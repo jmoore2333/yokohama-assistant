@@ -46,15 +46,26 @@
 //! is not. What travels instead is [`DrivenOutcome`] — moves with their movers,
 //! the final state, the result, and the per-seat counters.
 //!
-//! **What T1 deliberately does NOT ship**: `RootSource`/provenance/the registry
-//! (T3), `root_table` (T2), `adjudicate_root` (T4), the runner (T5). None is
-//! stubbed here — a stub is a surface a reader has to check the emptiness of.
+//! **What T2 adds**: [`root_table`], the ONE DECISION analyzed — the mechanical
+//! separator's instrument, and the surface on which D7's step-one check reads
+//! all fifteen search counters rather than the two `why` prints.
+//!
+//! **What this module still deliberately does NOT ship**: `RootSource`/
+//! provenance/the registry (T3), `adjudicate_root` (T4), the runner (T5). None
+//! is stubbed here — a stub is a surface a reader has to check the emptiness of.
+
+use std::cmp::Reverse;
 
 use crate::game::agent::HONEST_MAX_TURNS;
 use crate::game::arena::{
     agent_stream_seed, play_from_state, require_supported_player_count, AgentBench, ArenaAgent,
     Contestant, ExplainHandle, PlayError, PlayLimits, Slot,
 };
+use crate::game::belief::BeliefSampler;
+use crate::game::eval::WeightTable;
+use crate::game::invariants::check_invariants;
+use crate::game::lookahead::{LookaheadAgent, RootScore, SearchScheme, SearchStats};
+use crate::game::observe::observe;
 use crate::game::policy::RolloutPolicy;
 use crate::game::rules::Rules;
 use crate::game::scoring::{final_result, GameResult};
@@ -606,6 +617,271 @@ pub fn drive_to_terminal(
         seats: seat_outcomes,
         explanations,
     })
+}
+
+// ---------------------------------------------------------------------------
+// The root table: ONE decision, analyzed
+// ---------------------------------------------------------------------------
+
+/// The width of the top BAND [`RootTable::top_band`] reports, in evaluator
+/// points.
+///
+/// **One point, and the number is the e113 lesson rather than a taste.** At that
+/// root the shipped rung ranked 139 candidates and 100 of them valued within ONE
+/// point of the best, while only a handful were tied AT it. A report carrying
+/// [`tied_at_top`](RootTable::tied_at_top) alone describes that decision as "a
+/// few candidates were equal" when the honest statement is that the evaluator
+/// separated almost nothing — and the mechanical separator's question (does a
+/// wider beam SEE more here?) is a question about the second number.
+pub const TOP_BAND_POINTS: i64 = 1;
+
+/// WHICH WORLD the analyzed decision was taken in.
+///
+/// A searching contestant does not decide in the true state: it decides in one
+/// world its belief sampler determinized from the seat's view. The separator's
+/// premise — that b=4, b=8 and b=16 at one root differ only in how much of the
+/// SAME world they searched — is therefore a claim about the sampler, and this
+/// is the claim RECORDED rather than inferred (design §3, review N-1). It holds
+/// because the agent draws its three stream words (sampler seed, tie key,
+/// candidate seed) before any beam-dependent work, so equal decision seeds
+/// sample equal worlds at every beam; two tables that disagree here were not
+/// comparable and the numbers say so.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SampledWorld {
+    /// The seed the AGENT DREW from its own play stream and handed to
+    /// [`BeliefSampler::from_view`] — read off the agent, never re-derived from
+    /// the decision seed by a second copy of its draw order.
+    pub sampler_seed: u64,
+    /// Worlds this contestant samples per decision (`K`), read off the agent.
+    /// 1 at the shipped knobs.
+    pub worlds: u8,
+    /// [`state_digest`] of the FIRST sampled world.
+    ///
+    /// **REBUILT from [`sampler_seed`](Self::sampler_seed), not read out of the
+    /// agent** — which keeps a `GameState` clone per decision off the agent's hot
+    /// path. It is the same world by CONSTRUCTION and not an inference about it:
+    /// `BeliefSampler::from_view` is a deterministic function of `(view, rules,
+    /// seed)` and the first `sample()` off a fresh sampler is the first world the
+    /// agent searched. At `K > 1` the later worlds are not digested — one
+    /// identity, stated, beats a vector nothing reads.
+    pub digest: String,
+}
+
+/// ONE decision point, with every root candidate the contestant valued.
+///
+/// The instrument D7's mechanical separator runs on, and the answer to a
+/// question `why` cannot ask: `why` renders ONE decision's chosen move with 2 of
+/// the 15 search counters, while a separator needs the whole ranking's SHAPE
+/// (how much did the evaluator actually separate?) and the whole counter set
+/// (did the search do more work, and where?) at a root it re-runs at several
+/// beams.
+///
+/// **Every number here comes off the agent's own surface** —
+/// [`LookaheadAgent::last_roots`] and [`LookaheadAgent::last_stats`] — never
+/// from a second evaluation this module runs. A re-derivation could rank a
+/// different move first and there would be no fact of the matter about which
+/// answer the contestant gave (`suggest`'s rule, spec §0.3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RootTable {
+    /// The seat that was on the move, and whose view the decision was taken
+    /// from.
+    pub seat: PlayerId,
+    /// What was asked for.
+    pub contestant: Contestant,
+    /// What it RESOLVES to — `Contestant::echo`, so a quoted table names its
+    /// version and knobs instead of a bare name a reader would have to look up.
+    pub echo: String,
+    /// The seed the agent was built on. A fresh agent per decision (design §4's
+    /// second discipline, W5's shape), so this and the root determine everything
+    /// below.
+    pub decision_seed: u64,
+    /// The move the contestant PICKED — one of the maximisers of
+    /// [`ranked`](Self::ranked), chosen by the keyed tie draw, so the ranking
+    /// alone does not determine it.
+    pub winner: Move,
+    /// Every root candidate with its folded value, BEST FIRST (stable, so tied
+    /// candidates keep the candidate scheme's own order — `suggest`'s and
+    /// `bot::decide`'s rule, adopted verbatim so three readers of one decision
+    /// cannot disagree about which tie is listed first).
+    pub ranked: Vec<RootScore>,
+    /// The decision's FULL counter set — all fifteen fields readable, which is
+    /// the whole reason this type exists beside `why` (D7's step-one surface).
+    pub stats: SearchStats,
+    /// Which world it was decided in.
+    pub world: SampledWorld,
+}
+
+impl RootTable {
+    /// How many root candidates the contestant valued.
+    pub fn candidates(&self) -> usize {
+        todo!("T2 GREEN: candidates")
+    }
+
+    /// The best value on the table — `None` only for an empty ranking, which
+    /// [`root_table`] refuses to produce.
+    pub fn top_value(&self) -> Option<i64> {
+        todo!("T2 GREEN: top_value")
+    }
+
+    /// Candidates tied AT the best value. 1 means the evaluator picked a
+    /// strict argmax.
+    pub fn tied_at_top(&self) -> usize {
+        todo!("T2 GREEN: tied_at_top")
+    }
+
+    /// Candidates valued within `points` of the best — the top set INCLUDED, so
+    /// this is never smaller than [`tied_at_top`](Self::tied_at_top).
+    ///
+    /// Counted over the whole vector rather than as a prefix: the vector IS
+    /// sorted, and a count that depends on that is a count that breaks silently
+    /// if a caller ever hands this type an unsorted ranking.
+    pub fn band_within(&self, points: i64) -> usize {
+        todo!("T2 GREEN: band_within")
+    }
+
+    /// [`band_within`](Self::band_within) at [`TOP_BAND_POINTS`] — the e113
+    /// number.
+    pub fn top_band(&self) -> usize {
+        todo!("T2 GREEN: top_band")
+    }
+
+    /// How many DISTINCT values the ranking holds. The degeneracy read from the
+    /// other side: a 139-candidate table with 4 distinct values separated almost
+    /// nothing however its band reads.
+    pub fn distinct_values(&self) -> usize {
+        todo!("T2 GREEN: distinct_values")
+    }
+
+    /// Whether [`winner`](Self::winner) is one of the maximisers — a contract
+    /// the agent owes and this type can check, since a winner outside the top
+    /// set would mean the ranking and the pick came from different decisions.
+    pub fn winner_is_a_maximiser(&self) -> bool {
+        todo!("T2 GREEN: winner_is_a_maximiser")
+    }
+}
+
+/// Why a contestant has no root table in v1.
+///
+/// Typed rather than a message, because each arm is a different KIND of answer:
+/// two are permanent facts about what the contestant is, and one is a scope
+/// statement this module can revisit with a consumer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnsupportedReason {
+    /// A [`RolloutPolicy`] rung: it SAMPLES a move from a distribution and
+    /// values nothing, so there is no ranking to report and never will be.
+    /// `why`'s own posture at the same question.
+    Sampled,
+    /// **Greedy-v1: a one-ply argmax that reports no per-candidate vector.** It
+    /// scores its candidates and keeps only the chosen successor's explanation —
+    /// `GreedyAgent` has no `last_roots`, no `last_stats`, and no
+    /// [`SearchStats`] to carry at all — which is exactly what the CLI's own
+    /// greedy arm says by serving `ranking: Vec::new(), stats: None` and
+    /// printing a one-ply account in place of both blocks (`bot::decide`,
+    /// `why::ONE_PLY_ACCOUNT`). Mirroring that precedent HERE would produce a
+    /// table with no candidates, no band and no counters; producing a real one
+    /// would mean re-running the evaluator over the candidate set outside the
+    /// agent, which is the second derivation this module exists not to have.
+    /// The honest v1 answer is a refusal that names the missing surface.
+    Unranked,
+    /// MCTS-v1 and the S2 atomic-diagnostic arm: no ranked-root surface is
+    /// plumbed for them here, and none is invented on spec. Revisited only with
+    /// a consumer that needs it (design §3).
+    Diagnostic,
+}
+
+impl UnsupportedReason {
+    /// The sentence a report prints.
+    pub fn as_str(self) -> &'static str {
+        todo!("T2 GREEN: UnsupportedReason::as_str")
+    }
+}
+
+/// Why a decision produced no table.
+///
+/// [`DrivenError`]'s posture at one decision: every variant is a hard stop that
+/// produces nothing. A table computed on a corrupt root, at a seat that is not
+/// on the move, or by a contestant that valued nothing would be a wrong answer
+/// wearing the shape of a right one, and the analysis riding on it would have no
+/// way to notice.
+#[derive(Debug)]
+pub enum RootTableError {
+    /// The root violates an engine invariant — refused before the decision, so
+    /// a corrupt fixture is never reported as a search result.
+    CorruptRoot(String),
+    /// The seat asked about is not the seat to move. The decision analyzed is
+    /// the one the MOVER faces; valuing another seat's "candidates" at this
+    /// position would enumerate the mover's moves and attribute them to someone
+    /// else.
+    NotOnTheMove { seat: PlayerId, mover: PlayerId },
+    /// The seat cannot observe the root (a live-tracked seat whose own deal was
+    /// never revealed).
+    Unobservable { seat: PlayerId, detail: String },
+    /// This contestant has no root table in v1.
+    Unsupported { echo: String, reason: UnsupportedReason },
+    /// The agent refused the decision — a sampler refusal, or a decision point
+    /// that offered it nothing (which is what an ALREADY-TERMINAL root arrives
+    /// as: no candidates, hence a dead end, hence no table).
+    Agent { seat: PlayerId, detail: String },
+    /// The agent returned a move without the accounting it owes — a broken
+    /// contract rather than a state to report around.
+    Unaccounted { echo: String, missing: &'static str },
+}
+
+impl std::fmt::Display for RootTableError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        todo!("T2 GREEN: RootTableError::fmt")
+    }
+}
+
+impl std::error::Error for RootTableError {}
+
+/// Analyze ONE decision: what `contestant` would play for `seat` at `root`, with
+/// every candidate it valued.
+///
+/// **Construction MIRRORS [`Contestant::build`]'s arms** (design §3, review
+/// MUST-1) — same constructor, same knob order, same [`WeightTable::V2`], and no
+/// weight parameter anywhere on this surface (L12: a weight change is a
+/// versioned controller change, not a cell parameter). It cannot go through
+/// `build` itself: that returns `Box<dyn ArenaAgent>`, whose `choose` answers
+/// `DecisionReport { mv, volume }`, and the ranked values live on the CONCRETE
+/// agent's `last_roots`/`last_stats` — while `ExplainHandle` carries counters
+/// only. This is the CLI's own W5 pattern (`bot::decide` mirrors build for
+/// exactly this reason) and it carries the same obligation: the mirror is
+/// PINNED equal to `build` at the same view and seed, per supported arm, by
+/// `the_mirrored_agent_picks_what_contestant_build_picks`.
+///
+/// **`decision_seed` is design §4's second discipline** — the explicit
+/// single-decision seed, a fresh agent per decision (W5's shape), NOT the
+/// arena's long-lived per-seat stream. A caller reproducing a recorded CLI
+/// decision passes the seed that record implies; core does not re-implement the
+/// CLI's `splitmix64(bot_seed ^ event_count)` derivation.
+///
+/// **Knob-varied contestants come through the existing grammar** —
+/// `Contestant::from_str_name("lookahead-v1:b=8")` — so the separator's b=4 /
+/// b=8 / b=16 runs are three parses and one function, with no beam parameter
+/// added here.
+pub fn root_table(
+    root: &GameState,
+    seat: PlayerId,
+    contestant: Contestant,
+    rules: &Rules,
+    decision_seed: u64,
+) -> Result<RootTable, RootTableError> {
+    todo!("T2 GREEN: root_table")
+}
+
+/// THE mirror of [`Contestant::build`]'s arms, and the ONE place a supported
+/// contestant is decided.
+///
+/// Exhaustive with no `_` arm — `bot::eligible`'s discipline: a contestant added
+/// to core lands here as a compile error to be ANSWERED, never as a default that
+/// silently starts producing tables nobody checked.
+fn mirror_build(
+    contestant: Contestant,
+    rules: &Rules,
+    decision_seed: u64,
+) -> Result<LookaheadAgent, RootTableError> {
+    todo!("T2 GREEN: mirror_build")
 }
 
 #[cfg(test)]
@@ -1306,6 +1582,451 @@ mod tests {
                 assert_eq!((seats, players), (1, 2));
             }
             other => panic!("expected SeatMismatch, got {other:?}"),
+        }
+    }
+
+    // =======================================================================
+    // T2: the root table
+    // =======================================================================
+
+    /// T2's committed diagnostic DECISION seed — design §4's second discipline
+    /// (an explicit single-decision seed, a fresh agent per decision), not an
+    /// arena stream. Diagnostic BY NAME, per `game::seeds`: a table pin needs a
+    /// fixed decision, and a fixture cell is exactly the case spec §3's rule
+    /// carves out.
+    const DECISION_SEED: u64 = 0x0B02_2026_0817_9991;
+
+    /// A cheap 2P game to take ORGANIC roots out of. BOTH seats are rungs, so
+    /// the game itself pays for no search at all — the searching is what
+    /// `root_table` does, once, at whichever root a cell picks (design §6's wall
+    /// discipline).
+    fn rung_game(rules: &Rules, seed: WorldSeed) -> ArenaGameStats {
+        let rung = Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT);
+        arena_game(rules, seed, rung, rung)
+    }
+
+    /// `contestant`'s table at the state event `k` was decided in, at
+    /// [`DECISION_SEED`].
+    fn table_at(
+        rules: &Rules,
+        stats: &ArenaGameStats,
+        k: usize,
+        contestant: Contestant,
+    ) -> Result<RootTable, RootTableError> {
+        let state = state_at(&stats.record, k, rules).expect("the prefix replays");
+        let seat = state.current_player;
+        root_table(&state, seat, contestant, rules, DECISION_SEED)
+    }
+
+    /// The first root in `from .. from + window` whose table satisfies `want`.
+    ///
+    /// Deterministic in `(record, from, window, DECISION_SEED)` and nothing
+    /// else, so a cell that scans is as reproducible as one that names an index
+    /// — and a scan that finds nothing PANICS rather than quietly asserting
+    /// against whatever it last looked at.
+    fn scan(
+        rules: &Rules,
+        stats: &ArenaGameStats,
+        from: usize,
+        window: usize,
+        want: impl Fn(&RootTable) -> bool,
+    ) -> (usize, RootTable) {
+        let end = (from + window).min(stats.record.events.len());
+        (from..end)
+            .find_map(|k| {
+                let table = table_at(rules, stats, k, Contestant::LOOKAHEAD_V1_DEFAULT).ok()?;
+                want(&table).then_some((k, table))
+            })
+            .unwrap_or_else(|| panic!("no root in {from}..{end} satisfied the cell's predicate"))
+    }
+
+    /// A table with the given values and nothing else real — the ARITHMETIC
+    /// fixture. Its moves are distinct but arbitrary (the band functions read
+    /// values, never moves) and its winner is the FIRST entry.
+    fn table_of(values: &[i64]) -> RootTable {
+        RootTable {
+            seat: PlayerId(0),
+            contestant: Contestant::LOOKAHEAD_V1_DEFAULT,
+            echo: Contestant::LOOKAHEAD_V1_DEFAULT.echo(),
+            decision_seed: DECISION_SEED,
+            winner: Move::BuildShophouse { slot: 0 },
+            ranked: values
+                .iter()
+                .enumerate()
+                .map(|(i, v)| RootScore { mv: Move::BuildShophouse { slot: i as u8 }, value: *v })
+                .collect(),
+            stats: SearchStats::default(),
+            world: SampledWorld {
+                sampler_seed: 0,
+                worlds: 1,
+                digest: "0000000000000000".to_string(),
+            },
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // The band arithmetic
+    // -----------------------------------------------------------------------
+
+    /// The tie/band/distinct fields are EXACT, on rankings whose answers are
+    /// hand-computable.
+    ///
+    /// They are pure functions of the ranked vector, so this is the cell that
+    /// says what they MEAN — and the one that can state the boundary, which no
+    /// organic root can: `TOP_BAND_POINTS` is inclusive, so a candidate exactly
+    /// one point below the best is INSIDE the band and one two points below is
+    /// outside. An off-by-one here would silently re-scale every degeneracy
+    /// figure the separator reports.
+    #[test]
+    fn the_band_arithmetic_is_exact_on_a_hand_computed_ranking() {
+        let t = table_of(&[10, 10, 9, 9, 5]);
+        assert_eq!(t.candidates(), 5);
+        assert_eq!(t.top_value(), Some(10));
+        assert_eq!(t.tied_at_top(), 2, "two candidates sit AT 10");
+        assert_eq!(t.top_band(), 4, "10, 10, 9, 9 are within one point of the best; 5 is not");
+        assert_eq!(t.band_within(0), 2, "a zero-wide band IS the tied set");
+        assert_eq!(t.band_within(5), 5, "a five-point band swallows the whole table");
+        assert_eq!(t.distinct_values(), 3, "10, 9 and 5");
+        assert!(t.winner_is_a_maximiser());
+
+        // The boundary, on negatives so a sign error cannot hide in it.
+        let edge = table_of(&[0, -1, -2]);
+        assert_eq!(edge.tied_at_top(), 1);
+        assert_eq!(edge.top_band(), 2, "exactly one point below is INSIDE the band");
+        assert_eq!(edge.distinct_values(), 3);
+
+        // A strict argmax and a total tie — the two ends.
+        let lone = table_of(&[7]);
+        assert_eq!((lone.candidates(), lone.tied_at_top(), lone.top_band()), (1, 1, 1));
+        assert_eq!(lone.distinct_values(), 1);
+        let flat = table_of(&[3, 3, 3]);
+        assert_eq!((flat.tied_at_top(), flat.top_band(), flat.distinct_values()), (3, 3, 1));
+
+        // The winner check is a real check: a winner outside the top set means
+        // the ranking and the pick came from different decisions.
+        let mut liar = table_of(&[10, 4]);
+        liar.winner = Move::BuildShophouse { slot: 1 };
+        assert!(!liar.winner_is_a_maximiser(), "a winner valued 4 under a top of 10 is not one");
+    }
+
+    // -----------------------------------------------------------------------
+    // A real root
+    // -----------------------------------------------------------------------
+
+    /// An organic root's table reports the AGENT'S OWN ranking, and its shape
+    /// fields agree with it.
+    ///
+    /// Two cells rather than one, because "known ties" has two ends a real game
+    /// supplies and a literal fixture cannot vouch for: a FORCED decision point,
+    /// where every field is exactly 1 and the arithmetic is hand-computable
+    /// against a real search, and a TIED one, where the evaluator genuinely
+    /// separated less than the candidate count suggests.
+    ///
+    /// The load-bearing cross-check is `candidates() == stats.root_candidates`:
+    /// the ranking and the counters come off two different accessors of the same
+    /// decision, and a table that stitched a ranking to another decision's
+    /// counters would pass every other assertion here.
+    #[test]
+    fn a_real_roots_table_reports_the_agents_own_ranking() {
+        let rules = Rules::standard();
+        let stats = rung_game(&rules, world(30));
+
+        let (k, forced) = scan(&rules, &stats, 40, 40, |t| t.candidates() == 1);
+        assert_eq!(forced.tied_at_top(), 1);
+        assert_eq!(forced.top_band(), 1, "one candidate is one band");
+        assert_eq!(forced.distinct_values(), 1);
+        assert_eq!(forced.winner, forced.ranked[0].mv, "the only candidate is the winner");
+        assert_eq!(
+            forced.candidates() as u64,
+            forced.stats.root_candidates,
+            "event {k}: the ranking and the counters describe different decisions",
+        );
+
+        let (k, tied) = scan(&rules, &stats, 40, 60, |t| t.tied_at_top() >= 2);
+        assert!(tied.candidates() >= tied.tied_at_top());
+        assert!(
+            tied.top_band() >= tied.tied_at_top(),
+            "event {k}: the band must contain the tied set",
+        );
+        assert!(tied.distinct_values() <= tied.candidates());
+        assert!(tied.winner_is_a_maximiser(), "event {k}: the pick is one of the maximisers");
+        assert!(
+            tied.ranked.windows(2).all(|w| w[0].value >= w[1].value),
+            "event {k}: the ranking is not sorted best-first",
+        );
+        assert!(
+            tied.ranked.iter().any(|r| r.mv == tied.winner),
+            "event {k}: the winner is not on its own table",
+        );
+        assert_eq!(tied.candidates() as u64, tied.stats.root_candidates);
+        assert_eq!(tied.seat, state_at(&stats.record, k, &rules).unwrap().current_player);
+        assert_eq!(tied.echo, Contestant::LOOKAHEAD_V1_DEFAULT.echo());
+        assert_eq!(tied.decision_seed, DECISION_SEED);
+    }
+
+    /// ALL FIFTEEN counters ride the table, and an UNCAPPED S1 arm reads the
+    /// zero shape on every counter that has one.
+    ///
+    /// This is the reason the type exists beside `why`, which prints 2 of the 15
+    /// — so the cell reads every field by name rather than spot-checking three:
+    /// a field that stopped being populated would otherwise be invisible here
+    /// exactly as it is in the CLI.
+    #[test]
+    fn the_full_counter_set_rides_the_table_and_an_uncapped_arm_reads_zeros() {
+        let rules = Rules::standard();
+        let stats = rung_game(&rules, world(31));
+        let (k, table) = scan(&rules, &stats, 30, 40, |t| t.candidates() >= 3);
+        let s = table.stats;
+
+        // The uncapped shape: nothing was truncated and no budget existed to
+        // bind. `evaluator_gate`'s own assertions, at one decision.
+        assert_eq!(s.ply_cap_hits, 0, "event {k}: a line stopped at MAX_TURN_PLIES is valued mid-turn");
+        assert_eq!(s.free_cap_hits, 0, "the turn-boundary scheme never enters the quiescence arm");
+        assert_eq!(s.free_extension_steps, 0, "S1 takes no free extensions at all");
+        assert_eq!(s.budget_binds, 0, "an UNCAPPED arm has no budget to bind");
+        assert_eq!(s.budget_starved, 0);
+
+        // The work counters, and the identities the type documents.
+        assert!(s.root_candidates > 0, "a search that offered nothing did not search");
+        assert_eq!(s.root_candidates, table.candidates() as u64);
+        assert_eq!(s.root_scored, s.root_candidates, "each root candidate is scored exactly once");
+        assert!(s.scored >= s.root_scored, "the root share cannot exceed the total");
+        assert_eq!(s.nodes, s.handles, "one DecisionHandle per expandable node, by construction");
+        assert!(s.nodes > 0 && s.leaves > 0, "event {k}: {s:?}");
+        assert!(s.max_line >= 1, "a completed continuation is at least the root move");
+        // Read, never asserted: shape observations whose values are properties
+        // of the position rather than of the code under test.
+        let _ = (s.route_dfs_nodes, s.forced_nodes, s.placement_cap_binds);
+    }
+
+    // -----------------------------------------------------------------------
+    // Determinism, and the sampled world
+    // -----------------------------------------------------------------------
+
+    /// Same root, same seat, same contestant, same decision seed → the same
+    /// table, twice — and a DIFFERENT seed reaches a different world, which is
+    /// the anti-vacuity half (a table that ignored its seed would satisfy the
+    /// first assertion no matter what it did).
+    #[test]
+    fn the_same_root_and_seed_produce_the_same_table_twice() {
+        let rules = Rules::standard();
+        let stats = rung_game(&rules, world(32));
+        let (k, first) = scan(&rules, &stats, 30, 40, |t| t.candidates() >= 3);
+        let state = state_at(&stats.record, k, &rules).expect("the prefix replays");
+        let seat = state.current_player;
+
+        let second =
+            root_table(&state, seat, Contestant::LOOKAHEAD_V1_DEFAULT, &rules, DECISION_SEED)
+                .expect("the table must reproduce");
+        assert_eq!(first, second, "two identical asks produced different tables");
+
+        let elsewhere = root_table(
+            &state,
+            seat,
+            Contestant::LOOKAHEAD_V1_DEFAULT,
+            &rules,
+            DECISION_SEED ^ 0x5555_5555_5555_5555,
+        )
+        .expect("the table must reproduce at another seed");
+        assert_ne!(
+            first.world.digest, elsewhere.world.digest,
+            "the seed does not reach the sampled world, so the world identity witnesses nothing",
+        );
+        assert_ne!(first.world.sampler_seed, elsewhere.world.sampler_seed);
+        assert_eq!(first.world.worlds, 1, "the shipped knobs sample ONE world");
+    }
+
+    /// **The separator's premise, recorded rather than inferred** (design §3,
+    /// review N-1): at one root and one decision seed, b=4 and b=8 search the
+    /// SAME sampled world — the agent draws its three stream words before any
+    /// beam-dependent work — and the beam is therefore the only thing that
+    /// differs between the two tables.
+    ///
+    /// The second half is the ANTI-VACUITY the mechanical separator needs: an
+    /// instrument that reported the same band structure at every beam could not
+    /// separate anything, so a root at which the two tables DIFFER must exist
+    /// and be findable. No claim is made about WHICH way it moves — that is the
+    /// separator's finding to make, not this cell's.
+    #[test]
+    fn a_wider_beam_searches_the_same_world_and_can_move_the_band() {
+        let rules = Rules::standard();
+        let stats = rung_game(&rules, world(33));
+        let wide = Contestant::from_str_name("lookahead-v1:b=8").expect("the grammar parses b=8");
+
+        let mut moved: Option<(usize, RootTable, RootTable)> = None;
+        for k in 30..90.min(stats.record.events.len()) {
+            let Ok(narrow) = table_at(&rules, &stats, k, Contestant::LOOKAHEAD_V1_DEFAULT) else {
+                continue;
+            };
+            let Ok(broad) = table_at(&rules, &stats, k, wide) else { continue };
+            // The premise holds at EVERY root, differing bands or not.
+            assert_eq!(
+                narrow.world, broad.world,
+                "event {k}: two beams sampled different worlds, so their tables are not comparable",
+            );
+            let shape = |t: &RootTable| (t.tied_at_top(), t.top_band(), t.distinct_values());
+            if shape(&narrow) != shape(&broad) || narrow.ranked != broad.ranked {
+                moved = Some((k, narrow, broad));
+                break;
+            }
+        }
+
+        let (k, narrow, broad) = moved.expect(
+            "no root in the scanned window read differently at b=4 and b=8 — the instrument \
+             cannot see a beam difference at all",
+        );
+        assert_eq!(narrow.candidates(), broad.candidates(), "event {k}: the ROOT family is the beam's");
+        assert_eq!(narrow.echo, Contestant::LOOKAHEAD_V1_DEFAULT.echo());
+        assert!(broad.echo.contains("b=8"), "the wider arm must echo its own beam: {}", broad.echo);
+    }
+
+    // -----------------------------------------------------------------------
+    // The mirror-vs-build drift pin
+    // -----------------------------------------------------------------------
+
+    /// **THE DRIFT PIN** (design §3, review MUST-1). This module constructs the
+    /// concrete agent itself, because `Contestant::build`'s `Box<dyn ArenaAgent>`
+    /// erases the `last_roots`/`last_stats` surface the ranked values live on —
+    /// so the mirror has to be held equal to what it mirrors: at the same view
+    /// and the same seed, build's agent picks the move this table names, per
+    /// supported arm.
+    ///
+    /// Without it a mirror that drifted (a different weight table, a transposed
+    /// `k`/`m`, a forgotten `with_cap`) would keep producing plausible tables
+    /// about a contestant nobody runs.
+    #[test]
+    fn the_mirrored_agent_picks_what_contestant_build_picks() {
+        let rules = Rules::standard();
+        let stats = rung_game(&rules, world(34));
+        let (k, _) = scan(&rules, &stats, 30, 40, |t| t.candidates() >= 3);
+        let state = state_at(&stats.record, k, &rules).expect("the prefix replays");
+        let seat = state.current_player;
+        let view = observe(&state, seat).expect("the mover observes its own root");
+
+        for arm in [
+            Contestant::LOOKAHEAD_V1_DEFAULT,
+            Contestant::from_str_name("lookahead-v1:b=8").expect("b=8 parses"),
+            Contestant::from_str_name("lookahead-v1:b=2,cap=750").expect("a capped arm parses"),
+        ] {
+            let table = root_table(&state, seat, arm, &rules, DECISION_SEED)
+                .unwrap_or_else(|e| panic!("{}: {e}", arm.echo()));
+            assert!(
+                table.candidates() >= 3,
+                "anti-vacuity: agreeing on a forced decision says nothing ({})",
+                arm.echo(),
+            );
+
+            let (mut built, _) = arm.build(&rules, DECISION_SEED);
+            let report = built
+                .choose(&view, &rules)
+                .unwrap_or_else(|e| panic!("{} through build: {e}", arm.echo()));
+            assert_eq!(
+                table.winner,
+                report.mv,
+                "MIRROR DRIFT at event {k}: {} decided differently through Contestant::build",
+                arm.echo(),
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // The refusals
+    // -----------------------------------------------------------------------
+
+    /// Every contestant with no ranked-root surface is refused by its OWN
+    /// reason, and refused BEFORE the root is touched.
+    ///
+    /// The second half is what the corrupt root proves: a `Policy` rung asked
+    /// about a broken state comes back `Unsupported`, not `CorruptRoot`, so the
+    /// arm check genuinely precedes every other question rather than happening
+    /// to be reached first on a healthy state.
+    #[test]
+    fn every_contestant_without_a_ranked_root_surface_is_refused_by_its_own_reason() {
+        let rules = Rules::standard();
+        let root = root_2p(&rules, world(35).0);
+        let seat = root.current_player;
+
+        let expected = [
+            (Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT), UnsupportedReason::Sampled),
+            (Contestant::GREEDY_V1_DEFAULT, UnsupportedReason::Unranked),
+            (Contestant::MCTS_V1_DEFAULT, UnsupportedReason::Diagnostic),
+            (Contestant::ATOMIC_DIAG_DEFAULT, UnsupportedReason::Diagnostic),
+        ];
+        for (contestant, reason) in expected {
+            let err = root_table(&root, seat, contestant, &rules, DECISION_SEED)
+                .expect_err("v1 supports the S1 turn-boundary arm and nothing else");
+            match err {
+                RootTableError::Unsupported { echo, reason: got } => {
+                    assert_eq!(got, reason, "{echo} was refused for the wrong reason");
+                    assert_eq!(echo, contestant.echo(), "the refusal must name what it refused");
+                    assert!(
+                        err_text(&RootTableError::Unsupported { echo, reason: got })
+                            .contains(reason.as_str()),
+                        "the rendered refusal drops its reason",
+                    );
+                }
+                other => panic!("expected Unsupported for {}, got {other:?}", contestant.echo()),
+            }
+        }
+
+        // The arm check precedes the root check.
+        let mut corrupt = root;
+        corrupt.players[0].assistants.in_hand += 1;
+        assert!(check_invariants(&corrupt, &rules).is_err(), "the fixture must be corrupt");
+        assert!(matches!(
+            root_table(
+                &corrupt,
+                seat,
+                Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT),
+                &rules,
+                DECISION_SEED,
+            ),
+            Err(RootTableError::Unsupported { .. }),
+        ));
+        assert!(matches!(
+            root_table(&corrupt, seat, Contestant::LOOKAHEAD_V1_DEFAULT, &rules, DECISION_SEED),
+            Err(RootTableError::CorruptRoot(_)),
+        ));
+    }
+
+    /// `Display`, as a function, so a cell can assert a refusal SAYS what it is.
+    fn err_text(e: &RootTableError) -> String {
+        e.to_string()
+    }
+
+    /// The two remaining guards: a seat that is not on the move, and a root the
+    /// seat cannot observe.
+    ///
+    /// Both are wrong ANSWERS rather than errors if they are let through — a
+    /// table for a seat that is not to move would enumerate the mover's moves
+    /// and attribute them to someone else, which is a report no reader could
+    /// tell from a real one.
+    #[test]
+    fn a_table_is_refused_for_a_seat_that_is_not_the_mover_or_cannot_observe() {
+        let rules = Rules::standard();
+        let root = root_2p(&rules, world(36).0);
+        let mover = root.current_player;
+        let other = PlayerId(1 - mover.0);
+
+        match root_table(&root, other, Contestant::LOOKAHEAD_V1_DEFAULT, &rules, DECISION_SEED) {
+            Err(RootTableError::NotOnTheMove { seat, mover: m }) => {
+                assert_eq!((seat, m), (other, mover));
+            }
+            other => panic!("expected NotOnTheMove, got {other:?}"),
+        }
+
+        // The live-tracking shape, invariant-CLEAN so the refusal is about
+        // observability rather than corruption (T1's own fixture).
+        let mut hidden = root;
+        let seat = mover.0 as usize;
+        let kept = hidden.players[seat].starting_order.take().expect("a dealt starting order");
+        hidden.players[seat].order_cards_in_hand.retain(|c| *c != kept);
+        hidden.orders_removed.push(kept);
+        hidden.players[seat].starting_order_hidden = true;
+        check_invariants(&hidden, &rules).expect("the live-tracking root is invariant-clean");
+        match root_table(&hidden, mover, Contestant::LOOKAHEAD_V1_DEFAULT, &rules, DECISION_SEED) {
+            Err(RootTableError::Unobservable { seat, .. }) => assert_eq!(seat, mover),
+            other => panic!("expected Unobservable, got {other:?}"),
         }
     }
 }
