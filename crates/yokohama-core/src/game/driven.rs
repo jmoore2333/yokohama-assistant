@@ -793,9 +793,18 @@ pub enum UnsupportedReason {
     /// agent, which is the second derivation this module exists not to have.
     /// The honest v1 answer is a refusal that names the missing surface.
     Unranked,
-    /// MCTS-v1 and the S2 atomic-diagnostic arm: no ranked-root surface is
-    /// plumbed for them here, and none is invented on spec. Revisited only with
-    /// a consumer that needs it (design §3).
+    /// **MCTS-v1 and the S2 atomic-diagnostic arm — a SCOPE refusal, and the
+    /// two arms are refused for different reasons.** MCTS-v1 genuinely has no
+    /// ranked-root surface: `MctsAgent` is a tree over visit counts and carries
+    /// no `last_roots`/`last_stats` at all. The atomic-diag arm is the opposite
+    /// case and the honest wording matters — it IS a [`LookaheadAgent`]
+    /// (`Contestant::build` routes it through the same `build_search` as
+    /// `lookahead-v1`, differing only in `SearchScheme::AtomicDiag`), so
+    /// mirroring it here would be one more match arm and it would work. It is
+    /// refused because it is a LABELLED DIAGNOSTIC that no v1 consumer asks
+    /// about — the separator reads S1 beams — and a table nobody reads is a
+    /// surface whose correctness nothing checks. Revisited with a consumer, not
+    /// with a plumbing change (design §3).
     Diagnostic,
 }
 
@@ -807,7 +816,7 @@ impl UnsupportedReason {
             Self::Unranked => {
                 "a one-ply argmax reports no per-candidate vector and no search counters"
             }
-            Self::Diagnostic => "no ranked-root surface is plumbed for this diagnostic arm in v1",
+            Self::Diagnostic => "a labelled diagnostic arm no v1 consumer asks a root table about",
         }
     }
 }
@@ -1922,6 +1931,13 @@ mod tests {
     /// table, twice — and a DIFFERENT seed reaches a different world, which is
     /// the anti-vacuity half (a table that ignored its seed would satisfy the
     /// first assertion no matter what it did).
+    ///
+    /// **The last arm is `worlds`' own anti-vacuity** (review probe J): every
+    /// other cell in this module runs the shipped `K = 1` knobs, where a
+    /// `worlds` field HARDCODED to 1 at the construction site reads exactly like
+    /// one read off the agent. The only assertion that can tell those apart is
+    /// one at a contestant whose `K` is not 1, and it costs a single `K = 2`
+    /// decision.
     #[test]
     fn the_same_root_and_seed_produce_the_same_table_twice() {
         let rules = Rules::standard();
@@ -1967,6 +1983,32 @@ mod tests {
         assert_ne!(
             first.world.sampler_seed, first.decision_seed,
             "the sampler seed is a DRAW from the stream, not the seed the stream started at",
+        );
+
+        // `worlds` is READ OFF THE AGENT (`LookaheadAgent::worlds`), which only a
+        // contestant whose K is not the shipped 1 can witness. The knob comes
+        // through the existing grammar, so this arm adds no surface — one K=2
+        // decision, at the root the cell already found.
+        let two_worlds = Contestant::from_str_name("lookahead-v1:k=2").expect("k=2 parses");
+        let doubled = root_table(&state, seat, two_worlds, &rules, DECISION_SEED)
+            .expect("a K=2 arm is the same supported S1 arm at another knob");
+        assert_eq!(
+            doubled.world.worlds, 2,
+            "worlds is not the agent's own K: a K=2 arm reported {}",
+            doubled.world.worlds,
+        );
+        assert!(doubled.echo.contains("k=2"), "the K=2 arm must echo its knob: {}", doubled.echo);
+        // And the world IDENTITY is still world 0's at either K: the agent draws
+        // its sampler seed BEFORE the K loop and samples the loop off that one
+        // sampler, so K moves how many worlds were searched and not which world
+        // the digest names.
+        assert_eq!(
+            doubled.world.sampler_seed, first.world.sampler_seed,
+            "K moved the sampler seed, so two K's tables are not comparable at one root",
+        );
+        assert_eq!(
+            doubled.world.digest, first.world.digest,
+            "the digest names world 0, and world 0 is the same world at either K",
         );
     }
 
@@ -2044,14 +2086,27 @@ mod tests {
     /// half is not left at one root. The default arm sweeps the full window; the
     /// two knob-varied arms sweep a shorter one, since their construction drift
     /// is what (a) is for and a searching decision is not free in debug.
+    ///
+    /// **The knob-arm window is 12, widened from 8 at the T2 fix wave (review
+    /// N-1), and the reason is the SLACK.** At 8 both knob arms read branching
+    /// == floor == 2 — the anti-vacuity check passed with nothing to spare, so a
+    /// single root turning forced would have failed the cell for a reason that
+    /// is a property of the game rather than of the code under test. At 12 the
+    /// floor is 3 and both read 4 (roots 34/35/38/39 of this record), i.e. slack
+    /// 1, and four more decisions are compared. The default arm is unchanged at
+    /// 40 (branching 15, floor 10, slack 5). The floor FORMULA is untouched:
+    /// widening the window raises the bar with the sample, which is the point.
     #[test]
     fn the_mirrored_agent_picks_what_contestant_build_picks() {
         let rules = Rules::standard();
         let stats = rung_game(&rules, world(34));
         let arms = [
             (Contestant::LOOKAHEAD_V1_DEFAULT, 40),
-            (Contestant::from_str_name("lookahead-v1:b=8").expect("b=8 parses"), 8),
-            (Contestant::from_str_name("lookahead-v1:b=2,cap=750").expect("a capped arm parses"), 8),
+            (Contestant::from_str_name("lookahead-v1:b=8").expect("b=8 parses"), 12),
+            (
+                Contestant::from_str_name("lookahead-v1:b=2,cap=750").expect("a capped arm parses"),
+                12,
+            ),
         ];
 
         for (arm, window) in arms {
@@ -2094,8 +2149,11 @@ mod tests {
             assert_eq!(compared, window, "{}: the window did not compare cleanly", arm.echo());
             assert!(
                 branching * 4 >= window,
-                "anti-vacuity: only {branching} of {compared} roots offered a real choice ({})",
+                "anti-vacuity: only {branching} of {compared} roots offered a real choice ({}) — \
+                 the floor is {} and this window read at authoring 15/40 (slack 5) on the default \
+                 arm and 4/12 (slack 1) on each knob arm",
                 arm.echo(),
+                window / 4,
             );
         }
     }

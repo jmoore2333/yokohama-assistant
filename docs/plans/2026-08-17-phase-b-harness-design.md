@@ -82,10 +82,19 @@ a suite no gate line names is a suite that never runs — this design avoids cre
   the concrete `last_roots()`/`last_stats()` surface the ranked values live on, and
   `ExplainHandle` carries counters only. This is the CLI's own W5 pattern (`bot.rs`/`suggest.rs`
   mirror build, drift-pinned); the harness carries the same **drift pin**: mirror-vs-build move
-  identity at the same seed, per supported arm. **Seat support named (review S-8):**
-  `lookahead-v1` and `greedy-v1` supported; `Policy` rungs REFUSED typed (sampled-not-valued,
-  `why`'s posture); mcts/atomic-diag REFUSED in v1 (no ranked-root surface is plumbed for them
-  here; revisit only with a consumer). Reported: per-candidate values, top-set size, **the
+  identity at the same seed, per supported arm. **Seat support named (review S-8; amended at T2
+  adjudication — the orchestrator's ratified narrowing):** `lookahead-v1` supported;
+  `greedy-v1` REFUSED typed as `Unranked` — `GreedyAgent` exposes no ranked-roots surface
+  anywhere (no `last_roots`, no `last_stats`, no `SearchStats` at all), the CLI itself serves
+  greedy movers by DECLARING that absence (`why.rs`'s `ONE_PLY_ACCOUNT` swapped in by arm rather
+  than a table printed), and constructing a table here would require a second evaluation
+  derivation outside the agent — which this design's own MUST-1 resolution forbids; `Policy`
+  rungs REFUSED typed as `Sampled` (sampled-not-valued, `why`'s posture); mcts/atomic-diag
+  REFUSED typed as `Diagnostic` — a SCOPE refusal, not a capability one: mcts-v1 genuinely has
+  no ranked-root surface, while the S2 atomic-diag arm IS a `LookaheadAgent` (`Contestant::build`
+  routes it through the same `build_search`) and would mirror trivially, and is refused only as
+  a labelled diagnostic no v1 consumer asks a table about (revisit with a consumer, not with a
+  plumbing change). Reported: per-candidate values, top-set size, **the
   ≤1-point top-BAND width** (the e113 lesson: 100/139 inside one point — `tied_at_top` alone
   under-describes the degeneracy), distinct-value count, winner identity, the FULL
   `SearchStats` counter set (the shipped `why` prints 2 of 15 counters; D7's step-one check
