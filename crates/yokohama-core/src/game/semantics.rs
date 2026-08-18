@@ -214,6 +214,28 @@ pub fn state_digest(state: &GameState) -> String {
     format!("{:016x}", fnv1a_64(canon.as_bytes()))
 }
 
+/// Stable content digest of a `GameRecord` -- the DOCUMENT identity a rooted
+/// provenance points at (Phase B, `game::driven`'s `RootOrigin::RecordPrefix`).
+///
+/// Same FNV-1a-64-over-canonical-JSON recipe as [`state_digest`], and sound for
+/// the same reason: a record is `seed`/`config`/`choices`/`events` plus stamps,
+/// every map inside it a `BTreeMap`, so serde emits a deterministic string and
+/// two `PartialEq`-equal records digest alike.
+///
+/// **It names the DOCUMENT, not the game.** Two records of the same played game
+/// that differ in one stamped field -- a refreshed `terminal_digest`, an added
+/// `run` provenance block, a `lockdown` note -- are different documents and
+/// digest differently. That is exactly the property a root descriptor wants: it
+/// records WHICH FILE a root was replayed out of, so a root quoted against a
+/// re-saved record is visibly a root against a different document rather than
+/// silently the same one.
+pub fn record_digest(record: &crate::game::record::GameRecord) -> String {
+    // `state_digest`'s reasoning, unchanged: a record that could not serialize
+    // could not have been written to disk or parsed off it to begin with.
+    let canon = serde_json::to_string(record).expect("GameRecord serializes to JSON");
+    format!("{:016x}", fnv1a_64(canon.as_bytes()))
+}
+
 /// Stable content digest of a `PlayerView` -- the OBSERVATION identity the
 /// leakage suites compare on. Same FNV-1a-64-over-canonical-JSON recipe as
 /// `state_digest` and sound for the same reason: a `PlayerView`'s maps are
@@ -258,6 +280,35 @@ mod tests {
         let moves = crate::game::legal_moves::get_legal_moves(&state, &rules);
         let next = crate::game::apply_move::apply_move(&state, &moves[0], &rules).unwrap();
         assert_ne!(before, state_digest(&next), "a real move must change the digest");
+    }
+
+    /// The RECORD digest is the document identity `game::driven`'s root
+    /// descriptor points at, so it must move with any byte of the document --
+    /// including the stamped fields a re-save refreshes, which is what makes
+    /// "this root came from THAT file" a checkable claim rather than a hope.
+    #[test]
+    fn record_digest_is_16_hex_and_moves_with_the_documents_content() {
+        use crate::game::record::GameRecord;
+        use crate::types::Move;
+        let rules = Rules::standard();
+        let choices = vec![StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)];
+        let record = GameRecord::new(5, GameConfig::for_player_count(2), choices, &rules);
+
+        let d = record_digest(&record);
+        assert_eq!(d.len(), 16, "fnv1a-64 hex");
+        assert!(d.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(d, record_digest(&record.clone()), "equal records must digest alike");
+
+        // An appended event is a different document.
+        let mut longer = record.clone();
+        longer.push_move(Move::SkipBuilding);
+        assert_ne!(d, record_digest(&longer), "an appended event must move the digest");
+
+        // So is a re-stamped metadata field -- the digest names the FILE, not
+        // the game, and a caller comparing roots across a re-save must see that.
+        let mut stamped = record;
+        stamped.lockdown = Some("desync".to_string());
+        assert_ne!(d, record_digest(&stamped), "a stamped field must move the digest");
     }
 
     #[test]

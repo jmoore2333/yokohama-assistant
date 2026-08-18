@@ -1900,6 +1900,7 @@ pub struct LookaheadAgent {
     last_continuation: Vec<Move>,
     last_roots: Vec<RootScore>,
     last_stats: Option<SearchStats>,
+    last_sampler_seed: Option<u64>,
 }
 
 impl LookaheadAgent {
@@ -1971,6 +1972,7 @@ impl LookaheadAgent {
             last_continuation: Vec::new(),
             last_roots: Vec::new(),
             last_stats: None,
+            last_sampler_seed: None,
         }
     }
 
@@ -2116,6 +2118,30 @@ impl LookaheadAgent {
     pub fn last_stats(&self) -> Option<&SearchStats> {
         self.last_stats.as_ref()
     }
+
+    /// The seed the LAST decision drew from this agent's play stream and handed
+    /// to [`BeliefSampler::from_view`] — the first of the three words
+    /// [`choose`](ArenaAgent::choose) takes per decision, drawn before any
+    /// beam-dependent work.
+    ///
+    /// **INERT: reading it changes nothing, and writing it changed nothing** —
+    /// no counter, no draw order, no value, so no controller version moves with
+    /// it (spec §0.5 is about what a decision IS).
+    ///
+    /// It exists because a rooted instrument has to say WHICH WORLD a decision
+    /// was taken in, and the honest answer is the seed the agent actually drew
+    /// rather than a second copy of this method's draw order living in the
+    /// caller — a copy that would keep reporting a plausible seed if the order
+    /// here ever changed. `game::driven`'s `SampledWorld` is the first consumer
+    /// and rebuilds the world from it (`from_view` is deterministic in
+    /// `(view, rules, seed)`), which is what lets the mechanical separator
+    /// RECORD its same-worlds-across-beams premise instead of inferring it.
+    ///
+    /// The world itself is deliberately not kept: a `GameState` clone per
+    /// decision on the hot path buys nothing this seed does not.
+    pub fn last_sampler_seed(&self) -> Option<u64> {
+        self.last_sampler_seed
+    }
 }
 
 /// One root MOVE's value aggregated across the K worlds it appeared in.
@@ -2150,6 +2176,9 @@ impl ArenaAgent for LookaheadAgent {
         // — deriving it from anything state-flavoured would correlate the sample
         // with the truth it must be blind to.
         let sampler_seed: u64 = self.rng.gen();
+        // Recorded at the DRAW, so `last_sampler_seed` is the seed this decision
+        // used and not a re-derivation of it. Inert: nothing below reads it.
+        self.last_sampler_seed = Some(sampler_seed);
         let mut sampler = BeliefSampler::from_view(view, rules, sampler_seed)
             .map_err(|e| format!("belief sampler refused seat {}'s view: {e}", seat.0))?;
 

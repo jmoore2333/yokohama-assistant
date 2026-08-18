@@ -66,7 +66,7 @@ alone re-points if the generating play changes. `RootedProvenance` (root descrip
 + `semantics_rev` + `rules_hash` + seat descriptors carrying the RESOLVED contestant echo and
 observation label — Reply seats included — + master), stamped on every `DrivenOutcome`; serde
 round-trip. Root-eligibility precheck: hidden-deal seats (`starting_order_hidden`) refused up
-front by name. `driven::registry()` with the five session entries as `RecordPrefix` on
+front by name. `driven::registry()` with the six session entries as `RecordPrefix` on
 `docs/temp/owner-games/` paths (workspace-root-relative, manifest-dir resolved) — runner
 material, absent-tolerant typed miss — each entry carrying its recorded `decision_seed` and
 recorded move where known (the triage §3 seeds), so reproduction runs by default. TESTS use a

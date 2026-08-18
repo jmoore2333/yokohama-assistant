@@ -63,6 +63,29 @@ pub mod mcts;
 /// DESIGN (L12), and this instrument exists precisely to run the comparison that
 /// grammar refuses to express.
 pub mod eval_screen;
+/// The DRIVEN-FIXTURE harness (Phase B item 1): rooted runs from a supplied
+/// `GameState`. NAMESPACED for the same reason [`eval`], [`greedy`],
+/// [`lookahead`], [`mcts`] and [`eval_screen`] are — `SeatSpec`, `ReplyPolicy`
+/// and `drive_to_terminal` say nothing about ROOTED PLAY at the crate root, and
+/// `registry` (T3's entry point) would be indefensible there. Callers write
+/// `driven::drive_to_terminal`.
+///
+/// A SIBLING of [`arena`] rather than a submodule, like [`eval_screen`]: the
+/// arena's subject is a from-setup CELL and its unit tabulation, and this
+/// module's is a single position. What they SHARE is the play loop itself —
+/// `driven` seats its agents in the arena's own bench and drives the arena's own
+/// loop, which is the property its reproduction pin exists to keep true.
+pub mod driven;
+/// [`driven`]'s RUNNER: the argv grammar and the report rendering behind
+/// `examples/driven.rs`. NAMESPACED for the same reason its subject is, and
+/// SEPARATE from `driven` itself because the harness answers questions while
+/// this only decides which question was asked and how to lay the answer out.
+///
+/// It lives in the LIB rather than in the example because an example's
+/// `#[cfg(test)]` module runs under no command this repo documents — so a
+/// grammar and a renderer written there would be untested by every per-edit
+/// gate. Callers write `driven_runner::run`.
+pub mod driven_runner;
 
 pub use power::*;
 pub use movement::*;
