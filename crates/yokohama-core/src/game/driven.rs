@@ -50,28 +50,47 @@
 //! separator's instrument, and the surface on which D7's step-one check reads
 //! all fifteen search counters rather than the two `why` prints.
 //!
-//! **What this module still deliberately does NOT ship**: `RootSource`/
-//! provenance/the registry (T3), `adjudicate_root` (T4), the runner (T5). None
-//! is stubbed here — a stub is a surface a reader has to check the emptiness of.
+//! **What T3 adds**: WHERE a root comes from and WHAT a run says about itself.
+//! [`RootSource`] resolves the three origins the design names — a state handed
+//! in, the prefix of a record ([`RootSource::RecordPrefix`], `why n`'s own
+//! index), and a seeded scan for a position satisfying a [`RootPredicate`] —
+//! each into a [`RootDescriptor`] that identifies the root as DATA.
+//! [`RootedProvenance`] rides EVERY [`DrivenOutcome`]: the descriptor, the
+//! running `semantics_rev` and `rules_hash`, the master, and one
+//! [`SeatDescriptor`] per seat carrying the RESOLVED contestant echo and the
+//! observation label the driver witnessed. [`registry`] names the session's own
+//! roots, absent-tolerantly. And the ROOT-ELIGIBILITY precheck refuses a
+//! live-tracked root by name before a move is played, instead of letting it
+//! surface as a mid-run `observe` failure at some seat's first decision.
+//!
+//! **What this module still deliberately does NOT ship**: `adjudicate_root`
+//! (T4) and the runner (T5). Neither is stubbed here — a stub is a surface a
+//! reader has to check the emptiness of.
 
 use std::cmp::Reverse;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
 
 use crate::game::agent::HONEST_MAX_TURNS;
 use crate::game::arena::{
-    agent_stream_seed, play_from_state, require_supported_player_count, AgentBench, ArenaAgent,
-    Contestant, ExplainHandle, PlayError, PlayLimits, Slot,
+    agent_stream_seed, play_from_state, require_supported_player_count, run_arena_game, AgentBench,
+    ArenaAgent, Contestant, ExplainHandle, PlayError, PlayLimits, SeatBench, Slot,
 };
 use crate::game::belief::BeliefSampler;
+use crate::game::end_game::is_game_over;
 use crate::game::eval::WeightTable;
 use crate::game::invariants::check_invariants;
 use crate::game::lookahead::{LookaheadAgent, RootScore, SearchScheme, SearchStats};
 use crate::game::observe::observe;
 use crate::game::policy::RolloutPolicy;
+use crate::game::record::{replay_from, state_at, GameRecord, RecordedEvent, SeatProvenance};
 use crate::game::rules::Rules;
 use crate::game::scoring::{final_result, GameResult};
-use crate::game::seeds::WorldSeed;
-use crate::game::semantics::state_digest;
-use crate::types::{GameState, Move, PlayerId};
+use crate::game::seeds::{SeedSchedule, WorldSeed};
+use crate::game::semantics::{record_digest, state_digest, SEMANTICS_REV};
+use crate::types::{AreaId, GameState, Move, PlayerId};
 
 /// The decision guard's default: how many decisions a rooted run may apply
 /// before it is refused as non-terminating.
@@ -177,6 +196,368 @@ impl SeatSpec {
         match self {
             Self::Contestant(c) => c,
             Self::Reply(r) => r.contestant(),
+        }
+    }
+
+    /// What the caller ASKED FOR, as provenance text: `"contestant"` when a
+    /// contestant was named directly, `"reply:<menu name>"` when a menu slot
+    /// was.
+    ///
+    /// It rides [`SeatDescriptor::requested`] BESIDE the resolved echo, and the
+    /// pair is the point (design §3, review S-1): the echo says what actually
+    /// played, and this says which vocabulary chose it. At D1's identity freeze
+    /// a `reply:lookahead-at-final` seat's echo MOVES while this string does
+    /// not, so an artifact carrying both makes the re-pointing visible instead
+    /// of leaving two runs looking equally like "the reply policy".
+    pub fn requested_label(self) -> String {
+        match self {
+            Self::Contestant(_) => "contestant".to_string(),
+            Self::Reply(r) => format!("reply:{}", r.as_str()),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Roots: where a rooted run starts, and what it says about itself (T3)
+// ---------------------------------------------------------------------------
+
+/// WHICH POSITIONS a [`RootSource::Generated`] scan looks for.
+///
+/// v1 ships the TYPE plus exactly ONE predicate (design §3), and the restraint
+/// is deliberate: a menu of predicates invented before a consumer asks for them
+/// is a menu of fixtures chosen after seeing what each one selects. Layer 2 adds
+/// variants at family freeze, with the family that needs them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RootPredicate {
+    /// The final round is UNDER WAY and a decision still faces a mover:
+    /// `end_game_triggered && final_round && !is_game_over`.
+    ///
+    /// All three conjuncts are load-bearing, and two of them are easy to get
+    /// wrong. `end_game_triggered` ALONE is the TRIGGER round — the round the
+    /// trigger fired in, which still has a whole final round after it
+    /// (`apply_move`'s phase advance sets `final_round` only when the turn
+    /// passes back to the start player) — so it would select positions with
+    /// several turns of play left, which is not what family 1 asks about.
+    /// `!is_game_over` excludes the terminal state: a terminal root is a
+    /// legitimate thing to hand [`drive_to_terminal`] (it answers with a
+    /// zero-move run, deliberately) but it is not a POSITION anyone can
+    /// adjudicate a candidate at, and a scan that returned one would hand the
+    /// adjudicator a root with no decision in it.
+    FinalRoundAlreadyTriggered,
+}
+
+impl RootPredicate {
+    /// The stable name, for descriptors and error text.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::FinalRoundAlreadyTriggered => "final-round-already-triggered",
+        }
+    }
+
+    /// Whether `state` is one of the positions this predicate names.
+    pub fn holds(self, state: &GameState) -> bool {
+        let _ = state;
+        todo!("T3 GREEN: RootPredicate::holds")
+    }
+}
+
+/// The v1 generating configuration's NAME. Bump the version in the same commit
+/// as ANY change to a [`GeneratingEcology::v1`] field.
+pub const GENERATED_ECOLOGY_V1: &str = "driven-generated-v1";
+
+/// How many games a [`RootSource::Generated`] scan may play before it reports
+/// the supply exhausted.
+///
+/// A BOUND, not a budget: the scan must terminate on an ordinal nothing
+/// satisfies, and the honest way to say that is a refusal naming how far it
+/// looked. Four 2P games supply roughly a hundred final-round positions (the
+/// final round is a full round of turns at ~20 decisions each), which is far
+/// more ordinals than family 1 asks for, at a debug wall a test can pay.
+pub const GENERATED_SCAN_GAMES: u32 = 4;
+
+/// The seat count v1's generating ecology plays at.
+const GENERATED_PLAYERS: u8 = 2;
+
+/// The contestant every seat of v1's generating ecology plays.
+///
+/// The CHEAPEST honest seat there is — the shipped rollout rung — chosen so a
+/// scan costs games rather than searches. It is not a claim that final-round
+/// positions reached by rungs resemble the ones a bot reaches; that is exactly
+/// why the ecology is RECORDED on the descriptor rather than assumed, so a later
+/// stronger ecology is a visible change of identity instead of a silent
+/// re-pointing of every `(predicate, master, ordinal)` triple ever quoted.
+const GENERATED_SEAT: Contestant = Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT);
+
+/// The play that PRODUCED a generated root, recorded as data.
+///
+/// Review S-5's finding made a type: `(predicate, master, ordinal)` alone does
+/// NOT identify a position. The ordinal-th root satisfying a predicate is a fact
+/// about the games the scan played, so a later change to the generating seats,
+/// the player count, the seed derivation or the scan bound re-points every
+/// recorded triple at a different state while every recorded triple still reads
+/// exactly the same. A descriptor carrying this cannot do that silently: two
+/// runs whose ecologies differ are visibly two different questions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GeneratingEcology {
+    /// The configuration's name and version — [`GENERATED_ECOLOGY_V1`].
+    pub id: String,
+    /// What played the games.
+    pub driver: String,
+    /// The seat count.
+    pub players: u8,
+    /// The generating seats' RESOLVED echoes, in seat order — never a bare
+    /// name, for [`SeatDescriptor::echo`]'s reason.
+    pub seats: Vec<String>,
+    /// How a game's world seed and each seat's stream are derived.
+    pub seed_derivation: String,
+    /// The scan bound this run used ([`GENERATED_SCAN_GAMES`]) — recorded
+    /// because an `Exhausted` refusal and a found root are answers about the
+    /// same bound, and a later bound change makes an old "exhausted" reading
+    /// non-comparable.
+    pub games: u32,
+}
+
+impl GeneratingEcology {
+    /// The v1 configuration — THE single spelling of it.
+    pub fn v1() -> Self {
+        todo!("T3 GREEN: GeneratingEcology::v1")
+    }
+}
+
+/// WHERE a root came from, as data that travels.
+///
+/// The descriptor half of [`RootSource`]: no `GameState`, no `GameRecord`, so it
+/// serializes into a sidecar and compares cheaply, and it identifies the root by
+/// what a reader can act on — a document digest, or the seeded scan that found
+/// it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RootOrigin {
+    /// A `GameState` handed straight to the driver — a fixture, a hand-built
+    /// position, a state a caller derived some other way. There is nothing to
+    /// point AT but the state itself, which is what
+    /// [`RootDescriptor::root_digest`] is for.
+    Constructed,
+    /// The prefix of a recorded game, identified by the record's own document
+    /// digest ([`record_digest`]).
+    RecordPrefix { record_digest: String },
+    /// The ordinal-th position a seeded scan found, with the ecology that
+    /// produced it.
+    Generated {
+        predicate: RootPredicate,
+        master: u64,
+        ordinal: u32,
+        /// Which game of the scan held it — reproduction and diagnosis only
+        /// (the generated games are not saved anywhere; re-running the same
+        /// master rebuilds them).
+        game_index: u32,
+        ecology: GeneratingEcology,
+    },
+}
+
+impl RootOrigin {
+    /// The stable kind name, for one-line digests and report headers.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Constructed => "constructed",
+            Self::RecordPrefix { .. } => "record-prefix",
+            Self::Generated { .. } => "generated",
+        }
+    }
+}
+
+/// A root, identified.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RootDescriptor {
+    pub origin: RootOrigin,
+    /// The event index the root sits at, when its origin has one.
+    ///
+    /// `state_at`'s convention EXACTLY — `k` counts events APPLIED, so this is
+    /// the position the mover decided IN before the move that became event `k`,
+    /// which is the index `why <n>` prints. `None` for a constructed root, which
+    /// has no log to be an index into. For a GENERATED root it indexes the
+    /// scan's own game, which lives nowhere but the master that rebuilds it.
+    pub event_index: Option<usize>,
+    /// [`state_digest`] of the root state itself — the identity every origin
+    /// has, and the one thing two descriptions of the same position must agree
+    /// on.
+    pub root_digest: String,
+}
+
+impl RootDescriptor {
+    /// The descriptor for a state handed straight in.
+    ///
+    /// Not a stub for a missing provenance: a caller who built a fixture IS the
+    /// provenance, and the honest record of that is the state's own digest plus
+    /// the statement that nothing else was claimed.
+    pub fn constructed(root: &GameState) -> Self {
+        Self {
+            origin: RootOrigin::Constructed,
+            event_index: None,
+            root_digest: state_digest(root),
+        }
+    }
+}
+
+/// WHERE a rooted run starts.
+///
+/// The three origins design §3 names. `Constructed` and `RecordPrefix` carry
+/// their material (a state, a record) because resolving them is pure; `Generated`
+/// carries only a question, because resolving it is a seeded SCAN — which is why
+/// its descriptor records the ecology that answered it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RootSource {
+    /// A state a caller built or holds — the `scenario_suite` grain.
+    Constructed(GameState),
+    /// The state event `event_index` was decided in, replayed from `record`.
+    ///
+    /// `event_index` is `state_at`'s `k` and `why <n>`'s `n` — the SAME number,
+    /// deliberately, so a root taken from a session's own `why` output needs no
+    /// arithmetic to become a fixture here.
+    RecordPrefix { record: GameRecord, event_index: usize },
+    /// The `ordinal`-th position satisfying `predicate` in a seeded scan at
+    /// `master`.
+    ///
+    /// **`(predicate, master, ordinal)` is not the whole identity** — see
+    /// [`GeneratingEcology`], which the resolved descriptor carries for exactly
+    /// that reason.
+    Generated { predicate: RootPredicate, master: u64, ordinal: u32 },
+}
+
+impl RootSource {
+    /// The root this source names, with the descriptor that identifies it.
+    ///
+    /// Every arm is TOTAL and every failure is typed: an out-of-range prefix
+    /// index, a generating game that did not complete, an ordinal beyond the
+    /// scan's supply. None of them is a state — a caller that cannot get its
+    /// root gets a sentence naming what it asked for.
+    ///
+    /// **Eligibility is NOT checked here.** A root whose seats carry hidden
+    /// deals resolves fine and is refused by [`drive_to_terminal`] (the one
+    /// site, so a bare-state caller gets the same refusal a resolved one does);
+    /// see `require_eligible_root`.
+    pub fn resolve(&self, rules: &Rules) -> Result<(GameState, RootDescriptor), RootError> {
+        let _ = rules;
+        todo!("T3 GREEN: RootSource::resolve")
+    }
+}
+
+/// Why a [`RootSource`] produced no root.
+#[derive(Debug)]
+pub enum RootError {
+    /// The record does not carry the asked-for prefix.
+    Prefix { event_index: usize, events: usize, detail: String },
+    /// A generating game did not complete, so the scan cannot continue: the
+    /// ordinal is counted over a sequence, and skipping a game would silently
+    /// re-point every ordinal after it.
+    Generate { game_index: u32, detail: String },
+    /// The scan reached its bound with fewer than `ordinal + 1` hits. Names what
+    /// it FOUND and how far it looked, so a caller can tell "no such position"
+    /// from "not in this many games".
+    Exhausted { predicate: RootPredicate, ordinal: u32, found: u32, games: u32 },
+}
+
+impl std::fmt::Display for RootError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let _ = f;
+        todo!("T3 GREEN: RootError::fmt")
+    }
+}
+
+impl std::error::Error for RootError {}
+
+/// What ONE seat of a rooted run was, recorded so a report never has to look it
+/// up.
+///
+/// **The echo and the observation label are the two load-bearing fields**
+/// (design §3, review S-1/N-5). A menu name is a symbol whose meaning moves at
+/// D1's identity freeze, so an artifact carrying only `reply:lookahead-at-final`
+/// would describe two different opponents identically; the resolved echo carries
+/// the version and every knob. The observation label is single-sourced from the
+/// DRIVER'S OWN BENCH rather than from the contestant — `SeatProvenance`'s rule,
+/// for its reason: a controller labelling its own information access is exactly
+/// the claim that needs an independent witness.
+///
+/// [`controller`](Self::controller) + [`params`](Self::params) are the record's
+/// own two halves, so `Contestant::from_parts` reconstructs the seat from this
+/// descriptor alone — a property the provenance test pins, and the reason the
+/// pair rides here beside the (display-only) echo.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeatDescriptor {
+    pub seat: u8,
+    /// What the caller ASKED for — see [`SeatSpec::requested_label`].
+    pub requested: String,
+    /// What actually played — `Contestant::echo`.
+    pub echo: String,
+    /// The controller's stable wire name, as the seat's own agent reported it.
+    pub controller: String,
+    /// That controller's implementation version.
+    pub version: u32,
+    /// Its knobs in their declared integer units, identity keys included.
+    pub params: BTreeMap<String, i64>,
+    /// What this seat could SEE, witnessed by the driver's bench.
+    pub observation: String,
+    /// The seat's play stream, from `agent_stream_seed`.
+    pub agent_seed: u64,
+}
+
+/// What a rooted run WAS — stamped on every [`DrivenOutcome`].
+///
+/// **Never a `GameRecord`** (design §3): a rooted run is not a from-setup game.
+/// It has no `new_game` seed of its own, no setup choices, and nothing that
+/// would let `replay` reconstruct it from the top, so a record claiming
+/// otherwise would put a file in the corpus that says it is reproducible from
+/// setup and is not. This says what a rooted run can honestly say: which
+/// position, under which engine semantics and rules data, with which seats, off
+/// which master.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RootedProvenance {
+    /// Which position, and where it came from.
+    pub root: RootDescriptor,
+    /// The RUNNING engine's `SEMANTICS_REV` — the comparability key. A figure
+    /// from another rev is not this figure, whatever else matches.
+    pub semantics_rev: u32,
+    /// The RUNNING `Rules::content_hash()`.
+    pub rules_hash: String,
+    /// One entry per seat, in seat order.
+    pub seats: Vec<SeatDescriptor>,
+    /// The master every seat's stream descends from.
+    pub master: u64,
+}
+
+impl RootedProvenance {
+    /// Stamp a run. Private: provenance is what the DRIVER witnessed, so it is
+    /// assembled where the witnessing happened and nowhere else.
+    fn stamp(
+        root: RootDescriptor,
+        rules: &Rules,
+        master: WorldSeed,
+        specs: &[SeatSpec],
+        witnessed: &[SeatProvenance],
+        agent_seeds: &[u64],
+    ) -> Self {
+        let seats = specs
+            .iter()
+            .enumerate()
+            .map(|(index, spec)| {
+                let seen = &witnessed[index];
+                SeatDescriptor {
+                    seat: index as u8,
+                    requested: spec.requested_label(),
+                    echo: spec.contestant().echo(),
+                    controller: seen.controller.clone(),
+                    version: seen.version,
+                    params: seen.params.clone(),
+                    observation: seen.observation.clone(),
+                    agent_seed: agent_seeds[index],
+                }
+            })
+            .collect();
+        Self {
+            root,
+            semantics_rev: SEMANTICS_REV,
+            rules_hash: rules.content_hash(),
+            seats,
+            master: master.0,
         }
     }
 }
@@ -320,6 +701,13 @@ pub struct DrivenOutcome {
     /// what an already-terminal root produces. The two are different statements
     /// and a reader must not collapse them.
     pub explanations: Option<u64>,
+    /// What this run WAS (T3): the root's identity, the engine's semantics and
+    /// rules stamps, the resolved seats, the master.
+    ///
+    /// Stamped on EVERY outcome, including one from [`drive_to_terminal`]'s
+    /// bare-state entry point — which stamps [`RootOrigin::Constructed`],
+    /// because that is what a state handed straight in honestly is.
+    pub provenance: RootedProvenance,
 }
 
 impl DrivenOutcome {
@@ -347,12 +735,14 @@ impl DrivenOutcome {
     /// so a quoted digest names the run that produced it. It is NOT a
     /// serialization format — nothing parses it back.
     ///
-    /// **It names no ROOT identity**: two different roots that happen to reach
-    /// the same terminal state under the same master digest alike, so a quoted
-    /// digest identifies the run and not the question it answered. T3's
-    /// `RootedProvenance` (design §3 — root descriptor, `semantics_rev`,
-    /// `rules_hash`, seat descriptors) is the designed completion, not an
-    /// oversight here.
+    /// **It names the ROOT since T3** — the origin KIND and the root state's own
+    /// digest, off [`provenance`](Self::provenance). Before that it did not, and
+    /// the gap was real: two different roots that happen to reach the same
+    /// terminal state under the same master digested alike, so a quoted digest
+    /// identified the run without identifying the question it answered. The
+    /// FULL provenance (rules hash, seat knobs, the record digest a prefix root
+    /// came from) is deliberately not folded in here — it rides
+    /// [`RootedProvenance`], which serializes; this line stays a line.
     pub fn digest(&self) -> String {
         let seats: Vec<String> = self
             .seats
@@ -375,7 +765,11 @@ impl DrivenOutcome {
             .map(|st| format!("p{}={}", st.player.0, st.breakdown.total))
             .collect();
         format!(
-            "driven-v1 master={:#018x} decisions={} state={} winner=p{} seats=[{}] standings=[{}]",
+            "driven-v1 rev={} root={}@{} master={:#018x} decisions={} state={} winner=p{} \
+             seats=[{}] standings=[{}]",
+            self.provenance.semantics_rev,
+            self.provenance.root.origin.kind(),
+            self.provenance.root.root_digest,
             self.master.0,
             self.decisions,
             state_digest(&self.final_state),
@@ -405,6 +799,11 @@ fn opt(value: Option<u64>) -> String {
 /// would be wrong in a way no later check could find.
 #[derive(Debug)]
 pub enum DrivenError {
+    /// The [`RootSource`] produced no root at all — there was nothing to play
+    /// from. Kept as ONE variant wrapping [`RootError`] rather than flattened:
+    /// this taxonomy answers "why is there no outcome", and "the root could not
+    /// be resolved" is one answer whose own reasons are that type's business.
+    Root(RootError),
     /// The seat list does not describe the root's seats.
     SeatMismatch { seats: usize, players: usize },
     /// The root, or the options, are not something this driver can play.
@@ -412,8 +811,17 @@ pub enum DrivenError {
     /// The root violates an engine invariant — refused BEFORE the first
     /// decision, so a corrupt fixture is never misattributed to a move.
     CorruptRoot(String),
-    /// The seat to move cannot observe the root. The reachable case is a
-    /// live-tracked seat whose own deal was never revealed.
+    /// A seat cannot observe the root. The reachable case is a live-tracked
+    /// seat whose own deal was never revealed.
+    ///
+    /// **Since T3 this is normally an UP-FRONT refusal about ANY seat**, not
+    /// only the mover: `require_eligible_root` scans every seat's
+    /// `starting_order_hidden` before a move is played, so a live-tracked root
+    /// is refused as the ineligible ROOT it is instead of surfacing at whichever
+    /// seat happened to decide first. The mid-run arm behind it is retained as
+    /// defence in depth — it is what `classify` maps `observe`'s own refusal to
+    /// — and the DETAIL is the discriminator: the precheck names
+    /// `starting_order_hidden`, `observe`'s refusal names its own view error.
     Unobservable { seat: PlayerId, detail: String },
     /// A seat's agent refused to produce a move — the honest chain's typed hard
     /// error, with NO fallback arm behind it.
@@ -435,6 +843,7 @@ pub enum DrivenError {
 impl std::fmt::Display for DrivenError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Root(e) => write!(f, "no root: {e}"),
             Self::SeatMismatch { seats, players } => write!(
                 f,
                 "{seats} seat specs for a {players}-seat root: a driven run names every seat"
@@ -524,6 +933,66 @@ pub fn drive_to_terminal(
     master: WorldSeed,
     opts: DrivenOpts,
 ) -> Result<DrivenOutcome, DrivenError> {
+    drive_from_descriptor(root, RootDescriptor::constructed(root), seats, rules, master, opts)
+}
+
+/// Resolve `source` and play it to terminal — [`drive_to_terminal`] with the
+/// root's PROVENANCE carried through instead of reconstructed.
+///
+/// The two entry points share one driver ([`drive_from_descriptor`]) and differ
+/// only in what the resulting [`RootedProvenance`] can honestly say: a bare
+/// state is [`RootOrigin::Constructed`], and a resolved source names the record
+/// or the seeded scan it came from. That difference is the whole reason this
+/// function exists — an outcome whose root descriptor was rebuilt by the driver
+/// from a state it was handed could never say more than "someone gave me this
+/// position".
+pub fn drive_rooted(
+    source: &RootSource,
+    seats: &[SeatSpec],
+    rules: &Rules,
+    master: WorldSeed,
+    opts: DrivenOpts,
+) -> Result<DrivenOutcome, DrivenError> {
+    let (root, descriptor) = source.resolve(rules).map_err(DrivenError::Root)?;
+    drive_from_descriptor(&root, descriptor, seats, rules, master, opts)
+}
+
+/// Refuse a root whose seats carry HIDDEN DEALS, before anything is played
+/// (design §5, review N-3).
+///
+/// The reachable source is a LIVE-TRACKED record: an opponent who kept their
+/// dealt starting order face-down carries `starting_order_hidden` with the
+/// card's identity recorded nowhere in the state, and `observe` refuses to
+/// derive that seat's own view (a seat may not be ignorant of its own deal).
+/// Left to the run, that refusal surfaces at the seat's FIRST DECISION — after
+/// the other seats have already played, as an error about a seat the caller
+/// never chose, at a position the caller never asked about.
+///
+/// **EVERY seat is checked, not only the mover**, and the non-mover is the whole
+/// point: the mover's own hidden deal is the case `observe` catches on the first
+/// decision anyway, while a non-mover's is the one it catches too late.
+///
+/// The refusal reuses [`DrivenError::Unobservable`] rather than adding a second
+/// variant, because it is the same fact — this seat cannot be observed here —
+/// learned earlier. What tells them apart is the DETAIL, which names
+/// `starting_order_hidden` and the eligibility rule.
+fn require_eligible_root(root: &GameState) -> Result<(), DrivenError> {
+    let _ = root;
+    // T3 RED: the trivially-eligible answer, so the pins that demand the real
+    // one fail while no committed cell fails on a stub.
+    Ok(())
+}
+
+/// The ONE driver both entry points run, with the root's descriptor supplied
+/// rather than assumed.
+fn drive_from_descriptor(
+    root: &GameState,
+    descriptor: RootDescriptor,
+    seats: &[SeatSpec],
+    rules: &Rules,
+    master: WorldSeed,
+    opts: DrivenOpts,
+) -> Result<DrivenOutcome, DrivenError> {
     let players = root.players.len();
     if seats.len() != players {
         return Err(DrivenError::SeatMismatch { seats: seats.len(), players });
@@ -550,6 +1019,9 @@ pub fn drive_to_terminal(
             "max_decisions is 0: a run that may apply no decision is not a run".to_string(),
         ));
     }
+    // ELIGIBILITY before agents: a root nobody can play is not worth building
+    // agents for, and the refusal must not depend on which seat moves first.
+    require_eligible_root(root)?;
 
     // The agents are built HERE, from the seat list alone. Each gets the seat's
     // own long-lived stream and nothing else — no state, no root, no master —
@@ -579,6 +1051,14 @@ pub fn drive_to_terminal(
     )
     .map_err(classify)?;
 
+    // WITNESSED, not asserted: the bench states each seat's observation label
+    // (it IS the mode — `AgentBench` passes views and nothing else can) and each
+    // agent states its own controller descriptor. Read here rather than derived
+    // from the seat list so the provenance records what the driver actually
+    // seated, which is the independent witness `SeatProvenance`'s own rule asks
+    // for.
+    let witnessed = bench.seat_provenance();
+
     // The handles are read AFTER the run — they are `Arc`s on live counters, so
     // reading them earlier would report a search that had not happened yet.
     let seat_outcomes: Vec<SeatOutcome> = seats
@@ -604,8 +1084,11 @@ pub fn drive_to_terminal(
         .fold(None, |acc: Option<u64>, e| Some(acc.unwrap_or(0) + e));
 
     let result = final_result(&outcome.final_state, rules);
+    let provenance =
+        RootedProvenance::stamp(descriptor, rules, master, seats, &witnessed, &agent_seeds);
     Ok(DrivenOutcome {
         master,
+        provenance,
         decisions: outcome.applied.len() as u64,
         applied: outcome
             .applied
@@ -1006,6 +1489,160 @@ fn mirror_build(
             refuse(UnsupportedReason::Diagnostic)
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// The generated scan
+// ---------------------------------------------------------------------------
+
+/// Find the `ordinal`-th position satisfying `predicate` in a seeded scan at
+/// `master`, under [`GeneratingEcology::v1`].
+///
+/// **The scan order IS the ordinal**, and it is stated here because every
+/// recorded triple depends on it: games in `SeedSchedule::diagnostic(master)`
+/// draw order, and within a game the positions in PLAY order — position `k`
+/// being the state event `k` was decided in, `state_at`'s own index. Hits are
+/// counted across games, so ordinal 0 is the first hit of game 0 and the
+/// counting never restarts.
+///
+/// **Each game is walked ONE EVENT AT A TIME rather than by repeated
+/// `state_at`**: `state_at(record, k)` is O(k) applies, so scanning a
+/// thousand-event game with it is a million applies for the same information a
+/// single fold gives once. The fold is `replay_from` over one event, which is
+/// the same public path `state_at` itself runs — no second event-application
+/// implementation appears here.
+fn generate_root(
+    predicate: RootPredicate,
+    master: u64,
+    ordinal: u32,
+    rules: &Rules,
+) -> Result<(GameState, RootDescriptor), RootError> {
+    let _ = (predicate, master, ordinal, rules);
+    todo!("T3 GREEN: generate_root")
+}
+
+// ---------------------------------------------------------------------------
+// The registry: named roots
+// ---------------------------------------------------------------------------
+
+/// The workspace root, resolved from THIS CRATE'S manifest directory rather
+/// than from the working directory (review N-5).
+///
+/// A registry path resolved against the CWD would name a different file
+/// depending on where a runner was launched from, so an absent-file miss would
+/// fire (or not) for reasons that have nothing to do with the file. `env!` is a
+/// compile-time constant, so this is the same anchor wherever the binary runs.
+///
+/// The search looks for the ancestor carrying BOTH a `Cargo.toml` and a
+/// `crates/` directory — the workspace's own shape. If no ancestor has it (a
+/// vendored copy with another layout), the manifest directory itself is
+/// returned, which makes a registry miss name an obviously-wrong path rather
+/// than silently resolving somewhere plausible.
+pub fn workspace_root() -> PathBuf {
+    todo!("T3 GREEN: workspace_root")
+}
+
+/// The bot seat in BOTH session games (the CLI seats the human at 0).
+pub const SESSION_BOT_SEAT: PlayerId = PlayerId(1);
+
+/// One NAMED root the runner and an analysis session can ask for by name.
+///
+/// **Runner and analysis material, never a test dependency** (design §3): the
+/// session entries point at gitignored saves, so the test suite must be green
+/// with those files ABSENT — which is why loading is absent-tolerant with a
+/// typed miss and why no pin here reads one.
+///
+/// The recorded fields are what make a separator run reproduce BY DEFAULT
+/// instead of on hand-copied hex (review S-3): `decision_seed` is the seed the
+/// CLI's own `splitmix64(bot_seed ^ event_count)` derivation produced for that
+/// decision (derived in `yokohama-cli`, which core deliberately does not
+/// re-implement — see [`root_table`]), and `recorded_move` is the move the bot
+/// actually played there, so [`RegistryEntry::load`] can CHECK the file it
+/// opened is the game the entry describes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegistryEntry {
+    /// The name a runner asks for.
+    pub name: &'static str,
+    /// WORKSPACE-ROOT-RELATIVE path to the record, resolved by
+    /// [`workspace_root`].
+    pub path: &'static str,
+    /// `state_at`'s `k` and `why <n>`'s `n` — the position the mover decided in.
+    pub event_index: usize,
+    /// Which seat the bot played.
+    pub bot_seat: PlayerId,
+    /// The decision seed the recorded decision was taken at.
+    pub decision_seed: u64,
+    /// The move the record carries at [`event_index`](Self::event_index), where
+    /// it is known.
+    pub recorded_move: Option<Move>,
+    /// What this root is FOR, in one line.
+    pub note: &'static str,
+}
+
+impl RegistryEntry {
+    /// This entry's record path, anchored at [`workspace_root`].
+    pub fn resolved_path(&self) -> PathBuf {
+        todo!("T3 GREEN: RegistryEntry::resolved_path")
+    }
+
+    /// Load this entry's record and name the root it points at.
+    ///
+    /// **An absent file is a typed MISS naming the path** — not a panic, not a
+    /// skip, not an env var: the runner prints it and moves on, and the test
+    /// suite never asks. Everything else this function refuses is a
+    /// TRANSCRIPTION check on the entry itself: an event index past the log, or
+    /// a recorded move the record does not carry at that index. Those cannot
+    /// fire on a matching file and both fire loudly on the wrong one — an entry
+    /// pointed at a re-saved or replaced game is exactly the silent failure a
+    /// hand-transcribed literal invites.
+    pub fn load(&self) -> Result<RootSource, RegistryError> {
+        todo!("T3 GREEN: RegistryEntry::load")
+    }
+}
+
+/// Why a registry entry produced no root.
+#[derive(Debug)]
+pub enum RegistryError {
+    /// The record file is not there. THE expected miss — see
+    /// [`RegistryEntry::load`].
+    Missing { name: &'static str, path: PathBuf },
+    /// The file is there and could not be read.
+    Read { name: &'static str, path: PathBuf, detail: String },
+    /// The file is there and is not a `GameRecord`.
+    Parse { name: &'static str, path: PathBuf, detail: String },
+    /// The record is shorter than the entry's event index.
+    EventOutOfRange { name: &'static str, event_index: usize, events: usize },
+    /// The record carries something else at that index — the entry and the file
+    /// describe different games.
+    MoveMismatch { name: &'static str, event_index: usize, expected: Box<Move>, found: String },
+}
+
+impl std::fmt::Display for RegistryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let _ = f;
+        todo!("T3 GREEN: RegistryError::fmt")
+    }
+}
+
+impl std::error::Error for RegistryError {}
+
+/// The NAMED roots this session produced (design §3, plan §T5's list).
+///
+/// Six entries over the two owner diagnostic games, every one a
+/// [`RootSource::RecordPrefix`] at the position the bot decided in. Their
+/// content is FACTS ABOUT GITIGNORED MATERIAL — the seeds were derived by the
+/// CLI's own rule from each save's recorded bot seed, and the moves were read
+/// out of the saves' event logs — transcribed here because a runner cannot read
+/// them from a file it may not have, and because a transcription the loader
+/// CHECKS (see [`RegistryEntry::load`]) is better than a hand-copied hex string
+/// on a command line.
+///
+/// **The root-index rule** (plan §T5, review S-4): each root is the turn's
+/// FIRST BRANCHING decision. The `EndAdditionalPhase` events immediately before
+/// the two final-turn roots were verified forced (one root candidate, no
+/// runner-up) with the CLI's own `why`, so those two skip nothing.
+pub fn registry() -> Vec<RegistryEntry> {
+    todo!("T3 GREEN: registry")
 }
 
 #[cfg(test)]
@@ -2257,5 +2894,492 @@ mod tests {
             Err(RootTableError::Unobservable { seat, .. }) => assert_eq!(seat, mover),
             other => panic!("expected Unobservable, got {other:?}"),
         }
+    }
+
+    // =======================================================================
+    // T3: roots, provenance, and the registry
+    // =======================================================================
+
+    /// T3's committed diagnostic master for the GENERATED scan — diagnostic BY
+    /// NAME per `game::seeds`, the same waiver [`MASTER`] carries: a scan pin
+    /// needs a fixed sequence of games, and a fixture cell is exactly the case
+    /// spec §3's rule carves out.
+    const GEN_MASTER: u64 = 0x0B03_2026_0817_9992;
+
+    /// One REPLY seat and one named contestant that EXPLAINS — the seat list the
+    /// provenance cells use, because the two arms of `SeatSpec` must both appear
+    /// in a `seats` vector for the descriptor's `requested`/`echo` pair to be
+    /// worth anything.
+    fn mixed_seats() -> [SeatSpec; 2] {
+        [
+            SeatSpec::Reply(ReplyPolicy::FamilyWeighted),
+            SeatSpec::Contestant(Contestant::GREEDY_V1_DEFAULT),
+        ]
+    }
+
+    /// Every seat descriptor says what the driver actually seated.
+    ///
+    /// Shared by the constructed and record-prefix cells: the seat half of
+    /// provenance is the same claim whatever the root's origin, and stating it
+    /// twice by hand would let the two drift.
+    fn assert_seats_describe(seats: &[SeatSpec], p: &RootedProvenance, master: WorldSeed) {
+        assert_eq!(p.seats.len(), seats.len(), "a seat played that provenance does not name");
+        for (index, spec) in seats.iter().enumerate() {
+            let d = &p.seats[index];
+            assert_eq!(d.seat, index as u8, "the descriptors are not in seat order");
+            assert_eq!(d.requested, spec.requested_label());
+            assert_eq!(d.echo, spec.contestant().echo(), "seat {index} echoes another contestant");
+            assert_eq!(
+                d.observation,
+                crate::game::record::OBSERVATION_VIEW,
+                "seat {index} played from something other than a view",
+            );
+            assert_eq!(
+                d.agent_seed,
+                agent_stream_seed(master, PlayerId(index as u8), Slot(index as u8)),
+                "seat {index}'s recorded stream is not the one it played on",
+            );
+            // The RECONSTRUCTION property: the two record halves this descriptor
+            // carries are enough to rebuild the contestant, knobs and all — which
+            // is what makes the descriptor an identity rather than a label.
+            assert_eq!(
+                Contestant::from_parts(&d.controller, &d.params),
+                Ok(spec.contestant()),
+                "seat {index}'s controller+params do not reconstruct what played",
+            );
+        }
+    }
+
+    /// A bare state handed to [`drive_to_terminal`] is stamped for what it is —
+    /// CONSTRUCTED, with its own digest and nothing claimed beyond it.
+    ///
+    /// The second half is the equivalence that keeps the two entry points from
+    /// describing one root two ways: `RootSource::Constructed(state).resolve()`
+    /// must produce the descriptor the driver stamps by itself.
+    #[test]
+    fn a_constructed_root_stamps_its_own_identity_on_every_outcome() {
+        let rules = Rules::standard();
+        let root = root_2p(&rules, world(40).0);
+        let seats = [
+            SeatSpec::Reply(ReplyPolicy::FamilyWeighted),
+            SeatSpec::Reply(ReplyPolicy::FamilyWeighted),
+        ];
+        let master = world(41);
+
+        let outcome = drive_to_terminal(&root, &seats, &rules, master, DrivenOpts::default())
+            .expect("the run must complete");
+        let p = &outcome.provenance;
+
+        assert_eq!(p.root.origin, RootOrigin::Constructed);
+        assert_eq!(p.root.origin.kind(), "constructed");
+        assert_eq!(p.root.event_index, None, "a constructed root has no log to index into");
+        assert_eq!(p.root.root_digest, state_digest(&root), "the stamped root is another state");
+        assert_eq!(p.semantics_rev, SEMANTICS_REV);
+        assert_eq!(p.rules_hash, rules.content_hash());
+        assert_eq!(p.master, master.0);
+        assert_seats_describe(&seats, p, master);
+
+        // The one-line digest NAMES the root since T3.
+        let line = outcome.digest();
+        assert!(line.contains("root=constructed@"), "the digest does not name the origin: {line}");
+        assert!(line.contains(&p.root.root_digest), "the digest does not name the root: {line}");
+        assert!(line.contains(&format!("rev={SEMANTICS_REV}")), "the digest hides the rev: {line}");
+
+        // The entry points agree about what this root is.
+        let (resolved, descriptor) = RootSource::Constructed(root.clone())
+            .resolve(&rules)
+            .expect("a constructed source resolves to itself");
+        assert_eq!(resolved, root, "resolving a constructed source moved the state");
+        assert_eq!(descriptor, p.root, "the driver and the source describe one root differently");
+    }
+
+    /// A RECORD-PREFIX root: `state_at`'s position, driven to terminal, with the
+    /// document it came from named on the outcome.
+    ///
+    /// The event index is `why <n>`'s own number, which is the point of the
+    /// variant — a root taken from a session's `why` output needs no arithmetic
+    /// — so the cell pins the resolved state EQUAL to `state_at`'s rather than
+    /// merely plausible.
+    ///
+    /// It does NOT pin the source game's tail (design §4, review N-2): fresh
+    /// agents start their streams at position 0 where the recorded game's were
+    /// mid-stream, so a continuation is a different line and never claims to be
+    /// the same one. What is pinned is that it TERMINATES and says what it was.
+    #[test]
+    fn a_record_prefix_root_drives_to_terminal_with_its_provenance_stamped() {
+        let rules = Rules::standard();
+        let stats = rung_game(&rules, world(42));
+        let events = stats.record.events.len();
+        let k = events.saturating_sub(30);
+        let source = RootSource::RecordPrefix { record: stats.record.clone(), event_index: k };
+
+        let (root, descriptor) = source.resolve(&rules).expect("the prefix replays");
+        assert_eq!(
+            root,
+            state_at(&stats.record, k, &rules).expect("the prefix replays"),
+            "the resolved root is not the state event {k} was decided in",
+        );
+        assert!(!is_game_over(&root), "anti-vacuity: the chosen root is already terminal");
+        assert_eq!(descriptor.event_index, Some(k));
+        assert_eq!(descriptor.root_digest, state_digest(&root));
+        assert_eq!(
+            descriptor.origin,
+            RootOrigin::RecordPrefix { record_digest: record_digest(&stats.record) },
+            "the descriptor names another document",
+        );
+
+        let seats = mixed_seats();
+        let master = world(43);
+        let outcome = drive_rooted(&source, &seats, &rules, master, DrivenOpts::default())
+            .expect("the rooted run must complete");
+
+        assert!(is_game_over(&outcome.final_state), "a driven run must reach a terminal state");
+        assert!(outcome.decisions > 0, "anti-vacuity: the run applied nothing");
+        assert_eq!(outcome.decisions, outcome.applied.len() as u64);
+        let p = &outcome.provenance;
+        assert_eq!(p.root, descriptor, "the run stamped a different root than it resolved");
+        assert_eq!(p.semantics_rev, SEMANTICS_REV);
+        assert_eq!(p.rules_hash, rules.content_hash());
+        assert_eq!(p.master, master.0);
+        assert_seats_describe(&seats, p, master);
+        // The explaining seat is the named contestant, and the reply rung
+        // explains nothing — the `None`-is-not-zero rule, on a mixed vocabulary.
+        assert_eq!(outcome.seats[1].counters.explained, Some(outcome.seats[1].applied_moves));
+        assert_eq!(outcome.seats[0].counters, SeatCounters::NONE);
+        assert!(outcome.explanation_identity_holds());
+
+        // Real provenance survives the trip to a sidecar and back.
+        let json = serde_json::to_string(p).expect("provenance serializes");
+        let back: RootedProvenance = serde_json::from_str(&json).expect("provenance parses");
+        assert_eq!(&back, p, "a real run's provenance did not survive serde");
+    }
+
+    /// An out-of-range prefix index is a typed refusal naming the bound — never
+    /// a clamp to the terminal state, `state_at`'s own rule carried up.
+    ///
+    /// Costs no game: a zero-event record still has a position 0 (the post-setup
+    /// state), which is exactly what makes the boundary statable.
+    #[test]
+    fn a_prefix_index_past_the_event_log_is_a_typed_refusal() {
+        let rules = Rules::standard();
+        let record = GameRecord::new(
+            world(44).0,
+            GameConfig::for_player_count(2),
+            vec![StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)],
+            &rules,
+        );
+
+        let (state, descriptor) = RootSource::RecordPrefix { record: record.clone(), event_index: 0 }
+            .resolve(&rules)
+            .expect("position 0 of any record is its post-setup state");
+        assert_eq!(descriptor.event_index, Some(0));
+        assert_eq!(descriptor.root_digest, state_digest(&state));
+
+        let err = RootSource::RecordPrefix { record, event_index: 1 }
+            .resolve(&rules)
+            .expect_err("a record with no events has no position 1");
+        match err {
+            RootError::Prefix { event_index, events, .. } => {
+                assert_eq!((event_index, events), (1, 0));
+                let rendered = RootError::Prefix {
+                    event_index,
+                    events,
+                    detail: "x".to_string(),
+                }
+                .to_string();
+                assert!(rendered.contains('1'), "the refusal hides what was asked: {rendered}");
+                assert!(rendered.contains('0'), "the refusal hides the bound: {rendered}");
+            }
+            other => panic!("expected Prefix, got {other:?}"),
+        }
+    }
+
+    /// The provenance shape survives serde at EVERY origin, and a reader gets
+    /// the fields a sidecar exists for.
+    ///
+    /// Hand-built rather than driven, deliberately: the `Generated` origin
+    /// carries the whole ecology, which no cheap run produces, and an enum with
+    /// data is exactly where a serde rename or a missing `derive` bites.
+    #[test]
+    fn provenance_round_trips_through_serde_at_every_origin() {
+        let ecology = GeneratingEcology::v1();
+        let origins = [
+            RootOrigin::Constructed,
+            RootOrigin::RecordPrefix { record_digest: "0123456789abcdef".to_string() },
+            RootOrigin::Generated {
+                predicate: RootPredicate::FinalRoundAlreadyTriggered,
+                master: GEN_MASTER,
+                ordinal: 3,
+                game_index: 1,
+                ecology: ecology.clone(),
+            },
+        ];
+
+        for origin in origins {
+            let kind = origin.kind();
+            let p = RootedProvenance {
+                root: RootDescriptor {
+                    origin,
+                    event_index: Some(113),
+                    root_digest: "fedcba9876543210".to_string(),
+                },
+                semantics_rev: SEMANTICS_REV,
+                rules_hash: "rules-hash".to_string(),
+                seats: vec![SeatDescriptor {
+                    seat: 1,
+                    requested: "reply:lookahead-at-final".to_string(),
+                    echo: Contestant::LOOKAHEAD_V1_DEFAULT.echo(),
+                    controller: "lookahead-v1".to_string(),
+                    version: 2,
+                    params: BTreeMap::from([("b".to_string(), 4)]),
+                    observation: crate::game::record::OBSERVATION_VIEW.to_string(),
+                    agent_seed: 0x1234_5678_9abc_def0,
+                }],
+                master: GEN_MASTER,
+            };
+
+            let json = serde_json::to_string(&p).expect("provenance serializes");
+            let back: RootedProvenance =
+                serde_json::from_str(&json).expect("provenance parses back");
+            assert_eq!(back, p, "the {kind} origin did not survive serde");
+
+            // The fields a sidecar READER needs are actually in the document.
+            assert!(json.contains("fedcba9876543210"), "{kind}: the root digest is not written");
+            assert!(json.contains(&Contestant::LOOKAHEAD_V1_DEFAULT.echo()), "{kind}: no echo");
+            assert!(json.contains(crate::game::record::OBSERVATION_VIEW), "{kind}: no label");
+        }
+
+        // The ecology is v1's, spelled once.
+        assert_eq!(ecology.id, GENERATED_ECOLOGY_V1);
+        assert_eq!(ecology.players, 2);
+        assert_eq!(ecology.games, GENERATED_SCAN_GAMES);
+        assert_eq!(ecology.seats, vec![GENERATED_SEAT.echo(); 2]);
+        assert!(!ecology.driver.is_empty() && !ecology.seed_derivation.is_empty());
+    }
+
+    /// A LIVE-TRACKED root is refused UP FRONT, by name, whichever seat carries
+    /// the hidden deal (design §5, review N-3).
+    ///
+    /// The fixture doctors the seat that is NOT on the move, which is the case
+    /// the driver could otherwise only discover mid-run — and `max_decisions: 1`
+    /// is the discriminator that makes "up front" executable rather than
+    /// asserted: the same root undoctored reaches the decision cap, so a refusal
+    /// that arrived only when the hidden seat's turn came would show up here as
+    /// `DecisionCapReached` instead.
+    #[test]
+    fn a_root_whose_seats_carry_hidden_deals_is_refused_up_front_by_name() {
+        let rules = Rules::standard();
+        let root = root_2p(&rules, world(45).0);
+        let mover = root.current_player;
+        let other = PlayerId(1 - mover.0);
+        let seats = [
+            SeatSpec::Reply(ReplyPolicy::FamilyWeighted),
+            SeatSpec::Reply(ReplyPolicy::FamilyWeighted),
+        ];
+        let one_decision = DrivenOpts { max_decisions: 1, ..DrivenOpts::default() };
+
+        // The control: undoctored, this root plays and hits the cap.
+        assert!(matches!(
+            drive_to_terminal(&root, &seats, &rules, world(46), one_decision),
+            Err(DrivenError::DecisionCapReached { .. }),
+        ));
+
+        // The live-tracking shape on the NON-MOVER, invariant-clean so the
+        // refusal is about eligibility and not corruption.
+        let mut hidden = root;
+        let index = other.0 as usize;
+        let kept = hidden.players[index].starting_order.take().expect("a dealt starting order");
+        hidden.players[index].order_cards_in_hand.retain(|c| *c != kept);
+        hidden.orders_removed.push(kept);
+        hidden.players[index].starting_order_hidden = true;
+        check_invariants(&hidden, &rules).expect("the live-tracking root is invariant-clean");
+
+        let err = drive_to_terminal(&hidden, &seats, &rules, world(46), one_decision)
+            .expect_err("a live-tracked root must refuse");
+        match err {
+            DrivenError::Unobservable { seat, ref detail } => {
+                assert_eq!(seat, other, "the refusal named the wrong seat");
+                assert!(
+                    detail.contains("starting_order_hidden"),
+                    "the refusal does not name the field it read: {detail}",
+                );
+            }
+            ref other => panic!("expected Unobservable, got {other:?}"),
+        }
+        assert!(err.to_string().contains(&format!("seat {}", other.0)));
+    }
+
+    /// The GENERATED arm: a seeded scan finds the ordinal-th final-round root,
+    /// and finds the SAME one twice.
+    ///
+    /// Three anti-vacuity halves, because a scan that ignored any of its three
+    /// inputs would still reproduce: the ORDINAL must move the root, the MASTER
+    /// must move it, and the predicate must actually HOLD at what comes back
+    /// (a scan returning position 0 of game 0 would be perfectly deterministic
+    /// and perfectly useless).
+    #[test]
+    fn the_generated_arm_finds_the_same_final_round_root_twice() {
+        let rules = Rules::standard();
+        let predicate = RootPredicate::FinalRoundAlreadyTriggered;
+        let source = RootSource::Generated { predicate, master: GEN_MASTER, ordinal: 0 };
+
+        let (first, descriptor) = source.resolve(&rules).expect("the scan must find a root");
+        let (second, again) = source.resolve(&rules).expect("the scan must reproduce");
+        assert_eq!(descriptor, again, "two identical scans described different roots");
+        assert_eq!(state_digest(&first), state_digest(&second), "the scan is not deterministic");
+        assert_eq!(first, second);
+
+        // What came back is what was asked for.
+        assert!(predicate.holds(&first), "the scan returned a position the predicate rejects");
+        assert!(first.end_game_triggered && first.final_round, "not a final-round position");
+        assert!(!is_game_over(&first), "a terminal state is not a root anyone can decide at");
+        assert_eq!(descriptor.root_digest, state_digest(&first));
+        assert!(descriptor.event_index.is_some(), "a scanned root sits at a position");
+        assert!(check_invariants(&first, &rules).is_ok(), "the scan produced a corrupt root");
+
+        match &descriptor.origin {
+            RootOrigin::Generated { predicate: p, master, ordinal, ecology, .. } => {
+                assert_eq!(*p, predicate);
+                assert_eq!(*master, GEN_MASTER);
+                assert_eq!(*ordinal, 0);
+                assert_eq!(ecology, &GeneratingEcology::v1(), "the ecology is not v1's");
+            }
+            other => panic!("expected a Generated origin, got {other:?}"),
+        }
+
+        // The ordinal is READ.
+        let (next, _) = RootSource::Generated { predicate, master: GEN_MASTER, ordinal: 1 }
+            .resolve(&rules)
+            .expect("the scan supplies more than one root");
+        assert_ne!(
+            state_digest(&next),
+            state_digest(&first),
+            "ordinal 1 returned ordinal 0's root, so the ordinal selects nothing",
+        );
+        assert!(predicate.holds(&next));
+
+        // So is the master.
+        let (elsewhere, _) = RootSource::Generated {
+            predicate,
+            master: GEN_MASTER ^ 0x5555_5555_5555_5555,
+            ordinal: 0,
+        }
+        .resolve(&rules)
+        .expect("another master supplies its own roots");
+        assert_ne!(
+            state_digest(&elsewhere),
+            state_digest(&first),
+            "two masters produced one root, so the scan does not depend on its master",
+        );
+    }
+
+    /// An ordinal beyond the scan's supply is a typed error naming how far it
+    /// looked — never a hang, and never a nearest-available root quietly served
+    /// in place of the one that was asked for.
+    #[test]
+    fn an_ordinal_beyond_the_generated_supply_is_a_typed_error() {
+        let rules = Rules::standard();
+        let predicate = RootPredicate::FinalRoundAlreadyTriggered;
+        let err = RootSource::Generated { predicate, master: GEN_MASTER, ordinal: 1_000_000 }
+            .resolve(&rules)
+            .expect_err("no scan of four games holds a millionth final-round root");
+
+        match err {
+            RootError::Exhausted { predicate: p, ordinal, found, games } => {
+                assert_eq!(p, predicate);
+                assert_eq!(ordinal, 1_000_000);
+                assert_eq!(games, GENERATED_SCAN_GAMES, "the refusal misnames the bound");
+                assert!(
+                    found > 0,
+                    "anti-vacuity: the scan found NO final-round position in {games} games, so \
+                     this refusal says nothing about the ordinal",
+                );
+                let rendered =
+                    RootError::Exhausted { predicate: p, ordinal, found, games }.to_string();
+                assert!(rendered.contains(predicate.as_str()), "no predicate: {rendered}");
+                assert!(rendered.contains(&found.to_string()), "no found count: {rendered}");
+                assert!(rendered.contains(&games.to_string()), "no bound: {rendered}");
+            }
+            other => panic!("expected Exhausted, got {other:?}"),
+        }
+    }
+
+    /// The registry names this session's six roots — asserted WITHOUT opening a
+    /// single file, which is the constraint that makes the suite corpus-free.
+    ///
+    /// The names are pinned literally because a runner and a session note both
+    /// address roots by them: a renamed entry is a change to an interface, not
+    /// an implementation detail.
+    #[test]
+    fn the_registry_names_the_session_roots_without_touching_a_file() {
+        let entries = registry();
+        let names: Vec<&str> = entries.iter().map(|e| e.name).collect();
+        assert_eq!(
+            names,
+            vec![
+                "g1-e113-tiemass",
+                "g3-e63-tiemass",
+                "g3-e93-separated",
+                "g1-e228-deadrecall",
+                "g3-e178-finalturn",
+                "g1-e239-finalturn",
+            ],
+        );
+        let mut unique = names.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), entries.len(), "two entries share a name");
+
+        for entry in &entries {
+            assert!(
+                entry.path.starts_with("docs/temp/owner-games/"),
+                "{}: the path is not workspace-root-relative session material: {}",
+                entry.name,
+                entry.path,
+            );
+            assert!(entry.event_index > 0, "{}: event 0 is the post-setup state", entry.name);
+            assert_eq!(entry.bot_seat, SESSION_BOT_SEAT, "{}: the bot sat elsewhere", entry.name);
+            assert_ne!(entry.decision_seed, 0, "{}: no recorded decision seed", entry.name);
+            assert!(entry.recorded_move.is_some(), "{}: no recorded move", entry.name);
+            assert!(!entry.note.is_empty(), "{}: no note", entry.name);
+
+            // The path is anchored at the WORKSPACE, not at the working
+            // directory — so a runner launched from anywhere names one file.
+            let resolved = entry.resolved_path();
+            assert!(resolved.is_absolute(), "{}: {resolved:?} is relative", entry.name);
+            assert!(resolved.ends_with(entry.path), "{}: {resolved:?}", entry.name);
+        }
+
+        // The anchor is the workspace itself (this file always exists in a
+        // source checkout; no gitignored material is touched).
+        let root = workspace_root();
+        assert!(root.join("Cargo.toml").is_file(), "the anchor is not a workspace: {root:?}");
+        assert!(root.join("crates").is_dir(), "the anchor holds no crates dir: {root:?}");
+    }
+
+    /// An absent record is a TYPED MISS naming the path — the runner prints it
+    /// and moves on.
+    ///
+    /// Pointed at a path that cannot exist rather than at a real entry, so the
+    /// cell asserts the same thing whether or not this checkout carries the
+    /// gitignored saves. A pin that depended on their absence would be as
+    /// corpus-coupled as one that depended on their presence.
+    #[test]
+    fn an_absent_registry_file_is_a_typed_miss_naming_the_path() {
+        let mut entry = registry().into_iter().next().expect("the registry is not empty");
+        entry.path = "docs/temp/owner-games/__no-such-record__.json";
+        assert!(!entry.resolved_path().exists(), "the fixture path must not exist");
+
+        let err = entry.load().expect_err("an absent record must be a miss, not a root");
+        match err {
+            RegistryError::Missing { name, ref path } => {
+                assert_eq!(name, entry.name);
+                assert_eq!(path, &entry.resolved_path());
+            }
+            ref other => panic!("expected Missing, got {other:?}"),
+        }
+        let rendered = err.to_string();
+        assert!(rendered.contains("__no-such-record__.json"), "the miss hides its path: {rendered}");
+        assert!(rendered.contains(entry.name), "the miss hides which entry: {rendered}");
     }
 }
