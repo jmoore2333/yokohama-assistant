@@ -20,9 +20,10 @@ a separate piped process (byte-identical property), never the owner's live PTY.
   seat 0; start seat 1). **Red (owner) 85 — Green (bot) 49.** Margin half of game 1's — the
   bot paced this game far better (its church line banked church-first, 6).
 - `game2.json` = abandoned one-turn false start (Forge idle timeout); ignore.
-- Two casual-game saves sit gitignored in the repo root (`yokohama-game-17870157*.json`) —
-  owner side games; the newer one was mid-play at session close. Relocate to
-  `docs/temp/owner-games/` at leisure; the F3 opening evidence below cites the newer one.
+- The owner's casual side games (two gitignored saves in the repo root) were DISCARDED at
+  session close by owner instruction — unfinished, not diagnostic material. F3's opening
+  evidence from the newer one (the Textile-Mill lab rush and the −40/−42 Customs+Church
+  runner-ups) is banked verbatim in the notes file; nothing else referenced them.
 - The scribe notes file (above) — flags with event anchors, both games.
 
 ## 1. Findings (event-anchored; routing per D7)
@@ -181,5 +182,5 @@ Read order: `CLAUDE.md` → guidingpath's 2026-08-17 row → the kickoff
   reconstructions in two games plus post-game pulls — worth stating as a W5 field result.
 
 *Session hygiene: `.claude/settings.json` (chrome-devtools plugin registration) committed with
-owner approval beside this doc; the Forge terminal `owner-game-3` was left alive holding the
-owner's in-progress casual game.*
+owner approval beside this doc; all Forge terminals closed at session end (the owner concluded
+his casual games); the casual saves discarded per §0.*
