@@ -1949,24 +1949,45 @@ mod tests {
         );
         assert_ne!(first.world.sampler_seed, elsewhere.world.sampler_seed);
         assert_eq!(first.world.worlds, 1, "the shipped knobs sample ONE world");
+
+        // The digest's RECIPE, pinned: it is the world the SAMPLER SEED reaches,
+        // and the sampler seed is a word the agent DREW rather than the decision
+        // seed it was built on. A digest taken from the decision seed instead
+        // would name a world the search never entered while passing every
+        // assertion above — same determinism, same seed-sensitivity, wrong
+        // world.
+        let view = observe(&state, seat).expect("the mover observes its own root");
+        let mut sampler = BeliefSampler::from_view(&view, &rules, first.world.sampler_seed)
+            .expect("the recorded seed rebuilds the sampler the agent used");
+        assert_eq!(
+            first.world.digest,
+            state_digest(&sampler.sample()),
+            "the world digest is not the world its own sampler seed reaches",
+        );
+        assert_ne!(
+            first.world.sampler_seed, first.decision_seed,
+            "the sampler seed is a DRAW from the stream, not the seed the stream started at",
+        );
     }
 
     /// **The separator's premise, recorded rather than inferred** (design §3,
-    /// review N-1): at one root and one decision seed, b=4 and b=8 search the
-    /// SAME sampled world — the agent draws its three stream words before any
-    /// beam-dependent work — and the beam is therefore the only thing that
-    /// differs between the two tables.
+    /// review N-1): at one root and one decision seed, the THREE beams the
+    /// separator runs — b=4, b=8, b=16 — search the SAME sampled world, because
+    /// the agent draws its three stream words before any beam-dependent work.
+    /// The beam is therefore the only thing that differs between their tables,
+    /// which is the claim the separator's whole reading rests on.
     ///
     /// The second half is the ANTI-VACUITY the mechanical separator needs: an
     /// instrument that reported the same band structure at every beam could not
-    /// separate anything, so a root at which the two tables DIFFER must exist
-    /// and be findable. No claim is made about WHICH way it moves — that is the
+    /// separate anything, so a root at which the tables DIFFER must exist and be
+    /// findable. No claim is made about WHICH way it moves — that is the
     /// separator's finding to make, not this cell's.
     #[test]
     fn a_wider_beam_searches_the_same_world_and_can_move_the_band() {
         let rules = Rules::standard();
         let stats = rung_game(&rules, world(33));
         let wide = Contestant::from_str_name("lookahead-v1:b=8").expect("the grammar parses b=8");
+        let widest = Contestant::from_str_name("lookahead-v1:b=16").expect("b=16 parses");
 
         let mut moved: Option<(usize, RootTable, RootTable)> = None;
         for k in 30..90.min(stats.record.events.len()) {
@@ -1974,11 +1995,13 @@ mod tests {
                 continue;
             };
             let Ok(broad) = table_at(&rules, &stats, k, wide) else { continue };
+            let Ok(broadest) = table_at(&rules, &stats, k, widest) else { continue };
             // The premise holds at EVERY root, differing bands or not.
             assert_eq!(
                 narrow.world, broad.world,
                 "event {k}: two beams sampled different worlds, so their tables are not comparable",
             );
+            assert_eq!(narrow.world, broadest.world, "event {k}: b=16 left the shared world");
             let shape = |t: &RootTable| (t.tied_at_top(), t.top_band(), t.distinct_values());
             if shape(&narrow) != shape(&broad) || narrow.ranked != broad.ranked {
                 moved = Some((k, narrow, broad));
@@ -1999,46 +2022,79 @@ mod tests {
     // The mirror-vs-build drift pin
     // -----------------------------------------------------------------------
 
-    /// **THE DRIFT PIN** (design §3, review MUST-1). This module constructs the
-    /// concrete agent itself, because `Contestant::build`'s `Box<dyn ArenaAgent>`
-    /// erases the `last_roots`/`last_stats` surface the ranked values live on —
-    /// so the mirror has to be held equal to what it mirrors: at the same view
-    /// and the same seed, build's agent picks the move this table names, per
-    /// supported arm.
+    /// **THE DRIFT PIN** (design §3, review MUST-1), in the two halves one root
+    /// cannot supply on its own. This module constructs the concrete agent
+    /// itself, because `Contestant::build`'s `Box<dyn ArenaAgent>` erases the
+    /// `last_roots`/`last_stats` surface the ranked values live on — so the
+    /// mirror has to be held equal to what it mirrors, or it would go on
+    /// producing plausible tables about a contestant nobody runs.
     ///
-    /// Without it a mirror that drifted (a different weight table, a transposed
-    /// `k`/`m`, a forgotten `with_cap`) would keep producing plausible tables
-    /// about a contestant nobody runs.
+    /// **(a) CONSTRUCTION identity**, through the one surface a boxed agent does
+    /// expose: `ArenaAgent::controller()`. It carries the WHOLE construction —
+    /// name and version from the scheme, `b`/`k`/`m`/`cap`, `eval_impl`, the
+    /// WEIGHT TABLE identity, and the stream seed — so a mirror that drifted in
+    /// any of them fails here even at a position where the drift happens not to
+    /// move the pick.
+    ///
+    /// **(b) BEHAVIOURAL identity** over a WINDOW of roots rather than at one.
+    /// Measured while writing this: a `WeightTable::V1` mirror against a V2
+    /// build disagrees at only 3 of 40 consecutive roots here, so a single-root
+    /// cell passes a weight drift roughly 9 times in 10 — which is exactly the
+    /// drift half (a) alone would also catch, and precisely why the behavioural
+    /// half is not left at one root. The default arm sweeps the full window; the
+    /// two knob-varied arms sweep a shorter one, since their construction drift
+    /// is what (a) is for and a searching decision is not free in debug.
     #[test]
     fn the_mirrored_agent_picks_what_contestant_build_picks() {
         let rules = Rules::standard();
         let stats = rung_game(&rules, world(34));
-        let (k, _) = scan(&rules, &stats, 30, 40, |t| t.candidates() >= 3);
-        let state = state_at(&stats.record, k, &rules).expect("the prefix replays");
-        let seat = state.current_player;
-        let view = observe(&state, seat).expect("the mover observes its own root");
+        let arms = [
+            (Contestant::LOOKAHEAD_V1_DEFAULT, 40),
+            (Contestant::from_str_name("lookahead-v1:b=8").expect("b=8 parses"), 8),
+            (Contestant::from_str_name("lookahead-v1:b=2,cap=750").expect("a capped arm parses"), 8),
+        ];
 
-        for arm in [
-            Contestant::LOOKAHEAD_V1_DEFAULT,
-            Contestant::from_str_name("lookahead-v1:b=8").expect("b=8 parses"),
-            Contestant::from_str_name("lookahead-v1:b=2,cap=750").expect("a capped arm parses"),
-        ] {
-            let table = root_table(&state, seat, arm, &rules, DECISION_SEED)
-                .unwrap_or_else(|e| panic!("{}: {e}", arm.echo()));
-            assert!(
-                table.candidates() >= 3,
-                "anti-vacuity: agreeing on a forced decision says nothing ({})",
+        for (arm, window) in arms {
+            // (a) the construction, compared through the trait object.
+            let (built, _) = arm.build(&rules, DECISION_SEED);
+            let mirrored = mirror_build(arm, &rules, DECISION_SEED)
+                .unwrap_or_else(|e| panic!("{} is a supported arm: {e}", arm.echo()));
+            assert_eq!(
+                built.controller(),
+                mirrored.controller(),
+                "MIRROR DRIFT: {} is CONSTRUCTED differently here than by Contestant::build",
                 arm.echo(),
             );
 
-            let (mut built, _) = arm.build(&rules, DECISION_SEED);
-            let report = built
-                .choose(&view, &rules)
-                .unwrap_or_else(|e| panic!("{} through build: {e}", arm.echo()));
-            assert_eq!(
-                table.winner,
-                report.mv,
-                "MIRROR DRIFT at event {k}: {} decided differently through Contestant::build",
+            // (b) the decision, over a window.
+            let mut compared = 0;
+            let mut branching = 0;
+            for k in 30..30 + window {
+                let Ok(state) = state_at(&stats.record, k, &rules) else { continue };
+                let seat = state.current_player;
+                let Ok(view) = observe(&state, seat) else { continue };
+                let Ok(table) = root_table(&state, seat, arm, &rules, DECISION_SEED) else {
+                    continue;
+                };
+                let (mut built, _) = arm.build(&rules, DECISION_SEED);
+                let report = built
+                    .choose(&view, &rules)
+                    .unwrap_or_else(|e| panic!("{} through build at event {k}: {e}", arm.echo()));
+                assert_eq!(
+                    table.winner,
+                    report.mv,
+                    "MIRROR DRIFT at event {k}: {} decided differently through Contestant::build",
+                    arm.echo(),
+                );
+                compared += 1;
+                if table.candidates() >= 3 {
+                    branching += 1;
+                }
+            }
+            assert_eq!(compared, window, "{}: the window did not compare cleanly", arm.echo());
+            assert!(
+                branching * 4 >= window,
+                "anti-vacuity: only {branching} of {compared} roots offered a real choice ({})",
                 arm.echo(),
             );
         }
