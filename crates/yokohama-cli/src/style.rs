@@ -68,10 +68,16 @@ fn enabled() -> bool {
 /// vocabulary and no consumers, so today's frame still spells its own
 /// characters, and the non-ASCII ones that are NOT vocabulary are registered
 /// under DEFERRED CONVERSIONS below. The set is CLOSED and small on purpose
-/// -- it is exactly the twenty code points the approved mocks use
-/// (`docs/plans/2026-08-05-phase3.5a-mocks/`), so "does this frame match its
-/// mock?" stays a question about layout and color and never becomes a
-/// question about which character somebody happened to type. ASCII the
+/// -- twenty of its twenty-one code points are exactly the ones the approved
+/// mocks use (`docs/plans/2026-08-05-phase3.5a-mocks/`), so "does this frame
+/// match its mock?" stays a question about layout and color and never becomes
+/// a question about which character somebody happened to type. The
+/// twenty-first is [`DOUBLE_RULE`](glyph::DOUBLE_RULE), admitted by the
+/// branch-4 end-trigger banner — a surface the mocks never drew, so it could
+/// not have a mock to match; the mocks bound the REDESIGN, and a later feature
+/// that needs a mark states its case here instead (this one's is the
+/// DEFERRED CONVERSIONS entry below, which had already argued U+2550's width
+/// class before it was ever a constant). ASCII the
 /// mocks also use (`[1]` option brackets, `+n` overflow counts, the `*`
 /// any-good and `T7` trading-house tokens) is not vocabulary; only the
 /// characters a keyboard cannot produce are.
@@ -94,13 +100,14 @@ fn enabled() -> bool {
 /// | [`RANGE_DASH`](glyph::RANGE_DASH) | `–` | U+2013 | Ambiguous | en dash: a reward RANGE (`★3–14`) |
 /// | [`ELLIPSIS`](glyph::ELLIPSIS) | `…` | U+2026 | Ambiguous | an elided middle (the shortened seed in the title strip) |
 /// | [`RULE`](glyph::RULE) | `─` | U+2500 | Ambiguous | a horizontal rule; also a box's top and bottom edge |
+/// | [`DOUBLE_RULE`](glyph::DOUBLE_RULE) | `═` | U+2550 | Ambiguous | the double rule bordering an alert block (the end-trigger banner) |
 /// | [`BOX_V`](glyph::BOX_V) | `│` | U+2502 | Ambiguous | a box's side |
 /// | [`BOX_TL`](glyph::BOX_TL) | `┌` | U+250C | Ambiguous | box corner, top-left |
 /// | [`BOX_TR`](glyph::BOX_TR) | `┐` | U+2510 | Ambiguous | box corner, top-right |
 /// | [`BOX_BL`](glyph::BOX_BL) | `└` | U+2514 | Ambiguous | box corner, bottom-left |
 /// | [`BOX_BR`](glyph::BOX_BR) | `┘` | U+2518 | Ambiguous | box corner, bottom-right |
 ///
-/// Twenty-one names over twenty code points: [`SEPARATOR`](glyph::SEPARATOR)
+/// Twenty-two names over twenty-one code points: [`SEPARATOR`](glyph::SEPARATOR)
 /// and [`EMPTY_SLOT`](glyph::EMPTY_SLOT) are both U+00B7 deliberately. They
 /// are one character with two jobs, and a call site reads better saying
 /// which job it means -- the mocks' `Shophouses ···· Trade ·` run is empty
@@ -111,7 +118,7 @@ fn enabled() -> bool {
 /// `screen::test_support::assert_exact_width`).** The vocabulary spans three
 /// East-Asian-Width classes and NO Wide one, counted by NAME (the basis used
 /// everywhere below): `¥` is Narrow, `⌂` and `▸` are Neutral -- both classes
-/// are one column everywhere -- and the other eighteen of the twenty-one
+/// are one column everywhere -- and the other nineteen of the twenty-two
 /// names are Ambiguous, which means one column in a Western locale and
 /// two under a CJK-configured locale or font. T0's residual note called `★`
 /// East-Asian-WIDE; it is not. U+2605 is Ambiguous (UCD 16.0
@@ -165,8 +172,11 @@ fn enabled() -> bool {
 /// layout moves whether they convert or not. What they DO cost is exactness:
 /// `§` is the one code point the live frame emits that the closed vocabulary
 /// does not contain (the census is emitted-minus-vocabulary = {U+00A7}), so
-/// "the emitted set is the vocabulary" is true of nineteen of twenty glyphs
-/// and stated here about the twentieth. Converting three prose characters in
+/// "the emitted set is the vocabulary" is true of twenty of twenty-one emitted
+/// glyphs and stated here about the twenty-first. (Branch-4's end-trigger
+/// banner moved BOTH sides of that subtraction by one in the same commit —
+/// U+2550 entered the vocabulary and the emitted set together — so the census
+/// SET is unchanged and only its arithmetic moved.) Converting three prose characters in
 /// the same wave that rewrote two footers and the wizard's numbering was the
 /// scope call; the rows stay, with their owing task moved, so a reader meets a
 /// judgement and not an oversight.
@@ -191,9 +201,20 @@ fn enabled() -> bool {
 /// [`crate::screen_model::TitleModel`] holds and so lands with the surface that
 /// plumbs that model. T3 then found that the approved mocks' strip is centred
 /// text on an otherwise empty line — it draws no rule at all — so
-/// [`crate::panel_render::title_strip`] draws none, and U+2550 is no longer
-/// spelled anywhere in the crate. The row is kept, struck through, because
-/// "which task discharged this and how" is the question a reader arrives with.
+/// [`crate::panel_render::title_strip`] draws none. The row is kept, struck
+/// through, because "which task discharged this and how" is the question a
+/// reader arrives with.
+///
+/// **That answer held until branch-4 (2026-08-18), when U+2550 came back by
+/// the OTHER route this table sanctions.** The end-trigger banner needed a
+/// border that reads as an alert rather than as one more panel edge, so the
+/// character is now vocabulary — [`DOUBLE_RULE`](glyph::DOUBLE_RULE), admitted
+/// with a row and a width class exactly as the paragraph under the table
+/// requires, and never spelled inline. Both halves of the record stand: the
+/// title strip still draws no rule (`screen.rs`'s
+/// `the_title_strip_states_the_session_facts_and_draws_no_double_rule` pins
+/// that, scoped to the opening frame it composes), and the crate does spell
+/// U+2550 again — once, in the vocabulary's own declaration.
 pub mod glyph {
     /// Declares the vocabulary ONCE. One source line per glyph carries its
     /// doc comment, its constant name, its character, the code point recorded
@@ -219,7 +240,7 @@ pub mod glyph {
     /// row and break no test. But that is a different act from forgetting a
     /// row -- a declaration made OUTSIDE the vocabulary rather than an
     /// omission inside it -- and it reads on sight as the one line that does
-    /// not look like its twenty-one neighbours. The two-list divergence is
+    /// not look like its twenty-two neighbours. The two-list divergence is
     /// structurally gone; the deviation is left to review, which is where the
     /// width classes below already live.
     ///
@@ -280,6 +301,8 @@ pub mod glyph {
         ELLIPSIS = '…', 0x2026, Ambiguous;
         /// A horizontal rule; also a box's top and bottom edge.
         RULE = '─', 0x2500, Ambiguous;
+        /// The DOUBLE rule that borders an alert block: the end-trigger banner.
+        DOUBLE_RULE = '═', 0x2550, Ambiguous;
         /// A box's side.
         BOX_V = '│', 0x2502, Ambiguous;
         /// Box corner, top-left.

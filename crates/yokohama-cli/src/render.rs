@@ -17,7 +17,7 @@ use crate::describe;
 use crate::describe::tech_name;
 use crate::panel_render;
 use crate::screen_model;
-use crate::style::{paint, GoodKind, Tone};
+use crate::style::{glyph, paint, GoodKind, Tone};
 
 /// Per-seat presentation the panels need from the REPL (Phase 3.2 Task 12):
 /// whose hand CONTENTS may be printed, and which seats a bot plays.
@@ -403,6 +403,90 @@ pub fn end_trigger_line(state: &GameState) -> String {
     line
 }
 
+/// The rulebook WORDS for one [`EndGameTrigger`], for the banner, the load
+/// notice and the delta line to share (branch-4 item 5).
+///
+/// `EndGameTrigger` derives `Debug`, and `Debug` is what the delta line
+/// printed before this task: `END TRIGGERED: TradingHousesComplete(PlayerId(1))`
+/// names a Rust variant and an index at the single loudest moment the driver
+/// has. These are the words instead, one mapping shared by every surface so
+/// the banner, the reloaded-save notice and the log's historical fold can
+/// never tell three different stories about the same event.
+///
+/// `&GameState` is a parameter because two variants name a SEAT and a seat's
+/// name is a fact about the table, not about the trigger — the same reason
+/// [`describe::area_label`] takes one. The colour word comes from
+/// [`color_name`], so this and the players panel cannot drift.
+///
+/// The match is exhaustive with NO `_` arm, deliberately: a sixth trigger in
+/// core must not be able to reach a player's screen as `{:?}` (or as silence)
+/// merely because nobody remembered this function. It fails to compile
+/// instead.
+///
+/// [`EndGameTrigger::OrderDeckEmpty`] states BOTH halves of its condition.
+/// The engine fires it only when the deck is empty AND a Port slot cannot be
+/// refilled (`end_game.rs`'s `check_port_empty_slot`), so "the order deck is
+/// empty" alone would be the necessary half taught as if it were the whole
+/// rule — the same nuance `end_trigger_line`'s doc carries for the strip.
+pub fn trigger_reason_words(state: &GameState, trigger: &EndGameTrigger) -> String {
+    match trigger {
+        EndGameTrigger::TradingHousesComplete(p) => {
+            format!("{} built all 4 Trading Houses", color_name(state.players[p.0 as usize].color))
+        }
+        EndGameTrigger::ShophousesComplete(p) => {
+            format!("{} built all 8 Shophouses", color_name(state.players[p.0 as usize].color))
+        }
+        EndGameTrigger::OrderDeckEmpty => {
+            "the order deck is empty and a Port slot cannot refill".to_string()
+        }
+        EndGameTrigger::ChurchTrackFull => "the Church track filled".to_string(),
+        EndGameTrigger::CustomsTrackFull => "the Customs track filled".to_string(),
+    }
+}
+
+/// The one-time END TRIGGERED banner: a bordered, wrapped, `Tone::Warn` block
+/// for the message zone, `width` columns wide (branch-4 item 5).
+///
+/// The problem it solves is not that the driver said nothing — it is that
+/// what the driver said was quiet. The end trigger had exactly two in-flow
+/// witnesses: one delta-window line among a dozen bookkeeping lines, and the
+/// `· FINAL ROUND` suffix on [`end_trigger_line`]'s compact strip. The owner
+/// missed both live, in a real game, which is the whole evidence base for
+/// making this loud.
+///
+/// The second sentence is the RULE, not decoration, and it is the rule the
+/// engine implements rather than a plausible-sounding one: `apply_move.rs`'s
+/// `advance_phase` sets `final_round` when the turn passes back to
+/// `config.start_player`, and ends the game the next time it does — so the
+/// trigger round completes, THEN every player takes one more turn, THEN
+/// scoring runs (KB `01-rules-reference.md`, "End Game Procedure"). Stating
+/// it here is the difference between a player finishing the game they thought
+/// they were in and one who stopped developing a turn too early.
+///
+/// Composition rather than layout tricks: the border is
+/// [`glyph::DOUBLE_RULE`] repeated to `width`, and the body is wrapped by the
+/// same [`crate::suggest::wrap_to`] every other prose block in the driver uses,
+/// so a narrow frame reflows instead of overflowing. Each line is painted
+/// separately, which keeps `visible_width` measuring the plain text it was
+/// given — the crate's standing alignment rule.
+pub fn end_trigger_banner(state: &GameState, trigger: &EndGameTrigger, width: usize) -> String {
+    let rule = glyph::DOUBLE_RULE.to_string().repeat(width);
+    let body = format!(
+        "  END TRIGGERED {} {}. The current round finishes, then every player gets one full \
+         final round, then the game ends and final scoring runs.",
+        glyph::SECTION_DASH,
+        trigger_reason_words(state, trigger),
+    );
+    let mut out = format!("{}\n", paint(Tone::Warn, &rule));
+    for line in crate::suggest::wrap_to(&body, width).lines() {
+        out.push_str(&paint(Tone::Warn, line));
+        out.push('\n');
+    }
+    out.push_str(&paint(Tone::Warn, &rule));
+    out.push('\n');
+    out
+}
+
 // The `ports` and `labs` views RETIRED at T11 and moved to `view_render` as
 // full-screen card surfaces, the way `tracks`/`sites`/`goals` moved at T6 —
 // spec §0.5's whole roster now renders card-like, from typed models, over the
@@ -656,8 +740,21 @@ pub fn delta_summary(before: &GameState, after: &GameState, rules: &Rules) -> Ve
         }
     }
 
+    // Words, not `Debug` (branch-4 item 5): this line and `end_trigger_banner`
+    // share one mapping, so the delta window, the banner and `log`'s
+    // historical fold cannot tell three stories about one event. The `None`
+    // arm is unreachable on any engine-produced state — core's trigger
+    // coherence invariant refuses `end_game_triggered` without a
+    // `trigger_reason`, and `Session::apply` checks invariants on every
+    // applied state — so it degrades to the bare headline rather than
+    // inventing a reason for a tampered save.
     if after.end_game_triggered && !before.end_game_triggered {
-        lines.push(format!("END TRIGGERED: {:?}", after.trigger_reason));
+        lines.push(match &after.trigger_reason {
+            Some(t) => {
+                format!("END TRIGGERED {} {}", glyph::SECTION_DASH, trigger_reason_words(after, t))
+            }
+            None => "END TRIGGERED".to_string(),
+        });
     }
 
     lines
@@ -1150,6 +1247,187 @@ mod tests {
                 w <= crate::screen::frame_width(n as usize),
                 "{n}P end-trigger strip is {w} wide, over that count's frame width"
             );
+        }
+    }
+
+    /// Every [`EndGameTrigger`] variant reads as rulebook WORDS, never as
+    /// `Debug` (the shape the delta line shipped until this task, and the
+    /// shape the banner would inherit for free if nobody looked).
+    ///
+    /// The sweep is over a hand-written roster rather than over the enum —
+    /// nothing iterates a Rust enum — so the totality that matters lives in
+    /// the IMPLEMENTATION's exhaustive match with no `_` arm: a sixth variant
+    /// is a compile error there, and this roster is then the thing the
+    /// compiler's complaint sends you to.
+    ///
+    /// What each clause buys:
+    ///
+    /// - the Debug-artifact assert names the five variant identifiers and
+    ///   `PlayerId` explicitly. `assert!(!s.contains('('))` would have been
+    ///   the obvious form and is WRONG — the two building triggers legitimately
+    ///   name a seat, and a future wording could parenthesise it;
+    /// - the two building variants must name the SEAT, checked against
+    ///   [`color_name`] rather than a literal, so the words and the panel can
+    ///   never disagree about what a colour is called;
+    /// - [`EndGameTrigger::OrderDeckEmpty`] must state BOTH halves of its
+    ///   condition. `end_trigger_line`'s doc already carries the nuance —
+    ///   an empty deck is necessary, NOT sufficient; a Port slot must also be
+    ///   unfillable (`end_game.rs`'s `check_port_empty_slot`) — and a banner
+    ///   that said only "the order deck is empty" would teach the wrong rule
+    ///   at the loudest moment the driver has.
+    #[test]
+    fn trigger_reason_words_cover_every_variant_in_rulebook_words() {
+        let state = test_state_2p();
+        let seat0 = PlayerId::new(0);
+        let seat1 = PlayerId::new(1);
+        let roster = [
+            EndGameTrigger::TradingHousesComplete(seat0),
+            EndGameTrigger::ShophousesComplete(seat1),
+            EndGameTrigger::OrderDeckEmpty,
+            EndGameTrigger::ChurchTrackFull,
+            EndGameTrigger::CustomsTrackFull,
+        ];
+        for t in roster {
+            let s = trigger_reason_words(&state, &t);
+            assert!(!s.is_empty(), "{t:?} has no words");
+            for artifact in [
+                "TradingHousesComplete",
+                "ShophousesComplete",
+                "OrderDeckEmpty",
+                "ChurchTrackFull",
+                "CustomsTrackFull",
+                "PlayerId",
+            ] {
+                assert!(!s.contains(artifact), "{t:?} leaked the Debug artifact {artifact}: {s}");
+            }
+        }
+        // The seat-naming pair, against the panel's own colour vocabulary.
+        let red = color_name(state.players[0].color);
+        let blue = color_name(state.players[1].color);
+        let houses = trigger_reason_words(&state, &EndGameTrigger::TradingHousesComplete(seat0));
+        assert!(houses.contains(red), "the trading-house trigger must name the seat: {houses}");
+        assert!(houses.contains('4'), "…and how many it built: {houses}");
+        let shops = trigger_reason_words(&state, &EndGameTrigger::ShophousesComplete(seat1));
+        assert!(shops.contains(blue), "the shophouse trigger must name the seat: {shops}");
+        assert!(shops.contains('8'), "…and how many it built: {shops}");
+        // The necessary-not-sufficient conjunction, both halves.
+        let deck = trigger_reason_words(&state, &EndGameTrigger::OrderDeckEmpty);
+        assert!(deck.contains("order deck is empty"), "{deck}");
+        assert!(deck.contains("a Port slot cannot refill"), "{deck}");
+        // The two tracks say which track.
+        assert!(
+            trigger_reason_words(&state, &EndGameTrigger::ChurchTrackFull).contains("Church"),
+            "the church trigger must name the Church track",
+        );
+        assert!(
+            trigger_reason_words(&state, &EndGameTrigger::CustomsTrackFull).contains("Customs"),
+            "the customs trigger must name the Customs track",
+        );
+    }
+
+    /// The banner is a bordered full-width block that states the rule the
+    /// engine actually implements, and it is measured the way every other
+    /// fixed-width join in this crate is measured.
+    ///
+    /// The two-phase clause is not decoration: `apply_move.rs`'s
+    /// `advance_phase` sets `final_round` only when the turn passes back to
+    /// `config.start_player`, and ends the game when it passes back again —
+    /// the trigger round completes, THEN one full final round, THEN scoring
+    /// (KB `01-rules-reference.md`, "End Game Procedure"). A banner that said
+    /// "the game ends now" would be loud and wrong.
+    ///
+    /// **Scope note on the U+2550 border, so the next reader does not go
+    /// looking for a contradiction.** `screen.rs`'s
+    /// `the_title_strip_states_the_session_facts_and_draws_no_double_rule`
+    /// asserts no `═` appears in the composed OPENING frame. That pin is
+    /// scoped to the frame it emitted (its own comment says so) and this
+    /// banner is not part of it: the banner renders into the message zone of
+    /// a frame composed after a flip, so the two claims are about different
+    /// strings and neither weakens the other.
+    #[test]
+    fn end_trigger_banner_is_bordered_full_width_and_states_the_two_phase_rule() {
+        let state = test_state_2p();
+        let trigger = EndGameTrigger::ChurchTrackFull;
+        let banner = end_trigger_banner(&state, &trigger, 80);
+        let lines: Vec<&str> = banner.lines().collect();
+        assert!(lines.len() >= 3, "a bordered block is two rules and a body: {banner}");
+
+        let rule: String = std::iter::repeat_n(glyph::DOUBLE_RULE, 80).collect();
+        assert_eq!(lines[0], rule, "the top border is 80 columns of the vocabulary rule");
+        assert_eq!(*lines.last().expect("a last line"), rule, "…and so is the bottom");
+        assert_eq!(crate::screen::visible_width(lines[0]), 80, "measured, not counted in bytes");
+
+        let flat = lines[1..lines.len() - 1]
+            .join(" ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(flat.contains("END TRIGGERED"), "{banner}");
+        assert!(
+            flat.contains(&trigger_reason_words(&state, &trigger)),
+            "the banner speaks the shared words: {banner}",
+        );
+        assert!(
+            flat.contains("The current round finishes, then every player gets one full final round"),
+            "the banner must state the two-phase end rule the engine implements: {banner}",
+        );
+
+        for line in &lines {
+            assert!(
+                crate::screen::visible_width(line) <= 80,
+                "banner line over its budget ({}): {line}",
+                crate::screen::visible_width(line),
+            );
+        }
+    }
+
+    /// Piped runs get the banner as plain text: `paint` is the identity while
+    /// color is off, so content is never suppressed and the piped-plain
+    /// byte-identity property stays a claim about ESCAPES rather than about
+    /// which facts a reader is allowed to see.
+    #[test]
+    fn the_banner_is_plain_text_when_piped() {
+        crate::style::force(false);
+        let state = test_state_2p();
+        let banner = end_trigger_banner(&state, &EndGameTrigger::OrderDeckEmpty, 80);
+        assert!(!banner.contains('\u{1b}'), "an ESC byte reached a piped banner: {banner:?}");
+        assert!(banner.contains("a Port slot cannot refill"), "{banner}");
+    }
+
+    /// The delta window's flip line speaks the shared words too.
+    ///
+    /// It shipped as `format!("END TRIGGERED: {:?}", after.trigger_reason)` —
+    /// `Some(TradingHousesComplete(PlayerId(1)))` in front of a player — and
+    /// NO test pinned it, which is why the string could sit there through
+    /// three phases. The line matters beyond the banner: `log`'s historical
+    /// fold re-renders it, and it is the one witness that still speaks when a
+    /// post-`undo` re-trigger happens with the banner already drained.
+    ///
+    /// The assertion is an EQUALITY against the short form built from
+    /// [`trigger_reason_words`], not a `contains`, so the delta and the banner
+    /// cannot drift into two vocabularies for one event.
+    #[test]
+    fn the_delta_line_speaks_words_not_debug() {
+        let rules = Rules::standard();
+        let before = test_state_2p();
+        let mut after = before.clone();
+        let trigger = EndGameTrigger::TradingHousesComplete(PlayerId::new(1));
+        after.end_game_triggered = true;
+        after.trigger_reason = Some(trigger);
+        after.trigger_player = Some(PlayerId::new(1));
+
+        let lines = delta_summary(&before, &after, &rules);
+        let line = lines
+            .iter()
+            .find(|l| l.contains("END TRIGGERED"))
+            .unwrap_or_else(|| panic!("the flip must be visible in the delta: {lines:?}"));
+        assert_eq!(
+            *line,
+            format!("END TRIGGERED {} {}", glyph::SECTION_DASH, trigger_reason_words(&after, &trigger)),
+            "the delta line is the banner's words in short form",
+        );
+        for residue in ["Some(", "PlayerId", "TradingHousesComplete"] {
+            assert!(!line.contains(residue), "Debug residue {residue} survived in: {line}");
         }
     }
 

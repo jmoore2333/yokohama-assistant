@@ -275,7 +275,10 @@ fn area_name(board: &BoardModel, area: AreaId) -> String {
 /// that the strip either adopts a vocabulary glyph or admits its own; the
 /// approved mocks answer it a third way — their title strip is centred text on
 /// an otherwise empty line, with no rule character at all — so the redesigned
-/// strip draws none, and the crate no longer spells that code point anywhere.
+/// strip draws none. (The crate DOES spell that code point again since
+/// branch-4: the end-trigger banner took the row's other option and admitted
+/// it as [`crate::style::glyph::DOUBLE_RULE`]. Nothing changed here — this
+/// strip still draws no rule.)
 pub fn title_strip(title: &TitleModel, width: usize) -> String {
     let mut t = Twin::default();
     t.tinted(Tone::Strong, "Y O K O H A M A").raw("   ");

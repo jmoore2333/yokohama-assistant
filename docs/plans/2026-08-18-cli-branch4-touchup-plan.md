@@ -82,7 +82,7 @@ executors read both. The spec's §6 records the Fable review this plan already a
   `TradingHousesComplete(PlayerId)`, `ShophousesComplete(PlayerId)`, `OrderDeckEmpty`,
   `ChurchTrackFull`, `CustomsTrackFull`); `state.final_round` for the load notice.
 
-- [ ] **Step 1.1: Failing tests for the words mapping.** In `render.rs` tests:
+- [x] **Step 1.1: Failing tests for the words mapping.** In `render.rs` tests:
   `trigger_reason_words_cover_every_variant_in_rulebook_words` — exhaustive match over all
   five variants (no `_` arm in the IMPL, so a sixth variant is a compile error); asserts
   each string is non-empty, contains no `{:?}` artifacts (`assert!(!s.contains("("))` is
@@ -90,12 +90,12 @@ executors read both. The spec's §6 records the Fable review this plan already a
   assert the seat name appears), and `OrderDeckEmpty`'s words state BOTH halves ("order
   deck is empty" AND "a Port slot cannot refill" — the necessary-not-sufficient nuance
   `end_trigger_line`'s doc carries).
-- [ ] **Step 1.2:** Run `cargo test -p yokohama-cli trigger_reason_words` → FAIL
+- [x] **Step 1.2:** Run `cargo test -p yokohama-cli trigger_reason_words` → FAIL
   (unresolved function).
-- [ ] **Step 1.3:** Implement `trigger_reason_words` (takes `&GameState` too if seat names
+- [x] **Step 1.3:** Implement `trigger_reason_words` (takes `&GameState` too if seat names
   are needed — match the existing describe helpers' signature style, e.g.
   `describe::area_label(state, …)`). Run → PASS.
-- [ ] **Step 1.4: Failing tests for the banner block.**
+- [x] **Step 1.4: Failing tests for the banner block.**
   `end_trigger_banner_is_bordered_full_width_and_states_the_two_phase_rule`: renders at
   width 80; asserts top/bottom rules are exactly 80 columns of the `═` vocabulary char
   (via `screen::visible_width`), body contains `"END TRIGGERED"`, the reason words, and
@@ -103,17 +103,17 @@ executors read both. The spec's §6 records the Fable review this plan already a
   final round"`; and `visible_width(line) <= 80` for every line.
   `the_banner_is_plain_text_when_piped`: with color OFF (the default in tests), the output
   contains no ESC byte.
-- [ ] **Step 1.5:** Run → FAIL. Implement `end_trigger_banner` (wrap via the existing
+- [x] **Step 1.5:** Run → FAIL. Implement `end_trigger_banner` (wrap via the existing
   prose-wrap helper — `suggest::wrap_to` is the precedent; border from the vocabulary
   const; `paint(Tone::Warn, …)` per line). Run → PASS.
-- [ ] **Step 1.6: Failing test for the delta-line reword.** NO existing test pins the
+- [x] **Step 1.6: Failing test for the delta-line reword.** NO existing test pins the
   delta `END TRIGGERED` line (the string appears exactly once in the repo, render.rs:660)
   — write a FRESH `delta_summary` flip test using the trigger-state constructors around
   render.rs:~1123 and the delta-fixture pattern at ~1679-1751:
   `the_delta_line_speaks_words_not_debug` asserts the delta window line for a flip equals
   the short form built from `trigger_reason_words` and contains no `Some(` / `{:?}` residue.
   Run → FAIL. Replace `format!("END TRIGGERED: {:?}", …)` at ~659-661. Run → PASS.
-- [ ] **Step 1.7: Failing tests for session flip detection.** In `session.rs` tests, drive
+- [x] **Step 1.7: Failing tests for session flip detection.** In `session.rs` tests, drive
   a fixture to the trigger (the repo's session tests build small states — reuse the
   existing fixture pattern near session.rs:1674 which already constructs
   `end_game_triggered` states): `apply_sets_the_pending_banner_exactly_on_the_flip` —
@@ -126,7 +126,7 @@ executors read both. The spec's §6 records the Fable review this plan already a
   one accepted event (`RevealStartingOrder`) moves card identity and cannot flip the
   trigger (only `end_game::check_end_game_triggers` on the move path sets it); leave a
   one-line comment saying so instead of dead detection code.** Run → PASS.
-- [ ] **Step 1.8: Failing tests for the REPL surfaces.** Via `Repl::step` fixtures:
+- [x] **Step 1.8: Failing tests for the REPL surfaces.** Via `Repl::step` fixtures:
   `the_banner_reaches_the_inline_stream_once` (flip move → output contains the banner
   block; next step's output does not); `the_bot_review_carries_the_banner_when_the_flip
   _happened_inside_the_run` (bot run whose pump crosses the trigger → the review/narrative
@@ -134,13 +134,13 @@ executors read both. The spec's §6 records the Fable review this plan already a
   (load fixtures with `end_game_triggered && !final_round` → notice contains
   `"finishing the current round"`; with `final_round` → `"FINAL ROUND in progress"`; and
   the full banner does NOT render on load).
-- [ ] **Step 1.9:** Run → FAIL. Wire: repl drains `take_end_trigger_banner` where it
+- [x] **Step 1.9:** Run → FAIL. Wire: repl drains `take_end_trigger_banner` where it
   formats `{warnings}{narrative}{prompt}` (~repl.rs:516) and inside the bot-review branch
   (~511-514); the load path emits the branched notice once. Run → PASS.
-- [ ] **Step 1.10: Guides.** `docs/cli-guide.md` + `.html`: the end-triggers strip section
+- [x] **Step 1.10: Guides.** `docs/cli-guide.md` + `.html`: the end-triggers strip section
   gains the banner behavior paragraph (word-identical pair). Run the full per-edit gate
   (cli suite + clippy) → green.
-- [ ] **Step 1.11: Commit** `feat(cli): loud one-time end-trigger banner — transition-fired,
+- [x] **Step 1.11: Commit** `feat(cli): loud one-time end-trigger banner — transition-fired,
   bot-run and load-notice aware (branch-4 item 5)`.
 
 ---

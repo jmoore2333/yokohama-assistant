@@ -501,7 +501,17 @@ impl Repl {
             warnings.push_str(warning);
             warnings.push('\n');
         }
-        let narrative = self.pump_bots();
+        // Provenance for the game about to be played, so it rides with the
+        // warnings rather than with the review: a save reloaded after the
+        // trigger says so QUIETLY (branch-4 item 5). The banner is
+        // transition-fired and a load applies no move, so re-firing it here
+        // would claim the trigger had just happened.
+        warnings.push_str(&self.end_trigger_load_notice());
+        // …but a flip INSIDE the opening pump is a transition this session
+        // did observe, so it rides the narrative — into the review when there
+        // is one, into the frame body when there is not.
+        let mut narrative = self.pump_bots();
+        narrative.push_str(&self.take_end_trigger_banner_text());
 
         // `frame_active` rather than `screen::enabled()`: the question is
         // whether `wrap` is about to compose a frame for this session at all,
@@ -515,6 +525,58 @@ impl Repl {
         }
         let body = format!("{warnings}{narrative}{}", self.prompt());
         Opening { review: None, frame: screen::wrap(self, &body) }
+    }
+
+    /// The one-time END TRIGGERED banner, if this session has just watched the
+    /// trigger fire; empty otherwise (branch-4 item 5).
+    ///
+    /// Drains [`Session::take_end_trigger_banner`], so calling it twice at one
+    /// decision point yields the block once — "shown once" is the type's
+    /// guarantee rather than call-site discipline. Sized at
+    /// `screen::frame_width`, the same width authority `suggest` renders its
+    /// body to, so the block matches the frame it lands in at every player
+    /// count.
+    fn take_end_trigger_banner_text(&mut self) -> String {
+        match self.session.take_end_trigger_banner() {
+            None => String::new(),
+            Some(trigger) => {
+                let state = self.session.state();
+                render::end_trigger_banner(
+                    state,
+                    &trigger,
+                    screen::frame_width(state.players.len()),
+                )
+            }
+        }
+    }
+
+    /// The load-time notice for a save that was ALREADY triggered when it was
+    /// written; empty for every other load and for every fresh game.
+    ///
+    /// Branched on `final_round` because both save states are reachable and
+    /// they tell the player different things: the trigger round still has
+    /// turns left in it, or the last lap is already running. The reason words
+    /// come from the same [`render::trigger_reason_words`] mapping the banner
+    /// and the delta line use.
+    ///
+    /// The `None` reason arm is unreachable on an engine-produced state (core
+    /// refuses `end_game_triggered` without a `trigger_reason`, and `load`
+    /// replays through the engine), and it stays silent rather than inventing
+    /// a reason for a tampered save.
+    fn end_trigger_load_notice(&self) -> String {
+        let state = self.session.state();
+        if !state.end_game_triggered {
+            return String::new();
+        }
+        let Some(trigger) = state.trigger_reason else { return String::new() };
+        let words = render::trigger_reason_words(state, &trigger);
+        let dash = crate::style::glyph::SECTION_DASH;
+        let line = if state.final_round {
+            format!("FINAL ROUND in progress {dash} {words}")
+        } else {
+            format!("END TRIGGERED {dash} {words}; finishing the current round")
+        };
+        format!("{}\n", paint(Tone::Warn, &line))
     }
 
     /// Per-seat panel presentation: a bot's hand is masked whatever `privacy`
@@ -2592,6 +2654,19 @@ impl Repl {
                         text.push('\n');
                     }
                     text.push_str(&pump);
+                }
+                // AFTER the pump, and drained here rather than per-apply, so
+                // ONE screen carries at most one banner however many applies
+                // fed it (branch-4 item 5): the human's own move and every bot
+                // reply to it route through `Session::apply`, which arms on the
+                // transition, and this is the single place their combined
+                // output is assembled.
+                let banner = self.take_end_trigger_banner_text();
+                if !banner.is_empty() {
+                    if !text.is_empty() && !text.ends_with('\n') {
+                        text.push('\n');
+                    }
+                    text.push_str(&banner);
                 }
                 // AFTER the pump: a bot's reply can be the move that ends the
                 // game, and the final table has to describe the finished game
@@ -4939,6 +5014,151 @@ mod tests {
         assert!(!applied, "GameOver must report applied = false, same as every other error");
         assert!(out.text.contains("game over"), "{}", out.text);
         assert!(!out.text.contains("Illegal"), "{}", out.text);
+    }
+
+    // ---- The one-time end-trigger banner (branch-4 item 5) ----
+
+    /// A 2P state doctored so the NEXT applied move fires the
+    /// `OrderDeckEmpty` end-game trigger. Twin of `session.rs`'s
+    /// `sim_2p_one_move_from_the_trigger`, and conserving for the same reason:
+    /// cards go deck -> boxed pile and port slot -> boxed pile, so the engine's
+    /// 36-order conservation invariant holds and `Session::apply`'s post-move
+    /// `check_invariants` stays a real check rather than something the fixture
+    /// has to dodge.
+    fn state_one_move_from_the_trigger(seed: u64) -> GameState {
+        let mut state = Session::new_sim(
+            GameConfig::for_player_count(2),
+            seed,
+            vec![StartingOrderChoice::Keep(0); 2],
+            Rules::standard(),
+        )
+        .unwrap()
+        .state()
+        .clone();
+        let deck: Vec<_> = std::mem::take(&mut state.order_deck);
+        state.orders_removed.extend(deck);
+        if !state.port_state.port_a.has_empty_slot() {
+            if let Some(card) = state.port_state.port_a.slots[0].take() {
+                state.orders_removed.push(card);
+            }
+        }
+        assert!(!state.end_game_triggered, "the fixture must start UNtriggered");
+        state
+    }
+
+    /// [`step_one_move`]'s dispatch, handing back the output instead of
+    /// dropping it — the shape a test asserting on WHAT a move printed needs.
+    fn step_one_move_reporting(r: &mut Repl) -> StepOutput {
+        let queued = !r.session.state().pending_choices.is_empty();
+        match r.session.state().turn_phase {
+            TurnPhase::Placement if !queued => r.step("a"),
+            TurnPhase::Movement if !queued => r.step("r"),
+            _ => r.step("1"),
+        }
+    }
+
+    /// The banner reaches the inline stream on the flip, and only then.
+    ///
+    /// Keyed on the BORDER and on the two-phase rule clause rather than on
+    /// "END TRIGGERED", because the reworded delta line carries that headline
+    /// too — a test that only looked for the headline would pass with no
+    /// banner at all, which is precisely the state the owner played through.
+    #[test]
+    fn the_banner_reaches_the_inline_stream_once() {
+        let mut r = Repl::new(Session::for_test_from_state(
+            state_one_move_from_the_trigger(4),
+            Rules::standard(),
+        ));
+        let out = step_one_move_reporting(&mut r);
+        assert!(r.session.state().end_game_triggered, "the fixture must actually flip");
+        assert!(out.text.contains("END TRIGGERED"), "{}", out.text);
+        assert!(
+            out.text.contains(crate::style::glyph::DOUBLE_RULE),
+            "the flip must draw the bordered block, not just a delta line: {}",
+            out.text,
+        );
+        assert!(
+            out.text.contains("then every player gets one full final round"),
+            "the banner states the rule: {}",
+            out.text,
+        );
+
+        let next = step_one_move_reporting(&mut r);
+        assert!(
+            !next.text.contains(crate::style::glyph::DOUBLE_RULE),
+            "the banner is one-time — a second screen must not repeat it: {}",
+            next.text,
+        );
+        assert!(
+            !next.text.contains("then every player gets one full final round"),
+            "{}",
+            next.text,
+        );
+    }
+
+    /// A flip INSIDE a bot run surfaces with the run rather than being
+    /// swallowed by it (spec §2.1's bot clause).
+    ///
+    /// Driven through `opening()` — the load-time pump, spec §9's call site A
+    /// — at a forced terminal, so the review branch is the one under test:
+    /// that is the shape where the narrative leaves the frame entirely, and
+    /// therefore the shape a banner is most easily lost in. The assertion
+    /// reads BOTH halves of the [`Opening`] because which half carries the
+    /// narrative is `may_pause`'s business, not this property's.
+    #[test]
+    fn the_bot_review_carries_the_banner_when_the_flip_happened_inside_the_run() {
+        let bots = BotSeats::new(
+            vec![Some(Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT)), None],
+            0x5A17_3B0C_9E44_D218,
+        );
+        let mut session =
+            Session::for_test_from_state(state_one_move_from_the_trigger(4), Rules::standard());
+        session.set_run_seats(bots.seat_provenance());
+        let mut r = Repl::new(session);
+
+        let opening = at_a_terminal(|| r.opening());
+        assert!(r.session.state().end_game_triggered, "the opening pump must cross the trigger");
+        let shown = format!("{}{}", opening.review.clone().unwrap_or_default(), opening.frame);
+        let plain = crate::style::test_support::strip_ansi(&shown);
+        assert!(plain.contains("END TRIGGERED"), "{plain}");
+        assert!(
+            plain.contains("then every player gets one full final round"),
+            "the bot run must not swallow the banner: {plain}",
+        );
+    }
+
+    /// A save reloaded AFTER the trigger gets a quiet one-line notice, not the
+    /// banner — and the notice is branched, because both save states are real
+    /// and they mean different things to the player about to move.
+    ///
+    /// The banner is transition-fired and a load applies no move, so there is
+    /// no transition to fire on; re-firing it here would teach the player that
+    /// the trigger had just happened. The negative assertion is on the BORDER,
+    /// which is the banner's own mark and appears nowhere else in a composed
+    /// frame (`screen.rs`'s title-strip pin).
+    #[test]
+    fn a_loaded_triggered_save_prints_the_branched_notice() {
+        for (final_round, expected) in
+            [(false, "finishing the current round"), (true, "FINAL ROUND in progress")]
+        {
+            let mut state = state_one_move_from_the_trigger(4);
+            state.end_game_triggered = true;
+            state.trigger_reason = Some(EndGameTrigger::ChurchTrackFull);
+            state.trigger_player = Some(PlayerId::new(0));
+            state.final_round = final_round;
+
+            let mut r = Repl::new(Session::for_test_from_state(state, Rules::standard()));
+            let frame = crate::style::test_support::strip_ansi(&r.opening().frame);
+            assert!(frame.contains(expected), "final_round={final_round}: {frame}");
+            assert!(
+                frame.contains("the Church track filled"),
+                "the notice names the reason: {frame}",
+            );
+            assert!(
+                !frame.contains(crate::style::glyph::DOUBLE_RULE),
+                "a load must not re-fire the banner (final_round={final_round}): {frame}",
+            );
+        }
     }
 
     /// Task 10: once the game is over, `score` announces the winner and a
