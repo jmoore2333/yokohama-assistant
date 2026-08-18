@@ -1350,9 +1350,17 @@ mod tests {
     /// declared threshold — the F6 arithmetic, in the unit
     /// `calculate_technology_bonus` itself compares in.
     ///
-    /// The threshold is the dummy's 15 (D5's 7.5 doubled), which is exactly the
-    /// level a real total can never tie: industry 7 doubles to 14 (below) and
-    /// industry 8 doubles to 16 (past).
+    /// The canonical threshold is the dummy's 15 (D5's 7.5 doubled), which is
+    /// exactly the level a real total can never tie: industry 7 doubles to 14
+    /// (below) and industry 8 doubles to 16 (past).
+    ///
+    /// That unrepresentable tie is why this test also carries an EVEN-threshold
+    /// pair. Against 15 the comparison is UNOBSERVABLE — every real doubled
+    /// total is even, so `>` and `>=` agree on every fixture the canonical cells
+    /// can build, and a weakening would pass unseen. An even threshold is the
+    /// only shape that separates them, and STRICTNESS is this arm's named
+    /// semantic: at equal doubled value the clockwise tie-break decides rank, so
+    /// a `>=` read would over-claim.
     #[test]
     fn the_tech_majority_step_reads_doubled_industry_value_strictly_past_the_threshold() {
         let rules = rules();
@@ -1373,6 +1381,18 @@ mod tests {
         assert!(!TurnPredicate::ContestedStepTaken(step).eval(&root, &below, &rules));
         // INVERSION: a mover owning no technology at all.
         assert!(!TurnPredicate::ContestedStepTaken(step).eval(&root, &root, &rules));
+
+        // STRICTNESS, on an EVEN threshold — the only shape a real total can
+        // MEET rather than clear, and so the only shape that tells `>` from
+        // `>=`. The two cells above are blind to that difference by
+        // construction, which is what this pair repairs.
+        let even = ContestedStep::TechMajorityRankPast { doubled_threshold: 14 };
+        assert!(
+            !TurnPredicate::ContestedStepTaken(even).eval(&root, &below, &rules),
+            "doubled 14 TIES the threshold 14 and does not stand PAST it — a \
+             `>=` read here would claim a rank the clockwise tie-break decides",
+        );
+        assert!(TurnPredicate::ContestedStepTaken(even).eval(&root, &past, &rules));
     }
 
     /// The DENIAL control is the exact negation of the taken rule, on the same
