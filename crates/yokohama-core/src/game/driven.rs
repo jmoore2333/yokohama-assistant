@@ -9620,6 +9620,37 @@ mod tests {
         state
     }
 
+    /// A LATE root offering the mover between `min` and `max` legal moves.
+    ///
+    /// Both bounds matter here and only here: the LOWER one makes the cell's
+    /// per-row assertions non-trivial, and the UPPER one is the WALL — this cell
+    /// pays `candidates × 2` whole rung games (the adjudication's playouts plus
+    /// the independent re-drive the hand walk needs), so an unbounded scan that
+    /// happened to land on a money-saturated Movement point would cost a minute
+    /// for no more evidence. Late in the game for the same reason: a playout
+    /// from event ~800 is a tail rather than most of a game.
+    fn narrow_late_root(
+        rules: &Rules,
+        seed: WorldSeed,
+        from: usize,
+        min: usize,
+        max: usize,
+    ) -> GameState {
+        let stats = rung_game(rules, seed);
+        let events = stats.record.events.len();
+        assert!(from < events, "the generating game is only {events} events long");
+        (from..events)
+            .find_map(|k| {
+                let state = state_at(&stats.record, k, rules).ok()?;
+                if is_game_over(&state) {
+                    return None;
+                }
+                let width = get_legal_moves(&state, rules).len();
+                (min..=max).contains(&width).then_some(state)
+            })
+            .unwrap_or_else(|| panic!("no {min}..={max}-wide decision from event {from}"))
+    }
+
     /// Run an adjudication with a RECORDING hook and return what the hook saw,
     /// in call order: `(first-argument digest, second-argument digest)` per
     /// playout.
@@ -9664,13 +9695,13 @@ mod tests {
     #[test]
     fn the_turn_hook_reads_the_pre_candidate_root_and_the_hand_walked_hand_off() {
         let rules = Rules::standard();
-        let root = branching_root(&rules, world(90), 300, 8);
+        let root = narrow_late_root(&rules, world(90), 700, 4, 6);
         let mover = root.current_player;
         let master = world(91);
         let seats = rung_seats();
 
         let (adj, seen) = recorded_hook_args(&root, &seats, &rules, master, 1);
-        assert!(adj.candidates() >= 8, "anti-vacuity: the root offers {} candidates", adj.candidates());
+        assert!(adj.candidates() >= 4, "anti-vacuity: the root offers {} candidates", adj.candidates());
         assert_eq!(seen.len(), adj.candidates(), "one hook call per playout, in row order");
 
         let root_digest = state_digest(&root);
