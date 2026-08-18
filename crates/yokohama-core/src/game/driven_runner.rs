@@ -31,25 +31,62 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use crate::game::arena::Contestant;
+use crate::game::arena::{agent_stream_seed, ArenaAgent, Contestant, Slot};
 use crate::game::driven::{
-    self, Adjudication, DrivenOpts, DrivenOutcome, RegistryEntry, ReplyPolicy, RootDescriptor,
-    RootSource, RootTable, SeatSpec,
+    self, Adjudication, DrivenOpts, DrivenOutcome, GeneratingEcology, RegistryEntry, ReplyPolicy,
+    RootDescriptor, RootOrigin, RootPredicate, RootSource, RootTable, SeatSpec,
+};
+use crate::game::driven_families::{
+    families, run_family_block, AdmissionVerdict, BlockKind, ExclusionReason, FamilyBlockReport,
+    FamilyDecl, FamilyGenerator, FamilyLabel, FamilyRunError, FamilyVerdict, PassRule, RootRow,
+    RootVerdict, TurnPredicate, DECLARED_BY_THE_ROOT, FAMILY2_CONTROL_GENERATOR,
+    PROXIMITY_CORNER_GENERATOR, RACE_CONTROL_GENERATOR,
 };
 use crate::game::lookahead::SearchStats;
+use crate::game::metrics::wilson_95;
 use crate::game::rules::Rules;
-use crate::game::seeds::WorldSeed;
-use crate::types::{Move, PlayerId};
+use crate::game::seeds::{SeedSchedule, WorldSeed};
+use crate::game::semantics::state_digest;
+use crate::game::setup::{finalize_setup, new_game, StartingOrderChoice};
+use crate::types::{AreaAction, AreaId, GameConfig, Move, PlayerId};
 
 /// Every subcommand this runner answers. The parser reads it and
 /// [`USAGE`]'s completeness pin asserts every member is documented.
-pub const SUBCOMMANDS: &[&str] = &["list", "table", "run", "adjudicate"];
+pub const SUBCOMMANDS: &[&str] = &["list", "table", "run", "adjudicate", "family", "opening"];
 
 /// `list`'s flags: none.
 pub const LIST_FLAGS: &[&str] = &[];
 
 /// `table`'s flags.
 pub const TABLE_FLAGS: &[&str] = &["contestant", "decision-seed"];
+
+/// `family`'s flags.
+pub const FAMILY_FLAGS: &[&str] = &["block", "master", "arm"];
+
+/// `opening`'s flags.
+pub const OPENING_FLAGS: &[&str] = &["master", "games", "contestant"];
+
+/// The GENERATED root form's prefix — `gen:<predicate>:<master>:<ordinal>`.
+///
+/// A prefix rather than a fourth colon-splitting rule, because
+/// [`parse_root_ref`] splits a `<path>:<event>` root at its LAST colon and a
+/// generated spec has three: the prefix is read FIRST, so the two grammars
+/// cannot shadow one another whatever a path happens to contain.
+pub const GEN_PREFIX: &str = "gen:";
+
+/// The blocks `family --block` accepts, in declaration order.
+///
+/// **THERE ARE TWO AND THERE IS NO THIRD.** Escrow ordinals live in the FREEZE
+/// DOCUMENT and deliberately not in code (design §2's escrow hygiene), so no
+/// command can burn one by accident — `--block escrow` is exactly as unknown as
+/// any other typo, and this array is what makes that a property rather than an
+/// omission. The `gen:` escape hatch technically REACHES an escrow ordinal;
+/// that protection is procedural (the runs report's commands-as-record), and
+/// saying so out loud is the design's own instruction.
+pub const BLOCK_NAMES: [&str; 2] = ["pilot", "confirmatory"];
+
+/// The arms `family --arm` accepts, in declaration order.
+pub const ARM_NAMES: [&str; 2] = ["positive", "control"];
 
 /// `run`'s flags. **`replications` is deliberately absent** — a single rooted
 /// run has nothing to replicate, and accepting the flag would silently ignore
@@ -77,6 +114,33 @@ pub const RANKED_HEAD: usize = 10;
 /// registry entry, so the refusal names the ARGUMENT FORM rather than an entry
 /// nobody can look up.
 pub const PATH_ROOT_NAME: &str = "path:event";
+
+/// The `opening` probe's SETUP PATH, printed in its own output (design NOTE-4 —
+/// the ecology discipline: a population is only comparable to another when the
+/// path that produced it is on the page).
+///
+/// **It is the PUBLIC path and not the arena's** (plan review SHOULD-5): the
+/// Phase-B split seamed out only `play_from_state`, so the arena's setup half
+/// is still interior to its private driver and a probe that wanted to reuse it
+/// would have to widen a seam for one caller. What makes the reuse unnecessary
+/// is that the two are pinned BIT IDENTICAL — see this module's
+/// `the_opening_setup_path_is_bit_identical_to_the_arena_setup_half`.
+pub const OPENING_SETUP_PATH: &str =
+    "new_game(GameConfig::for_player_count(2), rules, world) -> each seat's \
+     ArenaAgent::choose_starting_order in SEAT ORDER -> finalize_setup (the PUBLIC setup path; \
+     the arena's own setup half is private to its driver, and the two are pinned bit-identical \
+     against state_at(record, 0) at the same master and the same streams)";
+
+/// What the opening probe prints when a first turn executed no area action.
+///
+/// A named constant because a cell asserts against it: an opening turn that
+/// reached no area action is a real (if surprising) reading, and it must not be
+/// spelled two ways.
+pub const OPENING_NO_ACTION: &str = "(no area action)";
+
+/// The area action whose share the opening probe reports as the LAB RUSH — the
+/// C-D question's own quantity.
+pub const LAB_RUSH_KIND: &str = "Laboratory";
 
 pub const USAGE: &str = "\
 usage: driven <subcommand> [options]
@@ -141,6 +205,59 @@ usage: driven <subcommand> [options]
       sizing choices are the ROOT and the reply seats, never a flag here. Rungs
       reply in milliseconds; two uncapped lookahead seats on a wide root is hours.
 
+  family <id> --block pilot --master <u64> [--arm positive|control]
+  family <id> --block confirmatory [--arm positive|control]
+      Run ONE declared block of ONE frozen family and print its report: the
+      label FIRST, D7's step-one counter check SECOND, then the per-policy
+      admission table, the per-root replication lines (each carrying its own
+      decision seed, so a failing replication feeds straight back to
+      `table ... --decision-seed`), the binomial line, and the exclusion /
+      dissent blocks. THE COMMAND IS THE RECORD.
+
+      <id>                   one of: final-round | end-trigger |
+                             exclusive-race | achievement
+      --block pilot          the declaration's PILOT ordinals. --master is
+                             MANDATORY here: recorded-before-use stays the
+                             caller's obligation and this instrument will not
+                             invent one.
+      --block confirmatory   the FROZEN block baked into the declaration at the
+                             freeze commit. --master is REFUSED here -- the
+                             declaration's master IS the committed identity, and
+                             a typo must not be able to run a plausible-looking
+                             non-frozen block. Before the freeze there is no
+                             frozen block at all and this refuses BY NAME.
+      --arm positive         (default) the family's positive generator.
+      --arm control          its declared control (or corner) arm, at the
+                             control PASS RULE where the control asks a
+                             different question:
+                               final-round     trigger-round-not-final, same rule
+                               end-trigger     the behind-in-truth complement,
+                                               read as not-end-fired-by-handoff
+                               exclusive-race  the no-denial builder, read as
+                                               denial-not-taken-by-handoff
+                               achievement     the proximity corner, same rule
+      SIZING is the PRE-FREEZE posture (BlockOpts::pilot) and the SUBJECT is the
+      shipped `lookahead-v1`: a family result is a statement about that subject,
+      so it is deliberately not a flag here.
+      COST: `roots x menu x candidates x K` whole games for admission plus
+      `roots x R` subject turns for the reads -- tens of minutes per root in
+      release at the declared sizing. The pilot is what prices it.
+
+  opening --master <u64> --games <N> [--contestant <spec>]
+      The C-D OPENING PROBE: N seeded fresh 2P games, the subject's FIRST TURN
+      played move by move, and the distribution over (placement area types,
+      president area type, first area action) with the lab-rush share and its
+      95% Wilson interval. Cheap, recorded, no gate. The SETUP PATH is printed
+      in the output, because a population is only comparable to another when the
+      path that produced it is on the page.
+
+      --games <N>            required; 0 is refused (a probe of no games
+                             measures nothing).
+      --contestant <spec>    default `lookahead-v1`. Any contestant the grammar
+                             spells plays here -- unlike `table`, an opening turn
+                             needs no ranked surface, so a rung is a legitimate
+                             (and much cheaper) subject.
+
 roots (<root> above):
   <fixture-name>   a name from `list`. Its record resolves against the WORKSPACE
                    ROOT, so one name means one file wherever the binary is
@@ -154,6 +271,26 @@ roots (<root> above):
                    own transcription checks (recorded move, recorded seat) are
                    entry-only, which is why `table` prints NOT CHECKED in place of
                    a REPRODUCED / DIVERGED line for a path root.
+  gen:<predicate>:<master>:<ordinal>
+                   the ordinal-th position a seeded SCAN at <master> found
+                   satisfying <predicate> -- so the separator and the
+                   adjudicator are runnable on generated roots. The resolved
+                   root's whole provenance prints in the report header
+                   (predicate, master, ordinal, the scan's own game index, and
+                   the GeneratingEcology, WITHOUT which the triple is not an
+                   identity: the ordinal-th hit is a fact about the games the
+                   scan played). <master> takes the same spelling --master does;
+                   <ordinal> is decimal. It carries NO recorded seed and NO
+                   recorded move, so `table` requires --decision-seed and prints
+                   NOT CHECKED, exactly as it does for a path root.
+                   COST is the ECOLOGY's: the family-1 predicates scan a rung
+                   ecology (seconds); the four layer-2 predicates scan the v2
+                   LOOKAHEAD ecology, where both generating seats search, and
+                   that is minutes.
+                   <predicate> is one of:
+                     final-round-already-triggered | trigger-round-not-final
+                     end-firable-ahead-in-truth | end-firable-behind-in-truth
+                     exclusive-race-one-step | achievement-claim-available
 
 seats (--seats <a,b[,c,d]>, one spec per seat in seat order, default
 `lookahead-v1` on EVERY seat):
@@ -164,17 +301,22 @@ seats (--seats <a,b[,c,d]>, one spec per seat in seat order, default
       lookahead-v1[:b=<n>,k=<n>,m=<n>,cap=<n>]
       uniform | retreat-averse | family-weighted[:p=<ppm>,k=<n>]
       atomic-diag-v1[:d=<n>,k=<n>,m=<n>] | mcts-v1[:cap=,c=,scale=,m=,leaf=]
-  the declared REPLY menu  the three bare names below. They resolve to the same
-                           contestants the grammar spells and differ only in what
-                           the provenance records they were ASKED FOR, which is
-                           the half that stops meaning what it means at D1's
-                           identity freeze:
-      family-weighted | greedy-at-final | lookahead-at-final
+  the declared REPLY menu  the four bare names below. The first three resolve to
+                           the same contestants the grammar spells and differ
+                           only in what the provenance records they were ASKED
+                           FOR, which is the half that stops meaning what it
+                           means at D1's identity freeze:
+      family-weighted | greedy-at-final | lookahead-at-final | race-rusher
   `family-weighted` ALONE is the reply-menu slot; `family-weighted:p=...` is the
   knobbed rung through the contestant grammar. Both resolve to a rung.
+  `race-rusher` is the declared ADVERSARIAL arm and names NO contestant at all:
+  a rule over state that takes a race step when one is in front of it and
+  delegates to an inner greedy-at-final otherwise. It is a harness instrument,
+  never an entrant, and it is spellable here only as a REPLY.
 
 masters:
-  --master has NO DEFAULT on `run` and `adjudicate`. A master is drawn from OS
+  --master has NO DEFAULT on `run`, `adjudicate`, `opening`, or a `family`
+  PILOT block (a `family` CONFIRMATORY block refuses it outright). A master is drawn from OS
   entropy and RECORDED BY THE CALLER BEFORE THE RUN (the standing policy), so an
   instrument that drew one here would put the draw after the decision to run, in
   a process whose output is the thing the draw is supposed to be independent of.
@@ -198,6 +340,37 @@ pub enum RootRef {
     Fixture(String),
     /// An explicit record file and the event index the mover decided in.
     Path { path: PathBuf, event_index: usize },
+    /// The ordinal-th position a seeded scan at `master` found satisfying
+    /// `predicate` — the `gen:` form (Phase C, T6).
+    ///
+    /// Nothing is scanned at parse time: like the other two arms this names a
+    /// root and resolves later, which is what keeps the whole grammar testable
+    /// without playing a game.
+    Generated { predicate: RootPredicate, master: u64, ordinal: u32 },
+}
+
+/// Which ARM of a family's declaration a block run uses.
+///
+/// A family's control (or corner) arm is a declared GENERATOR and, where the
+/// control asks a different question, a declared control PASS RULE — never a
+/// different family, which is why this is a flag on `family <id>` rather than
+/// four more ids. See [`control_arm`] for the mapping and its reasoning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FamilyArm {
+    /// The declaration as [`families`] carries it.
+    Positive,
+    /// Its declared control (or corner) arm.
+    Control,
+}
+
+impl FamilyArm {
+    /// The stable name, as the grammar spells it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Positive => "positive",
+            Self::Control => "control",
+        }
+    }
 }
 
 /// One parsed command line. Pure data — nothing here has read a file or played a
@@ -225,6 +398,25 @@ pub enum Command {
         master: u64,
         replications: u32,
         seats: Option<Vec<SeatSpec>>,
+    },
+    /// One declared block of one frozen family.
+    ///
+    /// `master` stays an `Option` all the way to
+    /// [`driven_families::run_family_block`](crate::game::driven_families::run_family_block):
+    /// the pilot-requires-it / confirmatory-refuses-it rule is THAT function's,
+    /// and re-stating it here would give the harness two authorities on which
+    /// master a block runs.
+    Family {
+        id: &'static str,
+        block: BlockKind,
+        master: Option<u64>,
+        arm: FamilyArm,
+    },
+    /// The C-D opening probe.
+    Opening {
+        master: u64,
+        games: u32,
+        contestant: Contestant,
     },
 }
 
@@ -283,7 +475,111 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
                 seats: seats_of(&flags)?,
             })
         }
+        "family" => {
+            let (positional, flags) = split_args(rest, FAMILY_FLAGS)?;
+            let id = one_family(&positional)?;
+            let block = match flags.get("block") {
+                Some(raw) => parse_block(raw)?,
+                None => {
+                    return Err(format!(
+                        "family {id} needs --block: {}\n\n{USAGE}",
+                        block_vocabulary(),
+                    ))
+                }
+            };
+            let arm = match flags.get("arm") {
+                Some(raw) => parse_arm(raw)?,
+                None => FamilyArm::Positive,
+            };
+            let master = flags.get("master").map(|raw| parse_u64(raw)).transpose()?;
+            Ok(Command::Family { id, block, master, arm })
+        }
+        "opening" => {
+            let (positional, flags) = split_args(rest, OPENING_FLAGS)?;
+            if !positional.is_empty() {
+                return Err(format!(
+                    "opening takes no positional argument, got {positional:?}\n\n{USAGE}"
+                ));
+            }
+            let games = match flags.get("games") {
+                Some(raw) => u32::try_from(parse_u64(raw)?)
+                    .map_err(|_| format!("--games {raw:?} is not a u32\n\n{USAGE}"))?,
+                None => {
+                    return Err(format!(
+                        "opening requires --games, which has no default: a probe's N is the whole \
+                         of what its distribution means\n\n{USAGE}"
+                    ))
+                }
+            };
+            if games == 0 {
+                return Err(format!(
+                    "opening --games 0 measures nothing: a probe of no games has no \
+                     distribution and no rate to put an interval around\n\n{USAGE}"
+                ));
+            }
+            let contestant = match flags.get("contestant") {
+                Some(spec) => Contestant::from_str_name(spec)
+                    .map_err(|e| format!("--contestant {spec:?}: {e}\n\n{USAGE}"))?,
+                None => default_contestant()?,
+            };
+            Ok(Command::Opening { master: master_of(&flags, "opening")?, games, contestant })
+        }
         other => Err(format!("unknown subcommand {other:?}\n\n{USAGE}")),
+    }
+}
+
+/// The four declared family ids, as one sentence.
+fn family_vocabulary() -> String {
+    let ids: Vec<&str> = families().iter().map(|decl| decl.id).collect();
+    ids.join(" | ")
+}
+
+/// The two block names, as one sentence — see [`BLOCK_NAMES`] for why there are
+/// exactly two.
+fn block_vocabulary() -> String {
+    format!("the blocks are {}", BLOCK_NAMES.join(" | "))
+}
+
+/// The ONE family id `family` takes, checked against the declarations so a typo
+/// refuses before anything is resolved.
+fn one_family(positional: &[String]) -> Result<&'static str, String> {
+    let [only] = positional else {
+        return Err(format!(
+            "family takes exactly ONE id, got {}: {positional:?} ({})\n\n{USAGE}",
+            positional.len(),
+            family_vocabulary(),
+        ));
+    };
+    families()
+        .into_iter()
+        .find(|decl| decl.id == only)
+        .map(|decl| decl.id)
+        .ok_or_else(|| {
+            format!(
+                "unknown family {only:?}: the declared families are {}\n\n{USAGE}",
+                family_vocabulary(),
+            )
+        })
+}
+
+/// `--block`.
+fn parse_block(raw: &str) -> Result<BlockKind, String> {
+    match raw {
+        "pilot" => Ok(BlockKind::Pilot),
+        "confirmatory" => Ok(BlockKind::Confirmatory),
+        other => Err(format!("unknown block {other:?}: {}\n\n{USAGE}", block_vocabulary())),
+    }
+}
+
+/// `--arm`.
+fn parse_arm(raw: &str) -> Result<FamilyArm, String> {
+    match raw {
+        "positive" => Ok(FamilyArm::Positive),
+        "control" => Ok(FamilyArm::Control),
+        other => Err(format!(
+            "unknown arm {other:?}: the arms are {}\n\n{USAGE}",
+            ARM_NAMES.join(" | "),
+        )),
     }
 }
 
@@ -360,8 +656,17 @@ fn default_contestant() -> Result<Contestant, String> {
         .map_err(|e| format!("the default contestant {DEFAULT_SEAT:?} does not parse: {e}"))
 }
 
-/// `<path>:<event>` or a bare registry name.
+/// `gen:<predicate>:<master>:<ordinal>`, `<path>:<event>`, or a bare registry
+/// name.
+///
+/// **The `gen:` prefix is read FIRST**, before the last-colon split: a generated
+/// spec carries three colons and a path may carry any number, so reading the
+/// prefix is the only rule under which the two grammars cannot shadow one
+/// another.
 pub fn parse_root_ref(raw: &str) -> Result<RootRef, String> {
+    if let Some(rest) = raw.strip_prefix(GEN_PREFIX) {
+        return parse_generated_root(raw, rest);
+    }
     let Some((path, event)) = raw.rsplit_once(':') else {
         if raw.is_empty() {
             return Err(format!("an empty root names nothing\n\n{USAGE}"));
@@ -383,6 +688,40 @@ pub fn parse_root_ref(raw: &str) -> Result<RootRef, String> {
     Ok(RootRef::Path { path: PathBuf::from(path), event_index })
 }
 
+/// The `gen:` form's three fields, each refusing on its own terms.
+///
+/// `raw` is what the caller typed and rides every refusal, because a spec with
+/// the wrong ARITY has no one field to blame and the useful thing to print is
+/// the whole of it beside the shape it should have had.
+fn parse_generated_root(raw: &str, rest: &str) -> Result<RootRef, String> {
+    let fields: Vec<&str> = rest.split(':').collect();
+    let [name, master, ordinal] = fields.as_slice() else {
+        return Err(format!(
+            "{raw:?} is not a generated root: the form is \
+             gen:<predicate>:<master>:<ordinal> and this carries {} field(s) after the \
+             prefix\n\n{USAGE}",
+            fields.len(),
+        ));
+    };
+    let predicate = RootPredicate::ALL
+        .into_iter()
+        .find(|candidate| candidate.as_str() == *name)
+        .ok_or_else(|| {
+            let known: Vec<&str> =
+                RootPredicate::ALL.into_iter().map(RootPredicate::as_str).collect();
+            format!(
+                "unknown predicate {name:?} in {raw:?}: the scan predicates are {}\n\n{USAGE}",
+                known.join(" | "),
+            )
+        })?;
+    let master = parse_u64(master)
+        .map_err(|e| format!("the master in {raw:?} does not read: {e}\n\n{USAGE}"))?;
+    let ordinal = ordinal.parse::<u32>().map_err(|e| {
+        format!("the ordinal {ordinal:?} in {raw:?} is not a decimal u32: {e}\n\n{USAGE}")
+    })?;
+    Ok(RootRef::Generated { predicate, master, ordinal })
+}
+
 /// ONE seat spec: the reply menu's three bare names, else the contestant
 /// grammar.
 ///
@@ -392,9 +731,18 @@ pub fn parse_root_ref(raw: &str) -> Result<RootRef, String> {
 /// seat; what differs is the `requested` label the provenance records, and that
 /// label is the half whose meaning moves at D1's identity freeze.
 pub fn parse_seat(spec: &str) -> Result<SeatSpec, String> {
-    for policy in
-        [ReplyPolicy::FamilyWeighted, ReplyPolicy::GreedyAtFinal, ReplyPolicy::LookaheadAtFinal]
-    {
+    // HAND-MAINTAINED, and deliberately so: `ReplyPolicy` ships no `ALL`, the
+    // USAGE seat list is written by hand beside it, and the pins assert every
+    // name here round-trips and appears there. `race-rusher` is the fourth slot
+    // (Phase C, T3) and is argv-REACHABLE because T7's pilots want to name it
+    // in `--seats`; it resolves to no contestant at all, which
+    // `SeatSpec::build`'s second arm answers.
+    for policy in [
+        ReplyPolicy::FamilyWeighted,
+        ReplyPolicy::GreedyAtFinal,
+        ReplyPolicy::LookaheadAtFinal,
+        ReplyPolicy::RaceRusher,
+    ] {
         if spec == policy.as_str() {
             return Ok(SeatSpec::Reply(policy));
         }
@@ -421,6 +769,69 @@ pub fn parse_u64(raw: &str) -> Result<u64, String> {
         None => cleaned.parse::<u64>(),
     };
     parsed.map_err(|e| format!("{raw:?} is not a u64: {e}"))
+}
+
+// ---------------------------------------------------------------------------
+// The family arms
+// ---------------------------------------------------------------------------
+
+/// A declaration RE-POINTED at its declared CONTROL (or corner) arm.
+///
+/// The design's registry is FOUR families, and each control is an ARM of its
+/// family rather than a fifth row — so the mapping from an id to its arm lives
+/// here, in the grammar that exposes it, and the ARMS themselves live in
+/// `driven_families` as named handles ([`FAMILY2_CONTROL_GENERATOR`],
+/// [`RACE_CONTROL_GENERATOR`], [`PROXIMITY_CORNER_GENERATOR`]) exactly so this
+/// function has something to point AT rather than something to invent. Family
+/// 1's control has no handle because it is a plain predicate
+/// ([`RootPredicate::TriggerRoundNotFinal`], the declaration's own comment
+/// names it); it is exposed the same way.
+///
+/// | family           | control generator                | control rule                           |
+/// |------------------|----------------------------------|----------------------------------------|
+/// | `final-round`    | `TriggerRoundNotFinal` predicate | unchanged (`AdjudicatedBest`)          |
+/// | `end-trigger`    | `FAMILY2_CONTROL_GENERATOR`      | `Turn(NotEndFired)`                    |
+/// | `exclusive-race` | `RACE_CONTROL_GENERATOR`         | `Turn(DenialNotTaken)`                 |
+/// | `achievement`    | `PROXIMITY_CORNER_GENERATOR`     | unchanged (`Turn(AchievementClaimed)`) |
+///
+/// **Why the two rule swaps are NEGATIONS and why `BlockOpts::control` stays
+/// FALSE under them — the double negation, stated once because getting it
+/// backwards is silent.** Design §1 says a family-2 control root passes on
+/// `NotEndFiredByHandoff` and a family-3 control root passes on the denial NOT
+/// being taken, so the control's READ is the negated predicate; the read and
+/// the admission hook are ONE rule in `run_one_root`, so the admission question
+/// becomes "does NOT firing dominate?", which is already the right direction
+/// for a behind mover. `BlockOpts::control` inverts that comparison a SECOND
+/// time — it is the other spelling of the same test, for a caller that kept the
+/// positive rule — so setting both would ask whether not-firing LOSES, which is
+/// the control's own claim upside down. The arithmetic is identical either way
+/// (`mean(¬fire) − mean(fire) ≥ δ` is `mean(fire) − mean(¬fire) ≤ −δ`); what is
+/// not identical is the READ, and the negated rule is the one that reads right.
+/// The report prints the arm and this sentence so nothing rests on remembering
+/// it.
+///
+/// Every other field is the declaration's, untouched: an arm is a generator and
+/// a rule, never a different family.
+pub fn control_arm(decl: &FamilyDecl) -> Result<FamilyDecl, String> {
+    let (generator, rule) = match decl.id {
+        "final-round" => (FamilyGenerator::Predicate(RootPredicate::TriggerRoundNotFinal), decl.rule),
+        "end-trigger" => (FAMILY2_CONTROL_GENERATOR, PassRule::Turn(TurnPredicate::NotEndFired)),
+        "exclusive-race" => (
+            RACE_CONTROL_GENERATOR,
+            PassRule::Turn(TurnPredicate::DenialNotTaken(DECLARED_BY_THE_ROOT)),
+        ),
+        "achievement" => (PROXIMITY_CORNER_GENERATOR, decl.rule),
+        other => {
+            return Err(format!(
+                "no control arm for family {other:?}: the declared families are {}",
+                family_vocabulary(),
+            ))
+        }
+    };
+    let mut arm = decl.clone();
+    arm.generator = generator;
+    arm.rule = rule;
+    Ok(arm)
 }
 
 // ---------------------------------------------------------------------------
@@ -515,6 +926,41 @@ fn root_line(root: &RootDescriptor) -> String {
     )
 }
 
+/// A GENERATED root's own provenance, as report lines — EMPTY for every other
+/// origin.
+///
+/// This is what "the resolved root's identity prints in the header" means for
+/// the `gen:` form. A registry root's identity is its name and the file behind
+/// it; a generated root's is the seeded scan that FOUND it, and
+/// `(predicate, master, ordinal)` is famously not the whole of that: the
+/// ordinal-th hit is a fact about the games the scan played, so the
+/// [`GeneratingEcology`] rides every line of it — id, driver, seat count,
+/// resolved seat echoes, seed derivation, scan bound and stride. Two runs whose
+/// ecologies differ are visibly two different questions, which is the entire
+/// reason that type exists.
+fn generated_lines(root: &RootDescriptor) -> Vec<String> {
+    let RootOrigin::Generated { predicate, master, ordinal, game_index, ecology } = &root.origin
+    else {
+        return Vec::new();
+    };
+    let GeneratingEcology { id, driver, players, seats, seed_derivation, games, per_game_cap } =
+        ecology;
+    vec![
+        format!(
+            "  generated      predicate={}  master={master:#018x}  ordinal={ordinal}  \
+             game={game_index}",
+            predicate.as_str(),
+        ),
+        format!(
+            "  ecology        id={id}  players={players}  games={games}  \
+             per_game_cap={per_game_cap}"
+        ),
+        format!("  ecology driver {driver}"),
+        format!("  ecology seats  {}", seats.join("  |  ")),
+        format!("  ecology seeds  {seed_derivation}"),
+    ]
+}
+
 /// What a `table` report knows about its root BEYOND the table itself.
 #[derive(Debug, Clone, Copy)]
 pub struct TableContext<'a> {
@@ -578,6 +1024,7 @@ pub fn render_root_table(table: &RootTable, ctx: &TableContext<'_>) -> String {
         format!("  winner         {:?}", table.winner),
         format!("  winner is a maximiser: {}", table.winner_is_a_maximiser()),
     ];
+    lines.extend(generated_lines(ctx.root));
     lines.extend(reproduction_lines(table, ctx));
     lines.push(String::new());
     lines.push(format!(
@@ -662,10 +1109,13 @@ pub fn render_outcome(outcome: &DrivenOutcome, asked_for: &str) -> String {
             provenance.semantics_rev, provenance.rules_hash,
         ),
         format!("  master         {:#018x}", outcome.master.0),
+    ];
+    lines.extend(generated_lines(&provenance.root));
+    lines.extend([
         String::new(),
         "  seats (as asked for, as resolved, and as the driver's own bench witnessed them):"
             .to_string(),
-    ];
+    ]);
     for seat in &provenance.seats {
         lines.push(format!(
             "    p{}  requested={}  echo={}  observation={}  stream={:#018x}",
@@ -736,9 +1186,10 @@ pub fn render_adjudication(adjudication: &Adjudication, asked_for: &str) -> Stri
             "  master         {:#018x}   replications={}",
             adjudication.master.0, adjudication.replications,
         ),
-        String::new(),
-        "  seats:".to_string(),
     ];
+    lines.extend(generated_lines(&provenance.root));
+    lines.push(String::new());
+    lines.push("  seats:".to_string());
     for seat in &provenance.seats {
         lines.push(format!(
             "    p{}  requested={}  echo={}",
@@ -805,6 +1256,622 @@ pub fn render_adjudication(adjudication: &Adjudication, asked_for: &str) -> Stri
 }
 
 // ---------------------------------------------------------------------------
+// Rendering a family block
+// ---------------------------------------------------------------------------
+
+/// What a family's LABEL claims — the sentence that has to be read before any
+/// number below it is quoted.
+fn label_line(label: FamilyLabel) -> String {
+    match label {
+        FamilyLabel::Confirmatory => "  label          CONFIRMATORY — a pass is evidence FOR the \
+                                      subject and a failure routes through D7; the block \
+                                      confirms a behaviour the canon (or the rules) already call \
+                                      right"
+            .to_string(),
+        FamilyLabel::ExistenceDemonstration => {
+            "  label          EXISTENCE_DEMONSTRATION — no pass bar is declared; the output is \
+             the demonstrated per-root GAP, which supports a pivot or a routing and never a GO"
+                .to_string()
+        }
+    }
+}
+
+/// A [`PassRule`] as one token, grain included.
+fn rule_text(rule: &PassRule) -> String {
+    match rule {
+        PassRule::Turn(predicate) => format!("turn:{}", predicate.as_str()),
+        PassRule::AdjudicatedBest { epsilon } => format!("adjudicated-best(epsilon={epsilon} VP)"),
+    }
+}
+
+/// One root's VERDICT as a loud token plus its detail.
+fn root_verdict_text(verdict: &RootVerdict) -> String {
+    match verdict {
+        RootVerdict::Excluded(ExclusionReason::Dead) => {
+            "EXCLUDED / DEAD (no candidate won any replication and the field's mean-margin spread \
+             is inside the declared bound — honest indifference, which confirms nothing and fails \
+             nothing)"
+                .to_string()
+        }
+        RootVerdict::Excluded(ExclusionReason::NotDemonstrated) => {
+            "EXCLUDED / NOT DEMONSTRATED (the pass behaviour does not dominate here under every \
+             declared policy — a real measurement, and the rate is on the report)"
+                .to_string()
+        }
+        RootVerdict::CounterRefused(detail) => {
+            format!("COUNTER REFUSED — a D7 branch-0 ROUTING and never a failure: {detail}")
+        }
+        RootVerdict::Pass => "PASS".to_string(),
+        RootVerdict::Fail { misses, allowance } => {
+            format!("FAIL ({misses} misses against an allowance of {allowance})")
+        }
+        RootVerdict::UnresolvedPendingExact { replications } => format!(
+            "UNRESOLVED-pending-exact ({replications} replications landed in SOME declared \
+             policy's top set and not all — the policies disagree about this position, which is \
+             the exact-adjudicator trigger and never a silent fail)"
+        ),
+        RootVerdict::GapRecorded { misses } => {
+            format!("GAP RECORDED ({misses} misses; the existence arm declares no bar)")
+        }
+    }
+}
+
+/// A family's VERDICT, with the VOID and EXISTENCE arms said out loud.
+fn family_verdict_lines(verdict: &FamilyVerdict) -> Vec<String> {
+    match verdict {
+        FamilyVerdict::Pass => vec!["  verdict        PASS".to_string()],
+        FamilyVerdict::Fail { failed_roots, allowance } => vec![format!(
+            "  verdict        FAIL — {failed_roots} admitted roots failed against an allowance of \
+             {allowance}"
+        )],
+        FamilyVerdict::UnresolvedPendingExact { roots } => vec![format!(
+            "  verdict        UNRESOLVED-pending-exact — {roots} root(s) whose declared policies \
+             disagree; the exact bounded-tree adjudicator is the named next instrument"
+        )],
+        FamilyVerdict::VoidAsConfirmation { admitted, drawn, minimum, disposition } => vec![
+            format!(
+                "  verdict        VOID AS CONFIRMATION — {admitted} admitted of {drawn} drawn, \
+                 below the declared minimum of {minimum}"
+            ),
+            "                 THIS BLOCK CONFIRMS NOTHING, whatever its roots said: a \
+             confirmatory result quoting too few admitted roots is not a confirmation"
+                .to_string(),
+            format!("                 disposition: {disposition}"),
+        ],
+        FamilyVerdict::GapDemonstrated { roots } => vec![format!(
+            "  verdict        GAP DEMONSTRATED over {roots} admitted root(s) — the EXISTENCE arm: \
+             no bar was declared, the failure allowance does not apply, and this supports a pivot \
+             or a routing, never a GO"
+        )],
+    }
+}
+
+/// One admission verdict as a loud token.
+fn admission_verdict_text(verdict: AdmissionVerdict) -> String {
+    match verdict {
+        AdmissionVerdict::Dominates => "DOMINATES".to_string(),
+        AdmissionVerdict::Fails => "FAILS".to_string(),
+        AdmissionVerdict::Cannot(reason) => format!("CANNOT ({})", reason.as_str()),
+    }
+}
+
+/// The per-root DETAIL block: the step-one counter table, the annotations, the
+/// binomial line and every replication's own seed.
+fn root_detail_lines(row: &RootRow) -> Vec<String> {
+    let mut lines = vec![
+        format!("    ordinal {}   {}", row.ordinal, root_line(&row.descriptor)),
+        format!("        verdict        {}", root_verdict_text(&row.verdict)),
+        format!(
+            "        draw seed      {}",
+            row.draw_seed.map_or_else(|| "-".to_string(), |seed| format!("{seed:#018x}")),
+        ),
+        format!(
+            "        step           {}",
+            row.step.map_or_else(|| "-".to_string(), |step| format!("{step:?}")),
+        ),
+        format!("        rule as run    {}", rule_text(&row.rule)),
+        format!("        misses {}   unresolved {}", row.misses, row.unresolved),
+    ];
+    if let Some(rider) = row.rider {
+        lines.push(format!(
+            "        rider          progress_sum={}  postclaim_sum={}  race_proximity={}  \
+             (RECORDED, never gated)",
+            rider.progress_sum, rider.postclaim_sum, rider.race_proximity,
+        ));
+    }
+    for (policy, dead) in &row.dead_by_policy {
+        lines.push(format!(
+            "        dead? {:<20} {}",
+            policy.as_str(),
+            if *dead { "DEAD" } else { "live" },
+        ));
+    }
+    for (policy, set) in &row.top_sets {
+        lines.push(format!("        top set {:<18} {} candidate(s)", policy.as_str(), set.len()));
+    }
+    let Some(read) = &row.read else {
+        lines.push(
+            "        read           none — this root was excluded or counter-refused before any \
+             replication ran"
+                .to_string(),
+        );
+        return lines;
+    };
+    let check = &read.counter_check;
+    lines.push(format!(
+        "        counter check  candidates={}  top={}  tied-at-top={}  top-band(<={} pt)={}  \
+         distinct={}",
+        check.table.candidates(),
+        check.table.top_value().map_or_else(|| "-".to_string(), |v| format!("{v:+}")),
+        check.tied_at_top,
+        driven::TOP_BAND_POINTS,
+        check.top_band,
+        check.distinct_values,
+    ));
+    for (name, value) in counter_rows(&check.table.stats) {
+        lines.push(format!("          {name:<22} {value}"));
+    }
+    for annotation in &read.annotations {
+        lines.push(format!("        annotation     {annotation:?}"));
+    }
+    if read.separator_recommended() {
+        lines.push(
+            "        annotation     SEPARATOR RECOMMENDED — the evaluator separated little here, \
+             so this root goes through b=4 / b=8 / b=16 before an argument rides it"
+                .to_string(),
+        );
+    }
+    if let Some(binomial) = read.binomial_line() {
+        lines.push(format!("        binomial       {binomial}"));
+    } else {
+        lines.push(
+            "        binomial       -  (decision grain: a miss is a fact about a TOP SET, which \
+             the block's own judgment resolves)"
+                .to_string(),
+        );
+    }
+    lines.push(format!(
+        "        replications   R={}  master={:#018x}  root_word={:#018x}",
+        read.replication_count(),
+        read.master,
+        read.root_word,
+    ));
+    for replication in &read.replications {
+        let verdict = match replication.verdict {
+            Some(true) => "HELD".to_string(),
+            Some(false) => "MISSED".to_string(),
+            None => "-".to_string(),
+        };
+        lines.push(format!(
+            "          r{:<3} seed={:#018x}  root_word={:#018x}  {verdict}  moves={}  \
+             game_over={}  handoff={}",
+            replication.replication,
+            replication.decision_seed,
+            replication.root_word,
+            replication.turn_moves,
+            replication.game_over.map_or_else(|| "-".to_string(), |over| over.to_string()),
+            replication.handoff_digest.as_deref().unwrap_or("-"),
+        ));
+        if let Some(pick) = &replication.pick {
+            lines.push(format!("               pick {pick:?}"));
+        }
+    }
+    lines
+}
+
+/// ONE family block, rendered (design §2: label first, counter check second,
+/// per-policy table, per-root replication lines, binomial line, exclusion and
+/// dissent blocks).
+///
+/// **The ORDER is the contract.** A reader meets the LABEL before any number —
+/// what a pass would even claim — and then D7's STEP-ONE counter check, because
+/// a counter refusal says the preference framing does not apply to a root at
+/// all. Only after both does the per-policy arithmetic appear.
+///
+/// `arm` is passed rather than read off the report because a
+/// [`FamilyBlockReport`] records the generator it RAN and not which arm of the
+/// declaration the caller asked for; the runner passes what it applied, and the
+/// header prints it beside the control arm's direction sentence so a control
+/// block cannot be read backwards.
+pub fn render_family_block(report: &FamilyBlockReport, arm: FamilyArm) -> String {
+    let annotated = report
+        .roots
+        .iter()
+        .filter(|row| row.read.as_ref().is_some_and(|read| read.separator_recommended()))
+        .count();
+    let menu: Vec<&str> = report.menu.iter().map(|policy| policy.as_str()).collect();
+
+    let mut lines = vec![
+        "=== driven family ===".to_string(),
+        label_line(report.label),
+        format!(
+            "  counter check  D7 step one — {} root(s) read, {} REFUSED, {annotated} annotated \
+             (a refusal is a ROUTING and never a failure: a truncated search's pick is not a \
+             preference)",
+            report.admitted, report.counter_refused,
+        ),
+        format!(
+            "  family         {}   class={}   block={}   arm={}",
+            report.id,
+            report.class.as_str(),
+            report.block.as_str(),
+            arm.as_str(),
+        ),
+    ];
+    if arm == FamilyArm::Control {
+        lines.push(
+            "                 the CONTROL arm reads the family's control PASS RULE, which is the \
+             NEGATED predicate where the control asks a different question — so its dominance \
+             direction is the POSITIVE one and the admission inversion stays OFF: inverting both \
+             would be a double negation, and the control's own claim upside down"
+                .to_string(),
+        );
+    }
+    lines.extend([
+        format!("  generator      {}", report.generator),
+        format!("  master         {:#018x}", report.master),
+        format!("  subject        {}", report.subject_echo),
+        format!("  rule           {}   grain={}", rule_text(&report.rule), report.rule.grain().as_str()),
+        format!(
+            "  sizing         R={}  per-root F={}  admission K={}  delta={} VP  \
+             admission-inverted={}",
+            report.replications, report.per_root_f, report.admission_k, report.delta,
+            report.control,
+        ),
+        format!("  menu           {}", menu.join(", ")),
+        format!(
+            "  counts         drawn={}  admitted={}  counter-refused={}",
+            report.drawn, report.admitted, report.counter_refused,
+        ),
+    ]);
+    lines.extend(family_verdict_lines(&report.verdict));
+    lines.push(format!("  robustness     {}", report.robustness_read));
+
+    // ---- the per-policy admission table -----------------------------------
+    lines.push(String::new());
+    lines.push(format!(
+        "  per-policy admission (delta={} VP, inverted={}) — the TURN-grain admission arithmetic, \
+         and at the DECISION grain the LIVE/DEAD split printed per root above:",
+        report.delta, report.control,
+    ));
+    lines.push(format!(
+        "    {:>7}  {:<18}  {:>6}  {:>7}  {:>10}  {:>11}  {:>8}   verdict",
+        "ordinal", "policy", "true_n", "false_n", "true_mean", "false_mean", "diff",
+    ));
+    let mut any = false;
+    for row in &report.roots {
+        let Some(admission) = &row.admission else { continue };
+        for policy in &admission.policies {
+            any = true;
+            lines.push(format!(
+                "    {:>7}  {:<18}  {:>6}  {:>7}  {:>10.2}  {:>11.2}  {:>8.2}   {}",
+                row.ordinal,
+                policy.policy.as_str(),
+                policy.true_n,
+                policy.false_n,
+                policy.true_mean,
+                policy.false_mean,
+                policy.difference,
+                admission_verdict_text(policy.verdict),
+            ));
+        }
+    }
+    if !any {
+        lines.push(
+            "    (none: this block reads at the DECISION grain, where admission is the LIVE/DEAD \
+             split rather than a dominance demonstration)"
+                .to_string(),
+        );
+    }
+
+    // ---- the roots --------------------------------------------------------
+    lines.push(String::new());
+    lines.push("  roots:".to_string());
+    for row in &report.roots {
+        lines.push(String::new());
+        lines.extend(root_detail_lines(row));
+    }
+
+    // ---- exclusions and dissent -------------------------------------------
+    lines.push(String::new());
+    lines.push("  exclusions (roots that never entered the denominator):".to_string());
+    let mut excluded = false;
+    for row in &report.roots {
+        if let RootVerdict::Excluded(_) = row.verdict {
+            excluded = true;
+            lines.push(format!("    ordinal {}   {}", row.ordinal, root_verdict_text(&row.verdict)));
+            if let Some(admission) = &row.admission {
+                let dissenters: Vec<&str> =
+                    admission.dissenters().iter().map(|p| p.as_str()).collect();
+                if !dissenters.is_empty() {
+                    lines.push(format!("                 dissenters: {}", dissenters.join(", ")));
+                }
+            }
+        }
+    }
+    if !excluded {
+        lines.push("    (none)".to_string());
+    }
+
+    lines.push(String::new());
+    if report.sole_dissenters.is_empty() {
+        lines.push(
+            "  dissent        no exclusion had lookahead-at-final as its SOLE DISSENTER"
+                .to_string(),
+        );
+    } else {
+        lines.push(format!(
+            "  dissent        SOLE DISSENTER at ordinals {:?} — dominance held under every \
+             declared policy EXCEPT lookahead-at-final",
+            report.sole_dissenters,
+        ));
+        lines.push(
+            "                 the subject IS (provisionally) lookahead@final, so a subject defect \
+             that degrades its POST-candidate play deflates measured dominance under exactly that \
+             arm and would exclude exactly the roots where the defect matters — a broken subject \
+             passing by shrinking its own denominator. Collected as potential subject SUPPRESSION \
+             evidence and routed to D7 as a finding, never silently dropped."
+                .to_string(),
+        );
+    }
+    lines.join("\n")
+}
+
+// ---------------------------------------------------------------------------
+// The opening probe (design §2's C-D probe)
+// ---------------------------------------------------------------------------
+
+/// ONE game's opening, as the probe reads it.
+///
+/// The three read-out fields are AREA TYPE names and not area ids, deliberately:
+/// the board's area types are dealt to positions per setup seed, so an id means
+/// a different place in every game and a distribution over ids would be a
+/// distribution over nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpeningGame {
+    pub game_index: u32,
+    /// The world this game's setup and streams descend from.
+    pub world: u64,
+    /// The seat that moved first.
+    pub mover: PlayerId,
+    /// The seed the subject's turn was taken at — the ARENA's own keying,
+    /// `agent_stream_seed(world, mover, Slot(mover))`, so the probed turn is the
+    /// turn that seat would have played.
+    pub decision_seed: u64,
+    /// `state_digest` of the opening state, which is what the setup-equivalence
+    /// pin compares.
+    pub opening_digest: String,
+    /// The area TYPES the mover placed assistants in, sorted.
+    pub placements: Vec<String>,
+    /// The area TYPE the president ended the movement step on.
+    pub president: Option<String>,
+    /// The kind of area action executed — [`OPENING_NO_ACTION`] when the turn
+    /// reached none.
+    pub purchase: String,
+    /// Decisions in the turn.
+    pub moves: usize,
+    /// Whether the first turn ENDED the game, which no opening does — recorded
+    /// rather than asserted, because the probe reports what it saw.
+    pub game_over: bool,
+}
+
+/// The whole probe.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpeningProbe {
+    pub master: u64,
+    pub games: u32,
+    /// What the subject RESOLVED to — never the spec that was typed.
+    pub subject_echo: String,
+    pub rows: Vec<OpeningGame>,
+}
+
+/// One [`AreaAction`]'s KIND, as a stable name.
+///
+/// **Exhaustive with no `_` arm**, on [`counter_rows`]'s discipline: a new area
+/// action is a compile error here, to be answered with a name, rather than a
+/// silent extra row in somebody's distribution.
+fn area_action_kind(action: &AreaAction) -> &'static str {
+    match action {
+        AreaAction::ProduceCopper => "ProduceCopper",
+        AreaAction::ProduceSilk => "ProduceSilk",
+        AreaAction::ProduceTea => "ProduceTea",
+        AreaAction::ProduceSeafood => "ProduceSeafood",
+        AreaAction::Bank => "Bank",
+        AreaAction::Port { .. } => "Port",
+        AreaAction::Laboratory { .. } => LAB_RUSH_KIND,
+        AreaAction::EmploymentAgency { .. } => "EmploymentAgency",
+        AreaAction::Chinatown { .. } => "Chinatown",
+        AreaAction::Church { .. } => "Church",
+        AreaAction::Customs { .. } => "Customs",
+        AreaAction::Skip => "Skip",
+    }
+}
+
+/// One area's TYPE name, off the state's own layout.
+fn area_type_name(state: &crate::types::GameState, area: AreaId) -> String {
+    state
+        .board_layout
+        .areas
+        .get(&area)
+        .map_or_else(|| format!("(unknown area {})", area.0), |config| format!("{:?}", config.area_type))
+}
+
+/// Run the C-D opening probe: `games` seeded fresh 2P games, the subject's
+/// FIRST TURN played in each.
+///
+/// **The setup path is the PUBLIC one** ([`OPENING_SETUP_PATH`]) and it is
+/// printed in the output — the Phase-B split seamed out only `play_from_state`,
+/// so the arena's setup half is still interior to its private driver, and what
+/// makes reusing it unnecessary is the bit-identity pin rather than a promise.
+/// The worlds are `SeedSchedule::diagnostic(master)`'s, one per game, which is
+/// the same convention `driven::generate_roots` draws its scan games from.
+///
+/// **This function COMPUTES nothing about a decision.** Every move it reports
+/// came out of [`driven::drive_turn`] over the subject's own honest chain; what
+/// is done here is the tabulation.
+pub fn run_opening(
+    master: u64,
+    games: u32,
+    contestant: Contestant,
+    rules: &Rules,
+) -> Result<OpeningProbe, String> {
+    let subject = SeatSpec::Contestant(contestant);
+    let mut schedule = SeedSchedule::diagnostic(master);
+    let mut rows = Vec::with_capacity(games as usize);
+    for game_index in 0..games {
+        let world = schedule.next_world();
+        let opening = build_opening(world, contestant, rules)
+            .map_err(|e| format!("game {game_index}: no opening: {e}"))?;
+        let mover = opening.current_player;
+        let decision_seed = agent_stream_seed(world, mover, Slot(mover.0));
+        let outcome = driven::drive_turn(&opening, subject, rules, decision_seed, &DrivenOpts::default())
+            .map_err(|e| format!("game {game_index}: the opening turn did not drive: {e}"))?;
+
+        let mut placements = Vec::new();
+        let mut president = None;
+        let mut purchase = OPENING_NO_ACTION.to_string();
+        for applied in &outcome.moves {
+            match &applied.mv {
+                Move::PlaceThreeAreas { placements: areas } => {
+                    placements.extend(areas.iter().map(|area| area_type_name(&opening, *area)));
+                }
+                Move::PlaceTwoSameArea { area, adjacent_bonus } => {
+                    placements.push(area_type_name(&opening, *area));
+                    placements.push(area_type_name(&opening, *area));
+                    if let Some(bonus) = adjacent_bonus {
+                        placements.push(area_type_name(&opening, *bonus));
+                    }
+                }
+                Move::PlacePresident { destination } | Move::MovePresident { destination, .. } => {
+                    president = Some(area_type_name(&opening, *destination));
+                }
+                Move::ExecuteAreaAction { action } => {
+                    purchase = area_action_kind(action).to_string();
+                }
+                _ => {}
+            }
+        }
+        placements.sort();
+        rows.push(OpeningGame {
+            game_index,
+            world: world.0,
+            mover,
+            decision_seed,
+            opening_digest: state_digest(&opening),
+            placements,
+            president,
+            purchase,
+            moves: outcome.moves.len(),
+            game_over: outcome.game_over,
+        });
+    }
+    Ok(OpeningProbe { master, games, subject_echo: subject.echo(), rows })
+}
+
+/// The PUBLIC setup half: `new_game`, each seat's own
+/// [`ArenaAgent::choose_starting_order`] in SEAT ORDER, `finalize_setup`.
+///
+/// The agents are built for ALL seats before any Keep is asked, exactly as
+/// `run_arena_game` builds them before its bench answers — that ordering is
+/// half of what makes the two bit-identical, and the streams
+/// (`agent_stream_seed(world, seat, Slot(seat))`) are the other half.
+fn build_opening(
+    world: WorldSeed,
+    contestant: Contestant,
+    rules: &Rules,
+) -> Result<crate::types::GameState, String> {
+    let pending = new_game(GameConfig::for_player_count(2), rules, world.0)
+        .map_err(|e| format!("new_game failed: {e}"))?;
+    let mut agents: Vec<Box<dyn ArenaAgent>> = (0..2u8)
+        .map(|seat| {
+            contestant.build(rules, agent_stream_seed(world, PlayerId(seat), Slot(seat))).0
+        })
+        .collect();
+    let choices: Vec<StartingOrderChoice> = (0..2usize)
+        .map(|seat| {
+            let keep =
+                agents[seat].choose_starting_order(PlayerId(seat as u8), &pending.deals[seat]);
+            StartingOrderChoice::Keep(keep)
+        })
+        .collect();
+    finalize_setup(pending, &choices).map_err(|e| format!("finalize_setup failed: {e}"))
+}
+
+/// The probe, rendered: the distribution, the lab-rush share with its Wilson
+/// interval, and the setup path.
+pub fn render_opening(probe: &OpeningProbe) -> String {
+    let n = probe.rows.len();
+    let labs = probe.rows.iter().filter(|row| row.purchase == LAB_RUSH_KIND).count();
+    let wilson = wilson_95(labs as u64, n as u64);
+    let share = if n == 0 { 0.0 } else { labs as f64 / n as f64 };
+
+    let mut tally: BTreeMap<(String, String, String), usize> = BTreeMap::new();
+    for row in &probe.rows {
+        let key = (
+            row.placements.join("+"),
+            row.president.clone().unwrap_or_else(|| "-".to_string()),
+            row.purchase.clone(),
+        );
+        *tally.entry(key).or_default() += 1;
+    }
+
+    let mut lines = vec![
+        "=== driven opening ===".to_string(),
+        format!("  master         {:#018x}", probe.master),
+        format!("  games          {} asked for, {n} played", probe.games),
+        format!("  subject        {}", probe.subject_echo),
+        format!("  setup path     {OPENING_SETUP_PATH}"),
+        "  turn driver    drive_turn at agent_stream_seed(world, mover, Slot(mover)) — the \
+         ARENA's own keying, so the probed turn is the turn that seat would have played"
+            .to_string(),
+        format!(
+            "  lab rush       {labs}/{n} = {share:.4}   Wilson95 [{:.4}, {:.4}]   (the first \
+             turn's area action is a {LAB_RUSH_KIND})",
+            wilson.lo, wilson.hi,
+        ),
+        String::new(),
+        format!(
+            "  distribution over (placement area types + president area type + first area \
+             action), {} distinct of {n}:",
+            tally.len(),
+        ),
+        format!(
+            "    {:>4}  {:>7}   {:<44}  {:<18}  {}",
+            "n", "share", "placements", "president", "purchase",
+        ),
+    ];
+    for ((placements, president, purchase), count) in &tally {
+        lines.push(format!(
+            "    {:>4}  {:>7.4}   {placements:<44}  {president:<18}  {purchase}",
+            count,
+            if n == 0 { 0.0 } else { *count as f64 / n as f64 },
+        ));
+    }
+    lines.push(String::new());
+    lines.push("  games:".to_string());
+    for row in &probe.rows {
+        lines.push(format!(
+            "    #{}  world {:#018x}  mover p{}  decision seed {:#018x}  moves {}  \
+             game_over={}  opening {}",
+            row.game_index,
+            row.world,
+            row.mover.0,
+            row.decision_seed,
+            row.moves,
+            row.game_over,
+            row.opening_digest,
+        ));
+        lines.push(format!(
+            "        placements {}   president {}   purchase {}",
+            if row.placements.is_empty() { "(none)".to_string() } else { row.placements.join("+") },
+            row.president.as_deref().unwrap_or("-"),
+            row.purchase,
+        ));
+    }
+    lines.join("\n")
+}
+
+// ---------------------------------------------------------------------------
 // Execution
 // ---------------------------------------------------------------------------
 
@@ -839,12 +1906,14 @@ pub(crate) fn run_with(
                 Some(seed) => seed,
                 None => asked.recorded_seed.ok_or_else(|| {
                     format!(
-                        "{}: --decision-seed is REQUIRED for a <path>:<event> root. No decision \
-                         seed is recorded anywhere for one — the CLI's own \
+                        "{}: --decision-seed is REQUIRED for a root that records none — a \
+                         <path>:<event> root, or a gen:<predicate>:<master>:<ordinal> root. No \
+                         decision seed is recorded anywhere for either: the CLI's own \
                          splitmix64(bot_seed ^ event_count) derivation lives in yokohama-cli and \
-                         core does not re-implement it — so inventing a seed here would answer a \
-                         different question from the one the record asks. A REGISTRY root takes \
-                         its entry's own recorded seed by default.\n\n{USAGE}",
+                         core does not re-implement it, and a SCANNED position was never decided \
+                         by anybody at all — so inventing a seed here would answer a different \
+                         question from the one the root asks. A REGISTRY root takes its entry's \
+                         own recorded seed by default.\n\n{USAGE}",
                         asked.asked_for,
                     )
                 })?,
@@ -862,7 +1931,10 @@ pub(crate) fn run_with(
                     return Err(format!(
                         "{}: the entry records seat p{} at event {}, but p{} is on the move there \
                          — the entry points at another decision",
-                        asked.asked_for, seat.0, asked.event_index, state.current_player.0,
+                        asked.asked_for,
+                        seat.0,
+                        asked.event_index.map_or_else(|| "-".to_string(), |k| k.to_string()),
+                        state.current_player.0,
                     ));
                 }
             }
@@ -907,22 +1979,65 @@ pub(crate) fn run_with(
             .map_err(|e| format!("{}: the adjudication did not complete: {e}", asked.asked_for))?;
             Ok(render_adjudication(&adjudication, &asked.asked_for))
         }
+
+        Command::Family { id, block, master, arm } => {
+            // `one_family` already checked the id against the declarations, so
+            // this lookup cannot miss — and it is written as a lookup rather
+            // than carried through the command because a declaration is a
+            // VALUE and the parse's job was to name one.
+            let declared = families()
+                .into_iter()
+                .find(|decl| decl.id == id)
+                .ok_or_else(|| format!("family {id:?} is no longer declared"))?;
+            let decl = match arm {
+                FamilyArm::Positive => declared,
+                FamilyArm::Control => control_arm(&declared)?,
+            };
+            // The SUBJECT is the shipped default and deliberately not a flag: a
+            // family result is a statement about that subject, and the sizing is
+            // `BlockOpts::pilot`'s pre-freeze posture, which T7's freeze commit
+            // is what replaces.
+            let subject = SeatSpec::Contestant(default_contestant()?);
+            match run_family_block(&decl, block, master, subject, &rules) {
+                Ok(report) => Ok(render_family_block(&report, arm)),
+                // The four COMMAND-shaped refusals carry USAGE, because each of
+                // them is answered by typing something different; the RUN-shaped
+                // ones do not, on `run`/`adjudicate`'s own convention.
+                Err(
+                    error @ (FamilyRunError::NoFrozenBlock { .. }
+                    | FamilyRunError::MasterRefused { .. }
+                    | FamilyRunError::MasterRequired { .. }
+                    | FamilyRunError::EmptyBlock { .. }),
+                ) => Err(format!("family {id} --block {}: {error}\n\n{USAGE}", block.as_str())),
+                Err(error) => {
+                    Err(format!("family {id} --block {}: {error}", block.as_str()))
+                }
+            }
+        }
+
+        Command::Opening { master, games, contestant } => {
+            let probe = run_opening(master, games, contestant, &rules)?;
+            Ok(render_opening(&probe))
+        }
     }
 }
 
 /// A root REFERENCE turned into the material a subcommand needs: the source
 /// itself, plus whatever the naming vocabulary happened to record about it.
 ///
-/// The three `Option`s are all `Some` for a registry entry and all `None` for a
-/// `<path>:<event>` root, and that asymmetry is the point rather than an
-/// oversight — a path names a position and nothing else, so there is no recorded
-/// seed to default to, no recorded move to reproduce against, and no recorded
-/// seat to check the mover against.
+/// The four `Option`s are all `Some` for a registry entry and all `None` for a
+/// `<path>:<event>` or `gen:` root, and that asymmetry is the point rather than
+/// an oversight — those two forms name a POSITION and nothing else, so there is
+/// no recorded seed to default to, no recorded move to reproduce against, no
+/// event index to quote back, and no recorded seat to check the mover against.
 struct Asked {
     /// What the caller typed, for report headers and error text.
     asked_for: String,
     source: RootSource,
-    event_index: usize,
+    /// The entry's own event index — `None` for a form that records none, and
+    /// read ONLY inside the recorded-seat check, which such a form cannot
+    /// reach.
+    event_index: Option<usize>,
     recorded_seed: Option<u64>,
     recorded_move: Option<Move>,
     bot_seat: Option<PlayerId>,
@@ -948,7 +2063,7 @@ fn resolve(
             Ok(Asked {
                 asked_for: entry.name.to_string(),
                 source,
-                event_index: entry.event_index,
+                event_index: Some(entry.event_index),
                 recorded_seed: Some(entry.decision_seed),
                 recorded_move: entry.recorded_move.clone(),
                 bot_seat: Some(entry.bot_seat),
@@ -964,7 +2079,29 @@ fn resolve(
             Ok(Asked {
                 asked_for: format!("{}:{event_index}", path.display()),
                 source: RootSource::RecordPrefix { record, event_index: *event_index },
-                event_index: *event_index,
+                event_index: Some(*event_index),
+                recorded_seed: None,
+                recorded_move: None,
+                bot_seat: None,
+            })
+        }
+        RootRef::Generated { predicate, master, ordinal } => {
+            // NOTHING is scanned here. Resolving a generated root PLAYS GAMES —
+            // seconds at the family-1 rung ecology, minutes at the v2 lookahead
+            // one — so it happens where the other two arms' resolution happens,
+            // at `RootSource::resolve`, and the cost lands once rather than once
+            // per caller of this function.
+            Ok(Asked {
+                asked_for: format!(
+                    "{GEN_PREFIX}{}:{master:#018x}:{ordinal}",
+                    predicate.as_str(),
+                ),
+                source: RootSource::Generated {
+                    predicate: *predicate,
+                    master: *master,
+                    ordinal: *ordinal,
+                },
+                event_index: None,
                 recorded_seed: None,
                 recorded_move: None,
                 bot_seat: None,
@@ -3201,16 +4338,35 @@ mod tests {
                 "game {}: the first turn ended the game, which no opening does",
                 row.game_index,
             );
-            // The president is PLACED from hand on turn one and the area action
-            // follows it — both are facts about the rules, not about the seat.
-            assert!(row.president.is_some(), "game {}: no president area", row.game_index);
-            assert_ne!(row.purchase, OPENING_NO_ACTION, "game {}: no area action", row.game_index);
             assert_eq!(
                 row.decision_seed,
                 agent_stream_seed(WorldSeed(row.world), row.mover, Slot(row.mover.0)),
                 "the turn is not taken on the arena's own keying",
             );
+            // THE ONE STRUCTURAL RELATION between the two read-outs: a
+            // president that never left the hand cannot execute an area
+            // action. It is not vacuous — a rung really does take Option B's
+            // return-to-hand on turn one sometimes (game 1 at this master
+            // does), which is exactly why the probe REPORTS `-` there instead
+            // of asserting a president it has no right to expect.
+            if row.president.is_none() {
+                assert_eq!(
+                    row.purchase, OPENING_NO_ACTION,
+                    "game {}: an area action with the president still in hand",
+                    row.game_index,
+                );
+            }
         }
+        // ANTI-VACUITY: the reader is not a function that always says "nothing".
+        assert!(
+            probe.rows.iter().any(|row| {
+                !row.placements.is_empty()
+                    && row.president.is_some()
+                    && row.purchase != OPENING_NO_ACTION
+            }),
+            "no game read a placement, a president AND an area action: {:?}",
+            probe.rows,
+        );
         // Distinct worlds per game — the schedule advances.
         let worlds: std::collections::BTreeSet<u64> = probe.rows.iter().map(|r| r.world).collect();
         assert_eq!(worlds.len(), 3, "two games share a world");
