@@ -622,6 +622,19 @@ pub(crate) struct RaceRusherAgent {
     /// delegating. Test-only, for the same reason.
     #[cfg(test)]
     race_picks: u64,
+    /// The probe seed this seat's LAST `choose` actually derived — the value
+    /// handed to [`BeliefSampler::from_view`], recorded where it is built rather
+    /// than recomputed by a cell.
+    ///
+    /// [`race_probe_seed`] has its own pin, but a pin on the FUNCTION says
+    /// nothing about the argument the agent passes it: freezing `ordinal` at 0
+    /// — one seat, ONE probe world for its whole life — leaves every other cell
+    /// in this module green. This is the field that makes the live ordinal
+    /// observable, and `successive_decisions_probe_at_successive_ordinals` is
+    /// what fails when it stops advancing. Test-only, like the two counters
+    /// above.
+    #[cfg(test)]
+    last_probe_seed: Option<u64>,
 }
 
 impl RaceRusherAgent {
@@ -652,6 +665,8 @@ impl RaceRusherAgent {
             probed_candidates: 0,
             #[cfg(test)]
             race_picks: 0,
+            #[cfg(test)]
+            last_probe_seed: None,
         }
     }
 }
@@ -688,6 +703,10 @@ impl ArenaAgent for RaceRusherAgent {
         // The PROBE WORLD — the agent's own, from its own view, on a stream that
         // is not the inner greedy's (see `SALT_DRIVEN_RACE_PROBE`).
         let probe_seed = race_probe_seed(self.agent_seed, ordinal);
+        #[cfg(test)]
+        {
+            self.last_probe_seed = Some(probe_seed);
+        }
         let mut sampler = BeliefSampler::from_view(view, rules, probe_seed).map_err(|e| {
             format!(
                 "{RACE_RUSHER_CONTROLLER}'s probe sampler refused seat {}'s view: {e}",
@@ -9276,8 +9295,57 @@ mod tests {
         );
     }
 
-    /// Same seed, same root → the same decisions twice; a different seed is the
-    /// anti-vacuity half.
+    /// The LIVE ordinal reaches the derivation: one seat's successive decisions
+    /// probe at ordinals 0 and 1.
+    ///
+    /// [`the_race_probe_seed_is_the_declared_derivation_on_its_own_serial`] pins
+    /// the FUNCTION, and nothing in it says the agent hands that function the
+    /// ordinal it is holding. Freeze the argument at 0 — one seat, ONE probe
+    /// world for its whole life, every decision classified against the same
+    /// determinization — and every other cell in this module stays green: the
+    /// scope counters, the fallback identity and the determinism cell are all
+    /// blind to WHICH world was probed. So the seed is recorded where the
+    /// sampler is built and read back here.
+    #[test]
+    fn successive_decisions_probe_at_successive_ordinals() {
+        let rules = Rules::standard();
+        let root = turn_start_root(&rules, world(83), 200);
+        let mut rusher = RaceRusherAgent::new(&rules, RUSH_SEED);
+
+        let first = ask(&mut rusher, &root, &rules);
+        assert_eq!(
+            rusher.last_probe_seed,
+            Some(race_probe_seed(RUSH_SEED, 0)),
+            "the first decision did not probe at ordinal 0",
+        );
+
+        // The two expectations are DIFFERENT values, stated about the pair this
+        // cell actually compares — otherwise a frozen argument would satisfy
+        // both and the second assertion would carry nothing.
+        assert_ne!(race_probe_seed(RUSH_SEED, 0), race_probe_seed(RUSH_SEED, 1));
+
+        let next = apply_move_unchecked(&root, &first, &rules).expect("the first move applies");
+        assert!(
+            !is_game_over(&next),
+            "the fixture ended in one move, so there is no second decision to probe",
+        );
+        let _ = ask(&mut rusher, &next, &rules);
+        assert_eq!(
+            rusher.last_probe_seed,
+            Some(race_probe_seed(RUSH_SEED, 1)),
+            "the second decision did not probe at ordinal 1 — the live ordinal is not reaching \
+             the derivation",
+        );
+    }
+
+    /// Same seed, same root → the same decisions twice.
+    ///
+    /// **The anti-vacuity half is the LENGTH assertion**, not a second seed:
+    /// this cell never runs a different seed, and a turn of one decision (or of
+    /// none) would satisfy the equality however broken the seeding was.
+    /// Asserting the fixture turn is at least two decisions long is what makes
+    /// the equality say something, and [`turn_start_root`]'s phase guarantee is
+    /// what supplies it.
     #[test]
     fn a_race_rusher_seat_is_deterministic_at_a_fixed_seed() {
         let rules = Rules::standard();
@@ -9297,11 +9365,6 @@ mod tests {
         let first = turn(RUSH_SEED);
         assert!(first.len() >= 2, "anti-vacuity: the fixture turn is {} decision(s)", first.len());
         assert_eq!(first, turn(RUSH_SEED), "the same seed produced two different turns");
-        assert_ne!(
-            RUSH_SEED,
-            RUSH_SEED ^ 1,
-            "the anti-vacuity seed must actually differ",
-        );
     }
 
     // -----------------------------------------------------------------------
