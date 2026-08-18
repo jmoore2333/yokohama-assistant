@@ -2005,7 +2005,10 @@ mod tests {
     use crate::game::record::{state_at, RecordedEvent};
     use crate::game::seeds::SeedSchedule;
     use crate::game::setup::{finalize_setup, new_game, StartingOrderChoice};
-    use crate::types::{GameConfig, PlayerView};
+    use crate::types::{
+        BuildingSite, EndGameTrigger, GameConfig, MercenaryState, PlayerView, PresidentLocation,
+        TradingHouseState, TurnPhase,
+    };
     use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
@@ -2646,6 +2649,22 @@ mod tests {
         assert_eq!(outcome.seats[0].counters.explained, Some(0));
         assert_eq!(outcome.seats[1].counters, SeatCounters::NONE, "a rung explains nothing");
         assert!(outcome.explanation_identity_holds());
+
+        // T2-review NOTE-3, pinned on the terminal state already in hand: the
+        // OTHER instrument answers the same position differently, and
+        // `RootTableError::Agent`'s own doc is where that claim lives ("which is
+        // what an ALREADY-TERMINAL root arrives as: no candidates, hence a dead
+        // end, hence no table"). A doc-only claim about an error arm is a claim
+        // nothing checks — and the contrast is the point: `drive_to_terminal`
+        // answers a terminal root with an empty run because a remainder of
+        // nothing is a real answer, while `root_table` refuses because a
+        // decision that does not exist has no ranking.
+        let err = root_table(&terminal, terminal.current_player, Contestant::LOOKAHEAD_V1_DEFAULT, &rules, DECISION_SEED)
+            .expect_err("a terminal root has no decision to tabulate");
+        assert!(
+            matches!(err, RootTableError::Agent { seat, .. } if seat == terminal.current_player),
+            "expected Agent at the terminal root's own seat, got {err:?}",
+        );
     }
 
     /// TWO explaining seats: `explanations` is their SUM.
@@ -4005,5 +4024,591 @@ mod tests {
 
         // The cell owns every file it read; the anchor goes when it drops.
         drop(anchor);
+    }
+
+    // =======================================================================
+    // T4: the adjudicator
+    // =======================================================================
+
+    /// A CONSTRUCTED near-terminal 2P root whose final margins are computable
+    /// BY HAND — the `scenario_suite` grain (a doctored `GameState` put through
+    /// `check_invariants` before anything reads it), built for exactly one
+    /// question: what does forcing each root candidate do to the score?
+    ///
+    /// **The position.** 2P, the final round already under way, and the seat on
+    /// the move is the LAST seat of that round — `(start + n - 1) % n`, the seat
+    /// `GameState::is_game_over` keys terminality on. It sits in `Building` at
+    /// action power 4, its President on the one area this fixture gives a
+    /// doctored building site, two shophouses in hand (a fresh setup's
+    /// `ShophouseState::new`) and none built. So `generate_building_moves`
+    /// offers exactly FIVE candidates: `SkipBuilding`, then one
+    /// `BuildShophouse` per empty slot — all four, since nothing is built.
+    /// `BuildTradingHouse` is NOT among them: the seat holds 0 trading houses in
+    /// hand (they reach the hand only through the Employment Agency).
+    ///
+    /// **Why the remainder is FORCED, which is what makes the margins
+    /// hand-computable at all.** Every candidate leaves `turn_phase` at
+    /// `Recovery`, which the same `apply_move_unchecked` resolves before it
+    /// returns (`resolve_recovery`; no Telephone owned, so no `RecoveryLeave`
+    /// choice defers it) and advances to `AdditionalActionSecond`. There
+    /// `generate_additional_action_moves` offers `EndAdditionalPhase` plus
+    /// mercenary uses plus University/Spinning-Mill actions — and this seat has
+    /// no mercenaries, no technologies and no assistants on board, so the list
+    /// is exactly `[EndAdditionalPhase]`. Applying it runs `advance_phase`,
+    /// whose `final_round && next_player == start_player` arm assigns `TurnEnd`
+    /// without moving `current_player`, and `is_game_over` is then true.
+    /// **ONE forced decision after every candidate** — so these margins do not
+    /// depend on which policy replies, on the master, or on the replication.
+    ///
+    /// **Why each seat's total IS its printed VP.** `final_result` adds five
+    /// legs to `victory_points`, and this fixture zeroes every one of them for
+    /// both seats:
+    /// * CHURCH and CUSTOMS majorities — neither real seat has a track pawn, so
+    ///   the only ranked competitor is the 2P setup dummy, which TAKES first
+    ///   place and is awarded nothing (`award_top_two`, finding D1); second
+    ///   place is an absent row. 0 and 0.
+    /// * TECHNOLOGY majority — neither seat owns a technology, so both rank at
+    ///   doubled industry value 0 behind the dummy's 15 (D5), and the
+    ///   participation gate `doubled_iv > 0` denies the seat that inherits
+    ///   second place. 0.
+    /// * COUNTRY sets — no completed orders and no technologies is no country
+    ///   icons at all, and `calculate_country_bonus` needs 2 distinct. 0.
+    /// * REMAINDER — `calculate_remainder_bonus` is exactly unused mercenaries
+    ///   + imported goods + money/2 + trade goods/3, and all four are zeroed.
+    ///
+    /// So a seat's final total is its `victory_points`, and building a shophouse
+    /// adds exactly the doctored space's printed `vp`: the site's spaces carry
+    /// no yen, no goods and no icons, so `apply_space_reward` queues nothing,
+    /// and the Mining and Gaslight bonuses need technologies this seat does not
+    /// own.
+    ///
+    /// Returns the root, the seat on the move, and the site's area.
+    fn near_terminal_building_root(
+        rules: &Rules,
+        seed: u64,
+        space_vp: [u8; 4],
+        mover_vp: u32,
+        rival_vp: u32,
+    ) -> (GameState, PlayerId, AreaId) {
+        let mut state = root_2p(rules, seed);
+        let n = state.config.player_count;
+        let start = state.config.start_player.0;
+        // The seat `is_game_over` keys on — derived, never the literal 1, so the
+        // fixture states the RULE rather than one board's answer to it.
+        let mover = PlayerId((start + n - 1) % n);
+        let area = *state
+            .board_layout
+            .building_sites
+            .keys()
+            .next()
+            .expect("the 2P board carries at least one building site");
+        // A site whose four spaces are PURE VP and whose trading-house space
+        // pays nothing: `BuildingSite::new` is the engine's own VP-only
+        // constructor, so no reward icon can sneak in through a hand-written
+        // literal.
+        state.board_layout.building_sites.insert(area, BuildingSite::new(space_vp, 0));
+
+        for p in state.players.iter_mut() {
+            p.money = 0;
+            p.copper = 0;
+            p.silk = 0;
+            p.tea = 0;
+            p.seafood = 0;
+            p.imported_goods = 0;
+            p.mercenaries = MercenaryState::new();
+            p.victory_points = if p.id == mover { mover_vp } else { rival_vp };
+        }
+        {
+            let m = state.player_mut(mover);
+            m.president_location = PresidentLocation::OnBoard(area);
+            // Explicit rather than assumed: 0 in hand is what keeps
+            // `BuildTradingHouse` off the candidate list, and the cell asserts
+            // the list, so a data change that put a token in hand at setup would
+            // fail there rather than silently re-shape the table.
+            m.trading_houses = TradingHouseState::new();
+        }
+        state.current_player = mover;
+        state.turn_phase = TurnPhase::Building;
+        state.current_action_power = Some(4);
+        state.is_mercenary_action = false;
+        state.mercenary_target_area = None;
+        state.president_start_area = None;
+        state.pending_choices.clear();
+        state.end_game_triggered = true;
+        state.final_round = true;
+        state.trigger_reason = Some(EndGameTrigger::ChurchTrackFull);
+        state.trigger_player = Some(state.config.start_player);
+
+        check_invariants(&state, rules)
+            .expect("the doctored root must be a state the engine accepts");
+        assert!(!is_game_over(&state), "anti-vacuity: the root is already terminal");
+        (state, mover, area)
+    }
+
+    /// The same fixture, one field further on: `TurnEnd` at the same seat, which
+    /// is `is_game_over`'s whole definition. Cheaper than playing a game out and
+    /// exact about WHY it is terminal.
+    fn terminal_building_root(rules: &Rules, seed: u64) -> (GameState, PlayerId) {
+        let (mut state, mover, _) = near_terminal_building_root(rules, seed, [0; 4], 6, 10);
+        state.turn_phase = TurnPhase::TurnEnd;
+        check_invariants(&state, rules).expect("a terminal state is still a valid state");
+        assert!(is_game_over(&state), "the fixture must actually be a finished game");
+        (state, mover)
+    }
+
+    /// The five candidates the fixture's Building root offers, in the
+    /// generator's own order.
+    fn expected_building_candidates() -> Vec<Move> {
+        vec![
+            Move::SkipBuilding,
+            Move::BuildShophouse { slot: 0 },
+            Move::BuildShophouse { slot: 1 },
+            Move::BuildShophouse { slot: 2 },
+            Move::BuildShophouse { slot: 3 },
+        ]
+    }
+
+    /// Two rung seats — the cheapest honest reply there is, and the right choice
+    /// wherever the property under test is STRUCTURAL (design §6's wall
+    /// discipline).
+    fn rung_seats() -> [SeatSpec; 2] {
+        [SeatSpec::Reply(ReplyPolicy::FamilyWeighted), SeatSpec::Reply(ReplyPolicy::FamilyWeighted)]
+    }
+
+    // -----------------------------------------------------------------------
+    // The replication derivation
+    // -----------------------------------------------------------------------
+
+    /// Design §4's formula, asserted rather than commented: a replication's
+    /// world is `mix(SALT_DRIVEN_REPLICATION, [master, replication_index])`.
+    ///
+    /// Recomputed from the arena's OWN mixing authority and the salt const —
+    /// not from a second copy of the formula — so this fails if the derivation
+    /// is ever re-routed through a different salt, a different component order,
+    /// or a hand-rolled hash. The distinctness half is what keeps replications
+    /// from being K copies of one run.
+    #[test]
+    fn a_replications_world_is_the_designs_mix_of_master_and_index() {
+        let master = world(40);
+        let derived: Vec<WorldSeed> = (0..6).map(|r| replication_world(master, r)).collect();
+        for (r, got) in derived.iter().enumerate() {
+            assert_eq!(
+                *got,
+                WorldSeed(mix(SALT_DRIVEN_REPLICATION, &[master.0, r as u64])),
+                "replication {r} did not derive through the design's formula",
+            );
+        }
+        let mut seen = derived.clone();
+        seen.sort_unstable_by_key(|w| w.0);
+        seen.dedup();
+        assert_eq!(seen.len(), derived.len(), "two replications drew the same world");
+
+        // Injective in the MASTER too, at a fixed index — without this the
+        // whole table would be master-independent and a recorded master would
+        // identify nothing.
+        let elsewhere = WorldSeed(master.0 ^ 0x5555_5555_5555_5555);
+        assert_ne!(replication_world(master, 3), replication_world(elsewhere, 3));
+    }
+
+    // -----------------------------------------------------------------------
+    // The hand-computed table
+    // -----------------------------------------------------------------------
+
+    /// **THE ARITHMETIC CELL.** Every candidate of a constructed near-terminal
+    /// root, forced and played out, against margins derived from the rules in
+    /// [`near_terminal_building_root`]'s doc.
+    ///
+    /// The fixture prints VP 3, 4, 5, 0 on the four shophouse spaces, banks 6 VP
+    /// for the mover and 10 for its rival, and zeroes every other scoring leg,
+    /// so the five margins are:
+    ///
+    /// | candidate | mover total | rival | margin | verdict |
+    /// |---|---|---|---|---|
+    /// | `SkipBuilding`         | 6      | 10 | −4 | rank 2 |
+    /// | `BuildShophouse{0}` +3 | 9      | 10 | −1 | rank 2 |
+    /// | `BuildShophouse{1}` +4 | **10** | 10 | **0** | rank 2 — LEVEL on VP and beaten by the official clockwise tie-break |
+    /// | `BuildShophouse{2}` +5 | 11     | 10 | +1 | rank 1, WINS |
+    /// | `BuildShophouse{3}` +0 | 6      | 10 | −4 | rank 2 |
+    ///
+    /// The `+4` row is the one that earns its place: a margin of 0 is NOT a win,
+    /// because the rival is the start player and `final_result` breaks a level
+    /// total by clockwise closeness to it. A margin type that resolved ties by
+    /// sign, or a `won` flag read off `margin >= 0`, passes every other row here
+    /// and fails that one.
+    ///
+    /// The MOVER seat is `greedy-v1` and the rival a rung, which is also this
+    /// file's statement that the forced mover's own spec governs its post-root
+    /// play: the one remaining decision is the mover's, the driver has no
+    /// fallback arm that could take it instead, and the witnessed provenance
+    /// names greedy at that seat.
+    #[test]
+    fn every_candidate_of_a_near_terminal_root_reports_its_hand_computed_margin() {
+        let rules = Rules::standard();
+        let (root, mover, _) = near_terminal_building_root(&rules, world(41).0, [3, 4, 5, 0], 6, 10);
+        let rival = PlayerId(1 - mover.0);
+        let master = world(42);
+
+        let mut seats = rung_seats();
+        seats[mover.0 as usize] = SeatSpec::Contestant(Contestant::GREEDY_V1_DEFAULT);
+
+        let table = adjudicate_root(
+            &RootSource::Constructed(root.clone()),
+            &seats,
+            &rules,
+            master,
+            2,
+            DrivenOpts::default(),
+        )
+        .expect("a near-terminal root adjudicates");
+
+        assert_eq!(table.mover, mover, "the margins are the ROOT MOVER's");
+        assert_eq!(table.replications, 2);
+        assert_eq!(table.master, master);
+        let moves: Vec<Move> = table.rows.iter().map(|r| r.candidate.clone()).collect();
+        assert_eq!(
+            moves,
+            expected_building_candidates(),
+            "the candidate set is not the engine's own legal list at this root",
+        );
+
+        // The hand-computed table, row by row. `mover_total` and
+        // `best_rival_total` are asserted BESIDE the margin so a row that got
+        // the right difference from two wrong totals cannot pass.
+        let expected: [(i64, u32, u8, bool); 5] =
+            [(-4, 6, 2, false), (-1, 9, 2, false), (0, 10, 2, false), (1, 11, 1, true), (-4, 6, 2, false)];
+        for (row, (margin, total, rank, won)) in table.rows.iter().zip(expected) {
+            assert_eq!(row.playouts.len(), 2, "{:?}: K playouts", row.candidate);
+            for p in &row.playouts {
+                assert_eq!(p.margin, margin, "{:?}: margin", row.candidate);
+                assert_eq!(p.mover_total, total, "{:?}: the mover's own total", row.candidate);
+                assert_eq!(p.best_rival, rival, "{:?}: the best rival's seat", row.candidate);
+                assert_eq!(p.best_rival_total, 10, "{:?}: the rival's total", row.candidate);
+                assert_eq!(p.rank, rank, "{:?}: the mover's rank", row.candidate);
+                assert_eq!(p.won, won, "{:?}: the mover's verdict", row.candidate);
+                // The forced remainder, asserted rather than assumed — it is
+                // what makes every number above policy-independent.
+                assert_eq!(p.decisions, 1, "{:?}: the remainder is one forced move", row.candidate);
+            }
+            // mean/min/max are RECORDED, and on a forced remainder they collapse
+            // — which is a statement about this fixture, not about the fields.
+            assert_eq!(row.min_margin(), Some(margin));
+            assert_eq!(row.max_margin(), Some(margin));
+            assert!((row.mean_margin() - margin as f64).abs() < 1e-12);
+        }
+
+        // The zero-margin row is a LOSS, and the +1 row is the only win.
+        assert_eq!(table.rows.iter().filter(|r| r.wins() > 0).count(), 1);
+        assert!(!table.all_candidates_equal(), "five different margins are not all equal");
+        // ...and two rows DO coincide (Skip and the 0-VP space), so "not all
+        // equal" is not "all distinct" — the helper compares vectors, not sets.
+        assert_eq!(table.rows[0].margins(), table.rows[4].margins());
+
+        // Provenance: the root named once, the seats resolved, the master and K.
+        assert_eq!(table.provenance.root, RootDescriptor::constructed(&root));
+        assert_eq!(table.provenance.semantics_rev, SEMANTICS_REV);
+        assert_eq!(table.provenance.rules_hash, rules.content_hash());
+        assert_eq!((table.provenance.master, table.provenance.replications), (master.0, 2));
+        assert_eq!(
+            table.provenance.seats[mover.0 as usize].echo,
+            Contestant::GREEDY_V1_DEFAULT.echo(),
+        );
+        assert_eq!(table.provenance.seats[mover.0 as usize].requested, "contestant");
+        assert_eq!(
+            table.provenance.seats[rival.0 as usize].requested,
+            "reply:family-weighted",
+        );
+        // The WITNESSED half, kept verbatim from the first playout: the mover's
+        // own agent said what it was, and the bench said what it could see.
+        let witness = table.witness.as_ref().expect("a table with playouts has a witness");
+        assert_eq!(witness.seats[mover.0 as usize].echo, Contestant::GREEDY_V1_DEFAULT.echo());
+        assert_eq!(witness.master, replication_world(master, 0).0, "the witness is replication 0's");
+    }
+
+    /// A GENUINELY DEAD root: five candidates, one margin.
+    ///
+    /// The same fixture with every printed space VP set to 0 — so the mover's
+    /// only choice is which token to spend, and no choice moves the score. This
+    /// is the reading family 1 asks for, and the CONTROL for it is the cell
+    /// above: one field of one fixture separates a table that discriminates from
+    /// a table that does not, so `all_candidates_equal` cannot be passing here
+    /// for a reason unrelated to the position.
+    #[test]
+    fn a_genuinely_dead_root_reads_all_candidates_equal() {
+        let rules = Rules::standard();
+        let (root, mover, _) = near_terminal_building_root(&rules, world(43).0, [0; 4], 6, 10);
+        let table = adjudicate_root(
+            &RootSource::Constructed(root),
+            &rung_seats(),
+            &rules,
+            world(44),
+            3,
+            DrivenOpts::default(),
+        )
+        .expect("the dead root adjudicates");
+
+        assert_eq!(table.candidates(), 5, "anti-vacuity: one candidate is trivially 'equal'");
+        assert!(
+            table.rows.iter().map(|r| r.candidate.clone()).collect::<Vec<_>>()
+                == expected_building_candidates(),
+            "the candidates are five DIFFERENT moves",
+        );
+        assert!(table.all_candidates_equal(), "no candidate moved the score, but the table says so");
+        for row in &table.rows {
+            assert_eq!(row.margins(), vec![-4; 3], "{:?}: 6 banked against 10", row.candidate);
+        }
+        assert_eq!(table.mover, mover);
+    }
+
+    /// A TERMINAL root adjudicates to an EMPTY table — `Ok`, zero candidates,
+    /// and the provenance still stamped.
+    ///
+    /// The counterpart of `drive_to_terminal`'s zero-move contract, one level
+    /// up: there is nothing to force at a finished game, and a refusal would
+    /// make the instrument unable to report the position an adjudication walks
+    /// INTO whenever a candidate ends the game.
+    #[test]
+    fn a_terminal_root_adjudicates_to_an_empty_table() {
+        let rules = Rules::standard();
+        let (terminal, mover) = terminal_building_root(&rules, world(45).0);
+        let master = world(46);
+        let table = adjudicate_root(
+            &RootSource::Constructed(terminal.clone()),
+            &rung_seats(),
+            &rules,
+            master,
+            2,
+            DrivenOpts::default(),
+        )
+        .expect("a terminal root is an Ok, not a refusal");
+
+        assert_eq!(table.candidates(), 0, "a finished game offers no candidate");
+        assert!(table.rows.is_empty());
+        assert_eq!(table.mover, mover);
+        assert!(table.witness.is_none(), "nothing was played, so nothing was witnessed");
+        assert_eq!(table.provenance.root.root_digest, state_digest(&terminal));
+        assert_eq!(table.provenance.replications, 2);
+        // Vacuously true, and the doc says so — a caller reading "dead" off an
+        // empty table is reading a FINISHED GAME, which is a different fact.
+        assert!(table.all_candidates_equal());
+    }
+
+    // -----------------------------------------------------------------------
+    // Determinism, and the per-replication worlds
+    // -----------------------------------------------------------------------
+
+    /// Same root, same seats, same master, same K → the same table, twice.
+    ///
+    /// The anti-vacuity is a DIFFERENT master: on this fixture the play is
+    /// forced, so the margins are master-independent BY CONSTRUCTION — what must
+    /// still move is the recorded worlds, and a digest that did not would be
+    /// witnessing nothing. Both halves are asserted, in that order.
+    #[test]
+    fn the_same_master_adjudicates_the_same_table_twice() {
+        let rules = Rules::standard();
+        let (root, _, _) = near_terminal_building_root(&rules, world(47).0, [3, 4, 5, 0], 6, 10);
+        let source = RootSource::Constructed(root);
+        let master = world(48);
+        let run = |m: WorldSeed| {
+            adjudicate_root(&source, &rung_seats(), &rules, m, 2, DrivenOpts::default())
+                .expect("the adjudication must complete")
+        };
+
+        let first = run(master);
+        let second = run(master);
+        assert_eq!(first.digest(), second.digest(), "the digest moved between identical runs");
+        assert_eq!(first, second, "the tables differ beyond what the digest covers");
+
+        let elsewhere = run(WorldSeed(master.0 ^ 0x5555_5555_5555_5555));
+        assert_eq!(
+            elsewhere.rows.iter().map(|r| r.margins()).collect::<Vec<_>>(),
+            first.rows.iter().map(|r| r.margins()).collect::<Vec<_>>(),
+            "this fixture's remainder is FORCED, so the master cannot move a margin",
+        );
+        assert_ne!(
+            first.digest(),
+            elsewhere.digest(),
+            "the digest does not depend on the master, so it cannot witness determinism",
+        );
+    }
+
+    /// Design §4's second sentence, made executable: the candidates of ONE
+    /// replication share that replication's world and streams, so they differ
+    /// only by the forced move.
+    ///
+    /// Three assertions, and the middle one is the one a plausible-looking
+    /// implementation gets wrong: (i) every row's r-th playout carries the SAME
+    /// world, (ii) that world is `replication_world(master, r)` and not a fresh
+    /// draw per candidate, (iii) the seats' streams descend from it through the
+    /// arena's own `agent_stream_seed(world, seat, Slot(seat))`. A driver that
+    /// re-derived a world per candidate would still produce a deterministic,
+    /// reproducible table — and every candidate would have been measured in a
+    /// different game.
+    #[test]
+    fn every_candidate_of_one_replication_plays_in_that_replications_world() {
+        let rules = Rules::standard();
+        let (root, _, _) = near_terminal_building_root(&rules, world(49).0, [3, 4, 5, 0], 6, 10);
+        let master = world(50);
+        let k = 3u32;
+        let table = adjudicate_root(
+            &RootSource::Constructed(root),
+            &rung_seats(),
+            &rules,
+            master,
+            k,
+            DrivenOpts::default(),
+        )
+        .expect("the adjudication must complete");
+        assert!(table.candidates() >= 2, "one candidate cannot witness a SHARED world");
+
+        for r in 0..k {
+            let expected = replication_world(master, r);
+            for row in &table.rows {
+                let p = &row.playouts[r as usize];
+                assert_eq!(p.replication, r);
+                assert_eq!(
+                    p.world, expected,
+                    "{:?} played replication {r} in a world of its own",
+                    row.candidate,
+                );
+                for (seat, agent_seed) in p.agent_seeds.iter().enumerate() {
+                    assert_eq!(
+                        *agent_seed,
+                        agent_stream_seed(expected, PlayerId(seat as u8), Slot(seat as u8)),
+                        "{:?}: seat {seat} did not play on the replication's arena-keyed stream",
+                        row.candidate,
+                    );
+                }
+            }
+        }
+
+        // The replications are DIFFERENT worlds — without this the K axis is K
+        // copies of one number and the recorded spread means nothing.
+        let worlds: Vec<u64> = (0..k).map(|r| table.rows[0].playouts[r as usize].world.0).collect();
+        let mut unique = worlds.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), worlds.len(), "two replications shared a world: {worlds:?}");
+    }
+
+    /// K > 1 on an ORGANIC root, where the reply seats actually get to choose:
+    /// the spread fields are RECORDED and their arithmetic is checked, and NO
+    /// value of any of them is asserted.
+    ///
+    /// This is the cell that can see a margin move between replications at all
+    /// — the constructed fixtures above are forced by design — so it is where
+    /// "variance recorded, never asserted" has content. What IS asserted is
+    /// internal consistency (`min <= mean <= max`, the mean is the mean, the
+    /// vector is K long) and reproduction at the same master.
+    #[test]
+    fn replication_spread_is_recorded_and_never_asserted() {
+        let rules = Rules::standard();
+        let stats = rung_game(&rules, world(51));
+        let events = stats.record.events.len();
+        // A LATE root with a small candidate set: deterministic in the record
+        // and the window, and cheap — every candidate is played out K times.
+        let from = events.saturating_sub(60);
+        let (k_root, root) = (from..events)
+            .find_map(|k| {
+                let state = state_at(&stats.record, k, &rules).ok()?;
+                let n = crate::game::legal_moves::get_legal_moves(&state, &rules).len();
+                (2..=6).contains(&n).then_some((k, state))
+            })
+            .expect("a late root with 2..=6 candidates exists in the last 60 events");
+        assert!(!is_game_over(&root), "event {k_root}: the chosen root is already terminal");
+
+        let master = world(52);
+        let source = RootSource::Constructed(root);
+        let table =
+            adjudicate_root(&source, &rung_seats(), &rules, master, 4, DrivenOpts::default())
+                .expect("the adjudication must complete");
+
+        assert!((2..=6).contains(&table.candidates()));
+        for row in &table.rows {
+            let margins = row.margins();
+            assert_eq!(margins.len(), 4, "{:?}: K margins", row.candidate);
+            let (min, max) = (row.min_margin().unwrap(), row.max_margin().unwrap());
+            let mean = row.mean_margin();
+            assert_eq!(min, *margins.iter().min().unwrap());
+            assert_eq!(max, *margins.iter().max().unwrap());
+            assert!(min as f64 <= mean && mean <= max as f64, "{:?}: mean outside [min,max]", row.candidate);
+            let sum: i64 = margins.iter().sum();
+            assert!((mean - sum as f64 / 4.0).abs() < 1e-9, "{:?}: the mean is not the mean", row.candidate);
+            assert!(row.wins() <= 4);
+            // Every playout ran to a real terminal state.
+            for p in &row.playouts {
+                assert!(!p.final_digest.is_empty());
+                assert!(p.turns >= table.root_turn, "{:?}: a run went backwards", row.candidate);
+            }
+        }
+        let again = adjudicate_root(&source, &rung_seats(), &rules, master, 4, DrivenOpts::default())
+            .expect("the adjudication must complete");
+        assert_eq!(table.digest(), again.digest(), "an organic root did not reproduce");
+    }
+
+    // -----------------------------------------------------------------------
+    // The refusals
+    // -----------------------------------------------------------------------
+
+    /// The adjudicator's own guards fire BEFORE any candidate is forced — and
+    /// the terminal case is why they have to: a terminal root produces no
+    /// playout at all, so a guard left to the first playout would never run and
+    /// an ill-formed call would come back `Ok` with an empty table.
+    #[test]
+    fn the_adjudicators_guards_fire_before_a_candidate_is_forced() {
+        let rules = Rules::standard();
+        let (root, _, _) = near_terminal_building_root(&rules, world(53).0, [0; 4], 6, 10);
+        let (terminal, _) = terminal_building_root(&rules, world(53).0);
+        let master = world(54);
+
+        // K = 0 is not a run.
+        let err = adjudicate_root(
+            &RootSource::Constructed(root.clone()),
+            &rung_seats(),
+            &rules,
+            master,
+            0,
+            DrivenOpts::default(),
+        )
+        .expect_err("zero replications must refuse");
+        assert!(matches!(err, AdjudicationError::NoReplications), "got {err:?}");
+
+        // A seat list that does not describe the root — on the TERMINAL root, so
+        // the guard cannot be riding on a playout.
+        let err = adjudicate_root(
+            &RootSource::Constructed(terminal),
+            &[SeatSpec::Reply(ReplyPolicy::FamilyWeighted)],
+            &rules,
+            master,
+            1,
+            DrivenOpts::default(),
+        )
+        .expect_err("a one-seat list for a two-seat root must refuse");
+        match err {
+            AdjudicationError::Unadjudicable(DrivenError::SeatMismatch { seats, players }) => {
+                assert_eq!((seats, players), (1, 2));
+            }
+            other => panic!("expected SeatMismatch, got {other:?}"),
+        }
+
+        // A corrupt root is refused as a ROOT, never as a candidate's fault.
+        let mut corrupt = root;
+        corrupt.players[0].victory_points = 1;
+        corrupt.players[0].assistants.in_hand += 1;
+        let err = adjudicate_root(
+            &RootSource::Constructed(corrupt),
+            &rung_seats(),
+            &rules,
+            master,
+            1,
+            DrivenOpts::default(),
+        )
+        .expect_err("a corrupt root must refuse");
+        match err {
+            AdjudicationError::Unadjudicable(DrivenError::CorruptRoot(ref m)) => {
+                assert!(m.contains("assistants total"), "the refusal must name the breakage: {m}");
+            }
+            ref other => panic!("expected CorruptRoot, got {other:?}"),
+        }
+        assert!(err.to_string().contains("assistants total"), "{err}");
     }
 }
