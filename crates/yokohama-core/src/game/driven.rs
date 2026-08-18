@@ -596,6 +596,20 @@ impl RootedProvenance {
             .enumerate()
             .map(|(index, spec)| {
                 let seen = &witnessed[index];
+                // PLUMBING PIN: the stream this descriptor records is the one
+                // the seat's own agent says it holds. The two come from
+                // different places on purpose — the driver derived
+                // `agent_seeds[index]` and the AGENT reports what it was built
+                // on — so a driver that ever built a seat on one stream and
+                // recorded another would produce provenance that reproduces
+                // nothing, silently. Once per seat per run, and debug-only
+                // because a runner should not abort on it while every test run
+                // is a debug run.
+                debug_assert_eq!(
+                    seen.agent_seed,
+                    Some(agent_seeds[index]),
+                    "seat {index} was built on a different stream than the run recorded",
+                );
                 SeatDescriptor {
                     seat: index as u8,
                     requested: spec.requested_label(),
@@ -3194,6 +3208,17 @@ mod tests {
                 Contestant::from_parts(&d.controller, &d.params),
                 Ok(spec.contestant()),
                 "seat {index}'s controller+params do not reconstruct what played",
+            );
+            // And the AGENT's own descriptor is the CONTESTANT's: these come from
+            // two different places (the built agent reported the first, the seat
+            // spec claims the second), so a contestant whose `build` ever routed
+            // to a differently-versioned or differently-knobbed agent would show
+            // up here rather than in a report nobody cross-checks.
+            let (name, version, params) = spec.contestant().descriptor();
+            assert_eq!(
+                (d.controller.as_str(), d.version, &d.params),
+                (name.as_str(), version, &params),
+                "seat {index}'s agent describes itself differently than its contestant does",
             );
         }
     }
