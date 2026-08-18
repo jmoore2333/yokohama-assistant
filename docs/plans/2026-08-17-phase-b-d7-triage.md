@@ -161,16 +161,24 @@ addition, not owner-flagged; the harness's root table prints the full set regard
 
 ---
 
-## 3. The mechanical separator (F1/F5 roots) — protocol, runs pending the harness
+## 3. The mechanical separator (F1/F5 roots) — protocol and readings
 
 Reproduce each frozen root under the shipped contestant (b=4, the reproduction check — the
 decision seeds are recorded in the evidence: g1 e113 `0x15e80120dfcbf8c3`, g3 e63
 `0x08d402cb00f70b0e`, g3 e93 `0x15eb620d98dc105b`), then at b=8 and b=16, same worlds; report
 per beam the top-band structure (top-set size, the ≤1-point band width, distinct-value count,
 winner identity) and the full counter set. Disappears ⇒ horizon; persists ⇒ representation
-(the scribe's recorded prediction). e93 runs as the positive control at every beam. Readings
-land in this document's §3 when the driven-fixture harness merges (its design/plan are this
-session's companion docs).
+(the scribe's recorded prediction). e93 runs as the positive control at every beam. Instrument:
+`examples/driven -- table` at the harness merge candidate `f3468e8` (the runner's same-world
+premise is recorded per beam — identical sampler seed and world digest, pinned).
+
+**The family-1 adjudication masters, RECORDED HERE BEFORE ANY RUN (the next free A3E1 serials
+by date order, never redrawn): g1:228 → `0xA3E1202608180001` · g3:178 → `0xA3E1202608180002`
+· g1:239 → `0xA3E1202608180003`.** Seats: the shipped `lookahead-v1` on both (the production
+contestant), K=8 replications, `examples/driven -- adjudicate` — a robustness read under the
+named policy, never exact ground truth, per the runner's own printed label.
+
+Readings land in the subsections below when the runs complete.
 
 ---
 
