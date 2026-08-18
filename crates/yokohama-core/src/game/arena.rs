@@ -661,7 +661,7 @@ pub fn run_arena_game_capped(
     let agents: Vec<Box<dyn ArenaAgent>> =
         (0..players).map(|i| make_agent(PlayerId(i), players)).collect();
 
-    let mut bench = AgentBench { agents };
+    let mut bench = AgentBench::new(agents);
     drive(seed, rules, pending, &mut bench, invariants, max_turns)
 }
 
@@ -1014,8 +1014,12 @@ pub(crate) fn play_from_state(
 ///
 /// The three `Driver` arms are the reason this function exists rather than a
 /// `From` impl: `ArenaError` folds observe/apply/invariant faults into one
-/// string, and the exact strings are what an existing caller (and the module's
-/// own tests) match on.
+/// string, and those strings are USER-VISIBLE driver output (the runner and
+/// `examples/arena` print them). No test matches on them — verified at the T1
+/// fix wave, so nothing here is load-bearing for the suite — and they are
+/// rebuilt verbatim anyway, because a message change inside a refactor billed
+/// as behavior-preserving is a change, and an operator reading a failure should
+/// not have to work out whether the driver moved or only its prose did.
 fn arena_error(seed: WorldSeed, error: PlayError) -> ArenaError {
     match error {
         PlayError::CorruptRoot(reason) => {

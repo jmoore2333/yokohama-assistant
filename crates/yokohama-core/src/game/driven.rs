@@ -30,7 +30,14 @@
 //! what verifies the whole discipline rather than a comment claiming it. The
 //! master is recorded on the outcome; per standing policy a caller quoting
 //! figures draws it from OS entropy and records it, and a fixture cell uses a
-//! committed diagnostic one.
+//! committed diagnostic one. **The reproduction pin rests on one further
+//! property of the shipped agents, stated because it is a property and not a
+//! guarantee**: a Keep rule never touches the PLAY stream — every evaluator
+//! contestant decides its deal from the deal alone, and `PolicyAgent` draws
+//! from a fresh `setup_stream_seed(seat, deal)` rng — so the arena's setup half
+//! does not advance the stream its play half then samples from, which is what
+//! lets a rooted run starting at stream position 0 reproduce it. An agent that
+//! broke this would fail the pin rather than drift past it.
 //!
 //! **NO `GameRecord` IS EMITTED, ever** (design §3). A rooted run is not a
 //! from-setup game: it has no `new_game` seed, no setup choices of its own, and
@@ -64,8 +71,12 @@ use crate::types::{GameState, Move, PlayerId};
 /// produce. It is not a performance budget and nothing tunes against it: it
 /// exists so that a HAND-BUILT fixture with an absorbing no-op loop — the T3
 /// null-placement pathology, which loops WITHOUT advancing `turn_number` and so
-/// slips under the turn cap — becomes a typed refusal in seconds instead of a
-/// hang.
+/// slips under the turn cap — becomes a typed refusal instead of a hang.
+///
+/// BOUNDED is the property, not FAST: at this default an uncapped
+/// `lookahead-v1` seat can spend minutes reaching the bound. A caller who wants
+/// a quick refusal sets a smaller one (which is what the guard's own test
+/// does); what the default promises is that the run ends.
 pub const DEFAULT_MAX_DECISIONS: u64 = 100_000;
 
 // ---------------------------------------------------------------------------
@@ -86,6 +97,20 @@ pub const DEFAULT_MAX_DECISIONS: u64 = 100_000;
 /// (Phase C); shipping a placeholder would invite a hand-picked adversary chosen
 /// after seeing the roots it is applied to, which is the shape of a fixture that
 /// proves whatever its author wanted.
+///
+/// **The two `*AtFinal` arms are PROVISIONAL, and the word is load-bearing** —
+/// the same obligation `yokohama-cli`'s `bot::PROVISIONAL_DEFAULT_BOT` carries,
+/// written here because this is core's own copy of it. Today they bind to the
+/// SHIPPED defaults ([`Contestant::GREEDY_V1_DEFAULT`] and
+/// [`Contestant::LOOKAHEAD_V1_DEFAULT`]); at D1's identity freeze they re-point
+/// at the frozen champion constructed from the EXPLICIT knobs that
+/// pre-registration records — never from a `*_DEFAULT` constant, which is D1's
+/// own rule — in the same commit that re-points the CLI's const, so the seat you
+/// play against and the seat a rooted question is measured against cannot drift
+/// apart. Until then the shared defaults are themselves frozen identity (D1:
+/// they may not move without an owner ruling), so the binding cannot drift
+/// silently either. What a report quotes is the RESOLVED echo and never the menu
+/// name: the name is a symbol whose meaning moves at the freeze.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReplyPolicy {
     /// The shipped rollout rung — `RolloutPolicy::FAMILY_WEIGHTED_DEFAULT`.
@@ -132,6 +157,11 @@ pub enum SeatSpec {
 
 impl SeatSpec {
     /// The contestant this seat plays.
+    ///
+    /// THE single materialization path — [`drive_to_terminal`] builds every seat
+    /// through this one call — which is what makes the sugar-equivalence of
+    /// `Reply(r)` and `Contestant(r.contestant())` hold BY CONSTRUCTION rather
+    /// than by a test agreeing with a second construction site.
     pub fn contestant(self) -> Contestant {
         match self {
             Self::Contestant(c) => c,
@@ -271,7 +301,13 @@ pub struct DrivenOutcome {
     /// One entry per seat, in seat order.
     pub seats: Vec<SeatOutcome>,
     /// Spec §0.3(b)'s count, summed over the seats that HAVE an explanation
-    /// path — `None` when no seat does (every seat a rung), never `Some(0)`.
+    /// path.
+    ///
+    /// `None` means NO SEAT EXPLAINS (every seat a rung) — the counter-absence
+    /// distinction, not a zero. **`Some(0)` is a real and reachable reading**: a
+    /// seat that DOES explain and was asked for no decisions, which is exactly
+    /// what an already-terminal root produces. The two are different statements
+    /// and a reader must not collapse them.
     pub explanations: Option<u64>,
 }
 
@@ -299,6 +335,13 @@ impl DrivenOutcome {
     /// per-seat counters close over the search work, and the master is printed
     /// so a quoted digest names the run that produced it. It is NOT a
     /// serialization format — nothing parses it back.
+    ///
+    /// **It names no ROOT identity**: two different roots that happen to reach
+    /// the same terminal state under the same master digest alike, so a quoted
+    /// digest identifies the run and not the question it answered. T3's
+    /// `RootedProvenance` (design §3 — root descriptor, `semantics_rev`,
+    /// `rules_hash`, seat descriptors) is the designed completion, not an
+    /// oversight here.
     pub fn digest(&self) -> String {
         let seats: Vec<String> = self
             .seats
@@ -422,6 +465,12 @@ impl std::error::Error for DrivenError {}
 fn classify(error: PlayError) -> DrivenError {
     match error {
         PlayError::CorruptRoot(reason) => DrivenError::CorruptRoot(reason),
+        // Through an invariant-clean root only `ViewError::ViewerDealUnrecorded`
+        // is reachable here (`SeatOutOfRange` needs a `current_player` no clean
+        // state carries), and only for the seat ON THE MOVE — a hidden deal on
+        // a NON-mover seat refuses mid-run at that seat's first decision instead
+        // of up front, which is why design §5's all-seats eligibility precheck
+        // is T3's obligation rather than something this arm quietly covers.
         PlayError::Observe { seat, detail } => DrivenError::Unobservable { seat, detail },
         PlayError::Agent { seat, detail } => DrivenError::AgentRefused { seat, detail },
         PlayError::IllegalPick { seat, mv } => DrivenError::IllegalPick { seat, mv },
@@ -449,6 +498,14 @@ fn classify(error: PlayError) -> DrivenError {
 /// their own knobs, through their own honest chains. Nothing about the root is
 /// privileged: an agent sees `observe(state, its seat)` and nothing else, and a
 /// sampler refusal is a typed hard error rather than a fallback.
+///
+/// **An ALREADY-TERMINAL root is an `Ok`, not a refusal** — `decisions == 0`,
+/// `applied` empty, `result` the root's own `final_result`, and an explaining
+/// seat reading `Some(0)`. That is deliberate and load-bearing: T4's
+/// adjudicator forces a candidate move and drives the REMAINDER, and a
+/// candidate that ends the game leaves a remainder of exactly nothing. Refusing
+/// it would make "this move wins immediately" the one outcome the instrument
+/// could not report.
 pub fn drive_to_terminal(
     root: &GameState,
     seats: &[SeatSpec],
@@ -468,8 +525,15 @@ pub fn drive_to_terminal(
     // it should have refused.
     let seat_count = u8::try_from(players)
         .map_err(|_| DrivenError::UnsupportedRoot(format!("root carries {players} seats")))?;
-    require_supported_player_count(seat_count)
-        .map_err(|e| DrivenError::UnsupportedRoot(e.to_string()))?;
+    // The GUARD is the arena's; the RENDERING is this module's. Forwarding
+    // `ArenaError`'s own `Display` would nest "arena driver:" inside "unsupported
+    // root:" — an error naming a driver this run is not — so the count is
+    // formatted here and the arena answer is used only as the verdict.
+    require_supported_player_count(seat_count).map_err(|_| {
+        DrivenError::UnsupportedRoot(format!(
+            "root carries {seat_count} seats (the engine plays 2-4)"
+        ))
+    })?;
     if opts.max_decisions == 0 {
         return Err(DrivenError::UnsupportedRoot(
             "max_decisions is 0: a run that may apply no decision is not a run".to_string(),
@@ -518,9 +582,11 @@ pub fn drive_to_terminal(
             counters: handles[index].as_ref().map_or(SeatCounters::NONE, SeatCounters::from_handle),
         })
         .collect();
-    // `None` when NO seat explains, never `Some(0)` — `ExplainHandle`'s rule,
-    // carried up one level: a rung field has no explanation count, and a zero
-    // would read as "it had one and never used it".
+    // `None` when NO seat explains — `ExplainHandle`'s counter-absence rule,
+    // carried up one level: a rung has no explanation count at all, and a zero
+    // would read as "it had one and never used it". `Some(0)` says exactly
+    // that latter thing and is reachable on purpose (a terminal root), so the
+    // fold seeds from `None` and only an explaining seat can start the sum.
     let explanations = seat_outcomes
         .iter()
         .filter_map(|s| s.counters.explained)
@@ -548,6 +614,7 @@ mod tests {
     use crate::game::arena::{
         run_arena_game, ArenaGameStats, ControllerProvenance, DecisionReport,
     };
+    use crate::game::end_game::is_game_over;
     use crate::game::invariants::check_invariants;
     use crate::game::record::{state_at, RecordedEvent};
     use crate::game::seeds::SeedSchedule;
@@ -1036,6 +1103,13 @@ mod tests {
     /// A corrupt root is refused BEFORE the first decision, so a broken fixture
     /// is never misattributed to a move — every driver in the repo guards its
     /// incoming state, and a rooted one has more reason to than most.
+    ///
+    /// The SECOND arm is the one that pins the guard's shape rather than its
+    /// existence: `invariants: false` is about the per-move cost of a bulk run,
+    /// and the ROOT check is unconditional — a corrupt starting state is not a
+    /// cost, it is a wrong answer waiting. Nothing else in the repo exercises
+    /// that flag's `false` setting on this driver, so a guard quietly moved
+    /// inside the `if invariants` block would otherwise ship silently.
     #[test]
     fn a_corrupt_root_is_refused_before_the_first_decision() {
         let rules = Rules::standard();
@@ -1043,23 +1117,173 @@ mod tests {
         root.players[0].assistants.in_hand += 1;
         assert!(check_invariants(&root, &rules).is_err(), "the fixture must actually be corrupt");
 
-        let err = drive_to_terminal(
-            &root,
-            &[
-                SeatSpec::Reply(ReplyPolicy::FamilyWeighted),
-                SeatSpec::Reply(ReplyPolicy::FamilyWeighted),
-            ],
-            &rules,
-            world(15),
-            DrivenOpts::default(),
-        )
-        .expect_err("a corrupt root must refuse");
+        let seats = [
+            SeatSpec::Reply(ReplyPolicy::FamilyWeighted),
+            SeatSpec::Reply(ReplyPolicy::FamilyWeighted),
+        ];
+        let err = drive_to_terminal(&root, &seats, &rules, world(15), DrivenOpts::default())
+            .expect_err("a corrupt root must refuse");
         match err {
             DrivenError::CorruptRoot(reason) => {
                 assert!(reason.contains("assistants total"), "the reason is lost: {reason}");
             }
             other => panic!("expected CorruptRoot, got {other:?}"),
         }
+
+        let unchecked = DrivenOpts { invariants: false, ..DrivenOpts::default() };
+        let err = drive_to_terminal(&root, &seats, &rules, world(15), unchecked)
+            .expect_err("the ROOT guard does not answer to the per-move flag");
+        match err {
+            DrivenError::CorruptRoot(reason) => {
+                assert!(reason.contains("assistants total"), "the reason is lost: {reason}");
+            }
+            other => panic!("expected CorruptRoot with invariants off, got {other:?}"),
+        }
+    }
+
+    /// BOTH player-count guards, on the two shapes that reach them — and they
+    /// are two guards, not one property with two inputs.
+    ///
+    /// A rooted driver is handed states nobody generated, which is the whole
+    /// point of the module, so "the engine plays 2-4" has to be enforced on the
+    /// ROOT rather than inherited from a `new_game` call that never happened.
+    /// The 5-seat root is refused by `require_supported_player_count`; the
+    /// 258-seat root is refused BEFORE it, by the `u8::try_from` narrowing,
+    /// because `258 as u8` is 2 and the supported-count check would then wave
+    /// through a root it exists to refuse.
+    ///
+    /// Both fixtures are seat CLONES: the guards run before any invariant check
+    /// or agent construction, so a state needs only to carry the seat count.
+    #[test]
+    fn a_root_with_an_unsupported_seat_count_is_refused_before_it_is_played() {
+        let rules = Rules::standard();
+        let base = root_2p(&rules, world(18).0);
+        let filler = base.players[0].clone();
+
+        let mut five = base.clone();
+        five.players.resize(5, filler.clone());
+        let five_seats = [SeatSpec::Reply(ReplyPolicy::FamilyWeighted); 5];
+        let err = drive_to_terminal(&five, &five_seats, &rules, world(19), DrivenOpts::default())
+            .expect_err("a 5-seat root must refuse");
+        let rendered = err.to_string();
+        assert!(
+            matches!(err, DrivenError::UnsupportedRoot(_)),
+            "expected UnsupportedRoot, got {err:?}",
+        );
+        assert!(rendered.contains("5 seats"), "the refusal must name the count: {rendered}");
+        assert!(
+            !rendered.contains("arena driver"),
+            "a rooted refusal must not nest the arena driver's own prefix: {rendered}",
+        );
+
+        // The narrowing arm. 258 is chosen because it WRAPS to 2 — a supported
+        // count — so a cast here would produce an outcome for a root the engine
+        // cannot play, rather than an error.
+        let mut many = base;
+        many.players.resize(258, filler);
+        let many_seats = vec![SeatSpec::Reply(ReplyPolicy::FamilyWeighted); 258];
+        let err = drive_to_terminal(&many, &many_seats, &rules, world(19), DrivenOpts::default())
+            .expect_err("a 258-seat root must refuse rather than narrow to 2");
+        match err {
+            DrivenError::UnsupportedRoot(m) => assert!(
+                m.contains("258 seats"),
+                "the refusal must name the count it SAW, not the one it wrapped to: {m}",
+            ),
+            other => panic!("expected UnsupportedRoot, got {other:?}"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // The zero-decision contract, and the explanation fold
+    // -----------------------------------------------------------------------
+
+    /// An ALREADY-TERMINAL root is an `Ok` with nothing in it, never a refusal.
+    ///
+    /// T4's adjudicator forces a candidate and drives the REMAINDER, and a
+    /// candidate that ends the game leaves a remainder of exactly nothing —
+    /// refusing here would make "this move wins immediately" the one answer the
+    /// instrument could not report.
+    ///
+    /// Seat 0 is an EVALUATOR deliberately: this is also the executable
+    /// statement that `explanations` reads `Some(0)` — a seat that HAS an
+    /// explanation path and was asked for no decisions — which is the reading
+    /// the field's own doc used to deny.
+    #[test]
+    fn an_already_terminal_root_drives_to_an_empty_ok_run() {
+        let rules = Rules::standard();
+        let root = root_2p(&rules, world(20).0);
+        let rungs = [
+            SeatSpec::Reply(ReplyPolicy::FamilyWeighted),
+            SeatSpec::Reply(ReplyPolicy::FamilyWeighted),
+        ];
+        let played = drive_to_terminal(&root, &rungs, &rules, world(21), DrivenOpts::default())
+            .expect("the run that MAKES the fixture must complete");
+        let terminal = played.final_state.clone();
+        assert!(is_game_over(&terminal), "anti-vacuity: the root under test is not terminal");
+
+        let seats = [
+            SeatSpec::Contestant(Contestant::GREEDY_V1_DEFAULT),
+            SeatSpec::Reply(ReplyPolicy::FamilyWeighted),
+        ];
+        let outcome = drive_to_terminal(&terminal, &seats, &rules, world(22), DrivenOpts::default())
+            .expect("a terminal root is an Ok, not a refusal");
+
+        assert_eq!(outcome.decisions, 0, "a terminal root has nothing to decide");
+        assert!(outcome.applied.is_empty());
+        assert_eq!(outcome.moves_by_seat(), vec![0, 0]);
+        assert_eq!(
+            outcome.result,
+            final_result(&terminal, &rules),
+            "the run reported a result other than the root's own",
+        );
+        assert_eq!(outcome.result, played.result, "the same terminal state scored differently");
+        assert_eq!(
+            outcome.explanations,
+            Some(0),
+            "an explaining seat with zero decisions reads Some(0) — None would say NO seat explains",
+        );
+        assert_eq!(outcome.seats[0].counters.explained, Some(0));
+        assert_eq!(outcome.seats[1].counters, SeatCounters::NONE, "a rung explains nothing");
+        assert!(outcome.explanation_identity_holds());
+    }
+
+    /// TWO explaining seats: `explanations` is their SUM.
+    ///
+    /// The accumulation is a fold seeded from `None`, and a fold that dropped
+    /// the accumulator would still produce a plausible `Some(n)` — one seat's
+    /// count, on a run where both seats searched. Nothing else in the module
+    /// has two explaining seats, so this is the only cell that can tell the two
+    /// apart. Driven from a LATE root, and `greedy-v1` on both sides, so the
+    /// search is paid for a tail rather than a whole game.
+    #[test]
+    fn two_explaining_seats_sum_into_the_explanation_count() {
+        let rules = Rules::standard();
+        let seed = world(23);
+        let rung = Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT);
+        let stats = arena_game(&rules, seed, rung, rung);
+        let events = stats.record.events.len();
+        let root = state_at(&stats.record, events.saturating_sub(30), &rules)
+            .expect("a late root replays");
+        assert!(!is_game_over(&root), "anti-vacuity: the chosen root is already terminal");
+
+        let greedy = SeatSpec::Contestant(Contestant::GREEDY_V1_DEFAULT);
+        let outcome =
+            drive_to_terminal(&root, &[greedy, greedy], &rules, seed, DrivenOpts::default())
+                .expect("the driven run must complete");
+
+        let e0 = outcome.seats[0].counters.explained.expect("seat 0 explains");
+        let e1 = outcome.seats[1].counters.explained.expect("seat 1 explains");
+        assert!(
+            e0 > 0 && e1 > 0,
+            "anti-vacuity: a sum over one moving seat is not a sum (e0={e0}, e1={e1})",
+        );
+        assert_eq!(outcome.explanations, Some(e0 + e1), "the fold dropped a seat's count");
+        assert_eq!(
+            outcome.explanations,
+            Some(outcome.decisions),
+            "with every seat explaining, the sum IS the decision count",
+        );
+        assert!(outcome.explanation_identity_holds());
     }
 
     /// The seat list must describe the root's seats — a shorter list would
