@@ -391,7 +391,8 @@ command. Steps:
    — legitimate and stated; then 2-positive, 2-control, 4), one seed master per builder
    family (3-positive, 3-control, 4-proximity corner), ONE admission/read master per family
    (sound because the two instruments mix under DIFFERENT salts —
-   `SALT_DRIVEN_REPLICATION` …0006 vs `SALT_DRIVEN_FAMILY_READ` …0007 — said out loud,
+   `SALT_DRIVEN_REPLICATION` …0006 vs `SALT_DRIVEN_FAMILY_READ` …0008 (0007 = T3's
+   `SALT_DRIVEN_RACE_PROBE`) — said out loud,
    plan review NOTE-5), plus the opening-probe master. 9999-scratch for any command-shape
    smoke.
 1. **Pilots** (`--block pilot`): supply rates (live-root rate for family 1;
