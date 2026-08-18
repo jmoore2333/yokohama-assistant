@@ -91,9 +91,11 @@ variance recorded not asserted.
 
 `examples/driven.rs`: `table <fixture|path:event> --contestant <spec> --decision-seed <u64>`,
 `run <fixture> [--seats a,b] [--master <u64>] [--replications K]`, `adjudicate <fixture> ...`,
-`list`. Thin argv glue over public functions (USAGE names every knob; unknown anything is an
+`list`. **(Post-merge correction, review N-B: this sketch's brackets were wrong and the SHIPPED
+grammar is the authority — `--master` is REQUIRED on run/adjudicate, `--replications` is
+adjudicate-only; the design doc and CLAUDE.md document the true grammar.)** Thin argv glue over public functions (USAGE names every knob; unknown anything is an
 error, eval_probe's discipline; `adjudicate` output prints the robustness-read label). Registry
-carries the five session roots: g1:113 (36-tie), g3:63 (26-tie), g3:93 (+116 control), g1:228
+carries the six session roots: g1:113 (36-tie), g3:63 (26-tie), g3:93 (+116 control), g1:228
 (dead-recall tie), g3:178 and g1:239 (the two final-turn roots). **Root-index rule, stated and
 VERIFIED (review S-4): roots are taken at the turn's FIRST BRANCHING decision — the preceding
 `EndAdditionalPhase` events were checked forced via `why` (g1 e238: 1 root candidate, 'No

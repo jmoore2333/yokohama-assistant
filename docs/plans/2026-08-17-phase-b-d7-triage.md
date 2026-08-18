@@ -119,8 +119,8 @@ costless in-model (verified in the e3/e10 tables); fees to opponents likewise (g
 placement already pays "fee 1 yen (1 to Red)" with no feature movement). Canon-gated alongside
 C-C; the V2-play corpus's money column (this session's counters slice) is the fresh L1 read.
 
-**F5 — recovery's hand terms → PENDING the family-1 adjudicator; the "defect" half may
-dissolve.** Verified: at g3 e143 (a strong line available) Return-President reads **−146**
+**F5 — recovery's hand terms → RESOLVED by the family-1 adjudicator (§3): honest indifference,
+no defect — the "defect" half dissolved exactly as the pending disposition anticipated.** Verified: at g3 e143 (a strong line available) Return-President reads **−146**
 beside EA −136 / Bank −150, far under the chosen church walk — do-nothing is NOT near the top
 when a real line exists. At g1 e228 the recall TIES 4-way at 0 (keyed draw) in a position
 verified dead-ish (0 yen, 0 imports, one UNAFFORDABLE order — copper 3 + silk 1 + seafood 2
@@ -178,7 +178,40 @@ by date order, never redrawn): g1:228 → `0xA3E1202608180001` · g3:178 → `0x
 contestant), K=8 replications, `examples/driven -- adjudicate` — a robustness read under the
 named policy, never exact ground truth, per the runner's own printed label.
 
-Readings land in the subsections below when the runs complete.
+**SEPARATOR READINGS (2026-08-18, `examples/driven -- table` at the merged tree — branch tip
+`f3468e8`, merge `f39e6c2`; every b=4 row REPRODUCED the recorded move; the same-world premise
+held per root, identical sampler seed + world digest across beams):**
+
+| Root | b=4 | b=8 | b=16 | Verdict |
+|---|---|---|---|---|
+| g1:113 | 36-tie · band 100 · 6 distinct · top −228 | 25-tie · band 41 · 8 distinct · top −224 | 56-tie · band 84 · 7 distinct · top −224 | **PERSISTS ⇒ REPRESENTATION** (the scribe's recorded prediction) — deeper search reshuffles the band and never separates it |
+| g3:63 | 26-tie · band 26 · 9 distinct · top +152 | **UNIQUE argmax** +160, "Place 2 in Church (A02)" | unique, same winner, +160 | **DISAPPEARS ⇒ HORIZON** — b=8 prices a church-line placement b=4 could not |
+| g3:93 control | unique +351 | unique, same winner | unique, same winner | control HELD at every beam |
+
+**The split verdict refines F1 into one defect class with TWO mechanisms, each now holding a
+frozen exemplar root:** the e113 class (no beam separates — the features cannot express where
+assistants went) is REPRESENTATION, and its fix path stays §1's disposition verbatim — the D11
+debt-list admission target through its evidence ladder. The e63 class (a separating line exists
+but b=4 cannot price it) is HORIZON — exemplar material for the depth/D3 lane the F2 routing
+already opened, and a caution for layer-2 fixture design: a tie-mass root must be
+separator-classified before it is used to argue for either fix.
+
+**FAMILY-1 ADJUDICATIONS (same day, `adjudicate` at the pre-registered masters above, K=8,
+the shipped `lookahead-v1` on both seats — a robustness read under the named policy, per the
+runner's printed label):**
+
+- g1:228 — **148 candidates** (the adjudicator enumerates the FULL legal list; the search's
+  why-table sampled the retreat family at m=8, hence its 14), mean margins **[−81.38, −77.62]**,
+  15 distinct means, **0 candidates win any of 8 replications**.
+- g3:178 — 139 candidates, **[−37.12, −33.62]**, 11 distinct means, **0 wins anywhere**.
+- g1:239 — 55 candidates, **[−81.00, −80.00]** (two distinct means), **0 wins**.
+
+**F5's disposition RESOLVES: all three roots are GENUINELY DEAD under the production policy** —
+no choice reaches a win and the entire candidate field moves ≤4 VP of final margin. The
+do-nothing/recall ties were honest indifference in lost positions, not a defect; the owner's
+family-1 impression ("likely genuinely dead positions") is CONFIRMED by measurement. The
+recovery-hand-term calibration note (`assistants_in_hand_core` at weight 30 over a
+near-constant feature) survives as a W6/V3 observation, now without a defect exhibit.
 
 ---
 

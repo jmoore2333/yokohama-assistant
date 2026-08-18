@@ -184,7 +184,7 @@ binary — crate code has no linkage path to it), so the harness hosts its own t
 and names the source it mirrors in-source. **Root eligibility precheck (review N-3): a root
 whose seats carry hidden deals (`starting_order_hidden` — live-tracked records) is REFUSED up
 front by name, not left to surface as a mid-run `observe` failure at that seat's first
-decision**; the five session roots are sim records, so this is forward-looking hygiene.
+decision**; the six session roots are sim records, so this is forward-looking hygiene.
 Deliberately absent: CLI/argv coupling
 in-crate — **scoped at T5 (review N-3): this clause means no coupling to `yokohama-cli`; the
 harness's OWN runner grammar lives in-crate at `game::driven_runner` precisely so its parse and
@@ -200,7 +200,10 @@ near-terminal fixture with hand-computable margins; tie-structure fields on a co
 with known ties; the reply-policy SUGAR-EQUIVALENCE pin — `Reply(FamilyWeighted)` byte-identical
 to `Contestant::Policy(FAMILY_WEIGHTED_DEFAULT)` through the driver (review N-6: W5's
 grandfathered splitmix chain is the CLI's pinned property, not this module's; the harness rung
-chain is the arena's `PolicyAgent` chain by declared discipline); the `root_table` mirror-vs-
+chain is the arena's `PolicyAgent` chain by declared discipline) **(scoped post-merge, review
+N-C: what shipped is the mapping-level pin plus the structural argument — `SeatSpec::contestant()`
+is the SINGLE materialization site, so a run-based cell would compare a value to itself; the
+clause is satisfied structurally, not by a second driver run)**; the `root_table` mirror-vs-
 build drift pin; provenance round-trip; the non-termination guard's typed refusal; the
 sampler-failure typed error; the terminal-root zero-move outcome. **Wall discipline (review
 N-8): loop-equality tests prefer rung/greedy seats** (a debug lookahead game is ~3s; the W5
