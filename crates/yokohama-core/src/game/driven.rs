@@ -94,12 +94,6 @@
 //! not stubbed here — a stub is a surface a reader has to check the emptiness
 //! of.
 
-// T1 RED (Phase C): the layer-2 helpers below are DECLARED with placeholder
-// bodies so the failing pins can name them, so their inputs, imports and some
-// of the helpers themselves are unused until the GREEN commit implements them.
-// This attribute is removed by that commit.
-#![allow(dead_code, unused_imports)]
-
 use std::cmp::Reverse;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -390,18 +384,45 @@ impl RootPredicate {
     /// reject the overwhelming majority of positions before any enumeration or
     /// apply-probe runs.
     pub fn holds(self, state: &GameState, rules: &Rules) -> bool {
-        // T1 RED: the layer-2 arms are not implemented yet. The two shipped
-        // arms keep their behaviour so the existing suite stays green.
-        let _ = rules;
         match self {
             Self::FinalRoundAlreadyTriggered => {
                 state.end_game_triggered && state.final_round && !is_game_over(state)
             }
-            Self::TriggerRoundNotFinal
-            | Self::EndFirableAheadInTruth
-            | Self::EndFirableBehindInTruth
-            | Self::ExclusiveRaceOneStep
-            | Self::AchievementClaimAvailable => false,
+            Self::TriggerRoundNotFinal => {
+                state.end_game_triggered && !state.final_round && !is_game_over(state)
+            }
+            Self::EndFirableAheadInTruth => {
+                !state.end_game_triggered
+                    && !firing_moves(state, rules).is_empty()
+                    && true_margin_now(state, rules) >= TRUE_MARGIN_BAND
+                    && width_ok(state, rules)
+            }
+            Self::EndFirableBehindInTruth => {
+                !state.end_game_triggered
+                    && !firing_moves(state, rules).is_empty()
+                    && true_margin_now(state, rules) <= -TRUE_MARGIN_BAND
+                    && width_ok(state, rules)
+            }
+            Self::ExclusiveRaceOneStep => {
+                if is_game_over(state) {
+                    return false;
+                }
+                let contested = opponent_race_steps(state);
+                if contested.is_empty() {
+                    return false;
+                }
+                let legal = get_legal_moves(state, rules);
+                if !width_ok_len(legal.len()) {
+                    return false;
+                }
+                let reachable = mover_reachable_steps(state, &legal, rules);
+                contested.iter().any(|step| reachable.contains(step))
+            }
+            Self::AchievementClaimAvailable => {
+                let legal = get_legal_moves(state, rules);
+                width_ok_len(legal.len())
+                    && legal.iter().any(|mv| matches!(mv, Move::FulfillAchievement { .. }))
+            }
         }
     }
 
@@ -421,9 +442,13 @@ impl RootPredicate {
     /// [`GeneratingConfig`], which exists so the recorded seat ECHOES cannot
     /// drift from the contestants the scan actually seats.
     fn config(self) -> GeneratingConfig {
-        // T1 RED: the ecology mapping is not implemented yet.
-        let _ = self;
-        v1_config()
+        match self {
+            Self::FinalRoundAlreadyTriggered | Self::TriggerRoundNotFinal => v1_config(),
+            Self::EndFirableAheadInTruth
+            | Self::EndFirableBehindInTruth
+            | Self::ExclusiveRaceOneStep
+            | Self::AchievementClaimAvailable => v2_lookahead_config(),
+        }
     }
 }
 
@@ -454,9 +479,7 @@ pub const TRUE_MARGIN_BAND: i64 = 10;
 
 /// Whether this position is narrow enough to be a layer-2 root.
 fn width_ok(state: &GameState, rules: &Rules) -> bool {
-    // T1 RED: not implemented.
-    let _ = (state, rules);
-    true
+    width_ok_len(get_legal_moves(state, rules).len())
 }
 
 /// [`width_ok`]'s arithmetic, over a legal-list length the caller already holds.
@@ -466,9 +489,7 @@ fn width_ok(state: &GameState, rules: &Rules) -> bool {
 /// enumeration, and one spelling is what stops the two paths drifting to
 /// different widths.
 const fn width_ok_len(len: usize) -> bool {
-    // T1 RED: not implemented.
-    let _ = len;
-    true
+    len <= MAX_ROOT_CANDIDATES
 }
 
 /// The mover's TRUE margin at this position: its final-score total minus the
@@ -490,9 +511,23 @@ const fn width_ok_len(len: usize) -> bool {
 /// fails either is corrupt in a way `check_invariants` already refuses, so the
 /// panic names the corruption rather than a wrong margin being returned quietly.
 pub fn true_margin_now(state: &GameState, rules: &Rules) -> i64 {
-    // T1 RED: not implemented.
-    let _ = (state, rules);
-    0
+    let result = final_result(state, rules);
+    let mover = state.current_player;
+    let mover_total = result
+        .standings
+        .iter()
+        .find(|s| s.player == mover)
+        .expect("the mover is one of the state's own seats")
+        .breakdown
+        .total as i64;
+    let rival_total = result
+        .standings
+        .iter()
+        .find(|s| s.player != mover)
+        .expect("a supported game has at least two seats")
+        .breakdown
+        .total as i64;
+    mover_total - rival_total
 }
 
 /// How many Trading Houses complete the set —
@@ -528,9 +563,15 @@ const FIRST_TRIGGER_KIND: EndGameTrigger = EndGameTrigger::TradingHousesComplete
 /// generator would simply never see the positions that trigger fires from — and
 /// nothing would fail.
 fn trigger_kind_after(trigger: &EndGameTrigger) -> Option<EndGameTrigger> {
-    // T1 RED: the enumeration is not implemented yet.
-    let _ = trigger;
-    None
+    match trigger {
+        EndGameTrigger::TradingHousesComplete(_) => {
+            Some(EndGameTrigger::ShophousesComplete(PlayerId::DUMMY))
+        }
+        EndGameTrigger::ShophousesComplete(_) => Some(EndGameTrigger::OrderDeckEmpty),
+        EndGameTrigger::OrderDeckEmpty => Some(EndGameTrigger::ChurchTrackFull),
+        EndGameTrigger::ChurchTrackFull => Some(EndGameTrigger::CustomsTrackFull),
+        EndGameTrigger::CustomsTrackFull => None,
+    }
 }
 
 /// Whether ONE applied move could make `trigger`'s own firing condition true.
@@ -552,9 +593,32 @@ fn trigger_kind_after(trigger: &EndGameTrigger) -> Option<EndGameTrigger> {
 /// silently biases a scan. The soundness pins exercise both a clock shape and a
 /// building shape through the short circuit.
 fn trigger_is_within_one_move(trigger: &EndGameTrigger, state: &GameState) -> bool {
-    // T1 RED: not implemented.
-    let _ = (trigger, state);
-    false
+    match trigger {
+        EndGameTrigger::TradingHousesComplete(_) => state
+            .players
+            .iter()
+            .any(|p| p.trading_houses.total_built() + 1 >= TRADING_HOUSES_COMPLETE),
+        EndGameTrigger::ShophousesComplete(_) => {
+            state.players.iter().any(|p| p.shophouses.total_built() + 1 >= SHOPHOUSES_COMPLETE)
+        }
+        EndGameTrigger::OrderDeckEmpty => {
+            // BOTH halves of that trigger's condition, one move ahead. It needs
+            // an empty deck AND an empty port slot afterwards; a slot is empty
+            // afterwards only if one is empty NOW, or if the move empties slots
+            // the deck cannot refill — which needs the deck strictly shorter
+            // than the slots one action can empty. Without the port half this
+            // arm is true from move one at 2 players, where the whole deck is
+            // ten cards after the setup removal, and the short circuit stops
+            // circuiting exactly where the layer-2 scans run.
+            port_has_empty_slot(state) || state.order_deck.len() < MAX_ORDER_DRAWS_PER_MOVE
+        }
+        EndGameTrigger::ChurchTrackFull => {
+            state.church_track.total_assistants() + 1 >= state.config.track_trigger()
+        }
+        EndGameTrigger::CustomsTrackFull => {
+            state.customs_track.total_assistants() + 1 >= state.config.track_trigger()
+        }
+    }
 }
 
 /// `end_game::check_port_empty_slot`'s condition, restated (that helper is
@@ -594,9 +658,20 @@ fn any_trigger_within_one_move(state: &GameState) -> bool {
 /// kind. What it must never do is skip a position where a firing move exists —
 /// that is the property its pins are about, not speed.
 pub(crate) fn firing_moves(state: &GameState, rules: &Rules) -> Vec<Move> {
-    // T1 RED: not implemented.
-    let _ = (state, rules);
-    Vec::new()
+    if state.end_game_triggered {
+        return Vec::new();
+    }
+    if !any_trigger_within_one_move(state) {
+        return Vec::new();
+    }
+    get_legal_moves(state, rules)
+        .into_iter()
+        .filter(|mv| {
+            apply_move_unchecked(state, mv, rules)
+                .map(|next| next.end_game_triggered)
+                .unwrap_or(false)
+        })
+        .collect()
 }
 
 /// One CONTESTED track step — the race currency family 3's predicate is written
@@ -666,9 +741,51 @@ fn area_of_type(state: &GameState, wanted: AreaType) -> Option<AreaId> {
 /// would favour RECALL against the plan's explicit instruction. The tech arm
 /// lives in the builder's declaration vocabulary instead.
 fn opponent_race_steps(state: &GameState) -> Vec<RaceStep> {
-    // T1 RED: not implemented.
-    let _ = state;
-    Vec::new()
+    let mover = state.current_player;
+    let church_area = area_of_type(state, AreaType::Church);
+    let customs_area = area_of_type(state, AreaType::Customs);
+    let mut steps: Vec<RaceStep> = Vec::new();
+
+    for p in &state.players {
+        if p.id == mover {
+            continue;
+        }
+        if let Some(area) = church_area {
+            if opponent_could_act_next_turn(p, area) && has_church_or_customs_assistant(p, area) {
+                let power = arriving_power(state, p.id, area);
+                let max_faith = calculate_church_faith(
+                    power,
+                    p.copper >= 1,
+                    p.silk >= 1,
+                    p.tea >= 1,
+                    p.seafood >= 1,
+                    // D1 (2026-08-08): the yen payment type costs 2 Yen.
+                    p.money >= 2,
+                    p.imported_goods >= 1,
+                );
+                for space in eligible_church_spaces(&state.church_track, max_faith) {
+                    steps.push(RaceStep::Church(space));
+                }
+            }
+        }
+        if let Some(area) = customs_area {
+            if opponent_could_act_next_turn(p, area) && has_church_or_customs_assistant(p, area) {
+                let power = arriving_power(state, p.id, area);
+                let payable = customs_max_imported_goods(power).min(
+                    u8::try_from(p.imported_goods).unwrap_or(u8::MAX),
+                );
+                for cost in 1..=payable {
+                    for space in eligible_customs_spaces_for_cost(&state.customs_track, cost) {
+                        steps.push(RaceStep::Customs(space));
+                    }
+                }
+            }
+        }
+    }
+
+    steps.sort_unstable();
+    steps.dedup();
+    steps
 }
 
 /// Clause 1+2 of [`opponent_race_steps`]: the President is elsewhere (so it can
@@ -701,9 +818,50 @@ fn arriving_power(state: &GameState, player: PlayerId, area: AreaId) -> u8 {
 /// it — and it credits every space the queued choice could still reach, since
 /// which one it takes is the mover's decision and not yet made.
 fn mover_reachable_steps(state: &GameState, legal: &[Move], rules: &Rules) -> Vec<RaceStep> {
-    // T1 RED: not implemented.
-    let _ = (state, legal, rules);
-    Vec::new()
+    let mover = state.current_player;
+    let mut steps: Vec<RaceStep> = Vec::new();
+
+    for mv in legal {
+        let Ok(next) = apply_move_unchecked(state, mv, rules) else {
+            continue;
+        };
+        for (index, slot) in next.church_track.slots.iter().enumerate() {
+            if state.church_track.slots[index].is_none()
+                && slot.is_some_and(|s| s.player == mover)
+            {
+                steps.push(RaceStep::Church(ChurchTrack::index_to_faith(index)));
+            }
+        }
+        for (index, slot) in next.customs_track.slots.iter().enumerate() {
+            if state.customs_track.slots[index].is_none()
+                && slot.is_some_and(|s| s.player == mover)
+            {
+                steps.push(RaceStep::Customs(CustomsTrack::index_to_space(index)));
+            }
+        }
+        if next.current_player != mover {
+            continue;
+        }
+        for choice in &next.pending_choices {
+            match choice {
+                PendingChoice::ChurchSpace { total_faith } => {
+                    for space in eligible_church_spaces(&next.church_track, *total_faith) {
+                        steps.push(RaceStep::Church(space));
+                    }
+                }
+                PendingChoice::CustomsSpace { cost } => {
+                    for space in eligible_customs_spaces_for_cost(&next.customs_track, *cost) {
+                        steps.push(RaceStep::Customs(space));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    steps.sort_unstable();
+    steps.dedup();
+    steps
 }
 
 /// The v1 generating configuration's NAME. Bump the version in the same commit
@@ -716,7 +874,7 @@ fn mover_reachable_steps(state: &GameState, legal: &[Move], rules: &Rules) -> Ve
 /// recorded is re-pointed by this (verified by grep at the amending commit) —
 /// the bump exists so that a triple quoted from a session NOTE cannot be
 /// silently re-resolved.
-pub const GENERATED_ECOLOGY_V1: &str = "driven-generated-v1"; // T1 RED: not amended yet
+pub const GENERATED_ECOLOGY_V1: &str = "driven-generated-v1.1";
 
 /// How many games a [`RootSource::Generated`] scan may play before it reports
 /// the supply exhausted.
@@ -734,7 +892,7 @@ pub const GENERATED_ECOLOGY_V1: &str = "driven-generated-v1"; // T1 RED: not ame
 /// dead-root slack. Raising the bound at a FIXED master and cap is
 /// PREFIX-STABLE — the strided ordinal sequence is identical, merely longer — so
 /// this is an extension and not a re-draw.
-pub const GENERATED_SCAN_GAMES: u32 = 4; // T1 RED: not raised yet
+pub const GENERATED_SCAN_GAMES: u32 = 16;
 
 /// How many hits per generated game may enter the ordinal sequence.
 ///
@@ -748,7 +906,7 @@ pub const GENERATED_SCAN_GAMES: u32 = 4; // T1 RED: not raised yet
 ///
 /// It is an ECOLOGY FIELD and therefore IDENTITY — see
 /// [`GeneratingEcology::per_game_cap`].
-pub const GENERATED_STRIDE_CAP: u32 = 0; // T1 RED: the stride is not implemented yet
+pub const GENERATED_STRIDE_CAP: u32 = 2;
 
 /// The seat count v1's generating ecology plays at.
 const GENERATED_PLAYERS: u8 = 2;
@@ -764,7 +922,7 @@ const GENERATED_PLAYERS: u8 = 2;
 const GENERATED_SEAT: Contestant = Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT);
 
 /// The v2 generating configuration's NAME — Phase C's layer-2 ecology.
-pub const GENERATED_ECOLOGY_V2_LOOKAHEAD: &str = "unimplemented"; // T1 RED
+pub const GENERATED_ECOLOGY_V2_LOOKAHEAD: &str = "driven-generated-v2-lookahead";
 
 /// The v2 ecology's scan bound.
 ///
@@ -775,7 +933,7 @@ pub const GENERATED_ECOLOGY_V2_LOOKAHEAD: &str = "unimplemented"; // T1 RED
 /// (design §1 family 3 says so in as many words). A games raise at a fixed
 /// master and cap is prefix-stable, which is the recovery if a frozen block runs
 /// short.
-pub const GENERATED_V2_SCAN_GAMES: u32 = 0; // T1 RED
+pub const GENERATED_V2_SCAN_GAMES: u32 = 24;
 
 /// The seat count v2's generating ecology plays at — 2P throughout (the canon
 /// priors are 2P priors).
@@ -2198,7 +2356,7 @@ fn generate_root(
     let config = predicate.config();
     let ecology = config.ecology;
     let games = ecology.games;
-    let _per_game_cap = ecology.per_game_cap; // T1 RED: unused until the stride lands
+    let per_game_cap = ecology.per_game_cap;
     let mut schedule = SeedSchedule::diagnostic(master);
     let mut found: u32 = 0;
 
@@ -2216,7 +2374,7 @@ fn generate_root(
         let events = &stats.record.events;
         let mut state = state_at(&stats.record, 0, rules)
             .map_err(|e| RootError::Generate { game_index, detail: e.to_string() })?;
-        // T1 RED: the stride is not implemented yet.
+        let mut hits_this_game: u32 = 0;
         // INCLUSIVE of the past-the-last position, for totality: `state_at(record,
         // len)` is a real position (the terminal state) and a future predicate may
         // want it. The shipped one excludes it — its `!is_game_over` conjunct —
@@ -2242,6 +2400,14 @@ fn generate_root(
                     ));
                 }
                 found += 1;
+                hits_this_game += 1;
+                if hits_this_game >= per_game_cap {
+                    // The STRIDE. Every remaining hit in this game would be
+                    // skipped, so walking on would only cost predicate
+                    // evaluations — which, for the apply-probing layer-2 arms,
+                    // is the scan's whole cost.
+                    break;
+                }
             }
             if let Some(event) = events.get(position) {
                 state = replay_from(&state, std::slice::from_ref(event), rules)
