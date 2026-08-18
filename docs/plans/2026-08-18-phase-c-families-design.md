@@ -145,19 +145,25 @@ ignores it (behavior byte-identical, pinned). New variants: `TriggerRoundNotFina
 `AchievementClaimAvailable`. Firing detection and race arithmetic are shared helper functions
 with their own unit pins (apply-probe over `get_legal_moves` via `apply_move_unchecked` on
 clones — generator-side, full-state, never observation-bound: PREDICATES SELECT ON TRUTH; the
-subject at the root still plays honest). **Scan cost discipline (review SHOULD-8): the
-apply-probing predicates SHORT-CIRCUIT on cheap state preconditions before any probe** — a
-firing move can exist only when some clock is one step from full (a church/customs track with
-one empty space, an order/tech deck near exhaustion — direct state reads), so the ~10^5
-per-game clone cost of probing every legal move at every scanned position never materializes;
-the short-circuit's soundness (never skips a position where a firing move exists) is its own
-pin on constructed states.
+subject at the root still plays honest). **Scan cost discipline (review SHOULD-8; precondition set corrected at the plan review's
+MUST-1): the apply-probing predicates SHORT-CIRCUIT on cheap state preconditions before any
+probe** — and the precondition list is DERIVED as an exhaustive `match` over
+`EndGameTrigger`'s five variants (a future variant becomes a compile error, never a silent
+scan bias): church track one space from full · customs track one from full · order deck
+near-empty · any player at 3 of 4 trading houses · any player at 7 of 8 shophouses. The
+~10^5 per-game clone cost of probing every legal move at every scanned position never
+materializes; the short-circuit's soundness (never skips a position where a firing move
+exists) is its own pin on constructed states, INCLUDING the one-building-from-complete
+shape.
 
 **`GeneratingEcology::v2_lookahead()`** (`driven.rs`): 2P, both seats the shipped
 `lookahead-v1` echo, arena driver, its own games bound and version string
-(`driven-generated-v2-lookahead`). The v1 rung ecology stays untouched for family 1.
-Scan-bound note: the bound rides the ecology's `games` field exactly as v1's does; family 2/4
-scans size it at freeze (pilot-measured supply, bound recorded). The lookahead ecology
+(`driven-generated-v2-lookahead`). The v1 rung ecology serves family 1 — and it is AMENDED
+with the phase, not untouched: it gains the §4 stride cap and a games-bound raise sized to
+the block arithmetic, with its id string bumped per the type's own rule (no committed
+Generated triple predates the change, verified). Scan-bound note: the bound rides the
+ecology's `games` field; family 2/4 scans size it at freeze (pilot-measured supply, bound
+recorded). The lookahead ecology
 generates the subject's OWN reachable positions — the right population for an on-policy
 checkpoint, said out loud in the freeze doc.
 
@@ -339,9 +345,16 @@ STRETCH task at the close, cut first, never load-bearing for this phase.
   THE STRIDED SPACE at ONE recorded scan master per generator (builders: seed-blocked the
   same way, one root per seed by construction). The predicate/builder is FROZEN before the
   confirmatory draw; pilots may fix a predicate, and a fixed predicate restarts its ordinal
-  space (old draws are spent, said in the doc). **Escrow is SPLIT BY CONSUMER at freeze**
-  (review SHOULD-3): 3 draws escrowed for the post-fix re-read, 3 for the final-controller
-  read — one block cannot serve both, since the first consumer burns it.
+  space (old draws are spent, said in the doc). **The supply arithmetic is sized up front
+  and the VOID disposition's extension ordinals are PRE-DECLARED at freeze** (plan review
+  MUST-2): each generator's games bound must cover pilot + confirmatory + escrow +
+  dead/excluded slack at its stride cap, and raising the games bound at a FIXED master and
+  cap is PREFIX-STABLE — the strided ordinal sequence is identical, merely longer — so a
+  supply exhaustion mid-protocol is recovered by a version-bumped extension, never a
+  re-draw (the argument recorded so the bump cannot be read as one). **Escrow is SPLIT BY
+  CONSUMER at freeze** (review SHOULD-3): 3 draws escrowed for the post-fix re-read, 3 for
+  the final-controller read — one block cannot serve both, since the first consumer burns
+  it.
 - **Root admission (the "demonstrably worthwhile" clause, uniform across families 2–4)**: a
   drawn root enters the confirmatory denominator only where the menu-wide `adjudicate_root`
   (with the turn-predicate hook) demonstrates the pass BEHAVIOR dominates at that root — the
@@ -426,7 +439,8 @@ STRETCH task at the close, cut first, never load-bearing for this phase.
 
 Every predicate variant: positive + negative constructed states (the family-1 pair's existing
 pins are the pattern). `true_margin_now`: hand-computable fixtures incl. the D1/D5 dummy and
-a tie (margin 0 ≠ win). Ecology v2: identity fields pinned; v1 byte-unmoved. RaceRusher:
+a tie (margin 0 ≠ win). Ecology v2: identity fields pinned; v1's AMENDED identity (stride cap + games raise + id
+bump) pinned. RaceRusher:
 class-priority pins on constructed decisions (claim beats church beats customs beats
 fallback), the fallback-equivalence pin (no raceable candidate ⇒ byte-identical to
 greedy@final through the driver), determinism, and the small-families-only probe scope pinned
