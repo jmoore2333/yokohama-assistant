@@ -2260,6 +2260,13 @@ pub struct Adjudication {
     /// replication 0's WORLD, not this table's master: the two are different
     /// numbers by design §4, and reading one for the other would mis-identify
     /// every stream.
+    ///
+    /// **Its ROOT DESCRIPTOR names the FIRST CANDIDATE'S CONTINUATION, not the
+    /// adjudicated root** — a playout starts at root + one forced move, so its
+    /// digest equals `rows[0].continuation_digest` and never
+    /// [`provenance`](Self::provenance)`.root.root_digest`. The two fields are
+    /// one name apart and a reader who took this one for the root would be
+    /// reading the wrong position.
     pub witness: Option<RootedProvenance>,
     /// What this adjudication WAS.
     pub provenance: AdjudicationProvenance,
