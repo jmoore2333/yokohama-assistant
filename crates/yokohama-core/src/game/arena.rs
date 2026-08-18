@@ -724,13 +724,16 @@ pub fn run_raw_game(
 /// bench is an implementation seam, not a public surface (the public seam is
 /// [`ArenaAgent`]).
 pub(crate) trait SeatBench {
+    /// SETUP is the from-setup driver's half alone — a rooted run never calls
+    /// this — so it keeps reporting [`ArenaError`] while [`decide`](Self::decide)
+    /// reports the shared [`PlayError`].
     fn starting_order(&mut self, seat: PlayerId, deal: &[OrderCardId; 2]) -> Result<u8, ArenaError>;
     fn decide(
         &mut self,
         state: &GameState,
         seat: PlayerId,
         rules: &Rules,
-    ) -> Result<DecisionReport, ArenaError>;
+    ) -> Result<DecisionReport, PlayError>;
 
     /// Per-seat provenance in seat order (spec §5).
     ///
@@ -772,16 +775,16 @@ impl SeatBench for AgentBench {
         state: &GameState,
         seat: PlayerId,
         rules: &Rules,
-    ) -> Result<DecisionReport, ArenaError> {
+    ) -> Result<DecisionReport, PlayError> {
         let view = observe(state, seat)
-            .map_err(|e| ArenaError::Driver(format!("observe failed for seat {}: {e}", seat.0)))?;
+            .map_err(|e| PlayError::Observe { seat, detail: e.to_string() })?;
         // Plumbing pin: an agent must never be handed another seat's view.
         // Unconditional, like `run_honest_game`'s — one `u8` compare against a
         // fault that would silently hand a seat someone else's information.
         assert_eq!(view.viewer, seat, "view/seat mismatch in the arena driver");
         self.agents[seat.0 as usize]
             .choose(&view, rules)
-            .map_err(|detail| ArenaError::SamplerFailed { seat, detail })
+            .map_err(|detail| PlayError::Agent { seat, detail })
     }
 }
 
@@ -822,11 +825,11 @@ impl SeatBench for RawBench {
         state: &GameState,
         seat: PlayerId,
         rules: &Rules,
-    ) -> Result<DecisionReport, ArenaError> {
+    ) -> Result<DecisionReport, PlayError> {
         let RawSeat { policy, rng, .. } = &mut self.seats[seat.0 as usize];
         let handle = DecisionHandle::new(state, rules);
-        let volume = decision_volume(&handle).ok_or(ArenaError::DeadEnd { seat })?;
-        let mv = policy.pick(&handle, rng).ok_or(ArenaError::DeadEnd { seat })?;
+        let volume = decision_volume(&handle).ok_or(PlayError::DeadEnd { seat })?;
+        let mv = policy.pick(&handle, rng).ok_or(PlayError::DeadEnd { seat })?;
         Ok(DecisionReport { mv, volume })
     }
 }
@@ -905,19 +908,143 @@ pub(crate) struct PlayOutcome {
 /// half, and `game::driven` is this function plus a rooted seat list. Nothing in
 /// here knows how the state was reached.
 pub(crate) fn play_from_state(
-    _root: &GameState,
-    _rules: &Rules,
-    _bench: &mut dyn SeatBench,
-    _limits: PlayLimits,
-    _invariants: bool,
+    root: &GameState,
+    rules: &Rules,
+    bench: &mut dyn SeatBench,
+    limits: PlayLimits,
+    invariants: bool,
 ) -> Result<PlayOutcome, PlayError> {
-    todo!("T1 GREEN: the shared play half")
+    let mut state = root.clone();
+    // Guard the INCOMING state so corruption is not misattributed to the first
+    // move (every driver in the repo does this). UNCONDITIONAL, not gated on
+    // `invariants`: that flag is about the per-move cost of a bulk run, and a
+    // corrupt starting state is not a cost, it is a wrong answer waiting.
+    if let Err(reason) = check_invariants(&state, rules) {
+        return Err(PlayError::CorruptRoot(reason));
+    }
+
+    let mut volumes: Vec<VolumeObs> = Vec::new();
+    let mut coverage = CoverageTally::default();
+    let mut applied: Vec<(PlayerId, Move)> = Vec::new();
+    let mut moves_by_seat: Vec<u64> = vec![0; state.players.len()];
+
+    loop {
+        if is_game_over(&state) {
+            return Ok(PlayOutcome {
+                final_state: state,
+                applied,
+                moves_by_seat,
+                volumes,
+                coverage,
+            });
+        }
+        if state.turn_number > limits.max_turns {
+            return Err(PlayError::TurnCap { turns: state.turn_number });
+        }
+        // The decision guard, checked BEFORE the decision it would be the
+        // (max+1)-th of, so the refusal names the bound the caller set rather
+        // than one past it. `None` — the arena's own setting — cannot trip.
+        if let Some(max) = limits.max_decisions {
+            if applied.len() as u64 >= max {
+                return Err(PlayError::DecisionCap { decisions: applied.len() as u64 });
+            }
+        }
+
+        let seat = state.current_player;
+        let report = bench.decide(&state, seat, rules)?;
+        let mv = report.mv;
+
+        // The validation boundary. `PathMode::Canonical` is design A doing the
+        // job open decision #3 settled it for; a false here is a driver bug, so
+        // it is a hard error and never a redraw.
+        if !is_move_legal(&state, &mv, rules, PathMode::Canonical) {
+            return Err(PlayError::IllegalPick { seat, mv: Box::new(mv) });
+        }
+        // Debug-tier membership cross-check (spec §4): `Canonical` is wider
+        // than list membership — it does not verify lex-least witness selection
+        // — so this is what catches a non-canonical witness per-edit, before
+        // strict replay would reject it through the checked `apply_move`.
+        debug_assert!(
+            crate::game::legal_moves::get_legal_moves(&state, rules).contains(&mv),
+            "seat {} played a move that passed PathMode::Canonical but is not in \
+             get_legal_moves — a non-canonical witness: {mv:?}",
+            seat.0,
+        );
+
+        // The agent-attested volume is cross-checked against the TRUE state in
+        // the same debug tier as the membership assert (T6 review F3): the
+        // report's figure crosses the agent seam unvalidated otherwise, and a
+        // per-family-invariance failure should die here, loudly, not surface
+        // as a skewed published quantile. (Reviewer-verified to hold across
+        // 14,572 decisions before this assert existed.) This is the THIRD
+        // debug-tier route DFS at an on-board Movement point — see the module
+        // doc's counter paragraph.
+        #[cfg(debug_assertions)]
+        {
+            let truth = crate::game::metrics::decision_volume(
+                &crate::game::search_actions::DecisionHandle::new(&state, rules),
+            );
+            debug_assert_eq!(
+                truth.map(|v| (v.total, v.has_upper_bound_term)),
+                Some((report.volume.total, report.volume.has_upper_bound_term)),
+                "seat {}'s attested volume disagrees with the true state's",
+                seat.0,
+            );
+        }
+
+        state = apply_move_unchecked(&state, &mv, rules)
+            .map_err(|e| PlayError::Apply { seat, detail: e.to_string() })?;
+        if invariants {
+            if let Err(reason) = check_invariants(&state, rules) {
+                return Err(PlayError::Invariant { seat, reason });
+            }
+        }
+
+        volumes.push(report.volume);
+        coverage.observe(&mv);
+        // `seat` is `state.current_player` read BEFORE the apply, i.e. the mover
+        // — not the seat whose turn it is afterwards.
+        applied.push((seat, mv));
+        moves_by_seat[seat.0 as usize] += 1;
+    }
 }
 
 /// [`PlayError`] as the from-setup driver reports it — the messages
-/// [`ArenaError`] carried before the T1 split, rebuilt verbatim.
-fn arena_error(_seed: WorldSeed, _e: PlayError) -> ArenaError {
-    todo!("T1 GREEN: the arena's own error mapping")
+/// [`ArenaError`] carried before the T1 split, rebuilt VERBATIM.
+///
+/// The three `Driver` arms are the reason this function exists rather than a
+/// `From` impl: `ArenaError` folds observe/apply/invariant faults into one
+/// string, and the exact strings are what an existing caller (and the module's
+/// own tests) match on.
+fn arena_error(seed: WorldSeed, error: PlayError) -> ArenaError {
+    match error {
+        PlayError::CorruptRoot(reason) => {
+            ArenaError::Driver(format!("corrupt starting state: {reason}"))
+        }
+        PlayError::Observe { seat, detail } => {
+            ArenaError::Driver(format!("observe failed for seat {}: {detail}", seat.0))
+        }
+        PlayError::Agent { seat, detail } => ArenaError::SamplerFailed { seat, detail },
+        PlayError::IllegalPick { seat, mv } => ArenaError::IllegalPick { seat, mv },
+        PlayError::DeadEnd { seat } => ArenaError::DeadEnd { seat },
+        PlayError::Apply { seat, detail } => ArenaError::Driver(format!(
+            "apply_move_unchecked rejected a validated move from seat {}: {detail}",
+            seat.0
+        )),
+        PlayError::Invariant { seat, reason } => ArenaError::Driver(format!(
+            "invariant violated after seat {}'s move: {reason}",
+            seat.0
+        )),
+        PlayError::TurnCap { turns } => ArenaError::CapReached { seed, turns },
+        // Unreachable from here BY CONSTRUCTION — `drive` passes
+        // `max_decisions: None`, which is what makes the split behaviour-inert
+        // for the arena. Mapped rather than `unreachable!()` because a panic in
+        // a driver is a worse answer than a typed error, whatever a future
+        // caller of this mapping does.
+        PlayError::DecisionCap { decisions } => ArenaError::Driver(format!(
+            "decision cap reached after {decisions} decisions (the arena sets no decision cap)"
+        )),
+    }
 }
 
 /// The shared loop: setup choices, then validate/apply/record per decision.
@@ -957,104 +1084,46 @@ fn drive(
     // `set_run_context` (see `stats::run_cell_emitting`).
     record.set_run_seats(bench.seat_provenance());
 
-    let mut state = finalize_setup(pending, &choices)
+    let start = finalize_setup(pending, &choices)
         .map_err(|e| ArenaError::Driver(format!("finalize_setup failed: {e}")))?;
-    // Guard the INCOMING state so setup corruption is not misattributed to the
-    // first move (every driver in the repo does this).
-    if let Err(reason) = check_invariants(&state, rules) {
-        return Err(ArenaError::Driver(format!("corrupt starting state: {reason}")));
-    }
 
-    let mut volumes: Vec<VolumeObs> = Vec::new();
-    let mut coverage = CoverageTally::default();
-    let mut moves_applied: u64 = 0;
-    let mut moves_by_seat: Vec<u64> = vec![0; players as usize];
+    // THE SHARED HALF (Phase 3.5c Phase-B T1). Everything from the incoming-state
+    // guard to the terminal check lives in `play_from_state`, which a ROOTED run
+    // drives too — so the two cannot drift in what they consider a legal,
+    // recorded move. `max_decisions: None` keeps this driver's guard set exactly
+    // as it was: the turn cap and nothing else.
+    let outcome = play_from_state(
+        &start,
+        rules,
+        bench,
+        PlayLimits { max_turns, max_decisions: None },
+        invariants,
+    )
+    .map_err(|e| arena_error(seed, e))?;
 
-    loop {
-        if is_game_over(&state) {
-            record.stamp_terminal_digest(&state);
-            return Ok(ArenaGameStats {
-                seed,
-                players,
-                turns: state.turn_number,
-                moves_applied,
-                moves_by_seat,
-                result: final_result(&state, rules),
-                trigger: state.trigger_reason,
-                volumes,
-                coverage,
-                record,
-            });
-        }
-        if state.turn_number > max_turns {
-            return Err(ArenaError::CapReached { seed, turns: state.turn_number });
-        }
-
-        let seat = state.current_player;
-        let report = bench.decide(&state, seat, rules)?;
-        let mv = report.mv;
-
-        // The validation boundary. `PathMode::Canonical` is design A doing the
-        // job open decision #3 settled it for; a false here is an arena bug, so
-        // it is a hard error and never a redraw.
-        if !is_move_legal(&state, &mv, rules, PathMode::Canonical) {
-            return Err(ArenaError::IllegalPick { seat, mv: Box::new(mv) });
-        }
-        // Debug-tier membership cross-check (spec §4): `Canonical` is wider
-        // than list membership — it does not verify lex-least witness selection
-        // — so this is what catches a non-canonical witness per-edit, before
-        // strict replay would reject it through the checked `apply_move`.
-        debug_assert!(
-            crate::game::legal_moves::get_legal_moves(&state, rules).contains(&mv),
-            "seat {} played a move that passed PathMode::Canonical but is not in \
-             get_legal_moves — a non-canonical witness: {mv:?}",
-            seat.0,
-        );
-
-        // The agent-attested volume is cross-checked against the TRUE state in
-        // the same debug tier as the membership assert (T6 review F3): the
-        // report's figure crosses the agent seam unvalidated otherwise, and a
-        // per-family-invariance failure should die here, loudly, not surface
-        // as a skewed published quantile. (Reviewer-verified to hold across
-        // 14,572 decisions before this assert existed.) This is the THIRD
-        // debug-tier route DFS at an on-board Movement point — see the module
-        // doc's counter paragraph.
-        #[cfg(debug_assertions)]
-        {
-            let truth = crate::game::metrics::decision_volume(
-                &crate::game::search_actions::DecisionHandle::new(&state, rules),
-            );
-            debug_assert_eq!(
-                truth.map(|v| (v.total, v.has_upper_bound_term)),
-                Some((report.volume.total, report.volume.has_upper_bound_term)),
-                "seat {}'s attested volume disagrees with the true state's",
-                seat.0,
-            );
-        }
-
-        state = apply_move_unchecked(&state, &mv, rules).map_err(|e| {
-            ArenaError::Driver(format!(
-                "apply_move_unchecked rejected a validated move from seat {}: {e}",
-                seat.0
-            ))
-        })?;
-        if invariants {
-            if let Err(reason) = check_invariants(&state, rules) {
-                return Err(ArenaError::Driver(format!(
-                    "invariant violated after seat {}'s move: {reason}",
-                    seat.0
-                )));
-            }
-        }
-
-        volumes.push(report.volume);
-        coverage.observe(&mv);
+    let PlayOutcome { final_state, applied, moves_by_seat, volumes, coverage } = outcome;
+    let moves_applied = applied.len() as u64;
+    // The record is stamped HERE rather than inside the loop, because a record is
+    // the from-setup driver's artifact and a rooted run must never produce one
+    // (design §3). `push_move` is a pure append and the log is not read during
+    // play, so appending in play order after the fact is the same record.
+    for (_mover, mv) in applied {
         record.push_move(mv);
-        moves_applied += 1;
-        // `seat` is `state.current_player` read BEFORE the apply, i.e. the mover
-        // — not the seat whose turn it is afterwards.
-        moves_by_seat[seat.0 as usize] += 1;
     }
+    record.stamp_terminal_digest(&final_state);
+
+    Ok(ArenaGameStats {
+        seed,
+        players,
+        turns: final_state.turn_number,
+        moves_applied,
+        moves_by_seat,
+        result: final_result(&final_state, rules),
+        trigger: final_state.trigger_reason,
+        volumes,
+        coverage,
+        record,
+    })
 }
 
 #[cfg(test)]

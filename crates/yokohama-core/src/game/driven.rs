@@ -45,12 +45,12 @@
 
 use crate::game::agent::HONEST_MAX_TURNS;
 use crate::game::arena::{
-    agent_stream_seed, play_from_state, AgentBench, ArenaAgent, Contestant, ExplainHandle,
-    PlayError, PlayLimits, Slot,
+    agent_stream_seed, play_from_state, require_supported_player_count, AgentBench, ArenaAgent,
+    Contestant, ExplainHandle, PlayError, PlayLimits, Slot,
 };
 use crate::game::policy::RolloutPolicy;
 use crate::game::rules::Rules;
-use crate::game::scoring::GameResult;
+use crate::game::scoring::{final_result, GameResult};
 use crate::game::seeds::WorldSeed;
 use crate::game::semantics::state_digest;
 use crate::types::{GameState, Move, PlayerId};
@@ -100,12 +100,20 @@ pub enum ReplyPolicy {
 impl ReplyPolicy {
     /// The contestant this arm names. THE single spelling of the menu.
     pub fn contestant(self) -> Contestant {
-        todo!("T1 GREEN: the reply menu's spelling")
+        match self {
+            Self::FamilyWeighted => Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT),
+            Self::GreedyAtFinal => Contestant::GREEDY_V1_DEFAULT,
+            Self::LookaheadAtFinal => Contestant::LOOKAHEAD_V1_DEFAULT,
+        }
     }
 
     /// The stable name, for reports and error text.
     pub fn as_str(self) -> &'static str {
-        todo!("T1 GREEN: the reply menu's names")
+        match self {
+            Self::FamilyWeighted => "family-weighted",
+            Self::GreedyAtFinal => "greedy-at-final",
+            Self::LookaheadAtFinal => "lookahead-at-final",
+        }
     }
 }
 
@@ -125,7 +133,10 @@ pub enum SeatSpec {
 impl SeatSpec {
     /// The contestant this seat plays.
     pub fn contestant(self) -> Contestant {
-        todo!("T1 GREEN: the seat's contestant")
+        match self {
+            Self::Contestant(c) => c,
+            Self::Reply(r) => r.contestant(),
+        }
     }
 }
 
@@ -401,8 +412,31 @@ impl std::error::Error for DrivenError {}
 
 /// [`PlayError`] in this module's taxonomy — total, and structural rather than
 /// string-matched.
-fn classify(_error: PlayError) -> DrivenError {
-    todo!("T1 GREEN: classify")
+///
+/// The two `Engine` arms are folded deliberately: an apply that rejects a
+/// validated move and an invariant that breaks after one are both "the engine
+/// disagreed with itself", they are both bugs rather than answers, and a caller
+/// that wants to tell them apart reads the message. Everything a rooted CALLER
+/// can cause — a corrupt fixture, an unobservable seat, a refusing agent, a
+/// bound reached — gets its own arm, because those are the ones a caller acts on.
+fn classify(error: PlayError) -> DrivenError {
+    match error {
+        PlayError::CorruptRoot(reason) => DrivenError::CorruptRoot(reason),
+        PlayError::Observe { seat, detail } => DrivenError::Unobservable { seat, detail },
+        PlayError::Agent { seat, detail } => DrivenError::AgentRefused { seat, detail },
+        PlayError::IllegalPick { seat, mv } => DrivenError::IllegalPick { seat, mv },
+        PlayError::DeadEnd { seat } => DrivenError::DeadEnd { seat },
+        PlayError::Apply { seat, detail } => DrivenError::Engine(format!(
+            "apply_move_unchecked rejected a validated move from seat {}: {detail}",
+            seat.0
+        )),
+        PlayError::Invariant { seat, reason } => DrivenError::Engine(format!(
+            "invariant violated after seat {}'s move: {reason}",
+            seat.0
+        )),
+        PlayError::TurnCap { turns } => DrivenError::TurnCapReached { turns },
+        PlayError::DecisionCap { decisions } => DrivenError::DecisionCapReached { decisions },
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -416,13 +450,91 @@ fn classify(_error: PlayError) -> DrivenError {
 /// privileged: an agent sees `observe(state, its seat)` and nothing else, and a
 /// sampler refusal is a typed hard error rather than a fallback.
 pub fn drive_to_terminal(
-    _root: &GameState,
-    _seats: &[SeatSpec],
-    _rules: &Rules,
-    _master: WorldSeed,
-    _opts: DrivenOpts,
+    root: &GameState,
+    seats: &[SeatSpec],
+    rules: &Rules,
+    master: WorldSeed,
+    opts: DrivenOpts,
 ) -> Result<DrivenOutcome, DrivenError> {
-    todo!("T1 GREEN: drive_to_terminal")
+    let players = root.players.len();
+    if seats.len() != players {
+        return Err(DrivenError::SeatMismatch { seats: seats.len(), players });
+    }
+    // ONE authority for what the engine plays — the arena's own guard, not a
+    // re-typed range (a rooted run that tabulated a 1-seat "game" would produce
+    // an outcome whose `final_result` nobody should read).
+    require_supported_player_count(players as u8)
+        .map_err(|e| DrivenError::UnsupportedRoot(e.to_string()))?;
+    if opts.max_decisions == 0 {
+        return Err(DrivenError::UnsupportedRoot(
+            "max_decisions is 0: a run that may apply no decision is not a run".to_string(),
+        ));
+    }
+
+    // The agents are built HERE, from the seat list alone. Each gets the seat's
+    // own long-lived stream and nothing else — no state, no root, no master —
+    // which is the arena's construction channel unchanged.
+    let mut agents: Vec<Box<dyn ArenaAgent>> = Vec::with_capacity(players);
+    let mut handles: Vec<Option<ExplainHandle>> = Vec::with_capacity(players);
+    let mut agent_seeds: Vec<u64> = Vec::with_capacity(players);
+    for (index, spec) in seats.iter().enumerate() {
+        let seat = PlayerId(index as u8);
+        // A rooted run has no seating rotation to identify a contestant across,
+        // so the slot component IS the seat index: the derivation stays
+        // injective in the seat, and two seats never share a stream.
+        let agent_seed = agent_stream_seed(master, seat, Slot(seat.0));
+        let (agent, handle) = spec.contestant().build(rules, agent_seed);
+        agents.push(agent);
+        handles.push(handle);
+        agent_seeds.push(agent_seed);
+    }
+
+    let mut bench = AgentBench::new(agents);
+    let outcome = play_from_state(
+        root,
+        rules,
+        &mut bench,
+        PlayLimits { max_turns: opts.max_turns, max_decisions: Some(opts.max_decisions) },
+        opts.invariants,
+    )
+    .map_err(classify)?;
+
+    // The handles are read AFTER the run — they are `Arc`s on live counters, so
+    // reading them earlier would report a search that had not happened yet.
+    let seat_outcomes: Vec<SeatOutcome> = seats
+        .iter()
+        .enumerate()
+        .map(|(index, spec)| SeatOutcome {
+            seat: PlayerId(index as u8),
+            spec: *spec,
+            echo: spec.contestant().echo(),
+            agent_seed: agent_seeds[index],
+            applied_moves: outcome.moves_by_seat[index],
+            counters: handles[index].as_ref().map_or(SeatCounters::NONE, SeatCounters::from_handle),
+        })
+        .collect();
+    // `None` when NO seat explains, never `Some(0)` — `ExplainHandle`'s rule,
+    // carried up one level: a rung field has no explanation count, and a zero
+    // would read as "it had one and never used it".
+    let explanations = seat_outcomes
+        .iter()
+        .filter_map(|s| s.counters.explained)
+        .fold(None, |acc: Option<u64>, e| Some(acc.unwrap_or(0) + e));
+
+    let result = final_result(&outcome.final_state, rules);
+    Ok(DrivenOutcome {
+        master,
+        decisions: outcome.applied.len() as u64,
+        applied: outcome
+            .applied
+            .into_iter()
+            .map(|(seat, mv)| AppliedMove { seat, mv })
+            .collect(),
+        final_state: outcome.final_state,
+        result,
+        seats: seat_outcomes,
+        explanations,
+    })
 }
 
 #[cfg(test)]
