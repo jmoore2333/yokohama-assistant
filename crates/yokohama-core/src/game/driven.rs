@@ -124,7 +124,7 @@
 //! of.
 
 use std::cmp::Reverse;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -1691,6 +1691,25 @@ pub enum RootSource {
     /// [`GeneratingEcology`], which the resolved descriptor carries for exactly
     /// that reason.
     Generated { predicate: RootPredicate, master: u64, ordinal: u32 },
+    /// A root a caller has ALREADY resolved, with the descriptor that
+    /// identified it — resolving it again returns both verbatim.
+    ///
+    /// **Why this is not [`Constructed`](Self::Constructed) with extra steps**
+    /// (Phase C's T5): a block of family roots is resolved ONCE, in a single
+    /// scan walk, and then adjudicated under every policy of a reply menu.
+    /// Handing `Generated` to each of those adjudications would re-run the scan
+    /// per policy per root — at the v2 ecology, where both generating seats
+    /// search, that is the block's entire cost paid over and over. Handing
+    /// `Constructed` instead would work and would LIE: every table would record
+    /// a root whose origin is "someone gave me this position" when the origin is
+    /// a seeded scan a reader can reproduce. This variant is the honest third
+    /// option — resolve once, carry the identity — and it is the only arm whose
+    /// descriptor the caller supplies, which is why the descriptor is checked
+    /// against the state it travels with at exactly one place: nowhere. A caller
+    /// that pairs a descriptor with a different state is describing a position
+    /// it did not resolve, and no instrument downstream can tell; the discipline
+    /// is that the pair comes from ONE `resolve` call.
+    Resolved { state: GameState, descriptor: RootDescriptor },
 }
 
 impl RootSource {
@@ -1729,6 +1748,7 @@ impl RootSource {
             Self::Generated { predicate, master, ordinal } => {
                 generate_root(*predicate, *master, *ordinal, rules)
             }
+            Self::Resolved { state, descriptor } => Ok((state.clone(), descriptor.clone())),
         }
     }
 }
@@ -3109,14 +3129,53 @@ fn generate_root(
     ordinal: u32,
     rules: &Rules,
 ) -> Result<(GameState, RootDescriptor), RootError> {
+    // ONE implementation, so "the batch resolves the same roots as the
+    // per-ordinal path" is true BY CONSTRUCTION rather than by two walks
+    // agreeing. The pin verifies it; this is what makes the pin cheap to keep.
+    generate_roots(predicate, master, &[ordinal], rules)
+        .map(|mut roots| roots.pop().expect("one ordinal asked for, one root returned"))
+}
+
+/// [`generate_root`] for a WHOLE BLOCK of ordinals, in ONE scan walk (Phase C's
+/// T5, plan review NOTE-8).
+///
+/// **Why a batch entry point exists at all.** The scan is defined over a
+/// SEQUENCE — ordinal `n` is the n-th strided hit across the generated games —
+/// so resolving ordinals 0..6 one at a time re-plays the same games six times
+/// and throws five of the walks away. On the rung ecology that is a second of
+/// waste; on the v2 lookahead ecology, where BOTH generating seats search, it is
+/// the whole cost of a family block paid six times over. The walk is identical
+/// to the single-ordinal one in every other respect — same games in the same
+/// draw order, same in-game position order, same stride, same descriptors — and
+/// [`generate_root`] is a call to THIS function, which is what keeps the two
+/// from drifting.
+///
+/// Returns one root per requested ordinal, IN THE REQUESTED ORDER (a repeated
+/// ordinal is answered twice). A missing ordinal is
+/// [`RootError::Exhausted`] naming the FIRST one the scan could not supply,
+/// with the total it did find — the same refusal a single-ordinal call gives.
+///
+/// The scan stops the moment the HIGHEST requested ordinal is collected, so
+/// asking for a block costs no more than asking for its last member.
+pub fn generate_roots(
+    predicate: RootPredicate,
+    master: u64,
+    ordinals: &[u32],
+    rules: &Rules,
+) -> Result<Vec<(GameState, RootDescriptor)>, RootError> {
+    let wanted: BTreeSet<u32> = ordinals.iter().copied().collect();
+    let Some(&highest) = wanted.iter().next_back() else {
+        return Ok(Vec::new());
+    };
     let config = predicate.config();
     let ecology = config.ecology;
     let games = ecology.games;
     let per_game_cap = ecology.per_game_cap;
     let mut schedule = SeedSchedule::diagnostic(master);
     let mut found: u32 = 0;
+    let mut collected: BTreeMap<u32, (GameState, RootDescriptor)> = BTreeMap::new();
 
-    for game_index in 0..games {
+    'games: for game_index in 0..games {
         let world = schedule.next_world();
         // The ecology's own seating, on the arena's own keying — the same
         // derivation `drive_to_terminal` uses, so a generated root is reachable
@@ -3138,22 +3197,28 @@ fn generate_root(
         // range one short would make the scan quietly predicate-specific.
         for position in 0..=events.len() {
             if predicate.holds(&state, rules) {
-                if found == ordinal {
+                if wanted.contains(&found) {
                     let root_digest = state_digest(&state);
-                    return Ok((
-                        state,
-                        RootDescriptor {
-                            origin: RootOrigin::Generated {
-                                predicate,
-                                master,
-                                ordinal,
-                                game_index,
-                                ecology,
+                    collected.insert(
+                        found,
+                        (
+                            state.clone(),
+                            RootDescriptor {
+                                origin: RootOrigin::Generated {
+                                    predicate,
+                                    master,
+                                    ordinal: found,
+                                    game_index,
+                                    ecology: ecology.clone(),
+                                },
+                                event_index: Some(position),
+                                root_digest,
                             },
-                            event_index: Some(position),
-                            root_digest,
-                        },
-                    ));
+                        ),
+                    );
+                    if found == highest {
+                        break 'games;
+                    }
                 }
                 found += 1;
                 hits_this_game += 1;
@@ -3172,7 +3237,17 @@ fn generate_root(
         }
     }
 
-    Err(RootError::Exhausted { predicate, ordinal, found, games })
+    ordinals
+        .iter()
+        .map(|ordinal| {
+            collected.get(ordinal).cloned().ok_or(RootError::Exhausted {
+                predicate,
+                ordinal: *ordinal,
+                found,
+                games,
+            })
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -5647,6 +5722,48 @@ mod tests {
             .expect("a constructed source resolves to itself");
         assert_eq!(resolved, root, "resolving a constructed source moved the state");
         assert_eq!(descriptor, p.root, "the driver and the source describe one root differently");
+    }
+
+    /// A PRE-RESOLVED root hands back exactly what it was given (Phase C's T5).
+    ///
+    /// The variant's whole job is to let a block resolve its draws ONCE and then
+    /// adjudicate them under a whole reply menu without re-scanning, so the
+    /// property that matters is that `resolve` is the IDENTITY on it — state and
+    /// descriptor both, byte for byte, including a descriptor whose origin is a
+    /// seeded scan the caller did earlier. The second half is the discriminator:
+    /// the same state wrapped as `Constructed` resolves to a DIFFERENT
+    /// descriptor, which is exactly the provenance downgrade this variant exists
+    /// to avoid.
+    #[test]
+    fn a_pre_resolved_root_resolves_to_itself_descriptor_included() {
+        let rules = Rules::standard();
+        let root = root_2p(&rules, world(46).0);
+        let descriptor = RootDescriptor {
+            origin: RootOrigin::Generated {
+                predicate: RootPredicate::FinalRoundAlreadyTriggered,
+                master: 0x0C04_2026_0818_9991,
+                ordinal: 3,
+                game_index: 1,
+                ecology: GeneratingEcology::v1(),
+            },
+            event_index: Some(211),
+            root_digest: state_digest(&root),
+        };
+
+        let (state, resolved) = RootSource::Resolved {
+            state: root.clone(),
+            descriptor: descriptor.clone(),
+        }
+        .resolve(&rules)
+        .expect("a pre-resolved source resolves to itself");
+        assert_eq!(state, root, "resolving a pre-resolved source moved the state");
+        assert_eq!(resolved, descriptor, "the descriptor did not survive the round trip");
+
+        // THE DISCRIMINATOR: the `Constructed` alternative loses the origin.
+        let (_, downgraded) =
+            RootSource::Constructed(root).resolve(&rules).expect("constructed resolves");
+        assert_eq!(downgraded.origin, RootOrigin::Constructed);
+        assert_ne!(downgraded, descriptor, "the two arms describe the root identically");
     }
 
     /// A RECORD-PREFIX root: `state_at`'s position, driven to terminal, with the

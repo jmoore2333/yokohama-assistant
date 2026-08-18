@@ -3470,4 +3470,436 @@ mod tests {
         unique.dedup();
         assert_eq!(unique.len(), digests.len(), "two seeds built the same position");
     }
+
+    // =======================================================================
+    // The REGISTRY and the block run (design §2's `FamilyDecl`, plan §T5(B))
+    // =======================================================================
+
+    /// [`families`] is EXACTLY design §1's four, in its order, with the label,
+    /// class, generator and pass rule each family is declared with.
+    #[test]
+    fn the_registry_declares_exactly_the_four_families_the_design_names() {
+        let decls = families();
+        assert_eq!(decls.len(), 4, "the design declares four families and no more");
+        let ids: Vec<&str> = decls.iter().map(|d| d.id).collect();
+        assert_eq!(ids, vec!["final-round", "end-trigger", "exclusive-race", "achievement"]);
+
+        // Family 1 — the rules-derivable decision-grain family.
+        assert_eq!(decls[0].label, FamilyLabel::Confirmatory);
+        assert_eq!(
+            decls[0].generator,
+            FamilyGenerator::Predicate(RootPredicate::FinalRoundAlreadyTriggered),
+        );
+        assert!(matches!(decls[0].rule, PassRule::AdjudicatedBest { .. }));
+        assert_eq!(decls[0].rule.grain(), ReadGrain::Decision);
+
+        // Family 2 — canon 15's inverted brake, at the turn grain.
+        assert_eq!(decls[1].label, FamilyLabel::Confirmatory);
+        assert_eq!(
+            decls[1].generator,
+            FamilyGenerator::Predicate(RootPredicate::EndFirableAheadInTruth),
+        );
+        assert_eq!(decls[1].rule, PassRule::Turn(TurnPredicate::EndFired));
+
+        // Family 3 — the EXISTENCE demonstration, off a builder.
+        assert_eq!(decls[2].label, FamilyLabel::ExistenceDemonstration);
+        assert!(
+            matches!(decls[2].generator, FamilyGenerator::Builder { .. }),
+            "family 3's honest source is the builder arm",
+        );
+        assert!(decls[2].rule.names_a_step(), "family 3's rule is step-carrying");
+
+        // Family 4 — the agenda-setters.
+        assert_eq!(decls[3].label, FamilyLabel::Confirmatory);
+        assert_eq!(
+            decls[3].generator,
+            FamilyGenerator::Predicate(RootPredicate::AchievementClaimAvailable),
+        );
+        assert_eq!(decls[3].rule, PassRule::Turn(TurnPredicate::AchievementClaimed));
+
+        for decl in &decls {
+            assert_eq!(decl.menu, REPLY_MENU, "{}: the declared menu is the full four", decl.id);
+            assert_eq!(decl.pilot, PILOT_DRAWS, "{}: pilot ordinals are 0..4", decl.id);
+            assert_eq!(decl.replications, PROVISIONAL_REPLICATIONS, "{}", decl.id);
+            assert_eq!(decl.per_root_f, PROVISIONAL_PER_ROOT_F, "{}", decl.id);
+            assert!(!decl.canon.is_empty(), "{}: every family cites its canon", decl.id);
+        }
+    }
+
+    /// **THE PRE-FREEZE STATE**: no declaration carries a frozen block, and no
+    /// third block field exists to carry an escrowed one.
+    ///
+    /// The escrow half is checked on the DECLARATION rather than on the source
+    /// text (design §2: "escrow ordinals live in the freeze DOCUMENT,
+    /// deliberately not in code — no command can burn an escrowed block by
+    /// accident"). A `Debug` rendering of the struct names every field it has,
+    /// so a field called anything escrow-shaped would show up here.
+    #[test]
+    fn no_declaration_carries_a_frozen_block_and_no_escrow_field_exists() {
+        for decl in families() {
+            assert!(
+                decl.confirmatory.is_none(),
+                "{}: a frozen block is baked at the FREEZE commit, not before",
+                decl.id,
+            );
+            let rendered = format!("{decl:?}");
+            assert!(rendered.contains("pilot"), "{}: the pilot block is not declared", decl.id);
+            assert!(
+                rendered.contains("confirmatory"),
+                "{}: the confirmatory block is not declared",
+                decl.id,
+            );
+            assert!(
+                !rendered.to_lowercase().contains("escrow"),
+                "{}: an escrow block reached the code: {rendered}",
+                decl.id,
+            );
+        }
+    }
+
+    /// The STRATEGIC-CLASS partition (design §4, review SHOULD-9): the pivot
+    /// trigger is undefined without it, so it is pinned rather than described.
+    #[test]
+    fn the_strategic_class_partition_matches_the_design() {
+        let decls = families();
+        assert_eq!(decls[0].class, StrategicClass::RulesFinalRound);
+        assert_eq!(decls[1].class, StrategicClass::EndTimingProximity);
+        assert_eq!(decls[2].class, StrategicClass::OpponentReply);
+        assert_eq!(decls[3].class, StrategicClass::EndTimingProximity);
+        // The consequence the partition exists for: families 2 and 4 CAN
+        // combine to fire the pivot, and family 3's expected failures cannot
+        // combine with either.
+        assert_eq!(
+            decls[1].class, decls[3].class,
+            "families 2 and 4 are one class — the end-timing/proximity cluster",
+        );
+        assert_ne!(decls[2].class, decls[1].class);
+        assert_ne!(decls[2].class, decls[0].class);
+        assert_ne!(decls[0].class, decls[1].class);
+    }
+
+    /// The block's three ARGUMENT refusals, each by name: a confirmatory run
+    /// before the freeze, a confirmatory run carrying a caller's master, and a
+    /// pilot run without one.
+    #[test]
+    fn a_block_run_refuses_a_missing_frozen_block_and_a_substituted_master() {
+        let rules = rules();
+        let decl = &families()[0];
+        let subject = SeatSpec::Contestant(Contestant::LOOKAHEAD_V1_DEFAULT);
+
+        let no_block =
+            run_family_block(decl, BlockKind::Confirmatory, None, subject, &rules).unwrap_err();
+        assert!(
+            matches!(no_block, FamilyRunError::NoFrozenBlock { .. }),
+            "expected a missing-frozen-block refusal, got {no_block}",
+        );
+
+        let substituted =
+            run_family_block(decl, BlockKind::Confirmatory, Some(MASTER), subject, &rules)
+                .unwrap_err();
+        assert!(
+            matches!(substituted, FamilyRunError::MasterRefused { .. }),
+            "a typed master must not be able to run a plausible-looking non-frozen block: \
+             {substituted}",
+        );
+
+        let unrecorded =
+            run_family_block(decl, BlockKind::Pilot, None, subject, &rules).unwrap_err();
+        assert!(
+            matches!(unrecorded, FamilyRunError::MasterRequired { .. }),
+            "recorded-before-use stays the caller's obligation: {unrecorded}",
+        );
+    }
+
+    /// **THE BATCH SEAM**: resolving a block's ordinals in one walk produces
+    /// descriptors IDENTICAL to resolving them one at a time.
+    ///
+    /// On the rung ecology, and at ordinals the stride cap keeps inside game 0,
+    /// so the cell costs one generated game rather than sixteen.
+    #[test]
+    fn batch_resolution_reproduces_per_ordinal_descriptors() {
+        let rules = rules();
+        let predicate = RootPredicate::FinalRoundAlreadyTriggered;
+        let ordinals = [0u32, 1];
+        let batched = crate::game::driven::generate_roots(predicate, MASTER, &ordinals, &rules)
+            .expect("the rung scan supplies two strided roots");
+        assert_eq!(batched.len(), 2);
+        for (i, ordinal) in ordinals.into_iter().enumerate() {
+            let (state, descriptor) =
+                crate::game::driven::RootSource::Generated { predicate, master: MASTER, ordinal }
+                    .resolve(&rules)
+                    .expect("the per-ordinal path supplies the same root");
+            assert_eq!(batched[i].0, state, "ordinal {ordinal}: the batch resolved another state");
+            assert_eq!(
+                batched[i].1, descriptor,
+                "ordinal {ordinal}: the batch described the root differently",
+            );
+        }
+    }
+
+    /// The THREE-WAY judgment (design §1): a pick in every policy's top set
+    /// passes, in some but not all is UNRESOLVED-pending-exact, and in none
+    /// fails.
+    #[test]
+    fn the_three_way_judgment_reads_all_some_and_no_top_sets() {
+        let a = Move::EndAdditionalPhase;
+        let b = Move::BuildShophouse { slot: 0 };
+        let c = Move::BuildShophouse { slot: 1 };
+        let sets = |first: Vec<Move>, second: Vec<Move>| {
+            vec![(ReplyPolicy::FamilyWeighted, first), (ReplyPolicy::GreedyAtFinal, second)]
+        };
+
+        assert_eq!(
+            judge_pick(&a, &sets(vec![a.clone(), b.clone()], vec![a.clone()])),
+            PickJudgment::InEverySet,
+        );
+        assert_eq!(
+            judge_pick(&b, &sets(vec![a.clone(), b.clone()], vec![a.clone()])),
+            PickJudgment::InSomeSet,
+        );
+        assert_eq!(
+            judge_pick(&c, &sets(vec![a.clone(), b.clone()], vec![a.clone()])),
+            PickJudgment::InNoSet,
+        );
+        // An EMPTY menu is not a judgment: nothing is in every set of no sets,
+        // and calling that a pass would pass a mis-wired block.
+        assert_eq!(judge_pick(&a, &[]), PickJudgment::InNoSet);
+    }
+
+    /// The TOP SET is the rows within epsilon of the best MEAN margin, and
+    /// epsilon's leniency direction is pinned: larger epsilon, easier pass.
+    #[test]
+    fn the_top_set_widens_with_epsilon_and_never_shrinks() {
+        // Row i's mean is −100 + delta_i / 25 (see `spread_table`): deltas
+        // 0/25/50 give means −100.0, −99.0, −98.0.
+        let adj = spread_table(&[0, 25, 50], None);
+        assert_eq!(top_set(&adj, 0).len(), 1, "epsilon 0 admits only the best row");
+        assert_eq!(top_set(&adj, 1).len(), 2);
+        assert_eq!(top_set(&adj, 2).len(), 3);
+        // The best row is in every top set, whatever epsilon is.
+        for epsilon in [0, 1, 2, 50] {
+            assert!(top_set(&adj, epsilon).contains(&adj.rows[2].candidate));
+        }
+        assert!(top_set(&spread_table(&[], None), 1).is_empty(), "an empty table has no top set");
+    }
+
+    /// The FAMILY VERDICT arms, as arithmetic over counts — pass, the failure
+    /// allowance, UNRESOLVED, the VOID rule, and the existence exemption.
+    #[test]
+    fn the_family_verdict_applies_the_allowance_the_void_rule_and_the_existence_exemption() {
+        use FamilyVerdict as V;
+        let conf = FamilyLabel::Confirmatory;
+        let exist = FamilyLabel::ExistenceDemonstration;
+
+        // A clean confirmatory block.
+        assert_eq!(family_verdict(conf, BlockKind::Confirmatory, 6, 6, 0, 0), V::Pass);
+        // One failed root exceeds the allowance of zero.
+        assert!(matches!(
+            family_verdict(conf, BlockKind::Confirmatory, 6, 6, 1, 0),
+            V::Fail { .. }
+        ));
+        // An unresolved root is never a silent fail.
+        assert!(matches!(
+            family_verdict(conf, BlockKind::Confirmatory, 6, 6, 0, 1),
+            V::UnresolvedPendingExact { .. }
+        ));
+        // THE VOID RULE: fewer than four admitted of six drawn.
+        assert!(matches!(
+            family_verdict(conf, BlockKind::Confirmatory, 6, 3, 0, 0),
+            V::VoidAsConfirmation { .. }
+        ));
+        assert_eq!(family_verdict(conf, BlockKind::Confirmatory, 6, 4, 0, 0), V::Pass);
+        // A PILOT block confirms nothing, so it cannot be void as confirmation.
+        assert!(matches!(family_verdict(conf, BlockKind::Pilot, 4, 1, 0, 0), V::Pass));
+        // The EXISTENCE arm skips the allowance entirely, failures included.
+        assert!(matches!(
+            family_verdict(exist, BlockKind::Confirmatory, 6, 2, 2, 0),
+            V::GapDemonstrated { .. }
+        ));
+    }
+
+    /// The family-4 RIDER's proximity mirror reproduces a HAND-COMPUTED value.
+    ///
+    /// The mirror names `examples/eval_probe.rs`'s
+    /// `achievement_race_proximity` as its source in-source (the harness §5
+    /// pattern for example-local logic); this is the pin that keeps the copy
+    /// honest, on a state whose three gaps are constructed rather than drawn.
+    #[test]
+    fn the_achievement_rider_mirrors_the_probes_proximity_arithmetic() {
+        let rules = rules();
+        let mut state = post_setup_2p(&rules, 0x31);
+        let mover = state.current_player;
+        state.achievements = [
+            AchievementCard::new(AchievementType::Copper5),
+            AchievementCard::new(AchievementType::Money10),
+            AchievementCard::new(AchievementType::Tea7),
+        ];
+        for p in state.players.iter_mut() {
+            p.copper = 0;
+            p.silk = 0;
+            p.tea = 0;
+            p.seafood = 0;
+            p.money = 0;
+            p.imported_goods = 0;
+        }
+        {
+            let p = state.player_mut(mover);
+            p.copper = 3; // gap 2 toward Copper5
+            p.money = 8; // gap 2 toward Money10
+            p.tea = 4; // gap 3 toward Tea7
+        }
+        let view = crate::game::observe::observe(&state, mover).expect("observable");
+        let me = view.players.iter().find(|p| p.id == mover).expect("the mover is in its own view");
+        let rider = achievement_rider(&view, me);
+
+        // HAND-COMPUTED: the capped progress sum is 3 + 8 + 4 = 15, nothing is
+        // claimed so the post-claim sum is the same, and the nearest gap is 2.
+        assert_eq!(rider.progress_sum, 15);
+        assert_eq!(rider.postclaim_sum, 15);
+        assert_eq!(rider.race_proximity, -2);
+
+        // A CLAIM by this seat drops its own leg from the post-claim sum and
+        // from the proximity scan, leaving Money10's gap 2 and Tea7's 3.
+        state.achievements[0].claimed_by.push(mover);
+        let view = crate::game::observe::observe(&state, mover).expect("observable");
+        let me = view.players.iter().find(|p| p.id == mover).expect("in view");
+        let after = achievement_rider(&view, me);
+        assert_eq!(after.progress_sum, 15, "the pre-freeze sum has no claim filter");
+        assert_eq!(after.postclaim_sum, 12, "the shipped sum drops the claimed leg");
+        assert_eq!(after.race_proximity, -2, "Money10's gap is still the nearest");
+    }
+
+    /// A SMOKE FAMILY: two constructed final-round roots where the mover can
+    /// claim exactly one achievement and declining ends its turn.
+    ///
+    /// Final-round so a playout is at most two turns — the whole reason the
+    /// block smoke is affordable at all.
+    fn smoke_root(seed: u64, rules: &Rules) -> Result<BuiltRoot, BuilderError> {
+        let mut state = post_setup_2p(rules, 0x40 + seed);
+        let mover = state.current_player;
+        state.achievements = [
+            AchievementCard::new(AchievementType::Money10),
+            AchievementCard::new(AchievementType::Tea7),
+            AchievementCard::new(AchievementType::Seafood7),
+        ];
+        for p in state.players.iter_mut() {
+            p.money = 0;
+            p.copper = 0;
+            p.silk = 0;
+            p.tea = 0;
+            p.seafood = 0;
+            p.imported_goods = 0;
+        }
+        state.player_mut(mover).money = 10;
+        state.turn_phase = TurnPhase::AdditionalActionSecond;
+        state.end_game_triggered = true;
+        state.final_round = true;
+        state.pending_choices.clear();
+        crate::game::invariants::check_invariants(&state, rules)
+            .map_err(BuilderError::NotEngineValid)?;
+        Ok(BuiltRoot { state, step: None })
+    }
+
+    /// A declaration over [`smoke_root`], at smoke scale.
+    fn smoke_decl(rule: PassRule, label: FamilyLabel) -> FamilyDecl {
+        FamilyDecl {
+            id: "smoke",
+            label,
+            class: StrategicClass::EndTimingProximity,
+            generator: FamilyGenerator::Builder { build: smoke_root, name: "smoke_root" },
+            rule,
+            replications: 2,
+            per_root_f: 0,
+            menu: &[ReplyPolicy::FamilyWeighted],
+            pilot: 0..2,
+            confirmatory: Some(FrozenBlock { master: MASTER, ordinals: 0..2 }),
+            canon: "a machinery smoke, not a family",
+        }
+    }
+
+    /// **THE BLOCK SMOKE** — the run's arms end to end at smoke scale: an
+    /// ADMITTED root read to a verdict, an EXCLUDED one, the VOID rule that
+    /// follows from excluding them all, and the EXISTENCE arm's exemption.
+    ///
+    /// One lookahead subject, two roots, R = 2, K = 1, a one-policy menu and
+    /// final-round playouts. Budget ~3s debug; the searching happens only at
+    /// the read's own turns, which are a couple of decisions each.
+    #[test]
+    fn the_block_run_covers_admitted_excluded_void_and_the_existence_arm() {
+        let rules = rules();
+        let subject = SeatSpec::Contestant(Contestant::LOOKAHEAD_V1_DEFAULT);
+        let decl = smoke_decl(PassRule::Turn(TurnPredicate::AchievementClaimed), FamilyLabel::Confirmatory);
+
+        // ADMITTED: a permissive delta lets the demonstration through, and the
+        // subject's own turn is then read against the rule.
+        let mut opts = BlockOpts::pilot();
+        opts.admission_k = 1;
+        opts.delta = -1_000;
+        let report = run_family_block_with(
+            &decl,
+            BlockKind::Confirmatory,
+            None,
+            subject,
+            &rules,
+            opts.clone(),
+        )
+        .expect("the smoke block runs");
+        assert_eq!(report.drawn, 2);
+        assert_eq!(report.admitted, 2, "a permissive delta admits both roots: {:?}", report.roots);
+        assert!(
+            report.roots.iter().all(|r| r.read.is_some()),
+            "an admitted root is READ: {:?}",
+            report.roots,
+        );
+        assert!(
+            report.roots.iter().all(|r| r.verdict == RootVerdict::Pass),
+            "the shipped subject claims a claimable achievement: {:?}",
+            report.roots,
+        );
+        // Two admitted of two drawn is below the VOID rule's four, so the
+        // smoke's own verdict IS void — which is the honest reading of a
+        // two-root block and is asserted rather than papered over.
+        assert!(
+            matches!(report.verdict, FamilyVerdict::VoidAsConfirmation { .. }),
+            "a two-root confirmatory block cannot confirm: {:?}",
+            report.verdict,
+        );
+        assert_eq!(report.subject_echo, Contestant::LOOKAHEAD_V1_DEFAULT.echo());
+        assert_eq!(report.robustness_read, crate::game::driven::ROBUSTNESS_READ);
+
+        // EXCLUDED: an unreachable delta demonstrates nothing, so no root is
+        // read at all and the block is void with zero admitted.
+        let mut strict = BlockOpts::pilot();
+        strict.admission_k = 1;
+        strict.delta = 10_000;
+        let excluded =
+            run_family_block_with(&decl, BlockKind::Confirmatory, None, subject, &rules, strict)
+                .expect("the smoke block runs");
+        assert_eq!(excluded.admitted, 0);
+        assert!(
+            excluded.roots.iter().all(|r| matches!(r.verdict, RootVerdict::Excluded(_))),
+            "{:?}",
+            excluded.roots,
+        );
+        assert!(excluded.roots.iter().all(|r| r.read.is_none()), "an excluded root is not read");
+        assert!(matches!(
+            excluded.verdict,
+            FamilyVerdict::VoidAsConfirmation { admitted: 0, .. }
+        ));
+
+        // THE EXISTENCE ARM: the same block under family 3's label skips the
+        // allowance and the VOID rule and emits the gap block instead.
+        let gap_decl = smoke_decl(
+            PassRule::Turn(TurnPredicate::NotEndFired),
+            FamilyLabel::ExistenceDemonstration,
+        );
+        let gap =
+            run_family_block_with(&gap_decl, BlockKind::Pilot, Some(MASTER), subject, &rules, opts)
+                .expect("the existence block runs");
+        assert!(
+            matches!(gap.verdict, FamilyVerdict::GapDemonstrated { .. }),
+            "the existence arm declares no bar: {:?}",
+            gap.verdict,
+        );
+    }
 }
