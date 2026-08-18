@@ -1174,6 +1174,9 @@ mod tests {
                     decisions: 42,
                     turns: 18,
                     final_digest: format!("final-{replication}"),
+                    // The runner renders tables; no turn predicate rides one, so
+                    // the counter-absence reading is the honest fixture value.
+                    turn_verdict: None,
                 })
                 .collect(),
         }

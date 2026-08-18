@@ -3619,6 +3619,21 @@ pub struct CandidatePlayout {
     pub turns: u32,
     /// [`state_digest`] of the terminal state.
     pub final_digest: String,
+    /// **THE MOVER'S FIRST TURN, judged** (Phase C, design §3's turn-grain
+    /// admission): whether the TURN PREDICATE a caller supplied to
+    /// [`adjudicate_root_with`] held at the hand-off this playout's forced
+    /// candidate started.
+    ///
+    /// `None` means NO HOOK WAS SUPPLIED — the counter-absence distinction this
+    /// module keeps everywhere ([`SeatCounters`]'s own rule), never "the
+    /// predicate was false". An admission arithmetic that read `None` as `false`
+    /// would silently put every hook-free playout in the losing group.
+    ///
+    /// **The turn is ROOT + forced candidate + the mover's remaining moves**,
+    /// and the candidate is decision ZERO of it rather than something that
+    /// happened before it — see [`adjudicate_root_with`] for the derivation and
+    /// for why the predicate's first argument is the PRE-candidate root.
+    pub turn_verdict: Option<bool>,
 }
 
 /// ONE root candidate, with every replication's playout of it.
@@ -3858,6 +3873,17 @@ pub enum AdjudicationError {
     /// a standing and every game has a rival), typed rather than panicking
     /// because an instrument that aborts is worse than one that refuses.
     Unscorable { seat: PlayerId },
+    /// A TURN HOOK was supplied and the mover's own applied moves would not
+    /// re-apply, so the hand-off the predicate is evaluated at could not be
+    /// rebuilt (Phase C).
+    ///
+    /// An engine bug rather than an answer — these are moves the driver ALREADY
+    /// applied in this same playout — and typed rather than `expect`ed on
+    /// [`Unscorable`]'s grounds: an instrument that aborts is worse than one
+    /// that refuses. Never a `None` verdict: a playout silently missing its
+    /// verdict would land in no admission group and shrink a denominator
+    /// invisibly.
+    HandoffReplay { candidate: Box<Move>, replication: u32, detail: String },
 }
 
 impl std::fmt::Display for AdjudicationError {
@@ -3886,6 +3912,11 @@ impl std::fmt::Display for AdjudicationError {
             Self::Unscorable { seat } => {
                 write!(f, "the final result carries no margin for seat {}", seat.0)
             }
+            Self::HandoffReplay { candidate, replication, detail } => write!(
+                f,
+                "replication {replication} of {candidate:?} played moves that do not re-apply, so \
+                 the turn hand-off the turn predicate reads could not be rebuilt: {detail}"
+            ),
         }
     }
 }
@@ -3989,6 +4020,88 @@ pub fn adjudicate_root(
     replications: u32,
     opts: DrivenOpts,
 ) -> Result<Adjudication, AdjudicationError> {
+    adjudicate_root_with(source, seats, rules, master, replications, opts, None)
+}
+
+/// The MOVER'S FIRST TURN inside one playout, rebuilt by replay from the moves
+/// the playout applied (Phase C, design §2's adjudicator hook).
+///
+/// **Why a replay and not an observer**: a playout runs through
+/// `play_from_state`, which exposes no per-move hook, so the only honest way to
+/// name the hand-off is the repo's canonical reconstruction pattern —
+/// `record::state_at` and the CLI's `why` both rebuild a position by re-applying
+/// a recorded move list, and this is that pattern scoped to one turn.
+///
+/// **`after` is ROOT + THE FORCED CANDIDATE**, so the candidate is decision ZERO
+/// of the turn and is already applied when this starts. The walk then takes the
+/// mover's applied moves up to the FIRST non-mover move, stopping early the
+/// moment the turn ends (`current_player` moves off the mover, or the game ends)
+/// — the same dual stop [`drive_turn`] documents, for the same reason: the
+/// game-end arm of `advance_phase` never writes `current_player`, so neither
+/// condition implies the other.
+///
+/// Cost: at most one turn of re-applies per playout, and only when a hook is
+/// supplied.
+fn turn_handoff_from_playout(
+    after: &GameState,
+    mover: PlayerId,
+    applied: &[AppliedMove],
+    rules: &Rules,
+) -> Result<GameState, String> {
+    // DECLARED PLACEHOLDER (Phase C T4 wave A, RED): the remainder is not walked
+    // at all, so the hook sees the POST-CANDIDATE state as its hand-off. The
+    // hand-walked pins fail on their assertions rather than on a compile error,
+    // and the corner where the candidate IS the whole turn passes — which is
+    // exactly the half a placeholder should already get right.
+    let _ = (mover, applied, rules);
+    Ok(after.clone())
+}
+
+/// A TURN PREDICATE, as [`adjudicate_root_with`] takes it: `(root, hand-off) ->
+/// bool`.
+///
+/// Named rather than spelled inline at the one call site, because the two
+/// arguments are NOT interchangeable and a name is where that can be said: the
+/// first is the ADJUDICATED ROOT, pre-candidate, and the second is where the
+/// mover's first turn ENDED. `game::driven_families::TurnPredicate` is the
+/// frozen vocabulary of rules that fit here; this alias keeps `driven` itself
+/// from depending on that module.
+pub type TurnHook<'a> = &'a dyn Fn(&GameState, &GameState) -> bool;
+
+/// [`adjudicate_root`] with design §2's optional TURN-PREDICATE HOOK — the form
+/// turn-grain admission (design §4) is computed from.
+///
+/// Every playout is stamped with [`CandidatePlayout::turn_verdict`]: whether the
+/// mover's FIRST TURN out of this root satisfied `turn_hook`. `None` supplies no
+/// hook and every verdict reads `None`, which is byte-for-byte what
+/// [`adjudicate_root`] produced before this seam existed.
+///
+/// **THE HOOK'S FIRST ARGUMENT IS THE ADJUDICATED ROOT, PRE-CANDIDATE**, and the
+/// rule is load-bearing rather than a convention. The mover's turn INCLUDES the
+/// forced candidate — the candidate is its decision zero — so a predicate that
+/// asks "did this turn claim an achievement?" must compare against the state
+/// BEFORE the candidate. Handed the post-candidate state instead, a playout
+/// whose forced candidate IS the claim would compare a grown claimed-set against
+/// an already-grown one, read FALSE, and land in the losing group — inverting
+/// exactly the dominance partition design §4's admission is computed from.
+/// `the_claim_first_playout_is_a_true_verdict_not_a_false_one` pins it.
+///
+/// The second argument is the HAND-OFF: root + candidate + the mover's remaining
+/// moves, rebuilt by [`turn_handoff_from_playout`].
+///
+/// A hook is a [`TurnHook`] — `&dyn Fn`, not a generic parameter — so that the
+/// two entry points share ONE body: a generic would make `adjudicate_root`'s
+/// delegation pick a turbofished stand-in type for "no hook", which is a second
+/// thing to keep correct for no gain at one call per playout.
+pub fn adjudicate_root_with(
+    source: &RootSource,
+    seats: &[SeatSpec],
+    rules: &Rules,
+    master: WorldSeed,
+    replications: u32,
+    opts: DrivenOpts,
+    turn_hook: Option<TurnHook<'_>>,
+) -> Result<Adjudication, AdjudicationError> {
     if replications == 0 {
         return Err(AdjudicationError::NoReplications);
     }
@@ -4049,6 +4162,24 @@ pub fn adjudicate_root(
             })?;
             let v = verdict(&outcome.result, mover)
                 .ok_or(AdjudicationError::Unscorable { seat: mover })?;
+            // The TURN VERDICT, derived from the moves this playout applied —
+            // and evaluated against the PRE-CANDIDATE root, per this function's
+            // doc. Skipped entirely without a hook, so the hook-free path pays
+            // not one re-apply.
+            let turn_verdict = match turn_hook {
+                Some(hook) => {
+                    let handoff =
+                        turn_handoff_from_playout(&after, mover, &outcome.applied, rules).map_err(
+                            |detail| AdjudicationError::HandoffReplay {
+                                candidate: Box::new(candidate.clone()),
+                                replication,
+                                detail,
+                            },
+                        )?;
+                    Some(hook(&root, &handoff))
+                }
+                None => None,
+            };
             if witness.is_none() {
                 witness = Some(outcome.provenance.clone());
             }
@@ -4065,6 +4196,7 @@ pub fn adjudicate_root(
                 decisions: outcome.decisions,
                 turns: outcome.final_state.turn_number,
                 final_digest: state_digest(&outcome.final_state),
+                turn_verdict,
             });
         }
         rows.push(CandidateRow { candidate, continuation_digest, playouts });
@@ -4119,6 +4251,7 @@ mod tests {
         PresidentLocation, TradingHouseState, TurnPhase,
     };
     use std::collections::BTreeMap;
+    use std::cell::RefCell;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
 
@@ -6430,6 +6563,9 @@ mod tests {
             decisions: 0,
             turns: 0,
             final_digest: String::new(),
+            // No hook ran over a hand-built playout — the counter-absence
+            // reading, never a false verdict.
+            turn_verdict: None,
         }
     }
 
@@ -9436,5 +9572,192 @@ mod tests {
             "the race-rusher seat reported an explanation account it does not have",
         );
         assert!(outcome.seats[0].applied_moves > 0, "anti-vacuity: the seat never moved");
+    }
+
+    // =======================================================================
+    // PHASE C T4: the adjudicator's TURN HOOK
+    // =======================================================================
+
+    /// Walk the mover's own turn out of a playout BY HAND, through the CHECKED
+    /// `apply_move` — a second, independent application of the moves the driver
+    /// reported, so a derivation that agreed with itself and with nothing else
+    /// fails here.
+    ///
+    /// The walk is the design's rule read literally: start at ROOT + the forced
+    /// candidate; if that already ended the turn, stop; otherwise apply the
+    /// playout's moves while they belong to the mover, stopping the moment the
+    /// game ends or the seat changes.
+    fn hand_walk_turn(
+        after: &GameState,
+        mover: PlayerId,
+        applied: &[AppliedMove],
+        rules: &Rules,
+    ) -> GameState {
+        let mut state = after.clone();
+        if is_game_over(&state) || state.current_player != mover {
+            return state;
+        }
+        for (i, step) in applied.iter().enumerate() {
+            if step.seat != mover {
+                break;
+            }
+            state = apply_move(&state, &step.mv, rules)
+                .unwrap_or_else(|e| panic!("hand-walk move {i} does not re-apply: {e}"));
+            if is_game_over(&state) || state.current_player != mover {
+                break;
+            }
+        }
+        state
+    }
+
+    /// Run an adjudication with a RECORDING hook and return what the hook saw,
+    /// in call order: `(first-argument digest, second-argument digest)` per
+    /// playout.
+    fn recorded_hook_args(
+        root: &GameState,
+        seats: &[SeatSpec],
+        rules: &Rules,
+        master: WorldSeed,
+        replications: u32,
+    ) -> (Adjudication, Vec<(String, String)>) {
+        let seen: RefCell<Vec<(String, String)>> = RefCell::new(Vec::new());
+        let adj = adjudicate_root_with(
+            &RootSource::Constructed(root.clone()),
+            seats,
+            rules,
+            master,
+            replications,
+            DrivenOpts::default(),
+            Some(&|r: &GameState, h: &GameState| {
+                seen.borrow_mut().push((state_digest(r), state_digest(h)));
+                true
+            }),
+        )
+        .expect("the fixture adjudicates");
+        (adj, seen.into_inner())
+    }
+
+    /// **THE HOOK'S TWO ARGUMENTS**: the ADJUDICATED ROOT (pre-candidate) and
+    /// the HAND-WALKED hand-off.
+    ///
+    /// The first half is plan MUST-3b's rule, asserted rather than commented: a
+    /// hook handed the post-candidate state would invert family 4's dominance
+    /// partition, and the anti-vacuity is that the two digests genuinely differ
+    /// at every row here (`continuation_digest` is what the wrong argument would
+    /// have been).
+    ///
+    /// The second half is the derivation itself, checked against an independent
+    /// walk through the CHECKED `apply_move` over the moves a re-driven playout
+    /// applied. The root is a BRANCHING mid-game position, so the hand-offs are
+    /// real hand-offs — a near-terminal fixture would exercise only the
+    /// game-over branch, which the next cell covers on purpose.
+    #[test]
+    fn the_turn_hook_reads_the_pre_candidate_root_and_the_hand_walked_hand_off() {
+        let rules = Rules::standard();
+        let root = branching_root(&rules, world(90), 300, 8);
+        let mover = root.current_player;
+        let master = world(91);
+        let seats = rung_seats();
+
+        let (adj, seen) = recorded_hook_args(&root, &seats, &rules, master, 1);
+        assert!(adj.candidates() >= 8, "anti-vacuity: the root offers {} candidates", adj.candidates());
+        assert_eq!(seen.len(), adj.candidates(), "one hook call per playout, in row order");
+
+        let root_digest = state_digest(&root);
+        for (index, (first, handoff)) in seen.iter().enumerate() {
+            let row = &adj.rows[index];
+            assert_eq!(
+                *first, root_digest,
+                "row {index}'s hook saw a first argument that is not the adjudicated root",
+            );
+            assert_ne!(
+                *first, row.continuation_digest,
+                "the fixture does not separate the two readings at row {index}",
+            );
+
+            // The independent walk: re-drive the SAME continuation in the SAME
+            // replication world and follow the mover's own moves by hand.
+            let after = apply_move(&root, &row.candidate, &rules)
+                .expect("a listed candidate applies through the checked boundary");
+            let outcome = drive_to_terminal(
+                &after,
+                &seats,
+                &rules,
+                replication_world(master, 0),
+                DrivenOpts::default(),
+            )
+            .expect("the remainder drives");
+            let walked = hand_walk_turn(&after, mover, &outcome.applied, &rules);
+            assert_eq!(
+                *handoff,
+                state_digest(&walked),
+                "row {index}: the hook's hand-off is not where the mover's own moves lead",
+            );
+        }
+
+        // The hand-offs are HAND-OFFS, not a whole game and not the candidate
+        // alone: at least one row's turn ran past its forced candidate and
+        // stopped before the terminal state the playout reached.
+        let moved_on = adj.rows.iter().enumerate().any(|(index, row)| {
+            seen[index].1 != row.continuation_digest && seen[index].1 != row.playouts[0].final_digest
+        });
+        assert!(moved_on, "no row's hand-off sits strictly between the candidate and the end");
+    }
+
+    /// The corner where the forced candidate IS the whole turn, in both of its
+    /// shapes — and the one where the walk runs on past it.
+    ///
+    /// `last_move_root`'s only candidate ENDS THE GAME, so the post-candidate
+    /// state is already terminal and the mover has no remainder at all: the
+    /// hand-off must be that state exactly (the continuation digest), never the
+    /// playout's own final digest reached by somebody else's moves.
+    /// `near_terminal_building_root` is the other half — the mover keeps playing
+    /// after its forced build and the turn ends the game, so the hand-off is the
+    /// TERMINAL state and the walk covered at least one remainder move.
+    #[test]
+    fn a_forced_candidate_that_ends_the_turn_is_the_whole_turn_the_hook_reads() {
+        let rules = Rules::standard();
+        let master = world(92);
+        let seats = rung_seats();
+
+        // (a) the candidate itself ends the game.
+        let root = last_move_root(&rules, 7, 6, 10);
+        let (adj, seen) = recorded_hook_args(&root, &seats, &rules, master, 1);
+        assert_eq!(adj.candidates(), 1, "the fixture's premise: one forced candidate");
+        assert_eq!(adj.rows[0].candidate, Move::EndAdditionalPhase);
+        assert_eq!(seen[0].0, state_digest(&root), "the first argument is still the root");
+        assert_eq!(
+            seen[0].1, adj.rows[0].continuation_digest,
+            "a candidate that ends the game leaves a remainder of exactly nothing",
+        );
+        assert_eq!(adj.rows[0].playouts[0].decisions, 0, "the fixture's premise: no remainder");
+
+        // (b) the candidate is followed by more of the mover's own turn, and the
+        // turn ends the game.
+        let (root, mover, _) = near_terminal_building_root(&rules, 8, [3, 4, 5, 0], 6, 10);
+        let (adj, seen) = recorded_hook_args(&root, &seats, &rules, master, 1);
+        assert_eq!(adj.candidates(), expected_building_candidates().len());
+        for (index, row) in adj.rows.iter().enumerate() {
+            let after = apply_move(&root, &row.candidate, &rules).expect("a listed candidate applies");
+            let outcome = drive_to_terminal(
+                &after,
+                &seats,
+                &rules,
+                replication_world(master, 0),
+                DrivenOpts::default(),
+            )
+            .expect("the remainder drives");
+            assert!(
+                outcome.applied.iter().any(|m| m.seat == mover),
+                "row {index}'s premise: the mover plays on after its forced build",
+            );
+            let walked = hand_walk_turn(&after, mover, &outcome.applied, &rules);
+            assert!(is_game_over(&walked), "row {index}: this fixture's turn ends the game");
+            assert_eq!(seen[index].1, state_digest(&walked), "row {index}'s hand-off");
+            assert_ne!(
+                seen[index].1, row.continuation_digest,
+                "row {index}: the walk did not run past the forced candidate",
+            );
+        }
     }
 }
