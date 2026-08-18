@@ -4048,13 +4048,23 @@ fn turn_handoff_from_playout(
     applied: &[AppliedMove],
     rules: &Rules,
 ) -> Result<GameState, String> {
-    // DECLARED PLACEHOLDER (Phase C T4 wave A, RED): the remainder is not walked
-    // at all, so the hook sees the POST-CANDIDATE state as its hand-off. The
-    // hand-walked pins fail on their assertions rather than on a compile error,
-    // and the corner where the candidate IS the whole turn passes — which is
-    // exactly the half a placeholder should already get right.
-    let _ = (mover, applied, rules);
-    Ok(after.clone())
+    let mut state = after.clone();
+    // The forced candidate may BE the whole turn: a candidate that hands off (or
+    // ends the game) leaves a mover-prefix of exactly nothing, and walking the
+    // remainder's moves would then attribute the OPPONENT's turn to this mover.
+    if is_game_over(&state) || state.current_player != mover {
+        return Ok(state);
+    }
+    for step in applied {
+        if step.seat != mover {
+            break;
+        }
+        state = apply_move_unchecked(&state, &step.mv, rules).map_err(|e| e.to_string())?;
+        if is_game_over(&state) || state.current_player != mover {
+            break;
+        }
+    }
+    Ok(state)
 }
 
 /// A TURN PREDICATE, as [`adjudicate_root_with`] takes it: `(root, hand-off) ->

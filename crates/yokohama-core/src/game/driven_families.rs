@@ -122,11 +122,17 @@ impl ContestedStep {
     /// behaviour is TAKING the step, and denial-as-strategy is a claim this
     /// phase does not make.
     pub fn held_by(self, state: &GameState, mover: PlayerId, rules: &Rules) -> bool {
-        // DECLARED PLACEHOLDER (T4 wave A, RED): nothing is ever held, so the
-        // positive arms fail on assertions and the denial arms pass vacuously —
-        // which is exactly the asymmetry the ill-formed-step pin is about.
-        let _ = doubled_industry_value(state, mover, rules);
-        false
+        match self {
+            Self::ChurchSpace { faith } => ChurchTrack::faith_to_index(faith)
+                .and_then(|i| state.church_track.slots[i])
+                .is_some_and(|slot| slot.player == mover),
+            Self::CustomsSpace { space } => CustomsTrack::space_to_index(space)
+                .and_then(|i| state.customs_track.slots[i])
+                .is_some_and(|slot| slot.player == mover),
+            Self::TechMajorityRankPast { doubled_threshold } => {
+                doubled_industry_value(state, mover, rules) > doubled_threshold
+            }
+        }
     }
 }
 
@@ -225,13 +231,18 @@ impl TurnPredicate {
     /// hand-off would judge the OPPONENT's achievements and the OPPONENT's track
     /// spaces at exactly the positions the family cares about.
     pub fn eval(&self, root: &GameState, handoff: &GameState, rules: &Rules) -> bool {
-        // DECLARED PLACEHOLDER (T4 wave A, RED): every predicate reads false,
-        // so each arm's positive pin fails on its assertion while its inversion
-        // control passes — the two halves are separately visible in the RED
-        // output.
         let mover = root.current_player;
-        let _ = (claimed_types(handoff, mover), rules);
-        false
+        match self {
+            Self::EndFired => handoff.end_game_triggered,
+            Self::NotEndFired => !handoff.end_game_triggered,
+            Self::AchievementClaimed => {
+                let before = claimed_types(root, mover);
+                let after = claimed_types(handoff, mover);
+                after.len() > before.len() && before.iter().all(|t| after.contains(t))
+            }
+            Self::ContestedStepTaken(step) => step.held_by(handoff, mover, rules),
+            Self::DenialNotTaken(step) => !step.held_by(handoff, mover, rules),
+        }
     }
 
     /// The stable name, for reports and freeze documents.
@@ -342,11 +353,18 @@ pub const DEAD_SPREAD_BOUND: i64 = 4;
 /// this classification — it is what "the candidates are literally
 /// indistinguishable" means, and it is a different (and rarer) statement.
 pub fn classify_dead(adj: &Adjudication, spread_bound: i64) -> bool {
-    // DECLARED PLACEHOLDER (T4 wave A, RED): the MUST-1 criterion is not
-    // implemented yet, so the measured-session cell fails on its assertion
-    // while the two LIVE cells pass — the RED output separates the halves.
-    let _ = (adj, spread_bound);
-    false
+    if adj.rows.is_empty() {
+        return false;
+    }
+    if adj.rows.iter().any(|row| row.wins() > 0) {
+        return false;
+    }
+    let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+    for mean in adj.rows.iter().map(|row| row.mean_margin()) {
+        lo = lo.min(mean);
+        hi = hi.max(mean);
+    }
+    hi - lo <= spread_bound as f64
 }
 
 
