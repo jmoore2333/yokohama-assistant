@@ -2434,6 +2434,23 @@ fn verdict(result: &GameResult, mover: PlayerId) -> Option<Verdict> {
 /// unable to report the position an adjudication walks into whenever a candidate
 /// ends the game.
 ///
+/// **The root arrives as a [`RootSource`], not a bare state**, for
+/// [`drive_rooted`]'s reason: the table names its root ONCE in provenance, and a
+/// descriptor the adjudicator rebuilt from a state it was handed could never say
+/// more than "someone gave me this position". A caller holding only a state
+/// passes `RootSource::Constructed`, which is exactly what that means.
+///
+/// **COST, stated because nothing here bounds it.** This is
+/// `candidates × K` whole games. The candidate count is the ENGINE's at that
+/// root — one at a forced decision, ~5 at a Building point, and up to the
+/// hundreds at a money-saturated Movement point (route_enum's ledger L9: max
+/// OBSERVED 694 adversarial, 66 organic under the shipped rung, no ceiling
+/// known) — so the sizing choices are the ROOT and the reply seats, not a knob
+/// on this function. Rungs reply in milliseconds per game; an uncapped
+/// `lookahead-v1` reply does not, and a caller putting one on both seats of a
+/// wide root is asking for hours. `DrivenOpts::max_decisions` bounds each
+/// playout's length, never the table's width.
+///
 /// **What each playout's own provenance says, and why it is not the root's.** A
 /// playout starts at ROOT + one forced candidate — a state THIS MODULE built —
 /// so its descriptor is `Constructed`, stamped on the state actually driven.
@@ -4722,6 +4739,18 @@ mod tests {
         (state, mover)
     }
 
+    /// The same fixture one phase later: `AdditionalActionSecond`, where the
+    /// mover's ONLY candidate is `EndAdditionalPhase` and applying it ends the
+    /// game outright — so the remainder after the forced move is EMPTY.
+    fn last_move_root(rules: &Rules, seed: u64, mover_vp: u32, rival_vp: u32) -> GameState {
+        let (mut state, _, _) =
+            near_terminal_building_root(rules, seed, [0; 4], mover_vp, rival_vp);
+        state.turn_phase = TurnPhase::AdditionalActionSecond;
+        check_invariants(&state, rules).expect("still a state the engine accepts");
+        assert!(!is_game_over(&state));
+        state
+    }
+
     /// The five candidates the fixture's Building root offers, in the
     /// generator's own order.
     fn expected_building_candidates() -> Vec<Move> {
@@ -4956,6 +4985,56 @@ mod tests {
         // Vacuously true, and the doc says so — a caller reading "dead" off an
         // empty table is reading a FINISHED GAME, which is a different fact.
         assert!(table.all_candidates_equal());
+    }
+
+    /// A candidate that ENDS THE GAME leaves a remainder of exactly nothing —
+    /// and the adjudicator reports it, rather than refusing.
+    ///
+    /// This is the other half of the terminal contract, and the half that joins
+    /// the two tasks: `drive_to_terminal`'s zero-move `Ok` was written FOR this
+    /// call site ("a candidate that ends the game leaves a remainder of exactly
+    /// nothing — refusing it would make 'this move wins immediately' the one
+    /// answer the instrument could not report"), and until now nothing exercised
+    /// it THROUGH the adjudicator. The cell above pins a terminal ROOT; this one
+    /// pins a terminal CONTINUATION, which is the case a real final-turn root
+    /// walks into.
+    ///
+    /// The margin is the banked difference with nothing added: 6 against 10.
+    #[test]
+    fn a_candidate_that_ends_the_game_plays_out_to_a_zero_move_remainder() {
+        let rules = Rules::standard();
+        let root = last_move_root(&rules, world(55).0, 6, 10);
+        let mover = root.current_player;
+        let table = adjudicate_root(
+            &RootSource::Constructed(root),
+            &rung_seats(),
+            &rules,
+            world(56),
+            2,
+            DrivenOpts::default(),
+        )
+        .expect("a final-move root adjudicates");
+
+        assert_eq!(
+            table.rows.iter().map(|r| r.candidate.clone()).collect::<Vec<_>>(),
+            vec![Move::EndAdditionalPhase],
+            "the fixture's whole point is that this decision is FORCED",
+        );
+        let row = &table.rows[0];
+        assert_eq!(row.playouts.len(), 2);
+        for p in &row.playouts {
+            assert_eq!(p.decisions, 0, "the forced move ended the game: no remainder to play");
+            assert_eq!(p.margin, -4, "6 banked against 10, with nothing added");
+            assert_eq!((p.mover_total, p.best_rival_total), (6, 10));
+            assert!(!p.won);
+            assert_eq!(p.rank, 2);
+        }
+        assert_eq!(table.mover, mover);
+        // ...and a one-row table is vacuously "all equal", which is a FORCED
+        // position rather than a dead one — the distinction the helper's doc
+        // makes, exercised here rather than only stated.
+        assert!(table.all_candidates_equal());
+        assert_eq!(table.candidates(), 1);
     }
 
     // -----------------------------------------------------------------------
