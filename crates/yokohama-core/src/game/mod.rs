@@ -76,6 +76,16 @@ pub mod eval_screen;
 /// `driven` seats its agents in the arena's own bench and drives the arena's own
 /// loop, which is the property its reproduction pin exists to keep true.
 pub mod driven;
+/// [`driven`]'s RUNNER: the argv grammar and the report rendering behind
+/// `examples/driven.rs`. NAMESPACED for the same reason its subject is, and
+/// SEPARATE from `driven` itself because the harness answers questions while
+/// this only decides which question was asked and how to lay the answer out.
+///
+/// It lives in the LIB rather than in the example because an example's
+/// `#[cfg(test)]` module runs under no command this repo documents — so a
+/// grammar and a renderer written there would be untested by every per-edit
+/// gate. Callers write `driven_runner::run`.
+pub mod driven_runner;
 
 pub use power::*;
 pub use movement::*;
