@@ -595,12 +595,10 @@ pub fn admission(
 /// before it gets there — so a stated constant beats an `Option` that every
 /// caller would unwrap.
 fn mean(values: &[i64]) -> f64 {
-    // DECLARED PLACEHOLDER (T4 wave B, RED): every group mean reads 0.0, so
-    // every difference is 0 and no dominance can fire — the group-arithmetic
-    // and verdict pins fail on assertions while the CannotDemonstrate arms,
-    // which are about group EMPTINESS rather than about margins, still pass.
-    let _ = values;
-    0.0
+    if values.is_empty() {
+        return 0.0;
+    }
+    values.iter().sum::<i64>() as f64 / values.len() as f64
 }
 
 // ---------------------------------------------------------------------------
@@ -637,11 +635,9 @@ pub const SALT_DRIVEN_FAMILY_READ: u64 = 0xA3E1_D21E_0000_0008;
 /// state: any `GameState` that serializes produces sixteen hex characters, and a
 /// state that does not serialize could not have reached this function.
 pub fn root_word(root: &GameState) -> u64 {
-    // DECLARED PLACEHOLDER (T4 wave B, RED): every root reads word 0, so the
-    // derivation pin and the distinct-roots-distinct-streams pin both fail
-    // while the mix itself stays real.
-    let _ = root;
-    0
+    let digest = state_digest(root);
+    u64::from_str_radix(&digest, 16)
+        .expect("state_digest is sixteen hex characters encoding one u64")
 }
 
 /// The decision seed replication `r` of a read at `root` is taken at.
@@ -899,13 +895,6 @@ impl FamilyReadOutcome {
 /// closed form `1 − alpha^(1/n)`, which the tests pin this bisection against.
 /// `k >= n` is total certainty and returns 1.0.
 fn clopper_pearson_upper(k: u32, n: u32, alpha: f64) -> f64 {
-    // DECLARED PLACEHOLDER (T4 wave B, RED): certainty at every count, so the
-    // binomial-line pins fail on their arithmetic rather than on a compile
-    // error.
-    if true {
-        let _ = binomial_cdf(k, n, alpha);
-        return 1.0;
-    }
     if n == 0 || k >= n {
         return 1.0;
     }
@@ -1036,15 +1025,29 @@ pub fn family_read(
     // for an answer already refused.
     let table = root_table(root, root.current_player, contestant, rules, seed_of(0))
         .map_err(|error| FamilyReadError::Table { replication: 0, error })?;
-    // DECLARED PLACEHOLDER (T4 wave B, RED): the hard-refuse check and the
-    // tie/band annotations are not wired, so the counter-refusal pin and the
-    // annotation pin fail on assertions while the rest of the read runs.
-    let _ = (refusing_stats(&table), refusing_counters(&SeatCounters::NONE));
+    let refusing = refusing_stats(&table);
+    if !refusing.is_empty() {
+        return Err(FamilyReadError::CounterRefusal {
+            site: CounterSite::RootTable,
+            counters: refusing,
+        });
+    }
 
-    let annotations: Vec<CounterAnnotation> = Vec::new();
+    let mut annotations: Vec<CounterAnnotation> = Vec::new();
     let tied_at_top = table.tied_at_top();
     let top_band = table.top_band();
-    let _ = TOP_BAND_POINTS;
+    if tied_at_top > 1 {
+        annotations.push(CounterAnnotation::TiedAtTop { candidates: tied_at_top });
+    }
+    if top_band > tied_at_top {
+        annotations
+            .push(CounterAnnotation::TopBand { candidates: top_band, points: TOP_BAND_POINTS });
+    }
+    if table.stats.placement_cap_binds > 0 {
+        annotations.push(CounterAnnotation::PlacementCapBinds {
+            count: table.stats.placement_cap_binds,
+        });
+    }
     let counter_check = CounterCheck {
         tied_at_top,
         top_band,
@@ -1066,6 +1069,13 @@ pub fn family_read(
                 // SHOULD-6: the WHOLE turn's counters reach the filter, not just
                 // the root decision's — a mid-turn cap hit is exactly the thing a
                 // replication-0 table cannot see.
+                let refusing = refusing_counters(&outcome.counters);
+                if !refusing.is_empty() {
+                    return Err(FamilyReadError::CounterRefusal {
+                        site: CounterSite::Replication(replication),
+                        counters: refusing,
+                    });
+                }
                 ReplicationRead {
                     replication,
                     decision_seed,
@@ -1089,6 +1099,13 @@ pub fn family_read(
                     root_table(root, root.current_player, contestant, rules, decision_seed)
                         .map_err(|error| FamilyReadError::Table { replication, error })?
                 };
+                let refusing = refusing_stats(&table);
+                if !refusing.is_empty() {
+                    return Err(FamilyReadError::CounterRefusal {
+                        site: CounterSite::Replication(replication),
+                        counters: refusing,
+                    });
+                }
                 ReplicationRead {
                     replication,
                     decision_seed,
