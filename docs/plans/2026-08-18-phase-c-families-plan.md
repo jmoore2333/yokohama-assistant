@@ -240,7 +240,7 @@ pub fn classify_dead(adj: &Adjudication, spread_bound: i64) -> bool;
 pub struct AdmissionRead { /* per-policy: group means, delta, both-nonempty, verdict;
                               plus the sole-dissenter flag and exclusion routing */ }
 pub fn admission(adjs: &[(ReplyPolicy, Adjudication)], delta: i64, control: bool) -> AdmissionRead;
-pub const SALT_DRIVEN_FAMILY_READ: u64 = 0xA3E1_D21E_0000_0007; // next serial after SALT_DRIVEN_REPLICATION
+pub const SALT_DRIVEN_FAMILY_READ: u64 = 0xA3E1_D21E_0000_0008; // next free D21E serial (0006 = SALT_DRIVEN_REPLICATION; 0007 was consumed by T3's SALT_DRIVEN_RACE_PROBE — orchestrator ruling at T3 adjudication: first consumer keeps the serial)
 pub struct FamilyReadOutcome { /* per-replication verdicts+picks, miss count, binomial line,
                                   counter check, refusal arm */ }
 pub fn family_read(root: &GameState, subject: SeatSpec, rule: &PassRule, r: u32,
@@ -391,7 +391,8 @@ command. Steps:
    — legitimate and stated; then 2-positive, 2-control, 4), one seed master per builder
    family (3-positive, 3-control, 4-proximity corner), ONE admission/read master per family
    (sound because the two instruments mix under DIFFERENT salts —
-   `SALT_DRIVEN_REPLICATION` …0006 vs `SALT_DRIVEN_FAMILY_READ` …0007 — said out loud,
+   `SALT_DRIVEN_REPLICATION` …0006 vs `SALT_DRIVEN_FAMILY_READ` …0008 (0007 = T3's
+   `SALT_DRIVEN_RACE_PROBE`) — said out loud,
    plan review NOTE-5), plus the opening-probe master. 9999-scratch for any command-shape
    smoke.
 1. **Pilots** (`--block pilot`): supply rates (live-root rate for family 1;
