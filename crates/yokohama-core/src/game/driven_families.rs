@@ -433,6 +433,25 @@ pub fn classify_dead(adj: &Adjudication, spread_bound: i64) -> bool {
     hi - lo <= spread_bound as f64
 }
 
+/// DEAD across the WHOLE declared menu: [`classify_dead`] per policy, AND-ed
+/// (design §4's NOTE-2 — a root the reply menu disagrees about is not
+/// indifferent).
+///
+/// **Split out of `run_one_root` for [`family_verdict`]'s reason** (T5 review
+/// MUST-1): the AND lived inline in the run, and every block a test can afford
+/// declares a SINGLE-POLICY menu — where AND and OR are the same function, so
+/// mutating one into the other passed the whole library. As its own function the
+/// MIXED vectors are one call each, and they are what this rule is about.
+///
+/// **An EMPTY vector is NOT dead** — deliberately, and not the vacuous truth
+/// `all` would give: no policy adjudicated the root, so nothing found it
+/// indifferent, and a `true` here would exclude every root of a menu-less
+/// declaration as dead. It is the same trap [`classify_dead`] states for an
+/// empty candidate table, one level up.
+fn dead_across_menu(dead_by_policy: &[(ReplyPolicy, bool)]) -> bool {
+    !dead_by_policy.is_empty() && dead_by_policy.iter().all(|(_, dead)| *dead)
+}
+
 
 // ---------------------------------------------------------------------------
 // Root admission (design §4, review MUST-2/MUST-4)
@@ -1817,8 +1836,12 @@ fn self_check_race_root(
 ///    plus 6 majority against a 1 VP bill, **+13**. (The five masks read +7,
 ///    +8, +7, +12, +13.)
 /// 6. Best line ENDING on Faith 4: the free mask — 3 printed plus 3 majority
-///    against a 0 VP bill, **+6**. (Every paying mask reaches the same space
-///    for 1 VP less.)
+///    against a 0 VP bill, **+6**. (The `k = 1` mask TIES it at +6 rather than
+///    trailing it — three goods still score 1, so paying ONE type costs
+///    nothing, which is step 3's own bill read at `k = 1`. It is the masks
+///    paying `k ≥ 2` that reach the same space for 1 VP less. The best DENIAL
+///    line is therefore +6 either way, which is what the forfeit below
+///    subtracts.)
 ///
 /// Hence [`NO_DENIAL_FORFEIT_VP`] = 13 − 6 = 7, identical at every draw (the
 /// declared parameters shift both sides or neither), and asserted by the
@@ -2284,6 +2307,25 @@ pub const PROXIMITY_CORNER_GENERATOR: FamilyGenerator = FamilyGenerator::Builder
     name: "build_achievement_proximity",
 };
 
+/// Family 2's declared CONTROL generator (design §1 family 2: "a behind mover
+/// should hand off WITHOUT firing"), an arm of family 2 for
+/// [`RACE_CONTROL_GENERATOR`]'s reason.
+///
+/// It is the EXACT COMPLEMENT of family 2's positive generator on the truth-margin
+/// conjunct — [`RootPredicate::EndFirableBehindInTruth`] against
+/// `EndFirableAheadInTruth` — read against `TurnPredicate::NotEndFired`, so a
+/// result that holds on one and not the other is a statement about the SIGN of
+/// the margin rather than about firing. A PREDICATE arm rather than a builder,
+/// unlike the other two declared arms, because the complement is a scan
+/// question and nothing here is constructed.
+///
+/// Declared as a named handle for the same reason the other two are (T5 review
+/// NOTE-4): the design's registry is FOUR families, the control is an ARM of
+/// family 2, and all three control/corner arms now share ONE convention a runner
+/// can expose without a fifth registry row.
+pub const FAMILY2_CONTROL_GENERATOR: FamilyGenerator =
+    FamilyGenerator::Predicate(RootPredicate::EndFirableBehindInTruth);
+
 /// **THE FOUR FROZEN FAMILIES** (design §1), in the design's own order.
 ///
 /// Every declaration is PRE-FREEZE: `confirmatory` is `None` on all four, so a
@@ -2699,6 +2741,24 @@ pub struct RootRow {
     /// honestly `Constructed` because the state was constructed.
     pub ordinal: u32,
     pub descriptor: RootDescriptor,
+    /// The seed a BUILDER draw was built from — the `(ordinal + 1)`-th world of
+    /// `SeedSchedule::diagnostic(master)`.
+    ///
+    /// **Derivable and recorded anyway** (T5 review NOTE-3), which is the
+    /// registry's own lesson made a field: a number a reader must re-derive from
+    /// a schedule is a number that silently re-points the moment the derivation
+    /// moves, and this one identifies a CONSTRUCTED position whose descriptor
+    /// (honestly `Constructed`) names nothing else. With it, `build(seed, rules)`
+    /// reproduces the exact root a row was read at, from the row alone.
+    ///
+    /// **`None` for a PREDICATE draw, and that is the honest shape rather than a
+    /// gap**: a scanned root has no builder and no input seed of its own — its
+    /// identity is the descriptor's `Generated` origin (predicate, master,
+    /// ordinal, game index, and the generating ecology), which is complete. The
+    /// generating GAME's world seed would be a second, differently-derived
+    /// identity sitting beside a sufficient one, so it is deliberately not
+    /// recorded here.
+    pub draw_seed: Option<u64>,
     /// The step this root DECLARED, for a step-carrying rule.
     pub step: Option<ContestedStep>,
     /// The rule as it was RUN — the declaration's rule re-pointed at this root's
@@ -2946,6 +3006,9 @@ struct Draw {
     ordinal: u32,
     state: GameState,
     descriptor: RootDescriptor,
+    /// The builder's input seed, when the draw came from a builder — see
+    /// [`RootRow::draw_seed`], which this becomes verbatim.
+    draw_seed: Option<u64>,
     step: Option<ContestedStep>,
 }
 
@@ -2983,6 +3046,9 @@ fn resolve_draws(
                     ordinal,
                     state,
                     descriptor,
+                    // A scanned root has no builder seed — see
+                    // [`RootRow::draw_seed`] for why that is the honest shape.
+                    draw_seed: None,
                     step: None,
                 })
                 .collect())
@@ -2996,10 +3062,17 @@ fn resolve_draws(
                 .iter()
                 .copied()
                 .map(|ordinal| {
-                    let built = build(seeds[ordinal as usize], rules)
+                    let draw_seed = seeds[ordinal as usize];
+                    let built = build(draw_seed, rules)
                         .map_err(|error| FamilyRunError::Builder { ordinal, error })?;
                     let descriptor = RootDescriptor::constructed(&built.state);
-                    Ok(Draw { ordinal, state: built.state, descriptor, step: built.step })
+                    Ok(Draw {
+                        ordinal,
+                        state: built.state,
+                        descriptor,
+                        draw_seed: Some(draw_seed),
+                        step: built.step,
+                    })
                 })
                 .collect()
         }
@@ -3026,7 +3099,7 @@ fn run_one_root(
     opts: &BlockOpts,
     draw: Draw,
 ) -> Result<RootRow, FamilyRunError> {
-    let Draw { ordinal, state, descriptor, step } = draw;
+    let Draw { ordinal, state, descriptor, draw_seed, step } = draw;
     if decl.rule.names_a_step() {
         match step {
             None => return Err(FamilyRunError::StepNotDeclared { ordinal }),
@@ -3068,7 +3141,9 @@ fn run_one_root(
             }
             // DEAD is judged PER POLICY and AND-ed across the menu (plan review
             // NOTE-2): a root the reply menu disagrees about is not indifferent.
-            dead = !dead_by_policy.is_empty() && dead_by_policy.iter().all(|(_, d)| *d);
+            // The AND is `dead_across_menu`'s, so it is pinnable on mixed
+            // vectors that no affordable block can produce.
+            dead = dead_across_menu(&dead_by_policy);
             !dead
         }
         PassRule::Turn(predicate) => {
@@ -3118,6 +3193,7 @@ fn run_one_root(
     let mut row = RootRow {
         ordinal,
         descriptor,
+        draw_seed,
         step,
         rule,
         admission: admission_read,
@@ -4510,6 +4586,78 @@ mod tests {
         );
     }
 
+    /// **THE PREDICATE-COHERENCE CLAUSE'S OWN RED PATH** (T5 review SHOULD-1).
+    ///
+    /// The sweep above asserts [`RootPredicate::ExclusiveRaceOneStep`] on every
+    /// built root, which is the property — but it asserts it INDEPENDENTLY, so
+    /// deleting the fifth clause of [`self_check_race_root`] left the whole
+    /// library green. This cell is the clause's own falsifier: a position that
+    /// satisfies the other FOUR clauses and that the shipped predicate still
+    /// rejects.
+    ///
+    /// **The separating conjunct is the WIDTH BOUND**, which is the one part of
+    /// the predicate the four shape clauses do not restate: widening the mover
+    /// to all six church payment types takes the root's legal list from 2 moves
+    /// to 65, past [`crate::game::driven::MAX_ROOT_CANDIDATES`], while the step
+    /// stays open, the threat stays public and the mover can still take it. That
+    /// is a REAL disagreement rather than a doctored flag — a root too wide to be
+    /// adjudicated is exactly what the predicate exists to exclude.
+    #[test]
+    fn the_race_self_check_refuses_a_root_the_shipped_predicate_rejects() {
+        let rules = rules();
+        // A CHURCH draw, found rather than assumed: the customs arm's legal list
+        // does not widen with payment types, so a seed-arm re-mapping must fail
+        // this cell loudly instead of quietly making it vacuous.
+        let (mut state, step) = BUILDER_SEEDS
+            .map(|seed| build_race_positive(seed, &rules).expect("builds"))
+            .find(|(_, step)| matches!(step, ContestedStep::ChurchSpace { .. }))
+            .expect("the sweep reaches the church arm");
+        let mover = state.current_player;
+        let opponent = other_seat(&state, mover).expect("a 2P root has a rival");
+
+        // The UNWIDENED root passes the whole self-check — the green half.
+        self_check_race_root(&state, step, mover, opponent, &rules)
+            .expect("the builder's own root satisfies its shape claim");
+
+        // All SIX church payment types at once (the builder's church arm zeroes
+        // every good) ⇒ 2⁶ payment masks in the legal list.
+        {
+            let p = state.player_mut(mover);
+            p.copper = 1;
+            p.silk = 1;
+            p.tea = 1;
+            p.seafood = 1;
+            p.money = 9;
+            p.imported_goods = 3;
+        }
+        assert!(
+            check_invariants(&state, &rules).is_ok(),
+            "the widened root must stay engine-valid, or the cell proves nothing",
+        );
+        assert!(
+            get_legal_moves(&state, &rules).len() > crate::game::driven::MAX_ROOT_CANDIDATES,
+            "the widened root is not past the width bound — the separator moved",
+        );
+        assert!(
+            !RootPredicate::ExclusiveRaceOneStep.holds(&state, &rules),
+            "the shipped predicate still recognises the widened root",
+        );
+
+        // ANTI-VACUITY: the other four clauses still hold, so the refusal below
+        // can only be the fifth.
+        assert!(step.well_formed() && step_is_open(&state, step));
+        assert!(mover_can_take_step(&state, step, &rules));
+        let view = observe(&state, mover).expect("the mover observes its own root");
+        assert!(opponent_one_action_from_step(&view, opponent, step));
+
+        let err = self_check_race_root(&state, step, mover, opponent, &rules)
+            .expect_err("a root the predicate rejects is not a race root");
+        assert!(
+            matches!(err, BuilderError::ShapeCheck { clause: "predicate coherence", .. }),
+            "expected the predicate-coherence clause, got {err}",
+        );
+    }
+
     /// **THE THREAT IS PUBLIC — and it is public BY CONSTRUCTION, not by
     /// assertion.**
     ///
@@ -4941,6 +5089,41 @@ mod tests {
         ));
     }
 
+    /// **DEAD is AND-ed across the menu, pinned on MIXED vectors** — the shape
+    /// no block a test can afford produces (T5 review MUST-1).
+    ///
+    /// Every block cell in this file declares a SINGLE-POLICY menu, where AND
+    /// and OR are the same function: mutating one into the other passed the
+    /// whole library. A one-element vector cannot separate them, so the cells
+    /// that matter here are the two mixed ones — one policy calling the field
+    /// dead and the other calling it live, in BOTH menu orders, so the rule is
+    /// pinned as a conjunction rather than as "whatever the first policy said".
+    #[test]
+    fn dead_is_and_ed_across_the_declared_menu_and_an_empty_menu_is_not_dead() {
+        let p = ReplyPolicy::FamilyWeighted;
+        let q = ReplyPolicy::LookaheadAtFinal;
+
+        // THE DISCRIMINATOR: disagreement is not indifference, either way round.
+        assert!(
+            !dead_across_menu(&[(p, true), (q, false)]),
+            "one policy finding the field LIVE makes the root live",
+        );
+        assert!(
+            !dead_across_menu(&[(p, false), (q, true)]),
+            "the menu's ORDER decided the verdict — this is not the AND",
+        );
+        // Unanimity is the only way to dead.
+        assert!(dead_across_menu(&[(p, true), (q, true)]));
+        assert!(!dead_across_menu(&[(p, false), (q, false)]));
+        // The EMPTY vector is NOT dead — deliberately not `all`'s vacuous truth.
+        assert!(!dead_across_menu(&[]), "no adjudication is not an indifferent field");
+        // A one-policy menu is the degenerate case the block cells exercise, and
+        // it agrees with `classify_dead` verbatim — which is exactly why it can
+        // never discriminate between the two readings above.
+        assert!(dead_across_menu(&[(p, true)]));
+        assert!(!dead_across_menu(&[(p, false)]));
+    }
+
     /// The family-4 RIDER's proximity mirror reproduces a HAND-COMPUTED value.
     ///
     /// The mirror names `examples/eval_probe.rs`'s
@@ -5160,6 +5343,65 @@ mod tests {
         );
     }
 
+    /// **THE BUILDER DRAW'S SEED IS RECORDED, not merely derivable** (T5 review
+    /// NOTE-3) — the registry's own lesson, one level down.
+    ///
+    /// The seed IS derivable: it is the `(ordinal + 1)`-th world of
+    /// `SeedSchedule::diagnostic(master)`. That is exactly what makes recording
+    /// it worth a field — a number a reader must re-derive silently re-points
+    /// the moment the derivation moves, and a builder row's descriptor is
+    /// honestly `Constructed` and so names nothing else at all.
+    ///
+    /// The pin is therefore not "the field is `Some`" but the property the field
+    /// exists for: **the recorded seed rebuilds the row's own root**, digest for
+    /// digest, through the declaration's own builder. The `None` half rides a
+    /// PREDICATE draw, where there is no builder and no input seed and the
+    /// descriptor's `Generated` origin is the whole identity.
+    #[test]
+    fn a_builder_block_records_the_seed_each_root_was_built_from() {
+        let rules = rules();
+        let subject = SeatSpec::Contestant(Contestant::LOOKAHEAD_V1_DEFAULT);
+        let decl = smoke_decl(FamilyLabel::Confirmatory, 2);
+        let report = run_family_block_with(&decl, BlockKind::Pilot, Some(MASTER), subject, &rules,
+            smoke_opts(-1_000))
+            .expect("the smoke block runs");
+        assert_eq!(report.roots.len(), 2);
+
+        // The DECLARED derivation, restated here rather than read off the rows.
+        let mut schedule = SeedSchedule::diagnostic(MASTER);
+        let stream: Vec<u64> = (0..report.roots.len()).map(|_| schedule.next_world().0).collect();
+        for (row, seed) in report.roots.iter().zip(&stream) {
+            assert_eq!(row.draw_seed, Some(*seed), "ordinal {}: the wrong draw", row.ordinal);
+            // THE PROPERTY: the recorded seed rebuilds this row's own root.
+            let rebuilt = smoke_root(*seed, &rules).expect("the recorded seed rebuilds").state;
+            assert_eq!(
+                state_digest(&rebuilt),
+                row.descriptor.root_digest,
+                "ordinal {}: the recorded seed builds another position",
+                row.ordinal,
+            );
+        }
+        // ANTI-VACUITY: two ordinals draw two DIFFERENT seeds, so a field
+        // populated with one constant could not pass.
+        assert_ne!(report.roots[0].draw_seed, report.roots[1].draw_seed);
+
+        // THE `None` HALF, at the cheap (rung) ecology: a scanned draw carries a
+        // `Generated` descriptor and no builder seed. Run through `resolve_draws`
+        // rather than a whole block — the adjudication is not what is under test.
+        let scanned = FamilyDecl {
+            generator: FamilyGenerator::Predicate(RootPredicate::FinalRoundAlreadyTriggered),
+            ..decl
+        };
+        let draws = resolve_draws(&scanned, MASTER, &[0], &rules).expect("the scan finds a root");
+        assert_eq!(draws.len(), 1);
+        assert_eq!(draws[0].draw_seed, None, "a scanned root has no builder seed to record");
+        assert!(
+            matches!(draws[0].descriptor.origin, RootOrigin::Generated { .. }),
+            "the scanned draw's identity is its origin: {:?}",
+            draws[0].descriptor.origin,
+        );
+    }
+
     /// **THE CANNOT-DEMONSTRATE ARM**, through the block: a rule every playout
     /// satisfies has no FALSE group, so the root is recorded-excluded rather
     /// than admitted on a comparison that does not exist.
@@ -5279,6 +5521,48 @@ mod tests {
             unreachable!()
         };
         assert!(corner(0, &rules).expect("builds").step.is_none());
+    }
+
+    /// **THE THIRD DECLARED ARM** (T5 review NOTE-4): family 2's control, beside
+    /// family 3's and family 4's, so all three share ONE convention a runner can
+    /// expose without a fifth registry row.
+    ///
+    /// This one is a PREDICATE arm rather than a builder — the complement is a
+    /// scan question, and nothing about it is constructed — so the pin its two
+    /// siblings get by BUILDING is here the two statements a predicate arm can
+    /// make: it names the predicate the declaration's comment names, and it is
+    /// the EXACT COMPLEMENT of family 2's positive generator on the truth-margin
+    /// sign (same firability, same width, opposite band). A scan is deliberately
+    /// NOT run — family 2 scans the v2 lookahead ecology, which is minutes.
+    #[test]
+    fn the_three_declared_control_and_corner_arms_share_one_convention() {
+        let arms = [
+            FAMILY2_CONTROL_GENERATOR,
+            RACE_CONTROL_GENERATOR,
+            PROXIMITY_CORNER_GENERATOR,
+        ];
+        let names: Vec<&str> = arms.iter().map(FamilyGenerator::name).collect();
+        assert_eq!(names.len(), 3);
+        assert!(names.iter().all(|n| !n.is_empty()), "a declared arm with no name: {names:?}");
+        let mut unique = names.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), 3, "two declared arms answer to one name: {names:?}");
+
+        // Family 2's arm, specifically: the predicate its declaration names.
+        assert_eq!(
+            FAMILY2_CONTROL_GENERATOR,
+            FamilyGenerator::Predicate(RootPredicate::EndFirableBehindInTruth),
+        );
+        // THE COMPLEMENT: family 2's positive generator is the same predicate
+        // with the margin band's sign flipped, and the two are never equal.
+        let positive = families()[1].generator;
+        assert_eq!(
+            positive,
+            FamilyGenerator::Predicate(RootPredicate::EndFirableAheadInTruth),
+            "family 2's positive generator moved out from under its control",
+        );
+        assert_ne!(FAMILY2_CONTROL_GENERATOR, positive, "a control equal to its positive");
     }
 
     /// A step-carrying rule is RE-POINTED at the root's own step, and a root

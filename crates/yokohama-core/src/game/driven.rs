@@ -1703,12 +1703,21 @@ pub enum RootSource {
     /// `Constructed` instead would work and would LIE: every table would record
     /// a root whose origin is "someone gave me this position" when the origin is
     /// a seeded scan a reader can reproduce. This variant is the honest third
-    /// option — resolve once, carry the identity — and it is the only arm whose
-    /// descriptor the caller supplies, which is why the descriptor is checked
-    /// against the state it travels with at exactly one place: nowhere. A caller
-    /// that pairs a descriptor with a different state is describing a position
-    /// it did not resolve, and no instrument downstream can tell; the discipline
-    /// is that the pair comes from ONE `resolve` call.
+    /// option — resolve once, carry the identity.
+    ///
+    /// **It is the ONLY arm whose descriptor the caller supplies, so it is the
+    /// only arm whose pair can disagree — and since Phase C's T5 fix wave that
+    /// disagreement is CHECKED**: [`resolve`](Self::resolve) re-derives
+    /// [`state_digest`] and refuses a descriptor that describes another position
+    /// ([`RootError::ResolvedMismatch`]). A caller pairing a descriptor with a
+    /// different state is describing a root it did not resolve, and NOTHING
+    /// downstream could tell — every report, digest and sidecar would name the
+    /// wrong position perfectly consistently. The check costs one digest of a
+    /// state the arm is about to clone anyway, and it is the Phase-B registry
+    /// loader's `RegistryError::Stale` posture one level down: not a corruption
+    /// report, but the identity key, refused before anything reads the state.
+    /// The discipline is still that the pair comes from ONE `resolve` call; this
+    /// makes departing from it a typed error instead of a silent one.
     Resolved { state: GameState, descriptor: RootDescriptor },
 }
 
@@ -1748,7 +1757,19 @@ impl RootSource {
             Self::Generated { predicate, master, ordinal } => {
                 generate_root(*predicate, *master, *ordinal, rules)
             }
-            Self::Resolved { state, descriptor } => Ok((state.clone(), descriptor.clone())),
+            Self::Resolved { state, descriptor } => {
+                // The one integrity check this arm needs: the caller supplied
+                // BOTH halves, so the pair is the only thing that can be wrong.
+                let digest = state_digest(state);
+                if digest != descriptor.root_digest {
+                    return Err(RootError::ResolvedMismatch {
+                        origin: descriptor.origin.kind(),
+                        descriptor_digest: descriptor.root_digest.clone(),
+                        state_digest: digest,
+                    });
+                }
+                Ok((state.clone(), descriptor.clone()))
+            }
         }
     }
 }
@@ -1766,6 +1787,15 @@ pub enum RootError {
     /// it FOUND and how far it looked, so a caller can tell "no such position"
     /// from "not in this many games".
     Exhausted { predicate: RootPredicate, ordinal: u32, found: u32, games: u32 },
+    /// A [`RootSource::Resolved`] pair whose descriptor describes a DIFFERENT
+    /// position than the state it travels with.
+    ///
+    /// The comparability key, not a corruption report — the `RegistryError::Stale`
+    /// shape at the one place a caller supplies both halves of an identity. The
+    /// descriptor's ORIGIN kind rides along because it is what a reader acts on:
+    /// a mis-paired `generated` descriptor points at a scan someone will re-run,
+    /// while a mis-paired `constructed` one points at nothing at all.
+    ResolvedMismatch { origin: &'static str, descriptor_digest: String, state_digest: String },
 }
 
 impl std::fmt::Display for RootError {
@@ -1784,6 +1814,12 @@ impl std::fmt::Display for RootError {
                 f,
                 "no root {ordinal} for {}: {found} found in {games} generated games",
                 predicate.as_str()
+            ),
+            Self::ResolvedMismatch { origin, descriptor_digest, state_digest } => write!(
+                f,
+                "the pre-resolved pair describes two positions: the {origin} descriptor names \
+                 root {descriptor_digest} and the state it travels with digests to \
+                 {state_digest}"
             ),
         }
     }
@@ -5764,6 +5800,68 @@ mod tests {
             RootSource::Constructed(root).resolve(&rules).expect("constructed resolves");
         assert_eq!(downgraded.origin, RootOrigin::Constructed);
         assert_ne!(downgraded, descriptor, "the two arms describe the root identically");
+    }
+
+    /// **A MIS-PAIRED pre-resolved root REFUSES BY NAME** (Phase C's T5 fix
+    /// wave, review SHOULD-2).
+    ///
+    /// [`RootSource::Resolved`] is the one arm whose descriptor the caller
+    /// supplies, so it is the one arm whose two halves can describe different
+    /// positions — and nothing downstream could ever tell: every table, digest
+    /// and sidecar would name the wrong root perfectly consistently. The check
+    /// is the Phase-B loader's `RegistryError::Stale` posture at the identity
+    /// level, and this is its red path.
+    ///
+    /// The GREEN half rides beside it deliberately: the same descriptor, paired
+    /// with the state it actually describes, resolves unchanged — so the cell
+    /// separates "the pair disagrees" from "the arm refuses".
+    #[test]
+    fn a_mis_paired_pre_resolved_root_refuses_naming_both_digests() {
+        let rules = Rules::standard();
+        let root = root_2p(&rules, world(46).0);
+        let other = root_2p(&rules, world(47).0);
+        assert_ne!(state_digest(&root), state_digest(&other), "the two fixtures are one position");
+
+        let descriptor = RootDescriptor {
+            origin: RootOrigin::Generated {
+                predicate: RootPredicate::FinalRoundAlreadyTriggered,
+                master: 0x0C04_2026_0818_9992,
+                ordinal: 1,
+                game_index: 0,
+                ecology: GeneratingEcology::v1(),
+            },
+            event_index: Some(97),
+            root_digest: state_digest(&root),
+        };
+
+        // GREEN: the pair that came from one resolution is untouched.
+        let (state, back) =
+            RootSource::Resolved { state: root.clone(), descriptor: descriptor.clone() }
+                .resolve(&rules)
+                .expect("a well-paired root resolves");
+        assert_eq!(state, root);
+        assert_eq!(back, descriptor);
+
+        // RED: the SAME descriptor over another state.
+        let err = RootSource::Resolved { state: other.clone(), descriptor: descriptor.clone() }
+            .resolve(&rules)
+            .expect_err("a descriptor describing another position must refuse");
+        match err {
+            RootError::ResolvedMismatch {
+                origin,
+                ref descriptor_digest,
+                state_digest: ref actual,
+            } => {
+                assert_eq!(origin, "generated", "the refusal misreports the origin kind");
+                assert_eq!(descriptor_digest, &descriptor.root_digest);
+                assert_eq!(actual, &state_digest(&other));
+            }
+            ref other => panic!("expected ResolvedMismatch, got {other:?}"),
+        }
+        // The sentence names BOTH positions, which is what makes it actionable.
+        let text = err.to_string();
+        assert!(text.contains(&descriptor.root_digest), "the refusal hides the descriptor: {text}");
+        assert!(text.contains(&state_digest(&other)), "the refusal hides the state: {text}");
     }
 
     /// A RECORD-PREFIX root: `state_at`'s position, driven to terminal, with the
