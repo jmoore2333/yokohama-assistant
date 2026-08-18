@@ -1143,6 +1143,7 @@ mod tests {
         adjudicate_root, adjudicate_root_with, AdjudicationProvenance, AdjudicationSeat,
         CandidatePlayout, CandidateRow, RootDescriptor, RootOrigin, RootSource, UnsupportedReason,
     };
+    use crate::game::lookahead::SearchStats;
     use crate::game::semantics::SEMANTICS_REV;
     use crate::game::seeds::WorldSeed;
     use crate::game::setup::{finalize_setup, new_game, StartingOrderChoice};
@@ -1837,9 +1838,9 @@ mod tests {
         assert!(read.admitted());
 
         // ANTI-VACUITY: the wins reading really does answer differently on this
-        // fixture — one of the two level playouts is a WIN.
-        let wins: usize = read.policies.len();
-        assert_eq!(wins, 1);
+        // fixture — one of the two LEVEL playouts is a WIN, so a group statistic
+        // built on `won` would read 0.5 against 0.0 and could not be compared to
+        // a δ in victory points at all.
         let adj = verdict_table(&[
             (0, true, Some(true)),
             (0, false, Some(true)),
@@ -2298,14 +2299,63 @@ mod tests {
         assert_eq!(CounterSite::Replication(4).describe(),
             "replication 4's whole-turn counters");
 
-        // The ANNOTATE class carries no refusal: a tie-mass root still produces
-        // its reading, it just goes to the separator first.
-        let annotations = [
-            CounterAnnotation::TiedAtTop { candidates: 3 },
-            CounterAnnotation::TopBand { candidates: 100, points: TOP_BAND_POINTS },
-            CounterAnnotation::PlacementCapBinds { count: 2 },
+        // The ANNOTATE class carries no refusal, and `placement_cap_binds` is
+        // the deliberate member of it: a table whose ONLY nonzero counter is that
+        // one reads CLEAN, because design §5.4's hard-refuse enumeration does not
+        // name it and `SeatCounters` — the turn grain's own account — does not
+        // carry it at all.
+        let stats = SearchStats {
+            root_candidates: 3,
+            scored: 3,
+            placement_cap_binds: 7,
+            ..SearchStats::default()
+        };
+        let table = hand_table_with(stats);
+        assert!(
+            refusing_stats(&table).is_empty(),
+            "a placement-cap bind ANNOTATES; it does not refuse",
+        );
+        // ANTI-VACUITY: the same table with one hard-refuse counter DOES refuse,
+        // so the cell separates the two classes rather than testing an empty rule.
+        // Each cell sets ONE hard-refuse counter on top of the annotate-class
+        // one, so the assertion is that exactly that name comes back.
+        let one_of_each = [
+            SearchStats { ply_cap_hits: 1, placement_cap_binds: 7, ..SearchStats::default() },
+            SearchStats { free_cap_hits: 1, placement_cap_binds: 7, ..SearchStats::default() },
+            SearchStats { budget_binds: 1, placement_cap_binds: 7, ..SearchStats::default() },
+            SearchStats { budget_starved: 1, placement_cap_binds: 7, ..SearchStats::default() },
         ];
-        assert_eq!(annotations.len(), 3);
+        let names = ["ply_cap_hits", "free_cap_hits", "budget_binds", "budget_starved"];
+        for (name, stats) in names.into_iter().zip(one_of_each) {
+            let refusing = refusing_stats(&hand_table_with(stats));
+            assert_eq!(
+                refusing.iter().map(|(n, _)| *n).collect::<Vec<_>>(),
+                vec![name],
+                "{name} is a hard-refuse counter and placement_cap_binds is not",
+            );
+        }
+    }
+
+    /// A hand-built [`RootTable`] carrying the given counters and nothing else
+    /// worth reading — `refusing_stats` reads `stats` and no other field.
+    fn hand_table_with(stats: SearchStats) -> RootTable {
+        RootTable {
+            seat: PlayerId(0),
+            contestant: Contestant::LOOKAHEAD_V1_DEFAULT,
+            echo: Contestant::LOOKAHEAD_V1_DEFAULT.echo(),
+            decision_seed: 0,
+            winner: Move::EndAdditionalPhase,
+            ranked: vec![crate::game::lookahead::RootScore {
+                mv: Move::EndAdditionalPhase,
+                value: 0,
+            }],
+            stats,
+            world: crate::game::driven::SampledWorld {
+                sampler_seed: 0,
+                worlds: 1,
+                digest: "hand-built-world".to_string(),
+            },
+        }
     }
 
     /// The TIE/BAND annotations fire off the step-one table and RECOMMEND the
