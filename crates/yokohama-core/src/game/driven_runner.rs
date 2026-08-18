@@ -101,6 +101,14 @@ usage: driven <subcommand> [options]
                              `lookahead-v1:b=8` and `lookahead-v1:b=16`, and a
                              wider beam is EXPECTED to diverge from the recorded
                              move -- that divergence is the measurement.
+                             ONLY `lookahead-v1` and its knob variants have a
+                             root table at all. Every other arm is a TYPED
+                             REFUSAL naming why, never an empty table: a rung
+                             SAMPLES its move and values no candidate,
+                             `greedy-v1` is a one-ply argmax that reports no
+                             per-candidate vector and no counters, and `mcts-v1`
+                             / `atomic-diag-v1` are labelled diagnostics no v1
+                             consumer asks a root table about.
       --decision-seed <u64>  For a REGISTRY root this DEFAULTS to the entry's own
                              recorded seed, and the report then prints a
                              REPRODUCED / DIVERGED line against the move the
@@ -174,6 +182,9 @@ masters:
 
 Unknown subcommands, unknown flags, unknown seat names, unknown contestant knobs
 and stray positionals are all ERRORS carrying this text -- never silent no-ops.
+A REPEATED flag is an ERROR too, which is a deliberate departure from
+eval_probe's last-wins: dropping the first value silently is the same
+substitution failure one level down from a mistyped flag.
 ";
 
 // ---------------------------------------------------------------------------
@@ -467,6 +478,33 @@ fn opt(value: Option<u64>) -> String {
     value.map_or_else(|| "-".to_string(), |v| v.to_string())
 }
 
+/// A RENDER-ONLY 16-hex fold of an already-computed reproduction string.
+///
+/// **Why this exists.** [`Adjudication::digest`] is `candidates × K` long — it
+/// folds in every playout's world, margin, decision count and terminal digest —
+/// so a real 139-candidate × 2-replication table digests to ~15 KB. Printed
+/// raw, that is one "line" nobody can paste into a triage note, and a
+/// reproduction check nobody performs is not a check. This is `state_digest`'s
+/// own recipe (FNV-1a 64, 16 hex) over the digest STRING, so the report carries
+/// a value a reader can compare at a glance.
+///
+/// **It is a DISPLAY shortening and NEVER an identity.** The digest function is
+/// untouched and stays the authority: reproduction compares
+/// `Adjudication::digest()` itself. Nothing writes this fold to disk, nothing
+/// parses it back, and no record stamps it — which is exactly why it is
+/// hand-rolled here rather than reaching for `game::semantics`'s (private) fold,
+/// whose recipe is a *stored* identity this module must not start depending on.
+fn digest_fold(digest: &str) -> String {
+    // FNV-1a 64: the standard offset basis and prime, wrapping because a hash
+    // is not a count.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in digest.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
+}
+
 /// The root descriptor as one line: origin kind, root digest, event index.
 fn root_line(root: &RootDescriptor) -> String {
     format!(
@@ -677,6 +715,11 @@ pub fn render_outcome(outcome: &DrivenOutcome, asked_for: &str) -> String {
 /// One adjudication. **Its FIRST LINE is [`driven::ROBUSTNESS_READ`] verbatim**
 /// (design §3, review N-7): the label rides the OUTPUT and not only the docs, so
 /// a table pasted into a triage note carries the claim it is entitled to make.
+///
+/// **Its LAST line is a FOLD of the reproduction digest, not the digest** — see
+/// [`digest_fold`]. `Adjudication::digest()` stays the authority a reproduction
+/// compares; what this report prints is a 16-hex hash of it, because the string
+/// itself is `candidates × K` long and a report has to be quotable.
 pub fn render_adjudication(adjudication: &Adjudication, asked_for: &str) -> String {
     let provenance = &adjudication.provenance;
     let mut lines = vec![
@@ -752,7 +795,12 @@ pub fn render_adjudication(adjudication: &Adjudication, asked_for: &str) -> Stri
                 .to_string(),
         ),
     }
-    lines.push(format!("  digest         {}", adjudication.digest()));
+    // The FOLD, not the string: see `digest_fold` for why a raw
+    // `Adjudication::digest()` is unquotable on a real table.
+    lines.push(format!(
+        "  digest         fnv1a64:{}   (of the adjudication-v1 reproduction string)",
+        digest_fold(&adjudication.digest()),
+    ));
     lines.join("\n")
 }
 
@@ -1165,6 +1213,19 @@ mod tests {
             "USAGE does not state the default K",
         );
         assert!(USAGE.contains("NO DEFAULT"), "USAGE does not say --master has no default");
+        // The two rules a caller cannot infer from a flag list: WHICH arms have
+        // a root table at all (every other one is a typed refusal, pinned by
+        // `mirror_build`'s own arms), and what a repeated flag does here —
+        // which is NOT what `eval_probe` does.
+        assert!(USAGE.contains("root table"), "USAGE does not say which arms have a root table");
+        assert!(
+            USAGE.contains("REPEATED flag"),
+            "USAGE does not state the repeated-flag-is-an-error rule",
+        );
+        assert!(
+            USAGE.contains("last-wins"),
+            "USAGE does not name the eval_probe rule it departs from",
+        );
     }
 
     /// No subcommand, and an unknown one, are both errors carrying USAGE.
@@ -1212,12 +1273,41 @@ mod tests {
             .expect("--replications is an adjudicate flag");
     }
 
-    /// A flag without its value refuses rather than consuming the next flag.
+    /// A flag without its value refuses — and the honest statement of WHICH
+    /// refusal, since the parser does NOT special-case a flag-shaped value.
+    ///
+    /// Two different failures, both refusals, and the sentences differ because
+    /// the failures do: a flag at the END of the line has no next token at all
+    /// and refuses for want of a value, while a flag followed by another flag
+    /// CONSUMES that next token whatever it looks like and refuses on the VALUE.
+    /// What neither one is, is a silent default — which is the property that
+    /// matters and the only one this cell is entitled to claim.
     #[test]
     fn a_flag_without_its_value_refuses() {
         let err = parse(&args(&["run", "g", "--master"]))
             .expect_err("a valueless --master must refuse");
         assert!(err.contains("master"), "the refusal hides the flag: {err}");
+        assert!(err.contains("needs a value"), "the refusal is not about the absence: {err}");
+
+        // The next token is consumed flag-shaped or not, so THIS one refuses on
+        // the value it read rather than on a missing one.
+        let err = parse(&args(&["run", "g", "--master", "--seats"]))
+            .expect_err("a flag-shaped value must still refuse");
+        assert!(err.contains("--seats"), "the refusal hides the value it read: {err}");
+        assert!(err.contains("not a u64"), "the refusal is not about the VALUE: {err}");
+    }
+
+    /// A REPEATED flag is an ERROR rather than last-wins — the departure from
+    /// `eval_probe` that USAGE states, pinned so the statement stays true.
+    #[test]
+    fn a_repeated_flag_refuses_rather_than_taking_the_last_value() {
+        let err = parse(&args(&["run", "g", "--master", "1", "--master", "2"]))
+            .expect_err("a repeated --master must refuse");
+        assert!(err.contains("master"), "the refusal hides the flag: {err}");
+        assert!(err.contains("twice"), "the refusal does not say it was repeated: {err}");
+        // ANTI-VACUITY: the same line with ONE --master parses, so the refusal
+        // above is about the repetition and not about the line.
+        parse(&args(&["run", "g", "--master", "1"])).expect("one --master parses");
     }
 
     /// Positional arity: `list` takes none, the other three take exactly one.
@@ -1417,6 +1507,80 @@ mod tests {
         }
     }
 
+    /// The ranked-head BLOCK of a rendered table: the lines between the
+    /// `ranked head` header and the blank line that closes it.
+    fn ranked_head_rows(rendered: &str) -> Vec<&str> {
+        rendered
+            .lines()
+            .skip_while(|line| !line.contains("ranked head"))
+            .skip(1)
+            .take_while(|line| !line.trim().is_empty())
+            .collect()
+    }
+
+    /// The ranked head is BEST FIRST and its first row is THE WINNER.
+    ///
+    /// The two facts a reader takes off that block without being told, and
+    /// neither is checked by a `contains` of a move name: a head rendered in
+    /// reverse still contains every move, every value and every margin, and
+    /// still prints a winner line above it — it just answers the separator's
+    /// question upside down, which is the whole reading the block exists for.
+    #[test]
+    fn the_ranked_head_leads_with_the_winner_and_its_margins_never_rise() {
+        let winner = Move::BuildShophouse { slot: 0 };
+        let table = table_with(
+            winner.clone(),
+            &[
+                (winner.clone(), 116),
+                (Move::BuildShophouse { slot: 1 }, 116),
+                (Move::BuildShophouse { slot: 2 }, 115),
+                (Move::BuildShophouse { slot: 3 }, 12),
+            ],
+        );
+        let root = descriptor();
+        let rendered = render_root_table(
+            &table,
+            &TableContext {
+                asked_for: "fixture",
+                root: &root,
+                recorded_move: None,
+                recorded_seed: None,
+            },
+        );
+        let head = ranked_head_rows(&rendered);
+        assert_eq!(head.len(), table.ranked.len(), "the head is not the ranking:\n{rendered}");
+
+        // ROW 1 IS THE WINNER — the move the table's own `winner` field names,
+        // not merely a move that appears somewhere in the block.
+        assert!(
+            head[0].ends_with(&format!("{:?}", table.winner)),
+            "row 1 is not the winner {:?}: {}",
+            table.winner,
+            head[0],
+        );
+
+        // …and the printed MARGINS never rise going down (best first).
+        let margins: Vec<i64> = head
+            .iter()
+            .map(|row| {
+                let token = row.split_whitespace().nth(2).unwrap_or_else(|| {
+                    panic!("a head row has no margin column: {row}")
+                });
+                token.parse().unwrap_or_else(|e| panic!("margin {token:?} does not parse: {e}"))
+            })
+            .collect();
+        assert!(
+            margins.windows(2).all(|pair| pair[0] >= pair[1]),
+            "the head is not best-first: {margins:?}",
+        );
+        // ANTI-VACUITY: a CONSTANT margin vector is non-increasing too, so the
+        // fixture has to spread — and the spread is what a reversal inverts.
+        assert!(
+            margins.first() > margins.last(),
+            "the fixture does not discriminate direction: {margins:?}",
+        );
+    }
+
     /// The reproduction line: REPRODUCED when the winner is the recorded move,
     /// DIVERGED when it is not, NOT CHECKED when there is nothing to compare —
     /// plus the OVERRIDDEN qualifier when the seed is not the entry's own.
@@ -1517,7 +1681,13 @@ mod tests {
         assert!(rendered.contains("all candidates equal"), "no equality line: {rendered}");
         assert!(rendered.contains("true"), "the equality fact is not stated: {rendered}");
         assert!(rendered.contains("BuildShophouse"), "no candidate rows: {rendered}");
-        assert!(rendered.contains(&equal.digest()), "no reproduction digest: {rendered}");
+        // The reproduction digest rides the report as a FOLD of itself (N-5) —
+        // the string is `candidates × K` long and the report has to be
+        // quotable. `digest_fold`'s own cell pins the fold's properties.
+        assert!(
+            rendered.contains(&digest_fold(&equal.digest())),
+            "no reproduction digest: {rendered}",
+        );
         assert!(rendered.contains("p1"), "the mover is not named: {rendered}");
 
         let unequal = adjudication_with(vec![
@@ -1532,8 +1702,167 @@ mod tests {
         assert!(rendered.contains("+5"), "the max margin is not printed: {rendered}");
     }
 
-    /// The `list` report marks each record PRESENT or MISSING against the anchor
-    /// it was given, and NEVER errors on absence.
+    /// The report's `digest` line, which there is exactly one of.
+    fn digest_line(rendered: &str) -> &str {
+        let mut found = rendered.lines().filter(|line| line.trim_start().starts_with("digest"));
+        let line = found.next().unwrap_or_else(|| panic!("no digest line:\n{rendered}"));
+        assert_eq!(found.next(), None, "more than one digest line:\n{rendered}");
+        line
+    }
+
+    /// The adjudication's digest line is a SHORT, STABLE, LABELLED fold that
+    /// still moves with the table (N-5).
+    ///
+    /// The line used to print `Adjudication::digest()` raw, which is
+    /// `candidates × K` long — about 15 KB on a real 139-candidate
+    /// two-replication run, i.e. a reproduction check nobody can quote and
+    /// therefore nobody performs. Four properties make the fold a replacement
+    /// rather than a deletion: it is ONE line, it is short enough to paste, it
+    /// reproduces, and it CHANGES when the table does.
+    #[test]
+    fn the_adjudication_digest_line_is_a_short_stable_fold_that_moves_with_a_margin() {
+        let adjudication = adjudication_with(vec![
+            row(Move::BuildShophouse { slot: 0 }, &[3, 3]),
+            row(Move::BuildShophouse { slot: 1 }, &[1, 5]),
+        ]);
+        let rendered = render_adjudication(&adjudication, "fixture");
+        let line = digest_line(&rendered);
+
+        assert!(line.len() < 100, "the digest line is {} chars, not quotable: {line}", line.len());
+        // It SAYS what it is: a hash, and of what.
+        assert!(line.contains("fnv1a64:"), "the line does not label its fold: {line}");
+        assert!(
+            line.contains("reproduction string"),
+            "the line does not say what was folded: {line}",
+        );
+        assert!(
+            line.contains(&digest_fold(&adjudication.digest())),
+            "the line is not the fold of THIS table's digest: {line}",
+        );
+        // The raw string is GONE, and it is genuinely the longer thing — so the
+        // shortening is a shortening rather than a coincidence of this fixture.
+        let full = adjudication.digest();
+        assert!(!line.contains(&full), "the full digest is still printed: {line}");
+        assert!(full.len() > line.len(), "anti-vacuity: the raw digest is not the longer form");
+
+        // It reproduces across two renders…
+        assert_eq!(line, digest_line(&render_adjudication(&adjudication, "fixture")));
+
+        // …and it MOVES when one replication's margin moves. A digest line that
+        // did not would be a decoration rather than a reproduction check.
+        let moved = adjudication_with(vec![
+            row(Move::BuildShophouse { slot: 0 }, &[3, 3]),
+            row(Move::BuildShophouse { slot: 1 }, &[1, 6]),
+        ]);
+        assert_ne!(
+            line,
+            digest_line(&render_adjudication(&moved, "fixture")),
+            "one flipped margin left the digest line unmoved",
+        );
+    }
+
+    /// The adjudication table's rows as `(row line, margins line)` pairs —
+    /// which also pins that a row IS two lines, since the second one carries
+    /// the margin vector the first one summarizes.
+    fn adjudication_rows(rendered: &str) -> Vec<(&str, &str)> {
+        let mut lines = rendered
+            .lines()
+            .skip_while(|line| !line.contains("candidate / margins"))
+            .skip(1);
+        let mut rows = Vec::new();
+        while let Some(row_line) = lines.next() {
+            if row_line.trim().is_empty() {
+                break;
+            }
+            let margins_line = lines
+                .next()
+                .unwrap_or_else(|| panic!("a row line has no margins line: {row_line}"));
+            assert!(
+                margins_line.trim_start().starts_with("margins ["),
+                "a row's second line is not its margins: {margins_line}",
+            );
+            rows.push((row_line, margins_line));
+        }
+        rows
+    }
+
+    /// Every printed `min` sits at or below its own row's `max`, and BOTH are
+    /// margins that row actually recorded.
+    ///
+    /// The two columns are adjacent, same width, same `{:+}` formatting and one
+    /// field name apart — a transposition compiles clean and reads plausible,
+    /// and every mean/wins figure around it stays right. What catches it is the
+    /// ORDER relation plus membership in the row's own margin list; a
+    /// same-margin row cannot catch it at all, which is why the fixture below
+    /// spreads and why the cell asserts that it does.
+    #[test]
+    fn every_adjudication_row_prints_a_min_at_or_below_its_max_and_both_are_margins() {
+        let adjudication = adjudication_with(vec![
+            row(Move::BuildShophouse { slot: 0 }, &[3, 3]),
+            row(Move::BuildShophouse { slot: 1 }, &[1, 5]),
+            row(Move::BuildShophouse { slot: 2 }, &[-4, 2]),
+        ]);
+        let rendered = render_adjudication(&adjudication, "fixture");
+        let rows = adjudication_rows(&rendered);
+        assert_eq!(rows.len(), adjudication.rows.len(), "not one row per candidate:\n{rendered}");
+
+        let mut spread = 0;
+        for (index, (row_line, margins_line)) in rows.iter().enumerate() {
+            let cell = |position: usize| -> i64 {
+                let token = row_line.split_whitespace().nth(position).unwrap_or_else(|| {
+                    panic!("row {index} has no column {position}: {row_line}")
+                });
+                token
+                    .parse()
+                    .unwrap_or_else(|e| panic!("row {index} column {position} {token:?}: {e}"))
+            };
+            // Columns: #, mean, MIN, MAX, wins, k.
+            let (min, max) = (cell(2), cell(3));
+            let printed: Vec<i64> = margins_line
+                .split_once('[')
+                .and_then(|(_, tail)| tail.split_once(']'))
+                .unwrap_or_else(|| panic!("row {index} has no margin list: {margins_line}"))
+                .0
+                .split(',')
+                .map(|m| {
+                    m.trim().parse().unwrap_or_else(|e| panic!("margin {m:?} in row {index}: {e}"))
+                })
+                .collect();
+
+            assert_eq!(printed, adjudication.rows[index].margins(), "row {index}'s margins");
+            assert!(min <= max, "row {index} prints min {min} above max {max}: {row_line}");
+            assert!(printed.contains(&min), "row {index}'s min {min} is not one of {printed:?}");
+            assert!(printed.contains(&max), "row {index}'s max {max} is not one of {printed:?}");
+            if min != max {
+                spread += 1;
+            }
+        }
+        // ANTI-VACUITY: a row whose margins are all equal satisfies min <= max
+        // and both-are-margins under a TRANSPOSED render too.
+        assert!(spread > 0, "no row spreads, so the fixture cannot see a transposition");
+    }
+
+    /// The `list` line that NAMES one entry — the line its presence marker is
+    /// printed on.
+    ///
+    /// A per-entry assertion has to FIND this line rather than search the
+    /// document, and the reason is concrete: the report's own header sentence
+    /// carries the word MISSING ("a MISSING record is a MISS and never a
+    /// failure"), so `rendered.contains("MISSING")` is satisfied by a render
+    /// that marked every entry PRESENT — including one that inverted the test
+    /// outright.
+    fn entry_line<'a>(rendered: &'a str, name: &str) -> &'a str {
+        let mut named =
+            rendered.lines().filter(|line| line.trim_start().starts_with(name));
+        let line = named
+            .next()
+            .unwrap_or_else(|| panic!("no line names `{name}`:\n{rendered}"));
+        assert_eq!(named.next(), None, "more than one line names `{name}`:\n{rendered}");
+        line
+    }
+
+    /// The `list` report marks EACH record PRESENT or MISSING on that entry's
+    /// own line against the anchor it was given, and NEVER errors on absence.
     #[test]
     fn the_list_report_marks_presence_and_never_errors_on_absence() {
         let anchor = TempRoot::make("list");
@@ -1545,10 +1874,17 @@ mod tests {
             entry("absent-one", "here/absent.json", 4, PlayerId(0), None),
         ];
         let rendered = render_list(&entries, &anchor.0);
-        assert!(rendered.contains("present-one"), "the entry is missing: {rendered}");
-        assert!(rendered.contains("absent-one"), "the entry is missing: {rendered}");
-        assert!(rendered.contains("PRESENT"), "no presence marker: {rendered}");
-        assert!(rendered.contains("MISSING"), "no absence marker: {rendered}");
+        // PER ENTRY, on the bracketed marker: the present record's own line says
+        // PRESENT and only PRESENT, the absent one's says MISSING and only
+        // MISSING. An inverted marker passes every document-level `contains`
+        // and fails here.
+        let present = entry_line(&rendered, "present-one");
+        assert!(present.contains("[PRESENT]"), "the present record is not marked: {present}");
+        assert!(!present.contains("[MISSING]"), "the present record is also marked absent: {present}");
+        let absent = entry_line(&rendered, "absent-one");
+        assert!(absent.contains("[MISSING]"), "the absent record is not marked: {absent}");
+        assert!(!absent.contains("[PRESENT]"), "the absent record is also marked present: {absent}");
+
         assert!(rendered.contains("a cell-owned fixture"), "the note is dropped: {rendered}");
         assert!(rendered.contains("here/present.json"), "the path is dropped: {rendered}");
         assert!(
@@ -1556,10 +1892,19 @@ mod tests {
             "the recorded seed is dropped: {rendered}",
         );
 
-        // Through the command, with an anchor that holds NOTHING: still Ok.
+        // Through the command, with an anchor that holds NOTHING: still Ok, and
+        // NO line claims a present record. Stated as "no line" rather than as
+        // "the report says MISSING" for the same vacuity reason.
         let empty = TempRoot::make("list-empty");
         let out = run_with(&args(&["list"]), &entries, &empty.0).expect("list never errors");
-        assert!(out.contains("MISSING"), "an empty anchor must read MISSING: {out}");
+        assert!(
+            !out.lines().any(|line| line.contains("[PRESENT]")),
+            "an anchor holding nothing marked a record PRESENT: {out}",
+        );
+        for name in ["present-one", "absent-one"] {
+            let line = entry_line(&out, name);
+            assert!(line.contains("[MISSING]"), "`{name}` is not marked absent: {line}");
+        }
     }
 
     /// The SHIPPED registry renders — every entry named, nothing panicking, and
@@ -1801,6 +2146,103 @@ mod tests {
         )
         .expect("the tail run completes");
         assert_eq!(out, again, "two identical run commands produced different reports");
+    }
+
+    /// One `key=value` line, split into its fields.
+    ///
+    /// Exact KEYS rather than substrings, because the counter line carries both
+    /// `scored=` and `root_scored=`: a `contains("scored=3")` check is satisfied
+    /// by the wrong field, and a render that swapped the two would pass it.
+    fn fields(line: &str) -> BTreeMap<&str, &str> {
+        line.split_whitespace().filter_map(|token| token.split_once('=')).collect()
+    }
+
+    /// The run report's per-seat counter line says WHAT THE OUTCOME SAYS, field
+    /// by field — and for a LOOKAHEAD seat the explained and scored fields are
+    /// NUMERIC, never the `-` the legend reserves for "this contestant has no
+    /// such quantity".
+    ///
+    /// Seated with the shipped lookahead-v1 deliberately: every other run cell
+    /// in this file is rung-seated (design §6's wall discipline), and a rung
+    /// prints `-` at all seven of these legitimately — so a render that hard-
+    /// coded the dash, or read a different seat's counters, would pass every one
+    /// of them. The root is near the end of a played game so a debug cell can
+    /// afford two uncapped searches.
+    #[test]
+    fn the_run_report_counter_line_agrees_with_a_lookahead_seats_counters() {
+        let rules = Rules::standard();
+        let record = rung_record(&rules, world(9));
+        let event_index = record.events.len() - 4;
+        let source = RootSource::RecordPrefix { record, event_index };
+        let (state, _) = source.resolve(&rules).expect("the prefix resolves");
+        let seats =
+            vec![SeatSpec::Contestant(Contestant::LOOKAHEAD_V1_DEFAULT); state.players.len()];
+        let outcome = driven::drive_rooted(
+            &source,
+            &seats,
+            &rules,
+            world(10),
+            DrivenOpts::default(),
+        )
+        .expect("the tail run completes");
+        let rendered = render_outcome(&outcome, "constructed");
+
+        let mut scored_anywhere = 0;
+        for seat in &outcome.seats {
+            let prefix = format!("p{}  moves=", seat.seat.0);
+            let line = rendered
+                .lines()
+                .find(|line| line.trim_start().starts_with(&prefix))
+                .unwrap_or_else(|| panic!("no counter line for p{}:\n{rendered}", seat.seat.0));
+            let printed = fields(line);
+            let field = |name: &str| -> &str {
+                printed
+                    .get(name)
+                    .unwrap_or_else(|| panic!("the counter line has no `{name}`: {line}"))
+            };
+            let counters = &seat.counters;
+
+            // A lookahead seat HAS an explanation path and a scored budget. Said
+            // first, because "never `-`" is only a claim about the RENDER once
+            // the seat is known to have the quantity.
+            assert!(
+                counters.explained.is_some() && counters.candidates_scored.is_some(),
+                "p{} is not an explaining, scoring seat — this cell is not seated as it claims",
+                seat.seat.0,
+            );
+
+            // Every counter, as the legend says it renders: the value where the
+            // seat has the quantity, `-` where it does not.
+            for (name, counter) in [
+                ("explained", counters.explained),
+                ("scored", counters.candidates_scored),
+                ("root_scored", counters.root_scored),
+                ("binds", counters.budget_binds),
+                ("starved", counters.budget_starved_decisions),
+                ("ply_cap", counters.ply_cap_hits),
+                ("free_cap", counters.free_cap_hits),
+            ] {
+                assert_eq!(
+                    field(name),
+                    counter.map_or_else(|| "-".to_string(), |value| value.to_string()),
+                    "p{}'s `{name}` field disagrees with its counters: {line}",
+                    seat.seat.0,
+                );
+            }
+            assert_eq!(
+                field("moves"),
+                seat.applied_moves.to_string(),
+                "p{}'s applied moves disagree: {line}",
+                seat.seat.0,
+            );
+            assert_ne!(field("explained"), "-", "a lookahead seat's explained read absent: {line}");
+            assert_ne!(field("scored"), "-", "a lookahead seat's scored read absent: {line}");
+
+            scored_anywhere += counters.candidates_scored.unwrap_or(0);
+        }
+        // ANTI-VACUITY: a run where nobody searched would satisfy every equality
+        // above with a line of zeros.
+        assert!(scored_anywhere > 0, "no seat scored a candidate: {rendered}");
     }
 
     /// The `adjudicate` report on a real near-terminal root: the label first,
