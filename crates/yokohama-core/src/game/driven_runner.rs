@@ -37,10 +37,10 @@ use crate::game::driven::{
     RootDescriptor, RootOrigin, RootPredicate, RootSource, RootTable, SeatSpec,
 };
 use crate::game::driven_families::{
-    families, run_family_block, AdmissionVerdict, BlockKind, ExclusionReason, FamilyBlockReport,
-    FamilyDecl, FamilyGenerator, FamilyLabel, FamilyRunError, FamilyVerdict, PassRule, RootRow,
-    RootVerdict, TurnPredicate, DECLARED_BY_THE_ROOT, FAMILY2_CONTROL_GENERATOR,
-    PROXIMITY_CORNER_GENERATOR, RACE_CONTROL_GENERATOR,
+    families, run_family_block_with, AdmissionVerdict, BlockKind, BlockOpts, ExclusionReason,
+    FamilyBlockReport, FamilyDecl, FamilyGenerator, FamilyLabel, FamilyRunError, FamilyVerdict,
+    PassRule, RootRow, RootVerdict, TurnPredicate, DECLARED_BY_THE_ROOT,
+    FAMILY2_CONTROL_GENERATOR, PROXIMITY_CORNER_GENERATOR, RACE_CONTROL_GENERATOR,
 };
 use crate::game::lookahead::SearchStats;
 use crate::game::metrics::wilson_95;
@@ -141,6 +141,24 @@ pub const OPENING_NO_ACTION: &str = "(no area action)";
 /// The area action whose share the opening probe reports as the LAB RUSH — the
 /// C-D question's own quantity.
 pub const LAB_RUSH_KIND: &str = "Laboratory";
+
+/// The BRAND a control render carries when the report it is rendering ALSO
+/// inverted admission (Phase C, T6 fix wave, review MUST-1).
+///
+/// **A tripwire on the page, not an assertion in a test** — deliberately, and
+/// this is the second half of [`family_block_opts`]'s answer. A block run is
+/// minutes to hours and lands in a T7 triage note, so the failure that matters
+/// is not a red suite but a table somebody QUOTES. `report.control` is the
+/// sizing the run actually used, `arm` is what the caller asked for, and the
+/// pair `(control, control=true)` is the double negation — the control's own
+/// claim upside down. Any edit that reaches `BlockOpts::control` around the
+/// seam therefore announces itself in its own output, in the arm block, above
+/// every number it would otherwise quietly invert.
+pub const DOUBLE_NEGATION_BRAND: &str =
+    "!! DOUBLE NEGATION — this CONTROL arm ran with admission-inverted=true, so the block asked \
+     whether the control's own pass behaviour LOSES by delta: the control's claim upside down. \
+     The arithmetic below is NOT this arm's result. Re-run with the inversion off (the sizing \
+     seam `family_block_opts` is the one place it is decided).";
 
 pub const USAGE: &str = "\
 usage: driven <subcommand> [options]
@@ -402,7 +420,7 @@ pub enum Command {
     /// One declared block of one frozen family.
     ///
     /// `master` stays an `Option` all the way to
-    /// [`driven_families::run_family_block`](crate::game::driven_families::run_family_block):
+    /// [`run_family_block_with`](crate::game::driven_families::run_family_block_with):
     /// the pilot-requires-it / confirmatory-refuses-it rule is THAT function's,
     /// and re-stating it here would give the harness two authorities on which
     /// master a block runs.
@@ -798,21 +816,13 @@ pub fn parse_u64(raw: &str) -> Result<u64, String> {
 /// | `exclusive-race` | `RACE_CONTROL_GENERATOR`         | `Turn(DenialNotTaken)`                 |
 /// | `achievement`    | `PROXIMITY_CORNER_GENERATOR`     | unchanged (`Turn(AchievementClaimed)`) |
 ///
-/// **Why the two rule swaps are NEGATIONS and why `BlockOpts::control` stays
-/// FALSE under them — the double negation, stated once because getting it
-/// backwards is silent.** Design §1 says a family-2 control root passes on
-/// `NotEndFiredByHandoff` and a family-3 control root passes on the denial NOT
-/// being taken, so the control's READ is the negated predicate; the read and
-/// the admission hook are ONE rule in `run_one_root`, so the admission question
-/// becomes "does NOT firing dominate?", which is already the right direction
-/// for a behind mover. `BlockOpts::control` inverts that comparison a SECOND
-/// time — it is the other spelling of the same test, for a caller that kept the
-/// positive rule — so setting both would ask whether not-firing LOSES, which is
-/// the control's own claim upside down. The arithmetic is identical either way
-/// (`mean(¬fire) − mean(fire) ≥ δ` is `mean(fire) − mean(¬fire) ≤ −δ`); what is
-/// not identical is the READ, and the negated rule is the one that reads right.
-/// The report prints the arm and this sentence so nothing rests on remembering
-/// it.
+/// **The two rule swaps are NEGATIONS, which is why the admission inversion
+/// stays OFF under them.** That is the double negation, and it is stated ONCE —
+/// at [`family_block_opts`], the single seam that decides `BlockOpts::control`
+/// — because a judgment split across two functions is a judgment nobody
+/// re-checks. This function's half of it: the control's READ is the negated
+/// predicate, so `end-trigger` swaps in `Turn(NotEndFired)` and
+/// `exclusive-race` swaps in `Turn(DenialNotTaken)`.
 ///
 /// Every other field is the declaration's, untouched: an arm is a generator and
 /// a rule, never a different family.
@@ -836,6 +846,42 @@ pub fn control_arm(decl: &FamilyDecl) -> Result<FamilyDecl, String> {
     arm.generator = generator;
     arm.rule = rule;
     Ok(arm)
+}
+
+/// The SIZING one `family` block runs under — [`BlockOpts::pilot`] for BOTH
+/// arms, which is the double negation made STRUCTURAL instead of remembered.
+///
+/// **Why this is a function and not a literal at the call site** (Phase C, T6
+/// fix wave, review MUST-1). The judgment below is correct and it is also
+/// invisible: `BlockOpts { control: arm == FamilyArm::Control, ..pilot() }` is
+/// the edit a reader reaches for, it compiles, it reads *more* careful than
+/// what is here, and every family block refuses before the freeze — so nothing
+/// in the suite would have run the changed line. A named seam gives that edit
+/// somewhere to fail: the pin below asserts BOTH arms come back with the
+/// inversion off, and `render_family_block` brands a control render whose
+/// report says otherwise.
+///
+/// **The double negation, stated once because getting it backwards is silent.**
+/// Design §1 says a family-2 control root passes on `NotEndFiredByHandoff` and
+/// a family-3 control root passes on the denial NOT being taken, so the
+/// control's READ is the negated predicate ([`control_arm`] swaps it in); the
+/// read and the admission hook are ONE rule in `run_one_root`, so the admission
+/// question becomes "does NOT firing dominate?", which is already the right
+/// direction for a behind mover. `BlockOpts::control` inverts that comparison a
+/// SECOND time — it is the other spelling of the same test, for a caller that
+/// kept the positive rule — so setting both would ask whether not-firing LOSES,
+/// which is the control's own claim upside down. The arithmetic is identical
+/// either way (`mean(¬fire) − mean(fire) ≥ δ` is `mean(fire) − mean(¬fire) ≤
+/// −δ`); what is not identical is the READ, and the negated rule is the one
+/// that reads right. The report prints the arm and this sentence so nothing
+/// rests on remembering it.
+///
+/// The `match` is EXHAUSTIVE rather than `_ => BlockOpts::pilot()`: a third arm
+/// has to answer this question rather than inherit an answer written for two.
+pub(crate) fn family_block_opts(arm: FamilyArm) -> BlockOpts {
+    match arm {
+        FamilyArm::Positive | FamilyArm::Control => BlockOpts::pilot(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1510,6 +1556,11 @@ pub fn render_family_block(report: &FamilyBlockReport, arm: FamilyArm) -> String
              would be a double negation, and the control's own claim upside down"
                 .to_string(),
         );
+        // The TRIPWIRE: the sentence above describes what the run SHOULD have
+        // been sized as; this line fires when the report says it was not.
+        if report.control {
+            lines.push(format!("  {DOUBLE_NEGATION_BRAND}"));
+        }
     }
     lines.extend([
         format!("  generator      {}", report.generator),
@@ -1963,9 +2014,9 @@ pub(crate) fn run_with(
 
         Command::Run { root, master, seats } => {
             let asked = resolve(&root, entries, anchor, &rules)?;
-            let seats = seats_or_default(seats, &asked, &rules)?;
+            let (source, seats) = resolve_once(&asked, seats, &rules)?;
             let outcome = driven::drive_rooted(
-                &asked.source,
+                &source,
                 &seats,
                 &rules,
                 WorldSeed(master),
@@ -1977,9 +2028,9 @@ pub(crate) fn run_with(
 
         Command::Adjudicate { root, master, replications, seats } => {
             let asked = resolve(&root, entries, anchor, &rules)?;
-            let seats = seats_or_default(seats, &asked, &rules)?;
+            let (source, seats) = resolve_once(&asked, seats, &rules)?;
             let adjudication = driven::adjudicate_root(
-                &asked.source,
+                &source,
                 &seats,
                 &rules,
                 WorldSeed(master),
@@ -2006,9 +2057,19 @@ pub(crate) fn run_with(
             // The SUBJECT is the shipped default and deliberately not a flag: a
             // family result is a statement about that subject, and the sizing is
             // `BlockOpts::pilot`'s pre-freeze posture, which T7's freeze commit
-            // is what replaces.
+            // is what replaces. The sizing goes through `family_block_opts`
+            // rather than through the two-argument entry point so the ARM
+            // reaches the one seam that decides the admission inversion — see
+            // its doc for why that inversion stays OFF in both arms.
             let subject = SeatSpec::Contestant(default_contestant()?);
-            match run_family_block(&decl, block, master, subject, &rules) {
+            match run_family_block_with(
+                &decl,
+                block,
+                master,
+                subject,
+                &rules,
+                family_block_opts(arm),
+            ) {
                 Ok(report) => Ok(render_family_block(&report, arm)),
                 // The four COMMAND-shaped refusals carry USAGE, because each of
                 // them is answered by typing something different; the RUN-shaped
@@ -2120,25 +2181,44 @@ fn resolve(
     }
 }
 
-/// The seat list, or [`DEFAULT_SEAT`] at every seat.
+/// The root RESOLVED ONCE, paired with the seat list the call runs under —
+/// either the caller's `--seats` or [`DEFAULT_SEAT`] at every seat.
 ///
-/// The default needs the root's PLAYER COUNT, which is why it is filled in here
-/// and not at parse time — and why this resolves the source once to ask. A
-/// seat-count disagreement is left to the driver's own typed `SeatMismatch`
-/// rather than pre-empted here, so one authority answers it.
-fn seats_or_default(
-    seats: Option<Vec<SeatSpec>>,
+/// **Why the source comes back as [`RootSource::Resolved`]** (Phase C, T6 fix
+/// wave, review SHOULD-1). The default seat list needs the root's PLAYER COUNT,
+/// so the runner must resolve before it can build one; handing the ORIGINAL
+/// source on to `drive_rooted`/`adjudicate_root` then resolves it a SECOND
+/// time. For a registry or path root that is a wasted replay. For a `gen:` root
+/// it is a wasted SCAN, and a scan at the v2 lookahead ecology is minutes — a
+/// `run` under default seats paid it twice, once for a number it used only to
+/// size a `Vec`. The T5 seam is the fix: resolve here, hand the execution call
+/// the ANSWER, and [`RootSource::resolve`] returns the pair verbatim (having
+/// integrity-checked that its two halves describe the same position).
+///
+/// **The downgrade keeps the IDENTITY.** `Constructed` would have been shorter
+/// to write and would have lied: the report header names the scan that found
+/// the root, so a run whose header said "constructed" would describe a root
+/// nobody could reproduce. That is the whole reason `Resolved` exists rather
+/// than being spelled as a state.
+///
+/// It runs even when `--seats` WAS typed, so "resolved once" is unconditional
+/// rather than a property of the default path alone — and the seat-count
+/// disagreement stays the driver's own typed `SeatMismatch`, so one authority
+/// answers it.
+fn resolve_once(
     asked: &Asked,
+    seats: Option<Vec<SeatSpec>>,
     rules: &Rules,
-) -> Result<Vec<SeatSpec>, String> {
-    if let Some(seats) = seats {
-        return Ok(seats);
-    }
-    let (state, _) = asked
+) -> Result<(RootSource, Vec<SeatSpec>), String> {
+    let (state, descriptor) = asked
         .source
         .resolve(rules)
         .map_err(|e| format!("{}: no root: {e}", asked.asked_for))?;
-    Ok(vec![SeatSpec::Contestant(default_contestant()?); state.players.len()])
+    let seats = match seats {
+        Some(seats) => seats,
+        None => vec![SeatSpec::Contestant(default_contestant()?); state.players.len()],
+    };
+    Ok((RootSource::Resolved { state, descriptor }, seats))
 }
 
 #[cfg(test)]
@@ -3645,6 +3725,95 @@ mod tests {
         assert!(out.contains("NOT CHECKED"), "a generated root claims a reproduction:\n{out}");
     }
 
+    /// SHOULD-1 (T6 fix wave): a root reaching `run`/`adjudicate` is resolved
+    /// EXACTLY ONCE, and the execution call is handed the ANSWER rather than the
+    /// question.
+    ///
+    /// **The cost this is about is the `gen:` form's.** Resolving a generated
+    /// root walks a seeded SCAN, and the default-seat path used to walk it
+    /// twice — once for the player count `--seats` was not given, once again
+    /// inside `drive_rooted`. On family 1's rung ecology (what this cell runs,
+    /// per design §6's wall discipline) that is a second; on the v2 lookahead
+    /// ecology it is minutes, paid for a number used only to size a `Vec`.
+    ///
+    /// **Measured, not argued**: `driven::scan_probe` counts the walks this
+    /// thread took, so "once" is a 1 rather than a code reading. The other half
+    /// is structural — the execution call receives a `RootSource::Resolved`,
+    /// whose `resolve` arm has no scan in it at all — and the last block spends
+    /// the identity end to end: the run's HEADER still names the scan, which is
+    /// why the hand-off is `Resolved` and not `Constructed`.
+    #[test]
+    fn a_generated_root_is_resolved_once_and_the_execution_call_gets_the_answer() {
+        let rules = Rules::standard();
+        let spec = format!("gen:final-round-already-triggered:{GEN_MASTER:#x}:0");
+        let asked =
+            resolve(&parse_root_ref(&spec).expect("the spec parses"), &[], Path::new("."), &rules)
+                .expect("the reference names a root");
+
+        // DEFAULT seats — the path that used to resolve twice.
+        let (resolved, scans) =
+            driven::scan_probe::count_scans(|| resolve_once(&asked, None, &rules));
+        let (source, seats) = resolved.expect("the generated root resolves");
+        assert_eq!(scans, 1, "the default-seat path walked the scan {scans} times, not once");
+
+        let RootSource::Resolved { state, descriptor } = &source else {
+            panic!("the execution call is handed the question, not the answer: {source:?}");
+        };
+        assert!(
+            matches!(descriptor.origin, RootOrigin::Generated { ordinal: 0, .. }),
+            "the hand-off lost the scan that found the root: {:?}",
+            descriptor.origin,
+        );
+        assert_eq!(
+            seats,
+            vec![
+                SeatSpec::Contestant(default_contestant().expect("the default parses"));
+                state.players.len()
+            ],
+            "the default seat list is not one default contestant per seat",
+        );
+
+        // The execution call's OWN resolve is then free and VERBATIM, which is
+        // what makes "resolved once" structural rather than a promise about one
+        // call site: this arm cannot scan.
+        let (again, extra) = driven::scan_probe::count_scans(|| source.resolve(&rules));
+        let (again_state, again_descriptor) = again.expect("a pre-resolved root re-resolves");
+        assert_eq!(extra, 0, "the execution call re-walked the scan");
+        assert_eq!(&again_descriptor, descriptor, "the execution call sees another descriptor");
+        assert_eq!(
+            state_digest(&again_state),
+            state_digest(state),
+            "the execution call sees another position",
+        );
+
+        // END TO END on the cheap seats (the default is `lookahead-v1`, and
+        // this cell is about plumbing rather than play): ONE walk for the whole
+        // command, and the header the run prints still carries the generated
+        // identity the header of a `table` on the same root carries.
+        let (rendered, run_scans) = driven::scan_probe::count_scans(|| {
+            run_with(
+                &args(&[
+                    "run",
+                    &spec,
+                    "--master",
+                    "0x0C06_2026_0818_9992",
+                    "--seats",
+                    "family-weighted, family-weighted",
+                ]),
+                &[],
+                Path::new("."),
+            )
+        });
+        let rendered = rendered.expect("the rooted run completes");
+        assert_eq!(run_scans, 1, "one `run` walked the scan {run_scans} times");
+        let ecology = driven::GeneratingEcology::v1();
+        for needle in
+            ["generated@", "ordinal=0", ecology.id.as_str(), ecology.seed_derivation.as_str()]
+        {
+            assert!(rendered.contains(needle), "the run's header drops `{needle}`:\n{rendered}");
+        }
+    }
+
     // =======================================================================
     // Phase C, T6 — the seat grammar's fourth menu slot
     // =======================================================================
@@ -3903,6 +4072,42 @@ mod tests {
                 "{id}: a control equal to its positive",
             );
         }
+    }
+
+    /// THE SEAM (T6 fix wave, review MUST-1): the sizing hands BOTH arms the
+    /// pre-freeze posture with the admission inversion OFF.
+    ///
+    /// **The mutation this exists for is the natural one** — `BlockOpts {
+    /// control: arm == FamilyArm::Control, ..BlockOpts::pilot() }`, which reads
+    /// MORE careful than what ships and is the control's own claim upside down
+    /// (see [`family_block_opts`] for the double negation). Written at the call
+    /// site it survived the entire suite, because `run_with`'s `Command::Family`
+    /// Ok path is unreachable in test: every block refuses before the freeze, so
+    /// no cell has ever executed that line. Named, it has somewhere to fail.
+    #[test]
+    fn the_family_block_sizing_keeps_the_admission_inversion_off_in_both_arms() {
+        let positive = family_block_opts(FamilyArm::Positive);
+        let control = family_block_opts(FamilyArm::Control);
+        assert!(
+            !control.control,
+            "the CONTROL arm inverts admission on top of its already-negated rule: a double \
+             negation, and the control's own claim upside down",
+        );
+        assert!(!positive.control, "the POSITIVE arm inverts admission");
+        // WHOLE-VALUE equality through `Debug`, because `BlockOpts` carries no
+        // `PartialEq` and a field-by-field compare would silently skip a field
+        // added later: an arm is a GENERATOR and a RULE, never a sizing.
+        assert_eq!(
+            format!("{control:?}"),
+            format!("{positive:?}"),
+            "the two arms run at different sizings",
+        );
+        assert_eq!(
+            format!("{control:?}"),
+            format!("{:?}", BlockOpts::pilot()),
+            "the sizing is no longer the PRE-FREEZE posture — which is T7's freeze commit to \
+             move, not this seam's",
+        );
     }
 
     /// An id no declaration carries refuses rather than silently returning the
@@ -4353,6 +4558,59 @@ mod tests {
         );
     }
 
+    /// THE TRIPWIRE (T6 fix wave, review MUST-1): a CONTROL render whose report
+    /// says the run INVERTED admission is branded, loudly, above every number
+    /// the inversion would otherwise quietly turn around.
+    ///
+    /// **Why a brand on the page and not only a cell.** A block run is minutes
+    /// to hours and lands in a T7 triage note, so the failure that matters is
+    /// not a red suite but a table somebody QUOTES. `report.control` is the
+    /// sizing the run actually used and `arm` is what the caller asked for, so
+    /// any edit reaching `BlockOpts::control` around [`family_block_opts`]
+    /// surfaces in its own output rather than in a reviewer's memory.
+    #[test]
+    fn a_control_render_of_an_inverted_report_is_branded_a_double_negation() {
+        let mut report = family_report(
+            FamilyVerdict::Pass,
+            vec![family_row(0, RootVerdict::Pass, Some(turn_read(0, 3)))],
+        );
+
+        // The HONEST pair — what `family_block_opts` produces — is UNBRANDED,
+        // so the brand is a signal and not decoration.
+        assert!(!report.control, "the constructed report is inverted before the cell starts");
+        let honest = render_family_block(&report, FamilyArm::Control);
+        assert!(
+            !honest.contains("DOUBLE NEGATION"),
+            "a correctly-sized control block is branded:\n{honest}",
+        );
+
+        // THE DEFECT: control arm, inverted sizing.
+        report.control = true;
+        let branded = render_family_block(&report, FamilyArm::Control);
+        assert!(
+            branded.contains(DOUBLE_NEGATION_BRAND),
+            "the inverted control block carries no brand:\n{branded}",
+        );
+        assert!(
+            line_index(&branded, "DOUBLE NEGATION") < line_index(&branded, "  sizing "),
+            "the brand sits below the arithmetic it is about:\n{branded}",
+        );
+
+        // The POSITIVE arm inverted is NOT this defect: inverting admission
+        // while keeping the POSITIVE rule is the other spelling of the same
+        // test ([`family_block_opts`]'s doc), so branding it would cry wolf at
+        // a legitimate caller — and the sizing line already declares it.
+        let positive = render_family_block(&report, FamilyArm::Positive);
+        assert!(
+            !positive.contains("DOUBLE NEGATION"),
+            "the positive arm's legitimate inversion is branded a defect:\n{positive}",
+        );
+        assert!(
+            positive.contains("admission-inverted=true"),
+            "the positive arm hides the inversion it ran under:\n{positive}",
+        );
+    }
+
     // =======================================================================
     // Phase C, T6 — the `opening` probe
     // =======================================================================
@@ -4480,6 +4738,19 @@ mod tests {
                     && row.purchase != OPENING_NO_ACTION
             }),
             "no game read a placement, a president AND an area action: {:?}",
+            probe.rows,
+        );
+        // ANTI-VACUITY on the OTHER arm (T6 fix wave, review NOTE-2): the
+        // structural relation above is an implication, so it holds trivially at
+        // any master where no president ever stays in hand — and it would then
+        // pin nothing while still reading green. The comment says game 1 at
+        // THIS master takes Option B's return-to-hand; this is that claim, made
+        // executable, so a future master that loses the case fails here instead
+        // of quietly emptying the cell.
+        assert!(
+            probe.rows.iter().any(|row| row.president.is_none()),
+            "no game left the president in hand, so the relation above is vacuous at this \
+             master — re-point it or re-choose the master: {:?}",
             probe.rows,
         );
         // Distinct worlds per game — the schedule advances.

@@ -3203,6 +3203,9 @@ pub fn generate_roots(
     let Some(&highest) = wanted.iter().next_back() else {
         return Ok(Vec::new());
     };
+    // AFTER the empty-block return, so the probe counts WALKS and not calls.
+    #[cfg(test)]
+    scan_probe::record_walk();
     let config = predicate.config();
     let ecology = config.ecology;
     let games = ecology.games;
@@ -3284,6 +3287,44 @@ pub fn generate_roots(
             })
         })
         .collect()
+}
+
+/// A TEST-ONLY meter for the one thing a signature cannot state: how many times
+/// a call WALKED the scan (Phase C, T6 fix wave, review SHOULD-1).
+///
+/// **Why it exists.** `gen:` roots are resolved by [`generate_roots`], which
+/// plays whole games; the runner's rule is that one command resolves its root
+/// ONCE and hands the resolved pair on. Nothing about that is visible in a
+/// return type — a second resolve is correct, reproducible, and merely costs a
+/// scan again — so the only executable form of the rule is a count.
+///
+/// **Thread-local, on `alloc_probe`'s precedent** (`game::search_actions`): a
+/// scan is synchronous on its caller's thread and libtest gives every cell its
+/// own thread, so a cell reads exactly its own walks and parallel cells cannot
+/// see each other's. The counter is MONOTONE and [`count_scans`] reads a DELTA,
+/// so nesting is harmless and no cell can zero another's region.
+///
+/// `#[cfg(test)]`, so nothing here ships: the integration tiers link the crate
+/// without it, and the shipped `generate_roots` is unchanged.
+#[cfg(test)]
+pub(crate) mod scan_probe {
+    use std::cell::Cell;
+
+    thread_local! {
+        static WALKS: Cell<u32> = const { Cell::new(0) };
+    }
+
+    /// Record one walk. Called from [`super::generate_roots`] and nowhere else.
+    pub(super) fn record_walk() {
+        let _ = WALKS.try_with(|walks| walks.set(walks.get().saturating_add(1)));
+    }
+
+    /// Run `f`, and report how many scan walks it took ON THIS THREAD.
+    pub(crate) fn count_scans<R>(f: impl FnOnce() -> R) -> (R, u32) {
+        let before = WALKS.with(Cell::get);
+        let value = f();
+        (value, WALKS.with(Cell::get) - before)
+    }
 }
 
 // ---------------------------------------------------------------------------
