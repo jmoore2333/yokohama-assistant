@@ -1797,53 +1797,12 @@ impl RegistryEntry {
         root: &Path,
         rules: &Rules,
     ) -> Result<RootSource, RegistryError> {
-        let path = root.join(self.path);
-        // `read_to_string` would report the absence too, but as one io error
-        // among many — and THE absence is the expected outcome here, so it gets
-        // its own arm rather than a message a caller has to match on. The test
-        // is `exists`, not `is_file`: something that IS at the path and cannot be
-        // read (a directory, a permission-denied file) is a real failure, and
-        // reporting it as the expected miss would let a runner walk past it.
-        if !path.exists() {
-            return Err(RegistryError::Missing { name: self.name, path });
-        }
-        let text = std::fs::read_to_string(&path).map_err(|e| RegistryError::Read {
-            name: self.name,
-            path: path.clone(),
-            detail: e.to_string(),
-        })?;
-        let record: GameRecord = serde_json::from_str(&text).map_err(|e| RegistryError::Parse {
-            name: self.name,
-            path,
-            detail: e.to_string(),
-        })?;
-
-        // STALENESS FIRST, before anything reads the log. An event index or a
-        // recorded move checked against a record produced under other semantics
-        // compares two different games, so a transcription refusal there would
-        // blame the ENTRY for the engine having moved — and a transcription
-        // refusal that does NOT fire would be worse, since the entry would go on
-        // to hand out a root whose comparability nothing checked.
-        //
-        // The check is NEUTRAL about absent provenance, matching `state_at`
-        // (record.rs: neither lenient nor strict — it prints no warning and
-        // refuses on neither key): it fires only where the record CARRIES a rev
-        // or a hash that DISAGREES. A record that says nothing — `semantics_rev`
-        // `None` (pre-Phase-2.9), or an empty `rules_hash` — passes through here
-        // and meets whatever verdict the caller's own replay renders, which is
-        // `replay_strict`'s business and not the registry's.
-        let running_hash = rules.content_hash();
-        let rev_disagrees = matches!(record.semantics_rev, Some(rev) if rev != SEMANTICS_REV);
-        let hash_disagrees = !record.rules_hash.is_empty() && record.rules_hash != running_hash;
-        if rev_disagrees || hash_disagrees {
-            return Err(RegistryError::Stale {
-                name: self.name,
-                record_rev: record.semantics_rev,
-                running_rev: SEMANTICS_REV,
-                record_hash: record.rules_hash,
-                running_hash,
-            });
-        }
+        // The file half is SHARED with the runner's `<path>:<event>` root
+        // ([`load_record`]) so a missing / unreadable / non-record / STALE file
+        // refuses identically however the root was named. What stays HERE is
+        // exactly what is about THIS ENTRY: the transcription checks, which a
+        // path root has nothing to transcribe against.
+        let record = load_record(self.name, &root.join(self.path), rules)?;
 
         let events = record.events.len();
         if self.event_index >= events {
@@ -1867,6 +1826,75 @@ impl RegistryEntry {
         }
         Ok(RootSource::RecordPrefix { record, event_index: self.event_index })
     }
+}
+
+/// Read ONE record file and rule on its comparability — the file half of
+/// [`RegistryEntry::load_from`], factored so the runner's `<path>:<event>` root
+/// takes the SAME path.
+///
+/// A root named by an explicit path is the same kind of thing as a root named by
+/// an entry: the file is there or it is not, it parses or it does not, and it
+/// was produced under these semantics or it was not. Re-implementing those four
+/// verdicts on the other side of the argv boundary would let them drift — the
+/// staleness check especially, which is the one that decides whether a quoted
+/// figure is comparable at all. `name` is what the refusals are reported under:
+/// an entry's name, or the ARGUMENT FORM for a root that has no entry.
+///
+/// What is deliberately NOT here is the entry's own transcription checks (the
+/// recorded event index, the recorded move). Those compare an entry against a
+/// file; a path root has no entry to compare.
+pub(crate) fn load_record(
+    name: &'static str,
+    path: &Path,
+    rules: &Rules,
+) -> Result<GameRecord, RegistryError> {
+    // `read_to_string` would report the absence too, but as one io error among
+    // many — and THE absence is the expected outcome here, so it gets its own
+    // arm rather than a message a caller has to match on. The test is `exists`,
+    // not `is_file`: something that IS at the path and cannot be read (a
+    // directory, a permission-denied file) is a real failure, and reporting it
+    // as the expected miss would let a runner walk past it.
+    if !path.exists() {
+        return Err(RegistryError::Missing { name, path: path.to_path_buf() });
+    }
+    let text = std::fs::read_to_string(path).map_err(|e| RegistryError::Read {
+        name,
+        path: path.to_path_buf(),
+        detail: e.to_string(),
+    })?;
+    let record: GameRecord = serde_json::from_str(&text).map_err(|e| RegistryError::Parse {
+        name,
+        path: path.to_path_buf(),
+        detail: e.to_string(),
+    })?;
+
+    // STALENESS FIRST, before anything reads the log. An event index or a
+    // recorded move checked against a record produced under other semantics
+    // compares two different games, so a transcription refusal there would
+    // blame the ENTRY for the engine having moved — and a transcription
+    // refusal that does NOT fire would be worse, since the entry would go on
+    // to hand out a root whose comparability nothing checked.
+    //
+    // The check is NEUTRAL about absent provenance, matching `state_at`
+    // (record.rs: neither lenient nor strict — it prints no warning and
+    // refuses on neither key): it fires only where the record CARRIES a rev
+    // or a hash that DISAGREES. A record that says nothing — `semantics_rev`
+    // `None` (pre-Phase-2.9), or an empty `rules_hash` — passes through here
+    // and meets whatever verdict the caller's own replay renders, which is
+    // `replay_strict`'s business and not the registry's.
+    let running_hash = rules.content_hash();
+    let rev_disagrees = matches!(record.semantics_rev, Some(rev) if rev != SEMANTICS_REV);
+    let hash_disagrees = !record.rules_hash.is_empty() && record.rules_hash != running_hash;
+    if rev_disagrees || hash_disagrees {
+        return Err(RegistryError::Stale {
+            name,
+            record_rev: record.semantics_rev,
+            running_rev: SEMANTICS_REV,
+            record_hash: record.rules_hash,
+            running_hash,
+        });
+    }
+    Ok(record)
 }
 
 /// Why a registry entry produced no root.

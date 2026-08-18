@@ -33,11 +33,13 @@ use std::path::{Path, PathBuf};
 
 use crate::game::arena::Contestant;
 use crate::game::driven::{
-    self, Adjudication, DrivenOutcome, RegistryEntry, ReplyPolicy, RootDescriptor, RootTable,
-    SeatSpec,
+    self, Adjudication, DrivenOpts, DrivenOutcome, RegistryEntry, ReplyPolicy, RootDescriptor,
+    RootSource, RootTable, SeatSpec,
 };
 use crate::game::lookahead::SearchStats;
-use crate::types::Move;
+use crate::game::rules::Rules;
+use crate::game::seeds::WorldSeed;
+use crate::types::{Move, PlayerId};
 
 /// Every subcommand this runner answers. The parser reads it and
 /// [`USAGE`]'s completeness pin asserts every member is documented.
@@ -221,34 +223,193 @@ pub enum Command {
 
 /// Parse a command line (argv WITHOUT the program name).
 pub fn parse(args: &[String]) -> Result<Command, String> {
-    let _ = args;
-    Err("driven_runner::parse is not implemented".to_string())
+    let Some(subcommand) = args.first().map(String::as_str) else {
+        return Err(format!("a subcommand is required\n\n{USAGE}"));
+    };
+    let rest = &args[1..];
+    match subcommand {
+        "list" => {
+            let (positional, _) = split_args(rest, LIST_FLAGS)?;
+            if !positional.is_empty() {
+                return Err(format!(
+                    "list takes no positional argument, got {positional:?}\n\n{USAGE}"
+                ));
+            }
+            Ok(Command::List)
+        }
+        "table" => {
+            let (positional, flags) = split_args(rest, TABLE_FLAGS)?;
+            let root = one_root(&positional, "table")?;
+            let contestant = match flags.get("contestant") {
+                Some(spec) => Contestant::from_str_name(spec)
+                    .map_err(|e| format!("--contestant {spec:?}: {e}\n\n{USAGE}"))?,
+                None => default_contestant()?,
+            };
+            let decision_seed = flags.get("decision-seed").map(|raw| parse_u64(raw)).transpose()?;
+            Ok(Command::Table { root, contestant, decision_seed })
+        }
+        "run" => {
+            let (positional, flags) = split_args(rest, RUN_FLAGS)?;
+            let root = one_root(&positional, "run")?;
+            Ok(Command::Run {
+                root,
+                master: master_of(&flags, "run")?,
+                seats: seats_of(&flags)?,
+            })
+        }
+        "adjudicate" => {
+            let (positional, flags) = split_args(rest, ADJUDICATE_FLAGS)?;
+            let root = one_root(&positional, "adjudicate")?;
+            let replications = match flags.get("replications") {
+                Some(raw) => u32::try_from(parse_u64(raw)?)
+                    .map_err(|_| format!("--replications {raw:?} is not a u32\n\n{USAGE}"))?,
+                None => DEFAULT_REPLICATIONS,
+            };
+            Ok(Command::Adjudicate {
+                root,
+                master: master_of(&flags, "adjudicate")?,
+                replications,
+                seats: seats_of(&flags)?,
+            })
+        }
+        other => Err(format!("unknown subcommand {other:?}\n\n{USAGE}")),
+    }
+}
+
+/// argv split into positionals and `--flag value` pairs.
+///
+/// EVERY flag this runner has takes a value, so there is no bare-flag arm — and
+/// a valueless flag is therefore an error rather than a silent `true`. An
+/// unknown flag is an error too (`eval_probe`'s rule): a mistyped
+/// `--decision-see` that quietly left the entry's recorded seed in place would
+/// print a reproduction verdict about a decision nobody asked for. A REPEATED
+/// flag is an error as well rather than last-wins, since losing the first value
+/// is the same silent-substitution failure one level down.
+fn split_args(
+    args: &[String],
+    valued: &[&str],
+) -> Result<(Vec<String>, BTreeMap<String, String>), String> {
+    let mut positional = Vec::new();
+    let mut flags: BTreeMap<String, String> = BTreeMap::new();
+    let mut i = 0;
+    while i < args.len() {
+        if let Some(name) = args[i].strip_prefix("--") {
+            if !valued.contains(&name) {
+                return Err(format!("unknown flag --{name}\n\n{USAGE}"));
+            }
+            let value =
+                args.get(i + 1).ok_or_else(|| format!("--{name} needs a value\n\n{USAGE}"))?;
+            if flags.insert(name.to_string(), value.clone()).is_some() {
+                return Err(format!("--{name} was given twice\n\n{USAGE}"));
+            }
+            i += 2;
+            continue;
+        }
+        positional.push(args[i].clone());
+        i += 1;
+    }
+    Ok((positional, flags))
+}
+
+/// The ONE root every subcommand but `list` takes.
+fn one_root(positional: &[String], subcommand: &str) -> Result<RootRef, String> {
+    match positional {
+        [only] => parse_root_ref(only),
+        other => Err(format!(
+            "{subcommand} takes exactly ONE root, got {}: {other:?}\n\n{USAGE}",
+            other.len()
+        )),
+    }
+}
+
+/// `--master`, which has no default anywhere.
+fn master_of(flags: &BTreeMap<String, String>, subcommand: &str) -> Result<u64, String> {
+    let raw = flags.get("master").ok_or_else(|| {
+        format!(
+            "{subcommand} requires --master, which has no default: a master is drawn from OS \
+             entropy and RECORDED BY THE CALLER BEFORE THE RUN (the standing policy), so this \
+             instrument takes the recorded value rather than drawing one — a draw made here would \
+             sit after the decision to run, in a process whose output is the thing the draw is \
+             supposed to be independent of\n\n{USAGE}"
+        )
+    })?;
+    parse_u64(raw)
+}
+
+/// `--seats`, left `None` when absent because the default needs the root's
+/// player count and nothing here has read the root yet.
+fn seats_of(flags: &BTreeMap<String, String>) -> Result<Option<Vec<SeatSpec>>, String> {
+    flags.get("seats").map(|raw| parse_seats(raw)).transpose()
+}
+
+/// [`DEFAULT_SEAT`] through the grammar. Propagated rather than unwrapped: a
+/// runner that panicked on its own default would be worse than one that says so.
+fn default_contestant() -> Result<Contestant, String> {
+    Contestant::from_str_name(DEFAULT_SEAT)
+        .map_err(|e| format!("the default contestant {DEFAULT_SEAT:?} does not parse: {e}"))
 }
 
 /// `<path>:<event>` or a bare registry name.
 pub fn parse_root_ref(raw: &str) -> Result<RootRef, String> {
-    let _ = raw;
-    Err("driven_runner::parse_root_ref is not implemented".to_string())
+    let Some((path, event)) = raw.rsplit_once(':') else {
+        if raw.is_empty() {
+            return Err(format!("an empty root names nothing\n\n{USAGE}"));
+        }
+        return Ok(RootRef::Fixture(raw.to_string()));
+    };
+    // The LAST colon, so a path that contains one still reads. A path with a
+    // colon and no event index is a user error rather than a fixture name,
+    // because a fixture name with a colon in it does not exist.
+    if path.is_empty() {
+        return Err(format!("{raw:?} has no path before its last colon\n\n{USAGE}"));
+    }
+    let event_index = event.parse::<usize>().map_err(|e| {
+        format!(
+            "{raw:?} carries a colon, so it reads as <path>:<event> split at the LAST colon — but \
+             {event:?} is not a decimal event index: {e}\n\n{USAGE}"
+        )
+    })?;
+    Ok(RootRef::Path { path: PathBuf::from(path), event_index })
 }
 
 /// ONE seat spec: the reply menu's three bare names, else the contestant
 /// grammar.
+///
+/// The menu is read FIRST and only on an EXACT bare name, which is what keeps
+/// `family-weighted` (the menu slot) and `family-weighted:p=…` (the knobbed rung
+/// through the contestant grammar) distinct. Both resolve to the same kind of
+/// seat; what differs is the `requested` label the provenance records, and that
+/// label is the half whose meaning moves at D1's identity freeze.
 pub fn parse_seat(spec: &str) -> Result<SeatSpec, String> {
-    let _ = spec;
-    Err("driven_runner::parse_seat is not implemented".to_string())
+    for policy in
+        [ReplyPolicy::FamilyWeighted, ReplyPolicy::GreedyAtFinal, ReplyPolicy::LookaheadAtFinal]
+    {
+        if spec == policy.as_str() {
+            return Ok(SeatSpec::Reply(policy));
+        }
+    }
+    Contestant::from_str_name(spec).map(SeatSpec::Contestant).map_err(|e| {
+        format!("seat {spec:?} is neither a reply-menu name nor a contestant: {e}\n\n{USAGE}")
+    })
 }
 
 /// A comma-separated seat list, one spec per seat in seat order.
 pub fn parse_seats(raw: &str) -> Result<Vec<SeatSpec>, String> {
-    let _ = raw;
-    Err("driven_runner::parse_seats is not implemented".to_string())
+    if raw.trim().is_empty() {
+        return Err(format!("--seats needs at least one seat\n\n{USAGE}"));
+    }
+    raw.split(',').map(|spec| parse_seat(spec.trim())).collect()
 }
 
 /// `eval_probe`'s spelling, so a master typed for one instrument means the same
 /// thing typed for the other: decimal, or `0x` hex, with `_` separators ignored.
 pub fn parse_u64(raw: &str) -> Result<u64, String> {
-    let _ = raw;
-    Err("driven_runner::parse_u64 is not implemented".to_string())
+    let cleaned = raw.replace('_', "");
+    let parsed = match cleaned.strip_prefix("0x").or_else(|| cleaned.strip_prefix("0X")) {
+        Some(hex) => u64::from_str_radix(hex, 16),
+        None => cleaned.parse::<u64>(),
+    };
+    parsed.map_err(|e| format!("{raw:?} is not a u64: {e}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -257,9 +418,63 @@ pub fn parse_u64(raw: &str) -> Result<u64, String> {
 
 /// The fifteen [`SearchStats`] counters as `(name, value)`, in declaration
 /// order.
+///
+/// **The body DESTRUCTURES `SearchStats` with no `..`**, which is the whole
+/// point: a sixteenth counter added to that type is a COMPILE ERROR here, to be
+/// answered with a row. A `stats.field` list would silently stay fifteen, and
+/// `why` printing 2 of 15 is exactly the gap this table exists to close.
 pub fn counter_rows(stats: &SearchStats) -> [(&'static str, u64); 15] {
-    let _ = stats;
-    [("", 0); 15]
+    let SearchStats {
+        root_candidates,
+        nodes,
+        handles,
+        route_dfs_nodes,
+        forced_nodes,
+        leaves,
+        scored,
+        root_scored,
+        budget_binds,
+        budget_starved,
+        placement_cap_binds,
+        max_line,
+        ply_cap_hits,
+        free_extension_steps,
+        free_cap_hits,
+    } = *stats;
+    [
+        ("root_candidates", root_candidates),
+        ("nodes", nodes),
+        ("handles", handles),
+        ("route_dfs_nodes", route_dfs_nodes),
+        ("forced_nodes", forced_nodes),
+        ("leaves", leaves),
+        ("scored", scored),
+        ("root_scored", root_scored),
+        ("budget_binds", budget_binds),
+        ("budget_starved", budget_starved),
+        ("placement_cap_binds", placement_cap_binds),
+        ("max_line", u64::from(max_line)),
+        ("ply_cap_hits", ply_cap_hits),
+        ("free_extension_steps", free_extension_steps),
+        ("free_cap_hits", free_cap_hits),
+    ]
+}
+
+/// `Some(n)` as `n`, `None` as `-` — the counter-absence distinction, rendered.
+/// A `None` counter means "this contestant has no such quantity" and must never
+/// print as a zero.
+fn opt(value: Option<u64>) -> String {
+    value.map_or_else(|| "-".to_string(), |v| v.to_string())
+}
+
+/// The root descriptor as one line: origin kind, root digest, event index.
+fn root_line(root: &RootDescriptor) -> String {
+    format!(
+        "{}@{}  event={}",
+        root.origin.kind(),
+        root.root_digest,
+        root.event_index.map_or_else(|| "-".to_string(), |n| n.to_string()),
+    )
 }
 
 /// What a `table` report knows about its root BEYOND the table itself.
@@ -276,27 +491,269 @@ pub struct TableContext<'a> {
 }
 
 /// The registry, with each record's presence resolved against `anchor`.
+///
+/// **Absence is reported, never refused.** The session roots live in gitignored
+/// saves, so a checkout without them must still be able to ask what the registry
+/// names — and a runner that errored on the first miss would be unusable on
+/// exactly the machine where the list matters most.
 pub fn render_list(entries: &[RegistryEntry], anchor: &Path) -> String {
-    let _ = (entries, anchor);
-    String::new()
+    let mut lines = vec![
+        "=== driven registry ===".to_string(),
+        format!("  {} entries, resolved against {}", entries.len(), anchor.display()),
+        "  a MISSING record is a MISS and never a failure: the session roots live in gitignored \
+         saves"
+            .to_string(),
+    ];
+    for entry in entries {
+        let presence = if anchor.join(entry.path).exists() { "PRESENT" } else { "MISSING" };
+        lines.push(String::new());
+        lines.push(format!("  {}  [{presence}]", entry.name));
+        lines.push(format!("      path    {}", entry.path));
+        lines.push(format!(
+            "      event   {}   seat p{}   decision seed {:#018x}",
+            entry.event_index, entry.bot_seat.0, entry.decision_seed,
+        ));
+        lines.push(format!(
+            "      move    {}",
+            entry
+                .recorded_move
+                .as_ref()
+                .map_or_else(|| "(none recorded)".to_string(), |mv| format!("{mv:?}")),
+        ));
+        lines.push(format!("      note    {}", entry.note));
+    }
+    lines.join("\n")
 }
 
-/// ONE decision, analyzed.
+/// ONE decision, analyzed — the mechanical separator's report.
 pub fn render_root_table(table: &RootTable, ctx: &TableContext<'_>) -> String {
-    let _ = (table, ctx);
-    String::new()
+    let mut lines = vec![
+        "=== driven table ===".to_string(),
+        format!("  root           {}   {}", ctx.asked_for, root_line(ctx.root)),
+        format!("  seat           p{}", table.seat.0),
+        format!("  contestant     {}", table.echo),
+        format!("  decision seed  {:#018x}", table.decision_seed),
+        format!(
+            "  world          sampler_seed={:#018x}  worlds={}  digest={}",
+            table.world.sampler_seed, table.world.worlds, table.world.digest,
+        ),
+        format!("  winner         {:?}", table.winner),
+        format!("  winner is a maximiser: {}", table.winner_is_a_maximiser()),
+    ];
+    lines.extend(reproduction_lines(table, ctx));
+    lines.push(String::new());
+    lines.push(format!(
+        "  shape          candidates={}  top={}  tied-at-top={}  top-band(<={} pt)={}  \
+         distinct={}",
+        table.candidates(),
+        table.top_value().map_or_else(|| "-".to_string(), |v| format!("{v:+}")),
+        table.tied_at_top(),
+        driven::TOP_BAND_POINTS,
+        table.top_band(),
+        table.distinct_values(),
+    ));
+    lines.push(String::new());
+    lines.push(format!(
+        "  ranked head ({} of {}, best first; margin is value - top):",
+        table.ranked.len().min(RANKED_HEAD),
+        table.ranked.len(),
+    ));
+    let top = table.top_value().unwrap_or(0);
+    for (index, score) in table.ranked.iter().take(RANKED_HEAD).enumerate() {
+        lines.push(format!(
+            "    {:>3}.  {:>8}  {:>8}   {:?}",
+            index + 1,
+            format!("{:+}", score.value),
+            format!("{:+}", score.value - top),
+            score.mv,
+        ));
+    }
+    lines.push(String::new());
+    lines.push("  search counters (all fifteen):".to_string());
+    for (name, value) in counter_rows(&table.stats) {
+        lines.push(format!("    {name:<22} {value}"));
+    }
+    lines.join("\n")
+}
+
+/// The REPRODUCED / DIVERGED / NOT CHECKED verdict, and its override qualifier.
+///
+/// The check is the mechanical separator's step one, as a command: at the
+/// entry's own recorded seed the shipped b=4 arm should pick the move the record
+/// carries, and a wider beam is EXPECTED to diverge — that divergence is the
+/// measurement rather than a fault. What the qualifier exists for is the case in
+/// between: a seed the caller supplied is no longer the entry's own question, so
+/// the verdict is still printed and is labelled as not being the entry's check.
+fn reproduction_lines(table: &RootTable, ctx: &TableContext<'_>) -> Vec<String> {
+    let event = ctx.root.event_index.map_or_else(|| "-".to_string(), |n| n.to_string());
+    let Some(recorded) = ctx.recorded_move else {
+        return vec![format!(
+            "  reproduction   NOT CHECKED: this root carries no recorded move to compare the \
+             winner against (only a registry entry does)",
+        )];
+    };
+    let mut lines = vec![if *recorded == table.winner {
+        format!("  REPRODUCED     the winner IS the move the record carries at event {event}")
+    } else {
+        format!(
+            "  DIVERGED       the winner is {:?}; the record carries {recorded:?} at event {event}",
+            table.winner,
+        )
+    }];
+    if let Some(recorded_seed) = ctx.recorded_seed {
+        if recorded_seed != table.decision_seed {
+            lines.push(format!(
+                "                 (the decision seed was OVERRIDDEN — {:#018x} against the \
+                 entry's recorded {recorded_seed:#018x} — so this is not the entry's own \
+                 reproduction check)",
+                table.decision_seed,
+            ));
+        }
+    }
+    lines
 }
 
 /// One rooted run.
 pub fn render_outcome(outcome: &DrivenOutcome, asked_for: &str) -> String {
-    let _ = (outcome, asked_for);
-    String::new()
+    let provenance = &outcome.provenance;
+    let mut lines = vec![
+        "=== driven run ===".to_string(),
+        format!("  root           {asked_for}   {}", root_line(&provenance.root)),
+        format!(
+            "  semantics      rev={}  rules={}",
+            provenance.semantics_rev, provenance.rules_hash,
+        ),
+        format!("  master         {:#018x}", outcome.master.0),
+        String::new(),
+        "  seats (as asked for, as resolved, and as the driver's own bench witnessed them):"
+            .to_string(),
+    ];
+    for seat in &provenance.seats {
+        lines.push(format!(
+            "    p{}  requested={}  echo={}  observation={}  stream={:#018x}",
+            seat.seat, seat.requested, seat.echo, seat.observation, seat.agent_seed,
+        ));
+    }
+    lines.push(String::new());
+    lines.push(format!(
+        "  result         winner=p{}  decisions={}  turns={}",
+        outcome.result.winner.0, outcome.decisions, outcome.final_state.turn_number,
+    ));
+    let standings: Vec<String> = outcome
+        .result
+        .standings
+        .iter()
+        .map(|s| format!("#{} p{}={}", s.rank, s.player.0, s.breakdown.total))
+        .collect();
+    lines.push(format!("  standings      {}", standings.join("  ")));
+    lines.push(format!(
+        "  explanations   {}  (identity holds: {})",
+        opt(outcome.explanations),
+        outcome.explanation_identity_holds(),
+    ));
+    lines.push(String::new());
+    lines.push("  per-seat counters (`-` means this contestant has no such quantity):".to_string());
+    for seat in &outcome.seats {
+        let c = &seat.counters;
+        lines.push(format!(
+            "    p{}  moves={}  explained={}  scored={}  root_scored={}  binds={}  starved={}  \
+             ply_cap={}  free_cap={}",
+            seat.seat.0,
+            seat.applied_moves,
+            opt(c.explained),
+            opt(c.candidates_scored),
+            opt(c.root_scored),
+            opt(c.budget_binds),
+            opt(c.budget_starved_decisions),
+            opt(c.ply_cap_hits),
+            opt(c.free_cap_hits),
+        ));
+    }
+    lines.push(String::new());
+    lines.push(format!("  digest         {}", outcome.digest()));
+    lines.join("\n")
 }
 
-/// One adjudication. **Its FIRST LINE is [`driven::ROBUSTNESS_READ`] verbatim.**
+/// One adjudication. **Its FIRST LINE is [`driven::ROBUSTNESS_READ`] verbatim**
+/// (design §3, review N-7): the label rides the OUTPUT and not only the docs, so
+/// a table pasted into a triage note carries the claim it is entitled to make.
 pub fn render_adjudication(adjudication: &Adjudication, asked_for: &str) -> String {
-    let _ = (adjudication, asked_for);
-    String::new()
+    let provenance = &adjudication.provenance;
+    let mut lines = vec![
+        driven::ROBUSTNESS_READ.to_string(),
+        String::new(),
+        "=== driven adjudicate ===".to_string(),
+        format!("  root           {asked_for}   {}", root_line(&provenance.root)),
+        format!(
+            "  semantics      rev={}  rules={}",
+            provenance.semantics_rev, provenance.rules_hash,
+        ),
+        format!("  mover          p{}   root turn={}", adjudication.mover.0, adjudication.root_turn),
+        format!(
+            "  master         {:#018x}   replications={}",
+            adjudication.master.0, adjudication.replications,
+        ),
+        String::new(),
+        "  seats:".to_string(),
+    ];
+    for seat in &provenance.seats {
+        lines.push(format!(
+            "    p{}  requested={}  echo={}",
+            seat.seat, seat.requested, seat.echo,
+        ));
+    }
+    lines.push(String::new());
+    lines.push(format!(
+        "  candidates     {}   all candidates equal: {}   (elementwise over the {} \
+         replications; vacuously true below 2 candidates, which is a FORCED position or a \
+         FINISHED game rather than a dead one)",
+        adjudication.candidates(),
+        adjudication.all_candidates_equal(),
+        adjudication.replications,
+    ));
+    lines.push(String::new());
+    lines.push(format!(
+        "  {:>3}  {:>10}  {:>8}  {:>8}  {:>8}  {:>6}   candidate / margins",
+        "#", "mean", "min", "max", "wins", "k",
+    ));
+    for (index, row) in adjudication.rows.iter().enumerate() {
+        let margins: Vec<String> = row.margins().iter().map(|m| format!("{m:+}")).collect();
+        lines.push(format!(
+            "  {:>3}  {:>10.2}  {:>8}  {:>8}  {:>8}  {:>6}   {:?}",
+            index + 1,
+            row.mean_margin(),
+            row.min_margin().map_or_else(|| "-".to_string(), |m| format!("{m:+}")),
+            row.max_margin().map_or_else(|| "-".to_string(), |m| format!("{m:+}")),
+            format!("{}/{}", row.wins(), row.playouts.len()),
+            row.playouts.len(),
+            row.candidate,
+        ));
+        lines.push(format!(
+            "       margins [{}]  continuation={}",
+            margins.join(", "),
+            row.continuation_digest,
+        ));
+    }
+    lines.push(String::new());
+    // The witness is the FIRST PLAYOUT's provenance, so its root descriptor
+    // names that playout's own starting position — root + the first candidate —
+    // and NOT the adjudicated root. Said out loud because the two are one field
+    // name apart and a reader who assumed otherwise would mis-read every stream.
+    match &adjudication.witness {
+        Some(witness) => lines.push(format!(
+            "  witness        the FIRST PLAYOUT's stamped provenance: {} (root + candidate 1, \
+             not the adjudicated root; world {:#018x})",
+            root_line(&witness.root),
+            witness.master,
+        )),
+        None => lines.push(
+            "  witness        none: nothing was played (a terminal root adjudicates to an empty \
+             table)"
+                .to_string(),
+        ),
+    }
+    lines.push(format!("  digest         {}", adjudication.digest()));
+    lines.join("\n")
 }
 
 // ---------------------------------------------------------------------------
@@ -323,8 +780,170 @@ pub(crate) fn run_with(
     entries: &[RegistryEntry],
     anchor: &Path,
 ) -> Result<String, String> {
-    let _ = (args, entries, anchor);
-    Err("driven_runner::run_with is not implemented".to_string())
+    let command = parse(args)?;
+    let rules = Rules::standard();
+    match command {
+        Command::List => Ok(render_list(entries, anchor)),
+
+        Command::Table { root, contestant, decision_seed } => {
+            let asked = resolve(&root, entries, anchor, &rules)?;
+            let seed = match decision_seed {
+                Some(seed) => seed,
+                None => asked.recorded_seed.ok_or_else(|| {
+                    format!(
+                        "{}: --decision-seed is REQUIRED for a <path>:<event> root. No decision \
+                         seed is recorded anywhere for one — the CLI's own \
+                         splitmix64(bot_seed ^ event_count) derivation lives in yokohama-cli and \
+                         core does not re-implement it — so inventing a seed here would answer a \
+                         different question from the one the record asks. A REGISTRY root takes \
+                         its entry's own recorded seed by default.\n\n{USAGE}",
+                        asked.asked_for,
+                    )
+                })?,
+            };
+            let (state, descriptor) = asked
+                .source
+                .resolve(&rules)
+                .map_err(|e| format!("{}: no root: {e}", asked.asked_for))?;
+            // The decision analyzed is the MOVER's. An entry that records
+            // another seat as the bot there is pointed at a different decision
+            // — and the loader cannot catch it, since the record does carry the
+            // recorded move at that index whoever played it.
+            if let Some(seat) = asked.bot_seat {
+                if seat != state.current_player {
+                    return Err(format!(
+                        "{}: the entry records seat p{} at event {}, but p{} is on the move there \
+                         — the entry points at another decision",
+                        asked.asked_for, seat.0, asked.event_index, state.current_player.0,
+                    ));
+                }
+            }
+            let table = driven::root_table(&state, state.current_player, contestant, &rules, seed)
+                .map_err(|e| format!("{}: no root table: {e}", asked.asked_for))?;
+            Ok(render_root_table(
+                &table,
+                &TableContext {
+                    asked_for: &asked.asked_for,
+                    root: &descriptor,
+                    recorded_move: asked.recorded_move.as_ref(),
+                    recorded_seed: asked.recorded_seed,
+                },
+            ))
+        }
+
+        Command::Run { root, master, seats } => {
+            let asked = resolve(&root, entries, anchor, &rules)?;
+            let seats = seats_or_default(seats, &asked, &rules)?;
+            let outcome = driven::drive_rooted(
+                &asked.source,
+                &seats,
+                &rules,
+                WorldSeed(master),
+                DrivenOpts::default(),
+            )
+            .map_err(|e| format!("{}: the run did not complete: {e}", asked.asked_for))?;
+            Ok(render_outcome(&outcome, &asked.asked_for))
+        }
+
+        Command::Adjudicate { root, master, replications, seats } => {
+            let asked = resolve(&root, entries, anchor, &rules)?;
+            let seats = seats_or_default(seats, &asked, &rules)?;
+            let adjudication = driven::adjudicate_root(
+                &asked.source,
+                &seats,
+                &rules,
+                WorldSeed(master),
+                replications,
+                DrivenOpts::default(),
+            )
+            .map_err(|e| format!("{}: the adjudication did not complete: {e}", asked.asked_for))?;
+            Ok(render_adjudication(&adjudication, &asked.asked_for))
+        }
+    }
+}
+
+/// A root REFERENCE turned into the material a subcommand needs: the source
+/// itself, plus whatever the naming vocabulary happened to record about it.
+///
+/// The three `Option`s are all `Some` for a registry entry and all `None` for a
+/// `<path>:<event>` root, and that asymmetry is the point rather than an
+/// oversight — a path names a position and nothing else, so there is no recorded
+/// seed to default to, no recorded move to reproduce against, and no recorded
+/// seat to check the mover against.
+struct Asked {
+    /// What the caller typed, for report headers and error text.
+    asked_for: String,
+    source: RootSource,
+    event_index: usize,
+    recorded_seed: Option<u64>,
+    recorded_move: Option<Move>,
+    bot_seat: Option<PlayerId>,
+}
+
+fn resolve(
+    root: &RootRef,
+    entries: &[RegistryEntry],
+    anchor: &Path,
+    rules: &Rules,
+) -> Result<Asked, String> {
+    match root {
+        RootRef::Fixture(name) => {
+            let entry = entries.iter().find(|entry| entry.name == name).ok_or_else(|| {
+                let known: Vec<&str> = entries.iter().map(|entry| entry.name).collect();
+                format!(
+                    "unknown root {name:?}: no registry entry by that name, and no ':' in it to \
+                     read as <path>:<event>. Known entries: {}",
+                    if known.is_empty() { "(none)".to_string() } else { known.join(", ") },
+                )
+            })?;
+            let source = entry.load_from(anchor, rules).map_err(|e| e.to_string())?;
+            Ok(Asked {
+                asked_for: entry.name.to_string(),
+                source,
+                event_index: entry.event_index,
+                recorded_seed: Some(entry.decision_seed),
+                recorded_move: entry.recorded_move.clone(),
+                bot_seat: Some(entry.bot_seat),
+            })
+        }
+        RootRef::Path { path, event_index } => {
+            // THE SAME loader a registry entry takes, so Missing / Read / Parse
+            // / Stale fire identically however the root was named. Only the
+            // entry's own transcription checks stay entry-side; a path has
+            // nothing to transcribe against.
+            let record = driven::load_record(PATH_ROOT_NAME, path, rules)
+                .map_err(|e| e.to_string())?;
+            Ok(Asked {
+                asked_for: format!("{}:{event_index}", path.display()),
+                source: RootSource::RecordPrefix { record, event_index: *event_index },
+                event_index: *event_index,
+                recorded_seed: None,
+                recorded_move: None,
+                bot_seat: None,
+            })
+        }
+    }
+}
+
+/// The seat list, or [`DEFAULT_SEAT`] at every seat.
+///
+/// The default needs the root's PLAYER COUNT, which is why it is filled in here
+/// and not at parse time — and why this resolves the source once to ask. A
+/// seat-count disagreement is left to the driver's own typed `SeatMismatch`
+/// rather than pre-empted here, so one authority answers it.
+fn seats_or_default(
+    seats: Option<Vec<SeatSpec>>,
+    asked: &Asked,
+    rules: &Rules,
+) -> Result<Vec<SeatSpec>, String> {
+    if let Some(seats) = seats {
+        return Ok(seats);
+    }
+    let (state, _) = asked
+        .source
+        .resolve(rules)
+        .map_err(|e| format!("{}: no root: {e}", asked.asked_for))?;
+    Ok(vec![SeatSpec::Contestant(default_contestant()?); state.players.len()])
 }
 
 #[cfg(test)]
