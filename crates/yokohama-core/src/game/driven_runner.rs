@@ -1000,15 +1000,22 @@ mod tests {
     use crate::game::arena::{agent_stream_seed, run_arena_game, ArenaAgent, Slot};
     use crate::game::driven::{
         AdjudicationProvenance, AdjudicationSeat, CandidatePlayout, CandidateRow, DrivenOpts,
-        RootOrigin, RootSource, SampledWorld, SESSION_BOT_SEAT,
+        RootOrigin, RootSource, SampledWorld, SeatCounters, SESSION_BOT_SEAT,
+    };
+    use crate::game::driven_families::{
+        AdmissionRead, AdmissionVerdict, CounterAnnotation, CounterCheck, ExclusionReason,
+        FamilyBlockReport, FamilyLabel, FamilyReadOutcome, FamilyVerdict, PolicyAdmission,
+        ReadGrain, ReplicationRead, RootRow, RootVerdict, StrategicClass, MIN_ADMITTED_ROOTS,
+        VOID_DISPOSITION,
     };
     use crate::game::legal_moves::get_legal_moves;
     use crate::game::lookahead::RootScore;
+    use crate::game::metrics::wilson_95;
     use crate::game::policy::RolloutPolicy;
     use crate::game::record::{state_at, GameRecord, RecordedEvent};
     use crate::game::rules::Rules;
     use crate::game::seeds::{SeedSchedule, WorldSeed};
-    use crate::game::semantics::SEMANTICS_REV;
+    use crate::game::semantics::{state_digest, SEMANTICS_REV};
     use crate::types::{GameState, PlayerId};
 
     /// This task's committed diagnostic master (Phase B, T5). The NAME of the
@@ -2336,5 +2343,1003 @@ mod tests {
         .expect("the rooted run completes");
         let rendered = render_outcome(&outcome, "constructed");
         assert!(rendered.contains(&outcome.digest()), "the render drops the digest: {rendered}");
+    }
+
+    // =======================================================================
+    // Phase C, T6 — the GENERATED root spec (`gen:<predicate>:<master>:<ordinal>`)
+    // =======================================================================
+
+    /// The master the two SCANNING cells below run at. Diagnostic by the
+    /// constructor's own name, per `game::seeds` — a fixture cell wants
+    /// reproduction, which is the case spec §3 carves out.
+    const GEN_MASTER: u64 = 0x0C06_2026_0818_9994;
+
+    /// The master the OPENING cells run at, same waiver.
+    const OPENING_MASTER: u64 = 0x0C06_2026_0818_9993;
+
+    /// Every `RootPredicate` name parses as a `gen:` root, at either master
+    /// spelling, and the parse is a ROUND TRIP: what came back names the
+    /// predicate that was typed.
+    #[test]
+    fn a_gen_root_parses_every_predicate_name_at_either_master_spelling() {
+        for predicate in RootPredicate::ALL {
+            let spec = format!("gen:{}:0x0A3E_0000_0000_0001:7", predicate.as_str());
+            assert_eq!(
+                parse_root_ref(&spec).unwrap_or_else(|e| panic!("{spec} must parse: {e}")),
+                RootRef::Generated { predicate, master: 0x0A3E_0000_0000_0001, ordinal: 7 },
+            );
+        }
+        // A decimal master and ordinal 0 — the other end of both fields.
+        assert_eq!(
+            parse_root_ref("gen:final-round-already-triggered:12345:0").expect("decimal parses"),
+            RootRef::Generated {
+                predicate: RootPredicate::FinalRoundAlreadyTriggered,
+                master: 12_345,
+                ordinal: 0,
+            },
+        );
+    }
+
+    /// An unknown predicate refuses naming the WHOLE valid set — a caller who
+    /// mistyped one gets the vocabulary, not a shrug.
+    #[test]
+    fn a_gen_root_with_an_unknown_predicate_names_every_valid_name() {
+        let err = parse_root_ref("gen:final-round:0x1:0").expect_err("an unknown predicate refuses");
+        assert!(err.contains("final-round"), "the refusal hides what was typed: {err}");
+        for predicate in RootPredicate::ALL {
+            assert!(
+                err.contains(predicate.as_str()),
+                "the refusal does not name `{}`: {err}",
+                predicate.as_str(),
+            );
+        }
+        assert!(err.contains(USAGE), "the refusal drops USAGE: {err}");
+    }
+
+    /// Each MALFORMED field refuses on its own terms — arity, master, ordinal,
+    /// empty name — and every refusal carries USAGE.
+    #[test]
+    fn a_malformed_gen_root_refuses_naming_the_field_that_is_wrong() {
+        let cases: [(&str, &str); 5] = [
+            // Too few fields.
+            ("gen:final-round-already-triggered:0x1", "gen:<predicate>"),
+            // Too many.
+            ("gen:final-round-already-triggered:0x1:0:9", "gen:<predicate>"),
+            // A master that is not a number.
+            ("gen:final-round-already-triggered:0xzz:0", "0xzz"),
+            // An ordinal that is not a decimal u32.
+            ("gen:final-round-already-triggered:0x1:-1", "-1"),
+            // An empty predicate name.
+            ("gen::0x1:0", "\"\""),
+        ];
+        for (spec, needle) in cases {
+            let err = parse_root_ref(spec).unwrap_err();
+            assert!(err.contains(needle), "{spec}: the refusal hides {needle}: {err}");
+            assert!(err.contains(USAGE), "{spec}: the refusal drops USAGE: {err}");
+        }
+    }
+
+    /// The `gen:` form reaches EVERY subcommand that takes a root — the
+    /// separator and the adjudicator become runnable on generated roots, which
+    /// is what the grammar is for.
+    #[test]
+    fn every_root_taking_subcommand_accepts_a_gen_root() {
+        let spec = "gen:achievement-claim-available:0x0A3E_0000_0000_0002:3";
+        let expected = RootRef::Generated {
+            predicate: RootPredicate::AchievementClaimAvailable,
+            master: 0x0A3E_0000_0000_0002,
+            ordinal: 3,
+        };
+        match parse(&args(&["table", spec, "--decision-seed", "9"])).expect("table parses") {
+            Command::Table { root, .. } => assert_eq!(root, expected),
+            other => panic!("table parsed as {other:?}"),
+        }
+        match parse(&args(&["run", spec, "--master", "0x1"])).expect("run parses") {
+            Command::Run { root, .. } => assert_eq!(root, expected),
+            other => panic!("run parsed as {other:?}"),
+        }
+        match parse(&args(&["adjudicate", spec, "--master", "0x1"])).expect("adjudicate parses") {
+            Command::Adjudicate { root, .. } => assert_eq!(root, expected),
+            other => panic!("adjudicate parsed as {other:?}"),
+        }
+    }
+
+    /// A `gen:` root carries no recorded seed, so `table` REFUSES without
+    /// `--decision-seed` — the `path:event` sentence, widened to name both
+    /// seedless forms rather than leaving one of them unexplained.
+    #[test]
+    fn a_gen_root_requires_a_decision_seed_at_table() {
+        let err = run_with(
+            &args(&["table", "gen:final-round-already-triggered:0x1:0"]),
+            &[],
+            Path::new("."),
+        )
+        .expect_err("a gen root without a seed must refuse");
+        assert!(err.contains("--decision-seed"), "the refusal hides the flag: {err}");
+        assert!(err.contains("gen:"), "the refusal does not name the gen form: {err}");
+    }
+
+    /// END TO END on the CHEAP family-1 ecology: a `gen:` root RESOLVES, and the
+    /// report's header carries the generated provenance the way a registry root
+    /// carries its identity — predicate, master, ordinal, the scan's game index,
+    /// and the whole `GeneratingEcology`, which is the half that makes a
+    /// `(predicate, master, ordinal)` triple an identity at all.
+    ///
+    /// The rung ecology is deliberate (design §6's wall discipline): the layer-2
+    /// predicates scan the v2 LOOKAHEAD ecology, which is minutes.
+    #[test]
+    fn a_generated_root_resolves_and_prints_its_provenance_in_the_header() {
+        let spec = format!("gen:final-round-already-triggered:{GEN_MASTER:#x}:0");
+        let out = run_with(
+            &args(&["table", &spec, "--decision-seed", "0x0DEC_0000_0000_0001"]),
+            &[],
+            Path::new("."),
+        )
+        .expect("the generated root resolves and tables");
+
+        let ecology = driven::GeneratingEcology::v1();
+        assert!(out.contains(RootPredicate::FinalRoundAlreadyTriggered.as_str()));
+        for needle in [
+            format!("{GEN_MASTER:#018x}"),
+            "ordinal=0".to_string(),
+            "game=".to_string(),
+            ecology.id.clone(),
+            ecology.driver.clone(),
+            ecology.seed_derivation.clone(),
+            format!("per_game_cap={}", ecology.per_game_cap),
+            format!("games={}", ecology.games),
+        ] {
+            assert!(out.contains(&needle), "the header drops `{needle}`:\n{out}");
+        }
+        // A generated root has no recorded move, so the reproduction line is the
+        // NOT CHECKED arm rather than a verdict about a move nobody recorded.
+        assert!(out.contains("NOT CHECKED"), "a generated root claims a reproduction:\n{out}");
+    }
+
+    // =======================================================================
+    // Phase C, T6 — the seat grammar's fourth menu slot
+    // =======================================================================
+
+    /// `race-rusher` parses as the fourth REPLY-MENU slot — argv-REACHABLE, so
+    /// T7's pilots can name it in `--seats` — and every menu name round-trips
+    /// through its own `as_str`.
+    #[test]
+    fn the_seat_grammar_reads_race_rusher_as_the_fourth_menu_slot() {
+        assert_eq!(
+            parse_seat("race-rusher").expect("race-rusher is a seat"),
+            SeatSpec::Reply(ReplyPolicy::RaceRusher),
+        );
+        // HAND-MAINTAINED on both sides (the literal array in `parse_seat` and
+        // the USAGE list), so the pin names all four rather than sweeping a
+        // const that does not exist.
+        for policy in [
+            ReplyPolicy::FamilyWeighted,
+            ReplyPolicy::GreedyAtFinal,
+            ReplyPolicy::LookaheadAtFinal,
+            ReplyPolicy::RaceRusher,
+        ] {
+            assert_eq!(
+                parse_seat(policy.as_str()).unwrap_or_else(|e| panic!("{policy:?}: {e}")),
+                SeatSpec::Reply(policy),
+                "{policy:?} does not round-trip through the seat grammar",
+            );
+            assert!(
+                USAGE.contains(policy.as_str()),
+                "USAGE does not name the seat `{}`",
+                policy.as_str(),
+            );
+        }
+        // In a LIST, beside a contestant — the shape `--seats` actually takes.
+        assert_eq!(
+            parse_seats("race-rusher, greedy-v1").expect("a mixed seat list parses"),
+            vec![
+                SeatSpec::Reply(ReplyPolicy::RaceRusher),
+                SeatSpec::Contestant(Contestant::GREEDY_V1_DEFAULT),
+            ],
+        );
+    }
+
+    // =======================================================================
+    // Phase C, T6 — `family <id> --block <kind> [--arm <arm>] [--master <u64>]`
+    // =======================================================================
+
+    /// The verb parses: every declared family id, both blocks, both arms, and
+    /// the master when one is typed.
+    #[test]
+    fn the_family_command_parses_every_id_block_and_arm() {
+        for decl in families() {
+            match parse(&args(&["family", decl.id, "--block", "pilot", "--master", "0x11"]))
+                .unwrap_or_else(|e| panic!("{}: {e}", decl.id))
+            {
+                Command::Family { id, block, master, arm } => {
+                    assert_eq!(id, decl.id);
+                    assert_eq!(block, BlockKind::Pilot);
+                    assert_eq!(master, Some(0x11));
+                    assert_eq!(arm, FamilyArm::Positive, "the default arm is not positive");
+                }
+                other => panic!("{}: parsed as {other:?}", decl.id),
+            }
+        }
+        match parse(&args(&[
+            "family",
+            "exclusive-race",
+            "--block",
+            "confirmatory",
+            "--arm",
+            "control",
+        ]))
+        .expect("a confirmatory control arm parses")
+        {
+            Command::Family { id, block, master, arm } => {
+                assert_eq!(id, "exclusive-race");
+                assert_eq!(block, BlockKind::Confirmatory);
+                assert_eq!(master, None);
+                assert_eq!(arm, FamilyArm::Control);
+            }
+            other => panic!("parsed as {other:?}"),
+        }
+    }
+
+    /// An unknown family id refuses naming ALL FOUR declared ids.
+    #[test]
+    fn an_unknown_family_id_names_the_four_declared_ids() {
+        let err = parse(&args(&["family", "final-rond", "--block", "pilot", "--master", "1"]))
+            .expect_err("an unknown family must refuse");
+        assert!(err.contains("final-rond"), "the refusal hides what was typed: {err}");
+        for decl in families() {
+            assert!(err.contains(decl.id), "the refusal does not name `{}`: {err}", decl.id);
+        }
+        assert!(err.contains(USAGE), "the refusal drops USAGE: {err}");
+    }
+
+    /// An unknown block name refuses naming THE TWO valid blocks — and the
+    /// ESCROW-ABSENT property rides this arm: no grammar names an escrow block,
+    /// so `--block escrow` is exactly as unknown as `--block wibble` and the
+    /// refusal does not offer it as an alternative (design §2's escrow hygiene:
+    /// escrow ordinals live in the freeze DOCUMENT so no command can burn one).
+    #[test]
+    fn an_unknown_block_name_refuses_naming_the_two_valid_blocks_and_no_third() {
+        for typed in ["escrow", "wibble"] {
+            let err = parse(&args(&["family", "final-round", "--block", typed])).unwrap_err();
+            assert!(err.contains(typed), "the refusal hides what was typed: {err}");
+            assert!(err.contains("pilot"), "the refusal does not name `pilot`: {err}");
+            assert!(
+                err.contains("confirmatory"),
+                "the refusal does not name `confirmatory`: {err}",
+            );
+        }
+        assert_eq!(BLOCK_NAMES, ["pilot", "confirmatory"], "the block vocabulary moved");
+        assert!(!USAGE.contains("escrow block"), "USAGE names an escrow block");
+    }
+
+    /// `--block` is REQUIRED and an unknown `--arm` refuses naming both arms.
+    #[test]
+    fn the_family_command_requires_a_block_and_names_both_arms() {
+        let no_block = parse(&args(&["family", "final-round", "--master", "1"]))
+            .expect_err("a family run with no block must refuse");
+        assert!(no_block.contains("--block"), "the refusal hides the flag: {no_block}");
+
+        let bad_arm =
+            parse(&args(&["family", "final-round", "--block", "pilot", "--arm", "sideways"]))
+                .expect_err("an unknown arm must refuse");
+        assert!(bad_arm.contains("sideways"), "the refusal hides what was typed: {bad_arm}");
+        for arm in ARM_NAMES {
+            assert!(bad_arm.contains(arm), "the refusal does not name `{arm}`: {bad_arm}");
+        }
+    }
+
+    /// The two MASTER refusals, end to end and COSTING NOTHING — both fire in
+    /// `resolve_block` before a single draw is resolved.
+    ///
+    /// Pilot without `--master`: recorded-before-use stays the caller's
+    /// obligation. Confirmatory WITH one: the declaration's master is the
+    /// committed identity, and a typo must not be able to run a
+    /// plausible-looking non-frozen block.
+    #[test]
+    fn a_pilot_needs_a_master_and_a_confirmatory_refuses_one() {
+        let missing =
+            run_with(&args(&["family", "final-round", "--block", "pilot"]), &[], Path::new("."))
+                .expect_err("a pilot with no master must refuse");
+        assert!(missing.contains("recorded-before-use"), "the refusal loses its reason: {missing}");
+        assert!(missing.contains("final-round"), "the refusal does not name the family: {missing}");
+        assert!(missing.contains(USAGE), "the command-shaped refusal drops USAGE: {missing}");
+
+        let supplied = run_with(
+            &args(&["family", "final-round", "--block", "confirmatory", "--master", "0x1"]),
+            &[],
+            Path::new("."),
+        )
+        .expect_err("a confirmatory with a caller's master must refuse");
+        assert!(
+            supplied.contains("caller-supplied master is refused"),
+            "the refusal loses its sentence: {supplied}",
+        );
+        assert!(supplied.contains(USAGE), "the command-shaped refusal drops USAGE: {supplied}");
+    }
+
+    /// BEFORE THE FREEZE every family's confirmatory block refuses BY NAME —
+    /// the pre-freeze state, pinned, so the freeze commit is what makes these
+    /// runnable and nothing else can.
+    #[test]
+    fn every_confirmatory_block_refuses_by_name_before_the_freeze() {
+        for decl in families() {
+            assert!(
+                decl.confirmatory.is_none(),
+                "{} carries a frozen block already — this pin is the PRE-FREEZE state",
+                decl.id,
+            );
+            let err =
+                run_with(&args(&["family", decl.id, "--block", "confirmatory"]), &[], Path::new("."))
+                    .expect_err("a confirmatory block must refuse before the freeze");
+            assert!(
+                err.contains(decl.id) && err.contains("FREEZE"),
+                "{}: the refusal does not name the family and the freeze: {err}",
+                decl.id,
+            );
+        }
+    }
+
+    // =======================================================================
+    // Phase C, T6 — the `--arm control` mapping
+    // =======================================================================
+
+    /// `--arm control` re-points each family at its DECLARED control (or corner)
+    /// generator, and — where the control asks a different question — at the
+    /// control PASS RULE the declaration's own docs name.
+    ///
+    /// The mapping, as landed:
+    ///
+    /// | family           | control generator                | control rule                           |
+    /// |------------------|----------------------------------|----------------------------------------|
+    /// | `final-round`    | `TriggerRoundNotFinal` predicate | unchanged (`AdjudicatedBest`)          |
+    /// | `end-trigger`    | `FAMILY2_CONTROL_GENERATOR`      | `Turn(NotEndFired)`                    |
+    /// | `exclusive-race` | `RACE_CONTROL_GENERATOR`         | `Turn(DenialNotTaken)`                 |
+    /// | `achievement`    | `PROXIMITY_CORNER_GENERATOR`     | unchanged (`Turn(AchievementClaimed)`) |
+    #[test]
+    fn the_control_arm_repoints_each_family_at_its_declared_arm_and_rule() {
+        let by_id = |id: &str| {
+            families().into_iter().find(|d| d.id == id).unwrap_or_else(|| panic!("{id} declared"))
+        };
+
+        let family1 = control_arm(&by_id("final-round")).expect("family 1 has a control");
+        assert_eq!(
+            family1.generator,
+            FamilyGenerator::Predicate(RootPredicate::TriggerRoundNotFinal),
+        );
+        assert_eq!(family1.rule, by_id("final-round").rule, "family 1's rule moved");
+
+        let family2 = control_arm(&by_id("end-trigger")).expect("family 2 has a control");
+        assert_eq!(family2.generator, FAMILY2_CONTROL_GENERATOR);
+        assert_eq!(family2.rule, PassRule::Turn(TurnPredicate::NotEndFired));
+
+        let family3 = control_arm(&by_id("exclusive-race")).expect("family 3 has a control");
+        assert_eq!(family3.generator, RACE_CONTROL_GENERATOR);
+        assert_eq!(
+            family3.rule,
+            PassRule::Turn(TurnPredicate::DenialNotTaken(DECLARED_BY_THE_ROOT)),
+            "family 3's control does not read the DENIAL rule",
+        );
+        assert!(family3.rule.names_a_step(), "the control rule must still be re-pointed per root");
+
+        let family4 = control_arm(&by_id("achievement")).expect("family 4 has a corner");
+        assert_eq!(family4.generator, PROXIMITY_CORNER_GENERATOR);
+        assert_eq!(family4.rule, by_id("achievement").rule, "family 4's rule moved");
+
+        // Every other field is the declaration's, untouched: an arm is a
+        // GENERATOR and a RULE, never a different family.
+        for (control, id) in [
+            (&family1, "final-round"),
+            (&family2, "end-trigger"),
+            (&family3, "exclusive-race"),
+            (&family4, "achievement"),
+        ] {
+            let positive = by_id(id);
+            assert_eq!(control.id, positive.id);
+            assert_eq!(control.label, positive.label);
+            assert_eq!(control.class, positive.class);
+            assert_eq!(control.replications, positive.replications);
+            assert_eq!(control.per_root_f, positive.per_root_f);
+            assert_eq!(control.menu, positive.menu);
+            assert_eq!(control.pilot, positive.pilot);
+            assert_ne!(
+                control.generator, positive.generator,
+                "{id}: a control equal to its positive",
+            );
+        }
+    }
+
+    /// An id no declaration carries refuses rather than silently returning the
+    /// positive arm — the defensive half of an exhaustive mapping.
+    #[test]
+    fn the_control_arm_refuses_a_family_it_does_not_know() {
+        let mut invented = families().remove(0);
+        invented.id = "not-a-family";
+        let err = control_arm(&invented).expect_err("an unknown id must refuse");
+        assert!(err.contains("not-a-family"), "the refusal hides the id: {err}");
+        for decl in families() {
+            assert!(err.contains(decl.id), "the refusal does not name `{}`: {err}", decl.id);
+        }
+    }
+
+    // =======================================================================
+    // Phase C, T6 — rendering a FamilyBlockReport (CONSTRUCTED outcomes only)
+    // =======================================================================
+
+    fn counter_check(tied: usize, band: usize, distinct: usize) -> CounterCheck {
+        CounterCheck {
+            table: table_with(
+                Move::SkipBuilding,
+                &[(Move::SkipBuilding, 12), (Move::BuildTradingHouse, 11)],
+            ),
+            tied_at_top: tied,
+            top_band: band,
+            distinct_values: distinct,
+        }
+    }
+
+    fn turn_replication(r: u32, verdict: bool) -> ReplicationRead {
+        ReplicationRead {
+            replication: r,
+            decision_seed: 0x0D00_0000_0000_0000 + u64::from(r),
+            root_word: 0x00FF_0000_0000_00AB,
+            verdict: Some(verdict),
+            pick: None,
+            turn_moves: 4,
+            handoff_digest: Some(format!("handoff-{r}")),
+            game_over: Some(false),
+            counters: SeatCounters::NONE,
+        }
+    }
+
+    fn turn_read(misses: u32, r: u32) -> FamilyReadOutcome {
+        FamilyReadOutcome {
+            rule: PassRule::Turn(TurnPredicate::EndFired),
+            grain: ReadGrain::Turn,
+            master: 0x0A3E_0000_0000_0001,
+            root_word: 0x00FF_0000_0000_00AB,
+            root_digest: "00ff0000000000ab".to_string(),
+            subject_echo: Contestant::LOOKAHEAD_V1_DEFAULT.echo(),
+            replications: (0..r).map(|i| turn_replication(i, i >= misses)).collect(),
+            counter_check: counter_check(2, 2, 2),
+            annotations: vec![CounterAnnotation::TiedAtTop { candidates: 2 }],
+        }
+    }
+
+    fn policy_admission(policy: ReplyPolicy, verdict: AdmissionVerdict) -> PolicyAdmission {
+        PolicyAdmission {
+            policy,
+            true_n: 4,
+            false_n: 4,
+            true_mean: 12.0,
+            false_mean: 1.0,
+            difference: 11.0,
+            verdict,
+        }
+    }
+
+    fn family_row(ordinal: u32, verdict: RootVerdict, read: Option<FamilyReadOutcome>) -> RootRow {
+        RootRow {
+            ordinal,
+            descriptor: descriptor(),
+            draw_seed: Some(0x5EED_0000_0000_0000 + u64::from(ordinal)),
+            step: None,
+            rule: PassRule::Turn(TurnPredicate::EndFired),
+            admission: Some(AdmissionRead {
+                delta: 5,
+                control: false,
+                policies: vec![
+                    policy_admission(ReplyPolicy::FamilyWeighted, AdmissionVerdict::Dominates),
+                    policy_admission(ReplyPolicy::GreedyAtFinal, AdmissionVerdict::Dominates),
+                ],
+            }),
+            dead_by_policy: Vec::new(),
+            dead: false,
+            top_sets: Vec::new(),
+            read,
+            misses: 0,
+            unresolved: 0,
+            verdict,
+            lookahead_sole_dissenter: false,
+            rider: None,
+        }
+    }
+
+    fn family_report(verdict: FamilyVerdict, roots: Vec<RootRow>) -> FamilyBlockReport {
+        let drawn = roots.len();
+        let admitted = roots.iter().filter(|r| r.read.is_some()).count();
+        let counter_refused =
+            roots.iter().filter(|r| matches!(r.verdict, RootVerdict::CounterRefused(_))).count();
+        let sole_dissenters =
+            roots.iter().filter(|r| r.lookahead_sole_dissenter).map(|r| r.ordinal).collect();
+        FamilyBlockReport {
+            id: "end-trigger",
+            label: FamilyLabel::Confirmatory,
+            class: StrategicClass::EndTimingProximity,
+            block: BlockKind::Pilot,
+            generator: "end-firable-ahead-in-truth",
+            master: 0x0A3E_0000_0000_0001,
+            subject_echo: Contestant::LOOKAHEAD_V1_DEFAULT.echo(),
+            rule: PassRule::Turn(TurnPredicate::EndFired),
+            replications: 20,
+            per_root_f: 1,
+            menu: vec![ReplyPolicy::FamilyWeighted, ReplyPolicy::GreedyAtFinal],
+            admission_k: 4,
+            delta: 5,
+            control: false,
+            roots,
+            drawn,
+            admitted,
+            counter_refused,
+            sole_dissenters,
+            verdict,
+            robustness_read: driven::ROBUSTNESS_READ,
+        }
+    }
+
+    fn line_index(rendered: &str, needle: &str) -> usize {
+        rendered
+            .lines()
+            .position(|line| line.contains(needle))
+            .unwrap_or_else(|| panic!("the report has no line containing {needle:?}:\n{rendered}"))
+    }
+
+    /// **THE SECTION ORDER IS THE PIN** (design §2): the family report leads
+    /// with its LABEL — what a pass would even claim — and D7's STEP-ONE
+    /// counter check comes second, before any per-policy arithmetic. A report
+    /// that put the numbers first would invite a reader to quote them before
+    /// learning whether the instrument refused the framing.
+    #[test]
+    fn the_family_report_leads_with_the_label_then_the_counter_check() {
+        let report = family_report(
+            FamilyVerdict::Pass,
+            vec![family_row(0, RootVerdict::Pass, Some(turn_read(0, 4)))],
+        );
+        let rendered = render_family_block(&report, FamilyArm::Positive);
+
+        let label = line_index(&rendered, "CONFIRMATORY");
+        let counter = line_index(&rendered, "counter check");
+        let admission = line_index(&rendered, "per-policy admission");
+        assert!(rendered.starts_with("=== driven family ===\n"), "no banner:\n{rendered}");
+        assert_eq!(label, 1, "the LABEL is not the first content line:\n{rendered}");
+        assert!(label < counter, "the counter check precedes the label:\n{rendered}");
+        assert!(counter < admission, "the admission table precedes the counter check:\n{rendered}");
+        // The identity a reader needs beside the label.
+        for needle in ["end-trigger", "pilot", "arm=positive", "end-firable-ahead-in-truth"] {
+            assert!(rendered.contains(needle), "the header drops `{needle}`:\n{rendered}");
+        }
+        assert!(
+            rendered.contains(driven::ROBUSTNESS_READ),
+            "the family report drops the robustness read:\n{rendered}",
+        );
+    }
+
+    /// EVERY replication prints its own DECISION SEED and the root word
+    /// verbatim — T7's separator feeds a failing replication's seed straight to
+    /// `table … --decision-seed`, and a seed a reader must re-derive from a mix
+    /// formula is a seed nobody feeds anywhere.
+    #[test]
+    fn the_family_report_prints_every_replication_seed_and_root_word() {
+        let read = turn_read(1, 3);
+        let report = family_report(
+            FamilyVerdict::Pass,
+            vec![family_row(0, RootVerdict::Pass, Some(read.clone()))],
+        );
+        let rendered = render_family_block(&report, FamilyArm::Positive);
+        for replication in &read.replications {
+            assert!(
+                rendered.contains(&format!("{:#018x}", replication.decision_seed)),
+                "replication {}'s decision seed is missing:\n{rendered}",
+                replication.replication,
+            );
+        }
+        assert!(
+            rendered.contains(&format!("{:#018x}", read.root_word)),
+            "the root word is missing:\n{rendered}",
+        );
+        // The DRAW SEED where one is recorded — a builder draw's only
+        // reproduction handle.
+        assert!(
+            rendered.contains(&format!("{:#018x}", 0x5EED_0000_0000_0000_u64)),
+            "the draw seed is missing:\n{rendered}",
+        );
+        // The exact binomial line, verbatim from the outcome that computed it.
+        assert!(
+            rendered.contains(&read.binomial_line().expect("a turn-grain read has one")),
+            "the binomial line is missing:\n{rendered}",
+        );
+    }
+
+    /// A PREDICATE draw records no draw seed, and the render says so rather
+    /// than inventing one — `None` is the honest shape for a scanned root
+    /// (`RootRow::draw_seed`'s own rule).
+    #[test]
+    fn a_predicate_draws_absent_seed_renders_as_absent() {
+        let mut row = family_row(0, RootVerdict::Pass, Some(turn_read(0, 2)));
+        row.draw_seed = None;
+        let rendered = render_family_block(
+            &family_report(FamilyVerdict::Pass, vec![row]),
+            FamilyArm::Positive,
+        );
+        assert!(
+            rendered.contains("draw seed      -"),
+            "an absent draw seed does not render as absent:\n{rendered}",
+        );
+    }
+
+    /// The per-policy ADMISSION table, the EXCLUSION block and the DISSENT
+    /// block — the three things a reader needs to tell "the subject failed"
+    /// from "the root was never in the denominator".
+    #[test]
+    fn the_family_report_renders_admission_exclusions_and_the_dissent_block() {
+        let mut excluded =
+            family_row(1, RootVerdict::Excluded(ExclusionReason::NotDemonstrated), None);
+        excluded.admission = Some(AdmissionRead {
+            delta: 5,
+            control: false,
+            policies: vec![
+                policy_admission(ReplyPolicy::FamilyWeighted, AdmissionVerdict::Dominates),
+                policy_admission(ReplyPolicy::LookaheadAtFinal, AdmissionVerdict::Fails),
+            ],
+        });
+        excluded.lookahead_sole_dissenter = true;
+        let dead = family_row(2, RootVerdict::Excluded(ExclusionReason::Dead), None);
+
+        let report = family_report(
+            FamilyVerdict::Pass,
+            vec![family_row(0, RootVerdict::Pass, Some(turn_read(0, 2))), excluded, dead],
+        );
+        let rendered = render_family_block(&report, FamilyArm::Positive);
+
+        // The table: one row per (root, policy), with the arithmetic δ is
+        // compared to.
+        assert!(rendered.contains("per-policy admission"), "no admission table:\n{rendered}");
+        assert!(rendered.contains("DOMINATES"), "no dominance verdict:\n{rendered}");
+        assert!(rendered.contains("FAILS"), "no failing verdict:\n{rendered}");
+        assert!(rendered.contains("11.00"), "the difference is missing:\n{rendered}");
+
+        // The exclusions, with their typed reasons.
+        assert!(rendered.contains("exclusions"), "no exclusion block:\n{rendered}");
+        assert!(rendered.contains("NOT DEMONSTRATED"), "no not-demonstrated reason:\n{rendered}");
+        assert!(rendered.contains("DEAD"), "no dead reason:\n{rendered}");
+
+        // The dissent block, and the circularity sentence it exists for.
+        assert!(
+            rendered.contains("SOLE DISSENTER"),
+            "the sole-dissenter routing is missing:\n{rendered}",
+        );
+        assert!(
+            rendered.to_lowercase().contains("suppression"),
+            "the sole-dissenter block loses its reason:\n{rendered}",
+        );
+    }
+
+    /// A COUNTER-REFUSED root renders as a ROUTING and never as a failure —
+    /// D7's branch 0, which is the one reading a family report must not
+    /// mis-summarize.
+    #[test]
+    fn a_counter_refused_root_renders_as_a_routing_not_a_failure() {
+        let refused = family_row(
+            0,
+            RootVerdict::CounterRefused("ply_cap_hits=3 — a truncated search's pick".to_string()),
+            None,
+        );
+        let rendered = render_family_block(
+            &family_report(FamilyVerdict::Pass, vec![refused]),
+            FamilyArm::Positive,
+        );
+        assert!(rendered.contains("COUNTER REFUSED"), "no counter-refusal row:\n{rendered}");
+        assert!(rendered.contains("ply_cap_hits=3"), "the evidence is dropped:\n{rendered}");
+        assert!(
+            rendered.to_lowercase().contains("routing"),
+            "a refusal reads as a failure:\n{rendered}",
+        );
+        assert!(rendered.contains("counter-refused=1"), "the count is missing:\n{rendered}");
+    }
+
+    /// The VOID and EXISTENCE verdicts render DISTINCTLY — a block that
+    /// confirms nothing must not be readable as a quiet pass, and an existence
+    /// demonstration must not be readable as a GO.
+    #[test]
+    fn the_void_and_existence_verdicts_render_distinctly() {
+        let void = family_report(
+            FamilyVerdict::VoidAsConfirmation {
+                admitted: 2,
+                drawn: 6,
+                minimum: MIN_ADMITTED_ROOTS,
+                disposition: VOID_DISPOSITION,
+            },
+            vec![family_row(0, RootVerdict::Pass, Some(turn_read(0, 2)))],
+        );
+        let rendered = render_family_block(&void, FamilyArm::Positive);
+        assert!(rendered.contains("VOID AS CONFIRMATION"), "the void verdict is quiet:\n{rendered}");
+        assert!(
+            rendered.contains("CONFIRMS NOTHING"),
+            "the void verdict does not say what it means:\n{rendered}",
+        );
+        assert!(rendered.contains(VOID_DISPOSITION), "the disposition is dropped:\n{rendered}");
+
+        let mut existence = family_report(
+            FamilyVerdict::GapDemonstrated { roots: 3 },
+            vec![family_row(0, RootVerdict::GapRecorded { misses: 2 }, Some(turn_read(2, 4)))],
+        );
+        existence.label = FamilyLabel::ExistenceDemonstration;
+        existence.id = "exclusive-race";
+        let rendered = render_family_block(&existence, FamilyArm::Positive);
+        assert!(
+            rendered.contains("EXISTENCE_DEMONSTRATION"),
+            "the existence label is missing:\n{rendered}",
+        );
+        assert!(rendered.contains("GAP DEMONSTRATED"), "the gap verdict is missing:\n{rendered}");
+        assert!(
+            rendered.contains("never a GO"),
+            "the existence arm does not say what it cannot support:\n{rendered}",
+        );
+        assert!(rendered.contains("GAP RECORDED"), "the per-root gap row is missing:\n{rendered}");
+    }
+
+    /// Rendering is a pure function of the report plus the arm: the same pair
+    /// renders byte-identically twice, and the ARM reaches the page — including
+    /// the DOUBLE-NEGATION sentence, which is the one thing a reader of a
+    /// control block could otherwise get backwards.
+    #[test]
+    fn the_family_render_is_deterministic_and_the_control_arm_states_its_direction() {
+        let report = family_report(
+            FamilyVerdict::Pass,
+            vec![family_row(0, RootVerdict::Pass, Some(turn_read(0, 3)))],
+        );
+        let control = render_family_block(&report, FamilyArm::Control);
+        assert_eq!(control, render_family_block(&report, FamilyArm::Control));
+        assert_ne!(
+            control,
+            render_family_block(&report, FamilyArm::Positive),
+            "the arm does not reach the report",
+        );
+        assert!(control.contains("arm=control"), "the arm is not named:\n{control}");
+        assert!(
+            control.contains("double negation"),
+            "the control arm does not state its admission direction:\n{control}",
+        );
+    }
+
+    // =======================================================================
+    // Phase C, T6 — the `opening` probe
+    // =======================================================================
+
+    /// The verb parses, and its two required flags refuse when absent.
+    #[test]
+    fn the_opening_command_parses_and_requires_its_master_and_games() {
+        match parse(&args(&["opening", "--master", "0x2A", "--games", "3"])).expect("parses") {
+            Command::Opening { master, games, contestant } => {
+                assert_eq!(master, 0x2A);
+                assert_eq!(games, 3);
+                assert_eq!(contestant, Contestant::LOOKAHEAD_V1_DEFAULT);
+            }
+            other => panic!("parsed as {other:?}"),
+        }
+        match parse(&args(&[
+            "opening",
+            "--master",
+            "1",
+            "--games",
+            "2",
+            "--contestant",
+            "greedy-v1",
+        ]))
+        .expect("a subject spec parses")
+        {
+            Command::Opening { contestant, .. } => {
+                assert_eq!(contestant, Contestant::GREEDY_V1_DEFAULT);
+            }
+            other => panic!("parsed as {other:?}"),
+        }
+
+        let no_master = parse(&args(&["opening", "--games", "2"])).expect_err("no master refuses");
+        assert!(no_master.contains("--master"), "{no_master}");
+        let no_games = parse(&args(&["opening", "--master", "1"])).expect_err("no games refuses");
+        assert!(no_games.contains("--games"), "{no_games}");
+        let zero = parse(&args(&["opening", "--master", "1", "--games", "0"]))
+            .expect_err("zero games refuses");
+        assert!(zero.contains("--games"), "{zero}");
+        let positional = parse(&args(&["opening", "3", "--master", "1", "--games", "2"]))
+            .expect_err("a stray positional refuses");
+        assert!(positional.contains("positional"), "{positional}");
+    }
+
+    /// **THE SETUP-EQUIVALENCE PIN** (plan review SHOULD-5). The probe builds
+    /// its opening through the PUBLIC path — `new_game`, each seat's own
+    /// `ArenaAgent::choose_starting_order` in seat order, `finalize_setup` —
+    /// because the Phase-B split seamed out only `play_from_state` and the
+    /// arena's setup half is still interior to its private driver. The pin is
+    /// that the two agree BIT FOR BIT at the same master and the same streams:
+    /// the built opening equals `state_at(record, 0)` of a `run_arena_game`
+    /// there.
+    ///
+    /// Rung seats, one cell — the property is STRUCTURAL (which stream feeds
+    /// which Keep), never a fact about the subject.
+    #[test]
+    fn the_opening_setup_path_is_bit_identical_to_the_arena_setup_half() {
+        let rules = Rules::standard();
+        let subject = Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT);
+        let probe = run_opening(OPENING_MASTER, 2, subject, &rules).expect("the probe runs");
+        assert_eq!(probe.rows.len(), 2, "the probe played the wrong number of games");
+
+        for row in &probe.rows {
+            let world = WorldSeed(row.world);
+            let mut make = |seat: PlayerId, _players: u8| -> Box<dyn ArenaAgent> {
+                subject.build(&rules, agent_stream_seed(world, seat, Slot(seat.0))).0
+            };
+            let stats = run_arena_game(world, 2, &rules, &mut make, true)
+                .expect("the comparison game completes");
+            let arena_opening =
+                state_at(&stats.record, 0, &rules).expect("the record's position 0 replays");
+            assert_eq!(
+                row.opening_digest,
+                state_digest(&arena_opening),
+                "game {}: the probe's opening is not the arena's",
+                row.game_index,
+            );
+        }
+    }
+
+    /// The probe plays the FIRST TURN of the first-moving seat and reads the
+    /// three things the C-D question is about off it.
+    #[test]
+    fn the_opening_probe_reads_placements_president_and_purchase_off_the_first_turn() {
+        let rules = Rules::standard();
+        let probe = run_opening(
+            OPENING_MASTER,
+            3,
+            Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT),
+            &rules,
+        )
+        .expect("the probe runs");
+        assert_eq!(probe.rows.len(), 3);
+        for row in &probe.rows {
+            assert!(row.moves > 0, "game {}: an empty first turn", row.game_index);
+            assert!(
+                !row.game_over,
+                "game {}: the first turn ended the game, which no opening does",
+                row.game_index,
+            );
+            // The president is PLACED from hand on turn one and the area action
+            // follows it — both are facts about the rules, not about the seat.
+            assert!(row.president.is_some(), "game {}: no president area", row.game_index);
+            assert_ne!(row.purchase, OPENING_NO_ACTION, "game {}: no area action", row.game_index);
+            assert_eq!(
+                row.decision_seed,
+                agent_stream_seed(WorldSeed(row.world), row.mover, Slot(row.mover.0)),
+                "the turn is not taken on the arena's own keying",
+            );
+        }
+        // Distinct worlds per game — the schedule advances.
+        let worlds: std::collections::BTreeSet<u64> = probe.rows.iter().map(|r| r.world).collect();
+        assert_eq!(worlds.len(), 3, "two games share a world");
+    }
+
+    /// The RENDER, on a CONSTRUCTED tally: the distribution, the lab-rush share
+    /// with its Wilson interval, and the SETUP-PATH line the ecology discipline
+    /// asks for (design NOTE-4).
+    #[test]
+    fn the_opening_render_carries_the_distribution_the_wilson_interval_and_the_setup_path() {
+        let row = |index: u32, president: &str, purchase: &str| OpeningGame {
+            game_index: index,
+            world: 0x0A00 + u64::from(index),
+            mover: PlayerId(0),
+            decision_seed: 0x0D00 + u64::from(index),
+            opening_digest: format!("opening-{index}"),
+            placements: vec!["Bank".to_string(), "CopperMine".to_string()],
+            president: Some(president.to_string()),
+            purchase: purchase.to_string(),
+            moves: 5,
+            game_over: false,
+        };
+        let probe = OpeningProbe {
+            master: 0x0A3E_0000_0000_0003,
+            games: 4,
+            subject_echo: Contestant::LOOKAHEAD_V1_DEFAULT.echo(),
+            rows: vec![
+                row(0, "LaboratoryA", "Laboratory"),
+                row(1, "LaboratoryA", "Laboratory"),
+                row(2, "Bank", "Bank"),
+                row(3, "PortA", "Port"),
+            ],
+        };
+        let rendered = render_opening(&probe);
+
+        // The distribution, tallied and shared.
+        assert!(rendered.contains("Bank+CopperMine"), "no placement key:\n{rendered}");
+        assert!(rendered.contains("LaboratoryA"), "no president area:\n{rendered}");
+        assert!(rendered.contains("0.5000"), "no share for the 2-of-4 cell:\n{rendered}");
+
+        // The lab-rush share and its interval, through the crate's OWN Wilson
+        // helper so this figure means what every other rate in the repo means.
+        let wilson = wilson_95(2, 4);
+        assert!(rendered.contains("lab rush"), "no lab-rush line:\n{rendered}");
+        assert!(
+            rendered.contains(&format!("{:.4}", wilson.lo))
+                && rendered.contains(&format!("{:.4}", wilson.hi)),
+            "the Wilson interval is missing:\n{rendered}",
+        );
+
+        // The setup path, printed rather than assumed.
+        assert!(
+            rendered.contains(OPENING_SETUP_PATH),
+            "the setup-path line is missing:\n{rendered}",
+        );
+        assert!(rendered.contains(&probe.subject_echo), "the subject echo is missing:\n{rendered}");
+    }
+
+    /// ONE cell with the SHIPPED subject — the probe's real question is about
+    /// `lookahead-v1`, and a machinery-only pin at a rung would leave the
+    /// expensive path unexercised. One game, one turn (~3s debug budget).
+    #[test]
+    fn one_opening_game_runs_the_shipped_lookahead_subject() {
+        let rules = Rules::standard();
+        let probe = run_opening(OPENING_MASTER, 1, Contestant::LOOKAHEAD_V1_DEFAULT, &rules)
+            .expect("the shipped subject plays an opening");
+        assert_eq!(probe.rows.len(), 1);
+        assert_eq!(probe.subject_echo, Contestant::LOOKAHEAD_V1_DEFAULT.echo());
+        assert!(probe.rows[0].moves > 0, "the shipped subject played no move");
+        let rendered = render_opening(&probe);
+        assert!(rendered.contains(&Contestant::LOOKAHEAD_V1_DEFAULT.echo()), "{rendered}");
+    }
+
+    // =======================================================================
+    // Phase C, T6 — USAGE and the unchanged surfaces
+    // =======================================================================
+
+    /// USAGE documents every NEW verb, flag and vocabulary: the `gen:` root form
+    /// and its predicate names, the four family ids, the two blocks, the two
+    /// arms, and the two master rules a caller cannot infer from a flag list.
+    #[test]
+    fn the_usage_documents_the_generated_roots_the_families_and_the_opening_probe() {
+        assert!(USAGE.contains("gen:<predicate>:<master>:<ordinal>"), "USAGE has no gen: form");
+        for predicate in RootPredicate::ALL {
+            assert!(
+                USAGE.contains(predicate.as_str()),
+                "USAGE does not name the predicate `{}`",
+                predicate.as_str(),
+            );
+        }
+        for decl in families() {
+            assert!(USAGE.contains(decl.id), "USAGE does not name family `{}`", decl.id);
+        }
+        for block in BLOCK_NAMES {
+            assert!(USAGE.contains(block), "USAGE does not name block `{block}`");
+        }
+        for arm in ARM_NAMES {
+            assert!(USAGE.contains(arm), "USAGE does not name arm `{arm}`");
+        }
+        assert!(
+            USAGE.contains("recorded-before-use"),
+            "USAGE does not state the pilot master rule",
+        );
+        assert!(
+            USAGE.contains("REFUSED"),
+            "USAGE does not state that a confirmatory block refuses a caller's master",
+        );
+    }
+
+    /// `list` is UNCHANGED — byte for byte, on a cell-owned registry. The
+    /// grammar grew two verbs and a root form; the report a reader already knows
+    /// did not move.
+    #[test]
+    fn the_list_report_is_byte_identical_to_its_golden() {
+        let anchor = TempRoot::make("list-golden");
+        let entries = [entry("golden", "nothing.json", 3, PlayerId(1), None)];
+        let rendered = run_with(&args(&["list"]), &entries, &anchor.0).expect("list always answers");
+        let expected = format!(
+            "=== driven registry ===\n  \
+             1 entries, resolved against {}\n  \
+             a MISSING record is a MISS and never a failure: the session roots live in gitignored \
+             saves\n\n  \
+             golden  [MISSING]\n      \
+             path    nothing.json\n      \
+             event   3   seat p1   decision seed 0x0dec151000000001\n      \
+             move    (none recorded)\n      \
+             note    a cell-owned fixture",
+            anchor.0.display(),
+        );
+        assert_eq!(rendered, expected);
     }
 }
