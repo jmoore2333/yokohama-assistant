@@ -63,9 +63,20 @@
 //! live-tracked root by name before a move is played, instead of letting it
 //! surface as a mid-run `observe` failure at some seat's first decision.
 //!
-//! **What this module still deliberately does NOT ship**: `adjudicate_root`
-//! (T4) and the runner (T5). Neither is stubbed here — a stub is a surface a
-//! reader has to check the emptiness of.
+//! **What T4 adds**: [`adjudicate_root`], family 1's question made executable —
+//! force EVERY root candidate in turn, play the remainder out under the named
+//! seats, K seeded replications, and report each candidate's final margin for
+//! the ROOT MOVER. It is a **ROBUSTNESS READ and never exact ground truth**
+//! ([`ROBUSTNESS_READ`] is the sentence a report prints): the numbers say what
+//! the named policies reach from here, so a table whose candidates all read
+//! alike says the position is dead AGAINST THAT REPLY. Replication worlds derive
+//! through [`replication_world`] — design §4's `mix` under a named salt, with
+//! the arena's per-seat keying re-entered at the derived world, so no third seed
+//! discipline is invented.
+//!
+//! **What this module still deliberately does NOT ship**: the runner (T5). It is
+//! not stubbed here — a stub is a surface a reader has to check the emptiness
+//! of.
 
 use std::cmp::Reverse;
 use std::collections::BTreeMap;
@@ -74,15 +85,19 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::game::agent::HONEST_MAX_TURNS;
+use crate::game::apply_move::apply_move_unchecked;
 use crate::game::arena::{
-    agent_stream_seed, play_from_state, require_supported_player_count, run_arena_game, AgentBench,
-    ArenaAgent, Contestant, ExplainHandle, PlayError, PlayLimits, SeatBench, Slot,
+    agent_stream_seed, mix, play_from_state, require_supported_player_count, run_arena_game,
+    AgentBench, ArenaAgent, Contestant, ExplainHandle, PlayError, PlayLimits, SeatBench, Slot,
+    SALT_DRIVEN_REPLICATION,
 };
 use crate::game::belief::BeliefSampler;
 use crate::game::end_game::is_game_over;
 use crate::game::eval::WeightTable;
 use crate::game::invariants::check_invariants;
+use crate::game::legal_moves::get_legal_moves;
 use crate::game::lookahead::{LookaheadAgent, RootScore, SearchScheme, SearchStats};
+use crate::game::move_legality::{is_move_legal, PathMode};
 use crate::game::observe::observe;
 use crate::game::policy::RolloutPolicy;
 use crate::game::record::{replay_from, state_at, GameRecord, RecordedEvent, SeatProvenance};
@@ -1069,16 +1084,20 @@ fn require_eligible_root(root: &GameState) -> Result<(), DrivenError> {
     Ok(())
 }
 
-/// The ONE driver both entry points run, with the root's descriptor supplied
-/// rather than assumed.
-fn drive_from_descriptor(
-    root: &GameState,
-    descriptor: RootDescriptor,
-    seats: &[SeatSpec],
-    rules: &Rules,
-    master: WorldSeed,
-    opts: DrivenOpts,
-) -> Result<DrivenOutcome, DrivenError> {
+/// Everything a rooted call is refused for BEFORE an agent is built — the seat
+/// list, the seat count, the options, and the root's own eligibility.
+///
+/// Extracted at T4 rather than duplicated: [`adjudicate_root`] has to run these
+/// checks ITSELF, because a TERMINAL root produces no playout at all and a guard
+/// left to the first playout would simply never run — an ill-formed call on a
+/// finished game would come back `Ok` with an empty table. Same checks, same
+/// order, one authority.
+///
+/// Deliberately NOT including `check_invariants`: [`play_from_state`] guards its
+/// own incoming state unconditionally, so a driven run gets that for free, while
+/// the adjudicator needs it a move EARLIER (before a candidate is forced) and
+/// asks for it there.
+fn preflight(root: &GameState, seats: &[SeatSpec], opts: DrivenOpts) -> Result<(), DrivenError> {
     let players = root.players.len();
     if seats.len() != players {
         return Err(DrivenError::SeatMismatch { seats: seats.len(), players });
@@ -1107,7 +1126,21 @@ fn drive_from_descriptor(
     }
     // ELIGIBILITY before agents: a root nobody can play is not worth building
     // agents for, and the refusal must not depend on which seat moves first.
-    require_eligible_root(root)?;
+    require_eligible_root(root)
+}
+
+/// The ONE driver both entry points run, with the root's descriptor supplied
+/// rather than assumed.
+fn drive_from_descriptor(
+    root: &GameState,
+    descriptor: RootDescriptor,
+    seats: &[SeatSpec],
+    rules: &Rules,
+    master: WorldSeed,
+    opts: DrivenOpts,
+) -> Result<DrivenOutcome, DrivenError> {
+    preflight(root, seats, opts)?;
+    let players = root.players.len();
 
     // The agents are built HERE, from the seat list alone. Each gets the seat's
     // own long-lived stream and nothing else — no state, no root, no master —
@@ -1992,6 +2025,539 @@ pub fn registry() -> Vec<RegistryEntry> {
                    EndAdditionalPhase was verified forced)",
         },
     ]
+}
+
+// ---------------------------------------------------------------------------
+// The adjudicator: every root candidate, forced and played out (T4)
+// ---------------------------------------------------------------------------
+
+/// The sentence every report of an [`Adjudication`] prints beside its numbers
+/// (design §3, review N-7 — the label rides the OUTPUT, not only the docs).
+///
+/// A const rather than prose in the runner so the claim is written once and the
+/// runner cannot quietly print a weaker one.
+pub const ROBUSTNESS_READ: &str =
+    "robustness read: each candidate was FORCED and the remainder PLAYED OUT under the named \
+     seats, so a margin here is what those policies reach from this position — not exact ground \
+     truth about the candidate";
+
+/// The world one replication plays in — design §4's formula, and the ONE place
+/// it is written.
+///
+/// `mix(SALT_DRIVEN_REPLICATION, [master, replication_index])`, then
+/// [`agent_stream_seed`] off THAT world per seat. Two derivations already exist
+/// in this repo (the arena's long-lived per-seat stream and the explicit
+/// single-decision seed) and the harness invents no third: a replication is a
+/// derived WORLD which the arena discipline is then re-entered at, which is why
+/// this is a `mix` under a named salt rather than, say, `master + r`.
+///
+/// `pub` because a consumer explaining a run has to be able to name the world a
+/// row was measured in without re-deriving it — and a re-derivation is exactly
+/// the second copy this function exists to prevent.
+pub fn replication_world(master: WorldSeed, replication: u32) -> WorldSeed {
+    WorldSeed(mix(SALT_DRIVEN_REPLICATION, &[master.0, u64::from(replication)]))
+}
+
+/// ONE playout of ONE candidate: what happened after the forced move, in one
+/// replication.
+///
+/// Deliberately a SUMMARY rather than a retained [`DrivenOutcome`] — a table is
+/// `candidates × K` of these and a kept outcome carries a whole `GameState`
+/// each. What survives is everything a margin table is read for plus the two
+/// identities that make a row checkable: the world it was played in and the
+/// terminal state's digest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CandidatePlayout {
+    /// Which replication this is — its index in design §4's formula.
+    pub replication: u32,
+    /// The world it played in: [`replication_world`] at that index.
+    pub world: WorldSeed,
+    /// Each seat's play stream, in seat order — `agent_stream_seed(world, seat,
+    /// Slot(seat))`, read off the run rather than re-derived here.
+    pub agent_seeds: Vec<u64>,
+    /// **THE MARGIN, defined exactly**: the ROOT MOVER's final total minus the
+    /// BEST RIVAL's, in victory points, where "best rival" is the highest-RANKED
+    /// seat other than the mover in `final_result`'s standings — i.e. chosen by
+    /// the official order (total, then the clockwise tie-break from the start
+    /// player), never by a bare `max` over totals, which would pick an arbitrary
+    /// one of several tied rivals.
+    ///
+    /// **A margin of 0 is NOT a win**, and conflating them is the mistake this
+    /// type is shaped to prevent: two seats level on VP are separated by the
+    /// clockwise tie-break, which a signed difference cannot express. The
+    /// verdict rides [`won`](Self::won) and [`rank`](Self::rank) beside it, both
+    /// straight off `final_result`.
+    pub margin: i64,
+    /// The mover's own final total.
+    pub mover_total: u32,
+    /// Which seat the margin was taken against.
+    pub best_rival: PlayerId,
+    /// That seat's final total.
+    pub best_rival_total: u32,
+    /// The mover's official rank, 1-based.
+    pub rank: u8,
+    /// Whether the mover WON — `final_result`'s own verdict, tie-break included.
+    pub won: bool,
+    /// Decisions the remainder took. **Excludes the forced candidate**, which
+    /// this module applied itself: it is the REMAINDER that was played.
+    pub decisions: u64,
+    /// The terminal state's `turn_number` (absolute — subtract
+    /// [`Adjudication::root_turn`] for the turns this playout added).
+    pub turns: u32,
+    /// [`state_digest`] of the terminal state.
+    pub final_digest: String,
+}
+
+/// ONE root candidate, with every replication's playout of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CandidateRow {
+    /// The move that was forced.
+    pub candidate: Move,
+    /// [`state_digest`] of ROOT + this candidate — where every playout in this
+    /// row began, and the value that joins the row to the playouts' own stamped
+    /// provenance.
+    pub continuation_digest: String,
+    /// One entry per replication, in index order.
+    pub playouts: Vec<CandidatePlayout>,
+}
+
+impl CandidateRow {
+    /// This candidate's margins, in replication order.
+    pub fn margins(&self) -> Vec<i64> {
+        self.playouts.iter().map(|p| p.margin).collect()
+    }
+
+    /// The mean margin. **RECORDED, never asserted** — the spread over K
+    /// replications is a measurement about the reply policies, and a harness
+    /// that gated on it would be gating a policy choice.
+    ///
+    /// `0.0` on an empty row, which no row this module builds can be (K >= 1 is
+    /// enforced at the entry point).
+    pub fn mean_margin(&self) -> f64 {
+        if self.playouts.is_empty() {
+            return 0.0;
+        }
+        let sum: i64 = self.playouts.iter().map(|p| p.margin).sum();
+        sum as f64 / self.playouts.len() as f64
+    }
+
+    /// The smallest margin any replication reached.
+    pub fn min_margin(&self) -> Option<i64> {
+        self.playouts.iter().map(|p| p.margin).min()
+    }
+
+    /// The largest margin any replication reached.
+    pub fn max_margin(&self) -> Option<i64> {
+        self.playouts.iter().map(|p| p.margin).max()
+    }
+
+    /// Replications the mover WON — the tie-break-aware count, which
+    /// `margin >= 0` is not.
+    pub fn wins(&self) -> usize {
+        self.playouts.iter().filter(|p| p.won).count()
+    }
+}
+
+/// One seat of an adjudication, as the CALLER named it and as it RESOLVES.
+///
+/// The resolved echo is the load-bearing half (design §3, review S-1): a reply
+/// menu name is a symbol whose meaning moves at D1's identity freeze, so a table
+/// carrying only `reply:lookahead-at-final` would describe two different
+/// opponents identically. The WITNESSED half — what each agent said it was and
+/// what the bench let it see — lives on [`Adjudication::witness`], because it
+/// exists only once something has actually been played.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdjudicationSeat {
+    pub seat: u8,
+    /// What the caller ASKED FOR — see [`SeatSpec::requested_label`].
+    pub requested: String,
+    /// What actually played — `Contestant::echo`.
+    pub echo: String,
+}
+
+/// What an adjudication WAS, stamped on every table.
+///
+/// **Never a `GameRecord`**, and never one per playout either: the root is named
+/// ONCE, here, with its full origin, and each row carries its own
+/// [`CandidateRow::continuation_digest`] so a reader joins the two by value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdjudicationProvenance {
+    /// Which position was adjudicated, and where it came from.
+    pub root: RootDescriptor,
+    /// The RUNNING engine's `SEMANTICS_REV` — the comparability key.
+    pub semantics_rev: u32,
+    /// The RUNNING `Rules::content_hash()`.
+    pub rules_hash: String,
+    /// One entry per seat, in seat order.
+    pub seats: Vec<AdjudicationSeat>,
+    /// The master every replication's world descends from.
+    pub master: u64,
+    /// K.
+    pub replications: u32,
+}
+
+/// Every root candidate, forced and played out — family 1's adjudicator.
+///
+/// **THIS IS A ROBUSTNESS READ, NOT GROUND TRUTH.** Each candidate was forced
+/// and the REMAINDER was played out under the named seats, so a margin here says
+/// what those policies reach from this position. It is not a claim about the
+/// candidate's value under best play, and a table whose candidates all read
+/// alike says the position is dead AGAINST THIS REPLY — which is the honest
+/// version of family 1's question and the only version v1 can answer (the exact
+/// bounded-tree upgrade is layer-2 work, and only in-final-round roots qualify
+/// for it). [`ROBUSTNESS_READ`] is the sentence a report prints.
+///
+/// **The verdict stays the caller's.** [`all_candidates_equal`](Self::all_candidates_equal)
+/// reports a fact about the margins; whether that fact means "dead" is a reading
+/// this type does not make.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Adjudication {
+    /// The seat on the move at the root — whose margins these are.
+    pub mover: PlayerId,
+    /// The root's own `turn_number`, so a playout's absolute
+    /// [`CandidatePlayout::turns`] can be read as a delta.
+    pub root_turn: u32,
+    /// The master every replication's world descends from.
+    pub master: WorldSeed,
+    /// K.
+    pub replications: u32,
+    /// One row per root candidate, in the engine's own legal-list order. EMPTY
+    /// for a terminal root, which is an `Ok` (see [`adjudicate_root`]).
+    pub rows: Vec<CandidateRow>,
+    /// The FIRST playout's own stamped provenance, kept verbatim so the
+    /// WITNESSED half of a run is not lost — the controller descriptors each
+    /// agent reported and the observation labels the bench witnessed.
+    ///
+    /// `None` when nothing was played (a terminal root). Its `master` field is
+    /// replication 0's WORLD, not this table's master: the two are different
+    /// numbers by design §4, and reading one for the other would mis-identify
+    /// every stream.
+    pub witness: Option<RootedProvenance>,
+    /// What this adjudication WAS.
+    pub provenance: AdjudicationProvenance,
+}
+
+impl Adjudication {
+    /// How many root candidates were adjudicated.
+    pub fn candidates(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// Whether every candidate produced the SAME margins — the "genuinely dead"
+    /// reading, as a fact rather than a verdict.
+    ///
+    /// Compared ELEMENTWISE over the K replications, not by mean: two candidates
+    /// whose margins average alike while differing per replication are not
+    /// equal, and calling them equal would hide exactly the variation K exists
+    /// to expose.
+    ///
+    /// **Vacuously `true` below two candidates**, and a caller must not read
+    /// that as "dead": an empty table is a FINISHED GAME and a one-row table is
+    /// a FORCED position. Both are different facts from "nothing the mover could
+    /// choose mattered", and [`candidates`](Self::candidates) is what tells them
+    /// apart.
+    pub fn all_candidates_equal(&self) -> bool {
+        let Some(first) = self.rows.first() else { return true };
+        let reference = first.margins();
+        self.rows.iter().all(|row| row.margins() == reference)
+    }
+
+    /// A stable one-line identity for this table.
+    ///
+    /// Deterministic in `(root, seats, master, K, opts)` and nothing else — the
+    /// reproduction check, not a summary, and not a serialization format
+    /// (nothing parses it back). Every per-playout margin and world is folded
+    /// in, so a table that moved a single replication's world moves this line.
+    pub fn digest(&self) -> String {
+        let rows: Vec<String> = self
+            .rows
+            .iter()
+            .map(|row| {
+                let cells: Vec<String> = row
+                    .playouts
+                    .iter()
+                    .map(|p| {
+                        format!(
+                            "r{}@{:#018x}={}{}/{}d/{}",
+                            p.replication,
+                            p.world.0,
+                            p.margin,
+                            if p.won { "W" } else { "L" },
+                            p.decisions,
+                            p.final_digest,
+                        )
+                    })
+                    .collect();
+                format!("{:?}@{} [{}]", row.candidate, row.continuation_digest, cells.join(" "))
+            })
+            .collect();
+        let seats: Vec<String> =
+            self.provenance.seats.iter().map(|s| format!("p{}={}", s.seat, s.echo)).collect();
+        format!(
+            "adjudication-v1 rev={} root={}@{} mover=p{} master={:#018x} k={} seats=[{}] rows=[{}]",
+            self.provenance.semantics_rev,
+            self.provenance.root.origin.kind(),
+            self.provenance.root.root_digest,
+            self.mover.0,
+            self.master.0,
+            self.replications,
+            seats.join(" | "),
+            rows.join(" | "),
+        )
+    }
+}
+
+/// Why an adjudication produced no table.
+///
+/// [`DrivenError`]'s posture one level up: every variant is a hard stop that
+/// produces nothing. A table missing a candidate — because its playout failed
+/// and was skipped — would read exactly like a table of a position with fewer
+/// options, and the reading riding on it would be wrong with no way to notice.
+#[derive(Debug)]
+pub enum AdjudicationError {
+    /// The [`RootSource`] produced no root at all.
+    Root(RootError),
+    /// `replications` was 0. A table with no playouts is not a measurement, and
+    /// silently promoting it to 1 would answer a question nobody asked.
+    NoReplications,
+    /// The root, the seat list or the options are not something this instrument
+    /// can adjudicate — [`DrivenError`]'s own answers, raised BEFORE any
+    /// candidate is forced (which is what makes them reachable on a terminal
+    /// root, where no playout ever runs).
+    Unadjudicable(DrivenError),
+    /// The root is not terminal and offered no candidate — the livelock shape.
+    /// Distinguished from the terminal empty table, which is an `Ok`.
+    DeadEnd { seat: PlayerId },
+    /// The engine refused a move IT had just listed as legal, or failed to apply
+    /// it. An engine bug rather than an answer, and never a skipped row.
+    ForcedMove { candidate: Box<Move>, detail: String },
+    /// One candidate's playout did not complete.
+    Playout { candidate: Box<Move>, replication: u32, error: Box<DrivenError> },
+    /// `final_result` returned standings this module could not read the mover's
+    /// margin out of. Unreachable through a supported seat count (every seat has
+    /// a standing and every game has a rival), typed rather than panicking
+    /// because an instrument that aborts is worse than one that refuses.
+    Unscorable { seat: PlayerId },
+}
+
+impl std::fmt::Display for AdjudicationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Root(e) => write!(f, "no root: {e}"),
+            Self::NoReplications => {
+                write!(f, "0 replications: a table with no playout is not a measurement")
+            }
+            Self::Unadjudicable(e) => write!(f, "the root cannot be adjudicated: {e}"),
+            Self::DeadEnd { seat } => write!(
+                f,
+                "seat {} faces no candidate at a root that is not over (a livelock, not a \
+                 finished game)",
+                seat.0
+            ),
+            Self::ForcedMove { candidate, detail } => write!(
+                f,
+                "the engine listed {candidate:?} as legal at this root and then refused it: \
+                 {detail}"
+            ),
+            Self::Playout { candidate, replication, error } => write!(
+                f,
+                "replication {replication} of {candidate:?} did not complete: {error}"
+            ),
+            Self::Unscorable { seat } => {
+                write!(f, "the final result carries no margin for seat {}", seat.0)
+            }
+        }
+    }
+}
+
+impl std::error::Error for AdjudicationError {}
+
+/// The mover's standing, as [`CandidatePlayout`] records it.
+struct Verdict {
+    margin: i64,
+    mover_total: u32,
+    best_rival: PlayerId,
+    best_rival_total: u32,
+    rank: u8,
+    won: bool,
+}
+
+/// Read the mover's margin out of a finished game's result.
+///
+/// The standings are ALREADY in the official order (total descending, then
+/// clockwise closeness to the start player), so the first non-mover row IS the
+/// best rival by that same order — which is what makes the tie-break part of the
+/// margin's definition rather than an afterthought applied to a `max`.
+fn verdict(result: &GameResult, mover: PlayerId) -> Option<Verdict> {
+    let mine = result.standings.iter().find(|s| s.player == mover)?;
+    let rival = result.standings.iter().find(|s| s.player != mover)?;
+    Some(Verdict {
+        margin: i64::from(mine.breakdown.total) - i64::from(rival.breakdown.total),
+        mover_total: mine.breakdown.total,
+        best_rival: rival.player,
+        best_rival_total: rival.breakdown.total,
+        rank: mine.rank,
+        won: result.winner == mover,
+    })
+}
+
+/// Force every root candidate in turn and play the REMAINDER out, K times.
+///
+/// **Candidates are the engine's own [`get_legal_moves`] at the root, which is
+/// QUEUE-FIRST** — so at a root with a pending choice the candidates are that
+/// choice's resolutions rather than the phase's moves. That is correct and worth
+/// saying out loud: the decision the mover actually faces there IS the queued
+/// choice, and enumerating the phase's moves instead would adjudicate a decision
+/// nobody is being asked to make.
+///
+/// Each candidate is checked with `is_move_legal(.., Canonical)` and applied
+/// with `apply_move_unchecked` — the DRIVER's own discipline, not the checked
+/// `apply_move` (which would re-enumerate the whole legal list per candidate for
+/// an answer this function already holds). A move the engine listed and then
+/// refuses is [`AdjudicationError::ForcedMove`], never a skipped row.
+///
+/// **Seeding is design §4's formula and nothing else**: replication `r` plays in
+/// [`replication_world`]`(master, r)`, and each seat's stream descends from that
+/// world through the arena's `agent_stream_seed`. **Every candidate of one
+/// replication shares that replication's world and streams** — fresh agents per
+/// candidate, identical seeds — so within a replication the candidates differ
+/// only by the forced move, which is the whole point of pairing them.
+///
+/// **The seats list governs the WHOLE run, the forced mover included**: its own
+/// spec decides its post-root moves exactly as it would have decided the root's,
+/// and nothing here substitutes a different seat behind it.
+///
+/// **A TERMINAL root adjudicates to an EMPTY table, `Ok`** — zero candidates,
+/// provenance still stamped, [`Adjudication::witness`] `None`. It is the same
+/// contract [`drive_to_terminal`]'s zero-move outcome makes, one level up: a
+/// finished game has nothing to force, and refusing would leave the instrument
+/// unable to report the position an adjudication walks into whenever a candidate
+/// ends the game.
+///
+/// **What each playout's own provenance says, and why it is not the root's.** A
+/// playout starts at ROOT + one forced candidate — a state THIS MODULE built —
+/// so its descriptor is `Constructed`, stamped on the state actually driven.
+/// Threading the root's descriptor down instead would have every playout claim
+/// it started at a position it did not start at, under an `event_index` that
+/// indexes a different move. The link is kept where it is true: the root is
+/// named ONCE on [`Adjudication::provenance`], with its full origin, and every
+/// row carries [`CandidateRow::continuation_digest`] — the same digest the
+/// playout's own provenance records — so a reader joins the two by value rather
+/// than by trust.
+pub fn adjudicate_root(
+    source: &RootSource,
+    seats: &[SeatSpec],
+    rules: &Rules,
+    master: WorldSeed,
+    replications: u32,
+    opts: DrivenOpts,
+) -> Result<Adjudication, AdjudicationError> {
+    if replications == 0 {
+        return Err(AdjudicationError::NoReplications);
+    }
+    let (root, descriptor) = source.resolve(rules).map_err(AdjudicationError::Root)?;
+    // The ROOT's guards, run HERE rather than left to a playout: a terminal root
+    // has no playout to carry them, and a corrupt root must be refused as the
+    // root it is instead of surfacing as a fault attributed to a forced move.
+    preflight(&root, seats, opts).map_err(AdjudicationError::Unadjudicable)?;
+    check_invariants(&root, rules)
+        .map_err(|e| AdjudicationError::Unadjudicable(DrivenError::CorruptRoot(e)))?;
+
+    let mover = root.current_player;
+    let candidates = get_legal_moves(&root, rules);
+    if candidates.is_empty() && !is_game_over(&root) {
+        return Err(AdjudicationError::DeadEnd { seat: mover });
+    }
+
+    let mut witness: Option<RootedProvenance> = None;
+    let mut rows: Vec<CandidateRow> = Vec::with_capacity(candidates.len());
+    for candidate in candidates {
+        if !is_move_legal(&root, &candidate, rules, PathMode::Canonical) {
+            return Err(AdjudicationError::ForcedMove {
+                candidate: Box::new(candidate),
+                detail: "is_move_legal(Canonical) rejected a move from get_legal_moves".to_string(),
+            });
+        }
+        let after = match apply_move_unchecked(&root, &candidate, rules) {
+            Ok(state) => state,
+            Err(e) => {
+                return Err(AdjudicationError::ForcedMove {
+                    candidate: Box::new(candidate),
+                    detail: e.to_string(),
+                })
+            }
+        };
+        // ONE descriptor per candidate, built once and reused across the K
+        // playouts — which is also why this goes through the private seam rather
+        // than `drive_to_terminal`: the latter would re-digest `after` K times
+        // for a value this row already holds.
+        let continuation = RootDescriptor::constructed(&after);
+        let continuation_digest = continuation.root_digest.clone();
+
+        let mut playouts = Vec::with_capacity(replications as usize);
+        for replication in 0..replications {
+            let world = replication_world(master, replication);
+            let outcome = drive_from_descriptor(
+                &after,
+                continuation.clone(),
+                seats,
+                rules,
+                world,
+                opts,
+            )
+            .map_err(|e| AdjudicationError::Playout {
+                candidate: Box::new(candidate.clone()),
+                replication,
+                error: Box::new(e),
+            })?;
+            let v = verdict(&outcome.result, mover)
+                .ok_or(AdjudicationError::Unscorable { seat: mover })?;
+            if witness.is_none() {
+                witness = Some(outcome.provenance.clone());
+            }
+            playouts.push(CandidatePlayout {
+                replication,
+                world,
+                agent_seeds: outcome.seats.iter().map(|s| s.agent_seed).collect(),
+                margin: v.margin,
+                mover_total: v.mover_total,
+                best_rival: v.best_rival,
+                best_rival_total: v.best_rival_total,
+                rank: v.rank,
+                won: v.won,
+                decisions: outcome.decisions,
+                turns: outcome.final_state.turn_number,
+                final_digest: state_digest(&outcome.final_state),
+            });
+        }
+        rows.push(CandidateRow { candidate, continuation_digest, playouts });
+    }
+
+    let seat_descriptors = seats
+        .iter()
+        .enumerate()
+        .map(|(index, spec)| AdjudicationSeat {
+            seat: index as u8,
+            requested: spec.requested_label(),
+            echo: spec.contestant().echo(),
+        })
+        .collect();
+    Ok(Adjudication {
+        mover,
+        root_turn: root.turn_number,
+        master,
+        replications,
+        rows,
+        witness,
+        provenance: AdjudicationProvenance {
+            root: descriptor,
+            semantics_rev: SEMANTICS_REV,
+            rules_hash: rules.content_hash(),
+            seats: seat_descriptors,
+            master: master.0,
+            replications,
+        },
+    })
 }
 
 #[cfg(test)]
@@ -4499,6 +5065,14 @@ mod tests {
     /// "variance recorded, never asserted" has content. What IS asserted is
     /// internal consistency (`min <= mean <= max`, the mean is the mean, the
     /// vector is K long) and reproduction at the same master.
+    ///
+    /// **Measured at authoring** (2026-08-18, WSL debug, event 686 of this
+    /// record, six `ExecuteAreaAction` candidates, K = 4): the spread is real
+    /// and large — per-candidate margins like `[2, −68, −6, −11]` and
+    /// `[−12, −37, −25, −3]`, means between −26.50 and −18.25, one won playout
+    /// in twenty-four. Read that as what it is: four rung rollouts of a ~60-move
+    /// tail, whose noise dwarfs any candidate difference at this N. It is
+    /// PRINTED (`--nocapture`) rather than asserted for exactly that reason.
     #[test]
     fn replication_spread_is_recorded_and_never_asserted() {
         let rules = Rules::standard();
@@ -4539,6 +5113,14 @@ mod tests {
                 assert!(!p.final_digest.is_empty());
                 assert!(p.turns >= table.root_turn, "{:?}: a run went backwards", row.candidate);
             }
+            // RECORDED, in the one place the fields have content: printed, never
+            // gated. `--nocapture` shows it.
+            println!(
+                "spread event {k_root} {:?}: margins {margins:?} mean {mean:+.2} \
+                 min {min:+} max {max:+} wins {}/4",
+                row.candidate,
+                row.wins(),
+            );
         }
         let again = adjudicate_root(&source, &rung_seats(), &rules, master, 4, DrivenOpts::default())
             .expect("the adjudication must complete");

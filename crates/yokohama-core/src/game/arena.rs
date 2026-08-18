@@ -186,6 +186,17 @@ const SALT_PLAY_STREAM: u64 = 0xA3E1_5701_0000_0001;
 const SALT_SETUP_STREAM: u64 = 0xA3E1_5E70_0000_0002;
 /// Domain salt for the raw diagnostic driver's per-seat stream.
 const SALT_RAW_STREAM: u64 = 0xA3E1_4157_0000_0003;
+/// Domain salt for the DRIVEN adjudicator's per-replication world (design
+/// `docs/plans/2026-08-17-phase-b-harness-design.md` §4):
+/// `mix(SALT_DRIVEN_REPLICATION, [master, replication_index])` is the world one
+/// replication of `game::driven::adjudicate_root` plays in, and every seat's
+/// stream then descends from THAT world through [`agent_stream_seed`] — so the
+/// harness invents no third seed discipline, it re-enters this one at a derived
+/// world. `pub(crate)` for [`mix`]'s own reason: the deriving code is a sibling
+/// module, and "one mixing authority, never a re-typed constant" is a rule
+/// across the crate rather than inside this file. The serial is this family's
+/// next free one (0004 is `arena::stats`' bootstrap, 0005 `eval_screen`'s).
+pub(crate) const SALT_DRIVEN_REPLICATION: u64 = 0xA3E1_D21E_0000_0006;
 
 /// Fold `components` into one full-width sub-seed under `salt` — the module
 /// doc's derivation. Injective in any single component (others fixed); see the
