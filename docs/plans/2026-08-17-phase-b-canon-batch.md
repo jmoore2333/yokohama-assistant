@@ -1,5 +1,15 @@
 # Phase B — the owner-games canon batch (four items for ruling)
 
+**Status: RULED (2026-08-18, owner rulings inline on all four items).** C-A ratified (the
+swing arithmetic holds at 2–4P, cleanest at 2P); C-B ratified toward the DISCOUNTED direction
+(the owner confirmed the orchestrator's reading in-session the same day: flips are priced with
+recoverability/opportunity-cost/phase awareness, and the full-swing step stops being the
+reference behavior in family-3 controls); C-C opens the tech-ability representation lane in
+principle (class-weighting acceptable; any admission still walks its own evidence ladder and
+the Phase-C STOP); C-D rules the fixed lab-rush opening NOT acceptable (opening diversity
+becomes a probe/family target). The guidingpath 2026-08-18 canon row is the decision-log
+record; this file stays the verbatim rulings text.
+
 **Written 2026-08-17, assembled from the feedback package's §3 and the scribe log's
 candidate-canon section (owner statements verbatim where quoted). Format and force follow the
 2026-08-09 batch: each ruling is a judgment PRIOR for narrowly-constructed 2P scenario
@@ -34,7 +44,7 @@ list on its own evidence ladder. Nothing ships from this ruling alone.
 **Questions:** (1) Ratify as stated? (2) Is the doubled-swing arithmetic 2P-specific, or does
 participation value survive at 3–4P where a space taken denies only one of several rivals?
 
-**Owner ruling:** ____
+**Owner ruling:** Ratified. The swing arithmetic holds throughout the 2-3-4p sets, but it's much cleaner to derive in a 2p as it's a true binary choice. 
 
 ---
 
@@ -58,7 +68,7 @@ candidate distinct from the measured-duplicate margin; family-3 controls stop tr
 full-swing step as the reference behavior. If ratified toward full-swing: the step is canon
 and the owner's e89 discomfort is recorded as an accepted model simplification.
 
-**Owner ruling:** ____
+**Owner ruling:** Ratified, it's important to weigh the alternative options to getting points, and any action taken necessairly decreases the chances of other moves being able to earn points, so especially being aware of the phases of the game, even in the loose sense, can help optimize for that. This is also influenced by what's available on the tech track, it's potential value to me or even the other player, possible achievements, etc. 
 
 ---
 
@@ -91,7 +101,7 @@ per-ability hand-modeling acceptable, or only a cheaper aggregate proxy (e.g.
 ability-class-weighted tech count)? (3) Does the answer change for the OPPONENT's abilities
 (the Language School yen rider priced as a threat — the F2 lane)?
 
-**Owner ruling:** ____
+**Owner ruling:** Ability value should enter the model, in principal. Without it, the tech card draws just for the benefit of majority bonuses is not a good strategy, even if the player lucks into something useful. I think that we can likely class-weight them, or associate with other horizon scanning like the examples given above, it would be complex now to lay out evidence for each of the movement cards and some of the placement cards can dramatically change the movement of pawns which may make it harder to build in other sections of the game. The opponent's abilities should be made aware, but it's again only useful with proper horizon planning to be aware of the opponents likely moves and give weighting to those.
 
 ---
 
@@ -116,7 +126,7 @@ target (cheap to measure: first-turn move distribution over a corpus) and turn-1
 achievement/synergy visibility joins the representation queue behind C-C. If acceptable, the
 100% observation is recorded as consistent-with-canon and the probe is not built.
 
-**Owner ruling:** ____
+**Owner ruling:** A fixed lab-rush opening is not acceptable, and it only works if you're the first player or the other player hasn't done it themselves. It is just as valid depending on board layout to optimize for an order in hand, or some other achievement - those are generally the factors that would be good opening moves in a 2p game. That said, it could be a good idea a large number of times, but it does depend on the lab cards.
 
 ---
 
