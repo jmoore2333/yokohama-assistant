@@ -2411,4 +2411,219 @@ mod tests {
             table.top_band(),
         );
     }
+
+    // =======================================================================
+    // The family 3/4 BUILDERS (design §1 families 3–4, plan §T5(A))
+    // =======================================================================
+
+    /// The seed sweep every builder pin runs. Nine draws is enough that each
+    /// declared parameter range is exercised at more than one value while the
+    /// whole block stays a fraction of a second (no builder plays a game).
+    const BUILDER_SEEDS: std::ops::Range<u64> = 0..9;
+
+    /// Every seed of the sweep builds an ENGINE-VALID race root whose declared
+    /// step is coherent with the shipped predicate.
+    ///
+    /// The builder already refuses on its own shape claims, so an `Ok` here is
+    /// most of the pin; what the cell adds is the two statements a builder
+    /// cannot make about itself — that `check_invariants` accepts the state
+    /// (re-run independently of the builder's own call) and that
+    /// [`RootPredicate::ExclusiveRaceOneStep`] AGREES the position is one of
+    /// its own (the predicate/builder coherence pin the plan names).
+    #[test]
+    fn the_race_positive_builder_is_engine_valid_and_predicate_coherent() {
+        let rules = rules();
+        let mut steps: Vec<ContestedStep> = Vec::new();
+        for seed in BUILDER_SEEDS {
+            let (state, step) = build_race_positive(seed, &rules)
+                .unwrap_or_else(|e| panic!("seed {seed}: {e}"));
+            crate::game::invariants::check_invariants(&state, &rules)
+                .unwrap_or_else(|e| panic!("seed {seed}: the built state is not engine-valid: {e}"));
+            assert!(step.well_formed(), "seed {seed}: {step:?} names no space");
+            assert!(
+                RootPredicate::ExclusiveRaceOneStep.holds(&state, &rules),
+                "seed {seed}: the shipped predicate does not recognise the built root",
+            );
+            assert!(
+                !step.held_by(&state, state.current_player, &rules),
+                "seed {seed}: the mover already HOLDS the contested step — not a race",
+            );
+            steps.push(step);
+        }
+        // ANTI-VACUITY on the declared TRACK parameter: the sweep must exercise
+        // both arms, or the customs half of the construction is untested.
+        assert!(
+            steps.iter().any(|s| matches!(s, ContestedStep::ChurchSpace { .. }))
+                && steps.iter().any(|s| matches!(s, ContestedStep::CustomsSpace { .. })),
+            "the seed sweep never reached one of the two track arms: {steps:?}",
+        );
+    }
+
+    /// **THE THREAT IS PUBLIC — and it is public BY CONSTRUCTION, not by
+    /// assertion.**
+    ///
+    /// [`opponent_one_action_from_step`] takes a [`PlayerView`], so the hidden
+    /// starting order is not merely unread: it is not in scope. The pin
+    /// evaluates the clause on the MOVER's own view — the information a seated
+    /// player has — and requires it to hold there.
+    ///
+    /// The second half is the discriminator: the same clause on a view where
+    /// the opponent's assistants have LEFT the contested area reads FALSE, so
+    /// the cell separates "the threat is visible" from "the function returns
+    /// true".
+    #[test]
+    fn the_race_positive_builders_threat_is_public_by_construction() {
+        let rules = rules();
+        for seed in BUILDER_SEEDS {
+            let (state, step) = build_race_positive(seed, &rules)
+                .unwrap_or_else(|e| panic!("seed {seed}: {e}"));
+            let mover = state.current_player;
+            let opponent = state
+                .players
+                .iter()
+                .map(|p| p.id)
+                .find(|id| *id != mover)
+                .expect("a 2P root has a rival");
+            let view = crate::game::observe::observe(&state, mover)
+                .unwrap_or_else(|e| panic!("seed {seed}: the mover cannot observe its own root: {e:?}"));
+            assert!(
+                opponent_one_action_from_step(&view, opponent, step),
+                "seed {seed}: the threat is not visible from the mover's own view",
+            );
+
+            // INVERSION: strip the opponent's presence at the contested area and
+            // the clause must fall.
+            let mut vacated = state.clone();
+            {
+                let p = vacated.player_mut(opponent);
+                let moved: u8 = p.assistants.on_board.values().copied().sum();
+                p.assistants.on_board.clear();
+                p.assistants.in_hand += moved;
+            }
+            let vacated_view = crate::game::observe::observe(&vacated, mover).expect("observable");
+            assert!(
+                !opponent_one_action_from_step(&vacated_view, opponent, step),
+                "seed {seed}: the clause holds with the opponent off the board — it is not \
+                 reading the board at all",
+            );
+        }
+    }
+
+    /// Distinct seeds build distinct positions — the declared parameter ranges
+    /// are live rather than decorative.
+    #[test]
+    fn the_race_positive_builder_varies_with_its_seed() {
+        let rules = rules();
+        let digests: Vec<String> = BUILDER_SEEDS
+            .map(|seed| {
+                let (state, _) = build_race_positive(seed, &rules).expect("builds");
+                state_digest(&state)
+            })
+            .collect();
+        let mut unique = digests.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), digests.len(), "two seeds built the same position");
+    }
+
+    /// The NO-DENIAL control: the denial step is TAKEABLE, and taking it
+    /// forfeits a strictly better line — by exactly the constructed 2 VP.
+    ///
+    /// The arithmetic is the engine's own final scoring read as-if-now, so the
+    /// pin re-derives it rather than trusting the builder: the costly mask
+    /// spends one imported good (1 VP of remainder) and two Yen (1 VP, since
+    /// `money / 2` loses exactly one step for any starting money in the
+    /// declared 2..=5 range), and the free mask reaches the same church
+    /// majority, so the gap is 2 and never 0.
+    #[test]
+    fn the_no_denial_builder_offers_the_step_and_a_strictly_better_line() {
+        let rules = rules();
+        for seed in BUILDER_SEEDS {
+            let (state, step) = build_race_no_denial(seed, &rules)
+                .unwrap_or_else(|e| panic!("seed {seed}: {e}"));
+            crate::game::invariants::check_invariants(&state, &rules)
+                .unwrap_or_else(|e| panic!("seed {seed}: not engine-valid: {e}"));
+            assert!(step.well_formed(), "seed {seed}: {step:?} names no space");
+            assert!(
+                mover_can_take_step(&state, step, &rules),
+                "seed {seed}: the denial step is not takeable — the control has no denial in it",
+            );
+            let split = denial_split(&state, step, &rules);
+            assert!(
+                split.denial_moves > 0 && split.alternative_moves > 0,
+                "seed {seed}: the split has an empty side: {split:?}",
+            );
+            assert_eq!(
+                split.best_alternative - split.best_denial,
+                NO_DENIAL_FORFEIT_VP,
+                "seed {seed}: the constructed forfeit is not the declared arithmetic: {split:?}",
+            );
+        }
+    }
+
+    /// Distinct seeds build distinct no-denial positions.
+    #[test]
+    fn the_no_denial_builder_varies_with_its_seed() {
+        let rules = rules();
+        let digests: Vec<String> = BUILDER_SEEDS
+            .map(|seed| {
+                let (state, _) = build_race_no_denial(seed, &rules).expect("builds");
+                state_digest(&state)
+            })
+            .collect();
+        let mut unique = digests.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), digests.len(), "two seeds built the same position");
+    }
+
+    /// **THE F8 PROXIMITY SHAPE, as an apply-probe**: the claim is NOT legal at
+    /// the root and IS legal one in-turn produce later — two decisions, one
+    /// turn, which is exactly what makes family 4's read a TURN-grain read.
+    #[test]
+    fn the_proximity_builder_is_two_decisions_from_a_claim_it_cannot_make_yet() {
+        let rules = rules();
+        for seed in BUILDER_SEEDS {
+            let state = build_achievement_proximity(seed, &rules)
+                .unwrap_or_else(|e| panic!("seed {seed}: {e}"));
+            crate::game::invariants::check_invariants(&state, &rules)
+                .unwrap_or_else(|e| panic!("seed {seed}: not engine-valid: {e}"));
+            let claim = Move::FulfillAchievement { achievement: PROXIMITY_ACHIEVEMENT };
+            let legal = crate::game::legal_moves::get_legal_moves(&state, &rules);
+            assert!(
+                !legal.contains(&claim),
+                "seed {seed}: the claim is already legal — this is F8's LIVE shape, not its \
+                 proximity corner",
+            );
+            assert!(
+                legal.contains(&PROXIMITY_PRODUCE),
+                "seed {seed}: the in-turn produce is not available: {legal:?}",
+            );
+            let after = crate::game::apply_move::apply_move(&state, &PROXIMITY_PRODUCE, &rules)
+                .unwrap_or_else(|e| panic!("seed {seed}: the produce does not apply: {e:?}"));
+            assert!(
+                crate::game::legal_moves::get_legal_moves(&after, &rules).contains(&claim),
+                "seed {seed}: the claim is not reachable one decision after the produce",
+            );
+            // And the leg really is completable WITHIN the turn: the produce
+            // never hands off.
+            assert_eq!(
+                after.current_player, state.current_player,
+                "seed {seed}: the produce ended the mover's turn",
+            );
+        }
+    }
+
+    /// Distinct seeds build distinct proximity positions.
+    #[test]
+    fn the_proximity_builder_varies_with_its_seed() {
+        let rules = rules();
+        let digests: Vec<String> = BUILDER_SEEDS
+            .map(|seed| state_digest(&build_achievement_proximity(seed, &rules).expect("builds")))
+            .collect();
+        let mut unique = digests.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), digests.len(), "two seeds built the same position");
+    }
 }
