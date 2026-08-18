@@ -50,14 +50,29 @@
 //! are the FAMILY RUN's (T5) — they are statements about a BLOCK of roots, and
 //! this module never sees more than one.
 
+use crate::actions::{
+    calculate_church_faith, customs_max_imported_goods, eligible_church_spaces,
+    eligible_customs_spaces_for_cost,
+};
+use crate::game::apply_move::apply_move_unchecked;
 use crate::game::arena::{mix, Contestant};
 use crate::game::driven::{
-    drive_turn, root_table, Adjudication, DrivenError, DrivenOpts, NotAContestant, ReplyPolicy,
-    RootTable, RootTableError, SeatCounters, SeatSpec, TOP_BAND_POINTS,
+    drive_turn, root_table, true_margin_now, Adjudication, DrivenError, DrivenOpts, NotAContestant,
+    ReplyPolicy, RootPredicate, RootTable, RootTableError, SeatCounters, SeatSpec, TOP_BAND_POINTS,
 };
+use crate::game::end_game::is_game_over;
+use crate::game::invariants::check_invariants;
+use crate::game::legal_moves::get_legal_moves;
+use crate::game::observe::observe;
 use crate::game::rules::Rules;
+use crate::game::seeds::SeedSchedule;
 use crate::game::semantics::state_digest;
-use crate::types::{AchievementType, ChurchTrack, CustomsTrack, GameState, Move, PlayerId};
+use crate::game::setup::{finalize_setup, new_game, StartingOrderChoice};
+use crate::types::{
+    AchievementCard, AchievementType, AreaId, AreaType, ChurchTrack, CustomsTrack,
+    GameConfig, GameState, Move, PlayerId, PlayerView, PresidentLocation, TechCardId, TechEffect,
+    TurnPhase, VisiblePlayer,
+};
 
 // ---------------------------------------------------------------------------
 // The contested step (design §3, review NOTE-6)
@@ -1133,6 +1148,819 @@ pub fn family_read(
         counter_check,
         annotations,
     })
+}
+
+// ---------------------------------------------------------------------------
+// The family 3/4 BUILDERS (design §1 families 3–4, §2's builder bullet)
+// ---------------------------------------------------------------------------
+
+/// Why a builder produced no root.
+///
+/// Typed, and every arm is a HARD stop: a builder that returned a
+/// nearly-right position would put a root into a frozen block whose shape
+/// claim is false, and the read riding it would be wrong with no way to
+/// notice. That is the same posture [`AdjudicationError`](crate::game::driven::AdjudicationError)
+/// takes one level up, for the same reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BuilderError {
+    /// `new_game` or `finalize_setup` refused the base deal.
+    Setup(&'static str),
+    /// The generated board carries no area of the type this construction needs.
+    /// Unreachable on a printed 2P board (Church and Customs are never among
+    /// the tiles a low player count removes) and typed anyway, because a board
+    /// generator change must surface HERE rather than as a wrong fixture.
+    MissingArea(&'static str),
+    /// The technology registry carries no card with the effect this
+    /// construction spends.
+    MissingTech(&'static str),
+    /// A doctored field would have spent a resource the fixture does not hold
+    /// (assistants moved out of a hand that is already empty, a track slot
+    /// already occupied, a card that sits in no pile).
+    OutOfStock(&'static str),
+    /// `check_invariants` refused the built state — the fixture is not one the
+    /// engine would ever hand an evaluator.
+    NotEngineValid(String),
+    /// The built state does not satisfy its OWN shape claim. The clause is
+    /// named so a failure says which half of the construction moved.
+    ShapeCheck { clause: &'static str, detail: String },
+}
+
+impl std::fmt::Display for BuilderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Setup(detail) => write!(f, "the base setup refused the build: {detail}"),
+            Self::MissingArea(area) => {
+                write!(f, "the generated board carries no {area} area")
+            }
+            Self::MissingTech(effect) => {
+                write!(f, "the technology registry carries no card with the {effect} effect")
+            }
+            Self::OutOfStock(what) => write!(f, "the fixture cannot spend {what}"),
+            Self::NotEngineValid(detail) => {
+                write!(f, "the built state is not one the engine accepts: {detail}")
+            }
+            Self::ShapeCheck { clause, detail } => {
+                write!(f, "the built state fails its own shape claim ({clause}): {detail}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for BuilderError {}
+
+/// The church space every race-positive CHURCH draw contests — the LOWEST
+/// space on the board, faith 4.
+///
+/// Lowest deliberately: `eligible_church_spaces` returns every empty space AT
+/// OR BELOW a computed faith, so the lowest space is the one BOTH sides reach
+/// across the whole declared power range. A higher space would make the
+/// contest a function of the drawn power rather than of the construction.
+const CONTESTED_FAITH: u8 = 4;
+
+/// The customs space every race-positive CUSTOMS draw contests — printed space
+/// 1, whose printed cost is 1 imported good, for [`CONTESTED_FAITH`]'s reason.
+const CONTESTED_SPACE: u8 = 1;
+
+/// What the no-denial control's better line is WORTH, in victory points.
+///
+/// **Seven, and it is the engine's own printed arithmetic rather than a taste**
+/// — see [`build_race_no_denial`]'s doc for the derivation. The number is what
+/// it is because of a fact about this game that the control had to be built
+/// AROUND rather than through: a church space PAYS (`ChurchTrack::vp_reward`
+/// runs 3, 4, 5, 6, 7, 8, 11, 14 up the track) and each extra Faith costs at
+/// most 1 VP of goods, so "climb the track" is never the wasteful move. What IS
+/// wasteful is climbing and then spending the climb on the LOW space the
+/// opponent was going to take — which is exactly denial-as-strategy, and
+/// exactly what this control prices.
+pub const NO_DENIAL_FORFEIT_VP: i64 = 7;
+
+/// The achievement [`build_achievement_proximity`] puts one produce away.
+///
+/// `Money10` because it is the one category-B card whose requirement an
+/// ADDITIONAL-ACTION move can move: the phase never advances inside the
+/// additional-action window (only `EndAdditionalPhase` advances it), so the
+/// produce and the claim are two decisions of ONE window and the "completable
+/// within the turn" claim is checkable by a single apply-probe.
+pub const PROXIMITY_ACHIEVEMENT: AchievementType = AchievementType::Money10;
+
+/// The in-turn PRODUCE [`build_achievement_proximity`] leaves available — the
+/// Textile Mill's silk → 2 Yen conversion.
+///
+/// **A deliberate reading of design §1's "produce-to-7 then claim".** The
+/// literal goods shape (stand on a Tea Plantation with six tea, produce, claim)
+/// is the same TWO-DECISION story, but its two decisions straddle a phase
+/// advance — the produce is an AREA action and the claim is an additional
+/// action several automatic transitions later — so "the claim becomes legal
+/// after the produce" stops being an apply-probe and becomes a driven turn.
+/// The mill route keeps both decisions inside one additional-action window,
+/// which is what makes the completability claim MECHANICAL here. The shape
+/// design §1 cares about — a leg the mover completes within its own turn, with
+/// no claim candidate at the root — is identical.
+pub const PROXIMITY_PRODUCE: Move = Move::UseSpinningMill;
+
+/// The one area of `wanted` type, if the board has one.
+///
+/// `driven`'s own `area_of_type`, restated here rather than shared because
+/// that one is private to the module that scans; both are two lines over
+/// `board_layout.areas` and neither is a rules decision.
+fn area_of(state: &GameState, wanted: AreaType) -> Option<AreaId> {
+    state.board_layout.areas.iter().find(|(_, c)| c.area_type == wanted).map(|(a, _)| *a)
+}
+
+/// The same, over a [`PlayerView`] — the board layout is public information and
+/// the view carries it verbatim.
+fn view_area_of(view: &PlayerView, wanted: AreaType) -> Option<AreaId> {
+    view.board_layout.areas.iter().find(|(_, c)| c.area_type == wanted).map(|(a, _)| *a)
+}
+
+/// One player's power at one area, read from a VIEW.
+///
+/// **A MIRROR of [`crate::game::power::calculate_power`], and it names its
+/// source because that is the rule for mirrored logic in this harness** (the
+/// Phase-B design's §5 pattern): the shipped function takes a `&GameState`,
+/// which is exactly the input a PUBLIC-threat clause may not have. Every term
+/// is the shipped one in the shipped order — President, assistants, shophouse,
+/// trading house, station token, then the cap applied LAST — and every input is
+/// a field the view already carries, which is the whole point: a threat
+/// computed here cannot accidentally read a hidden deal, because a hidden deal
+/// is not in scope.
+fn visible_power(view: &PlayerView, player: &VisiblePlayer, area: AreaId) -> u8 {
+    let mut power: u8 = 0;
+    if player.president_location == PresidentLocation::OnBoard(area) {
+        power += 1;
+    }
+    power += player.assistants.in_area(area);
+    if player.shophouses.built.contains_key(&area) {
+        power += 1;
+    }
+    if player.trading_houses.built.contains(&area) {
+        power += 1;
+    }
+    if view.station_location == Some(area) {
+        power += 1;
+    }
+    power.min(5)
+}
+
+/// **THE PUBLIC-THREAT CLAUSE**: is `opponent` ONE COMPLETED ACTION away from
+/// taking `step`, as far as a seated player can see?
+///
+/// **It takes a [`PlayerView`], and that signature IS the publicness claim**
+/// (design §1 family 3: "the threat is PUBLIC … the race arithmetic rides board
+/// state and port-taken orders, never the hidden deal"). A clause written over
+/// `&GameState` would be *asserted* to be public; written over a view it cannot
+/// be anything else, because the masked starting order and the deck order are
+/// not reachable from here at all. That is the confound the amendment's
+/// family-3 sentence flags, shaped out by construction rather than by care.
+///
+/// The arithmetic MIRRORS `driven`'s own generator-side `opponent_race_steps`
+/// (whose doc carries the full derivation and the precision/recall trade it
+/// takes): the opponent's President is elsewhere, so it can travel to the track
+/// area next turn; it already holds an assistant there, which is the durable
+/// claim and also supplies `has_church_or_customs_assistant` (implied by that
+/// same conjunct, so it does not appear twice); the power it would ARRIVE with
+/// is its current power plus the travelling President, re-capped; and that
+/// power, with the payment types it can afford, reaches the declared space.
+///
+/// **The TECH-MAJORITY arm reads FALSE**, exactly as the generator's does and
+/// for the generator's stated reason: an opponent's lab affordability needs the
+/// board-position surcharge and `validate_lab_action`'s payment search, and an
+/// approximation of it would favour recall where this clause exists to favour
+/// precision. No builder here declares a tech step; a caller that did would get
+/// a refusal from its own shape check rather than a silent pass.
+pub fn opponent_one_action_from_step(
+    view: &PlayerView,
+    opponent: PlayerId,
+    step: ContestedStep,
+) -> bool {
+    let Some(p) = view.players.iter().find(|p| p.id == opponent) else {
+        return false;
+    };
+    match step {
+        ContestedStep::ChurchSpace { faith } => {
+            let Some(area) = view_area_of(view, AreaType::Church) else {
+                return false;
+            };
+            if !could_act_next_turn(p, area) {
+                return false;
+            }
+            let arriving = (visible_power(view, p, area) + 1).min(5);
+            let max_faith = calculate_church_faith(
+                arriving,
+                p.copper >= 1,
+                p.silk >= 1,
+                p.tea >= 1,
+                p.seafood >= 1,
+                // D1 (2026-08-08): the yen payment type costs 2 Yen.
+                p.money >= 2,
+                p.imported_goods >= 1,
+            );
+            eligible_church_spaces(&view.church_track, max_faith).contains(&faith)
+        }
+        ContestedStep::CustomsSpace { space } => {
+            let Some(area) = view_area_of(view, AreaType::Customs) else {
+                return false;
+            };
+            if !could_act_next_turn(p, area) {
+                return false;
+            }
+            let arriving = (visible_power(view, p, area) + 1).min(5);
+            let payable = customs_max_imported_goods(arriving)
+                .min(u8::try_from(p.imported_goods).unwrap_or(u8::MAX));
+            (1..=payable).any(|cost| {
+                eligible_customs_spaces_for_cost(&view.customs_track, cost).contains(&space)
+            })
+        }
+        ContestedStep::TechMajorityRankPast { .. } => false,
+    }
+}
+
+/// The President is elsewhere (so it can travel here next turn) and the
+/// assistants that give it power are already here.
+fn could_act_next_turn(p: &VisiblePlayer, area: AreaId) -> bool {
+    p.president_location != PresidentLocation::OnBoard(area) && p.assistants.in_area(area) >= 1
+}
+
+/// Whether ONE legal move puts the MOVER on `step` before its turn ends.
+///
+/// **TWO probe levels, and the second is not an optimisation.** A Church or
+/// Customs action with two or more eligible spaces places NOTHING at apply
+/// time: it queues a `PendingChoice::ChurchSpace`/`CustomsSpace`, and the pawn
+/// lands when the choice resolves. A one-level probe would therefore see
+/// exactly the already-narrowed singleton case and call every race-INITIATING
+/// move a non-starter — the same blindness `driven`'s `mover_reachable_steps`
+/// documents on its own queue-aware arm.
+///
+/// The walk stops at the mover's own turn: a follow-up is probed only while the
+/// probed clone still has the mover on the move and the game is not over, so
+/// nothing here credits the mover with a step the OPPONENT would take.
+fn move_reaches_step(
+    root: &GameState,
+    mv: &Move,
+    step: ContestedStep,
+    rules: &Rules,
+) -> bool {
+    let mover = root.current_player;
+    let Ok(next) = apply_move_unchecked(root, mv, rules) else {
+        return false;
+    };
+    if step.held_by(&next, mover, rules) {
+        return true;
+    }
+    if is_game_over(&next) || next.current_player != mover {
+        return false;
+    }
+    get_legal_moves(&next, rules).iter().any(|follow| {
+        apply_move_unchecked(&next, follow, rules)
+            .map(|after| step.held_by(&after, mover, rules))
+            .unwrap_or(false)
+    })
+}
+
+/// Whether the MOVER holds ANY move that takes `step` this turn — the
+/// builders' "the mover can alter it" clause, as an apply-probe over the root's
+/// own legal list.
+pub fn mover_can_take_step(root: &GameState, step: ContestedStep, rules: &Rules) -> bool {
+    get_legal_moves(root, rules).iter().any(|mv| move_reaches_step(root, mv, step, rules))
+}
+
+/// The root's own LINES, split by whether the line ends with the mover holding
+/// a declared step, with the best AS-IF-NOW margin each side reaches.
+///
+/// **A LINE, not a move, and the difference is the whole correctness of the
+/// control.** A track action PAYS at apply time and PLACES at choice-resolution
+/// time (the choice-encoding shape): with two or more eligible spaces the
+/// action queues a `PendingChoice::ChurchSpace`/`CustomsSpace` and the pawn —
+/// with its printed VP reward — lands one decision later. A move-grain split
+/// would therefore compare a paid-but-unplaced state against a placed one and
+/// read the payment as a loss with no gain, which is a wrong answer that looks
+/// like a right one. A line is the root move plus, where the mover still has
+/// the move and a choice is queued, its resolution — depth 2, which is exactly
+/// as deep as a track action goes.
+///
+/// The margin is [`true_margin_now`] at the line's end — full-state truth, the
+/// same generator-side arithmetic family 2's predicates select on. It is
+/// deliberately NOT a search: the no-denial control's claim is that taking the
+/// step COSTS something a reader can add up, and an arithmetic a reader can add
+/// up is the only kind a control may rest on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DenialSplit {
+    /// The best margin reachable by a line that ends on the step.
+    pub best_denial: i64,
+    /// The best margin reachable by a line that does not.
+    pub best_alternative: i64,
+    /// How many lines end on it.
+    pub denial_lines: usize,
+    /// How many do not.
+    pub alternative_lines: usize,
+}
+
+/// [`DenialSplit`] at one root. Both sides are empty-safe: an empty side keeps
+/// [`i64::MIN`], which no comparison can mistake for a reachable margin, and
+/// the counts are what a caller checks first.
+pub fn denial_split(root: &GameState, step: ContestedStep, rules: &Rules) -> DenialSplit {
+    let mover = root.current_player;
+    let mut split = DenialSplit {
+        best_denial: i64::MIN,
+        best_alternative: i64::MIN,
+        denial_lines: 0,
+        alternative_lines: 0,
+    };
+    for mv in get_legal_moves(root, rules) {
+        let Ok(next) = apply_move_unchecked(root, &mv, rules) else {
+            continue;
+        };
+        // The line ENDS here unless the mover still owes a queued decision —
+        // in which case each resolution is its own line.
+        let ends: Vec<GameState> = if is_game_over(&next)
+            || next.current_player != mover
+            || next.pending_choices.is_empty()
+        {
+            vec![next]
+        } else {
+            get_legal_moves(&next, rules)
+                .iter()
+                .filter_map(|follow| apply_move_unchecked(&next, follow, rules).ok())
+                .collect()
+        };
+        for end in ends {
+            let margin = true_margin_now(&end, rules);
+            if step.held_by(&end, mover, rules) {
+                split.denial_lines += 1;
+                split.best_denial = split.best_denial.max(margin);
+            } else {
+                split.alternative_lines += 1;
+                split.best_alternative = split.best_alternative.max(margin);
+            }
+        }
+    }
+    split
+}
+
+/// A finalized 2P game with both seats keeping their first dealt Order — the
+/// `scenario_suite` construction grain (`tests/scenario_suite.rs:446`'s
+/// `keep_game`), restated here because these builders ship in the LIBRARY and
+/// a test helper is not reachable from it.
+///
+/// Keeping (rather than swapping) is what makes both seats OBSERVABLE:
+/// `observe` refuses a seat whose own deal is unrecorded, and family 3's
+/// public-threat clause is read from the mover's view.
+fn keep_game_2p(seed: u64, rules: &Rules) -> Result<GameState, BuilderError> {
+    let pending = new_game(GameConfig::for_player_count(2), rules, seed)
+        .map_err(BuilderError::Setup)?;
+    finalize_setup(pending, &[StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)])
+        .map_err(BuilderError::Setup)
+}
+
+/// The seat that is not `mover`, in a 2P state.
+fn other_seat(state: &GameState, mover: PlayerId) -> Result<PlayerId, BuilderError> {
+    state
+        .players
+        .iter()
+        .map(|p| p.id)
+        .find(|id| *id != mover)
+        .ok_or(BuilderError::OutOfStock("a rival seat"))
+}
+
+/// Zero every seat's goods and money, so a construction's payment arithmetic is
+/// exactly what it writes back afterwards rather than what the deal happened to
+/// hand out.
+fn zero_goods(state: &mut GameState) {
+    for p in state.players.iter_mut() {
+        p.money = 0;
+        p.copper = 0;
+        p.silk = 0;
+        p.tea = 0;
+        p.seafood = 0;
+        p.imported_goods = 0;
+    }
+}
+
+/// Move `n` of `player`'s assistants from its hand onto `area`, keeping the
+/// twenty-assistant accounting coherent.
+fn place_area_assistants(
+    state: &mut GameState,
+    player: PlayerId,
+    area: AreaId,
+    n: u8,
+) -> Result<(), BuilderError> {
+    let p = state.player_mut(player);
+    if p.assistants.in_hand < n {
+        return Err(BuilderError::OutOfStock("assistants in hand for an area placement"));
+    }
+    p.assistants.in_hand -= n;
+    *p.assistants.on_board.entry(area).or_insert(0) += n;
+    Ok(())
+}
+
+/// Take one Technology card out of whichever pile the setup left it in, so a
+/// fixture may file it under a seat's `technologies` without minting a 31st
+/// card — `scenario_suite`'s `take_tech_out_of_play`, restated for the library
+/// for [`keep_game_2p`]'s reason.
+fn take_tech_out_of_play(state: &mut GameState, id: TechCardId) -> Result<(), BuilderError> {
+    if let Some(i) = state.tech_deck.iter().position(|c| *c == id) {
+        state.tech_deck.remove(i);
+        return Ok(());
+    }
+    let labs = std::iter::once(&mut state.lab_state.lab_a).chain(state.lab_state.lab_b.as_mut());
+    for slot in labs.flat_map(|lab| lab.slots.iter_mut()) {
+        if *slot == Some(id) {
+            *slot = None;
+            return Ok(());
+        }
+    }
+    Err(BuilderError::OutOfStock("a technology card that sits in no pile"))
+}
+
+/// Whether the declared step's own slot is still OPEN — nobody holds it.
+///
+/// A race whose prize is already taken is not a race, and the two track arms
+/// are the only ones with a slot to read: the tech-majority arm names a LEVEL
+/// rather than a space, and a level is never occupied.
+fn step_is_open(state: &GameState, step: ContestedStep) -> bool {
+    match step {
+        ContestedStep::ChurchSpace { faith } => ChurchTrack::faith_to_index(faith)
+            .is_some_and(|i| state.church_track.slots[i].is_none()),
+        ContestedStep::CustomsSpace { space } => CustomsTrack::space_to_index(space)
+            .is_some_and(|i| state.customs_track.slots[i].is_none()),
+        ContestedStep::TechMajorityRankPast { .. } => true,
+    }
+}
+
+/// A `ShapeCheck` refusal, spelled once.
+fn shape(clause: &'static str, detail: impl Into<String>) -> BuilderError {
+    BuilderError::ShapeCheck { clause, detail: detail.into() }
+}
+
+/// **FAMILY 3's POSITIVE BUILDER** — a rooted position where the opponent is
+/// one completed action from a contested track step, the mover holds a move
+/// that takes it this turn, and the threat is PUBLIC (design §1 family 3).
+///
+/// **DECLARED PARAMETER RANGES** (the freeze document quotes this list; every
+/// draw is taken from `SeedSchedule::diagnostic(seed)` — the repo's own
+/// SplitMix stream, so a builder block and a scan block at one master are two
+/// blocks of the same seeded sequence and no new salt serial is consumed). All
+/// six draws are taken UNCONDITIONALLY, before any branch, so the stream
+/// position does not depend on which arm a seed selects:
+///
+/// | # | parameter | range |
+/// |---|-----------|-------|
+/// | 0 | base setup seed | the whole `u64` space — board layout, port/lab contents and both deals |
+/// | 1 | contested track | Church \| Customs |
+/// | 2 | mover assistants at a CHURCH area | 3..=4 (⇒ acting power 4..=5) |
+/// | 3 | opponent assistants at a CHURCH area | 3..=4 (⇒ arriving power 4..=5) |
+/// | 4 | mover assistants at a CUSTOMS area | 1..=3 (⇒ acting power 2..=4) |
+/// | 5 | opponent assistants at a CUSTOMS area | 1..=3 (⇒ arriving power 2..=4) |
+/// | 6 | opponent imported goods (CUSTOMS arm) | 1..=2 |
+///
+/// **The construction, per arm.** The root sits at `TurnPhase::AreaAction` with
+/// the mover's President on the track area and `current_action_power` set to the
+/// power that position gives it, which is the one decision point where a track
+/// step is one move away. Every good and every Yen is zeroed for both seats and
+/// written back only where the arm's arithmetic needs it, so a payment type is
+/// available exactly when the construction says it is.
+///
+/// * CHURCH: with no payment types affordable, `calculate_church_faith` is the
+///   power itself, so the mover's faith is 4..=5 and the OPPONENT's arriving
+///   faith is 4..=5 — and [`CONTESTED_FAITH`] (4) is the space both reach at
+///   every draw. At faith 4 exactly one space is eligible, so the action places
+///   INLINE; at 5, two are, so it defers the pick to a queued choice. Both
+///   shapes are real and both are exercised by the sweep.
+/// * CUSTOMS: the mover holds exactly ONE imported good, so the only payable
+///   cost is 1, whose printed spaces are 1 and 2 — two eligible spaces, so this
+///   arm always exercises the QUEUED-CHOICE shape. The opponent holds 1..=2,
+///   which is enough for the same cost at its own arriving power.
+///
+/// **The shape self-check** runs `check_invariants` and then the four clauses
+/// this builder's declaration rests on: the step is well formed; it is still
+/// OPEN; the opponent's threat holds when read from the MOVER'S OWN VIEW
+/// ([`opponent_one_action_from_step`] — the publicness claim, by signature);
+/// the mover can take it this turn; and — the predicate/builder coherence pin —
+/// the shipped [`RootPredicate::ExclusiveRaceOneStep`] agrees this is one of its
+/// own positions.
+pub fn build_race_positive(
+    seed: u64,
+    rules: &Rules,
+) -> Result<(GameState, ContestedStep), BuilderError> {
+    let mut draws = SeedSchedule::diagnostic(seed);
+    let setup_seed = draws.next_world().0;
+    let church_arm = draws.next_world().0.is_multiple_of(2);
+    let mover_church = 3 + (draws.next_world().0 % 2) as u8;
+    let opponent_church = 3 + (draws.next_world().0 % 2) as u8;
+    let mover_customs = 1 + (draws.next_world().0 % 3) as u8;
+    let opponent_customs = 1 + (draws.next_world().0 % 3) as u8;
+    let opponent_imported = 1 + (draws.next_world().0 % 2) as u32;
+
+    let mut state = keep_game_2p(setup_seed, rules)?;
+    let mover = state.current_player;
+    let opponent = other_seat(&state, mover)?;
+    zero_goods(&mut state);
+
+    let (area_type, step, mover_pawns, opponent_pawns) = if church_arm {
+        (
+            AreaType::Church,
+            ContestedStep::ChurchSpace { faith: CONTESTED_FAITH },
+            mover_church,
+            opponent_church,
+        )
+    } else {
+        (
+            AreaType::Customs,
+            ContestedStep::CustomsSpace { space: CONTESTED_SPACE },
+            mover_customs,
+            opponent_customs,
+        )
+    };
+    let area = area_of(&state, area_type)
+        .ok_or(BuilderError::MissingArea(if church_arm { "Church" } else { "Customs" }))?;
+
+    place_area_assistants(&mut state, mover, area, mover_pawns)?;
+    place_area_assistants(&mut state, opponent, area, opponent_pawns)?;
+    state.player_mut(mover).president_location = PresidentLocation::OnBoard(area);
+    // The opponent's President is OFF the contested area — clause 1 of the
+    // threat, and the reason it can travel there next turn.
+    state.player_mut(opponent).president_location = PresidentLocation::InHand;
+    if !church_arm {
+        state.player_mut(mover).imported_goods = 1;
+        state.player_mut(opponent).imported_goods = opponent_imported;
+    }
+    state.turn_phase = TurnPhase::AreaAction;
+    state.current_action_power = Some((mover_pawns + 1).min(5));
+    state.is_mercenary_action = false;
+    state.mercenary_target_area = None;
+    state.pending_choices.clear();
+
+    check_invariants(&state, rules).map_err(BuilderError::NotEngineValid)?;
+    self_check_race_root(&state, step, mover, opponent, rules)?;
+    Ok((state, step))
+}
+
+/// The four clauses [`build_race_positive`] declares, checked on the built
+/// state — shared with nothing, because a shape check that ran anywhere but at
+/// the end of the construction it describes would be checking a different
+/// position.
+fn self_check_race_root(
+    state: &GameState,
+    step: ContestedStep,
+    mover: PlayerId,
+    opponent: PlayerId,
+    rules: &Rules,
+) -> Result<(), BuilderError> {
+    if !step.well_formed() {
+        return Err(shape("well-formed step", format!("{step:?} names no space")));
+    }
+    if !step_is_open(state, step) {
+        return Err(shape("open step", format!("{step:?} is already held")));
+    }
+    let view = observe(state, mover)
+        .map_err(|e| shape("observable mover", format!("{e:?}")))?;
+    if !opponent_one_action_from_step(&view, opponent, step) {
+        return Err(shape(
+            "public opponent threat",
+            format!("seat {} is not one action from {step:?} in the mover's view", opponent.0),
+        ));
+    }
+    if !mover_can_take_step(state, step, rules) {
+        return Err(shape(
+            "mover can take the step",
+            format!("no legal move at this root reaches {step:?}"),
+        ));
+    }
+    if !RootPredicate::ExclusiveRaceOneStep.holds(state, rules) {
+        return Err(shape(
+            "predicate coherence",
+            "the shipped ExclusiveRaceOneStep predicate does not recognise this root".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// **FAMILY 3's NO-DENIAL CONTROL BUILDER** — a rooted position where a
+/// denial-shaped step is available and taking it FORFEITS a strictly better
+/// line (design §1 family 3; canon 12/13: denial is not a strategy).
+///
+/// **DECLARED PARAMETER RANGES** (drawn from `SeedSchedule::diagnostic(seed)`,
+/// unconditionally and in order, exactly as [`build_race_positive`] draws
+/// them):
+///
+/// | # | parameter | range |
+/// |---|-----------|-------|
+/// | 0 | base setup seed | the whole `u64` space |
+/// | 1 | the mover's Yen | 0..=1 — below the Church's 2-Yen payment (D1), so Yen is never a payment type and `money / 2` is 0 either way |
+/// | 2 | the opponent's Yen | 0..=1, for the same two reasons |
+/// | 3 | the mover's starting victory points | 0..=3 — a pure shift that cancels in the difference below |
+///
+/// Three figures are PREMISES of the arithmetic rather than free parameters and
+/// are therefore fixed: the mover's four assistants at the Church area (power
+/// 5), the opponent's three (arriving power 4), and the mover's one each of the
+/// four trade goods.
+///
+/// **THE CONSTRUCTION ARITHMETIC, written out** — and the first line of it is
+/// the fact the control had to be built around:
+///
+/// 1. A church space PAYS its printed reward on placement
+///    (`ChurchTrack::vp_reward`: 3, 4, 5, 6, 7, 8, 11, 14 up the track), and
+///    each extra Faith costs the mover at most 1 VP of goods. So climbing the
+///    track is never the wasteful move, and a control resting on "taking a
+///    space costs you" would be resting on something false.
+/// 2. What IS wasteful is climbing and then spending the climb on the LOW space
+///    — which is precisely denial, because the low space is the only one the
+///    opponent can reach. The opponent arrives at power 4 holding no goods, so
+///    its maximum Faith is exactly 4 and [`CONTESTED_FAITH`] is the ONE space it
+///    threatens.
+/// 3. The mover acts at power 5 holding one each of copper/silk/tea/seafood, so
+///    the church masks are the 16 subsets of those four (Yen and imported goods
+///    are unaffordable by construction) and the mask paying `k` types reaches
+///    Faith `5 + k`. Its goods bill is `1 − (4 − k)/3` VP of `remainder_bonus`
+///    — 0 for k ≤ 1 and 1 for k ≥ 2 — because four goods score 1 and three
+///    still do.
+/// 4. **The church MAJORITY moves with the space too**, and it is the larger
+///    half of the price. At the root the track holds only the 2P dummy at Faith
+///    7 (slot index 3); the mover's first pawn ties it on count, so the
+///    majority's positional tie-break — RIGHTMOST occupied slot — hands FIRST
+///    place (6 VP) to a pawn on Faith 8 or above and leaves a lower pawn in
+///    SECOND (3 VP).
+/// 5. Best line NOT ending on Faith 4: `k = 4`, Faith 9, space 9 — 8 printed
+///    plus 6 majority against a 1 VP bill, **+13**. (The five masks read +7,
+///    +8, +7, +12, +13.)
+/// 6. Best line ENDING on Faith 4: the free mask — 3 printed plus 3 majority
+///    against a 0 VP bill, **+6**. (Every paying mask reaches the same space
+///    for 1 VP less.)
+///
+/// Hence [`NO_DENIAL_FORFEIT_VP`] = 13 − 6 = 7, identical at every draw (the
+/// declared parameters shift both sides or neither), and asserted by the
+/// builder's own self-check rather than bounded.
+///
+/// The control still SITS in the race — [`RootPredicate::ExclusiveRaceOneStep`]
+/// holds here, and the self-check requires it — which is the point: it is the
+/// same kind of position as the positive draws, and the only thing that differs
+/// is whether taking the contested step is worth what it costs.
+pub fn build_race_no_denial(
+    seed: u64,
+    rules: &Rules,
+) -> Result<(GameState, ContestedStep), BuilderError> {
+    /// The mover's assistants at the church area — with its President there,
+    /// power 5, so the free mask already reaches Faith 5.
+    const MOVER_AREA_ASSISTANTS: u8 = 4;
+    /// The opponent's — arriving power 4, so Faith 4 is the ONE space it can
+    /// reach and the contested step is unambiguous.
+    const OPPONENT_AREA_ASSISTANTS: u8 = 3;
+
+    let mut draws = SeedSchedule::diagnostic(seed);
+    let setup_seed = draws.next_world().0;
+    let mover_money = (draws.next_world().0 % 2) as u32;
+    let opponent_money = (draws.next_world().0 % 2) as u32;
+    let mover_start_vp = (draws.next_world().0 % 4) as u32;
+
+    let mut state = keep_game_2p(setup_seed, rules)?;
+    let mover = state.current_player;
+    let opponent = other_seat(&state, mover)?;
+    zero_goods(&mut state);
+    let area = area_of(&state, AreaType::Church).ok_or(BuilderError::MissingArea("Church"))?;
+
+    place_area_assistants(&mut state, mover, area, MOVER_AREA_ASSISTANTS)?;
+    place_area_assistants(&mut state, opponent, area, OPPONENT_AREA_ASSISTANTS)?;
+    state.player_mut(mover).president_location = PresidentLocation::OnBoard(area);
+    state.player_mut(opponent).president_location = PresidentLocation::InHand;
+    {
+        let p = state.player_mut(mover);
+        p.money = mover_money;
+        p.victory_points = mover_start_vp;
+        // ONE of each trade good: the four affordable payment types, and a
+        // goods bill of 1 VP that two of them buy back.
+        p.copper = 1;
+        p.silk = 1;
+        p.tea = 1;
+        p.seafood = 1;
+    }
+    state.player_mut(opponent).money = opponent_money;
+    state.turn_phase = TurnPhase::AreaAction;
+    state.current_action_power = Some(MOVER_AREA_ASSISTANTS + 1);
+    state.is_mercenary_action = false;
+    state.mercenary_target_area = None;
+    state.pending_choices.clear();
+
+    let step = ContestedStep::ChurchSpace { faith: CONTESTED_FAITH };
+    check_invariants(&state, rules).map_err(BuilderError::NotEngineValid)?;
+    self_check_race_root(&state, step, mover, opponent, rules)?;
+    let split = denial_split(&state, step, rules);
+    if split.denial_lines == 0 || split.alternative_lines == 0 {
+        return Err(shape("both sides of the denial split", format!("{split:?}")));
+    }
+    if split.best_alternative - split.best_denial != NO_DENIAL_FORFEIT_VP {
+        return Err(shape(
+            "the declared forfeit",
+            format!(
+                "taking {step:?} forfeits {} VP, not the declared {NO_DENIAL_FORFEIT_VP}: {split:?}",
+                split.best_alternative - split.best_denial,
+            ),
+        ));
+    }
+    Ok((state, step))
+}
+
+/// **FAMILY 4's PROXIMITY-CORNER BUILDER** — the F8 shape: an achievement leg
+/// the mover completes WITHIN one turn, two decisions from the root, with NO
+/// claim candidate at the root at all (design §1 family 4).
+///
+/// This is the corner that makes family 4's read a TURN-grain read rather than
+/// a decision-grain one, and it is also the corner design §4's admission
+/// arithmetic is shaped by: a candidate-level pass set is structurally EMPTY
+/// here, because the claim is not in the root's legal list.
+///
+/// **DECLARED PARAMETER RANGES** (drawn from `SeedSchedule::diagnostic(seed)`,
+/// unconditionally and in order):
+///
+/// | # | parameter | range |
+/// |---|-----------|-------|
+/// | 0 | base setup seed | the whole `u64` space |
+/// | 1 | the mover's Yen | 8..=9 — one mill conversion short of ten |
+/// | 2 | the mover's silk | 1..=3 — the conversion's fuel |
+/// | 3 | the opponent's Yen | 0..=7 — public context, kept clear of its own claim |
+///
+/// **The construction.** The three achievement cards are doctored to types only
+/// one of which is reachable at all ([`PROXIMITY_ACHIEVEMENT`], `Money10`; the
+/// other two need seven tea and four production-area buildings, and both seats
+/// have neither), every good is zeroed and written back only where the
+/// arithmetic needs it, and the mover owns the Textile Mill — taken out of the
+/// deck or a lab slot so tech conservation holds. The root sits where the deal
+/// leaves it, at `TurnPhase::AdditionalActionFirst`.
+///
+/// **The shape self-check is the completability claim itself**: the claim is
+/// NOT legal at the root, [`PROXIMITY_PRODUCE`] IS, applying it leaves the
+/// claim legal, and the mover still has the assistant a claim places. The
+/// produce never advances the phase (only `EndAdditionalPhase` does), so the
+/// two decisions are two decisions of one turn.
+pub fn build_achievement_proximity(seed: u64, rules: &Rules) -> Result<GameState, BuilderError> {
+    let mut draws = SeedSchedule::diagnostic(seed);
+    let setup_seed = draws.next_world().0;
+    let mover_money = 8 + (draws.next_world().0 % 2) as u32;
+    let mover_silk = 1 + (draws.next_world().0 % 3) as u32;
+    let opponent_money = (draws.next_world().0 % 8) as u32;
+
+    let mut state = keep_game_2p(setup_seed, rules)?;
+    let mover = state.current_player;
+    let opponent = other_seat(&state, mover)?;
+    zero_goods(&mut state);
+    state.achievements = [
+        AchievementCard::new(AchievementType::Tea7),
+        AchievementCard::new(PROXIMITY_ACHIEVEMENT),
+        AchievementCard::new(AchievementType::Production4),
+    ];
+    {
+        let p = state.player_mut(mover);
+        p.money = mover_money;
+        p.silk = mover_silk;
+    }
+    state.player_mut(opponent).money = opponent_money;
+
+    let mill = rules
+        .techs
+        .iter_sorted_by_id()
+        .into_iter()
+        .find(|card| card.effect == TechEffect::SpinningMill)
+        .map(|card| card.id)
+        .ok_or(BuilderError::MissingTech("SpinningMill"))?;
+    take_tech_out_of_play(&mut state, mill)?;
+    state.player_mut(mover).technologies.push(mill);
+    state.pending_choices.clear();
+
+    check_invariants(&state, rules).map_err(BuilderError::NotEngineValid)?;
+    let claim = Move::FulfillAchievement { achievement: PROXIMITY_ACHIEVEMENT };
+    let legal = get_legal_moves(&state, rules);
+    if legal.contains(&claim) {
+        return Err(shape(
+            "the claim is not yet available",
+            "the root already offers the claim — this is F8's LIVE shape".to_string(),
+        ));
+    }
+    if !legal.contains(&PROXIMITY_PRODUCE) {
+        return Err(shape(
+            "the in-turn produce is available",
+            format!("{PROXIMITY_PRODUCE:?} is not legal at this root"),
+        ));
+    }
+    if state.player(mover).assistants.in_hand < 1 {
+        return Err(shape(
+            "an assistant for the claim",
+            "the mover holds no assistant to place on the achievement".to_string(),
+        ));
+    }
+    let after = apply_move_unchecked(&state, &PROXIMITY_PRODUCE, rules)
+        .map_err(|e| shape("the produce applies", format!("{e:?}")))?;
+    if after.current_player != mover {
+        return Err(shape(
+            "the produce stays inside the turn",
+            "applying the produce handed the turn off".to_string(),
+        ));
+    }
+    if !get_legal_moves(&after, rules).contains(&claim) {
+        return Err(shape(
+            "two-decision completability",
+            "the claim is not legal one produce later".to_string(),
+        ));
+    }
+    Ok(state)
 }
 
 #[cfg(test)]
@@ -2527,14 +3355,19 @@ mod tests {
     }
 
     /// The NO-DENIAL control: the denial step is TAKEABLE, and taking it
-    /// forfeits a strictly better line — by exactly the constructed 2 VP.
+    /// forfeits a strictly better line — by exactly the constructed 7 VP.
     ///
-    /// The arithmetic is the engine's own final scoring read as-if-now, so the
-    /// pin re-derives it rather than trusting the builder: the costly mask
-    /// spends one imported good (1 VP of remainder) and two Yen (1 VP, since
-    /// `money / 2` loses exactly one step for any starting money in the
-    /// declared 2..=5 range), and the free mask reaches the same church
-    /// majority, so the gap is 2 and never 0.
+    /// The arithmetic is the engine's own final scoring read as-if-now at the
+    /// LINE grain, so the pin re-derives it independently of the builder: the
+    /// best line that avoids the contested space climbs to Faith 9 and banks 8
+    /// printed VP plus first place in the church majority against a 1 VP goods
+    /// bill (+13), while the best line that takes the contested space banks
+    /// Faith 4's printed 3 VP and second place for nothing (+6).
+    ///
+    /// The second half is the DISCRIMINATOR the first draft of this control did
+    /// not have: the same split against a step the OPPONENT cannot reach — the
+    /// track's top space — inverts the sign, so the cell separates "denial is
+    /// priced" from "any low space is priced".
     #[test]
     fn the_no_denial_builder_offers_the_step_and_a_strictly_better_line() {
         let rules = rules();
@@ -2550,13 +3383,24 @@ mod tests {
             );
             let split = denial_split(&state, step, &rules);
             assert!(
-                split.denial_moves > 0 && split.alternative_moves > 0,
+                split.denial_lines > 0 && split.alternative_lines > 0,
                 "seed {seed}: the split has an empty side: {split:?}",
             );
             assert_eq!(
                 split.best_alternative - split.best_denial,
                 NO_DENIAL_FORFEIT_VP,
                 "seed {seed}: the constructed forfeit is not the declared arithmetic: {split:?}",
+            );
+
+            // The DISCRIMINATOR: price the track's BEST space instead. It is
+            // not a denial step (the opponent cannot reach it), and taking it
+            // is what the better line does — so the sign flips.
+            let best_space = ContestedStep::ChurchSpace { faith: 9 };
+            let inverted = denial_split(&state, best_space, &rules);
+            assert!(
+                inverted.best_alternative - inverted.best_denial < 0,
+                "seed {seed}: taking the track's best space reads as a forfeit too — the \
+                 control is pricing height, not denial: {inverted:?}",
             );
         }
     }
