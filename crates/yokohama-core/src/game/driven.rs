@@ -1931,6 +1931,120 @@ fn drive_from_descriptor(
 }
 
 // ---------------------------------------------------------------------------
+// The turn-grain driver (Phase C, T2)
+// ---------------------------------------------------------------------------
+
+/// ONE MOVER'S TURN, driven from a root: what it played, where it handed off,
+/// and what its search cost across the WHOLE turn.
+///
+/// The grain between [`root_table`] (one decision) and [`DrivenOutcome`] (a
+/// whole game), and the one families 2–4 read: their pass rules are statements
+/// about what a TURN did — the trigger fired, an achievement was claimed, a
+/// contested step was taken — and none of those is decidable at a single
+/// decision, because the move that fires the trigger is rarely the move that
+/// starts the turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnOutcome {
+    /// The mover's applied moves, in order. Every entry's seat is the ROOT's
+    /// mover — an opponent move inside a turn is structurally impossible (see
+    /// [`drive_turn`]'s stop rule), not merely filtered out here.
+    pub moves: Vec<AppliedMove>,
+    /// The state the turn ENDED in: the first state whose `current_player` is
+    /// not the root's, or the terminal state when the turn ended the game.
+    pub handoff: GameState,
+    /// True when the stop was the GAME ENDING rather than a hand-off — read as
+    /// `is_game_over(handoff)` at the stop, never inferred from the mover.
+    ///
+    /// The two are not interchangeable and one of them is a trap: the game-end
+    /// arm of `advance_phase` (`apply_move.rs:259-264`) sets `TurnPhase::TurnEnd`
+    /// and NEVER writes `current_player`, so a game that ends on the mover's own
+    /// turn hands off to nobody.
+    pub game_over: bool,
+    /// The mover's counters ACROSS THE WHOLE TURN — one agent, one handle, read
+    /// after the last decision. Never the last decision's alone: design §2's
+    /// SHOULD-6 is that a mid-turn cap hit or starvation must reach D7's
+    /// step-one filter, and a per-decision snapshot would drop exactly the
+    /// decisions that hit it.
+    pub counters: SeatCounters,
+    /// Decision points resolved — equal to `moves.len()`, on
+    /// [`DrivenOutcome::decisions`]'s own grounds.
+    pub decisions: u64,
+}
+
+/// Play ONE TURN: the mover's decisions from `root` until it hands off or the
+/// game ends.
+///
+/// **THE STOP IS DUAL, and both halves are mandatory** (design §2's verified
+/// premise, `apply_move.rs:252-279`). `current_player` has exactly ONE
+/// production writer — `advance_phase`'s end-of-turn arm at
+/// `apply_move.rs:276` — and mercenary sub-turns return through
+/// `finish_recovery_transition` (`apply_move.rs:1166-1183`) without touching it,
+/// which is what makes a turn cheap and reply-policy-free: the opponent never
+/// moves inside one, so ONE seat spec names the whole run. But the arm BESIDE
+/// that write (`apply_move.rs:259-264`) ends the game by setting
+/// `TurnPhase::TurnEnd` and writing no seat at all, so a `current_player`-only
+/// loop would spin at game end until the decision bound refused it, and an
+/// `is_game_over`-only loop would run straight through every hand-off. The stop
+/// is therefore `current_player != root.current_player || is_game_over(state)`,
+/// with [`TurnOutcome::game_over`] READ from the second condition rather than
+/// inferred from the first. The two reasons are disjoint by that code shape, and
+/// the game-over corner is pinned as such.
+///
+/// **SEED DISCIPLINE — the arena's, scoped to a turn, and no third discipline is
+/// invented** (design §2, review SHOULD-6). ONE agent is constructed at
+/// `decision_seed` for the mover's seat and its stream ADVANCES across the
+/// turn's decisions, exactly as a seat's long-lived stream advances across a
+/// game in [`drive_to_terminal`]. At the FIRST decision that is byte-identical
+/// to [`root_table`]'s fresh-agent-at-the-same-seed — which is what joins D7's
+/// counter check (a table at replication 0's seed) to the read (a turn at the
+/// same seed) — and the join is pinned rather than asserted in prose. Beyond
+/// decision 0 the loop is pinned against the play half itself: at
+/// `decision_seed = agent_stream_seed(world, mover, Slot(mover))` a turn's move
+/// list EQUALS the mover's own prefix of `drive_to_terminal` at `world`.
+///
+/// **This is a THIRD per-decision loop, said out loud.** [`play_from_state`]
+/// runs to terminal and exposes no stop hook, so a turn cannot borrow it; what
+/// keeps the two from drifting is the prefix-equivalence pin above plus the
+/// failure taxonomy, which is routed through [`classify`] over the arena's own
+/// [`PlayError`] rather than re-typed — so a turn and a game refuse the same
+/// root with the same variant and the same message BY CONSTRUCTION. The one
+/// deliberate omission is `play_from_state`'s debug-tier VOLUME cross-check: a
+/// turn reports no volume, so no attested figure crosses this seam, and adding
+/// a fourth debug route DFS at every on-board Movement point would cost every
+/// caller for a quantity nothing here reads. The membership `debug_assert` IS
+/// kept — it guards the canonical-witness gap, which reaches an applied move.
+///
+/// **An ALREADY-TERMINAL root is an `Ok`**, not a refusal: zero moves,
+/// `handoff` the root itself, `game_over` true, and an explaining seat's
+/// `explained` reading `Some(0)`. That is [`drive_to_terminal`]'s contract at
+/// this grain and for the same reason — a turn with nothing in it is a real
+/// answer, and refusing it would make "the position was already finished" the
+/// one reading the instrument could not report.
+///
+/// The root hygiene is [`drive_to_terminal`]'s, through the SHARED guard
+/// [`require_driveable_root`] (seat count, `max_decisions`, hidden-deal
+/// eligibility) plus a `check_invariants` guard that names the ROOT before the
+/// first decision — so a corrupt fixture is never misattributed to a move.
+pub fn drive_turn(
+    root: &GameState,
+    mover: SeatSpec,
+    rules: &Rules,
+    decision_seed: u64,
+    opts: &DrivenOpts,
+) -> Result<TurnOutcome, DrivenError> {
+    // PLACEHOLDER (RED commit): the pins below name this surface; the GREEN
+    // commit implements it and this comment goes with the body.
+    let _ = (mover, rules, decision_seed, opts);
+    Ok(TurnOutcome {
+        moves: Vec::new(),
+        handoff: root.clone(),
+        game_over: false,
+        counters: SeatCounters::NONE,
+        decisions: 0,
+    })
+}
+
+// ---------------------------------------------------------------------------
 // The root table: ONE decision, analyzed
 // ---------------------------------------------------------------------------
 
@@ -7540,6 +7654,447 @@ mod tests {
                 );
             }
             other => panic!("expected Exhausted, got {other:?}"),
+        }
+    }
+
+    // =======================================================================
+    // PHASE C T2: the turn-grain driver
+    // =======================================================================
+
+    /// T2's committed diagnostic DECISION seed — the same discipline
+    /// [`DECISION_SEED`] carries, one grain up: a turn is keyed by an explicit
+    /// single seed the caller supplies, and a fixture cell fixes it so the turn
+    /// is one reproducible thing.
+    const TURN_SEED: u64 = 0x0C02_2026_0818_9991;
+
+    /// A root at the START of a mover's turn, out of a cheap rung game.
+    ///
+    /// `TurnPhase::AdditionalActionFirst` is the guarantee these cells need, and
+    /// it is a guarantee about the PHASE MACHINE rather than about what the
+    /// mover chose: a turn entered at its first phase still has to pass through
+    /// Placement, Movement, the area action and the second additional-action
+    /// window, so it is ≥2 decisions under ANY policy. That is what makes "the
+    /// counters are not one decision's" and "the bound refuses mid-turn"
+    /// statable without a cell depending on a particular line of play.
+    ///
+    /// Both seats of the generating game are rungs, so the fixture pays for no
+    /// search at all (design §6's wall discipline) — the searching, where a cell
+    /// wants any, is what the cell itself does at the root.
+    fn turn_start_root(rules: &Rules, seed: WorldSeed, from: usize) -> GameState {
+        let stats = rung_game(rules, seed);
+        let events = stats.record.events.len();
+        assert!(from < events, "the generating game is only {events} events long");
+        let end = (from + 40).min(events);
+        (from..end)
+            .find_map(|k| {
+                let state = state_at(&stats.record, k, rules).ok()?;
+                (state.turn_phase == TurnPhase::AdditionalActionFirst
+                    && !is_game_over(&state)
+                    && !state.end_game_triggered)
+                    .then_some(state)
+            })
+            .unwrap_or_else(|| panic!("no turn start in events {from}..{end}"))
+    }
+
+    /// The cheapest honest mover there is, for the cells whose subject is the
+    /// LOOP rather than the contestant.
+    fn rung_mover() -> SeatSpec {
+        rung_seats()[0]
+    }
+
+    /// The HAND-OFF stop is exact: the turn is the mover's own moves, every one
+    /// of them decided in a state the mover was on the move in, and the hand-off
+    /// is the first state that is not.
+    ///
+    /// The exactness half is replayed through the CHECKED `apply_move` — a
+    /// second, independent application of the reported moves — so a driver that
+    /// reported a move list and a hand-off state that do not belong together
+    /// fails here rather than passing on the strength of its own arithmetic.
+    #[test]
+    fn a_turn_stops_at_the_hand_off_and_names_exactly_the_movers_moves() {
+        let rules = Rules::standard();
+        let root = turn_start_root(&rules, world(70), 300);
+        let mover = root.current_player;
+
+        let outcome = drive_turn(&root, rung_mover(), &rules, TURN_SEED, &DrivenOpts::default())
+            .expect("a mid-game turn drives");
+
+        assert!(
+            outcome.moves.len() >= 2,
+            "anti-vacuity: a turn entered at its first phase is more than one decision, this one \
+             ran {}",
+            outcome.moves.len(),
+        );
+        assert_eq!(outcome.decisions, outcome.moves.len() as u64);
+        assert!(!outcome.game_over, "a mid-game turn hands off; it does not end the game");
+        assert!(!is_game_over(&outcome.handoff));
+        assert_ne!(
+            outcome.handoff.current_player, mover,
+            "the run did not stop at a hand-off",
+        );
+
+        let mut state = root.clone();
+        for (i, applied) in outcome.moves.iter().enumerate() {
+            assert_eq!(applied.seat, mover, "move {i} is attributed to another seat");
+            assert_eq!(
+                state.current_player, mover,
+                "move {i} was decided in a state the mover was not on the move in",
+            );
+            state = apply_move(&state, &applied.mv, &rules)
+                .unwrap_or_else(|e| panic!("move {i} does not re-apply: {e}"));
+        }
+        assert_eq!(
+            state_digest(&state),
+            state_digest(&outcome.handoff),
+            "the reported hand-off is not where the reported moves lead",
+        );
+        assert_ne!(state.current_player, mover);
+    }
+
+    /// The FIRST-DECISION JOIN: at one seed, a turn's first move is the move
+    /// [`root_table`] reports as the winner.
+    ///
+    /// This is what makes D7's counter check and the family read the same
+    /// question — the check runs a table at replication 0's seed and the read
+    /// runs a turn at that seed, and without this they would be two decisions
+    /// that merely look alike. It holds because the turn constructs ONE agent at
+    /// `decision_seed` and the table constructs a fresh one at the same seed:
+    /// at stream position 0 those are the same agent.
+    ///
+    /// **The ONE lookahead-heavy cell in this section** (design §6's wall
+    /// discipline): a whole turn under the uncapped shipped S1 arm plus one
+    /// table at the same root. Budget ~3s debug — every other cell here runs
+    /// rungs or greedy.
+    #[test]
+    fn the_first_move_of_a_turn_is_root_tables_winner_at_the_same_seed() {
+        let rules = Rules::standard();
+        let root = turn_start_root(&rules, world(71), 300);
+        let seat = root.current_player;
+        let contestant = Contestant::LOOKAHEAD_V1_DEFAULT;
+
+        let table = root_table(&root, seat, contestant, &rules, TURN_SEED)
+            .expect("the shipped S1 arm tabulates an organic root");
+        let outcome = drive_turn(
+            &root,
+            SeatSpec::Contestant(contestant),
+            &rules,
+            TURN_SEED,
+            &DrivenOpts::default(),
+        )
+        .expect("the same contestant drives the turn");
+
+        assert!(
+            table.candidates() > 1,
+            "anti-vacuity: a FORCED decision joins whatever the seeding does",
+        );
+        assert_eq!(
+            outcome.moves.first().map(|a| a.mv.clone()),
+            Some(table.winner.clone()),
+            "the turn's first decision is not the table's winner at the same seed",
+        );
+        assert_eq!(outcome.moves[0].seat, seat);
+    }
+
+    /// PREFIX EQUIVALENCE — the pin that keeps the turn loop honest against the
+    /// play half BEYOND decision 0.
+    ///
+    /// `drive_turn` is a THIRD per-decision loop (`play_from_state` runs to
+    /// terminal and exposes no stop hook), and the first-decision join above
+    /// covers exactly one decision. At `decision_seed = agent_stream_seed(world,
+    /// mover, Slot(mover))` the mover's stream is the one
+    /// [`drive_to_terminal`] gives it at that world, so the turn's move list
+    /// must be the mover's OWN PREFIX of the full run — up to the first
+    /// opponent move. A loop that advanced the stream differently, re-built its
+    /// agent per decision, or applied the moves in another order diverges here.
+    #[test]
+    fn a_turns_moves_are_the_terminal_drivers_own_prefix_at_the_arena_seed() {
+        let rules = Rules::standard();
+        let root = turn_start_root(&rules, world(72), 300);
+        let mover = root.current_player;
+        let master = world(73);
+        let seed = agent_stream_seed(master, mover, Slot(mover.0));
+
+        let turn = drive_turn(&root, rung_mover(), &rules, seed, &DrivenOpts::default())
+            .expect("the turn drives");
+        let full = drive_to_terminal(&root, &rung_seats(), &rules, master, DrivenOpts::default())
+            .expect("the whole game drives");
+
+        let prefix: Vec<Move> = full
+            .applied
+            .iter()
+            .take_while(|a| a.seat == mover)
+            .map(|a| a.mv.clone())
+            .collect();
+        let played: Vec<Move> = turn.moves.iter().map(|a| a.mv.clone()).collect();
+        assert_same_moves(&played, &prefix, "the turn loop left the play half's line");
+
+        assert!(prefix.len() >= 2, "anti-vacuity: the prefix is {} moves", prefix.len());
+        assert!(
+            full.applied.len() > prefix.len(),
+            "anti-vacuity: the mover's prefix is the WHOLE game, so this compares a game to itself",
+        );
+        assert_ne!(
+            full.applied[prefix.len()].seat,
+            mover,
+            "the prefix does not end at an opponent move",
+        );
+    }
+
+    /// Same root, same seed → the same turn, twice.
+    ///
+    /// The third cell is the anti-vacuity half: a turn that ignored its seed
+    /// would satisfy the first two however it played, so a DIFFERENT seed must
+    /// move the run.
+    #[test]
+    fn driving_the_same_turn_twice_is_byte_identical() {
+        let rules = Rules::standard();
+        let root = turn_start_root(&rules, world(74), 300);
+        let opts = DrivenOpts::default();
+
+        let first = drive_turn(&root, rung_mover(), &rules, TURN_SEED, &opts).expect("first run");
+        let second = drive_turn(&root, rung_mover(), &rules, TURN_SEED, &opts).expect("second run");
+
+        assert_eq!(
+            state_digest(&first.handoff),
+            state_digest(&second.handoff),
+            "the hand-off moved between two identical turns",
+        );
+        assert_eq!(first.moves, second.moves, "the move lists differ");
+        assert_eq!(first, second, "the outcomes differ beyond the digest and the move list");
+        assert!(first.moves.len() >= 2, "anti-vacuity: {} moves", first.moves.len());
+
+        let elsewhere =
+            drive_turn(&root, rung_mover(), &rules, TURN_SEED ^ 0x5555_5555_5555_5555, &opts)
+                .expect("another seed still drives");
+        assert!(
+            elsewhere.moves != first.moves
+                || state_digest(&elsewhere.handoff) != state_digest(&first.handoff),
+            "the turn does not depend on its decision seed, so nothing above witnesses determinism",
+        );
+    }
+
+    /// An ALREADY-TERMINAL root is an `Ok` with nothing in it — the zero-move
+    /// outcome, `game_over` true, and the root itself as the hand-off.
+    ///
+    /// [`drive_to_terminal`]'s contract at this grain, and the seat is an
+    /// EVALUATOR for the same reason its cell uses one: `Some(0)` is a seat that
+    /// HAS an explanation path and was asked for no decisions, which is a
+    /// different statement from `None`.
+    #[test]
+    fn a_terminal_root_drives_a_zero_move_turn_that_reads_game_over() {
+        let rules = Rules::standard();
+        let (terminal, mover) = terminal_building_root(&rules, world(75).0);
+
+        let outcome = drive_turn(
+            &terminal,
+            SeatSpec::Contestant(Contestant::GREEDY_V1_DEFAULT),
+            &rules,
+            TURN_SEED,
+            &DrivenOpts::default(),
+        )
+        .expect("a terminal root is an Ok, not a refusal");
+
+        assert!(outcome.moves.is_empty(), "a finished game has nothing to decide");
+        assert_eq!(outcome.decisions, 0);
+        assert!(outcome.game_over, "the stop was the game being over, and it must say so");
+        assert_eq!(
+            state_digest(&outcome.handoff),
+            state_digest(&terminal),
+            "the hand-off of a zero-move turn is the root itself",
+        );
+        assert_eq!(outcome.handoff.current_player, mover, "nothing moved, so nobody handed off");
+        assert_eq!(
+            outcome.counters.explained,
+            Some(0),
+            "an explaining seat asked for no decisions reads Some(0); None would say it cannot \
+             explain at all",
+        );
+    }
+
+    /// The GAME-OVER corner, and the executable form of why the stop is DUAL.
+    ///
+    /// `advance_phase`'s game-end arm (`apply_move.rs:259-264`) sets
+    /// `TurnPhase::TurnEnd` and never writes `current_player`, so the turn that
+    /// ends the game hands off to NOBODY: a `current_player`-only stop would
+    /// spin here until the decision bound refused it. The fixture's decision is
+    /// FORCED (`EndAdditionalPhase` is the only candidate), so the corner is a
+    /// property of the loop rather than of what a policy chose.
+    #[test]
+    fn a_turn_that_ends_the_game_stops_on_game_over_with_the_mover_unchanged() {
+        let rules = Rules::standard();
+        let root = last_move_root(&rules, world(76).0, 6, 10);
+        let mover = root.current_player;
+
+        let outcome = drive_turn(&root, rung_mover(), &rules, TURN_SEED, &DrivenOpts::default())
+            .expect("a final-move root drives one turn");
+
+        assert_eq!(outcome.moves.len(), 1, "anti-vacuity: the loop applied nothing at all");
+        assert_eq!(outcome.moves[0].mv, Move::EndAdditionalPhase);
+        assert_eq!(outcome.moves[0].seat, mover);
+        assert!(outcome.game_over, "the game ended and the outcome must say so");
+        assert!(is_game_over(&outcome.handoff));
+        assert_eq!(outcome.handoff.turn_phase, TurnPhase::TurnEnd);
+        assert_eq!(
+            outcome.handoff.current_player, mover,
+            "the game-end arm never writes current_player, so the mover must be unchanged — a \
+             hand-off here would mean the stop read the wrong field",
+        );
+    }
+
+    /// The WHOLE-TURN counters, discriminated against a single decision's.
+    ///
+    /// The comparator is the SAME contestant at the SAME seed asked for the
+    /// FIRST decision alone — so it reproduces the turn's decision 0 exactly
+    /// (asserted, which is also the first-decision join at the greedy arm) and
+    /// its counters are precisely what a per-decision snapshot would have
+    /// reported. `explained` is the sharp half: whole-turn reads the decision
+    /// count, and both a first-decision and a last-decision snapshot read 1.
+    #[test]
+    fn a_turns_counters_accumulate_across_every_decision_not_just_one() {
+        let rules = Rules::standard();
+        let root = turn_start_root(&rules, world(77), 300);
+        let seat = root.current_player;
+        let greedy = Contestant::GREEDY_V1_DEFAULT;
+
+        let outcome = drive_turn(
+            &root,
+            SeatSpec::Contestant(greedy),
+            &rules,
+            TURN_SEED,
+            &DrivenOpts::default(),
+        )
+        .expect("a greedy mover drives its turn");
+        assert!(
+            outcome.moves.len() >= 2,
+            "anti-vacuity: a one-decision turn cannot tell whole-turn counters from one \
+             decision's, and this turn ran {}",
+            outcome.moves.len(),
+        );
+        assert_eq!(
+            outcome.counters.explained,
+            Some(outcome.decisions),
+            "the mover applied moves it did not explain",
+        );
+
+        let (mut solo, handle) = greedy.build(&rules, TURN_SEED);
+        let view = observe(&root, seat).expect("the root is observable");
+        let picked = solo.choose(&view, &rules).expect("the comparator decides once").mv;
+        let single = SeatCounters::from_handle(handle.as_ref().expect("greedy explains"));
+
+        assert_eq!(
+            picked, outcome.moves[0].mv,
+            "the comparator did not reproduce the turn's own first decision, so it is not one",
+        );
+        assert_eq!(single.explained, Some(1), "the comparator was asked for exactly one decision");
+        assert!(
+            outcome.counters.candidates_scored.unwrap_or(0)
+                > single.candidates_scored.unwrap_or(u64::MAX),
+            "the turn scored {:?} candidates against decision 0's {:?} — the counters are one \
+             decision's, not the turn's",
+            outcome.counters.candidates_scored,
+            single.candidates_scored,
+        );
+        assert_eq!(
+            outcome.counters.ply_cap_hits, None,
+            "a one-ply argmax has no continuation to truncate — None is not zero",
+        );
+    }
+
+    /// The guards a turn is refused by are the TERMINAL DRIVER'S, shared rather
+    /// than re-typed: same variants, same messages, same order.
+    ///
+    /// Five arms, each with the control that makes it a discriminator: the
+    /// decision bound (against the same root driving cleanly), the hidden deal
+    /// on the NON-MOVER (against the undoctored root reaching the bound — which
+    /// is what makes "up front" executable, since a refusal that waited for the
+    /// hidden seat's turn would never fire inside ONE turn at all), the seat
+    /// count, the zero bound, and the corrupt root with its `invariants: false`
+    /// arm (the root guard does not answer to the per-move flag).
+    #[test]
+    fn a_turns_guards_refuse_the_same_way_the_terminal_drivers_do() {
+        let rules = Rules::standard();
+        let root = turn_start_root(&rules, world(78), 300);
+        let mover = root.current_player;
+        let default = DrivenOpts::default();
+
+        // (a) THE DECISION BOUND, on a turn known to be longer than it.
+        let bounded = DrivenOpts { max_decisions: 1, ..default };
+        let err = drive_turn(&root, rung_mover(), &rules, TURN_SEED, &bounded)
+            .expect_err("a two-decision turn cannot finish inside a one-decision bound");
+        match err {
+            DrivenError::DecisionCapReached { decisions } => assert_eq!(
+                decisions, 1,
+                "the refusal must name the bound the caller set, not one past it",
+            ),
+            other => panic!("expected DecisionCapReached, got {other:?}"),
+        }
+        assert!(
+            drive_turn(&root, rung_mover(), &rules, TURN_SEED, &default).is_ok(),
+            "control: the same turn drives cleanly at the default bound",
+        );
+
+        // (b) THE HIDDEN DEAL, on the seat that never moves inside this turn.
+        let other_seat = PlayerId(1 - mover.0);
+        let mut hidden = root.clone();
+        let index = other_seat.0 as usize;
+        let kept = hidden.players[index].starting_order.take().expect("a dealt starting order");
+        hidden.players[index].order_cards_in_hand.retain(|c| *c != kept);
+        hidden.orders_removed.push(kept);
+        hidden.players[index].starting_order_hidden = true;
+        check_invariants(&hidden, &rules).expect("the live-tracking root is invariant-clean");
+        let err = drive_turn(&hidden, rung_mover(), &rules, TURN_SEED, &default)
+            .expect_err("a live-tracked root must refuse");
+        match err {
+            DrivenError::Unobservable { seat, ref detail } => {
+                assert_eq!(seat, other_seat, "the refusal named the wrong seat");
+                assert!(
+                    detail.contains("starting_order_hidden"),
+                    "the refusal does not name the field it read: {detail}",
+                );
+            }
+            ref other => panic!("expected Unobservable, got {other:?}"),
+        }
+
+        // (c) THE SEAT COUNT, on the wrapping shape.
+        let mut many = root.clone();
+        let filler = many.players[0].clone();
+        many.players.resize(258, filler);
+        match drive_turn(&many, rung_mover(), &rules, TURN_SEED, &default)
+            .expect_err("a 258-seat root must refuse rather than narrow to 2")
+        {
+            DrivenError::UnsupportedRoot(m) => assert!(
+                m.contains("258 seats"),
+                "the refusal must name the count it SAW, not the one it wrapped to: {m}",
+            ),
+            other => panic!("expected UnsupportedRoot, got {other:?}"),
+        }
+
+        // (d) THE ZERO BOUND: a run that may apply no decision is not a run.
+        let zero = DrivenOpts { max_decisions: 0, ..default };
+        match drive_turn(&root, rung_mover(), &rules, TURN_SEED, &zero)
+            .expect_err("a zero bound must refuse")
+        {
+            DrivenError::UnsupportedRoot(m) => {
+                assert!(m.contains("max_decisions"), "the refusal does not name the knob: {m}");
+            }
+            other => panic!("expected UnsupportedRoot, got {other:?}"),
+        }
+
+        // (e) THE CORRUPT ROOT, named as the ROOT and unconditional in the
+        // per-move flag.
+        let mut corrupt = root;
+        corrupt.players[0].assistants.in_hand += 1;
+        assert!(check_invariants(&corrupt, &rules).is_err(), "the fixture must be corrupt");
+        for opts in [default, DrivenOpts { invariants: false, ..default }] {
+            match drive_turn(&corrupt, rung_mover(), &rules, TURN_SEED, &opts)
+                .expect_err("a corrupt root must refuse")
+            {
+                DrivenError::CorruptRoot(reason) => assert!(
+                    reason.contains("assistants total"),
+                    "the reason is lost: {reason}",
+                ),
+                other => panic!("expected CorruptRoot, got {other:?}"),
+            }
         }
     }
 }
