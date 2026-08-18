@@ -256,8 +256,11 @@ impl RootPredicate {
 
     /// Whether `state` is one of the positions this predicate names.
     pub fn holds(self, state: &GameState) -> bool {
-        let _ = state;
-        todo!("T3 GREEN: RootPredicate::holds")
+        match self {
+            Self::FinalRoundAlreadyTriggered => {
+                state.end_game_triggered && state.final_round && !is_game_over(state)
+            }
+        }
     }
 }
 
@@ -270,9 +273,12 @@ pub const GENERATED_ECOLOGY_V1: &str = "driven-generated-v1";
 ///
 /// A BOUND, not a budget: the scan must terminate on an ordinal nothing
 /// satisfies, and the honest way to say that is a refusal naming how far it
-/// looked. Four 2P games supply roughly a hundred final-round positions (the
-/// final round is a full round of turns at ~20 decisions each), which is far
-/// more ordinals than family 1 asks for, at a debug wall a test can pay.
+/// looked. MEASURED at this bound (the exhaustion cell's own master, 2026-08-18,
+/// WSL debug): **54 final-round positions across the four games, ~14 per game**,
+/// which is far more ordinals than family 1 asks for at a wall a debug test can
+/// pay (0.30s for the whole four-game scan). A caller wanting more raises the
+/// bound and re-records the ecology — which is why the bound rides
+/// [`GeneratingEcology::games`] rather than living only here.
 pub const GENERATED_SCAN_GAMES: u32 = 4;
 
 /// The seat count v1's generating ecology plays at.
@@ -319,8 +325,22 @@ pub struct GeneratingEcology {
 
 impl GeneratingEcology {
     /// The v1 configuration — THE single spelling of it.
+    ///
+    /// Every string here is prose a reader acts on, not a key anything parses:
+    /// what changes an identity is the FIELD SET plus [`GENERATED_ECOLOGY_V1`],
+    /// and a reworded driver line that left the play unchanged would be a
+    /// spurious identity change. Reword freely; re-point nothing.
     pub fn v1() -> Self {
-        todo!("T3 GREEN: GeneratingEcology::v1")
+        Self {
+            id: GENERATED_ECOLOGY_V1.to_string(),
+            driver: "arena::run_arena_game (honest bench, per-move invariants ON)".to_string(),
+            players: GENERATED_PLAYERS,
+            seats: vec![GENERATED_SEAT.echo(); GENERATED_PLAYERS as usize],
+            seed_derivation: "SeedSchedule::diagnostic(master).next_world() once per game in \
+                              scan order; agent_stream_seed(world, seat, Slot(seat)) per seat"
+                .to_string(),
+            games: GENERATED_SCAN_GAMES,
+        }
     }
 }
 
@@ -436,8 +456,30 @@ impl RootSource {
     /// site, so a bare-state caller gets the same refusal a resolved one does);
     /// see `require_eligible_root`.
     pub fn resolve(&self, rules: &Rules) -> Result<(GameState, RootDescriptor), RootError> {
-        let _ = rules;
-        todo!("T3 GREEN: RootSource::resolve")
+        match self {
+            Self::Constructed(state) => {
+                Ok((state.clone(), RootDescriptor::constructed(state)))
+            }
+            Self::RecordPrefix { record, event_index } => {
+                let state = state_at(record, *event_index, rules).map_err(|e| RootError::Prefix {
+                    event_index: *event_index,
+                    events: record.events.len(),
+                    detail: e.to_string(),
+                })?;
+                let root_digest = state_digest(&state);
+                Ok((
+                    state,
+                    RootDescriptor {
+                        origin: RootOrigin::RecordPrefix { record_digest: record_digest(record) },
+                        event_index: Some(*event_index),
+                        root_digest,
+                    },
+                ))
+            }
+            Self::Generated { predicate, master, ordinal } => {
+                generate_root(*predicate, *master, *ordinal, rules)
+            }
+        }
     }
 }
 
@@ -458,8 +500,22 @@ pub enum RootError {
 
 impl std::fmt::Display for RootError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let _ = f;
-        todo!("T3 GREEN: RootError::fmt")
+        match self {
+            Self::Prefix { event_index, events, detail } => write!(
+                f,
+                "no root at event {event_index}: the record carries {events} events ({detail})"
+            ),
+            Self::Generate { game_index, detail } => write!(
+                f,
+                "the scan's game {game_index} did not complete, so no ordinal after it is \
+                 well defined: {detail}"
+            ),
+            Self::Exhausted { predicate, ordinal, found, games } => write!(
+                f,
+                "no root {ordinal} for {}: {found} found in {games} generated games",
+                predicate.as_str()
+            ),
+        }
     }
 }
 
@@ -977,9 +1033,18 @@ pub fn drive_rooted(
 /// learned earlier. What tells them apart is the DETAIL, which names
 /// `starting_order_hidden` and the eligibility rule.
 fn require_eligible_root(root: &GameState) -> Result<(), DrivenError> {
-    let _ = root;
-    // T3 RED: the trivially-eligible answer, so the pins that demand the real
-    // one fail while no committed cell fails on a stub.
+    for player in &root.players {
+        if player.starting_order_hidden {
+            return Err(DrivenError::Unobservable {
+                seat: player.id,
+                detail: format!(
+                    "seat {} carries a hidden starting-order deal (starting_order_hidden), so its \
+                     own view cannot be derived: a live-tracked root is not driveable",
+                    player.id.0,
+                ),
+            });
+        }
+    }
     Ok(())
 }
 
@@ -1517,8 +1582,58 @@ fn generate_root(
     ordinal: u32,
     rules: &Rules,
 ) -> Result<(GameState, RootDescriptor), RootError> {
-    let _ = (predicate, master, ordinal, rules);
-    todo!("T3 GREEN: generate_root")
+    let ecology = GeneratingEcology::v1();
+    let mut schedule = SeedSchedule::diagnostic(master);
+    let mut found: u32 = 0;
+
+    for game_index in 0..ecology.games {
+        let world = schedule.next_world();
+        // The ecology's own seating, on the arena's own keying — the same
+        // derivation `drive_to_terminal` uses, so a generated root is reachable
+        // by a run anyone can reproduce from the master alone.
+        let mut make = |seat: PlayerId, _players: u8| -> Box<dyn ArenaAgent> {
+            GENERATED_SEAT.build(rules, agent_stream_seed(world, seat, Slot(seat.0))).0
+        };
+        let stats = run_arena_game(world, GENERATED_PLAYERS, rules, &mut make, true)
+            .map_err(|e| RootError::Generate { game_index, detail: e.to_string() })?;
+
+        let events = &stats.record.events;
+        let mut state = state_at(&stats.record, 0, rules)
+            .map_err(|e| RootError::Generate { game_index, detail: e.to_string() })?;
+        // INCLUSIVE of the past-the-last position, for totality: `state_at(record,
+        // len)` is a real position (the terminal state) and a future predicate may
+        // want it. The shipped one excludes it — its `!is_game_over` conjunct —
+        // so that position is unreachable today rather than dead, and stopping the
+        // range one short would make the scan quietly predicate-specific.
+        for position in 0..=events.len() {
+            if predicate.holds(&state) {
+                if found == ordinal {
+                    let root_digest = state_digest(&state);
+                    return Ok((
+                        state,
+                        RootDescriptor {
+                            origin: RootOrigin::Generated {
+                                predicate,
+                                master,
+                                ordinal,
+                                game_index,
+                                ecology,
+                            },
+                            event_index: Some(position),
+                            root_digest,
+                        },
+                    ));
+                }
+                found += 1;
+            }
+            if let Some(event) = events.get(position) {
+                state = replay_from(&state, std::slice::from_ref(event), rules)
+                    .map_err(|e| RootError::Generate { game_index, detail: e.to_string() })?;
+            }
+        }
+    }
+
+    Err(RootError::Exhausted { predicate, ordinal, found, games: ecology.games })
 }
 
 // ---------------------------------------------------------------------------
@@ -1539,7 +1654,12 @@ fn generate_root(
 /// returned, which makes a registry miss name an obviously-wrong path rather
 /// than silently resolving somewhere plausible.
 pub fn workspace_root() -> PathBuf {
-    todo!("T3 GREEN: workspace_root")
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    manifest
+        .ancestors()
+        .find(|dir| dir.join("Cargo.toml").is_file() && dir.join("crates").is_dir())
+        .unwrap_or(manifest)
+        .to_path_buf()
 }
 
 /// The bot seat in BOTH session games (the CLI seats the human at 0).
@@ -1582,7 +1702,7 @@ pub struct RegistryEntry {
 impl RegistryEntry {
     /// This entry's record path, anchored at [`workspace_root`].
     pub fn resolved_path(&self) -> PathBuf {
-        todo!("T3 GREEN: RegistryEntry::resolved_path")
+        workspace_root().join(self.path)
     }
 
     /// Load this entry's record and name the root it points at.
@@ -1596,7 +1716,45 @@ impl RegistryEntry {
     /// pointed at a re-saved or replaced game is exactly the silent failure a
     /// hand-transcribed literal invites.
     pub fn load(&self) -> Result<RootSource, RegistryError> {
-        todo!("T3 GREEN: RegistryEntry::load")
+        let path = self.resolved_path();
+        // `read_to_string` would report the absence too, but as one io error
+        // among many — and THE absence is the expected outcome here, so it gets
+        // its own arm rather than a message a caller has to match on.
+        if !path.is_file() {
+            return Err(RegistryError::Missing { name: self.name, path });
+        }
+        let text = std::fs::read_to_string(&path).map_err(|e| RegistryError::Read {
+            name: self.name,
+            path: path.clone(),
+            detail: e.to_string(),
+        })?;
+        let record: GameRecord = serde_json::from_str(&text).map_err(|e| RegistryError::Parse {
+            name: self.name,
+            path,
+            detail: e.to_string(),
+        })?;
+
+        let events = record.events.len();
+        if self.event_index >= events {
+            return Err(RegistryError::EventOutOfRange {
+                name: self.name,
+                event_index: self.event_index,
+                events,
+            });
+        }
+        if let Some(expected) = &self.recorded_move {
+            let found = &record.events[self.event_index];
+            let matches = matches!(found, RecordedEvent::Move(mv) if mv == expected);
+            if !matches {
+                return Err(RegistryError::MoveMismatch {
+                    name: self.name,
+                    event_index: self.event_index,
+                    expected: Box::new(expected.clone()),
+                    found: format!("{found:?}"),
+                });
+            }
+        }
+        Ok(RootSource::RecordPrefix { record, event_index: self.event_index })
     }
 }
 
@@ -1619,8 +1777,30 @@ pub enum RegistryError {
 
 impl std::fmt::Display for RegistryError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let _ = f;
-        todo!("T3 GREEN: RegistryError::fmt")
+        match self {
+            Self::Missing { name, path } => write!(
+                f,
+                "{name}: no record at {} (session roots live in gitignored saves; this is a \
+                 MISS, not a failure)",
+                path.display()
+            ),
+            Self::Read { name, path, detail } => {
+                write!(f, "{name}: {} could not be read: {detail}", path.display())
+            }
+            Self::Parse { name, path, detail } => {
+                write!(f, "{name}: {} is not a GameRecord: {detail}", path.display())
+            }
+            Self::EventOutOfRange { name, event_index, events } => write!(
+                f,
+                "{name}: event {event_index} is past the log ({events} events) — the entry and \
+                 the file describe different games"
+            ),
+            Self::MoveMismatch { name, event_index, expected, found } => write!(
+                f,
+                "{name}: event {event_index} is {found}, not the recorded {expected:?} — the \
+                 entry and the file describe different games"
+            ),
+        }
     }
 }
 
@@ -1642,7 +1822,75 @@ impl std::error::Error for RegistryError {}
 /// the two final-turn roots were verified forced (one root candidate, no
 /// runner-up) with the CLI's own `why`, so those two skip nothing.
 pub fn registry() -> Vec<RegistryEntry> {
-    todo!("T3 GREEN: registry")
+    const G1: &str = "docs/temp/owner-games/game1.json";
+    const G3: &str = "docs/temp/owner-games/game3.json";
+    vec![
+        RegistryEntry {
+            name: "g1-e113-tiemass",
+            path: G1,
+            event_index: 113,
+            bot_seat: SESSION_BOT_SEAT,
+            decision_seed: 0x15e8_0120_dfcb_f8c3,
+            recorded_move: Some(Move::PlaceThreeAreas {
+                placements: vec![AreaId(0), AreaId(1)],
+            }),
+            note: "the 36-way tie — the branch-0 headline root of the D7 triage",
+        },
+        RegistryEntry {
+            name: "g3-e63-tiemass",
+            path: G3,
+            event_index: 63,
+            bot_seat: SESSION_BOT_SEAT,
+            decision_seed: 0x08d4_02cb_00f7_0b0e,
+            recorded_move: Some(Move::PlaceThreeAreas {
+                placements: vec![AreaId(1), AreaId(2), AreaId(3)],
+            }),
+            note: "a 26-way tie — the second tie-mass seed, in the other game",
+        },
+        RegistryEntry {
+            name: "g3-e93-separated",
+            path: G3,
+            event_index: 93,
+            bot_seat: SESSION_BOT_SEAT,
+            decision_seed: 0x15eb_620d_98dc_105b,
+            recorded_move: Some(Move::PlaceTwoSameArea { area: AreaId(2), adjacent_bonus: None }),
+            note: "a +116 unique argmax — the POSITIVE CONTROL: the instrument must read a \
+                   decision the evaluator genuinely separated as separated",
+        },
+        RegistryEntry {
+            name: "g1-e228-deadrecall",
+            path: G1,
+            event_index: 228,
+            bot_seat: SESSION_BOT_SEAT,
+            decision_seed: 0x5453_844f_397d_538a,
+            recorded_move: Some(Move::ReturnPresidentToHand {
+                recover: BTreeMap::from([(AreaId(4), 1), (AreaId(6), 1)]),
+            }),
+            note: "the dead-recall 4-way tie — family 1's adjudication root",
+        },
+        RegistryEntry {
+            name: "g3-e178-finalturn",
+            path: G3,
+            event_index: 178,
+            bot_seat: SESSION_BOT_SEAT,
+            decision_seed: 0x0192_0e62_30f9_dcaf,
+            recorded_move: Some(Move::PlaceThreeAreas {
+                placements: vec![AreaId(4), AreaId(6), AreaId(9)],
+            }),
+            note: "the bot's genuinely-final turn, first branching decision (e177's \
+                   EndAdditionalPhase was verified forced)",
+        },
+        RegistryEntry {
+            name: "g1-e239-finalturn",
+            path: G1,
+            event_index: 239,
+            bot_seat: SESSION_BOT_SEAT,
+            decision_seed: 0x18e9_4f6a_7620_fcab,
+            recorded_move: Some(Move::PlaceThreeAreas { placements: vec![AreaId(0)] }),
+            note: "game 1's true final turn, first branching decision (e238's \
+                   EndAdditionalPhase was verified forced)",
+        },
+    ]
 }
 
 #[cfg(test)]

@@ -230,8 +230,10 @@ pub fn state_digest(state: &GameState) -> String {
 /// re-saved record is visibly a root against a different document rather than
 /// silently the same one.
 pub fn record_digest(record: &crate::game::record::GameRecord) -> String {
-    let _ = record;
-    todo!("T3 GREEN: record_digest")
+    // `state_digest`'s reasoning, unchanged: a record that could not serialize
+    // could not have been written to disk or parsed off it to begin with.
+    let canon = serde_json::to_string(record).expect("GameRecord serializes to JSON");
+    format!("{:016x}", fnv1a_64(canon.as_bytes()))
 }
 
 /// Stable content digest of a `PlayerView` -- the OBSERVATION identity the
