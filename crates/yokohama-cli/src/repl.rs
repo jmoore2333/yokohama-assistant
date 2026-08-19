@@ -571,7 +571,13 @@ impl Repl {
         let Some(trigger) = state.trigger_reason else { return String::new() };
         let words = render::trigger_reason_words(state, &trigger);
         let dash = crate::style::glyph::SECTION_DASH;
-        let line = if state.final_round {
+        // Three arms, not the spec's two: a FINISHED game keeps both flags
+        // true, so the `final_round` branch alone would greet a completed
+        // save with "in progress" (T1 review, finding 1). The reason words
+        // stay — why the game ended is what a returning reader wants.
+        let line = if is_game_over(state) {
+            format!("GAME OVER {dash} {words}")
+        } else if state.final_round {
             format!("FINAL ROUND in progress {dash} {words}")
         } else {
             format!("END TRIGGERED {dash} {words}; finishing the current round")
@@ -2614,6 +2620,18 @@ impl Repl {
         let pump = self.pump_bots();
         if !pump.is_empty() {
             text.push_str(&pump);
+        }
+        // The re-pump deterministically REPLAYS the unwound line, and if that
+        // line crossed the end-game trigger the replay re-arms the banner
+        // (`Session::undo` dropped the pre-undo pending one). A replayed flip
+        // is still an observed transition, so it speaks HERE — leaving it
+        // armed would hand a stale announcement to the next apply's screen.
+        let banner = self.take_end_trigger_banner_text();
+        if !banner.is_empty() {
+            if !text.is_empty() && !text.ends_with('\n') {
+                text.push('\n');
+            }
+            text.push_str(&banner);
         }
         self.out(text, false)
     }
@@ -5159,6 +5177,72 @@ mod tests {
                 "a load must not re-fire the banner (final_round={final_round}): {frame}",
             );
         }
+    }
+
+    /// An `undo` whose re-pump REPLAYS the flip drains the banner to its own
+    /// screen instead of leaking it (T1 review, finding 0). The reachable
+    /// shape: the game opens on a bot run that crosses the trigger (banner
+    /// drained by `opening`), the human undoes at the bottom, `Session::undo`
+    /// unwinds the run, and the deterministic re-pump replays it — re-arming
+    /// the banner inside the undo handler, which used to end without a drain,
+    /// handing the stale announcement to the NEXT apply's screen. A replayed
+    /// flip is still an observed transition, so the banner speaks on the undo
+    /// screen (spec §2.1's transition-fired clause), and the following screen
+    /// stays clean.
+    #[test]
+    fn undo_over_a_triggering_opening_run_drains_the_replayed_banner_to_its_own_screen() {
+        let bots = BotSeats::new(
+            vec![Some(Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT)), None],
+            0x5A17_3B0C_9E44_D218,
+        );
+        let mut session =
+            Session::for_test_from_state(state_one_move_from_the_trigger(4), Rules::standard());
+        session.set_run_seats(bots.seat_provenance());
+        let mut r = Repl::new(session);
+        let _ = r.opening();
+        assert!(r.session.state().end_game_triggered, "the opening pump must cross the trigger");
+
+        let undone = r.step("undo");
+        assert!(r.session.state().end_game_triggered, "the re-pump replays the same flip");
+        assert!(
+            undone.text.contains(crate::style::glyph::DOUBLE_RULE),
+            "the replayed flip's banner belongs to the undo screen: {}",
+            undone.text,
+        );
+
+        let next = step_one_move_reporting(&mut r);
+        assert!(
+            !next.text.contains(crate::style::glyph::DOUBLE_RULE),
+            "the banner must not leak onto the screen after the undo: {}",
+            next.text,
+        );
+    }
+
+    /// A FINISHED game's save reloads saying so — not "FINAL ROUND in
+    /// progress", which misdescribes a game that is over (T1 review, finding
+    /// 1: both `end_game_triggered` and `final_round` stay true in a finished
+    /// save, so the two-branch notice took the in-progress arm). The reason
+    /// words stay: why the game ended is exactly what a returning reader
+    /// wants beside the score.
+    #[test]
+    fn a_finished_save_reloads_with_game_over_wording_not_in_progress() {
+        let mut state = create_test_game_state(2);
+        state.end_game_triggered = true;
+        state.trigger_player = Some(PlayerId::new(0));
+        state.trigger_reason = Some(yokohama_core::EndGameTrigger::OrderDeckEmpty);
+        state.final_round = true;
+        state.turn_phase = TurnPhase::TurnEnd;
+        state.current_player = PlayerId::new(1);
+        assert!(is_game_over(&state), "fixture must actually satisfy is_game_over");
+
+        let mut r = Repl::new(Session::for_test_from_state(state, Rules::empty_for_tests()));
+        let frame = crate::style::test_support::strip_ansi(&r.opening().frame);
+        assert!(frame.contains("GAME OVER"), "{frame}");
+        assert!(frame.contains("the order deck is empty"), "the reason survives: {frame}");
+        assert!(
+            !frame.contains("FINAL ROUND in progress"),
+            "a finished game is not in progress: {frame}",
+        );
     }
 
     /// Task 10: once the game is over, `score` announces the winner and a
