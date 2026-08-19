@@ -33,7 +33,7 @@ Canal: the President may cross shore to shore for ¥1 to the bank ('sites' lists
   Tech  none yet                                            Tech  none yet                                            Tech  none yet
   Mercenaries  0 unused · 0 used                            Mercenaries  0 unused · 0 used                            Mercenaries  0 unused · 0 used
   President in hand                                         President in hand                                         President in hand
-  1 order · next take ¥4                                    1 order · next take ¥4                                    1 order · next take ¥4
+  1 order · 0 filled · next take ¥4                         1 order · 0 filled · next take ¥4                         1 order · 0 filled · next take ¥4
 
 ─ TRACKS  (ends at 5 of YOUR pawns)  Church [4][5][6][7][8][9][10][11] 0/5 ★3–14+mv · Customs [1][1][2][2][3][3][4] imports 0/5 ★4–22 · 10 mercenaries left
 ─ ACHIEVEMENTS  A · own 6 silk  8/6 VP  unclaimed · B · complete 5 orders  9/7 VP  unclaimed · C · buildings in 4 production  10/8 VP  unclaimed

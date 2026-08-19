@@ -295,7 +295,17 @@ pub struct PlayerModel {
     pub president: PresidentLocation,
     /// The COUNT only. Card identities live in [`HandPanel`], which masks.
     pub orders_in_hand: usize,
-    pub completed_orders: usize,
+    /// The orders this seat has FILLED, in the order it filled them —
+    /// `Player::completed_orders` verbatim, and the Vec's own order IS the
+    /// chronology (`apply_move` pushes each card as it is fulfilled).
+    ///
+    /// **Identities rather than a count, and they are public on every seat.**
+    /// Fulfilling an order is a public act with the card turned face up, so
+    /// this is not hidden information the way [`Self::orders_in_hand`]'s
+    /// contents are — the mask never applies to it. The count is `.len()`; a
+    /// second field holding it would be a duplicate fact for the two to
+    /// disagree about.
+    pub orders_filled: Vec<OrderCardId>,
     pub is_current: bool,
     pub is_bot: bool,
     pub hand_hidden: bool,
@@ -1867,7 +1877,7 @@ fn build_player(
         five_power_tokens: p.five_power_tokens,
         president: p.president_location,
         orders_in_hand: p.order_cards_in_hand.len(),
-        completed_orders: p.completed_orders.len(),
+        orders_filled: p.completed_orders.clone(),
         is_current: p.id == state.current_player,
         is_bot: facts.is_bot,
         hand_hidden: facts.hand_hidden,
@@ -3026,7 +3036,9 @@ mod tests {
         );
         assert_eq!((m.assistants.on_church, m.assistants.on_customs), (2, 3));
         assert_eq!(m.five_power_tokens, 2);
-        assert_eq!(m.completed_orders, 1);
+        // The identities, not merely the count: a builder that carried the
+        // right length and the wrong cards passed the old `== 1`.
+        assert_eq!(m.orders_filled, vec![extra_completed]);
         assert_eq!(m.shophouses.built, 1);
     }
 

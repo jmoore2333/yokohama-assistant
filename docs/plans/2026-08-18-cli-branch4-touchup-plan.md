@@ -195,7 +195,7 @@ executors read both. The spec's §6 records the Fable review this plan already a
 - Consumes: `Player::completed_orders: Vec<OrderCardId>` (public, mode-independent —
   written at `apply_move.rs:1346`).
 
-- [ ] **Step 3.1: Failing tests, 2P.** In panel_render tests:
+- [x] **Step 3.1: Failing tests, 2P.** In panel_render tests:
   `the_orders_line_states_hand_count_and_filled_codes_in_completion_order` — fixture with
   completed_orders `[23, 8, 12]` and 2 hand orders → panel contains
   `Orders  2 in hand · 3 filled (O23, O08, O12)` (exact substring, completion order NOT
@@ -212,13 +212,13 @@ executors read both. The spec's §6 records the Fable review this plan already a
   `12 filled (O23, O08, …)`); the sweep drives the widest legal joint case (in-hand +
   filled bounded by the 36-card deck) the way the module's other widest-legal pins do
   (achievements :2303, tracks :2388, seat tail :2451). Run → FAIL.
-- [ ] **Step 3.2:** Implement model + 2P render. Run → PASS, EXPECT height pins to fail —
+- [x] **Step 3.2:** Implement model + 2P render. Run → PASS, EXPECT height pins to fail —
   that failure is the deliberate re-measure trigger.
-- [ ] **Step 3.3:** Re-measure `WALK_HEIGHTS` (and `FRAME_HEIGHTS` only if the composed
+- [x] **Step 3.3:** Re-measure `WALK_HEIGHTS` (and `FRAME_HEIGHTS` only if the composed
   frame actually grew — the 2P panel sits beside the board; verify whether the +1 line
   overflows the board height before touching the frame constant). Update pins + guide §2
   numbers if `guide_sync` says so. Run cli suite → green.
-- [ ] **Step 3.4: Failing tests, 3-4P.** `the_seat_tail_row_carries_the_filled_count` —
+- [x] **Step 3.4: Failing tests, 3-4P.** `the_seat_tail_row_carries_the_filled_count` —
   4P fixture, tail row contains `3 filled` and NEVER a code parenthetical at any fixture
   width. **The four-fact worst case overflows the 47/48-column budget (~58 columns even
   under the joint in-hand+filled ≤ 36 bound), and NO elision machinery exists on this row
@@ -232,8 +232,8 @@ executors read both. The spec's §6 records the Fable review this plan already a
   (`the_widest_legal_seat_tail_row_still_fits_its_column`) over the constrained joint
   domain — the new worst case is computed, asserted ≤ the column budget, and stated in
   the test doc. Run → FAIL → implement → PASS.
-- [ ] **Step 3.5:** Guides: panel section prose (both formats). Per-edit gate → green.
-- [ ] **Step 3.6: Commit** `feat(cli): players panel shows orders filled — 2P codes in
+- [x] **Step 3.5:** Guides: panel section prose (both formats). Per-edit gate → green.
+- [x] **Step 3.6: Commit** `feat(cli): players panel shows orders filled — 2P codes in
   completion order, 3-4P counts by measured necessity (owner item 7)`; the height/width
   pin moves named in the body.
 

@@ -6,20 +6,22 @@
 │ sites ★1 ★4 — ¥2  │ T9     ││ sites ★1 ⌂2 — a2  │ T6     ││ sites ★1 ★4 — ¥2  │ T6     ││ sites ★1 ★2¥1 — ⌂2  │ T8   │      Assistants  8 in hand · 0 on board · 12 in warehouse
 └────────────────────────────┘└────────────────────────────┘└────────────────────────────┘└────────────────────────────┘      Shophouses  2 in hand · 6 in warehouse · 0 built
                ┌ A04 CHURCH ────────────────┐┌ A05 SILK MILL ─────────────┐┌ A06 TEA PLANTATION ────────┐                     Trade houses  0 in hand · 4 in warehouse · 0 built (next take ¥4)
-               │ 5-Power: 3 Tea Site 16     ││ 5-Power: 1 Import Site 6   ││ 5-Power: 2 Silk Site 22    │                     Tech  none yet
-               │ no pawns                   ││ no pawns                   ││ no pawns                   │                     Mercenaries  0 unused · 0 used
-               │ sites ★1 ★2¥1 — ★1¥1  │ T9 ││ sites ★1 *2 — *1  │ T7     ││ sites ★1 ★4 — ★3  │ T9     │                     President in hand · 1 order in hand
-               └────────────────────────────┘└────────────────────────────┘└────────────────────────────┘
-                              ┌ A07 LABORATORY A ──────────┐┌ A08 COPPER MINE ───────────┐                                    BLUE                      ¥4    0 VP    seat 1
-                              │ 5-Power: 1 Import Site 14  ││ 5-Power: 3 Yen Site 21     │                                    Goods  1 Copper · 1 Silk · 1 Tea · 1 Seafood · 0 Imports
-                              │ no pawns                   ││ no pawns                   │                                    Assistants  8 in hand · 0 on board · 12 in warehouse
-                              │ sites ★1 ★3 — ⌂2  │ T8     ││ sites ★1 ★4 — ★1¥2  │ T5   │                                    Shophouses  2 in hand · 6 in warehouse · 0 built
-                              └────────────────────────────┘└────────────────────────────┘                                    Trade houses  0 in hand · 4 in warehouse · 0 built (next take ¥4)
-                                             ┌ A09 EMPLOYMENT AGENCY ─────┐                                                   Tech  none yet
-                                             │ 5-Power: 2 Copper Site 13  │                                                   Mercenaries  0 unused · 0 used
-                                             │ no pawns                   │                                                   President in hand · 1 order in hand
-                                             │ sites ★1 ⌂3 — ⌂2  │ T5     │
-                                             └────────────────────────────┘                                                 ─ TRACKS  (ends at 4 of YOUR pawns · D = dummy, not counted) ─────────────
+               │ 5-Power: 3 Tea Site 16     ││ 5-Power: 1 Import Site 6   ││ 5-Power: 2 Silk Site 22    │                     Orders  1 in hand · 0 filled
+               │ no pawns                   ││ no pawns                   ││ no pawns                   │                     Tech  none yet
+               │ sites ★1 ★2¥1 — ★1¥1  │ T9 ││ sites ★1 *2 — *1  │ T7     ││ sites ★1 ★4 — ★3  │ T9     │                     Mercenaries  0 unused · 0 used
+               └────────────────────────────┘└────────────────────────────┘└────────────────────────────┘                     President in hand
+                              ┌ A07 LABORATORY A ──────────┐┌ A08 COPPER MINE ───────────┐
+                              │ 5-Power: 1 Import Site 14  ││ 5-Power: 3 Yen Site 21     │                                    BLUE                      ¥4    0 VP    seat 1
+                              │ no pawns                   ││ no pawns                   │                                    Goods  1 Copper · 1 Silk · 1 Tea · 1 Seafood · 0 Imports
+                              │ sites ★1 ★3 — ⌂2  │ T8     ││ sites ★1 ★4 — ★1¥2  │ T5   │                                    Assistants  8 in hand · 0 on board · 12 in warehouse
+                              └────────────────────────────┘└────────────────────────────┘                                    Shophouses  2 in hand · 6 in warehouse · 0 built
+                                             ┌ A09 EMPLOYMENT AGENCY ─────┐                                                   Trade houses  0 in hand · 4 in warehouse · 0 built (next take ¥4)
+                                             │ 5-Power: 2 Copper Site 13  │                                                   Orders  1 in hand · 0 filled
+                                             │ no pawns                   │                                                   Tech  none yet
+                                             │ sites ★1 ⌂3 — ⌂2  │ T5     │                                                   Mercenaries  0 unused · 0 used
+                                             └────────────────────────────┘                                                   President in hand
+
+                                                                                                                            ─ TRACKS  (ends at 4 of YOUR pawns · D = dummy, not counted) ─────────────
                                                                                                                               Church   faith [4][5][6][7 D][8][9][10][11] 0/4 · ★3–14+mv
                                                                                                                               Customs  pay   [1][1][2][2 D][3][3][4] imports 0/4 · ★4–22
                                                                                                                               Mercenary supply: 10 left · ('tracks' renders every space)

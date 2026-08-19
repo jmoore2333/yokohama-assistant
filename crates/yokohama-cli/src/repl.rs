@@ -7052,10 +7052,18 @@ mod tests {
     ///
     /// This pins the two heights the fix is FOR, so the fix cannot be undone
     /// without a failing number: the composed-everything frame overruns
-    /// `screen`'s recorded 2P opening height (49 rows since the end-trigger
-    /// strip, `FRAME_HEIGHTS`) and the design floor with it, while the frame
-    /// the player actually lands on after the review is back at that recorded
-    /// height exactly.
+    /// `screen`'s recorded 2P opening height (51 rows since branch-4's Orders
+    /// line, `FRAME_HEIGHTS`; 49 before it) while the frame the player actually
+    /// lands on after the review is back at that recorded height exactly.
+    ///
+    /// **The floor clause of that sentence went with the Orders line.** Until
+    /// 2026-08-18 the reviewed frame was BOTH at its recorded height and inside
+    /// the 50-row design floor, and the fixture asserted the all-in-one frame
+    /// overran the floor; the 2P opening is now one row past the floor itself
+    /// (`screen::FRAME_HEIGHTS`' own doc records why), so what the fixture
+    /// asserts is the thing that is still true and still discriminating — the
+    /// all-in-one frame overruns the RECORDED OPENING, by enough that a
+    /// player loses the board's top rows.
     #[test]
     fn the_bot_narrative_overran_the_design_floor_and_the_reviewed_frame_does_not() {
         let mut r = repl_2p_bots(4, &[0]);
@@ -7070,17 +7078,18 @@ mod tests {
             (all_in_one, r.opening())
         });
 
-        assert!(
-            all_in_one > 50,
-            "fixture: the composed-everything opening must actually overrun the 50-row floor \
-             (it drew {all_in_one} rows) — otherwise this test is measuring nothing",
-        );
         let reviewed = opening.frame.lines().count();
+        assert!(
+            all_in_one > reviewed,
+            "fixture: the composed-everything opening must actually overrun the frame the \
+             player lands on (it drew {all_in_one} rows against {reviewed}) — otherwise this \
+             test is measuring nothing",
+        );
         assert_eq!(
-            reviewed, 49,
+            reviewed, 51,
             "and the frame behind the review is the ordinary 2P opening frame, at the height \
-             `screen::FRAME_HEIGHTS` records for it (49 since the end-trigger strip, \
-             2026-08-08) — it drew {reviewed} rows",
+             `screen::FRAME_HEIGHTS` records for it (51 since branch-4's Orders line, \
+             2026-08-18; 49 before it) — it drew {reviewed} rows",
         );
     }
 

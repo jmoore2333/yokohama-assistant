@@ -1699,16 +1699,21 @@ mod tests {
     }
 
     /// The dashboard is privacy-safe BY CONSTRUCTION at every seat but the
-    /// viewing one: a player's hand appears as a COUNT on their President line
+    /// viewing one: a player's hand appears as a COUNT on their Orders line
     /// and card identities live only in the hand panel, which empties itself
     /// when masked. Re-pointed from `compact_panel`'s equivalent assertions.
+    ///
+    /// **The count moved with branch-4's Orders line** — it read `1 order in
+    /// hand` on the President line and reads `1 in hand` on its own line now,
+    /// with the noun in the label. The PROPERTY is unchanged: a count, never a
+    /// card.
     #[test]
     fn the_dashboard_never_prints_another_seats_cards() {
         let state = test_state_2p();
         let rules = Rules::standard();
         let seats = SeatDisplay::new(vec![false, true], vec![false, false]);
         let text = dashboard(&state, &rules, &seats, PlayerId::new(0));
-        assert!(text.contains("1 order in hand"), "the count still shows: {text}");
+        assert!(text.contains("Orders  1 in hand"), "the count still shows: {text}");
         assert!(text.contains("(hidden)"), "a masked seat says so: {text}");
         // Seat 1's kept starting order must not appear anywhere on the panel.
         //
