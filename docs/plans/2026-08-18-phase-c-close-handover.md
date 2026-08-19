@@ -59,7 +59,7 @@ instrument) is harness work under OD-0, not a STOP; D9/OD-8 stays at your leisur
    the measured-shape DEAD classifier, the adjudicator turn-hook, admission arithmetic,
    `family_read` (T4) · the three builders + the four-family registry + `run_family_block`
    (T5) · the runner surfaces — `gen:` roots, the `family` verb, the `opening` probe,
-   race-rusher argv (T6). Core core 1090 -> 1236 (+146), ignored UNMOVED at 29 throughout — nothing in the phase is release-tier.
+   race-rusher argv (T6). Core 1090 -> 1236 (+146), ignored UNMOVED at 29 throughout — nothing in the phase is release-tier.
 2. **The freeze** (code+doc, Fable-reviewed FREEZE SOUND — the splitting rules judged
    noise-reduction-not-bar-lowering by shape-by-shape re-derivation): the frozen
    identities, sizing (R=20 F=1 K=8 δ=5 ε=2), escrow out of code, the recorded ecology
