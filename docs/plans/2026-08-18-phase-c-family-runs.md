@@ -169,8 +169,9 @@ fixed opening not acceptable; this is the frozen baseline number the representat
 
 ## 5. The multiplicity read (the amendment's rule, applied)
 
-Family-level failures this wave: **final-round (rules/final-round class)** and
-**none - family 2's control arm is VOID, not failed (end-timing/proximity class)**. That is EXACTLY ONE family-level failure, alone in
+Family-level failures this wave: **final-round (rules/final-round class)** — and no
+other: family 2's control arm is VOID, not failed, so the end-timing/proximity class holds
+zero failures. That is EXACTLY ONE family-level failure, alone in
 its class — the pivot trigger (two failures in one strategic class) does NOT fire, and each
 finding routes individually. Family 4 is VOID
 (explicitly not a failure); family 3 declares no bar. Each failure routes through D7
