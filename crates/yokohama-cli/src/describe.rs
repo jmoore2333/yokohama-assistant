@@ -454,7 +454,7 @@ pub fn tech_effect_text(effect: TechEffect) -> &'static str {
 /// spoken of in two words is one a player has to learn twice. `fish` survives
 /// as an INPUT alias at the index filter, where accepting more than one word
 /// costs nothing; what is unified is what the tool SAYS.
-fn trade_good_name(g: TradeGood) -> &'static str {
+pub(crate) fn trade_good_name(g: TradeGood) -> &'static str {
     match g {
         TradeGood::Copper => "copper",
         TradeGood::Silk => "silk",

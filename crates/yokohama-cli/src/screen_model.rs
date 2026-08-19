@@ -35,6 +35,17 @@
 //! the crate reads, on the reasoning at its declaration.
 
 use yokohama_core::*;
+// The per-power reward functions the AREAS reference computes its ladders from.
+// `actions` is a NAMESPACED module in the engine (`game/mod.rs` deliberately
+// keeps it off the crate glob), so it is imported by name — the same import
+// `describe.rs` already makes for the option previews, which is what keeps
+// preview and reference reading off ONE arithmetic.
+use yokohama_core::game::actions::{
+    bank_reward, calculate_church_faith, calculate_industry_value, chinatown_rate,
+    church_faith_from_power, copper_mine_reward, customs_max_imported_goods,
+    employment_agency_tokens_allowed, fishing_ground_reward, port_accessible_zones,
+    silk_mill_reward, tea_plantation_reward, ChinatownRate,
+};
 
 // ---------------------------------------------------------------------------
 // The numbering base
@@ -544,6 +555,260 @@ impl LogPanel {
     /// a reader who is looking for one that is not there.
     pub fn omitted(&self) -> usize {
         self.total.saturating_sub(self.entries.len())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The areas reference (branch-4 T5)
+// ---------------------------------------------------------------------------
+
+/// The action powers an area's payout ladder is stated at.
+///
+/// **1 to 5, because 5 is where every engine reward function saturates** — and
+/// that is a fact this constant is derived FROM rather than a display choice:
+/// `bank_reward`, `church_faith_from_power` and `calculate_industry_value` are
+/// literal `power.min(5)`, and the four production tables plus
+/// `customs_max_imported_goods` and `employment_agency_tokens_allowed` all end
+/// in a `_ =>` arm that answers for 5 and up. A real action power can exceed 5
+/// (a President, four pawns, a Station and a technology will do it); nothing it
+/// buys is new, which is why the top rung is worded `power 5+` at the renderer
+/// and why a sixth rung would print a duplicate of the fifth.
+pub const LADDER_POWERS: [u8; 5] = [1, 2, 3, 4, 5];
+
+/// **The Port's Power-5 victory points, the one figure on this surface with no
+/// callable behind it.**
+///
+/// `execute_port_action` awards it from a literal inside its own body
+/// (`if power >= 5 { victory_points += 3 }`) — there is no `port_vp_bonus`
+/// to ask — so this is the hand-worded residue spec §2.7 item 2 permits, and it
+/// carries the pin that rule demands:
+/// `the_port_power_five_vp_bonus_matches_what_an_apply_awards` plays a take at
+/// power 5 and at power 4 through the engine and reads the victory-point delta
+/// off the two resulting states. It is TAKE-GATED (a `Skip` at power 5 scores
+/// nothing, owner-adjudicated 2026-07-18), which the renderer says in words.
+pub const PORT_TAKE_VP_AT_FULL_POWER: u8 = 3;
+
+/// How many Chinatown exchanges one action buys at `power` — the surface's
+/// SECOND hand-worded residue, and the second one pinned.
+///
+/// The engine's rule is `let depth = power.min(5)` inside
+/// `legal_moves::generate_chinatown_actions`, which is private, so this
+/// restates it and `the_chinatown_depth_matches_what_the_generator_offers`
+/// checks the restatement against the longest exchange chain
+/// `get_legal_moves` actually offers a funded seat at that power.
+const fn chinatown_exchange_depth(power: u8) -> u8 {
+    if power > 5 {
+        5
+    } else {
+        power
+    }
+}
+
+/// What one area's action pays at ONE action power, as ENGINE VALUES.
+///
+/// **Numbers, not sentences** — the R9 contract at the top of this module. Each
+/// variant carries what the engine's own function returned; the words that
+/// state it (`+2 silk`, `reaches LOW and MID`) are
+/// [`crate::view_render::areas_view`]'s job, exactly as `TileModel` carries an
+/// `AreaType` and not `"Copper Mine"`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ActionYield {
+    /// A production area: `amount` of `good`, from that area's own reward
+    /// function (`copper_mine_reward` and its three siblings).
+    Produce { good: TradeGood, amount: u8 },
+    /// The Bank, from `bank_reward`.
+    Money { yen: u8 },
+    /// A Port take: the zones this power reaches (`port_accessible_zones`), and
+    /// the victory points a TAKE at this power scores
+    /// ([`PORT_TAKE_VP_AT_FULL_POWER`], 0 below full power).
+    PortTake { zones: Vec<PortZone>, vp: u8 },
+    /// A Laboratory purchase: the industry value power ALONE supplies
+    /// (`calculate_industry_value(power, 0, 0)`) — the slot surcharge and the
+    /// bought points are the `labs` view's business.
+    Industry { value: u32 },
+    /// The Church: faith from power alone (`church_faith_from_power`) and faith
+    /// with all six payment kinds (`calculate_church_faith`) — the range the
+    /// decision is actually made inside.
+    Faith { from_power: u8, with_all_payment_kinds: u8 },
+    /// Customs: the most imported goods this power may pay
+    /// (`customs_max_imported_goods`), which is what picks the space.
+    CustomsPayment { max_imports: u8 },
+    /// The Employment Agency: how many warehouse items this power takes
+    /// (`employment_agency_tokens_allowed`).
+    WarehouseTakes { items: u8 },
+    /// Chinatown: how many exchanges this power buys
+    /// ([`chinatown_exchange_depth`]).
+    Exchanges { count: u8 },
+}
+
+/// One rung of a payout ladder: an action power, and what the area's action
+/// pays at it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PowerRung {
+    pub power: u8,
+    pub pays: ActionYield,
+}
+
+/// The full-screen surface an area's own detail already lives on.
+///
+/// **A POINTER, never a duplicate** (spec §2.7 item 5). The offer on a Port
+/// board, the technologies in a Laboratory and the occupied spaces of the two
+/// tracks are three surfaces this driver already draws in full; a reference card
+/// that redrew them would be a second copy to keep true, so it names the word
+/// that opens the real one instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AreaCompanion {
+    Ports,
+    Labs,
+    Tracks,
+}
+
+/// One area, as the reference surface shows it.
+///
+/// **The occupancy facts are a [`TileModel`] rather than copies of one**, which
+/// is what makes "matching the live tiles' facts" (spec §2.7 item 4) structural:
+/// the card and the board are built from the same model, so they cannot come to
+/// differ about who stands where.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AreaCard {
+    pub tile: TileModel,
+    /// One rung per [`LADDER_POWERS`] entry — EMPTY on the Canal, which is
+    /// never an action area at all.
+    pub ladder: Vec<PowerRung>,
+    pub companion: Option<AreaCompanion>,
+}
+
+/// Every area of the board, grouped into the board's own rows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AreasPanel {
+    /// Board rows in ascending `grid_position.0`, each row's cards in ascending
+    /// column. **No shape is assumed**: this is whatever grouping the data
+    /// yields, on [`crate::render::board_grid`]'s rule, so a fixture geometry
+    /// renders as readily as the staggered pyramid.
+    pub rows: Vec<Vec<AreaCard>>,
+}
+
+/// The nine Chinatown exchanges at their PRINTED rates, straight from the
+/// engine's single source of truth (`chinatown_rate`).
+///
+/// The rates are computed; only the ROSTER is spelled here, because the
+/// engine's own `ALL_CHINATOWN_EXCHANGES` is private to `legal_moves`. That
+/// roster is kept exhaustive by [`Self::index`]'s `_`-free match — a tenth
+/// exchange variant stops this file compiling rather than quietly going
+/// unprinted.
+pub struct ChinatownOffer;
+
+impl ChinatownOffer {
+    /// The nine exchanges, in the engine's own declaration order.
+    pub fn all() -> [ChinatownExchange; 9] {
+        use ChinatownExchange as X;
+        [
+            X::CopperToYen,
+            X::SilkToYen,
+            X::TeaToYen,
+            X::SeafoodToYen,
+            X::YenToCopper,
+            X::YenToSilk,
+            X::YenToTea,
+            X::YenToSeafood,
+            X::YenToImported,
+        ]
+    }
+
+    /// A stable position per variant — the exhaustiveness guard behind
+    /// [`Self::all`], and what its coverage test compares against.
+    pub fn index(e: ChinatownExchange) -> usize {
+        use ChinatownExchange as X;
+        match e {
+            X::CopperToYen => 0,
+            X::SilkToYen => 1,
+            X::TeaToYen => 2,
+            X::SeafoodToYen => 3,
+            X::YenToCopper => 4,
+            X::YenToSilk => 5,
+            X::YenToTea => 6,
+            X::YenToSeafood => 7,
+            X::YenToImported => 8,
+        }
+    }
+
+    /// Each exchange with the rate the ENGINE prices it at.
+    pub fn rates() -> Vec<(ChinatownExchange, ChinatownRate)> {
+        Self::all().into_iter().map(|e| (e, chinatown_rate(e))).collect()
+    }
+}
+
+/// What `area_type`'s action pays at every [`LADDER_POWERS`] rung — computed by
+/// calling the engine's own per-power functions, never transcribed (spec §2.7
+/// item 2).
+///
+/// Empty for the Canal, the one area type with no action at all.
+pub fn action_ladder(area_type: AreaType) -> Vec<PowerRung> {
+    LADDER_POWERS
+        .iter()
+        .filter_map(|&power| action_yield(area_type, power).map(|pays| PowerRung { power, pays }))
+        .collect()
+}
+
+/// One rung's worth of the above, or `None` where the area has no action.
+///
+/// Exhaustive over [`AreaType`] with no `_` arm: a new area type is a compile
+/// error here rather than a card the reference silently leaves blank.
+fn action_yield(area_type: AreaType, power: u8) -> Option<ActionYield> {
+    Some(match area_type {
+        AreaType::CopperMine => {
+            ActionYield::Produce { good: TradeGood::Copper, amount: copper_mine_reward(power) }
+        }
+        AreaType::SilkMill => {
+            ActionYield::Produce { good: TradeGood::Silk, amount: silk_mill_reward(power) }
+        }
+        AreaType::TeaPlantation => {
+            ActionYield::Produce { good: TradeGood::Tea, amount: tea_plantation_reward(power) }
+        }
+        AreaType::FishingGround => {
+            ActionYield::Produce { good: TradeGood::Seafood, amount: fishing_ground_reward(power) }
+        }
+        AreaType::Bank => ActionYield::Money { yen: bank_reward(power) },
+        AreaType::PortA | AreaType::PortB => ActionYield::PortTake {
+            zones: port_accessible_zones(power),
+            vp: if power >= 5 { PORT_TAKE_VP_AT_FULL_POWER } else { 0 },
+        },
+        AreaType::LaboratoryA | AreaType::LaboratoryB => {
+            ActionYield::Industry { value: calculate_industry_value(power, 0, 0) }
+        }
+        AreaType::EmploymentAgency => {
+            ActionYield::WarehouseTakes { items: employment_agency_tokens_allowed(power) }
+        }
+        AreaType::Chinatown => {
+            ActionYield::Exchanges { count: chinatown_exchange_depth(power) }
+        }
+        AreaType::Church => ActionYield::Faith {
+            from_power: church_faith_from_power(power),
+            with_all_payment_kinds: calculate_church_faith(
+                power, true, true, true, true, true, true,
+            ),
+        },
+        AreaType::Customs => {
+            ActionYield::CustomsPayment { max_imports: customs_max_imported_goods(power) }
+        }
+        AreaType::Canal => return None,
+    })
+}
+
+/// The full-screen view that already draws `area_type`'s own detail, if any.
+pub fn companion_view(area_type: AreaType) -> Option<AreaCompanion> {
+    match area_type {
+        AreaType::PortA | AreaType::PortB => Some(AreaCompanion::Ports),
+        AreaType::LaboratoryA | AreaType::LaboratoryB => Some(AreaCompanion::Labs),
+        AreaType::Church | AreaType::Customs => Some(AreaCompanion::Tracks),
+        AreaType::CopperMine
+        | AreaType::SilkMill
+        | AreaType::TeaPlantation
+        | AreaType::FishingGround
+        | AreaType::Bank
+        | AreaType::EmploymentAgency
+        | AreaType::Chinatown
+        | AreaType::Canal => None,
     }
 }
 
@@ -2096,6 +2361,44 @@ pub fn build_labs(state: &GameState, rules: &Rules) -> LabsPanel {
     LabsPanel { boards, deck_remaining: state.tech_deck.len() }
 }
 
+/// Every area of the board as a reference card, grouped into the board's own
+/// rows (spec §2.7).
+///
+/// **The tiles come from [`build_board`] with an EMPTY legal list**, which is
+/// the same call the `sites` view makes and for the same two reasons: this
+/// surface draws no `◈` marks, so asking for a list would cost an enumeration
+/// to feed a field nothing here reads — and an unmarked board is the truthful
+/// model of "nothing is offered", never a defaulted one.
+///
+/// **The grouping assumes no board shape.** It walks the tiles sorted by
+/// `(row, column, area id)` and starts a new group whenever the row value
+/// changes, so the staggered pyramid, a fixture geometry and a future layout all
+/// group by the same rule — [`crate::render::board_grid`]'s discipline, which
+/// exists precisely so a renderer cannot drift from the data.
+pub fn build_areas(state: &GameState, rules: &Rules) -> AreasPanel {
+    let mut tiles = build_board(state, rules, &[]).tiles;
+    tiles.sort_by_key(|t| (t.grid_position.0, t.grid_position.1, t.area.0));
+
+    let mut rows: Vec<Vec<AreaCard>> = Vec::new();
+    let mut open_row: Option<u8> = None;
+    for tile in tiles {
+        let card = AreaCard {
+            ladder: action_ladder(tile.area_type),
+            companion: companion_view(tile.area_type),
+            tile,
+        };
+        let row = card.tile.grid_position.0;
+        match (open_row, rows.last_mut()) {
+            (Some(open), Some(last)) if open == row => last.push(card),
+            _ => {
+                open_row = Some(row);
+                rows.push(vec![card]);
+            }
+        }
+    }
+    AreasPanel { rows }
+}
+
 /// The move/event trail from descriptions the CALLER already holds.
 ///
 /// `described` is `(index, text)` oldest-first, and the text is the one cached
@@ -3093,5 +3396,287 @@ mod tests {
         assert_eq!(build_board(&state, &rules, &[]).tiles.len(), 14);
         assert_eq!(build_players(&state, &rules, &SeatFacts::all_open(3)).players.len(), 3);
         assert!(build_tracks(&state).church.iter().all(|s| s.occupant.is_none()));
+    }
+
+    // -----------------------------------------------------------------------
+    // The areas reference (branch-4 T5)
+    // -----------------------------------------------------------------------
+
+    /// **Grouped by the board's own rows, assuming no shape at all** — the rule
+    /// [`crate::render::board_grid`] holds and the reason it can draw a fixture
+    /// geometry: the grouping reads `grid_position` and nothing else, so a board
+    /// that is not the staggered pyramid still groups.
+    ///
+    /// Three claims, and the third is the one that makes the first two worth
+    /// having: every area appears EXACTLY once (a reference that drops a tile is
+    /// worse than no reference), rows and columns ascend, and a state whose
+    /// geometry has been rewritten to a single row still yields a single row
+    /// rather than the pyramid the shipped board happens to deal.
+    #[test]
+    fn build_areas_groups_by_board_rows_any_geometry() {
+        for n in [2u8, 3, 4] {
+            let (state, rules) = state_np(n);
+            let panel = build_areas(&state, &rules);
+
+            let mut seen: Vec<u8> =
+                panel.rows.iter().flatten().map(|c| c.tile.area.0).collect();
+            seen.sort_unstable();
+            let mut want: Vec<u8> = state.board_layout.areas.keys().map(|a| a.0).collect();
+            want.sort_unstable();
+            assert_eq!(seen, want, "{n}P: every area exactly once");
+
+            let mut last_row: Option<u8> = None;
+            for row in &panel.rows {
+                assert!(!row.is_empty(), "{n}P: no empty row is ever emitted");
+                let r = row[0].tile.grid_position.0;
+                if let Some(prev) = last_row {
+                    assert!(prev < r, "{n}P: rows ascend and never repeat ({prev} then {r})");
+                }
+                last_row = Some(r);
+                assert!(
+                    row.iter().all(|c| c.tile.grid_position.0 == r),
+                    "{n}P: one row value per row",
+                );
+                for w in row.windows(2) {
+                    assert!(
+                        w[0].tile.grid_position.1 <= w[1].tile.grid_position.1,
+                        "{n}P: columns ascend inside a row",
+                    );
+                }
+            }
+        }
+
+        // No assumed shape: flatten the geometry and the grouping follows the
+        // DATA rather than the board it was written against.
+        let (mut state, rules) = state_np(4);
+        for (i, cfg) in state.board_layout.areas.values_mut().enumerate() {
+            cfg.grid_position = (9, i as u8);
+        }
+        let flat = build_areas(&state, &rules);
+        assert_eq!(flat.rows.len(), 1, "one board row in, one card row group out");
+        assert_eq!(flat.rows[0].len(), state.board_layout.areas.len());
+    }
+
+    /// **The production ladders are COMPUTED, never transcribed** (spec §2.7
+    /// item 2). The test CALLS the engine's own per-power reward function and
+    /// compares — which is the whole point of the rule: a transcribed table
+    /// passes a test that quotes the same literal it copied, and fails nothing
+    /// when the engine's data changes underneath it.
+    #[test]
+    fn production_ladders_are_computed_not_transcribed() {
+        let (state, rules) = state_np(4);
+        let panel = build_areas(&state, &rules);
+        let mut covered: Vec<AreaType> = Vec::new();
+
+        for card in panel.rows.iter().flatten() {
+            let (f, good): (fn(u8) -> u8, TradeGood) = match card.tile.area_type {
+                AreaType::CopperMine => (copper_mine_reward, TradeGood::Copper),
+                AreaType::SilkMill => (silk_mill_reward, TradeGood::Silk),
+                AreaType::TeaPlantation => (tea_plantation_reward, TradeGood::Tea),
+                AreaType::FishingGround => (fishing_ground_reward, TradeGood::Seafood),
+                _ => continue,
+            };
+            if !covered.contains(&card.tile.area_type) {
+                covered.push(card.tile.area_type);
+            }
+            assert_eq!(card.ladder.len(), LADDER_POWERS.len(), "one rung per power");
+            for rung in &card.ladder {
+                match rung.pays {
+                    ActionYield::Produce { good: g, amount } => {
+                        assert_eq!(amount, f(rung.power), "A{:02} at power {}", card.tile.area.0, rung.power);
+                        assert_eq!(g, good, "A{:02} produces its own good", card.tile.area.0);
+                    }
+                    ref other => panic!("A{:02} is a production area: {other:?}", card.tile.area.0),
+                }
+            }
+        }
+        assert_eq!(covered.len(), 4, "a 4P board deals all four production areas: {covered:?}");
+    }
+
+    /// The Bank's ladder is [`bank_reward`], asked rather than copied.
+    #[test]
+    fn the_bank_ladder_matches_bank_reward() {
+        let (state, rules) = state_np(2);
+        let panel = build_areas(&state, &rules);
+        let bank = panel
+            .rows
+            .iter()
+            .flatten()
+            .find(|c| c.tile.area_type == AreaType::Bank)
+            .expect("a 2P board deals a Bank");
+        assert_eq!(bank.ladder.len(), LADDER_POWERS.len());
+        for rung in &bank.ladder {
+            assert_eq!(rung.pays, ActionYield::Money { yen: bank_reward(rung.power) });
+        }
+    }
+
+    /// **Every area type answers, and the four with a surface of their own point
+    /// at it** (spec §2.7 item 5). Exhaustive over [`AreaType`] by an inner
+    /// match with no `_` arm, so a fifteenth area type is a compile error here
+    /// rather than a card with no ladder on the owner's screen.
+    #[test]
+    fn every_area_type_carries_a_ladder_and_names_its_companion_view() {
+        for t in [
+            AreaType::CopperMine,
+            AreaType::SilkMill,
+            AreaType::TeaPlantation,
+            AreaType::FishingGround,
+            AreaType::Bank,
+            AreaType::PortA,
+            AreaType::PortB,
+            AreaType::LaboratoryA,
+            AreaType::LaboratoryB,
+            AreaType::EmploymentAgency,
+            AreaType::Chinatown,
+            AreaType::Church,
+            AreaType::Customs,
+            AreaType::Canal,
+        ] {
+            let want: Option<AreaCompanion> = match t {
+                AreaType::PortA | AreaType::PortB => Some(AreaCompanion::Ports),
+                AreaType::LaboratoryA | AreaType::LaboratoryB => Some(AreaCompanion::Labs),
+                AreaType::Church | AreaType::Customs => Some(AreaCompanion::Tracks),
+                AreaType::CopperMine
+                | AreaType::SilkMill
+                | AreaType::TeaPlantation
+                | AreaType::FishingGround
+                | AreaType::Bank
+                | AreaType::EmploymentAgency
+                | AreaType::Chinatown
+                | AreaType::Canal => None,
+            };
+            assert_eq!(companion_view(t), want, "{t:?}");
+
+            let ladder = action_ladder(t);
+            if t == AreaType::Canal {
+                assert!(ladder.is_empty(), "the Canal is never an action area");
+                // ...and the engine agrees, which is what keeps that sentence
+                // from being this crate's own opinion about the rules.
+                assert!(!t.allows_placement(), "the Canal takes no pawn");
+            } else {
+                assert_eq!(ladder.len(), LADDER_POWERS.len(), "{t:?} rungs");
+                assert!(
+                    ladder.iter().map(|r| r.power).eq(LADDER_POWERS.iter().copied()),
+                    "{t:?} rungs run 1..=5 in order",
+                );
+            }
+        }
+    }
+
+    /// The Church rung carries BOTH engine numbers — faith from power alone,
+    /// and faith with all six payment kinds — so the ladder states the range a
+    /// player actually decides inside.
+    #[test]
+    fn the_church_ladder_carries_both_engine_faith_figures() {
+        for rung in action_ladder(AreaType::Church) {
+            assert_eq!(
+                rung.pays,
+                ActionYield::Faith {
+                    from_power: church_faith_from_power(rung.power),
+                    with_all_payment_kinds: calculate_church_faith(
+                        rung.power, true, true, true, true, true, true,
+                    ),
+                },
+            );
+        }
+    }
+
+    /// **The one Port figure with no callable behind it, pinned against an
+    /// actual apply** (spec §2.7 item 2's hand-worded residue rule).
+    ///
+    /// `execute_port_action` awards the Power-5 bonus from a literal inside its
+    /// own body — there is no `port_vp_bonus(power)` to call — so the constant
+    /// this crate prints is checked the only honest way left: play a take at
+    /// power 5 and at power 4 through the engine, and read the victory-point
+    /// delta off the two resulting states.
+    #[test]
+    fn the_port_power_five_vp_bonus_matches_what_an_apply_awards() {
+        let rules = Rules::standard();
+        for (assistants, want) in [(4u8, PORT_TAKE_VP_AT_FULL_POWER), (3, 0)] {
+            let (mut state, _) = state_np(2);
+            let port = *state
+                .board_layout
+                .areas
+                .iter()
+                .find(|(_, c)| c.area_type == AreaType::PortA)
+                .expect("a 2P board deals Port A")
+                .0;
+            let me = state.current_player;
+            state.players[me.0 as usize].president_location = PresidentLocation::OnBoard(port);
+            state.players[me.0 as usize].assistants.on_board.insert(port, assistants);
+            state.players[me.0 as usize].assistants.in_hand -= assistants;
+            state.turn_phase = TurnPhase::AreaAction;
+            let power = calculate_power(&state, me, port);
+            state.current_action_power = Some(power);
+            assert_eq!(power, assistants + 1, "president plus pawns");
+
+            // The LOW zone is reachable at power 2, so both cells take a real card.
+            let card = state.port_state.port_a.slots[0].expect("slot 1 is dealt at setup");
+            let mv = Move::ExecuteAreaAction {
+                action: AreaAction::Port { cards_taken: vec![card], second_card_payment: None },
+            };
+            let before = state.players[me.0 as usize].victory_points;
+            let after = apply_move_unchecked(&state, &mv, &rules).expect("a Port take applies");
+            let gained = after.players[me.0 as usize].victory_points - before;
+            assert_eq!(
+                u8::try_from(gained).expect("a small bonus"),
+                want,
+                "power {power}: the engine's own award",
+            );
+        }
+    }
+
+    /// **The other hand-worded residue, pinned against the engine's own
+    /// enumeration**: how many Chinatown exchanges one action buys is
+    /// `power.min(5)` inside a PRIVATE generator, so the modelled count is
+    /// checked against the longest exchange chain `get_legal_moves` will offer
+    /// at that power on a resource-rich seat.
+    #[test]
+    fn the_chinatown_depth_matches_what_the_generator_offers() {
+        let rules = Rules::standard();
+        for assistants in 0u8..=3 {
+            // 3 players, because the Chinatown tile is a 3-4P one
+            // (`board_gen::tiles_for_player_count` drops it at 2).
+            let (mut state, _) = state_np(3);
+            let town = *state
+                .board_layout
+                .areas
+                .iter()
+                .find(|(_, c)| c.area_type == AreaType::Chinatown)
+                .expect("a 3P board deals a Chinatown")
+                .0;
+            let me = state.current_player;
+            state.players[me.0 as usize].president_location = PresidentLocation::OnBoard(town);
+            if assistants > 0 {
+                state.players[me.0 as usize].assistants.on_board.insert(town, assistants);
+                state.players[me.0 as usize].assistants.in_hand -= assistants;
+            }
+            // Deep enough pockets that money, never power, is the binding cap.
+            state.players[me.0 as usize].money = 99;
+            state.turn_phase = TurnPhase::AreaAction;
+            let power = calculate_power(&state, me, town);
+            state.current_action_power = Some(power);
+
+            let deepest = get_legal_moves(&state, &rules)
+                .iter()
+                .filter_map(|mv| match mv {
+                    Move::ExecuteAreaAction { action: AreaAction::Chinatown { exchanges } } => {
+                        Some(exchanges.len())
+                    }
+                    _ => None,
+                })
+                .max()
+                .expect("a funded Chinatown offers exchanges");
+            let modelled = match action_ladder(AreaType::Chinatown)
+                .into_iter()
+                .find(|r| r.power == power.min(5))
+                .expect("a rung at every power 1..=5")
+                .pays
+            {
+                ActionYield::Exchanges { count } => count,
+                other => panic!("Chinatown pays exchanges: {other:?}"),
+            };
+            assert_eq!(usize::from(modelled), deepest, "power {power}");
+        }
     }
 }

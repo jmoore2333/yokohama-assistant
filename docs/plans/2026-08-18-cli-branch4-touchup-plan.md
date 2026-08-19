@@ -339,27 +339,27 @@ executors read both. The spec's §6 records the Fable review this plan already a
   exported that `describe.rs:605-617`'s Bank-preview pattern reaches. Hand-worded lines
   ONLY where no callable exists, each with a pin against apply behavior.
 
-- [ ] **Step 5.1: Failing tests, model.** `build_areas_groups_by_board_rows_any_geometry`
+- [x] **Step 5.1: Failing tests, model.** `build_areas_groups_by_board_rows_any_geometry`
   (fixture-geometry safe, like the board_grid tests); `production_ladders_are_computed_not_
   transcribed` — for each production area, the ladder line at power p quotes EXACTLY
   `<area>_reward(p)`'s value (the test CALLS the engine fn and compares — transcription
   cannot pass a data change); `the_bank_ladder_matches_bank_reward`;
   `special_areas_state_their_action_and_point_at_their_view`. Run → FAIL.
-- [ ] **Step 5.2:** Implement `AreaCard`/`AreasPanel`/`build_areas`. Run → PASS.
-- [ ] **Step 5.3: Failing tests, render.** `areas_view_renders_every_area_exactly_once`;
+- [x] **Step 5.2:** Implement `AreaCard`/`AreasPanel`/`build_areas`. Run → PASS.
+- [x] **Step 5.3: Failing tests, render.** `areas_view_renders_every_area_exactly_once`;
   `board_rows_chunk_rather_than_truncate` — at a 200-column context no line exceeds the
   width (via `visible_width`) and every card's reward words appear unelided;
   `the_view_is_allowed_to_exceed_screen_height` (asserts the full surface prints —
   scrollback is the stated behavior, spec §2.7). Run → FAIL. Implement `areas_view` over
   `card_render`. Run → PASS.
-- [ ] **Step 5.4: Failing tests, plumbing.** Repl: `areas_opens_and_toggles_like_the_other_
+- [x] **Step 5.4: Failing tests, plumbing.** Repl: `areas_opens_and_toggles_like_the_other_
   surfaces` (`step("areas")` shows it, second `step("areas")` closes, `view` menu lists
   it); HELP_TEXT mentions `areas`. Run → FAIL. Add the `Areas` arm everywhere the compiler
   and the menu tests point. Run → PASS.
-- [ ] **Step 5.5:** Guides: §5 blocks in both formats + a short view section
+- [x] **Step 5.5:** Guides: §5 blocks in both formats + a short view section
   (`guide_sync::help_text_commands_are_documented_in_both_guides` enforces the floor).
   Per-edit gate → green.
-- [ ] **Step 5.6: Commit** `feat(cli): the areas view — per-area action-payout reference,
+- [x] **Step 5.6: Commit** `feat(cli): the areas view — per-area action-payout reference,
   computed from the engine's own reward functions (branch-4 item 3 + owner item 8)`.
 
 ---

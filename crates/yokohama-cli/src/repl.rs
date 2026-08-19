@@ -125,6 +125,11 @@ pub(crate) enum ViewSurface {
     Sites,
     Ports,
     Labs,
+    /// The per-area action-payout REFERENCE (branch-4 T5) — the seventh
+    /// member, and the one that is not a live offer: it answers "what does
+    /// acting here pay me, at the power I will have" for every area at once,
+    /// which no other surface says anywhere.
+    Areas,
     Hand,
     Log,
 }
@@ -138,6 +143,7 @@ impl ViewSurface {
             ViewSurface::Sites => "sites",
             ViewSurface::Ports => "ports",
             ViewSurface::Labs => "labs",
+            ViewSurface::Areas => "areas",
             ViewSurface::Hand => "hand",
             ViewSurface::Log => "log",
         }
@@ -250,6 +256,7 @@ fn view_surface(word: &str) -> Option<ViewSurface> {
         "sites" => Some(ViewSurface::Sites),
         "ports" => Some(ViewSurface::Ports),
         "labs" => Some(ViewSurface::Labs),
+        "areas" => Some(ViewSurface::Areas),
         "hand" => Some(ViewSurface::Hand),
         "log" => Some(ViewSurface::Log),
         _ => None,
@@ -1477,7 +1484,7 @@ impl Repl {
     /// command uses. NOTE this couples label to function only -- whether a
     /// label's WORDING matches what its view renders remains a human
     /// judgment (reviewed, not machine-checked).
-    const VIEW_MENU: [ViewEntry; 13] = [
+    const VIEW_MENU: [ViewEntry; 14] = [
         ("Port offer — the order cards on display, and the power each zone takes", |r| {
             r.open_view(ViewSurface::Ports)
         }),
@@ -1489,6 +1496,9 @@ impl Repl {
         }),
         ("Building sites — every area's site card: rewards, builders, canal tolls", |r| {
             r.open_view(ViewSurface::Sites)
+        }),
+        ("Areas — what every area's action pays at each power, and what is on it", |r| {
+            r.open_view(ViewSurface::Areas)
         }),
         ("Goals — the achievement cards, claim VP, and per-player progress", |r| {
             r.open_index(IndexKind::Achievements)
@@ -1814,6 +1824,15 @@ impl Repl {
             ),
             ViewSurface::Labs => crate::view_render::labs_view(
                 &crate::screen_model::build_labs(state, self.session.rules()),
+                context,
+            ),
+            ViewSurface::Areas => crate::view_render::areas_view(
+                // No legal list, for the `sites` view's two reasons: this
+                // surface draws no `◈` marks, and an unmarked board is the
+                // truthful model of "nothing is offered" rather than a
+                // defaulted one.
+                &crate::screen_model::build_areas(state, self.session.rules()),
+                &colors,
                 context,
             ),
             ViewSurface::Hand => self.hand_text(),
@@ -3427,6 +3446,7 @@ Commands:
   labs            open the LABORATORY OFFER view: every slot's technology, what it does, and what it costs
   tracks          open the TRACKS view: every Church and Customs space as a card, with the 2P dummy
   sites           open the BUILDING SITES view: every area's site card, its builders, and its canal tolls
+  areas           open the AREAS reference: what every area's action pays at each power, its site, and who is on it
   hand            open YOUR HAND view: the current player's order cards, drawn in full
   orders          open the ORDER CARD INDEX: all 36 cards, grouped by flag, full-screen
   techs           open the TECHNOLOGY INDEX: all 20 titles by flag, each with its full purchase text
@@ -8933,5 +8953,55 @@ mod tests {
         r.step(&menu_number(take).to_string());
         assert!(matches!(r.pending, Pending::OrderReveals { .. }), "parked at a reveal");
         (r, deck_card)
+    }
+
+    // -----------------------------------------------------------------------
+    // The areas view (branch-4 T5)
+    // -----------------------------------------------------------------------
+
+    /// **`areas` is a full-screen surface like the other six** — it opens over
+    /// whatever is up, the key that opened it closes it again, and the `view`
+    /// menu reaches the same code path the word does.
+    #[test]
+    fn areas_opens_and_toggles_like_the_other_surfaces() {
+        let mut r = repl_2p(4);
+        let out = r.step("areas");
+        assert!(r.full_screen_surface(), "'areas' opens a full-screen view");
+        assert!(
+            !out.text.contains("'help' for commands)"),
+            "a view, not a framed body: {}",
+            out.text,
+        );
+        let shown = r.overlay_text();
+        assert!(shown.contains("AREAS — full view   "), "{shown:.200}");
+        assert!(
+            shown.contains("closes this view and puts you back at the prompt underneath"),
+            "it states its own way out: {shown:.400}",
+        );
+
+        // The key that opened it closes it — the toggle every view holds.
+        r.step("areas");
+        assert!(!r.full_screen_surface(), "the second press closed it");
+
+        // ...and the menu is the other door onto the same surface.
+        let row = Repl::VIEW_MENU
+            .iter()
+            .position(|(label, _)| label.starts_with("Areas"))
+            .expect("the roster carries the areas reference");
+        r.step("view");
+        let by_menu = r.step(&crate::screen_model::menu_number(row).to_string());
+        assert!(by_menu.text.is_empty() || r.full_screen_surface(), "the row opened a surface");
+        assert!(r.overlay_text().contains("AREAS — full view"), "{}", r.overlay_text());
+    }
+
+    /// `help` documents the word, which is also what `guide_sync` reads it
+    /// through to hold both guide formats to the same roster.
+    #[test]
+    fn help_documents_the_areas_view() {
+        assert!(HELP_TEXT.contains("\n  areas "), "the help roster lists it: {HELP_TEXT}");
+        assert!(
+            HELP_TEXT.lines().any(|l| l.trim_start().starts_with("areas ") && l.contains("AREAS")),
+            "and its row says what the surface is",
+        );
     }
 }

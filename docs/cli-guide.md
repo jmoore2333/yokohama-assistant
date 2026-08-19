@@ -148,7 +148,7 @@ On a real terminal the hint also names **`↑ recalls what you typed`** — the 
 
 **Finding information: the view pattern.** Every panel on the game screen is a *summary*. The tracks panel prints eight bracketed faith numbers, which is enough to see that faith 7 is taken and not enough to decide whether to take faith 9. Each of those summaries has a **full surface** behind it, and that surface is one word away: it replaces the whole screen, draws the same facts card by card, and `Enter` puts you back at the prompt you left with nothing entered and nothing there cancelled.
 
-Six surfaces render that way, plus four card indexes:
+Seven surfaces render that way, plus four card indexes:
 
 | Word | Surface |
 |---|---|
@@ -156,6 +156,7 @@ Six surfaces render that way, plus four card indexes:
 | `labs` | **Laboratory offer** — every Laboratory slot's technology, its country, its whole effect text in full words, and the **industry it costs in that slot** (the card's printed cost plus the slot's own surcharge, already added). |
 | `tracks` | **Tracks** — every Church faith space and Customs space as a card, with its printed rewards, its occupant, and (at 2 players) the neutral dummy. |
 | `sites` | **Building sites** — every area's site card: the four printed space rewards in full words, who has built on each, the trading house's VP, and the area's tolled canal crossings. |
+| `areas` | **Areas** — every area on the board as a reference card: what its action pays at each action power 1–5 in words, its 5-Power token, its site's four printed rewards, and who is standing on it. This is the surface to read before you decide where to move; it is a *reference*, not a live offer, and it is taller than the screen at 3 and 4 players. |
 | `goals` | **Achievements** — the three cards in play, what each pays first and later, who has claimed it, and every seat's progress. ⚠ This one is a card *index* wearing a word of its own, so it leaves like an index (below), not like a view. |
 | `hand` | **Your hand** — the current player's order cards drawn full size, the kept starting order marked. |
 | `log` | **Log** — the move and reveal trail, each line worded as it read at the moment it applied. |
@@ -349,6 +350,7 @@ ports           open the PORT OFFER view: every slot's order card, and the power
 labs            open the LABORATORY OFFER view: every slot's technology, what it does, and what it costs
 tracks          open the TRACKS view: every Church and Customs space as a card, with the 2P dummy
 sites           open the BUILDING SITES view: every area's site card, its builders, and its canal tolls
+areas           open the AREAS reference: what every area's action pays at each power, its site, and who is on it
 hand            open YOUR HAND view: the current player's order cards, drawn in full
 orders          open the ORDER CARD INDEX: all 36 cards, grouped by flag, full-screen
 techs           open the TECHNOLOGY INDEX: all 20 titles by flag, each with its full purchase text
@@ -384,7 +386,7 @@ In live mode, whenever a move would draw hidden cards, the tool **does not apply
 LIVE TRACKING · Port A refilled 1 slot from the order deck.
 
 YOU ARE RECORDING · Port A slot 6 (reveal 1 of 1) — which order card is it?
-(a number, 'O14', or '?' for the card index · 'cancel' drops the move — nothing is applied or recorded · 'tracks', 'sites', 'ports', 'labs', 'hand' or 'log' to look around)
+(a number, 'O14', or '?' for the card index · 'cancel' drops the move — nothing is applied or recorded · 'tracks', 'sites', 'areas', 'ports', 'labs', 'hand' or 'log' to look around)
 > 
 ```
 
@@ -415,7 +417,7 @@ Whose starting order just became public?
 LIVE TRACKING · Seat 1's starting order is face up at the table.
 
 YOU ARE RECORDING · Seat 1's hidden starting order — which order card is it?
-(a number, 'O14', or '?' for the card index · 'cancel' backs out — nothing is recorded · 'tracks', 'sites', 'ports', 'labs', 'hand' or 'log' to look around)
+(a number, 'O14', or '?' for the card index · 'cancel' backs out — nothing is recorded · 'tracks', 'sites', 'areas', 'ports', 'labs', 'hand' or 'log' to look around)
 > 
 ```
 
@@ -546,6 +548,8 @@ Tracks (`tracks` view): a full-screen surface with **every space as a card**. Ch
 Port offer (`ports` view): both Port boards, **every slot as the order card physically on it**, with a label above each card giving the slot number and its zone. A Port take is gated by your action power — LOW needs power 2, MID needs 3, HIGH needs 4 — so the section rule over each board states that gate, and a card in a zone you cannot reach is not an offer to you this turn. Empty slots draw as holes rather than closing up, because a take slides the remaining cards LEFT and then refills from the RIGHT, so which slot a card sits in is information. The shared order deck's remaining count sits under the boards.
 
 Laboratory offer (`labs` view): both Laboratory boards, every slot's technology as a card carrying its name, its country, its **whole effect text in full words** (never clipped — the qualifiers are what change a purchase decision), and the **industry the card costs in that slot**: the printed card cost plus the slot's own +0/+1/+2 surcharge, already added, with the two components shown beside the total. Industry comes from your action power, and each further point can be bought with 2 yen or 1 imported good — so a card one point out of reach costs two yen more, not a turn. The tech deck's remaining count sits under the boards. This is the **offer**; the `techs` index (§4) is the *identification* surface over all twenty titles.
+
+Areas (`areas` view): every area on the board as a **reference card**, grouped into the board's own rows — the surface to read *before* you decide where to move. Each card carries: what its action pays at every action power 1 to 5, in words, with the top rung written `power 5+` because 5 is where every payout stops rising; the 5-Power token's face; the four printed site rewards in full words, with a builder's mark on any space already taken; the trading house's VP; who is standing there (Presidents, assistants by seat, the Station); and any tolled canal crossing. **The ladders are the engine's own arithmetic**, not a table typed into the guide: each rung calls the same function that will pay you (`copper_mine_reward`, `bank_reward`, `port_accessible_zones`, `calculate_industry_value`, `calculate_church_faith`, `customs_max_imported_goods`, `employment_agency_tokens_allowed`, and Chinatown's nine printed rates), so a rules correction moves the reference with it. The four areas that already have a surface of their own — both Ports, both Laboratories, the Church and the Customs — state their action here and **point at that surface** (`ports`, `labs`, `tracks`) rather than redrawing it. This view is **taller than a 50-row screen** at 3 and 4 players and prints in full: scroll back for the rows above, exactly as you would for a long `log`.
 
 Your hand (`hand` view): the current player's order cards drawn full size, the kept starting order marked `your starting order`. In live mode, or for a bot seat, it shows the count and says why the contents are hidden rather than showing nothing (§2, *Privacy*).
 

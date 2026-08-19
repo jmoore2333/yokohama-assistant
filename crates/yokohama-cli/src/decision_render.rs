@@ -1124,7 +1124,7 @@ fn reveal_hint(model: &crate::screen_model::RevealModel, players: u8) -> String 
         // a whole-line match on a surface's own name, intercepted ahead of the
         // capture — so the hint was under-selling four screens.
         //
-        // **It names the WORDS and not `view`, deliberately.** The six surface
+        // **It names the WORDS and not `view`, deliberately.** The seven surface
         // names are intercepted by `Repl::step` AHEAD of the reveal collector,
         // exactly as `?` is; the `view` menu is dispatched in the command match
         // BELOW it, so the collector reaches every `view` line first and reads
@@ -1134,7 +1134,7 @@ fn reveal_hint(model: &crate::screen_model::RevealModel, players: u8) -> String 
         // have been the shorter clause and a false one, which
         // `the_reveal_hint_never_offers_the_one_word_that_does_not_work_here`
         // is the pin for.
-        "'tracks', 'sites', 'ports', 'labs', 'hand' or 'log' to look around".to_string(),
+        "'tracks', 'sites', 'areas', 'ports', 'labs', 'hand' or 'log' to look around".to_string(),
     ];
     wrap_hint(&parts, crate::screen::frame_width(usize::from(players)))
 }

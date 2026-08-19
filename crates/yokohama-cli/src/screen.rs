@@ -629,7 +629,7 @@ fn stage(repl: &Repl) -> String {
     // game-info surfaces and the command that opens them, so a player who
     // never read the guide finds them on screen.
     stage.push_str(
-        "info: type 'view' — board · players · ports · labs · tracks · sites · goals · hand · score · log   ·   '?' — the card index\n",
+        "info: type 'view' — board · players · ports · labs · tracks · sites · areas · goals · hand · score · log   ·   '?' — the card index\n",
     );
     stage
 }

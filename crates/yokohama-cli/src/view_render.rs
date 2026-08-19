@@ -44,7 +44,8 @@
 //! PROMPT UNDERNEATH, so it is the one thing a caller has to tell these
 //! functions.
 
-use yokohama_core::{AreaId, PlayerColor, PlayerId, PortZone};
+use yokohama_core::game::actions::{ChinatownGood, ChinatownRate};
+use yokohama_core::{AreaId, AreaType, PlayerColor, PlayerId, PortZone};
 
 use crate::board_render::{color_of, exact, Twin};
 use crate::card_render;
@@ -52,9 +53,9 @@ use crate::card_render::{bottom, interior, wrap_words, CARD_W};
 use crate::describe;
 use crate::screen::FLOOR_W;
 use crate::screen_model::{
-    menu_number, BoardModel, ChurchSpaceModel, CustomsSpaceModel, HandPanel, LabBoardModel,
-    LabSlotModel, LabsPanel, LogPanel, PortBoardModel, PortSlotModel, PortsPanel, TileModel,
-    TracksPanel,
+    menu_number, ActionYield, AreaCard, AreaCompanion, AreasPanel, BoardModel, ChinatownOffer,
+    ChurchSpaceModel, CustomsSpaceModel, HandPanel, LabBoardModel, LabSlotModel, LabsPanel,
+    LogPanel, PortBoardModel, PortSlotModel, PortsPanel, TileModel, TracksPanel,
 };
 use crate::style::{glyph, paint, Tone};
 
@@ -836,6 +837,419 @@ fn lab_card(slot: &LabSlotModel) -> Vec<String> {
 /// `every_lab_card_is_the_same_height_across_the_whole_registry`, so headroom
 /// nobody measured cannot creep in here.
 const LAB_CARD_H: usize = 6;
+
+// ---------------------------------------------------------------------------
+// The areas view (branch-4 T5)
+// ---------------------------------------------------------------------------
+
+/// An area reference card's width. Three to a row, exactly filling the design
+/// floor at a one-column gutter — [`LAB_VIEW_W`]'s arithmetic, and wide for the
+/// same reason: the payout ladder is spelled in WORDS, and a ladder nobody can
+/// read the rungs of is not a reference.
+const AREA_VIEW_W: usize = 66;
+
+/// **Where the ladder's numbers come from, and the two places they do not**
+/// — the callable inventory spec §2.7 item 2 asks the implementer to assemble,
+/// recorded where the surface that consumes it lives.
+///
+/// COMPUTED, by calling the engine's own function (all of these are reached
+/// through [`crate::screen_model::action_ladder`], so this renderer only ever
+/// words a number the model already asked the engine for):
+///
+/// | area | engine source |
+/// |---|---|
+/// | Copper Mine | `actions::copper_mine_reward(power)` |
+/// | Silk Mill | `actions::silk_mill_reward(power)` |
+/// | Tea Plantation | `actions::tea_plantation_reward(power)` |
+/// | Fishing Ground | `actions::fishing_ground_reward(power)` |
+/// | Bank | `actions::bank_reward(power)` |
+/// | Port A/B | `actions::port_accessible_zones(power)` |
+/// | Laboratory A/B | `actions::calculate_industry_value(power, 0, 0)` |
+/// | Employment Agency | `actions::employment_agency_tokens_allowed(power)` |
+/// | Church | `actions::church_faith_from_power` + `actions::calculate_church_faith` |
+/// | Customs | `actions::customs_max_imported_goods(power)` |
+/// | Chinatown rates | `actions::chinatown_rate(exchange)`, all nine |
+/// | site spaces | the registry's own `SpaceReward`, worded by `card_render::space_reward_words` |
+/// | 5-Power faces | the board's own `FivePowerEffect`, worded by `describe::five_power_effect_label` |
+/// | trading-house VP | the registry's `trading_house_reward` |
+///
+/// HAND-WORDED, because no callable exists — and each one carries the pin spec
+/// §2.7 demands, against apply behaviour rather than against itself:
+///
+/// - the Port's Power-5 `+3 VP`
+///   ([`crate::screen_model::PORT_TAKE_VP_AT_FULL_POWER`]) — `execute_port_action`
+///   awards it from a literal in its own body. Pin:
+///   `the_port_power_five_vp_bonus_matches_what_an_apply_awards`.
+/// - Chinatown's exchange depth (`power.min(5)`) — private inside
+///   `legal_moves::generate_chinatown_actions`. Pin:
+///   `the_chinatown_depth_matches_what_the_generator_offers`, against the
+///   longest chain the generator actually offers.
+///
+/// Everything else on a card is PROSE GLUE: the sentence that says what the
+/// action is. It states no number the engine owns.
+///
+/// **Height: this surface may exceed the screen, and prints in full.** At 3 and
+/// 4 players it draws fourteen and eighteen rich cards and runs past the 50-row
+/// design floor by design — it relies on terminal scrollback, which is the
+/// existing full-screen-view behaviour, said out loud here (spec §2.7) and said
+/// on the surface itself so a player is not left discovering it. Per-screenful
+/// legibility at the floor size is Forge's to prove (task 7), not a whole-surface
+/// capture's.
+pub fn areas_view(areas: &AreasPanel, colors: &[PlayerColor], context: ViewContext) -> String {
+    let mut out = String::new();
+    out.push_str(&view_title(
+        "AREAS",
+        "every area on the board: what its action pays at each power, what is printed on its site, and who is standing there",
+    ));
+
+    let per_row = ((FLOOR_W + GAP) / (AREA_VIEW_W + GAP)).max(1);
+    for row in &areas.rows {
+        // A board row wider than the floor CHUNKS into successive card rows
+        // rather than narrowing its cards: the reward words are the whole point
+        // of the surface, and a card narrow enough to fit six across could not
+        // carry them.
+        for chunk in row.chunks(per_row) {
+            for line in area_row(chunk, colors) {
+                out.push_str(&line);
+                out.push('\n');
+            }
+        }
+        out.push('\n');
+    }
+
+    out.push_str(&paint(
+        Tone::Chrome,
+        "Action power is 1 for your President plus 1 per assistant of yours in the area, +1 for the Station and whatever your technologies add — the ladder is what that buys.",
+    ));
+    out.push('\n');
+    out.push_str(&paint(
+        Tone::Chrome,
+        "The 5-Power token on a card is taken by the first player to act in that area at power 5, once, and is then gone.",
+    ));
+    out.push('\n');
+    out.push_str(&paint(
+        Tone::Chrome,
+        "This reference is TALLER than the screen at 3 and 4 players and prints in full — scroll back for the rows above.",
+    ));
+    out.push('\n');
+    out.push_str(&exit_line(context));
+    out.push('\n');
+    out.push_str(&paint(Tone::Prompt, "> "));
+    out.push('\n');
+    out
+}
+
+/// One row of area cards, every card padded to the row's tallest so their bottom
+/// edges line up.
+///
+/// **Padded per ROW rather than to one crate-wide height**, which is the one
+/// place this surface departs from [`lab_card`]'s shape and does it knowingly:
+/// the Laboratory cards differ by a line or two, while a Chinatown card carries
+/// nine printed rates and a Copper Mine card carries a sentence — squaring every
+/// area off against the tallest would spend four blank lines on most of the
+/// board. Levelling within the row buys the same tidy edge for nothing.
+fn area_row(cards: &[AreaCard], colors: &[PlayerColor]) -> Vec<String> {
+    let drawn: Vec<(String, Vec<String>)> = cards.iter().map(|c| area_card(c, colors)).collect();
+    let height = drawn.iter().map(|(_, body)| body.len()).max().unwrap_or(0);
+    let boxed: Vec<Vec<String>> = drawn
+        .into_iter()
+        .map(|(top, mut body)| {
+            while body.len() < height {
+                body.push(interior(&Twin::default(), AREA_VIEW_W));
+            }
+            let mut lines = vec![top];
+            lines.append(&mut body);
+            lines.push(bottom(AREA_VIEW_W));
+            lines
+        })
+        .collect();
+    card_row(&boxed)
+}
+
+/// One area's reference card as `(top edge, interior lines)` — the bottom edge
+/// is [`area_row`]'s, which is what lets a row level its cards.
+///
+/// Every line is exactly [`AREA_VIEW_W`] columns.
+fn area_card(card: &AreaCard, colors: &[PlayerColor]) -> (String, Vec<String>) {
+    let tile = &card.tile;
+
+    let mut top = Twin::default();
+    top.raw(&format!("{} ", glyph::BOX_TL));
+    top.tinted(Tone::Chrome, &format!("A{:02}", tile.area.0));
+    top.raw(" ");
+    top.tinted(Tone::Strong, &describe::area_type_name(tile.area_type).to_uppercase());
+    top.raw(" ");
+    let fill = (AREA_VIEW_W - 1).saturating_sub(top.width());
+    top.raw(&String::from(glyph::RULE).repeat(fill));
+    top.raw(&glyph::BOX_TR.to_string());
+
+    let inner = AREA_VIEW_W - 4;
+    let mut rows: Vec<String> = Vec::new();
+    let chrome = |text: &str, rows: &mut Vec<String>| {
+        for piece in wrap_words(text, inner) {
+            let mut t = Twin::default();
+            t.tinted(Tone::Chrome, &piece);
+            rows.push(interior(&t, AREA_VIEW_W));
+        }
+    };
+
+    chrome(area_action_gloss(tile.area_type), &mut rows);
+    if tile.area_type == AreaType::Chinatown {
+        for (_, rate) in ChinatownOffer::rates() {
+            let mut t = Twin::default();
+            t.raw("  ");
+            t.tinted(Tone::Reachable, &chinatown_rate_words(&rate));
+            rows.push(interior(&t, AREA_VIEW_W));
+        }
+    }
+
+    for rung in &card.ladder {
+        let mut t = Twin::default();
+        // `power 5+`, because 5 is where every engine reward function saturates
+        // and a real power can run past it (see `LADDER_POWERS`).
+        let last = rung.power == *crate::screen_model::LADDER_POWERS.last().expect("five rungs");
+        t.tinted(Tone::Chrome, &format!("power {}{}", rung.power, if last { "+" } else { "" }));
+        t.pad_to(10);
+        t.tinted(Tone::Reachable, &action_yield_words(&rung.pays));
+        rows.push(interior(&t, AREA_VIEW_W));
+    }
+
+    if let Some(companion) = card.companion {
+        let mut t = Twin::default();
+        t.tinted(Tone::Chrome, companion_pointer(companion));
+        rows.push(interior(&t, AREA_VIEW_W));
+    }
+
+    let mut token = Twin::default();
+    token.tinted(Tone::Chrome, "5-Power");
+    token.pad_to(10);
+    // The face only — WHEN it is taken is one rule for the whole board, so the
+    // surface says it once in its footer rather than on every card.
+    match tile.token {
+        Some(effect) => {
+            token.tinted(Tone::Vp, &describe::five_power_effect_label(effect));
+        }
+        None if tile.area_type == AreaType::Canal => {
+            token.tinted(Tone::Dim, "none — the Canal carries no token");
+        }
+        None => {
+            token.tinted(Tone::Dim, "already taken");
+        }
+    }
+    rows.push(interior(&token, AREA_VIEW_W));
+
+    match tile.site.as_ref() {
+        None => {
+            let mut t = Twin::default();
+            t.tinted(Tone::Dim, "no building site");
+            rows.push(interior(&t, AREA_VIEW_W));
+        }
+        Some(site) => {
+            // Two spaces to a line, printed rewards in FULL WORDS — the
+            // compressed tile tokens expanded, which is half of what this
+            // surface is for.
+            for pair in [0usize, 2] {
+                let mut t = Twin::default();
+                for (offset, slot) in site.slots.iter().enumerate().skip(pair).take(2) {
+                    if offset > pair {
+                        t.pad_to(31);
+                    }
+                    t.tinted(Tone::Chrome, &format!("{} ", describe::site_space_name(offset)));
+                    card_render::push_space_reward(&mut t, &slot.reward, false);
+                    if let Some(seat) = slot.built_by {
+                        t.raw(" ");
+                        t.owned(colors, seat, &glyph::BUILT.to_string());
+                    }
+                }
+                rows.push(interior(&t, AREA_VIEW_W));
+            }
+            let mut house = Twin::default();
+            house.tinted(Tone::Chrome, "house");
+            house.pad_to(10);
+            house.tinted(Tone::Vp, &format!("{}{} VP", glyph::VP, site.trading_house_vp));
+            house.pad_to(24);
+            match site.trading_house_owner {
+                Some(seat) => {
+                    house.owned(
+                        colors,
+                        seat,
+                        &format!("{} {}", glyph::BUILT, seat_name(colors, seat)),
+                    );
+                }
+                None => {
+                    house.tinted(Tone::Dim, "open");
+                }
+            }
+            rows.push(interior(&house, AREA_VIEW_W));
+        }
+    }
+
+    let mut here = Twin::default();
+    here.tinted(Tone::Chrome, "here");
+    here.pad_to(10);
+    let mut facts = 0usize;
+    for &seat in &tile.presidents {
+        if facts > 0 {
+            here.raw(&format!(" {} ", glyph::SEPARATOR));
+        }
+        here.owned(colors, seat, &format!("{} {}", glyph::PRESIDENT, seat_name(colors, seat)));
+        facts += 1;
+    }
+    for &(seat, n) in tile.assistants.iter().filter(|&&(_, n)| n > 0) {
+        if facts > 0 {
+            here.raw(&format!(" {} ", glyph::SEPARATOR));
+        }
+        here.owned(colors, seat, &format!("{}{} {}", glyph::ASSISTANT, n, seat_name(colors, seat)));
+        facts += 1;
+    }
+    if tile.has_station {
+        if facts > 0 {
+            here.raw(&format!(" {} ", glyph::SEPARATOR));
+        }
+        here.tinted(Tone::Reachable, "Station: +1 power for everyone");
+        facts += 1;
+    }
+    if facts == 0 {
+        here.tinted(Tone::Dim, "empty");
+    }
+    rows.push(interior(&here, AREA_VIEW_W));
+
+    if !tile.canal_crossings.is_empty() {
+        let mut t = Twin::default();
+        t.tinted(Tone::Chrome, "canal");
+        t.pad_to(10);
+        t.raw(&format!(
+            "1 yen to cross to {}",
+            tile.canal_crossings
+                .iter()
+                .map(|a: &AreaId| format!("A{:02}", a.0))
+                .collect::<Vec<_>>()
+                .join(" "),
+        ));
+        rows.push(interior(&t, AREA_VIEW_W));
+    }
+
+    (exact(&top, AREA_VIEW_W), rows)
+}
+
+/// What the area's action IS, in one sentence — the prose glue around the
+/// computed ladder. It states no number the engine owns.
+///
+/// Exhaustive with no `_` arm: a new area type is a compile error rather than a
+/// card with a blank line where its action should be.
+fn area_action_gloss(area_type: AreaType) -> &'static str {
+    match area_type {
+        AreaType::CopperMine => "Produce copper.",
+        AreaType::SilkMill => "Produce silk.",
+        AreaType::TeaPlantation => "Produce tea.",
+        AreaType::FishingGround => "Produce seafood.",
+        AreaType::Bank => "Take money from the bank.",
+        AreaType::PortA | AreaType::PortB => {
+            "Take one order card, or two by paying 2 yen or 1 imported good for the second — your \
+             power decides which zones you can reach, and your hand holds 3 cards at most."
+        }
+        AreaType::LaboratoryA | AreaType::LaboratoryB => {
+            "Acquire ONE technology card. Your power is industry value; each further point costs 2 \
+             yen or 1 imported good, the slot adds its own surcharge, and from your 4th card on \
+             there is a further 2 yen or 1 import to pay."
+        }
+        AreaType::EmploymentAgency => {
+            "Take assistants, shophouses and trading houses out of your warehouse — assistants are \
+             free, a shophouse costs its printed price, and trading houses run up the printed \
+             4/5/6/7 progression."
+        }
+        AreaType::Chinatown => "Trade at the printed rates, up to your power in exchanges:",
+        AreaType::Church => {
+            "Pay one of each kind you can — copper, silk, tea, seafood, 2 yen, an imported good — \
+             for +1 faith each on top of your power, then place an assistant on the highest free \
+             faith space you have reached."
+        }
+        AreaType::Customs => {
+            "Pay imported goods and place an assistant on the customs space of exactly that cost."
+        }
+        AreaType::Canal => {
+            "Never an action area. The Canal is crossed for 1 yen to the bank, and no President or \
+             assistant may stop on it."
+        }
+    }
+}
+
+/// One ladder rung's payout, in words. The NUMBERS are the engine's — this
+/// function only spells them.
+fn action_yield_words(pays: &ActionYield) -> String {
+    match pays {
+        ActionYield::Produce { good, amount } => {
+            format!("+{amount} {}", describe::trade_good_name(*good))
+        }
+        ActionYield::Money { yen } => format!("+{yen} yen"),
+        ActionYield::PortTake { zones, vp } => {
+            let reach = if zones.is_empty() {
+                "no zone in reach".to_string()
+            } else {
+                format!(
+                    "take from {}",
+                    zones.iter().map(|z| port_zone_name(*z)).collect::<Vec<_>>().join(", "),
+                )
+            };
+            if *vp > 0 {
+                format!("{reach} {} a take also scores {}{vp} VP", glyph::SEPARATOR, glyph::VP)
+            } else {
+                reach
+            }
+        }
+        ActionYield::Industry { value } => format!("{value} industry value"),
+        ActionYield::Faith { from_power, with_all_payment_kinds } => {
+            format!("faith {from_power}, up to {with_all_payment_kinds} paying all six kinds")
+        }
+        ActionYield::CustomsPayment { max_imports } => {
+            if *max_imports == 0 {
+                "no payment possible".to_string()
+            } else {
+                format!("pay up to {}", plural(*max_imports, "imported good"))
+            }
+        }
+        ActionYield::WarehouseTakes { items } => {
+            if *items == 0 {
+                "nothing".to_string()
+            } else {
+                format!("{} out of the warehouse", plural(*items, "item"))
+            }
+        }
+        ActionYield::Exchanges { count } => plural(*count, "exchange"),
+    }
+}
+
+/// `1 copper → 2 yen` — one printed Chinatown rate, priced by the engine.
+fn chinatown_rate_words(rate: &ChinatownRate) -> String {
+    format!(
+        "{} {} {} {} {}",
+        rate.spend_amount,
+        chinatown_good_name(rate.spend),
+        glyph::CHAIN_STEP,
+        rate.gain_amount,
+        chinatown_good_name(rate.gain),
+    )
+}
+
+fn chinatown_good_name(good: ChinatownGood) -> &'static str {
+    match good {
+        ChinatownGood::Copper => "copper",
+        ChinatownGood::Silk => "silk",
+        ChinatownGood::Tea => "tea",
+        ChinatownGood::Seafood => "seafood",
+        ChinatownGood::Money => "yen",
+        ChinatownGood::Imported => "import",
+    }
+}
+
+/// The word that opens the surface an area's own detail already lives on.
+fn companion_pointer(companion: AreaCompanion) -> &'static str {
+    match companion {
+        AreaCompanion::Ports => "The cards on offer are on the 'ports' view.",
+        AreaCompanion::Labs => "The technologies on offer are on the 'labs' view.",
+        AreaCompanion::Tracks => "Every space, and who is on it, is on the 'tracks' view.",
+    }
+}
 
 // ---------------------------------------------------------------------------
 // The hand view (T11)
@@ -2625,5 +3039,288 @@ pub(crate) mod tests {
             widest.chars().count(),
             31 - 11,
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // The areas view (branch-4 T5)
+    // -----------------------------------------------------------------------
+
+    /// The areas reference at `players`, from a real generated board.
+    fn areas_at(players: u8) -> (String, yokohama_core::GameState, Rules) {
+        let (state, rules) = game(players);
+        let colors: Vec<PlayerColor> = state.players.iter().map(|p| p.color).collect();
+        let text = areas_view(
+            &crate::screen_model::build_areas(&state, &rules),
+            &colors,
+            ViewContext::Decision,
+        );
+        (text, state, rules)
+    }
+
+    /// **Every area gets exactly one CARD.** A browsable reference that silently
+    /// drops a tile is worse than no reference at all, and the failure mode a
+    /// chunking layout invites is exactly that — a card lost off the end of a
+    /// row.
+    ///
+    /// Counted over card TITLES rather than over the id anywhere on the surface,
+    /// and the difference is load-bearing: an area id also appears in its
+    /// neighbours' canal-toll lines, so a bare `A02` count reads 3 on a healthy
+    /// 3-player board and would have to be relaxed into saying nothing.
+    #[test]
+    fn areas_view_renders_every_area_exactly_once() {
+        for players in [2u8, 3, 4] {
+            let (text, state, _) = areas_at(players);
+            let plain = strip_ansi(&text);
+            for (&area, cfg) in &state.board_layout.areas {
+                let title = format!(
+                    "{} A{:02} {}",
+                    glyph::BOX_TL,
+                    area.0,
+                    describe::area_type_name(cfg.area_type).to_uppercase(),
+                );
+                assert_eq!(
+                    plain.matches(&title).count(),
+                    1,
+                    "{players}P: {title:?} heads exactly one card",
+                );
+            }
+        }
+    }
+
+    /// **A board row too wide for the floor CHUNKS into successive card rows —
+    /// it never truncates** (spec §2.7's layout clause). Three claims, and the
+    /// third is what makes the word "chunks" mean anything: no line is wider
+    /// than the design floor, every card line measures its card's width exactly
+    /// (a card that sheared would shear the whole row it sits in), and the
+    /// ellipsis mark — the one thing [`crate::board_render::exact`] emits when a
+    /// line overruns — appears NOWHERE on the surface.
+    #[test]
+    fn board_rows_chunk_rather_than_truncate() {
+        for players in [2u8, 3, 4] {
+            let (text, _, _) = areas_at(players);
+            let mut card_lines = 0usize;
+            for line in text.lines() {
+                assert!(
+                    visible_width(line) <= FLOOR_W,
+                    "{players}P: {} columns past the floor: {:?}",
+                    visible_width(line),
+                    strip_ansi(line),
+                );
+                assert!(
+                    !strip_ansi(line).contains(glyph::ELLIPSIS),
+                    "{players}P: a line elided, and nothing on this surface may: {:?}",
+                    strip_ansi(line),
+                );
+                if line.contains(glyph::BOX_V) || line.contains(glyph::BOX_TL) {
+                    card_lines += 1;
+                }
+            }
+            assert!(card_lines > 0, "{players}P: the surface really draws cards");
+        }
+    }
+
+    /// **Every printed reward word reaches the screen whole** — the readability
+    /// half of the owner's ask: the compressed `✱1 ✱2¥1` tile tokens expand to
+    /// the `sites` vocabulary here, so a reward that is truncated to fit is a
+    /// failure of the surface's entire purpose.
+    #[test]
+    fn every_printed_site_reward_appears_in_full_words() {
+        for players in [2u8, 3, 4] {
+            let (text, state, rules) = areas_at(players);
+            let plain = strip_ansi(&text);
+            let board = crate::screen_model::build_board(&state, &rules, &[]);
+            let mut checked = 0usize;
+            for tile in &board.tiles {
+                let Some(site) = tile.site.as_ref() else { continue };
+                for slot in &site.slots {
+                    let words = crate::card_render::space_reward_words(&slot.reward);
+                    assert!(
+                        plain.contains(&words),
+                        "{players}P: A{:02} prints {words:?} and the reference must say it whole",
+                        tile.area.0,
+                    );
+                    checked += 1;
+                }
+            }
+            assert!(checked >= 40, "{players}P: the sweep really ran ({checked} spaces)");
+        }
+    }
+
+    /// **The surface is ALLOWED to run past the screen and prints in full**
+    /// (spec §2.7's height clause, stated rather than assumed). At 3 and 4
+    /// players it genuinely does exceed the 50-row design floor — a reference
+    /// over fourteen and eighteen rich cards cannot not — so it relies on
+    /// terminal scrollback, and it SAYS so on the surface rather than leaving a
+    /// player to discover that the top of it is above the window.
+    #[test]
+    fn the_view_is_allowed_to_exceed_screen_height_and_says_so() {
+        let (two, _, _) = areas_at(2);
+        let (four, _, _) = areas_at(4);
+        assert!(
+            four.lines().count() > 50,
+            "the 4P reference is taller than the floor by construction: {} rows",
+            four.lines().count(),
+        );
+        assert!(
+            four.lines().count() > two.lines().count(),
+            "more areas, more rows — nothing is being dropped to fit",
+        );
+        for (what, text) in [("2P", &two), ("4P", &four)] {
+            assert!(
+                strip_ansi(text).contains("scroll"),
+                "{what}: the surface names its own scrollback contract",
+            );
+        }
+    }
+
+    /// **The ladder lines quote the ENGINE's numbers** — the render half of
+    /// `production_ladders_are_computed_not_transcribed`. The model already
+    /// holds the engine's value; this is the pin that the value reaches the
+    /// screen instead of a nearby literal.
+    #[test]
+    fn every_production_ladder_line_quotes_the_engines_own_number() {
+        use yokohama_core::game::actions::{
+            copper_mine_reward, fishing_ground_reward, silk_mill_reward, tea_plantation_reward,
+        };
+        let (state, rules) = game(4);
+        let colors: Vec<PlayerColor> = state.players.iter().map(|p| p.color).collect();
+        let panel = crate::screen_model::build_areas(&state, &rules);
+        let mut checked = 0usize;
+        for card in panel.rows.iter().flatten() {
+            let (f, good): (fn(u8) -> u8, &str) = match card.tile.area_type {
+                AreaType::CopperMine => (copper_mine_reward, "copper"),
+                AreaType::SilkMill => (silk_mill_reward, "silk"),
+                AreaType::TeaPlantation => (tea_plantation_reward, "tea"),
+                AreaType::FishingGround => (fishing_ground_reward, "seafood"),
+                _ => continue,
+            };
+            let drawn = strip_ansi(&area_card(card, &colors).1.join("\n"));
+            for power in crate::screen_model::LADDER_POWERS {
+                let want = format!("+{} {good}", f(power));
+                assert!(
+                    drawn.contains(&want),
+                    "A{:02} at power {power} pays {want:?}:\n{drawn}",
+                    card.tile.area.0,
+                );
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 4 * 5 * 2, "a 4P board deals two of each production area");
+    }
+
+    /// **Special areas state their action in words and POINT at their own
+    /// surface** (spec §2.7 item 5) — they never redraw it. Port, Laboratory,
+    /// Church and Customs each already have a full-screen view; a reference that
+    /// copied those would be a second copy of a live offer to keep true.
+    #[test]
+    fn special_areas_state_their_action_and_point_at_their_view() {
+        let (state, rules) = game(4);
+        let colors: Vec<PlayerColor> = state.players.iter().map(|p| p.color).collect();
+        let panel = crate::screen_model::build_areas(&state, &rules);
+        let mut seen = 0usize;
+        for card in panel.rows.iter().flatten() {
+            let (word, action): (&str, &str) = match card.tile.area_type {
+                AreaType::PortA | AreaType::PortB => ("'ports'", "order card"),
+                AreaType::LaboratoryA | AreaType::LaboratoryB => ("'labs'", "technology"),
+                AreaType::Church => ("'tracks'", "faith"),
+                AreaType::Customs => ("'tracks'", "imported good"),
+                _ => continue,
+            };
+            let drawn = strip_ansi(&area_card(card, &colors).1.join("\n"));
+            assert!(drawn.contains(word), "A{:02} points at {word}:\n{drawn}", card.tile.area.0);
+            assert!(
+                drawn.contains(action),
+                "A{:02} states its action in words ({action:?}):\n{drawn}",
+                card.tile.area.0,
+            );
+            seen += 1;
+        }
+        assert_eq!(seen, 6, "a 4P board deals two Ports, two Laboratories, a Church and a Customs");
+    }
+
+    /// The Chinatown card prints all NINE printed rates, each priced by the
+    /// engine's own `chinatown_rate` — the one area whose whole action is a
+    /// table nothing else in the driver ever shows.
+    #[test]
+    fn the_chinatown_card_prints_every_printed_rate() {
+        let (state, rules) = game(4);
+        let colors: Vec<PlayerColor> = state.players.iter().map(|p| p.color).collect();
+        let panel = crate::screen_model::build_areas(&state, &rules);
+        let card = panel
+            .rows
+            .iter()
+            .flatten()
+            .find(|c| c.tile.area_type == AreaType::Chinatown)
+            .expect("a 4P board deals a Chinatown");
+        let drawn = strip_ansi(&area_card(card, &colors).1.join("\n"));
+        for (_, rate) in crate::screen_model::ChinatownOffer::rates() {
+            let line = chinatown_rate_words(&rate);
+            assert!(drawn.contains(&line), "the Chinatown card prints {line:?}:\n{drawn}");
+        }
+    }
+
+    /// **The roster of nine is exhaustive**, and the guard behind that claim is
+    /// a `_`-free match rather than a comment: every variant maps to its own
+    /// index, and the nine indices are the nine positions of the array.
+    #[test]
+    fn the_chinatown_roster_covers_every_exchange_exactly_once() {
+        use crate::screen_model::ChinatownOffer;
+        let mut seen: Vec<usize> =
+            ChinatownOffer::all().into_iter().map(ChinatownOffer::index).collect();
+        seen.sort_unstable();
+        assert_eq!(seen, (0..9).collect::<Vec<_>>(), "nine exchanges, each listed once");
+    }
+
+    /// Piped output is byte-plain: `paint` is the identity while color is off
+    /// (the default in tests), so the whole surface must carry no escape byte.
+    #[test]
+    fn the_areas_view_is_escape_free_when_piped() {
+        for players in [2u8, 3, 4] {
+            let (text, _, _) = areas_at(players);
+            assert!(!text.contains('\u{1b}'), "{players}P: an escape reached a piped surface");
+        }
+    }
+
+    /// **The areas view wears the shape every full-screen surface wears** — the
+    /// standing title (`NAME — full view   <gloss>`, a blank row under it) and
+    /// the standing exit clause directly above the caret.
+    ///
+    /// Stated as its own test rather than by joining [`t11_views`], which is the
+    /// roster the T11 sweeps read AND the roster
+    /// `the_committed_t11_captures_are_what_the_renderers_draw` names its golden
+    /// files off: adding a branch-4 surface there would have committed it as
+    /// `t11-areas.txt`, a filename claiming a task that did not build it. The
+    /// two properties that roster buys are cheaper to restate than a misfiled
+    /// golden is to explain, and `areas` carries its own capture below.
+    #[test]
+    fn the_areas_view_wears_the_standing_title_and_exit_shape() {
+        let (text, _, _) = areas_at(2);
+        let lines: Vec<String> = text.lines().map(strip_ansi).collect();
+        let (name, gloss) = lines[0]
+            .split_once(" — full view   ")
+            .unwrap_or_else(|| panic!("the title is `NAME — full view   <gloss>`: {:?}", lines[0]));
+        assert!(name.chars().all(|c| !c.is_lowercase()), "the name leads, in caps: {name:?}");
+        assert!(gloss.len() > 40, "and says what is on it: {gloss:?}");
+        assert_eq!(lines[1], "", "a blank row under the title");
+
+        let last_exit_line = strip_ansi(&exit_line(ViewContext::Decision))
+            .lines()
+            .next_back()
+            .expect("a last line")
+            .to_string();
+        let caret = lines
+            .iter()
+            .position(|l| l.starts_with("> "))
+            .expect("every view ends at a caret");
+        assert_eq!(lines[caret - 1], last_exit_line, "the way out sits above the prompt");
+    }
+
+    /// The `areas` view's golden, at 2 players — the committed capture every
+    /// full-screen surface in this module carries, and the artifact a layout
+    /// change has to be looked at through.
+    #[test]
+    fn the_committed_areas_capture_is_what_the_renderer_draws() {
+        let (text, _, _) = areas_at(2);
+        assert_capture("b4-areas-view.txt", &strip_ansi(&text));
     }
 }

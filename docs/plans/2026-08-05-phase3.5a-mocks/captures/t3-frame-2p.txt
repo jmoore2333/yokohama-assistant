@@ -41,7 +41,7 @@
 marks: ▲ president (owner color) · ● assistants (4, then +n) · ◈ a Movement destination the engine offers · [St] Station (+1 Power for everyone)
 site slots: ⌂ built (owner color) · ★n VP · ¥n yen · f/t/s/cn goods · *n any good · an assistants · ⌂n build · Tn trading-house VP — 'sites' renders the full cards
 end triggers: deck 10 · church 0/4 · customs 0/4 · shophouses 0/8 · trade houses 0/4
-info: type 'view' — board · players · ports · labs · tracks · sites · goals · hand · score · log   ·   '?' — the card index
+info: type 'view' — board · players · ports · labs · tracks · sites · areas · goals · hand · score · log   ·   '?' — the card index
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 TURN 1 · RED's turn    ADDITIONAL  ▸ Placement ▸ Movement ▸ Area Action ▸ 5-Power ▸ Building ▸ Recovery ▸ Additional ▸ End
 

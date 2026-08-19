@@ -39,7 +39,7 @@ Canal: the President may cross shore to shore for ¥1 to the bank ('sites' lists
 ─ ACHIEVEMENTS  A · own 7 seafood  8/6 VP  unclaimed · B · own 10 yen  9/7 VP  unclaimed · C · buildings in 4 commercial  10/8 VP  unclaimed
 ─ YOUR HAND  O05 France · 'hand' expands
 end triggers: deck 16 · church 0/6 · customs 0/6 · shophouses 0/8 · trade houses 0/4
-info: type 'view' — board · players · ports · labs · tracks · sites · goals · hand · score · log   ·   '?' — the card index
+info: type 'view' — board · players · ports · labs · tracks · sites · areas · goals · hand · score · log   ·   '?' — the card index
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 TURN 1 · RED's turn    ADDITIONAL  ▸ Placement ▸ Movement ▸ Area Action ▸ 5-Power ▸ Building ▸ Recovery ▸ Additional ▸ End
 

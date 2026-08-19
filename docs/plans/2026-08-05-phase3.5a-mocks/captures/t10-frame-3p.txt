@@ -39,7 +39,7 @@ Canal: the President may cross shore to shore for ¥1 to the bank ('sites' lists
 ─ ACHIEVEMENTS  A · own 6 silk  8/6 VP  unclaimed · B · complete 5 orders  9/7 VP  unclaimed · C · buildings in 4 production  10/8 VP  unclaimed
 ─ YOUR HAND  O01 America · 'hand' expands
 end triggers: deck 13 · church 0/5 · customs 0/5 · shophouses 0/8 · trade houses 0/4
-info: type 'view' — board · players · ports · labs · tracks · sites · goals · hand · score · log   ·   '?' — the card index
+info: type 'view' — board · players · ports · labs · tracks · sites · areas · goals · hand · score · log   ·   '?' — the card index
 ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 TURN 1 · RED's turn    ADDITIONAL  ▸ Placement ▸ Movement ▸ Area Action ▸ 5-Power ▸ Building ▸ Recovery ▸ Additional ▸ End
 
