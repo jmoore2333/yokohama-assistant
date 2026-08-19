@@ -8626,6 +8626,168 @@ mod tests {
         assert_ne!(ecology.seats, v1.seats, "two ecologies must not seat the same contestant");
     }
 
+    /// **SPEC §5.1 — the ecology-id bump the pin above obliges.**
+    ///
+    /// Every field of [`GeneratingEcology`] is identity, and §5.1 changes one:
+    /// the seats. The in-source any-field-change rule therefore bumps the
+    /// version `v2.2` → `v2.3`, and the retired string joins its predecessors
+    /// as test history and nowhere else (the `v2` → `v2.1` → `v2.2` precedent).
+    ///
+    /// Read the bump the way the two extensions before it are read: it is a
+    /// NAMING obligation, not a re-pointing. Pinned-V2 is the padded live V2, so
+    /// every ordinal resolves to exactly the state it resolved to before — which
+    /// is what the sibling decision-equality pin asserts and what the one-time
+    /// scan-level byte-match at named burned ordinals measured.
+    #[test]
+    fn the_v2_ecology_bumps_its_version_for_the_pinned_seats() {
+        let ecology = GeneratingEcology::v2_lookahead();
+        assert_eq!(
+            ecology.id, "driven-generated-v2.3-lookahead",
+            "pinning the generating seats changes an ecology FIELD, so the version moves",
+        );
+        assert_eq!(ecology.id, GENERATED_ECOLOGY_V2_LOOKAHEAD);
+        for retired in [
+            "driven-generated-v2-lookahead",
+            "driven-generated-v2.1-lookahead",
+            "driven-generated-v2.2-lookahead",
+        ] {
+            assert_ne!(
+                ecology.id, retired,
+                "a pre-bump id must survive as test history and nowhere else",
+            );
+        }
+    }
+
+    /// **SPEC §5.1 — the generating-ecology identity fix, tier (i).**
+    ///
+    /// The coupling this replaces: the layer-2 ecology's scanning seats WERE the
+    /// live shipped contestant, whose weight table is whatever the shipped
+    /// constructors take at the commit it is built on. At an evaluator freeze
+    /// both scanning seats would play differently and every recorded
+    /// `(predicate, master, ordinal)` triple of this ecology would resolve to a
+    /// DIFFERENT state while every recorded triple still read exactly the same —
+    /// the precise failure mode [`GeneratingEcology`] exists to make impossible,
+    /// and the precondition the acceptance battery's post-fix re-reads depend on.
+    ///
+    /// The fix pins the seats to an EXPLICIT [`WeightTable::V2`] via in-crate
+    /// weighted construction, so this pin is keyed to `V2` BY NAME and never to
+    /// the shipped default: that is what lets it survive — and enforce —
+    /// through the freeze that re-points the default. The link to what the scan
+    /// actually benches is [`GeneratingConfig`]'s own invariant: the ecology is
+    /// BUILT FROM the seat, so the recorded echo cannot drift from the agent.
+    #[test]
+    fn the_v2_ecology_seats_are_pinned_to_an_explicit_v2_table() {
+        use crate::game::eval::WeightTable;
+        use crate::game::lookahead::{
+            controller_provenance_capped, DEFAULT_BEAM, DEFAULT_WORLDS,
+        };
+        use crate::game::arena::descriptor_echo;
+
+        let pinned_echo = |weights: &WeightTable| {
+            let p = controller_provenance_capped(
+                SearchScheme::TurnBoundary { beam: DEFAULT_BEAM },
+                DEFAULT_WORLDS,
+                DEFAULT_RETREAT_SAMPLES,
+                None,
+                weights,
+                None,
+            );
+            descriptor_echo(&p.name, p.version, &p.params)
+        };
+
+        let ecology = GeneratingEcology::v2_lookahead();
+        assert_eq!(
+            ecology.seats,
+            vec![pinned_echo(&WeightTable::V2); 2],
+            "the layer-2 ecology must record the EXPLICIT-V2 construction at both seats — \
+             keyed to the table by name, never to whatever the shipped constructors take",
+        );
+        // ANTI-VACUITY: the echo names the table, so a different table is a
+        // different echo. Without this the assertion above would hold for any
+        // construction that happened to spell its knobs the same way.
+        assert_ne!(
+            pinned_echo(&WeightTable::V2),
+            pinned_echo(&WeightTable::ZERO),
+            "the recorded echo must carry the weight-table identity, or it pins no table",
+        );
+        assert!(
+            ecology.seats[0].contains(&format!(
+                "weights={}",
+                crate::game::greedy::weight_table_identity(&WeightTable::V2)
+            )),
+            "the recorded seat must name V2's identity digest: {:?}",
+            ecology.seats[0],
+        );
+    }
+
+    /// **SPEC §5.1 — tier (i)'s second half: the semantics did not move.**
+    ///
+    /// The pinned construction and the shipped agent decide IDENTICALLY today
+    /// (they must: pinned-V2 is the padded live V2 by §5's retention contract),
+    /// which is what makes the ecology-id bump a naming obligation rather than a
+    /// re-pointing. The day the shipped constructors take a different table this
+    /// pin goes red — and that is the whole point: it says out loud that the
+    /// scan's seats stopped being the shipped seats, instead of letting every
+    /// recorded ordinal silently re-point.
+    ///
+    /// MUTATION-PROVEN by table perturbation in the same test: a perturbed table
+    /// must move a decision on this walk, or the equality above is pinning
+    /// nothing.
+    #[test]
+    fn the_pinned_generating_seat_decides_exactly_as_the_shipped_agent_today() {
+        use crate::game::eval::WeightTable;
+        use crate::game::lookahead::{DEFAULT_BEAM, DEFAULT_WORLDS};
+
+        let rules = Rules::standard();
+        let seed = 0x0B01_2026_0819_9004u64;
+        let pinned = |weights: WeightTable| {
+            LookaheadAgent::with_knobs(
+                &rules,
+                SearchScheme::TurnBoundary { beam: DEFAULT_BEAM },
+                DEFAULT_WORLDS,
+                DEFAULT_RETREAT_SAMPLES,
+                weights,
+                seed,
+            )
+        };
+
+        // A short walk: the shipped agent drives, and at every decision point
+        // the two candidate agents are asked the same question at the same
+        // state on the same stream seed.
+        let mut state = root_2p(&rules, 0x0B01_2026_0819_9005);
+        let mut shipped_seat = Contestant::LOOKAHEAD_V1_DEFAULT.build(&rules, seed).0;
+        let mut pinned_seat = pinned(WeightTable::V2);
+        let mut mutant_seat = pinned(WeightTable::ZERO);
+        let mut decisions = 0usize;
+        let mut mutant_divergences = 0usize;
+        for _ in 0..8 {
+            if is_game_over(&state) {
+                break;
+            }
+            let view = observe(&state, state.current_player).expect("the seat is viewable");
+            let shipped = shipped_seat.choose(&view, &rules).expect("the shipped agent decides");
+            let pinned_move =
+                pinned_seat.choose(&view, &rules).expect("the pinned agent decides");
+            let mutant = mutant_seat.choose(&view, &rules).expect("the mutant decides");
+            assert_eq!(
+                pinned_move.mv, shipped.mv,
+                "decision {decisions}: the pinned construction and the shipped agent must \
+                 agree — a divergence means the scan's seats stopped being the shipped seats",
+            );
+            if mutant.mv != shipped.mv {
+                mutant_divergences += 1;
+            }
+            state = apply_move_unchecked(&state, &shipped.mv, &rules).expect("it applies");
+            decisions += 1;
+        }
+        assert!(decisions >= 6, "the walk barely ran: {decisions} decisions");
+        assert!(
+            mutant_divergences > 0,
+            "a zeroed table decided identically at all {decisions} points, so the equality \
+             above is pinning nothing",
+        );
+    }
+
     /// v2's EXTENDED identity: the raised bound, the version string that rides
     /// it, and the cap that did NOT move — which is what makes the raise an
     /// extension rather than a re-draw.

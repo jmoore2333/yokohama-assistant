@@ -177,6 +177,28 @@ pub enum Contestant {
     MctsV1 { cap: Option<u32>, c_ppm: u32, scale: i64, m: u8, leaf: LeafRule },
 }
 
+/// `name@vN` or `name@vN{k=v,…}` — the ONE echo composer, over a descriptor's
+/// three parts rather than over a [`Contestant`].
+///
+/// Extracted from [`Contestant::echo`] (whose body this is) at the V3 adoption,
+/// because §5.1's pinned generating seat is a construction the `Contestant`
+/// grammar deliberately cannot name — its weight table is explicit rather than
+/// whatever the shipped constructors take today — and it must still echo in the
+/// one format every report, golden and CLI header reads. A second composer
+/// beside this one is exactly the drift the W1 grammar promotion exists to
+/// prevent, so there is one function and both callers route through it.
+pub(crate) fn descriptor_echo(
+    name: &str,
+    version: u32,
+    params: &BTreeMap<String, i64>,
+) -> String {
+    if params.is_empty() {
+        return format!("{name}@v{version}");
+    }
+    let knobs: Vec<String> = params.iter().map(|(k, v)| format!("{k}={v}")).collect();
+    format!("{name}@v{version}{{{}}}", knobs.join(","))
+}
+
 /// How a contestant resolves its dealt starting-order pair — the property spec
 /// §5.5 scopes the pairing doctrine on.
 ///
@@ -597,11 +619,7 @@ impl Contestant {
     /// record's two halves rather than over this string.
     pub fn echo(&self) -> String {
         let (name, version, params) = self.descriptor();
-        if params.is_empty() {
-            return format!("{name}@v{version}");
-        }
-        let knobs: Vec<String> = params.iter().map(|(k, v)| format!("{k}={v}")).collect();
-        format!("{name}@v{version}{{{}}}", knobs.join(","))
+        descriptor_echo(&name, version, &params)
     }
 
     /// Which starting-order rule this contestant plays (spec §5.5).

@@ -285,6 +285,21 @@ pub enum Feature {
     /// Order cards in hand. R1-7: 0.4745/0.4171/0.3753 — NEGATIVE and growing
     /// (an unfulfilled order is a commitment, not an asset).
     HandSize,
+    /// How near this seat is to its NEXT achievement claim, negated so that
+    /// nearer reads HIGHER — the V3 mini-cycle's one admitted candidate
+    /// (`docs/plans/2026-08-19-phase3.5c-v3-round1-evidence.md` §2/§4). Value
+    /// arithmetic and the three decisions behind it:
+    /// [`achievement_race_proximity`].
+    ///
+    /// **A score-structure feature** ([`Feature::is_score_structure`] answers
+    /// TRUE): it reads the same achievement legs
+    /// [`Feature::AchievementProgressSum`] reads, so it is derived ONCE per
+    /// seat in [`ScoreStructure::derive`] beside them rather than recomputed
+    /// per accessor call. It is NOT a component of
+    /// [`ScoreStructure::final_total`] — proximity is not points, and folding
+    /// it into a final total would put a positional quantity into §2.6's
+    /// terminal ranking.
+    AchievementRaceProximity,
 }
 
 impl Feature {
@@ -335,6 +350,7 @@ impl Feature {
             Feature::AchievementProgressSum => 13,
             Feature::MercenariesTotal => 14,
             Feature::HandSize => 15,
+            Feature::AchievementRaceProximity => 16,
         }
     }
 
@@ -358,6 +374,7 @@ impl Feature {
             Feature::AchievementProgressSum => "achievement_progress_sum",
             Feature::MercenariesTotal => "mercenaries_total",
             Feature::HandSize => "hand_size",
+            Feature::AchievementRaceProximity => "achievement_race_proximity",
         }
     }
 
@@ -375,6 +392,7 @@ impl Feature {
                 | Feature::ChurchBonusNow
                 | Feature::CustomsBonusNow
                 | Feature::AchievementProgressSum
+                | Feature::AchievementRaceProximity
         )
     }
 }
@@ -880,6 +898,12 @@ impl WeightTable {
     /// Prefer `V2` in new code. This spelling exists for the committed commands.
     pub const V2_DRAFT: WeightTable = Self::V2;
 
+    /// **THE V3 MINI-CYCLE'S CANDIDATE TABLE — shipped by nothing.**
+    ///
+    /// **RED SKELETON.** Its value lands in the GREEN commit; this alias exists
+    /// so the pins that describe it compile and fail on a value.
+    pub const V3_DRAFT: WeightTable = Self::V2;
+
     /// The all-zero table: a CONSTANT evaluator. Not a curiosity — spec §3.2's
     /// degeneracy pin and §0.2's targeted-mutation authoring rule both need one,
     /// and a table is how a caller builds a mutant without a second code path.
@@ -1204,6 +1228,11 @@ pub struct ScoreStructure {
     pub remainder: [i64; MAX_SEATS],
     /// Summed progress toward the three Achievement cards in play.
     pub achievement: [i64; MAX_SEATS],
+    /// Nearness to the seat's NEXT achievement claim, negated
+    /// ([`achievement_race_proximity`]). Derived here with the other
+    /// achievement arithmetic and deliberately NOT summed into
+    /// [`final_total`](Self::final_total) — proximity is not points.
+    pub race_proximity: [i64; MAX_SEATS],
 }
 
 impl ScoreStructure {
@@ -1218,6 +1247,7 @@ impl ScoreStructure {
             customs: [0; MAX_SEATS],
             remainder: [0; MAX_SEATS],
             achievement: [0; MAX_SEATS],
+            race_proximity: [0; MAX_SEATS],
         };
 
         for player in &view.players {
@@ -1261,6 +1291,7 @@ impl ScoreStructure {
             Feature::ChurchBonusNow => structured(&self.church),
             Feature::CustomsBonusNow => structured(&self.customs),
             Feature::AchievementProgressSum => structured(&self.achievement),
+            Feature::AchievementRaceProximity => structured(&self.race_proximity),
 
             // The piecewise split, and the only place its shape lives: the two
             // raw values SUM to `in_hand` at every count, so the pair carries
@@ -1608,6 +1639,16 @@ pub fn achievement_progress_postclaim_sum(view: &PlayerView, player: &VisiblePla
         sum += i64::from(current.min(needed));
     }
     sum
+}
+
+/// How near this seat is to its NEXT achievement claim, negated so that nearer
+/// reads HIGHER — [`Feature::AchievementRaceProximity`]'s arithmetic.
+///
+/// **RED SKELETON.** The arithmetic lands in the GREEN commit; this stub exists
+/// so the pins that describe it compile and fail on a value rather than on a
+/// missing symbol.
+pub fn achievement_race_proximity(_view: &PlayerView, _player: &VisiblePlayer) -> i64 {
+    0
 }
 
 /// One player's `(current, needed)` progress toward one achievement, mirroring
@@ -2079,6 +2120,103 @@ mod tests {
         assert_eq!(names.len(), unique, "duplicate feature name");
         // The exact five whose values come from `ScoreStructure`.
         assert_eq!(Feature::ALL.iter().filter(|f| f.is_score_structure()).count(), 5);
+    }
+
+    /// **V3's admitted candidate, appended LAST** (`docs/plans/2026-08-19-phase3.5c-v3-spec.md`
+    /// §5; the L2 evidence artifact's §4 verdict). The width claim leads every
+    /// assertion here on purpose: `Feature::ALL` is the hand-maintained literal
+    /// with no compiler-checked relation to the variant set, so a variant given
+    /// its match arms and left out of `ALL` scores zero silently — this is the
+    /// pin that refuses that state.
+    #[test]
+    fn the_seventeenth_feature_is_the_achievement_race_proximity_column() {
+        assert_eq!(Feature::COUNT, 17, "the V3 admission moves the list 16 -> 17");
+        assert_eq!(
+            Feature::ALL.last().copied(),
+            Some(Feature::AchievementRaceProximity),
+            "the admitted feature is APPENDED, never inserted: every earlier index is a \
+             recorded weight-vector slot",
+        );
+        assert_eq!(Feature::AchievementRaceProximity.index(), 16);
+        assert_eq!(Feature::AchievementRaceProximity.name(), "achievement_race_proximity");
+        assert!(
+            Feature::AchievementRaceProximity.is_score_structure(),
+            "it reads the achievement legs the structure already derives",
+        );
+        assert_eq!(
+            Feature::ALL.iter().filter(|f| f.is_score_structure()).count(),
+            6,
+            "five mirrors plus the proximity column",
+        );
+    }
+
+    /// **Spec §5's RETENTION CONTRACT.** Physical byte-verbatim is impossible
+    /// across a width change, so what is pinned is: the sixteen historical
+    /// values unchanged, and a `(0, 0)` seventeenth slot in every retained
+    /// table. A zero weight contributes a zero product, so behaviour identity
+    /// is exact rather than approximate — the organic half of that claim is
+    /// `tests/eval_core.rs`'s inertness pin and the committed evaluator golden.
+    #[test]
+    fn the_retained_tables_pad_the_seventeenth_slot_with_zero() {
+        assert_eq!(Feature::COUNT, 17, "the V3 admission moves the list 16 -> 17");
+        for (label, table) in [
+            ("V1", WeightTable::V1),
+            ("V2", WeightTable::V2),
+            ("PRE_FREEZE_2026_07_27", WeightTable::PRE_FREEZE_2026_07_27),
+        ] {
+            assert_eq!(
+                table.get(Feature::AchievementRaceProximity),
+                (0, 0),
+                "{label} must PAD the new slot: a retained table prices no feature it was \
+                 never measured on",
+            );
+        }
+        // The sixteen that were there before are the sixteen that are there
+        // now, in order, in both vectors of both live tables.
+        assert_eq!(
+            WeightTable::V1.early[..16],
+            [10, 12, 6, -4, 3, 30, 4, -10, 14, 12, 15, 8, 5, 2, 3, -3],
+        );
+        assert_eq!(
+            WeightTable::V1.late[..16],
+            [40, 30, 20, 16, 20, 20, 2, -4, 10, 20, 25, 10, 8, 4, 4, -6],
+        );
+        assert_eq!(
+            WeightTable::V2.early[..16],
+            [1, 20, 14, -4, 3, 30, 5, -10, 6, 12, 15, 8, 5, 2, 3, -1],
+        );
+        assert_eq!(
+            WeightTable::V2.late[..16],
+            [40, 30, 20, 8, 20, 20, 2, -10, 10, 20, 25, 14, 8, 4, 4, -2],
+        );
+    }
+
+    /// **`V3_DRAFT` is padded `V2` plus the L2-selected rung, and NOTHING
+    /// else** — the candidate table the adoption commit introduces and that
+    /// nothing ships (spec §5; `eval_screen_round`'s candidate arm is its only
+    /// reader). The rung is V3-R1's SELECTED one: `(40, 40)`, the ladder's
+    /// bottom, chosen because every higher rung deteriorated monotonically.
+    #[test]
+    fn v3_draft_is_padded_v2_plus_the_selected_proximity_rung() {
+        assert_eq!(Feature::COUNT, 17, "the V3 admission moves the list 16 -> 17");
+        let draft = WeightTable::V3_DRAFT;
+        assert_ne!(draft, WeightTable::V2, "a draft equal to the shipped table screens nothing");
+        assert_eq!(
+            draft.get(Feature::AchievementRaceProximity),
+            (40, 40),
+            "V3-R1's selected rung is a1/4 = 40 in both vectors",
+        );
+        for feature in Feature::ALL {
+            if feature == Feature::AchievementRaceProximity {
+                continue;
+            }
+            assert_eq!(
+                draft.get(feature),
+                WeightTable::V2.get(feature),
+                "{}: the draft moves ONE slot — every other weight is padded V2 verbatim",
+                feature.name(),
+            );
+        }
     }
 
     #[test]

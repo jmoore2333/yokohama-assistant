@@ -4882,6 +4882,66 @@ mod tests {
         assert_eq!(shipped_bonus(&view, 2, Feature::TechBonusNow, &rules), 5);
     }
 
+    /// **THE GRADUATION PIN (spec §5's postclaim precedent).** When a candidate
+    /// column is admitted into `Feature::ALL`, its arithmetic MOVES into
+    /// `eval.rs` as one authored function and this column re-points at it — so
+    /// the screened column and the shipped feature can never be two things that
+    /// drift.
+    ///
+    /// Asserted over the same fixtures the arithmetic pin below uses, plus the
+    /// shipped FEATURE's own value, so the chain
+    /// `column -> eval helper -> Feature::AchievementRaceProximity` is closed
+    /// end to end.
+    #[test]
+    fn the_achievement_race_proximity_column_is_the_shipped_helper_verbatim() {
+        let rules = Rules::standard();
+        let one_tech = techs_totalling(&rules, &[3]);
+        let mut view = observed_view(2, 17, 0, &rules);
+        view.achievements = [
+            AchievementCard::new(AchievementType::Money10),
+            AchievementCard::new(AchievementType::Orders5),
+            AchievementCard::new(AchievementType::Technologies4),
+        ];
+        {
+            let me = seat_mut(&mut view, 0);
+            me.money = 8;
+            me.completed_orders = vec![OrderCardId(1), OrderCardId(2)];
+            me.technologies = one_tech.clone();
+        }
+        let mut nonzero = 0usize;
+        for claim in [None, Some((0usize, PlayerId(0))), Some((0, PlayerId(1)))] {
+            let mut probe_view = view.clone();
+            if let Some((card, by)) = claim {
+                probe_view.achievements[card].claimed_by.push(by);
+            }
+            for seat in 0u8..2 {
+                let player = probe_view
+                    .players
+                    .iter()
+                    .find(|p| p.id == PlayerId(seat))
+                    .expect("both seats are in the view")
+                    .clone();
+                let column =
+                    column_value(CandidateColumn::AchievementRaceProximity, &probe_view, seat, &rules);
+                assert_eq!(
+                    column,
+                    yokohama_core::game::eval::achievement_race_proximity(&probe_view, &player),
+                    "the column must BE the shipped helper, not a second copy of it",
+                );
+                assert_eq!(
+                    column,
+                    ScoreStructure::derive(&probe_view, &rules)
+                        .value_of(&player, Feature::AchievementRaceProximity),
+                    "…and the shipped FEATURE must report the same number",
+                );
+                if column != 0 {
+                    nonzero += 1;
+                }
+            }
+        }
+        assert!(nonzero > 0, "every reading was zero, so this pins nothing");
+    }
+
     /// The achievement column is SELF-guidance, per the owner's 2026-08-09 canon
     /// batch: achievements are agenda-setters, so what it measures is how near
     /// THIS seat is to its next claim — never how near an opponent is.
