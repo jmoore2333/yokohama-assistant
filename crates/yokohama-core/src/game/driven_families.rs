@@ -2537,14 +2537,18 @@ pub const FAMILY2_CONTROL_GENERATOR: FamilyGenerator =
 /// `every_frozen_block_fits_the_supply_its_generator_declares`: family 1 spans
 /// **16 draws** (4..20) inside the v1.1 rung ecology's 16 games × cap 2 = 32
 /// strided ordinals, and the layer-2 families span **24 draws** (4..28) inside
-/// the v2.1 lookahead ecology's 120 × 2 = 240.
+/// the v2.2 lookahead ecology's 240 × 2 = 480.
 ///
 /// The layer-2 bound was **24 games (capacity 48) at the freeze**, which the
 /// arithmetic covered and the PREDICATES did not: family 2's arms realized 10
 /// and 7 strided hits there against the 28 their blocks demand, so the bound was
 /// raised 24 → 120 afterwards — the prefix-stable extension design §4 and the
-/// freeze pre-declared. No block moved with it: same masters, same ordinals,
-/// same cap (see [`crate::game::driven::GENERATED_V2_SCAN_GAMES`]).
+/// freeze pre-declared. It was raised **again, 120 → 240**, when the control arm
+/// came up two short at that bound as well (26 realized hits, a measured
+/// 0.217/game against the pilot-implied 0.29), this time sized off the longer
+/// measurement rather than off the pilot. No block moved with either raise: same
+/// masters, same ordinals, same cap (see
+/// [`crate::game::driven::GENERATED_V2_SCAN_GAMES`]).
 ///
 /// What remains the design's draft posture is R and F, which the freeze document
 /// prices from the confirmatory runs themselves.

@@ -4118,17 +4118,19 @@ mod tests {
     /// middle of a confirmatory run. This is that check as a test rather than as
     /// arithmetic in a commit message — and it is why the freeze needed NO
     /// games-bound change: v1.1 supplies 32 against family 1's 20 (pilot 4 +
-    /// confirmatory 16), and the v2.1 lookahead ecology supplies 240 against the
+    /// confirmatory 16), and the v2.2 lookahead ecology supplies 480 against the
     /// layer-2 families' 28 (pilot 4 + confirmatory 24).
     ///
-    /// **WHAT THIS CHECK DOES NOT PROVE, learned the hard way (2026-08-18):**
-    /// `games × per_game_cap` is the CAPACITY of the ordinal space, not the
-    /// supply a predicate REALIZES inside it. Family 2's blocks passed this check
-    /// at the freeze's capacity of 48 and still exhausted mid-protocol at 10 and
-    /// 7 realized strided hits — which is what took the v2 bound 24 → 120 (a
-    /// prefix-stable extension, so no block, master or cap moved). A block that
-    /// FAILS here is certainly unrunnable; a block that passes is merely not yet
-    /// ruled out, and only a scan settles it.
+    /// **WHAT THIS CHECK DOES NOT PROVE, learned the hard way TWICE
+    /// (2026-08-18):** `games × per_game_cap` is the CAPACITY of the ordinal
+    /// space, not the supply a predicate REALIZES inside it. Family 2's blocks
+    /// passed this check at the freeze's capacity of 48 and still exhausted
+    /// mid-protocol at 10 and 7 realized strided hits — which took the v2 bound
+    /// 24 → 120 — and its control arm then passed the check at capacity 240 and
+    /// exhausted AGAIN at 26 realized hits, which took the bound 120 → 240 (both
+    /// prefix-stable extensions, so no block, master or cap moved at either).
+    /// A block that FAILS here is certainly unrunnable; a block that passes is
+    /// merely not yet ruled out, and only a scan settles it.
     ///
     /// BUILDER arms are exempt and say so: their ordinals index
     /// `SeedSchedule::diagnostic`, which has no bound.
