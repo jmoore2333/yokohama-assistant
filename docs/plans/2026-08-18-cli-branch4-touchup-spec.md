@@ -358,6 +358,16 @@ cards, the cheapest real taste of Large. The PR review adjudicates the record ei
     never fit 50 rows anyway. T3 implementer deviation 2 + review finding 1; the owner
     adjudicates whether the row is worth the crossing (the alternatives: compress another
     2P panel line, or fold orders back onto the President line).
+12. T4's three recorded deviations, adjudicated shipped-shape-over-spec-letter: the counter
+    grouping's unknown-name arm renders a labelled defect line ("Counters this build does
+    not group (please report):") rather than erroring — the totality purpose is fully
+    served by the all-15-names pin plus core's compile guard, and a `why` screen that
+    panics on future counter growth is worse than one that names the gap; the summary
+    counts "rows" not "features" (the terminal `final standing` row is a story row —
+    without it a finished game would read "0 of 16" over a table whose whole content sat
+    in the skipped row); the second counter line is labelled "Budget and guards:" so D7's
+    mandatory step-one set lands on one line. The dated owner-walkthrough capture in
+    docs/temp/ keeps the old two-counter line as the historical record it is.
 
 ## 6. Review trail
 
