@@ -1145,6 +1145,21 @@ fn terminal_margin_now(
 struct ScoreTableSpec {
     name: String,
     table: WeightTable,
+    /// The `+<column>=<early>/<late>` clauses this table carries on top of its
+    /// base, in the order they were written — V3 spec §4.1's "17th column" L2
+    /// machinery. Empty for every pre-V3 spelling, and an empty list is what
+    /// makes an extension-free table byte-identical to what this parser built
+    /// before the clause grammar existed.
+    extensions: Vec<(CandidateColumn, i64, i64)>,
+}
+
+impl ScoreTableSpec {
+    /// A base table with NO extension clauses — the pre-V3 shape, kept as a
+    /// constructor so the three bare spellings and every fixture say what they
+    /// mean rather than repeating an empty vector.
+    fn named(name: &str, table: WeightTable) -> Self {
+        ScoreTableSpec { name: name.to_string(), table, extensions: Vec::new() }
+    }
 }
 
 /// Parse one `--score-table` value.
@@ -1169,18 +1184,9 @@ fn parse_score_table(spec: &str) -> Result<ScoreTableSpec, String> {
         "(v1 | v2 | v2-draft | <name>=<16 comma-separated i64>/<16 comma-separated i64>)";
 
     match spec {
-        "v1" => {
-            return Ok(ScoreTableSpec { name: "v1".to_string(), table: WeightTable::V1 })
-        }
-        "v2" => {
-            return Ok(ScoreTableSpec { name: "v2".to_string(), table: WeightTable::V2 })
-        }
-        "v2-draft" => {
-            return Ok(ScoreTableSpec {
-                name: "v2-draft".to_string(),
-                table: WeightTable::V2_DRAFT,
-            })
-        }
+        "v1" => return Ok(ScoreTableSpec::named("v1", WeightTable::V1)),
+        "v2" => return Ok(ScoreTableSpec::named("v2", WeightTable::V2)),
+        "v2-draft" => return Ok(ScoreTableSpec::named("v2-draft", WeightTable::V2_DRAFT)),
         _ => {}
     }
 
@@ -1232,6 +1238,7 @@ fn parse_score_table(spec: &str) -> Result<ScoreTableSpec, String> {
             early: parse_vector(early, "EARLY")?,
             late: parse_vector(late, "LATE")?,
         },
+        extensions: Vec::new(),
     })
 }
 
@@ -1288,6 +1295,23 @@ impl Split {
     }
 }
 
+/// One view's positional total under a candidate spec, split at the base/
+/// extension seam.
+///
+/// Both halves ride ONE pass over the structure: the paired-difference arm
+/// (V3 spec §4.2) needs the base table's own number for every cell, and
+/// re-running the sixteen-term mirror loop a second time to get it would double
+/// an extension table's corpus cost for a quantity the first pass already had
+/// in hand. For a spec with NO extension clauses the two fields are the same
+/// bits — no arithmetic happens between them — which is what makes an
+/// extension-free candidate's column identical to what it was before the clause
+/// grammar existed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CandidateTotals {
+    base: f64,
+    total: f64,
+}
+
 /// The evaluator's own positional total under a CANDIDATE table, RE-WEIGHTED
 /// from the [`ScoreStructure`] this view already derived.
 ///
@@ -1311,17 +1335,24 @@ impl Split {
 /// recorded view is terminal. It is kept for totality — a hand-built corpus
 /// could contain one — and it is deliberately the trivial pass-through above
 /// precisely so unreachable code cannot lie about a weight table.
+#[allow(clippy::too_many_arguments)]
 fn candidate_total(
     view: &PlayerView,
     me: &yokohama_core::VisiblePlayer,
     structure: &ScoreStructure,
-    table: &WeightTable,
+    rules: &Rules,
+    spec: &ScoreTableSpec,
     progress: u32,
     terminal: bool,
     shipped_total: f64,
-) -> f64 {
+) -> CandidateTotals {
+    // STUB (V3-T2 RED): the extension clauses are parsed by nothing yet and
+    // priced by nothing yet, so `rules` is threaded and unread and every
+    // candidate reports its base as its total.
+    let _ = rules;
+    let table = &spec.table;
     if terminal {
-        return shipped_total;
+        return CandidateTotals { base: shipped_total, total: shipped_total };
     }
     let mut total: i64 = 0;
     for feature in Feature::ALL {
@@ -1350,7 +1381,7 @@ fn candidate_total(
         let theirs = theirs.unwrap_or(0);
         total = total.saturating_add(weight.saturating_mul(mine.saturating_sub(theirs)));
     }
-    total as f64
+    CandidateTotals { base: total as f64, total: total as f64 }
 }
 
 /// The ROWS_LEN values a single view contributes, relative and absolute.
@@ -1373,6 +1404,7 @@ fn row_values(
     out_rel: &mut [f64],
     out_abs: &mut [f64],
     out_cand: &mut [f64],
+    out_base: &mut [f64],
 ) {
     // ONCE per view — see the module doc. Everything below indexes it.
     let structure = ScoreStructure::derive(view, rules);
@@ -1449,15 +1481,18 @@ fn row_values(
         let progress = progress_ppm(view, rules);
         let terminal = view_is_terminal(view);
         for (slot, candidate) in candidates.iter().enumerate() {
-            out_cand[slot] = candidate_total(
+            let totals = candidate_total(
                 view,
                 me,
                 &structure,
-                &candidate.table,
+                rules,
+                candidate,
                 progress,
                 terminal,
                 total,
             );
+            out_cand[slot] = totals.total;
+            out_base[slot] = totals.base;
         }
     }
 }
@@ -1529,6 +1564,11 @@ struct Cell {
     /// One EVAL TOTAL per `--score-table` candidate, in the order they were
     /// named. Empty — and allocation-free — when none was given.
     cand: Vec<f64>,
+    /// The same cell under each candidate's BASE table alone, extension clauses
+    /// unpriced — the second arm of the §4.2 paired difference. Bit-identical
+    /// to [`cand`](Self::cand) for a candidate that carries no clause, which is
+    /// the property the zero-extension reproduction pin reads.
+    base: Vec<f64>,
 }
 
 /// A per-(game, seat, stage) accumulator, folded into a [`Cell`] at game end.
@@ -1537,6 +1577,7 @@ struct CellAcc {
     rel: Vec<f64>,
     abs: Vec<f64>,
     cand: Vec<f64>,
+    base: Vec<f64>,
 }
 
 impl CellAcc {
@@ -1546,6 +1587,7 @@ impl CellAcc {
             rel: vec![0.0; rows],
             abs: vec![0.0; rows],
             cand: vec![0.0; candidates],
+            base: vec![0.0; candidates],
         }
     }
 }
@@ -2001,6 +2043,7 @@ fn snapshot_game(
     let mut rel = vec![0.0f64; rows.len()];
     let mut abs = vec![0.0f64; rows.len()];
     let mut cand = vec![0.0f64; candidates.len()];
+    let mut base = vec![0.0f64; candidates.len()];
     // Looked up once per game rather than per snapshot; `None` only if the
     // shipped feature list ever stops carrying running VP.
     let vp_slot = rows.iter().position(|row| matches!(row, Row::Feature(Feature::VictoryPoints)));
@@ -2024,6 +2067,7 @@ fn snapshot_game(
                 &mut rel,
                 &mut abs,
                 &mut cand,
+                &mut base,
             );
             // Per SEAT, per turn start — the same population the cells are
             // built from, before it is averaged into one. A no-op, and free of
@@ -2039,6 +2083,9 @@ fn snapshot_game(
                 acc.abs[slot] += abs[slot];
             }
             for (target, value) in acc.cand.iter_mut().zip(cand.iter()) {
+                *target += value;
+            }
+            for (target, value) in acc.base.iter_mut().zip(base.iter()) {
                 *target += value;
             }
             corpus.snapshots += 1;
@@ -2062,6 +2109,7 @@ fn snapshot_game(
                 rel: acc.rel.iter().map(|v| v / n).collect(),
                 abs: acc.abs.iter().map(|v| v / n).collect(),
                 cand: acc.cand.iter().map(|v| v / n).collect(),
+                base: acc.base.iter().map(|v| v / n).collect(),
             });
         }
     }
@@ -2543,13 +2591,43 @@ struct SplitColumn {
     winners: usize,
 }
 
+/// Which of a candidate's two columns a [`SplitColumn`] collects.
+///
+/// The BASE arm is the same candidate with its extension clauses unpriced — the
+/// comparison the §4.2 improvement interval is a difference against. For a
+/// candidate with no clauses the two arms are the same numbers, and that is a
+/// property rather than a coincidence: [`candidate_total`] computes them in one
+/// pass and nothing happens between them.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Arm {
+    Extended,
+    Base,
+}
+
 /// Collect one candidate's cells for one stage and one side of the split.
 fn split_column(corpus: &Corpus, candidate: usize, stage: Stage, split: Split) -> SplitColumn {
+    split_column_arm(corpus, candidate, stage, split, Arm::Extended)
+}
+
+/// [`split_column`] over a named [`Arm`].
+fn split_column_arm(
+    corpus: &Corpus,
+    candidate: usize,
+    stage: Stage,
+    split: Split,
+    arm: Arm,
+) -> SplitColumn {
     let mut rows: Vec<(f64, u32, bool)> = corpus
         .cells
         .iter()
         .filter(|c| c.stage == stage && Split::of(c.game) == split)
-        .map(|c| (c.cand[candidate], split.cluster(c.game), c.label))
+        .map(|c| {
+            let value = match arm {
+                Arm::Extended => c.cand[candidate],
+                Arm::Base => c.base[candidate],
+            };
+            (value, split.cluster(c.game), c.label)
+        })
         .collect();
     rows.sort_by(|a, b| a.0.partial_cmp(&b.0).expect("candidate totals are finite"));
     let winners = rows.iter().filter(|r| r.2).count();
@@ -2616,6 +2694,46 @@ fn held_out_intervals(
         );
     }
     out
+}
+
+/// One stage's held-out IMPROVEMENT of an extension table over its own base.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Improvement {
+    /// `AUC(extended) − AUC(base)` on the unresampled column, or `None` when
+    /// either side's AUC is undefined (one class empty).
+    point: Option<f64>,
+    /// The percentile endpoints of the PAIRED difference. `NaN` when no
+    /// replicate produced a difference at all.
+    lo: f64,
+    hi: f64,
+}
+
+/// The §4.2 improvement interval: a PAIRED-DIFFERENCE held-out bootstrap of an
+/// extension table against its own base.
+///
+/// **One multiplicity draw per replicate, applied to BOTH arms, differenced
+/// inside the replicate** — never two independent bootstraps subtracted. The
+/// two arms are the same cells of the same games under two pricings, so almost
+/// all of the sampling variation is shared; differencing inside the replicate
+/// cancels it, and differencing two independently-drawn intervals would add the
+/// two variances instead and report a width the design does not have. A
+/// zero-width interval here is therefore a real reading — the extension re-
+/// ranked nothing in any resample — and not the refused kind, which is an
+/// estimator that cannot tell "no variation" from "no measurement".
+///
+/// The stream is the candidate's own `resample_seed`, which is keyed on the
+/// BASE weight table's identity (see [`candidate_resample_seed`]) — so these
+/// replicates are the very ones behind the two marginal intervals printed
+/// beside them.
+fn paired_improvement_intervals(
+    extended: &[SplitColumn; 3],
+    base: &[SplitColumn; 3],
+    bootstrap: u32,
+    seed: u64,
+) -> [Improvement; 3] {
+    // STUB (V3-T2 RED).
+    let _ = (extended, base, bootstrap, seed);
+    [Improvement { point: None, lo: f64::NAN, hi: f64::NAN }; 3]
 }
 
 /// One AUC point estimate, or the two honest non-answers.
@@ -3315,11 +3433,11 @@ mod tests {
     fn the_score_table_grammar_parses_its_four_forms() {
         assert_eq!(
             parse_score_table("v1"),
-            Ok(ScoreTableSpec { name: "v1".to_string(), table: WeightTable::V1 }),
+            Ok(ScoreTableSpec::named("v1", WeightTable::V1)),
         );
         assert_eq!(
             parse_score_table("v2"),
-            Ok(ScoreTableSpec { name: "v2".to_string(), table: WeightTable::V2 }),
+            Ok(ScoreTableSpec::named("v2", WeightTable::V2)),
         );
         // The rounds' own spelling, kept alive by the alias so every committed
         // command still parses — and it names the SAME numbers `v2` does, which
@@ -3328,7 +3446,7 @@ mod tests {
         // quoting `v2` is measuring what ships.
         assert_eq!(
             parse_score_table("v2-draft"),
-            Ok(ScoreTableSpec { name: "v2-draft".to_string(), table: WeightTable::V2_DRAFT }),
+            Ok(ScoreTableSpec::named("v2-draft", WeightTable::V2_DRAFT)),
         );
         assert_eq!(
             parse_score_table("v2-draft").unwrap().table,
@@ -3425,6 +3543,7 @@ mod tests {
                 rel: vec![f64::from(game)],
                 abs: vec![f64::from(game)],
                 cand: vec![f64::from(game) * 10.0],
+                base: vec![f64::from(game) * 10.0],
             })
             .collect();
         let corpus = test_corpus(cells, 6);
@@ -3479,7 +3598,7 @@ mod tests {
                 SeedScheduleKind::Diagnostic(DEFAULT_MASTER),
                 true,
                 &[],
-                &[ScoreTableSpec { name: "v1".to_string(), table: WeightTable::V1 }],
+                &[ScoreTableSpec::named("v1", WeightTable::V1)],
             )
             .expect("a greedy game completes");
 
@@ -3508,8 +3627,8 @@ mod tests {
     fn the_candidate_block_is_byte_identical_on_a_second_render() {
         let rules = Rules::standard();
         let candidates = vec![
-            ScoreTableSpec { name: "v1".to_string(), table: WeightTable::V1 },
-            ScoreTableSpec { name: "v2-draft".to_string(), table: WeightTable::V2_DRAFT },
+            ScoreTableSpec::named("v1", WeightTable::V1),
+            ScoreTableSpec::named("v2-draft", WeightTable::V2_DRAFT),
         ];
         let (corpus, _) = generate(
             2,
@@ -3536,6 +3655,379 @@ mod tests {
         assert_ne!(
             render_candidate_tables(&corpus, &WeightTable::V1, &alone, 64, 0xABCD),
             first,
+        );
+    }
+
+
+    // -----------------------------------------------------------------------
+    // Phase 3.5c V3 T2 — extended score tables (the §4.1 "17th column")
+    // -----------------------------------------------------------------------
+
+    /// The clause grammar `<name>=<base>[+<column>=<early>/<late>]…`, and the
+    /// pre-V3 spellings unchanged beside it.
+    #[test]
+    fn the_score_table_grammar_parses_extension_clauses() {
+        // Every pre-V3 spelling still builds exactly what it built before the
+        // clause grammar existed — an EMPTY clause list. That is what
+        // byte-compatibility means for a committed round command.
+        for spec in ["v1", "v2", "v2-draft"] {
+            let parsed = parse_score_table(spec).expect("a bare form parses");
+            assert!(parsed.extensions.is_empty(), "{spec} must carry no clause");
+            assert_eq!(parsed.name, spec);
+        }
+
+        // A named base with no clause at all is spellable now, and names the
+        // same table under a name of the caller's choosing.
+        assert_eq!(
+            parse_score_table("probe1=v2").expect("a named base parses"),
+            ScoreTableSpec::named("probe1", WeightTable::V2),
+        );
+
+        // One clause — the data-contact command's own spec.
+        let one = parse_score_table("probe1=v2+terminal_margin_now=4/4").expect("one clause");
+        assert_eq!(one.name, "probe1");
+        assert_eq!(one.table, WeightTable::V2);
+        assert_eq!(one.extensions, vec![(CandidateColumn::TerminalMarginNow, 4, 4)]);
+
+        // A clause on the `v1` base with a NEGATIVE late weight: the base is
+        // whatever the grammar names, and a weight pair is signed like any
+        // other feature's.
+        let on_v1 = parse_score_table("probe2=v1+money=3/-7").expect("a v1 base takes a clause");
+        assert_eq!(on_v1.table, WeightTable::V1);
+        assert_eq!(on_v1.extensions, vec![(CandidateColumn::Money, 3, -7)]);
+
+        // TWO clauses: stripped from the RIGHT, reported LEFT TO RIGHT.
+        let two = parse_score_table("probe3=v2+money=1/2+postclaim=3/4").expect("two clauses");
+        assert_eq!(
+            two.extensions,
+            vec![(CandidateColumn::Money, 1, 2), (CandidateColumn::PostClaim, 3, 4)],
+        );
+
+        // A clause on a VECTOR-form base: the greedy right-strip runs first, so
+        // the sixteen-per-side base is still there to parse behind it.
+        let early = (0..16).map(|i| (i as i64 - 3).to_string()).collect::<Vec<_>>().join(",");
+        let late = (0..16).map(|i| (40 - i as i64).to_string()).collect::<Vec<_>>().join(",");
+        let on_vector = parse_score_table(&format!("A1={early}/{late}+church_majority_margin=-2/5"))
+            .expect("a vector base takes a clause");
+        assert_eq!(on_vector.name, "A1");
+        assert_eq!(on_vector.table.early[0], -3);
+        assert_eq!(on_vector.table.late[15], 25);
+        assert_eq!(on_vector.extensions, vec![(CandidateColumn::ChurchMajorityMargin, -2, 5)]);
+
+        // A clause WEIGHT may carry an explicit `+`: after the clause's own `=`
+        // the sign is unambiguous, and the right-strip finds the clause behind
+        // it rather than mis-segmenting on the inner `+`.
+        assert_eq!(
+            parse_score_table("probe4=v2+money=+3/4").expect("a signed clause weight").extensions,
+            vec![(CandidateColumn::Money, 3, 4)],
+        );
+    }
+
+    /// Every clause refusal names what it SAW — the file's standing rule, and
+    /// the three the V3 spec calls out by name.
+    #[test]
+    fn an_extension_clause_refusal_names_what_it_saw() {
+        // An unknown column names the token AND what IS accepted.
+        let message = parse_score_table("probe1=v2+nosuch=1/2").expect_err("an unknown column");
+        assert!(message.contains("nosuch"), "{message}");
+        assert!(
+            message.contains("terminal_margin_now"),
+            "the refusal must list what IS accepted: {message}",
+        );
+
+        // A malformed clause names the clause it could not read.
+        for spec in ["probe1=v2+money=1/x", "probe1=v2+money=1", "probe1=v2+money=/2"] {
+            let clause = spec.rsplit_once('+').expect("the fixture has a clause").1;
+            let message = parse_score_table(spec).expect_err("a malformed clause is refused");
+            assert!(message.contains(clause), "{spec}: the refusal never named {clause:?}: {message}");
+        }
+
+        // A leading-`+` VECTOR entry names the AMBIGUITY: with `+` reserved for
+        // clause separation, `+1` in a vector is not a signed 1.
+        let sixteen = (0..16).map(|_| "1").collect::<Vec<_>>().join(",");
+        let message = parse_score_table(&format!("A1=+{sixteen}/{sixteen}"))
+            .expect_err("a leading-`+` vector entry is refused");
+        assert!(message.contains("+1"), "{message}");
+        assert!(message.contains("ambiguous"), "the refusal must name the ambiguity: {message}");
+
+        // An extension needs a NAME: `v2+…` has a base but nothing to report
+        // the row under.
+        let message = parse_score_table("v2+money=1/2").expect_err("an unnamed extension");
+        assert!(message.contains("v2+money=1/2"), "{message}");
+        assert!(message.contains("name"), "{message}");
+
+        // A column named TWICE is refused rather than silently summed — two
+        // clauses on one column would price it once at the sum and read in the
+        // report as two independent terms.
+        let message =
+            parse_score_table("probe1=v2+money=1/2+money=3/4").expect_err("a duplicate column");
+        assert!(message.contains("money"), "{message}");
+        assert!(message.contains("twice"), "{message}");
+    }
+
+    /// The three HELD-OUT stage columns of one candidate, on a named arm.
+    fn held_columns(corpus: &Corpus, ordinal: usize, arm: Arm) -> [SplitColumn; 3] {
+        [
+            split_column_arm(corpus, ordinal, Stage::Early, Split::HeldOut, arm),
+            split_column_arm(corpus, ordinal, Stage::Mid, Split::HeldOut, arm),
+            split_column_arm(corpus, ordinal, Stage::Late, Split::HeldOut, arm),
+        ]
+    }
+
+    /// **REPRODUCTION PIN (a).** A zero-weight extension is INERT: it must
+    /// reproduce its base's row cell for cell, bit for bit — and be quoted
+    /// against the same resample stream, which is what keying the stream on the
+    /// BASE table buys.
+    #[test]
+    fn a_zero_weight_extension_reproduces_its_base_row_cell_for_cell() {
+        let rules = Rules::standard();
+        let candidates = vec![
+            parse_score_table("v2").expect("the plain base"),
+            parse_score_table("inert=v2+terminal_margin_now=0/0").expect("a zero-weight clause"),
+        ];
+        let (corpus, _) = generate(
+            2,
+            4,
+            ProbeContestant::Greedy { m: DEFAULT_RETREAT_SAMPLES },
+            &WeightTable::V1,
+            &rules,
+            SeedScheduleKind::Diagnostic(DEFAULT_MASTER),
+            true,
+            &[],
+            &candidates,
+        )
+        .expect("four 2P greedy games complete");
+
+        assert!(!corpus.cells.is_empty(), "a corpus with no cells proves nothing");
+        for cell in &corpus.cells {
+            assert_eq!(
+                cell.cand[1].to_bits(),
+                cell.cand[0].to_bits(),
+                "game {} stage {:?}: a 0/0 clause moved the total",
+                cell.game,
+                cell.stage,
+            );
+            // …and each candidate's own base arm is its own column when there
+            // is nothing priced between them.
+            assert_eq!(cell.base[0].to_bits(), cell.cand[0].to_bits());
+            assert_eq!(cell.base[1].to_bits(), cell.cand[1].to_bits());
+        }
+
+        let seed_plain = candidate_resample_seed(0xABCD, &candidates[0].table);
+        let seed_ext = candidate_resample_seed(0xABCD, &candidates[1].table);
+        assert_eq!(
+            seed_plain, seed_ext,
+            "an extension table and its base share one resample stream (review N4)",
+        );
+        let plain = held_out_intervals(&held_columns(&corpus, 0, Arm::Extended), 64, seed_plain);
+        let inert = held_out_intervals(&held_columns(&corpus, 1, Arm::Extended), 64, seed_ext);
+        for stage in 0..3 {
+            assert_eq!(plain[stage].0.to_bits(), inert[stage].0.to_bits(), "stage {stage} lo");
+            assert_eq!(plain[stage].1.to_bits(), inert[stage].1.to_bits(), "stage {stage} hi");
+        }
+    }
+
+    /// An extension is priced EXACTLY as a feature would be: the interpolated
+    /// weight times (viewer − opponent extreme). At 2P the opponent extreme is
+    /// the single opponent, so the cell arithmetic is readable against the
+    /// column's own relative row.
+    #[test]
+    fn an_extension_prices_its_column_exactly_as_a_feature_would() {
+        let rules = Rules::standard();
+        let candidates = vec![parse_score_table("m5=v2+money=5/5").expect("a flat clause")];
+        let (corpus, _) = generate(
+            2,
+            3,
+            ProbeContestant::Greedy { m: DEFAULT_RETREAT_SAMPLES },
+            &WeightTable::V1,
+            &rules,
+            SeedScheduleKind::Diagnostic(DEFAULT_MASTER),
+            true,
+            &[CandidateColumn::Money],
+            &candidates,
+        )
+        .expect("three 2P greedy games complete");
+
+        let slot = corpus
+            .rows
+            .iter()
+            .position(|r| matches!(r, Row::Candidate(CandidateColumn::Money)))
+            .expect("the money column was requested");
+        let mut moved = 0;
+        for cell in &corpus.cells {
+            let expected = cell.base[0] + 5.0 * cell.rel[slot];
+            assert!(
+                (cell.cand[0] - expected).abs() <= 1e-9 * (1.0 + expected.abs()),
+                "game {} stage {:?}: {} is not base {} + 5 x rel {}",
+                cell.game,
+                cell.stage,
+                cell.cand[0],
+                cell.base[0],
+                cell.rel[slot],
+            );
+            if cell.cand[0] != cell.base[0] {
+                moved += 1;
+            }
+        }
+        assert!(moved > 0, "a flat weight of 5 that never moved a cell proves nothing");
+    }
+
+    /// **The opponent rule is the MIRROR's, not a plain maximum.** A positive
+    /// weight picks the same opponent a plain max does; a NEGATIVE one must
+    /// sometimes pick a different seat, which is exactly what fails on an
+    /// extension loop that copied `row_values`' convention by mistake.
+    #[test]
+    fn an_extension_takes_the_signed_weight_opponent_not_the_plain_maximum() {
+        let rules = Rules::standard();
+        let candidates = vec![
+            parse_score_table("pos=v2+money=5/5").expect("a positive clause"),
+            parse_score_table("neg=v2+money=-5/-5").expect("a negative clause"),
+        ];
+        let (corpus, _) = generate(
+            4,
+            2,
+            ProbeContestant::Greedy { m: DEFAULT_RETREAT_SAMPLES },
+            &WeightTable::V1,
+            &rules,
+            SeedScheduleKind::Diagnostic(DEFAULT_MASTER),
+            true,
+            &[CandidateColumn::Money],
+            &candidates,
+        )
+        .expect("two 4P greedy games complete");
+
+        let slot = corpus
+            .rows
+            .iter()
+            .position(|r| matches!(r, Row::Candidate(CandidateColumn::Money)))
+            .expect("the money column was requested");
+        let mut disagreements = 0;
+        for cell in &corpus.cells {
+            let plain_max = cell.base[0] + 5.0 * cell.rel[slot];
+            assert!(
+                (cell.cand[0] - plain_max).abs() <= 1e-9 * (1.0 + plain_max.abs()),
+                "a POSITIVE weight maximizes the raw value, exactly as a plain max does",
+            );
+            if (cell.cand[1] - (cell.base[1] - 5.0 * cell.rel[slot])).abs() > 1e-6 {
+                disagreements += 1;
+            }
+        }
+        assert!(
+            disagreements > 0,
+            "at 4P a NEGATIVE weight must sometimes select a different opponent than the plain \
+             maximum — without a disagreement this pin passes on a plain-max extension loop",
+        );
+    }
+
+    /// **The §4.2 improvement interval is PAIRED.** A strictly increasing
+    /// transform of a column leaves every rank untouched, so the difference is
+    /// exactly zero in EVERY resample while each arm's own interval is wide:
+    /// two independent bootstraps, subtracted, would report a spread here.
+    #[test]
+    fn the_improvement_interval_is_a_paired_difference_and_not_two_bootstraps() {
+        let column = |f: &dyn Fn(f64) -> f64| {
+            let mut rows: Vec<(f64, u32, bool)> =
+                (0..12u32).map(|g| (f(f64::from(g)), g, g.is_multiple_of(3))).collect();
+            rows.sort_by(|a, b| a.0.partial_cmp(&b.0).expect("finite"));
+            let winners = rows.iter().filter(|r| r.2).count();
+            SplitColumn { rows, clusters: 12, winners }
+        };
+        let three = |f: &dyn Fn(f64) -> f64| [column(f), column(f), column(f)];
+
+        let base = three(&|v| v);
+        let rank_preserving = three(&|v| 2.0 * v + 1.0);
+        let improvement = paired_improvement_intervals(&rank_preserving, &base, 256, 0x51D5);
+        for (s, imp) in improvement.iter().enumerate() {
+            assert_eq!(imp.point, Some(0.0), "stage {s}: a rank-preserving transform gains nothing");
+            assert_eq!(
+                (imp.lo, imp.hi),
+                (0.0, 0.0),
+                "stage {s}: the PAIRED difference of a rank-preserving transform is exactly zero \
+                 in every resample",
+            );
+        }
+
+        // …and the arms are not themselves degenerate, so the zero width above
+        // is a property of the PAIRING and not of the fixture.
+        let marginal = held_out_intervals(&three(&|v| v), 256, 0x51D5);
+        assert!(
+            marginal[0].1 > marginal[0].0,
+            "the base arm's own interval must have width: {marginal:?}",
+        );
+
+        // A column that flips the ranking reads as a real, signed difference
+        // with a real interval — the arithmetic is a difference, not a flag.
+        let flipped = three(&|v| -v);
+        let worse = paired_improvement_intervals(&flipped, &base, 256, 0x51D5);
+        assert!(
+            worse[0].point.expect("both arms have both classes") > 0.0,
+            "this fixture's winners sit LOW, so negating the column improves it: {worse:?}",
+        );
+        assert!(worse[0].hi > worse[0].lo, "a real difference has a real interval: {worse:?}");
+
+        // An arm with no rows has no AUC, and the improvement says so rather
+        // than filling in a zero.
+        let empty = || SplitColumn { rows: Vec::new(), clusters: 12, winners: 0 };
+        let none = paired_improvement_intervals(&[empty(), empty(), empty()], &base, 256, 0x51D5);
+        assert_eq!(none[0].point, None, "an empty arm has no point estimate");
+        assert!(none[0].lo.is_nan() && none[0].hi.is_nan(), "…and no interval: {none:?}");
+    }
+
+    /// The report path: the clause echo, the improvement column on a NAMED
+    /// base, its stated absence on a vector-form base, and a zero-extension
+    /// candidate whose rows keep their pre-V3 shape.
+    #[test]
+    fn an_extension_tables_block_echoes_its_clauses_and_prints_the_improvement_interval() {
+        let rules = Rules::standard();
+        let sixteen = (0..16).map(|_| "1").collect::<Vec<_>>().join(",");
+        let candidates = vec![
+            parse_score_table("v2").expect("the plain base"),
+            parse_score_table("probe1=v2+terminal_margin_now=4/4").expect("a named base"),
+            parse_score_table(&format!("A1={sixteen}/{sixteen}+money=1/2"))
+                .expect("a vector base"),
+        ];
+        let (corpus, _) = generate(
+            2,
+            4,
+            ProbeContestant::Greedy { m: DEFAULT_RETREAT_SAMPLES },
+            &WeightTable::V1,
+            &rules,
+            SeedScheduleKind::Diagnostic(DEFAULT_MASTER),
+            true,
+            &[],
+            &candidates,
+        )
+        .expect("four 2P greedy games complete");
+
+        let first = render_candidate_tables(&corpus, &WeightTable::V1, &candidates, 64, 0xABCD);
+        let second = render_candidate_tables(&corpus, &WeightTable::V1, &candidates, 64, 0xABCD);
+        assert_eq!(first, second, "the candidate block must not depend on run order");
+
+        // The clause echo rides beside the early/late echo.
+        assert!(first.contains("terminal_margin_now=4/4"), "no clause echo:\n{first}");
+        assert!(first.contains("money=1/2"), "no clause echo:\n{first}");
+        // The header states what IS paired rather than the old blanket denial.
+        assert!(first.contains("paired"), "the header never mentions pairing:\n{first}");
+
+        let i1 = first.find("[1] candidate=v2").expect("the plain row");
+        let i2 = first.find("[2] candidate=probe1").expect("the named-base row");
+        let i3 = first.find("[3] candidate=A1").expect("the vector-base row");
+        let plain = &first[i1..i2];
+        let named_base = &first[i2..i3];
+        let vector_base = &first[i3..];
+
+        assert!(
+            !plain.contains('\u{0394}'),
+            "a table with NO clause gains no improvement column:\n{plain}",
+        );
+        assert!(named_base.contains("\u{0394} vs v2"), "no improvement column:\n{named_base}");
+        assert!(
+            !vector_base.contains("\u{0394} vs"),
+            "a vector-form base has no NAMED base to improve on:\n{vector_base}",
+        );
+        assert!(
+            vector_base.contains("no improvement interval"),
+            "an absent improvement column must say why:\n{vector_base}",
         );
     }
 
@@ -4178,7 +4670,18 @@ mod tests {
         let mut rel = [0.0f64];
         let mut abs = [0.0f64];
         let mut cand: [f64; 0] = [];
-        row_values(&view, &rules, &WeightTable::V1, &rows, &[], &mut rel, &mut abs, &mut cand);
+        let mut base: [f64; 0] = [];
+        row_values(
+            &view,
+            &rules,
+            &WeightTable::V1,
+            &rows,
+            &[],
+            &mut rel,
+            &mut abs,
+            &mut cand,
+            &mut base,
+        );
         assert_eq!(rel[0], 0.0, "the relative form of a board-global column is zero by construction");
         assert_eq!(abs[0], 4.0, "the absolute form is the whole information this column carries");
 
