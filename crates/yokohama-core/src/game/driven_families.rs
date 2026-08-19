@@ -5375,20 +5375,27 @@ mod tests {
         }
     }
 
-    /// **THE PRE-FREEZE STATE**: no declaration carries a frozen block, and no
-    /// third block field exists to carry an escrowed one.
+    /// **THE FROZEN STATE**: every declaration carries BOTH frozen blocks, and
+    /// no third block field exists to carry an escrowed one.
     ///
     /// The escrow half is checked on the DECLARATION rather than on the source
     /// text (design §2: "escrow ordinals live in the freeze DOCUMENT,
     /// deliberately not in code — no command can burn an escrowed block by
     /// accident"). A `Debug` rendering of the struct names every field it has,
-    /// so a field called anything escrow-shaped would show up here.
+    /// so a field called anything escrow-shaped would show up here. That half is
+    /// UNCHANGED by the freeze wave, which baked two blocks and not three.
     #[test]
-    fn no_declaration_carries_a_frozen_block_and_no_escrow_field_exists() {
+    fn every_declaration_carries_both_frozen_blocks_and_no_escrow_field_exists() {
         for decl in families() {
             assert!(
-                decl.confirmatory.is_none(),
-                "{}: a frozen block is baked at the FREEZE commit, not before",
+                decl.confirmatory.is_some(),
+                "{}: the freeze wave bakes the positive arm's block",
+                decl.id,
+            );
+            assert!(
+                decl.confirmatory_control.is_some(),
+                "{}: the freeze wave bakes the CONTROL arm's block too — the two arms draw \
+                 different roots and cannot share one identity",
                 decl.id,
             );
             let rendered = format!("{decl:?}");
@@ -5404,6 +5411,141 @@ mod tests {
                 decl.id,
             );
         }
+    }
+
+    /// **THE BAKED BLOCKS, HEX FOR HEX** (the freeze wave) — a TRANSCRIPTION
+    /// pin over the masters the orchestrator recorded before use and the strided
+    /// ordinals the freeze sizes.
+    ///
+    /// Written as literals rather than derived from anything: these numbers ARE
+    /// the committed identity of every confirmatory result Phase C will quote,
+    /// and a derivation would let one of them move without a test noticing.
+    ///
+    /// Family 1's two arms share a master DELIBERATELY: its control is a
+    /// different PREDICATE (`TriggerRoundNotFinal`), so the same master and the
+    /// same ordinals name a different ordinal space and therefore different
+    /// roots. The other three families' arms carry their own masters.
+    #[test]
+    fn the_four_declarations_carry_the_baked_confirmatory_and_control_blocks() {
+        let expected: [(&str, u64, std::ops::Range<u32>, u64, std::ops::Range<u32>); 4] = [
+            ("final-round", 0xA3E1_2026_0818_0004, 4..20, 0xA3E1_2026_0818_0004, 4..20),
+            ("end-trigger", 0xA3E1_2026_0818_0005, 4..28, 0xA3E1_2026_0818_0006, 4..28),
+            ("exclusive-race", 0xA3E1_2026_0818_0008, 4..28, 0xA3E1_2026_0818_0009, 4..28),
+            ("achievement", 0xA3E1_2026_0818_0007, 4..28, 0xA3E1_2026_0818_000A, 4..28),
+        ];
+        let decls = families();
+        assert_eq!(decls.len(), expected.len());
+        for (decl, (id, master, ordinals, control_master, control_ordinals)) in
+            decls.iter().zip(expected)
+        {
+            assert_eq!(decl.id, id, "the registry order moved");
+            assert_eq!(
+                decl.confirmatory,
+                Some(FrozenBlock { master, ordinals: ordinals.clone() }),
+                "{id}: the positive arm's frozen block",
+            );
+            assert_eq!(
+                decl.confirmatory_control,
+                Some(FrozenBlock {
+                    master: control_master,
+                    ordinals: control_ordinals.clone(),
+                }),
+                "{id}: the control arm's frozen block",
+            );
+            // DISJOINT from the pilot, which is what makes a confirmatory result
+            // a fresh reading rather than a re-quote of the pilot's roots.
+            for block in [ordinals, control_ordinals] {
+                assert!(
+                    block.start >= decl.pilot.end,
+                    "{id}: a confirmatory block overlaps the pilot draws {:?}",
+                    decl.pilot,
+                );
+            }
+        }
+
+        // The MASTERS: every family's positive master is its own, and only
+        // family 1 shares one across its arms (a different predicate at the same
+        // master is a different ordinal space).
+        let mut positives: Vec<u64> =
+            decls.iter().map(|d| d.confirmatory.as_ref().expect("baked").master).collect();
+        positives.sort_unstable();
+        positives.dedup();
+        assert_eq!(positives.len(), 4, "two families share a confirmatory master");
+        for decl in &decls {
+            let positive = decl.confirmatory.as_ref().expect("baked").master;
+            let control = decl.confirmatory_control.as_ref().expect("baked").master;
+            if decl.id == "final-round" {
+                assert_eq!(positive, control, "family 1's arms share a master by design");
+            } else {
+                assert_ne!(positive, control, "{}: an arm re-uses its family's master", decl.id);
+            }
+        }
+    }
+
+    /// **THE FROZEN SIZING** (the freeze wave): K rises 4 → 8 for group-mean
+    /// noise, δ and the dead-spread bound stand, and the PILOT posture is
+    /// untouched so the pilots that already ran still reproduce.
+    #[test]
+    fn the_frozen_sizing_raises_k_and_leaves_the_pilot_posture_untouched() {
+        let pilot = BlockOpts::pilot();
+        assert_eq!(pilot.admission_k, PILOT_ADMISSION_K);
+        assert_eq!(pilot.admission_k, 4, "the pilots ran at K = 4 and their readings must stand");
+
+        let freeze = BlockOpts::freeze();
+        assert_eq!(freeze.admission_k, FROZEN_ADMISSION_K);
+        assert_eq!(freeze.admission_k, 8, "the freeze doubles K against group-mean noise");
+        assert_eq!(freeze.delta, DELTA_VP, "δ is the same number in both postures");
+        assert_eq!(freeze.delta, pilot.delta);
+        assert_eq!(freeze.dead_spread_bound, DEAD_SPREAD_BOUND);
+        assert!(
+            !freeze.control,
+            "the admission inversion is the SEAM's decision, never a posture's",
+        );
+        assert_eq!(
+            format!("{:?}", freeze.driven),
+            format!("{:?}", DrivenOpts::default()),
+            "the frozen posture runs the driver's own defaults",
+        );
+        // WHOLE-VALUE, so a field added later cannot be silently equal.
+        assert_ne!(
+            format!("{freeze:?}"),
+            format!("{pilot:?}"),
+            "the two postures are the same sizing — then one of them is not a posture",
+        );
+    }
+
+    /// **FAMILY 1'S ε IS FROZEN AT 2 VP** (the freeze wave, pilot-informed).
+    ///
+    /// The pilot's trigger-round controls read UNRESOLVED at every root under
+    /// ε = 1 at K = 4 — the declared policies' top sets differed by less than a
+    /// point of adjudication noise, which is a statement about the instrument
+    /// rather than about policy disagreement. ε = 2 is the design's draft value
+    /// and is the freeze's answer.
+    ///
+    /// The leniency direction is pinned where the number is: a LARGER ε is an
+    /// EASIER pass, so the second half here shows what the move buys — the ε = 2
+    /// top set CONTAINS the ε = 1 one, never the other way round.
+    #[test]
+    fn family_ones_epsilon_is_frozen_at_two_victory_points() {
+        assert_eq!(FROZEN_EPSILON_VP, 2);
+        let decl = &families()[0];
+        assert_eq!(
+            decl.rule,
+            PassRule::AdjudicatedBest { epsilon: FROZEN_EPSILON_VP },
+            "family 1's declared ε is not the frozen one",
+        );
+
+        // Means −100.0 / −99.0 / −98.0 (see `spread_table`): ε = 1 admits two
+        // rows and ε = 2 admits all three.
+        let adj = spread_table(&[0, 25, 50], None);
+        let tight = top_set(&adj, 1);
+        let frozen = top_set(&adj, FROZEN_EPSILON_VP);
+        assert_eq!(tight.len(), 2);
+        assert_eq!(frozen.len(), 3);
+        assert!(
+            tight.iter().all(|m| frozen.contains(m)),
+            "a larger ε must be an EASIER pass — the frozen top set dropped a candidate",
+        );
     }
 
     /// The STRATEGIC-CLASS partition (design §4, review SHOULD-9): the pivot
@@ -5427,22 +5569,44 @@ mod tests {
         assert_ne!(decls[0].class, decls[1].class);
     }
 
-    /// The block's three ARGUMENT refusals, each by name: a confirmatory run
-    /// before the freeze, a confirmatory run carrying a caller's master, and a
-    /// pilot run without one.
+    /// **THE FLIPPED PIN** (the freeze wave): a confirmatory block now RESOLVES
+    /// its baked identity, and the missing-block refusal fires only on a
+    /// declaration that carries none.
+    ///
+    /// **Why this is `resolve_block` and not `run_family_block`**: before the
+    /// freeze the Ok path could be pinned by running the block, because there
+    /// was no Ok path — every family refused. There is one now, and it is
+    /// `roots × menu × candidates × K` whole games at the shipped subject, i.e.
+    /// hours. `resolve_block` is the whole of what the refusals guard (master
+    /// and ordinals, before a single draw is resolved), so pinning it is pinning
+    /// the argument contract without buying a block run.
+    ///
+    /// The refusal CODE is kept and re-pointed rather than deleted: a
+    /// declaration whose block is `None` is exactly what a future family arm
+    /// looks like on the day it is declared and before it is baked.
     #[test]
-    fn a_block_run_refuses_a_missing_frozen_block_and_a_substituted_master() {
+    fn a_confirmatory_block_resolves_its_baked_identity_and_a_blockless_decl_refuses() {
         let rules = rules();
         let decl = &families()[0];
         let subject = SeatSpec::Contestant(Contestant::LOOKAHEAD_V1_DEFAULT);
+        let frozen = decl.confirmatory.clone().expect("baked at the freeze");
 
+        let (master, ordinals) =
+            resolve_block(decl, BlockKind::Confirmatory, None).expect("the frozen block resolves");
+        assert_eq!(master, frozen.master, "the block ran another master");
+        assert_eq!(ordinals, frozen.ordinals.clone().collect::<Vec<u32>>());
+
+        // THE REFUSAL, re-pointed at the shape it now describes.
+        let blockless = FamilyDecl { confirmatory: None, ..decl.clone() };
         let no_block =
-            run_family_block(decl, BlockKind::Confirmatory, None, subject, &rules).unwrap_err();
+            resolve_block(&blockless, BlockKind::Confirmatory, None).unwrap_err();
         assert!(
             matches!(no_block, FamilyRunError::NoFrozenBlock { .. }),
             "expected a missing-frozen-block refusal, got {no_block}",
         );
 
+        // The other two refusals are UNMOVED, and both still fire before a draw
+        // — so they stay pinned through the public entry point.
         let substituted =
             run_family_block(decl, BlockKind::Confirmatory, Some(MASTER), subject, &rules)
                 .unwrap_err();

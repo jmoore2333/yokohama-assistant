@@ -4014,34 +4014,123 @@ mod tests {
         assert!(supplied.contains(USAGE), "the command-shaped refusal drops USAGE: {supplied}");
     }
 
-    /// BEFORE THE FREEZE every family's confirmatory block refuses BY NAME —
-    /// the pre-freeze state, pinned, so the freeze commit is what makes these
-    /// runnable and nothing else can.
+    /// **AFTER THE FREEZE** every family's confirmatory block RESOLVES its baked
+    /// identity, in BOTH arms — and each arm resolves the block its own
+    /// declaration carries.
+    ///
+    /// **This pin replaced a `run_with` sweep, and the reason is cost.** Before
+    /// the freeze the whole argv path could be exercised end to end because it
+    /// refused; a confirmatory run now executes `roots × menu × candidates × K`
+    /// whole games at the shipped subject. So the two halves are pinned
+    /// separately: the argv parse in
+    /// `the_family_command_parses_every_id_block_and_arm`, and the
+    /// arm-plus-block resolution here, which is everything between the parse and
+    /// the first drawn root.
     #[test]
-    fn every_confirmatory_block_refuses_by_name_before_the_freeze() {
+    fn every_confirmatory_block_resolves_its_baked_identity_in_both_arms() {
         for decl in families() {
-            assert!(
-                decl.confirmatory.is_none(),
-                "{} carries a frozen block already — this pin is the PRE-FREEZE state",
-                decl.id,
-            );
-            // BOTH ARMS — which is also the only place `control_arm` runs
-            // INSIDE `run_with`: a control arm that panicked or lost its id on
-            // the way through would show up here rather than at T7.
-            for arm in ARM_NAMES {
-                let err = run_with(
-                    &args(&["family", decl.id, "--block", "confirmatory", "--arm", arm]),
-                    &[],
-                    Path::new("."),
-                )
-                .expect_err("a confirmatory block must refuse before the freeze");
-                assert!(
-                    err.contains(decl.id) && err.contains("FREEZE"),
-                    "{} --arm {arm}: the refusal does not name the family and the freeze: {err}",
+            let control = control_arm(&decl).expect("every family declares a control arm");
+            for (arm, resolved, expected) in [
+                (FamilyArm::Positive, &decl, decl.confirmatory.clone()),
+                (FamilyArm::Control, &control, decl.confirmatory_control.clone()),
+            ] {
+                let expected = expected.unwrap_or_else(|| {
+                    panic!("{} --arm {}: no frozen block is baked", decl.id, arm.as_str())
+                });
+                let (master, ordinals) =
+                    crate::game::driven_families::resolve_block(resolved, BlockKind::Confirmatory, None)
+                        .unwrap_or_else(|e| {
+                            panic!("{} --arm {}: {e}", decl.id, arm.as_str())
+                        });
+                assert_eq!(
+                    master,
+                    expected.master,
+                    "{} --arm {}: the wrong master",
                     decl.id,
+                    arm.as_str(),
+                );
+                assert_eq!(
+                    ordinals,
+                    expected.ordinals.clone().collect::<Vec<u32>>(),
+                    "{} --arm {}: the wrong ordinals",
+                    decl.id,
+                    arm.as_str(),
                 );
             }
         }
+    }
+
+    /// A declaration whose ARM carries no baked block still refuses BY NAME —
+    /// the refusal the freeze wave re-pointed rather than deleted, reached the
+    /// way a runner reaches it (through `control_arm`).
+    #[test]
+    fn a_control_arm_with_no_baked_block_still_refuses_by_name() {
+        let mut decl = families().remove(0);
+        decl.confirmatory_control = None;
+        let control = control_arm(&decl).expect("family 1 has a control");
+        assert!(
+            control.confirmatory.is_none(),
+            "the control arm did not take its own block: {:?}",
+            control.confirmatory,
+        );
+        let err = crate::game::driven_families::resolve_block(&control, BlockKind::Confirmatory, None)
+            .expect_err("an unbaked arm must refuse");
+        assert!(
+            err.to_string().contains(decl.id) && err.to_string().contains("FREEZE"),
+            "the refusal does not name the family and the freeze: {err}",
+        );
+    }
+
+    /// **THE SUPPLY ARITHMETIC** (the freeze wave, item 6): every frozen block's
+    /// highest ordinal is inside the supply its generator's ECOLOGY declares.
+    ///
+    /// A scan's ordinal space is `games × per_game_cap` strided hits, and a
+    /// frozen block that asks past it is a block that dies on `Exhausted` in the
+    /// middle of a confirmatory run. This is that check as a test rather than as
+    /// arithmetic in a commit message — and it is why the freeze needed NO
+    /// games-bound change: v1.1 supplies 32 against family 1's 20 (pilot 4 +
+    /// confirmatory 16), and the v2 lookahead ecology supplies 48 against the
+    /// layer-2 families' 28 (pilot 4 + confirmatory 24).
+    ///
+    /// BUILDER arms are exempt and say so: their ordinals index
+    /// `SeedSchedule::diagnostic`, which has no bound.
+    #[test]
+    fn every_frozen_block_fits_the_supply_its_generator_declares() {
+        let mut checked_predicates = 0;
+        let mut checked_builders = 0;
+        for decl in families() {
+            let control = control_arm(&decl).expect("every family declares a control arm");
+            for (arm, generator, block) in [
+                ("positive", decl.generator, decl.confirmatory.clone()),
+                ("control", control.generator, decl.confirmatory_control.clone()),
+            ] {
+                let block = block.expect("baked at the freeze");
+                let highest = block.ordinals.end - 1;
+                match generator {
+                    FamilyGenerator::Predicate(predicate) => {
+                        let ecology = predicate.ecology();
+                        let supply = ecology.games * ecology.per_game_cap;
+                        assert!(
+                            highest < supply,
+                            "{} --arm {arm}: ordinal {highest} is past the {} supply of {supply} \
+                             ({} games × cap {})",
+                            decl.id,
+                            ecology.id,
+                            ecology.games,
+                            ecology.per_game_cap,
+                        );
+                        checked_predicates += 1;
+                    }
+                    FamilyGenerator::Builder { .. } => {
+                        // A builder draws seeds off `SeedSchedule::diagnostic`,
+                        // which is unbounded — there is no supply to fit.
+                        checked_builders += 1;
+                    }
+                }
+            }
+        }
+        // ANTI-VACUITY: both kinds were actually met.
+        assert_eq!((checked_predicates, checked_builders), (5, 3));
     }
 
     // =======================================================================
@@ -4110,6 +4199,17 @@ mod tests {
                 control.generator, positive.generator,
                 "{id}: a control equal to its positive",
             );
+            // THE FROZEN BLOCK IS RE-POINTED TOO (the freeze wave): the arms
+            // draw different roots, so a control run that inherited the positive
+            // arm's block would quote the positive arm's identity.
+            assert_eq!(
+                control.confirmatory, positive.confirmatory_control,
+                "{id}: the control arm did not take its own frozen block",
+            );
+            assert_eq!(
+                control.confirmatory_control, positive.confirmatory_control,
+                "{id}: an arm is a GENERATOR, a RULE and a BLOCK — never a different declaration",
+            );
         }
     }
 
@@ -4125,27 +4225,43 @@ mod tests {
     /// no cell has ever executed that line. Named, it has somewhere to fail.
     #[test]
     fn the_family_block_sizing_keeps_the_admission_inversion_off_in_both_arms() {
-        let positive = family_block_opts(FamilyArm::Positive);
-        let control = family_block_opts(FamilyArm::Control);
-        assert!(
-            !control.control,
-            "the CONTROL arm inverts admission on top of its already-negated rule: a double \
-             negation, and the control's own claim upside down",
-        );
-        assert!(!positive.control, "the POSITIVE arm inverts admission");
-        // WHOLE-VALUE equality through `Debug`, because `BlockOpts` carries no
-        // `PartialEq` and a field-by-field compare would silently skip a field
-        // added later: an arm is a GENERATOR and a RULE, never a sizing.
+        for block in [BlockKind::Pilot, BlockKind::Confirmatory] {
+            let positive = family_block_opts(FamilyArm::Positive, block);
+            let control = family_block_opts(FamilyArm::Control, block);
+            assert!(
+                !control.control,
+                "the CONTROL arm inverts admission on top of its already-negated rule: a double \
+                 negation, and the control's own claim upside down",
+            );
+            assert!(!positive.control, "the POSITIVE arm inverts admission");
+            // WHOLE-VALUE equality through `Debug`, because `BlockOpts` carries
+            // no `PartialEq` and a field-by-field compare would silently skip a
+            // field added later: an arm is a GENERATOR and a RULE, never a
+            // sizing.
+            assert_eq!(
+                format!("{control:?}"),
+                format!("{positive:?}"),
+                "the two arms run at different sizings at block {}",
+                block.as_str(),
+            );
+        }
+
+        // THE BLOCK, on the other hand, IS a sizing (the freeze wave): a pilot
+        // runs the pre-freeze posture and a confirmatory runs the frozen one.
         assert_eq!(
-            format!("{control:?}"),
-            format!("{positive:?}"),
-            "the two arms run at different sizings",
-        );
-        assert_eq!(
-            format!("{control:?}"),
+            format!("{:?}", family_block_opts(FamilyArm::Positive, BlockKind::Pilot)),
             format!("{:?}", BlockOpts::pilot()),
-            "the sizing is no longer the PRE-FREEZE posture — which is T7's freeze commit to \
-             move, not this seam's",
+            "a pilot block no longer runs the posture the pilots that already ran used",
+        );
+        assert_eq!(
+            format!("{:?}", family_block_opts(FamilyArm::Control, BlockKind::Confirmatory)),
+            format!("{:?}", BlockOpts::freeze()),
+            "a confirmatory block does not run the FROZEN posture",
+        );
+        assert_ne!(
+            format!("{:?}", BlockOpts::freeze()),
+            format!("{:?}", BlockOpts::pilot()),
+            "the two postures are one sizing, so the block cannot be choosing between them",
         );
     }
 
@@ -4972,6 +5088,13 @@ mod tests {
         assert!(
             USAGE.contains("REFUSED"),
             "USAGE does not state that a confirmatory block refuses a caller's master",
+        );
+        // THE TWO SIZINGS (the freeze wave): the page a caller reads before
+        // typing the command names the K each block runs at.
+        assert!(
+            USAGE.contains(&format!("K = {PILOT_ADMISSION_K}"))
+                && USAGE.contains(&format!("K = {FROZEN_ADMISSION_K}")),
+            "USAGE does not name both admission K values:\n{USAGE}",
         );
     }
 
