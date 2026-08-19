@@ -569,10 +569,19 @@ impl LogPanel {
 /// `bank_reward`, `church_faith_from_power` and `calculate_industry_value` are
 /// literal `power.min(5)`, and the four production tables plus
 /// `customs_max_imported_goods` and `employment_agency_tokens_allowed` all end
-/// in a `_ =>` arm that answers for 5 and up. A real action power can exceed 5
-/// (a President, four pawns, a Station and a technology will do it); nothing it
-/// buys is new, which is why the top rung is worded `power 5+` at the renderer
-/// and why a sixth rung would print a duplicate of the fifth.
+/// in a `_ =>` arm that answers for 5 and up.
+///
+/// **A real action power never exceeds 5** — `calculate_power` ends in
+/// `power.min(5)`, applied last after every modifier, and no technology
+/// contributes to it at all. What runs past 5 is the raw SUM of contributors (a
+/// President, four pawns, a shophouse, a trading house and the Station come to
+/// 8) and the cap absorbs the excess. So the top rung is worded `power 5+` at
+/// the renderer because the reward FUNCTIONS answer for 5 and up — they are
+/// total over `u8` and every one of them saturates — and NOT because a power a
+/// player can actually bring runs past it. A sixth rung would print a duplicate
+/// of the fifth either way. (The cap and the contributor list are pinned by
+/// `view_render`'s `the_power_footer_states_the_engines_own_contributors`,
+/// which is where the surface states them in words.)
 pub const LADDER_POWERS: [u8; 5] = [1, 2, 3, 4, 5];
 
 /// **The Port's Power-5 victory points, the one figure on this surface with no
@@ -3631,10 +3640,17 @@ mod tests {
     /// `power.min(5)` inside a PRIVATE generator, so the modelled count is
     /// checked against the longest exchange chain `get_legal_moves` will offer
     /// at that power on a resource-rich seat.
+    ///
+    /// **Swept to power 5, the SATURATING rung** (T5 review NOTE-5). It stopped
+    /// at three assistants — power 4, one rung short — which left the one rung
+    /// where the model's `power.min(5)` and the generator's own `power.min(5)`
+    /// coincide at the cap, and the rung the gloss's "up to your power" claim
+    /// most rides on, never actually compared.
     #[test]
     fn the_chinatown_depth_matches_what_the_generator_offers() {
         let rules = Rules::standard();
-        for assistants in 0u8..=3 {
+        let mut swept: Vec<u8> = Vec::new();
+        for assistants in 0u8..=4 {
             // 3 players, because the Chinatown tile is a 3-4P one
             // (`board_gen::tiles_for_player_count` drops it at 2).
             let (mut state, _) = state_np(3);
@@ -3677,6 +3693,11 @@ mod tests {
                 other => panic!("Chinatown pays exchanges: {other:?}"),
             };
             assert_eq!(usize::from(modelled), deepest, "power {power}");
+            swept.push(power);
         }
+        // Anti-vacuity for the extension: the ladder really was walked to its
+        // top, so a fixture that stopped short again would fail here rather
+        // than pass a sweep with a hole in it.
+        assert_eq!(swept, LADDER_POWERS.to_vec(), "every rung, cap included");
     }
 }

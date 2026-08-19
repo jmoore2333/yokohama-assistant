@@ -32,9 +32,9 @@ AREAS — full view   every area on the board: what its action pays at each powe
 
 ┌ A04 CHURCH ────────────────────────────────────────────────────┐ ┌ A05 BANK ──────────────────────────────────────────────────────┐ ┌ A06 LABORATORY A ──────────────────────────────────────────────┐
 │ Pay one of each kind you can — copper, silk, tea, seafood, 2   │ │ Take money from the bank.                                      │ │ Acquire ONE technology card. Your power is industry value;     │
-│ yen, an imported good — for +1 faith each on top of your       │ │ power 1   +1 yen                                               │ │ each further point costs 2 yen or 1 imported good, the slot    │
-│ power, then place an assistant on the highest free faith space │ │ power 2   +2 yen                                               │ │ adds its own surcharge, and from your 4th card on there is a   │
-│ you have reached.                                              │ │ power 3   +3 yen                                               │ │ further 2 yen or 1 import to pay.                              │
+│ yen, an imported good — for +1 faith each on top of your       │ │ power 1   +1 yen                                               │ │ each further point costs 2 yen or 1 imported good, and the     │
+│ power, then place an assistant on the highest free faith space │ │ power 2   +2 yen                                               │ │ slot adds its own surcharge. Once you own 3 technologies every │
+│ you have reached.                                              │ │ power 3   +3 yen                                               │ │ further card owes another 2 yen or 1 import.                   │
 │ power 1   faith 1, up to 7 paying all six kinds                │ │ power 4   +4 yen                                               │ │ power 1   1 industry value                                     │
 │ power 2   faith 2, up to 8 paying all six kinds                │ │ power 5+  +5 yen                                               │ │ power 2   2 industry value                                     │
 │ power 3   faith 3, up to 9 paying all six kinds                │ │ 5-Power   1 imported goods                                     │ │ power 3   3 industry value                                     │
@@ -79,8 +79,9 @@ AREAS — full view   every area on the board: what its action pays at each powe
 │ here      empty                                                │
 └────────────────────────────────────────────────────────────────┘
 
-Action power is 1 for your President plus 1 per assistant of yours in the area, +1 for the Station and whatever your technologies add — the ladder is what that buys.
-The 5-Power token on a card is taken by the first player to act in that area at power 5, once, and is then gone.
+Action power is 1 for your President, 1 per assistant of yours in the area, 1 each for your own shophouse and trading house there, and 1 for the Station — capped at 5.
+The Station counts for whoever acts there, no technology adds power, and the ladder is what the power you bring buys.
+The 5-Power token on a card may be taken by the first player to act in that area at power 5 — skipping leaves it there for the next one, and a take is what removes it for good.
 This reference is TALLER than the screen at 3 and 4 players and prints in full — scroll back for the rows above.
 Enter or 'cancel' closes this view and puts you back at the prompt underneath, exactly as you left it — nothing is entered and nothing there is cancelled.
 Any other line closes the view and then RUNS at that prompt — a NUMBER applies that option, and 'back' undoes your last move.
