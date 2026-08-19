@@ -100,6 +100,15 @@ grammar names an escrow block; the `gen:` escape hatch reaches these ordinals, s
 is PROCEDURAL — the runs report's commands-as-record is the audit. A games-bound raise at a
 fixed master and cap is PREFIX-STABLE (a version-bumped extension, never a re-draw).
 
+**AMENDMENT (2026-08-18, same day, commit `4002340`): the v2 ecology's games bound raised
+24 → 120 (id `driven-generated-v2-lookahead` → `driven-generated-v2.1-lookahead`)** — the
+end-trigger confirmatory blocks EXHAUSTED at the frozen bound (positive 10 hits in 24 games,
+control 7, needing 28; the typed refusals are the recorded evidence), which is exactly the
+prefix-stable recovery the paragraph above pre-declares: the strided ordinal sequence at 120
+games is identical to the 24-game sequence where both exist, so every completed reading
+stands at its recorded ecology id and the re-run draws the same roots plus the
+previously-unreachable ones. No master, ordinal, cap, or block moved.
+
 ## 5. Error arithmetic (the declared benign-miss model)
 
 Per-root F=1/20 means a root fails on ≥2 misses. Under a benign per-world miss rate p
