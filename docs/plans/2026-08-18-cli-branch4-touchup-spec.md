@@ -368,6 +368,15 @@ cards, the cheapest real taste of Large. The PR review adjudicates the record ei
     in the skipped row); the second counter line is labelled "Budget and guards:" so D7's
     mandatory step-one set lands on one line. The dated owner-walkthrough capture in
     docs/temp/ keeps the old two-counter line as the historical record it is.
+13. **The strip suffix contradicts the new notice during the trigger round** (T7 validation
+    anomaly A): `render::end_trigger_line` appends `· FINAL ROUND` gated on
+    `end_game_triggered`, so at `end_game_triggered && !final_round` the frame shows
+    `· FINAL ROUND` directly above the precise `END TRIGGERED — <reason>; finishing the
+    current round` notice. Pre-existing and pinned; branch 4 did not cause it but its
+    precise wording is what makes the shorthand read as a contradiction. UNCHANGED on this
+    branch — owner call. Recommendation: a follow-up gates the suffix (`· END TRIGGERED`
+    during the trigger round, `· FINAL ROUND` once `final_round` sets), moving the strip
+    pin and the guide sentence with it.
 
 ## 6. Review trail
 
@@ -378,6 +387,23 @@ cards, the cheapest real taste of Large. The PR review adjudicates the record ei
   3-4P orders clause redesigned counts-only against the measured zero-budget tail row; the
   forced-move detection re-sourced to the legal list. Adjudicated by the orchestrator; this
   revision is the amended spec.
+- 2026-08-19: **EXECUTION COMPLETE — the branch is ready and HELD, unpushed, awaiting the
+  Phase-C lane.** T1–T5 each ran opus-implement (xhigh) → fable-review (max) → orchestrator
+  adjudication, with fix waves where findings were real: T1 `6d0e025`+`9b3606c` (banner;
+  review PASS_WITH_NOTES, undo-drain + GAME-OVER-notice fixes) · T2 `82aac18` (surcharge;
+  PASS_WITH_NOTES, nothing to fix) · T3 `613c5d3`+`fd5f902` (orders line; PASS_WITH_NOTES,
+  growth-mechanism doc + rename) · T4 `a3a8fca`+`aa704fb` (why trio; PASS_WITH_NOTES,
+  decision 12) · T5 `f001783`+`ddb5815` (areas view; FIXABLE — the footer/gloss prose
+  transcription findings, all fixed with computed/pinned figures) · T6 `bf422a1` (README +
+  four chromium-rendered captures, the banner shot from a REAL played transition) · T7
+  validation (Forge): forced-`why` at the owner's own e28/e42 anchors, all THREE
+  load-notice arms witnessed live, 4P tail row, 18/18 areas at the floor with zero
+  over-width lines, the one-time banner property verified over a whole session buffer;
+  anomaly B ("1 imported good") fixed on-branch, anomaly A recorded as decision 13.
+  Cross-suite sweep at HEAD: core 1090+29+1 · oracle 191 · difftest 52+5 · bridge 81 ·
+  eval_probe 36 · node 4/4 · clippy clean — every non-cli count UNCHANGED; cli grew
+  743→796 lib (+2 dogfood ignores unchanged). The 15-gate release roster is deliberately
+  NOT run here — it runs at the (deferred) merge close per the two-tier policy.
 - 2026-08-18: single-Fable max review of the PLAN. Verdict FIXABLE — 1 MUST (the
   `NONZERO_MARK` addition trips the only-one-shared-code-point glyph pin; whitelisted
   deliberately), 4 SHOULD (U+2550 is GONE from the crate, not converted — this spec's
