@@ -335,16 +335,45 @@ const FRAME_WIDTHS: [usize; 3] = [198, 175, 200];
 /// players, where the dashboard is ragged and grows with holdings —
 /// [`WALK_HEIGHTS`] is where that distinction is drawn, and T10 blurred it.
 ///
+/// **RE-MEASURED at branch-4's players-panel Orders line (2026-08-18), and the
+/// 2-player entry CROSSED THE FLOOR: 49 → 51.** The line is one row per seat in
+/// the BESIDE arrangement (spec §2.5 gives the orders facts a dedicated line and
+/// takes the in-hand count off the President line), so two seats cost two rows
+/// and the 2P opening no longer fits a 200x50 window by one row. The 3- and
+/// 4-player entries did NOT move: their arrangement carries the same fact on the
+/// existing tail row inside [`panel_render::SEAT_ROWS`], which is fixed.
+///
+/// That crossing is RECORDED rather than absorbed, and it is owner-visible: it
+/// is the first time an entry of this table has sat outside [`FLOOR_H`], and
+/// guide §2's "a 200x50 window shows the whole opening screen at every player
+/// count" stopped being true at 2 players with it. What makes it a defensible
+/// place to land rather than a bound quietly relaxed is the distinction
+/// [`WALK_HEIGHTS`] already draws: the 2-player frame is the ONE whose height
+/// was never a ceiling — its dashboard joins beside the board and grows a row
+/// per owned Technology from the SECOND tech onward (the first replaces the
+/// `Tech  none yet` placeholder, +0 rows), so ordinary 2-player games left 50
+/// rows behind long before this change: the measured in-play walk reaches 65
+/// rows ([`WALK_HEIGHTS`]), against which a 51-row opening moves nothing a
+/// 200x50 window actually delivered mid-game. The 3- and 4-player openings,
+/// which are ceilings, are still inside the floor. The owner adjudicates whether
+/// the row is worth its cost; nothing here may be raised further to keep a run
+/// quiet.
+///
 /// `cfg(test)`, unlike [`FRAME_WIDTHS`]: a width is a BUDGET the running driver
 /// spends (`suggest` sizes its body against `frame_width`), while a height is
 /// only ever a measurement and a pin. Nothing at runtime asks how tall its own
 /// frame is, so a production constant here would be dead code claiming to be
 /// used.
 #[cfg(test)]
-const FRAME_HEIGHTS: [usize; 3] = [49, 50, 49];
+const FRAME_HEIGHTS: [usize; 3] = [51, 50, 49];
 
-/// The design floor's height (spec §0.1's 200x50), which every entry of
-/// [`FRAME_HEIGHTS`] meets since T10. `cfg(test)` for the same reason.
+/// The design floor's height (spec §0.1's 200x50).
+///
+/// **Every entry of [`FRAME_HEIGHTS`] met it from T10 until branch-4's Orders
+/// line, and the 2-player entry does not any more** — see that constant's doc
+/// for the measurement and the reasoning. The number itself has NOT moved and
+/// must not: it is what a tester's window is told to be, not a budget that
+/// follows the layout around. `cfg(test)` for the same reason.
 #[cfg(test)]
 const FLOOR_H: usize = 50;
 
@@ -361,14 +390,29 @@ const FLOOR_H: usize = 50;
 /// T3 and nobody could have known, because nothing measured it.
 ///
 /// **MEASURED, then set** — the same discipline as [`FRAME_MARGIN`], and
-/// **RE-MEASURED at T4, at T10, and again at the T10 review**, which is the
-/// condition each revision of this doc attached to the table:
+/// **RE-MEASURED at T4, at T10, at the T10 review, and again at branch-4's
+/// Orders line (2026-08-18)**, which is the condition each revision of this doc
+/// attached to the table:
 ///
-/// | count | opening | tallest in play | overshoot | measured on | (T10's reading) | (T4's) | (T3's) |
-/// |---|---|---|---|---|---|---|---|
-/// | 2 | 48 | 67 | +19 | seed 18, rot 2, 900 moves | 60, +12 | 60, +12 | 66, +20 |
-/// | 3 | 49 | 60 | +11 | seed 7, rot 0, 250 moves | 60, +11 | 90, +12 | 96, +20 |
-/// | 4 | 48 | 60 | +12 | seed 7, rot 0, 250 moves | 60, +12 | 99, +12 | 105, +20 |
+/// | count | opening | tallest in play | overshoot | measured on | (T10-review's reading) | (T10's) | (T4's) | (T3's) |
+/// |---|---|---|---|---|---|---|---|---|
+/// | 2 | 51 | 65 | +14 | seed 18, rot 2, 900 moves | 67, +19 | 60, +12 | 60, +12 | 66, +20 |
+/// | 3 | 50 | 61 | +11 | seed 7, rot 0, 250 moves | 60, +11 | 60, +11 | 90, +12 | 96, +20 |
+/// | 4 | 49 | 61 | +12 | seed 7, rot 0, 250 moves | 60, +12 | 60, +12 | 99, +12 | 105, +20 |
+///
+/// **The 2-player row moved for TWO reasons at branch-4 and they pull opposite
+/// ways, so both are stated.** The Orders line added exactly one row per seat,
+/// which this walk measures as +2 (63 → 65 with the line switched off and on,
+/// same walk). The other +5 of the gap against the recorded 67 was DRIFT that
+/// this test structurally cannot catch: it asserts an upper bound only, so a
+/// frame that gets SHORTER never fails, and the 2P walk had quietly fallen to 63
+/// against a constant still reading 68. The constant is therefore re-measured
+/// DOWN at 2 players and stays a real net rather than a ceiling nothing
+/// approaches. (The 3- and 4-player rows of this table read 60 while the
+/// CONSTANT already read 61: the end-trigger strip's extra row went into the
+/// constant on 2026-08-08 and not into the table beside it. The re-measure
+/// confirms 61 at both, and the table says so now — a doc table that disagrees
+/// with the constant it documents is the same drift by a quieter door.)
 ///
 /// **THE THREE ENTRIES ARE NOT THE SAME KIND OF NUMBER, and T10 claimed they
 /// were.** Its commit read "all three in-play maxima are now the SAME number,
@@ -388,11 +432,13 @@ const FLOOR_H: usize = 50;
 ///   is ragged: one line per owned Technology, per hand card, per panel that
 ///   fills up. It therefore grows with holdings for as long as a game runs, and
 ///   the recorded figure is a property of the WALK rather than of the layout —
-///   a 4,000-move version of the same walk reaches 68 and is still climbing
-///   when it stops. What 67 means is exactly "what the walk pinned in
-///   `every_frame_of_a_real_game_walk_fits_its_recorded_bounds` draws", which is
-///   all a regression net needs: that walk is deterministic, so a layout change
-///   that adds a row to the 2P dashboard moves this number and fails.
+///   the T10 review's 4,000-move version of the same walk reached 68 and was
+///   still climbing when it stopped. What 65 means is exactly "what the walk
+///   pinned in `every_frame_of_a_real_game_walk_fits_its_recorded_bounds`
+///   draws", which is all a regression net needs: that walk is deterministic, so
+///   a layout change that adds a row to the 2P dashboard moves this number, and
+///   branch-4's Orders line is that change measured — 63 with the line switched
+///   off, 65 with it on, one row per seat.
 ///
 /// The 2P entry is deliberately NOT quoted as a bound anywhere a player reads
 /// (guide §2 says what the shape is instead), and fixing the raggedness itself
@@ -407,7 +453,7 @@ const FLOOR_H: usize = 50;
 /// fails, and the fix is to re-measure the table deliberately, not to raise one
 /// entry until a run goes quiet.
 #[cfg(test)]
-const WALK_HEIGHTS: [usize; 3] = [68, 61, 61];
+const WALK_HEIGHTS: [usize; 3] = [65, 61, 61];
 
 /// Allowance over [`WALK_HEIGHTS`], and one row is all it is.
 ///
@@ -583,7 +629,7 @@ fn stage(repl: &Repl) -> String {
     // game-info surfaces and the command that opens them, so a player who
     // never read the guide finds them on screen.
     stage.push_str(
-        "info: type 'view' — board · players · ports · labs · tracks · sites · goals · hand · score · log   ·   '?' — the card index\n",
+        "info: type 'view' — board · players · ports · labs · tracks · sites · areas · goals · hand · score · log   ·   '?' — the card index\n",
     );
     stage
 }
@@ -922,9 +968,21 @@ mod tests {
     /// a weaker one: it fails on a frame that grows by one row and on a frame
     /// that shrinks by one, so the numbers cannot drift while nobody is
     /// looking, and `guide_sync` independently requires guide §2 to state these
-    /// same three. The FLOOR is asserted separately and at EVERY count, because
-    /// the two say different things -- the table says what the frame is, the
-    /// floor says what a tester's 200x50 window can hold.
+    /// same three. The FLOOR is asserted separately, because the two say
+    /// different things -- the table says what the frame is, the floor says what
+    /// a tester's 200x50 window can hold.
+    ///
+    /// **The floor is asserted at the two counts whose opening is a CEILING,
+    /// and the 2-player exception is asserted rather than skipped** (branch-4,
+    /// 2026-08-18). The Orders line took the 2P opening to 51 rows, one past the
+    /// floor; that entry is the one frame in the table that was never bounded
+    /// (its dashboard joins beside the board and gains a row per owned
+    /// Technology, so every 2-player game passed 50 rows at its first technology
+    /// purchase already -- see [`FRAME_HEIGHTS`] and [`WALK_HEIGHTS`]). Skipping
+    /// it silently would let it drift; so the overshoot is pinned as an EXACT
+    /// number, which fails both if the 2P frame grows another row AND if a
+    /// future layout brings it back inside the floor -- at which point this
+    /// exception must be deleted rather than kept as cover.
     #[test]
     fn the_opening_frame_is_the_recorded_size_at_every_count() {
         for n in [2u8, 3, 4] {
@@ -940,13 +998,21 @@ mod tests {
                  and guide §2 (checked independently by guide_sync) must state the same number"
             );
         }
-        for (i, rows) in FRAME_HEIGHTS.iter().enumerate() {
+        for (i, rows) in FRAME_HEIGHTS.iter().enumerate().skip(1) {
             assert!(
                 *rows <= FLOOR_H,
                 "the {}P frame must open inside the {FLOOR_H}-row design floor; it is {rows} rows",
                 i + 2,
             );
         }
+        assert_eq!(
+            FRAME_HEIGHTS[0],
+            FLOOR_H + 1,
+            "the 2P opening sits exactly one row past the {FLOOR_H}-row floor since branch-4's \
+             Orders line, and that overshoot is RECORDED, not licensed: a second added row is a \
+             regression, and a frame back inside the floor means this exception is stale and must \
+             be deleted rather than left as cover",
+        );
     }
 
     /// A frame over a deliberately WIDE game position: turn 99, 3-digit

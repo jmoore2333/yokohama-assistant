@@ -56,6 +56,37 @@ const ONE_PLY_ACCOUNT: &str = "This contestant takes a one-ply argmax: it scores
                                reports no per-candidate ranking — the table below IS its whole \
                                account of the move.";
 
+/// What a position offering exactly ONE move is led with (spec §2.2).
+///
+/// **The fact is the ENGINE's, and that is why it can be said on both arms.**
+/// The gate is `get_legal_moves(&state, rules).len() == 1` at the reconstructed
+/// decision state — a statement about the position, which is exactly what this
+/// sentence claims. No search artifact could carry it: greedy's `ranking` is
+/// empty BY CONSTRUCTION (`bot.rs`) whatever the position offered, so a
+/// one-candidate ranking means "greedy" on one arm and "forced" on the other,
+/// and reading the two as one fact is how a screen ends up asserting something
+/// false about a branching point.
+///
+/// It COMPOSES with [`ONE_PLY_ACCOUNT`] rather than replacing it: the two
+/// sentences are about different things (this one about the position, that one
+/// about the contestant), and a greedy seat at a forced point is where both
+/// are true at once.
+const FORCED_LEAD: &str =
+    "Only legal option — nothing was weighed: the position offered exactly one move.";
+
+/// The counter block's WORK line: what the search did.
+const SEARCH_COST_LABEL: &str = "Search cost:";
+
+/// The counter block's LIMIT line: where a budget or a guard bit. D7's
+/// mandatory step-one set (`budget_binds`, `budget_starved`, `ply_cap_hits`,
+/// `free_cap_hits`) all land here, which is the point of splitting at all —
+/// "did anything stop this search" is one question and deserves one line.
+const GUARD_LABEL: &str = "Budget and guards:";
+
+/// The counter block's DEFECT line: a `counter_rows` name this build's
+/// grouping does not place. See [`counter_lines`].
+const UNGROUPED_LABEL: &str = "Counters this build does not group (please report):";
+
 /// The `why` screen for `arg` (or for the most recent explainable bot move
 /// when `arg` is `None`), or the typed refusal that stands in for it.
 pub(crate) fn why(session: &Session, bots: &BotSeats, arg: Option<usize>) -> String {
@@ -409,13 +440,87 @@ fn account(
         .explain
         .ok_or_else(|| Refusal::Unaccounted { index, contestant: controller.clone() })?;
 
+    // THE FORCED-POSITION FACT, read off the engine rather than off the search
+    // ([`FORCED_LEAD`]). Computed here, past every refusal, so a screen that is
+    // never rendered never pays for the exhaustive enumeration.
+    let forced = get_legal_moves(&state, rules).len() == 1;
+
     Ok(render(
-        Reconstruction { contestant, index, seat, decision_seed, recorded_version, current_version },
+        Reconstruction {
+            contestant,
+            index,
+            seat,
+            decision_seed,
+            recorded_version,
+            current_version,
+            forced,
+        },
         decision.mv,
         explain,
         &state,
         rules,
     ))
+}
+
+/// Which grouping line a `counter_rows` name belongs on.
+///
+/// **Exhaustive by NAME, with no catch-all.** The names are core's vocabulary
+/// verbatim (spec §2.6: one vocabulary across the instruments), and a name this
+/// list does not carry is a counter that arrived after this screen was written
+/// — the [`Ungrouped`](Grouping::Ungrouped) arm exists so that fact reaches the
+/// reader instead of being swallowed by a `_ =>`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Grouping {
+    /// Work the search did.
+    Work,
+    /// A budget or a guard that bit.
+    Limit,
+    /// A name this build has no line for — a defect, printed as one.
+    Ungrouped,
+}
+
+/// [`Grouping`] for one counter name.
+fn grouping_of(name: &str) -> Grouping {
+    match name {
+        "root_candidates" | "nodes" | "handles" | "route_dfs_nodes" | "forced_nodes" | "leaves"
+        | "scored" | "root_scored" | "max_line" | "free_extension_steps" => Grouping::Work,
+        "budget_binds" | "budget_starved" | "placement_cap_binds" | "ply_cap_hits"
+        | "free_cap_hits" => Grouping::Limit,
+        _ => Grouping::Ungrouped,
+    }
+}
+
+/// The counter block: `rows` grouped onto at most three labelled lines, in
+/// `counter_rows`' own declaration order within each.
+///
+/// Takes a SLICE rather than a `&SearchStats` so the ungrouped arm can be
+/// driven at all: a sixteenth counter cannot be manufactured from this crate,
+/// which is precisely what core's no-`..` destructure guarantees.
+///
+/// The names are printed VERBATIM — they are the same strings the arena's
+/// report, the probe and this screen all use, and a friendlier spelling here
+/// would mean a reader could not grep one instrument's output with another's
+/// vocabulary.
+fn counter_lines(rows: &[(&str, u64)]) -> Vec<String> {
+    let mut lines = Vec::new();
+    for (label, group) in [
+        (SEARCH_COST_LABEL, Grouping::Work),
+        (GUARD_LABEL, Grouping::Limit),
+        (UNGROUPED_LABEL, Grouping::Ungrouped),
+    ] {
+        let cells: Vec<String> = rows
+            .iter()
+            .filter(|(name, _)| grouping_of(name) == group)
+            .map(|(name, value)| format!("{name} {value}"))
+            .collect();
+        if !cells.is_empty() {
+            lines.push(format!(
+                "{label} {}",
+                cells.join(&format!(" {} ", crate::style::glyph::SEPARATOR)),
+            ));
+        }
+    }
+    lines
 }
 
 /// What the header says about the reconstruction, as one argument rather than
@@ -427,6 +532,9 @@ struct Reconstruction {
     decision_seed: u64,
     recorded_version: Option<u32>,
     current_version: u32,
+    /// The engine's legal list held exactly one move at the decision state —
+    /// see [`FORCED_LEAD`].
+    forced: bool,
 }
 
 /// The screen: `why`'s own header over `suggest`'s body (design §2.4 — the
@@ -450,14 +558,15 @@ fn render(
             r.decision_seed,
         ),
     )];
+    // THE WHOLE COUNTER SURFACE, not a chosen two of it (spec §2.6). What
+    // stood here printed `scored` and `root_candidates` and dropped the other
+    // thirteen — including every counter that says whether a budget or a guard
+    // bit, which is exactly what a reader asking "why that move" needs when the
+    // answer is "the search ran out of room".
     if let Some(stats) = explain.stats {
-        notes.push((
-            Tone::Dim,
-            format!(
-                "Search cost: {} successor position(s) scored across {} root candidate(s).",
-                stats.scored, stats.root_candidates,
-            ),
-        ));
+        for line in counter_lines(&driven_runner::counter_rows(&stats)) {
+            notes.push((Tone::Dim, line));
+        }
     }
     // Version drift WARNS and does not refuse: the move still reproduced, so
     // the table is a true account of a decision an older build made — but the
@@ -496,6 +605,7 @@ fn render(
                 None
             }
         },
+        forced_lead: r.forced.then_some(FORCED_LEAD),
     };
 
     let suggestion = Suggestion {
@@ -520,6 +630,7 @@ mod tests {
     use crate::repl::Repl;
     use crate::session::Session;
     use std::sync::OnceLock;
+    use yokohama_core::lookahead::SearchStats;
 
     /// The bot stream seed every fixture here keys with. A LITERAL rather than
     /// a draw: `why`'s whole claim is that it re-derives the pump's own key, so
@@ -633,6 +744,33 @@ mod tests {
                 get_legal_moves(&state, rules).len() > 1
             })
             .collect()
+    }
+
+    /// Play until the bot has moved at all, and hand back its FIRST move —
+    /// asserted here to be a FORCED one, which is the fixture's whole point.
+    ///
+    /// The assertion is the fixture rather than a decoration: the bot's first
+    /// move of a game is the `End additional-action phase` its opening turn
+    /// begins with, and that position offers exactly one move
+    /// ([`branching_move_indices_of`]'s doc is the same observation from the
+    /// other side). Asserting it means a rules change that gives that position
+    /// a second move fails HERE, naming the fixture, instead of quietly
+    /// un-testing the forced lead.
+    fn play_to_a_forced_bot_move(r: &mut Repl) -> usize {
+        let rules = Rules::standard();
+        play(r, 400, |r| {
+            !move_indices_of(r.session.record(), &Rules::standard(), PlayerId::new(1)).is_empty()
+        });
+        let first = *move_indices_of(r.session.record(), &rules, PlayerId::new(1))
+            .first()
+            .expect("fixture: the bot must have moved");
+        let state = state_at(r.session.record(), first, &rules).expect("the decision state");
+        assert_eq!(
+            get_legal_moves(&state, &rules).len(),
+            1,
+            "fixture: the bot's first move must be a FORCED one",
+        );
+        first
     }
 
     /// Play until the bot has made a move at a branching decision point, and
@@ -1196,6 +1334,281 @@ mod tests {
         // ...and the search-only note stays off too: greedy runs no search, so
         // there are no counters to report.
         assert!(!out.contains("Search cost:"), "{out}");
+    }
+
+    /// **A forced position is LED with the fact that nothing was weighed**
+    /// (spec §2.2). The sentence is a claim about the POSITION — the engine's
+    /// own legal list held exactly one move — so it is stated before the
+    /// provenance note and before the table, and the runner-up block is
+    /// omitted whole rather than printed as "No runner-up", which would invite
+    /// the reader to think a ranking was computed and came up short.
+    #[test]
+    fn a_forced_move_leads_with_only_legal_option_and_omits_runner_ups() {
+        let mut r = bot_repl(4, PROVISIONAL_DEFAULT_BOT);
+        let forced = play_to_a_forced_bot_move(&mut r);
+
+        let out = why(&r.session, &r.bots, Some(forced));
+        assert!(out.contains(ACCOUNTED), "the account still renders: {out}");
+        assert!(flat(&out).contains(FORCED_LEAD), "{out}");
+
+        let lead_at = out.find("Only legal option").expect("the lead line");
+        let note_at = out.find("reconstructed by replay").expect("the provenance note");
+        let table_at = out.find(ACCOUNTED).expect("the table");
+        assert!(lead_at < note_at, "the lead comes before the provenance note: {out}");
+        assert!(lead_at < table_at, "and before any table: {out}");
+
+        assert!(!out.contains("Runner-ups ("), "there are none to rank: {out}");
+        assert!(!out.contains("No runner-up"), "the block is omitted, not restated: {out}");
+    }
+
+    /// The control: a position that DID offer a choice carries no such lead,
+    /// and its runner-up block is where it always was.
+    #[test]
+    fn an_unforced_move_has_no_forced_lead() {
+        let mut r = bot_repl(4, PROVISIONAL_DEFAULT_BOT);
+        let branching = play_to_a_branching_bot_move(&mut r);
+
+        let out = why(&r.session, &r.bots, Some(branching));
+        assert!(out.contains(ACCOUNTED), "{out}");
+        assert!(!out.contains("Only legal option"), "a branching point weighed candidates: {out}");
+        assert!(out.contains("Runner-ups ("), "{out}");
+    }
+
+    /// **The lead COMPOSES with the one-ply sentence rather than replacing it**
+    /// (spec §2.2's both-arms clause). The two say different things — the lead
+    /// is about the position, `ONE_PLY_ACCOUNT` is about the contestant — and
+    /// a greedy seat at its forced first move is the one address where both
+    /// are true at once.
+    #[test]
+    fn a_forced_greedy_move_composes_the_lead_with_its_one_ply_account() {
+        let mut r = bot_repl(4, Contestant::GREEDY_V1_DEFAULT);
+        let forced = play_to_a_forced_bot_move(&mut r);
+
+        let out = why(&r.session, &r.bots, Some(forced));
+        assert!(out.contains(ACCOUNTED), "{out}");
+        assert!(flat(&out).contains(FORCED_LEAD), "the position's own fact: {out}");
+        assert!(out.contains("one-ply"), "and the contestant's: {out}");
+        assert!(!out.contains("Runner-ups ("), "{out}");
+        assert!(!out.contains("No runner-up"), "{out}");
+    }
+
+    /// **All fifteen counters, with the values the search actually reported**
+    /// (spec §2.6). The old note printed two of them, which is the gap
+    /// `driven_runner::counter_rows` was built to close: its body destructures
+    /// `SearchStats` with no `..`, so a sixteenth counter is a compile error
+    /// THERE, the array grows, and [`counter_lines`]' ungrouped arm surfaces it
+    /// HERE. The chain has no silent link, and this is the end of it.
+    ///
+    /// The values are re-derived by re-running the SAME decision rather than
+    /// scraped off the screen: a block that printed fifteen names against
+    /// fifteen zeroes would pass a names-only pin.
+    #[test]
+    fn the_counter_block_names_all_fifteen_rows() {
+        let mut r = bot_repl(4, PROVISIONAL_DEFAULT_BOT);
+        let rules = Rules::standard();
+        let branching = play_to_a_branching_bot_move(&mut r);
+        let out = flat(&why(&r.session, &r.bots, Some(branching)));
+
+        let state = state_at(r.session.record(), branching, &rules).expect("the decision state");
+        let stats = bot::decide(
+            PROVISIONAL_DEFAULT_BOT,
+            &state,
+            &rules,
+            PlayerId::new(1),
+            r.bots.decision_seed(branching),
+        )
+        .expect("the search decides")
+        .explain
+        .expect("and explains")
+        .stats
+        .expect("a search reports counters");
+
+        let rows = driven_runner::counter_rows(&stats);
+        for (name, value) in rows {
+            assert!(
+                out.contains(&format!("{name} {value}")),
+                "the block must carry {name} at its reported value {value}: {out}",
+            );
+        }
+        // Anti-vacuity: the counters must not be all-zero, or the pin above
+        // would hold for any name paired with any zero.
+        assert!(
+            rows.iter().filter(|(_, v)| *v > 0).count() >= 4,
+            "the fixture's search must have done real work: {rows:?}",
+        );
+    }
+
+    /// The block is TWO groupings, and every line of it fits the frame.
+    ///
+    /// The split is by what a counter measures — work done on the search line,
+    /// limits that bit on the guard line — so D7's mandatory set
+    /// (binds/starved/ply/free-cap) reads as one answer to one question
+    /// instead of being spread across a wall of names.
+    #[test]
+    fn the_two_line_grouping_holds() {
+        crate::style::force(false);
+        let mut r = bot_repl(4, PROVISIONAL_DEFAULT_BOT);
+        let branching = play_to_a_branching_bot_move(&mut r);
+        let out = why(&r.session, &r.bots, Some(branching));
+
+        assert!(out.contains(SEARCH_COST_LABEL), "{out}");
+        assert!(out.contains(GUARD_LABEL), "{out}");
+        assert!(
+            !out.contains(UNGROUPED_LABEL),
+            "every shipped counter is grouped, so the defect line must stay off: {out}",
+        );
+        // Each name lands on exactly ONE of the two lines. Counted over WHOLE
+        // whitespace tokens, never as a substring: `nodes` is inside both
+        // `route_dfs_nodes` and `forced_nodes`, so a `matches()` count would
+        // read 3 for a name that is printed once.
+        let tokens: Vec<&str> = out.split_whitespace().collect();
+        for (name, _) in driven_runner::counter_rows(&SearchStats::default()) {
+            assert_eq!(
+                tokens.iter().filter(|t| **t == name).count(),
+                1,
+                "{name} must appear once, on one grouping line: {out}",
+            );
+        }
+
+        let frame = crate::screen::frame_width(2);
+        for line in out.lines() {
+            let width = crate::screen::visible_width(line);
+            assert!(width <= frame, "a line is {width} columns against {frame}: {line:?}");
+        }
+    }
+
+    /// **A counter this build does not know is a DEFECT, said out loud.** The
+    /// grouping is a match with no catch-all, and what it cannot place goes on
+    /// its own line naming it — because the alternative, dropping it, is
+    /// exactly the "why printed 2 of 15" failure one layer up.
+    ///
+    /// Driven through [`counter_lines`] with a fabricated row: a real
+    /// sixteenth counter cannot be manufactured from this crate (that is the
+    /// point of core's no-`..` destructure), so the arm is exercised at the
+    /// seam it defends rather than left to a future edit to discover.
+    #[test]
+    fn an_ungrouped_counter_is_surfaced_rather_than_dropped() {
+        let lines = counter_lines(&[("scored", 7), ("brand_new_counter", 3), ("budget_binds", 1)]);
+        let joined = lines.join(" ");
+        assert!(joined.contains("scored 7"), "{joined}");
+        assert!(joined.contains("budget_binds 1"), "{joined}");
+        assert!(joined.contains(UNGROUPED_LABEL), "{joined}");
+        assert!(joined.contains("brand_new_counter 3"), "the unknown one is NAMED: {joined}");
+
+        // ...and a fully-known list prints no such line.
+        let known = counter_lines(&driven_runner::counter_rows(&SearchStats::default())).join(" ");
+        assert!(!known.contains(UNGROUPED_LABEL), "{known}");
+    }
+
+    /// The explanation table's rows, in render order: every line from the
+    /// headings row to the `TOTAL` row inclusive.
+    ///
+    /// Sliced by the two strings the renderer OWNS (`TABLE_HEADINGS` at their
+    /// real column spacing, `TOTAL_LABEL`), so a column-width edit moves this
+    /// helper's answer rather than silently changing what it measures.
+    fn table_block(text: &str) -> Vec<&str> {
+        let headings = crate::suggest::table_row(crate::suggest::TABLE_HEADINGS);
+        let start = text
+            .lines()
+            .position(|l| l == headings)
+            .unwrap_or_else(|| panic!("no table headings row in:\n{text}"));
+        let rows: Vec<&str> = text.lines().skip(start).collect();
+        let end = rows
+            .iter()
+            .position(|l| l.contains(crate::suggest::TOTAL_LABEL))
+            .expect("no TOTAL row");
+        rows[..=end].to_vec()
+    }
+
+    /// The `product` cell of a table row — its last whitespace token, which is
+    /// the column the marker's semantics are about.
+    fn product_cell(row: &str) -> &str {
+        row.split_whitespace().next_back().unwrap_or("")
+    }
+
+    /// **The nonzero-product aid, all three parts** (spec §2.3): a marker in a
+    /// lead column on exactly the rows whose product is nonzero, the zero rows
+    /// dimmed on a terminal, and a computed summary under the table saying how
+    /// many rows carried the move.
+    ///
+    /// **Canonical row ORDER does not move** — cross-referencing a screen
+    /// against `eval::explain` or against an older capture has to keep working,
+    /// which is why the aid is a column and a tone rather than a re-sort.
+    ///
+    /// The marker's column is the row's FIRST character, taken out of the two
+    /// spaces every row already began with, so the table's alignment and its
+    /// total width are untouched: that is asserted here rather than assumed.
+    #[test]
+    fn nonzero_product_rows_carry_the_mark_and_zeros_dim() {
+        crate::style::force(false);
+        let mut r = bot_repl(4, PROVISIONAL_DEFAULT_BOT);
+        let branching = play_to_a_branching_bot_move(&mut r);
+        let out = why(&r.session, &r.bots, Some(branching));
+
+        let rows = table_block(&out);
+        let widths: std::collections::BTreeSet<usize> =
+            rows.iter().map(|l| crate::screen::visible_width(l)).collect();
+        assert_eq!(widths.len(), 1, "the table's columns must stay square: {rows:#?}");
+
+        let mark = crate::style::glyph::NONZERO_MARK;
+        let mut marked = 0usize;
+        let mut story = 0usize;
+        for row in &rows[1..] {
+            let is_total = row.contains(crate::suggest::TOTAL_LABEL);
+            let carries = row.starts_with(mark);
+            if is_total {
+                assert!(!carries, "the TOTAL row is a sum, not a story row: {row:?}");
+                continue;
+            }
+            story += 1;
+            let product: i64 = product_cell(row).parse().expect("a numeric product cell");
+            assert_eq!(
+                carries,
+                product != 0,
+                "the marker must track the product cell exactly: {row:?}",
+            );
+            marked += usize::from(carries);
+        }
+        assert!(marked > 0 && marked < story, "anti-vacuity: the fixture needs both kinds");
+
+        assert!(
+            out.contains(&format!(
+                "{marked} of {story} {}",
+                crate::suggest::NONZERO_SUMMARY_TAIL
+            )),
+            "the summary line must count what the table marked: {out}",
+        );
+
+        // ...and on a terminal the zero rows are the DIM ones.
+        crate::style::force(true);
+        let painted = why(&r.session, &r.bots, Some(branching));
+        for row in &table_block(&painted)[1..] {
+            if row.contains(crate::suggest::TOTAL_LABEL) {
+                continue;
+            }
+            let dim = row.contains('\u{1b}');
+            assert_eq!(
+                dim,
+                !row.contains(mark),
+                "zero-product rows dim, marked rows do not: {row:?}",
+            );
+        }
+        crate::style::force(false);
+    }
+
+    /// The aid is present on TTY and piped ALIKE, so the two stay
+    /// byte-identical modulo color: the marker is a CHARACTER, never a paint.
+    #[test]
+    fn piped_output_is_escape_free() {
+        crate::style::force(false);
+        let mut r = bot_repl(4, PROVISIONAL_DEFAULT_BOT);
+        let branching = play_to_a_branching_bot_move(&mut r);
+        let out = why(&r.session, &r.bots, Some(branching));
+        assert!(!out.contains('\u{1b}'), "piped output carries no ANSI:\n{out}");
+        assert!(
+            out.contains(crate::style::glyph::NONZERO_MARK),
+            "and the marker still reaches it:\n{out}",
+        );
     }
 
     /// **Every line of every `why` screen fits the frame, and the prose fits

@@ -53,9 +53,12 @@
 //! the 200-column design floor that mock's own frame is drawn at. (5) The mock
 //! draws seven lines per seat and no tech, mercenary, seat-number, locked-pawn
 //! or next-take figure at all; this keeps every one of them — the first two on
-//! their own rows, the last three on a tail row, since a fourth zone on the
+//! their own rows, the last FOUR on a tail row (the orders in hand, the orders
+//! filled, the locked pawns and the next-take price), since a fourth zone on the
 //! assistants line costs 51 columns and the trade-house line with its price
-//! costs 61. Technologies are NAMED rather than explained there, because the
+//! costs 61. That row is over its column at the corner and yields the next-take
+//! price alone when it is -- see [`seat_tail_row`], which states the policy and
+//! its two measured maxima. Technologies are NAMED rather than explained there, because the
 //! shortest [`tech_summary`] needs 34 columns beside a name and a label. (6)
 //! The mock folds TRACKS and ACHIEVEMENTS onto ONE 192-column line; they get a
 //! row each here, because the 3-player block is [`BELOW_BLOCK_MIN`] columns and
@@ -65,10 +68,13 @@
 //! [`president_row`] and [`seat_tail_row`] — because the orders count travels
 //! with the locked-pawn tally and the next-take price rather than with the
 //! President (see (5)), and no information is lost by the split: both facts
-//! still appear, on adjacent rows of the same column.
+//! still appear, on adjacent rows of the same column. **The BESIDE form splits
+//! them too since branch-4**, for the opposite reason: the orders facts grew a
+//! filled clause with card codes on it and earned [`orders_line`] to themselves,
+//! leaving [`president_line`] a location and nothing else.
 
 use yokohama_core::{
-    AchievementType, AreaId, PlayerColor, PlayerId, PresidentLocation,
+    AchievementType, AreaId, OrderCardId, PlayerColor, PlayerId, PresidentLocation,
     TechEffect,
 };
 
@@ -275,7 +281,10 @@ fn area_name(board: &BoardModel, area: AreaId) -> String {
 /// that the strip either adopts a vocabulary glyph or admits its own; the
 /// approved mocks answer it a third way — their title strip is centred text on
 /// an otherwise empty line, with no rule character at all — so the redesigned
-/// strip draws none, and the crate no longer spells that code point anywhere.
+/// strip draws none. (The crate DOES spell that code point again since
+/// branch-4: the end-trigger banner took the row's other option and admitted
+/// it as [`crate::style::glyph::DOUBLE_RULE`]. Nothing changed here — this
+/// strip still draws no rule.)
 pub fn title_strip(title: &TitleModel, width: usize) -> String {
     let mut t = Twin::default();
     t.tinted(Tone::Strong, "Y O K O H A M A").raw("   ");
@@ -362,6 +371,7 @@ fn players_lines(panel: &PlayersPanel, board: &BoardModel, colors: &[PlayerColor
         out.push(assistants_line(p));
         out.push(shophouses_line(p));
         out.push(trading_houses_line(p));
+        out.push(orders_line(p));
         out.extend(tech_lines(p));
         out.push(mercenaries_line(p));
         out.push(president_line(p, board, colors));
@@ -589,11 +599,108 @@ fn mercenaries_line(p: &PlayerModel) -> String {
     line(&t)
 }
 
-/// `President ▲ on SILK MILL · 1 order in hand (hidden)`.
+/// `Orders  2 in hand · 3 filled (O23, O08, O12)`.
+///
+/// **Its own line since branch-4, and the in-hand count MOVED here** from
+/// [`president_line`], which now states a location and nothing else: one fact,
+/// one home. The count is emphasised at nonzero like every other in-hand zone
+/// ([`zone_count`]) because orders in hand are exactly what a seat can fill
+/// this turn, and `(hidden)` still DECLARES the mask beside it rather than
+/// being it — [`HandPanel`] is the only panel that carries card identities from
+/// a hand.
+///
+/// **The filled clause is public on every seat.** Fulfilling an order turns the
+/// card face up in front of its player, so a masked bot seat's filled codes are
+/// as public as its VP; the mask covers the HAND, and the two halves of this
+/// line are on opposite sides of that line deliberately.
+///
+/// The codes are the Vec's own order — the CHRONOLOGY of a seat's game, which
+/// is the reading that carries information (spec §2.5, decision 3) — and they
+/// elide from the END when they would outrun [`DASH_W`]; see
+/// [`append_filled_codes`].
+fn orders_line(p: &PlayerModel) -> String {
+    let mut t = indented();
+    t.raw("Orders  ");
+    zone_count(&mut t, p.orders_in_hand as u32, "in hand");
+    if p.hand_hidden {
+        t.raw(" ").tinted(Tone::Chrome, "(hidden)");
+    }
+    sep(&mut t).raw(&format!("{} filled", p.orders_filled.len()));
+    append_filled_codes(&mut t, &p.orders_filled, DASH_W);
+    line(&t)
+}
+
+/// ` (O23, O08, O12)` appended to `t`, or ` (O23, O08, …)` when the whole list
+/// would not fit `budget`.
+///
+/// **The elision is SPECIFIED rather than discovered** (spec §5 decision 10).
+/// [`line`] would otherwise clip this line at [`DASH_W`] and take the closing
+/// paren with it, leaving a code sheared mid-token — and a seat can legally
+/// hold enough filled orders to reach that. So:
+///
+/// - codes drop from the END, the earliest ones being the ones a player is
+///   least able to reconstruct from the table;
+/// - the paren ALWAYS closes, so an elided tail never reads as a clipped one;
+/// - the `N filled` COUNT stays exact — it is drawn before this is called and
+///   nothing here can move it.
+///
+/// The mark is the vocabulary's own [`glyph::ELLIPSIS`], the same one every
+/// other elided surface in the crate draws.
+///
+/// `budget` is a parameter rather than the constant so the pin can state the
+/// arithmetic at a width it chooses; the one caller passes [`DASH_W`].
+fn append_filled_codes(t: &mut Twin, filled: &[OrderCardId], budget: usize) {
+    if filled.is_empty() {
+        return;
+    }
+    let codes: Vec<String> = filled.iter().map(|id| format!("O{:02}", id.0)).collect();
+    let available = budget.saturating_sub(t.width());
+
+    // ` (` + the codes joined by `, ` + `)`.
+    let full = 3 + codes.iter().map(|c| c.chars().count()).sum::<usize>() + 2 * (codes.len() - 1);
+    if full <= available {
+        t.tinted(Tone::Chrome, &format!(" ({})", codes.join(", ")));
+        return;
+    }
+
+    // ` (…)` is 4 columns, and each code kept in front of the mark costs its
+    // own width plus the `, ` that joins it.
+    let mut cost = 4;
+    let mut shown = 0usize;
+    for c in &codes {
+        let add = c.chars().count() + 2;
+        if cost + add > available {
+            break;
+        }
+        cost += add;
+        shown += 1;
+    }
+    if shown == 0 {
+        // Not even the mark fits: say nothing rather than open a paren this
+        // function cannot close. Unreachable from any legal state (the widest
+        // legal prefix leaves 33 columns and the mark needs 4), and the pin
+        // sweeps that domain -- this is the defence that keeps the guarantee
+        // above true of every caller rather than of one.
+        if available >= 4 {
+            t.tinted(Tone::Chrome, &format!(" ({})", glyph::ELLIPSIS));
+        }
+        return;
+    }
+    t.tinted(
+        Tone::Chrome,
+        &format!(" ({}, {})", codes[..shown].join(", "), glyph::ELLIPSIS),
+    );
+}
+
+/// `President ▲ on SILK MILL`.
 ///
 /// The area is NAMED, not numbered: the board already answers "which tile is
 /// A06", and this line answers "where is my President" for a player reading the
 /// panel rather than scanning the board.
+///
+/// **Location only since branch-4.** It used to carry ` · 1 order in hand
+/// (hidden)` as a tail; that fact now has [`orders_line`] to itself, beside the
+/// filled codes it belongs with.
 fn president_line(p: &PlayerModel, board: &BoardModel, colors: &[PlayerColor]) -> String {
     let mut t = indented();
     t.raw("President ");
@@ -605,10 +712,6 @@ fn president_line(p: &PlayerModel, board: &BoardModel, colors: &[PlayerColor]) -
             t.owned(colors, p.seat, &glyph::PRESIDENT.to_string());
             t.raw(&format!(" on {}", area_name(board, area)));
         }
-    }
-    sep(&mut t).raw(&format!("{} in hand", plural(p.orders_in_hand, "order")));
-    if p.hand_hidden {
-        t.raw(" ").tinted(Tone::Chrome, "(hidden)");
     }
     line(&t)
 }
@@ -933,7 +1036,7 @@ pub const BELOW_BLOCK_MIN: usize = 175;
 ///
 /// Ten is what the fields cost: the mock's seven (header, two goods rows, the
 /// three zone rows, President) plus Technologies, Mercenaries, and the tail row
-/// that carries the three facts no zone row has the columns for.
+/// that carries the four facts no zone row has the columns for.
 const SEAT_ROWS: usize = 10;
 
 /// Column the seat header's money field starts at, and its two successors —
@@ -1258,22 +1361,47 @@ fn president_row(
     line_at(&t, w)
 }
 
-/// The three facts no zone row has the columns for: the orders in hand (with
-/// the mask declared, exactly as the beside panel declares it), the assistants
-/// locked on goals and tracks, and the next Employment-Agency take price.
+/// The FOUR facts no zone row has the columns for: the orders in hand (with
+/// the mask declared, exactly as the beside panel declares it), the orders this
+/// seat has FILLED, the assistants locked on goals and tracks, and the next
+/// Employment-Agency take price.
 ///
-/// A row rather than three tails, because all three are short and none of them
+/// A row rather than four tails, because all of them are short and none of them
 /// fits where it belongs: `· 3 locked` costs 11 columns on a 40-column
 /// assistants line, `(next take ¥4)` costs 15 on a 46-column trade-house line,
 /// and the column is 48.
 ///
-/// **It is the tightest row in the column layout: 47 columns against 48 at 4
-/// players**, swept over its three fields (orders 0..36 x masked or not x
-/// locked 0..18 x the whole 4/5/6/7 take progression) and held by
-/// `the_widest_legal_seat_tail_row_still_fits_its_column`. One column of
-/// margin, at the count with the narrowest columns — so a word added to any of
-/// these three facts costs one of the others, and the pin is what turns that
-/// into a failing test rather than a silently truncated next-take price.
+/// **The filled count is a COUNT here and the codes are the 2-player Orders
+/// line's business.** [`orders_line`] names the cards because a 74-column strip
+/// can hold them; this column is 48 and the shortest useful parenthetical
+/// (`(O23)`) costs 6 on a row that is already over budget. That is the owner's
+/// ask under-delivered at 3 and 4 players BY MEASUREMENT, and spec §2.5 records
+/// it as such rather than calling it a design.
+///
+/// **THE ROW NO LONGER FITS ITS COLUMN ON ITS OWN, so it has a YIELD POLICY**
+/// (spec §5 decision 9, branch-4). Over the constrained joint domain — 36 order
+/// cards exist, so a seat's in-hand count plus its filled count cannot exceed 36
+/// — the four-fact worst case measures **59 columns against 48**. Where the T11
+/// verdict below found one column of margin over three facts, the fourth fact
+/// spends it and 11 more, so something has to give and WHICH is a decision
+/// rather than an accident:
+///
+/// - **`next take ¥N` drops FIRST and ALONE.** It is appended only when the
+///   whole row still fits, so no other fact can be displaced by it.
+/// - **The orders, filled, locked and mask facts never yield.** They are
+///   state a player cannot recover from anywhere else on the screen; the
+///   next-take price is recoverable at the Employment Agency's own decision
+///   preview, and [`trading_houses_line`] prints it in full in the beside
+///   arrangement.
+/// - **One drop is always enough**, which is what makes the policy total rather
+///   than a first step: the widest row WITHOUT the price measures 44 columns.
+///   `the_widest_legal_seat_tail_row_still_fits_its_column` measures both halves
+///   (48 keeping, 44 yielding) so a future word that made one drop insufficient
+///   fails there instead of clipping.
+///
+/// The yield is NOT a rare corner: a masked seat with any locked pawn already
+/// exceeds the budget at 4 players, so an opponent bot column routinely shows
+/// three facts rather than four. That is the cost of the fourth fact, stated.
 ///
 /// **`next take ¥N` was re-examined at T11 and KEPT, which is a verdict rather
 /// than an omission** (the T10 review flagged it: reword it if you can do
@@ -1281,31 +1409,39 @@ fn president_row(
 ///
 /// The complaint is real — on a row reading `1 order · 3 locked · next take
 /// ¥4` nothing says WHAT is being taken, and "take" is also what an assistant
-/// and a shophouse leave the warehouse by. What settles it is the measurement
-/// above: the widest legal row is 47 against a 48-column column, and the pin
-/// asserts `< content_w`, so the budget for a disambiguating word is ZERO
-/// columns, not one. Every candidate costs more than that (`next trade house
-/// ¥4` is +7; `next house ¥4` is +1 AND ambiguous between the two building
-/// kinds), and the abbreviations that would fit are exactly what the owner's
-/// full-words ruling excludes.
-///
-/// So the words stay, and the two places that CAN carry the context do:
-/// [`trading_houses_line`] prints `(next take ¥4)` on the Trade houses line
-/// itself, where the noun is one row up in the beside arrangement, and the
-/// guide says what the tail row's copy of it counts. `next take` is the
-/// Employment Agency's own vocabulary for the printed 4/5/6/7 progression, not
-/// an abbreviation of longer words.
+/// and a shophouse leave the warehouse by. What settled it was the measurement:
+/// the budget for a disambiguating word was ZERO columns, not one. Every
+/// candidate costs more than that (`next trade house ¥4` is +7; `next house ¥4`
+/// is +1 AND ambiguous between the two building kinds), and the abbreviations
+/// that would fit are exactly what the owner's full-words ruling excludes.
+/// **Branch-4 conditionally RE-OPENS that verdict** rather than settling it
+/// again: a fact that now yields at the corner is a different question from a
+/// fact that fits with one column to spare, and spec §5 decision 9 routes it to
+/// the owner. Until they rule, the words stay and the two places that CAN carry
+/// the context do — [`trading_houses_line`] prints `(next take ¥4)` on the
+/// Trade houses line itself, where the noun is one row up in the beside
+/// arrangement, and the guide says what the tail row's copy of it counts.
+/// `next take` is the Employment Agency's own vocabulary for the printed
+/// 4/5/6/7 progression, not an abbreviation of longer words.
 fn seat_tail_row(p: &PlayerModel, w: usize) -> String {
     let mut t = indented();
     t.raw(&plural(p.orders_in_hand, "order"));
     if p.hand_hidden {
         t.raw(" ").tinted(Tone::Chrome, "(hidden)");
     }
+    sep(&mut t).raw(&format!("{} filled", p.orders_filled.len()));
     let locked = p.assistants.locked();
     if locked > 0 {
         sep(&mut t).raw(&format!("{locked} locked"));
     }
-    sep(&mut t).tinted(Tone::Chrome, &format!("next take {}{}", glyph::YEN, p.trading_houses.next_take_cost));
+    // The one fact allowed to yield, and it yields by never being written
+    // rather than by being clipped: a truncated price is a WRONG price, where
+    // an absent one sends a player to the Employment Agency preview that owns
+    // the number.
+    let take = format!("next take {}{}", glyph::YEN, p.trading_houses.next_take_cost);
+    if t.width() + 3 + take.chars().count() <= w {
+        sep(&mut t).tinted(Tone::Chrome, &take);
+    }
     line_at(&t, w)
 }
 
@@ -1605,6 +1741,7 @@ mod tests {
             "Shophouses  ",
             "Trade houses  ",
             "(next take ¥4)",
+            "Orders  ",
             "Tech  ",
             "Mercenaries  ",
             "President ",
@@ -2257,7 +2394,8 @@ mod tests {
         let text = strip_ansi(&below_np(4));
         for want in [
             "PLAYERS", "Goods  ", "Assistants  ", "Shophouses  ", "Trade houses  ", "Tech  ",
-            "Mercenaries  ", "President ", "next take ", "TRACKS", "ACHIEVEMENTS", "YOUR HAND",
+            "Mercenaries  ", "President ", "filled", "next take ", "TRACKS", "ACHIEVEMENTS",
+            "YOUR HAND",
         ] {
             assert!(text.contains(want), "want {want:?} in the below dashboard:\n{text}");
         }
@@ -2432,62 +2570,151 @@ mod tests {
         }
     }
 
+    /// The 3-4 player seat tail row carries the FILLED count and never the
+    /// codes — at any width, including ones far wider than a seat column, so a
+    /// renderer that only withheld them because they did not fit fails here.
+    #[test]
+    fn the_seat_tail_row_carries_the_filled_count() {
+        let (mut state, rules) = state_np(4);
+        state.players[0].completed_orders =
+            vec![OrderCardId(23), OrderCardId(8), OrderCardId(12)];
+        let seats = crate::screen_model::SeatFacts::all_open(4);
+        let panel = crate::screen_model::build_players(&state, &rules, &seats);
+        for w in [SEAT_COL_W - SEAT_COL_GAP, 56, DASH_W, 200] {
+            let row = strip_ansi(&seat_tail_row(&panel.players[0], w));
+            assert!(row.contains("3 filled"), "at width {w}: {row:?}");
+            for id in [23u8, 8, 12] {
+                assert!(
+                    !row.contains(&format!("O{id:02}")),
+                    "the tail row names no card at any width -- the codes are the 2-player \
+                     Orders line's business (width {w}): {row:?}",
+                );
+            }
+        }
+    }
+
     /// The seat TAIL row is the tightest line in the column layout, so it gets
     /// the measured-maximum treatment its column-mates do not need (T10 review
     /// N1).
     ///
-    /// **MEASURED: 47 columns against the 48 a 4-player column gives it** —
-    /// swept over all three of its fields at once, because they are drawn on
-    /// one line and it is their SUM that has to fit: the orders count (0..=36,
-    /// the whole deck), the mask, the locked-pawn tally (0..=18, the three
-    /// Achievement cards plus both management boards), and the whole 4/5/6/7
-    /// Employment-Agency progression.
+    /// **RE-MEASURED at branch-4's Orders work over FOUR facts and a
+    /// CONSTRAINED joint domain.** The row gained the filled count, and its
+    /// four-fact worst case does not fit: swept naively it reaches 59 columns
+    /// against the 48 a 4-player column gives it. So the row has a YIELD POLICY
+    /// (spec §5 decision 9) and this pin is what proves the policy sufficient
+    /// rather than plausible.
     ///
-    /// One column of margin is why this is a per-edit pin. A word added to any
-    /// one of these three facts costs one of the other two, and without this
-    /// the failure would be a silently truncated next-take price on the count
-    /// with the narrowest columns.
+    /// The domain is the whole row at once, because the facts are drawn on one
+    /// line and it is their SUM that has to fit — and it is JOINT: 36 order
+    /// cards exist, so `in hand + filled <= 36` (703 pairs), crossed with the
+    /// mask, the locked-pawn tally (0..=18, the three Achievement cards plus
+    /// both management boards) and the whole 4/5/6/7 Employment-Agency
+    /// progression. 106,856 rows, every one of them rendered.
+    ///
+    /// **MEASURED, both halves:**
+    ///
+    /// - the widest row that KEEPS its next-take price is **48 columns**, which
+    ///   is the column exactly — the price is appended only when it fits, so
+    ///   this is a budget met rather than a margin;
+    /// - the widest row that YIELDS it is **44**, and that is the number which
+    ///   makes the policy total: dropping one fact is always enough, so the row
+    ///   never reaches [`line_at`]'s clip and no fact is ever half-drawn.
+    ///
+    /// The old reading was 47 against 48 over three facts; the one column of
+    /// margin it recorded is spent, which is exactly what spec §5 decision 9
+    /// says it is spending it on.
     #[test]
     fn the_widest_legal_seat_tail_row_still_fits_its_column() {
         let (state, rules) = state_np(4);
         let seats = crate::screen_model::SeatFacts::all_open(4);
         let panel = crate::screen_model::build_players(&state, &rules, &seats);
         let content_w = SEAT_COL_W - SEAT_COL_GAP;
-        let mut worst = (0usize, String::new());
+        let ids: Vec<OrderCardId> = (1..=36u8).rev().map(OrderCardId).collect();
+        let mut swept = 0usize;
+        let mut worst_kept = (0usize, String::new());
+        let mut worst_yielded = (0usize, String::new());
         for orders in 0..=36usize {
-            for hidden in [false, true] {
-                for locked in 0..=18u8 {
-                    for take in [4u8, 5, 6, 7] {
-                        let mut p = panel.players[0].clone();
-                        p.orders_in_hand = orders;
-                        p.hand_hidden = hidden;
-                        // Spread the locked pawns across the three places they
-                        // can be, capped at what each holds: 3 Achievement
-                        // cards, 8 Church spaces, 7 Customs spaces.
-                        p.assistants.on_achievements = locked.min(3);
-                        p.assistants.on_church = locked.saturating_sub(3).min(8);
-                        p.assistants.on_customs = locked.saturating_sub(11).min(7);
-                        p.trading_houses.next_take_cost = take;
-                        let row = seat_tail_row(&p, content_w);
-                        let plain = strip_ansi(&row);
-                        assert!(
-                            !plain.contains(glyph::ELLIPSIS),
-                            "a legal tail row clipped inside a {content_w}-column column: \
-                             {plain:?}",
-                        );
-                        if visible_width(&row) > worst.0 {
-                            worst = (visible_width(&row), plain);
+            for filled in 0..=(36 - orders) {
+                for hidden in [false, true] {
+                    for locked in 0..=18u8 {
+                        for take in [4u8, 5, 6, 7] {
+                            let mut p = panel.players[0].clone();
+                            p.orders_in_hand = orders;
+                            p.orders_filled = ids[..filled].to_vec();
+                            p.hand_hidden = hidden;
+                            // Spread the locked pawns across the three places
+                            // they can be, capped at what each holds: 3
+                            // Achievement cards, 8 Church spaces, 7 Customs
+                            // spaces.
+                            p.assistants.on_achievements = locked.min(3);
+                            p.assistants.on_church = locked.saturating_sub(3).min(8);
+                            p.assistants.on_customs = locked.saturating_sub(11).min(7);
+                            p.trading_houses.next_take_cost = take;
+                            let row = seat_tail_row(&p, content_w);
+                            let plain = strip_ansi(&row);
+                            swept += 1;
+
+                            assert!(
+                                !plain.contains(glyph::ELLIPSIS),
+                                "a legal tail row clipped inside a {content_w}-column \
+                                 column: {plain:?}",
+                            );
+                            // The three facts that never yield are on every row
+                            // whatever else had to go.
+                            assert!(
+                                plain.contains(&format!("{filled} filled")),
+                                "the filled count never yields: {plain:?}",
+                            );
+                            assert!(
+                                locked == 0 || plain.contains(&format!("{locked} locked")),
+                                "the locked tally never yields: {plain:?}",
+                            );
+                            assert_eq!(
+                                plain.matches("(hidden)").count(),
+                                usize::from(hidden),
+                                "the mask never yields: {plain:?}",
+                            );
+
+                            let slot = if plain.contains("next take") {
+                                &mut worst_kept
+                            } else {
+                                &mut worst_yielded
+                            };
+                            if visible_width(&row) > slot.0 {
+                                *slot = (visible_width(&row), plain);
+                            }
                         }
                     }
                 }
             }
         }
         assert_eq!(
-            worst.0, 47,
-            "the widest legal seat tail row measures {} columns, not the recorded 47: {:?}",
-            worst.0, worst.1,
+            swept,
+            703 * 2 * 19 * 4,
+            "the sweep must cover every legal (in hand, filled) pair at every mask, locked \
+             tally and take price",
         );
-        assert!(worst.0 < content_w, "and it must still fit the {content_w}-column column");
+        assert_eq!(
+            worst_kept.0, 48,
+            "the widest legal tail row that keeps its next-take price measures {} columns, \
+             not the recorded 48: {:?}",
+            worst_kept.0, worst_kept.1,
+        );
+        assert_eq!(
+            worst_yielded.0, 44,
+            "the widest legal tail row that yields it measures {} columns, not the recorded \
+             44: {:?}\nThat number is what makes the yield policy TOTAL -- if it ever \
+             exceeds the column, dropping one fact stopped being enough and a second fact \
+             needs a stated order",
+            worst_yielded.0, worst_yielded.1,
+        );
+        for (label, worst) in [("keeping", &worst_kept), ("yielding", &worst_yielded)] {
+            assert!(
+                worst.0 <= content_w,
+                "and the widest {label} row ({}) must fit the {content_w}-column column",
+                worst.0,
+            );
+        }
     }
 
     /// [`header_row`]'s clip, pinned on its own (T10 review MUST-1(c)).
@@ -2664,5 +2891,177 @@ mod tests {
         let empty = BoardModel { player_count: 2, tiles: Vec::new() };
         let fallback = strip_ansi(&players_lines(&panel, &empty, &colors_np(&state)).join("\n"));
         assert!(fallback.contains("on A03"), "{fallback}");
+    }
+
+    // -----------------------------------------------------------------------
+    // The orders line (branch-4 item 7)
+    // -----------------------------------------------------------------------
+
+    /// The owner's own example, rendered: the count a seat holds, the count it
+    /// has filled, and WHICH cards those were — in COMPLETION order, which is
+    /// the order `Player::completed_orders` is written in and the only order
+    /// that carries information (spec §2.5, decision 3).
+    ///
+    /// The negative half is the point of the positive one: the ascending form
+    /// of the same three codes must NOT appear, so a renderer that sorted them
+    /// on the way out fails here rather than reading plausibly.
+    #[test]
+    fn the_orders_line_states_hand_count_and_filled_codes_in_completion_order() {
+        let (mut state, rules) = state_np(2);
+        let extra = state.order_deck.pop().expect("the setup deck is not empty");
+        {
+            let p = &mut state.players[0];
+            p.order_cards_in_hand.push(extra);
+            p.completed_orders = vec![OrderCardId(23), OrderCardId(8), OrderCardId(12)];
+        }
+        let seats = crate::screen_model::SeatFacts::all_open(2);
+        let board = crate::screen_model::build_board(&state, &rules, &[]);
+        let panel = crate::screen_model::build_players(&state, &rules, &seats);
+        let text = strip_ansi(&players_lines(&panel, &board, &colors_np(&state)).join("\n"));
+
+        let want = format!("Orders  2 in hand {} 3 filled (O23, O08, O12)", glyph::SEPARATOR);
+        assert!(text.contains(&want), "want {want:?} in:\n{text}");
+        assert!(
+            !text.contains("(O08, O12, O23)"),
+            "the codes are the CHRONOLOGY, so the sorted form is a defect, not an equivalent:\n\
+             {text}",
+        );
+    }
+
+    /// A seat that has filled nothing says so and opens no parenthetical — an
+    /// empty `()` would read as a card whose code the renderer lost.
+    #[test]
+    fn zero_filled_has_no_parenthetical() {
+        let (state, rules) = state_np(2);
+        let seats = crate::screen_model::SeatFacts::all_open(2);
+        let panel = crate::screen_model::build_players(&state, &rules, &seats);
+        let row = strip_ansi(&orders_line(&panel.players[0]));
+        assert!(
+            row.ends_with("0 filled"),
+            "a seat with nothing filled ends its orders line at the count: {row:?}",
+        );
+    }
+
+    /// One fact, one home: the in-hand count MOVED to the orders line, so the
+    /// President line is location-only. Both President states, since a line
+    /// reading `President in hand` legitimately contains those words.
+    #[test]
+    fn the_president_line_no_longer_carries_the_order_clause() {
+        let (mut state, rules) = state_np(2);
+        state.players[1].president_location = PresidentLocation::OnBoard(AreaId(3));
+        let seats = crate::screen_model::SeatFacts::all_open(2);
+        let board = crate::screen_model::build_board(&state, &rules, &[]);
+        let panel = crate::screen_model::build_players(&state, &rules, &seats);
+        let colors = colors_np(&state);
+        for p in &panel.players {
+            let row = strip_ansi(&president_line(p, &board, &colors));
+            assert!(
+                !row.contains("order"),
+                "the President line states a LOCATION and nothing else: {row:?}",
+            );
+            assert!(
+                !row.contains(glyph::SEPARATOR),
+                "one fact needs no separator: {row:?}",
+            );
+        }
+    }
+
+    /// A masked seat's orders line keeps the SAME treatment the President line
+    /// gave it — the count with `(hidden)` declaring the mask beside it — and
+    /// the filled clause is public on every seat, because fulfilling an order
+    /// is a public act with the card turned face up (spec §2.5).
+    #[test]
+    fn a_hidden_bot_hand_puts_the_hidden_marker_on_the_count_not_the_filled_clause() {
+        let (mut state, rules) = state_np(2);
+        let extra = state.order_deck.pop().expect("the setup deck is not empty");
+        {
+            let p = &mut state.players[1];
+            p.order_cards_in_hand.push(extra);
+            p.completed_orders = vec![OrderCardId(23), OrderCardId(8)];
+        }
+        let seats = vec![
+            crate::screen_model::SeatFacts { is_bot: false, hand_hidden: false },
+            crate::screen_model::SeatFacts { is_bot: true, hand_hidden: true },
+        ];
+        let panel = crate::screen_model::build_players(&state, &rules, &seats);
+        let row = strip_ansi(&orders_line(&panel.players[1]));
+        let want = format!("Orders  2 in hand (hidden) {} 2 filled (O23, O08)", glyph::SEPARATOR);
+        assert_eq!(row.trim_start(), want, "the masked seat's orders line");
+    }
+
+    /// The 2-player orders line is the one dashboard line whose length grows
+    /// with a card COUNT rather than with a word, so its budget is swept rather
+    /// than argued — the same treatment the achievements, tracks and seat-tail
+    /// rows get.
+    ///
+    /// **The domain is JOINT and constrained by the deck**: 36 order cards
+    /// exist, so a seat's in-hand count plus its filled count cannot exceed 36
+    /// (`in_hand + filled <= 36`, 703 pairs), each at both mask states — 1,406
+    /// states, every one of them rendered.
+    ///
+    /// **MEASURED: 74 columns, exactly [`DASH_W`]** — the elision is what
+    /// guarantees that rather than a margin that happens to hold, so the widest
+    /// legal line FILLS its column and none of them clips. What a clip would
+    /// look like is a line ending in `…`; what this renders instead ends in
+    /// `)`, with the `N filled` count exact whether or not its codes were
+    /// elided (spec §5 decision 10).
+    #[test]
+    fn the_widest_legal_orders_line_survives_its_budget() {
+        let (state, rules) = state_np(2);
+        let seats = crate::screen_model::SeatFacts::all_open(2);
+        let panel = crate::screen_model::build_players(&state, &rules, &seats);
+        // Descending, so a renderer that sorted the codes could not be told
+        // apart from one that did not by width alone -- and every printed
+        // corner index is two digits under `O{:02}`, so the sweep's widths do
+        // not depend on WHICH cards these are.
+        let ids: Vec<OrderCardId> = (1..=36u8).rev().map(OrderCardId).collect();
+
+        let mut swept = 0usize;
+        let mut worst = (0usize, String::new());
+        for in_hand in 0..=36usize {
+            for filled in 0..=(36 - in_hand) {
+                for hidden in [false, true] {
+                    let mut p = panel.players[0].clone();
+                    p.orders_in_hand = in_hand;
+                    p.orders_filled = ids[..filled].to_vec();
+                    p.hand_hidden = hidden;
+                    let row = orders_line(&p);
+                    let plain = strip_ansi(&row);
+                    swept += 1;
+
+                    assert!(
+                        plain.contains(&format!("{filled} filled")),
+                        "the count stays EXACT however the codes elide: {plain:?}",
+                    );
+                    if filled == 0 {
+                        assert!(plain.ends_with("0 filled"), "{plain:?}");
+                    } else {
+                        assert!(
+                            plain.contains(" filled ("),
+                            "a seat with filled orders opens its codes: {plain:?}",
+                        );
+                        assert!(
+                            plain.ends_with(')'),
+                            "the paren ALWAYS closes -- an elided tail is not a clipped one: \
+                             {plain:?}",
+                        );
+                    }
+                    assert!(
+                        visible_width(&row) <= DASH_W,
+                        "a legal orders line is {} columns, past DASH_W {DASH_W}: {plain:?}",
+                        visible_width(&row),
+                    );
+                    if visible_width(&row) > worst.0 {
+                        worst = (visible_width(&row), plain);
+                    }
+                }
+            }
+        }
+        assert_eq!(swept, 703 * 2, "the sweep must cover every legal (in hand, filled) pair");
+        assert_eq!(
+            worst.0, 74,
+            "the widest legal orders line measures {} columns, not the recorded 74: {:?}",
+            worst.0, worst.1,
+        );
     }
 }

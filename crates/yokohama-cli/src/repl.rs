@@ -125,6 +125,11 @@ pub(crate) enum ViewSurface {
     Sites,
     Ports,
     Labs,
+    /// The per-area action-payout REFERENCE (branch-4 T5) — the seventh
+    /// member, and the one that is not a live offer: it answers "what does
+    /// acting here pay me, at the power I will have" for every area at once,
+    /// which no other surface says anywhere.
+    Areas,
     Hand,
     Log,
 }
@@ -138,6 +143,7 @@ impl ViewSurface {
             ViewSurface::Sites => "sites",
             ViewSurface::Ports => "ports",
             ViewSurface::Labs => "labs",
+            ViewSurface::Areas => "areas",
             ViewSurface::Hand => "hand",
             ViewSurface::Log => "log",
         }
@@ -250,6 +256,7 @@ fn view_surface(word: &str) -> Option<ViewSurface> {
         "sites" => Some(ViewSurface::Sites),
         "ports" => Some(ViewSurface::Ports),
         "labs" => Some(ViewSurface::Labs),
+        "areas" => Some(ViewSurface::Areas),
         "hand" => Some(ViewSurface::Hand),
         "log" => Some(ViewSurface::Log),
         _ => None,
@@ -501,7 +508,17 @@ impl Repl {
             warnings.push_str(warning);
             warnings.push('\n');
         }
-        let narrative = self.pump_bots();
+        // Provenance for the game about to be played, so it rides with the
+        // warnings rather than with the review: a save reloaded after the
+        // trigger says so QUIETLY (branch-4 item 5). The banner is
+        // transition-fired and a load applies no move, so re-firing it here
+        // would claim the trigger had just happened.
+        warnings.push_str(&self.end_trigger_load_notice());
+        // …but a flip INSIDE the opening pump is a transition this session
+        // did observe, so it rides the narrative — into the review when there
+        // is one, into the frame body when there is not.
+        let mut narrative = self.pump_bots();
+        narrative.push_str(&self.take_end_trigger_banner_text());
 
         // `frame_active` rather than `screen::enabled()`: the question is
         // whether `wrap` is about to compose a frame for this session at all,
@@ -515,6 +532,64 @@ impl Repl {
         }
         let body = format!("{warnings}{narrative}{}", self.prompt());
         Opening { review: None, frame: screen::wrap(self, &body) }
+    }
+
+    /// The one-time END TRIGGERED banner, if this session has just watched the
+    /// trigger fire; empty otherwise (branch-4 item 5).
+    ///
+    /// Drains [`Session::take_end_trigger_banner`], so calling it twice at one
+    /// decision point yields the block once — "shown once" is the type's
+    /// guarantee rather than call-site discipline. Sized at
+    /// `screen::frame_width`, the same width authority `suggest` renders its
+    /// body to, so the block matches the frame it lands in at every player
+    /// count.
+    fn take_end_trigger_banner_text(&mut self) -> String {
+        match self.session.take_end_trigger_banner() {
+            None => String::new(),
+            Some(trigger) => {
+                let state = self.session.state();
+                render::end_trigger_banner(
+                    state,
+                    &trigger,
+                    screen::frame_width(state.players.len()),
+                )
+            }
+        }
+    }
+
+    /// The load-time notice for a save that was ALREADY triggered when it was
+    /// written; empty for every other load and for every fresh game.
+    ///
+    /// Branched on `final_round` because both save states are reachable and
+    /// they tell the player different things: the trigger round still has
+    /// turns left in it, or the last lap is already running. The reason words
+    /// come from the same [`render::trigger_reason_words`] mapping the banner
+    /// and the delta line use.
+    ///
+    /// The `None` reason arm is unreachable on an engine-produced state (core
+    /// refuses `end_game_triggered` without a `trigger_reason`, and `load`
+    /// replays through the engine), and it stays silent rather than inventing
+    /// a reason for a tampered save.
+    fn end_trigger_load_notice(&self) -> String {
+        let state = self.session.state();
+        if !state.end_game_triggered {
+            return String::new();
+        }
+        let Some(trigger) = state.trigger_reason else { return String::new() };
+        let words = render::trigger_reason_words(state, &trigger);
+        let dash = crate::style::glyph::SECTION_DASH;
+        // Three arms, not the spec's two: a FINISHED game keeps both flags
+        // true, so the `final_round` branch alone would greet a completed
+        // save with "in progress" (T1 review, finding 1). The reason words
+        // stay — why the game ended is what a returning reader wants.
+        let line = if is_game_over(state) {
+            format!("GAME OVER {dash} {words}")
+        } else if state.final_round {
+            format!("FINAL ROUND in progress {dash} {words}")
+        } else {
+            format!("END TRIGGERED {dash} {words}; finishing the current round")
+        };
+        format!("{}\n", paint(Tone::Warn, &line))
     }
 
     /// Per-seat panel presentation: a bot's hand is masked whatever `privacy`
@@ -1409,7 +1484,7 @@ impl Repl {
     /// command uses. NOTE this couples label to function only -- whether a
     /// label's WORDING matches what its view renders remains a human
     /// judgment (reviewed, not machine-checked).
-    const VIEW_MENU: [ViewEntry; 13] = [
+    const VIEW_MENU: [ViewEntry; 14] = [
         ("Port offer — the order cards on display, and the power each zone takes", |r| {
             r.open_view(ViewSurface::Ports)
         }),
@@ -1421,6 +1496,9 @@ impl Repl {
         }),
         ("Building sites — every area's site card: rewards, builders, canal tolls", |r| {
             r.open_view(ViewSurface::Sites)
+        }),
+        ("Areas — what every area's action pays at each power, and what is on it", |r| {
+            r.open_view(ViewSurface::Areas)
         }),
         ("Goals — the achievement cards, claim VP, and per-player progress", |r| {
             r.open_index(IndexKind::Achievements)
@@ -1746,6 +1824,15 @@ impl Repl {
             ),
             ViewSurface::Labs => crate::view_render::labs_view(
                 &crate::screen_model::build_labs(state, self.session.rules()),
+                context,
+            ),
+            ViewSurface::Areas => crate::view_render::areas_view(
+                // No legal list, for the `sites` view's two reasons: this
+                // surface draws no `◈` marks, and an unmarked board is the
+                // truthful model of "nothing is offered" rather than a
+                // defaulted one.
+                &crate::screen_model::build_areas(state, self.session.rules()),
+                &colors,
                 context,
             ),
             ViewSurface::Hand => self.hand_text(),
@@ -2553,6 +2640,18 @@ impl Repl {
         if !pump.is_empty() {
             text.push_str(&pump);
         }
+        // The re-pump deterministically REPLAYS the unwound line, and if that
+        // line crossed the end-game trigger the replay re-arms the banner
+        // (`Session::undo` dropped the pre-undo pending one). A replayed flip
+        // is still an observed transition, so it speaks HERE — leaving it
+        // armed would hand a stale announcement to the next apply's screen.
+        let banner = self.take_end_trigger_banner_text();
+        if !banner.is_empty() {
+            if !text.is_empty() && !text.ends_with('\n') {
+                text.push('\n');
+            }
+            text.push_str(&banner);
+        }
         self.out(text, false)
     }
 
@@ -2592,6 +2691,19 @@ impl Repl {
                         text.push('\n');
                     }
                     text.push_str(&pump);
+                }
+                // AFTER the pump, and drained here rather than per-apply, so
+                // ONE screen carries at most one banner however many applies
+                // fed it (branch-4 item 5): the human's own move and every bot
+                // reply to it route through `Session::apply`, which arms on the
+                // transition, and this is the single place their combined
+                // output is assembled.
+                let banner = self.take_end_trigger_banner_text();
+                if !banner.is_empty() {
+                    if !text.is_empty() && !text.ends_with('\n') {
+                        text.push('\n');
+                    }
+                    text.push_str(&banner);
                 }
                 // AFTER the pump: a bot's reply can be the move that ends the
                 // game, and the final table has to describe the finished game
@@ -3334,6 +3446,7 @@ Commands:
   labs            open the LABORATORY OFFER view: every slot's technology, what it does, and what it costs
   tracks          open the TRACKS view: every Church and Customs space as a card, with the 2P dummy
   sites           open the BUILDING SITES view: every area's site card, its builders, and its canal tolls
+  areas           open the AREAS reference: what every area's action pays at each power, its site, and who is on it
   hand            open YOUR HAND view: the current player's order cards, drawn in full
   orders          open the ORDER CARD INDEX: all 36 cards, grouped by flag, full-screen
   techs           open the TECHNOLOGY INDEX: all 20 titles by flag, each with its full purchase text
@@ -4939,6 +5052,217 @@ mod tests {
         assert!(!applied, "GameOver must report applied = false, same as every other error");
         assert!(out.text.contains("game over"), "{}", out.text);
         assert!(!out.text.contains("Illegal"), "{}", out.text);
+    }
+
+    // ---- The one-time end-trigger banner (branch-4 item 5) ----
+
+    /// A 2P state doctored so the NEXT applied move fires the
+    /// `OrderDeckEmpty` end-game trigger. Twin of `session.rs`'s
+    /// `sim_2p_one_move_from_the_trigger`, and conserving for the same reason:
+    /// cards go deck -> boxed pile and port slot -> boxed pile, so the engine's
+    /// 36-order conservation invariant holds and `Session::apply`'s post-move
+    /// `check_invariants` stays a real check rather than something the fixture
+    /// has to dodge.
+    fn state_one_move_from_the_trigger(seed: u64) -> GameState {
+        let mut state = Session::new_sim(
+            GameConfig::for_player_count(2),
+            seed,
+            vec![StartingOrderChoice::Keep(0); 2],
+            Rules::standard(),
+        )
+        .unwrap()
+        .state()
+        .clone();
+        let deck: Vec<_> = std::mem::take(&mut state.order_deck);
+        state.orders_removed.extend(deck);
+        if !state.port_state.port_a.has_empty_slot() {
+            if let Some(card) = state.port_state.port_a.slots[0].take() {
+                state.orders_removed.push(card);
+            }
+        }
+        assert!(!state.end_game_triggered, "the fixture must start UNtriggered");
+        state
+    }
+
+    /// [`step_one_move`]'s dispatch, handing back the output instead of
+    /// dropping it — the shape a test asserting on WHAT a move printed needs.
+    fn step_one_move_reporting(r: &mut Repl) -> StepOutput {
+        let queued = !r.session.state().pending_choices.is_empty();
+        match r.session.state().turn_phase {
+            TurnPhase::Placement if !queued => r.step("a"),
+            TurnPhase::Movement if !queued => r.step("r"),
+            _ => r.step("1"),
+        }
+    }
+
+    /// The banner reaches the inline stream on the flip, and only then.
+    ///
+    /// Keyed on the BORDER and on the two-phase rule clause rather than on
+    /// "END TRIGGERED", because the reworded delta line carries that headline
+    /// too — a test that only looked for the headline would pass with no
+    /// banner at all, which is precisely the state the owner played through.
+    #[test]
+    fn the_banner_reaches_the_inline_stream_once() {
+        let mut r = Repl::new(Session::for_test_from_state(
+            state_one_move_from_the_trigger(4),
+            Rules::standard(),
+        ));
+        let out = step_one_move_reporting(&mut r);
+        assert!(r.session.state().end_game_triggered, "the fixture must actually flip");
+        assert!(out.text.contains("END TRIGGERED"), "{}", out.text);
+        assert!(
+            out.text.contains(crate::style::glyph::DOUBLE_RULE),
+            "the flip must draw the bordered block, not just a delta line: {}",
+            out.text,
+        );
+        assert!(
+            out.text.contains("then every player gets one full final round"),
+            "the banner states the rule: {}",
+            out.text,
+        );
+
+        let next = step_one_move_reporting(&mut r);
+        assert!(
+            !next.text.contains(crate::style::glyph::DOUBLE_RULE),
+            "the banner is one-time — a second screen must not repeat it: {}",
+            next.text,
+        );
+        assert!(
+            !next.text.contains("then every player gets one full final round"),
+            "{}",
+            next.text,
+        );
+    }
+
+    /// A flip INSIDE a bot run surfaces with the run rather than being
+    /// swallowed by it (spec §2.1's bot clause).
+    ///
+    /// Driven through `opening()` — the load-time pump, spec §9's call site A
+    /// — at a forced terminal, so the review branch is the one under test:
+    /// that is the shape where the narrative leaves the frame entirely, and
+    /// therefore the shape a banner is most easily lost in. The assertion
+    /// reads BOTH halves of the [`Opening`] because which half carries the
+    /// narrative is `may_pause`'s business, not this property's.
+    #[test]
+    fn the_bot_review_carries_the_banner_when_the_flip_happened_inside_the_run() {
+        let bots = BotSeats::new(
+            vec![Some(Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT)), None],
+            0x5A17_3B0C_9E44_D218,
+        );
+        let mut session =
+            Session::for_test_from_state(state_one_move_from_the_trigger(4), Rules::standard());
+        session.set_run_seats(bots.seat_provenance());
+        let mut r = Repl::new(session);
+
+        let opening = at_a_terminal(|| r.opening());
+        assert!(r.session.state().end_game_triggered, "the opening pump must cross the trigger");
+        let shown = format!("{}{}", opening.review.clone().unwrap_or_default(), opening.frame);
+        let plain = crate::style::test_support::strip_ansi(&shown);
+        assert!(plain.contains("END TRIGGERED"), "{plain}");
+        assert!(
+            plain.contains("then every player gets one full final round"),
+            "the bot run must not swallow the banner: {plain}",
+        );
+    }
+
+    /// A save reloaded AFTER the trigger gets a quiet one-line notice, not the
+    /// banner — and the notice is branched, because both save states are real
+    /// and they mean different things to the player about to move.
+    ///
+    /// The banner is transition-fired and a load applies no move, so there is
+    /// no transition to fire on; re-firing it here would teach the player that
+    /// the trigger had just happened. The negative assertion is on the BORDER,
+    /// which is the banner's own mark and appears nowhere else in a composed
+    /// frame (`screen.rs`'s title-strip pin).
+    #[test]
+    fn a_loaded_triggered_save_prints_the_branched_notice() {
+        for (final_round, expected) in
+            [(false, "finishing the current round"), (true, "FINAL ROUND in progress")]
+        {
+            let mut state = state_one_move_from_the_trigger(4);
+            state.end_game_triggered = true;
+            state.trigger_reason = Some(EndGameTrigger::ChurchTrackFull);
+            state.trigger_player = Some(PlayerId::new(0));
+            state.final_round = final_round;
+
+            let mut r = Repl::new(Session::for_test_from_state(state, Rules::standard()));
+            let frame = crate::style::test_support::strip_ansi(&r.opening().frame);
+            assert!(frame.contains(expected), "final_round={final_round}: {frame}");
+            assert!(
+                frame.contains("the Church track filled"),
+                "the notice names the reason: {frame}",
+            );
+            assert!(
+                !frame.contains(crate::style::glyph::DOUBLE_RULE),
+                "a load must not re-fire the banner (final_round={final_round}): {frame}",
+            );
+        }
+    }
+
+    /// An `undo` whose re-pump REPLAYS the flip drains the banner to its own
+    /// screen instead of leaking it (T1 review, finding 0). The reachable
+    /// shape: the game opens on a bot run that crosses the trigger (banner
+    /// drained by `opening`), the human undoes at the bottom, `Session::undo`
+    /// unwinds the run, and the deterministic re-pump replays it — re-arming
+    /// the banner inside the undo handler, which used to end without a drain,
+    /// handing the stale announcement to the NEXT apply's screen. A replayed
+    /// flip is still an observed transition, so the banner speaks on the undo
+    /// screen (spec §2.1's transition-fired clause), and the following screen
+    /// stays clean.
+    #[test]
+    fn undo_over_a_triggering_opening_run_drains_the_replayed_banner_to_its_own_screen() {
+        let bots = BotSeats::new(
+            vec![Some(Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT)), None],
+            0x5A17_3B0C_9E44_D218,
+        );
+        let mut session =
+            Session::for_test_from_state(state_one_move_from_the_trigger(4), Rules::standard());
+        session.set_run_seats(bots.seat_provenance());
+        let mut r = Repl::new(session);
+        let _ = r.opening();
+        assert!(r.session.state().end_game_triggered, "the opening pump must cross the trigger");
+
+        let undone = r.step("undo");
+        assert!(r.session.state().end_game_triggered, "the re-pump replays the same flip");
+        assert!(
+            undone.text.contains(crate::style::glyph::DOUBLE_RULE),
+            "the replayed flip's banner belongs to the undo screen: {}",
+            undone.text,
+        );
+
+        let next = step_one_move_reporting(&mut r);
+        assert!(
+            !next.text.contains(crate::style::glyph::DOUBLE_RULE),
+            "the banner must not leak onto the screen after the undo: {}",
+            next.text,
+        );
+    }
+
+    /// A FINISHED game's save reloads saying so — not "FINAL ROUND in
+    /// progress", which misdescribes a game that is over (T1 review, finding
+    /// 1: both `end_game_triggered` and `final_round` stay true in a finished
+    /// save, so the two-branch notice took the in-progress arm). The reason
+    /// words stay: why the game ended is exactly what a returning reader
+    /// wants beside the score.
+    #[test]
+    fn a_finished_save_reloads_with_game_over_wording_not_in_progress() {
+        let mut state = create_test_game_state(2);
+        state.end_game_triggered = true;
+        state.trigger_player = Some(PlayerId::new(0));
+        state.trigger_reason = Some(yokohama_core::EndGameTrigger::OrderDeckEmpty);
+        state.final_round = true;
+        state.turn_phase = TurnPhase::TurnEnd;
+        state.current_player = PlayerId::new(1);
+        assert!(is_game_over(&state), "fixture must actually satisfy is_game_over");
+
+        let mut r = Repl::new(Session::for_test_from_state(state, Rules::empty_for_tests()));
+        let frame = crate::style::test_support::strip_ansi(&r.opening().frame);
+        assert!(frame.contains("GAME OVER"), "{frame}");
+        assert!(frame.contains("the order deck is empty"), "the reason survives: {frame}");
+        assert!(
+            !frame.contains("FINAL ROUND in progress"),
+            "a finished game is not in progress: {frame}",
+        );
     }
 
     /// Task 10: once the game is over, `score` announces the winner and a
@@ -6748,10 +7072,18 @@ mod tests {
     ///
     /// This pins the two heights the fix is FOR, so the fix cannot be undone
     /// without a failing number: the composed-everything frame overruns
-    /// `screen`'s recorded 2P opening height (49 rows since the end-trigger
-    /// strip, `FRAME_HEIGHTS`) and the design floor with it, while the frame
-    /// the player actually lands on after the review is back at that recorded
-    /// height exactly.
+    /// `screen`'s recorded 2P opening height (51 rows since branch-4's Orders
+    /// line, `FRAME_HEIGHTS`; 49 before it) while the frame the player actually
+    /// lands on after the review is back at that recorded height exactly.
+    ///
+    /// **The floor clause of that sentence went with the Orders line.** Until
+    /// 2026-08-18 the reviewed frame was BOTH at its recorded height and inside
+    /// the 50-row design floor, and the fixture asserted the all-in-one frame
+    /// overran the floor; the 2P opening is now one row past the floor itself
+    /// (`screen::FRAME_HEIGHTS`' own doc records why), so what the fixture
+    /// asserts is the thing that is still true and still discriminating — the
+    /// all-in-one frame overruns the RECORDED OPENING, by enough that a
+    /// player loses the board's top rows.
     #[test]
     fn the_bot_narrative_overran_the_design_floor_and_the_reviewed_frame_does_not() {
         let mut r = repl_2p_bots(4, &[0]);
@@ -6766,17 +7098,18 @@ mod tests {
             (all_in_one, r.opening())
         });
 
-        assert!(
-            all_in_one > 50,
-            "fixture: the composed-everything opening must actually overrun the 50-row floor \
-             (it drew {all_in_one} rows) — otherwise this test is measuring nothing",
-        );
         let reviewed = opening.frame.lines().count();
+        assert!(
+            all_in_one > reviewed,
+            "fixture: the composed-everything opening must actually overrun the frame the \
+             player lands on (it drew {all_in_one} rows against {reviewed}) — otherwise this \
+             test is measuring nothing",
+        );
         assert_eq!(
-            reviewed, 49,
+            reviewed, 51,
             "and the frame behind the review is the ordinary 2P opening frame, at the height \
-             `screen::FRAME_HEIGHTS` records for it (49 since the end-trigger strip, \
-             2026-08-08) — it drew {reviewed} rows",
+             `screen::FRAME_HEIGHTS` records for it (51 since branch-4's Orders line, \
+             2026-08-18; 49 before it) — it drew {reviewed} rows",
         );
     }
 
@@ -8620,5 +8953,55 @@ mod tests {
         r.step(&menu_number(take).to_string());
         assert!(matches!(r.pending, Pending::OrderReveals { .. }), "parked at a reveal");
         (r, deck_card)
+    }
+
+    // -----------------------------------------------------------------------
+    // The areas view (branch-4 T5)
+    // -----------------------------------------------------------------------
+
+    /// **`areas` is a full-screen surface like the other six** — it opens over
+    /// whatever is up, the key that opened it closes it again, and the `view`
+    /// menu reaches the same code path the word does.
+    #[test]
+    fn areas_opens_and_toggles_like_the_other_surfaces() {
+        let mut r = repl_2p(4);
+        let out = r.step("areas");
+        assert!(r.full_screen_surface(), "'areas' opens a full-screen view");
+        assert!(
+            !out.text.contains("'help' for commands)"),
+            "a view, not a framed body: {}",
+            out.text,
+        );
+        let shown = r.overlay_text();
+        assert!(shown.contains("AREAS — full view   "), "{shown:.200}");
+        assert!(
+            shown.contains("closes this view and puts you back at the prompt underneath"),
+            "it states its own way out: {shown:.400}",
+        );
+
+        // The key that opened it closes it — the toggle every view holds.
+        r.step("areas");
+        assert!(!r.full_screen_surface(), "the second press closed it");
+
+        // ...and the menu is the other door onto the same surface.
+        let row = Repl::VIEW_MENU
+            .iter()
+            .position(|(label, _)| label.starts_with("Areas"))
+            .expect("the roster carries the areas reference");
+        r.step("view");
+        let by_menu = r.step(&crate::screen_model::menu_number(row).to_string());
+        assert!(by_menu.text.is_empty() || r.full_screen_surface(), "the row opened a surface");
+        assert!(r.overlay_text().contains("AREAS — full view"), "{}", r.overlay_text());
+    }
+
+    /// `help` documents the word, which is also what `guide_sync` reads it
+    /// through to hold both guide formats to the same roster.
+    #[test]
+    fn help_documents_the_areas_view() {
+        assert!(HELP_TEXT.contains("\n  areas "), "the help roster lists it: {HELP_TEXT}");
+        assert!(
+            HELP_TEXT.lines().any(|l| l.trim_start().starts_with("areas ") && l.contains("AREAS")),
+            "and its row says what the surface is",
+        );
     }
 }

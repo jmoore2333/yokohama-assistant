@@ -1,0 +1,88 @@
+AREAS — full view   every area on the board: what its action pays at each power, what is printed on its site, and who is standing there
+
+┌ A00 SILK MILL ─────────────────────────────────────────────────┐ ┌ A01 FISHING GROUND ────────────────────────────────────────────┐ ┌ A02 PORT A ────────────────────────────────────────────────────┐
+│ Produce silk.                                                  │ │ Produce seafood.                                               │ │ Take one order card, or two by paying 2 yen or 1 imported good │
+│ power 1   +0 silk                                              │ │ power 1   +1 seafood                                           │ │ for the second — your power decides which zones you can reach, │
+│ power 2   +1 silk                                              │ │ power 2   +2 seafood                                           │ │ and your hand holds 3 cards at most.                           │
+│ power 3   +2 silk                                              │ │ power 3   +3 seafood                                           │ │ power 1   no zone in reach                                     │
+│ power 4   +3 silk                                              │ │ power 4   +4 seafood                                           │ │ power 2   take from LOW                                        │
+│ power 5+  +4 silk                                              │ │ power 5+  +5 seafood                                           │ │ power 3   take from LOW, MID                                   │
+│ 5-Power   1 imported good                                      │ │ 5-Power   1 imported good                                      │ │ power 4   take from LOW, MID, HIGH                             │
+│ top-left 1 VP                  top-right 4 VP                  │ │ top-left 1 VP                  top-right 2 any goods           │ │ power 5+  take from LOW, MID, HIGH · a take also scores ★3 VP  │
+│ mid-left blank                 mid-right 3 VP                  │ │ mid-left blank                 mid-right 1 any good            │ │ The cards on offer are on the 'ports' view.                    │
+│ house     ★9 VP         open                                   │ │ house     ★7 VP         open                                   │ │ 5-Power   3 yen                                                │
+│ here      empty                                                │ │ here      empty                                                │ │ top-left 1 VP                  top-right 3 VP                  │
+│                                                                │ │                                                                │ │ mid-left blank                 mid-right 2 warehouse takes     │
+│                                                                │ │                                                                │ │ house     ★8 VP         open                                   │
+│                                                                │ │                                                                │ │ here      empty                                                │
+└────────────────────────────────────────────────────────────────┘ └────────────────────────────────────────────────────────────────┘ └────────────────────────────────────────────────────────────────┘
+┌ A03 COPPER MINE ───────────────────────────────────────────────┐
+│ Produce copper.                                                │
+│ power 1   +0 copper                                            │
+│ power 2   +0 copper                                            │
+│ power 3   +1 copper                                            │
+│ power 4   +2 copper                                            │
+│ power 5+  +3 copper                                            │
+│ 5-Power   3 tea                                                │
+│ top-left 1 VP                  top-right 2 warehouse takes     │
+│ mid-left blank                 mid-right 2 assistant moves     │
+│ house     ★7 VP         open                                   │
+│ here      empty                                                │
+└────────────────────────────────────────────────────────────────┘
+
+┌ A04 CHURCH ────────────────────────────────────────────────────┐ ┌ A05 BANK ──────────────────────────────────────────────────────┐ ┌ A06 LABORATORY A ──────────────────────────────────────────────┐
+│ Pay one of each kind you can — copper, silk, tea, seafood, 2   │ │ Take money from the bank.                                      │ │ Acquire ONE technology card. Your power is industry value;     │
+│ yen, an imported good — for +1 faith each on top of your       │ │ power 1   +1 yen                                               │ │ each further point costs 2 yen or 1 imported good, and the     │
+│ power, then place an assistant on the highest free faith space │ │ power 2   +2 yen                                               │ │ slot adds its own surcharge. Once you own 3 technologies every │
+│ you have reached.                                              │ │ power 3   +3 yen                                               │ │ further card owes another 2 yen or 1 import.                   │
+│ power 1   faith 1, up to 7 paying all six kinds                │ │ power 4   +4 yen                                               │ │ power 1   1 industry value                                     │
+│ power 2   faith 2, up to 8 paying all six kinds                │ │ power 5+  +5 yen                                               │ │ power 2   2 industry value                                     │
+│ power 3   faith 3, up to 9 paying all six kinds                │ │ 5-Power   1 imported good                                      │ │ power 3   3 industry value                                     │
+│ power 4   faith 4, up to 10 paying all six kinds               │ │ top-left 1 VP                  top-right 2 any goods           │ │ power 4   4 industry value                                     │
+│ power 5+  faith 5, up to 11 paying all six kinds               │ │ mid-left blank                 mid-right 1 any good            │ │ power 5+  5 industry value                                     │
+│ Every space, and who is on it, is on the 'tracks' view.        │ │ house     ★6 VP         open                                   │ │ The technologies on offer are on the 'labs' view.              │
+│ 5-Power   2 copper                                             │ │ here      empty                                                │ │ 5-Power   3 tea                                                │
+│ top-left 1 VP                  top-right 2 warehouse takes     │ │                                                                │ │ top-left 1 VP                  top-right 4 VP                  │
+│ mid-left blank                 mid-right 2 assistant moves     │ │                                                                │ │ mid-left blank                 mid-right 1 VP + 2 yen          │
+│ house     ★6 VP         open                                   │ │                                                                │ │ house     ★5 VP         open                                   │
+│ here      empty                                                │ │                                                                │ │ here      empty                                                │
+└────────────────────────────────────────────────────────────────┘ └────────────────────────────────────────────────────────────────┘ └────────────────────────────────────────────────────────────────┘
+
+┌ A07 CUSTOMS ───────────────────────────────────────────────────┐ ┌ A08 EMPLOYMENT AGENCY ─────────────────────────────────────────┐
+│ Pay imported goods and place an assistant on the customs space │ │ Take assistants, shophouses and trading houses out of your     │
+│ of exactly that cost.                                          │ │ warehouse — assistants are free, a shophouse costs its printed │
+│ power 1   no payment possible                                  │ │ price, and trading houses run up the printed 4/5/6/7           │
+│ power 2   pay up to 1 imported good                            │ │ progression.                                                   │
+│ power 3   pay up to 2 imported goods                           │ │ power 1   nothing                                              │
+│ power 4   pay up to 3 imported goods                           │ │ power 2   1 item out of the warehouse                          │
+│ power 5+  pay up to 4 imported goods                           │ │ power 3   2 items out of the warehouse                         │
+│ Every space, and who is on it, is on the 'tracks' view.        │ │ power 4   3 items out of the warehouse                         │
+│ 5-Power   3 seafood                                            │ │ power 5+  4 items out of the warehouse                         │
+│ top-left 1 VP                  top-right 2 VP + 1 yen          │ │ 5-Power   2 silk                                               │
+│ mid-left blank                 mid-right 1 VP + 1 yen          │ │ top-left 1 VP                  top-right 2 VP + 1 yen          │
+│ house     ★9 VP         open                                   │ │ mid-left blank                 mid-right 2 VP                  │
+│ here      empty                                                │ │ house     ★8 VP         open                                   │
+│                                                                │ │ here      empty                                                │
+└────────────────────────────────────────────────────────────────┘ └────────────────────────────────────────────────────────────────┘
+
+┌ A09 TEA PLANTATION ────────────────────────────────────────────┐
+│ Produce tea.                                                   │
+│ power 1   +1 tea                                               │
+│ power 2   +2 tea                                               │
+│ power 3   +3 tea                                               │
+│ power 4   +4 tea                                               │
+│ power 5+  +5 tea                                               │
+│ 5-Power   2 copper                                             │
+│ top-left 1 VP                  top-right 3 warehouse takes     │
+│ mid-left blank                 mid-right 2 warehouse takes     │
+│ house     ★5 VP         open                                   │
+│ here      empty                                                │
+└────────────────────────────────────────────────────────────────┘
+
+Action power is 1 for your President, 1 per assistant of yours in the area, 1 each for your own shophouse and trading house there, and 1 for the Station — capped at 5.
+The Station counts for whoever acts there, no technology adds power, and the ladder is what the power you bring buys.
+The 5-Power token on a card may be taken by the first player to act in that area at power 5 — skipping leaves it there for the next one, and a take is what removes it for good.
+This reference is TALLER than the screen at 3 and 4 players and prints in full — scroll back for the rows above.
+Enter or 'cancel' closes this view and puts you back at the prompt underneath, exactly as you left it — nothing is entered and nothing there is cancelled.
+Any other line closes the view and then RUNS at that prompt — a NUMBER applies that option, and 'back' undoes your last move.
+> 

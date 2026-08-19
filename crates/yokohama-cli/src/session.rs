@@ -101,6 +101,21 @@ pub struct Session {
     /// Always empty for `new_sim`/`new_live`/`for_test_from_state`, which
     /// build their record from the running engine.
     pub load_warnings: Vec<String>,
+    /// The end-game trigger this session has OBSERVED firing and not yet
+    /// handed to the screen (branch-4 item 5). Armed by `apply` on the
+    /// false->true transition of `end_game_triggered`, cleared by
+    /// [`take_end_trigger_banner`](Self::take_end_trigger_banner).
+    ///
+    /// **Session-scoped and never serialized**, which is the design and not
+    /// an omission: a reloaded save must not re-fire the banner (the load
+    /// path prints a quiet notice instead), so "have we shown this yet?" is
+    /// deliberately a fact about this process rather than about the game.
+    ///
+    /// TRANSITION-fired, not once-per-session. An `undo` that unwinds the
+    /// trigger and a later move that re-fires it produce a second banner —
+    /// possibly for a DIFFERENT reason — because that genuinely is news.
+    /// A sticky flag would swallow it.
+    pending_end_trigger_banner: Option<EndGameTrigger>,
 }
 
 impl Session {
@@ -129,6 +144,7 @@ impl Session {
             checkpoint: None,
             event_descriptions: Vec::new(),
             load_warnings: Vec::new(),
+            pending_end_trigger_banner: None,
         })
     }
 
@@ -157,6 +173,7 @@ impl Session {
             checkpoint: None,
             event_descriptions: Vec::new(),
             load_warnings: Vec::new(),
+            pending_end_trigger_banner: None,
         })
     }
 
@@ -351,6 +368,7 @@ impl Session {
             checkpoint: None,
             event_descriptions,
             load_warnings,
+            pending_end_trigger_banner: None,
         })
     }
 
@@ -527,6 +545,18 @@ impl Session {
             apply_move_unchecked(&staged, &mv, &self.rules).map_err(|e| ApplyError::Illegal(e.to_string()))?;
         check_invariants(&next, &self.rules)
             .map_err(|e| ApplyError::Invariant(format!("INVARIANT VIOLATION after apply (driver/engine bug): {e}")))?;
+        // The end-trigger flip, observed HERE because this is the one place
+        // that holds both sides of a transition (branch-4 item 5). Regardless
+        // of actor: `pump_bots` and every live-mode reveal path route their
+        // applies through this same function, so a bot's move or a
+        // live-entered move arms the banner exactly as the human's does.
+        // `next.trigger_reason` is `Some` on any engine-produced triggered
+        // state — core's trigger-coherence invariant says so and the check
+        // above has just run — so arming from it degrades to silence on a
+        // tampered state rather than inventing a reason.
+        if next.end_game_triggered && !self.state.end_game_triggered {
+            self.pending_end_trigger_banner = next.trigger_reason;
+        }
         let mut delta = crate::render::delta_summary(&self.state, &next, &self.rules);
         for ev in reveals {
             self.record.push_event(ev);
@@ -542,12 +572,30 @@ impl Session {
         Ok(delta)
     }
 
+    /// The end-game trigger this session watched fire since the last call,
+    /// if any — the REPL's one-time banner, drained the moment it is drawn
+    /// (branch-4 item 5).
+    ///
+    /// `take` rather than a getter plus a clear, so "shown once" is a
+    /// property of the type instead of caller discipline: there is no way to
+    /// read this without consuming it.
+    pub fn take_end_trigger_banner(&mut self) -> Option<EndGameTrigger> {
+        self.pending_end_trigger_banner.take()
+    }
+
     /// Apply a standalone reveal event (`RevealStartingOrder`) atomically:
     /// staged clone -> `reveal_starting_order` -> invariants -> commit ->
     /// autosave. Any other variant is rejected -- those are bound reveals,
     /// only valid as part of `apply`'s group. Same `is_over()` gate as
     /// `apply` (Task 13), for the same reason: a hidden order revealed after
     /// the game has ended is not a real driver action.
+    ///
+    /// **No end-trigger detection here, deliberately** (branch-4 item 5):
+    /// the one event this accepts moves a card's IDENTITY between two piles
+    /// that already held it, and `end_game_triggered` is written by exactly
+    /// one function — `end_game::check_end_game_triggers`, which runs on the
+    /// MOVE path. A flip is unreachable through this door, so a detector here
+    /// would be dead code pretending to be a safety net.
     pub fn apply_standalone(&mut self, ev: RecordedEvent) -> Result<Vec<String>, ApplyError> {
         if self.is_over() {
             return Err(ApplyError::GameOver);
@@ -643,6 +691,14 @@ impl Session {
         debug_assert_eq!(self.event_descriptions.len(), record.events.len());
         self.record = record;
         self.state = state;
+        // An armed-but-undrained banner describes a flip this undo may have
+        // just unwound, so it goes with it (branch-4 item 5). Unreachable
+        // through the REPL, which drains inside the same step that applies —
+        // but the alternative is announcing an event that no longer happened,
+        // and the state that settles it is right here.
+        if !self.state.end_game_triggered {
+            self.pending_end_trigger_banner = None;
+        }
         // An autosave failure here means the on-disk record still holds the
         // move that was just undone, so it has to be SEEN. It used to go to
         // stderr because this signature was `Result<(), String>`; the
@@ -716,6 +772,7 @@ impl Session {
             save_path: None,
             event_descriptions: Vec::new(),
             load_warnings: Vec::new(),
+            pending_end_trigger_banner: None,
         }
     }
 }
@@ -797,6 +854,101 @@ mod tests {
         let mut s = Session::for_test_from_state(state, Rules::empty_for_tests());
         let err = s.apply(Move::EndAdditionalPhase, vec![]).unwrap_err();
         assert!(matches!(err, ApplyError::GameOver), "{err:?}");
+    }
+
+    /// A real 2P sim game doctored so the NEXT applied move fires the
+    /// `OrderDeckEmpty` end-game trigger — the cheapest honest route to a
+    /// FLIP, since the trigger is checked at the end of every
+    /// `apply_move_unchecked` and this one's precondition is a pure state
+    /// fact rather than eight built shophouses.
+    ///
+    /// Both doctoring steps are CONSERVING — cards go deck -> boxed pile and
+    /// port slot -> boxed pile — so the engine's 36-order conservation
+    /// invariant still holds and `apply`'s post-move `check_invariants` is a
+    /// real check here rather than something the fixture has to dodge.
+    fn sim_2p_one_move_from_the_trigger(seed: u64) -> Session {
+        let mut state = sim_2p(seed).state().clone();
+        let deck: Vec<_> = std::mem::take(&mut state.order_deck);
+        state.orders_removed.extend(deck);
+        if !state.port_state.port_a.has_empty_slot() {
+            if let Some(card) = state.port_state.port_a.slots[0].take() {
+                state.orders_removed.push(card);
+            }
+        }
+        assert!(!state.end_game_triggered, "the fixture must start UNtriggered");
+        Session::for_test_from_state(state, Rules::standard())
+    }
+
+    /// The banner is armed on the OBSERVED false->true transition and on
+    /// nothing else (branch-4 item 5, spec §2.1's transition-fired semantics).
+    ///
+    /// Four claims, and the last two are the ones that keep a banner from
+    /// becoming wallpaper: nothing is armed before the flip; the flip arms the
+    /// engine's own reason; taking DISARMS; and a subsequent apply — which
+    /// runs against an already-triggered state, so `check_end_game_triggers`
+    /// returns immediately — arms nothing. A sticky flag would pass the first
+    /// two and fail the last two, which is exactly the bug this shape avoids.
+    #[test]
+    fn apply_sets_the_pending_banner_exactly_on_the_flip() {
+        let mut s = sim_2p_one_move_from_the_trigger(4);
+        assert_eq!(s.take_end_trigger_banner(), None, "nothing is armed before the flip");
+
+        let mv = s.legal()[0].clone();
+        s.apply(mv, vec![]).expect("a legal move applies");
+        assert!(s.state().end_game_triggered, "the fixture must actually flip");
+        assert_eq!(
+            s.take_end_trigger_banner(),
+            Some(EndGameTrigger::OrderDeckEmpty),
+            "the flip arms the engine's own reason",
+        );
+        assert_eq!(s.take_end_trigger_banner(), None, "taking disarms");
+
+        let mv2 = s.legal()[0].clone();
+        s.apply(mv2, vec![]).expect("a legal move applies");
+        assert_eq!(s.take_end_trigger_banner(), None, "an apply that flips nothing arms nothing");
+    }
+
+    /// `undo` and the banner, both directions.
+    ///
+    /// FORWARD: unwinding the trigger makes a later re-trigger genuinely news,
+    /// so it fires a fresh banner. That is the whole reason spec §2.1 chose
+    /// transition-fired over a once-per-session flag — the flag's behavior
+    /// here (silence, because "we already showed it") would be wrong, and
+    /// wrong in the direction of hiding the end of the game.
+    ///
+    /// BACKWARD: an armed-but-undrained banner does NOT survive an undo that
+    /// unwinds its trigger. Unreachable through the REPL, which drains inside
+    /// the same step that applies — but a banner describing an event that has
+    /// been unwound is a false claim, and the state that decides it is right
+    /// here after the replay.
+    #[test]
+    fn undo_re_arms_the_banner_and_drops_an_undrained_one() {
+        let mut s = sim_2p_one_move_from_the_trigger(4);
+        let mv = s.legal()[0].clone();
+        s.apply(mv.clone(), vec![]).expect("a legal move applies");
+        assert!(s.take_end_trigger_banner().is_some(), "the flip armed it");
+
+        s.undo().expect("the flip is undoable");
+        assert!(!s.state().end_game_triggered, "undo unwound the trigger");
+        s.apply(mv, vec![]).expect("the same move applies again");
+        assert_eq!(
+            s.take_end_trigger_banner(),
+            Some(EndGameTrigger::OrderDeckEmpty),
+            "a re-trigger is news again",
+        );
+
+        // …and the undrained case, on a fresh session so nothing here depends
+        // on the sequence above: arm it, then unwind WITHOUT taking.
+        let mut t = sim_2p_one_move_from_the_trigger(4);
+        let m = t.legal()[0].clone();
+        t.apply(m, vec![]).expect("a legal move applies");
+        t.undo().expect("the flip is undoable");
+        assert_eq!(
+            t.take_end_trigger_banner(),
+            None,
+            "an undrained banner for an unwound flip is a claim about an event that no longer \
+             happened",
+        );
     }
 
     /// Phase-2.9 close-out follow-up (a): every save stamps the terminal

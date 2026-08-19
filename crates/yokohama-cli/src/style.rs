@@ -68,10 +68,16 @@ fn enabled() -> bool {
 /// vocabulary and no consumers, so today's frame still spells its own
 /// characters, and the non-ASCII ones that are NOT vocabulary are registered
 /// under DEFERRED CONVERSIONS below. The set is CLOSED and small on purpose
-/// -- it is exactly the twenty code points the approved mocks use
-/// (`docs/plans/2026-08-05-phase3.5a-mocks/`), so "does this frame match its
-/// mock?" stays a question about layout and color and never becomes a
-/// question about which character somebody happened to type. ASCII the
+/// -- twenty of its twenty-one code points are exactly the ones the approved
+/// mocks use (`docs/plans/2026-08-05-phase3.5a-mocks/`), so "does this frame
+/// match its mock?" stays a question about layout and color and never becomes
+/// a question about which character somebody happened to type. The
+/// twenty-first is [`DOUBLE_RULE`](glyph::DOUBLE_RULE), admitted by the
+/// branch-4 end-trigger banner — a surface the mocks never drew, so it could
+/// not have a mock to match; the mocks bound the REDESIGN, and a later feature
+/// that needs a mark states its case here instead (this one's is the
+/// DEFERRED CONVERSIONS entry below, which had already argued U+2550's width
+/// class before it was ever a constant). ASCII the
 /// mocks also use (`[1]` option brackets, `+n` overflow counts, the `*`
 /// any-good and `T7` trading-house tokens) is not vocabulary; only the
 /// characters a keyboard cannot produce are.
@@ -85,6 +91,7 @@ fn enabled() -> bool {
 /// | [`VP`](glyph::VP) | `★` | U+2605 | Ambiguous | victory points, on cards, site slots and tracks |
 /// | [`YEN`](glyph::YEN) | `¥` | U+00A5 | Narrow | money |
 /// | [`ACTIVE`](glyph::ACTIVE) | `▶` | U+25B6 | Ambiguous | the seat whose turn it is, in the players panel |
+/// | [`NONZERO_MARK`](glyph::NONZERO_MARK) | `▶` | U+25B6 | Ambiguous | an explanation-table row carrying a nonzero product (same code point, different job) |
 /// | [`CHAIN_STEP`](glyph::CHAIN_STEP) | `▸` | U+25B8 | Neutral | the separator between phases in the phase chain |
 /// | [`CATEGORY`](glyph::CATEGORY) | `■` | U+25A0 | Ambiguous | an index's group heading (order flags, goal categories) |
 /// | [`HISTORY_KEY`](glyph::HISTORY_KEY) | `↑` | U+2191 | Ambiguous | names the recall key in the standing hint |
@@ -94,24 +101,28 @@ fn enabled() -> bool {
 /// | [`RANGE_DASH`](glyph::RANGE_DASH) | `–` | U+2013 | Ambiguous | en dash: a reward RANGE (`★3–14`) |
 /// | [`ELLIPSIS`](glyph::ELLIPSIS) | `…` | U+2026 | Ambiguous | an elided middle (the shortened seed in the title strip) |
 /// | [`RULE`](glyph::RULE) | `─` | U+2500 | Ambiguous | a horizontal rule; also a box's top and bottom edge |
+/// | [`DOUBLE_RULE`](glyph::DOUBLE_RULE) | `═` | U+2550 | Ambiguous | the double rule bordering an alert block (the end-trigger banner) |
 /// | [`BOX_V`](glyph::BOX_V) | `│` | U+2502 | Ambiguous | a box's side |
 /// | [`BOX_TL`](glyph::BOX_TL) | `┌` | U+250C | Ambiguous | box corner, top-left |
 /// | [`BOX_TR`](glyph::BOX_TR) | `┐` | U+2510 | Ambiguous | box corner, top-right |
 /// | [`BOX_BL`](glyph::BOX_BL) | `└` | U+2514 | Ambiguous | box corner, bottom-left |
 /// | [`BOX_BR`](glyph::BOX_BR) | `┘` | U+2518 | Ambiguous | box corner, bottom-right |
 ///
-/// Twenty-one names over twenty code points: [`SEPARATOR`](glyph::SEPARATOR)
-/// and [`EMPTY_SLOT`](glyph::EMPTY_SLOT) are both U+00B7 deliberately. They
-/// are one character with two jobs, and a call site reads better saying
-/// which job it means -- the mocks' `Shophouses ···· Trade ·` run is empty
-/// slots, not separators. Composed runs like that one are repetition at the
-/// call site, never a constant here.
+/// Twenty-three names over twenty-one code points, in TWO deliberate pairs.
+/// [`SEPARATOR`](glyph::SEPARATOR) and [`EMPTY_SLOT`](glyph::EMPTY_SLOT) are
+/// both U+00B7; [`ACTIVE`](glyph::ACTIVE) and
+/// [`NONZERO_MARK`](glyph::NONZERO_MARK) are both U+25B6. Each pair is one
+/// character with two jobs, and a call site reads better saying which job it
+/// means -- the mocks' `Shophouses ···· Trade ·` run is empty slots, not
+/// separators, and a marked row of [`crate::suggest`]'s explanation table is
+/// not a seat taking its turn. Composed runs like that one are repetition at
+/// the call site, never a constant here.
 ///
 /// **Width decision (the SF3 pin; completes the KNOWN RESIDUAL on
 /// `screen::test_support::assert_exact_width`).** The vocabulary spans three
 /// East-Asian-Width classes and NO Wide one, counted by NAME (the basis used
 /// everywhere below): `¥` is Narrow, `⌂` and `▸` are Neutral -- both classes
-/// are one column everywhere -- and the other eighteen of the twenty-one
+/// are one column everywhere -- and the other twenty of the twenty-three
 /// names are Ambiguous, which means one column in a Western locale and
 /// two under a CJK-configured locale or font. T0's residual note called `★`
 /// East-Asian-WIDE; it is not. U+2605 is Ambiguous (UCD 16.0
@@ -165,8 +176,11 @@ fn enabled() -> bool {
 /// layout moves whether they convert or not. What they DO cost is exactness:
 /// `§` is the one code point the live frame emits that the closed vocabulary
 /// does not contain (the census is emitted-minus-vocabulary = {U+00A7}), so
-/// "the emitted set is the vocabulary" is true of nineteen of twenty glyphs
-/// and stated here about the twentieth. Converting three prose characters in
+/// "the emitted set is the vocabulary" is true of twenty of twenty-one emitted
+/// glyphs and stated here about the twenty-first. (Branch-4's end-trigger
+/// banner moved BOTH sides of that subtraction by one in the same commit —
+/// U+2550 entered the vocabulary and the emitted set together — so the census
+/// SET is unchanged and only its arithmetic moved.) Converting three prose characters in
 /// the same wave that rewrote two footers and the wizard's numbering was the
 /// scope call; the rows stay, with their owing task moved, so a reader meets a
 /// judgement and not an oversight.
@@ -191,9 +205,20 @@ fn enabled() -> bool {
 /// [`crate::screen_model::TitleModel`] holds and so lands with the surface that
 /// plumbs that model. T3 then found that the approved mocks' strip is centred
 /// text on an otherwise empty line — it draws no rule at all — so
-/// [`crate::panel_render::title_strip`] draws none, and U+2550 is no longer
-/// spelled anywhere in the crate. The row is kept, struck through, because
-/// "which task discharged this and how" is the question a reader arrives with.
+/// [`crate::panel_render::title_strip`] draws none. The row is kept, struck
+/// through, because "which task discharged this and how" is the question a
+/// reader arrives with.
+///
+/// **That answer held until branch-4 (2026-08-18), when U+2550 came back by
+/// the OTHER route this table sanctions.** The end-trigger banner needed a
+/// border that reads as an alert rather than as one more panel edge, so the
+/// character is now vocabulary — [`DOUBLE_RULE`](glyph::DOUBLE_RULE), admitted
+/// with a row and a width class exactly as the paragraph under the table
+/// requires, and never spelled inline. Both halves of the record stand: the
+/// title strip still draws no rule (`screen.rs`'s
+/// `the_title_strip_states_the_session_facts_and_draws_no_double_rule` pins
+/// that, scoped to the opening frame it composes), and the crate does spell
+/// U+2550 again — once, in the vocabulary's own declaration.
 pub mod glyph {
     /// Declares the vocabulary ONCE. One source line per glyph carries its
     /// doc comment, its constant name, its character, the code point recorded
@@ -219,7 +244,7 @@ pub mod glyph {
     /// row and break no test. But that is a different act from forgetting a
     /// row -- a declaration made OUTSIDE the vocabulary rather than an
     /// omission inside it -- and it reads on sight as the one line that does
-    /// not look like its twenty-one neighbours. The two-list divergence is
+    /// not look like its twenty-three neighbours. The two-list divergence is
     /// structurally gone; the deviation is left to review, which is where the
     /// width classes below already live.
     ///
@@ -262,6 +287,9 @@ pub mod glyph {
         YEN = '¥', 0x00A5, Narrow;
         /// The seat whose turn it is.
         ACTIVE = '▶', 0x25B6, Ambiguous;
+        /// An explanation-table row whose product is nonzero. Same code point
+        /// as [`ACTIVE`], different job.
+        NONZERO_MARK = '▶', 0x25B6, Ambiguous;
         /// The step separator in the phase chain.
         CHAIN_STEP = '▸', 0x25B8, Neutral;
         /// An index's group heading.
@@ -280,6 +308,8 @@ pub mod glyph {
         ELLIPSIS = '…', 0x2026, Ambiguous;
         /// A horizontal rule; also a box's top and bottom edge.
         RULE = '─', 0x2500, Ambiguous;
+        /// The DOUBLE rule that borders an alert block: the end-trigger banner.
+        DOUBLE_RULE = '═', 0x2550, Ambiguous;
         /// A box's side.
         BOX_V = '│', 0x2502, Ambiguous;
         /// Box corner, top-left.
@@ -930,12 +960,20 @@ mod tests {
             );
         }
 
-        // The one sanctioned duplicate, stated as a PROPERTY rather than as a
+        // The sanctioned duplicates, stated as a PROPERTY rather than as a
         // count. The retired length literal could only say "twenty-one names
         // over twenty code points" and could not say which twenty; this names
-        // the pair, so a second glyph that silently repeats an existing
-        // character -- two names for one mark, where one name was wanted --
-        // fails instead of quietly restoring the arithmetic.
+        // the pairs, so a glyph that silently repeats an existing character --
+        // two names for one mark, where one name was wanted -- fails instead
+        // of quietly restoring the arithmetic.
+        //
+        // **The list GREW to two on 2026-08-18 (branch-4 item 2), and the
+        // growth is the deliberate act this assert exists to force.** The
+        // explanation table's nonzero-product marker wanted the character
+        // U+25B6 already carries for the active seat, and the precedent for
+        // that is SEPARATOR/EMPTY_SLOT: one mark, two jobs, a name each so a
+        // call site says which it means. Extending a whitelist is the review
+        // step; what the assert forbids is a second name arriving without one.
         let mut by_codepoint: std::collections::BTreeMap<u32, Vec<&str>> = Default::default();
         for gl in glyph::VOCABULARY {
             by_codepoint.entry(gl.codepoint).or_default().push(gl.name);
@@ -944,10 +982,14 @@ mod tests {
             by_codepoint.into_iter().filter(|(_, names)| names.len() > 1).collect();
         assert_eq!(
             shared,
-            vec![(0x00B7, vec!["SEPARATOR", "EMPTY_SLOT"])],
-            "U+00B7 carried by SEPARATOR and EMPTY_SLOT is the vocabulary's only shared \
-             code point -- one character with two jobs. Any other sharing is two names \
-             for one mark, and wants one name",
+            vec![
+                (0x00B7, vec!["SEPARATOR", "EMPTY_SLOT"]),
+                (0x25B6, vec!["ACTIVE", "NONZERO_MARK"]),
+            ],
+            "U+00B7 (SEPARATOR/EMPTY_SLOT) and U+25B6 (ACTIVE/NONZERO_MARK) are the \
+             vocabulary's only shared code points -- one character with two jobs, each \
+             pair sanctioned here by review. Any other sharing is two names for one \
+             mark, and wants one name",
         );
     }
 

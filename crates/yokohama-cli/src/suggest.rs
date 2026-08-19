@@ -94,7 +94,8 @@ const RUNNER_UPS_SHOWN: usize = 3;
 /// `pub` because the guide pair quotes a captured `suggest` screen verbatim and
 /// `guide_sync` holds the quote to THIS string rather than to a copy of it —
 /// the same rule `HELP_TEXT` follows (authority lives in code; the guides
-/// follow). Same for [`TABLE_HEADINGS`] and [`TOTAL_LABEL`].
+/// follow). Same for [`TABLE_HEADINGS`], [`TOTAL_LABEL`] and
+/// [`NONZERO_SUMMARY_TAIL`].
 pub const RUNNER_UPS_LABEL: &str = "Runner-ups (margin against the suggestion, so 0 means tied)";
 
 /// The explanation table's column headings, in render order.
@@ -103,15 +104,58 @@ pub const TABLE_HEADINGS: [&str; 5] = ["feature", "you", "best opp", "weight", "
 /// The explanation table's summing row.
 pub const TOTAL_LABEL: &str = "TOTAL";
 
-/// One explanation-table row at the table's column widths.
+/// One UNMARKED explanation-table row at the table's column widths.
 ///
 /// Every row goes through here — headings, feature terms, the terminal standing
 /// and the total — so the columns are stated once instead of at four format
 /// sites that have to be kept identical by inspection. Cells arrive as strings
 /// because the rows are not all numbers (the standing prints `#2 of 4`).
 pub fn table_row(cells: [&str; 5]) -> String {
-    format!("  {:<26}{:>8}{:>11}{:>9}{:>12}", cells[0], cells[1], cells[2], cells[3], cells[4])
+    marked_table_row(false, cells)
 }
+
+/// [`table_row`] with the nonzero-product marker in its lead column.
+///
+/// **The marker takes the FIRST of the two spaces every row already began
+/// with**, so the column stops and the row's total width are byte-for-byte
+/// what they were before the aid existed: a heading row and a `TOTAL` row are
+/// unchanged, and only a marked row differs from its old self, by one
+/// character in a gutter. That is what lets the canonical row ORDER stay put
+/// (§2.3) while the eye still finds the rows that carried the move — the
+/// alternative, sorting nonzero rows to the top, would break every
+/// cross-reference against `eval::explain` and every older capture.
+///
+/// The mark is [`glyph::NONZERO_MARK`](crate::style::glyph::NONZERO_MARK) — a
+/// CHARACTER, present on a terminal and in a pipe alike, never a paint, so the
+/// two streams stay identical modulo color. Its width class is the one
+/// `style`'s own width decision records for U+25B6 (Ambiguous, one column on
+/// this project's terminals); that argument is cited here, not re-made.
+pub fn marked_table_row(marked: bool, cells: [&str; 5]) -> String {
+    format!(
+        "{} {:<26}{:>8}{:>11}{:>9}{:>12}",
+        if marked { crate::style::glyph::NONZERO_MARK } else { ' ' },
+        cells[0],
+        cells[1],
+        cells[2],
+        cells[3],
+        cells[4],
+    )
+}
+
+/// The tail of the summary line under the explanation table, after its
+/// computed `N of M` count.
+///
+/// `pub` for the same reason [`TABLE_HEADINGS`] is: the guides quote a captured
+/// screen, and a quote is held to the string the renderer owns rather than to a
+/// copy of it. The COUNTS are computed from the table that was just printed and
+/// are never hand-maintained.
+///
+/// It says "rows" where spec §2.3 said "features" because the count includes
+/// the `final standing` row when there is one — on a finished game that row is
+/// the only one with anything in it, and a summary counting feature terms alone
+/// would read `0 of 16` over a table whose whole content it had skipped.
+pub const NONZERO_SUMMARY_TAIL: &str =
+    "rows carry a nonzero product — they are this move's whole story.";
 
 /// Longest move description a LIST row prints before it is elided — the
 /// EDITORIAL budget, narrower than any frame on purpose so a continuation step
@@ -496,6 +540,19 @@ pub(crate) struct Header {
     /// ("the score was read at this position itself", "this decision point
     /// offered exactly one move") are false about a branching position.
     pub explanation_only: Option<&'static str>,
+    /// `Some(sentence)` when the ENGINE's own legal list held exactly one move
+    /// at this position (`crate::why::FORCED_LEAD`). It is a claim about the
+    /// POSITION, not about a search artifact, which is why it composes with
+    /// [`explanation_only`](Self::explanation_only) rather than competing with
+    /// it: one says what the contestant reports, this says what there was to
+    /// report on.
+    ///
+    /// The renderer leads with it — before the notes, before the table — and
+    /// omits the runner-up block whole. **`suggest` leaves this `None` and
+    /// keeps its own forced-point line** ("No runner-up: this decision point
+    /// offered exactly one move"): `why` is the surface this branch was vetted
+    /// on, and the two messages say the same thing to two different readers.
+    pub forced_lead: Option<&'static str>,
 }
 
 /// The whole `suggest` screen.
@@ -582,6 +639,7 @@ fn suggest_header(s: &Suggestion) -> Header {
         notes: Vec::new(),
         move_label: "Suggested move:",
         explanation_only: None,
+        forced_lead: None,
     }
 }
 
@@ -603,6 +661,12 @@ fn render_within(
         &format!("Seat {} ({})", s.seat.0, render::color_name(color)),
         &header.identity,
     );
+    // LEADS, deliberately: the fact that the position offered no choice is the
+    // first thing a reader of this screen needs, and it governs how everything
+    // under it should be read. Above the notes, which are provenance.
+    if let Some(lead) = header.forced_lead {
+        body.prose("", lead);
+    }
     for (tone, note) in &header.notes {
         body.painted_prose(*tone, "", note);
     }
@@ -655,37 +719,74 @@ fn render_within(
         s.explanation.total, s.explanation.progress_ppm,
     ));
     body.line(&table_row(TABLE_HEADINGS));
+    // The aid, three parts and one source: the marker, the dim, and the count
+    // below all derive from the SAME value the `product` cell prints, so a row
+    // cannot be marked and print a zero, or be counted and not be marked.
+    let mut story_rows = 0usize;
+    let mut nonzero_rows = 0usize;
+    let mut story_row = |body: &mut Body, product: i64, cells: [&str; 5]| {
+        story_rows += 1;
+        let row = marked_table_row(product != 0, cells);
+        if product == 0 {
+            // Dimmed rather than dropped: a zero row is a term that was READ
+            // and came out level, which is a different fact from a term the
+            // evaluator does not have — and dropping it would break the
+            // cross-reference against `eval::explain`'s own vector.
+            body.painted(Tone::Dim, "", &row);
+        } else {
+            nonzero_rows += 1;
+            body.line(&row);
+        }
+    };
     for term in &s.explanation.terms {
-        body.line(&table_row([
-            term.feature.name(),
-            &term.viewer_value.to_string(),
-            &term.opponent_value.to_string(),
-            &term.weight.to_string(),
-            &term.product.to_string(),
-        ]));
+        story_row(
+            &mut body,
+            term.product,
+            [
+                term.feature.name(),
+                &term.viewer_value.to_string(),
+                &term.opponent_value.to_string(),
+                &term.weight.to_string(),
+                &term.product.to_string(),
+            ],
+        );
     }
     if let Some(t) = &s.explanation.terminal {
         // On a finished game the positional vector does not govern at all
         // (§2.6), so every weight above reads 0 and the standing IS the score.
-        body.line(&table_row([
-            "final standing",
-            &format!("#{} of {}", t.rank, t.seats),
-            &t.viewer_total.to_string(),
-            "",
-            &t.value.to_string(),
-        ]));
+        // Which is exactly why the standing is a STORY row here and counted as
+        // one: at that point it is the only row with anything in it, and a
+        // summary that counted only the feature terms would read "0 of 16"
+        // over a table whose whole content sits in the row it skipped.
+        story_row(
+            &mut body,
+            t.value,
+            [
+                "final standing",
+                &format!("#{} of {}", t.rank, t.seats),
+                &t.viewer_total.to_string(),
+                "",
+                &t.value.to_string(),
+            ],
+        );
         body.line(&format!(
             "  (game over: place {} of {}, your re-derived final {} against the best other {})",
             t.rank, t.seats, t.viewer_total, t.best_other_total,
         ));
     }
+    // The TOTAL row is exempt from the marker's semantics (§2.3): it is a sum,
+    // not a story row, so it is neither marked nor counted nor dimmed.
     body.line(&table_row([TOTAL_LABEL, "", "", "", &s.explanation.total.to_string()]));
+    body.line(&format!("  {nonzero_rows} of {story_rows} {NONZERO_SUMMARY_TAIL}"));
 
     // -- runner-ups ---------------------------------------------------------
     // Skipped WHOLE (its blank line included) for an explanation-only
     // contestant: it has no ranking to show and the reason was already given
-    // above, so a second block would only repeat it in a worse sentence.
-    if header.explanation_only.is_none() {
+    // above, so a second block would only repeat it in a worse sentence. And
+    // skipped the same way for a FORCED position, where the lead line already
+    // said there were no others — printing "No runner-up" under it would read
+    // as a second, weaker finding rather than the same one twice.
+    if header.explanation_only.is_none() && header.forced_lead.is_none() {
         let best = s.best_value();
         let others: Vec<&lookahead::RootScore> =
             s.ranking.iter().filter(|r| r.mv != s.mv).take(RUNNER_UPS_SHOWN).collect();

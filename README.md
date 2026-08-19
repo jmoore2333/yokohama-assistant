@@ -17,29 +17,58 @@ vision lives in `docs/plans/2025-12-07-yokohama-assistant-design.md`).
 ## See it running
 
 ![The Yokohama CLI at 2 players against the built-in bot: the staggered pyramid board on the
-left; on the right the players panel — RED (you) and BLUE marked [bot] with its hand masked —
-the church and customs tracks with the dummy pawn, the three achievements, and your starting
-order rendered as a card; the decision zone along the bottom offers turn 1's options, including
-an immediately fulfillable order](docs/images/cli-frame-w5.png)
+left, both Presidents placed; on the right the players panel — RED (you) and GREEN marked [bot]
+with its hand hidden — where each seat carries its own Orders line naming the order cards it has
+filled, then the church and customs tracks with the 2-player dummy pawn, the three achievements,
+and the order still in hand; along the bottom the end-trigger strip reads church 4/4 and FINAL
+ROUND, and the message zone greets the reloaded save with GAME OVER — the Church track
+filled](docs/images/cli-frame-b4.png)
 
-Turn 1 of a 2P game against the shipped bot, real terminal output (v2 frontend, 200×50). The
-bot plays **`lookahead-v1`** — the production-intent search over the frozen evaluator-v2
-weights — from the same masked view of the game a seated player gets, and every decision it
-makes can be interrogated after the fact:
+One of the owner's own finished 2-player games, reloaded — real terminal output (v2 frontend,
+200×50). The bot plays **`lookahead-v1`** — the production-intent search over the frozen
+evaluator-v2 weights — from the same masked view of the game a seated player gets: its Orders
+line prints `0 in hand (hidden) · 2 filled (O04, O33)`, because which cards a seat has *filled*
+is public and what it still holds is not. Every decision it makes can be interrogated after the
+fact:
 
-![The why command's output for the bot's tech purchase: a header naming the seat, the full
+![The why command's output for one of the bot's placements: a header naming the seat, the full
 contestant identity string, the event index and decision seed, and the statement that the move
-was reconstructed by replay; then the move it played, the five-move line it searched, the
-term-by-term score table whose tech_bonus_now row drives the total, and the ranked runner-ups it
-rejected](docs/images/cli-why-w5.png)
+was reconstructed by replay; then two labelled lines of search counters, the move it played, the
+six-move line it searched, the term-by-term score table with a marker against each row that
+carries a nonzero product and the zero rows dimmed, and the ranked runner-ups it rejected — here
+four candidates tied at the top](docs/images/cli-why-counters-b4.png)
 
-That is **`why 11`** (Phase 3.5c, W5) asking about the bot's Laboratory purchase: the record is
-replayed to event 11 and the bot's own decision function re-run at the same derived seed — so
-the account is a *reconstruction the engine can vouch for*, not a stored note — then the move,
-the line it searched (whose later steps match the moves it actually went on to play), the
-arithmetic, and what it rejected at what margin. A `why` that cannot reproduce the recorded move
-refuses, naming both moves. **`suggest`** is the same machinery pointed at *your* seat before
-you move; both apply nothing and record nothing.
+That is **`why 178`** asking about the bot's placement: the record is replayed to event 178 and
+the bot's own decision function re-run at the same derived seed — so the account is a
+*reconstruction the engine can vouch for*, not a stored note — then what the search cost
+(139 root candidates, 1,401 nodes, 3,311 scored positions, and the budget and cap guards that
+never bound), the move, the line it searched, the arithmetic, and what it rejected at what
+margin. A `why` that cannot reproduce the recorded move refuses, naming both moves.
+**`suggest`** is the same machinery pointed at *your* seat before you move; both apply nothing
+and record nothing.
+
+The driver is loud about the one moment a game can be lost by missing: the **end trigger**.
+
+![The end-trigger banner at the moment it fires: the strip along the top reads church 4/4 and
+FINAL ROUND, the delta lines below it show Red paying two yen and four goods and placing on
+Church faith-8, and then a bordered warning block states END TRIGGERED — the Church track filled,
+followed by the rule the engine implements — the current round finishes, then every player gets
+one full final round, then the game ends and final scoring runs](docs/images/cli-banner-b4.png)
+
+The banner fires once, on the transition, and states the rule rather than a Rust variant name; a
+save reloaded after the fact gets the one-line notice instead (the `GAME OVER — the Church track
+filled` line in the first screenshot above). And because "what does this area pay me at the
+power I can bring?" is the question a new player asks most, every area's whole ladder is one
+command away:
+
+![The areas view: one card per area, each printing its action in a sentence, then the payout at
+power 1 through 5+, its 5-Power token, the four printed site rewards, the trading-house VP, and
+who is standing there — Laboratory A's industry-value ladder and the Church's faith ladder
+beside the Silk Mill, Tea Plantation, Copper Mine and Fishing Ground production
+ladders](docs/images/cli-areas-b4.png)
+
+Every figure on that reference is computed from the engine's own reward functions rather than
+re-derived in the display layer, so it cannot drift from what the action actually pays.
 
 **[Full `suggest` walkthrough →](https://claude.ai/code/artifact/9dbb3a84-7994-4066-a400-7e83c049a19e)**
 — a few minutes of live play against a bot seat (2026-07-27, v0.3.3), captured as the raw ANSI
@@ -49,11 +78,12 @@ combinations; determinism and the no-side-effect guards are real) and **what it 
 display-layer bugs in `describe.rs` — a Laboratory surcharge rendered as a reward, and production
 previews that ignore the acting player's techs — plus the evaluator's structural positional
 blindness, and the fact that the *playable* bot was, at that date, the 3.2 weighted-random rung).
-Every finding is display-layer; the engine did the right thing in each case. Two of those three
-caveats have since been retired: the weights are **evaluator v2** (frozen 2026-08-10), and since
-Phase A's W5 (2026-08-12) the playable bot IS the search — a wizard bot seat runs `lookahead-v1`,
-the same controller `suggest` consults, and the new **`why`** command replays and explains any bot
-move after the fact.
+Every finding is display-layer; the engine did the right thing in each case. Three of them have
+since been retired: the Laboratory surcharge now prints as a `slot fee: 2 yen` clause instead of
+reading as a reward, the weights are **evaluator v2** (frozen 2026-08-10), and since Phase A's W5
+(2026-08-12) the playable bot IS the search — a wizard bot seat runs `lookahead-v1`, the same
+controller `suggest` consults, and the **`why`** command replays and explains any bot move after
+the fact.
 
 That link is a hosted copy, so it opens and renders in a browser. The source of truth is
 [`docs/suggest-walkthrough-2026-07-27.html`](docs/suggest-walkthrough-2026-07-27.html) in this
@@ -143,6 +173,15 @@ recorded BGA-parity divergences).
   reconstruction cannot vouch for the recorded move; and the BGA importer learned the Tram
   vocabulary (evidence-first, from the captured payloads), regenerating the comparison corpus
   at rev 7.
+- **Phase B is complete** (PR #23, 2026-08-18): a driven-fixture harness that re-runs any
+  recorded decision through the search at chosen knobs, a re-derived triage of the owner's two
+  diagnostic games, a counters baseline for V2 play, and a readout on the four strategic
+  families. Its measured result is the useful one. The bot's tie-mass defect turned out to be
+  **two** mechanisms rather than one — one exemplar root still ties with the beam widened to 8
+  and 16 (a *representation* gap: the evaluator cannot see the difference) while another resolves
+  into a single best line at beam 8 (a *horizon* gap) — and three positions the owner had flagged
+  as bad play measured as genuinely dead, no candidate winning in any replication, where
+  indifference is the correct answer rather than a defect.
 
 **Since then, Phases B and C are merged (2026-08-18)** — the driven-fixture harness with the
 owner's two recorded diagnostic games and their evidence triage (PR #23), then the four driven
@@ -161,7 +200,7 @@ semantics bump by design, and rev-6-and-earlier saves no longer resume.
 | Crate | What it is |
 |---|---|
 | `yokohama-core` | The engine: serde-serializable `GameState` (history-free, cheap to clone for search), pure `get_legal_moves` / checked `apply_move`, seeded setup, `GameRecord` save/replay stamped with `rules_hash`, `semantics_rev`, and a terminal-state digest verified by `replay_strict` — plus the Phase-3 player stack: the honest observation boundary (`PlayerView`/`observe`/`BeliefSampler`), the factored action families (`DecisionHandle`), the arena (contestants, paired cells, corpus emission), evaluator v1 (`game/eval.rs`), and the Greedy/Lookahead search rungs |
-| `yokohama-cli` | The game driver: setup wizard → REPL; simulated games and live-table tracking (reconciliation, desync tripwire), save/load/undo, TTY-colored board, the BGA `import`/`--follow` pipeline, and **human-vs-bot play** in sim mode (any seat mix with ≥1 human; a bot seat is a `Contestant` — the wizard default plays `lookahead-v1`, honest by construction: the agent sees only its seat's view) plus the explanation pair: **`suggest`** — the same search analyzes YOUR seat's view and explains its recommended move term by term — and **`why` / `why <n>`** — any bot move replayed to its exact decision point and accounted for with the same tables, refusing (never guessing) when the reconstruction does not match the record |
+| `yokohama-cli` | The game driver: setup wizard → REPL; simulated games and live-table tracking (reconciliation, desync tripwire), save/load/undo, TTY-colored board, a persistent dashboard whose per-seat **Orders line** names the cards each seat has filled, an **`areas`** reference printing every area's payout ladder from the engine's own reward functions, a bordered **end-trigger banner** that fires once on the transition and states the two-phase end rule, the BGA `import`/`--follow` pipeline, and **human-vs-bot play** in sim mode (any seat mix with ≥1 human; a bot seat is a `Contestant` — the wizard default plays `lookahead-v1`, honest by construction: the agent sees only its seat's view) plus the explanation pair: **`suggest`** — the same search analyzes YOUR seat's view and explains its recommended move term by term — and **`why` / `why <n>`** — any bot move replayed to its exact decision point and accounted for with the same tables, refusing (never guessing) when the reconstruction does not match the record |
 | `yokohama-oracle` | The independent referee: legal-move enumeration, final scoring + tie-break, and a prune-free route reference, authored from the rules sources under an audited independence rule (types-only dependency on the engine) |
 | `yokohama-difftest` | The harness comparing engine vs oracle: per-decision-point sweeps under two policies, terminal scoring comparison, three-way route-pruning check, self-contained divergence artifacts + `repro` tool |
 | `yokohama-bridge` | The BGA capture relay (Phase 3.5b): a localhost-only HTTP sink that appends what the read-only browser extension in `bridge/` observes to `bridge-captures/<table>.ndjson`, plus the feed pre-processor (typed NDJSON reader, payload-identity dedupe, structural supersession collapse for takebacks). Depends on NO engine crate and knows no rules — translating captures into engine moves is `yokohama-cli`'s `import`, deliberately on the other side of that boundary |
@@ -210,9 +249,10 @@ cargo run  -p yokohama-cli -- save.json  # resume a save (autosaves every move)
 
 Fastest playable game: answer the wizard `sim`, `2`, `red`, `blue`, `0`, Enter twice, `0`, `0`,
 `confirm`. At the prompt: type an option number, or use the direct grammars — placement
-`a 3 7 9` / `b 5`, assistant moves `m 4 7`, retreats `r 3:2 5:1`. Views: `board`, `sites`,
-`goals`, `tracks`, `labs`, `log`, `help`; plus `suggest` (the bot's explained recommendation for
-your seat), `why` / `why <n>` (a bot move, replayed and accounted for), `undo`, `save`, `q`.
+`a 3 7 9` / `b 5`, assistant moves `m 4 7`, retreats `r 3:2 5:1`. Views: `board`, `areas`,
+`sites`, `goals`, `tracks`, `labs`, `log`, `help`; plus `suggest` (the bot's explained
+recommendation for your seat), `why` / `why <n>` (a bot move, replayed and accounted for),
+`undo`, `save`, `q`.
 Full tester guide: **[HTML](docs/cli-guide.html)** or [Markdown](docs/cli-guide.md).
 
 **Gates.** Per-edit (debug): the six crate suites (`yokohama-core`, its `eval_probe` example
