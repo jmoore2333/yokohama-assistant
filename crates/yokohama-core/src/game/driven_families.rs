@@ -2230,7 +2230,8 @@ pub const FAMILY_FAILURE_ALLOWANCE: usize = 0;
 
 /// ε for family 1's [`PassRule::AdjudicatedBest`], in victory points.
 ///
-/// **FROZEN AT 2 VP by the freeze wave** (design §4's own draft value), raised
+/// **FROZEN AT 2 VP by the freeze wave** (a REAL LOOSENING, disclosed — the design
+/// drafts no ε; the sanctioned sd-UCB derivation is recorded in the runs report), raised
 /// from the 1 VP the pilots ran at. Design §4 derives it at the freeze from
 /// ADJUDICATION-MARGIN noise at pilot roots, and the pilot supplied exactly that
 /// measurement: at ε = 1 with K = 4 the trigger-round control read UNRESOLVED at

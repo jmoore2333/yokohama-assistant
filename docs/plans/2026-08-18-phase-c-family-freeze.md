@@ -40,8 +40,9 @@ Supply capacity at the frozen ecologies: v1.1 (16 games × cap 2) = 32 strided o
 The proximity corner reads design §1's produce-to-7 sketch as within-window two-decision
 completability via the Textile Mill conversion (T5's declared, review-endorsed reading — the
 recording line the T5 review asked for). The `ExclusiveRaceOneStep` generated arm was NOT
-frozen: its pilot role was supply measurement; the builder arm is the family's honest source
-per the design's fallback clause.
+frozen: the builder arm is the family's declared PRIMARY source; the generated arm's supply
+probe runs at the freshly-recorded master 0xA3E1202608180010 and its result (a count or an
+Exhausted refusal) is RECORDED in the runs report — either way the builder arm stands.
 
 ## 3. The frozen sizing and admission semantics
 
@@ -56,9 +57,11 @@ per the design's fallback clause.
 - **δ = 5 VP** (`DELTA_VP`, unmoved from the pilot posture: the pilot's clean dominances
   read 8–38; its marginal fails −7..+4.5 — δ=5 separates the shapes the pilots actually
   produced).
-- **ε = 2 VP** (`FROZEN_EPSILON_VP`, family 1 — was 1 at pilot; pilot evidence: ε=1 at K=4
-  produced UNRESOLVED at every trigger-round root — adjudication noise, not established
-  policy disagreement; the ε=2 top set provably contains ε=1's, leniency direction pinned).
+- **ε = 2 VP** (`FROZEN_EPSILON_VP`, family 1 — was 1 at pilot; A REAL LOOSENING, disclosed:
+  pilot evidence is the SYMPTOM — ε=1 at K=4 read UNRESOLVED at every trigger-round root —
+  and the design-sanctioned sd-UCB derivation is computed from the reproduced pilot
+  adjudications and recorded in the runs report BEFORE any family-1 confirmatory verdict is
+  quoted; the ε=2 top set provably contains ε=1's, leniency direction pinned).
 - **Pilot-reproducibility caveat**: `BlockOpts::pilot()` is byte-unchanged, so a pilot
   re-run draws the same roots and adjudications; the JUDGMENTS over them moved with this
   freeze (forced exclusion, splitting conjunction, NOTHING ADMITTED, ε) — recorded pilot
@@ -89,7 +92,10 @@ per the design's fallback clause.
 | exclusive-race (each arm) | 28..36 | 36..42 | 42..48 |
 | achievement (each arm) | 28..36 | 36..42 | 42..48 |
 
-Burning = running table/adjudicate/read at an ordinal; supply counting does not burn. No
+Layer-2 escrow ships 6+6 where the design sketched 3+3 — a DECLARED deviation in the safe
+direction (more pre-declared escrow, nothing burned, capacity exact); family 1 ships the
+sketched 3+3. Burning = running table/adjudicate/read at an ordinal; supply counting does
+not burn. No
 grammar names an escrow block; the `gen:` escape hatch reaches these ordinals, so protection
 is PROCEDURAL — the runs report's commands-as-record is the audit. A games-bound raise at a
 fixed master and cap is PREFIX-STABLE (a version-bumped extension, never a re-draw).
@@ -101,7 +107,10 @@ Per-root F=1/20 means a root fails on ≥2 misses. Under a benign per-world miss
 ≈10% family-level at 6 admitted roots; p=2% ⇒ ≈6% per root, ≈31% family-level. The second
 layer is D7 routing: a 2/20 miss pattern reads as world-sensitivity and a 20/20 as
 systematic — the report's per-root miss counts are what keep a benign trip from mis-routing.
-A family FAIL is therefore a ROUTE-TO-D7 event, never a standalone conclusion.
+The bound scales with the admitted count (at p=1%: 12 admitted ⇒ ≈18.5%) — the
+pilot-measured admission rates (~1/4) make 6 the honest anchor, and the wider blocks exist
+for supply, not for power inflation. A family FAIL is therefore a ROUTE-TO-D7 event, never a
+standalone conclusion.
 
 ## 6. Reply-policy menu (fixed at this freeze)
 
