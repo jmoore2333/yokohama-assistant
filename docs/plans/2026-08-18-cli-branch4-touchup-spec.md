@@ -348,6 +348,16 @@ cards, the cheapest real taste of Large. The PR review adjudicates the record ei
 10. The 2P Orders line's codes parenthetical elides with the vocabulary ellipsis when it
     would overflow the line budget — codes drop from the end, the paren always closes, the
     `N filled` count stays exact (§2.5, plan Task 3.1).
+11. **The 2P opening frame crossed the 200×50 design floor: 49 → 51 rows (`FLOOR_H + 1`,
+    pinned EXACT so both further growth and a future return inside fail loudly).** The
+    cost is inherent to decision 4's dedicated Orders line (two seats, one row each).
+    `FLOOR_H` itself is unmoved; the 3P/4P openings stay inside it; guide §2 no longer
+    claims a 200×50 window shows the whole opening at every count. Mitigating fact,
+    measured: the 2P in-play walk already reached 63 rows before this change (65 after) —
+    the dashboard grows a row per owned tech from the second onward — so mid-game 2P
+    never fit 50 rows anyway. T3 implementer deviation 2 + review finding 1; the owner
+    adjudicates whether the row is worth the crossing (the alternatives: compress another
+    2P panel line, or fold orders back onto the President line).
 
 ## 6. Review trail
 

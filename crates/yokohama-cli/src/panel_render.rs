@@ -2971,7 +2971,7 @@ mod tests {
     /// the filled clause is public on every seat, because fulfilling an order
     /// is a public act with the card turned face up (spec §2.5).
     #[test]
-    fn a_hidden_bot_hand_hides_the_count_not_the_filled_clause() {
+    fn a_hidden_bot_hand_puts_the_hidden_marker_on_the_count_not_the_filled_clause() {
         let (mut state, rules) = state_np(2);
         let extra = state.order_deck.pop().expect("the setup deck is not empty");
         {

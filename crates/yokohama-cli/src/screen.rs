@@ -349,9 +349,12 @@ const FRAME_WIDTHS: [usize; 3] = [198, 175, 200];
 /// count" stopped being true at 2 players with it. What makes it a defensible
 /// place to land rather than a bound quietly relaxed is the distinction
 /// [`WALK_HEIGHTS`] already draws: the 2-player frame is the ONE whose height
-/// was never a ceiling — its dashboard joins beside the board and gains a row
-/// per owned Technology, so it passed 50 rows on the FIRST technology purchase
-/// of every 2-player game already, at 49 as at 51. The 3- and 4-player openings,
+/// was never a ceiling — its dashboard joins beside the board and grows a row
+/// per owned Technology from the SECOND tech onward (the first replaces the
+/// `Tech  none yet` placeholder, +0 rows), so ordinary 2-player games left 50
+/// rows behind long before this change: the measured in-play walk reaches 65
+/// rows ([`WALK_HEIGHTS`]), against which a 51-row opening moves nothing a
+/// 200x50 window actually delivered mid-game. The 3- and 4-player openings,
 /// which are ceilings, are still inside the floor. The owner adjudicates whether
 /// the row is worth its cost; nothing here may be raised further to keep a run
 /// quiet.
