@@ -757,11 +757,7 @@ impl CandidateColumn {
                 .count() as i64,
             CandidateColumn::PortEmptySlots => port_empty_slots(view),
             CandidateColumn::Money => i64::from(player.money),
-            // RED (Phase 3.5c V3, task T1): the C1 column is STUBBED at zero in
-            // this commit so its tests fail on ARITHMETIC rather than on
-            // compilation — round 3's task-D shape. The GREEN commit replaces
-            // this arm with `terminal_margin_now(view, player, rules)`.
-            CandidateColumn::TerminalMarginNow => 0,
+            CandidateColumn::TerminalMarginNow => terminal_margin_now(view, player, rules),
         }
     }
 
@@ -1055,6 +1051,80 @@ fn port_empty_slots(view: &PlayerView) -> i64 {
         board.slots.iter().filter(|slot| slot.is_none()).count() as i64
     };
     empty(&view.port_state.port_a) + view.port_state.port_b.as_ref().map_or(0, empty)
+}
+
+// ---------------------------------------------------------------------------
+// The V3 admission column's arithmetic (C1)
+// ---------------------------------------------------------------------------
+
+/// This seat's row in a [`ScoreStructure`]'s per-seat vectors, or `None` for the
+/// dummy sentinel and for a seat number outside the printed range.
+///
+/// `eval::seat_index`'s rule verbatim, restated here because that function is
+/// private — the same treatment [`contender_slot`] gives `eval`'s own slot rule
+/// one section up, and for the same reason. The two are DIFFERENT rules and are
+/// deliberately not one function: a majority tally gives the 2P dummy a
+/// contender row, and a score structure gives it none.
+fn structure_seat(player: &yokohama_core::VisiblePlayer) -> Option<usize> {
+    if player.id.is_dummy() {
+        return None;
+    }
+    let i = usize::from(player.id.0);
+    (i < PROBE_MAX_SEATS).then_some(i)
+}
+
+/// One seat's WOULD-BE-FINAL MARGIN if the game were scored where it stands:
+/// its full final total minus the best other seated non-dummy seat's.
+///
+/// # The arithmetic
+///
+/// ```text
+/// margin = final_total(me) − max over the other seated non-dummy seats
+/// ```
+///
+/// with [`ScoreStructure::final_total`] supplying each total — running VP plus
+/// country, technology, church, customs and the leftover conversions. Raw,
+/// signed, unclamped, and with NO rank component: `TerminalStanding` shapes the
+/// same two totals into a win/loss ladder because `score` needs an ORDERING,
+/// and this column deliberately reports the underlying quantity instead, which
+/// is what an L1 separation reading is about. **No opponent ⇒ 0**, spelled as
+/// `unwrap_or(my_total)` — `terminal_standing_of`'s own convention for a
+/// single-seat view, which only a fixture can produce.
+///
+/// # Cost
+///
+/// Derives a whole [`ScoreStructure`], so a snapshot pays one derivation per
+/// seat on top of the one `row_values` already made. Accepted instrument cost
+/// (V3 spec §4.1): threading the caller's structure would put a
+/// `&ScoreStructure` parameter on [`CandidateColumn::value`] for one of nine
+/// arms, and this is an example whose corpus cost is dominated by playing the
+/// games. The derivation is a pure function of `(view, rules)`, so the two
+/// cannot disagree.
+///
+/// # Honesty
+///
+/// Every input is a face-up field of the view — this is the interaction
+/// [`port_empty_slots`]' doc names as its own candidate, computed on its own.
+/// Pinned against `driven::true_margin_now` by behaviour over organic play at
+/// 2/3/4P, which is the arithmetic reference and stays selection-side.
+fn terminal_margin_now(
+    view: &PlayerView,
+    me: &yokohama_core::VisiblePlayer,
+    rules: &Rules,
+) -> i64 {
+    let structure = ScoreStructure::derive(view, rules);
+    let Some(mine) = structure_seat(me) else { return 0 };
+    let my_total = structure.final_total(mine);
+    let mut best_other: Option<i64> = None;
+    for player in &view.players {
+        let Some(i) = structure_seat(player) else { continue };
+        if i == mine {
+            continue;
+        }
+        let total = structure.final_total(i);
+        best_other = Some(best_other.map_or(total, |best: i64| best.max(total)));
+    }
+    my_total.saturating_sub(best_other.unwrap_or(my_total))
 }
 
 // ---------------------------------------------------------------------------
@@ -1931,6 +2001,9 @@ fn snapshot_game(
     let mut rel = vec![0.0f64; rows.len()];
     let mut abs = vec![0.0f64; rows.len()];
     let mut cand = vec![0.0f64; candidates.len()];
+    // Looked up once per game rather than per snapshot; `None` only if the
+    // shipped feature list ever stops carrying running VP.
+    let vp_slot = rows.iter().position(|row| matches!(row, Row::Feature(Feature::VictoryPoints)));
 
     for (index, start) in starts.iter().enumerate() {
         let stage = stage_of(index, turns);
@@ -1952,6 +2025,13 @@ fn snapshot_game(
                 &mut abs,
                 &mut cand,
             );
+            // Per SEAT, per turn start — the same population the cells are
+            // built from, before it is averaged into one. A no-op, and free of
+            // the `progress_ppm` call, when no candidate column was named.
+            if !corpus.anchor_rel.is_empty() {
+                let progress = progress_ppm(&view, rules);
+                observe_anchor(corpus, rows, &rel, vp_slot, progress);
+            }
             let acc = &mut accs[usize::from(seat) * STAGES.len() + stage.index()];
             acc.n += 1;
             for slot in 0..rows.len() {
@@ -2214,13 +2294,73 @@ fn shape(early: &AucRow, mid: &AucRow, late: &AucRow) -> String {
 /// interval, no direction, no disposition. They are the two magnitudes the
 /// anchor rule divides.
 fn render_anchor_stats(corpus: &Corpus) -> Vec<String> {
-    // RED (Phase 3.5c V3, task T1): the fold that fills the two sketches and
-    // the order statistics rendered off them are both stubbed in this commit,
-    // so T1's tests fail on ARITHMETIC rather than on compilation — round 3's
-    // task-D shape. Reading the two lengths is what keeps the `Corpus` fields
-    // live under `-D warnings` until the GREEN commit replaces this whole body.
-    let _ = (corpus.anchor_rel.len(), corpus.anchor_vp_product.len());
-    Vec::new()
+    if corpus.anchor_rel.is_empty() {
+        return Vec::new();
+    }
+    // An empty sketch has no order statistic; `--` says so rather than printing
+    // a 0 a reader would divide by. Only a corpus that recorded no snapshot at
+    // all reaches it.
+    let stat = |sketch: &QuantileSketch, num: u64, den: u64| -> String {
+        sketch.quantile(num, den).map_or_else(|| "--".to_string(), |v| v.to_string())
+    };
+    let mut lines = vec![
+        "  ANCHOR STATS (V3 spec 4.2) — nearest-rank over SNAPSHOTS, not the cells above; the \
+         ladder anchor a minimizes |a * p90(|column|) - p50(|VP term|)|, the VP term priced \
+         under WeightTable::V2 at each snapshot's own progress"
+            .to_string(),
+        format!(
+            "  ANCHOR STATS  {:<30} p50 = {}  (n = {})",
+            "vp_term_product_v2 (shared)",
+            stat(&corpus.anchor_vp_product, 1, 2),
+            corpus.anchor_vp_product.len(),
+        ),
+    ];
+    for (slot, row) in corpus.rows.iter().enumerate() {
+        if !matches!(row, Row::Candidate(_)) {
+            continue;
+        }
+        lines.push(format!(
+            "  ANCHOR STATS  {:<30} p90 = {}  (n = {})",
+            row.name(),
+            stat(&corpus.anchor_rel[slot], 9, 10),
+            corpus.anchor_rel[slot].len(),
+        ));
+    }
+    lines
+}
+
+/// Fold ONE snapshot into the §4.2 anchor sketches.
+///
+/// `rel` is the very vector [`row_values`] just filled and the cell fold is
+/// about to consume, so a column cannot be measured here and printed there from
+/// two arithmetics. `vp_slot` is looked up from `rows` rather than assumed to be
+/// zero — `Feature::VictoryPoints` leads `Feature::ALL` today, and this fold
+/// must not be the thing that breaks if it ever stops leading it.
+///
+/// Values reach the sketch as whole numbers because they ARE whole numbers:
+/// every row's relative form is a difference of `i64` feature values widened to
+/// `f64`, and the VP product multiplies one of those by an `i64` weight.
+/// `round` states that rather than trusting a truncating cast to agree.
+fn observe_anchor(
+    corpus: &mut Corpus,
+    rows: &[Row],
+    rel: &[f64],
+    vp_slot: Option<usize>,
+    progress: u32,
+) {
+    if corpus.anchor_rel.is_empty() {
+        return;
+    }
+    let magnitude = |value: f64| -> u64 { value.abs().round() as u64 };
+    for (slot, row) in rows.iter().enumerate() {
+        if matches!(row, Row::Candidate(_)) {
+            corpus.anchor_rel[slot].observe(magnitude(rel[slot]));
+        }
+    }
+    let (early, late) = WeightTable::V2.get(Feature::VictoryPoints);
+    let weight = interpolate(early, late, progress) as f64;
+    let vp_rel = vp_slot.map_or(0.0, |slot| rel[slot]);
+    corpus.anchor_vp_product.observe(magnitude(weight * vp_rel));
 }
 
 fn report_features(
@@ -4141,8 +4281,9 @@ mod tests {
         let rules = Rules::standard();
         let mut checked = 0usize;
         let mut nonzero = 0usize;
-        for (players, seed) in [(2u8, 0x51u64), (2, 0x52), (3, 0x53), (3, 0x54), (4, 0x55), (4, 0x56)]
-        {
+        let walks: [(u8, u64); 6] =
+            [(2, 0x51), (2, 0x52), (3, 0x53), (3, 0x54), (4, 0x55), (4, 0x56)];
+        for (players, seed) in walks {
             organic_turn_starts(players, seed, &rules, |state| {
                 let mover = state.current_player;
                 let view = observe(state, mover).expect("a seated view");
