@@ -3872,6 +3872,48 @@ mod tests {
         );
     }
 
+    /// **THE FORCED FIELD IS ITS OWN CLASSIFICATION** (the freeze wave, pilot
+    /// finding 1): fewer than two candidates is not a preference at all.
+    ///
+    /// The pilot admitted a family-1 root whose adjudication carried ONE
+    /// candidate and read it PASS — vacuously, because the subject's pick was
+    /// the only move there was and the top set was therefore whatever the
+    /// adjudicator forced. `classify_dead` cannot catch it: a lone candidate that
+    /// WINS its replications is `live` by the wins clause, which is exactly the
+    /// shape the pilot hit.
+    ///
+    /// The EMPTY table rides the same arm and for the same reason a caller must
+    /// not read it as dead — it is a finished game, it offers no choice either,
+    /// and neither confirms nor fails anything.
+    #[test]
+    fn a_forced_field_is_classified_forced_and_two_candidates_stay_live() {
+        assert_eq!(FORCED_CANDIDATE_FLOOR, 2, "the floor is two candidates");
+        assert!(classify_forced(&spread_table(&[], None)), "a finished game offers no choice");
+        assert!(classify_forced(&spread_table(&[0], None)), "a one-row table is FORCED");
+        assert!(
+            !classify_forced(&spread_table(&[0, 25], None)),
+            "two candidates is a CHOICE — the live path this rule must not touch",
+        );
+
+        // ACROSS THE MENU: the smallest count decides, and it is reported so the
+        // exclusion can name it.
+        let p = ReplyPolicy::FamilyWeighted;
+        let q = ReplyPolicy::GreedyAtFinal;
+        assert_eq!(forced_across_menu(&[(p, 1), (q, 1)]), Some(1));
+        assert_eq!(
+            forced_across_menu(&[(p, 2), (q, 1)]),
+            Some(1),
+            "one policy seeing a forced field is a forced field — the count is the ROOT's",
+        );
+        assert_eq!(forced_across_menu(&[(p, 2), (q, 3)]), None, "two candidates is live");
+        assert_eq!(
+            forced_across_menu(&[]),
+            None,
+            "no adjudication ran, so nothing found the field forced — the empty trap \
+             `dead_across_menu` states one level up",
+        );
+    }
+
     /// The hook-FREE path is byte-for-byte what it was: [`adjudicate_root`]
     /// equals [`adjudicate_root_with`] at `None`, and every playout carries the
     /// counter-ABSENCE reading rather than a `false` verdict.
@@ -4121,6 +4163,234 @@ mod tests {
         let empty = admission(&[], 5, false);
         assert!(!empty.admitted());
         assert!(!empty.lookahead_sole_dissenter());
+    }
+
+    // =======================================================================
+    // THE FREEZE WAVE: the SPLITTING rules (pilot findings on families 3/4)
+    // =======================================================================
+
+    /// A one-row adjudication with `trues` playouts at `true_margin` and
+    /// `falses` at `false_margin` — the shape every splitting rule is about.
+    ///
+    /// One ROW, because the admission partition is over PLAYOUTS and ignores
+    /// which candidate produced them (`verdict_table`'s own reason).
+    fn split_table(trues: usize, true_margin: i64, falses: usize, false_margin: i64) -> Adjudication {
+        let mut playouts: Vec<(i64, bool, Option<bool>)> = Vec::new();
+        playouts.extend((0..trues).map(|_| (true_margin, false, Some(true))));
+        playouts.extend((0..falses).map(|_| (false_margin, false, Some(false))));
+        verdict_table(&playouts)
+    }
+
+    /// **(a) A ONE-SIDED POLICY IS RECORDED AND NON-BLOCKING** (the freeze wave).
+    ///
+    /// The pilot's families 3 and 4 admitted 0 of 4 roots everywhere, and the
+    /// per-policy tables named the mechanism: greedy never claims within a turn
+    /// at a proximity root (all-FALSE) and the race-rusher claims near-universally
+    /// (all-TRUE). Those are DEGENERATE SHAPES — a policy with one group has no
+    /// comparison in it — and under the landed conjunction each of them vetoed
+    /// every root a splitting policy could have demonstrated.
+    ///
+    /// So the CANNOT line stays (it is a finding about that policy at that root)
+    /// and it stops blocking. This is noise reduction, not bar-lowering: what a
+    /// non-demonstrating policy loses is its VETO, never its record.
+    #[test]
+    fn a_one_sided_policy_is_recorded_but_does_not_block_the_conjunction() {
+        let split = || split_table(2, 10, 2, -10);
+        let read = admission(
+            &[
+                (ReplyPolicy::FamilyWeighted, split()),
+                (ReplyPolicy::GreedyAtFinal, split()),
+                (ReplyPolicy::RaceRusher, split_table(4, 10, 0, 0)),
+                (ReplyPolicy::LookaheadAtFinal, split_table(0, 0, 4, -10)),
+            ],
+            5,
+            false,
+        );
+
+        // RECORDED: both degenerate arms keep their typed CANNOT reading.
+        assert_eq!(
+            read.policies[2].verdict,
+            AdmissionVerdict::Cannot(CannotDemonstrate::NoFalseGroup),
+            "the all-TRUE arm lost its record",
+        );
+        assert_eq!(
+            read.policies[3].verdict,
+            AdmissionVerdict::Cannot(CannotDemonstrate::NoTrueGroup),
+            "the all-FALSE arm lost its record",
+        );
+        assert!(!read.policies[2].splitting() && !read.policies[3].splitting());
+
+        // NON-BLOCKING: the two splitting policies decide the root.
+        assert_eq!(read.splitting_count(), 2);
+        assert!(read.admitted(), "a one-sided policy vetoed the conjunction: {read:?}");
+        assert!(
+            read.dissenters().is_empty(),
+            "a policy that could not demonstrate is not a DISSENTER: {:?}",
+            read.dissenters(),
+        );
+    }
+
+    /// **(b) A GROUP OF ONE IS ONE GAME'S NOISE** (the freeze wave).
+    ///
+    /// The pilot's family-weighted rung SPLIT ACCIDENTALLY — 1 of 8 true groups,
+    /// whose "group mean" is a single playout's margin — and that one game then
+    /// decided δ for the whole root. A policy therefore SPLITS only at two
+    /// playouts a side; below that it is non-demonstrating, recorded and
+    /// non-blocking exactly like the one-sided arms above.
+    #[test]
+    fn a_policy_splits_only_when_both_groups_hold_at_least_two_playouts() {
+        assert_eq!(SPLIT_MIN_GROUP, 2, "the floor is two playouts a side");
+
+        // THE PILOT'S OWN SHAPE: 1 of 8, at a difference δ would otherwise clear.
+        let thin = admission(&[(ReplyPolicy::FamilyWeighted, split_table(1, 40, 7, -40))], 5, false);
+        assert_eq!(
+            thin.policies[0].verdict,
+            AdmissionVerdict::Cannot(CannotDemonstrate::ThinSplit),
+            "a one-game group mean was read as a measurement",
+        );
+        assert!(!thin.policies[0].splitting());
+        assert_eq!((thin.policies[0].true_n, thin.policies[0].false_n), (1, 7));
+
+        // The FALSE side is read the same way round.
+        let other_way =
+            admission(&[(ReplyPolicy::FamilyWeighted, split_table(7, 40, 1, -40))], 5, false);
+        assert_eq!(
+            other_way.policies[0].verdict,
+            AdmissionVerdict::Cannot(CannotDemonstrate::ThinSplit),
+        );
+
+        // ANTI-VACUITY: the SAME difference at two-a-side is a real measurement.
+        let fat = admission(&[(ReplyPolicy::FamilyWeighted, split_table(2, 40, 6, -40))], 5, false);
+        assert_eq!(fat.policies[0].verdict, AdmissionVerdict::Dominates);
+        assert!(fat.policies[0].splitting());
+    }
+
+    /// **(c) TWO SPLITTING POLICIES, ALL OF THEM DOMINATING** (the freeze wave).
+    ///
+    /// The conjunction is now taken over the SPLITTING policies rather than over
+    /// the whole menu, with a floor of two: one splitting policy is one
+    /// measurement, and a root admitted on it would be a root admitted on a
+    /// single reply's taste. Fewer than two is an EXCLUSION whose reason names
+    /// the count — a different finding from "the behaviour failed here".
+    #[test]
+    fn admission_needs_two_splitting_policies_and_every_one_of_them_dominating() {
+        assert_eq!(MIN_SPLITTING_POLICIES, 2);
+        let dominating = || split_table(2, 10, 2, -10);
+        let failing = || split_table(2, 0, 2, 0);
+        let one_sided = || split_table(4, 10, 0, 0);
+
+        // EXACTLY ONE splitting policy: excluded, whatever that one said.
+        let lonely = admission(
+            &[
+                (ReplyPolicy::FamilyWeighted, dominating()),
+                (ReplyPolicy::GreedyAtFinal, one_sided()),
+                (ReplyPolicy::RaceRusher, one_sided()),
+            ],
+            5,
+            false,
+        );
+        assert_eq!(lonely.splitting_count(), 1);
+        assert!(!lonely.admitted(), "one splitting policy is one reply's taste");
+
+        // TWO, both dominating: admitted.
+        let two = admission(
+            &[
+                (ReplyPolicy::FamilyWeighted, dominating()),
+                (ReplyPolicy::GreedyAtFinal, dominating()),
+                (ReplyPolicy::RaceRusher, one_sided()),
+            ],
+            5,
+            false,
+        );
+        assert_eq!(two.splitting_count(), 2);
+        assert!(two.admitted());
+
+        // A SPLITTING DISSENTER still blocks — this is the half that is NOT
+        // relaxed, and the reason the change is noise reduction rather than a
+        // lower bar.
+        let dissent = admission(
+            &[
+                (ReplyPolicy::FamilyWeighted, dominating()),
+                (ReplyPolicy::GreedyAtFinal, failing()),
+                (ReplyPolicy::RaceRusher, dominating()),
+            ],
+            5,
+            false,
+        );
+        assert_eq!(dissent.splitting_count(), 3);
+        assert!(!dissent.admitted(), "a splitting policy that FAILED stopped blocking");
+        assert_eq!(dissent.dissenters(), vec![ReplyPolicy::GreedyAtFinal]);
+
+        // THE CONTROL INVERSE, at the same floor: two splitting policies must
+        // both demonstrate the LOSS.
+        let control = admission(
+            &[
+                (ReplyPolicy::FamilyWeighted, split_table(2, -10, 2, 10)),
+                (ReplyPolicy::GreedyAtFinal, split_table(2, -10, 2, 10)),
+                (ReplyPolicy::RaceRusher, one_sided()),
+            ],
+            5,
+            true,
+        );
+        assert_eq!(control.splitting_count(), 2);
+        assert!(control.admitted(), "the control's inverted direction lost its two policies");
+    }
+
+    /// **THE SOLE-DISSENTER GUARD KEYS ON SPLITTING POLICIES ONLY** (the freeze
+    /// wave, on review MUST-4's own logic).
+    ///
+    /// The flag exists to catch a subject defect that deflates dominance under
+    /// exactly the arm the subject IS. A policy that demonstrated nothing at all
+    /// is not evidence either way, so it can neither raise the flag nor mask it —
+    /// the "every other policy held" half has to be read over the policies that
+    /// could hold.
+    #[test]
+    fn the_sole_dissenter_flag_keys_on_splitting_policies_only() {
+        let dominating = || split_table(2, 10, 2, -10);
+        let failing = || split_table(2, 0, 2, 0);
+        let one_sided = || split_table(4, 10, 0, 0);
+
+        // TWO splitting policies, lookahead the only dissenter among them — the
+        // one-sided third arm neither raises nor masks it.
+        let flagged = admission(
+            &[
+                (ReplyPolicy::FamilyWeighted, dominating()),
+                (ReplyPolicy::RaceRusher, one_sided()),
+                (ReplyPolicy::LookaheadAtFinal, failing()),
+            ],
+            5,
+            false,
+        );
+        assert!(!flagged.admitted());
+        assert_eq!(flagged.dissenters(), vec![ReplyPolicy::LookaheadAtFinal]);
+        assert!(flagged.lookahead_sole_dissenter(), "MUST-4's collection trigger");
+
+        // A lookahead arm that DEMONSTRATED NOTHING is not a dissenter at all.
+        let quiet = admission(
+            &[
+                (ReplyPolicy::FamilyWeighted, dominating()),
+                (ReplyPolicy::GreedyAtFinal, dominating()),
+                (ReplyPolicy::LookaheadAtFinal, one_sided()),
+            ],
+            5,
+            false,
+        );
+        assert!(quiet.admitted());
+        assert!(!quiet.lookahead_sole_dissenter());
+
+        // ONE splitting policy cannot state the flag — there is no "the others
+        // held" half to observe, which is the accessor's own requirement read
+        // over the splitting policies instead of over the menu.
+        let alone = admission(
+            &[
+                (ReplyPolicy::FamilyWeighted, one_sided()),
+                (ReplyPolicy::LookaheadAtFinal, failing()),
+            ],
+            5,
+            false,
+        );
+        assert_eq!(alone.splitting_count(), 1);
+        assert!(!alone.lookahead_sole_dissenter());
     }
 
     // =======================================================================
@@ -5089,6 +5359,45 @@ mod tests {
         ));
     }
 
+    /// **AN EMPTY DENOMINATOR IS NOT A PASS** (the freeze wave, pilot finding 2).
+    ///
+    /// The pilot printed `verdict PASS` for blocks that admitted NOTHING — a
+    /// PILOT block escapes the VOID rule by design (it confirms nothing, so it
+    /// cannot be void AS a confirmation), and the allowance arm then read "0
+    /// failures of 0 admitted" as a clean pass. That sentence is the one reading
+    /// a block with no denominator must not produce.
+    ///
+    /// The three arms stay separate on purpose: a CONFIRMATORY block below four
+    /// keeps the VOID wording (it is a stronger statement — it names the minimum
+    /// it fell short of), the EXISTENCE arm keeps its gap verdict (its output is
+    /// per-root gaps, and zero of them is still zero gaps, which the render says
+    /// out loud), and everything else with zero admitted reads NOTHING ADMITTED.
+    #[test]
+    fn a_block_that_admitted_nothing_reads_nothing_even_as_a_pilot() {
+        use FamilyVerdict as V;
+        let conf = FamilyLabel::Confirmatory;
+        let exist = FamilyLabel::ExistenceDemonstration;
+
+        // THE PILOT FINDING, as arithmetic: this read `Pass` before the freeze.
+        assert_eq!(
+            family_verdict(conf, BlockKind::Pilot, 4, 0, 0, 0),
+            V::NothingAdmitted { drawn: 4 },
+        );
+        // A CONFIRMATORY block keeps the VOID wording — the stronger statement.
+        assert!(matches!(
+            family_verdict(conf, BlockKind::Confirmatory, 6, 0, 0, 0),
+            V::VoidAsConfirmation { admitted: 0, minimum: MIN_ADMITTED_ROOTS, .. },
+        ));
+        // The EXISTENCE arm keeps its own verdict at zero admitted; what it
+        // gains is the render's "this demonstrates nothing" clause.
+        assert_eq!(
+            family_verdict(exist, BlockKind::Pilot, 4, 0, 0, 0),
+            V::GapDemonstrated { roots: 0 },
+        );
+        // ANTI-VACUITY: ONE admitted root is a reading again.
+        assert_eq!(family_verdict(conf, BlockKind::Pilot, 4, 1, 0, 0), V::Pass);
+    }
+
     /// **DEAD is AND-ed across the menu, pinned on MIXED vectors** — the shape
     /// no block a test can afford produces (T5 review MUST-1).
     ///
@@ -5494,6 +5803,79 @@ mod tests {
         // is the accessor's own documented requirement — pinned so the flag is
         // never read as "no suppression" at a menu that cannot show it.
         assert!(report.sole_dissenters.is_empty());
+    }
+
+    /// [`smoke_root`] with the CLAIM taken away: at `AdditionalActionSecond`
+    /// with nothing claimable, no standing additional action and no technology,
+    /// `EndAdditionalPhase` is the only legal move — a FORCED decision.
+    fn forced_root(seed: u64, rules: &Rules) -> Result<BuiltRoot, BuilderError> {
+        let mut built = smoke_root(seed, rules)?;
+        let mover = built.state.current_player;
+        built.state.player_mut(mover).money = 0;
+        check_invariants(&built.state, rules).map_err(BuilderError::NotEngineValid)?;
+        Ok(built)
+    }
+
+    /// **A FORCED ROOT IS EXCLUDED AND NEVER READ** (the freeze wave, pilot
+    /// finding 1) — through the block, at the decision grain.
+    ///
+    /// The pilot LIVE-admitted a one-candidate family-1 root and read it PASS:
+    /// the subject's pick was the only move on offer, so it was trivially in
+    /// every adjudicated top set. A one-row table confirms nothing and fails
+    /// nothing, and this is the exclusion that says so.
+    ///
+    /// The cell carries its own ANTI-VACUITY in the second half: the SAME
+    /// declaration over the two-candidate smoke root still admits and still
+    /// reads, so the rule excludes forced fields rather than decision-grain
+    /// roots.
+    #[test]
+    fn a_forced_decision_grain_root_is_excluded_and_never_read() {
+        let rules = rules();
+        let subject = SeatSpec::Contestant(Contestant::LOOKAHEAD_V1_DEFAULT);
+        let decl = FamilyDecl {
+            generator: FamilyGenerator::Builder { build: forced_root, name: "forced_root" },
+            rule: PassRule::AdjudicatedBest { epsilon: 1 },
+            replications: 1,
+            pilot: 0..1,
+            ..smoke_decl(FamilyLabel::Confirmatory, 0)
+        };
+
+        // THE FIXTURE'S PREMISE, asserted rather than assumed.
+        let built = forced_root(0x77, &rules).expect("the forced root builds");
+        assert_eq!(
+            get_legal_moves(&built.state, &rules),
+            vec![Move::EndAdditionalPhase],
+            "the fixture is not forced",
+        );
+
+        let report = run_family_block_with(&decl, BlockKind::Pilot, Some(MASTER), subject, &rules,
+            smoke_opts(-1_000))
+            .expect("the block runs");
+        assert_eq!(report.drawn, 1);
+        assert_eq!(report.admitted, 0, "a FORCED root was admitted: {:?}", report.roots);
+        assert_eq!(
+            report.roots[0].verdict,
+            RootVerdict::Excluded(ExclusionReason::Forced { candidates: 1 }),
+            "the forced exclusion did not fire: {:?}",
+            report.roots[0].verdict,
+        );
+        assert!(report.roots[0].read.is_none(), "a forced root was READ");
+        assert!(
+            !report.roots[0].dead,
+            "the pilot's shape: a lone WINNING candidate is `live` by the wins clause, which is \
+             why the forced arm cannot be left to `classify_dead`",
+        );
+
+        // ANTI-VACUITY: the two-candidate root of the same shape still admits.
+        let live = FamilyDecl {
+            generator: FamilyGenerator::Builder { build: smoke_root, name: "smoke_root" },
+            ..decl
+        };
+        let report = run_family_block_with(&live, BlockKind::Pilot, Some(MASTER), subject, &rules,
+            smoke_opts(-1_000))
+            .expect("the block runs");
+        assert_eq!(report.admitted, 1, "the LIVE path moved: {:?}", report.roots);
+        assert!(report.roots[0].read.is_some());
     }
 
     /// Family 3's declared CONTROL and family 4's declared CORNER are reachable

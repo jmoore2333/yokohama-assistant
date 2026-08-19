@@ -4448,6 +4448,80 @@ mod tests {
         assert!(rendered.contains("GAP RECORDED"), "the per-root gap row is missing:\n{rendered}");
     }
 
+    /// **NOTHING ADMITTED renders as no reading at all** (the freeze wave, pilot
+    /// finding 2), and the EXISTENCE arm says so too when its gap block is empty.
+    ///
+    /// The pilot printed `verdict PASS` over an empty denominator. What a reader
+    /// must meet instead is the sentence that block earned: nothing entered the
+    /// denominator, so there is nothing to read.
+    #[test]
+    fn a_block_that_admitted_nothing_renders_no_reading_and_the_empty_gap_says_so() {
+        let nothing = family_report(FamilyVerdict::NothingAdmitted { drawn: 4 }, vec![]);
+        let rendered = render_family_block(&nothing, FamilyArm::Positive);
+        assert!(
+            rendered.contains("NOTHING ADMITTED"),
+            "an empty denominator does not announce itself:\n{rendered}",
+        );
+        assert!(
+            rendered.contains("no reading"),
+            "the verdict does not say what it means:\n{rendered}",
+        );
+        assert!(
+            !rendered.contains("verdict        PASS"),
+            "an empty denominator still renders as a pass:\n{rendered}",
+        );
+
+        // The EXISTENCE arm keeps its gap wording and GAINS the empty clause.
+        let mut empty_gap = family_report(FamilyVerdict::GapDemonstrated { roots: 0 }, vec![]);
+        empty_gap.label = FamilyLabel::ExistenceDemonstration;
+        empty_gap.id = "exclusive-race";
+        let rendered = render_family_block(&empty_gap, FamilyArm::Positive);
+        assert!(rendered.contains("GAP DEMONSTRATED"), "the gap verdict moved:\n{rendered}");
+        assert!(
+            rendered.contains("over 0 admitted roots this demonstrates nothing"),
+            "an empty gap block reads as a demonstration:\n{rendered}",
+        );
+        // ANTI-VACUITY: a non-empty gap block does NOT carry the clause.
+        let three = family_report(FamilyVerdict::GapDemonstrated { roots: 3 }, vec![]);
+        assert!(
+            !render_family_block(&three, FamilyArm::Positive).contains("demonstrates nothing"),
+            "the empty clause rides a block that demonstrated something",
+        );
+    }
+
+    /// The two freeze-wave EXCLUSION reasons render as themselves: a FORCED root
+    /// says what a one-row table is, and a too-few-splitting root NAMES its
+    /// splitting count rather than reading as "the behaviour failed here".
+    #[test]
+    fn the_forced_and_too_few_splitting_exclusions_render_their_own_reasons() {
+        let forced =
+            family_row(0, RootVerdict::Excluded(ExclusionReason::Forced { candidates: 1 }), None);
+        let thin = family_row(
+            1,
+            RootVerdict::Excluded(ExclusionReason::TooFewSplitting { splitting: 1, minimum: 2 }),
+            None,
+        );
+        let rendered = render_family_block(
+            &family_report(FamilyVerdict::NothingAdmitted { drawn: 2 }, vec![forced, thin]),
+            FamilyArm::Positive,
+        );
+
+        assert!(rendered.contains("FORCED"), "the forced exclusion is unnamed:\n{rendered}");
+        assert!(
+            rendered.contains("a one-row table is a FORCED position — it confirms nothing and \
+                               fails nothing"),
+            "the forced row loses the sentence it exists to print:\n{rendered}",
+        );
+        assert!(
+            rendered.contains("TOO FEW SPLITTING"),
+            "the splitting exclusion is unnamed:\n{rendered}",
+        );
+        assert!(
+            rendered.contains("1 of the declared policies split") || rendered.contains("splitting=1"),
+            "the splitting exclusion does not name its count:\n{rendered}",
+        );
+    }
+
     /// The DECISION-grain shape (family 1's), which the turn-grain cells above
     /// never reach: no admission table at all, the LIVE/DEAD split and the
     /// per-policy top sets printed per root instead, the subject's PICKS on the
