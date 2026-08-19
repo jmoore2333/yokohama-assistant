@@ -35,6 +35,12 @@ protocol's machinery (evidence ladder, pre-registered screens, its own freeze) �
 behavior-moving work, so the D2 owner-game cadence fires on its merge. *What a NO means:*
 the cluster's exhibits stay recorded; W6/W7 proceed on the shipped table.
 *Where:* a one-line ruling in the next session (or margin note here).
+**OWNER RULING (2026-08-18, in-session): YES — open the V3 mini-cycle with exactly two
+candidates, terminal-margin awareness and `achievement_race_proximity`; no other admissions
+ride it; W6 defers to the V3 table** (tune the table you intend to freeze — D1's own
+contamination logic; W6 on the shipped V2 ruled unproductive given the identified needs).
+The static opponent-pending term is BANKED as a later candidate, informed by the escrow
+re-reads.
 
 **ASK 2 — the D3 capability lane (opponent awareness; D7 branch 3; the amendment's other
 STOP).** *The evidence:* F2's owner-game series (the standing branch-3 routing) PLUS Phase
@@ -45,6 +51,12 @@ the instrument shape that could. *What a YES opens:* the bounded cross-handoff b
 S1 under D3's six-clause fence. *What a NO means:* the lane stays open-with-evidence for a
 later cycle. *Where:* one line, as above. (The e113 REPRESENTATION admission ladder — the
 other Phase-B carry — is unchanged by Phase C and stays an open ask alongside these.)
+**OWNER RULING (2026-08-18, in-session): SEQUENCED, not refused — the e113
+placement-representation cycle (V4) comes FIRST; the D3 cross-handoff build is considered
+only after it, so the depth experiment runs over an evaluator that can see placements
+(cross-handoff's leaf values inherit location blindness — the false-negative risk the 3.4
+MCTS non-adoption exemplifies; the dependency runs one way only). The go/no-go is RE-ASKED
+at V4's close with the escrow re-reads and diagnostic games in hand.**
 
 **ASK 3 — nothing else is owner-gated.** The exact-adjudicator build (family 1's named next
 instrument) is harness work under OD-0, not a STOP; D9/OD-8 stays at your leisure.
