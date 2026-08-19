@@ -156,17 +156,17 @@ executors read both. The spec's §6 records the Fable review this plan already a
 `", slot fee: {n} yen"` / `", slot fee: {n} imported good[s]"` / both-nonzero composed
 `", slot fee: {a} yen + {b} imported good[s]"`.
 
-- [ ] **Step 2.1: Failing tests.** In describe.rs's test block (the existing Laboratory
+- [x] **Step 2.1: Failing tests.** In describe.rs's test block (the existing Laboratory
   fixtures sit at ~1566-1600): `the_slot_surcharge_reads_as_a_fee_not_a_gain` — three cases:
   yen-only (`extra_yen: 2` → contains `"slot fee: 2 yen"`, NOT `"+2 yen"`), imported-only
   (`extra_imported: 1` → `"slot fee: 1 imported good"`, no `"good(s)"`, no `+`),
   both-nonzero (`extra_yen: 1, extra_imported: 1` → exactly one `"slot fee:"` occurrence,
   `"1 yen + 1 imported good"`). Run → FAIL.
-- [ ] **Step 2.2:** Implement the composed clause. Run → PASS. Sweep for other pinned
+- [x] **Step 2.2:** Implement the composed clause. Run → PASS. Sweep for other pinned
   sites: `grep -rn '"+.* yen"' crates/yokohama-cli` and fix any fixture asserting the old
   wording.
-- [ ] **Step 2.3:** Update both guide blocks (word-identical). Per-edit gate → green.
-- [ ] **Step 2.4: Commit** `feat(cli): lab slot surcharge reads as the fee it is
+- [x] **Step 2.3:** Update both guide blocks (word-identical). Per-edit gate → green.
+- [x] **Step 2.4: Commit** `feat(cli): lab slot surcharge reads as the fee it is
   (branch-4 item 4)`.
 
 ---

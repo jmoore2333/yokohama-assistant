@@ -7,6 +7,7 @@ use yokohama_core::game::actions::{
     fishing_ground_reward, silk_mill_reward, tea_plantation_reward,
 };
 
+use crate::card_render::plural;
 use crate::render;
 use crate::style::glyph;
 
@@ -629,11 +630,21 @@ fn describe_area_action(action: &AreaAction, state: &GameState, rules: &Rules) -
         AreaAction::Laboratory { card_id, extra_yen, extra_imported, extra_tech_payment } => {
             let name = tech_name(*card_id, &rules.techs);
             let mut s = format!("Laboratory: acquire {name}");
+            // Branch-4 item 4: the slot's board-position surcharge is a COST
+            // (slots 3-6 add +1/+1/+2/+2 industry, each point bought with 2
+            // yen or 1 imported good), so it speaks the same fee grammar as
+            // the 4th+ tech-card clause below rather than the `+n` shape every
+            // GAIN on an option line wears. Both halves compose into ONE
+            // clause -- never two `slot fee:` labels on one line.
+            let mut fee = Vec::new();
             if *extra_yen > 0 {
-                s.push_str(&format!(", +{extra_yen} yen"));
+                fee.push(format!("{extra_yen} yen"));
             }
             if *extra_imported > 0 {
-                s.push_str(&format!(", +{extra_imported} imported"));
+                fee.push(plural(*extra_imported as usize, "imported good"));
+            }
+            if !fee.is_empty() {
+                s.push_str(&format!(", slot fee: {}", fee.join(" + ")));
             }
             // Rulebook p.14 verbatim (D2 owner ruling 2026-08-08): "Starting
             // with your 4th card, each technology card requires an additional
@@ -1597,6 +1608,55 @@ mod tests {
             &rules,
         );
         assert!(imported.contains("4th+ tech fee: 1 imported good"), "{imported}");
+    }
+
+    /// Branch-4 item 4 (spec 2.4): the Laboratory BOARD-POSITION surcharge
+    /// (`extra_yen`/`extra_imported` -- slots 3-6 cost +1/+1/+2/+2 industry,
+    /// each point bought with 2 yen or 1 imported good) is a COST, but it used
+    /// to render as `", +2 yen"` -- the same `+n` shape every GAIN on an option
+    /// line wears (the Bank's `+3 yen` yield, a production yield, a site
+    /// reward), so the one place `+n yen` meant "you pay" read as "you
+    /// receive". It now speaks the fee grammar the 4th+ tech-card clause
+    /// immediately below it already uses (`", 4th+ tech fee: 2 yen"`), and the
+    /// two halves COMPOSE into a single clause when both are nonzero rather
+    /// than labelling `slot fee:` twice on one line. Plurals come from the
+    /// crate's `plural()` helper, never a `(s)` parenthetical.
+    #[test]
+    fn the_slot_surcharge_reads_as_a_fee_not_a_gain() {
+        let state = state_2p();
+        let rules = Rules::standard();
+        let lab = |extra_yen: u8, extra_imported: u8| {
+            describe_move(
+                &Move::ExecuteAreaAction {
+                    action: AreaAction::Laboratory {
+                        card_id: TechCardId(20),
+                        extra_yen,
+                        extra_imported,
+                        extra_tech_payment: None,
+                    },
+                },
+                &state,
+                &rules,
+            )
+        };
+
+        // Yen-only: the fee is named, the gain shape is gone.
+        let yen = lab(2, 0);
+        assert!(yen.contains("slot fee: 2 yen"), "{yen}");
+        assert!(!yen.contains("+2 yen"), "the gain shape is gone: {yen}");
+
+        // Imported-only: full words, singular, and no `+` anywhere on the line
+        // (the tech title "Postal System" carries none of its own).
+        let imported = lab(0, 1);
+        assert!(imported.contains("slot fee: 1 imported good"), "{imported}");
+        assert!(!imported.contains("good(s)"), "no parenthetical plural: {imported}");
+        assert!(!imported.contains('+'), "nothing on this line reads as a gain: {imported}");
+        assert!(lab(0, 2).contains("slot fee: 2 imported goods"), "{}", lab(0, 2));
+
+        // Both nonzero: ONE clause, both halves inside it.
+        let both = lab(1, 1);
+        assert_eq!(both.matches("slot fee:").count(), 1, "one label, not two: {both}");
+        assert!(both.contains("slot fee: 1 yen + 1 imported good"), "{both}");
     }
 
     #[test]
