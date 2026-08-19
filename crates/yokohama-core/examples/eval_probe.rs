@@ -2822,10 +2822,17 @@ fn candidate_resample_seed(resample_seed: u64, table: &WeightTable) -> u64 {
 /// ONE multiplicity draw per replicate, reused across the three stages —
 /// `report_features`'s rule, for its reason: the cluster resample is a property
 /// of the replicate, not of the column, so drawing per stage would make a
-/// candidate's own stage rows mutually incomparable. Across CANDIDATES the
-/// streams differ by construction (see [`candidate_resample_seed`]), so two
-/// candidates' intervals are not paired — stated in the block header rather than
-/// left for a reader to assume either way.
+/// candidate's own stage rows mutually incomparable.
+///
+/// Across CANDIDATES the sharing follows the KEY: [`candidate_resample_seed`]
+/// keys the stream on the BASE weight table's identity, so two candidates that
+/// name the SAME base — an extension table and the base itself, or two
+/// extension tables on one base — draw the same multiplicities and ARE paired,
+/// while two candidates on DIFFERENT bases are not. That same-base pairing is
+/// not a side effect: it is what [`paired_improvement_intervals`] rests on, and
+/// it is why the Δ column's replicates are the very ones behind the marginal
+/// intervals printed beside them. The block header states both halves rather
+/// than leaving a reader to assume either way.
 fn held_out_intervals(
     columns: &[SplitColumn; 3],
     bootstrap: u32,
