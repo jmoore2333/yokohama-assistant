@@ -474,6 +474,13 @@ pub const FORCED_CANDIDATE_FLOOR: usize = 2;
 /// no choice either, and both are positions a read confirms nothing and fails
 /// nothing at. What the two are NOT is interchangeable with dead, which is why
 /// the exclusion reason names the candidate count.
+///
+/// **Applied at the DECISION grain only, and the scope is the point.** A
+/// decision-grain read judges the ROOT PICK, which at a forced root is not a
+/// preference. A turn-grain read judges what the whole TURN accomplished, and a
+/// turn continues past a forced first decision — so a forced root is still a
+/// real reading there, and the degenerate shapes that DO defeat a turn-grain
+/// read are the ones [`admission`]'s splitting rules answer.
 pub fn classify_forced(adj: &Adjudication) -> bool {
     adj.candidates() < FORCED_CANDIDATE_FLOOR
 }
@@ -507,9 +514,12 @@ fn forced_across_menu(candidates_by_policy: &[(ReplyPolicy, usize)]) -> Option<u
 /// the CALL (the adjudication carried no verdicts at all, so it was run without
 /// design §2's turn hook and this is a caller error rather than a reading).
 ///
-/// **Every arm is RECORDED and none of them BLOCKS** (the freeze wave): a policy
-/// that demonstrated nothing is evidence about that policy at that root, not a
-/// veto over the ones that did demonstrate something. See
+/// **The three POSITION-shaped arms are RECORDED and stop BLOCKING** (the freeze
+/// wave): a policy that demonstrated nothing is evidence about that policy at
+/// that root, not a veto over the ones that did demonstrate something.
+/// [`Unstamped`](Self::Unstamped) is the exception and keeps its veto, because
+/// it is not a fact about the position at all — it says the run was mis-wired,
+/// and a mis-wired run must not produce an admission. See
 /// [`AdmissionRead::admitted`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CannotDemonstrate {
@@ -613,6 +623,13 @@ impl PolicyAdmission {
     pub fn splitting(&self) -> bool {
         matches!(self.verdict, AdmissionVerdict::Dominates | AdmissionVerdict::Fails)
     }
+
+    /// Whether this policy's adjudication was run WITHOUT the family's turn hook
+    /// — a caller error rather than a reading, and the one
+    /// [`CannotDemonstrate`] arm that still refuses the whole root.
+    pub fn unstamped(&self) -> bool {
+        self.verdict == AdmissionVerdict::Cannot(CannotDemonstrate::Unstamped)
+    }
 }
 
 /// One root's admission read across the declared reply menu (design §4).
@@ -655,9 +672,19 @@ impl AdmissionRead {
     /// demonstrated a FAILURE still blocks, which is the half that is not
     /// relaxed.
     ///
+    /// **[`CannotDemonstrate::Unstamped`] is the one arm that still vetoes**, and
+    /// it is deliberately NOT relaxed with the other two: it says the
+    /// adjudication was run without the family's turn hook, which is a fact
+    /// about the CALL. A mis-wired run must not be able to admit a root off the
+    /// policies that happened to be wired correctly. (`run_one_root` always
+    /// passes the hook at the turn grain, so this guards a direct caller.)
+    ///
     /// Vacuously false on an empty menu, and false below the splitting floor —
     /// an admission "across no policies", or across one, is not a demonstration.
     pub fn admitted(&self) -> bool {
+        if self.policies.iter().any(PolicyAdmission::unstamped) {
+            return false;
+        }
         self.splitting_count() >= MIN_SPLITTING_POLICIES
             && self.splitting().all(PolicyAdmission::dominates)
     }
@@ -4562,6 +4589,26 @@ mod tests {
             read.dissenters().is_empty(),
             "a policy that could not demonstrate is not a DISSENTER: {:?}",
             read.dissenters(),
+        );
+
+        // THE ONE ARM THAT STILL VETOES: an UNSTAMPED adjudication is a fact
+        // about the CALL (the turn hook was not passed), not about the position,
+        // so it refuses the root rather than standing aside for the policies
+        // that were wired correctly.
+        let mis_wired = admission(
+            &[
+                (ReplyPolicy::FamilyWeighted, split()),
+                (ReplyPolicy::GreedyAtFinal, split()),
+                (ReplyPolicy::RaceRusher, verdict_table(&[(5, false, None), (5, false, None)])),
+            ],
+            5,
+            false,
+        );
+        assert_eq!(mis_wired.splitting_count(), 2, "the two honest policies still split");
+        assert!(mis_wired.policies[2].unstamped());
+        assert!(
+            !mis_wired.admitted(),
+            "a mis-wired adjudication admitted a root off the policies that were wired right",
         );
     }
 

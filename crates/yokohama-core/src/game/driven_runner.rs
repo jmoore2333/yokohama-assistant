@@ -256,14 +256,15 @@ usage: driven <subcommand> [options]
                                                denial-not-taken-by-handoff
                                achievement     the proximity corner, same rule
       SIZING is the BLOCK's: a pilot runs BlockOpts::pilot (admission K = 4, the
-      posture the pilots that already ran used, so their readings reproduce) and
-      a confirmatory runs BlockOpts::freeze (admission K = 8, doubled against
-      group-mean noise). The ARM never moves the sizing. The SUBJECT is the
-      shipped `lookahead-v1`: a family result is a statement about that subject,
-      so it is deliberately not a flag here.
+      posture the pilot runs were taken at, unchanged so a pilot re-draws the
+      same roots and adjudications) and a confirmatory runs BlockOpts::freeze
+      (admission K = 8, doubled against group-mean noise). The ARM never moves
+      the sizing. The SUBJECT is the shipped `lookahead-v1`: a family result is a
+      statement about that subject, so it is deliberately not a flag here.
       COST: `roots x menu x candidates x K` whole games for admission plus
       `roots x R` subject turns for the reads -- tens of minutes per root in
-      release at the declared sizing. The pilot is what prices it.
+      release at the declared sizing. The pilot is what priced it, and a
+      confirmatory block costs about twice its pilot per root on K alone.
 
   opening --master <u64> --games <N> [--contestant <spec>]
       The C-D OPENING PROBE: N seeded fresh 2P games, the subject's FIRST TURN
