@@ -1018,7 +1018,7 @@ pub fn describe_move(mv: &Move, state: &GameState, rules: &Rules) -> String {
 /// token, and what the `log` view records, in place of the raw `{:?}` debug.
 pub fn five_power_effect_label(effect: FivePowerEffect) -> String {
     match effect {
-        FivePowerEffect::ImportedGoods(n) => format!("{n} imported goods"),
+        FivePowerEffect::ImportedGoods(n) => plural(n as usize, "imported good"),
         FivePowerEffect::Copper(n) => format!("{n} copper"),
         FivePowerEffect::Silk(n) => format!("{n} silk"),
         FivePowerEffect::Tea(n) => format!("{n} tea"),
@@ -1465,7 +1465,8 @@ mod tests {
     #[test]
     fn five_power_effect_label_reads_as_plain_goods() {
         // One label per token face; the amounts match parse_token_letter's map.
-        assert_eq!(five_power_effect_label(FivePowerEffect::ImportedGoods(1)), "1 imported goods");
+        assert_eq!(five_power_effect_label(FivePowerEffect::ImportedGoods(1)), "1 imported good");
+        assert_eq!(five_power_effect_label(FivePowerEffect::ImportedGoods(2)), "2 imported goods");
         assert_eq!(five_power_effect_label(FivePowerEffect::Copper(2)), "2 copper");
         assert_eq!(five_power_effect_label(FivePowerEffect::Silk(2)), "2 silk");
         assert_eq!(five_power_effect_label(FivePowerEffect::Tea(3)), "3 tea");

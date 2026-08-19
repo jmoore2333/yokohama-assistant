@@ -7,7 +7,7 @@ AREAS — full view   every area on the board: what its action pays at each powe
 │ power 3   +2 silk                                              │ │ power 3   +3 seafood                                           │ │ power 1   no zone in reach                                     │
 │ power 4   +3 silk                                              │ │ power 4   +4 seafood                                           │ │ power 2   take from LOW                                        │
 │ power 5+  +4 silk                                              │ │ power 5+  +5 seafood                                           │ │ power 3   take from LOW, MID                                   │
-│ 5-Power   1 imported goods                                     │ │ 5-Power   1 imported goods                                     │ │ power 4   take from LOW, MID, HIGH                             │
+│ 5-Power   1 imported good                                      │ │ 5-Power   1 imported good                                      │ │ power 4   take from LOW, MID, HIGH                             │
 │ top-left 1 VP                  top-right 4 VP                  │ │ top-left 1 VP                  top-right 2 any goods           │ │ power 5+  take from LOW, MID, HIGH · a take also scores ★3 VP  │
 │ mid-left blank                 mid-right 3 VP                  │ │ mid-left blank                 mid-right 1 any good            │ │ The cards on offer are on the 'ports' view.                    │
 │ house     ★9 VP         open                                   │ │ house     ★7 VP         open                                   │ │ 5-Power   3 yen                                                │
@@ -37,7 +37,7 @@ AREAS — full view   every area on the board: what its action pays at each powe
 │ you have reached.                                              │ │ power 3   +3 yen                                               │ │ further card owes another 2 yen or 1 import.                   │
 │ power 1   faith 1, up to 7 paying all six kinds                │ │ power 4   +4 yen                                               │ │ power 1   1 industry value                                     │
 │ power 2   faith 2, up to 8 paying all six kinds                │ │ power 5+  +5 yen                                               │ │ power 2   2 industry value                                     │
-│ power 3   faith 3, up to 9 paying all six kinds                │ │ 5-Power   1 imported goods                                     │ │ power 3   3 industry value                                     │
+│ power 3   faith 3, up to 9 paying all six kinds                │ │ 5-Power   1 imported good                                      │ │ power 3   3 industry value                                     │
 │ power 4   faith 4, up to 10 paying all six kinds               │ │ top-left 1 VP                  top-right 2 any goods           │ │ power 4   4 industry value                                     │
 │ power 5+  faith 5, up to 11 paying all six kinds               │ │ mid-left blank                 mid-right 1 any good            │ │ power 5+  5 industry value                                     │
 │ Every space, and who is on it, is on the 'tracks' view.        │ │ house     ★6 VP         open                                   │ │ The technologies on offer are on the 'labs' view.              │
