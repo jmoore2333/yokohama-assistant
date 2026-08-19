@@ -74,38 +74,94 @@
 //! the arena's per-seat keying re-entered at the derived world, so no third seed
 //! discipline is invented.
 //!
+//! **What PHASE C's T1 adds** (design
+//! `docs/plans/2026-08-18-phase-c-families-design.md` §1–§2): the layer-2
+//! GENERATOR vocabulary. [`RootPredicate`] grows five variants — one nonterminal
+//! control for family 1 and one per layer-2 family — and its `holds` takes
+//! `&Rules`, because those arms probe the LEGAL LIST rather than reading flags.
+//! Their shared conjuncts ship beside them as named, separately-pinned helpers:
+//! [`true_margin_now`] (full-state truth, a SELECTION-side helper that must
+//! never reach the evaluator), [`firing_moves`] (short-circuited on a
+//! precondition set DERIVED from an exhaustive match over `EndGameTrigger`, so a
+//! sixth trigger kind is a compile error rather than a silent scan bias), and
+//! the [`MAX_ROOT_CANDIDATES`] width bound, which is a conjunct of the
+//! predicates and therefore a recorded generator constraint rather than a
+//! post-hoc filter. [`GeneratingEcology`] gains the per-game STRIDE CAP and a
+//! second configuration, [`GeneratingEcology::v2_lookahead`], under which the
+//! layer-2 predicates scan the subject's OWN reachable positions.
+//!
+//! **What PHASE C's T2 adds**: the TURN GRAIN. [`drive_turn`] plays ONE mover's
+//! turn from a root — the grain between [`root_table`] (one decision) and
+//! [`drive_to_terminal`] (a whole game), and the one families 2–4 read, because
+//! their pass rules are statements about what a TURN did and the move that fires
+//! a trigger is rarely the move that starts the turn. It stops on a DUAL
+//! condition (hand-off OR game over) because the engine's end-of-turn arm and
+//! its game-end arm write different fields, it runs ONE agent at the caller's
+//! `decision_seed` so the stream advances across the turn, and it reports the
+//! mover's WHOLE-TURN [`SeatCounters`] so a mid-turn cap hit reaches D7's
+//! step-one filter. It is a third per-decision loop — [`play_from_state`] runs
+//! to terminal and exposes no stop hook — and what keeps it from drifting is
+//! stated where it is enforced: a prefix-equivalence pin against the play half,
+//! and a failure taxonomy routed through [`classify`] over the arena's own
+//! `PlayError` rather than re-typed.
+//!
+//! **What PHASE C's T3 adds**: the reply menu's fourth and ADVERSARIAL slot,
+//! [`ReplyPolicy::RaceRusher`] — a rule over state, not a contestant, so
+//! [`ReplyPolicy::contestant`] becomes partial ([`NotAContestant`]) and
+//! [`SeatSpec::build`] grows a SECOND ARM that returns the boxed
+//! [`RaceRusherAgent`] directly. It is still ONE materialization site: what that
+//! ever bought was that no caller decides what a seat is, and the three drivers
+//! still all ask here. The agent probes only the small families
+//! ([`is_probed_family`]), classifies by apply-probe on its OWN sampled probe
+//! world, and DELEGATES everything else to an inner greedy@final it owns for the
+//! seat's lifetime — with the probe world derived from `(agent_seed, decision
+//! ordinal)` under [`SALT_DRIVEN_RACE_PROBE`] rather than drawn from that
+//! greedy's stream, which is what makes the no-race fallback byte-identical to a
+//! bare greedy seat BY CONSTRUCTION rather than by measurement.
+//!
 //! **What this module still deliberately does NOT ship**: the runner (T5). It is
 //! not stubbed here — a stub is a surface a reader has to check the emptiness
 //! of.
 
 use std::cmp::Reverse;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::actions::{
+    calculate_church_faith, customs_max_imported_goods, eligible_church_spaces,
+    eligible_customs_spaces_for_cost, has_church_or_customs_assistant,
+};
 use crate::game::agent::HONEST_MAX_TURNS;
 use crate::game::apply_move::apply_move_unchecked;
 use crate::game::arena::{
     agent_stream_seed, mix, play_from_state, require_supported_player_count, run_arena_game,
-    AgentBench, ArenaAgent, Contestant, ExplainHandle, PlayError, PlayLimits, SeatBench, Slot,
-    SALT_DRIVEN_REPLICATION,
+    AgentBench, ArenaAgent, Contestant, ControllerProvenance, DecisionReport, ExplainHandle,
+    PlayError, PlayLimits, SeatBench, Slot, SALT_DRIVEN_REPLICATION,
 };
 use crate::game::belief::BeliefSampler;
 use crate::game::end_game::is_game_over;
 use crate::game::eval::WeightTable;
+use crate::game::greedy::{GreedyAgent, DEFAULT_RETREAT_SAMPLES};
 use crate::game::invariants::check_invariants;
 use crate::game::legal_moves::get_legal_moves;
 use crate::game::lookahead::{LookaheadAgent, RootScore, SearchScheme, SearchStats};
+use crate::game::metrics::decision_volume;
 use crate::game::move_legality::{is_move_legal, PathMode};
 use crate::game::observe::observe;
 use crate::game::policy::RolloutPolicy;
+use crate::game::power::calculate_power;
 use crate::game::record::{replay_from, state_at, GameRecord, RecordedEvent, SeatProvenance};
 use crate::game::rules::Rules;
 use crate::game::scoring::{final_result, GameResult};
+use crate::game::search_actions::{DecisionHandle, MoveFamily};
 use crate::game::seeds::{SeedSchedule, WorldSeed};
 use crate::game::semantics::{record_digest, state_digest, SEMANTICS_REV};
-use crate::types::{AreaId, GameState, Move, PlayerId};
+use crate::types::{
+    AreaId, AreaType, ChurchTrack, CustomsTrack, EndGameTrigger, GameState, Move, OrderCardId,
+    PendingChoice, PlayerId, PlayerView, PresidentLocation,
+};
 
 /// The decision guard's default: how many decisions a rooted run may apply
 /// before it is refused as non-terminating.
@@ -137,11 +193,15 @@ pub const DEFAULT_MAX_DECISIONS: u64 = 100_000;
 /// only as meaningful as the reply it was measured against, so the reply belongs
 /// in the vocabulary rather than in a caller's argument.
 ///
-/// **The fourth menu slot — one adversarial policy declared as a RULE OVER
-/// STATE — is deliberately absent in v1.** It is declared at family freeze
-/// (Phase C); shipping a placeholder would invite a hand-picked adversary chosen
-/// after seeing the roots it is applied to, which is the shape of a fixture that
-/// proves whatever its author wanted.
+/// **The fourth menu slot — [`RaceRusher`](Self::RaceRusher), one adversarial
+/// policy declared as a RULE OVER STATE — landed at Phase C's T3** (design
+/// `docs/plans/2026-08-18-phase-c-families-design.md` §2). It was deliberately
+/// absent in v1 for a reason that its declaration had to answer rather than
+/// outgrow: shipping a placeholder would have invited a hand-picked adversary
+/// chosen after seeing the roots it is applied to, which is the shape of a
+/// fixture that proves whatever its author wanted. What it ships as instead is a
+/// STATED RULE over state — the rule is in this file, in full, and it was
+/// written before any family root was drawn.
 ///
 /// **The two `*AtFinal` arms are PROVISIONAL, and the word is load-bearing** —
 /// the same obligation `yokohama-cli`'s `bot::PROVISIONAL_DEFAULT_BOT` carries,
@@ -165,15 +225,58 @@ pub enum ReplyPolicy {
     /// Lookahead-v1 at its shipped knobs, UNCAPPED — the provisional production
     /// contestant.
     LookaheadAtFinal,
+    /// **The declared adversarial arm** (Phase C, design §2): a positional
+    /// OPPORTUNIST that takes a race step when one is in front of it and plays
+    /// [`GreedyAtFinal`](Self::GreedyAtFinal) otherwise. See
+    /// [`RaceRusherAgent`] for the rule in full — it is a HARNESS INSTRUMENT and
+    /// has no [`Contestant`], which is why [`contestant`](Self::contestant) is
+    /// partial. Its FALLBACK is provisional in exactly the sense the two
+    /// `*AtFinal` arms are, and for the same reason: it IS
+    /// [`GreedyAtFinal`](Self::GreedyAtFinal)'s binding
+    /// ([`RACE_RUSHER_FALLBACK`]), so D1's identity freeze moves the two
+    /// together or the pin fails.
+    RaceRusher,
+}
+
+/// Why a [`ReplyPolicy`] arm names no [`Contestant`].
+///
+/// Typed rather than a bare `Option`, on [`UnsupportedReason`]'s grounds: the
+/// absence is a FACT ABOUT THE ARM that a report should be able to print, and a
+/// `None` says only that a lookup failed. It is also what keeps
+/// [`SeatSpec::build`]'s two arms exhaustive — a second harness rule lands here
+/// as a compile error to be answered rather than as a `_` that silently
+/// materializes nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotAContestant {
+    /// [`ReplyPolicy::RaceRusher`] is a RULE OVER STATE built out of the shipped
+    /// pieces (a belief sample, the factored family surface, an apply-probe, and
+    /// a greedy fallback) — never an entrant. It must never become a
+    /// [`Contestant`]: the grammar's names are things a CELL may pit against
+    /// each other and a gate may quote, and this one exists only to be a hostile
+    /// REPLY inside an adjudication.
+    RaceRusher,
+}
+
+impl NotAContestant {
+    /// The sentence a report prints.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::RaceRusher => {
+                "a harness reply rule over state, deliberately not a contestant"
+            }
+        }
+    }
 }
 
 impl ReplyPolicy {
-    /// The contestant this arm names. THE single spelling of the menu.
-    pub fn contestant(self) -> Contestant {
+    /// The contestant this arm names. THE single spelling of the menu — PARTIAL
+    /// since Phase C's T3, because [`RaceRusher`](Self::RaceRusher) names none.
+    pub fn contestant(self) -> Result<Contestant, NotAContestant> {
         match self {
-            Self::FamilyWeighted => Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT),
-            Self::GreedyAtFinal => Contestant::GREEDY_V1_DEFAULT,
-            Self::LookaheadAtFinal => Contestant::LOOKAHEAD_V1_DEFAULT,
+            Self::FamilyWeighted => Ok(Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT)),
+            Self::GreedyAtFinal => Ok(Contestant::GREEDY_V1_DEFAULT),
+            Self::LookaheadAtFinal => Ok(Contestant::LOOKAHEAD_V1_DEFAULT),
+            Self::RaceRusher => Err(NotAContestant::RaceRusher),
         }
     }
 
@@ -183,6 +286,7 @@ impl ReplyPolicy {
             Self::FamilyWeighted => "family-weighted",
             Self::GreedyAtFinal => "greedy-at-final",
             Self::LookaheadAtFinal => "lookahead-at-final",
+            Self::RaceRusher => "race-rusher",
         }
     }
 }
@@ -201,16 +305,65 @@ pub enum SeatSpec {
 }
 
 impl SeatSpec {
-    /// The contestant this seat plays.
+    /// The contestant this seat plays, or the typed reason it names none.
     ///
-    /// THE single materialization path — [`drive_to_terminal`] builds every seat
-    /// through this one call — which is what makes the sugar-equivalence of
-    /// `Reply(r)` and `Contestant(r.contestant())` hold BY CONSTRUCTION rather
-    /// than by a test agreeing with a second construction site.
-    pub fn contestant(self) -> Contestant {
+    /// Sugar-equivalence still holds BY CONSTRUCTION for every arm that HAS a
+    /// contestant: `Reply(r)` and `Contestant(r.contestant()?)` are one seat
+    /// written two ways, because this is the only place the mapping lives.
+    pub fn contestant(self) -> Result<Contestant, NotAContestant> {
         match self {
-            Self::Contestant(c) => c,
+            Self::Contestant(c) => Ok(c),
             Self::Reply(r) => r.contestant(),
+        }
+    }
+
+    /// What actually plays, as provenance/report text.
+    ///
+    /// [`Contestant::echo`] for every seat that names one, and
+    /// [`race_rusher_echo`]'s composed sentence for the one that does not — so
+    /// a descriptor's `echo` field is always a resolved identity and never a
+    /// menu name (the rule [`requested_label`](Self::requested_label) states).
+    pub fn echo(self) -> String {
+        match self.contestant() {
+            Ok(c) => c.echo(),
+            Err(NotAContestant::RaceRusher) => race_rusher_echo(),
+        }
+    }
+
+    /// Build the agent this seat plays, plus its explanation read-out if it has
+    /// one — **THE single materialization site, now with TWO ARMS**.
+    ///
+    /// **The single-site argument survives the second arm, and restating it is
+    /// the point** (design §2's SHOULD-7). What made one site valuable was never
+    /// that it contained one `match` — it is that NO CALLER decides what a seat
+    /// is: [`drive_to_terminal`], [`drive_turn`] and [`adjudicate_root`] all
+    /// hand a [`SeatSpec`] here and receive an agent, so a seat cannot be
+    /// materialized one way in a whole-game run and another way in a turn. The
+    /// two arms are the two KINDS of thing a seat can be — an entrant, or a
+    /// harness rule — and they are exhaustive over [`NotAContestant`], so a
+    /// third kind is a compile error here rather than a silent omission at one
+    /// of the three drivers.
+    ///
+    /// **The race-rusher arm hands back NO [`ExplainHandle`], deliberately.** It
+    /// explains the decisions it DELEGATES (its inner greedy does) and not the
+    /// ones it takes itself, so a handle here would report an `explained` count
+    /// a reader would compare against the seat's applied moves and read as a
+    /// defect. `None` is the closest true statement at this granularity — a seat
+    /// that carries no explanation account — and it is the same posture a rung
+    /// gets for the same kind of reason (see [`SeatCounters::NONE`]).
+    pub fn build(
+        self,
+        rules: &Rules,
+        agent_seed: u64,
+    ) -> (Box<dyn ArenaAgent>, Option<ExplainHandle>) {
+        match self.contestant() {
+            // ARM 1 — an entrant: the arena's own constructor, untouched.
+            Ok(contestant) => contestant.build(rules, agent_seed),
+            // ARM 2 — a harness rule: built here, because there is no
+            // `Contestant` to route it through and there must never be one.
+            Err(NotAContestant::RaceRusher) => {
+                (Box::new(RaceRusherAgent::new(rules, agent_seed)), None)
+            }
         }
     }
 
@@ -233,15 +386,422 @@ impl SeatSpec {
 }
 
 // ---------------------------------------------------------------------------
+// The RACE-RUSHER reply (Phase C, T3)
+// ---------------------------------------------------------------------------
+
+/// Domain salt for the RACE-RUSHER's PROBE WORLD.
+///
+/// **The derivation, stated where the constant is**:
+/// `race_probe_seed(agent_seed, decision_ordinal) = mix(SALT_DRIVEN_RACE_PROBE,
+/// [agent_seed, decision_ordinal])`, where `agent_seed` is the seat's own play
+/// stream (from `agent_stream_seed`, exactly as every other seat's) and
+/// `decision_ordinal` counts this seat's `choose` calls from 0.
+///
+/// **Why it is a DERIVATION and not a draw** — the property the whole T3
+/// fallback claim rests on: a probe that drew its seed from the inner greedy's
+/// `ChaCha8Rng` would advance that stream, and the no-race fallback would then
+/// differ from a bare greedy seat at the same seed by however many probes
+/// happened to run. Deriving the probe world from `(agent_seed, ordinal)`
+/// instead means the classification consumes ZERO randomness from the inner
+/// agent, so "a no-race decision is byte-identical to greedy@final" holds BY
+/// CONSTRUCTION rather than by a test noticing. It is still a function of the
+/// seat's own stream seed, so two seats never probe the same worlds, and it is
+/// injective in the ordinal, so one seat's successive decisions do not either.
+///
+/// **Serial provenance (the A3E1_D21E family)**: this family's HOME is
+/// `arena::SALT_DRIVEN_REPLICATION` (serial 0006), whose own doc records 0004
+/// and 0005 as taken elsewhere. 0007 is the next free one. It is declared HERE
+/// rather than there because Phase C's T3 moves `driven.rs` alone and this
+/// constant has exactly one consumer in this file — the cross-pointer above is
+/// what keeps the family's serial ledger readable from either end, and
+/// `the_race_probe_salt_is_its_own_serial` pins that the two do not collide.
+const SALT_DRIVEN_RACE_PROBE: u64 = 0xA3E1_D21E_0000_0007;
+
+/// The probe world's sampler seed for one decision — see
+/// [`SALT_DRIVEN_RACE_PROBE`] for the derivation and what it buys.
+fn race_probe_seed(agent_seed: u64, decision_ordinal: u64) -> u64 {
+    mix(SALT_DRIVEN_RACE_PROBE, &[agent_seed, decision_ordinal])
+}
+
+/// The contestant [`ReplyPolicy::RaceRusher`] DELEGATES to when no candidate
+/// races — greedy@final, i.e. [`ReplyPolicy::GreedyAtFinal`]'s own binding.
+///
+/// Spelled from the same const that arm is spelled from
+/// ([`Contestant::GREEDY_V1_DEFAULT`]'s definition), and PINNED equal to both
+/// that const and to `GreedyAtFinal.contestant()`, so D1's identity freeze
+/// re-points the fallback with the menu arm it is named after rather than
+/// leaving this instrument on a stale binding.
+///
+/// **PROVISIONAL until D1, exactly as the other `*AtFinal` bindings are** — the
+/// echo a report quotes carries the RESOLVED fallback (`fallback=<greedy
+/// echo>`), never the word "greedy@final", for that reason.
+const RACE_RUSHER_FALLBACK: Contestant = Contestant::GreedyV1 { m: DEFAULT_RETREAT_SAMPLES };
+
+/// The race-rusher's stable controller name, in the repo's `name-vN` shape
+/// (`greedy-v1`'s convention: the DESIGN version rides the name, the
+/// IMPLEMENTATION version rides [`RACE_RUSHER_IMPL_VERSION`]).
+pub const RACE_RUSHER_CONTROLLER: &str = "race-rusher-v1";
+
+/// Implementation version under [`RACE_RUSHER_CONTROLLER`]. Bump it in the same
+/// commit as ANY change to the decision rule, the probe scope, or the probe
+/// world's derivation — the same obligation `GREEDY_IMPL_VERSION` carries.
+pub const RACE_RUSHER_IMPL_VERSION: u32 = 1;
+
+/// `reply:race-rusher-v1{fallback=<the resolved greedy echo>}` — what a
+/// race-rusher seat ECHOES.
+///
+/// The `reply:` prefix is deliberate and is not a mistake about what an echo
+/// field holds: every other echo names a contestant, and this one must say out
+/// loud that it names none. The fallback is INTERPOLATED rather than described,
+/// so a report carries the greedy identity (version, knobs, weight-table digest)
+/// that the seat actually delegated to.
+fn race_rusher_echo() -> String {
+    format!("reply:{RACE_RUSHER_CONTROLLER}{{fallback={}}}", RACE_RUSHER_FALLBACK.echo())
+}
+
+/// What a probed candidate RACES, highest priority FIRST.
+///
+/// **Declaration order IS the priority order** and the derived `Ord` is what
+/// enforces it: `Claim < Church < Customs`, so the best class is the MINIMUM.
+/// Writing the priority as a type rather than as an integer means the ordering
+/// cannot drift from the rule the design states (design §2: claims, then the
+/// church race, then the customs race).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum RaceClass {
+    /// The move IS a claim (`Move::FulfillAchievement`) — the one class read
+    /// off the move's SHAPE rather than off an apply-probe, because a claim is
+    /// not a state change this classifier would have to look for: it is the
+    /// move.
+    Claim,
+    /// The probed clone advances the mover on the CHURCH track — occupancy
+    /// grew, or a church space-placement choice is queued for the mover.
+    Church,
+    /// The same on the CUSTOMS track.
+    Customs,
+}
+
+/// Whether the race-rusher PROBES this family (design §2's probe scope, with the
+/// real family-tag names).
+///
+/// Exhaustive with no `_` arm: a new [`MoveFamily`] must be ANSWERED here rather
+/// than silently join (or silently miss) the probe set.
+///
+/// The three excluded movement/placement families are excluded because the rule
+/// is a POSITIONAL one — the race-rusher races from where it stands, never by
+/// walking somewhere first — and because those are precisely the families whose
+/// size makes an apply-probe per candidate a six-figure cost (the retreat
+/// product alone reaches 442,368). [`MoveFamily::FivePower`] and
+/// [`MoveFamily::Building`] are excluded BY DECISION rather than by cost:
+/// neither advances a track and neither claims, so probing them could only ever
+/// return `None`.
+fn is_probed_family(family: &MoveFamily) -> bool {
+    match family {
+        MoveFamily::AdditionalAction | MoveFamily::AreaAction | MoveFamily::ChoiceResolution => {
+            true
+        }
+        MoveFamily::Placement | MoveFamily::MovementRoutes | MoveFamily::MovementRetreat { .. } => {
+            false
+        }
+        MoveFamily::FivePower | MoveFamily::Building => false,
+    }
+}
+
+/// Classify ONE candidate by apply-probe on `world`.
+///
+/// **QUEUE-AWARE** through [`mover_reachable_steps`], which is the single
+/// authority for "did this move advance the mover on a track" and is shared
+/// verbatim with [`RootPredicate::ExclusiveRaceOneStep`]'s mover half: a Church
+/// or Customs action with two or more eligible spaces places NOTHING at apply
+/// time (it queues a `PendingChoice::ChurchSpace`/`CustomsSpace`), so an
+/// occupancy-only classifier would be blind to exactly the race-INITIATING moves
+/// this policy exists to model. Sharing the helper rather than restating it is
+/// what keeps the predicate and the reply from disagreeing about what a race
+/// step is.
+///
+/// **Class 1 is read off the MOVE and costs no probe**, deliberately: a claim is
+/// not a state change this classifier has to go looking for, it is the move
+/// itself — and checking it first is what keeps the common case (a claim in the
+/// additional-action list) from paying for a clone.
+///
+/// A move that reaches BOTH tracks classifies CHURCH, on the declared priority.
+/// It is not a hypothetical: a track action taken while a track-space choice is
+/// already queued reaches steps on both, and
+/// `the_race_rule_takes_claim_then_church_then_customs` asserts exactly that
+/// shape so the tie-break is exercised rather than merely written down.
+fn race_class(world: &GameState, mv: &Move, rules: &Rules) -> Option<RaceClass> {
+    if matches!(mv, Move::FulfillAchievement { .. }) {
+        return Some(RaceClass::Claim);
+    }
+    let steps = mover_reachable_steps(world, std::slice::from_ref(mv), rules);
+    if steps.iter().any(|s| matches!(s, RaceStep::Church(_))) {
+        return Some(RaceClass::Church);
+    }
+    if steps.iter().any(|s| matches!(s, RaceStep::Customs(_))) {
+        return Some(RaceClass::Customs);
+    }
+    None
+}
+
+/// The first candidate of the HIGHEST nonempty class, in the order `candidates`
+/// are given.
+///
+/// Deterministic and stated: the caller supplies the probed families' moves in
+/// the engine's own legal-list order (see [`RaceRusherAgent::choose`]), so "the
+/// first of the best class" is a fact about the engine's enumeration and not
+/// about a sort this function performs. A [`RaceClass::Claim`] short-circuits —
+/// nothing outranks it, so the scan stops rather than probing the rest.
+fn race_pick(world: &GameState, rules: &Rules, candidates: &[Move]) -> Option<(RaceClass, Move)> {
+    let mut best: Option<(RaceClass, &Move)> = None;
+    for mv in candidates {
+        let Some(class) = race_class(world, mv, rules) else { continue };
+        // STRICTLY better replaces, so the FIRST candidate of each class is the
+        // one that survives its own class — "first of the best class", not "last
+        // of it".
+        if best.is_none_or(|(held, _)| class < held) {
+            best = Some((class, mv));
+        }
+        if class == RaceClass::Claim {
+            break;
+        }
+    }
+    best.map(|(class, mv)| (class, mv.clone()))
+}
+
+/// The declared adversarial REPLY: take a race step when one is in front of it,
+/// and play greedy@final otherwise.
+///
+/// **The rule, in full** (design §2, and this is the whole of it):
+/// 1. sample a PROBE WORLD from the seat's own view, at
+///    [`race_probe_seed`]`(agent_seed, decision_ordinal)` — the honest chain,
+///    and a stream that is NOT the inner greedy's;
+/// 2. collect the candidates of the probed families only —
+///    [`is_probed_family`], i.e. additional actions, area actions and choice
+///    resolutions;
+/// 3. classify each by apply-probe on that world ([`race_class`]);
+/// 4. play the first candidate of the highest nonempty class ([`race_pick`]);
+/// 5. otherwise DELEGATE the whole decision to the inner greedy.
+///
+/// **It is a positional OPPORTUNIST and not a planner**, and the freeze document
+/// says so in its robustness caveat: movement is never probed, so it races only
+/// from where it already stands. Read as "the hostile arm of the reply menu", it
+/// is a threat MODEL — a reply that competes for the tracks — and never a claim
+/// about how well the tracks can be raced.
+///
+/// **It OWNS its fallback for the seat's lifetime.** One [`GreedyAgent`],
+/// constructed once at the seat's own `agent_seed`, whose stream advances
+/// exactly as a bare greedy seat's would — because the probes above draw from a
+/// derived stream and never from it. That is what makes the no-race fallback
+/// byte-identical to greedy@final at the same seed BY CONSTRUCTION, and
+/// `the_no_race_fallback_is_byte_identical_to_a_bare_greedy_seat` is the pin.
+///
+/// **Never a [`Contestant`], never gate-eligible**: it is an instrument for
+/// asking what a position looks like against a hostile reply, and an instrument
+/// that could enter a cell is one whose numbers someone will eventually quote.
+pub(crate) struct RaceRusherAgent {
+    /// The MIRRORED greedy@final agent — see [`Self::new`] for the mirror and
+    /// what pins it.
+    inner: GreedyAgent,
+    /// The seat's own play stream seed, kept because the probe derivation and
+    /// the provenance both need it and `GreedyAgent` will not hand its own back.
+    agent_seed: u64,
+    /// How many decisions this seat has been asked for. The probe world's second
+    /// derivation component; incremented on EVERY `choose`, probed or not, so
+    /// the ordinal means "this seat's n-th decision" rather than "this seat's
+    /// n-th probe".
+    decisions: u64,
+    /// Candidates COLLECTED for classification across this seat's life — the
+    /// probe-scope instrument. It counts what the scope rule admitted rather
+    /// than what [`race_class`] was actually called on, because the two differ
+    /// only by [`race_pick`]'s claim short-circuit and it is the SCOPE this
+    /// counter exists to pin. Test-only: it makes "a movement decision probes
+    /// NOTHING" an assertion rather than an argument, and a harness instrument
+    /// does not need it in release.
+    #[cfg(test)]
+    probed_candidates: u64,
+    /// Decisions this seat resolved by taking a race candidate rather than by
+    /// delegating. Test-only, for the same reason.
+    #[cfg(test)]
+    race_picks: u64,
+    /// The probe seed this seat's LAST `choose` actually derived — the value
+    /// handed to [`BeliefSampler::from_view`], recorded where it is built rather
+    /// than recomputed by a cell.
+    ///
+    /// [`race_probe_seed`] has its own pin, but a pin on the FUNCTION says
+    /// nothing about the argument the agent passes it: freezing `ordinal` at 0
+    /// — one seat, ONE probe world for its whole life — leaves every other cell
+    /// in this module green. This is the field that makes the live ordinal
+    /// observable, and `successive_decisions_probe_at_successive_ordinals` is
+    /// what fails when it stops advancing. Test-only, like the two counters
+    /// above.
+    #[cfg(test)]
+    last_probe_seed: Option<u64>,
+}
+
+impl RaceRusherAgent {
+    /// Build the seat, including its own fallback.
+    ///
+    /// **The inner agent MIRRORS [`Contestant::build`]'s greedy arm** — the same
+    /// constructor, the same explicitly-named frozen [`WeightTable::V2`] (L12: a
+    /// weight is part of what a controller's name MEANS, so it is never a
+    /// parameter here), the same knob, at the SAME `agent_seed` the seat plays
+    /// on. It is a mirror rather than a `build` call for [`mirror_build`]'s own
+    /// reason: `build` erases the agent behind `Box<dyn ArenaAgent>`, and this
+    /// type owns a concrete `GreedyAgent` so the fallback's own surfaces stay
+    /// reachable. The obligation that comes with mirroring is discharged the
+    /// same way: `the_inner_greedy_is_contestant_builds_greedy_arm` pins that a
+    /// delegated decision equals what `Contestant::build`'s greedy agent plays
+    /// at the same seed on the same view.
+    pub(crate) fn new(rules: &Rules, agent_seed: u64) -> Self {
+        Self {
+            inner: GreedyAgent::with_weights(
+                rules,
+                WeightTable::V2,
+                DEFAULT_RETREAT_SAMPLES,
+                agent_seed,
+            ),
+            agent_seed,
+            decisions: 0,
+            #[cfg(test)]
+            probed_candidates: 0,
+            #[cfg(test)]
+            race_picks: 0,
+            #[cfg(test)]
+            last_probe_seed: None,
+        }
+    }
+}
+
+impl ArenaAgent for RaceRusherAgent {
+    /// Delegated to the fallback, unconditionally.
+    ///
+    /// The race rule is about PLAY and says nothing about a Keep, so inventing a
+    /// second Keep rule here would make a cell seating this reply
+    /// setup-different from one seating greedy@final for no stated reason.
+    /// Greedy's Keep draws no stream at all, so the delegation also cannot
+    /// disturb the fallback identity.
+    fn choose_starting_order(&mut self, seat: PlayerId, deal: &[OrderCardId; 2]) -> u8 {
+        self.inner.choose_starting_order(seat, deal)
+    }
+
+    /// The rule, in the order [`RaceRusherAgent`]'s doc states it.
+    ///
+    /// **The ordinal advances on EVERY decision, probed or not.** It names "this
+    /// seat's n-th decision", so a turn whose first decision is a movement step
+    /// and whose second is an area action probes the second at ordinal 1 — which
+    /// keeps the probe stream a function of the seat's position in the game
+    /// rather than of how often the scope rule happened to fire.
+    ///
+    /// **A probe-sampler refusal is a HARD error and never a quiet delegation.**
+    /// The sampler refuses a VIEW, not a seed, so the inner greedy would refuse
+    /// the same view moments later; swallowing it here would turn a typed
+    /// honest-chain failure into a silently different policy. It names the probe
+    /// so the two refusals stay distinguishable in a report.
+    fn choose(&mut self, view: &PlayerView, rules: &Rules) -> Result<DecisionReport, String> {
+        let ordinal = self.decisions;
+        self.decisions += 1;
+
+        // The PROBE WORLD — the agent's own, from its own view, on a stream that
+        // is not the inner greedy's (see `SALT_DRIVEN_RACE_PROBE`).
+        let probe_seed = race_probe_seed(self.agent_seed, ordinal);
+        #[cfg(test)]
+        {
+            self.last_probe_seed = Some(probe_seed);
+        }
+        let mut sampler = BeliefSampler::from_view(view, rules, probe_seed).map_err(|e| {
+            format!(
+                "{RACE_RUSHER_CONTROLLER}'s probe sampler refused seat {}'s view: {e}",
+                view.viewer.0,
+            )
+        })?;
+        let world = sampler.sample();
+
+        // ONE handle for the whole decision (L10): the family tags, the probed
+        // candidates and the volume observation all come off it, so a raced
+        // decision pays for one enumeration exactly as a rung's does.
+        let handle = DecisionHandle::new(&world, rules);
+        // The probed families in `families()`' own order, and within each the
+        // order `iter_family` yields — which IS the engine's legal-list order
+        // restricted to those families (`tests/action_source_equivalence.rs`
+        // pins the ordered union against `get_legal_moves`). So "the first
+        // candidate of the best class" is a fact about the engine's enumeration
+        // and not about any ordering this agent imposes.
+        let candidates: Vec<Move> = handle
+            .families()
+            .iter()
+            .filter(|family| is_probed_family(family))
+            .flat_map(|family| handle.iter(family))
+            .collect();
+        #[cfg(test)]
+        {
+            self.probed_candidates += candidates.len() as u64;
+        }
+
+        if let Some((_class, mv)) = race_pick(&world, rules, &candidates) {
+            // Unreachable in the same sense `root_table`'s accounting refusals
+            // are: a candidate was served, so this decision point HAS families
+            // and `decision_volume` answers. It is an error rather than a
+            // fallback because a report that silently degraded to greedy here
+            // would be a report about a different policy.
+            let volume = decision_volume(&handle).ok_or_else(|| {
+                format!(
+                    "{RACE_RUSHER_CONTROLLER} raced at a decision point reporting no volume, at \
+                     {:?} for seat {}",
+                    handle.turn_phase(),
+                    view.viewer.0,
+                )
+            })?;
+            #[cfg(test)]
+            {
+                self.race_picks += 1;
+            }
+            return Ok(DecisionReport { mv, volume });
+        }
+
+        // NOTHING RACES: the whole decision goes to the fallback, whose stream
+        // the probes above did not touch.
+        self.inner.choose(view, rules)
+    }
+
+    /// **The fallback's identity rides the params; the fallback's NAME rides the
+    /// echo.** `ControllerProvenance::params` is `i64`-valued, so a delegate's
+    /// name cannot travel in it — what travels instead is the delegate's whole
+    /// knob map VERBATIM (its `m`, its placement cap, its evaluator version, its
+    /// weight-table digest) plus `fallback_version`, all read OFF the inner
+    /// agent rather than re-derived, and the composed [`race_rusher_echo`] on the
+    /// seat descriptor beside it carries the name.
+    fn controller(&self) -> ControllerProvenance {
+        let fallback = self.inner.controller();
+        let mut params = fallback.params;
+        params.insert("fallback_version".to_string(), i64::from(fallback.version));
+        ControllerProvenance {
+            name: RACE_RUSHER_CONTROLLER.to_string(),
+            version: RACE_RUSHER_IMPL_VERSION,
+            params,
+            agent_seed: Some(self.agent_seed),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Roots: where a rooted run starts, and what it says about itself (T3)
 // ---------------------------------------------------------------------------
 
 /// WHICH POSITIONS a [`RootSource::Generated`] scan looks for.
 ///
-/// v1 ships the TYPE plus exactly ONE predicate (design §3), and the restraint
-/// is deliberate: a menu of predicates invented before a consumer asks for them
-/// is a menu of fixtures chosen after seeing what each one selects. Layer 2 adds
-/// variants at family freeze, with the family that needs them.
+/// v1 shipped the TYPE plus exactly ONE predicate (design §3), and the restraint
+/// was deliberate: a menu of predicates invented before a consumer asks for them
+/// is a menu of fixtures chosen after seeing what each one selects. **Phase C's
+/// layer 2 adds five, each with the family that asks for it** (design
+/// `docs/plans/2026-08-18-phase-c-families-design.md` §1): one nonterminal
+/// CONTROL for family 1, a positive/control pair for family 2, a pilot probe for
+/// family 3, and family 4's positive.
+///
+/// **PREDICATES SELECT ON TRUTH** (design §2). Every arm below reads the whole
+/// `GameState` — hidden decks included — because a generator is not a player: it
+/// is the thing that CHOOSES the position, and choosing it from a seat's view
+/// would make the population a function of what one seat happened to know. The
+/// SUBJECT at the resulting root still plays its own honest chain, which is the
+/// property that matters and the one [`drive_to_terminal`] enforces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RootPredicate {
     /// The final round is UNDER WAY and a decision still faces a mover:
@@ -259,42 +819,629 @@ pub enum RootPredicate {
     /// adjudicate a candidate at, and a scan that returned one would hand the
     /// adjudicator a root with no decision in it.
     FinalRoundAlreadyTriggered,
+    /// FAMILY 1's NONTERMINAL CONTROL — the trigger has fired but the final
+    /// round has NOT begun: `end_game_triggered && !final_round &&
+    /// !is_game_over`.
+    ///
+    /// The amendment's "nonterminal control earlier in the round" (design §1),
+    /// and the exact COMPLEMENT of [`Self::FinalRoundAlreadyTriggered`] on the
+    /// `final_round` conjunct — which is the point: the two predicates partition
+    /// the triggered, non-terminal positions, so a family-1 result that holds on
+    /// one and not the other is a statement about the final round rather than
+    /// about the trigger. The session's g1:228 shape.
+    TriggerRoundNotFinal,
+    /// FAMILY 2's POSITIVE — the mover can END THE GAME this move and is AHEAD
+    /// in truth: `!end_game_triggered && !firing_moves(..).is_empty() &&
+    /// true_margin_now(..) >= TRUE_MARGIN_BAND && width_ok`.
+    ///
+    /// Canon 15's inverted brake, made a selection rule: the family supplies
+    /// true-arithmetic inputs (the F9 lesson) rather than testing whether the
+    /// subject can reconstruct them. [`TRUE_MARGIN_BAND`] carries the +10
+    /// calibration and its reasoning.
+    EndFirableAheadInTruth,
+    /// FAMILY 2's CONTROL — the same shape with the mover BEHIND in truth
+    /// (`true_margin_now(..) <= -TRUE_MARGIN_BAND`).
+    ///
+    /// Canon 15's own sentence: ending the game when you know you are going to
+    /// lose is a bad idea, so the behind mover should hand off WITHOUT firing.
+    EndFirableBehindInTruth,
+    /// FAMILY 3's PILOT PROBE — an opponent is ONE COMPLETED ACTION from a
+    /// contested track step and the mover holds a move that takes it.
+    ///
+    /// The exact arithmetic is [`opponent_race_steps`] (the opponent side) and
+    /// [`mover_reachable_steps`] (the mover side); the predicate is their
+    /// INTERSECTION plus `width_ok`. Read those two doc comments before quoting
+    /// this predicate's supply — the design accepts that this arm may read
+    /// `Exhausted` at the scan bound (family 3's honest source is T5's builder;
+    /// this is the generated-arm probe whose supply is MEASURED and recorded),
+    /// so it is written to favour PRECISION over recall throughout.
+    ExclusiveRaceOneStep,
+    /// FAMILY 4's POSITIVE — a legal `Move::FulfillAchievement` exists (plus
+    /// `width_ok`).
+    ///
+    /// F8's live-green shape. No proximity clause: the leg-completable-within-
+    /// the-turn corner is a BUILDER block (design §1 family 4), because a claim
+    /// two decisions away is not a claim in the legal list and a predicate that
+    /// tried to see it would be searching, not selecting.
+    AchievementClaimAvailable,
 }
 
 impl RootPredicate {
+    /// Every variant, for callers that enumerate the vocabulary (the runner's
+    /// `gen:` grammar names this set in its refusal, and the tests sweep it).
+    ///
+    /// HAND-MAINTAINED: adding a variant is a compile error in [`Self::as_str`],
+    /// [`Self::holds`] and [`Self::config`] — all three are exhaustive matches —
+    /// but NOT here, so a new variant must be added to this array by hand. The
+    /// name-distinctness pin is what catches a copy-paste that forgot to.
+    pub const ALL: [Self; 6] = [
+        Self::FinalRoundAlreadyTriggered,
+        Self::TriggerRoundNotFinal,
+        Self::EndFirableAheadInTruth,
+        Self::EndFirableBehindInTruth,
+        Self::ExclusiveRaceOneStep,
+        Self::AchievementClaimAvailable,
+    ];
+
     /// The stable name, for descriptors and error text.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::FinalRoundAlreadyTriggered => "final-round-already-triggered",
+            Self::TriggerRoundNotFinal => "trigger-round-not-final",
+            Self::EndFirableAheadInTruth => "end-firable-ahead-in-truth",
+            Self::EndFirableBehindInTruth => "end-firable-behind-in-truth",
+            Self::ExclusiveRaceOneStep => "exclusive-race-one-step",
+            Self::AchievementClaimAvailable => "achievement-claim-available",
         }
     }
 
     /// Whether `state` is one of the positions this predicate names.
-    pub fn holds(self, state: &GameState) -> bool {
+    ///
+    /// **The signature carries `&Rules` since Phase C** and the shipped v1
+    /// variants ignore it: the layer-2 arms probe the LEGAL LIST (a firing move,
+    /// a claim, a step the mover can take), which no state can answer on its
+    /// own. The two rules-free arms are pinned byte-identical across two
+    /// different `Rules` values, so "ignores it" is a property rather than a
+    /// reading of the code.
+    ///
+    /// **Cheap conjuncts come first, deliberately.** The scan evaluates this at
+    /// EVERY position of every generated game, so each arm is ordered so that
+    /// the flag reads and the short-circuited [`firing_moves`] precondition
+    /// reject the overwhelming majority of positions before any enumeration or
+    /// apply-probe runs.
+    pub fn holds(self, state: &GameState, rules: &Rules) -> bool {
         match self {
             Self::FinalRoundAlreadyTriggered => {
                 state.end_game_triggered && state.final_round && !is_game_over(state)
             }
+            Self::TriggerRoundNotFinal => {
+                state.end_game_triggered && !state.final_round && !is_game_over(state)
+            }
+            Self::EndFirableAheadInTruth => {
+                !state.end_game_triggered
+                    && !firing_moves(state, rules).is_empty()
+                    && true_margin_now(state, rules) >= TRUE_MARGIN_BAND
+                    && width_ok(state, rules)
+            }
+            Self::EndFirableBehindInTruth => {
+                !state.end_game_triggered
+                    && !firing_moves(state, rules).is_empty()
+                    && true_margin_now(state, rules) <= -TRUE_MARGIN_BAND
+                    && width_ok(state, rules)
+            }
+            Self::ExclusiveRaceOneStep => {
+                if is_game_over(state) {
+                    return false;
+                }
+                let contested = opponent_race_steps(state);
+                if contested.is_empty() {
+                    return false;
+                }
+                let legal = get_legal_moves(state, rules);
+                if !width_ok_len(legal.len()) {
+                    return false;
+                }
+                let reachable = mover_reachable_steps(state, &legal, rules);
+                contested.iter().any(|step| reachable.contains(step))
+            }
+            Self::AchievementClaimAvailable => {
+                let legal = get_legal_moves(state, rules);
+                width_ok_len(legal.len())
+                    && legal.iter().any(|mv| matches!(mv, Move::FulfillAchievement { .. }))
+            }
+        }
+    }
+
+    /// Which generating configuration a scan for this predicate runs under.
+    ///
+    /// The family-1 pair scans the CHEAP rung ecology (a final-round position is
+    /// a fact about the rules' own clock, and a rung reaches it for the price of
+    /// a game); the four layer-2 predicates scan the LOOKAHEAD ecology, which
+    /// generates the SUBJECT'S OWN reachable positions — the right population
+    /// for an on-policy checkpoint, and the reason the ecology is recorded on
+    /// every descriptor rather than assumed.
+    pub fn ecology(self) -> GeneratingEcology {
+        self.config().ecology
+    }
+
+    /// [`Self::ecology`] plus the live parts a scan needs — see
+    /// [`GeneratingConfig`], which exists so the recorded seat ECHOES cannot
+    /// drift from the contestants the scan actually seats.
+    fn config(self) -> GeneratingConfig {
+        match self {
+            Self::FinalRoundAlreadyTriggered | Self::TriggerRoundNotFinal => v1_config(),
+            Self::EndFirableAheadInTruth
+            | Self::EndFirableBehindInTruth
+            | Self::ExclusiveRaceOneStep
+            | Self::AchievementClaimAvailable => v2_lookahead_config(),
         }
     }
 }
 
+// ---------------------------------------------------------------------------
+// Phase C layer 2: the shared conjuncts (design §1 families 1–2, §3, §4)
+// ---------------------------------------------------------------------------
+
+/// The design §4 CANDIDATE-WIDTH bound: the widest position a layer-2 family
+/// will draw as a root.
+///
+/// A RECORDED GENERATOR CONSTRAINT, never a post-hoc filter — it is a CONJUNCT
+/// of the predicates themselves, so a 139-wide placement position was never in
+/// the ordinal space rather than dropped after being looked at. The reason is
+/// compute: families 2–4 sit mid/late game where one adjudication playout is
+/// about a half game, and the admission adjudication forces EVERY root
+/// candidate under the whole reply menu. The families' questions do not need a
+/// wide placement root.
+pub const MAX_ROOT_CANDIDATES: usize = 60;
+
+/// The design §1 family-2 band: how far AHEAD (or BEHIND) in truth a mover must
+/// be for the end-trigger question to be the one canon 15 asks.
+///
+/// +10 VP ≈ one majority bonus ≈ "one good turn of value" — C-A's own
+/// calibration, adopted so the family's roots are positions where the answer is
+/// not a coin flip. It is a SELECTION parameter and nothing evaluates against
+/// it: terminal-margin awareness stays off the evaluator (the STOP fence).
+pub const TRUE_MARGIN_BAND: i64 = 10;
+
+/// Whether this position is narrow enough to be a layer-2 root.
+fn width_ok(state: &GameState, rules: &Rules) -> bool {
+    width_ok_len(get_legal_moves(state, rules).len())
+}
+
+/// [`width_ok`]'s arithmetic, over a legal-list length the caller already holds.
+///
+/// The bound is spelled ONCE, here: two of the layer-2 arms need the legal list
+/// anyway (they probe it), so they call this rather than paying a second
+/// enumeration, and one spelling is what stops the two paths drifting to
+/// different widths.
+const fn width_ok_len(len: usize) -> bool {
+    len <= MAX_ROOT_CANDIDATES
+}
+
+/// The mover's TRUE margin at this position: its final-score total minus the
+/// best-ranked rival's, scored AS IF the game ended now.
+///
+/// **Full-state truth, hidden cards included** — a SELECTION-side helper
+/// (design §1 family 2). It exists so family 2's generator can supply the
+/// arithmetic canon 15 is about instead of testing whether the subject can
+/// reconstruct it; nothing in the evaluator may read it.
+///
+/// "Best rival" is the highest-RANKED other seat in [`final_result`]'s official
+/// standings, not the highest raw total: the standings already carry the
+/// clockwise tie-break, so on level totals the rival is the one the rulebook
+/// says beats the mover. **Margin 0 is therefore NOT a win** — it is exactly the
+/// case where the ranking decides — and the pins say so.
+///
+/// Both lookups are total on any state the engine can produce (`current_player`
+/// indexes `state.players`, and a supported game has 2–4 seats); a state that
+/// fails either is corrupt in a way `check_invariants` already refuses, so the
+/// panic names the corruption rather than a wrong margin being returned quietly.
+pub fn true_margin_now(state: &GameState, rules: &Rules) -> i64 {
+    let result = final_result(state, rules);
+    let mover = state.current_player;
+    let mover_total = result
+        .standings
+        .iter()
+        .find(|s| s.player == mover)
+        .expect("the mover is one of the state's own seats")
+        .breakdown
+        .total as i64;
+    let rival_total = result
+        .standings
+        .iter()
+        .find(|s| s.player != mover)
+        .expect("a supported game has at least two seats")
+        .breakdown
+        .total as i64;
+    mover_total - rival_total
+}
+
+/// How many Trading Houses complete the set —
+/// `end_game::check_end_game_triggers`' own `>= 4`, restated where the
+/// precondition needs it.
+const TRADING_HOUSES_COMPLETE: usize = 4;
+
+/// The same for Shophouses — that function's `>= 8`.
+const SHOPHOUSES_COMPLETE: usize = 8;
+
+/// The most Order-card slots ONE applied move can leave needing a refill.
+///
+/// `cards::refill_port` pops once per EMPTY slot of the ONE port board an action
+/// refills — `actions/cards.rs`'s single refill site, reached once per applied
+/// move — and a port board has six slots, so six is the structural bound and no
+/// other code path takes a card off `order_deck` at all (verified by grep over
+/// `game/`: setup builds the deck, this refill is the only consumer).
+const MAX_ORDER_DRAWS_PER_MOVE: usize = 6;
+
+/// The first [`EndGameTrigger`] kind; [`trigger_kind_after`] walks the rest.
+///
+/// The `PlayerId` is a PLACEHOLDER — this enumerates trigger KINDS, and every
+/// precondition arm below ignores the player component.
+const FIRST_TRIGGER_KIND: EndGameTrigger = EndGameTrigger::TradingHousesComplete(PlayerId::DUMMY);
+
+/// The next [`EndGameTrigger`] kind after `trigger`, in
+/// `check_end_game_triggers`' own order — `None` after the last.
+///
+/// The enumeration is an exhaustive `match` rather than a hand-written array so
+/// that a SIXTH variant is a COMPILE ERROR here instead of a silently narrower
+/// precondition set. That matters more than it looks: a precondition list that
+/// quietly missed a trigger would bias every layer-2 scan — the family-2
+/// generator would simply never see the positions that trigger fires from — and
+/// nothing would fail.
+fn trigger_kind_after(trigger: &EndGameTrigger) -> Option<EndGameTrigger> {
+    match trigger {
+        EndGameTrigger::TradingHousesComplete(_) => {
+            Some(EndGameTrigger::ShophousesComplete(PlayerId::DUMMY))
+        }
+        EndGameTrigger::ShophousesComplete(_) => Some(EndGameTrigger::OrderDeckEmpty),
+        EndGameTrigger::OrderDeckEmpty => Some(EndGameTrigger::ChurchTrackFull),
+        EndGameTrigger::ChurchTrackFull => Some(EndGameTrigger::CustomsTrackFull),
+        EndGameTrigger::CustomsTrackFull => None,
+    }
+}
+
+/// Whether ONE applied move could make `trigger`'s own firing condition true.
+///
+/// Every arm mirrors `end_game::check_end_game_triggers`' condition with the
+/// largest single-move delta subtracted, and each delta is a verified fact about
+/// the engine's moves rather than an estimate:
+/// - a build move places exactly ONE building (`Move::BuildShophouse` /
+///   `Move::BuildTradingHouse` are one token each), so a player at
+///   `COMPLETE - 1` is the one-move-away case;
+/// - a Church/Customs placement writes exactly ONE track slot
+///   (`place_church_assistant` / `place_customs_assistant` are the only two
+///   writers, one slot per call), so `total + 1 >= track_trigger()` is exact;
+/// - the order deck's delta is [`MAX_ORDER_DRAWS_PER_MOVE`], which is a bound
+///   rather than an exact figure and is deliberately loose.
+///
+/// The direction that matters is that this NEVER says "no" where a firing move
+/// exists — an over-eager arm costs a wasted apply-probe, an under-eager one
+/// silently biases a scan. The soundness pins exercise both a clock shape and a
+/// building shape through the short circuit.
+fn trigger_is_within_one_move(trigger: &EndGameTrigger, state: &GameState) -> bool {
+    match trigger {
+        EndGameTrigger::TradingHousesComplete(_) => state
+            .players
+            .iter()
+            .any(|p| p.trading_houses.total_built() + 1 >= TRADING_HOUSES_COMPLETE),
+        EndGameTrigger::ShophousesComplete(_) => {
+            state.players.iter().any(|p| p.shophouses.total_built() + 1 >= SHOPHOUSES_COMPLETE)
+        }
+        EndGameTrigger::OrderDeckEmpty => {
+            // BOTH halves of that trigger's condition, one move ahead. It needs
+            // an empty deck AND an empty port slot afterwards; a slot is empty
+            // afterwards only if one is empty NOW, or if the move empties slots
+            // the deck cannot refill — which needs the deck strictly shorter
+            // than the slots one action can empty. Without the port half this
+            // arm is true from move one at 2 players, where the whole deck is
+            // ten cards after the setup removal, and the short circuit stops
+            // circuiting exactly where the layer-2 scans run.
+            port_has_empty_slot(state) || state.order_deck.len() < MAX_ORDER_DRAWS_PER_MOVE
+        }
+        EndGameTrigger::ChurchTrackFull => {
+            state.church_track.total_assistants() + 1 >= state.config.track_trigger()
+        }
+        EndGameTrigger::CustomsTrackFull => {
+            state.customs_track.total_assistants() + 1 >= state.config.track_trigger()
+        }
+    }
+}
+
+/// `end_game::check_port_empty_slot`'s condition, restated (that helper is
+/// private to its module): does any port board hold an empty slot right now.
+fn port_has_empty_slot(state: &GameState) -> bool {
+    state.port_state.port_a.has_empty_slot()
+        || state.port_state.port_b.as_ref().is_some_and(|b| b.has_empty_slot())
+}
+
+/// Whether ANY end-game trigger is within one applied move of firing — the
+/// short circuit [`firing_moves`] pays before it clones anything.
+fn any_trigger_within_one_move(state: &GameState) -> bool {
+    let mut kind = Some(FIRST_TRIGGER_KIND);
+    while let Some(k) = kind {
+        if trigger_is_within_one_move(&k, state) {
+            return true;
+        }
+        kind = trigger_kind_after(&k);
+    }
+    false
+}
+
+/// The legal moves whose application SETS `end_game_triggered` — family 2's
+/// "the mover can end the game this move", as data.
+///
+/// **Transition semantics, and the word "sets" is load-bearing**: on a state
+/// where the trigger has ALREADY fired this is EMPTY, because every applied
+/// state inherits the flag and a bare "the result has it true" test would answer
+/// "every legal move" at exactly the positions where the question is
+/// meaningless.
+///
+/// **The short circuit is the whole reason this is affordable.** Probing every
+/// legal move at every position of every generated game is ~10^5 `GameState`
+/// clones per game; [`any_trigger_within_one_move`] rejects the overwhelming
+/// majority of positions on integer reads alone, and it is derived from an
+/// exhaustive match over [`EndGameTrigger`] so it cannot silently miss a trigger
+/// kind. What it must never do is skip a position where a firing move exists —
+/// that is the property its pins are about, not speed.
+pub(crate) fn firing_moves(state: &GameState, rules: &Rules) -> Vec<Move> {
+    if state.end_game_triggered {
+        return Vec::new();
+    }
+    if !any_trigger_within_one_move(state) {
+        return Vec::new();
+    }
+    get_legal_moves(state, rules)
+        .into_iter()
+        .filter(|mv| {
+            apply_move_unchecked(state, mv, rules)
+                .map(|next| next.end_game_triggered)
+                .unwrap_or(false)
+        })
+        .collect()
+}
+
+/// One CONTESTED track step — the race currency family 3's predicate is written
+/// in.
+///
+/// The read instrument's own declaration type (`driven_families::ContestedStep`,
+/// T4) is a WIDER vocabulary that also names the tech-majority arm; this one is
+/// deliberately narrower, because it is what the GENERATED predicate can decide
+/// exactly (see [`opponent_race_steps`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum RaceStep {
+    /// A Church faith space, 4..=11.
+    Church(u8),
+    /// A Customs space, 1..=7.
+    Customs(u8),
+}
+
+/// The one area of `wanted` type, if the board has one.
+fn area_of_type(state: &GameState, wanted: AreaType) -> Option<AreaId> {
+    state.board_layout.areas.iter().find(|(_, c)| c.area_type == wanted).map(|(a, _)| *a)
+}
+
+/// The track steps an OPPONENT is ONE COMPLETED ACTION away from taking.
+///
+/// **The arithmetic, exactly** (design §1 family 3; the plan's "write the exact
+/// state arithmetic in-source"). For each seat other than `state.current_player`
+/// and each of the two track areas:
+/// 1. the opponent's President is NOT already on that area — a President may not
+///    return to the area it starts its turn on (rulebook p.11), so an opponent
+///    standing there cannot take that area's action next turn;
+/// 2. the opponent has at least one ASSISTANT on that area — the durable claim.
+///    This deliberately does NOT call `is_possible_action_area_full`: that
+///    predicate answers "can this player act here NOW", and it counts every
+///    other President as a block, but the race question is about NEXT turn, by
+///    which time the mover's President will have moved (it moves every turn, and
+///    at an area-action root it is standing on the very area being contested —
+///    so the strict predicate would make this whole family structurally empty);
+/// 3. the power the opponent would have on arrival —
+///    `(calculate_power + 1).min(5)`, the +1 being the President that must
+///    travel there — is enough, together with the goods the opponent actually
+///    holds, to reach the step:
+///    - CHURCH: `calculate_church_faith(power, …)` at every payment type the
+///      opponent can afford (yen counts 2 Yen, ruling D1) gives its maximum
+///      Faith, and `eligible_church_spaces` turns that into the unoccupied
+///      spaces it could place on;
+///    - CUSTOMS: `customs_max_imported_goods(power)` capped by the imported
+///      goods held gives the largest printed cost it can pay exactly, and
+///      `eligible_customs_spaces_for_cost` turns each affordable cost into
+///      unoccupied spaces;
+/// 4. an assistant is available for the placement at all
+///    (`has_church_or_customs_assistant`, the apply-side guard restated).
+///
+/// **PRECISION over recall, as the plan directs.** Reachability of the area (a
+/// walk the opponent can afford, fees included) and the mover's own turn — which
+/// happens BEFORE the opponent's and can take goods, spaces or position away —
+/// are NOT modelled, and both omissions can only make this predicate say YES
+/// where a full turn simulation would say no. That is the recall/precision trade
+/// stated honestly: the set is a superset in exactly those two ways and a strict
+/// subset in the president-blocking and payment-arithmetic ways above, and it is
+/// the BUILDER arm (T5), not this probe, that family 3 rests on.
+///
+/// **Deliberately ABSENT: the TECH-MAJORITY arm.** `ContestedStep` names three
+/// race steps and this enumerates two. A tech-majority step ("the opponent's one
+/// affordable lab purchase would rank it past the mover") needs the lab
+/// affordability model — board-position surcharge, gear/yen/imported split,
+/// `validate_lab_action`'s payment search — and an approximate version of it
+/// would favour RECALL against the plan's explicit instruction. The tech arm
+/// lives in the builder's declaration vocabulary instead.
+fn opponent_race_steps(state: &GameState) -> Vec<RaceStep> {
+    let mover = state.current_player;
+    let church_area = area_of_type(state, AreaType::Church);
+    let customs_area = area_of_type(state, AreaType::Customs);
+    let mut steps: Vec<RaceStep> = Vec::new();
+
+    for p in &state.players {
+        if p.id == mover {
+            continue;
+        }
+        if let Some(area) = church_area {
+            if opponent_could_act_next_turn(p, area) && has_church_or_customs_assistant(p, area) {
+                let power = arriving_power(state, p.id, area);
+                let max_faith = calculate_church_faith(
+                    power,
+                    p.copper >= 1,
+                    p.silk >= 1,
+                    p.tea >= 1,
+                    p.seafood >= 1,
+                    // D1 (2026-08-08): the yen payment type costs 2 Yen.
+                    p.money >= 2,
+                    p.imported_goods >= 1,
+                );
+                for space in eligible_church_spaces(&state.church_track, max_faith) {
+                    steps.push(RaceStep::Church(space));
+                }
+            }
+        }
+        if let Some(area) = customs_area {
+            if opponent_could_act_next_turn(p, area) && has_church_or_customs_assistant(p, area) {
+                let power = arriving_power(state, p.id, area);
+                let payable = customs_max_imported_goods(power).min(
+                    u8::try_from(p.imported_goods).unwrap_or(u8::MAX),
+                );
+                for cost in 1..=payable {
+                    for space in eligible_customs_spaces_for_cost(&state.customs_track, cost) {
+                        steps.push(RaceStep::Customs(space));
+                    }
+                }
+            }
+        }
+    }
+
+    steps.sort_unstable();
+    steps.dedup();
+    steps
+}
+
+/// Clause 1+2 of [`opponent_race_steps`]: the President is elsewhere (so it can
+/// travel to `area` next turn) and the assistants that give it power are there.
+fn opponent_could_act_next_turn(p: &crate::types::PlayerState, area: AreaId) -> bool {
+    p.president_location != PresidentLocation::OnBoard(area) && p.assistants.in_area(area) >= 1
+}
+
+/// The power `player` would have at `area` with its President standing there —
+/// `calculate_power`'s figure plus the President that has to travel, re-capped.
+///
+/// Adding after the cap and re-capping is correct because the cap is idempotent:
+/// a raw total already above 5 reads 5 either way.
+fn arriving_power(state: &GameState, player: PlayerId, area: AreaId) -> u8 {
+    (calculate_power(state, player, area) + 1).min(5)
+}
+
+/// The track steps the MOVER would hold — or would have QUEUED the choice for —
+/// after ONE of `legal`, by apply-probe.
+///
+/// **QUEUE-AWARE, and that is not an optimisation.** A Church or Customs action
+/// with two or more eligible spaces places NOTHING at apply time: it queues a
+/// `PendingChoice::ChurchSpace` / `CustomsSpace` and the pawn lands when the
+/// choice resolves (the choice-encoding shape). An occupancy-only classifier
+/// would therefore be blind to exactly the race-INITIATING moves this predicate
+/// exists to find, and would see only the already-narrowed singleton case.
+///
+/// The queued arm is credited to the mover only while `current_player` still IS
+/// the mover in the probed clone — a queue belongs to the seat that will resolve
+/// it — and it credits every space the queued choice could still reach, since
+/// which one it takes is the mover's decision and not yet made.
+fn mover_reachable_steps(state: &GameState, legal: &[Move], rules: &Rules) -> Vec<RaceStep> {
+    let mover = state.current_player;
+    let mut steps: Vec<RaceStep> = Vec::new();
+
+    for mv in legal {
+        let Ok(next) = apply_move_unchecked(state, mv, rules) else {
+            continue;
+        };
+        for (index, slot) in next.church_track.slots.iter().enumerate() {
+            if state.church_track.slots[index].is_none()
+                && slot.is_some_and(|s| s.player == mover)
+            {
+                steps.push(RaceStep::Church(ChurchTrack::index_to_faith(index)));
+            }
+        }
+        for (index, slot) in next.customs_track.slots.iter().enumerate() {
+            if state.customs_track.slots[index].is_none()
+                && slot.is_some_and(|s| s.player == mover)
+            {
+                steps.push(RaceStep::Customs(CustomsTrack::index_to_space(index)));
+            }
+        }
+        if next.current_player != mover {
+            continue;
+        }
+        for choice in &next.pending_choices {
+            match choice {
+                PendingChoice::ChurchSpace { total_faith } => {
+                    for space in eligible_church_spaces(&next.church_track, *total_faith) {
+                        steps.push(RaceStep::Church(space));
+                    }
+                }
+                PendingChoice::CustomsSpace { cost } => {
+                    for space in eligible_customs_spaces_for_cost(&next.customs_track, *cost) {
+                        steps.push(RaceStep::Customs(space));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    steps.sort_unstable();
+    steps.dedup();
+    steps
+}
+
 /// The v1 generating configuration's NAME. Bump the version in the same commit
 /// as ANY change to a [`GeneratingEcology::v1`] field.
-pub const GENERATED_ECOLOGY_V1: &str = "driven-generated-v1";
+///
+/// **AMENDED to `v1.1` in Phase C** (design §2/§4): the ecology gained the
+/// per-game STRIDE CAP and its `games` bound was raised 4 → 16 to cover the
+/// families' block arithmetic. Both are identity, so both ride one version bump.
+/// No committed artifact holds a serialized `Generated` triple, so nothing
+/// recorded is re-pointed by this (verified by grep at the amending commit) —
+/// the bump exists so that a triple quoted from a session NOTE cannot be
+/// silently re-resolved.
+pub const GENERATED_ECOLOGY_V1: &str = "driven-generated-v1.1";
 
 /// How many games a [`RootSource::Generated`] scan may play before it reports
 /// the supply exhausted.
 ///
 /// A BOUND, not a budget: the scan must terminate on an ordinal nothing
 /// satisfies, and the honest way to say that is a refusal naming how far it
-/// looked. MEASURED at this bound (the exhaustion cell's own master, 2026-08-18,
-/// WSL debug): **54 final-round positions across the four games, ~14 per game**,
-/// which is far more ordinals than family 1 asks for at a wall a debug test can
-/// pay (0.30s for the whole four-game scan). A caller wanting more raises the
-/// bound and re-records the ecology — which is why the bound rides
-/// [`GeneratingEcology::games`] rather than living only here.
-pub const GENERATED_SCAN_GAMES: u32 = 4;
+/// looked. MEASURED at the PREVIOUS bound of 4 (the exhaustion cell's own
+/// master, 2026-08-18, WSL debug): **54 final-round positions across the four
+/// games, ~14 per game**, at 0.30s for the whole four-game scan.
+///
+/// **RAISED 4 → 16 in Phase C** for the block arithmetic: at the stride cap of
+/// 2 hits per game, one family-1 predicate demands pilot 4 + confirmatory 6 +
+/// escrow 6 = 16 strided ordinals, and 4 games × cap 2 = 8 could strand a frozen
+/// confirmatory block on `Exhausted`; 16 × 2 = 32 covers the demand plus
+/// dead-root slack. Raising the bound at a FIXED master and cap is
+/// PREFIX-STABLE — the strided ordinal sequence is identical, merely longer — so
+/// this is an extension and not a re-draw.
+///
+/// **RE-VERIFIED AT THE FREEZE WAVE and left at 16.** The baked family-1 blocks
+/// are wider than that draft — pilot `0..4` plus confirmatory `4..20` is **20**
+/// strided ordinals per predicate, not 16 — and both of family 1's arms
+/// (`FinalRoundAlreadyTriggered` and its `TriggerRoundNotFinal` control) scan
+/// this ecology, each in its OWN ordinal space. 16 × 2 = 32 still covers 20 with
+/// 12 ordinals of slack for the escrow the freeze DOCUMENT holds, so no bound
+/// moved. The check is executable, not a comment:
+/// `driven_runner::every_frozen_block_fits_the_supply_its_generator_declares`.
+pub const GENERATED_SCAN_GAMES: u32 = 16;
+
+/// How many hits per generated game may enter the ordinal sequence.
+///
+/// **The STRIDE** (design §4, review MUST-6). Consecutive scan ordinals are NOT
+/// independent draws: family 1's supply is ~14 hits per game, which are the
+/// successive decision points of ONE final round, so an unstrided block of 6
+/// ordinals would quote "six roots" that are near-duplicate positions of at most
+/// two games. Hits past the cap are SKIPPED and consume no ordinal, so the
+/// ordinal space is defined over strided hits and ordinal `cap` necessarily
+/// comes from a later game than ordinal 0.
+///
+/// It is an ECOLOGY FIELD and therefore IDENTITY — see
+/// [`GeneratingEcology::per_game_cap`].
+pub const GENERATED_STRIDE_CAP: u32 = 2;
 
 /// The seat count v1's generating ecology plays at.
 const GENERATED_PLAYERS: u8 = 2;
@@ -308,6 +1455,126 @@ const GENERATED_PLAYERS: u8 = 2;
 /// stronger ecology is a visible change of identity instead of a silent
 /// re-pointing of every `(predicate, master, ordinal)` triple ever quoted.
 const GENERATED_SEAT: Contestant = Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT);
+
+/// The v2 generating configuration's NAME — Phase C's layer-2 ecology. Bump the
+/// version in the same commit as ANY change to a
+/// [`GeneratingEcology::v2_lookahead`] field, exactly as
+/// [`GENERATED_ECOLOGY_V1`]'s rule says.
+///
+/// **EXTENDED to `v2.1` (2026-08-18)**: the `games` bound rose 24 → 120 when
+/// family 2's confirmatory blocks exhausted the supply the predicates REALIZE
+/// (the measured rates are on [`GENERATED_V2_SCAN_GAMES`]). The bound is an
+/// ecology field and therefore identity, so the raise rides a version bump. The
+/// bump is a NAMING obligation, not a re-pointing: raising `games` at a FIXED
+/// master and cap is PREFIX-STABLE, so every ordinal the old bound could supply
+/// resolves to exactly the state it resolved to before — the strided sequence at
+/// 120 games is the sequence at 24 with more on the end. The version moves so
+/// that a triple quoted from a session note cannot be read as an answer about a
+/// different scan than the one that produced it.
+///
+/// **EXTENDED AGAIN to `v2.2` (2026-08-18)**: 120 → 240, when the same family's
+/// CONTROL arm exhausted a SECOND time — `EndFirableBehindInTruth` realized 26
+/// strided hits in 120 games against the 28 its block demands, a measured
+/// 0.217/game where the 24-game pilot had read 0.29. The recovery is the SAME
+/// one, taken the same way and for the same reason: a prefix-stable extension at
+/// a fixed master and cap, version-bumped because the bound is identity. The
+/// strided sequence at 240 games is the sequence at 120 with more on the end,
+/// which is the sequence at 24 with more on the end — so a triple recorded under
+/// `v2` or `v2.1` still resolves to exactly the state it resolved to then, and
+/// the version moves only so that a quoted reading names the scan that produced
+/// it.
+pub const GENERATED_ECOLOGY_V2_LOOKAHEAD: &str = "driven-generated-v2.2-lookahead";
+
+/// The v2 ecology's scan bound.
+///
+/// Sized by the SAME arithmetic as v1's (pilot 4 + confirmatory 6 + escrow 6 per
+/// predicate, at cap 2) with slack, and with NO supply guarantee: the layer-2
+/// predicates are selective by design, and an `Exhausted` refusal at this bound
+/// is RECORDED EVIDENCE about the family rather than a failure of the scan
+/// (design §1 family 3 says so in as many words). A games raise at a fixed
+/// master and cap is prefix-stable, which is the recovery if a frozen block runs
+/// short.
+///
+/// **RE-VERIFIED AT THE FREEZE WAVE and left at 24.** The baked layer-2 blocks
+/// demand pilot `0..4` plus confirmatory `4..28` = **28** strided ordinals per
+/// predicate, against a supply of 24 × 2 = 48 — 20 ordinals of slack, and the
+/// three predicates that scan here (`EndFirableAheadInTruth`, its
+/// `EndFirableBehindInTruth` control, and `AchievementClaimAvailable`) each get
+/// their own space at their own master. No bound moved; the check is executable
+/// in `driven_runner::every_frozen_block_fits_the_supply_its_generator_declares`.
+/// The no-supply-guarantee sentence above still stands — a bound that FITS is
+/// not a promise that the predicate hits that often.
+///
+/// **RAISED 24 → 120 (2026-08-18) — that last sentence, collected.** Family 2's
+/// confirmatory blocks (`4..28`, both arms) EXHAUSTED at the old bound: the
+/// positive predicate `EndFirableAheadInTruth` yielded **10** strided hits in 24
+/// games and its `EndFirableBehindInTruth` control **7**, against the 28 each
+/// block demands. The capacity arithmetic was never the binding constraint —
+/// 24 × 2 = 48 covered 28 on paper the whole time — and the distinction is what
+/// this raise records: `games × per_game_cap` is a CEILING on the ordinal space,
+/// while the supply a predicate REALIZES inside it is a fact about the predicate
+/// that only a scan can measure. At the measured rates, 120 games yield ≈50 and
+/// ≈35 strided hits, so ordinal 27 is reached with slack on both arms, and
+/// `AchievementClaimAvailable` gains the same headroom without being re-sized
+/// separately.
+///
+/// **RAISED AGAIN 120 → 240 (2026-08-18) — and the ≈35 projection above is why.**
+/// The CONTROL arm exhausted a second time: `EndFirableBehindInTruth` realized
+/// **26** strided hits in 120 games (typed refusal `draw 26: no root 26 for
+/// end-firable-behind-in-truth: 26 found in 120 generated games`) against the 28
+/// its block demands — two short. The 24-game pilot's 7 hits had implied
+/// 0.29/game; 120 games measure **0.217/game**, so the projection extrapolated a
+/// rate the longer scan did not sustain, and the correction is to size off the
+/// LONGER measurement rather than the pilot. At 0.217/game, 240 games yield ≈52
+/// strided hits against a demand of 28 — 1.8× the demand on the arm that has
+/// actually been measured twice, which is what makes this raise the last one
+/// sizing is expected to need. The positive arm and `AchievementClaimAvailable`,
+/// both denser than this control, gain the same headroom without being re-sized
+/// separately.
+///
+/// **The raise is an EXTENSION, never a re-draw** (design §4 and freeze §4
+/// pre-declare exactly this recovery): at a FIXED master and cap the scan walks
+/// the same games in the same draw order and strides them the same way, so the
+/// strided ordinal sequence is PREFIX-STABLE — identical, merely longer. Every
+/// reading already taken at this ecology stands at the ordinal it was taken at;
+/// the frozen blocks, their masters, the cap and the seed derivation are all
+/// untouched. Only the version string moves ([`GENERATED_ECOLOGY_V2_LOOKAHEAD`],
+/// now `v2.2`), because the bound is identity. Both raises are that same shape,
+/// so `v2` ⊂ `v2.1` ⊂ `v2.2` as strided sequences.
+///
+/// It stays a BOUND and not a budget: [`generate_roots`] stops the moment the
+/// highest requested ordinal is collected, so a block that was already served
+/// inside 24 or 120 games costs after these raises exactly what it cost before
+/// them.
+///
+/// The block-fits-supply check remains executable in
+/// `driven_runner::every_frozen_block_fits_the_supply_its_generator_declares`,
+/// now reading a capacity of 240 × 2 = **480** against the layer-2 demand of 28.
+pub const GENERATED_V2_SCAN_GAMES: u32 = 240;
+
+/// The seat count v2's generating ecology plays at — 2P throughout (the canon
+/// priors are 2P priors).
+const GENERATED_V2_PLAYERS: u8 = 2;
+
+/// The contestant every seat of v2's generating ecology plays: the shipped
+/// provisional production contestant, uncapped.
+///
+/// This ecology generates the SUBJECT'S OWN reachable positions, which is the
+/// right population for an on-policy checkpoint and is said out loud here
+/// because it is also the ecology's whole cost: both seats search. PROVISIONAL
+/// until D1's identity freeze, exactly as [`ReplyPolicy`]'s `*AtFinal` arms are
+/// — when that freeze re-points the champion, this const re-points with it and
+/// the version string bumps, because the ecology is identity.
+const GENERATED_V2_SEAT: Contestant = Contestant::LOOKAHEAD_V1_DEFAULT;
+
+/// The one driver line both ecologies record — spelled once so a reworded
+/// sentence cannot make the two ecologies look like different drivers.
+const GENERATED_DRIVER: &str = "arena::run_arena_game (honest bench, per-move invariants ON)";
+
+/// The one seed-derivation line both ecologies record.
+const GENERATED_SEED_DERIVATION: &str =
+    "SeedSchedule::diagnostic(master).next_world() once per game in scan order; \
+     agent_stream_seed(world, seat, Slot(seat)) per seat";
 
 /// The play that PRODUCED a generated root, recorded as data.
 ///
@@ -336,6 +1603,18 @@ pub struct GeneratingEcology {
     /// same bound, and a later bound change makes an old "exhausted" reading
     /// non-comparable.
     pub games: u32,
+    /// How many hits per generated game entered the ordinal sequence — the
+    /// STRIDE ([`GENERATED_STRIDE_CAP`]).
+    ///
+    /// IDENTITY, like every other field here, and for the sharpest version of
+    /// this type's own reason: changing the cap re-points every
+    /// `(predicate, master, ordinal)` triple past the first game while every
+    /// triple still reads the same. It carries **no `#[serde(default)]`
+    /// deliberately** — no committed artifact holds a serialized `Generated`
+    /// triple, so a sidecar that lacks this field is one written before the
+    /// stride existed and should fail loudly rather than be silently read as
+    /// "cap 0" (which is not even a meaningful scan).
+    pub per_game_cap: u32,
 }
 
 impl GeneratingEcology {
@@ -346,16 +1625,63 @@ impl GeneratingEcology {
     /// and a reworded driver line that left the play unchanged would be a
     /// spurious identity change. Reword freely; re-point nothing.
     pub fn v1() -> Self {
-        Self {
+        v1_config().ecology
+    }
+
+    /// The v2 LOOKAHEAD configuration — Phase C's layer-2 ecology, both seats
+    /// the shipped provisional contestant.
+    pub fn v2_lookahead() -> Self {
+        v2_lookahead_config().ecology
+    }
+}
+
+/// A generating configuration: the recorded [`GeneratingEcology`] plus the live
+/// parts a scan needs to play the games.
+///
+/// The two travel together, and the ecology is BUILT FROM the contestant rather
+/// than written beside it, so the recorded seat echoes cannot drift from the
+/// seats the scan actually benches — the failure mode a descriptor exists to
+/// prevent, appearing inside the thing that writes descriptors.
+struct GeneratingConfig {
+    /// The contestant every seat plays.
+    seat: Contestant,
+    /// The seat count.
+    players: u8,
+    /// What gets recorded on the descriptor.
+    ecology: GeneratingEcology,
+}
+
+/// The v1 (rung) generating configuration — family 1's.
+fn v1_config() -> GeneratingConfig {
+    GeneratingConfig {
+        seat: GENERATED_SEAT,
+        players: GENERATED_PLAYERS,
+        ecology: GeneratingEcology {
             id: GENERATED_ECOLOGY_V1.to_string(),
-            driver: "arena::run_arena_game (honest bench, per-move invariants ON)".to_string(),
+            driver: GENERATED_DRIVER.to_string(),
             players: GENERATED_PLAYERS,
             seats: vec![GENERATED_SEAT.echo(); GENERATED_PLAYERS as usize],
-            seed_derivation: "SeedSchedule::diagnostic(master).next_world() once per game in \
-                              scan order; agent_stream_seed(world, seat, Slot(seat)) per seat"
-                .to_string(),
+            seed_derivation: GENERATED_SEED_DERIVATION.to_string(),
             games: GENERATED_SCAN_GAMES,
-        }
+            per_game_cap: GENERATED_STRIDE_CAP,
+        },
+    }
+}
+
+/// The v2 (lookahead) generating configuration — the layer-2 families'.
+fn v2_lookahead_config() -> GeneratingConfig {
+    GeneratingConfig {
+        seat: GENERATED_V2_SEAT,
+        players: GENERATED_V2_PLAYERS,
+        ecology: GeneratingEcology {
+            id: GENERATED_ECOLOGY_V2_LOOKAHEAD.to_string(),
+            driver: GENERATED_DRIVER.to_string(),
+            players: GENERATED_V2_PLAYERS,
+            seats: vec![GENERATED_V2_SEAT.echo(); GENERATED_V2_PLAYERS as usize],
+            seed_derivation: GENERATED_SEED_DERIVATION.to_string(),
+            games: GENERATED_V2_SCAN_GAMES,
+            per_game_cap: GENERATED_STRIDE_CAP,
+        },
     }
 }
 
@@ -456,6 +1782,34 @@ pub enum RootSource {
     /// [`GeneratingEcology`], which the resolved descriptor carries for exactly
     /// that reason.
     Generated { predicate: RootPredicate, master: u64, ordinal: u32 },
+    /// A root a caller has ALREADY resolved, with the descriptor that
+    /// identified it — resolving it again returns both verbatim.
+    ///
+    /// **Why this is not [`Constructed`](Self::Constructed) with extra steps**
+    /// (Phase C's T5): a block of family roots is resolved ONCE, in a single
+    /// scan walk, and then adjudicated under every policy of a reply menu.
+    /// Handing `Generated` to each of those adjudications would re-run the scan
+    /// per policy per root — at the v2 ecology, where both generating seats
+    /// search, that is the block's entire cost paid over and over. Handing
+    /// `Constructed` instead would work and would LIE: every table would record
+    /// a root whose origin is "someone gave me this position" when the origin is
+    /// a seeded scan a reader can reproduce. This variant is the honest third
+    /// option — resolve once, carry the identity.
+    ///
+    /// **It is the ONLY arm whose descriptor the caller supplies, so it is the
+    /// only arm whose pair can disagree — and since Phase C's T5 fix wave that
+    /// disagreement is CHECKED**: [`resolve`](Self::resolve) re-derives
+    /// [`state_digest`] and refuses a descriptor that describes another position
+    /// ([`RootError::ResolvedMismatch`]). A caller pairing a descriptor with a
+    /// different state is describing a root it did not resolve, and NOTHING
+    /// downstream could tell — every report, digest and sidecar would name the
+    /// wrong position perfectly consistently. The check costs one digest of a
+    /// state the arm is about to clone anyway, and it is the Phase-B registry
+    /// loader's `RegistryError::Stale` posture one level down: not a corruption
+    /// report, but the identity key, refused before anything reads the state.
+    /// The discipline is still that the pair comes from ONE `resolve` call; this
+    /// makes departing from it a typed error instead of a silent one.
+    Resolved { state: GameState, descriptor: RootDescriptor },
 }
 
 impl RootSource {
@@ -494,6 +1848,19 @@ impl RootSource {
             Self::Generated { predicate, master, ordinal } => {
                 generate_root(*predicate, *master, *ordinal, rules)
             }
+            Self::Resolved { state, descriptor } => {
+                // The one integrity check this arm needs: the caller supplied
+                // BOTH halves, so the pair is the only thing that can be wrong.
+                let digest = state_digest(state);
+                if digest != descriptor.root_digest {
+                    return Err(RootError::ResolvedMismatch {
+                        origin: descriptor.origin.kind(),
+                        descriptor_digest: descriptor.root_digest.clone(),
+                        state_digest: digest,
+                    });
+                }
+                Ok((state.clone(), descriptor.clone()))
+            }
         }
     }
 }
@@ -511,6 +1878,15 @@ pub enum RootError {
     /// it FOUND and how far it looked, so a caller can tell "no such position"
     /// from "not in this many games".
     Exhausted { predicate: RootPredicate, ordinal: u32, found: u32, games: u32 },
+    /// A [`RootSource::Resolved`] pair whose descriptor describes a DIFFERENT
+    /// position than the state it travels with.
+    ///
+    /// The comparability key, not a corruption report — the `RegistryError::Stale`
+    /// shape at the one place a caller supplies both halves of an identity. The
+    /// descriptor's ORIGIN kind rides along because it is what a reader acts on:
+    /// a mis-paired `generated` descriptor points at a scan someone will re-run,
+    /// while a mis-paired `constructed` one points at nothing at all.
+    ResolvedMismatch { origin: &'static str, descriptor_digest: String, state_digest: String },
 }
 
 impl std::fmt::Display for RootError {
@@ -529,6 +1905,12 @@ impl std::fmt::Display for RootError {
                 f,
                 "no root {ordinal} for {}: {found} found in {games} generated games",
                 predicate.as_str()
+            ),
+            Self::ResolvedMismatch { origin, descriptor_digest, state_digest } => write!(
+                f,
+                "the pre-resolved pair describes two positions: the {origin} descriptor names \
+                 root {descriptor_digest} and the state it travels with digests to \
+                 {state_digest}"
             ),
         }
     }
@@ -635,7 +2017,7 @@ impl RootedProvenance {
                 SeatDescriptor {
                     seat: index as u8,
                     requested: spec.requested_label(),
-                    echo: spec.contestant().echo(),
+                    echo: spec.echo(),
                     controller: seen.controller.clone(),
                     version: seen.version,
                     params: seen.params.clone(),
@@ -1097,11 +2479,27 @@ fn require_eligible_root(root: &GameState) -> Result<(), DrivenError> {
 /// own incoming state unconditionally, so a driven run gets that for free, while
 /// the adjudicator needs it a move EARLIER (before a candidate is forced) and
 /// asks for it there.
+///
+/// **The SEAT-LIST arity is this function's only own business** since Phase C's
+/// T2: everything after it is [`require_driveable_root`], which [`drive_turn`]
+/// calls directly. A turn names ONE seat rather than a list, so it has no arity
+/// to check and no `SeatMismatch` to report — but it refuses the same seat
+/// counts, the same option, and the same live-tracked roots the whole-game
+/// driver does, which is what keeps "driveable" one property rather than two.
+/// The order is preserved exactly (arity, then count, then the option, then
+/// eligibility) so no existing refusal moves.
 fn preflight(root: &GameState, seats: &[SeatSpec], opts: DrivenOpts) -> Result<(), DrivenError> {
     let players = root.players.len();
     if seats.len() != players {
         return Err(DrivenError::SeatMismatch { seats: seats.len(), players });
     }
+    require_driveable_root(root, opts)
+}
+
+/// The part of [`preflight`] that is about the ROOT and the OPTIONS rather than
+/// about a seat list — shared verbatim with [`drive_turn`].
+fn require_driveable_root(root: &GameState, opts: DrivenOpts) -> Result<(), DrivenError> {
+    let players = root.players.len();
     // ONE authority for what the engine plays — the arena's own guard, not a
     // re-typed range (a rooted run that tabulated a 1-seat "game" would produce
     // an outcome whose `final_result` nobody should read). The narrowing runs
@@ -1154,7 +2552,7 @@ fn drive_from_descriptor(
         // so the slot component IS the seat index: the derivation stays
         // injective in the seat, and two seats never share a stream.
         let agent_seed = agent_stream_seed(master, seat, Slot(seat.0));
-        let (agent, handle) = spec.contestant().build(rules, agent_seed);
+        let (agent, handle) = spec.build(rules, agent_seed);
         agents.push(agent);
         handles.push(handle);
         agent_seeds.push(agent_seed);
@@ -1186,7 +2584,7 @@ fn drive_from_descriptor(
         .map(|(index, spec)| SeatOutcome {
             seat: PlayerId(index as u8),
             spec: *spec,
-            echo: spec.contestant().echo(),
+            echo: spec.echo(),
             agent_seed: agent_seeds[index],
             applied_moves: outcome.moves_by_seat[index],
             counters: handles[index].as_ref().map_or(SeatCounters::NONE, SeatCounters::from_handle),
@@ -1218,6 +2616,220 @@ fn drive_from_descriptor(
         result,
         seats: seat_outcomes,
         explanations,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// The turn-grain driver (Phase C, T2)
+// ---------------------------------------------------------------------------
+
+/// ONE MOVER'S TURN, driven from a root: what it played, where it handed off,
+/// and what its search cost across the WHOLE turn.
+///
+/// The grain between [`root_table`] (one decision) and [`DrivenOutcome`] (a
+/// whole game), and the one families 2–4 read: their pass rules are statements
+/// about what a TURN did — the trigger fired, an achievement was claimed, a
+/// contested step was taken — and none of those is decidable at a single
+/// decision, because the move that fires the trigger is rarely the move that
+/// starts the turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnOutcome {
+    /// The mover's applied moves, in order. Every entry's seat is the ROOT's
+    /// mover — an opponent move inside a turn is structurally impossible (see
+    /// [`drive_turn`]'s stop rule), not merely filtered out here.
+    pub moves: Vec<AppliedMove>,
+    /// The state the turn ENDED in: the first state whose `current_player` is
+    /// not the root's, or the terminal state when the turn ended the game.
+    pub handoff: GameState,
+    /// True when the stop was the GAME ENDING rather than a hand-off — read as
+    /// `is_game_over(handoff)` at the stop, never inferred from the mover.
+    ///
+    /// The two are not interchangeable and one of them is a trap: the game-end
+    /// arm of `advance_phase` (`apply_move.rs:259-264`) sets `TurnPhase::TurnEnd`
+    /// and NEVER writes `current_player`, so a game that ends on the mover's own
+    /// turn hands off to nobody.
+    pub game_over: bool,
+    /// The mover's counters ACROSS THE WHOLE TURN — one agent, one handle, read
+    /// after the last decision. Never the last decision's alone: design §2's
+    /// SHOULD-6 is that a mid-turn cap hit or starvation must reach D7's
+    /// step-one filter, and a per-decision snapshot would drop exactly the
+    /// decisions that hit it.
+    pub counters: SeatCounters,
+    /// Decision points resolved — equal to `moves.len()`, on
+    /// [`DrivenOutcome::decisions`]'s own grounds.
+    pub decisions: u64,
+}
+
+/// Play ONE TURN: the mover's decisions from `root` until it hands off or the
+/// game ends.
+///
+/// **THE STOP IS DUAL, and both halves are mandatory** (design §2's verified
+/// premise, `apply_move.rs:252-279`). `current_player` has exactly ONE
+/// production writer — `advance_phase`'s end-of-turn arm at
+/// `apply_move.rs:276` — and mercenary sub-turns return through
+/// `finish_recovery_transition` (`apply_move.rs:1166-1183`) without touching it,
+/// which is what makes a turn cheap and reply-policy-free: the opponent never
+/// moves inside one, so ONE seat spec names the whole run. But the arm BESIDE
+/// that write (`apply_move.rs:259-264`) ends the game by setting
+/// `TurnPhase::TurnEnd` and writing no seat at all, so a `current_player`-only
+/// loop would spin at game end until the decision bound refused it, and an
+/// `is_game_over`-only loop would run straight through every hand-off. The stop
+/// is therefore `current_player != root.current_player || is_game_over(state)`,
+/// with [`TurnOutcome::game_over`] READ from the second condition rather than
+/// inferred from the first. The two reasons are disjoint by that code shape, and
+/// the game-over corner is pinned as such.
+///
+/// **SEED DISCIPLINE — the arena's, scoped to a turn, and no third discipline is
+/// invented** (design §2, review SHOULD-6). ONE agent is constructed at
+/// `decision_seed` for the mover's seat and its stream ADVANCES across the
+/// turn's decisions, exactly as a seat's long-lived stream advances across a
+/// game in [`drive_to_terminal`]. At the FIRST decision that is byte-identical
+/// to [`root_table`]'s fresh-agent-at-the-same-seed — which is what joins D7's
+/// counter check (a table at replication 0's seed) to the read (a turn at the
+/// same seed) — and the join is pinned rather than asserted in prose. Beyond
+/// decision 0 the loop is pinned against the play half itself: at
+/// `decision_seed = agent_stream_seed(world, mover, Slot(mover))` a turn's move
+/// list EQUALS the mover's own prefix of `drive_to_terminal` at `world`.
+///
+/// **This is a THIRD per-decision loop, said out loud.** [`play_from_state`]
+/// runs to terminal and exposes no stop hook, so a turn cannot borrow it; what
+/// keeps the two from drifting is the prefix-equivalence pin above plus the
+/// failure taxonomy, which is routed through [`classify`] over the arena's own
+/// [`PlayError`] rather than re-typed — so a turn and a game refuse the same
+/// root with the same variant and the same message BY CONSTRUCTION. The one
+/// deliberate omission is `play_from_state`'s debug-tier VOLUME cross-check: a
+/// turn reports no volume, so no attested figure crosses this seam, and adding
+/// a fourth debug route DFS at every on-board Movement point would cost every
+/// caller for a quantity nothing here reads. The membership `debug_assert` IS
+/// kept — it guards the canonical-witness gap, which reaches an applied move.
+///
+/// **An ALREADY-TERMINAL root is an `Ok`**, not a refusal: zero moves,
+/// `handoff` the root itself, `game_over` true, and an explaining seat's
+/// `explained` reading `Some(0)`. That is [`drive_to_terminal`]'s contract at
+/// this grain and for the same reason — a turn with nothing in it is a real
+/// answer, and refusing it would make "the position was already finished" the
+/// one reading the instrument could not report.
+///
+/// **`mover` names WHAT plays, never WHICH SEAT.** The seat is
+/// `root.current_player` and there is nothing to reconcile: a [`SeatSpec`]
+/// carries a contestant, not an index, and a turn has exactly one mover by the
+/// stop rule above — which is also why this takes ONE spec where
+/// [`drive_to_terminal`] takes a list, and why no reply policy appears anywhere
+/// in a turn.
+///
+/// The root hygiene is [`drive_to_terminal`]'s, through the SHARED guard
+/// [`require_driveable_root`] (seat count, `max_decisions`, hidden-deal
+/// eligibility) plus a `check_invariants` guard that names the ROOT before the
+/// first decision — so a corrupt fixture is never misattributed to a move. The
+/// eligibility check is the one that would be easiest to drop and hardest to
+/// miss the loss of: `observe` is only ever called for the MOVER inside a turn,
+/// so a live-tracked root whose OPPONENT hid its deal would otherwise drive
+/// perfectly and report a turn nobody could have played.
+pub fn drive_turn(
+    root: &GameState,
+    mover: SeatSpec,
+    rules: &Rules,
+    decision_seed: u64,
+    opts: &DrivenOpts,
+) -> Result<TurnOutcome, DrivenError> {
+    require_driveable_root(root, *opts)?;
+    // The ROOT's own guard, run HERE rather than left to the first decision —
+    // `drive_to_terminal` gets this from `play_from_state`, which a turn cannot
+    // borrow, and `adjudicate_root`'s reason applies unchanged: a state computed
+    // on a corrupt root is a wrong answer wearing the shape of a right one, and
+    // it must be refused as the ROOT it is rather than misattributed to a move.
+    // Unconditional in `opts.invariants`, which is about the PER-MOVE cost of a
+    // bulk run and never about the state handed in.
+    check_invariants(root, rules).map_err(DrivenError::CorruptRoot)?;
+
+    // ONE agent, at `decision_seed`, for the whole turn — the seed discipline
+    // this function's doc states, and the reason the handle below reads the
+    // TURN's counters rather than a decision's.
+    let seat = root.current_player;
+    let (mut agent, handle) = mover.build(rules, decision_seed);
+
+    let mut state = root.clone();
+    let mut moves: Vec<AppliedMove> = Vec::new();
+    let game_over = loop {
+        // THE DUAL STOP, in the order that makes `game_over` a FACT about the
+        // state rather than an inference: a game that ended on this turn never
+        // wrote `current_player` (`apply_move.rs:259-264`), and a hand-off is
+        // never terminal, so the two arms are disjoint and each is checked for
+        // itself.
+        if is_game_over(&state) {
+            break true;
+        }
+        if state.current_player != seat {
+            break false;
+        }
+        if state.turn_number > opts.max_turns {
+            return Err(classify(PlayError::TurnCap { turns: state.turn_number }));
+        }
+        // The decision guard, checked BEFORE the decision it would be the
+        // (max+1)-th of, so the refusal names the bound the caller set rather
+        // than one past it — `play_from_state`'s rule, kept identical.
+        let decisions = moves.len() as u64;
+        if decisions >= opts.max_decisions {
+            return Err(classify(PlayError::DecisionCap { decisions }));
+        }
+
+        // The honest chain, mirroring `AgentBench::decide`: the agent sees
+        // `observe(state, its seat)` and nothing else, and a refusal is a typed
+        // hard error with no fallback arm behind it. It is mirrored rather than
+        // called because that bench is indexed by SEAT and a turn seats exactly
+        // one — but every FAILURE is routed through `classify` over the arena's
+        // own `PlayError`, so the two loops cannot drift in their taxonomy or
+        // their messages.
+        let view = observe(&state, seat)
+            .map_err(|e| classify(PlayError::Observe { seat, detail: e.to_string() }))?;
+        // Plumbing pin, unconditional exactly as the bench's is: one `u8`
+        // compare against a fault that would hand a seat someone else's
+        // information.
+        assert_eq!(view.viewer, seat, "view/seat mismatch in the turn driver");
+        let mv = agent
+            .choose(&view, rules)
+            .map_err(|detail| classify(PlayError::Agent { seat, detail }))?
+            .mv;
+
+        // The validation boundary, `play_from_state`'s verbatim: a false here is
+        // a driver bug, so it is a hard error and never a redraw.
+        if !is_move_legal(&state, &mv, rules, PathMode::Canonical) {
+            return Err(classify(PlayError::IllegalPick { seat, mv: Box::new(mv) }));
+        }
+        // The debug-tier membership cross-check, kept: `Canonical` is wider than
+        // list membership — it does not verify lex-least witness selection — so
+        // this is what catches a non-canonical witness before it reaches an
+        // applied move. The bench's OTHER debug-tier check, the attested-volume
+        // comparison, is deliberately NOT here: a turn reports no volume, so no
+        // attested figure crosses this seam, and a fourth debug route DFS at
+        // every on-board Movement point would cost every caller for a quantity
+        // nothing reads.
+        debug_assert!(
+            get_legal_moves(&state, rules).contains(&mv),
+            "seat {} played a move that passed PathMode::Canonical but is not in \
+             get_legal_moves — a non-canonical witness: {mv:?}",
+            seat.0,
+        );
+
+        state = apply_move_unchecked(&state, &mv, rules)
+            .map_err(|e| classify(PlayError::Apply { seat, detail: e.to_string() }))?;
+        if opts.invariants {
+            if let Err(reason) = check_invariants(&state, rules) {
+                return Err(classify(PlayError::Invariant { seat, reason }));
+            }
+        }
+        moves.push(AppliedMove { seat, mv });
+    };
+
+    // Read AFTER the loop: the handle is an `Arc` on live counters, so reading
+    // it earlier would report a turn that had not happened yet.
+    let counters = handle.as_ref().map_or(SeatCounters::NONE, SeatCounters::from_handle);
+    Ok(TurnOutcome {
+        decisions: moves.len() as u64,
+        moves,
+        handoff: state,
+        game_over,
+        counters,
     })
 }
 
@@ -1615,7 +3227,7 @@ fn mirror_build(
 // ---------------------------------------------------------------------------
 
 /// Find the `ordinal`-th position satisfying `predicate` in a seeded scan at
-/// `master`, under [`GeneratingEcology::v1`].
+/// `master`, under the ecology `predicate.ecology()` names.
 ///
 /// **The scan order IS the ordinal**, and it is stated here because every
 /// recorded triple depends on it: games in `SeedSchedule::diagnostic(master)`
@@ -1623,6 +3235,14 @@ fn mirror_build(
 /// being the state event `k` was decided in, `state_at`'s own index. Hits are
 /// counted across games, so ordinal 0 is the first hit of game 0 and the
 /// counting never restarts.
+///
+/// **The ordinal space is STRIDED** (design §4): at most
+/// [`GeneratingEcology::per_game_cap`] hits per generated game enter it, and
+/// hits past that cap are skipped WITHOUT consuming an ordinal. Consecutive hits
+/// inside one game are successive decision points of one round rather than
+/// independent draws, so an unstrided block would quote a root count it does not
+/// have. The scan therefore stops walking a game the moment its cap is spent —
+/// every remaining hit there is one it would skip anyway.
 ///
 /// **Each game is walked ONE EVENT AT A TIME rather than by repeated
 /// `state_at`**: `state_at(record, k)` is O(k) applies, so scanning a
@@ -1636,49 +3256,109 @@ fn generate_root(
     ordinal: u32,
     rules: &Rules,
 ) -> Result<(GameState, RootDescriptor), RootError> {
-    let ecology = GeneratingEcology::v1();
+    // ONE implementation, so "the batch resolves the same roots as the
+    // per-ordinal path" is true BY CONSTRUCTION rather than by two walks
+    // agreeing. The pin verifies it; this is what makes the pin cheap to keep.
+    generate_roots(predicate, master, &[ordinal], rules)
+        .map(|mut roots| roots.pop().expect("one ordinal asked for, one root returned"))
+}
+
+/// [`generate_root`] for a WHOLE BLOCK of ordinals, in ONE scan walk (Phase C's
+/// T5, plan review NOTE-8).
+///
+/// **Why a batch entry point exists at all.** The scan is defined over a
+/// SEQUENCE — ordinal `n` is the n-th strided hit across the generated games —
+/// so resolving ordinals 0..6 one at a time re-plays the same games six times
+/// and throws five of the walks away. On the rung ecology that is a second of
+/// waste; on the v2 lookahead ecology, where BOTH generating seats search, it is
+/// the whole cost of a family block paid six times over. The walk is identical
+/// to the single-ordinal one in every other respect — same games in the same
+/// draw order, same in-game position order, same stride, same descriptors — and
+/// [`generate_root`] is a call to THIS function, which is what keeps the two
+/// from drifting.
+///
+/// Returns one root per requested ordinal, IN THE REQUESTED ORDER (a repeated
+/// ordinal is answered twice). A missing ordinal is
+/// [`RootError::Exhausted`] naming the FIRST one the scan could not supply,
+/// with the total it did find — the same refusal a single-ordinal call gives.
+///
+/// The scan stops the moment the HIGHEST requested ordinal is collected, so
+/// asking for a block costs no more than asking for its last member.
+pub fn generate_roots(
+    predicate: RootPredicate,
+    master: u64,
+    ordinals: &[u32],
+    rules: &Rules,
+) -> Result<Vec<(GameState, RootDescriptor)>, RootError> {
+    let wanted: BTreeSet<u32> = ordinals.iter().copied().collect();
+    let Some(&highest) = wanted.iter().next_back() else {
+        return Ok(Vec::new());
+    };
+    // AFTER the empty-block return, so the probe counts WALKS and not calls.
+    #[cfg(test)]
+    scan_probe::record_walk();
+    let config = predicate.config();
+    let ecology = config.ecology;
+    let games = ecology.games;
+    let per_game_cap = ecology.per_game_cap;
     let mut schedule = SeedSchedule::diagnostic(master);
     let mut found: u32 = 0;
+    let mut collected: BTreeMap<u32, (GameState, RootDescriptor)> = BTreeMap::new();
 
-    for game_index in 0..ecology.games {
+    'games: for game_index in 0..games {
         let world = schedule.next_world();
         // The ecology's own seating, on the arena's own keying — the same
         // derivation `drive_to_terminal` uses, so a generated root is reachable
         // by a run anyone can reproduce from the master alone.
         let mut make = |seat: PlayerId, _players: u8| -> Box<dyn ArenaAgent> {
-            GENERATED_SEAT.build(rules, agent_stream_seed(world, seat, Slot(seat.0))).0
+            config.seat.build(rules, agent_stream_seed(world, seat, Slot(seat.0))).0
         };
-        let stats = run_arena_game(world, GENERATED_PLAYERS, rules, &mut make, true)
+        let stats = run_arena_game(world, config.players, rules, &mut make, true)
             .map_err(|e| RootError::Generate { game_index, detail: e.to_string() })?;
 
         let events = &stats.record.events;
         let mut state = state_at(&stats.record, 0, rules)
             .map_err(|e| RootError::Generate { game_index, detail: e.to_string() })?;
+        let mut hits_this_game: u32 = 0;
         // INCLUSIVE of the past-the-last position, for totality: `state_at(record,
         // len)` is a real position (the terminal state) and a future predicate may
         // want it. The shipped one excludes it — its `!is_game_over` conjunct —
         // so that position is unreachable today rather than dead, and stopping the
         // range one short would make the scan quietly predicate-specific.
         for position in 0..=events.len() {
-            if predicate.holds(&state) {
-                if found == ordinal {
+            if predicate.holds(&state, rules) {
+                if wanted.contains(&found) {
                     let root_digest = state_digest(&state);
-                    return Ok((
-                        state,
-                        RootDescriptor {
-                            origin: RootOrigin::Generated {
-                                predicate,
-                                master,
-                                ordinal,
-                                game_index,
-                                ecology,
+                    collected.insert(
+                        found,
+                        (
+                            state.clone(),
+                            RootDescriptor {
+                                origin: RootOrigin::Generated {
+                                    predicate,
+                                    master,
+                                    ordinal: found,
+                                    game_index,
+                                    ecology: ecology.clone(),
+                                },
+                                event_index: Some(position),
+                                root_digest,
                             },
-                            event_index: Some(position),
-                            root_digest,
-                        },
-                    ));
+                        ),
+                    );
+                    if found == highest {
+                        break 'games;
+                    }
                 }
                 found += 1;
+                hits_this_game += 1;
+                if hits_this_game >= per_game_cap {
+                    // The STRIDE. Every remaining hit in this game would be
+                    // skipped, so walking on would only cost predicate
+                    // evaluations — which, for the apply-probing layer-2 arms,
+                    // is the scan's whole cost.
+                    break;
+                }
             }
             if let Some(event) = events.get(position) {
                 state = replay_from(&state, std::slice::from_ref(event), rules)
@@ -1687,7 +3367,55 @@ fn generate_root(
         }
     }
 
-    Err(RootError::Exhausted { predicate, ordinal, found, games: ecology.games })
+    ordinals
+        .iter()
+        .map(|ordinal| {
+            collected.get(ordinal).cloned().ok_or(RootError::Exhausted {
+                predicate,
+                ordinal: *ordinal,
+                found,
+                games,
+            })
+        })
+        .collect()
+}
+
+/// A TEST-ONLY meter for the one thing a signature cannot state: how many times
+/// a call WALKED the scan (Phase C, T6 fix wave, review SHOULD-1).
+///
+/// **Why it exists.** `gen:` roots are resolved by [`generate_roots`], which
+/// plays whole games; the runner's rule is that one command resolves its root
+/// ONCE and hands the resolved pair on. Nothing about that is visible in a
+/// return type — a second resolve is correct, reproducible, and merely costs a
+/// scan again — so the only executable form of the rule is a count.
+///
+/// **Thread-local, on `alloc_probe`'s precedent** (`game::search_actions`): a
+/// scan is synchronous on its caller's thread and libtest gives every cell its
+/// own thread, so a cell reads exactly its own walks and parallel cells cannot
+/// see each other's. The counter is MONOTONE and [`count_scans`] reads a DELTA,
+/// so nesting is harmless and no cell can zero another's region.
+///
+/// `#[cfg(test)]`, so nothing here ships: the integration tiers link the crate
+/// without it, and the shipped `generate_roots` is unchanged.
+#[cfg(test)]
+pub(crate) mod scan_probe {
+    use std::cell::Cell;
+
+    thread_local! {
+        static WALKS: Cell<u32> = const { Cell::new(0) };
+    }
+
+    /// Record one walk. Called from [`super::generate_roots`] and nowhere else.
+    pub(super) fn record_walk() {
+        let _ = WALKS.try_with(|walks| walks.set(walks.get().saturating_add(1)));
+    }
+
+    /// Run `f`, and report how many scan walks it took ON THIS THREAD.
+    pub(crate) fn count_scans<R>(f: impl FnOnce() -> R) -> (R, u32) {
+        let before = WALKS.with(Cell::get);
+        let value = f();
+        (value, WALKS.with(Cell::get) - before)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2134,6 +3862,21 @@ pub struct CandidatePlayout {
     pub turns: u32,
     /// [`state_digest`] of the terminal state.
     pub final_digest: String,
+    /// **THE MOVER'S FIRST TURN, judged** (Phase C, design §3's turn-grain
+    /// admission): whether the TURN PREDICATE a caller supplied to
+    /// [`adjudicate_root_with`] held at the hand-off this playout's forced
+    /// candidate started.
+    ///
+    /// `None` means NO HOOK WAS SUPPLIED — the counter-absence distinction this
+    /// module keeps everywhere ([`SeatCounters`]'s own rule), never "the
+    /// predicate was false". An admission arithmetic that read `None` as `false`
+    /// would silently put every hook-free playout in the losing group.
+    ///
+    /// **The turn is ROOT + forced candidate + the mover's remaining moves**,
+    /// and the candidate is decision ZERO of it rather than something that
+    /// happened before it — see [`adjudicate_root_with`] for the derivation and
+    /// for why the predicate's first argument is the PRE-candidate root.
+    pub turn_verdict: Option<bool>,
 }
 
 /// ONE root candidate, with every replication's playout of it.
@@ -2373,6 +4116,17 @@ pub enum AdjudicationError {
     /// a standing and every game has a rival), typed rather than panicking
     /// because an instrument that aborts is worse than one that refuses.
     Unscorable { seat: PlayerId },
+    /// A TURN HOOK was supplied and the mover's own applied moves would not
+    /// re-apply, so the hand-off the predicate is evaluated at could not be
+    /// rebuilt (Phase C).
+    ///
+    /// An engine bug rather than an answer — these are moves the driver ALREADY
+    /// applied in this same playout — and typed rather than `expect`ed on
+    /// [`Unscorable`]'s grounds: an instrument that aborts is worse than one
+    /// that refuses. Never a `None` verdict: a playout silently missing its
+    /// verdict would land in no admission group and shrink a denominator
+    /// invisibly.
+    HandoffReplay { candidate: Box<Move>, replication: u32, detail: String },
 }
 
 impl std::fmt::Display for AdjudicationError {
@@ -2401,6 +4155,11 @@ impl std::fmt::Display for AdjudicationError {
             Self::Unscorable { seat } => {
                 write!(f, "the final result carries no margin for seat {}", seat.0)
             }
+            Self::HandoffReplay { candidate, replication, detail } => write!(
+                f,
+                "replication {replication} of {candidate:?} played moves that do not re-apply, so \
+                 the turn hand-off the turn predicate reads could not be rebuilt: {detail}"
+            ),
         }
     }
 }
@@ -2504,6 +4263,98 @@ pub fn adjudicate_root(
     replications: u32,
     opts: DrivenOpts,
 ) -> Result<Adjudication, AdjudicationError> {
+    adjudicate_root_with(source, seats, rules, master, replications, opts, None)
+}
+
+/// The MOVER'S FIRST TURN inside one playout, rebuilt by replay from the moves
+/// the playout applied (Phase C, design §2's adjudicator hook).
+///
+/// **Why a replay and not an observer**: a playout runs through
+/// `play_from_state`, which exposes no per-move hook, so the only honest way to
+/// name the hand-off is the repo's canonical reconstruction pattern —
+/// `record::state_at` and the CLI's `why` both rebuild a position by re-applying
+/// a recorded move list, and this is that pattern scoped to one turn.
+///
+/// **`after` is ROOT + THE FORCED CANDIDATE**, so the candidate is decision ZERO
+/// of the turn and is already applied when this starts. The walk then takes the
+/// mover's applied moves up to the FIRST non-mover move, stopping early the
+/// moment the turn ends (`current_player` moves off the mover, or the game ends)
+/// — the same dual stop [`drive_turn`] documents, for the same reason: the
+/// game-end arm of `advance_phase` never writes `current_player`, so neither
+/// condition implies the other.
+///
+/// Cost: at most one turn of re-applies per playout, and only when a hook is
+/// supplied.
+fn turn_handoff_from_playout(
+    after: &GameState,
+    mover: PlayerId,
+    applied: &[AppliedMove],
+    rules: &Rules,
+) -> Result<GameState, String> {
+    let mut state = after.clone();
+    // The forced candidate may BE the whole turn: a candidate that hands off (or
+    // ends the game) leaves a mover-prefix of exactly nothing, and walking the
+    // remainder's moves would then attribute the OPPONENT's turn to this mover.
+    if is_game_over(&state) || state.current_player != mover {
+        return Ok(state);
+    }
+    for step in applied {
+        if step.seat != mover {
+            break;
+        }
+        state = apply_move_unchecked(&state, &step.mv, rules).map_err(|e| e.to_string())?;
+        if is_game_over(&state) || state.current_player != mover {
+            break;
+        }
+    }
+    Ok(state)
+}
+
+/// A TURN PREDICATE, as [`adjudicate_root_with`] takes it: `(root, hand-off) ->
+/// bool`.
+///
+/// Named rather than spelled inline at the one call site, because the two
+/// arguments are NOT interchangeable and a name is where that can be said: the
+/// first is the ADJUDICATED ROOT, pre-candidate, and the second is where the
+/// mover's first turn ENDED. `game::driven_families::TurnPredicate` is the
+/// frozen vocabulary of rules that fit here; this alias keeps `driven` itself
+/// from depending on that module.
+pub type TurnHook<'a> = &'a dyn Fn(&GameState, &GameState) -> bool;
+
+/// [`adjudicate_root`] with design §2's optional TURN-PREDICATE HOOK — the form
+/// turn-grain admission (design §4) is computed from.
+///
+/// Every playout is stamped with [`CandidatePlayout::turn_verdict`]: whether the
+/// mover's FIRST TURN out of this root satisfied `turn_hook`. `None` supplies no
+/// hook and every verdict reads `None`, which is byte-for-byte what
+/// [`adjudicate_root`] produced before this seam existed.
+///
+/// **THE HOOK'S FIRST ARGUMENT IS THE ADJUDICATED ROOT, PRE-CANDIDATE**, and the
+/// rule is load-bearing rather than a convention. The mover's turn INCLUDES the
+/// forced candidate — the candidate is its decision zero — so a predicate that
+/// asks "did this turn claim an achievement?" must compare against the state
+/// BEFORE the candidate. Handed the post-candidate state instead, a playout
+/// whose forced candidate IS the claim would compare a grown claimed-set against
+/// an already-grown one, read FALSE, and land in the losing group — inverting
+/// exactly the dominance partition design §4's admission is computed from.
+/// `the_claim_first_playout_is_a_true_verdict_not_a_false_one` pins it.
+///
+/// The second argument is the HAND-OFF: root + candidate + the mover's remaining
+/// moves, rebuilt by [`turn_handoff_from_playout`].
+///
+/// A hook is a [`TurnHook`] — `&dyn Fn`, not a generic parameter — so that the
+/// two entry points share ONE body: a generic would make `adjudicate_root`'s
+/// delegation pick a turbofished stand-in type for "no hook", which is a second
+/// thing to keep correct for no gain at one call per playout.
+pub fn adjudicate_root_with(
+    source: &RootSource,
+    seats: &[SeatSpec],
+    rules: &Rules,
+    master: WorldSeed,
+    replications: u32,
+    opts: DrivenOpts,
+    turn_hook: Option<TurnHook<'_>>,
+) -> Result<Adjudication, AdjudicationError> {
     if replications == 0 {
         return Err(AdjudicationError::NoReplications);
     }
@@ -2564,6 +4415,24 @@ pub fn adjudicate_root(
             })?;
             let v = verdict(&outcome.result, mover)
                 .ok_or(AdjudicationError::Unscorable { seat: mover })?;
+            // The TURN VERDICT, derived from the moves this playout applied —
+            // and evaluated against the PRE-CANDIDATE root, per this function's
+            // doc. Skipped entirely without a hook, so the hook-free path pays
+            // not one re-apply.
+            let turn_verdict = match turn_hook {
+                Some(hook) => {
+                    let handoff =
+                        turn_handoff_from_playout(&after, mover, &outcome.applied, rules).map_err(
+                            |detail| AdjudicationError::HandoffReplay {
+                                candidate: Box::new(candidate.clone()),
+                                replication,
+                                detail,
+                            },
+                        )?;
+                    Some(hook(&root, &handoff))
+                }
+                None => None,
+            };
             if witness.is_none() {
                 witness = Some(outcome.provenance.clone());
             }
@@ -2580,6 +4449,7 @@ pub fn adjudicate_root(
                 decisions: outcome.decisions,
                 turns: outcome.final_state.turn_number,
                 final_digest: state_digest(&outcome.final_state),
+                turn_verdict,
             });
         }
         rows.push(CandidateRow { candidate, continuation_digest, playouts });
@@ -2591,7 +4461,7 @@ pub fn adjudicate_root(
         .map(|(index, spec)| AdjudicationSeat {
             seat: index as u8,
             requested: spec.requested_label(),
-            echo: spec.contestant().echo(),
+            echo: spec.echo(),
         })
         .collect();
     Ok(Adjudication {
@@ -2630,10 +4500,11 @@ mod tests {
     use crate::game::seeds::SeedSchedule;
     use crate::game::setup::{finalize_setup, new_game, StartingOrderChoice};
     use crate::types::{
-        BuildingSite, EndGameTrigger, GameConfig, MercenaryState, PlayerView, PresidentLocation,
-        TradingHouseState, TurnPhase,
+        AreaAction, BuildingSite, EndGameTrigger, GameConfig, MercenaryState, PlayerView,
+        PresidentLocation, TradingHouseState, TurnPhase,
     };
     use std::collections::BTreeMap;
+    use std::cell::RefCell;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
 
@@ -2709,15 +4580,18 @@ mod tests {
     fn the_reply_menu_spells_the_declared_contestants() {
         assert_eq!(
             ReplyPolicy::FamilyWeighted.contestant(),
-            Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT),
+            Ok(Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT)),
         );
-        assert_eq!(ReplyPolicy::GreedyAtFinal.contestant(), Contestant::GREEDY_V1_DEFAULT);
-        assert_eq!(ReplyPolicy::GreedyAtFinal.contestant(), Contestant::GreedyV1 { m: 8 });
-        assert_eq!(ReplyPolicy::LookaheadAtFinal.contestant(), Contestant::LOOKAHEAD_V1_DEFAULT);
+        assert_eq!(ReplyPolicy::GreedyAtFinal.contestant(), Ok(Contestant::GREEDY_V1_DEFAULT));
+        assert_eq!(ReplyPolicy::GreedyAtFinal.contestant(), Ok(Contestant::GreedyV1 { m: 8 }));
+        assert_eq!(
+            ReplyPolicy::LookaheadAtFinal.contestant(),
+            Ok(Contestant::LOOKAHEAD_V1_DEFAULT),
+        );
         assert!(
             matches!(
                 ReplyPolicy::LookaheadAtFinal.contestant(),
-                Contestant::LookaheadV1 { cap: None, .. }
+                Ok(Contestant::LookaheadV1 { cap: None, .. })
             ),
             "the shipped S1 arm is UNCAPPED: an absent cap is not any set cap",
         );
@@ -3245,7 +5119,7 @@ mod tests {
             "anti-vacuity: this terminal state never reached the final round",
         );
         assert!(
-            !RootPredicate::FinalRoundAlreadyTriggered.holds(&terminal),
+            !RootPredicate::FinalRoundAlreadyTriggered.holds(&terminal, &rules),
             "a state that is OVER satisfied the root predicate — nobody decides there",
         );
 
@@ -3935,7 +5809,7 @@ mod tests {
             let d = &p.seats[index];
             assert_eq!(d.seat, index as u8, "the descriptors are not in seat order");
             assert_eq!(d.requested, spec.requested_label());
-            assert_eq!(d.echo, spec.contestant().echo(), "seat {index} echoes another contestant");
+            assert_eq!(d.echo, spec.echo(), "seat {index} echoes another contestant");
             assert_eq!(
                 d.observation,
                 crate::game::record::OBSERVATION_VIEW,
@@ -3946,12 +5820,19 @@ mod tests {
                 agent_stream_seed(master, PlayerId(index as u8), Slot(index as u8)),
                 "seat {index}'s recorded stream is not the one it played on",
             );
+            // The two CONTESTANT-only claims. A harness-rule seat (T3's
+            // race-rusher) has no contestant to reconstruct and no
+            // `Contestant::descriptor` to agree with — which is the whole point
+            // of the second materialization arm — so it is skipped HERE rather
+            // than weakened for every seat; its own descriptor is pinned by
+            // `a_race_rusher_seat_is_described_by_the_driver_that_seated_it`.
+            let Ok(contestant) = spec.contestant() else { continue };
             // The RECONSTRUCTION property: the two record halves this descriptor
             // carries are enough to rebuild the contestant, knobs and all — which
             // is what makes the descriptor an identity rather than a label.
             assert_eq!(
                 Contestant::from_parts(&d.controller, &d.params),
-                Ok(spec.contestant()),
+                Ok(contestant),
                 "seat {index}'s controller+params do not reconstruct what played",
             );
             // And the AGENT's own descriptor is the CONTESTANT's: these come from
@@ -3959,7 +5840,7 @@ mod tests {
             // spec claims the second), so a contestant whose `build` ever routed
             // to a differently-versioned or differently-knobbed agent would show
             // up here rather than in a report nobody cross-checks.
-            let (name, version, params) = spec.contestant().descriptor();
+            let (name, version, params) = contestant.descriptor();
             assert_eq!(
                 (d.controller.as_str(), d.version, &d.params),
                 (name.as_str(), version, &params),
@@ -4009,6 +5890,110 @@ mod tests {
             .expect("a constructed source resolves to itself");
         assert_eq!(resolved, root, "resolving a constructed source moved the state");
         assert_eq!(descriptor, p.root, "the driver and the source describe one root differently");
+    }
+
+    /// A PRE-RESOLVED root hands back exactly what it was given (Phase C's T5).
+    ///
+    /// The variant's whole job is to let a block resolve its draws ONCE and then
+    /// adjudicate them under a whole reply menu without re-scanning, so the
+    /// property that matters is that `resolve` is the IDENTITY on it — state and
+    /// descriptor both, byte for byte, including a descriptor whose origin is a
+    /// seeded scan the caller did earlier. The second half is the discriminator:
+    /// the same state wrapped as `Constructed` resolves to a DIFFERENT
+    /// descriptor, which is exactly the provenance downgrade this variant exists
+    /// to avoid.
+    #[test]
+    fn a_pre_resolved_root_resolves_to_itself_descriptor_included() {
+        let rules = Rules::standard();
+        let root = root_2p(&rules, world(46).0);
+        let descriptor = RootDescriptor {
+            origin: RootOrigin::Generated {
+                predicate: RootPredicate::FinalRoundAlreadyTriggered,
+                master: 0x0C04_2026_0818_9991,
+                ordinal: 3,
+                game_index: 1,
+                ecology: GeneratingEcology::v1(),
+            },
+            event_index: Some(211),
+            root_digest: state_digest(&root),
+        };
+
+        let (state, resolved) = RootSource::Resolved {
+            state: root.clone(),
+            descriptor: descriptor.clone(),
+        }
+        .resolve(&rules)
+        .expect("a pre-resolved source resolves to itself");
+        assert_eq!(state, root, "resolving a pre-resolved source moved the state");
+        assert_eq!(resolved, descriptor, "the descriptor did not survive the round trip");
+
+        // THE DISCRIMINATOR: the `Constructed` alternative loses the origin.
+        let (_, downgraded) =
+            RootSource::Constructed(root).resolve(&rules).expect("constructed resolves");
+        assert_eq!(downgraded.origin, RootOrigin::Constructed);
+        assert_ne!(downgraded, descriptor, "the two arms describe the root identically");
+    }
+
+    /// **A MIS-PAIRED pre-resolved root REFUSES BY NAME** (Phase C's T5 fix
+    /// wave, review SHOULD-2).
+    ///
+    /// [`RootSource::Resolved`] is the one arm whose descriptor the caller
+    /// supplies, so it is the one arm whose two halves can describe different
+    /// positions — and nothing downstream could ever tell: every table, digest
+    /// and sidecar would name the wrong root perfectly consistently. The check
+    /// is the Phase-B loader's `RegistryError::Stale` posture at the identity
+    /// level, and this is its red path.
+    ///
+    /// The GREEN half rides beside it deliberately: the same descriptor, paired
+    /// with the state it actually describes, resolves unchanged — so the cell
+    /// separates "the pair disagrees" from "the arm refuses".
+    #[test]
+    fn a_mis_paired_pre_resolved_root_refuses_naming_both_digests() {
+        let rules = Rules::standard();
+        let root = root_2p(&rules, world(46).0);
+        let other = root_2p(&rules, world(47).0);
+        assert_ne!(state_digest(&root), state_digest(&other), "the two fixtures are one position");
+
+        let descriptor = RootDescriptor {
+            origin: RootOrigin::Generated {
+                predicate: RootPredicate::FinalRoundAlreadyTriggered,
+                master: 0x0C04_2026_0818_9992,
+                ordinal: 1,
+                game_index: 0,
+                ecology: GeneratingEcology::v1(),
+            },
+            event_index: Some(97),
+            root_digest: state_digest(&root),
+        };
+
+        // GREEN: the pair that came from one resolution is untouched.
+        let (state, back) =
+            RootSource::Resolved { state: root.clone(), descriptor: descriptor.clone() }
+                .resolve(&rules)
+                .expect("a well-paired root resolves");
+        assert_eq!(state, root);
+        assert_eq!(back, descriptor);
+
+        // RED: the SAME descriptor over another state.
+        let err = RootSource::Resolved { state: other.clone(), descriptor: descriptor.clone() }
+            .resolve(&rules)
+            .expect_err("a descriptor describing another position must refuse");
+        match err {
+            RootError::ResolvedMismatch {
+                origin,
+                ref descriptor_digest,
+                state_digest: ref actual,
+            } => {
+                assert_eq!(origin, "generated", "the refusal misreports the origin kind");
+                assert_eq!(descriptor_digest, &descriptor.root_digest);
+                assert_eq!(actual, &state_digest(&other));
+            }
+            ref other => panic!("expected ResolvedMismatch, got {other:?}"),
+        }
+        // The sentence names BOTH positions, which is what makes it actionable.
+        let text = err.to_string();
+        assert!(text.contains(&descriptor.root_digest), "the refusal hides the descriptor: {text}");
+        assert!(text.contains(&state_digest(&other)), "the refusal hides the state: {text}");
     }
 
     /// A RECORD-PREFIX root: `state_at`'s position, driven to terminal, with the
@@ -4275,7 +6260,10 @@ mod tests {
         assert_eq!(first, second);
 
         // What came back is what was asked for.
-        assert!(predicate.holds(&first), "the scan returned a position the predicate rejects");
+        assert!(
+            predicate.holds(&first, &rules),
+            "the scan returned a position the predicate rejects",
+        );
         assert!(first.end_game_triggered && first.final_round, "not a final-round position");
         assert!(!is_game_over(&first), "a terminal state is not a root anyone can decide at");
         assert_eq!(descriptor.root_digest, state_digest(&first));
@@ -4310,7 +6298,7 @@ mod tests {
             state_at(&first_game.record, 0, &rules).expect("position 0 of any record replays");
         let mut anchor = None;
         for position in 0..=first_game.record.events.len() {
-            if predicate.holds(&walk) {
+            if predicate.holds(&walk, &rules) {
                 anchor = Some((position, state_digest(&walk)));
                 break;
             }
@@ -4341,7 +6329,7 @@ mod tests {
             state_digest(&first),
             "ordinal 1 returned ordinal 0's root, so the ordinal selects nothing",
         );
-        assert!(predicate.holds(&next));
+        assert!(predicate.holds(&next, &rules));
 
         // So is the master.
         let (elsewhere, _) = RootSource::Generated {
@@ -4932,6 +6920,9 @@ mod tests {
             decisions: 0,
             turns: 0,
             final_digest: String::new(),
+            // No hook ran over a hand-built playout — the counter-absence
+            // reading, never a false verdict.
+            turn_verdict: None,
         }
     }
 
@@ -5625,5 +7616,2584 @@ mod tests {
             rendered.contains("did not terminate within 3 decisions"),
             "the message hides the cause: {rendered}",
         );
+    }
+
+
+    // =======================================================================
+    // Phase C T1: the layer-2 generator vocabulary
+    // =======================================================================
+
+    /// Phase C T1's committed diagnostic master for the HARVESTS below —
+    /// diagnostic BY NAME per `game::seeds`, the same waiver [`MASTER`] and
+    /// [`GEN_MASTER`] carry.
+    const C_MASTER: u64 = 0x0C01_2026_0818_9990;
+
+    /// The FIRST position of the organic 2P rung games at `master` satisfying
+    /// `want`.
+    ///
+    /// **Harvest-then-doctor is the fixture discipline for every layer-2 cell
+    /// below**, and it is deliberate: the layer-2 predicates read the LEGAL
+    /// LIST, so a state assembled field by field would have to be legal enough
+    /// for `get_legal_moves` to answer sensibly, which is most of a game's
+    /// worth of coherence to hand-write. Starting from an engine-produced
+    /// position and moving ONE thing (a victory-point total, a seat's
+    /// assistants) keeps the fixture inside the engine's own net —
+    /// `check_invariants` is asserted on every doctored state — while making
+    /// the conjunct under test the only thing that differs.
+    ///
+    /// Panics with a naming message when nothing matches, so a cell can never
+    /// pass by harvesting nothing.
+    fn harvest(
+        rules: &Rules,
+        master: u64,
+        games: u32,
+        what: &str,
+        want: &mut dyn FnMut(&GameState) -> bool,
+    ) -> GameState {
+        let mut schedule = SeedSchedule::diagnostic(master);
+        for _ in 0..games {
+            let world = schedule.next_world();
+            let mut make = |seat: PlayerId, _players: u8| -> Box<dyn ArenaAgent> {
+                GENERATED_SEAT.build(rules, agent_stream_seed(world, seat, Slot(seat.0))).0
+            };
+            let stats = run_arena_game(world, 2, rules, &mut make, true)
+                .expect("a harvest game must complete");
+            let events = &stats.record.events;
+            let mut state =
+                state_at(&stats.record, 0, rules).expect("position 0 of any record replays");
+            for position in 0..=events.len() {
+                if want(&state) {
+                    return state;
+                }
+                if let Some(event) = events.get(position) {
+                    state = replay_from(&state, std::slice::from_ref(event), rules)
+                        .expect("a generated game replays event by event");
+                }
+            }
+        }
+        panic!("anti-vacuity: no position in {games} rung games at {master:#018x} is {what}");
+    }
+
+    /// Doctor base VP until the mover's true margin is exactly `target`, and
+    /// assert it landed.
+    ///
+    /// Only `victory_points` moves, and only UPWARD on one seat, so nothing
+    /// clamps and no other score component is disturbed — which is what makes
+    /// the band cells below statements about the band rather than about the
+    /// doctoring.
+    fn set_true_margin(state: &mut GameState, rules: &Rules, target: i64) {
+        let mover = state.current_player;
+        let rival = state
+            .players
+            .iter()
+            .map(|p| p.id)
+            .find(|id| *id != mover)
+            .expect("a 2P fixture has a rival");
+        let delta = target - true_margin_now(state, rules);
+        if delta >= 0 {
+            state.player_mut(mover).victory_points += delta as u32;
+        } else {
+            state.player_mut(rival).victory_points += (-delta) as u32;
+        }
+        assert_eq!(
+            true_margin_now(state, rules),
+            target,
+            "the VP doctor did not land the margin it was asked for",
+        );
+    }
+
+    /// Move one of `p`'s assistants onto `area` from wherever it can be spared,
+    /// keeping the 20-assistant conservation the invariant net checks.
+    fn stage_assistant(p: &mut crate::types::PlayerState, area: AreaId) {
+        if p.assistants.in_hand > 0 {
+            p.assistants.in_hand -= 1;
+        } else if p.assistants.in_warehouse > 0 {
+            p.assistants.in_warehouse -= 1;
+        } else {
+            panic!("the fixture seat has no assistant left to stage");
+        }
+        *p.assistants.on_board.entry(area).or_insert(0) += 1;
+    }
+
+    /// Return every assistant `p` has on `area` to its hand.
+    fn clear_area(p: &mut crate::types::PlayerState, area: AreaId) {
+        if let Some(n) = p.assistants.on_board.remove(&area) {
+            p.assistants.in_hand += n;
+        }
+    }
+
+    /// Arm the OPPONENT with a full race threat on both tracks: four assistants
+    /// on each track area (power 4, plus the President that travels there = the
+    /// capped 5), every payment type in stock, and its President anywhere but
+    /// the area it would have to travel to.
+    ///
+    /// At that power and stock its reachable set is EVERY unoccupied space on
+    /// both tracks, which is what makes the intersection with the mover's own
+    /// reachable step guaranteed rather than lucky.
+    fn arm_race_threat(state: &mut GameState, opponent: PlayerId, areas: [AreaId; 2]) {
+        for area in areas {
+            let p = state.player_mut(opponent);
+            while p.assistants.in_area(area) < 4 {
+                stage_assistant(p, area);
+            }
+            if p.president_location == PresidentLocation::OnBoard(area) {
+                p.president_location = PresidentLocation::InHand;
+            }
+        }
+        let p = state.player_mut(opponent);
+        p.money = 10;
+        p.copper = 1;
+        p.silk = 1;
+        p.tea = 1;
+        p.seafood = 1;
+        p.imported_goods = 4;
+    }
+
+    /// The two track areas of a 2P board.
+    fn track_areas(state: &GameState) -> [AreaId; 2] {
+        [
+            area_of_type(state, AreaType::Church).expect("every board has a Church"),
+            area_of_type(state, AreaType::Customs).expect("every board has a Customs"),
+        ]
+    }
+
+    /// The seat that is not the mover.
+    fn rival_of(state: &GameState) -> PlayerId {
+        state
+            .players
+            .iter()
+            .map(|p| p.id)
+            .find(|id| *id != state.current_player)
+            .expect("a 2P fixture has a rival")
+    }
+
+    // -----------------------------------------------------------------------
+    // Item 1: `holds` gained `&Rules`, and the rules-free arms ignore it
+    // -----------------------------------------------------------------------
+
+    /// The two flag-reading predicates answer IDENTICALLY under two different
+    /// `Rules`, and answer their own conjunct.
+    ///
+    /// The signature change is the interesting part of T1's item 1: every
+    /// caller now passes rules, so an arm that started READING them would be
+    /// invisible at the call sites. This is the executable form of "the shipped
+    /// variant ignores it" — same states, two rules values (the standard
+    /// registries and the empty test ones, which share not one card), same
+    /// answers, and each answer re-derived from the state's own flags.
+    #[test]
+    fn the_rules_free_predicates_ignore_the_rules_the_signature_now_carries() {
+        let rules = Rules::standard();
+        let other = Rules::empty_for_tests();
+
+        let fresh = root_2p(&rules, world(30).0);
+        let (final_round, _) =
+            RootSource::Generated { predicate: RootPredicate::FinalRoundAlreadyTriggered, master: GEN_MASTER, ordinal: 0 }
+                .resolve(&rules)
+                .expect("the scan supplies a final-round root");
+        let mid_round = harvest(&rules, C_MASTER, 4, "triggered but not yet the final round", &mut |s| {
+            s.end_game_triggered && !s.final_round && !is_game_over(s)
+        });
+
+        // Anti-vacuity: the three states are three DIFFERENT answers, so the
+        // agreement below is not the agreement of a constant.
+        assert!(!fresh.end_game_triggered, "the fresh root is already triggered");
+        assert!(final_round.end_game_triggered && final_round.final_round);
+        assert!(mid_round.end_game_triggered && !mid_round.final_round);
+
+        for state in [&fresh, &final_round, &mid_round] {
+            for predicate in
+                [RootPredicate::FinalRoundAlreadyTriggered, RootPredicate::TriggerRoundNotFinal]
+            {
+                let with_standard = predicate.holds(state, &rules);
+                assert_eq!(
+                    with_standard,
+                    predicate.holds(state, &other),
+                    "{} read the rules it is supposed to ignore",
+                    predicate.as_str(),
+                );
+                // And the answer is the conjunct, re-derived here.
+                let expected = match predicate {
+                    RootPredicate::FinalRoundAlreadyTriggered => {
+                        state.end_game_triggered && state.final_round && !is_game_over(state)
+                    }
+                    _ => state.end_game_triggered && !state.final_round && !is_game_over(state),
+                };
+                assert_eq!(with_standard, expected, "{} is not its own conjunct", predicate.as_str());
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Item 2: the five new predicate arms
+    // -----------------------------------------------------------------------
+
+    /// Family 1's CONTROL partitions the triggered non-terminal positions with
+    /// the shipped predicate, and neither claims an untriggered or a terminal
+    /// one.
+    #[test]
+    fn the_trigger_round_control_partitions_the_triggered_positions() {
+        let rules = Rules::standard();
+        let shipped = RootPredicate::FinalRoundAlreadyTriggered;
+        let control = RootPredicate::TriggerRoundNotFinal;
+
+        // POSITIVE for the control: triggered, not yet the final round.
+        let mid_round = harvest(&rules, C_MASTER, 4, "triggered but not yet the final round", &mut |s| {
+            s.end_game_triggered && !s.final_round && !is_game_over(s)
+        });
+        assert!(control.holds(&mid_round, &rules));
+        assert!(!shipped.holds(&mid_round, &rules), "the two predicates overlap");
+
+        // NEGATIVE: the final round itself — the shipped predicate's own ground.
+        let (final_round, _) =
+            RootSource::Generated { predicate: shipped, master: GEN_MASTER, ordinal: 0 }
+                .resolve(&rules)
+                .expect("the scan supplies a final-round root");
+        assert!(!control.holds(&final_round, &rules));
+        assert!(shipped.holds(&final_round, &rules));
+
+        // NEGATIVE: never triggered at all, and NEGATIVE: over.
+        let fresh = root_2p(&rules, world(31).0);
+        assert!(!control.holds(&fresh, &rules) && !shipped.holds(&fresh, &rules));
+        let terminal = harvest(&rules, C_MASTER, 4, "a terminal position", &mut |s| is_game_over(s));
+        assert!(
+            terminal.end_game_triggered,
+            "anti-vacuity: this terminal state never triggered, so `!is_game_over` is untested",
+        );
+        assert!(
+            !control.holds(&terminal, &rules),
+            "the control claimed a state nobody decides at",
+        );
+    }
+
+    /// Family 2's POSITIVE needs all four conjuncts, and each one is shown
+    /// refusing on its own.
+    ///
+    /// The band cell is the sharp one: at a margin of exactly
+    /// [`TRUE_MARGIN_BAND`] the predicate holds and at one VP less it does not,
+    /// on the SAME position with the same firing move — so the constant is
+    /// read rather than merely present.
+    #[test]
+    fn the_ahead_predicate_needs_a_firing_move_a_full_band_and_a_narrow_root() {
+        let rules = Rules::standard();
+        let ahead = RootPredicate::EndFirableAheadInTruth;
+        let behind = RootPredicate::EndFirableBehindInTruth;
+
+        let firable = harvest(&rules, C_MASTER, 4, "a narrow position with a firing move", &mut |s| {
+            !s.end_game_triggered
+                && width_ok(s, &rules)
+                && !firing_moves(s, &rules).is_empty()
+        });
+        assert!(check_invariants(&firable, &rules).is_ok());
+
+        let mut at_band = firable.clone();
+        set_true_margin(&mut at_band, &rules, TRUE_MARGIN_BAND);
+        assert!(check_invariants(&at_band, &rules).is_ok(), "the VP doctor left an invalid state");
+        assert!(ahead.holds(&at_band, &rules), "the positive fixture does not satisfy the predicate");
+        assert!(!behind.holds(&at_band, &rules), "the control claimed an AHEAD position");
+
+        // The BAND is read: one VP short and the same position is out.
+        let mut under_band = firable.clone();
+        set_true_margin(&mut under_band, &rules, TRUE_MARGIN_BAND - 1);
+        assert!(
+            !ahead.holds(&under_band, &rules),
+            "a margin one VP under the band still satisfied the predicate",
+        );
+        assert!(
+            !firing_moves(&under_band, &rules).is_empty(),
+            "anti-vacuity: the under-band fixture lost its firing move, so the band is untested",
+        );
+
+        // The FIRING conjunct is read: a fresh root is +10 ahead and still out.
+        let mut no_fire = root_2p(&rules, world(32).0);
+        set_true_margin(&mut no_fire, &rules, TRUE_MARGIN_BAND);
+        assert!(
+            firing_moves(&no_fire, &rules).is_empty(),
+            "anti-vacuity: the opening position can already end the game",
+        );
+        assert!(!ahead.holds(&no_fire, &rules));
+
+        // The `!end_game_triggered` conjunct is read: the same board once the
+        // trigger has fired has no FIRING move by definition.
+        let (final_round, _) = RootSource::Generated {
+            predicate: RootPredicate::FinalRoundAlreadyTriggered,
+            master: GEN_MASTER,
+            ordinal: 0,
+        }
+        .resolve(&rules)
+        .expect("the scan supplies a final-round root");
+        let mut triggered = final_round;
+        set_true_margin(&mut triggered, &rules, TRUE_MARGIN_BAND);
+        assert!(!ahead.holds(&triggered, &rules));
+    }
+
+    /// Family 2's CONTROL is the AHEAD predicate mirrored at `-BAND`, on the
+    /// same harvested position.
+    #[test]
+    fn the_behind_predicate_mirrors_the_ahead_one_at_the_negative_band() {
+        let rules = Rules::standard();
+        let ahead = RootPredicate::EndFirableAheadInTruth;
+        let behind = RootPredicate::EndFirableBehindInTruth;
+
+        let firable = harvest(&rules, C_MASTER, 4, "a narrow position with a firing move", &mut |s| {
+            !s.end_game_triggered
+                && width_ok(s, &rules)
+                && !firing_moves(s, &rules).is_empty()
+        });
+
+        let mut at_band = firable.clone();
+        set_true_margin(&mut at_band, &rules, -TRUE_MARGIN_BAND);
+        assert!(check_invariants(&at_band, &rules).is_ok());
+        assert!(behind.holds(&at_band, &rules), "the control fixture does not satisfy the control");
+        assert!(!ahead.holds(&at_band, &rules), "the positive claimed a BEHIND position");
+
+        let mut under_band = firable.clone();
+        set_true_margin(&mut under_band, &rules, -(TRUE_MARGIN_BAND - 1));
+        assert!(
+            !behind.holds(&under_band, &rules),
+            "a margin one VP short of the negative band still satisfied the control",
+        );
+
+        // A margin of ZERO satisfies NEITHER — the band is a two-sided
+        // exclusion zone, not a sign test.
+        let mut level = firable.clone();
+        set_true_margin(&mut level, &rules, 0);
+        assert!(!ahead.holds(&level, &rules) && !behind.holds(&level, &rules));
+    }
+
+    /// Family 3's probe holds where an opponent is one action from a contested
+    /// track step the mover can take this move, and each half of that
+    /// conjunction is shown refusing alone.
+    #[test]
+    fn the_race_probe_needs_both_a_threatened_step_and_a_mover_who_can_take_it() {
+        let rules = Rules::standard();
+        let race = RootPredicate::ExclusiveRaceOneStep;
+
+        // The MOVER half, harvested: a narrow position where one of this move's
+        // candidates puts (or queues) this seat's own pawn on a track space.
+        let base = harvest(&rules, C_MASTER, 4, "a narrow position where the mover can take a track step", &mut |s| {
+            if is_game_over(s) {
+                return false;
+            }
+            let legal = get_legal_moves(s, &rules);
+            width_ok_len(legal.len()) && !mover_reachable_steps(s, &legal, &rules).is_empty()
+        });
+        let areas = track_areas(&base);
+        let opponent = rival_of(&base);
+
+        // The OPPONENT half, doctored on: four assistants on each track area and
+        // a full purse, so its reachable set is every unoccupied space.
+        let mut armed = base.clone();
+        arm_race_threat(&mut armed, opponent, areas);
+        assert!(check_invariants(&armed, &rules).is_ok(), "the armed fixture is not engine-valid");
+        let legal = get_legal_moves(&armed, &rules);
+        assert!(
+            width_ok_len(legal.len()),
+            "the doctoring widened the position past the bound, so this cell tests the bound",
+        );
+        let reachable = mover_reachable_steps(&armed, &legal, &rules);
+        assert!(!reachable.is_empty(), "the doctoring cost the mover its own step");
+        let contested = opponent_race_steps(&armed);
+        assert!(!contested.is_empty(), "the armed opponent threatens nothing");
+        assert!(race.holds(&armed, &rules), "the positive fixture does not satisfy the probe");
+
+        // NEGATIVE, the opponent half alone: take the threat's assistants away
+        // and the same position — same mover, same reachable step — is out.
+        let mut disarmed = armed.clone();
+        for area in areas {
+            clear_area(disarmed.player_mut(opponent), area);
+        }
+        assert!(check_invariants(&disarmed, &rules).is_ok());
+        assert!(
+            opponent_race_steps(&disarmed).is_empty(),
+            "anti-vacuity: the disarmed opponent still threatens a step",
+        );
+        assert_eq!(
+            mover_reachable_steps(&disarmed, &get_legal_moves(&disarmed, &rules), &rules),
+            reachable,
+            "the disarming changed the MOVER's half, so this negative is not isolated",
+        );
+        assert!(!race.holds(&disarmed, &rules));
+
+        // NEGATIVE, the President clause: an opponent standing on the area it
+        // would have to travel to cannot act there next turn (rulebook p.11).
+        let mut parked = armed.clone();
+        parked.player_mut(opponent).president_location = PresidentLocation::OnBoard(areas[0]);
+        let after_church = opponent_race_steps(&parked);
+        assert!(
+            !after_church.iter().any(|s| matches!(s, RaceStep::Church(_))),
+            "a President parked on the Church still threatened a Church space",
+        );
+        parked.player_mut(opponent).president_location = PresidentLocation::OnBoard(areas[1]);
+        assert!(
+            !opponent_race_steps(&parked).iter().any(|s| matches!(s, RaceStep::Customs(_))),
+            "a President parked on Customs still threatened a Customs space",
+        );
+
+        // NEGATIVE, a mover with no step: the opening position, armed the same
+        // way, has a threat but no candidate that takes it.
+        let mut opening = root_2p(&rules, world(33).0);
+        let opening_areas = track_areas(&opening);
+        let opening_rival = rival_of(&opening);
+        arm_race_threat(&mut opening, opening_rival, opening_areas);
+        assert!(
+            !opponent_race_steps(&opening).is_empty(),
+            "anti-vacuity: the armed opening threatens nothing, so the mover half is untested",
+        );
+        assert!(
+            mover_reachable_steps(&opening, &get_legal_moves(&opening, &rules), &rules).is_empty(),
+            "anti-vacuity: the opening mover can already take a track step",
+        );
+        assert!(!race.holds(&opening, &rules));
+    }
+
+    /// The race probe's mover half is QUEUE-AWARE: a track action with two or
+    /// more eligible spaces places nothing at apply time, and the probe still
+    /// credits the mover with every space the queued choice can still reach.
+    ///
+    /// Without this the classifier would see only the already-narrowed
+    /// singleton case — i.e. exactly not the race-INITIATING moves the family
+    /// is about.
+    #[test]
+    fn the_race_probes_mover_half_reads_a_queued_track_choice() {
+        let rules = Rules::standard();
+        let queued = harvest(
+            &rules,
+            C_MASTER,
+            4,
+            "a position whose applied candidate QUEUES a track-space choice",
+            &mut |s| {
+                if is_game_over(s) {
+                    return false;
+                }
+                let legal = get_legal_moves(s, &rules);
+                if !width_ok_len(legal.len()) {
+                    return false;
+                }
+                legal.iter().any(|mv| {
+                    apply_move_unchecked(s, mv, &rules).is_ok_and(|next| {
+                        next.current_player == s.current_player
+                            && next.pending_choices.iter().any(|c| {
+                                matches!(
+                                    c,
+                                    PendingChoice::ChurchSpace { .. }
+                                        | PendingChoice::CustomsSpace { .. }
+                                )
+                            })
+                    })
+                })
+            },
+        );
+
+        let legal = get_legal_moves(&queued, &rules);
+        // The queueing candidate itself places NOTHING, which is the whole
+        // point: an occupancy-only classifier reads zero steps from it.
+        let queueing = legal
+            .iter()
+            .find(|mv| {
+                apply_move_unchecked(&queued, mv, &rules).is_ok_and(|next| {
+                    next.current_player == queued.current_player
+                        && next.pending_choices.iter().any(|c| {
+                            matches!(
+                                c,
+                                PendingChoice::ChurchSpace { .. }
+                                    | PendingChoice::CustomsSpace { .. }
+                            )
+                        })
+                })
+            })
+            .expect("the harvest promised one");
+        let applied = apply_move_unchecked(&queued, queueing, &rules).expect("it applied once");
+        assert_eq!(
+            applied.church_track.total_assistants(),
+            queued.church_track.total_assistants(),
+            "the queueing candidate placed a church pawn, so nothing here is about a QUEUE",
+        );
+        assert_eq!(
+            applied.customs_track.total_assistants(),
+            queued.customs_track.total_assistants(),
+            "the queueing candidate placed a customs pawn, so nothing here is about a QUEUE",
+        );
+
+        assert!(
+            !mover_reachable_steps(&queued, std::slice::from_ref(queueing), &rules).is_empty(),
+            "the mover half read no step from a candidate that queues a track-space choice",
+        );
+    }
+
+    /// Family 4's predicate is exactly "a claim is in the legal list", and the
+    /// harvested claim position proves it non-vacuously.
+    #[test]
+    fn the_achievement_predicate_holds_exactly_when_a_claim_is_legal() {
+        let rules = Rules::standard();
+        let claim = RootPredicate::AchievementClaimAvailable;
+
+        let claimable = harvest(&rules, C_MASTER, 4, "a narrow position with a legal claim", &mut |s| {
+            let legal = get_legal_moves(s, &rules);
+            width_ok_len(legal.len())
+                && legal.iter().any(|mv| matches!(mv, Move::FulfillAchievement { .. }))
+        });
+        assert!(claim.holds(&claimable, &rules));
+
+        // NEGATIVE: the same predicate on a position with no claim in the list.
+        let fresh = root_2p(&rules, world(34).0);
+        assert!(
+            !get_legal_moves(&fresh, &rules)
+                .iter()
+                .any(|mv| matches!(mv, Move::FulfillAchievement { .. })),
+            "anti-vacuity: the opening position already offers a claim",
+        );
+        assert!(!claim.holds(&fresh, &rules));
+    }
+
+    /// The candidate-width bound is a CONJUNCT of the layer-2 predicates, not a
+    /// filter applied after the fact.
+    ///
+    /// The sharp cell is the last one: a harvested position that satisfies
+    /// EVERY other conjunct of `EndFirableAheadInTruth` — untriggered, a real
+    /// firing move, a doctored +10 margin — and is refused solely because its
+    /// legal list is wider than [`MAX_ROOT_CANDIDATES`]. A bound that lived
+    /// outside the predicate would let that position into the ordinal space.
+    #[test]
+    fn the_candidate_width_bound_is_a_conjunct_of_the_layer_two_predicates() {
+        let rules = Rules::standard();
+        assert_eq!(MAX_ROOT_CANDIDATES, 60, "the recorded generator constraint moved");
+        assert!(width_ok_len(MAX_ROOT_CANDIDATES), "the bound must be inclusive at 60");
+        assert!(!width_ok_len(MAX_ROOT_CANDIDATES + 1), "61 candidates must be out");
+
+        // The state-level helper over a REAL wide position — the 61-candidate
+        // pin, met by an engine-produced state rather than a synthetic count.
+        let wide = harvest(&rules, C_MASTER, 4, "a position wider than the bound", &mut |s| {
+            get_legal_moves(s, &rules).len() > MAX_ROOT_CANDIDATES
+        });
+        assert!(get_legal_moves(&wide, &rules).len() > MAX_ROOT_CANDIDATES);
+        assert!(!width_ok(&wide, &rules));
+
+        let narrow = root_2p(&rules, world(35).0);
+        assert!(get_legal_moves(&narrow, &rules).len() <= MAX_ROOT_CANDIDATES);
+        assert!(width_ok(&narrow, &rules));
+
+        // The conjunct, non-vacuously: every OTHER conjunct of the family-2
+        // positive holds here and the width alone refuses it.
+        let mut wide_firable = harvest(
+            &rules,
+            C_MASTER,
+            4,
+            "a WIDE position that can still fire the end trigger",
+            &mut |s| {
+                !s.end_game_triggered
+                    && get_legal_moves(s, &rules).len() > MAX_ROOT_CANDIDATES
+                    && !firing_moves(s, &rules).is_empty()
+            },
+        );
+        set_true_margin(&mut wide_firable, &rules, TRUE_MARGIN_BAND);
+        assert!(!wide_firable.end_game_triggered);
+        assert!(!firing_moves(&wide_firable, &rules).is_empty());
+        assert_eq!(true_margin_now(&wide_firable, &rules), TRUE_MARGIN_BAND);
+        assert!(
+            !RootPredicate::EndFirableAheadInTruth.holds(&wide_firable, &rules),
+            "a position past the width bound entered the family-2 positive's ordinal space",
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Item 3: `firing_moves` and its short circuit
+    // -----------------------------------------------------------------------
+
+    /// The trigger-precondition enumeration visits all FIVE `EndGameTrigger`
+    /// kinds, exactly once each.
+    ///
+    /// The compile-error guard lives in `trigger_kind_after`'s exhaustive
+    /// match; this is its runtime witness, and it is what catches a chain that
+    /// was made exhaustive by pointing two arms at the same successor.
+    #[test]
+    fn the_trigger_precondition_chain_visits_every_trigger_kind_once() {
+        let mut names: Vec<&'static str> = Vec::new();
+        let mut kind = Some(FIRST_TRIGGER_KIND);
+        while let Some(k) = kind {
+            names.push(crate::game::metrics::trigger_name(&k));
+            assert!(names.len() <= 8, "the trigger-kind chain does not terminate");
+            kind = trigger_kind_after(&k);
+        }
+        assert_eq!(
+            names,
+            [
+                "TradingHousesComplete",
+                "ShophousesComplete",
+                "OrderDeckEmpty",
+                "ChurchTrackFull",
+                "CustomsTrackFull",
+            ],
+            "the precondition set is not `EndGameTrigger`'s five kinds in the engine's own order",
+        );
+    }
+
+    /// A CLOCK position one pawn from a full track finds its firing move
+    /// THROUGH the short circuit.
+    #[test]
+    fn the_short_circuit_finds_a_clock_positions_firing_move() {
+        let rules = Rules::standard();
+        let clock = harvest(&rules, C_MASTER, 4, "one track pawn from the end-game clock", &mut |s| {
+            !s.end_game_triggered
+                && (s.church_track.total_assistants() + 1 >= s.config.track_trigger()
+                    || s.customs_track.total_assistants() + 1 >= s.config.track_trigger())
+                && !firing_moves(s, &rules).is_empty()
+        });
+
+        assert!(any_trigger_within_one_move(&clock), "the short circuit skipped a clock position");
+        let firing = firing_moves(&clock, &rules);
+        assert!(!firing.is_empty());
+        // Each move it named really does fire, applied independently through
+        // the CHECKED boundary rather than through the helper's own path.
+        for mv in &firing {
+            let next = apply_move(&clock, mv, &rules).expect("a firing move is a legal move");
+            assert!(next.end_game_triggered, "firing_moves named a move that fires nothing: {mv:?}");
+        }
+    }
+
+    /// A BUILDING position one token from a complete set finds its firing move
+    /// through the short circuit too.
+    ///
+    /// This shape does not occur in the rung corpus — 2P rung games end on the
+    /// church clock — so the fixture is CONSTRUCTED: a harvested position with
+    /// the mover's trading houses moved warehouse → built (conservation
+    /// preserved, `check_invariants` asserted) so that the fourth one is one
+    /// build away. Without this cell the two building triggers would be
+    /// precondition arms nothing ever exercises, which is the exact bias the
+    /// exhaustive enumeration exists to prevent.
+    #[test]
+    fn the_short_circuit_finds_a_building_positions_firing_move() {
+        let rules = Rules::standard();
+        let mut built = harvest(
+            &rules,
+            C_MASTER,
+            4,
+            "a Building-phase position where the mover may build a trading house",
+            &mut |s| {
+                !s.end_game_triggered
+                    && get_legal_moves(s, &rules).contains(&Move::BuildTradingHouse)
+            },
+        );
+
+        let mover = built.current_player;
+        // Three trading houses already standing, on areas nobody else claims —
+        // warehouse → built, so the four-token conservation is untouched.
+        let taken: Vec<AreaId> = built
+            .players
+            .iter()
+            .flat_map(|p| p.trading_houses.built.iter().copied())
+            .collect();
+        let president_area = match built.player(mover).president_location {
+            PresidentLocation::OnBoard(a) => a,
+            PresidentLocation::InHand => panic!("a Building-phase mover has its President placed"),
+        };
+        let spare: Vec<AreaId> = built
+            .board_layout
+            .areas
+            .keys()
+            .copied()
+            .filter(|a| *a != president_area && !taken.contains(a))
+            .take(3)
+            .collect();
+        assert_eq!(spare.len(), 3, "the board has too few free areas for this fixture");
+        {
+            let p = built.player_mut(mover);
+            for area in &spare {
+                if p.trading_houses.built.contains(area) {
+                    continue;
+                }
+                if p.trading_houses.in_warehouse > 0 {
+                    p.trading_houses.in_warehouse -= 1;
+                } else {
+                    p.trading_houses.in_hand -= 1;
+                }
+                p.trading_houses.built.push(*area);
+            }
+            // The fourth token has to be IN HAND for the build to be legal.
+            if p.trading_houses.in_hand == 0 && p.trading_houses.in_warehouse > 0 {
+                p.trading_houses.in_warehouse -= 1;
+                p.trading_houses.in_hand += 1;
+            }
+        }
+        assert_eq!(
+            built.player(mover).trading_houses.total_built(),
+            TRADING_HOUSES_COMPLETE - 1,
+            "the fixture is not one trading house from complete",
+        );
+        assert!(check_invariants(&built, &rules).is_ok(), "the constructed fixture is not engine-valid");
+
+        assert!(
+            any_trigger_within_one_move(&built),
+            "the short circuit skipped a one-building-from-complete position",
+        );
+        let firing = firing_moves(&built, &rules);
+        assert!(
+            firing.contains(&Move::BuildTradingHouse),
+            "the last trading house is not among the firing moves: {firing:?}",
+        );
+        let next =
+            apply_move(&built, &Move::BuildTradingHouse, &rules).expect("the build is legal");
+        assert!(next.end_game_triggered);
+        assert!(matches!(
+            next.trigger_reason,
+            Some(EndGameTrigger::TradingHousesComplete(p)) if p == mover
+        ));
+    }
+
+    /// The short circuit NEVER LIES: where it declines to probe, an exhaustive
+    /// probe finds nothing either.
+    ///
+    /// Two halves, and the second is the one that matters. The first says a
+    /// mid-game position short-circuits to an empty answer; the second re-runs
+    /// the SAME question WITHOUT the short circuit — every legal move applied
+    /// and checked by hand — and gets the same empty answer, which is the only
+    /// way to tell "nothing to find" from "did not look".
+    #[test]
+    fn the_short_circuit_never_skips_a_position_that_had_a_firing_move() {
+        let rules = Rules::standard();
+        let mut checked = 0usize;
+        let mut skipped = 0usize;
+        let mut schedule = SeedSchedule::diagnostic(C_MASTER);
+        let world = schedule.next_world();
+        let mut make = |seat: PlayerId, _players: u8| -> Box<dyn ArenaAgent> {
+            GENERATED_SEAT.build(&rules, agent_stream_seed(world, seat, Slot(seat.0))).0
+        };
+        let stats = run_arena_game(world, 2, &rules, &mut make, true).expect("the game completes");
+        let events = &stats.record.events;
+        let mut state = state_at(&stats.record, 0, &rules).expect("position 0 replays");
+        for position in 0..=events.len() {
+            if !state.end_game_triggered && !any_trigger_within_one_move(&state) {
+                skipped += 1;
+                // The exhaustive probe, written out here rather than called, so
+                // this is a SECOND opinion and not the same code twice.
+                let exhaustive: Vec<Move> = get_legal_moves(&state, &rules)
+                    .into_iter()
+                    .filter(|mv| {
+                        apply_move_unchecked(&state, mv, &rules)
+                            .map(|next| next.end_game_triggered)
+                            .unwrap_or(false)
+                    })
+                    .collect();
+                assert!(
+                    exhaustive.is_empty(),
+                    "the short circuit skipped position {position}, where {} moves fire the \
+                     trigger: {exhaustive:?}",
+                    exhaustive.len(),
+                );
+                assert!(firing_moves(&state, &rules).is_empty());
+                checked += 1;
+            }
+            if let Some(event) = events.get(position) {
+                state = replay_from(&state, std::slice::from_ref(event), &rules)
+                    .expect("the game replays event by event");
+            }
+        }
+        assert!(
+            skipped > 20,
+            "anti-vacuity: the short circuit declined only {skipped} positions of this game, so \
+             it is not being exercised",
+        );
+        assert_eq!(checked, skipped);
+    }
+
+    /// `firing_moves` means SETS, not "the result has the flag": on an
+    /// already-triggered position it is EMPTY rather than the whole legal list.
+    #[test]
+    fn firing_moves_is_empty_once_the_trigger_has_already_fired() {
+        let rules = Rules::standard();
+        let (final_round, _) = RootSource::Generated {
+            predicate: RootPredicate::FinalRoundAlreadyTriggered,
+            master: GEN_MASTER,
+            ordinal: 0,
+        }
+        .resolve(&rules)
+        .expect("the scan supplies a final-round root");
+        assert!(final_round.end_game_triggered);
+        assert!(
+            !get_legal_moves(&final_round, &rules).is_empty(),
+            "anti-vacuity: this root has no legal moves, so an empty answer says nothing",
+        );
+        assert!(
+            firing_moves(&final_round, &rules).is_empty(),
+            "every legal move at an already-triggered position was called a FIRING move",
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Item 4: `true_margin_now`
+    // -----------------------------------------------------------------------
+
+    /// The margin is the mover's total minus the best-RANKED rival's, and on a
+    /// fixture whose only asymmetry is base VP it is exactly that difference.
+    #[test]
+    fn true_margin_now_is_the_movers_lead_over_the_best_ranked_rival() {
+        let rules = Rules::standard();
+        let mut state = root_2p(&rules, world(36).0);
+        // Level every component the two seats could differ on, so the only
+        // asymmetry left is the victory points set below. The tracks hold
+        // nothing but the 2P dummy, and neither seat owns a technology, so
+        // every majority is uncontested by construction.
+        for p in &mut state.players {
+            p.money = 4;
+            p.copper = 0;
+            p.silk = 0;
+            p.tea = 0;
+            p.seafood = 0;
+            p.imported_goods = 0;
+        }
+        state.player_mut(PlayerId::new(0)).victory_points = 30;
+        state.player_mut(PlayerId::new(1)).victory_points = 10;
+        assert!(check_invariants(&state, &rules).is_ok());
+        assert_eq!(state.current_player, PlayerId::new(0), "the fixture assumes seat 0 moves");
+
+        let result = final_result(&state, &rules);
+        // The premise, verified rather than asserted in prose: everything but
+        // base VP is equal between the seats.
+        let mut components: Vec<(u32, u32, u32, u32, u32)> = result
+            .standings
+            .iter()
+            .map(|s| {
+                (
+                    s.breakdown.church,
+                    s.breakdown.customs,
+                    s.breakdown.technology,
+                    s.breakdown.country,
+                    s.breakdown.remainder,
+                )
+            })
+            .collect();
+        components.dedup();
+        assert_eq!(components.len(), 1, "the fixture is not symmetric outside base VP: {result:?}");
+
+        assert_eq!(true_margin_now(&state, &rules), 20, "30 − 10 is the whole margin here");
+
+        // MOVER-RELATIVE: the same board read from the other seat is the
+        // negation, which is what "the mover's margin" means at two seats.
+        let mut other = state.clone();
+        other.current_player = PlayerId::new(1);
+        assert_eq!(true_margin_now(&other, &rules), -20);
+
+        // And it is a total, not a rank: one more VP is one more margin.
+        let mut richer = state.clone();
+        richer.player_mut(PlayerId::new(0)).victory_points += 7;
+        assert_eq!(true_margin_now(&richer, &rules), 27);
+    }
+
+    /// The 2P dummy PARTICIPATES: the same single church pawn is worth 6 VP of
+    /// margin above the dummy's faith-7 space and 3 below it.
+    ///
+    /// Finding D1's majority rule, hand-computed. The church majority pays 6 to
+    /// the most pawns and 3 to the second, count ties broken by the RIGHTMOST
+    /// occupied space; the dummy holds faith 7 and one pawn, so a rival pawn at
+    /// faith 8 wins the count tie and takes the 6, while a pawn at faith 5
+    /// loses it and takes the 3 the dummy leaves behind. Margin against a
+    /// pawnless mover: −6 and −3.
+    #[test]
+    fn true_margin_now_counts_the_two_player_dummy_in_the_majorities() {
+        let rules = Rules::standard();
+        let mut base = root_2p(&rules, world(37).0);
+        for p in &mut base.players {
+            p.money = 4;
+            p.copper = 0;
+            p.silk = 0;
+            p.tea = 0;
+            p.seafood = 0;
+            p.imported_goods = 0;
+        }
+        let dummy_index = ChurchTrack::faith_to_index(7).expect("faith 7 is on the track");
+        assert_eq!(
+            base.church_track.slots[dummy_index].map(|s| s.player),
+            Some(PlayerId::DUMMY),
+            "anti-vacuity: the 2P dummy is not on faith 7, so nothing here is about the dummy",
+        );
+        assert_eq!(base.church_track.total_assistants(), 0, "the fixture starts with no real pawns");
+
+        let rival = rival_of(&base);
+        let with_pawn_at = |faith: u8| {
+            let mut state = base.clone();
+            let index = ChurchTrack::faith_to_index(faith).expect("a track space");
+            state.church_track.slots[index] =
+                Some(crate::types::ChurchSlot { player: rival, arrival_order: 1 });
+            let p = state.player_mut(rival);
+            p.assistants.in_hand -= 1;
+            p.assistants.on_church += 1;
+            p.church_positions.push(faith);
+            assert!(check_invariants(&state, &rules).is_ok(), "the church fixture is not valid");
+            state
+        };
+
+        let above = with_pawn_at(8);
+        assert_eq!(
+            true_margin_now(&above, &rules),
+            -6,
+            "a rival pawn RIGHT of the dummy takes the 6-VP church majority outright",
+        );
+        let below = with_pawn_at(5);
+        assert_eq!(
+            true_margin_now(&below, &rules),
+            -3,
+            "a rival pawn LEFT of the dummy loses the count tie and takes the second place",
+        );
+    }
+
+    /// Level totals read margin 0 while `final_result` still RANKS the seats —
+    /// margin 0 is not a win, and the rival is the best-RANKED seat rather than
+    /// the highest raw total.
+    #[test]
+    fn a_level_pair_reads_margin_zero_while_the_standings_still_rank() {
+        let rules = Rules::standard();
+        let mut state = root_2p(&rules, world(38).0);
+        for p in &mut state.players {
+            p.money = 4;
+            p.copper = 0;
+            p.silk = 0;
+            p.tea = 0;
+            p.seafood = 0;
+            p.imported_goods = 0;
+            p.victory_points = 17;
+        }
+        assert!(check_invariants(&state, &rules).is_ok());
+
+        let result = final_result(&state, &rules);
+        assert_eq!(
+            result.standings[0].breakdown.total, result.standings[1].breakdown.total,
+            "anti-vacuity: the fixture is not level",
+        );
+        assert_eq!(result.standings[0].rank, 1);
+        assert_eq!(result.standings[1].rank, 2);
+        assert_ne!(result.standings[0].player, result.standings[1].player);
+
+        // Both seats read ZERO — and the seat the standings put SECOND reads
+        // zero too, which is the whole point: a margin of 0 does not say the
+        // mover is winning, it says the ranking decides.
+        for seat in [PlayerId::new(0), PlayerId::new(1)] {
+            let mut from_seat = state.clone();
+            from_seat.current_player = seat;
+            assert_eq!(true_margin_now(&from_seat, &rules), 0);
+        }
+        let loser = result.standings[1].player;
+        assert_ne!(result.winner, loser, "the level pair still has exactly one winner");
+    }
+
+    // -----------------------------------------------------------------------
+    // Item 5: the ecologies
+    // -----------------------------------------------------------------------
+
+    /// v1's AMENDED identity: the stride cap, the raised bound, and the version
+    /// string that rides both.
+    #[test]
+    fn the_v1_ecology_carries_its_amended_identity() {
+        let ecology = GeneratingEcology::v1();
+        assert_eq!(ecology.id, "driven-generated-v1.1", "the amendment did not bump the version");
+        assert_eq!(ecology.id, GENERATED_ECOLOGY_V1);
+        assert_eq!(ecology.per_game_cap, 2);
+        assert_eq!(ecology.per_game_cap, GENERATED_STRIDE_CAP);
+        assert_eq!(ecology.games, 16, "the bound must cover pilot 4 + confirmatory 6 + escrow 6");
+        assert_eq!(ecology.games, GENERATED_SCAN_GAMES);
+        assert_eq!(ecology.players, 2);
+        assert_eq!(ecology.seats, vec![GENERATED_SEAT.echo(); 2]);
+        assert!(ecology.seats[0].contains("family-weighted"), "v1 is the rung ecology: {:?}", ecology.seats);
+        assert!(!ecology.driver.is_empty() && !ecology.seed_derivation.is_empty());
+        // The supply arithmetic the raise was sized by, stated as arithmetic.
+        assert!(
+            ecology.games * ecology.per_game_cap >= 4 + 6 + 6,
+            "the strided supply cannot cover one predicate's blocks",
+        );
+    }
+
+    /// v2's identity — pinned WITHOUT running a scan, because a lookahead scan
+    /// is up to 240 games of both-seats search and this is a unit test.
+    #[test]
+    fn the_v2_lookahead_ecology_names_the_shipped_contestant_at_both_seats() {
+        let ecology = GeneratingEcology::v2_lookahead();
+        assert_eq!(ecology.id, "driven-generated-v2.2-lookahead");
+        assert_eq!(ecology.id, GENERATED_ECOLOGY_V2_LOOKAHEAD);
+        assert_eq!(ecology.players, 2, "the canon priors are 2P priors");
+        assert_eq!(ecology.games, 240);
+        assert_eq!(ecology.games, GENERATED_V2_SCAN_GAMES);
+        assert_eq!(ecology.per_game_cap, GENERATED_STRIDE_CAP, "both ecologies stride the same");
+        assert_eq!(
+            ecology.seats,
+            vec![Contestant::LOOKAHEAD_V1_DEFAULT.echo(); 2],
+            "the layer-2 ecology must seat the SHIPPED provisional contestant, resolved",
+        );
+        // The two ecologies share their driver and seed derivation verbatim —
+        // one spelling each, so a reworded sentence cannot make them look like
+        // different instruments.
+        let v1 = GeneratingEcology::v1();
+        assert_eq!(ecology.driver, v1.driver);
+        assert_eq!(ecology.seed_derivation, v1.seed_derivation);
+        assert_ne!(ecology.id, v1.id, "two ecologies must not share an identity string");
+        assert_ne!(ecology.seats, v1.seats, "two ecologies must not seat the same contestant");
+    }
+
+    /// v2's EXTENDED identity: the raised bound, the version string that rides
+    /// it, and the cap that did NOT move — which is what makes the raise an
+    /// extension rather than a re-draw.
+    ///
+    /// The v1 pin's TRANSCRIPTION pattern, for the v1 pin's reason: the literal
+    /// is written out here as well as asserted against the const, so editing the
+    /// const alone cannot move a recorded identity silently — a raise has to be
+    /// transcribed twice, in the same commit, on purpose. BOTH pre-extension id
+    /// strings survive HERE and nowhere else in the crate, as history.
+    #[test]
+    fn the_v2_ecology_carries_its_extended_identity() {
+        let ecology = GeneratingEcology::v2_lookahead();
+        assert_eq!(
+            ecology.id, "driven-generated-v2.2-lookahead",
+            "the games raise did not bump the version",
+        );
+        assert_eq!(ecology.id, GENERATED_ECOLOGY_V2_LOOKAHEAD);
+        for retired in ["driven-generated-v2-lookahead", "driven-generated-v2.1-lookahead"] {
+            assert_ne!(
+                ecology.id, retired,
+                "a pre-extension id must survive as test history and nowhere else",
+            );
+        }
+        assert_eq!(
+            ecology.games, 240,
+            "the bound family 2's SECOND exhaustion bought: its control arm realized 26 hits \
+             in 120 games against the 28 its block demands, a measured 0.217/game",
+        );
+        assert_eq!(ecology.games, GENERATED_V2_SCAN_GAMES);
+        // The STRIDE did not move, and that is the prefix-stability argument in
+        // one assertion: same master, same cap, same walk order, so the strided
+        // sequence at 240 games is the sequence at 120 with more on the end —
+        // itself the sequence at 24 with more on the end — and every ordinal
+        // already read still resolves where it was read.
+        assert_eq!(ecology.per_game_cap, 2);
+        assert_eq!(ecology.per_game_cap, GENERATED_STRIDE_CAP);
+        // The capacity arithmetic, as arithmetic: every ordinal the freeze
+        // pre-declared for ONE layer-2 predicate — pilot 4 + confirmatory 24 +
+        // the VOID-disposition extension 8 + escrow 6 (post-fix re-read) + 6
+        // (final-controller) = 48 — with the raises leaving 10× that. Capacity is
+        // not supply: this says the ordinal SPACE is wide enough, never that the
+        // predicate hits that often — the very distinction both exhaustions cost.
+        assert!(
+            ecology.games * ecology.per_game_cap >= 4 + 24 + 8 + 6 + 6,
+            "the strided space cannot cover one layer-2 predicate's pre-declared ordinals",
+        );
+    }
+
+    /// Each predicate names the ecology its family scans under, and the two
+    /// layers are disjoint.
+    #[test]
+    fn each_predicate_names_its_own_generating_ecology() {
+        for predicate in RootPredicate::ALL {
+            let expected = match predicate {
+                RootPredicate::FinalRoundAlreadyTriggered | RootPredicate::TriggerRoundNotFinal => {
+                    GeneratingEcology::v1()
+                }
+                RootPredicate::EndFirableAheadInTruth
+                | RootPredicate::EndFirableBehindInTruth
+                | RootPredicate::ExclusiveRaceOneStep
+                | RootPredicate::AchievementClaimAvailable => GeneratingEcology::v2_lookahead(),
+            };
+            assert_eq!(
+                predicate.ecology(),
+                expected,
+                "{} scans under the wrong ecology",
+                predicate.as_str(),
+            );
+        }
+        assert_eq!(
+            RootPredicate::ALL.iter().filter(|p| p.ecology() == GeneratingEcology::v1()).count(),
+            2,
+            "family 1's pair is the whole of the rung-scanned set",
+        );
+    }
+
+    /// The predicate names are stable, kebab-case and distinct — a descriptor
+    /// and a runner spec both address a predicate by them.
+    #[test]
+    fn the_predicate_names_are_kebab_case_and_distinct() {
+        let names: Vec<&str> = RootPredicate::ALL.iter().map(|p| p.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "final-round-already-triggered",
+                "trigger-round-not-final",
+                "end-firable-ahead-in-truth",
+                "end-firable-behind-in-truth",
+                "exclusive-race-one-step",
+                "achievement-claim-available",
+            ],
+        );
+        let unique: std::collections::BTreeSet<&str> = names.iter().copied().collect();
+        assert_eq!(unique.len(), names.len(), "two predicates share a name");
+        for name in &names {
+            assert!(
+                name.chars().all(|c| c.is_ascii_lowercase() || c == '-'),
+                "predicate name {name} is not kebab-case",
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Item 6: the scan's stride
+    // -----------------------------------------------------------------------
+
+    /// The scan STRIDES: at most `per_game_cap` hits per generated game enter
+    /// the ordinal sequence, and the hits it skips consume no ordinal.
+    ///
+    /// The sharp assertion is the last one. Ordinals 0 and 1 are game 0's first
+    /// two hits and ordinal 2 is game 1's FIRST — not game 0's third, which is
+    /// what an unstrided scan would serve and which this cell reconstructs
+    /// independently so the difference is visible rather than assumed.
+    #[test]
+    fn the_scan_strides_at_most_two_hits_per_generated_game() {
+        let rules = Rules::standard();
+        let predicate = RootPredicate::FinalRoundAlreadyTriggered;
+        let cap = GeneratingEcology::v1().per_game_cap;
+        assert_eq!(cap, 2, "this cell is written for a cap of 2");
+
+        // The two games' own hit sequences, rebuilt from the ecology's parts
+        // rather than through `generate_root` — the same anchor construction the
+        // ordinal cell uses, extended to a second game.
+        let mut schedule = SeedSchedule::diagnostic(GEN_MASTER);
+        let mut per_game: Vec<Vec<String>> = Vec::new();
+        for _ in 0..2 {
+            let world = schedule.next_world();
+            let mut make = |seat: PlayerId, _players: u8| -> Box<dyn ArenaAgent> {
+                GENERATED_SEAT.build(&rules, agent_stream_seed(world, seat, Slot(seat.0))).0
+            };
+            let stats = run_arena_game(world, 2, &rules, &mut make, true)
+                .expect("the ecology's games must complete");
+            let events = &stats.record.events;
+            let mut state = state_at(&stats.record, 0, &rules).expect("position 0 replays");
+            let mut hits = Vec::new();
+            for position in 0..=events.len() {
+                if predicate.holds(&state, &rules) {
+                    hits.push(state_digest(&state));
+                }
+                if let Some(event) = events.get(position) {
+                    state = replay_from(&state, std::slice::from_ref(event), &rules)
+                        .expect("the generated game replays event by event");
+                }
+            }
+            per_game.push(hits);
+        }
+        assert!(
+            per_game[0].len() > cap as usize,
+            "anti-vacuity: game 0 holds only {} hits, so no hit is ever SKIPPED and this cell \
+             tests nothing",
+            per_game[0].len(),
+        );
+        assert!(!per_game[1].is_empty(), "anti-vacuity: game 1 holds no hit to stride into");
+
+        let resolve = |ordinal: u32| {
+            RootSource::Generated { predicate, master: GEN_MASTER, ordinal }
+                .resolve(&rules)
+                .unwrap_or_else(|e| panic!("ordinal {ordinal} must resolve: {e}"))
+        };
+
+        for ordinal in 0..cap {
+            let (state, descriptor) = resolve(ordinal);
+            assert_eq!(
+                state_digest(&state),
+                per_game[0][ordinal as usize],
+                "ordinal {ordinal} is not game 0's hit {ordinal}",
+            );
+            match descriptor.origin {
+                RootOrigin::Generated { game_index, ref ecology, .. } => {
+                    assert_eq!(game_index, 0, "ordinal {ordinal} came from a later game");
+                    assert_eq!(ecology.per_game_cap, cap, "the descriptor misreports the stride");
+                }
+                ref other => panic!("expected a Generated origin, got {other:?}"),
+            }
+        }
+
+        let (strided, descriptor) = resolve(cap);
+        match descriptor.origin {
+            RootOrigin::Generated { game_index, .. } => assert!(
+                game_index >= 1,
+                "ordinal {cap} came from game {game_index} — the cap did not stride",
+            ),
+            ref other => panic!("expected a Generated origin, got {other:?}"),
+        }
+        assert_eq!(
+            state_digest(&strided),
+            per_game[1][0],
+            "ordinal {cap} is not game 1's FIRST hit",
+        );
+        assert_ne!(
+            state_digest(&strided),
+            per_game[0][cap as usize],
+            "ordinal {cap} served game 0's hit {cap}, so skipped hits still consume ordinals",
+        );
+    }
+
+    /// The exhaustion refusal still names its bound after the stride, and the
+    /// supply it reports is the STRIDED supply.
+    #[test]
+    fn the_exhaustion_refusal_reports_the_strided_supply_and_its_bound() {
+        let rules = Rules::standard();
+        let predicate = RootPredicate::FinalRoundAlreadyTriggered;
+        let ecology = GeneratingEcology::v1();
+        let err = RootSource::Generated { predicate, master: GEN_MASTER, ordinal: 1_000_000 }
+            .resolve(&rules)
+            .expect_err("no scan holds a millionth final-round root");
+        match err {
+            RootError::Exhausted { predicate: p, ordinal, found, games } => {
+                assert_eq!(p, predicate);
+                assert_eq!(ordinal, 1_000_000);
+                assert_eq!(games, ecology.games, "the refusal misnames the bound");
+                assert!(found > 0, "anti-vacuity: the scan found nothing at all");
+                assert!(
+                    found <= ecology.games * ecology.per_game_cap,
+                    "the scan admitted {found} hits, more than {} games × cap {} allows — the \
+                     stride is not being enforced",
+                    ecology.games,
+                    ecology.per_game_cap,
+                );
+            }
+            other => panic!("expected Exhausted, got {other:?}"),
+        }
+    }
+
+    // =======================================================================
+    // PHASE C T2: the turn-grain driver
+    // =======================================================================
+
+    /// T2's committed diagnostic DECISION seed — the same discipline
+    /// [`DECISION_SEED`] carries, one grain up: a turn is keyed by an explicit
+    /// single seed the caller supplies, and a fixture cell fixes it so the turn
+    /// is one reproducible thing.
+    const TURN_SEED: u64 = 0x0C02_2026_0818_9991;
+
+    /// A root at the START of a mover's turn, out of a cheap rung game.
+    ///
+    /// `TurnPhase::AdditionalActionFirst` is the guarantee these cells need, and
+    /// it is a guarantee about the PHASE MACHINE rather than about what the
+    /// mover chose: a turn entered at its first phase still has to pass through
+    /// Placement, Movement, the area action and the second additional-action
+    /// window, so it is ≥2 decisions under ANY policy. That is what makes "the
+    /// counters are not one decision's" and "the bound refuses mid-turn"
+    /// statable without a cell depending on a particular line of play.
+    ///
+    /// Both seats of the generating game are rungs, so the fixture pays for no
+    /// search at all (design §6's wall discipline) — the searching, where a cell
+    /// wants any, is what the cell itself does at the root.
+    fn turn_start_root(rules: &Rules, seed: WorldSeed, from: usize) -> GameState {
+        let stats = rung_game(rules, seed);
+        let events = stats.record.events.len();
+        assert!(from < events, "the generating game is only {events} events long");
+        let end = (from + 40).min(events);
+        (from..end)
+            .find_map(|k| {
+                let state = state_at(&stats.record, k, rules).ok()?;
+                (state.turn_phase == TurnPhase::AdditionalActionFirst
+                    && !is_game_over(&state)
+                    && !state.end_game_triggered)
+                    .then_some(state)
+            })
+            .unwrap_or_else(|| panic!("no turn start in events {from}..{end}"))
+    }
+
+    /// A mid-game root where the mover has a REAL CHOICE — more than one legal
+    /// move.
+    ///
+    /// A mid-game root offering the mover at least `width` legal moves.
+    ///
+    /// [`turn_start_root`]'s guarantee is about turn LENGTH, and the two are
+    /// independent: an `AdditionalActionFirst` position usually offers exactly
+    /// `EndAdditionalPhase` and nothing else, which is a fine root for a stop
+    /// rule and a useless one for a join — a FORCED decision agrees with
+    /// whatever the seeding does, so it would pass a join cell whose seeding was
+    /// wrong. This scans for the branching half instead, and `width` is what
+    /// makes an accidental agreement unlikely rather than merely possible.
+    fn branching_root(rules: &Rules, seed: WorldSeed, from: usize, width: usize) -> GameState {
+        let stats = rung_game(rules, seed);
+        let events = stats.record.events.len();
+        assert!(from < events, "the generating game is only {events} events long");
+        let end = (from + 40).min(events);
+        (from..end)
+            .find_map(|k| {
+                let state = state_at(&stats.record, k, rules).ok()?;
+                (!is_game_over(&state)
+                    && !state.end_game_triggered
+                    && get_legal_moves(&state, rules).len() >= width)
+                    .then_some(state)
+            })
+            .unwrap_or_else(|| panic!("no {width}-wide decision in events {from}..{end}"))
+    }
+
+    /// The cheapest honest mover there is, for the cells whose subject is the
+    /// LOOP rather than the contestant.
+    fn rung_mover() -> SeatSpec {
+        rung_seats()[0]
+    }
+
+    /// The HAND-OFF stop is exact: the turn is the mover's own moves, every one
+    /// of them decided in a state the mover was on the move in, and the hand-off
+    /// is the first state that is not.
+    ///
+    /// The exactness half is replayed through the CHECKED `apply_move` — a
+    /// second, independent application of the reported moves — so a driver that
+    /// reported a move list and a hand-off state that do not belong together
+    /// fails here rather than passing on the strength of its own arithmetic.
+    #[test]
+    fn a_turn_stops_at_the_hand_off_and_names_exactly_the_movers_moves() {
+        let rules = Rules::standard();
+        let root = turn_start_root(&rules, world(70), 300);
+        let mover = root.current_player;
+
+        let outcome = drive_turn(&root, rung_mover(), &rules, TURN_SEED, &DrivenOpts::default())
+            .expect("a mid-game turn drives");
+
+        assert!(
+            outcome.moves.len() >= 2,
+            "anti-vacuity: a turn entered at its first phase is more than one decision, this one \
+             ran {}",
+            outcome.moves.len(),
+        );
+        assert_eq!(outcome.decisions, outcome.moves.len() as u64);
+        assert!(!outcome.game_over, "a mid-game turn hands off; it does not end the game");
+        assert!(!is_game_over(&outcome.handoff));
+        assert_ne!(
+            outcome.handoff.current_player, mover,
+            "the run did not stop at a hand-off",
+        );
+
+        let mut state = root.clone();
+        for (i, applied) in outcome.moves.iter().enumerate() {
+            assert_eq!(applied.seat, mover, "move {i} is attributed to another seat");
+            assert_eq!(
+                state.current_player, mover,
+                "move {i} was decided in a state the mover was not on the move in",
+            );
+            state = apply_move(&state, &applied.mv, &rules)
+                .unwrap_or_else(|e| panic!("move {i} does not re-apply: {e}"));
+        }
+        assert_eq!(
+            state_digest(&state),
+            state_digest(&outcome.handoff),
+            "the reported hand-off is not where the reported moves lead",
+        );
+        assert_ne!(state.current_player, mover);
+        assert_eq!(
+            outcome.counters,
+            SeatCounters::NONE,
+            "a rung explains nothing — every counter is absent, not zero",
+        );
+    }
+
+    /// The FIRST-DECISION JOIN: at one seed, a turn's first move is the move
+    /// [`root_table`] reports as the winner.
+    ///
+    /// This is what makes D7's counter check and the family read the same
+    /// question — the check runs a table at replication 0's seed and the read
+    /// runs a turn at that seed, and without this they would be two decisions
+    /// that merely look alike. It holds because the turn constructs ONE agent at
+    /// `decision_seed` and the table constructs a fresh one at the same seed:
+    /// at stream position 0 those are the same agent.
+    ///
+    /// **The ONE cell in this section with a SEARCHING subject** (design §6's
+    /// wall discipline): a whole turn under the uncapped shipped S1 arm plus one
+    /// table at the same root — every other cell here runs a rung or greedy.
+    /// The budget is ~3s debug and the MEASURED wall is 0.05s, because the
+    /// root the scan lands on is an ordinary mid-game decision (13 candidates,
+    /// an 8-decision turn, 174 scored successors at HEAD) rather than a
+    /// money-saturated Movement point. The budget is the ceiling this cell must
+    /// not grow past, not a prediction of it.
+    #[test]
+    fn the_first_move_of_a_turn_is_root_tables_winner_at_the_same_seed() {
+        let rules = Rules::standard();
+        let root = branching_root(&rules, world(71), 300, 8);
+        let seat = root.current_player;
+        let contestant = Contestant::LOOKAHEAD_V1_DEFAULT;
+
+        let table = root_table(&root, seat, contestant, &rules, TURN_SEED)
+            .expect("the shipped S1 arm tabulates an organic root");
+        let outcome = drive_turn(
+            &root,
+            SeatSpec::Contestant(contestant),
+            &rules,
+            TURN_SEED,
+            &DrivenOpts::default(),
+        )
+        .expect("the same contestant drives the turn");
+
+        assert!(
+            table.candidates() >= 8,
+            "anti-vacuity: a FORCED (or near-forced) decision joins whatever the seeding does — \
+             this root offered {}",
+            table.candidates(),
+        );
+        assert_eq!(
+            outcome.moves.first().map(|a| a.mv.clone()),
+            Some(table.winner.clone()),
+            "the turn's first decision is not the table's winner at the same seed",
+        );
+        assert_eq!(outcome.moves[0].seat, seat);
+        assert!(
+            !outcome.game_over && outcome.handoff.current_player != seat,
+            "the searching mover drove a whole turn and handed off, so the join is not a \
+             one-decision special case",
+        );
+    }
+
+    /// PREFIX EQUIVALENCE — the pin that keeps the turn loop honest against the
+    /// play half BEYOND decision 0.
+    ///
+    /// `drive_turn` is a THIRD per-decision loop (`play_from_state` runs to
+    /// terminal and exposes no stop hook), and the first-decision join above
+    /// covers exactly one decision. At `decision_seed = agent_stream_seed(world,
+    /// mover, Slot(mover))` the mover's stream is the one
+    /// [`drive_to_terminal`] gives it at that world, so the turn's move list
+    /// must be the mover's OWN PREFIX of the full run — up to the first
+    /// opponent move. A loop that advanced the stream differently, re-built its
+    /// agent per decision, or applied the moves in another order diverges here.
+    #[test]
+    fn a_turns_moves_are_the_terminal_drivers_own_prefix_at_the_arena_seed() {
+        let rules = Rules::standard();
+        let root = turn_start_root(&rules, world(72), 300);
+        let mover = root.current_player;
+        let master = world(73);
+        let seed = agent_stream_seed(master, mover, Slot(mover.0));
+
+        let turn = drive_turn(&root, rung_mover(), &rules, seed, &DrivenOpts::default())
+            .expect("the turn drives");
+        let full = drive_to_terminal(&root, &rung_seats(), &rules, master, DrivenOpts::default())
+            .expect("the whole game drives");
+
+        let prefix: Vec<Move> = full
+            .applied
+            .iter()
+            .take_while(|a| a.seat == mover)
+            .map(|a| a.mv.clone())
+            .collect();
+        let played: Vec<Move> = turn.moves.iter().map(|a| a.mv.clone()).collect();
+        assert_same_moves(&played, &prefix, "the turn loop left the play half's line");
+
+        assert!(prefix.len() >= 2, "anti-vacuity: the prefix is {} moves", prefix.len());
+        assert!(
+            full.applied.len() > prefix.len(),
+            "anti-vacuity: the mover's prefix is the WHOLE game, so this compares a game to itself",
+        );
+        assert_ne!(
+            full.applied[prefix.len()].seat,
+            mover,
+            "the prefix does not end at an opponent move",
+        );
+    }
+
+    /// Same root, same seed → the same turn, twice.
+    ///
+    /// The third cell is the anti-vacuity half: a turn that ignored its seed
+    /// would satisfy the first two however it played, so a DIFFERENT seed must
+    /// move the run.
+    #[test]
+    fn driving_the_same_turn_twice_is_byte_identical() {
+        let rules = Rules::standard();
+        let root = turn_start_root(&rules, world(74), 300);
+        let opts = DrivenOpts::default();
+
+        let first = drive_turn(&root, rung_mover(), &rules, TURN_SEED, &opts).expect("first run");
+        let second = drive_turn(&root, rung_mover(), &rules, TURN_SEED, &opts).expect("second run");
+
+        assert_eq!(
+            state_digest(&first.handoff),
+            state_digest(&second.handoff),
+            "the hand-off moved between two identical turns",
+        );
+        assert_eq!(first.moves, second.moves, "the move lists differ");
+        assert_eq!(first, second, "the outcomes differ beyond the digest and the move list");
+        assert!(first.moves.len() >= 2, "anti-vacuity: {} moves", first.moves.len());
+
+        let elsewhere =
+            drive_turn(&root, rung_mover(), &rules, TURN_SEED ^ 0x5555_5555_5555_5555, &opts)
+                .expect("another seed still drives");
+        assert!(
+            elsewhere.moves != first.moves
+                || state_digest(&elsewhere.handoff) != state_digest(&first.handoff),
+            "the turn does not depend on its decision seed, so nothing above witnesses determinism",
+        );
+    }
+
+    /// An ALREADY-TERMINAL root is an `Ok` with nothing in it — the zero-move
+    /// outcome, `game_over` true, and the root itself as the hand-off.
+    ///
+    /// [`drive_to_terminal`]'s contract at this grain, and the seat is an
+    /// EVALUATOR for the same reason its cell uses one: `Some(0)` is a seat that
+    /// HAS an explanation path and was asked for no decisions, which is a
+    /// different statement from `None`.
+    #[test]
+    fn a_terminal_root_drives_a_zero_move_turn_that_reads_game_over() {
+        let rules = Rules::standard();
+        let (terminal, mover) = terminal_building_root(&rules, world(75).0);
+
+        let outcome = drive_turn(
+            &terminal,
+            SeatSpec::Contestant(Contestant::GREEDY_V1_DEFAULT),
+            &rules,
+            TURN_SEED,
+            &DrivenOpts::default(),
+        )
+        .expect("a terminal root is an Ok, not a refusal");
+
+        assert!(outcome.moves.is_empty(), "a finished game has nothing to decide");
+        assert_eq!(outcome.decisions, 0);
+        assert!(outcome.game_over, "the stop was the game being over, and it must say so");
+        assert_eq!(
+            state_digest(&outcome.handoff),
+            state_digest(&terminal),
+            "the hand-off of a zero-move turn is the root itself",
+        );
+        assert_eq!(outcome.handoff.current_player, mover, "nothing moved, so nobody handed off");
+        assert_eq!(
+            outcome.counters.explained,
+            Some(0),
+            "an explaining seat asked for no decisions reads Some(0); None would say it cannot \
+             explain at all",
+        );
+    }
+
+    /// The GAME-OVER corner, and the executable form of why the stop is DUAL.
+    ///
+    /// `advance_phase`'s game-end arm (`apply_move.rs:259-264`) sets
+    /// `TurnPhase::TurnEnd` and never writes `current_player`, so the turn that
+    /// ends the game hands off to NOBODY: a `current_player`-only stop would
+    /// spin here until the decision bound refused it. The fixture's decision is
+    /// FORCED (`EndAdditionalPhase` is the only candidate), so the corner is a
+    /// property of the loop rather than of what a policy chose.
+    #[test]
+    fn a_turn_that_ends_the_game_stops_on_game_over_with_the_mover_unchanged() {
+        let rules = Rules::standard();
+        let root = last_move_root(&rules, world(76).0, 6, 10);
+        let mover = root.current_player;
+
+        let outcome = drive_turn(&root, rung_mover(), &rules, TURN_SEED, &DrivenOpts::default())
+            .expect("a final-move root drives one turn");
+
+        assert_eq!(outcome.moves.len(), 1, "anti-vacuity: the loop applied nothing at all");
+        assert_eq!(outcome.moves[0].mv, Move::EndAdditionalPhase);
+        assert_eq!(outcome.moves[0].seat, mover);
+        assert!(outcome.game_over, "the game ended and the outcome must say so");
+        assert!(is_game_over(&outcome.handoff));
+        assert_eq!(outcome.handoff.turn_phase, TurnPhase::TurnEnd);
+        assert_eq!(
+            outcome.handoff.current_player, mover,
+            "the game-end arm never writes current_player, so the mover must be unchanged — a \
+             hand-off here would mean the stop read the wrong field",
+        );
+    }
+
+    /// The WHOLE-TURN counters, discriminated against a single decision's.
+    ///
+    /// The comparator is the SAME contestant at the SAME seed asked for the
+    /// FIRST decision alone — so it reproduces the turn's decision 0 exactly
+    /// (asserted, which is also the first-decision join at the greedy arm) and
+    /// its counters are precisely what a per-decision snapshot would have
+    /// reported. `explained` is the sharp half: whole-turn reads the decision
+    /// count, and both a first-decision and a last-decision snapshot read 1.
+    #[test]
+    fn a_turns_counters_accumulate_across_every_decision_not_just_one() {
+        let rules = Rules::standard();
+        let root = turn_start_root(&rules, world(77), 300);
+        let seat = root.current_player;
+        let greedy = Contestant::GREEDY_V1_DEFAULT;
+
+        let outcome = drive_turn(
+            &root,
+            SeatSpec::Contestant(greedy),
+            &rules,
+            TURN_SEED,
+            &DrivenOpts::default(),
+        )
+        .expect("a greedy mover drives its turn");
+        assert!(
+            outcome.moves.len() >= 2,
+            "anti-vacuity: a one-decision turn cannot tell whole-turn counters from one \
+             decision's, and this turn ran {}",
+            outcome.moves.len(),
+        );
+        assert_eq!(
+            outcome.counters.explained,
+            Some(outcome.decisions),
+            "the mover applied moves it did not explain",
+        );
+
+        let (mut solo, handle) = greedy.build(&rules, TURN_SEED);
+        let view = observe(&root, seat).expect("the root is observable");
+        let picked = solo.choose(&view, &rules).expect("the comparator decides once").mv;
+        let single = SeatCounters::from_handle(handle.as_ref().expect("greedy explains"));
+
+        assert_eq!(
+            picked, outcome.moves[0].mv,
+            "the comparator did not reproduce the turn's own first decision, so it is not one",
+        );
+        assert_eq!(single.explained, Some(1), "the comparator was asked for exactly one decision");
+        assert!(
+            outcome.counters.candidates_scored.unwrap_or(0)
+                > single.candidates_scored.unwrap_or(u64::MAX),
+            "the turn scored {:?} candidates against decision 0's {:?} — the counters are one \
+             decision's, not the turn's",
+            outcome.counters.candidates_scored,
+            single.candidates_scored,
+        );
+        assert_eq!(
+            outcome.counters.ply_cap_hits, None,
+            "a one-ply argmax has no continuation to truncate — None is not zero",
+        );
+    }
+
+    /// The guards a turn is refused by are the TERMINAL DRIVER'S, shared rather
+    /// than re-typed: same variants, same messages, same order.
+    ///
+    /// Five arms, each with the control that makes it a discriminator: the
+    /// decision bound (against the same root driving cleanly), the hidden deal
+    /// on the NON-MOVER (against the undoctored root reaching the bound — which
+    /// is what makes "up front" executable, since a refusal that waited for the
+    /// hidden seat's turn would never fire inside ONE turn at all), the seat
+    /// count, the zero bound, and the corrupt root with its `invariants: false`
+    /// arm (the root guard does not answer to the per-move flag).
+    #[test]
+    fn a_turns_guards_refuse_the_same_way_the_terminal_drivers_do() {
+        let rules = Rules::standard();
+        let root = turn_start_root(&rules, world(78), 300);
+        let default = DrivenOpts::default();
+
+        // (a) THE DECISION BOUND, on a turn known to be longer than it.
+        let bounded = DrivenOpts { max_decisions: 1, ..default };
+        let err = drive_turn(&root, rung_mover(), &rules, TURN_SEED, &bounded)
+            .expect_err("a two-decision turn cannot finish inside a one-decision bound");
+        match err {
+            DrivenError::DecisionCapReached { decisions } => assert_eq!(
+                decisions, 1,
+                "the refusal must name the bound the caller set, not one past it",
+            ),
+            other => panic!("expected DecisionCapReached, got {other:?}"),
+        }
+        assert!(
+            drive_turn(&root, rung_mover(), &rules, TURN_SEED, &default).is_ok(),
+            "control: the same turn drives cleanly at the default bound",
+        );
+
+        // (b) THE HIDDEN DEAL, on the seat that never moves inside this turn —
+        // which is what makes the UP-FRONT guard load-bearing rather than
+        // redundant here: `observe` is only ever called for the MOVER inside a
+        // turn, so a driver without this check would drive the live-tracked root
+        // happily and report a turn nobody could have played. Doctored on a
+        // fresh post-setup root, where the dealt card is still in hand (a
+        // mid-game seat may have completed it, and conservation is not something
+        // a fixture may break to make a point).
+        let fresh = root_2p(&rules, world(79).0);
+        let other_seat = PlayerId(1 - fresh.current_player.0);
+        let mut hidden = fresh.clone();
+        let index = other_seat.0 as usize;
+        let kept = hidden.players[index].starting_order.take().expect("a dealt starting order");
+        hidden.players[index].order_cards_in_hand.retain(|c| *c != kept);
+        hidden.orders_removed.push(kept);
+        hidden.players[index].starting_order_hidden = true;
+        check_invariants(&hidden, &rules).expect("the live-tracking root is invariant-clean");
+        assert!(
+            drive_turn(&fresh, rung_mover(), &rules, TURN_SEED, &default).is_ok(),
+            "control: undoctored, the same root drives a turn",
+        );
+        let err = drive_turn(&hidden, rung_mover(), &rules, TURN_SEED, &default)
+            .expect_err("a live-tracked root must refuse");
+        match err {
+            DrivenError::Unobservable { seat, ref detail } => {
+                assert_eq!(seat, other_seat, "the refusal named the wrong seat");
+                assert!(
+                    detail.contains("starting_order_hidden"),
+                    "the refusal does not name the field it read: {detail}",
+                );
+            }
+            ref other => panic!("expected Unobservable, got {other:?}"),
+        }
+
+        // (c) THE SEAT COUNT, on the wrapping shape.
+        let mut many = root.clone();
+        let filler = many.players[0].clone();
+        many.players.resize(258, filler);
+        match drive_turn(&many, rung_mover(), &rules, TURN_SEED, &default)
+            .expect_err("a 258-seat root must refuse rather than narrow to 2")
+        {
+            DrivenError::UnsupportedRoot(m) => assert!(
+                m.contains("258 seats"),
+                "the refusal must name the count it SAW, not the one it wrapped to: {m}",
+            ),
+            other => panic!("expected UnsupportedRoot, got {other:?}"),
+        }
+
+        // (d) THE ZERO BOUND: a run that may apply no decision is not a run.
+        let zero = DrivenOpts { max_decisions: 0, ..default };
+        match drive_turn(&root, rung_mover(), &rules, TURN_SEED, &zero)
+            .expect_err("a zero bound must refuse")
+        {
+            DrivenError::UnsupportedRoot(m) => {
+                assert!(m.contains("max_decisions"), "the refusal does not name the knob: {m}");
+            }
+            other => panic!("expected UnsupportedRoot, got {other:?}"),
+        }
+
+        // (e) THE CORRUPT ROOT, named as the ROOT and unconditional in the
+        // per-move flag.
+        let mut corrupt = root;
+        corrupt.players[0].assistants.in_hand += 1;
+        assert!(check_invariants(&corrupt, &rules).is_err(), "the fixture must be corrupt");
+        for opts in [default, DrivenOpts { invariants: false, ..default }] {
+            match drive_turn(&corrupt, rung_mover(), &rules, TURN_SEED, &opts)
+                .expect_err("a corrupt root must refuse")
+            {
+                DrivenError::CorruptRoot(reason) => assert!(
+                    reason.contains("assistants total"),
+                    "the reason is lost: {reason}",
+                ),
+                other => panic!("expected CorruptRoot, got {other:?}"),
+            }
+        }
+    }
+
+    // =======================================================================
+    // PHASE C T3: the RACE-RUSHER reply
+    // =======================================================================
+
+    /// T3's committed diagnostic seed for the seats these cells build by hand —
+    /// the same discipline [`TURN_SEED`] carries. A fallback-identity pin needs a
+    /// FIXED stream on both sides, and a fixture cell is exactly the case
+    /// `game::seeds`' rule carves out.
+    const RUSH_SEED: u64 = 0x0C03_2026_0818_9992;
+
+    /// One decision through the honest chain the drivers use — observe, choose,
+    /// and the legality boundary — so a cell that asks an agent for a move gets
+    /// the same treatment a driven run would give it.
+    fn ask(agent: &mut dyn ArenaAgent, state: &GameState, rules: &Rules) -> Move {
+        let seat = state.current_player;
+        let view = observe(state, seat).expect("the fixture seat observes its own position");
+        let mv = agent.choose(&view, rules).expect("the agent decides").mv;
+        assert!(
+            is_move_legal(state, &mv, rules, PathMode::Canonical),
+            "the agent played a move the engine does not allow: {mv:?}",
+        );
+        mv
+    }
+
+    /// A bare greedy@final seat, built the way [`Contestant::build`] builds one.
+    fn bare_greedy(rules: &Rules, agent_seed: u64) -> Box<dyn ArenaAgent> {
+        Contestant::GREEDY_V1_DEFAULT.build(rules, agent_seed).0
+    }
+
+    /// Drive ONE mover's turn with a race-rusher, comparing every NO-RACE
+    /// decision against `other` at the same stream position, and return how many
+    /// decisions were compared.
+    ///
+    /// **The comparison is DECISION-SCOPED, and the break is why** (plan review
+    /// SHOULD-2): a whole-turn identity claim would need "no candidate ever
+    /// races", which no fixture can promise. What IS claimable is that every
+    /// decision the race-rusher DELEGATED is the decision a bare greedy seat
+    /// makes at that stream position — and the second such decision is the one
+    /// that carries the real content, since it can only agree if the first
+    /// decision's probes left the inner stream alone.
+    fn no_race_prefix_agrees(
+        rules: &Rules,
+        root: &GameState,
+        agent_seed: u64,
+        other: &mut dyn ArenaAgent,
+    ) -> usize {
+        let mover = root.current_player;
+        let mut rusher = RaceRusherAgent::new(rules, agent_seed);
+        let mut state = root.clone();
+        let mut compared = 0usize;
+        while state.current_player == mover && !is_game_over(&state) {
+            let before = rusher.race_picks;
+            let mine = ask(&mut rusher, &state, rules);
+            if rusher.race_picks != before {
+                // A raced decision: the two agents are answering different
+                // questions from here on, so the comparison stops rather than
+                // reporting a divergence it invited.
+                break;
+            }
+            let theirs = ask(other, &state, rules);
+            assert_eq!(
+                mine, theirs,
+                "decision {compared} delegated, but did not agree with the bare greedy seat",
+            );
+            compared += 1;
+            state = apply_move_unchecked(&state, &mine, rules).expect("the agreed move applies");
+        }
+        compared
+    }
+
+    /// The FIRST position of the organic 2P rung games at [`C_MASTER`] whose
+    /// mover faces a decision in `phase`, with no choice queued.
+    fn phase_root(rules: &Rules, phase: TurnPhase) -> GameState {
+        harvest(rules, C_MASTER, 4, "a decision in the requested phase", &mut |s| {
+            !is_game_over(s)
+                && s.pending_choices.is_empty()
+                && s.turn_phase == phase
+                && get_legal_moves(s, rules).len() >= 2
+        })
+    }
+
+    /// ONE world at which a CLAIM, a CHURCH step and a CUSTOMS step all classify
+    /// — the constructed multi-class decision, plus the three moves.
+    ///
+    /// **It has to be CONSTRUCTED, and the reason is the phase machine itself.**
+    /// `search_actions::families` emits exactly one PROBED family per decision
+    /// point (`AdditionalAction`, `AreaAction`, or `ChoiceResolution` — the queue
+    /// short-circuits everything else), a claim lives only in the first, and a
+    /// track action resolves the ACTING AREA, which is one area. So no legal list
+    /// the engine ever emits holds two classes at once, and a priority rule
+    /// pinned only on organic lists would be pinned on nothing. What this builds
+    /// instead is one STATE at which all three moves genuinely apply — the
+    /// classifier's own input — by standing the mover's President on the Church
+    /// with the goods for a church action and queueing a customs-space choice it
+    /// can resolve.
+    ///
+    /// Harvest-then-doctor, this module's fixture discipline: the base position
+    /// is engine-produced and offers the claim for real, `check_invariants` is
+    /// asserted on the result, and each of the three moves is asserted to
+    /// classify as the class it is named for before any priority claim rides it.
+    fn multi_class_world(rules: &Rules) -> (GameState, Move, Move, Move) {
+        let mut world = harvest(rules, C_MASTER, 4, "a position with a legal claim", &mut |s| {
+            !is_game_over(s)
+                && get_legal_moves(s, rules)
+                    .iter()
+                    .any(|mv| matches!(mv, Move::FulfillAchievement { .. }))
+        });
+        let claim = get_legal_moves(&world, rules)
+            .into_iter()
+            .find(|mv| matches!(mv, Move::FulfillAchievement { .. }))
+            .expect("the harvest promised a claim");
+
+        let mover = world.current_player;
+        let [church_area, _customs_area] = track_areas(&world);
+
+        // The CHURCH half: the mover acts at the Church, at a power and a stock
+        // that reach an eligible space.
+        world.player_mut(mover).president_location = PresidentLocation::OnBoard(church_area);
+        while world.player(mover).assistants.in_area(church_area) < 1 {
+            stage_assistant(world.player_mut(mover), church_area);
+        }
+        world.current_action_power = Some(4);
+        {
+            let p = world.player_mut(mover);
+            p.copper = 1;
+            p.silk = 1;
+            p.tea = 1;
+            p.seafood = 1;
+            p.money = 10;
+            p.imported_goods = 4;
+        }
+        let church = Move::ExecuteAreaAction {
+            action: AreaAction::Church {
+                copper: true,
+                silk: false,
+                tea: false,
+                seafood: false,
+                yen: false,
+                imported_good: false,
+            },
+        };
+
+        // The CUSTOMS half: a queued space choice the mover can resolve. The
+        // cheapest printed cost with an unoccupied space is used, so the fixture
+        // does not depend on which spaces the base game happened to fill.
+        let cost = (1..=7u8)
+            .find(|c| !eligible_customs_spaces_for_cost(&world.customs_track, *c).is_empty())
+            .expect("a mid-game customs track has an unoccupied space");
+        let space = eligible_customs_spaces_for_cost(&world.customs_track, cost)[0];
+        world.pending_choices.push(PendingChoice::CustomsSpace { cost });
+        let customs = Move::ChooseCustomsSpace { space };
+
+        assert!(
+            check_invariants(&world, rules).is_ok(),
+            "the doctored multi-class world left the engine's own net",
+        );
+        (world, claim, church, customs)
+    }
+
+    // -----------------------------------------------------------------------
+    // The vocabulary, the echo, and the probe world's derivation
+    // -----------------------------------------------------------------------
+
+    /// The fourth menu slot names NO contestant, says so in a TYPE, and echoes
+    /// its rule together with the RESOLVED identity it falls back to.
+    ///
+    /// The echo is pinned three ways on purpose: verbatim against the composed
+    /// sentence (so a re-pointed fallback moves the string), literally against
+    /// its two fixed halves (so a composition change that still interpolates
+    /// something is caught), and against `requested_label`, which must NOT move
+    /// at D1 — the pair is what makes a re-pointing visible in an artifact.
+    #[test]
+    fn the_race_rusher_echo_names_the_rule_and_its_resolved_fallback() {
+        assert_eq!(ReplyPolicy::RaceRusher.as_str(), "race-rusher");
+        assert_eq!(
+            ReplyPolicy::RaceRusher.contestant(),
+            Err(NotAContestant::RaceRusher),
+            "the adversarial arm must never resolve to a contestant",
+        );
+        assert_eq!(
+            SeatSpec::Reply(ReplyPolicy::RaceRusher).contestant(),
+            Err(NotAContestant::RaceRusher),
+        );
+        assert!(!NotAContestant::RaceRusher.as_str().is_empty());
+
+        let echo = SeatSpec::Reply(ReplyPolicy::RaceRusher).echo();
+        assert_eq!(
+            echo,
+            format!("reply:race-rusher-v1{{fallback={}}}", Contestant::GREEDY_V1_DEFAULT.echo()),
+        );
+        assert!(
+            echo.starts_with("reply:race-rusher-v1{fallback=greedy-v1@v"),
+            "the echo lost its rule name or its fallback: {echo}",
+        );
+        assert!(echo.ends_with("}}"), "the echo did not close the fallback: {echo}");
+        assert_eq!(
+            SeatSpec::Reply(ReplyPolicy::RaceRusher).requested_label(),
+            "reply:race-rusher",
+            "the REQUESTED label is the menu name and must not carry the resolution",
+        );
+    }
+
+    /// The fallback is [`ReplyPolicy::GreedyAtFinal`]'s own binding, read from
+    /// one place — so D1's identity freeze re-points both together or fails
+    /// here.
+    #[test]
+    fn the_race_rusher_fallback_is_the_greedy_at_final_binding() {
+        assert_eq!(RACE_RUSHER_FALLBACK, Contestant::GREEDY_V1_DEFAULT);
+        assert_eq!(ReplyPolicy::GreedyAtFinal.contestant(), Ok(RACE_RUSHER_FALLBACK));
+        assert_eq!(RACE_RUSHER_FALLBACK, Contestant::GreedyV1 { m: DEFAULT_RETREAT_SAMPLES });
+        assert_eq!(RACE_RUSHER_CONTROLLER, "race-rusher-v1");
+        assert_eq!(RACE_RUSHER_IMPL_VERSION, 1);
+    }
+
+    /// The probe world's seed is the DECLARED derivation, on its own serial, and
+    /// it separates both seats and successive decisions.
+    ///
+    /// The salt-distinctness half is the cheap guard the cross-pointer asks for:
+    /// this constant lives in `driven.rs` while its family's home is
+    /// `arena.rs`, so nothing but a test stops a future serial from colliding.
+    #[test]
+    fn the_race_probe_seed_is_the_declared_derivation_on_its_own_serial() {
+        assert_ne!(
+            SALT_DRIVEN_RACE_PROBE, SALT_DRIVEN_REPLICATION,
+            "two salts of the A3E1_D21E family collided",
+        );
+        let a = 0x1234_5678_9ABC_DEF0u64;
+        let b = 0x0FED_CBA9_8765_4321u64;
+        assert_eq!(race_probe_seed(a, 0), mix(SALT_DRIVEN_RACE_PROBE, &[a, 0]));
+        assert_eq!(race_probe_seed(a, 7), mix(SALT_DRIVEN_RACE_PROBE, &[a, 7]));
+        assert_ne!(race_probe_seed(a, 0), race_probe_seed(a, 1), "one seat's decisions share a world");
+        assert_ne!(race_probe_seed(a, 0), race_probe_seed(b, 0), "two seats share a probe world");
+        // And it is NOT the play stream itself: a probe world derived from the
+        // bare agent seed would be a second consumer of the same value.
+        assert_ne!(race_probe_seed(a, 0), a);
+    }
+
+    /// The probe SCOPE is the three small families, stated over every tag the
+    /// factored surface has.
+    ///
+    /// Exhaustive by hand here rather than by `match`, because the claim is
+    /// about the SET and a `match` in a test would only restate the one in the
+    /// implementation.
+    #[test]
+    fn the_probe_scope_is_the_three_small_families() {
+        let on_board = BTreeMap::new();
+        for family in [
+            MoveFamily::AdditionalAction,
+            MoveFamily::AreaAction,
+            MoveFamily::ChoiceResolution,
+        ] {
+            assert!(is_probed_family(&family), "{family:?} must be probed");
+        }
+        for family in [
+            MoveFamily::Placement,
+            MoveFamily::MovementRoutes,
+            MoveFamily::MovementRetreat { on_board },
+            MoveFamily::FivePower,
+            MoveFamily::Building,
+        ] {
+            assert!(!is_probed_family(&family), "{family:?} must NOT be probed");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // The decision rule
+    // -----------------------------------------------------------------------
+
+    /// Claim beats church beats customs beats the fallback, at a world where all
+    /// three genuinely apply.
+    ///
+    /// The order the candidates are OFFERED in is deliberately the reverse of
+    /// the priority, so a rule that returned the first classifiable candidate
+    /// (rather than the best class) fails every one of these.
+    #[test]
+    fn the_race_rule_takes_claim_then_church_then_customs() {
+        let rules = Rules::standard();
+        let (world, claim, church, customs) = multi_class_world(&rules);
+
+        // The classifier first: every priority claim below is only worth as much
+        // as these three.
+        assert_eq!(race_class(&world, &claim, &rules), Some(RaceClass::Claim));
+        assert_eq!(race_class(&world, &church, &rules), Some(RaceClass::Church));
+        assert_eq!(race_class(&world, &customs, &rules), Some(RaceClass::Customs));
+
+        // The TIE-BREAK is exercised here rather than merely stated: because the
+        // fixture already carries a queued customs choice, the church candidate
+        // reaches steps on BOTH tracks, and the declared priority is what makes
+        // its class Church.
+        let both = mover_reachable_steps(&world, std::slice::from_ref(&church), &rules);
+        assert!(
+            both.iter().any(|s| matches!(s, RaceStep::Church(_)))
+                && both.iter().any(|s| matches!(s, RaceStep::Customs(_))),
+            "the tie-break is untested: the church candidate reaches only {both:?}",
+        );
+        assert_eq!(
+            RaceClass::Claim.cmp(&RaceClass::Church),
+            std::cmp::Ordering::Less,
+            "the class type's own order is the priority order",
+        );
+        assert!(RaceClass::Church < RaceClass::Customs);
+
+        // All three, worst first.
+        assert_eq!(
+            race_pick(&world, &rules, &[customs.clone(), church.clone(), claim.clone()]),
+            Some((RaceClass::Claim, claim.clone())),
+        );
+        // Drop the claim: the church step wins.
+        assert_eq!(
+            race_pick(&world, &rules, &[customs.clone(), church.clone()]),
+            Some((RaceClass::Church, church.clone())),
+        );
+        // Drop it too: the customs step wins.
+        assert_eq!(
+            race_pick(&world, &rules, std::slice::from_ref(&customs)),
+            Some((RaceClass::Customs, customs.clone())),
+        );
+
+        // FIRST of the best class, in the order given — two claims, and the
+        // earlier one is the answer.
+        assert_eq!(
+            race_pick(&world, &rules, &[claim.clone(), claim.clone()]),
+            Some((RaceClass::Claim, claim.clone())),
+        );
+
+        // And nothing to race is a fallback, not a pick.
+        let inert = Move::EndAdditionalPhase;
+        assert_eq!(race_class(&world, &inert, &rules), None);
+        assert_eq!(race_pick(&world, &rules, &[inert]), None);
+    }
+
+    /// **MUST-5, the load-bearing pin**: a track action with TWO OR MORE
+    /// eligible spaces places nothing at apply time — it queues the choice — and
+    /// the race-rusher must still classify it as race progress and TAKE it.
+    ///
+    /// An occupancy-only classifier passes every other cell in this file and
+    /// fails exactly here, which is the point: the queueing candidates are the
+    /// race-INITIATING moves this reply exists to model, and a classifier blind
+    /// to them would model only the already-narrowed singleton case.
+    #[test]
+    fn a_queued_track_choice_classifies_as_race_progress_and_is_taken() {
+        let rules = Rules::standard();
+        // A decision whose own legal list holds a candidate that QUEUES a
+        // track-space choice — the T1 harvest shape, re-taken here because this
+        // cell needs the DECISION and not merely the state.
+        let root = harvest(
+            &rules,
+            C_MASTER,
+            4,
+            "a decision offering a candidate that QUEUES a track-space choice",
+            &mut |s| {
+                if is_game_over(s) || !s.pending_choices.is_empty() {
+                    return false;
+                }
+                get_legal_moves(s, &rules).iter().any(|mv| {
+                    apply_move_unchecked(s, mv, &rules).is_ok_and(|next| {
+                        next.current_player == s.current_player
+                            && next.pending_choices.iter().any(|c| {
+                                matches!(
+                                    c,
+                                    PendingChoice::ChurchSpace { .. }
+                                        | PendingChoice::CustomsSpace { .. }
+                                )
+                            })
+                    })
+                })
+            },
+        );
+
+        let legal = get_legal_moves(&root, &rules);
+        let queueing = legal
+            .iter()
+            .find(|mv| {
+                apply_move_unchecked(&root, mv, &rules).is_ok_and(|next| {
+                    next.current_player == root.current_player
+                        && next.pending_choices.iter().any(|c| {
+                            matches!(
+                                c,
+                                PendingChoice::ChurchSpace { .. }
+                                    | PendingChoice::CustomsSpace { .. }
+                            )
+                        })
+                })
+            })
+            .expect("the harvest promised one")
+            .clone();
+
+        // The MUST-5 premise, asserted rather than assumed: this candidate places
+        // NOTHING, so occupancy cannot be what classifies it.
+        let after = apply_move_unchecked(&root, &queueing, &rules).expect("it applies");
+        assert_eq!(
+            (after.church_track.total_assistants(), after.customs_track.total_assistants()),
+            (root.church_track.total_assistants(), root.customs_track.total_assistants()),
+            "the fixture candidate placed a pawn, so nothing here is about a QUEUE",
+        );
+        assert!(
+            matches!(race_class(&root, &queueing, &rules), Some(RaceClass::Church | RaceClass::Customs)),
+            "a queueing track action classified as no race at all",
+        );
+
+        // And the AGENT takes it, through its own honest chain.
+        let mut rusher = RaceRusherAgent::new(&rules, RUSH_SEED);
+        let played = ask(&mut rusher, &root, &rules);
+        assert_eq!(rusher.race_picks, 1, "the decision was delegated, not raced");
+        assert!(
+            matches!(race_class(&root, &played, &rules), Some(RaceClass::Church | RaceClass::Customs)),
+            "the race-rusher raced with a move that races nothing: {played:?}",
+        );
+        assert!(rusher.probed_candidates > 0, "anti-vacuity: the decision probed nothing");
+    }
+
+    /// A movement decision probes NOTHING and delegates — with the
+    /// anti-vacuity half that a probed-family decision does probe.
+    ///
+    /// Both halves are needed: a counter that never moves would satisfy the
+    /// first assertion however broken the scope rule was.
+    #[test]
+    fn a_movement_decision_probes_nothing_and_delegates() {
+        let rules = Rules::standard();
+        let movement = phase_root(&rules, TurnPhase::Movement);
+        assert!(
+            crate::game::search_actions::families(&movement, &rules)
+                .iter()
+                .all(|f| !is_probed_family(f)),
+            "the movement fixture offers a probed family, so this cell tests nothing",
+        );
+
+        let mut rusher = RaceRusherAgent::new(&rules, RUSH_SEED);
+        let mut greedy = bare_greedy(&rules, RUSH_SEED);
+        let raced = ask(&mut rusher, &movement, &rules);
+        let plain = ask(greedy.as_mut(), &movement, &rules);
+        assert_eq!(rusher.probed_candidates, 0, "a movement decision probed a candidate");
+        assert_eq!(rusher.race_picks, 0);
+        assert_eq!(raced, plain, "a probe-free decision did not delegate");
+
+        // ANTI-VACUITY: the counter does move where the scope says it should.
+        let area = phase_root(&rules, TurnPhase::AreaAction);
+        let mut probing = RaceRusherAgent::new(&rules, RUSH_SEED);
+        let _ = ask(&mut probing, &area, &rules);
+        assert!(
+            probing.probed_candidates > 0,
+            "an area-action decision probed nothing, so the zero above says nothing",
+        );
+    }
+
+    /// The no-race fallback is byte-identical to a bare greedy seat at the same
+    /// seed — for at least TWO decisions, which is what proves the probes left
+    /// the inner stream alone.
+    ///
+    /// One decision would only show that the first delegation agrees. The second
+    /// is the content: the race-rusher's probes ran between them, and a probe
+    /// that had drawn from the greedy's own `ChaCha8Rng` would move it past the
+    /// value the bare seat is about to use.
+    #[test]
+    fn the_no_race_fallback_is_byte_identical_to_a_bare_greedy_seat() {
+        let rules = Rules::standard();
+        let root = turn_start_root(&rules, world(80), 200);
+        // The MIRROR itself on the other side — the construction `new` performs,
+        // written out, so this cell is about the STREAM rather than about the
+        // constructor.
+        let mut mirrored =
+            GreedyAgent::with_weights(&rules, WeightTable::V2, DEFAULT_RETREAT_SAMPLES, RUSH_SEED);
+        let compared = no_race_prefix_agrees(&rules, &root, RUSH_SEED, &mut mirrored);
+        assert!(
+            compared >= 2,
+            "anti-vacuity: only {compared} delegated decision(s) were compared, and the stream \
+             claim needs two",
+        );
+    }
+
+    /// The inner greedy IS [`Contestant::build`]'s greedy arm — the drift pin
+    /// the mirror owes.
+    ///
+    /// Compared by MOVE IDENTITY over a whole turn at the same seed rather than
+    /// by inspecting fields: a mirror that agreed on every field and differed in
+    /// construction ORDER would still diverge here, and a mirror that differed
+    /// in a field nobody thought to compare would not be caught by a field
+    /// check.
+    #[test]
+    fn the_inner_greedy_is_contestant_builds_greedy_arm() {
+        let rules = Rules::standard();
+        let root = turn_start_root(&rules, world(81), 240);
+        let mut built = bare_greedy(&rules, RUSH_SEED);
+        let compared = no_race_prefix_agrees(&rules, &root, RUSH_SEED, built.as_mut());
+        assert!(
+            compared >= 1,
+            "anti-vacuity: no delegated decision was compared against `Contestant::build`",
+        );
+    }
+
+    /// The LIVE ordinal reaches the derivation: one seat's successive decisions
+    /// probe at ordinals 0 and 1.
+    ///
+    /// [`the_race_probe_seed_is_the_declared_derivation_on_its_own_serial`] pins
+    /// the FUNCTION, and nothing in it says the agent hands that function the
+    /// ordinal it is holding. Freeze the argument at 0 — one seat, ONE probe
+    /// world for its whole life, every decision classified against the same
+    /// determinization — and every other cell in this module stays green: the
+    /// scope counters, the fallback identity and the determinism cell are all
+    /// blind to WHICH world was probed. So the seed is recorded where the
+    /// sampler is built and read back here.
+    #[test]
+    fn successive_decisions_probe_at_successive_ordinals() {
+        let rules = Rules::standard();
+        let root = turn_start_root(&rules, world(83), 200);
+        let mut rusher = RaceRusherAgent::new(&rules, RUSH_SEED);
+
+        let first = ask(&mut rusher, &root, &rules);
+        assert_eq!(
+            rusher.last_probe_seed,
+            Some(race_probe_seed(RUSH_SEED, 0)),
+            "the first decision did not probe at ordinal 0",
+        );
+
+        // The two expectations are DIFFERENT values, stated about the pair this
+        // cell actually compares — otherwise a frozen argument would satisfy
+        // both and the second assertion would carry nothing.
+        assert_ne!(race_probe_seed(RUSH_SEED, 0), race_probe_seed(RUSH_SEED, 1));
+
+        let next = apply_move_unchecked(&root, &first, &rules).expect("the first move applies");
+        assert!(
+            !is_game_over(&next),
+            "the fixture ended in one move, so there is no second decision to probe",
+        );
+        let _ = ask(&mut rusher, &next, &rules);
+        assert_eq!(
+            rusher.last_probe_seed,
+            Some(race_probe_seed(RUSH_SEED, 1)),
+            "the second decision did not probe at ordinal 1 — the live ordinal is not reaching \
+             the derivation",
+        );
+    }
+
+    /// Same seed, same root → the same decisions twice.
+    ///
+    /// **The anti-vacuity half is the LENGTH assertion**, not a second seed:
+    /// this cell never runs a different seed, and a turn of one decision (or of
+    /// none) would satisfy the equality however broken the seeding was.
+    /// Asserting the fixture turn is at least two decisions long is what makes
+    /// the equality say something, and [`turn_start_root`]'s phase guarantee is
+    /// what supplies it.
+    #[test]
+    fn a_race_rusher_seat_is_deterministic_at_a_fixed_seed() {
+        let rules = Rules::standard();
+        let root = turn_start_root(&rules, world(82), 260);
+        let turn = |seed: u64| -> Vec<Move> {
+            let mut agent = RaceRusherAgent::new(&rules, seed);
+            let mover = root.current_player;
+            let mut state = root.clone();
+            let mut moves = Vec::new();
+            while state.current_player == mover && !is_game_over(&state) {
+                let mv = ask(&mut agent, &state, &rules);
+                state = apply_move_unchecked(&state, &mv, &rules).expect("the move applies");
+                moves.push(mv);
+            }
+            moves
+        };
+        let first = turn(RUSH_SEED);
+        assert!(first.len() >= 2, "anti-vacuity: the fixture turn is {} decision(s)", first.len());
+        assert_eq!(first, turn(RUSH_SEED), "the same seed produced two different turns");
+    }
+
+    // -----------------------------------------------------------------------
+    // Through the drivers
+    // -----------------------------------------------------------------------
+
+    /// The seat materializes through BOTH drivers, and the whole-game one
+    /// records what it seated: the menu name asked for, the composed echo, the
+    /// agent's own controller descriptor, and the view label the bench
+    /// witnessed.
+    ///
+    /// Driven from a LATE root with a rung opponent, so the greedy fallback pays
+    /// for a tail rather than a whole game (design §6's wall discipline).
+    #[test]
+    fn a_race_rusher_seat_is_described_by_the_driver_that_seated_it() {
+        let rules = Rules::standard();
+        let seed = world(83);
+        let stats = rung_game(&rules, seed);
+        let events = stats.record.events.len();
+        let root = state_at(&stats.record, events.saturating_sub(24), &rules)
+            .expect("a late root replays");
+        assert!(!is_game_over(&root), "anti-vacuity: the chosen root is already terminal");
+
+        // The TURN driver accepts the seat, which is the cheaper half.
+        let turn = drive_turn(
+            &root,
+            SeatSpec::Reply(ReplyPolicy::RaceRusher),
+            &rules,
+            RUSH_SEED,
+            &DrivenOpts::default(),
+        )
+        .expect("a race-rusher turn drives");
+        assert!(!turn.moves.is_empty(), "anti-vacuity: the turn played nothing");
+        assert_eq!(
+            turn.counters,
+            SeatCounters::NONE,
+            "a race-rusher explains only what it delegates, so it must carry no account",
+        );
+
+        // And the WHOLE-GAME driver records the seat.
+        let seats =
+            [SeatSpec::Reply(ReplyPolicy::RaceRusher), SeatSpec::Reply(ReplyPolicy::FamilyWeighted)];
+        let master = world(84);
+        let outcome = drive_to_terminal(&root, &seats, &rules, master, DrivenOpts::default())
+            .expect("a rung-vs-race-rusher run completes");
+        assert_seats_describe(&seats, &outcome.provenance, master);
+
+        let d = &outcome.provenance.seats[0];
+        assert_eq!(d.requested, "reply:race-rusher");
+        assert_eq!(d.echo, SeatSpec::Reply(ReplyPolicy::RaceRusher).echo());
+        assert_eq!(d.controller, RACE_RUSHER_CONTROLLER);
+        assert_eq!(d.version, RACE_RUSHER_IMPL_VERSION);
+        assert_eq!(
+            d.params["fallback_version"],
+            i64::from(crate::game::greedy::GREEDY_IMPL_VERSION),
+            "the descriptor does not name the fallback's version",
+        );
+        assert_eq!(d.params["m"], i64::from(DEFAULT_RETREAT_SAMPLES));
+        assert!(d.params.contains_key("weights"), "the fallback's table identity is not recorded");
+        assert_eq!(d.observation, crate::game::record::OBSERVATION_VIEW);
+        let reconstructed = Contestant::from_parts(&d.controller, &d.params);
+        assert!(
+            reconstructed.is_err(),
+            "a harness rule reconstructed as the contestant {reconstructed:?}",
+        );
+        assert_eq!(
+            outcome.seats[0].counters,
+            SeatCounters::NONE,
+            "the race-rusher seat reported an explanation account it does not have",
+        );
+        assert!(outcome.seats[0].applied_moves > 0, "anti-vacuity: the seat never moved");
+    }
+
+    // =======================================================================
+    // PHASE C T4: the adjudicator's TURN HOOK
+    // =======================================================================
+
+    /// Walk the mover's own turn out of a playout BY HAND, through the CHECKED
+    /// `apply_move` — a second, independent application of the moves the driver
+    /// reported, so a derivation that agreed with itself and with nothing else
+    /// fails here.
+    ///
+    /// The walk is the design's rule read literally: start at ROOT + the forced
+    /// candidate; if that already ended the turn, stop; otherwise apply the
+    /// playout's moves while they belong to the mover, stopping the moment the
+    /// game ends or the seat changes.
+    fn hand_walk_turn(
+        after: &GameState,
+        mover: PlayerId,
+        applied: &[AppliedMove],
+        rules: &Rules,
+    ) -> GameState {
+        let mut state = after.clone();
+        if is_game_over(&state) || state.current_player != mover {
+            return state;
+        }
+        for (i, step) in applied.iter().enumerate() {
+            if step.seat != mover {
+                break;
+            }
+            state = apply_move(&state, &step.mv, rules)
+                .unwrap_or_else(|e| panic!("hand-walk move {i} does not re-apply: {e}"));
+            if is_game_over(&state) || state.current_player != mover {
+                break;
+            }
+        }
+        state
+    }
+
+    /// A LATE root offering the mover between `min` and `max` legal moves.
+    ///
+    /// Both bounds matter here and only here: the LOWER one makes the cell's
+    /// per-row assertions non-trivial, and the UPPER one is the WALL — this cell
+    /// pays `candidates × 2` whole rung games (the adjudication's playouts plus
+    /// the independent re-drive the hand walk needs), so an unbounded scan that
+    /// happened to land on a money-saturated Movement point would cost a minute
+    /// for no more evidence. Late in the game for the same reason: a playout
+    /// from event ~800 is a tail rather than most of a game.
+    fn narrow_late_root(
+        rules: &Rules,
+        seed: WorldSeed,
+        from: usize,
+        min: usize,
+        max: usize,
+    ) -> GameState {
+        let stats = rung_game(rules, seed);
+        let events = stats.record.events.len();
+        assert!(from < events, "the generating game is only {events} events long");
+        (from..events)
+            .find_map(|k| {
+                let state = state_at(&stats.record, k, rules).ok()?;
+                if is_game_over(&state) {
+                    return None;
+                }
+                let width = get_legal_moves(&state, rules).len();
+                (min..=max).contains(&width).then_some(state)
+            })
+            .unwrap_or_else(|| panic!("no {min}..={max}-wide decision from event {from}"))
+    }
+
+    /// Run an adjudication with a RECORDING hook and return what the hook saw,
+    /// in call order: `(first-argument digest, second-argument digest)` per
+    /// playout.
+    fn recorded_hook_args(
+        root: &GameState,
+        seats: &[SeatSpec],
+        rules: &Rules,
+        master: WorldSeed,
+        replications: u32,
+    ) -> (Adjudication, Vec<(String, String)>) {
+        let seen: RefCell<Vec<(String, String)>> = RefCell::new(Vec::new());
+        let adj = adjudicate_root_with(
+            &RootSource::Constructed(root.clone()),
+            seats,
+            rules,
+            master,
+            replications,
+            DrivenOpts::default(),
+            Some(&|r: &GameState, h: &GameState| {
+                seen.borrow_mut().push((state_digest(r), state_digest(h)));
+                true
+            }),
+        )
+        .expect("the fixture adjudicates");
+        (adj, seen.into_inner())
+    }
+
+    /// **THE HOOK'S TWO ARGUMENTS**: the ADJUDICATED ROOT (pre-candidate) and
+    /// the HAND-WALKED hand-off.
+    ///
+    /// The first half is plan MUST-3b's rule, asserted rather than commented: a
+    /// hook handed the post-candidate state would invert family 4's dominance
+    /// partition, and the anti-vacuity is that the two digests genuinely differ
+    /// at every row here (`continuation_digest` is what the wrong argument would
+    /// have been).
+    ///
+    /// The second half is the derivation itself, checked against an independent
+    /// walk through the CHECKED `apply_move` over the moves a re-driven playout
+    /// applied. The root is a BRANCHING mid-game position, so the hand-offs are
+    /// real hand-offs — a near-terminal fixture would exercise only the
+    /// game-over branch, which the next cell covers on purpose.
+    #[test]
+    fn the_turn_hook_reads_the_pre_candidate_root_and_the_hand_walked_hand_off() {
+        let rules = Rules::standard();
+        let root = narrow_late_root(&rules, world(90), 700, 4, 6);
+        let mover = root.current_player;
+        let master = world(91);
+        let seats = rung_seats();
+
+        let (adj, seen) = recorded_hook_args(&root, &seats, &rules, master, 1);
+        assert!(adj.candidates() >= 4, "anti-vacuity: the root offers {} candidates", adj.candidates());
+        assert_eq!(seen.len(), adj.candidates(), "one hook call per playout, in row order");
+
+        let root_digest = state_digest(&root);
+        for (index, (first, handoff)) in seen.iter().enumerate() {
+            let row = &adj.rows[index];
+            assert_eq!(
+                *first, root_digest,
+                "row {index}'s hook saw a first argument that is not the adjudicated root",
+            );
+            assert_ne!(
+                *first, row.continuation_digest,
+                "the fixture does not separate the two readings at row {index}",
+            );
+
+            // The independent walk: re-drive the SAME continuation in the SAME
+            // replication world and follow the mover's own moves by hand.
+            let after = apply_move(&root, &row.candidate, &rules)
+                .expect("a listed candidate applies through the checked boundary");
+            let outcome = drive_to_terminal(
+                &after,
+                &seats,
+                &rules,
+                replication_world(master, 0),
+                DrivenOpts::default(),
+            )
+            .expect("the remainder drives");
+            let walked = hand_walk_turn(&after, mover, &outcome.applied, &rules);
+            assert_eq!(
+                *handoff,
+                state_digest(&walked),
+                "row {index}: the hook's hand-off is not where the mover's own moves lead",
+            );
+        }
+
+        // The hand-offs are HAND-OFFS, not a whole game and not the candidate
+        // alone: at least one row's turn ran past its forced candidate and
+        // stopped before the terminal state the playout reached.
+        let moved_on = adj.rows.iter().enumerate().any(|(index, row)| {
+            seen[index].1 != row.continuation_digest && seen[index].1 != row.playouts[0].final_digest
+        });
+        assert!(moved_on, "no row's hand-off sits strictly between the candidate and the end");
+    }
+
+    /// The corner where the forced candidate IS the whole turn, in both of its
+    /// shapes — and the one where the walk runs on past it.
+    ///
+    /// `last_move_root`'s only candidate ENDS THE GAME, so the post-candidate
+    /// state is already terminal and the mover has no remainder at all: the
+    /// hand-off must be that state exactly (the continuation digest), never the
+    /// playout's own final digest reached by somebody else's moves.
+    /// `near_terminal_building_root` is the other half — the mover keeps playing
+    /// after its forced build and the turn ends the game, so the hand-off is the
+    /// TERMINAL state and the walk covered at least one remainder move.
+    #[test]
+    fn a_forced_candidate_that_ends_the_turn_is_the_whole_turn_the_hook_reads() {
+        let rules = Rules::standard();
+        let master = world(92);
+        let seats = rung_seats();
+
+        // (a) the candidate itself ends the game.
+        let root = last_move_root(&rules, 7, 6, 10);
+        let (adj, seen) = recorded_hook_args(&root, &seats, &rules, master, 1);
+        assert_eq!(adj.candidates(), 1, "the fixture's premise: one forced candidate");
+        assert_eq!(adj.rows[0].candidate, Move::EndAdditionalPhase);
+        assert_eq!(seen[0].0, state_digest(&root), "the first argument is still the root");
+        assert_eq!(
+            seen[0].1, adj.rows[0].continuation_digest,
+            "a candidate that ends the game leaves a remainder of exactly nothing",
+        );
+        assert_eq!(adj.rows[0].playouts[0].decisions, 0, "the fixture's premise: no remainder");
+
+        // (b) the candidate is followed by more of the mover's own turn, and the
+        // turn ends the game.
+        let (root, mover, _) = near_terminal_building_root(&rules, 8, [3, 4, 5, 0], 6, 10);
+        let (adj, seen) = recorded_hook_args(&root, &seats, &rules, master, 1);
+        assert_eq!(adj.candidates(), expected_building_candidates().len());
+        for (index, row) in adj.rows.iter().enumerate() {
+            let after = apply_move(&root, &row.candidate, &rules).expect("a listed candidate applies");
+            let outcome = drive_to_terminal(
+                &after,
+                &seats,
+                &rules,
+                replication_world(master, 0),
+                DrivenOpts::default(),
+            )
+            .expect("the remainder drives");
+            assert!(
+                outcome.applied.iter().any(|m| m.seat == mover),
+                "row {index}'s premise: the mover plays on after its forced build",
+            );
+            let walked = hand_walk_turn(&after, mover, &outcome.applied, &rules);
+            assert!(is_game_over(&walked), "row {index}: this fixture's turn ends the game");
+            assert_eq!(seen[index].1, state_digest(&walked), "row {index}'s hand-off");
+            assert_ne!(
+                seen[index].1, row.continuation_digest,
+                "row {index}: the walk did not run past the forced candidate",
+            );
+        }
     }
 }

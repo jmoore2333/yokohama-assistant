@@ -195,7 +195,10 @@ const SALT_RAW_STREAM: u64 = 0xA3E1_4157_0000_0003;
 /// world. `pub(crate)` for [`mix`]'s own reason: the deriving code is a sibling
 /// module, and "one mixing authority, never a re-typed constant" is a rule
 /// across the crate rather than inside this file. The serial is this family's
-/// next free one (0004 is `arena::stats`' bootstrap, 0005 `eval_screen`'s).
+/// next free one (0004 is `arena::stats`' bootstrap, 0005 `eval_screen`'s,
+/// 0006 `SALT_DRIVEN_REPLICATION` below, 0007 `driven::SALT_DRIVEN_RACE_PROBE`,
+/// 0008 `driven_families::SALT_DRIVEN_FAMILY_READ` — the family home's index,
+/// swept complete at the Phase-C close).
 pub(crate) const SALT_DRIVEN_REPLICATION: u64 = 0xA3E1_D21E_0000_0006;
 
 /// Fold `components` into one full-width sub-seed under `salt` — the module

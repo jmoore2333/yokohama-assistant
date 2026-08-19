@@ -76,6 +76,17 @@ pub mod eval_screen;
 /// `driven` seats its agents in the arena's own bench and drives the arena's own
 /// loop, which is the property its reproduction pin exists to keep true.
 pub mod driven;
+/// [`driven`]'s LAYER-2 READ MACHINERY (Phase C): the turn predicates, the
+/// DEAD-root classifier, root admission and the binary read. NAMESPACED for the
+/// same reason its subject is — `admission`, `family_read` and `PassRule` say
+/// nothing about DRIVEN FAMILIES at the crate root.
+///
+/// SEPARATE from [`driven`] because the two answer different questions over one
+/// instrument: `driven` answers "what happens from this position", and this
+/// answers "does the subject's behaviour here satisfy a DECLARED RULE". Keeping
+/// the rules in one file is what lets a reader check all of them at once against
+/// the freeze document. Callers write `driven_families::family_read`.
+pub mod driven_families;
 /// [`driven`]'s RUNNER: the argv grammar and the report rendering behind
 /// `examples/driven.rs`. NAMESPACED for the same reason its subject is, and
 /// SEPARATE from `driven` itself because the harness answers questions while
