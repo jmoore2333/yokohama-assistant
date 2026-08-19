@@ -107,7 +107,13 @@ control 7, needing 28; the typed refusals are the recorded evidence), which is e
 prefix-stable recovery the paragraph above pre-declares: the strided ordinal sequence at 120
 games is identical to the 24-game sequence where both exist, so every completed reading
 stands at its recorded ecology id and the re-run draws the same roots plus the
-previously-unreachable ones. No master, ordinal, cap, or block moved.
+previously-unreachable ones. No master, ordinal, cap, or block moved. **AMENDMENT 2 (same
+day, commit `0aa7385`): 120 → 240 (v2.1 → v2.2)** — the control arm exhausted AGAIN at 26 of
+28 (the measured rate fell to 26/120 = 0.217/game from the pilot-implied 0.29, which is why
+the first raise's projection missed); this raise is sized off the longer measurement
+(0.217 × 240 ≈ 52 vs 28 needed, 1.8× demand) and called final on that stated basis; same
+prefix-stability (v2 ⊂ v2.1 ⊂ v2.2 as strided sequences), same nothing-else-moved
+discipline, and the identity pin now guards BOTH retired id strings.
 
 ## 5. Error arithmetic (the declared benign-miss model)
 
