@@ -20,7 +20,8 @@
 
 use yokohama_cli::repl::{Repl, HELP_TEXT};
 use yokohama_cli::session::Session;
-use yokohama_cli::suggest::{RUNNER_UPS_LABEL, TABLE_HEADINGS, TOTAL_LABEL};
+use yokohama_cli::style::glyph;
+use yokohama_cli::suggest::{NONZERO_SUMMARY_TAIL, RUNNER_UPS_LABEL, TABLE_HEADINGS, TOTAL_LABEL};
 use yokohama_cli::{render, screen, suggest};
 use yokohama_core::{eval, greedy, lookahead, GameConfig, Rules, StartingOrderChoice};
 
@@ -325,8 +326,9 @@ const SUGGEST_BLOCK_OPENING: &str = "─ Suggest ";
 /// (h) The captured `suggest` screen quotes strings the renderer OWNS, so those
 /// strings are held to the code rather than to a reviewer's memory: the header's
 /// knob line (every value from the const the agent itself reads), the
-/// explanation table's headings AT THEIR COLUMN SPACING, its total row, and the
-/// runner-up heading.
+/// explanation table's headings AT THEIR COLUMN SPACING, its total row, the
+/// runner-up heading, and — since branch-4 — the nonzero-product summary's
+/// tail plus the marker itself in the lead column the renderer puts it in.
 ///
 /// T10 shipped ~50 lines of captured screen into both guides without extending
 /// this file (six-lens review) — exactly the verbatim-quoting surface this
@@ -357,6 +359,7 @@ fn the_captured_suggest_screen_matches_the_renderers_own_strings() {
             ("the explanation table's headings", headings.as_str()),
             ("the explanation table's total row", total),
             ("the runner-up heading", RUNNER_UPS_LABEL),
+            ("the nonzero-product summary", NONZERO_SUMMARY_TAIL),
         ] {
             assert!(
                 block.contains(needle),
@@ -365,6 +368,17 @@ fn the_captured_suggest_screen_matches_the_renderers_own_strings() {
                  (render_suggestion + its pub consts). Re-capture the screen in BOTH formats."
             );
         }
+
+        // The MARKER, pinned in the column the renderer puts it in — the lead
+        // character of a row, which is the one thing about it a substring
+        // needle would not see. The fixture's own table has nonzero rows (the
+        // summary needle above counts them), so this is not vacuous.
+        assert!(
+            block.lines().any(|line| line.starts_with(glyph::NONZERO_MARK)),
+            "{file}'s captured suggest screen shows no nonzero-product marker in its lead \
+             column. Authority: crates/yokohama-cli/src/suggest.rs (marked_table_row). \
+             Re-capture the screen in BOTH formats."
+        );
     }
 }
 

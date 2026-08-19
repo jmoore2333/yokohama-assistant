@@ -91,6 +91,7 @@ fn enabled() -> bool {
 /// | [`VP`](glyph::VP) | `★` | U+2605 | Ambiguous | victory points, on cards, site slots and tracks |
 /// | [`YEN`](glyph::YEN) | `¥` | U+00A5 | Narrow | money |
 /// | [`ACTIVE`](glyph::ACTIVE) | `▶` | U+25B6 | Ambiguous | the seat whose turn it is, in the players panel |
+/// | [`NONZERO_MARK`](glyph::NONZERO_MARK) | `▶` | U+25B6 | Ambiguous | an explanation-table row carrying a nonzero product (same code point, different job) |
 /// | [`CHAIN_STEP`](glyph::CHAIN_STEP) | `▸` | U+25B8 | Neutral | the separator between phases in the phase chain |
 /// | [`CATEGORY`](glyph::CATEGORY) | `■` | U+25A0 | Ambiguous | an index's group heading (order flags, goal categories) |
 /// | [`HISTORY_KEY`](glyph::HISTORY_KEY) | `↑` | U+2191 | Ambiguous | names the recall key in the standing hint |
@@ -107,18 +108,21 @@ fn enabled() -> bool {
 /// | [`BOX_BL`](glyph::BOX_BL) | `└` | U+2514 | Ambiguous | box corner, bottom-left |
 /// | [`BOX_BR`](glyph::BOX_BR) | `┘` | U+2518 | Ambiguous | box corner, bottom-right |
 ///
-/// Twenty-two names over twenty-one code points: [`SEPARATOR`](glyph::SEPARATOR)
-/// and [`EMPTY_SLOT`](glyph::EMPTY_SLOT) are both U+00B7 deliberately. They
-/// are one character with two jobs, and a call site reads better saying
-/// which job it means -- the mocks' `Shophouses ···· Trade ·` run is empty
-/// slots, not separators. Composed runs like that one are repetition at the
-/// call site, never a constant here.
+/// Twenty-three names over twenty-one code points, in TWO deliberate pairs.
+/// [`SEPARATOR`](glyph::SEPARATOR) and [`EMPTY_SLOT`](glyph::EMPTY_SLOT) are
+/// both U+00B7; [`ACTIVE`](glyph::ACTIVE) and
+/// [`NONZERO_MARK`](glyph::NONZERO_MARK) are both U+25B6. Each pair is one
+/// character with two jobs, and a call site reads better saying which job it
+/// means -- the mocks' `Shophouses ···· Trade ·` run is empty slots, not
+/// separators, and a marked row of [`crate::suggest`]'s explanation table is
+/// not a seat taking its turn. Composed runs like that one are repetition at
+/// the call site, never a constant here.
 ///
 /// **Width decision (the SF3 pin; completes the KNOWN RESIDUAL on
 /// `screen::test_support::assert_exact_width`).** The vocabulary spans three
 /// East-Asian-Width classes and NO Wide one, counted by NAME (the basis used
 /// everywhere below): `¥` is Narrow, `⌂` and `▸` are Neutral -- both classes
-/// are one column everywhere -- and the other nineteen of the twenty-two
+/// are one column everywhere -- and the other twenty of the twenty-three
 /// names are Ambiguous, which means one column in a Western locale and
 /// two under a CJK-configured locale or font. T0's residual note called `★`
 /// East-Asian-WIDE; it is not. U+2605 is Ambiguous (UCD 16.0
@@ -240,7 +244,7 @@ pub mod glyph {
     /// row and break no test. But that is a different act from forgetting a
     /// row -- a declaration made OUTSIDE the vocabulary rather than an
     /// omission inside it -- and it reads on sight as the one line that does
-    /// not look like its twenty-two neighbours. The two-list divergence is
+    /// not look like its twenty-three neighbours. The two-list divergence is
     /// structurally gone; the deviation is left to review, which is where the
     /// width classes below already live.
     ///
@@ -283,6 +287,9 @@ pub mod glyph {
         YEN = '¥', 0x00A5, Narrow;
         /// The seat whose turn it is.
         ACTIVE = '▶', 0x25B6, Ambiguous;
+        /// An explanation-table row whose product is nonzero. Same code point
+        /// as [`ACTIVE`], different job.
+        NONZERO_MARK = '▶', 0x25B6, Ambiguous;
         /// The step separator in the phase chain.
         CHAIN_STEP = '▸', 0x25B8, Neutral;
         /// An index's group heading.
@@ -953,12 +960,20 @@ mod tests {
             );
         }
 
-        // The one sanctioned duplicate, stated as a PROPERTY rather than as a
+        // The sanctioned duplicates, stated as a PROPERTY rather than as a
         // count. The retired length literal could only say "twenty-one names
         // over twenty code points" and could not say which twenty; this names
-        // the pair, so a second glyph that silently repeats an existing
-        // character -- two names for one mark, where one name was wanted --
-        // fails instead of quietly restoring the arithmetic.
+        // the pairs, so a glyph that silently repeats an existing character --
+        // two names for one mark, where one name was wanted -- fails instead
+        // of quietly restoring the arithmetic.
+        //
+        // **The list GREW to two on 2026-08-18 (branch-4 item 2), and the
+        // growth is the deliberate act this assert exists to force.** The
+        // explanation table's nonzero-product marker wanted the character
+        // U+25B6 already carries for the active seat, and the precedent for
+        // that is SEPARATOR/EMPTY_SLOT: one mark, two jobs, a name each so a
+        // call site says which it means. Extending a whitelist is the review
+        // step; what the assert forbids is a second name arriving without one.
         let mut by_codepoint: std::collections::BTreeMap<u32, Vec<&str>> = Default::default();
         for gl in glyph::VOCABULARY {
             by_codepoint.entry(gl.codepoint).or_default().push(gl.name);
@@ -967,10 +982,14 @@ mod tests {
             by_codepoint.into_iter().filter(|(_, names)| names.len() > 1).collect();
         assert_eq!(
             shared,
-            vec![(0x00B7, vec!["SEPARATOR", "EMPTY_SLOT"])],
-            "U+00B7 carried by SEPARATOR and EMPTY_SLOT is the vocabulary's only shared \
-             code point -- one character with two jobs. Any other sharing is two names \
-             for one mark, and wants one name",
+            vec![
+                (0x00B7, vec!["SEPARATOR", "EMPTY_SLOT"]),
+                (0x25B6, vec!["ACTIVE", "NONZERO_MARK"]),
+            ],
+            "U+00B7 (SEPARATOR/EMPTY_SLOT) and U+25B6 (ACTIVE/NONZERO_MARK) are the \
+             vocabulary's only shared code points -- one character with two jobs, each \
+             pair sanctioned here by review. Any other sharing is two names for one \
+             mark, and wants one name",
         );
     }
 

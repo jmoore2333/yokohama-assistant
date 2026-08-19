@@ -266,7 +266,7 @@ executors read both. The spec's §6 records the Fable review this plan already a
   (the table builder already has them — the marker derives from the SAME value the
   `product` cell prints, one source).
 
-- [ ] **Step 4.1: Failing test, forced lead.** Reuse why's fixture machinery to a
+- [x] **Step 4.1: Failing test, forced lead.** Reuse why's fixture machinery to a
   1-legal-move decision (a forced point exists in the every-move pin's game — or construct
   via the pending-choice singleton pattern why's fixtures already use):
   `a_forced_move_leads_with_only_legal_option_and_omits_runner_ups` — output STARTS the
@@ -278,18 +278,18 @@ executors read both. The spec's §6 records the Fable review this plan already a
   `a_greedy_mover_renders_the_leaner_block`, why.rs:~1181) renders the lead line AND the
   ONE_PLY_ACCOUNT sentence together — composition, not replacement (spec §2.2's
   both-arms clause, red-greened rather than asserted in prose). Run → FAIL.
-- [ ] **Step 4.2:** Implement (the account path reconstructs `state` already; call
+- [x] **Step 4.2:** Implement (the account path reconstructs `state` already; call
   `get_legal_moves` there once). **Implement the lead + runner-ups omission in WHY's
   account path, NOT in the shared builder: suggest.rs:694 renders its own forced-point
   message ("No runner-up: this decision point offered exactly one move.") with its own
   pin at suggest.rs:1145 — both stay untouched** (spec §0's why-is-the-vetted-surface
   note). Run → PASS.
-- [ ] **Step 4.3: Failing test, counters.** `the_counter_block_names_all_fifteen_rows` —
+- [x] **Step 4.3: Failing test, counters.** `the_counter_block_names_all_fifteen_rows` —
   drive a lookahead why; for each `(name, _)` in `counter_rows(&stats)` assert the block
   contains the name; plus `the_two_line_grouping_holds` (search line + budget line, both
   ≤ frame width via `visible_width`). Run → FAIL. Implement from `counter_rows` with an
   unknown-name error arm. Run → PASS.
-- [ ] **Step 4.4: Failing test, marker.** `nonzero_product_rows_carry_the_mark_and_zeros_
+- [x] **Step 4.4: Failing test, marker.** `nonzero_product_rows_carry_the_mark_and_zeros_
   dim` — a fixture explanation with known zero/nonzero rows: marked rows exactly the
   nonzero-product ones, column alignment unchanged (`visible_width` equal across rows),
   summary line counts match, TOTAL row unmarked; `piped_output_is_escape_free` (paint
@@ -302,11 +302,11 @@ executors read both. The spec's §6 records the Fable review this plan already a
   names over twenty code points" ~:103, "eighteen of the twenty-one" ~:114) plus the doc
   table row for the new name — the commit message names the vocabulary move.** Implement
   row lead + dim + summary. Run → PASS.
-- [ ] **Step 4.5:** Guides: re-capture the quoted screens (the guide quotes captured
+- [x] **Step 4.5:** Guides: re-capture the quoted screens (the guide quotes captured
   output; `guide_sync` holds label constants — update both formats and any moved label).
   Per-edit gate → green (why's every-move pin ~22.5s is the long pole; it must stay green
   UNCHANGED in meaning — these are additive renders).
-- [ ] **Step 4.6: Commit** `feat(cli): why leads forced moves honestly, surfaces all 15
+- [x] **Step 4.6: Commit** `feat(cli): why leads forced moves honestly, surfaces all 15
   search counters, and marks the nonzero-product rows (branch-4 items 1, 2, 6)`.
 
 ---
