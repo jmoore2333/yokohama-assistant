@@ -1456,8 +1456,22 @@ const GENERATED_PLAYERS: u8 = 2;
 /// re-pointing of every `(predicate, master, ordinal)` triple ever quoted.
 const GENERATED_SEAT: Contestant = Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT);
 
-/// The v2 generating configuration's NAME — Phase C's layer-2 ecology.
-pub const GENERATED_ECOLOGY_V2_LOOKAHEAD: &str = "driven-generated-v2-lookahead";
+/// The v2 generating configuration's NAME — Phase C's layer-2 ecology. Bump the
+/// version in the same commit as ANY change to a
+/// [`GeneratingEcology::v2_lookahead`] field, exactly as
+/// [`GENERATED_ECOLOGY_V1`]'s rule says.
+///
+/// **EXTENDED to `v2.1` (2026-08-18)**: the `games` bound rose 24 → 120 when
+/// family 2's confirmatory blocks exhausted the supply the predicates REALIZE
+/// (the measured rates are on [`GENERATED_V2_SCAN_GAMES`]). The bound is an
+/// ecology field and therefore identity, so the raise rides a version bump. The
+/// bump is a NAMING obligation, not a re-pointing: raising `games` at a FIXED
+/// master and cap is PREFIX-STABLE, so every ordinal the old bound could supply
+/// resolves to exactly the state it resolved to before — the strided sequence at
+/// 120 games is the sequence at 24 with more on the end. The version moves so
+/// that a triple quoted from a session note cannot be read as an answer about a
+/// different scan than the one that produced it.
+pub const GENERATED_ECOLOGY_V2_LOOKAHEAD: &str = "driven-generated-v2.1-lookahead";
 
 /// The v2 ecology's scan bound.
 ///
@@ -1478,7 +1492,37 @@ pub const GENERATED_ECOLOGY_V2_LOOKAHEAD: &str = "driven-generated-v2-lookahead"
 /// in `driven_runner::every_frozen_block_fits_the_supply_its_generator_declares`.
 /// The no-supply-guarantee sentence above still stands — a bound that FITS is
 /// not a promise that the predicate hits that often.
-pub const GENERATED_V2_SCAN_GAMES: u32 = 24;
+///
+/// **RAISED 24 → 120 (2026-08-18) — that last sentence, collected.** Family 2's
+/// confirmatory blocks (`4..28`, both arms) EXHAUSTED at the old bound: the
+/// positive predicate `EndFirableAheadInTruth` yielded **10** strided hits in 24
+/// games and its `EndFirableBehindInTruth` control **7**, against the 28 each
+/// block demands. The capacity arithmetic was never the binding constraint —
+/// 24 × 2 = 48 covered 28 on paper the whole time — and the distinction is what
+/// this raise records: `games × per_game_cap` is a CEILING on the ordinal space,
+/// while the supply a predicate REALIZES inside it is a fact about the predicate
+/// that only a scan can measure. At the measured rates, 120 games yield ≈50 and
+/// ≈35 strided hits, so ordinal 27 is reached with slack on both arms, and
+/// `AchievementClaimAvailable` gains the same headroom without being re-sized
+/// separately.
+///
+/// **The raise is an EXTENSION, never a re-draw** (design §4 and freeze §4
+/// pre-declare exactly this recovery): at a FIXED master and cap the scan walks
+/// the same games in the same draw order and strides them the same way, so the
+/// strided ordinal sequence is PREFIX-STABLE — identical, merely longer. Every
+/// reading already taken at this ecology stands at the ordinal it was taken at;
+/// the frozen blocks, their masters, the cap and the seed derivation are all
+/// untouched. Only the version string moves ([`GENERATED_ECOLOGY_V2_LOOKAHEAD`],
+/// now `v2.1`), because the bound is identity.
+///
+/// It stays a BOUND and not a budget: [`generate_roots`] stops the moment the
+/// highest requested ordinal is collected, so a block that was already served
+/// inside 24 games costs after this raise exactly what it cost before it.
+///
+/// The block-fits-supply check remains executable in
+/// `driven_runner::every_frozen_block_fits_the_supply_its_generator_declares`,
+/// now reading a capacity of 120 × 2 = **240** against the layer-2 demand of 28.
+pub const GENERATED_V2_SCAN_GAMES: u32 = 120;
 
 /// The seat count v2's generating ecology plays at — 2P throughout (the canon
 /// priors are 2P priors).
@@ -8529,14 +8573,14 @@ mod tests {
     }
 
     /// v2's identity — pinned WITHOUT running a scan, because a lookahead scan
-    /// is 24 games of both-seats search and this is a unit test.
+    /// is up to 120 games of both-seats search and this is a unit test.
     #[test]
     fn the_v2_lookahead_ecology_names_the_shipped_contestant_at_both_seats() {
         let ecology = GeneratingEcology::v2_lookahead();
-        assert_eq!(ecology.id, "driven-generated-v2-lookahead");
+        assert_eq!(ecology.id, "driven-generated-v2.1-lookahead");
         assert_eq!(ecology.id, GENERATED_ECOLOGY_V2_LOOKAHEAD);
         assert_eq!(ecology.players, 2, "the canon priors are 2P priors");
-        assert_eq!(ecology.games, 24);
+        assert_eq!(ecology.games, 120);
         assert_eq!(ecology.games, GENERATED_V2_SCAN_GAMES);
         assert_eq!(ecology.per_game_cap, GENERATED_STRIDE_CAP, "both ecologies stride the same");
         assert_eq!(
@@ -8552,6 +8596,51 @@ mod tests {
         assert_eq!(ecology.seed_derivation, v1.seed_derivation);
         assert_ne!(ecology.id, v1.id, "two ecologies must not share an identity string");
         assert_ne!(ecology.seats, v1.seats, "two ecologies must not seat the same contestant");
+    }
+
+    /// v2's EXTENDED identity: the raised bound, the version string that rides
+    /// it, and the cap that did NOT move — which is what makes the raise an
+    /// extension rather than a re-draw.
+    ///
+    /// The v1 pin's TRANSCRIPTION pattern, for the v1 pin's reason: the literal
+    /// is written out here as well as asserted against the const, so editing the
+    /// const alone cannot move a recorded identity silently — a raise has to be
+    /// transcribed twice, in the same commit, on purpose. The pre-extension id
+    /// string survives HERE and nowhere else in the crate, as history.
+    #[test]
+    fn the_v2_ecology_carries_its_extended_identity() {
+        let ecology = GeneratingEcology::v2_lookahead();
+        assert_eq!(
+            ecology.id, "driven-generated-v2.1-lookahead",
+            "the games raise did not bump the version",
+        );
+        assert_eq!(ecology.id, GENERATED_ECOLOGY_V2_LOOKAHEAD);
+        assert_ne!(
+            ecology.id, "driven-generated-v2-lookahead",
+            "the pre-extension id must survive as test history and nowhere else",
+        );
+        assert_eq!(
+            ecology.games, 120,
+            "the bound family 2's exhaustion bought: 10 and 7 realized hits in 24 games \
+             against the 28 its blocks demand",
+        );
+        assert_eq!(ecology.games, GENERATED_V2_SCAN_GAMES);
+        // The STRIDE did not move, and that is the prefix-stability argument in
+        // one assertion: same master, same cap, same walk order, so the strided
+        // sequence at 120 games is the sequence at 24 with more on the end and
+        // every ordinal already read still resolves where it was read.
+        assert_eq!(ecology.per_game_cap, 2);
+        assert_eq!(ecology.per_game_cap, GENERATED_STRIDE_CAP);
+        // The capacity arithmetic, as arithmetic: every ordinal the freeze
+        // pre-declared for ONE layer-2 predicate — pilot 4 + confirmatory 24 +
+        // the VOID-disposition extension 8 + escrow 6 (post-fix re-read) + 6
+        // (final-controller) = 48 — with the raise leaving 5× that. Capacity is
+        // not supply: this says the ordinal SPACE is wide enough, never that the
+        // predicate hits that often.
+        assert!(
+            ecology.games * ecology.per_game_cap >= 4 + 24 + 8 + 6 + 6,
+            "the strided space cannot cover one layer-2 predicate's pre-declared ordinals",
+        );
     }
 
     /// Each predicate names the ecology its family scans under, and the two
