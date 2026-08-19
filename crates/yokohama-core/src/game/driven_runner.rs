@@ -1343,11 +1343,21 @@ fn root_verdict_text(verdict: &RootVerdict) -> String {
              nothing)"
                 .to_string()
         }
+        RootVerdict::Excluded(ExclusionReason::Forced { candidates }) => format!(
+            "EXCLUDED / FORCED ({candidates} candidate(s)): a one-row table is a FORCED position — \
+             it confirms nothing and fails nothing, because the mover had nothing to prefer and \
+             its pick is inside every adjudicated top set by construction"
+        ),
         RootVerdict::Excluded(ExclusionReason::NotDemonstrated) => {
             "EXCLUDED / NOT DEMONSTRATED (the pass behaviour does not dominate here under every \
-             declared policy — a real measurement, and the rate is on the report)"
+             SPLITTING policy — a real measurement, and the rate is on the report)"
                 .to_string()
         }
+        RootVerdict::Excluded(ExclusionReason::TooFewSplitting { splitting, minimum }) => format!(
+            "EXCLUDED / TOO FEW SPLITTING (splitting={splitting}, minimum={minimum}): fewer than \
+             {minimum} of the declared policies split their playouts into two groups of two, so \
+             there is no measurement here to fail — a different finding from NOT DEMONSTRATED"
+        ),
         RootVerdict::CounterRefused(detail) => {
             format!("COUNTER REFUSED — a D7 branch-0 ROUTING and never a failure: {detail}")
         }
@@ -1388,11 +1398,29 @@ fn family_verdict_lines(verdict: &FamilyVerdict) -> Vec<String> {
                 .to_string(),
             format!("                 disposition: {disposition}"),
         ],
-        FamilyVerdict::GapDemonstrated { roots } => vec![format!(
-            "  verdict        GAP DEMONSTRATED over {roots} admitted root(s) — the EXISTENCE arm: \
-             no bar was declared, the failure allowance does not apply, and this supports a pivot \
-             or a routing, never a GO"
-        )],
+        FamilyVerdict::NothingAdmitted { drawn } => vec![
+            "  verdict        NOTHING ADMITTED — no reading".to_string(),
+            format!(
+                "                 0 of {drawn} drawn root(s) entered the denominator, so this \
+                 block read NOTHING: a PASS over an empty denominator is not a pass, and the \
+                 admitted-count is what a reader checks before quoting anything below"
+            ),
+        ],
+        FamilyVerdict::GapDemonstrated { roots } => {
+            let mut lines = vec![format!(
+                "  verdict        GAP DEMONSTRATED over {roots} admitted root(s) — the EXISTENCE \
+                 arm: no bar was declared, the failure allowance does not apply, and this supports \
+                 a pivot or a routing, never a GO"
+            )];
+            if *roots == 0 {
+                lines.push(
+                    "                 over 0 admitted roots this demonstrates nothing — an \
+                     existence arm with an empty denominator has no gap to show"
+                        .to_string(),
+                );
+            }
+            lines
+        }
     }
 }
 
@@ -1589,6 +1617,12 @@ pub fn render_family_block(report: &FamilyBlockReport, arm: FamilyArm) -> String
          and at the DECISION grain the LIVE/DEAD split printed per root above:",
         report.delta, report.control,
     ));
+    lines.push(
+        "    the conjunction runs over the SPLITTING policies (both groups >= 2 playouts): a \
+         CANNOT row is recorded and blocks nothing, a FAILS row blocks, and a root needs 2 \
+         splitting policies before its admission is a demonstration at all"
+            .to_string(),
+    );
     lines.push(format!(
         "    {:>7}  {:<18}  {:>6}  {:>7}  {:>10}  {:>11}  {:>8}   verdict",
         "ordinal", "policy", "true_n", "false_n", "true_mean", "false_mean", "diff",
@@ -1636,6 +1670,11 @@ pub fn render_family_block(report: &FamilyBlockReport, arm: FamilyArm) -> String
             excluded = true;
             lines.push(format!("    ordinal {}   {}", row.ordinal, root_verdict_text(&row.verdict)));
             if let Some(admission) = &row.admission {
+                lines.push(format!(
+                    "                 splitting={} of {} declared policies",
+                    admission.splitting_count(),
+                    admission.policies.len(),
+                ));
                 let dissenters: Vec<&str> =
                     admission.dissenters().iter().map(|p| p.as_str()).collect();
                 if !dissenters.is_empty() {

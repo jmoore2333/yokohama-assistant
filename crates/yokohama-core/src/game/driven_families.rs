@@ -452,6 +452,48 @@ fn dead_across_menu(dead_by_policy: &[(ReplyPolicy, bool)]) -> bool {
     !dead_by_policy.is_empty() && dead_by_policy.iter().all(|(_, dead)| *dead)
 }
 
+/// How many candidates a DECISION-grain root must offer before its pick can be
+/// read as a preference at all.
+///
+/// **Two, and the pilot is why the constant exists** (the freeze wave). A
+/// family-1 pilot root adjudicated ONE candidate, was admitted LIVE and read
+/// PASS — vacuously, because the subject's pick was the only move there was and
+/// was therefore inside every adjudicated top set by construction.
+pub const FORCED_CANDIDATE_FLOOR: usize = 2;
+
+/// Is this root's candidate field FORCED — fewer than [`FORCED_CANDIDATE_FLOOR`]
+/// candidates?
+///
+/// **A different fact from [`classify_dead`], and it must be checked FIRST.**
+/// Dead means "the mover had a choice and it did not matter"; forced means
+/// "there was no choice". A lone candidate that WINS its replications is `live`
+/// by `classify_dead`'s wins clause — the exact shape the pilot hit — so the
+/// dead classifier cannot be asked to carry this.
+///
+/// The EMPTY table (a finished game) rides the same arm deliberately: it offers
+/// no choice either, and both are positions a read confirms nothing and fails
+/// nothing at. What the two are NOT is interchangeable with dead, which is why
+/// the exclusion reason names the candidate count.
+pub fn classify_forced(adj: &Adjudication) -> bool {
+    adj.candidates() < FORCED_CANDIDATE_FLOOR
+}
+
+/// FORCED across the declared MENU: the smallest candidate count, when it is
+/// below the floor.
+///
+/// The count is a fact about the ROOT (the adjudicator forces the engine's own
+/// legal list, and the reply seats decide only the remainder), so every policy
+/// sees the same number and the minimum is that number. Taking the MINIMUM
+/// rather than a unanimity is the conservative reading: one policy seeing a
+/// forced field is a forced field.
+///
+/// **An EMPTY vector is NOT forced**, on [`dead_across_menu`]'s reasoning: no
+/// policy adjudicated the root, so nothing found it forced.
+fn forced_across_menu(candidates_by_policy: &[(ReplyPolicy, usize)]) -> Option<usize> {
+    let smallest = candidates_by_policy.iter().map(|(_, n)| *n).min()?;
+    (smallest < FORCED_CANDIDATE_FLOOR).then_some(smallest)
+}
+
 
 // ---------------------------------------------------------------------------
 // Root admission (design §4, review MUST-2/MUST-4)
@@ -459,17 +501,27 @@ fn dead_across_menu(dead_by_policy: &[(ReplyPolicy, bool)]) -> bool {
 
 /// Why one reply policy's adjudication could DEMONSTRATE nothing about a root.
 ///
-/// Typed rather than a bare "no": each arm routes differently. Two are facts
-/// about the POSITION (the playouts all did the thing, or none of them did — the
-/// comparison has no other side), and one is a fact about the CALL (the
-/// adjudication carried no verdicts at all, so it was run without design §2's
-/// turn hook and this is a caller error rather than a reading).
+/// Typed rather than a bare "no": each arm routes differently. Three are facts
+/// about the POSITION (the playouts all did the thing, none of them did, or one
+/// side is too thin for its mean to be a measurement), and one is a fact about
+/// the CALL (the adjudication carried no verdicts at all, so it was run without
+/// design §2's turn hook and this is a caller error rather than a reading).
+///
+/// **Every arm is RECORDED and none of them BLOCKS** (the freeze wave): a policy
+/// that demonstrated nothing is evidence about that policy at that root, not a
+/// veto over the ones that did demonstrate something. See
+/// [`AdmissionRead::admitted`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CannotDemonstrate {
     /// No playout satisfied the predicate — there is no TRUE group to compare.
     NoTrueGroup,
     /// Every playout satisfied it — there is no FALSE group to compare.
     NoFalseGroup,
+    /// Both groups exist and one of them holds fewer than [`SPLIT_MIN_GROUP`]
+    /// playouts, so its "group mean" is one game's noise (the freeze wave: the
+    /// pilot's family-weighted rung split 1-of-8 and that single playout then
+    /// decided δ for the whole root).
+    ThinSplit,
     /// At least one playout carries no verdict: the adjudication was produced by
     /// `adjudicate_root` (or `adjudicate_root_with(.., None)`) rather than with
     /// the family's turn hook. Never silently treated as `false` — that would
@@ -484,12 +536,33 @@ impl CannotDemonstrate {
         match self {
             Self::NoTrueGroup => "no playout's first turn satisfied the predicate",
             Self::NoFalseGroup => "every playout's first turn satisfied the predicate",
+            Self::ThinSplit => {
+                "one group holds fewer than two playouts, so its mean is one game's noise"
+            }
             Self::Unstamped => {
                 "the adjudication carries no turn verdicts (it was run without the turn hook)"
             }
         }
     }
 }
+
+/// The smallest a group may be and still have a MEAN worth comparing (the freeze
+/// wave, pilot-informed).
+///
+/// **Two playouts a side.** The pilot's family-weighted rung split ACCIDENTALLY
+/// — 1 of 8 true groups — and the resulting one-game "group mean" was then
+/// compared to δ as though it were a measurement. A policy below this floor is
+/// [`CannotDemonstrate::ThinSplit`]: recorded, and non-blocking.
+pub const SPLIT_MIN_GROUP: usize = 2;
+
+/// How many SPLITTING policies a root needs before its admission is a
+/// demonstration (the freeze wave).
+///
+/// **Two.** One splitting policy is one reply's measurement, and a root admitted
+/// on it would be a root admitted on a single opponent model's taste. Below the
+/// floor the root is excluded with the count named — a different finding from
+/// "the pass behaviour failed here".
+pub const MIN_SPLITTING_POLICIES: usize = 2;
 
 /// One reply policy's admission verdict at one root.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -527,6 +600,19 @@ impl PolicyAdmission {
     pub fn dominates(&self) -> bool {
         matches!(self.verdict, AdmissionVerdict::Dominates)
     }
+
+    /// Whether this policy SPLIT the root — both groups exist and both hold at
+    /// least [`SPLIT_MIN_GROUP`] playouts, so the comparison it reports is a
+    /// measurement (the freeze wave).
+    ///
+    /// Read off the VERDICT rather than off the counts, deliberately: the two
+    /// would then be two spellings of one rule that could drift apart, and the
+    /// unstamped arm (which can carry two full groups and still be a caller
+    /// error) would need restating here. `Dominates` and `Fails` are exactly the
+    /// verdicts [`admission`] produces from a real two-sided comparison.
+    pub fn splitting(&self) -> bool {
+        matches!(self.verdict, AdmissionVerdict::Dominates | AdmissionVerdict::Fails)
+    }
 }
 
 /// One root's admission read across the declared reply menu (design §4).
@@ -543,20 +629,46 @@ pub struct AdmissionRead {
 }
 
 impl AdmissionRead {
-    /// The CONJUNCTION: the root is admitted only if every declared policy
-    /// demonstrates dominance.
-    ///
-    /// Vacuously false on an empty menu — an admission "across no policies" is
-    /// not a demonstration, and returning `true` there would admit every root of
-    /// a mis-wired block.
-    pub fn admitted(&self) -> bool {
-        !self.policies.is_empty() && self.policies.iter().all(PolicyAdmission::dominates)
+    /// The policies that SPLIT — the ones whose comparison is a measurement at
+    /// all (the freeze wave).
+    pub fn splitting(&self) -> impl Iterator<Item = &PolicyAdmission> {
+        self.policies.iter().filter(|p| p.splitting())
     }
 
-    /// The policies that did NOT demonstrate dominance, in menu order.
+    /// How many policies split. The number an exclusion NAMES when it falls
+    /// below [`MIN_SPLITTING_POLICIES`].
+    pub fn splitting_count(&self) -> usize {
+        self.splitting().count()
+    }
+
+    /// The CONJUNCTION, taken over the SPLITTING policies: the root is admitted
+    /// only if at least [`MIN_SPLITTING_POLICIES`] of them split and EVERY
+    /// splitting one demonstrates dominance.
+    ///
+    /// **The freeze wave narrowed the conjunction's domain and nothing else.**
+    /// It used to run over the whole declared menu, and the pilot showed what
+    /// that costs: greedy never claims within a turn at a proximity root
+    /// (all-FALSE) and the race-rusher claims near-universally (all-TRUE), so
+    /// two arms that had no comparison in them vetoed every root the other two
+    /// could have demonstrated — families 3 and 4 admitted 0 of 4 everywhere.
+    /// A policy that demonstrated NOTHING now blocks nothing; a policy that
+    /// demonstrated a FAILURE still blocks, which is the half that is not
+    /// relaxed.
+    ///
+    /// Vacuously false on an empty menu, and false below the splitting floor —
+    /// an admission "across no policies", or across one, is not a demonstration.
+    pub fn admitted(&self) -> bool {
+        self.splitting_count() >= MIN_SPLITTING_POLICIES
+            && self.splitting().all(PolicyAdmission::dominates)
+    }
+
+    /// The SPLITTING policies that did not demonstrate dominance, in menu order.
+    ///
+    /// **Splitting only** (the freeze wave): a policy that could demonstrate
+    /// nothing did not dissent from anything, and listing it as a dissenter
+    /// would route a degenerate shape to D7 as a disagreement.
     pub fn dissenters(&self) -> Vec<ReplyPolicy> {
-        self.policies
-            .iter()
+        self.splitting()
             .filter(|p| !p.dominates())
             .map(|p| p.policy)
             .collect()
@@ -573,10 +685,13 @@ impl AdmissionRead {
     /// subject-suppression evidence and routed to D7 as a finding, never
     /// silently dropped.
     ///
-    /// Requires a menu of at least two policies — with `lookahead-at-final`
-    /// alone there is no "other policies held" half to observe.
+    /// Requires at least two SPLITTING policies — with `lookahead-at-final`
+    /// alone among them there is no "the other policies held" half to observe.
+    /// The freeze wave re-keyed that requirement from the MENU to the splitting
+    /// policies, on this accessor's own logic: a policy that demonstrated
+    /// nothing is not evidence that anything held.
     pub fn lookahead_sole_dissenter(&self) -> bool {
-        self.policies.len() >= 2
+        self.splitting_count() >= 2
             && self.dissenters().as_slice() == [ReplyPolicy::LookaheadAtFinal]
     }
 }
@@ -592,9 +707,12 @@ impl AdmissionRead {
 /// * positive roots admit when `true_mean − false_mean >= delta`;
 /// * CONTROL roots admit when `true_mean − false_mean <= −delta`.
 ///
-/// **Both groups must be non-empty**, else [`CannotDemonstrate`]: a root where
-/// every playout fires (or none does) has no comparison in it, and is
-/// recorded-excluded rather than counted either way.
+/// **Both groups must hold at least [`SPLIT_MIN_GROUP`] playouts**, else
+/// [`CannotDemonstrate`]: a root where every playout fires (or none does) has no
+/// comparison in it, and a root where one side is a single game has a comparison
+/// whose "group mean" is that game's own margin. Both are recorded — with their
+/// typed reason — rather than counted either way, and neither blocks the
+/// policies that did demonstrate something ([`AdmissionRead::admitted`]).
 ///
 /// **MARGINS, never wins.** The 10–10 shape is the trap: two playouts level on
 /// VP have `won` split by the clockwise tie-break while both carry margin 0, so
@@ -632,6 +750,11 @@ pub fn admission(
                 AdmissionVerdict::Cannot(CannotDemonstrate::NoTrueGroup)
             } else if falses.is_empty() {
                 AdmissionVerdict::Cannot(CannotDemonstrate::NoFalseGroup)
+            } else if trues.len() < SPLIT_MIN_GROUP || falses.len() < SPLIT_MIN_GROUP {
+                // THE THIN SPLIT (the freeze wave): both groups exist, and one
+                // of them is a single game whose margin would otherwise BE the
+                // group mean δ is compared to.
+                AdmissionVerdict::Cannot(CannotDemonstrate::ThinSplit)
             } else {
                 let threshold = delta as f64;
                 let met =
@@ -2593,10 +2716,20 @@ pub enum ExclusionReason {
     /// under EVERY declared policy, so a pick there confirms nothing and fails
     /// nothing.
     Dead,
+    /// **The decision grain's FORCED field** (the freeze wave): fewer than
+    /// [`FORCED_CANDIDATE_FLOOR`] candidates, so the mover had nothing to
+    /// prefer. Checked BEFORE `Dead` because a lone WINNING candidate reads
+    /// `live` — the pilot's own shape.
+    Forced { candidates: usize },
     /// Families 2–4: the pass behaviour does not demonstrably dominate at this
-    /// root under every declared policy. A real measurement, and the rate is
+    /// root under every SPLITTING policy. A real measurement, and the rate is
     /// carried on the report.
     NotDemonstrated,
+    /// **Families 2–4's degenerate field** (the freeze wave): fewer than
+    /// [`MIN_SPLITTING_POLICIES`] policies produced a two-sided comparison at
+    /// all, so there is no measurement here to fail. A different finding from
+    /// [`NotDemonstrated`](Self::NotDemonstrated), and the count is named.
+    TooFewSplitting { splitting: usize, minimum: usize },
 }
 
 /// One drawn root's verdict.
@@ -2806,6 +2939,14 @@ pub enum FamilyVerdict {
         minimum: usize,
         disposition: &'static str,
     },
+    /// **THE EMPTY DENOMINATOR** (the freeze wave, pilot finding 2): NOTHING was
+    /// admitted, so the block read nothing at all.
+    ///
+    /// It is its own arm rather than a `Pass` with zero failures because that is
+    /// exactly what the pilot printed. A PILOT block escapes the VOID rule by
+    /// design (it confirms nothing, so it cannot be void AS a confirmation), and
+    /// the allowance arm then read "0 failures over 0 admitted roots" as clean.
+    NothingAdmitted { drawn: usize },
     /// The EXISTENCE arm: no bar was declared, so the output is the per-root
     /// gap block and the failure allowance does not apply.
     GapDemonstrated { roots: usize },
@@ -2817,8 +2958,16 @@ pub enum FamilyVerdict {
 /// running a block — the same reason `classify_dead` and `admission` are their
 /// own functions. The ORDER of the arms is the semantics: the existence
 /// exemption comes first (it skips everything), then the VOID rule (a block that
-/// cannot confirm has no verdict to give), then the allowance, then the
-/// unresolved routing.
+/// cannot confirm has no verdict to give), then the EMPTY DENOMINATOR, then the
+/// allowance, then the unresolved routing.
+///
+/// **Why the empty denominator sits where it does** (the freeze wave): a
+/// confirmatory block below the minimum keeps the VOID wording, which is the
+/// stronger statement — it names the floor it fell short of — so the void arm
+/// runs first and this arm catches everything else that admitted nothing,
+/// PILOTS included. It is deliberately above the allowance and unresolved arms:
+/// over an empty denominator those counts are structurally zero, and reading a
+/// zero-of-zero as a pass is the pilot defect this arm exists for.
 pub fn family_verdict(
     label: FamilyLabel,
     block: BlockKind,
@@ -2837,6 +2986,9 @@ pub fn family_verdict(
             minimum: MIN_ADMITTED_ROOTS,
             disposition: VOID_DISPOSITION,
         };
+    }
+    if admitted == 0 {
+        return FamilyVerdict::NothingAdmitted { drawn };
     }
     if failed > FAMILY_FAILURE_ALLOWANCE {
         return FamilyVerdict::Fail { failed_roots: failed, allowance: FAMILY_FAILURE_ALLOWANCE };
@@ -3119,9 +3271,13 @@ fn run_one_root(
     let mut top_sets: Vec<(ReplyPolicy, Vec<Move>)> = Vec::new();
     let mut admission_read: Option<AdmissionRead> = None;
     let mut dead = false;
+    // The exclusion this root would carry if it is not admitted — set by
+    // whichever branch measured it, so a reason is never inferred after the fact.
+    let mut exclusion = ExclusionReason::NotDemonstrated;
 
     let admitted = match rule {
         PassRule::AdjudicatedBest { epsilon } => {
+            let mut candidates_by_policy: Vec<(ReplyPolicy, usize)> = Vec::new();
             for &policy in decl.menu {
                 let adj = adjudicate_root(
                     &source,
@@ -3136,6 +3292,7 @@ fn run_one_root(
                     policy,
                     error: Box::new(error),
                 })?;
+                candidates_by_policy.push((policy, adj.candidates()));
                 dead_by_policy.push((policy, classify_dead(&adj, opts.dead_spread_bound)));
                 top_sets.push((policy, top_set(&adj, epsilon)));
             }
@@ -3144,7 +3301,22 @@ fn run_one_root(
             // The AND is `dead_across_menu`'s, so it is pinnable on mixed
             // vectors that no affordable block can produce.
             dead = dead_across_menu(&dead_by_policy);
-            !dead
+            // FORCED FIRST (the freeze wave): a one-row field is not a
+            // preference at all, and a lone WINNING candidate reads `live`, so
+            // leaving this to the dead classifier admits it — which is what the
+            // pilot did.
+            match forced_across_menu(&candidates_by_policy) {
+                Some(candidates) => {
+                    exclusion = ExclusionReason::Forced { candidates };
+                    false
+                }
+                None => {
+                    if dead {
+                        exclusion = ExclusionReason::Dead;
+                    }
+                    !dead
+                }
+            }
         }
         PassRule::Turn(predicate) => {
             let mut adjs: Vec<(ReplyPolicy, Adjudication)> = Vec::new();
@@ -3170,6 +3342,18 @@ fn run_one_root(
             }
             let read = admission(&adjs, opts.delta, opts.control);
             let ok = read.admitted();
+            if !ok {
+                // The two exclusions are DIFFERENT findings (the freeze wave):
+                // too few policies produced a comparison at all, or the
+                // comparisons they produced did not dominate.
+                let splitting = read.splitting_count();
+                if splitting < MIN_SPLITTING_POLICIES {
+                    exclusion = ExclusionReason::TooFewSplitting {
+                        splitting,
+                        minimum: MIN_SPLITTING_POLICIES,
+                    };
+                }
+            }
             admission_read = Some(read);
             ok
         }
@@ -3203,11 +3387,7 @@ fn run_one_root(
         read: None,
         misses: 0,
         unresolved: 0,
-        verdict: RootVerdict::Excluded(if dead {
-            ExclusionReason::Dead
-        } else {
-            ExclusionReason::NotDemonstrated
-        }),
+        verdict: RootVerdict::Excluded(exclusion),
         lookahead_sole_dissenter,
         rider,
     };
@@ -4017,14 +4197,24 @@ mod tests {
             (-10, false, Some(false)),
             (-10, false, Some(false)),
         ]);
-        let read = admission(&[(ReplyPolicy::GreedyAtFinal, adj)], 5, false);
+        let read = admission(&[(ReplyPolicy::GreedyAtFinal, adj.clone())], 5, false);
         let p = &read.policies[0];
         assert_eq!((p.true_n, p.false_n), (2, 2));
         assert!((p.true_mean - 0.0).abs() < 1e-12, "the TRUE group is level, not won: {p:?}");
         assert!((p.false_mean + 10.0).abs() < 1e-12);
         assert!((p.difference - 10.0).abs() < 1e-12);
         assert_eq!(p.verdict, AdmissionVerdict::Dominates);
-        assert!(read.admitted());
+        assert!(p.splitting(), "two a side is a measurement");
+        // The ROOT-level conjunction needs TWO splitting policies since the
+        // freeze wave, so the same table under a second policy is what admits.
+        assert!(
+            admission(
+                &[(ReplyPolicy::GreedyAtFinal, adj.clone()), (ReplyPolicy::FamilyWeighted, adj)],
+                5,
+                false,
+            )
+            .admitted(),
+        );
 
         // ANTI-VACUITY: the wins reading really does answer differently on this
         // fixture — one of the two LEVEL playouts is a WIN, so a group statistic
@@ -4106,8 +4296,26 @@ mod tests {
     /// somebody else, are different findings and must not raise it.
     #[test]
     fn the_conjunction_and_the_sole_dissenter_flag_read_the_per_policy_verdicts() {
-        let good = || verdict_table(&[(10, false, Some(true)), (-10, false, Some(false))]);
-        let bad = || verdict_table(&[(0, false, Some(true)), (0, false, Some(false))]);
+        // TWO playouts a side, because the freeze wave's SPLIT_MIN_GROUP makes a
+        // one-game group non-demonstrating — a policy that cannot demonstrate is
+        // outside the conjunction entirely, which is the rule the cells below
+        // this one pin and NOT the one this cell is about.
+        let good = || {
+            verdict_table(&[
+                (10, false, Some(true)),
+                (10, false, Some(true)),
+                (-10, false, Some(false)),
+                (-10, false, Some(false)),
+            ])
+        };
+        let bad = || {
+            verdict_table(&[
+                (0, false, Some(true)),
+                (0, false, Some(true)),
+                (0, false, Some(false)),
+                (0, false, Some(false)),
+            ])
+        };
 
         let all_good = admission(
             &[
@@ -5530,16 +5738,27 @@ mod tests {
             rule: PassRule::Turn(TurnPredicate::AchievementClaimed),
             replications: 2,
             per_root_f,
-            menu: &[ReplyPolicy::FamilyWeighted],
+            menu: SMOKE_MENU,
             pilot: 0..2,
             confirmatory: Some(FrozenBlock { master: MASTER, ordinals: 0..2 }),
             canon: "a machinery smoke, not a family",
         }
     }
 
-    /// The smoke's own sizing: one policy, K = 1, and a delta that admits.
+    /// The smoke's declared menu — TWO policies, because the freeze wave's
+    /// admission needs [`MIN_SPLITTING_POLICIES`] of them before any root is a
+    /// demonstration. Both are cheap at a final-round root (a playout is at most
+    /// two turns), which is what keeps the block cells affordable.
+    const SMOKE_MENU: &[ReplyPolicy] = &[ReplyPolicy::FamilyWeighted, ReplyPolicy::GreedyAtFinal];
+
+    /// The smoke's own sizing: K = 2 and a delta that admits.
+    ///
+    /// **K = 2 and not 1** since the freeze wave: at K = 1 the smoke's two
+    /// candidates give one playout a side, which is [`SPLIT_MIN_GROUP`]'s thin
+    /// split — the group mean would be one game's margin, and the rule that
+    /// refuses to read it is the rule these cells run under.
     fn smoke_opts(delta: i64) -> BlockOpts {
-        BlockOpts { admission_k: 1, delta, ..BlockOpts::pilot() }
+        BlockOpts { admission_k: 2, delta, ..BlockOpts::pilot() }
     }
 
     /// **THE BLOCK SMOKE** — every arm of the run, end to end at smoke scale:
@@ -5731,7 +5950,16 @@ mod tests {
             .expect("the block runs");
         assert_eq!(report.admitted, 0, "a one-sided root demonstrates nothing");
         for row in &report.roots {
-            assert_eq!(row.verdict, RootVerdict::Excluded(ExclusionReason::NotDemonstrated));
+            // THE REASON MOVED AT THE FREEZE WAVE and this is the honest one: no
+            // policy split its playouts at all, so the root is excluded for
+            // having no measurement rather than for a measurement that failed.
+            assert_eq!(
+                row.verdict,
+                RootVerdict::Excluded(ExclusionReason::TooFewSplitting {
+                    splitting: 0,
+                    minimum: MIN_SPLITTING_POLICIES,
+                }),
+            );
             let admission = row.admission.as_ref().expect("a turn-grain root carries an admission");
             assert!(
                 admission.policies.iter().all(|p| {
@@ -5778,26 +6006,38 @@ mod tests {
         assert_eq!(report.admitted, 2, "a live field is admitted: {:?}", report.roots);
         for row in &report.roots {
             assert!(row.admission.is_none(), "the decision grain admits on LIVE/DEAD, not δ");
-            assert_eq!(row.dead_by_policy.len(), 1, "one entry per declared policy");
+            assert_eq!(
+                row.dead_by_policy.len(),
+                SMOKE_MENU.len(),
+                "one entry per declared policy",
+            );
             assert!(!row.dead, "the fixture's field is LIVE");
-            assert_eq!(row.top_sets.len(), 1);
-            assert!(!row.top_sets[0].1.is_empty(), "a live field has a top set");
+            assert_eq!(row.top_sets.len(), SMOKE_MENU.len());
+            assert!(
+                row.top_sets.iter().all(|(_, set)| !set.is_empty()),
+                "a live field has a top set under every policy",
+            );
             let read = row.read.as_ref().expect("an admitted root is read");
             assert!(
                 read.replications.iter().all(|r| r.pick.is_some() && r.verdict.is_none()),
                 "a decision-grain read reports picks and no turn verdict",
             );
             // ANTI-VACUITY: the judgment DISCRIMINATED. The subject's pick is
-            // outside the adjudicated top set at this fixture, so the row fails
-            // — a judgment that admitted everything would read Pass here.
+            // outside EVERY adjudicated top set at this fixture, so the row
+            // fails — a judgment that admitted everything would read Pass here.
             let pick = read.replications[0].pick.clone().expect("a pick");
-            assert!(!row.top_sets[0].1.contains(&pick), "the fixture does not separate the two");
+            assert!(
+                row.top_sets.iter().all(|(_, set)| !set.contains(&pick)),
+                "the fixture does not separate the two: {:?} vs {:?}",
+                pick,
+                row.top_sets,
+            );
             assert_eq!(
                 row.verdict,
                 RootVerdict::Fail { misses: 1, allowance: 0 },
                 "a pick in NO top set is the fail arm",
             );
-            assert_eq!(row.unresolved, 0, "a single-policy menu cannot disagree with itself");
+            assert_eq!(row.unresolved, 0, "a pick in no set at all cannot be UNRESOLVED");
         }
         // A one-policy menu makes `lookahead_sole_dissenter` unstatable, which
         // is the accessor's own documented requirement — pinned so the flag is
