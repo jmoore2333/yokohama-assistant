@@ -60,7 +60,7 @@ That link is a hosted copy, so it opens and renders in a browser. The source of 
 repo — GitHub shows `.html` as source rather than rendering it, so read that one by opening the
 file locally.
 
-## Status (2026-08-12)
+## Status (2026-08-19)
 
 The engine plays complete, rules-correct games at 2–4 players and has been verified
 **differentially**: an independently-authored rules oracle — written from the rulebook and
@@ -144,9 +144,11 @@ recorded BGA-parity divergences).
   vocabulary (evidence-first, from the captured payloads), regenerating the comparison corpus
   at rev 7.
 
-**Next: Phase B** — the driven-fixture harness, exploratory probes on the checkpoint's four
-strategic families, and the owner's two recorded diagnostic games with `why` as the instrument.
-The CLI is tester-ready; start with the linked HTML guide and report any table/CLI mismatch.
+**Since then, Phases B and C are merged (2026-08-18)** — the driven-fixture harness with the
+owner's two recorded diagnostic games and their evidence triage (PR #23), then the four driven
+strategic families frozen, run, and routed (PR #24). Next, per the 2026-08-18 owner rulings: the
+V3 evaluator mini-cycle (exactly two candidate terms), then the e113 placement-representation
+cycle. The CLI is tester-ready; start with the linked HTML guide and report any table/CLI mismatch.
 
 Releases track completed phases (**v0.3.3** ↔ Phase 3.3; the first with a Windows build — a
 post-3.5 release cut is pending the strength checkpoint). Saves and self-play records are
