@@ -310,8 +310,9 @@ Score at that point: 72   ·   stage 0/1000000 ppm (0 = opening, 1000000 = end t
   achievement_progress_sum         1          1        2           0
   mercenaries_total                0          0        3           0
   hand_size                        1          1       -1           0
+  achievement_race_proximity      -4         -4        0           0
   TOTAL                                                           72
-  3 of 16 rows carry a nonzero product — they are this move's whole story.
+  3 of 17 rows carry a nonzero product — they are this move's whole story.
 
 Runner-ups (margin against the suggestion, so 0 means tied) — 186 candidate(s) ranked:
            0  Place 1 assistant in each of: Port A (A00), Laboratory A (A01), Tea Plantation …

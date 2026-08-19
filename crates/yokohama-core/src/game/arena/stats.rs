@@ -2584,11 +2584,20 @@ mod tests {
     /// The literals are what the module-private `contestant_echo` produced at
     /// HEAD `a61d642`, captured BEFORE the body moved onto the type. Both format
     /// branches are covered: knobless, and knob-bearing.
+    ///
+    /// **RE-CAPTURED at the V3 width move (2026-08-19).** `weights=` carries the
+    /// weight-table identity, which hashes every slot of both vectors — so
+    /// `Feature::ALL` widening 16 → 17 and the retained tables taking a `(0, 0)`
+    /// seventeenth slot moves the digest (`-7339724794018772210` →
+    /// `297092078925334212`) while V2's thirty-two numbers, and therefore the
+    /// play, do not move at all. Everything LEFT of `weights=` is what this
+    /// literal is really for and none of it moved: the controller name, the
+    /// version const, `eval_impl`, and the three knobs.
     #[test]
     fn the_echo_is_public_and_matches_the_spec_echo_format() {
         assert_eq!(
             Contestant::LOOKAHEAD_V1_DEFAULT.echo(),
-            "lookahead-v1@v2{b=4,eval_impl=3,k=1,m=8,weights=-7339724794018772210}",
+            "lookahead-v1@v2{b=4,eval_impl=3,k=1,m=8,weights=297092078925334212}",
         );
         assert_eq!(Contestant::Policy(RolloutPolicy::Uniform).echo(), "uniform@v1");
 

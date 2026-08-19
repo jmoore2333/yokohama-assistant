@@ -938,9 +938,16 @@ fn explain_reconstructs_score_exactly_over_organic_views() {
 /// measure-then-halve discipline. Still a genuinely rare event, same reason
 /// as before. Every other arm stayed above its standing floor at rev 6, so
 /// only this entry moved.
-//     [vp,  ctry, tech, chur, cust, hCORE, hEXC, ware, brd, shop, trad, 5pw, imp, achv, merc, hnd#]
+///
+/// `achievement_race_proximity` MEASURED at its admission (2026-08-19, V3 T4) on
+/// this same sweep: nonzero on **1,584 of 1,598 views**, floored at 792 by the
+/// same measure-then-halve discipline. It is the densest arm in the table and
+/// that is structural rather than lucky — the value is zero only for a seat
+/// standing on a claimable card or one that has claimed all three, so a floor
+/// here is a check that the sweep RAN, not that the event is rare.
+//     [vp,  ctry, tech, chur, cust, hCORE, hEXC, ware, brd, shop, trad, 5pw, imp, achv, merc, hnd#, prox]
 const FEATURE_NONZERO_FLOORS: [usize; Feature::COUNT] =
-    [689, 489, 375, 387, 84, 634, 133, 855, 835, 431, 30, 27, 120, 809, 317, 823];
+    [689, 489, 375, 387, 84, 634, 133, 855, 835, 431, 30, 27, 120, 809, 317, 823, 792];
 
 // ---------------------------------------------------------------------------
 // §2.2 — the D1 dummy, constructed
@@ -1899,12 +1906,15 @@ fn the_padded_seventeenth_slot_is_inert_in_both_retained_tables() {
     }
     assert!(views >= 20, "the inertness pin barely ran: {views} views");
     // ANTI-VACUITY: the slot is inert because its WEIGHT is zero, not because
-    // its VALUE is. A draft that prices it moves the score.
-    let view = observe(&keep_game(2, 31, &rules), PlayerId(0)).unwrap();
+    // its VALUE is. A table that PRICES it moves the score — on a position where
+    // the seats' proximities actually differ, since every term is relative and
+    // two seats racing equally cancel by construction.
+    let view = observe(&proximity_fixture(&rules), PlayerId(0)).unwrap();
+    let me = seat_of(&view, PlayerId(0));
     assert_ne!(
-        raw_value(&view, seat_of(&view, PlayerId(0)), Feature::AchievementRaceProximity, &rules),
+        raw_value(&view, me, Feature::AchievementRaceProximity, &rules),
         0,
-        "a fresh seat is not standing on a claimable card, so its proximity is nonzero",
+        "the fixture's viewer must actually be chasing something",
     );
     assert_ne!(
         score(&view, &rules, &WeightTable::V3_DRAFT),

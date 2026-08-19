@@ -2537,7 +2537,7 @@ pub const FAMILY2_CONTROL_GENERATOR: FamilyGenerator =
 /// `every_frozen_block_fits_the_supply_its_generator_declares`: family 1 spans
 /// **16 draws** (4..20) inside the v1.1 rung ecology's 16 games × cap 2 = 32
 /// strided ordinals, and the layer-2 families span **24 draws** (4..28) inside
-/// the v2.2 lookahead ecology's 240 × 2 = 480.
+/// the v2.3 lookahead ecology's 240 × 2 = 480.
 ///
 /// The layer-2 bound was **24 games (capacity 48) at the freeze**, which the
 /// arithmetic covered and the PREDICATES did not: family 2's arms realized 10

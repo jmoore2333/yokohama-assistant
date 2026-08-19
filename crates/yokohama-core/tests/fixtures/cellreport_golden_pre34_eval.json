@@ -1,5 +1,5 @@
 {
-  "spec_echo": "cell=t0-pre34-golden-lookahead-vs-greedy players=2 x=lookahead-v1@v2{b=4,eval_impl=3,k=1,m=8,weights=-7339724794018772210} y=greedy-v1@v2{eval_impl=3,m=8,placement_cap=512,weights=-7339724794018772210} units=2 unit=pair (2 seatings) games=4 master=diagnostic:0xa3e1202608040003 bootstrap_B=10000 resample_seed=0xf5f56be650fcbe0c single-threaded=yes fixed-N=yes setup-identical=yes",
+  "spec_echo": "cell=t0-pre34-golden-lookahead-vs-greedy players=2 x=lookahead-v1@v2{b=4,eval_impl=3,k=1,m=8,weights=297092078925334212} y=greedy-v1@v2{eval_impl=3,m=8,placement_cap=512,weights=297092078925334212} units=2 unit=pair (2 seatings) games=4 master=diagnostic:0xa3e1202608040003 bootstrap_B=10000 resample_seed=0xf5f56be650fcbe0c single-threaded=yes fixed-N=yes setup-identical=yes",
   "games": 4,
   "x_unit_shares": [
     1.0,

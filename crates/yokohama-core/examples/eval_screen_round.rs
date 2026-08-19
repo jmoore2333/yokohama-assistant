@@ -2,10 +2,14 @@
 //! protocol's §4.2 **L4** screen
 //! (`docs/plans/2026-08-09-phase3.5c-evaluator-v2-protocol.md`).
 //!
-//! One command per round, run at BOTH rungs by default:
-//! `WeightTable::V2_DRAFT` (the iteration candidate) against
-//! `WeightTable::V1` (the incumbent), 2P, over swapped-pair design units,
-//! through the honest driver, tabulated by `eval_screen`'s harness.
+//! One command per round, run at BOTH rungs by default: the DRAFT table (the
+//! iteration candidate) against the SHIPPED table (the incumbent), 2P, over
+//! swapped-pair design units, through the honest driver, tabulated by
+//! `eval_screen`'s harness. Since the V3 mini-cycle's adoption commit
+//! (2026-08-19) those are `WeightTable::V3_DRAFT` and `WeightTable::V2`; through
+//! the v2 rounds they were `V2_DRAFT` and `V1`, and the arm move is exactly what
+//! "a round that wants a different candidate moves the draft in a commit"
+//! means — the arms follow the cycle, the binary does not gain an argument.
 //!
 //! ```text
 //! cargo run --release -p yokohama-core --example eval_screen_round -- \
@@ -14,13 +18,11 @@
 //!     --rung lookahead --units 200 --master 0x3EE753CE7F4052C4
 //! ```
 //!
-//! # AFTER THE FREEZE (2026-08-10)
+//! # THE v2 ROUNDS AND THEIR FREEZE (2026-08-10) — history, and how to re-read it
 //!
-//! The iteration loop is closed and `WeightTable::V2_DRAFT` is now an ALIAS of
-//! `WeightTable::V2`, the table that ships — so this binary still runs a REAL
-//! cell (candidate `V2` against incumbent `V1`, two different tables) rather
-//! than the null one an un-moved draft would give, and the cell it runs is
-//! exactly the freeze's **criteria 1–2**:
+//! Through rounds 1–3 the arms were `V2_DRAFT` against `V1`. The freeze closed
+//! that loop and made `V2_DRAFT` an ALIAS of `V2`, so the binary ran candidate
+//! `V2` against incumbent `V1` — the freeze's own **criteria 1–2**:
 //!
 //! ```text
 //! cargo run --release -p yokohama-core --example eval_screen_round -- \
@@ -34,20 +36,25 @@
 //! blocks print 2 — so it is a different measurement, not a reproduction, and
 //! the recorded criteria figures (lookahead θ̂ 0.6775 [0.6275, 0.7250] above the
 //! null; greedy θ̂ 0.4825 [0.4325, 0.5300] spanning it) belong to the pre-commit
-//! tree. The spelling `V2_DRAFT` is deliberately left in the code and in the
-//! printed label so the ROUND blocks in the evidence artifacts keep reading
-//! against the same identifier they were produced under.
+//! tree.
+//!
+//! **And since the V3 arm move that command no longer runs those arms at all**
+//! — it now screens `V3_DRAFT` against `V2`. Reproducing a v2-era block means
+//! checking out the commit it names; the constants `V2_DRAFT` and `V1` are both
+//! still here, retained verbatim, so that checkout parses and runs. This is the
+//! tables' own retention contract applied to a binary: a recorded figure stays a
+//! record of the arms it measured, never of the arms that came after.
 //!
 //! # THERE IS NO TABLE ARGUMENT, AND THAT IS THE DESIGN
 //!
-//! The candidate is `V2_DRAFT` and the incumbent is `V1`, both hardcoded, as is
+//! The candidate is `V3_DRAFT` and the incumbent is `V2`, both hardcoded, as is
 //! the 2P player count. `game::eval_screen`'s module doc fixes the rule this
 //! binary obeys — the weighted constructors are "called from tests and round
 //! scripts — never from argv, never from the CLI, never from a gate" — because
 //! `Contestant` carries no weight knob by L12 design, and an argv table here
 //! would smuggle the same unversioned-weights-under-a-versioned-name confusion
 //! in through a different door. A round that wants a DIFFERENT candidate moves
-//! `V2_DRAFT` in a commit, which is what an adoption IS.
+//! the draft const in a commit, which is what an adoption IS.
 //!
 //! # THERE IS NO `--os-entropy` ARM EITHER
 //!
@@ -90,8 +97,8 @@ const USAGE: &str = "\
 usage: eval_screen_round --master <u64> [--rung greedy|lookahead|both]
                          [--units <n>] [--no-invariants]
 
-  Runs the protocol §4.2 L4 screen for ONE round: WeightTable::V2_DRAFT (the
-  candidate) against WeightTable::V1 (the incumbent), 2P, at the shipped knobs
+  Runs the protocol §4.2 L4 screen for ONE round: WeightTable::V3_DRAFT (the
+  candidate) against WeightTable::V2 (the incumbent), 2P, at the shipped knobs
   of each rung, and prints each cell's report plus its three verdict lines.
 
   --master <u64>   REQUIRED. Decimal, or hex with a 0x prefix; `_` separators
@@ -180,13 +187,13 @@ fn run(args: &[String]) -> Result<(), String> {
         )
     })?;
 
-    let candidate = WeightTable::V2_DRAFT;
-    let incumbent = WeightTable::V1;
+    let candidate = WeightTable::V3_DRAFT;
+    let incumbent = WeightTable::V2;
     let rules = Rules::standard();
 
     println!("=== eval_screen_round ===");
     println!(
-        "  candidate=WeightTable::V2_DRAFT {:#018x}   incumbent=WeightTable::V1 {:#018x}",
+        "  candidate=WeightTable::V3_DRAFT {:#018x}   incumbent=WeightTable::V2 {:#018x}",
         weight_table_identity(&candidate) as u64,
         weight_table_identity(&incumbent) as u64,
     );
@@ -205,10 +212,11 @@ fn run(args: &[String]) -> Result<(), String> {
     );
     if weight_table_identity(&candidate) == weight_table_identity(&incumbent) {
         println!(
-            "  *** NULL SCREEN: the two identity digests are EQUAL, so V2_DRAFT still holds V1's \
-             numbers and every cell below measures the INSTRUMENT rather than a candidate. That \
-             is the initialized state — a round's adoption commit is what moves the draft — so \
-             read these figures as a V1-vs-V1 null, never as evidence about a re-pricing."
+            "  *** NULL SCREEN: the two identity digests are EQUAL, so the draft still holds \
+             the incumbent's numbers and every cell below measures the INSTRUMENT rather than a \
+             candidate. That is the initialized state — a round's adoption commit is what moves \
+             the draft — so read these figures as an incumbent-vs-itself null, never as \
+             evidence about a re-pricing."
         );
     }
 

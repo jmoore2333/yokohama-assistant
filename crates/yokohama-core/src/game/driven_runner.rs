@@ -4118,7 +4118,7 @@ mod tests {
     /// middle of a confirmatory run. This is that check as a test rather than as
     /// arithmetic in a commit message — and it is why the freeze needed NO
     /// games-bound change: v1.1 supplies 32 against family 1's 20 (pilot 4 +
-    /// confirmatory 16), and the v2.2 lookahead ecology supplies 480 against the
+    /// confirmatory 16), and the v2.3 lookahead ecology supplies 480 against the
     /// layer-2 families' 28 (pilot 4 + confirmatory 24).
     ///
     /// **WHAT THIS CHECK DOES NOT PROVE, learned the hard way TWICE

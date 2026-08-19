@@ -79,9 +79,14 @@ use std::time::Instant;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
+// `achievement_progress` used to be imported here for this file's own copy of
+// the achievement-race arithmetic; that copy GRADUATED into `eval.rs` at the V3
+// adoption and the column now calls the shipped helper, so the per-card mirror
+// is no longer reached from this side of the boundary.
 use yokohama_core::game::eval::{
-    achievement_progress, achievement_progress_postclaim_sum, interpolate, progress_ppm, score,
-    view_is_terminal, Feature, ScoreStructure, WeightTable, PROGRESS_FULL_PPM,
+    achievement_progress_postclaim_sum, achievement_race_proximity as shipped_race_proximity,
+    interpolate, progress_ppm, score, view_is_terminal, Feature, ScoreStructure, WeightTable,
+    PROGRESS_FULL_PPM,
 };
 // `DEFAULT_RETREAT_SAMPLES` is deliberately NOT imported here: since the parse
 // delegates to `Contestant::from_str_name`, every default this file used to type
@@ -125,8 +130,9 @@ usage: eval_probe <subcommand> [options]
                              every committed round command), `v2` (the table
                              that ships since the 2026-08-10 freeze), `v2-draft`
                              (the same numbers under the rounds' own spelling),
-                             or `<e0,...,e15>/<l0,...,l15>` (sixteen i64 per
-                             vector, Feature::ALL order).
+                             or `<e0,...,eN>/<l0,...,lN>` (one i64 per FEATURE
+                             per vector, Feature::ALL order; the width is
+                             Feature::COUNT and the refusal names it).
                              Each `+` clause is the V3 spec §4.1 17th-column
                              machinery: it prices a --candidate-columns name
                              exactly as a shipped feature is priced —
@@ -146,8 +152,10 @@ usage: eval_probe <subcommand> [options]
                              corpus command reproduces.
       --candidate-columns <list>
                              Comma-separated extra ROWS in the features block,
-                             measured beside the sixteen and shipped by nothing.
-                             Feature::ALL stays sixteen everywhere. REFUSED
+                             measured beside the shipped features. A column here
+                             ships nothing by itself: admission is a separate
+                             act that moves Feature::ALL, as the V3 cycle did
+                             for achievement_race_proximity. REFUSED
                              when --blocks omits `features` (an ignored column
                              would be a silent no-op). The nine names, each
                              also the row's printed name except `postclaim`:
@@ -599,9 +607,8 @@ impl Row {
         }
     }
 
-    /// The reported rows, in print order: the sixteen shipped features, the
-    /// unsplit hand row, then any CANDIDATE COLUMNS, and the benchmark total
-    /// last.
+    /// The reported rows, in print order: the shipped features, the unsplit
+    /// hand row, then any CANDIDATE COLUMNS, and the benchmark total last.
     ///
     /// Candidate columns sit before `EvalTotal` so the benchmark keeps ending
     /// the table, which is the shape every recorded artifact's appendix has.
@@ -617,16 +624,18 @@ impl Row {
     }
 }
 
-/// A row this instrument can measure that the shipped feature list does NOT
-/// contain — an admission candidate, reported beside the sixteen so a proposal
-/// can be read against the evidence rather than argued from first principles.
+/// A row this instrument can measure — an admission candidate, reported beside
+/// the shipped features so a proposal can be read against the evidence rather
+/// than argued from first principles.
 ///
-/// **NOT a [`Feature`], and nothing here moves `Feature::ALL`.** The shipped
-/// list stays sixteen entries everywhere; adding a variant here adds a REPORTED
-/// COLUMN and nothing else. That separation is the point: the protocol's ladder
-/// (§4.2) wants L1 evidence for an admission BEFORE the feature count moves, and
-/// the feature count moving is the one step `Feature::ALL`'s own doc calls out
-/// as having a silent failure mode.
+/// **NOT a [`Feature`], and adding a variant here moves nothing.** Adding one
+/// adds a REPORTED COLUMN and nothing else; ADMISSION is a separate act, in a
+/// separate commit, that moves `Feature::ALL` — which is what the V3 cycle did
+/// to `AchievementRaceProximity` (that variant now READS the shipped feature's
+/// helper and is kept so the recorded L1 commands still parse). That separation
+/// is the point: the protocol's ladder (§4.2) wants L1 evidence for an admission
+/// BEFORE the feature count moves, and the feature count moving is the one step
+/// `Feature::ALL`'s own doc calls out as having a silent failure mode.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum CandidateColumn {
     /// The T3 post-claim filter's value: `achievement_progress_sum` with the
@@ -642,8 +651,15 @@ enum CandidateColumn {
     /// industry-value ranking, the 2P dummy competing at doubled value 15 (D5)
     /// — see [`tech_majority_margin`].
     TechMajorityMargin,
-    /// **Round 3, T5.** Nearness to the seat's next achievement claim — see
-    /// [`achievement_race_proximity`].
+    /// **Round 3, T5 — GRADUATED at the V3 adoption (2026-08-19).** Nearness to
+    /// the seat's next achievement claim. The arithmetic now lives in `eval.rs`
+    /// as `eval::achievement_race_proximity` and ships as
+    /// [`Feature::AchievementRaceProximity`]; this column READS it, so the
+    /// screened column and the shipped feature are one function. It stays a
+    /// candidate column rather than disappearing so that every recorded L1
+    /// command still parses and still reports the row it named — and, since the
+    /// shipped feature now carries it too, a report naming both is reporting the
+    /// same number twice on purpose.
     AchievementRaceProximity,
     /// **Round 3, T6.** The seat's OWN pawn count on the church track: how much
     /// of the ending clock this seat is itself driving.
@@ -764,7 +780,14 @@ impl CandidateColumn {
                 player.id,
             ),
             CandidateColumn::TechMajorityMargin => tech_majority_margin(view, player, rules),
-            CandidateColumn::AchievementRaceProximity => achievement_race_proximity(view, player),
+            CandidateColumn::AchievementRaceProximity => {
+                // GRADUATED at the V3 adoption: the arithmetic moved into
+                // `eval.rs` and this column reads it, so the screened column and
+                // the shipped feature cannot become two things (the postclaim
+                // precedent). Kept as a candidate column so the recorded L1
+                // commands still parse and report the row they named.
+                shipped_race_proximity(view, player)
+            }
             CandidateColumn::ClockControlChurch => view
                 .church_track
                 .slots
@@ -1000,44 +1023,6 @@ fn tech_majority_margin(
         0
     };
     2 * gap + tie
-}
-
-/// How near this seat is to its NEXT achievement claim, negated so that nearer
-/// reads HIGHER.
-///
-/// Over the cards this seat has not already claimed, each card's remaining gap
-/// is `needed − min(current, needed)` on `eval::achievement_progress`'s own
-/// arithmetic (the AND-shaped cards' per-leg caps included), and the column is
-/// minus the SMALLEST of them.
-///
-/// Three decisions, each recorded rather than implied:
-///
-/// * **Cards claimed by an OPPONENT stay live.** The engine's claim gate refuses
-///   only a REPEAT claim by the SAME seat (`can_claim_achievement`), so a card
-///   an opponent has taken is still worth its printed subsequent value to this
-///   seat, and dropping it would price a reachable reward at nothing. This is
-///   also why the column is SELF-guidance rather than a denial term: the owner's
-///   2026-08-09 canon batch rules achievement denial explicitly NOT canon, and
-///   names achievements agenda-setters instead.
-/// * **The cap is inherited**, so hoarding past a requirement does not read as
-///   extra nearness — the same reasoning `achievement_progress_sum` gives.
-/// * **A seat that has claimed all three reads 0**, which COLLIDES with the
-///   reading for a seat standing on a claimable card. Both are "nothing left to
-///   chase"; the state needs three claims by one seat to occur at all; and the
-///   alternative — a sentinel outside the scale — would put a discontinuity into
-///   a column whose whole content is an ordering. Stated so a reader of the L1
-///   table knows which zero they are looking at.
-fn achievement_race_proximity(view: &PlayerView, me: &yokohama_core::VisiblePlayer) -> i64 {
-    let mut nearest: Option<u32> = None;
-    for card in &view.achievements {
-        if card.claimed_by.contains(&me.id) {
-            continue;
-        }
-        let (current, needed) = achievement_progress(view, me, card.achievement_type);
-        let gap = needed.saturating_sub(current.min(needed));
-        nearest = Some(nearest.map_or(gap, |best| best.min(gap)));
-    }
-    -i64::from(nearest.unwrap_or(0))
 }
 
 /// Empty Port CARD SLOTS across every Port board in play (six per board; two
@@ -1285,8 +1270,10 @@ fn split_extension_clauses(spec: &str) -> Result<(&str, Vec<ExtensionClause>), S
 ///   * `v2-draft` — the same numbers under the spelling the rounds used
 ///     (`WeightTable::V2_DRAFT` is an alias of `V2` since the freeze promoted
 ///     it), kept so the committed round commands still parse and reproduce;
-///   * `<e0,…,e15>/<l0,…,l15>` — sixteen comma-separated `i64` per vector, in
-///     [`Feature::ALL`] order, for a grid cell that has no const yet.
+///   * `<e0,…,eN>/<l0,…,lN>` — one comma-separated `i64` per FEATURE per
+///     vector, in [`Feature::ALL`] order, for a grid cell that has no const yet.
+///     The width is [`Feature::COUNT`] (17 since the V3 admission), never a
+///     literal, and a wrong width is refused naming both numbers.
 ///
 /// The three bare spellings stay legal WITHOUT a name, which is what keeps the
 /// committed round commands byte-compatible; a name is required as soon as a
@@ -1449,7 +1436,7 @@ impl Split {
 ///
 /// Both halves ride ONE pass over the structure: the paired-difference arm
 /// (V3 spec §4.2) needs the base table's own number for every cell, and
-/// re-running the sixteen-term mirror loop a second time to get it would double
+/// re-running the whole mirror loop a second time to get it would double
 /// an extension table's corpus cost for a quantity the first pass already had
 /// in hand. For a spec with NO extension clauses the two fields are the same
 /// bits — no arithmetic happens between them — which is what makes an
@@ -1508,7 +1495,7 @@ fn candidate_total(
     }
     let base = total;
 
-    // The §4.1 extension clauses, priced EXACTLY as the sixteen above are: one
+    // The §4.1 extension clauses, priced EXACTLY as the features above are: one
     // interpolated weight, the viewer's value minus the same signed-weight
     // opponent extreme, saturating throughout. That identity is the whole
     // instrument — an extension table is what admitting the column would
@@ -2664,9 +2651,10 @@ fn report_features(
     );
     // Printed only when a `--candidate-columns` row is present, so an
     // argument-free run stays byte-identical to every recorded appendix. The
-    // marking is load-bearing: these rows sit in the same table as the sixteen
-    // and ship in nothing, and a reader who takes one for a feature would read
-    // the whole report as describing an evaluator that does not exist.
+    // marking is load-bearing: these rows sit in the same table as the shipped
+    // features and ship in nothing themselves, and a reader who took one for a
+    // feature would read the whole report as describing an evaluator that does
+    // not exist.
     let candidate_columns: Vec<&str> = corpus
         .rows
         .iter()
@@ -3782,10 +3770,14 @@ mod tests {
             "the draft spelling and the shipped spelling name one table since the freeze",
         );
 
-        // An explicit vector: sixteen per side, Feature::ALL order, negatives
-        // and zeroes included so the parser cannot be a positive-only reader.
-        let early: Vec<String> = (0..16).map(|i| (i as i64 - 3).to_string()).collect();
-        let late: Vec<String> = (0..16).map(|i| (40 - i as i64).to_string()).collect();
+        // An explicit vector: one entry per FEATURE per side, Feature::ALL
+        // order, negatives and zeroes included so the parser cannot be a
+        // positive-only reader. Width is derived from `Feature::COUNT`, never
+        // typed: an admission moves the grammar's width and these fixtures with
+        // it, which is exactly what the V3 admission did (16 -> 17).
+        let early: Vec<String> =
+            (0..Feature::COUNT).map(|i| (i as i64 - 3).to_string()).collect();
+        let late: Vec<String> = (0..Feature::COUNT).map(|i| (40 - i as i64).to_string()).collect();
         let spec = format!("A1={}/{}", early.join(","), late.join(","));
         let parsed = parse_score_table(&spec).expect("an explicit vector must parse");
         assert_eq!(parsed.name, "A1");
@@ -3805,7 +3797,7 @@ mod tests {
     /// same class of failure `split_args` refuses unknown flags to prevent.
     #[test]
     fn an_unknown_or_malformed_score_table_is_a_typed_error_naming_what_it_saw() {
-        let sixteen = (0..16).map(|_| "1").collect::<Vec<_>>().join(",");
+        let full = (0..Feature::COUNT).map(|_| "1").collect::<Vec<_>>().join(",");
         for (spec, token) in [
             // `v3` stands in for the spelling `v2` used to hold here: a table
             // name the grammar does not know is an ERROR, never a silent
@@ -3824,11 +3816,21 @@ mod tests {
         }
         // A vector of the wrong WIDTH names the width it got and the width the
         // feature list has, so a future admission cannot be mistaken for a typo.
-        let short = format!("A1={}/{}", sixteen, (0..15).map(|_| "1").collect::<Vec<_>>().join(","));
-        let message = parse_score_table(&short).expect_err("15 late entries must be refused");
-        assert!(message.contains("15") && message.contains("16"), "{message}");
+        let one_short = Feature::COUNT - 1;
+        let short = format!(
+            "A1={}/{}",
+            full,
+            (0..one_short).map(|_| "1").collect::<Vec<_>>().join(","),
+        );
+        let message =
+            parse_score_table(&short).expect_err("a short late vector must be refused");
+        assert!(
+            message.contains(&one_short.to_string())
+                && message.contains(&Feature::COUNT.to_string()),
+            "{message}",
+        );
         // A non-integer entry names the token rather than the whole spec.
-        let bad = format!("A1={}/{}", sixteen.replacen('1', "x", 1), sixteen);
+        let bad = format!("A1={}/{}", full.replacen('1', "x", 1), full);
         let message = parse_score_table(&bad).expect_err("a non-integer entry must be refused");
         assert!(message.contains('x'), "{message}");
         // The missing separator, both ways round.
@@ -3846,7 +3848,7 @@ mod tests {
         assert!(message.contains("postclim"), "{message}");
         assert!(message.contains("postclaim"), "the refusal must name what IS accepted: {message}");
         // Feature::ALL is not touched by a candidate column, ever.
-        assert_eq!(Feature::COUNT, 16);
+        assert_eq!(Feature::COUNT, 17);
         assert_eq!(Row::all(&[CandidateColumn::PostClaim]).len(), Row::all(&[]).len() + 1);
         // …and the benchmark row stays last.
         assert!(matches!(Row::all(&[CandidateColumn::PostClaim]).last(), Some(Row::EvalTotal)));
@@ -4032,9 +4034,11 @@ mod tests {
         );
 
         // A clause on a VECTOR-form base: the greedy right-strip runs first, so
-        // the sixteen-per-side base is still there to parse behind it.
-        let early = (0..16).map(|i| (i as i64 - 3).to_string()).collect::<Vec<_>>().join(",");
-        let late = (0..16).map(|i| (40 - i as i64).to_string()).collect::<Vec<_>>().join(",");
+        // the full-width base is still there to parse behind it.
+        let early =
+            (0..Feature::COUNT).map(|i| (i as i64 - 3).to_string()).collect::<Vec<_>>().join(",");
+        let late =
+            (0..Feature::COUNT).map(|i| (40 - i as i64).to_string()).collect::<Vec<_>>().join(",");
         let on_vector = parse_score_table(&format!("A1={early}/{late}+church_majority_margin=-2/5"))
             .expect("a vector base takes a clause");
         assert_eq!(on_vector.name, "A1");
@@ -4072,8 +4076,8 @@ mod tests {
 
         // A leading-`+` VECTOR entry names the AMBIGUITY: with `+` reserved for
         // clause separation, `+1` in a vector is not a signed 1.
-        let sixteen = (0..16).map(|_| "1").collect::<Vec<_>>().join(",");
-        let message = parse_score_table(&format!("A1=+{sixteen}/{sixteen}"))
+        let full = (0..Feature::COUNT).map(|_| "1").collect::<Vec<_>>().join(",");
+        let message = parse_score_table(&format!("A1=+{full}/{full}"))
             .expect_err("a leading-`+` vector entry is refused");
         assert!(message.contains("+1"), "{message}");
         assert!(message.contains("ambiguous"), "the refusal must name the ambiguity: {message}");
@@ -4307,12 +4311,11 @@ mod tests {
     #[test]
     fn an_extension_tables_block_echoes_its_clauses_and_prints_the_improvement_interval() {
         let rules = Rules::standard();
-        let sixteen = (0..16).map(|_| "1").collect::<Vec<_>>().join(",");
+        let full = (0..Feature::COUNT).map(|_| "1").collect::<Vec<_>>().join(",");
         let candidates = vec![
             parse_score_table("v2").expect("the plain base"),
             parse_score_table("probe1=v2+terminal_margin_now=4/4").expect("a named base"),
-            parse_score_table(&format!("A1={sixteen}/{sixteen}+money=1/2"))
-                .expect("a vector base"),
+            parse_score_table(&format!("A1={full}/{full}+money=1/2")).expect("a vector base"),
         ];
         let (corpus, _) = generate(
             2,
@@ -4925,7 +4928,7 @@ mod tests {
                     column_value(CandidateColumn::AchievementRaceProximity, &probe_view, seat, &rules);
                 assert_eq!(
                     column,
-                    yokohama_core::game::eval::achievement_race_proximity(&probe_view, &player),
+                    shipped_race_proximity(&probe_view, &player),
                     "the column must BE the shipped helper, not a second copy of it",
                 );
                 assert_eq!(
@@ -5285,17 +5288,23 @@ mod tests {
         assert_eq!(CandidateColumn::TerminalMarginNow.name(), "terminal_margin_now");
         assert_eq!(CandidateColumn::TerminalMarginNow.token(), "terminal_margin_now");
 
-        // The shipped feature list is untouched, the argument-free row vector is
-        // the one every recorded appendix was rendered from, and the benchmark
-        // row still ends the table with every column present.
-        assert_eq!(Feature::COUNT, 16);
-        assert_eq!(Row::all(&[]).len(), 18);
-        assert_eq!(Row::all(&CANDIDATE_COLUMNS).len(), 18 + CANDIDATE_COLUMNS.len());
+        // The shipped feature list is not touched BY A CANDIDATE COLUMN (it moved
+        // 16 -> 17 at the V3 admission, which is a different act and has its own
+        // pins), the argument-free row vector is the one the recorded appendices
+        // were rendered from plus that admission's row, and the benchmark row
+        // still ends the table with every column present.
+        assert_eq!(Feature::COUNT, 17);
+        let shipped_rows = Feature::COUNT + 1; // the features plus the unsplit-hand row
+        assert_eq!(Row::all(&[]).len(), shipped_rows + 1, "…and the benchmark row");
+        assert_eq!(
+            Row::all(&CANDIDATE_COLUMNS).len(),
+            shipped_rows + 1 + CANDIDATE_COLUMNS.len(),
+        );
         assert!(matches!(Row::all(&CANDIDATE_COLUMNS).last(), Some(Row::EvalTotal)));
         assert_eq!(
-            Row::all(&CANDIDATE_COLUMNS)[..17],
-            Row::all(&[])[..17],
-            "candidate columns must not disturb the sixteen features or the unsplit hand row",
+            Row::all(&CANDIDATE_COLUMNS)[..shipped_rows],
+            Row::all(&[])[..shipped_rows],
+            "candidate columns must not disturb the feature rows or the unsplit hand row",
         );
     }
 
@@ -5331,8 +5340,8 @@ mod tests {
     }
 
     /// End to end on a real corpus: the columns ride the same cell machinery the
-    /// sixteen do, every value is finite, the board-global column's relative
-    /// cells are identically zero, and the columns are not all silently zero
+    /// shipped features do, every value is finite, the board-global column's
+    /// relative cells are identically zero, and the columns are not all zero
     /// (the anti-vacuity that separates a measured null from a stub).
     #[test]
     fn the_admission_columns_ride_a_real_corpus_end_to_end() {
@@ -5350,7 +5359,9 @@ mod tests {
         )
         .expect("a 2P greedy game completes");
 
-        assert_eq!(corpus.rows.len(), 18 + CANDIDATE_COLUMNS.len());
+        // Derived, never typed: the feature rows plus the unsplit-hand row plus
+        // the benchmark row, plus one per requested candidate column.
+        assert_eq!(corpus.rows.len(), Feature::COUNT + 2 + CANDIDATE_COLUMNS.len());
         assert!(!corpus.cells.is_empty(), "a corpus with no cells proves nothing");
         let slot = |column: CandidateColumn| {
             corpus

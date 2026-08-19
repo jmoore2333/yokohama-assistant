@@ -644,8 +644,9 @@ fn seat_slot(player: &VisiblePlayer) -> Option<usize> {
 
 /// The viewer's own raw value for one feature — the same number [`score`]
 /// multiplies by a weight, read without a weight so a fixture can state what it
-/// built (`ScoreStructure` is the authority on all sixteen; eleven are field
-/// reads and five are re-derived).
+/// built (`ScoreStructure` is the authority on every feature; eleven are field
+/// reads and six come out of the structure — the five end-scoring mirrors plus
+/// V3's race-proximity column).
 fn viewer_value(view: &PlayerView, rules: &Rules, feature: Feature) -> i64 {
     ScoreStructure::derive(view, rules).value_of(own_row(view), feature)
 }

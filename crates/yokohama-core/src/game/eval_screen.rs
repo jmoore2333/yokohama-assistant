@@ -1435,12 +1435,30 @@ mod tests {
         );
         assert_eq!(
             weight_table_identity(&WeightTable::V2) as u64,
-            0x9a24_0f2f_f762_4b0e,
+            0x041f_7bab_f5ed_46c4,
             "the v2 freeze's weight identity moved. That digest is quoted in eval.rs's V2 \
              register, in the round-2 evidence artifact, in the execution ledger's freeze row \
              and in every screen report those cite — so if V2 has legitimately been re-priced, \
              this constant moves in the same commit as the numbers and the freeze figures \
              become a record of the table they measured, not of this one.",
+        );
+        // RE-CAPTURED at the V3 width move (2026-08-19): the digest hashes every
+        // slot of both vectors, so padding the seventeenth with `(0, 0)` moves it
+        // even though V2's THIRTY-TWO NUMBERS did not move a digit. The
+        // pre-padding value was `0x9a24_0f2f_f762_4b0e` and every figure recorded
+        // under it stays a record of exactly this table — that is the retention
+        // contract (spec §5), and it is why the two digests are named together
+        // rather than one quietly replacing the other. What a REAL re-pricing
+        // would look like is unchanged: the numbers above move too.
+        assert_eq!(
+            WeightTable::V2.early[..16],
+            [1, 20, 14, -4, 3, 30, 5, -10, 6, 12, 15, 8, 5, 2, 3, -1],
+            "the sixteen frozen EARLY values are the freeze's content, digest or no digest",
+        );
+        assert_eq!(
+            WeightTable::V2.late[..16],
+            [40, 30, 20, 8, 20, 20, 2, -10, 10, 20, 25, 14, 8, 4, 4, -2],
+            "the sixteen frozen LATE values are the freeze's content, digest or no digest",
         );
         assert_eq!(
             WeightTable::V2_DRAFT,
