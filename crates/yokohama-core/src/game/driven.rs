@@ -1418,6 +1418,15 @@ pub const GENERATED_ECOLOGY_V1: &str = "driven-generated-v1.1";
 /// dead-root slack. Raising the bound at a FIXED master and cap is
 /// PREFIX-STABLE — the strided ordinal sequence is identical, merely longer — so
 /// this is an extension and not a re-draw.
+///
+/// **RE-VERIFIED AT THE FREEZE WAVE and left at 16.** The baked family-1 blocks
+/// are wider than that draft — pilot `0..4` plus confirmatory `4..20` is **20**
+/// strided ordinals per predicate, not 16 — and both of family 1's arms
+/// (`FinalRoundAlreadyTriggered` and its `TriggerRoundNotFinal` control) scan
+/// this ecology, each in its OWN ordinal space. 16 × 2 = 32 still covers 20 with
+/// 12 ordinals of slack for the escrow the freeze DOCUMENT holds, so no bound
+/// moved. The check is executable, not a comment:
+/// `driven_runner::every_frozen_block_fits_the_supply_its_generator_declares`.
 pub const GENERATED_SCAN_GAMES: u32 = 16;
 
 /// How many hits per generated game may enter the ordinal sequence.
@@ -1459,6 +1468,16 @@ pub const GENERATED_ECOLOGY_V2_LOOKAHEAD: &str = "driven-generated-v2-lookahead"
 /// (design §1 family 3 says so in as many words). A games raise at a fixed
 /// master and cap is prefix-stable, which is the recovery if a frozen block runs
 /// short.
+///
+/// **RE-VERIFIED AT THE FREEZE WAVE and left at 24.** The baked layer-2 blocks
+/// demand pilot `0..4` plus confirmatory `4..28` = **28** strided ordinals per
+/// predicate, against a supply of 24 × 2 = 48 — 20 ordinals of slack, and the
+/// three predicates that scan here (`EndFirableAheadInTruth`, its
+/// `EndFirableBehindInTruth` control, and `AchievementClaimAvailable`) each get
+/// their own space at their own master. No bound moved; the check is executable
+/// in `driven_runner::every_frozen_block_fits_the_supply_its_generator_declares`.
+/// The no-supply-guarantee sentence above still stands — a bound that FITS is
+/// not a promise that the predicate hits that often.
 pub const GENERATED_V2_SCAN_GAMES: u32 = 24;
 
 /// The seat count v2's generating ecology plays at — 2P throughout (the canon

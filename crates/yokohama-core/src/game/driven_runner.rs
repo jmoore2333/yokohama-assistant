@@ -239,11 +239,12 @@ usage: driven <subcommand> [options]
                              caller's obligation and this instrument will not
                              invent one.
       --block confirmatory   the FROZEN block baked into the declaration at the
-                             freeze commit. --master is REFUSED here -- the
-                             declaration's master IS the committed identity, and
-                             a typo must not be able to run a plausible-looking
-                             non-frozen block. Before the freeze there is no
-                             frozen block at all and this refuses BY NAME.
+                             freeze commit -- PER ARM, since the two arms draw
+                             their own roots off their own masters. --master is
+                             REFUSED here: the declaration's master IS the
+                             committed identity, and a typo must not be able to
+                             run a plausible-looking non-frozen block. An arm
+                             carrying no baked block refuses BY NAME.
       --arm positive         (default) the family's positive generator.
       --arm control          its declared control (or corner) arm, at the
                              control PASS RULE where the control asks a
@@ -254,7 +255,10 @@ usage: driven <subcommand> [options]
                                exclusive-race  the no-denial builder, read as
                                                denial-not-taken-by-handoff
                                achievement     the proximity corner, same rule
-      SIZING is the PRE-FREEZE posture (BlockOpts::pilot) and the SUBJECT is the
+      SIZING is the BLOCK's: a pilot runs BlockOpts::pilot (admission K = 4, the
+      posture the pilots that already ran used, so their readings reproduce) and
+      a confirmatory runs BlockOpts::freeze (admission K = 8, doubled against
+      group-mean noise). The ARM never moves the sizing. The SUBJECT is the
       shipped `lookahead-v1`: a family result is a statement about that subject,
       so it is deliberately not a flag here.
       COST: `roots x menu x candidates x K` whole games for admission plus
@@ -824,8 +828,17 @@ pub fn parse_u64(raw: &str) -> Result<u64, String> {
 /// predicate, so `end-trigger` swaps in `Turn(NotEndFired)` and
 /// `exclusive-race` swaps in `Turn(DenialNotTaken)`.
 ///
-/// Every other field is the declaration's, untouched: an arm is a generator and
-/// a rule, never a different family.
+/// **THE FROZEN BLOCK IS RE-POINTED TOO** (the freeze wave): the arm's
+/// `confirmatory` becomes the declaration's
+/// [`confirmatory_control`](FamilyDecl::confirmatory_control), because the two
+/// arms draw their own roots off their own masters and a control run that
+/// inherited the positive arm's block would quote the positive arm's identity
+/// for a different set of positions. Family 1's two blocks happen to name one
+/// master — its control is a different PREDICATE, so that master's ordinal space
+/// is a different space — and the re-point is what makes even that explicit.
+///
+/// Every other field is the declaration's, untouched: an arm is a generator, a
+/// rule and a block, never a different family.
 pub fn control_arm(decl: &FamilyDecl) -> Result<FamilyDecl, String> {
     let (generator, rule) = match decl.id {
         "final-round" => (FamilyGenerator::Predicate(RootPredicate::TriggerRoundNotFinal), decl.rule),
@@ -845,21 +858,25 @@ pub fn control_arm(decl: &FamilyDecl) -> Result<FamilyDecl, String> {
     let mut arm = decl.clone();
     arm.generator = generator;
     arm.rule = rule;
+    arm.confirmatory = decl.confirmatory_control.clone();
     Ok(arm)
 }
 
-/// The SIZING one `family` block runs under — [`BlockOpts::pilot`] for BOTH
-/// arms, which is the double negation made STRUCTURAL instead of remembered.
+/// The SIZING one `family` block runs under — the ARM never moves it (which is
+/// the double negation made STRUCTURAL instead of remembered) and the BLOCK
+/// always does: [`BlockOpts::pilot`] for a pilot, [`BlockOpts::freeze`] for a
+/// confirmatory.
 ///
 /// **Why this is a function and not a literal at the call site** (Phase C, T6
 /// fix wave, review MUST-1). The judgment below is correct and it is also
 /// invisible: `BlockOpts { control: arm == FamilyArm::Control, ..pilot() }` is
 /// the edit a reader reaches for, it compiles, it reads *more* careful than
-/// what is here, and every family block refuses before the freeze — so nothing
-/// in the suite would have run the changed line. A named seam gives that edit
-/// somewhere to fail: the pin below asserts BOTH arms come back with the
-/// inversion off, and `render_family_block` brands a control render whose
-/// report says otherwise.
+/// what is here, and NO CELL HAS EVER EXECUTED THE LINE it would change — every
+/// family block refused before the freeze, and since the freeze a real
+/// confirmatory block is hours of games that no suite can afford. A named seam
+/// gives that edit somewhere to fail: the pin below asserts BOTH arms come back
+/// with the inversion off at BOTH blocks, and `render_family_block` brands a
+/// control render whose report says otherwise.
 ///
 /// **The double negation, stated once because getting it backwards is silent.**
 /// Design §1 says a family-2 control root passes on `NotEndFiredByHandoff` and
@@ -876,11 +893,22 @@ pub fn control_arm(decl: &FamilyDecl) -> Result<FamilyDecl, String> {
 /// that reads right. The report prints the arm and this sentence so nothing
 /// rests on remembering it.
 ///
-/// The `match` is EXHAUSTIVE rather than `_ => BlockOpts::pilot()`: a third arm
-/// has to answer this question rather than inherit an answer written for two.
-pub(crate) fn family_block_opts(arm: FamilyArm) -> BlockOpts {
+/// **THE BLOCK IS the sizing choice** (the freeze wave): a PILOT runs the
+/// posture the pilots that already ran used — so their readings reproduce — and
+/// a CONFIRMATORY runs the frozen one, whose single moved field is the admission
+/// K (4 → 8, priced from pilot-measured group-mean noise). The two questions
+/// meet in one function on purpose: the arm must not reach the sizing and the
+/// block must, and both facts are checked by one cell.
+///
+/// Both `match`es are EXHAUSTIVE rather than `_ => BlockOpts::pilot()`: a third
+/// arm — or a third block — has to answer this question rather than inherit an
+/// answer written for two.
+pub(crate) fn family_block_opts(arm: FamilyArm, block: BlockKind) -> BlockOpts {
     match arm {
-        FamilyArm::Positive | FamilyArm::Control => BlockOpts::pilot(),
+        FamilyArm::Positive | FamilyArm::Control => match block {
+            BlockKind::Pilot => BlockOpts::pilot(),
+            BlockKind::Confirmatory => BlockOpts::freeze(),
+        },
     }
 }
 
@@ -2094,12 +2122,12 @@ pub(crate) fn run_with(
                 FamilyArm::Control => control_arm(&declared)?,
             };
             // The SUBJECT is the shipped default and deliberately not a flag: a
-            // family result is a statement about that subject, and the sizing is
-            // `BlockOpts::pilot`'s pre-freeze posture, which T7's freeze commit
-            // is what replaces. The sizing goes through `family_block_opts`
-            // rather than through the two-argument entry point so the ARM
-            // reaches the one seam that decides the admission inversion — see
-            // its doc for why that inversion stays OFF in both arms.
+            // family result is a statement about that subject. The sizing goes
+            // through `family_block_opts` rather than through the two-argument
+            // entry point so that BOTH the arm and the block reach the one seam
+            // that decides them — the arm never moves the sizing (see its doc
+            // for why the admission inversion stays OFF in both arms) and the
+            // block always does (pilot posture vs the frozen one).
             let subject = SeatSpec::Contestant(default_contestant()?);
             match run_family_block_with(
                 &decl,
@@ -2107,7 +2135,7 @@ pub(crate) fn run_with(
                 master,
                 subject,
                 &rules,
-                family_block_opts(arm),
+                family_block_opts(arm, block),
             ) {
                 Ok(report) => Ok(render_family_block(&report, arm)),
                 // The four COMMAND-shaped refusals carry USAGE, because each of
@@ -2271,8 +2299,8 @@ mod tests {
     use crate::game::driven_families::{
         AdmissionRead, AdmissionVerdict, CounterAnnotation, CounterCheck, ExclusionReason,
         FamilyBlockReport, FamilyLabel, FamilyReadOutcome, FamilyVerdict, PolicyAdmission,
-        ReadGrain, ReplicationRead, RootRow, RootVerdict, StrategicClass, MIN_ADMITTED_ROOTS,
-        VOID_DISPOSITION,
+        ReadGrain, ReplicationRead, RootRow, RootVerdict, StrategicClass, FROZEN_ADMISSION_K,
+        MIN_ADMITTED_ROOTS, PILOT_ADMISSION_K, VOID_DISPOSITION,
     };
     use crate::game::legal_moves::get_legal_moves;
     use crate::game::lookahead::RootScore;
@@ -4213,16 +4241,19 @@ mod tests {
         }
     }
 
-    /// THE SEAM (T6 fix wave, review MUST-1): the sizing hands BOTH arms the
-    /// pre-freeze posture with the admission inversion OFF.
+    /// THE SEAM (T6 fix wave, review MUST-1; extended by the freeze wave): the
+    /// sizing hands BOTH arms the same posture with the admission inversion OFF,
+    /// and hands each BLOCK its own posture.
     ///
     /// **The mutation this exists for is the natural one** — `BlockOpts {
     /// control: arm == FamilyArm::Control, ..BlockOpts::pilot() }`, which reads
     /// MORE careful than what ships and is the control's own claim upside down
     /// (see [`family_block_opts`] for the double negation). Written at the call
     /// site it survived the entire suite, because `run_with`'s `Command::Family`
-    /// Ok path is unreachable in test: every block refuses before the freeze, so
-    /// no cell has ever executed that line. Named, it has somewhere to fail.
+    /// Ok path is unreachable in test: it refused before the freeze, and since
+    /// the freeze it is hours of real games. Named, it has somewhere to fail —
+    /// and the freeze wave's own edit (the block choosing the posture) rides the
+    /// same seam for the same reason.
     #[test]
     fn the_family_block_sizing_keeps_the_admission_inversion_off_in_both_arms() {
         for block in [BlockKind::Pilot, BlockKind::Confirmatory] {

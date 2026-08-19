@@ -2179,10 +2179,12 @@ pub const VOID_DISPOSITION: &str =
 
 /// R — replications per root (design §4).
 ///
-/// **PROVISIONAL until T7's freeze commit**, like every other number in this
-/// block: design §4 states R = 20 as the draft posture and the freeze document
-/// is what fixes it, together with F, δ, ε and the per-policy K. Nothing here
-/// may be read as frozen.
+/// **STILL THE DRAFT POSTURE after the freeze wave**, which fixed ε, δ and the
+/// per-policy K and deliberately left R and F alone: design §4 states R = 20,
+/// and what prices R honestly is the per-root miss distribution the
+/// CONFIRMATORY runs themselves report. The freeze document is where that
+/// pricing lands — so this number, and [`PROVISIONAL_PER_ROOT_F`] with it, are
+/// the two in this block a reader must not read as frozen.
 pub const PROVISIONAL_REPLICATIONS: u32 = 20;
 
 /// Per-root allowed misses (design §4's draft posture, F = 1 of 20).
@@ -2201,22 +2203,48 @@ pub const FAMILY_FAILURE_ALLOWANCE: usize = 0;
 
 /// ε for family 1's [`PassRule::AdjudicatedBest`], in victory points.
 ///
-/// PROVISIONAL: design §4 derives it at the freeze from ADJUDICATION-MARGIN
-/// noise at pilot roots, as a conservative upper confidence bound on the sd of
-/// per-candidate means. The leniency direction, stated once more where the
-/// number is: a LARGER epsilon is an EASIER pass.
-pub const PROVISIONAL_EPSILON_VP: i64 = 1;
+/// **FROZEN AT 2 VP by the freeze wave** (design §4's own draft value), raised
+/// from the 1 VP the pilots ran at. Design §4 derives it at the freeze from
+/// ADJUDICATION-MARGIN noise at pilot roots, and the pilot supplied exactly that
+/// measurement: at ε = 1 with K = 4 the trigger-round control read UNRESOLVED at
+/// EVERY root — the declared policies' top sets differed by less than a point of
+/// adjudication noise, which is a statement about the instrument rather than
+/// about policy disagreement.
+///
+/// The leniency direction, stated once more where the number is: a LARGER
+/// epsilon is an EASIER pass. Raising it is therefore a real loosening of
+/// family 1's rule, taken deliberately and on measured grounds — the
+/// alternative was a family whose every root routed to the exact adjudicator.
+pub const FROZEN_EPSILON_VP: i64 = 2;
 
 /// δ for root admission, in victory points (design §4's draft 5 VP).
 ///
-/// PROVISIONAL: the freeze sizes it (and the per-policy K) from pilot-measured
-/// playout-margin noise, such that the SE of the group mean-difference is below
-/// δ/2.
-pub const PROVISIONAL_DELTA_VP: i64 = 5;
+/// **UNMOVED by the freeze wave, and that is a decision rather than an
+/// omission**: the one pilot family whose admission discriminated cleanly
+/// (family 2, 1 of 4 admitted on each arm, the admitted control root showing the
+/// subject firing 20/20 where not-firing dominates) read at this δ, and the
+/// families that admitted nothing failed on DEGENERATE GROUP SHAPES rather than
+/// on the margin — which is what the splitting rules answer and what a δ move
+/// would have papered over.
+pub const DELTA_VP: i64 = 5;
 
-/// The per-policy admission K (design §4's draft: the full menu at K = 4).
-/// PROVISIONAL, for [`PROVISIONAL_DELTA_VP`]'s reason.
-pub const PROVISIONAL_ADMISSION_K: u32 = 4;
+/// The per-policy admission K the PILOT posture runs (design §4's draft: the
+/// full menu at K = 4).
+///
+/// Kept, and kept at 4, so the pilot runs that already happened reproduce
+/// exactly. [`FROZEN_ADMISSION_K`] is what a confirmatory block runs.
+pub const PILOT_ADMISSION_K: u32 = 4;
+
+/// The per-policy admission K a CONFIRMATORY block runs (the freeze wave).
+///
+/// **8, doubled from the pilot's 4, and the reason is group-mean noise.** An
+/// admission compares two group MEANS, and at K = 4 a four-candidate root gives
+/// groups of a handful of playouts whose means move a full δ on one game — the
+/// pilot's family-weighted rung split 1-of-8 at more than one root. Doubling K
+/// is the cheapest lever on that variance (the walls are trivial: the whole
+/// ten-command pilot ran in about three minutes at K = 4), and it composes with
+/// [`SPLIT_MIN_GROUP`], which refuses the groups that stay thin anyway.
+pub const FROZEN_ADMISSION_K: u32 = 8;
 
 /// The PLACEHOLDER step a step-carrying declaration is written with.
 ///
@@ -2274,11 +2302,14 @@ impl StrategicClass {
 /// review SHOULD-4 — the committed-diagnostic-master pattern the gates already
 /// use).
 ///
-/// Before the freeze every declaration carries `None` and every run supplies its
-/// own master; after it, `--block confirmatory` runs the committed identity and
-/// a caller-typed master cannot silently substitute a non-frozen block. **Escrow
-/// ordinals are deliberately NOT representable here**: they live in the freeze
-/// document, so no command can burn one by accident.
+/// Before the freeze every declaration carried `None` and every run supplied its
+/// own master; since the freeze wave each declaration carries ONE PER ARM
+/// ([`FamilyDecl::confirmatory`] and [`FamilyDecl::confirmatory_control`]),
+/// `--block confirmatory` runs the committed identity, and a caller-typed master
+/// cannot silently substitute a non-frozen block. **Escrow ordinals are
+/// deliberately NOT representable here**: they live in the freeze document, so
+/// no command can burn one by accident — which is why there are TWO block fields
+/// and not three.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrozenBlock {
     /// The recorded master this block's draws descend from.
@@ -2387,8 +2418,23 @@ pub struct FamilyDecl {
     /// The PILOT block's ordinals. Pilots quote nothing confirmatory, so they
     /// carry no master: the caller records one before use.
     pub pilot: std::ops::Range<u32>,
-    /// The CONFIRMATORY block, baked at the freeze commit. `None` before it.
+    /// The POSITIVE arm's CONFIRMATORY block, baked at the freeze commit. `None`
+    /// before it, and `None` is still the shape a newly declared arm carries.
     pub confirmatory: Option<FrozenBlock>,
+    /// The CONTROL arm's CONFIRMATORY block (the freeze wave).
+    ///
+    /// **Its own block, because the arms draw their own roots.** A control arm
+    /// is a different generator — a different predicate, or a builder — so it
+    /// has its own ordinal space and a control run that inherited the positive
+    /// arm's block would quote the positive arm's identity for a different set
+    /// of positions. `driven_runner::control_arm` re-points `confirmatory` from
+    /// this field, which is what keeps `resolve_block` a single rule over one
+    /// field rather than a second rule that has to know about arms.
+    ///
+    /// **THERE IS NO THIRD BLOCK FIELD.** Escrow ordinals live in the freeze
+    /// DOCUMENT (design §2's escrow hygiene): no command can burn an escrowed
+    /// block by accident because no command can name one.
+    pub confirmatory_control: Option<FrozenBlock>,
     /// Which canon (or which rules clause) this family rests on.
     pub canon: &'static str,
 }
@@ -2451,11 +2497,22 @@ pub const FAMILY2_CONTROL_GENERATOR: FamilyGenerator =
 
 /// **THE FOUR FROZEN FAMILIES** (design §1), in the design's own order.
 ///
-/// Every declaration is PRE-FREEZE: `confirmatory` is `None` on all four, so a
-/// confirmatory run refuses by name until T7's freeze commit bakes the masters
-/// and the strided ordinals in. The numbers each declaration carries (R, F, ε)
-/// are the design's draft posture and are re-set from pilot measurements at that
-/// same commit.
+/// **BAKED at the freeze wave**: every declaration carries a confirmatory block
+/// for BOTH arms, each naming the master its ordinals descend from — recorded
+/// before use by the caller who drew them, and transcribed here hex for hex.
+/// The pilot ordinals (`0..4`) and every confirmatory block are DISJOINT, so a
+/// confirmatory result is a fresh reading rather than a re-quote of the roots
+/// the pilot already looked at.
+///
+/// The block sizes are the supply arithmetic, verified against each generator's
+/// declared ecology in `driven_runner`'s
+/// `every_frozen_block_fits_the_supply_its_generator_declares`: family 1 spans
+/// **16 draws** (4..20) inside the v1.1 rung ecology's 16 games × cap 2 = 32
+/// strided ordinals, and the layer-2 families span **24 draws** (4..28) inside
+/// the v2 lookahead ecology's 24 × 2 = 48. Neither needed a games-bound change.
+///
+/// What remains the design's draft posture is R and F, which the freeze document
+/// prices from the confirmatory runs themselves.
 pub fn families() -> Vec<FamilyDecl> {
     vec![
         // ---- FAMILY 1 -----------------------------------------------------
@@ -2477,12 +2534,22 @@ pub fn families() -> Vec<FamilyDecl> {
             label: FamilyLabel::Confirmatory,
             class: StrategicClass::RulesFinalRound,
             generator: FamilyGenerator::Predicate(RootPredicate::FinalRoundAlreadyTriggered),
-            rule: PassRule::AdjudicatedBest { epsilon: PROVISIONAL_EPSILON_VP },
+            rule: PassRule::AdjudicatedBest { epsilon: FROZEN_EPSILON_VP },
             replications: PROVISIONAL_REPLICATIONS,
             per_root_f: PROVISIONAL_PER_ROOT_F,
             menu: REPLY_MENU,
             pilot: PILOT_DRAWS,
-            confirmatory: None,
+            // Both arms at ONE master: the control is a different PREDICATE, so
+            // the same master and the same ordinals name a different ordinal
+            // space and therefore different roots.
+            confirmatory: Some(FrozenBlock {
+                master: 0xA3E1_2026_0818_0004,
+                ordinals: 4..20,
+            }),
+            confirmatory_control: Some(FrozenBlock {
+                master: 0xA3E1_2026_0818_0004,
+                ordinals: 4..20,
+            }),
             canon: "rules-derivable (rulebook p.9's final round); no canon ruling needed — \
                     design §1 family 1",
         },
@@ -2505,7 +2572,14 @@ pub fn families() -> Vec<FamilyDecl> {
             per_root_f: PROVISIONAL_PER_ROOT_F,
             menu: REPLY_MENU,
             pilot: PILOT_DRAWS,
-            confirmatory: None,
+            confirmatory: Some(FrozenBlock {
+                master: 0xA3E1_2026_0818_0005,
+                ordinals: 4..28,
+            }),
+            confirmatory_control: Some(FrozenBlock {
+                master: 0xA3E1_2026_0818_0006,
+                ordinals: 4..28,
+            }),
             canon: "canon 15 (the inverted brake): ending the game while behind is a bad idea — \
                     design §1 family 2",
         },
@@ -2536,7 +2610,14 @@ pub fn families() -> Vec<FamilyDecl> {
             per_root_f: PROVISIONAL_PER_ROOT_F,
             menu: REPLY_MENU,
             pilot: PILOT_DRAWS,
-            confirmatory: None,
+            confirmatory: Some(FrozenBlock {
+                master: 0xA3E1_2026_0818_0008,
+                ordinals: 4..28,
+            }),
+            confirmatory_control: Some(FrozenBlock {
+                master: 0xA3E1_2026_0818_0009,
+                ordinals: 4..28,
+            }),
             canon: "canon 12/13 (race arithmetic and awareness, never denial-as-default) plus \
                     C-A's participation framing — design §1 family 3",
         },
@@ -2559,7 +2640,14 @@ pub fn families() -> Vec<FamilyDecl> {
             per_root_f: PROVISIONAL_PER_ROOT_F,
             menu: REPLY_MENU,
             pilot: PILOT_DRAWS,
-            confirmatory: None,
+            confirmatory: Some(FrozenBlock {
+                master: 0xA3E1_2026_0818_0007,
+                ordinals: 4..28,
+            }),
+            confirmatory_control: Some(FrozenBlock {
+                master: 0xA3E1_2026_0818_000A,
+                ordinals: 4..28,
+            }),
             canon: "ruling 14 (achievements are agenda-setters, denial is not canon) plus C-A — \
                     design §1 family 4",
         },
@@ -2590,18 +2678,20 @@ impl BlockKind {
     }
 }
 
-/// The sizing a block run uses — the parameters T7's freeze bakes per family.
+/// The sizing a block run uses — the parameters the freeze wave priced.
 ///
-/// **K, δ and the dead-spread bound are PARAMETERS and not decl fields**, which
-/// is the honest split at this stage: the design fixes them at the freeze from
-/// PILOT MEASUREMENTS, so before the freeze they belong to the run rather than
-/// to the declaration. [`BlockOpts::pilot`] is the pre-freeze posture, and it is
-/// what the two-argument [`run_family_block`] uses — the same
-/// `adjudicate_root` / `adjudicate_root_with` split, one level up.
+/// **K, δ and the dead-spread bound are PARAMETERS and not decl fields**, and
+/// the freeze wave is why that stayed the right split: the numbers are a
+/// property of the RUN (a pilot and a confirmatory of the same family run at
+/// different K), so there are two POSTURES rather than two declarations —
+/// [`BlockOpts::pilot`] and [`BlockOpts::freeze`]. The two-argument
+/// [`run_family_block`] uses the pilot posture; `driven_runner`'s
+/// `family_block_opts` is the seam that picks per block.
 #[derive(Debug, Clone)]
 pub struct BlockOpts {
     /// Replications per candidate in an ADMISSION adjudication (design §4's
-    /// per-policy K; uniform before the freeze).
+    /// per-policy K; uniform across the menu — 4 in the pilot posture, 8 in the
+    /// frozen one).
     pub admission_k: u32,
     /// The admission dominance margin, in victory points.
     pub delta: i64,
@@ -2615,11 +2705,30 @@ pub struct BlockOpts {
 }
 
 impl BlockOpts {
-    /// The PRE-FREEZE posture — design §4's drafts.
+    /// The PILOT posture — design §4's drafts, UNCHANGED by the freeze wave so
+    /// that the pilot runs which already happened reproduce exactly.
     pub fn pilot() -> Self {
         Self {
-            admission_k: PROVISIONAL_ADMISSION_K,
-            delta: PROVISIONAL_DELTA_VP,
+            admission_k: PILOT_ADMISSION_K,
+            delta: DELTA_VP,
+            dead_spread_bound: DEAD_SPREAD_BOUND,
+            control: false,
+            driven: DrivenOpts::default(),
+        }
+    }
+
+    /// The FROZEN posture — what a CONFIRMATORY block runs (the freeze wave).
+    ///
+    /// One field moves against [`pilot`](Self::pilot): the per-policy admission
+    /// K, 4 → 8, priced from pilot-measured group-mean noise (see
+    /// [`FROZEN_ADMISSION_K`]). δ and the dead-spread bound stand, and `control`
+    /// is `false` here for the reason it is false in both arms of
+    /// `driven_runner::family_block_opts`: the admission inversion is a SEAM's
+    /// decision about one run, never a property of a posture.
+    pub fn freeze() -> Self {
+        Self {
+            admission_k: FROZEN_ADMISSION_K,
+            delta: DELTA_VP,
             dead_spread_bound: DEAD_SPREAD_BOUND,
             control: false,
             driven: DrivenOpts::default(),
@@ -2636,7 +2745,9 @@ impl Default for BlockOpts {
 /// Why a block produced no report.
 #[derive(Debug)]
 pub enum FamilyRunError {
-    /// A confirmatory run before the freeze commit baked this family's block.
+    /// A confirmatory run of an ARM whose block was never baked. Every declared
+    /// arm carries one since the freeze wave, so this is the shape a NEWLY
+    /// declared arm has on the day it is written and before it is frozen.
     NoFrozenBlock { id: &'static str },
     /// A confirmatory run carrying a caller's master. Refused rather than
     /// honoured (design §2, review SHOULD-4): a typo must not be able to run a
@@ -2668,8 +2779,8 @@ impl std::fmt::Display for FamilyRunError {
         match self {
             Self::NoFrozenBlock { id } => write!(
                 f,
-                "family {id} carries no frozen confirmatory block: it is baked at the FREEZE \
-                 commit, and before that only `--block pilot` can run"
+                "family {id} carries no frozen confirmatory block for this arm: a block is baked \
+                 at the FREEZE commit, and an arm without one can only run `--block pilot`"
             ),
             Self::MasterRefused { id } => write!(
                 f,
@@ -3040,7 +3151,9 @@ pub struct FamilyBlockReport {
 ///
 /// The runner owns no execution logic: it parses argv, calls this, and renders
 /// the report. See [`run_family_block_with`] for the sizing parameters; this
-/// entry point uses [`BlockOpts::pilot`], the pre-freeze posture.
+/// entry point uses [`BlockOpts::pilot`]. **The runner does NOT come through
+/// here** — it calls `run_family_block_with` via its own `family_block_opts`
+/// seam, so that a confirmatory block runs [`BlockOpts::freeze`] instead.
 pub fn run_family_block(
     decl: &FamilyDecl,
     block: BlockKind,
@@ -3069,7 +3182,9 @@ pub fn run_family_block(
 /// **COST**, stated because nothing here bounds it: `roots × menu × candidates ×
 /// K` whole games for admission, plus `roots × R` turns of the subject for the
 /// reads. At the design's own sizing that is tens of minutes per root in
-/// release, which is why the pilot prices it before the freeze fixes K.
+/// release. The pilots priced it, and the freeze then DOUBLED K on that
+/// evidence (the whole ten-command pilot ran in about three minutes), so a
+/// confirmatory block costs about twice its pilot per root.
 pub fn run_family_block_with(
     decl: &FamilyDecl,
     block: BlockKind,
@@ -3125,7 +3240,19 @@ pub fn run_family_block_with(
 
 /// The master and ordinals a block runs — and the three refusals that guard
 /// them.
-fn resolve_block(
+///
+/// **`pub(crate)` since the freeze wave, for a stated reason**: before it, the
+/// refusals could be pinned through the public [`run_family_block`] because a
+/// confirmatory run had no Ok path at all. It has one now, and it is hours of
+/// real games — so the ARGUMENT contract (which master, which ordinals, and the
+/// three refusals) is pinned here, where it costs nothing, and the runner's own
+/// arm cells reach it the same way.
+///
+/// The CONFIRMATORY arm reads `decl.confirmatory` and nothing else:
+/// `driven_runner::control_arm` re-points that field from
+/// [`FamilyDecl::confirmatory_control`], so this stays one rule over one field
+/// rather than a second rule that has to know which arm it is serving.
+pub(crate) fn resolve_block(
     decl: &FamilyDecl,
     block: BlockKind,
     master_override: Option<u64>,
@@ -5427,40 +5554,40 @@ mod tests {
     /// roots. The other three families' arms carry their own masters.
     #[test]
     fn the_four_declarations_carry_the_baked_confirmatory_and_control_blocks() {
-        let expected: [(&str, u64, std::ops::Range<u32>, u64, std::ops::Range<u32>); 4] = [
-            ("final-round", 0xA3E1_2026_0818_0004, 4..20, 0xA3E1_2026_0818_0004, 4..20),
-            ("end-trigger", 0xA3E1_2026_0818_0005, 4..28, 0xA3E1_2026_0818_0006, 4..28),
-            ("exclusive-race", 0xA3E1_2026_0818_0008, 4..28, 0xA3E1_2026_0818_0009, 4..28),
-            ("achievement", 0xA3E1_2026_0818_0007, 4..28, 0xA3E1_2026_0818_000A, 4..28),
+        let block = |master: u64, ordinals: std::ops::Range<u32>| FrozenBlock { master, ordinals };
+        let expected = [
+            ("final-round", block(0xA3E1_2026_0818_0004, 4..20), block(0xA3E1_2026_0818_0004, 4..20)),
+            ("end-trigger", block(0xA3E1_2026_0818_0005, 4..28), block(0xA3E1_2026_0818_0006, 4..28)),
+            (
+                "exclusive-race",
+                block(0xA3E1_2026_0818_0008, 4..28),
+                block(0xA3E1_2026_0818_0009, 4..28),
+            ),
+            ("achievement", block(0xA3E1_2026_0818_0007, 4..28), block(0xA3E1_2026_0818_000A, 4..28)),
         ];
         let decls = families();
         assert_eq!(decls.len(), expected.len());
-        for (decl, (id, master, ordinals, control_master, control_ordinals)) in
-            decls.iter().zip(expected)
-        {
+        for (decl, (id, positive, control)) in decls.iter().zip(expected) {
             assert_eq!(decl.id, id, "the registry order moved");
-            assert_eq!(
-                decl.confirmatory,
-                Some(FrozenBlock { master, ordinals: ordinals.clone() }),
-                "{id}: the positive arm's frozen block",
-            );
-            assert_eq!(
-                decl.confirmatory_control,
-                Some(FrozenBlock {
-                    master: control_master,
-                    ordinals: control_ordinals.clone(),
-                }),
-                "{id}: the control arm's frozen block",
-            );
             // DISJOINT from the pilot, which is what makes a confirmatory result
             // a fresh reading rather than a re-quote of the pilot's roots.
-            for block in [ordinals, control_ordinals] {
+            for arm in [&positive, &control] {
                 assert!(
-                    block.start >= decl.pilot.end,
+                    arm.ordinals.start >= decl.pilot.end,
                     "{id}: a confirmatory block overlaps the pilot draws {:?}",
                     decl.pilot,
                 );
             }
+            assert_eq!(
+                decl.confirmatory,
+                Some(positive),
+                "{id}: the positive arm's frozen block",
+            );
+            assert_eq!(
+                decl.confirmatory_control,
+                Some(control),
+                "{id}: the control arm's frozen block",
+            );
         }
 
         // The MASTERS: every family's positive master is its own, and only
@@ -5905,6 +6032,9 @@ mod tests {
             menu: SMOKE_MENU,
             pilot: 0..2,
             confirmatory: Some(FrozenBlock { master: MASTER, ordinals: 0..2 }),
+            // The smoke never runs a control arm; the field is declared so the
+            // fixture is a whole `FamilyDecl` rather than a partial one.
+            confirmatory_control: None,
             canon: "a machinery smoke, not a family",
         }
     }
@@ -6159,12 +6289,12 @@ mod tests {
         let rules = rules();
         let subject = SeatSpec::Contestant(Contestant::LOOKAHEAD_V1_DEFAULT);
         let decl = FamilyDecl {
-            rule: PassRule::AdjudicatedBest { epsilon: PROVISIONAL_EPSILON_VP },
+            rule: PassRule::AdjudicatedBest { epsilon: FROZEN_EPSILON_VP },
             replications: 1,
             ..smoke_decl(FamilyLabel::Confirmatory, 0)
         };
         let report = run_family_block_with(&decl, BlockKind::Pilot, Some(MASTER), subject, &rules,
-            smoke_opts(PROVISIONAL_DELTA_VP))
+            smoke_opts(DELTA_VP))
             .expect("the block runs");
 
         assert_eq!(report.admitted, 2, "a live field is admitted: {:?}", report.roots);
