@@ -512,7 +512,15 @@ pub fn world_invariance(
         let table = exact_table(&RootSource::Constructed(determinized), rules, bounds)?;
         let top_set: Vec<Move> =
             table.top_set(eps_vp).into_iter().map(|r| r.candidate.clone()).collect();
-        let matches_truth = top_set == truth_top_set;
+        // SET equality, not sequence equality. Both lists come out in
+        // `get_legal_moves` order, which a determinization has no reason to
+        // permute — but "no reason to" is not a guarantee, and comparing
+        // sequences would report a reordered-but-identical set as CONFOUNDED.
+        // That error is in the conservative direction (it understates misplay
+        // rather than overstating it), which is exactly why it could sit here
+        // unnoticed.
+        let matches_truth = top_set.len() == truth_top_set.len()
+            && top_set.iter().all(|mv| truth_top_set.contains(mv));
         worlds.push(WorldRead { world_seed, world_digest, differs_from_truth, top_set, matches_truth });
     }
 
@@ -1495,6 +1503,29 @@ mod tests {
             "ANTI-VACUITY: every determinization of this root WAS the true position, so an \
              invariance reading here would say nothing about the decision"
         );
+    }
+
+    /// Top sets are compared as SETS: a reordering is not a disagreement.
+    ///
+    /// The failure this guards is quiet and conservative — a sequence compare
+    /// would call a reordered-but-identical top set CONFOUNDED, understating
+    /// misplay rather than overstating it, which is precisely the kind of error
+    /// that survives review. Asserted directly on the comparison's own rule.
+    #[test]
+    fn a_reordered_top_set_is_the_same_top_set() {
+        let rules = rules();
+        let (root, _, _) = near_terminal_building_root(&rules, 0x74, [4, 4, 1, 2], 20, 18);
+        let table = exact_table(&RootSource::Constructed(root), &rules, ExactBounds::default())
+            .expect("solves");
+        let forward: Vec<Move> =
+            table.argmax_set().into_iter().map(|r| r.candidate.clone()).collect();
+        assert_eq!(forward.len(), 2, "fixture drift: this root has two value-equal optima");
+        let mut reversed = forward.clone();
+        reversed.reverse();
+        assert_ne!(forward, reversed, "anti-vacuity: the two orderings must differ");
+        // The rider's own rule, applied to the same pair.
+        let same = reversed.len() == forward.len() && reversed.iter().all(|m| forward.contains(m));
+        assert!(same, "a reordered top set was treated as a different one");
     }
 
     /// The memoization is SOUND: the same values come back with the
