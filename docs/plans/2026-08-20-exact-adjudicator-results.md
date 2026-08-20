@@ -15,10 +15,11 @@ reproduces regardless of load. Every figure is a recorded observation under a na
 
 ## 0. The headline
 
-At the four in-final-round UNRESOLVED roots the instrument could solve, **the frozen
-`UNRESOLVED-pending-exact` verdict converts to EXACT-FAIL in all four**, and at the frozen PASS
-root it converts to **EXACT-PASS**. The instrument agrees with the frozen one wherever the frozen
-one could speak, and resolves it wherever it could not.
+**Six of the positive arm's seven admitted roots were solved exactly.** At the four in-final-round
+UNRESOLVED roots that solved, the frozen `UNRESOLVED-pending-exact` verdict converts to
+**EXACT-FAIL** in all four; the frozen **FAIL** root converts to **EXACT-FAIL** too; and the frozen
+**PASS** root converts to **EXACT-PASS**. The instrument agrees with the frozen one wherever the
+frozen one could speak, and resolves it wherever it could not. **One root — ordinal 16 — refused.**
 
 **The correspondence that makes the frozen instrument look good, not bad:** the number of
 replications the four reply policies could not agree about is very nearly the number of picks that
@@ -26,9 +27,18 @@ are genuinely outside the exact optimum — 13 → 13, 18 → 18, 19 → 20, 20 
 adjudicator was detecting real signal it had no way to adjudicate. That is a corroboration of the
 family-1 design, independent of this instrument's own verdicts.
 
-**Two roots were NOT solved** (positive 16 and 17) and one of them is the arm's only FAIL root, so
-the attribution half of the mandate is answered for the roots that converted and *not* for the root
-it was originally aimed at. §5 is explicit about that.
+**The attribution mandate RETURNS A RESULT.** Positive 17 — the arm's only FAIL root, and the root
+the attribution question was actually written for — solved after all, in 93 m 54 s over 3.28 billion
+nodes, and converts to **EXACT-FAIL at 20 of 20**. Its rider was in flight when this document was
+written (§6). Only **ordinal 16** refused, and it refused structurally rather than for want of
+patience (§5).
+
+**A directional detail that closes the corroboration story.** At ordinal 17 the FROZEN instrument
+recorded **11 of 20** misses; the exact read finds **20 of 20** outside. The exact instrument is
+HARSHER, not gentler — because the four contested policy top sets were WIDER than the true optimum,
+so nine picks that satisfied some policy's set do not satisfy the position. That is the same "the
+policies were seeing real signal they could not adjudicate" finding as the UNRESOLVED roots, seen
+from the FAIL side.
 
 > **READ THIS BEFORE QUOTING ANY VERDICT BELOW. EXACT-FAIL IS NOT MISPLAY.** An exact verdict is
 > measured against a CLAIRVOYANT pole — a solve that saw the hidden five the subject could not. A
@@ -92,34 +102,37 @@ cargo run --release -p yokohama-core --example driven -- \
 | 9 | UNRESOLVED | 11 | **1** | 1 | −14 VP | 18 VP | 108,080,097 | 1 m 51.38 s |
 | 13 | UNRESOLVED | 65 | **1** | 1 | +3 VP | 28 VP | 77,384,727 | 1 m 57.40 s |
 | 15 | UNRESOLVED | 139 | **1** | 1 | −30 VP | 11 VP | 2,345,858,676 | 53 m 17.12 s |
-| 16 | UNRESOLVED | — | — | — | — | — | **NOT SOLVED** — >90 min CPU, still running at write-up | see §5 |
-| 17 | **FAIL** | — | — | — | — | — | **NOT SOLVED** — queued behind 16 | see §5 |
+| **16** | UNRESOLVED | — | — | — | — | — | **EXACT-REFUSED** — MemoBudget, 4,000,000 entries | 118 m 25.58 s |
+| **17** | **FAIL** | 66 | **1** | 1 | **+95 VP** | 5 VP | **3,282,444,115** | 93 m 54.38 s |
 
 Ordinal 9 was solved separately and its report is the worked example in §7.
 
-**Four of the five solved roots have a UNIQUE optimum**, and the field behind it is not close: the
-worst candidate trails by 11–28 VP. These are not positions where every move is much of a muchness.
+**Five of the six solved roots have a UNIQUE optimum**, and the field behind it is not close: the
+worst candidate trails by 5–28 VP. These are not positions where every move is much of a muchness.
+Ordinal 17's optimum is worth **+95** against a runner-up wall at +90, and `won at best` reads TRUE.
 
 ### 3.1 The finding that reaches outside this lane
 
-**At ordinals 13 and 15 the exact optimum is a two-into-one-area placement**
-(`PlaceTwoSameArea { area, adjacent_bonus: None }`), and at both it sits at the **bottom of the
-engine's candidate listing** — row 64 of 65, and row 138 of 139:
+**At THREE OF THE FIVE roots with a unique optimum, that optimum is a two-into-one-area
+placement** (`PlaceTwoSameArea { area, adjacent_bonus: None }`), and at each it sits LATE in the
+engine's candidate listing — twice at the very bottom:
 
 ```
-ord 13    64        +3       0      *   PlaceTwoSameArea { area: AreaId(8), adjacent_bonus: None }
-ord 15   138       -30       0      *   PlaceTwoSameArea { area: AreaId(8), adjacent_bonus: None }
+ord 13    64 of 65     +3       0      *   PlaceTwoSameArea { area: AreaId(8), adjacent_bonus: None }
+ord 15   138 of 139   -30       0      *   PlaceTwoSameArea { area: AreaId(8), adjacent_bonus: None }
+ord 17    59 of 66    +95       0      *   PlaceTwoSameArea { area: AreaId(2), adjacent_bonus: None }
 ```
 
-The subject picked it in **zero of twenty** replications at either root.
+The subject picked it in **zero of twenty** replications at every one of the three.
 
-Recorded with care about what it is: this is **one instrument, at two roots, in the final round**,
+Recorded with care about what it is: this is **one instrument, at three roots, in the final round**,
 and it is not a claim about midgame play or about any feature's value. But it is an independent
 arrival at the V4 milestone's own diagnosis from a completely different direction — the milestone
 holds that the largest replicated deficit is placement REPRESENTATION (`AssistantsOnBoard` is a
 count, not a map), and the exact solver, which knows nothing about any feature set, finds that the
-optimal final-round move at two of four roots is a specific placement SHAPE the subject never
-chooses. **It is offered to the V4 lane as corroborating evidence, never as a fitting input**
+optimal final-round move at three of five uniquely-decided roots is a specific placement SHAPE the
+subject never chooses — and at ordinal 17, the one root where the shipped subject was already
+recorded as FAILING, it is worth +95 against a +90 wall. **It is offered to the V4 lane as corroborating evidence, never as a fitting input**
 (map §1.5/§1.6 fence).
 
 ---
@@ -138,8 +151,8 @@ beside it**. Picks are the frozen confirmatory block's own per-replication recor
 | 9 | UNRESOLVED (18 unresolved) | 2/20 | 2/20 | **EXACT-FAIL** — 18 of 20 outside |
 | 13 | UNRESOLVED (19 unresolved) | 0/20 | 0/20 | **EXACT-FAIL** — 20 of 20 outside |
 | 15 | UNRESOLVED (20 unresolved) | 0/20 | 0/20 | **EXACT-FAIL** — 20 of 20 outside |
-| 16 | UNRESOLVED | — | — | **NOT SOLVED** — keeps its frozen verdict |
-| 17 | FAIL | — | — | **NOT SOLVED** — keeps its frozen verdict |
+| **16** | UNRESOLVED | — | — | **EXACT-REFUSED** (MemoBudget) — keeps its frozen verdict |
+| **17** | **FAIL** (11 of 20 misses) | **0/20** | **0/20** | **EXACT-FAIL** — 20 of 20 outside |
 
 **Ordinal 5 is why ruling 4 was load-bearing rather than bookkeeping.** It reads EXACT-PASS at
 ε = 2 and would read EXACT-FAIL at ε = 0 (16 of 20 in the argmax). Its optimal set is 15 candidates
@@ -153,7 +166,7 @@ EXACT-FAIL and un-attributed; ordinal 5's EXACT-PASS needs no rider because noth
 attributed there.
 
 **Family 1's positive arm, restated over the roots this instrument resolved:** 1 EXACT-PASS,
-4 EXACT-FAIL, 2 NOT SOLVED. The arm's frozen family-level FAIL stands, and its attribution is no
+**5 EXACT-FAIL**, 1 EXACT-REFUSED. The arm's frozen family-level FAIL stands, and its attribution is no
 longer entangled *at the four roots that converted* — the picks there are genuinely outside a
 sharply-defined optimum, not merely outside four disagreeing policy sets.
 
@@ -177,22 +190,30 @@ verdict stands untouched
 (The digest `2b09f612bb95f9ef` is the same root the confirmatory control block drew at ordinal 9 —
 the refusal is about the right position.)
 
-**BEYOND THE BUDGET — positive ordinals 16 and 17.** Attempted at a 4,000,000,000-node budget.
-Their spec-phase measurement is why they were expected to be the hard ones: the MOVER'S TURN ALONE
-at both exceeds 40,000,000 nodes with ≥ 547,650 distinct hand-offs, against ordinal 15's 28,064 —
-roughly twenty times the scale of the largest root that did solve, and ordinal 15 itself needed
-2.35 billion nodes and 53 minutes.
+**BUDGET-REFUSED — ordinal 16 ALONE.** Positive 17, flagged at risk alongside it, **solved** — so
+16 is not one of a pair but the arm's single structural outlier.
 
-**Recorded at the state of the run rather than at a predicted outcome.** Ordinal 16 was still
-searching when this document was written, having consumed **more than 90 minutes of CPU without
-completing** — against the 53 minutes ordinal 15 needed to finish, and already past the point where
-it has expanded more nodes than the largest root that solved. Ordinal 17 was queued behind it.
+```
+gen:final-round-already-triggered:0xa3e1202608180004:16: the exact solve did not complete:
+memo cap 4000000 exceeded (4000000 entries)              real 118m25.577s
+```
 
-That is the honest statement available now, and it is already sufficient for the only comparison
-this section needs to support: **both roots are beyond the largest root this instrument solved, so
-neither is retired and neither is attributed.** The exact node figures their typed `NodeBudget`
-refusals will carry — the bound and the counted total — belong in a one-line follow-up to this
-section when the runs land; they will sharpen the number and cannot change the disposition.
+**Note which bound bit.** The 4,000,000,000-node budget was never reached: the root exhausted the
+default **4,000,000-entry transposition cap** first. That is the more informative refusal, and it is
+worth saying why. A node bound would have said "more than four billion nodes" — a fact about how
+long we were willing to wait. This says the root has **more than 4,000,000 distinct turn-entry
+hand-off states**, against ordinal 15's **28,064** and ordinal 17's **2,781,365** — a hand-off space
+more than **142× larger than the largest root that solved**. That is a fact about the POSITION'S
+STRUCTURE, and no amount of patience changes it.
+
+**The comparison that frames it:** ordinal 17 solved at 2,781,365 entries — **69% of the same cap**
+16 blew through. The two roots were flagged together on their spec-phase mover-turn measurement
+(both ≥547,650 distinct hand-offs); only one of them turned out to be beyond reach.
+
+**Not re-run at a larger cap, deliberately.** Raising the cap to force a node-budget refusal instead
+would cost gigabytes and hours to convert a structural fact into a weaker wait-duration one. The
+counted bound is a lower bound, never a ceiling (L9). Ordinal 16 is not retired and not attributed;
+a refusal is not an attribution.
 
 **Move ordering was measured before either was declared refused**, as ruling 5 requires:
 
@@ -205,11 +226,18 @@ section when the runs land; they will sharpen the number and cannot change the d
 OFF and **ordering does not change the tractability picture**. A 4.6% saving does not reach a 20×
 gap.
 
-**The consequence, stated plainly: positive ordinal 17 is the positive arm's only FAIL root, and it
-is one of the two the instrument cannot solve.** The attribution the mandate was originally aimed
-at therefore returns **no result** — not a negative one. What the lane delivered instead is
-attribution at four roots nobody expected to need it, because they converted from UNRESOLVED to
-EXACT-FAIL.
+**The consequence, stated plainly:** ordinal 17 — the positive arm's only FAIL root and the
+attribution mandate's actual subject — **solved**, so the mandate returns a result rather than a
+gap. What the instrument could not reach is one UNRESOLVED root (16), which keeps its frozen
+verdict untouched.
+
+**One binary across the whole run set, checked rather than assumed.** All six solved/refused roots
+(7, 5, 13, 15, 16, 17) ran on the same pre-fix-wave build — ordinal 17's report prints `bounds`
+rather than the fix wave's `realized`, which shows the running process kept its original binary
+across the intervening rebuilds. The only post-fix-wave run is the RIDER (§6), and the two builds
+were checked equivalent where it matters: ordinal 7 re-solved on the post-fix-wave binary returns
+byte-identical `nodes = 36,330,750` and `memo = 5,520` entries with the same +15 optimum, so neither
+the 128-bit key nor the interior-refusal posture moves a count.
 
 ---
 
@@ -255,25 +283,38 @@ is attributed at all.
 | 7 | principle applied at discovered FAIL | 1 candidate | 5 of 5 | **INVARIANT** | 5 m 09.75 s |
 | 9 | principle applied at discovered FAIL | 1 candidate | 5 of 5 | **INVARIANT** | 17 m 14.55 s |
 | 13 | principle applied at discovered FAIL | 1 candidate | 5 of 5 | **INVARIANT** | 30 m 10.72 s |
-| 15 | principle applies — NOT RUN (cost, below) | — | — | — | — |
-| 17 | **named set** (the pre-registered FAIL root) | — | — | NOT RUN — root unsolved (§5) | — |
+| 15 | principle applies — NOT RUN (ruled, below) | — | — | — | — |
+| **17** | **NAMED SET** (the pre-registered FAIL root) | — | — | **IN FLIGHT** — verdict lands as a follow-up commit | ~9.4 h est. |
 
-**No row in this lane was admitted by the named set.** Positive 17, the one root the named
-instantiation actually named, could not be solved, so every rider figure here rests on the
-principle-applied reading and on nothing else. That is worth stating plainly rather than leaving a
-reader to infer it from an empty cell.
+**Ordinal 17's rider is squarely inside the ORIGINAL instantiation** — it is the root the
+pre-registration named, so it needs no appeal to the applied-rule reading above. It was launched at
+the recorded master with **W = 5** after this document's roster run, and its verdict lands on this
+branch as a disclosed follow-up commit; the merge does not gate on it, and nothing else in this
+document depends on it.
+
+*Bounds raised for that run, disclosed:* memo cap 12,000,000 and node budget 8e9, because ordinal
+17's own truth solve used 2,781,365 entries — 69% of the 4,000,000 default — and a determinized
+world could plausibly exceed it, spending hours to produce a spurious refusal. **Bounds are cost
+containment, not pre-registered parameters, and raising one cannot change a value that completes
+either way; W stayed 5, which is the parameter that is fixed.**
+
+**Three of the four rider rows so far rest on the applied-rule reading** (ordinals 7, 9, 13); the
+fourth is the named-set root itself. Under the strict reading of the named instantiation, only
+ordinal 17's row survives — which the admission column keeps recoverable.
 
 **All three EXACT-FAIL roots the rider reached read INVARIANT.** The world seeds repeat across
 roots by construction — they are one `SeedSchedule::diagnostic` stream off one recorded master — but
 each root's determinization is drawn against ITS OWN view, so the five worlds differ per root even
 where the seeds do not.
 
-**Ordinal 15 got no rider, and the reason is cost, not choice.** It is the fourth EXACT-FAIL root,
-and W = 5 means six solves of a root that needed 2.35 billion nodes and 53 minutes for one —
-upwards of five hours. W is not adjustable (ruling 3), so the honest disposition is the one the
-spec pre-declared for exactly this case: the root's exact verdict stands and **its attribution is
-simply not read**. It is recorded here as un-attributed rather than assumed to match its three
-neighbours, and a future run at that budget is the only thing that would change it.
+**Ordinal 15 gets no rider — a RULING, not a deferral** (orchestrator, 2026-08-20), on four
+recorded grounds: the three INVARIANT riders already establish the class; 15's 20-of-20 shape
+matches ordinal 13's, which read INVARIANT; the recorded master makes the run reproducible at any
+later date; and five CPU-hours is not the mandate's critical path. W is not adjustable (ruling 3),
+so the honest disposition is the one the spec pre-declared for exactly this case: the root's exact
+verdict stands and **its attribution is simply not read**. It is recorded as un-attributed rather
+than assumed to match its neighbours, and it rides this document as a **recorded owner-leisure
+option**.
 
 **Reading, per the pre-registration:** the optimal set is the same in the true world and in every
 world consistent with the mover's own view, so **hidden information does not bear on these
@@ -369,9 +410,11 @@ best is known. That is a property of the search, recorded, not a result.
 |---|---|
 | confirmatory positive / control re-runs | 56.33 s / 3 m 24.27 s |
 | exact ord 7 / 9 / 13 / 5 / 15 | 35.67 s / 1 m 51.38 s / 1 m 57.40 s / 3 m 20.97 s / 53 m 17.12 s |
-| exact ord 16 (budget 4e9) | >90 min CPU, unfinished at write-up |
-| exact ord 17 (budget 4e9) | queued behind 16 |
+| exact ord 16 (REFUSED, MemoBudget) | 118 m 25.58 s |
+| exact ord 17 (SOLVED) | 93 m 54.38 s |
 | rider ord 7 / 9 / 13 | 5 m 09.75 s / 17 m 14.55 s / 30 m 10.72 s |
+| rider ord 17 | in flight (~9.4 h est.) |
+| fifteen-gate release roster (M5, quiet box) | **379 s — see §8.1** |
 | ordering measurement (ord 9, both arms) | 1 m 51.38 s / 1 m 54.00 s |
 
 Node counts are the load-independent figure; walls above overlapped other work and are recorded as
@@ -391,6 +434,26 @@ is ~10⁻²⁸. **Widening changed no result**: ordinal 7 re-solved on the widen
 64-bit run, which incidentally also shows no collision was occurring there. (Widening
 `state_digest` itself was never an option: it is written into saved records, which is
 `SEMANTICS_REV` territory and out of this lane.)
+
+### 8.1 The fifteen-gate release roster — an M5 BASELINE
+
+**15 / 15 GREEN in 379 s**, measured as ONE uninterrupted sequence on a QUIET box, release binaries
+pre-built outside the timing, single-threaded exactly where the command says so. Machine: Apple M5
+(Darwin 25.6.0), toolchain 1.97.1.
+
+**Recorded as an M5 BASELINE BESIDE the WSL figures, never against them** (the per-machine rule):
+the WSL box's recent whole-roster readings are 508.9 s (PR #20 head), 487.8 s (PR #23) and 478.5 s
+(PR #24); the freeze-era M5 reading was 382.86 s. This 379 s sits with that M5 figure and is not
+comparable to the WSL column. Target ≤ 420 s (3.4 spec §8), met.
+
+**Gate 10 ran EXACTLY 1 test**, which is the load-bearing count `CLAUDE.md` flags: the core lib has
+exactly one `#[ignore]` (the recovery falsifier), and this lane added none — every cell it adds is
+per-edit. A second ignored lib test would have ridden in unannounced and this is what catches that.
+
+**The roster is corpus-independent.** The fourteen corpus-gated pins are per-edit DEBUG suites
+(`bga_import`, `feed_preprocess`); no release gate reads a capture. So the worktree's
+`YOKOHAMA_BGA_CORPUS_OPTIONAL=1` — which does make `bga_import`'s 9 tests pass vacuously in the
+per-edit tier — does not touch this figure.
 
 **Binary-drift check, because the solver changed mid-lane.** The roots above were solved before the
 lazy-expansion fix (commit `9b56488`), which was argued to leave node counts untouched — the counter
@@ -413,9 +476,12 @@ Every node count in this document reproduces at HEAD.
 - **This is checkpoint evidence about a PROVISIONAL subject** —
   `lookahead-v1@v2{b=4,eval_impl=3,k=1,m=8}` at `SEMANTICS_REV` 7 under `WeightTable::V2` — never
   GO evidence, never the bar, and non-comparable across any future controller or impl bump.
-- **Four roots are not a family and not a population.** The exact verdicts are per-root facts. They
-  sharpen family 1's recorded FAIL; they do not restate it as a new family-level claim, and the two
-  refused roots mean the arm was never read whole.
+- **Six roots are not a family and not a population.** The exact verdicts are per-root facts. They
+  sharpen family 1's recorded FAIL; they do not restate it as a new family-level claim, and the one
+  refused root means the arm was never read whole.
+- **The three-of-five placement pattern (§3.1) is an observation, not a rate.** Three roots sharing
+  an optimum SHAPE in the final round is a lead worth handing to the V4 lane; it is not a measured
+  frequency, and nothing here estimates how often that shape is optimal in general.
 - **Nothing here tunes, admits, or re-prices anything.** No contestant, policy, weight table,
   evaluator, knob or preserved rung moved; `SEMANTICS_REV` is untouched at 7; the frozen family
   instrument's parameters are unchanged; and only the already-read confirmatory ordinals 4..20 were
@@ -450,8 +516,8 @@ full text was reviewed directly.
 ## 10. Routing — what this evidence feeds, and what it closes
 
 1. **Family 1's `UNRESOLVED-pending-exact` class is retired for the in-final-round arm.** Four of
-   its five roots now carry exact verdicts; the fifth (positive 16) is beyond this instrument's
-   budget and keeps its frozen verdict.
+   four of its five roots now carry exact verdicts; the fifth (positive 16) is beyond this
+   instrument's budget and keeps its frozen verdict.
    The value-architecture checkpoint §7 step 12's note that "family 1 still sits out pending the
    exact adjudicator" is discharged **for the positive arm only** — the control arm's nine
    UNRESOLVED roots are out of this instrument's scope and still sit out.
@@ -460,10 +526,12 @@ full text was reviewed directly.
    UNRESOLVED roots" figure counts nine control-arm roots the Phase-B design had already excluded,
    and §6.7's measurement confirms that exclusion. Should the owner rule otherwise, the spec §2.1
    predicate is the one line that moves.
-3. **The attribution mandate is partly unmet and the gap is named.** Positive 17 — the arm's only
-   FAIL root, the root the attribution question was written for — is beyond the budget. What the lane
-   supplies instead is attribution at three roots that converted from UNRESOLVED to EXACT-FAIL and
-   read INVARIANT under the rider: unambiguous final-round misplay, quantified in VP.
+3. **The attribution mandate RETURNS A RESULT.** Positive 17 — the arm's only FAIL root and the
+   root the attribution question was written for — solved, converts to EXACT-FAIL at 20 of 20, and
+   its rider is in flight at the recorded master. Beside it, three roots that converted from
+   UNRESOLVED to EXACT-FAIL read INVARIANT under the rider: unambiguous final-round misplay,
+   quantified in VP. What remains unread is ordinal 15's attribution (ruled) and ordinal 16
+   entirely (refused).
 4. **The §3.1 placement observation goes to the V4 lane as corroboration only.** It is a
    final-round finding from an instrument that knows nothing about the feature set, and it arrives
    at the same place the milestone's own diagnosis did. Under the map §1.5/§1.6 fence it is
