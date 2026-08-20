@@ -36,7 +36,7 @@ use crate::game::driven::{
     self, Adjudication, DrivenOpts, DrivenOutcome, GeneratingEcology, RegistryEntry, ReplyPolicy,
     RootDescriptor, RootOrigin, RootPredicate, RootSource, RootTable, SeatSpec,
 };
-use crate::game::driven_exact::{self, ExactTable};
+use crate::game::driven_exact::{self, ExactTable, WorldInvariance};
 use crate::game::driven_families::{
     families, run_family_block_with, AdmissionVerdict, BlockKind, BlockOpts, ExclusionReason,
     FamilyBlockReport, FamilyDecl, FamilyGenerator, FamilyLabel, FamilyRunError, FamilyVerdict,
@@ -68,7 +68,7 @@ pub const TABLE_FLAGS: &[&str] = &["contestant", "decision-seed"];
 /// **`master` is deliberately ABSENT and its absence is enforced with a REASON**
 /// (see the parse arm): the exact solve draws no worlds, so accepting a master
 /// would advertise a dependence it does not have.
-pub const EXACT_FLAGS: &[&str] = &["max-nodes", "max-depth", "max-memo", "eps"];
+pub const EXACT_FLAGS: &[&str] = &["max-nodes", "max-depth", "max-memo", "eps", "rider"];
 
 /// `family`'s flags.
 pub const FAMILY_FLAGS: &[&str] = &["block", "master", "arm"];
@@ -268,8 +268,24 @@ usage: driven <subcommand> [options]
                              on the tolerance the family actually ran at. On an
                              exact read eps is a declared INDIFFERENCE BAND and
                              not noise cover -- there is no sampling noise here.
+      --rider <master>       run the W = 5 WORLD-INVARIANCE read after the solve
+                             and print its verdict. THE ONE PLACE `exact` takes a
+                             master, and the carve-out is exactly the point: the
+                             SOLVE draws no worlds, the RIDER does -- it re-solves
+                             the root in five determinizations of the MOVER's own
+                             view, drawn through the honest chain's own sampler.
+                             W is pre-registered at 5 and is not adjustable; a
+                             root that cannot afford five worlds refuses.
+                             INVARIANT means the optimal set is the same in the
+                             true world and in every world the mover could not
+                             tell apart from it, so a pick outside the set is
+                             UNAMBIGUOUS MISPLAY. CONFOUNDED means the optimal
+                             set MOVES with the world, so the exact verdict still
+                             resolves the policy disagreement but licenses NO
+                             misplay claim. Record the master BEFORE the run.
       COST is the ROOT's, not a knob's: this is an exhaustive solve of two turns
       of play. Minutes at a small root; hours at a wide one; some roots refuse.
+      The rider multiplies that by six (the truth plus five worlds).
 
   family <id> --block pilot --master <u64> [--arm positive|control]
   family <id> --block confirmatory [--arm positive|control]
@@ -480,6 +496,13 @@ pub enum Command {
         bounds: driven_exact::ExactBounds,
         /// The tolerance the top set is reported at, BESIDE the ε = 0 argmax.
         eps_vp: i64,
+        /// `Some(master)` runs the W = 5 world-invariance rider afterwards.
+        ///
+        /// **The ONE place `exact` accepts a master**, and the carve-out is the
+        /// spec's own: the SOLVE draws no worlds, the RIDER does. Off unless a
+        /// master is supplied, because a rider without a recorded master would
+        /// put the draw after the decision to run.
+        rider: Option<u64>,
     },
     /// One declared block of one frozen family.
     ///
@@ -596,7 +619,8 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
                     .map_err(|_| format!("--eps {raw:?} is not a non-negative integer\n\n{USAGE}"))?,
                 None => FROZEN_EPSILON_VP,
             };
-            Ok(Command::Exact { root, bounds, eps_vp })
+            let rider = flags.get("rider").map(|raw| parse_u64(raw)).transpose()?;
+            Ok(Command::Exact { root, bounds, eps_vp, rider })
         }
         "family" => {
             let (positional, flags) = split_args(rest, FAMILY_FLAGS)?;
@@ -1338,6 +1362,49 @@ pub fn render_outcome(outcome: &DrivenOutcome, asked_for: &str) -> String {
     }
     lines.push(String::new());
     lines.push(format!("  digest         {}", outcome.digest()));
+    lines.join("\n")
+}
+
+/// The world-invariance rider, rendered to append BENEATH an exact table.
+///
+/// **The reading is PRINTED, not left to be inferred.** The whole reason this
+/// read exists is that a clairvoyant table cannot by itself distinguish misplay
+/// from unavoidable uncertainty, and a report that showed five world rows
+/// without saying which conclusion they license would leave exactly the gap the
+/// rider was built to close.
+pub fn render_world_invariance(read: &WorldInvariance) -> String {
+    let mut lines = vec![
+        String::new(),
+        "  --- world-invariance rider (W = 5, pre-registered) ---".to_string(),
+        format!(
+            "  master         {:#018x}   worlds={}   (drawn from the MOVER's own view via the \
+             honest chain's sampler)",
+            read.master,
+            read.worlds.len(),
+        ),
+        format!("  truth top set  {} candidate(s)", read.truth_top_set.len()),
+    ];
+    for (index, world) in read.worlds.iter().enumerate() {
+        lines.push(format!(
+            "    w{:<2} {:#018x}   top set {:>3}   {}",
+            index,
+            world.world_seed,
+            world.top_set.len(),
+            if world.matches_truth { "matches truth" } else { "DIFFERS from truth" },
+        ));
+    }
+    lines.push(String::new());
+    if read.invariant {
+        lines.push(
+            "  verdict        INVARIANT — the optimal set is the same in the true world and in              every world consistent with the mover's own view, so hidden information does not              bear on this decision and a pick outside the set is UNAMBIGUOUS MISPLAY."
+                .to_string(),
+        );
+    } else {
+        lines.push(
+            "  verdict        CONFOUNDED — the optimal set MOVES with the world, so the exact              verdict still resolves the policy disagreement but licenses NO misplay claim: a              seated player could not have known which world it was in."
+                .to_string(),
+        );
+    }
     lines.join("\n")
 }
 
@@ -2289,7 +2356,7 @@ pub(crate) fn run_with(
             Ok(render_adjudication(&adjudication, &asked.asked_for))
         }
 
-        Command::Exact { root, bounds, eps_vp } => {
+        Command::Exact { root, bounds, eps_vp, rider } => {
             let asked = resolve(&root, entries, anchor, &rules)?;
             // The root goes in as the descriptor the resolver already produced,
             // exactly as `adjudicate` does, so the table names its origin once
@@ -2297,7 +2364,16 @@ pub(crate) fn run_with(
             let (source, _) = resolve_once(&asked, None, &rules)?;
             let table = driven_exact::exact_table(&source, &rules, bounds)
                 .map_err(|e| format!("{}: the exact solve did not complete: {e}", asked.asked_for))?;
-            Ok(render_exact_table(&table, &asked.asked_for, eps_vp))
+            let mut report = render_exact_table(&table, &asked.asked_for, eps_vp);
+            if let Some(master) = rider {
+                let read =
+                    driven_exact::world_invariance(&source, &rules, bounds, eps_vp, master)
+                        .map_err(|e| {
+                            format!("{}: the rider did not complete: {e}", asked.asked_for)
+                        })?;
+                report.push_str(&render_world_invariance(&read));
+            }
+            Ok(report)
         }
 
         Command::Family { id, block, master, arm } => {
@@ -2697,7 +2773,7 @@ mod tests {
             "--eps",
             "2",
         ]);
-        let Command::Exact { root, bounds, eps_vp } = parse(&args).expect("parses") else {
+        let Command::Exact { root, bounds, eps_vp, .. } = parse(&args).expect("parses") else {
             panic!("wrong command")
         };
         assert!(matches!(root, RootRef::Generated { .. }));
@@ -2712,8 +2788,8 @@ mod tests {
     /// (spec §7.3). On an exact read it is an INDIFFERENCE BAND, not noise cover.
     #[test]
     fn exact_defaults_epsilon_to_the_frozen_family_parameter() {
-        let args = args(&["exact", "gen:final-round-already-triggered:0xA3E1202608180004:9"]);
-        let Command::Exact { eps_vp, .. } = parse(&args).expect("parses") else {
+        let bare = args(&["exact", "gen:final-round-already-triggered:0xA3E1202608180004:9"]);
+        let Command::Exact { eps_vp, .. } = parse(&bare).expect("parses") else {
             panic!("wrong command")
         };
         assert_eq!(eps_vp, FROZEN_EPSILON_VP);
@@ -2788,6 +2864,17 @@ mod tests {
 
     /// A tiny in-final-round table, for the render cells.
     fn exact_fixture_table(rules: &Rules) -> driven_exact::ExactTable {
+        driven_exact::exact_table(
+            &exact_fixture_source(rules),
+            rules,
+            driven_exact::ExactBounds::default(),
+        )
+        .expect("the fixture solves")
+    }
+
+    /// The same fixture as a source, so the rider and the table read the SAME
+    /// position rather than two independently doctored ones.
+    fn exact_fixture_source(rules: &Rules) -> RootSource {
         let pending = new_game(GameConfig::for_player_count(2), rules, 0x92)
             .expect("new_game builds a 2P setup");
         let mut state = finalize_setup(
@@ -2831,12 +2918,54 @@ mod tests {
         state.final_round = true;
         state.trigger_reason = Some(EndGameTrigger::ChurchTrackFull);
         state.trigger_player = Some(state.config.start_player);
-        driven_exact::exact_table(
-            &RootSource::Constructed(state),
-            rules,
+        RootSource::Constructed(state)
+    }
+
+    /// `--rider <master>` turns the world-invariance read on and carries its
+    /// recorded master.
+    ///
+    /// A master IS accepted here and nowhere else in `exact`, which is exactly
+    /// the spec's single carve-out: the SOLVE draws no worlds, the RIDER does.
+    #[test]
+    fn exact_takes_a_rider_master_even_though_the_solve_takes_none() {
+        let with_rider = args(&[
+            "exact",
+            "gen:final-round-already-triggered:0xA3E1202608180004:9",
+            "--rider",
+            "0x83937F67C176F538",
+        ]);
+        let Command::Exact { rider, .. } = parse(&with_rider).expect("parses") else {
+            panic!("wrong command")
+        };
+        assert_eq!(rider, Some(0x8393_7F67_C176_F538));
+
+        let bare = args(&["exact", "gen:final-round-already-triggered:0xA3E1202608180004:9"]);
+        let Command::Exact { rider, .. } = parse(&bare).expect("parses") else {
+            panic!("wrong command")
+        };
+        assert_eq!(rider, None, "the rider is OFF unless a master is supplied");
+    }
+
+    /// The rider's report names its master, its five worlds, and the verdict the
+    /// attribution rests on.
+    #[test]
+    fn the_rider_report_names_its_master_and_its_verdict() {
+        let rules = Rules::standard();
+        let table = exact_fixture_table(&rules);
+        let read = driven_exact::world_invariance(
+            &exact_fixture_source(&rules),
+            &rules,
             driven_exact::ExactBounds::default(),
+            FROZEN_EPSILON_VP,
+            0x8393_7F67_C176_F538,
         )
-        .expect("the fixture solves")
+        .expect("the rider runs");
+        let report = render_exact_table(&table, "constructed", FROZEN_EPSILON_VP)
+            + &render_world_invariance(&read);
+        assert!(report.contains("0x83937f67c176f538"), "the master must be printed: {report}");
+        assert!(report.contains("world-invariance"), "{report}");
+        assert!(report.contains("INVARIANT") || report.contains("CONFOUNDED"), "{report}");
+        assert!(report.contains("misplay"), "the reading must be printed, not implied: {report}");
     }
 
     /// USAGE names EVERY subcommand and EVERY flag the parser accepts — read off
