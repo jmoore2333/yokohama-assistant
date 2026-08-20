@@ -30,6 +30,14 @@ family-1 design, independent of this instrument's own verdicts.
 the attribution half of the mandate is answered for the roots that converted and *not* for the root
 it was originally aimed at. §5 is explicit about that.
 
+> **READ THIS BEFORE QUOTING ANY VERDICT BELOW. EXACT-FAIL IS NOT MISPLAY.** An exact verdict is
+> measured against a CLAIRVOYANT pole — a solve that saw the hidden five the subject could not. A
+> pick outside that pole is misplay only where §6's rider reports **INVARIANT**, and the rider is
+> what earns the word. **An un-ridered row and a CONFOUNDED row never do**, however large their gap.
+> In this document that distinction is live and not hypothetical: ordinal 15 reads EXACT-FAIL at
+> 20 of 20 and **got no rider**, so it is an un-attributed failure against a privileged standard and
+> nothing stronger.
+
 ---
 
 ## 1. Scope — which roots this instrument answers about
@@ -138,6 +146,12 @@ beside it**. Picks are the frozen confirmatory block's own per-replication recor
 wide and its ε = 2 band is 68 of 139 — a genuinely flat position, where an indifference band is the
 honest instrument and a bare argmax would manufacture a failure out of ties.
 
+**What an EXACT-FAIL row does and does not say.** It says the recorded picks fall outside the set a
+perfect-information solve calls optimal. It does **not** say the subject played badly — that claim
+belongs to §6 and only for the rows the rider read INVARIANT (ordinals 7, 9, 13). Ordinal 15 is
+EXACT-FAIL and un-attributed; ordinal 5's EXACT-PASS needs no rider because nothing is being
+attributed there.
+
 **Family 1's positive arm, restated over the roots this instrument resolved:** 1 EXACT-PASS,
 4 EXACT-FAIL, 2 NOT SOLVED. The arm's frozen family-level FAIL stands, and its attribution is no
 longer entangled *at the four roots that converted* — the picks there are genuinely outside a
@@ -201,8 +215,29 @@ EXACT-FAIL.
 
 ## 6. The world-invariance rider
 
-**Master `0x83937F67C176F538`**, drawn from OS entropy on 2026-08-20 and **recorded before any
-use**. W = 5, pre-registered and not adjustable (ruling 3).
+**THE APPLIED RULE, in one sentence:** the rider runs **where attribution is the question**, which
+after the solves means **every root that actually read EXACT-FAIL** — the governing principle of
+spec §3.4, whose named instantiation ("the in-scope FAIL root plus close-UNRESOLVED roots") encoded
+a PREDICTION about where that class would fall that the instrument's own reads then updated
+(orchestrator ruling, 2026-08-20, option (a); grounds recorded with it: the rider is
+diagnostic-only, it **cannot change an exact verdict**, and it costs minutes).
+
+**Master `0x83937F67C176F538`**, drawn from OS entropy on 2026-08-20. W = 5, pre-registered and not
+adjustable (ruling 3).
+
+**The master's recording sequence, stated exactly rather than as a blanket "recorded before use".**
+It was drawn from OS entropy and displayed, then exercised by the module's own unit cells during
+development, then written into source and into the commit message of `3bfe2e9` (12:16:42), and only
+then drawn against for the EVALUATION runs in this section. So: **recorded durably before the first
+evaluation draw, but after the first test-fixture use.** The standing policy's purpose — that the
+draw not be chosen after seeing what it produces — is met, because no rider result existed at any
+point before the value was fixed; the test cells that touched it earlier assert structure (five
+distinct worlds, reproduction from the master) and produce no figure this document quotes.
+
+*Forward correction, recorded rather than edited away:* commit `3bfe2e9`'s message says the master
+was "RECORDED HERE BEFORE ANY USE". That shorthand is imprecise — it was recorded before any
+EVALUATION use, which is the property that matters, but not before the test-fixture use. **This
+paragraph is the authority on the sequence.**
 
 ```
 cargo run --release -p yokohama-core --example driven -- \
@@ -210,11 +245,23 @@ cargo run --release -p yokohama-core --example driven -- \
     --rider 0x83937F67C176F538 --max-nodes 4000000000
 ```
 
-| ordinal | truth top set | worlds agreeing | verdict | wall |
-|---|---|---|---|---|
-| 7 | 1 candidate | 5 of 5 | **INVARIANT** | 5 m 09.75 s |
-| 9 | 1 candidate | 5 of 5 | **INVARIANT** | 17 m 14.55 s |
-| 13 | 1 candidate | 5 of 5 | **INVARIANT** | 30 m 10.72 s |
+Every row carries its **admission clause** — why that root was in the rider set — so the strict
+reading of the named instantiation ("run it only at positive 17 and close-UNRESOLVED roots") stays
+fully recoverable from this same table: on that reading, all three rows below drop out and no root
+is attributed at all.
+
+| ordinal | admission clause | truth top set | worlds agreeing | verdict | wall |
+|---|---|---|---|---|---|
+| 7 | principle applied at discovered FAIL | 1 candidate | 5 of 5 | **INVARIANT** | 5 m 09.75 s |
+| 9 | principle applied at discovered FAIL | 1 candidate | 5 of 5 | **INVARIANT** | 17 m 14.55 s |
+| 13 | principle applied at discovered FAIL | 1 candidate | 5 of 5 | **INVARIANT** | 30 m 10.72 s |
+| 15 | principle applies — NOT RUN (cost, below) | — | — | — | — |
+| 17 | **named set** (the pre-registered FAIL root) | — | — | NOT RUN — root unsolved (§5) | — |
+
+**No row in this lane was admitted by the named set.** Positive 17, the one root the named
+instantiation actually named, could not be solved, so every rider figure here rests on the
+principle-applied reading and on nothing else. That is worth stating plainly rather than leaving a
+reader to infer it from an empty cell.
 
 **All three EXACT-FAIL roots the rider reached read INVARIANT.** The world seeds repeat across
 roots by construction — they are one `SeedSchedule::diagnostic` stream off one recorded master — but
@@ -241,12 +288,16 @@ it passes, so a final-round root genuinely does leave the mover uncertain. The i
 records `distinct_worlds` per read and emits a third verdict, **VACUOUS**, when no alternative world
 existed to disagree; the rider rows above predate that field and their non-vacuity rests on the pin.
 
-**A pre-registration note, flagged to the orchestrator and recorded here:** ruling 3 fixed the rider
-at "the in-scope FAIL root plus close UNRESOLVED roots", written when positive 17 was the only root
-expected to read FAIL. The measurement moved which roots read FAIL, and 7/9/13 are not "close"
-(their ε = 2 sets are a single candidate) yet all converted to EXACT-FAIL. The rider was run at the
-roots that ACTUALLY read FAIL, as the faithful reading of "run it where attribution is the
-question". It cannot change an exact verdict — it only classifies one — so no gate moved.
+**Why the applied rule is the principle and not an extension of it — the ruling's own reasoning,
+recorded so it does not have to be re-argued.** Spec §3.4's governing sentence was always "run the
+rider where attribution is the question." The named instantiation (positive 17 plus close-UNRESOLVED
+roots) was written when positive 17 was the only root *expected* to read FAIL — it encoded a
+prediction about where that class would fall. The instrument's own reads updated the prediction:
+ordinals 7, 9 and 13 are not "close" (their ε = 2 sets are a single candidate) and all converted to
+EXACT-FAIL, making them members of the attribution-question class discovered in-run. Running the
+rider there is the principle faithfully applied. Nothing about it can move a gate: **the rider
+cannot change an exact verdict — it only classifies one** — and the strict reading remains
+recoverable from the admission-clause column above.
 
 ---
 
