@@ -1,8 +1,13 @@
 # The exact bounded-tree adjudicator — SPEC
 
-**Date:** 2026-08-20 · **Status: SPEC, awaiting orchestrator (cross-model) review. NO
-implementation has begun.** Branch `phase3.5c-exact-adjudicator`, own worktree, per the
-value-architecture checkpoint §9.
+**Date:** 2026-08-20 · **Status: APPROVED (sound-with-notes) by the orchestrator's Fable-max review
+stage, 2026-08-20 — implementation authorised. All six §11 items ruled; the rulings are recorded
+inline in §11 and are binding on the build.** Branch `phase3.5c-exact-adjudicator`, own worktree,
+per the value-architecture checkpoint §9.
+
+**ONE ITEM TRAVELS TO THE OWNER**: the scope correction below, as a prominent flag in the step-1
+handover (forward-correction class), *not* as a build blocker — §11.1 carries the ruling and its
+grounds.
 
 **Traceability — the authorities this spec executes, and nothing else rides in.** The instrument
 is the named trigger of the Phase-C family freeze §9 ("*the exact bounded-tree adjudicator exists
@@ -38,9 +43,14 @@ feasibility/scope decision and is **not** this lane's.
 > This spec therefore scopes admission to the in-final-round class (§2.1) and reports the
 > retirable set as **5 UNRESOLVED roots, not 14** (positive 7, 9, 13, 15, 16 — of which 16 is at
 > risk) plus **1 FAIL root** (positive 17, at risk). The remaining 9 UNRESOLVED and 5 FAIL roots
-> are CONTROL-arm and get a **named structural refusal**, not a quiet omission. **This is the
-> lane's first flagged-for-owner item** (§11.1) — it is a scope change against the checkpoint's
-> wording, and per checkpoint §7 step 1 a scope change returns to the owner.
+> are CONTROL-arm and get a **named structural refusal**, not a quiet omission.
+>
+> **RULED (orchestrator, 2026-08-20): adopted — §11.1 carries the ruling and its grounds.** It
+> **travels to the OWNER as a prominent step-1 handover flag** (the forward-correction class, as
+> checkpoint §9 itself corrected the V3 handover's g1:113 over-reach) rather than as a build
+> blocker: nothing built is wasted under any owner disposition, and the control-arm roots keep
+> their frozen verdicts untouched either way. **If the owner rules otherwise, the §2.1 predicate is
+> the one line that moves.**
 
 ---
 
@@ -168,7 +178,7 @@ position with fewer options, and the reading riding on it would be wrong with no
 one thing a refusal DOES carry is the **counted lower bound** reached, because that is a real
 measurement about the root and it is what tells a later reader whether a bigger budget would help.
 
-**A refusal at one of the 14 is a ROUTING, not a failure, and not a shrunken mandate.** §6.6 names
+**A refusal at an ADMITTED root is a ROUTING, not a failure, and not a shrunken mandate.** §6.6 names
 the roots the measurement already puts at risk and §7.4 fixes their disposition.
 
 ### 2.3 What stays out
@@ -230,30 +240,33 @@ walks. That is exactly why the rider exists.
 
 ### 3.4 The world-invariance rider — what converts a verdict into an attribution
 
-Pre-registered, bounded, and reported beside the primary read:
+**PRE-REGISTERED, ruled by the orchestrator 2026-08-20 (review item 3). `W = 5`, FIXED — not
+adjustable after registration.**
 
-> Over `W` determinized worlds drawn from the **mover's own `PlayerView`** via the existing
+> Over **W = 5** determinized worlds drawn from the **mover's own `PlayerView`** via the existing
 > `BeliefSampler` (conservation-consistent, the honest chain's own sampler), solve exactly in each
 > and record whether the exact top set is **identical** to the true-state top set.
 
 Reading, fixed now:
 
-- **Top set invariant across all `W` worlds and the true state** → hidden information does not bear
+- **Top set invariant across all 5 worlds and the true state** → hidden information does not bear
   on this decision, and a pick outside the set is **unambiguous misplay** at this root.
 - **Top set moves** → the clairvoyant verdict is **confounded by hidden information** and is
   recorded as such. It still resolves the *policy disagreement* (the primary mandate), but it does
   not license a misplay claim.
 
-`W`, the draw derivation, and which roots pay for the rider are pre-registration parameters. The
-recommendation, sized off §6: **run the rider at the six FAIL roots (where attribution is the
-question) and at any UNRESOLVED root whose exact table is close** (top two candidates within the
-declared ε), not at all 21 — the rider multiplies solve cost by `W` and §6 shows the solve is
-already the expensive half. This is a **flagged decision**: it is the one place the spec trades
-completeness for wall, and a reviewer may reasonably want it everywhere or nowhere.
+**Rider root set (ruled):** the **in-scope FAIL root** (positive 17 — where attribution is the
+question) **plus any in-scope UNRESOLVED root whose exact table is CLOSE**, where close is defined
+before any read as *the top two candidates within the declared ε*. Not every admitted root: the
+rider multiplies solve cost by 5 and §6 shows the solve is already the expensive half.
 
-The rider is the ONE place a seed enters this lane. It draws worlds and therefore takes a
-**recorded master** under the standing policy — declared here so §5.5's "no seeds" claim is exact
-about which component it covers.
+**If a rider root's solve cost makes W = 5 infeasible it BUDGET-REFUSES honestly**, exactly like
+any other budget hit (§2.2, §7.4). W is not reduced to make a root fit — a shrunk W would be a
+quietly weakened pre-registration, which is the failure mode the fixed value exists to prevent.
+
+The rider is the ONE place a seed enters this lane. It draws worlds and therefore takes **ONE
+recorded master, drawn at first rider use and ledger-recorded BEFORE that use**, under the standing
+policy — declared here so §5.5's "no seeds" claim is exact about which component it covers.
 
 ### 3.5 Both seats, and why the value is well formed
 
@@ -628,8 +641,8 @@ separate thing from its noise model.
 
 **Pre-registered: ε = 2 VP remains the PRIMARY verdict rule; ε = 0 (the true argmax set) is
 recorded beside it.** The reason is comparability: changing the instrument *and* the tolerance in
-one step would confound "the instrument got sharper" with "the bar moved," and the six FAILs must
-be re-read on the tolerance they failed under. The ε = 2 set provably **contains** the ε = 0 set, so
+one step would confound "the instrument got sharper" with "the bar moved," and the in-scope FAIL
+root must be re-read on the tolerance it failed under. The ε = 2 set provably **contains** the ε = 0 set, so
 the leniency direction is pinned exactly as the freeze pinned it. Recorded honestly: at ε = 2 on an
 exact read, ε is a **declared indifference band**, not noise cover, and the spec calls it that.
 
@@ -661,21 +674,36 @@ would misrepresent both:
   positive 16 and 17 are at risk of, and the counted bound is what tells a later reader whether a
   better solver would change the answer.
 
-For the six FAILs the output additionally carries the **attribution**, which is the pair (exact gap,
-world-invariance verdict) and nothing more:
+**Attribution — and read the scope sentence before the table.** Family 1 recorded **six** FAIL
+roots, but under the §2.1 ruling **exactly ONE of them is in scope for attribution: positive
+ordinal 17.** The other five (control 6, 8, 10, 11, 13) are trigger-round roots this instrument
+never attempts; they keep their frozen FAIL verdicts **unchanged and untouched by any exact
+claim**, and no attribution — of either sign — is offered for them. **Any sentence of the form "the
+exact adjudicator attributed the six FAILs" is false**, and the results doc (§7.5) states the
+one-of-six scope in the same breath as any attribution it reports.
 
-- pick outside the exact set **and** top set invariant across the rider's worlds → **real
+For the ONE in-scope FAIL root the output additionally carries the **attribution**, which is the
+pair (exact gap, world-invariance verdict) and nothing more:
+
+- pick outside the exact set **and** top set invariant across the rider's 5 worlds → **real
   final-round misplay**, quantified in VP;
 - pick outside **and** top set moves with the world → **confounded** — the frozen FAIL is not
   cleared and not confirmed;
 - pick **inside** the exact set → the frozen FAIL was an artifact of an under-instrumented ground
   truth, which is the runs report's own stated alternative.
 
+Note the compounding risk this table sits under, recorded because it is real: positive 17 is also
+one of the two roots §6.6 measures as **at risk of BUDGET-REFUSAL**. If it refuses, the attribution
+half of the mandate returns **no** result rather than a negative one, and that is what gets
+reported — which is why move ordering is measured before it is declared refused (§10.5).
+
 ### 7.5 The eventual results document
 
 `docs/plans/YYYY-MM-DD-exact-adjudicator-results.md`: the reproduced verdict map with machine-tagged
 walls; the commands as record; per-root exact tables for all 21 admitted roots; the conversion table
-above applied; the six FAILs' attribution; every refusal with its counted bound; the walls and node
+above applied; the ONE in-scope FAIL root's attribution, stated with its one-of-six scope in the
+same breath (§7.4); every refusal with its counted bound, OUT-OF-SCOPE and BUDGET-REFUSED kept
+apart; the walls and node
 counts in L9 language; and a **what this does not mean** block on the model of the freeze §10 — in
 particular that a clairvoyant top set is an upper bound on achievable quality and that "best against
 best defense" is not "best against this opponent."
@@ -814,24 +842,34 @@ head; PR review as standing. Nothing here is owner-gated (OD-0), and nothing her
 
 ---
 
-## 11. Flagged for orchestrator review
+## 11. Flagged items — ALL RULED (orchestrator, 2026-08-20)
 
-1. **THE SCOPE CORRECTION (header, §2.1, §6.7) — an OWNER item, not merely a review item.** The
-   checkpoint says 14 roots; the measurement plus the Phase-B design's own "in-final-round" clause
-   say 5, with 2 of those 5 at risk. Per checkpoint §7 step 1, a scope change returns to the owner.
-   The three dispositions: **(a)** adopt the in-final-round predicate as specified and record the
-   control arm as out of scope for this instrument (**recommended** — it is what both governing
-   documents actually say, and the measurement is decisive); **(b)** keep `end_game_triggered` as
-   the predicate and let the control arm BUDGET-REFUSE root by root, paying ~13.5 min per root to
-   record 14 refusals we can already predict; **(c)** open a separate feasibility question for a
-   trigger-round instrument, which this lane does not scope and did not price.
-2. **§3 — the exactness decision.** Clairvoyant-over-truth (recommended, with the rider) versus
-   per-sampled-world. The lane's primary epistemic call.
-3. **§3.4 — the rider's scope.** The FAIL root plus close UNRESOLVED roots (recommended) versus
-   every admitted root versus none; and `W`.
-4. **§7.3 — ε on an exact read.** ε = 2 primary for comparability (recommended) versus ε = 0.
-5. **§7.4 / §10.5 — positive 16 and 17.** Whether move ordering is measured before they are
-   declared BUDGET-REFUSED (recommended: yes — 17 is the only in-scope attribution root, so
-   refusing it costs the attribution mandate its entire subject).
-6. **§5.4 — memoization**, if the reviewer wants the cheap-hash variant measured before the
-   turn-entry choice is fixed.
+**All six were adjudicated by the orchestrator's Fable-max review stage on 2026-08-20; the spec is
+APPROVED (sound-with-notes) and implementation is authorised.** Rulings recorded inline:
+
+1. **THE SCOPE CORRECTION (header, §2.1, §6.7).** **RULED: disposition (a) ADOPTED** — the
+   in-final-round predicate, control arm refused structurally with §6.7's measurement as the
+   reason. Grounds recorded with the ruling: the Phase-B design's eligibility sentence is the lane's
+   design authority; the measurement is decisive; and the checkpoint §9's "14" is a headline-count
+   summary whose OPERATIVE clause is "final-round-small scope", of which this predicate is the
+   literal reading. **It travels to the OWNER as a prominent flag in the step-1 handover — the
+   forward-correction class, exactly as checkpoint §9 itself corrected the V3 handover's g1:113
+   over-reach — and NOT as a build blocker**: nothing built is wasted under any owner disposition,
+   and the control-arm roots keep their frozen verdicts untouched either way. Should the owner rule
+   otherwise, **the predicate is the one line that moves.** The rejected alternatives, kept on
+   record: (b) keep `end_game_triggered` and let the control arm BUDGET-REFUSE root by root, paying
+   ~13.5 min each to record refusals already predicted; (c) open a separate trigger-round
+   feasibility question, which this lane does not scope and did not price.
+2. **§3 — the exactness decision.** **RULED: APPROVED as specced** — clairvoyant-over-truth with
+   the rider, privileged/selection-side, label on line 1. The `true_margin_now` precedent was
+   accepted as directly on point.
+3. **§3.4 — the rider.** **RULED: APPROVED at the recommended scope**, with **W = 5 fixed** and one
+   recorded master drawn at first rider use. A rider root that cannot afford W = 5 BUDGET-REFUSES;
+   W is not adjustable after registration.
+4. **§7.3 — ε.** **RULED: APPROVED** — ε = 2 VP primary for comparability, ε = 0 recorded beside,
+   the indifference-band relabeling stated.
+5. **§7.4 / §10.5 — positive 16 and 17.** **RULED: APPROVED** — move ordering is MEASURED against
+   the §6.5 baseline before either is declared BUDGET-REFUSED.
+6. **§5.4 — memoization.** **RULED: turn-entry TT adopted** on the §6.5 measurement. The cheap-hash
+   variant is optional; if tried, collisions must be impossible-by-construction or checked, and it
+   is measured against the turn-entry baseline.
