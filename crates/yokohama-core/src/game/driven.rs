@@ -2450,7 +2450,7 @@ pub fn drive_rooted(
 /// variant, because it is the same fact — this seat cannot be observed here —
 /// learned earlier. What tells them apart is the DETAIL, which names
 /// `starting_order_hidden` and the eligibility rule.
-fn require_eligible_root(root: &GameState) -> Result<(), DrivenError> {
+pub(crate) fn require_eligible_root(root: &GameState) -> Result<(), DrivenError> {
     for player in &root.players {
         if player.starting_order_hidden {
             return Err(DrivenError::Unobservable {

@@ -96,6 +96,8 @@ pub mod driven_families;
 /// `#[cfg(test)]` module runs under no command this repo documents — so a
 /// grammar and a renderer written there would be untested by every per-edit
 /// gate. Callers write `driven_runner::run`.
+pub mod driven_exact;
+
 pub mod driven_runner;
 
 pub use power::*;
