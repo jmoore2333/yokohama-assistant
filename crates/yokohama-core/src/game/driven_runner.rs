@@ -1383,18 +1383,33 @@ pub fn render_world_invariance(read: &WorldInvariance) -> String {
             read.worlds.len(),
         ),
         format!("  truth top set  {} candidate(s)", read.truth_top_set.len()),
+        format!(
+            "  distinct       {} of {} worlds are a DIFFERENT position from the truth",
+            read.distinct_worlds,
+            read.worlds.len(),
+        ),
     ];
     for (index, world) in read.worlds.iter().enumerate() {
         lines.push(format!(
-            "    w{:<2} {:#018x}   top set {:>3}   {}",
+            "    w{:<2} {:#018x}  {}  {:>3} in top set   {}",
             index,
             world.world_seed,
+            if world.differs_from_truth { "distinct" } else { "IS-TRUTH" },
             world.top_set.len(),
-            if world.matches_truth { "matches truth" } else { "DIFFERS from truth" },
+            if world.matches_truth { "top set matches truth" } else { "TOP SET DIFFERS" },
         ));
     }
     lines.push(String::new());
-    if read.invariant {
+    if read.distinct_worlds == 0 {
+        // The reading that is true and says nothing, called out rather than
+        // dressed up as the meaningful one.
+        lines.push(
+            "  verdict        VACUOUS — every determinization WAS the true position, so the \
+             mover's view already pinned the state and no alternative world existed to \
+             disagree. This licenses no attribution either way."
+                .to_string(),
+        );
+    } else if read.invariant {
         lines.push(
             "  verdict        INVARIANT — the optimal set is the same in the true world and \
              in every world consistent with the mover's own view, so hidden \

@@ -410,6 +410,17 @@ pub const RIDER_WORLDS: u32 = 5;
 pub struct WorldRead {
     /// The world's seed, so a row reproduces without re-deriving the schedule.
     pub world_seed: u64,
+    /// This determinization's own state digest.
+    pub world_digest: String,
+    /// Whether this world is a DIFFERENT position from the true one.
+    ///
+    /// **The anti-vacuity field, and it is load-bearing.** If the mover's view
+    /// already pins the state — nothing unseen left that matters — then every
+    /// determinization IS the truth and "the top set did not move" is trivially
+    /// true while licensing nothing. A reader must be able to tell that case
+    /// from the meaningful one, so it is recorded per world rather than
+    /// inferred.
+    pub differs_from_truth: bool,
     /// The top set this world produced, as candidates.
     pub top_set: Vec<Move>,
     /// Whether it is IDENTICAL to the true state's top set.
@@ -437,7 +448,16 @@ pub struct WorldInvariance {
     /// One row per world, in draw order.
     pub worlds: Vec<WorldRead>,
     /// Every world agreed with the truth.
+    ///
+    /// Read it WITH [`Self::distinct_worlds`]: invariance over worlds that are
+    /// all the true position is a statement about the view, not about the
+    /// decision.
     pub invariant: bool,
+    /// How many of the worlds were a different position from the truth.
+    ///
+    /// **Zero means the read is VACUOUS** — the mover's view left nothing
+    /// material unseen, so there was no alternative world to disagree.
+    pub distinct_worlds: usize,
     /// The master the worlds were drawn from — recorded before use, per the
     /// standing policy, and printed with any figure this read produces.
     pub master: u64,
@@ -469,6 +489,7 @@ pub fn world_invariance(
         truth.top_set(eps_vp).into_iter().map(|r| r.candidate.clone()).collect();
 
     let (root, _) = source.resolve(rules).map_err(ExactError::Root)?;
+    let truth_digest = state_digest(&root);
     let mover = root.current_player;
     let view = observe(&root, mover).map_err(|e| ExactError::Unadjudicable(DrivenError::Unobservable {
         seat: mover,
@@ -486,15 +507,18 @@ pub fn world_invariance(
             })
         })?;
         let determinized = sampler.sample();
+        let world_digest = state_digest(&determinized);
+        let differs_from_truth = world_digest != truth_digest;
         let table = exact_table(&RootSource::Constructed(determinized), rules, bounds)?;
         let top_set: Vec<Move> =
             table.top_set(eps_vp).into_iter().map(|r| r.candidate.clone()).collect();
         let matches_truth = top_set == truth_top_set;
-        worlds.push(WorldRead { world_seed, top_set, matches_truth });
+        worlds.push(WorldRead { world_seed, world_digest, differs_from_truth, top_set, matches_truth });
     }
 
     let invariant = worlds.iter().all(|w| w.matches_truth);
-    Ok(WorldInvariance { truth_top_set, worlds, invariant, master })
+    let distinct_worlds = worlds.iter().filter(|w| w.differs_from_truth).count();
+    Ok(WorldInvariance { truth_top_set, worlds, invariant, distinct_worlds, master })
 }
 
 /// Whether a transposition entry is an exact value or only a bound.
@@ -1432,6 +1456,44 @@ mod tests {
         assert!(
             read.worlds.iter().all(|w| w.matches_truth),
             "invariant was reported without every world agreeing"
+        );
+    }
+
+    /// A final-round root really does leave the mover uncertain — so an
+    /// INVARIANT reading there is a statement about the DECISION and not about
+    /// the view.
+    ///
+    /// The vacuity this guards against is real and easy to miss: if a
+    /// determinization is always the true position, "the top set did not move"
+    /// is true and means nothing. `distinct_worlds` is what tells the two apart,
+    /// and this cell asserts a generated final-round root produces genuinely
+    /// different worlds.
+    #[test]
+    fn a_generated_final_round_root_leaves_genuinely_different_worlds() {
+        let rules = rules();
+        let source = RootSource::Generated {
+            predicate: crate::game::driven::RootPredicate::FinalRoundAlreadyTriggered,
+            master: 0xA3E1_2026_0818_0004,
+            ordinal: 9,
+        };
+        let (root, _) = source.resolve(&rules).expect("the scan finds the root");
+        let mover = root.current_player;
+        let view = crate::game::observe::observe(&root, mover).expect("the mover observes");
+        let truth = crate::game::semantics::state_digest(&root);
+        let mut schedule = crate::game::seeds::SeedSchedule::diagnostic(0x8393_7F67_C176_F538);
+        let mut distinct = 0;
+        for _ in 0..RIDER_WORLDS {
+            let seed = schedule.next_world().0;
+            let mut sampler = crate::game::belief::BeliefSampler::from_view(&view, &rules, seed)
+                .expect("the sampler accepts a final-round view");
+            if crate::game::semantics::state_digest(&sampler.sample()) != truth {
+                distinct += 1;
+            }
+        }
+        assert!(
+            distinct > 0,
+            "ANTI-VACUITY: every determinization of this root WAS the true position, so an \
+             invariance reading here would say nothing about the decision"
         );
     }
 
