@@ -117,12 +117,29 @@ usage: eval_probe <subcommand> [options]
                              split fit (EVEN game index) / held-out (ODD) by
                              generation index alone, with a game-clustered
                              bootstrap on the HELD-OUT figures — the quotable
-                             ones. <spec> is `v1` (the reproduction check for
+                             ones. <spec> is a BASE, optionally named and
+                             optionally EXTENDED:
+                               <base>                        (bare, unnamed)
+                               <name>=<base>[+<column>=<early>/<late>]...
+                             where <base> is `v1` (the reproduction check for
                              every committed round command), `v2` (the table
                              that ships since the 2026-08-10 freeze), `v2-draft`
                              (the same numbers under the rounds' own spelling),
-                             or `<name>=<e0,...,e15>/<l0,...,l15>` (sixteen i64
-                             per vector, Feature::ALL order).
+                             or `<e0,...,e15>/<l0,...,l15>` (sixteen i64 per
+                             vector, Feature::ALL order).
+                             Each `+` clause is the V3 spec §4.1 17th-column
+                             machinery: it prices a --candidate-columns name
+                             exactly as a shipped feature is priced —
+                             interpolate(early,late) x (mine - the signed-weight
+                             opponent extreme) — so an extension table IS the
+                             arithmetic preview of admitting that column.
+                             Feature::ALL does not move; a clause is not a
+                             feature. Clauses come off the RIGHT greedily, so a
+                             vector base writes its entries bare or `-`-signed
+                             (a leading `+` entry is refused by name). An
+                             extension table on a NAMED base also prints the
+                             §4.2 PAIRED held-out improvement interval against
+                             that base.
                              A candidate is EVALUATED here and never GENERATES
                              the corpus: `--weights` chooses what the bot plays,
                              and its DEFAULT is still v1 so every committed
@@ -132,7 +149,7 @@ usage: eval_probe <subcommand> [options]
                              measured beside the sixteen and shipped by nothing.
                              Feature::ALL stays sixteen everywhere. REFUSED
                              when --blocks omits `features` (an ignored column
-                             would be a silent no-op). The eight names, each
+                             would be a silent no-op). The nine names, each
                              also the row's printed name except `postclaim`:
                                postclaim
                                    achievement_progress_sum with the viewer's
@@ -158,6 +175,12 @@ usage: eval_probe <subcommand> [options]
                                    absolute form carries information
                                money
                                    this seat's yen
+                               terminal_margin_now
+                                   this seat's would-be-FINAL margin if the
+                                   game were scored where it stands: its full
+                                   final total minus the best other seat's.
+                                   View-honest — every component of a
+                                   scored-now total is public board state
 
   table [--weights v1|v2|pre-freeze]
       Print a weight table with its provenance identity. No games are played.
@@ -639,6 +662,37 @@ enum CandidateColumn {
     PortEmptySlots,
     /// **Round 3, T7/T8.** The seat's yen, re-tested at rev-7 prices.
     Money,
+    /// **V3, C1 — the F9 debt item, never before carried to L1.** The seat's
+    /// would-be-FINAL margin if the game were scored where it stands:
+    /// `ScoreStructure::final_total(me)` minus the best other seated non-dummy
+    /// seat's, raw signed and unclamped, with no rank component — see
+    /// [`terminal_margin_now`].
+    ///
+    /// **Provenance.** D7 triage item F9 and the round-3 runs report (§4.2)
+    /// record the same absence twice: canon 15's inverted end-trigger brake
+    /// needs the TRUE margin, and no deficit-keyed term exists — scenario
+    /// registry 18 pins exactly that gap, and the Phase-C f2-control read made
+    /// it mechanical (the subject fired the end-trigger 20/20 at the one
+    /// admitted root where not-firing dominates under every splitting policy).
+    /// F9's gap was a missing TERM, not an uncomputable one, which is what this
+    /// column is here to measure.
+    ///
+    /// **View-honesty, stated precisely (V3 spec §2).** Every component of a
+    /// scored-NOW total is public board state — running VP, the country set,
+    /// the technology / church / customs majorities and the leftover
+    /// conversions all read face-up fields of the view. This is
+    /// `TerminalStanding`'s own observation from the other side: an opponent's
+    /// masked starting order is value the viewer cannot see COMING, so it
+    /// changes future `*_now` TRAJECTORIES and never the scored-now
+    /// arithmetic. The column is therefore exact truth delivered view-honestly.
+    ///
+    /// **The selection-side fence.** `driven::true_margin_now` — full-state
+    /// truth through `final_result`'s official standings — stays HARNESS-side
+    /// (design §1 family 2: "nothing in the evaluator may read it"). This
+    /// column is written fresh on the view side, the round-3 probe-mirror
+    /// pattern, and is pinned by BEHAVIOUR against that reference: the tests
+    /// may read the selection helper, the evaluator never does.
+    TerminalMarginNow,
 }
 
 /// Every accepted `--candidate-columns` token, paired with the column it names.
@@ -650,7 +704,7 @@ enum CandidateColumn {
 /// the half that makes it reachable from the command line, and
 /// `every_candidate_column_is_reachable_from_the_command_line` is what pins the
 /// two together.
-const CANDIDATE_COLUMNS: [CandidateColumn; 8] = [
+const CANDIDATE_COLUMNS: [CandidateColumn; 9] = [
     CandidateColumn::PostClaim,
     CandidateColumn::ChurchMajorityMargin,
     CandidateColumn::CustomsMajorityMargin,
@@ -659,6 +713,7 @@ const CANDIDATE_COLUMNS: [CandidateColumn; 8] = [
     CandidateColumn::ClockControlChurch,
     CandidateColumn::PortEmptySlots,
     CandidateColumn::Money,
+    CandidateColumn::TerminalMarginNow,
 ];
 
 impl CandidateColumn {
@@ -688,13 +743,15 @@ impl CandidateColumn {
             CandidateColumn::ClockControlChurch => "clock_control_church",
             CandidateColumn::PortEmptySlots => "port_empty_slots",
             CandidateColumn::Money => "money",
+            CandidateColumn::TerminalMarginNow => "terminal_margin_now",
         }
     }
 
     /// One seat's raw value for this column.
     ///
-    /// `rules` is here for the technology margin alone — industry values live in
-    /// the tech registry, exactly as `eval::technology_majority` reads them.
+    /// `rules` is here for the technology margin and the terminal margin —
+    /// industry values live in the tech registry, exactly as
+    /// `eval::technology_majority` and `ScoreStructure::derive` read them.
     fn value(self, view: &PlayerView, player: &yokohama_core::VisiblePlayer, rules: &Rules) -> i64 {
         match self {
             CandidateColumn::PostClaim => achievement_progress_postclaim_sum(view, player),
@@ -717,6 +774,7 @@ impl CandidateColumn {
                 .count() as i64,
             CandidateColumn::PortEmptySlots => port_empty_slots(view),
             CandidateColumn::Money => i64::from(player.money),
+            CandidateColumn::TerminalMarginNow => terminal_margin_now(view, player, rules),
         }
     }
 
@@ -1013,6 +1071,80 @@ fn port_empty_slots(view: &PlayerView) -> i64 {
 }
 
 // ---------------------------------------------------------------------------
+// The V3 admission column's arithmetic (C1)
+// ---------------------------------------------------------------------------
+
+/// This seat's row in a [`ScoreStructure`]'s per-seat vectors, or `None` for the
+/// dummy sentinel and for a seat number outside the printed range.
+///
+/// `eval::seat_index`'s rule verbatim, restated here because that function is
+/// private — the same treatment [`contender_slot`] gives `eval`'s own slot rule
+/// one section up, and for the same reason. The two are DIFFERENT rules and are
+/// deliberately not one function: a majority tally gives the 2P dummy a
+/// contender row, and a score structure gives it none.
+fn structure_seat(player: &yokohama_core::VisiblePlayer) -> Option<usize> {
+    if player.id.is_dummy() {
+        return None;
+    }
+    let i = usize::from(player.id.0);
+    (i < PROBE_MAX_SEATS).then_some(i)
+}
+
+/// One seat's WOULD-BE-FINAL MARGIN if the game were scored where it stands:
+/// its full final total minus the best other seated non-dummy seat's.
+///
+/// # The arithmetic
+///
+/// ```text
+/// margin = final_total(me) − max over the other seated non-dummy seats
+/// ```
+///
+/// with [`ScoreStructure::final_total`] supplying each total — running VP plus
+/// country, technology, church, customs and the leftover conversions. Raw,
+/// signed, unclamped, and with NO rank component: `TerminalStanding` shapes the
+/// same two totals into a win/loss ladder because `score` needs an ORDERING,
+/// and this column deliberately reports the underlying quantity instead, which
+/// is what an L1 separation reading is about. **No opponent ⇒ 0**, spelled as
+/// `unwrap_or(my_total)` — `terminal_standing_of`'s own convention for a
+/// single-seat view, which only a fixture can produce.
+///
+/// # Cost
+///
+/// Derives a whole [`ScoreStructure`], so a snapshot pays one derivation per
+/// seat on top of the one `row_values` already made. Accepted instrument cost
+/// (V3 spec §4.1): threading the caller's structure would put a
+/// `&ScoreStructure` parameter on [`CandidateColumn::value`] for one of nine
+/// arms, and this is an example whose corpus cost is dominated by playing the
+/// games. The derivation is a pure function of `(view, rules)`, so the two
+/// cannot disagree.
+///
+/// # Honesty
+///
+/// Every input is a face-up field of the view — this is the interaction
+/// [`port_empty_slots`]' doc names as its own candidate, computed on its own.
+/// Pinned against `driven::true_margin_now` by behaviour over organic play at
+/// 2/3/4P, which is the arithmetic reference and stays selection-side.
+fn terminal_margin_now(
+    view: &PlayerView,
+    me: &yokohama_core::VisiblePlayer,
+    rules: &Rules,
+) -> i64 {
+    let structure = ScoreStructure::derive(view, rules);
+    let Some(mine) = structure_seat(me) else { return 0 };
+    let my_total = structure.final_total(mine);
+    let mut best_other: Option<i64> = None;
+    for player in &view.players {
+        let Some(i) = structure_seat(player) else { continue };
+        if i == mine {
+            continue;
+        }
+        let total = structure.final_total(i);
+        best_other = Some(best_other.map_or(total, |best: i64| best.max(total)));
+    }
+    my_total.saturating_sub(best_other.unwrap_or(my_total))
+}
+
+// ---------------------------------------------------------------------------
 // Candidate weight tables (the protocol's L2 arm)
 // ---------------------------------------------------------------------------
 
@@ -1026,15 +1158,126 @@ fn port_empty_slots(view: &PlayerView) -> i64 {
 /// takes only `v1 | pre-freeze`: the two flags mean different things, and
 /// letting a draft table into the generator would quietly turn an incumbent-play
 /// corpus into a candidate-play one wearing the same header.
+/// One `+<column>=<early>/<late>` extension clause: the column it prices and
+/// its early/late weight pair, in exactly the shape a shipped feature's pair
+/// takes in a [`WeightTable`].
+type ExtensionClause = (CandidateColumn, i64, i64);
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ScoreTableSpec {
     name: String,
     table: WeightTable,
+    /// The `+<column>=<early>/<late>` clauses this table carries on top of its
+    /// base, in the order they were written — V3 spec §4.1's "17th column" L2
+    /// machinery. Empty for every pre-V3 spelling, and an empty list is what
+    /// makes an extension-free table byte-identical to what this parser built
+    /// before the clause grammar existed.
+    extensions: Vec<ExtensionClause>,
+}
+
+impl ScoreTableSpec {
+    /// A base table with NO extension clauses — the pre-V3 shape, kept as a
+    /// constructor so the three bare spellings and every fixture say what they
+    /// mean rather than repeating an empty vector.
+    fn named(name: &str, table: WeightTable) -> Self {
+        ScoreTableSpec { name: name.to_string(), table, extensions: Vec::new() }
+    }
+}
+
+/// Every accepted candidate-column token, as a refusal reads them out.
+fn candidate_column_menu() -> String {
+    CANDIDATE_COLUMNS.iter().map(|c| c.token()).collect::<Vec<_>>().join(" | ")
+}
+
+/// One `+<column>=<early>/<late>` clause, or `None` when `suffix` is not one.
+///
+/// STRICT and total: every part must be there and every part must parse, so a
+/// suffix this rejects is a suffix the greedy strip leaves in the BASE. The
+/// weights go through `i64::from_str`, which accepts a leading `+` — harmless
+/// after the clause's own `=`, where no re-segmentation is possible, and the
+/// grammar's only reserved use of `+` is the clause separator itself.
+fn parse_extension_clause(suffix: &str) -> Option<ExtensionClause> {
+    let (token, weights) = suffix.split_once('=')?;
+    let column = CANDIDATE_COLUMNS.iter().copied().find(|c| c.token() == token)?;
+    let (early, late) = weights.split_once('/')?;
+    Some((column, early.trim().parse::<i64>().ok()?, late.trim().parse::<i64>().ok()?))
+}
+
+/// Strip the extension clauses off the RIGHT of a `--score-table` spec, and
+/// hand back the base spelling that remains.
+///
+/// **The V3 spec §4.1 parse rule, verbatim:** clauses come off greedily from
+/// the right while the suffix matches `+<known column token>=<i64>/<i64>`; what
+/// remains is the base. Written as a search over `+` positions right to left
+/// rather than a split, because a clause weight may legitimately carry its own
+/// `+` sign (`money=+3/4`) and a naive "cut at the last `+`" would segment
+/// inside it.
+///
+/// Anything left that still LOOKS like a clause — a `+` whose suffix carries an
+/// `=` — is a typed refusal rather than base text: it is either an unknown
+/// column or a clause whose weights did not read, and letting it fall through
+/// to the vector parser would report a width error about a spec whose real
+/// problem was a mistyped column name.
+fn split_extension_clauses(spec: &str) -> Result<(&str, Vec<ExtensionClause>), String> {
+    let mut rest = spec;
+    let mut clauses: Vec<ExtensionClause> = Vec::new();
+    'strip: loop {
+        for (at, _) in rest.char_indices().rev().filter(|(_, c)| *c == '+') {
+            if let Some(clause) = parse_extension_clause(&rest[at + 1..]) {
+                clauses.push(clause);
+                rest = &rest[..at];
+                continue 'strip;
+            }
+        }
+        break;
+    }
+    clauses.reverse();
+
+    if let Some(at) = rest.rfind('+') {
+        let suffix = &rest[at + 1..];
+        if let Some((token, weights)) = suffix.split_once('=') {
+            let known = CANDIDATE_COLUMNS.iter().any(|c| c.token() == token);
+            return Err(if known {
+                format!(
+                    "--score-table {spec:?}: the extension clause {suffix:?} is malformed — a \
+                     clause is `+<column>=<early>/<late>` with two i64 weights, and {weights:?} \
+                     is not that"
+                )
+            } else {
+                format!(
+                    "--score-table {spec:?}: the extension clause {suffix:?} names no known \
+                     candidate column ({token:?}); accepted: {}",
+                    candidate_column_menu(),
+                )
+            });
+        }
+    }
+
+    // A clause with nothing named in front of it has a base but no name to
+    // report the row under, and two such rows would both print as `v2`.
+    if !clauses.is_empty() && matches!(rest, "v1" | "v2" | "v2-draft") {
+        return Err(format!(
+            "--score-table {spec:?}: an extension table needs a NAME to be reported under — \
+             write `<name>={rest}+…`, not `{rest}+…`"
+        ));
+    }
+
+    for (i, (column, _, _)) in clauses.iter().enumerate() {
+        if clauses[..i].iter().any(|(seen, _, _)| seen == column) {
+            return Err(format!(
+                "--score-table {spec:?}: the candidate column {:?} is extended TWICE; one clause \
+                 per column (two would price one term at their sum and read in the report as two)",
+                column.token(),
+            ));
+        }
+    }
+    Ok((rest, clauses))
 }
 
 /// Parse one `--score-table` value.
 ///
-/// Three forms, and nothing else parses:
+/// The grammar is `<base>` or `<name>=<base>[+<column>=<early>/<late>]…`, where
+/// `<base>` is one of:
 ///   * `v1` — the pre-v2-freeze table, i.e. the REPRODUCTION CHECK for every
 ///     round command (run it beside a real candidate and the candidate's
 ///     numbers have something to be read against on the same split);
@@ -1042,34 +1285,49 @@ struct ScoreTableSpec {
 ///   * `v2-draft` — the same numbers under the spelling the rounds used
 ///     (`WeightTable::V2_DRAFT` is an alias of `V2` since the freeze promoted
 ///     it), kept so the committed round commands still parse and reproduce;
-///   * `<name>=<e0,…,e15>/<l0,…,l15>` — sixteen comma-separated `i64` per
-///     vector, in [`Feature::ALL`] order, for a grid cell that has no const yet.
+///   * `<e0,…,e15>/<l0,…,l15>` — sixteen comma-separated `i64` per vector, in
+///     [`Feature::ALL`] order, for a grid cell that has no const yet.
+///
+/// The three bare spellings stay legal WITHOUT a name, which is what keeps the
+/// committed round commands byte-compatible; a name is required as soon as a
+/// clause is present, because the clause is what the row has to be told apart
+/// by. Every extension-free spec parses to an EMPTY clause list and prices
+/// exactly as it did before the clause grammar existed.
+///
+/// **The clause layer is V3 spec §4.1's "17th column" machinery**: each clause
+/// prices a [`CandidateColumn`] with an early/late weight pair, exactly the way
+/// a shipped feature is priced, so an extension table IS the arithmetic preview
+/// of admitting that column. `Feature::ALL` does not move — the base vector's
+/// width stays keyed to `Feature::COUNT`, and a clause is not a feature.
 ///
 /// Every refusal names what it SAW (the importer discipline: an unrecognized
-/// input is a typed error, never a silent default), and the vector arm checks
-/// its lengths against `Feature::COUNT` rather than against a literal 16, so a
-/// feature admission cannot leave this parser accepting a stale width.
+/// input is a typed error, never a silent default). The vector arm checks its
+/// lengths against `Feature::COUNT` rather than against a literal 16, so a
+/// feature admission cannot leave this parser accepting a stale width — and it
+/// refuses a leading-`+` ENTRY by name, because `+` is the clause separator and
+/// a `+5` inside a vector is an ambiguity rather than a signed five.
 fn parse_score_table(spec: &str) -> Result<ScoreTableSpec, String> {
-    const FORMS: &str =
-        "(v1 | v2 | v2-draft | <name>=<16 comma-separated i64>/<16 comma-separated i64>)";
+    const FORMS: &str = "(v1 | v2 | v2-draft | <name>=<base>[+<column>=<early>/<late>]... where \
+                         <base> is v1 | v2 | v2-draft | <16 comma-separated i64>/<16 \
+                         comma-separated i64>)";
 
-    match spec {
-        "v1" => {
-            return Ok(ScoreTableSpec { name: "v1".to_string(), table: WeightTable::V1 })
+    let (base_spec, extensions) = split_extension_clauses(spec)?;
+
+    let named = |base: &str| -> Option<WeightTable> {
+        match base {
+            "v1" => Some(WeightTable::V1),
+            "v2" => Some(WeightTable::V2),
+            "v2-draft" => Some(WeightTable::V2_DRAFT),
+            _ => None,
         }
-        "v2" => {
-            return Ok(ScoreTableSpec { name: "v2".to_string(), table: WeightTable::V2 })
+    };
+    if let Some(table) = named(base_spec) {
+        if extensions.is_empty() {
+            return Ok(ScoreTableSpec::named(base_spec, table));
         }
-        "v2-draft" => {
-            return Ok(ScoreTableSpec {
-                name: "v2-draft".to_string(),
-                table: WeightTable::V2_DRAFT,
-            })
-        }
-        _ => {}
     }
 
-    let Some((name, vectors)) = spec.split_once('=') else {
+    let Some((name, base)) = base_spec.split_once('=') else {
         return Err(format!("unknown --score-table {spec:?} {FORMS}"));
     };
     if name.is_empty() {
@@ -1078,7 +1336,10 @@ fn parse_score_table(spec: &str) -> Result<ScoreTableSpec, String> {
              to be reported under {FORMS}"
         ));
     }
-    let Some((early, late)) = vectors.split_once('/') else {
+    if let Some(table) = named(base) {
+        return Ok(ScoreTableSpec { name: name.to_string(), table, extensions });
+    }
+    let Some((early, late)) = base.split_once('/') else {
         return Err(format!(
             "--score-table {spec:?} names no LATE vector: the two vectors are separated by `/` \
              {FORMS}"
@@ -1100,7 +1361,16 @@ fn parse_score_table(spec: &str) -> Result<ScoreTableSpec, String> {
         }
         let mut out = [0i64; Feature::COUNT];
         for (slot, entry) in entries.iter().enumerate() {
-            out[slot] = entry.trim().parse::<i64>().map_err(|e| {
+            let entry = entry.trim();
+            if entry.starts_with('+') {
+                return Err(format!(
+                    "--score-table {spec:?}: the {which} vector's entry {} ({entry:?}) opens with \
+                     `+`, which is ambiguous here — `+` separates extension clauses, so a vector \
+                     entry is written bare or `-`-signed",
+                    slot + 1,
+                ));
+            }
+            out[slot] = entry.parse::<i64>().map_err(|e| {
                 format!(
                     "--score-table {spec:?}: the {which} vector's entry {} ({entry:?}) is not an \
                      i64: {e}",
@@ -1117,6 +1387,7 @@ fn parse_score_table(spec: &str) -> Result<ScoreTableSpec, String> {
             early: parse_vector(early, "EARLY")?,
             late: parse_vector(late, "LATE")?,
         },
+        extensions,
     })
 }
 
@@ -1173,6 +1444,23 @@ impl Split {
     }
 }
 
+/// One view's positional total under a candidate spec, split at the base/
+/// extension seam.
+///
+/// Both halves ride ONE pass over the structure: the paired-difference arm
+/// (V3 spec §4.2) needs the base table's own number for every cell, and
+/// re-running the sixteen-term mirror loop a second time to get it would double
+/// an extension table's corpus cost for a quantity the first pass already had
+/// in hand. For a spec with NO extension clauses the two fields are the same
+/// bits — no arithmetic happens between them — which is what makes an
+/// extension-free candidate's column identical to what it was before the clause
+/// grammar existed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CandidateTotals {
+    base: f64,
+    total: f64,
+}
+
 /// The evaluator's own positional total under a CANDIDATE table, RE-WEIGHTED
 /// from the [`ScoreStructure`] this view already derived.
 ///
@@ -1196,46 +1484,75 @@ impl Split {
 /// recorded view is terminal. It is kept for totality — a hand-built corpus
 /// could contain one — and it is deliberately the trivial pass-through above
 /// precisely so unreachable code cannot lie about a weight table.
+#[allow(clippy::too_many_arguments)]
 fn candidate_total(
     view: &PlayerView,
     me: &yokohama_core::VisiblePlayer,
     structure: &ScoreStructure,
-    table: &WeightTable,
+    rules: &Rules,
+    spec: &ScoreTableSpec,
     progress: u32,
     terminal: bool,
     shipped_total: f64,
-) -> f64 {
+) -> CandidateTotals {
     if terminal {
-        return shipped_total;
+        return CandidateTotals { base: shipped_total, total: shipped_total };
     }
     let mut total: i64 = 0;
     for feature in Feature::ALL {
-        let (early, late) = table.get(feature);
+        let (early, late) = spec.table.get(feature);
         let weight = interpolate(early, late, progress);
         let mine = structure.value_of(me, feature);
-        // `eval::opponent_extreme`'s rule, reproduced: maximize `weight · value`
-        // over the non-dummy opponents and subtract the winner's RAW value, with
-        // ties (including every tie at `weight == 0`) keeping the FIRST opponent
-        // in seat order. Unexercised at 2P, where the maximum is over one
-        // opponent — but the corpora are not the only thing this runs on.
-        let mut theirs: Option<i64> = None;
-        for other in &view.players {
-            if other.id == me.id || other.id.is_dummy() {
-                continue;
-            }
-            let value = structure.value_of(other, feature);
-            let improves = match theirs {
-                None => true,
-                Some(current) => weight.saturating_mul(value) > weight.saturating_mul(current),
-            };
-            if improves {
-                theirs = Some(value);
-            }
-        }
-        let theirs = theirs.unwrap_or(0);
+        let theirs = opponent_extreme(view, me, weight, |other| structure.value_of(other, feature));
         total = total.saturating_add(weight.saturating_mul(mine.saturating_sub(theirs)));
     }
-    total as f64
+    let base = total;
+
+    // The §4.1 extension clauses, priced EXACTLY as the sixteen above are: one
+    // interpolated weight, the viewer's value minus the same signed-weight
+    // opponent extreme, saturating throughout. That identity is the whole
+    // instrument — an extension table is what admitting the column would
+    // arithmetically do, not an approximation of it.
+    for (column, early, late) in &spec.extensions {
+        let weight = interpolate(*early, *late, progress);
+        let mine = column.value(view, me, rules);
+        let theirs = opponent_extreme(view, me, weight, |other| column.value(view, other, rules));
+        total = total.saturating_add(weight.saturating_mul(mine.saturating_sub(theirs)));
+    }
+    CandidateTotals { base: base as f64, total: total as f64 }
+}
+
+/// `eval::opponent_extreme`'s rule, reproduced once for BOTH halves of
+/// [`candidate_total`].
+///
+/// Maximize `weight · value` over the non-dummy opponents and return the
+/// winner's RAW value, with ties — including every tie at `weight == 0` —
+/// keeping the FIRST opponent in seat order, and `0` when the viewer has no
+/// opponent at all. Unexercised at 2P, where the maximum is over one opponent;
+/// the corpora are not the only thing this runs on, and a NEGATIVE weight picks
+/// a different seat than a plain maximum would, which is the drift a shared
+/// helper exists to prevent between the feature loop and the clause loop.
+fn opponent_extreme(
+    view: &PlayerView,
+    me: &yokohama_core::VisiblePlayer,
+    weight: i64,
+    value_of: impl Fn(&yokohama_core::VisiblePlayer) -> i64,
+) -> i64 {
+    let mut theirs: Option<i64> = None;
+    for other in &view.players {
+        if other.id == me.id || other.id.is_dummy() {
+            continue;
+        }
+        let value = value_of(other);
+        let improves = match theirs {
+            None => true,
+            Some(current) => weight.saturating_mul(value) > weight.saturating_mul(current),
+        };
+        if improves {
+            theirs = Some(value);
+        }
+    }
+    theirs.unwrap_or(0)
 }
 
 /// The ROWS_LEN values a single view contributes, relative and absolute.
@@ -1258,6 +1575,7 @@ fn row_values(
     out_rel: &mut [f64],
     out_abs: &mut [f64],
     out_cand: &mut [f64],
+    out_base: &mut [f64],
 ) {
     // ONCE per view — see the module doc. Everything below indexes it.
     let structure = ScoreStructure::derive(view, rules);
@@ -1334,15 +1652,18 @@ fn row_values(
         let progress = progress_ppm(view, rules);
         let terminal = view_is_terminal(view);
         for (slot, candidate) in candidates.iter().enumerate() {
-            out_cand[slot] = candidate_total(
+            let totals = candidate_total(
                 view,
                 me,
                 &structure,
-                &candidate.table,
+                rules,
+                candidate,
                 progress,
                 terminal,
                 total,
             );
+            out_cand[slot] = totals.total;
+            out_base[slot] = totals.base;
         }
     }
 }
@@ -1414,6 +1735,11 @@ struct Cell {
     /// One EVAL TOTAL per `--score-table` candidate, in the order they were
     /// named. Empty — and allocation-free — when none was given.
     cand: Vec<f64>,
+    /// The same cell under each candidate's BASE table alone, extension clauses
+    /// unpriced — the second arm of the §4.2 paired difference. Bit-identical
+    /// to [`cand`](Self::cand) for a candidate that carries no clause, which is
+    /// the property the zero-extension reproduction pin reads.
+    base: Vec<f64>,
 }
 
 /// A per-(game, seat, stage) accumulator, folded into a [`Cell`] at game end.
@@ -1422,6 +1748,7 @@ struct CellAcc {
     rel: Vec<f64>,
     abs: Vec<f64>,
     cand: Vec<f64>,
+    base: Vec<f64>,
 }
 
 impl CellAcc {
@@ -1431,6 +1758,7 @@ impl CellAcc {
             rel: vec![0.0; rows],
             abs: vec![0.0; rows],
             cand: vec![0.0; candidates],
+            base: vec![0.0; candidates],
         }
     }
 }
@@ -1591,6 +1919,28 @@ struct Corpus {
     /// `(progress_ppm, post-hoc stage)` at every turn start (seat-invariant, so
     /// one observation per turn start, not per view).
     proxy: Vec<(u32, Stage)>,
+    /// The V3 spec §4.2 ladder anchor's per-column input: `|relative value|` at
+    /// every SNAPSHOT, one sketch per ROW slot.
+    ///
+    /// Indexed by row slot rather than by position among the candidate columns
+    /// so it cannot drift out of step with `rows` — only `Row::Candidate` slots
+    /// are ever observed, and the rest stay empty. EMPTY (allocation-free) when
+    /// the run named no candidate column, which is what keeps an
+    /// argument-free run byte-identical to every recorded appendix.
+    ///
+    /// Per-SNAPSHOT, deliberately NOT per-cell: the anchor scales a WEIGHT
+    /// against the magnitudes a decision actually sees, and a cell is a mean
+    /// over a whole (game × seat × stage) block, which is a smaller number for
+    /// a reason that has nothing to do with the weight.
+    anchor_rel: Vec<QuantileSketch>,
+    /// The anchor's shared TARGET: `|interpolate(V2's VictoryPoints pair,
+    /// progress) · VP relative value|` at every snapshot.
+    ///
+    /// `WeightTable::V2` regardless of `--weights`, because V2 is the base every
+    /// §4.1 extension table rides on — the anchor calibrates against the term
+    /// the candidate would sit beside in the SHIPPED table, not against
+    /// whatever table generated the corpus.
+    anchor_vp_product: QuantileSketch,
     turns: QuantileSketch,
     moves: QuantileSketch,
     trigger: TriggerTally,
@@ -1648,6 +1998,12 @@ fn generate(
         games: 0,
         snapshots: 0,
         proxy: Vec::new(),
+        anchor_rel: if columns.is_empty() {
+            Vec::new()
+        } else {
+            vec![QuantileSketch::default(); rows.len()]
+        },
+        anchor_vp_product: QuantileSketch::default(),
         turns: QuantileSketch::default(),
         moves: QuantileSketch::default(),
         trigger: TriggerTally::default(),
@@ -1858,6 +2214,10 @@ fn snapshot_game(
     let mut rel = vec![0.0f64; rows.len()];
     let mut abs = vec![0.0f64; rows.len()];
     let mut cand = vec![0.0f64; candidates.len()];
+    let mut base = vec![0.0f64; candidates.len()];
+    // Looked up once per game rather than per snapshot; `None` only if the
+    // shipped feature list ever stops carrying running VP.
+    let vp_slot = rows.iter().position(|row| matches!(row, Row::Feature(Feature::VictoryPoints)));
 
     for (index, start) in starts.iter().enumerate() {
         let stage = stage_of(index, turns);
@@ -1878,7 +2238,15 @@ fn snapshot_game(
                 &mut rel,
                 &mut abs,
                 &mut cand,
+                &mut base,
             );
+            // Per SEAT, per turn start — the same population the cells are
+            // built from, before it is averaged into one. A no-op, and free of
+            // the `progress_ppm` call, when no candidate column was named.
+            if !corpus.anchor_rel.is_empty() {
+                let progress = progress_ppm(&view, rules);
+                observe_anchor(corpus, rows, &rel, vp_slot, progress);
+            }
             let acc = &mut accs[usize::from(seat) * STAGES.len() + stage.index()];
             acc.n += 1;
             for slot in 0..rows.len() {
@@ -1886,6 +2254,9 @@ fn snapshot_game(
                 acc.abs[slot] += abs[slot];
             }
             for (target, value) in acc.cand.iter_mut().zip(cand.iter()) {
+                *target += value;
+            }
+            for (target, value) in acc.base.iter_mut().zip(base.iter()) {
                 *target += value;
             }
             corpus.snapshots += 1;
@@ -1909,6 +2280,7 @@ fn snapshot_game(
                 rel: acc.rel.iter().map(|v| v / n).collect(),
                 abs: acc.abs.iter().map(|v| v / n).collect(),
                 cand: acc.cand.iter().map(|v| v / n).collect(),
+                base: acc.base.iter().map(|v| v / n).collect(),
             });
         }
     }
@@ -2119,6 +2491,97 @@ fn shape(early: &AucRow, mid: &AucRow, late: &AucRow) -> String {
     }
 }
 
+/// The V3 spec §4.2 ladder anchor's inputs, one line each, or NO lines at all
+/// when the run named no candidate column.
+///
+/// # What the lines are for
+///
+/// §4.2 pre-commits the ladder's centre rung before any fixed-corpus run:
+/// `a` is the integer minimizing `|a · p90(|relative column value|) −
+/// p50(|VP term product|)|`. Both quantities are read off ONE scratch run, so
+/// the derivation is auditable from a printed artifact rather than
+/// re-measured — which is why they are printed here, beside the columns they
+/// describe, and not left for a reader to reconstruct. The features block
+/// itself prints AUC and `mean_abs` only, and nothing anywhere else prints a
+/// term PRODUCT.
+///
+/// # What they are NOT
+///
+/// Order statistics over SNAPSHOTS, not over the (game × seat × stage) cells
+/// the AUC table is built from, and nearest-rank rather than interpolated —
+/// [`QuantileSketch`]'s own rule. Neither line is a claim about anything: no
+/// interval, no direction, no disposition. They are the two magnitudes the
+/// anchor rule divides.
+fn render_anchor_stats(corpus: &Corpus) -> Vec<String> {
+    if corpus.anchor_rel.is_empty() {
+        return Vec::new();
+    }
+    // An empty sketch has no order statistic; `--` says so rather than printing
+    // a 0 a reader would divide by. Only a corpus that recorded no snapshot at
+    // all reaches it.
+    let stat = |sketch: &QuantileSketch, num: u64, den: u64| -> String {
+        sketch.quantile(num, den).map_or_else(|| "--".to_string(), |v| v.to_string())
+    };
+    let mut lines = vec![
+        "  ANCHOR STATS (V3 spec 4.2) — nearest-rank over SNAPSHOTS, not the cells above; the \
+         ladder anchor a minimizes |a * p90(|column|) - p50(|VP term|)|, the VP term priced \
+         under WeightTable::V2 at each snapshot's own progress"
+            .to_string(),
+        format!(
+            "  ANCHOR STATS  {:<30} p50 = {}  (n = {})",
+            "vp_term_product_v2 (shared)",
+            stat(&corpus.anchor_vp_product, 1, 2),
+            corpus.anchor_vp_product.len(),
+        ),
+    ];
+    for (slot, row) in corpus.rows.iter().enumerate() {
+        if !matches!(row, Row::Candidate(_)) {
+            continue;
+        }
+        lines.push(format!(
+            "  ANCHOR STATS  {:<30} p90 = {}  (n = {})",
+            row.name(),
+            stat(&corpus.anchor_rel[slot], 9, 10),
+            corpus.anchor_rel[slot].len(),
+        ));
+    }
+    lines
+}
+
+/// Fold ONE snapshot into the §4.2 anchor sketches.
+///
+/// `rel` is the very vector [`row_values`] just filled and the cell fold is
+/// about to consume, so a column cannot be measured here and printed there from
+/// two arithmetics. `vp_slot` is looked up from `rows` rather than assumed to be
+/// zero — `Feature::VictoryPoints` leads `Feature::ALL` today, and this fold
+/// must not be the thing that breaks if it ever stops leading it.
+///
+/// Values reach the sketch as whole numbers because they ARE whole numbers:
+/// every row's relative form is a difference of `i64` feature values widened to
+/// `f64`, and the VP product multiplies one of those by an `i64` weight.
+/// `round` states that rather than trusting a truncating cast to agree.
+fn observe_anchor(
+    corpus: &mut Corpus,
+    rows: &[Row],
+    rel: &[f64],
+    vp_slot: Option<usize>,
+    progress: u32,
+) {
+    if corpus.anchor_rel.is_empty() {
+        return;
+    }
+    let magnitude = |value: f64| -> u64 { value.abs().round() as u64 };
+    for (slot, row) in rows.iter().enumerate() {
+        if matches!(row, Row::Candidate(_)) {
+            corpus.anchor_rel[slot].observe(magnitude(rel[slot]));
+        }
+    }
+    let (early, late) = WeightTable::V2.get(Feature::VictoryPoints);
+    let weight = interpolate(early, late, progress) as f64;
+    let vp_rel = vp_slot.map_or(0.0, |slot| rel[slot]);
+    corpus.anchor_vp_product.observe(magnitude(weight * vp_rel));
+}
+
 fn report_features(
     corpus: &Corpus,
     weights: &WeightTable,
@@ -2273,6 +2736,16 @@ fn report_features(
             table[slot][2].mean_abs,
         );
     }
+
+    // The §4.2 anchor inputs, printed only when a candidate column is present —
+    // same rule as the CANDIDATE COLUMNS banner above, and for the same reason.
+    let anchor = render_anchor_stats(corpus);
+    if !anchor.is_empty() {
+        println!();
+        for line in &anchor {
+            println!("{line}");
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2289,13 +2762,43 @@ struct SplitColumn {
     winners: usize,
 }
 
+/// Which of a candidate's two columns a [`SplitColumn`] collects.
+///
+/// The BASE arm is the same candidate with its extension clauses unpriced — the
+/// comparison the §4.2 improvement interval is a difference against. For a
+/// candidate with no clauses the two arms are the same numbers, and that is a
+/// property rather than a coincidence: [`candidate_total`] computes them in one
+/// pass and nothing happens between them.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Arm {
+    Extended,
+    Base,
+}
+
 /// Collect one candidate's cells for one stage and one side of the split.
 fn split_column(corpus: &Corpus, candidate: usize, stage: Stage, split: Split) -> SplitColumn {
+    split_column_arm(corpus, candidate, stage, split, Arm::Extended)
+}
+
+/// [`split_column`] over a named [`Arm`].
+fn split_column_arm(
+    corpus: &Corpus,
+    candidate: usize,
+    stage: Stage,
+    split: Split,
+    arm: Arm,
+) -> SplitColumn {
     let mut rows: Vec<(f64, u32, bool)> = corpus
         .cells
         .iter()
         .filter(|c| c.stage == stage && Split::of(c.game) == split)
-        .map(|c| (c.cand[candidate], split.cluster(c.game), c.label))
+        .map(|c| {
+            let value = match arm {
+                Arm::Extended => c.cand[candidate],
+                Arm::Base => c.base[candidate],
+            };
+            (value, split.cluster(c.game), c.label)
+        })
         .collect();
     rows.sort_by(|a, b| a.0.partial_cmp(&b.0).expect("candidate totals are finite"));
     let winners = rows.iter().filter(|r| r.2).count();
@@ -2319,10 +2822,17 @@ fn candidate_resample_seed(resample_seed: u64, table: &WeightTable) -> u64 {
 /// ONE multiplicity draw per replicate, reused across the three stages —
 /// `report_features`'s rule, for its reason: the cluster resample is a property
 /// of the replicate, not of the column, so drawing per stage would make a
-/// candidate's own stage rows mutually incomparable. Across CANDIDATES the
-/// streams differ by construction (see [`candidate_resample_seed`]), so two
-/// candidates' intervals are not paired — stated in the block header rather than
-/// left for a reader to assume either way.
+/// candidate's own stage rows mutually incomparable.
+///
+/// Across CANDIDATES the sharing follows the KEY: [`candidate_resample_seed`]
+/// keys the stream on the BASE weight table's identity, so two candidates that
+/// name the SAME base — an extension table and the base itself, or two
+/// extension tables on one base — draw the same multiplicities and ARE paired,
+/// while two candidates on DIFFERENT bases are not. That same-base pairing is
+/// not a side effect: it is what [`paired_improvement_intervals`] rests on, and
+/// it is why the Δ column's replicates are the very ones behind the marginal
+/// intervals printed beside them. The block header states both halves rather
+/// than leaving a reader to assume either way.
 fn held_out_intervals(
     columns: &[SplitColumn; 3],
     bootstrap: u32,
@@ -2362,6 +2872,120 @@ fn held_out_intervals(
         );
     }
     out
+}
+
+/// One stage's held-out IMPROVEMENT of an extension table over its own base.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Improvement {
+    /// `AUC(extended) − AUC(base)` on the unresampled column, or `None` when
+    /// either side's AUC is undefined (one class empty).
+    point: Option<f64>,
+    /// The percentile endpoints of the PAIRED difference. `NaN` when no
+    /// replicate produced a difference at all.
+    lo: f64,
+    hi: f64,
+}
+
+/// The §4.2 improvement interval: a PAIRED-DIFFERENCE held-out bootstrap of an
+/// extension table against its own base.
+///
+/// **One multiplicity draw per replicate, applied to BOTH arms, differenced
+/// inside the replicate** — never two independent bootstraps subtracted. The
+/// two arms are the same cells of the same games under two pricings, so almost
+/// all of the sampling variation is shared; differencing inside the replicate
+/// cancels it, and differencing two independently-drawn intervals would add the
+/// two variances instead and report a width the design does not have. A
+/// zero-width interval here is therefore a real reading — the extension re-
+/// ranked nothing in any resample — and not the refused kind, which is an
+/// estimator that cannot tell "no variation" from "no measurement".
+///
+/// The stream is the candidate's own `resample_seed`, which is keyed on the
+/// BASE weight table's identity (see [`candidate_resample_seed`]) — so these
+/// replicates are the very ones behind the two marginal intervals printed
+/// beside them.
+fn paired_improvement_intervals(
+    extended: &[SplitColumn; 3],
+    base: &[SplitColumn; 3],
+    bootstrap: u32,
+    seed: u64,
+) -> [Improvement; 3] {
+    let mut out = [Improvement { point: None, lo: f64::NAN, hi: f64::NAN }; 3];
+    for (s, slot) in out.iter_mut().enumerate() {
+        let ones = vec![1u32; base[s].clusters.max(extended[s].clusters)];
+        slot.point = match (
+            auc_weighted(&extended[s].rows, &ones),
+            auc_weighted(&base[s].rows, &ones),
+        ) {
+            (Some(e), Some(b)) => Some(e - b),
+            _ => None,
+        };
+    }
+
+    // The cluster population is the DESIGN's, taken from the base arm: the two
+    // arms are the same cells of the same games under two pricings, so they
+    // resample over one population by construction.
+    let clusters = base[0].clusters;
+    if clusters == 0 || bootstrap == 0 {
+        return out;
+    }
+    let mut rng = ChaCha8Rng::seed_from_u64(seed);
+    let mut replicates: [Vec<f64>; 3] = [
+        Vec::with_capacity(bootstrap as usize),
+        Vec::with_capacity(bootstrap as usize),
+        Vec::with_capacity(bootstrap as usize),
+    ];
+    let mut mult = vec![0u32; clusters];
+    for _ in 0..bootstrap {
+        mult.iter_mut().for_each(|m| *m = 0);
+        for _ in 0..clusters {
+            mult[rng.gen_range(0..clusters)] += 1;
+        }
+        // ONE draw, BOTH arms, differenced HERE — the whole point. The draw
+        // sequence is `held_out_intervals`' own at this seed, so these are the
+        // very replicates behind the marginal interval printed beside the Δ.
+        for (s, reps) in replicates.iter_mut().enumerate() {
+            if let (Some(e), Some(b)) =
+                (auc_weighted(&extended[s].rows, &mult), auc_weighted(&base[s].rows, &mult))
+            {
+                reps.push(e - b);
+            }
+        }
+    }
+    for (s, reps) in replicates.iter_mut().enumerate() {
+        reps.sort_by(|a, b| a.partial_cmp(b).expect("AUC differences are finite"));
+        if reps.is_empty() {
+            continue;
+        }
+        out[s].lo = reps[nearest_rank_index(reps.len(), 25, 1000)];
+        out[s].hi = reps[nearest_rank_index(reps.len(), 975, 1000)];
+    }
+    out
+}
+
+/// One improvement cell, or the honest non-answer.
+fn improvement_render(imp: &Improvement) -> String {
+    match imp.point {
+        None => "--  (one class empty)".to_string(),
+        Some(p) if imp.lo.is_nan() => format!("{p:+.4}  (no interval)"),
+        Some(p) => format!("{p:+.4} [{:+.4}, {:+.4}]", imp.lo, imp.hi),
+    }
+}
+
+/// The NAME of a base weight table, or `None` for an explicit vector.
+///
+/// Compares the NUMBERS rather than carrying a spelling: `v2-draft` and `v2`
+/// are one table since the freeze promoted the draft (the grammar test asserts
+/// exactly that), so both report as `v2`, and a hand-written vector that
+/// happens to equal a shipped table is that table — which is true, and is what
+/// the improvement interval would be quoted against either way.
+fn named_base_table(table: &WeightTable) -> Option<&'static str> {
+    if *table == WeightTable::V1 {
+        Some("v1")
+    } else if *table == WeightTable::V2 {
+        Some("v2")
+    } else {
+        None
+    }
 }
 
 /// One AUC point estimate, or the two honest non-answers.
@@ -2416,8 +3040,10 @@ fn render_candidate_tables(
     let _ = writeln!(
         out,
         "  bootstrap B={bootstrap}, game-clustered, on the HELD-OUT columns only; one draw per \
-         replicate is shared by a candidate's three stages, so those are jointly resampled and \
-         two DIFFERENT candidates' intervals are not paired"
+         replicate is shared by a candidate's three stages, so those are jointly resampled — and \
+         shared by any two candidates that name the SAME BASE weight table, because the stream is \
+         keyed on that table's identity. That sharing is what an extension table's Δ against its \
+         own base rests on; two candidates on DIFFERENT bases are still NOT paired"
     );
     let _ = writeln!(
         out,
@@ -2443,17 +3069,58 @@ fn render_candidate_tables(
             split_column(corpus, ordinal, Stage::Late, Split::HeldOut),
         ];
         let intervals = held_out_intervals(&held, bootstrap, seed);
+        // The §4.2 improvement arm: an extension table on a NAMED base is
+        // quoted against that base itself, over the SAME replicates.
+        let base_name =
+            (!candidate.extensions.is_empty()).then(|| named_base_table(&candidate.table)).flatten();
+        let improvement = base_name.map(|_| {
+            let base_arm: [SplitColumn; 3] = [
+                split_column_arm(corpus, ordinal, Stage::Early, Split::HeldOut, Arm::Base),
+                split_column_arm(corpus, ordinal, Stage::Mid, Split::HeldOut, Arm::Base),
+                split_column_arm(corpus, ordinal, Stage::Late, Split::HeldOut, Arm::Base),
+            ];
+            paired_improvement_intervals(&held, &base_arm, bootstrap, seed)
+        });
 
         let _ = writeln!(
             out,
-            "\n  [{}] candidate={}  identity={identity:#018x}  vs corpus table: {}  \
+            "\n  [{}] candidate={}  {}={identity:#018x}  vs corpus table: {}  \
              resample_seed={seed:#018x}",
             ordinal + 1,
             candidate.name,
-            if identity == corpus_identity { "SAME" } else { "DIFFERENT" },
+            // An extension table's weight-table identity is its BASE's — the
+            // clauses are not in it, and two extension tables on one base share
+            // it — so the label says which quantity is being printed.
+            if candidate.extensions.is_empty() { "identity" } else { "base identity" },
+            match candidate.extensions.len() {
+                0 =>
+                    if identity == corpus_identity {
+                        "SAME".to_string()
+                    } else {
+                        "DIFFERENT".to_string()
+                    },
+                n => format!(
+                    "{} base plus {n} extension clause{}",
+                    if identity == corpus_identity { "SAME" } else { "DIFFERENT" },
+                    if n == 1 { "" } else { "s" },
+                ),
+            },
         );
         let _ = writeln!(out, "      early={:?}", candidate.table.early);
         let _ = writeln!(out, "      late ={:?}", candidate.table.late);
+        if !candidate.extensions.is_empty() {
+            let _ = writeln!(
+                out,
+                "      ext  =[{}]  (each priced as a feature is: interpolate(early,late) x \
+                 (mine - the signed-weight opponent extreme))",
+                candidate
+                    .extensions
+                    .iter()
+                    .map(|(column, early, late)| format!("+{}={early}/{late}", column.token()))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            );
+        }
         let _ = writeln!(
             out,
             "      hand-split ordering (L14 core>on_board>excess, both vectors): {}",
@@ -2465,15 +3132,22 @@ fn render_candidate_tables(
         );
         let _ = writeln!(
             out,
-            "      {:<7} {:>9} {:>9}   {:<26} {:>13}",
-            "stage", "fit auc", "held auc", "held-out 95% [lo, hi]", "cells fit/held",
+            "      {:<7} {:>9} {:>9}   {:<26} {:>13}{}",
+            "stage",
+            "fit auc",
+            "held auc",
+            "held-out 95% [lo, hi]",
+            "cells fit/held",
+            // The LAST column, so it is never padded: a trailing run of spaces
+            // in a report is bytes a diff has to explain.
+            base_name.map_or(String::new(), |b| format!("   Δ vs {b}, 95% paired")),
         );
         for stage in STAGES {
             let s = stage.index();
             let (lo, hi) = intervals[s];
             let _ = writeln!(
                 out,
-                "      {:<7} {:>9} {:>9}   {:<26} {:>13}",
+                "      {:<7} {:>9} {:>9}   {:<26} {:>13}{}",
                 stage.name(),
                 point_render(&fit[s]),
                 point_render(&held[s]),
@@ -2496,7 +3170,33 @@ fn render_candidate_tables(
                     fit[s].winners,
                     held[s].winners,
                 ),
+                improvement
+                    .map_or(String::new(), |imp| format!("   {}", improvement_render(&imp[s]))),
             );
+        }
+        // The Δ column's reading, and — when there is none — why not. An
+        // absence a reader has to infer is the failure mode this file refuses
+        // everywhere else.
+        match (candidate.extensions.is_empty(), base_name) {
+            (false, Some(b)) => {
+                let _ = writeln!(
+                    out,
+                    "      Δ = the PAIRED held-out difference against {b} ITSELF: one resample \
+                     draw per replicate applied to BOTH arms and differenced inside the \
+                     replicate, never two independent bootstraps subtracted. An exactly \
+                     zero-width Δ is a real reading — the clauses re-ranked nothing in any \
+                     resample — and improvement > 0 at the pre-registered stage is the §4.2 \
+                     advance condition, quoted with this interval beside it"
+                );
+            }
+            (false, None) => {
+                let _ = writeln!(
+                    out,
+                    "      (no improvement interval: §4.2 quotes the paired difference against a \
+                     NAMED base table, and this candidate's base is an explicit vector)"
+                );
+            }
+            (true, _) => {}
         }
     }
     out
@@ -2786,8 +3486,9 @@ mod tests {
     use yokohama_core::game::greedy::DEFAULT_RETREAT_SAMPLES;
     use yokohama_core::game::lookahead::{DEFAULT_BEAM, DEFAULT_WORLDS};
     use yokohama_core::{
-        AchievementCard, AchievementType, ChurchSlot, ChurchTrack, CustomsSlot, CustomsTrack,
-        GameConfig, OrderCardId, StartingOrderChoice, TechCardId, VisiblePlayer,
+        apply_move, get_legal_moves, is_game_over, AchievementCard, AchievementType, ChurchSlot,
+        ChurchTrack, CustomsSlot, CustomsTrack, GameConfig, OrderCardId, StartingOrderChoice,
+        TechCardId, VisiblePlayer,
     };
 
     /// W1-C review NOTE-3: `worlds` and `retreat_samples` are ADJACENT `u8`
@@ -3060,11 +3761,11 @@ mod tests {
     fn the_score_table_grammar_parses_its_four_forms() {
         assert_eq!(
             parse_score_table("v1"),
-            Ok(ScoreTableSpec { name: "v1".to_string(), table: WeightTable::V1 }),
+            Ok(ScoreTableSpec::named("v1", WeightTable::V1)),
         );
         assert_eq!(
             parse_score_table("v2"),
-            Ok(ScoreTableSpec { name: "v2".to_string(), table: WeightTable::V2 }),
+            Ok(ScoreTableSpec::named("v2", WeightTable::V2)),
         );
         // The rounds' own spelling, kept alive by the alias so every committed
         // command still parses — and it names the SAME numbers `v2` does, which
@@ -3073,7 +3774,7 @@ mod tests {
         // quoting `v2` is measuring what ships.
         assert_eq!(
             parse_score_table("v2-draft"),
-            Ok(ScoreTableSpec { name: "v2-draft".to_string(), table: WeightTable::V2_DRAFT }),
+            Ok(ScoreTableSpec::named("v2-draft", WeightTable::V2_DRAFT)),
         );
         assert_eq!(
             parse_score_table("v2-draft").unwrap().table,
@@ -3170,6 +3871,7 @@ mod tests {
                 rel: vec![f64::from(game)],
                 abs: vec![f64::from(game)],
                 cand: vec![f64::from(game) * 10.0],
+                base: vec![f64::from(game) * 10.0],
             })
             .collect();
         let corpus = test_corpus(cells, 6);
@@ -3224,7 +3926,7 @@ mod tests {
                 SeedScheduleKind::Diagnostic(DEFAULT_MASTER),
                 true,
                 &[],
-                &[ScoreTableSpec { name: "v1".to_string(), table: WeightTable::V1 }],
+                &[ScoreTableSpec::named("v1", WeightTable::V1)],
             )
             .expect("a greedy game completes");
 
@@ -3253,8 +3955,8 @@ mod tests {
     fn the_candidate_block_is_byte_identical_on_a_second_render() {
         let rules = Rules::standard();
         let candidates = vec![
-            ScoreTableSpec { name: "v1".to_string(), table: WeightTable::V1 },
-            ScoreTableSpec { name: "v2-draft".to_string(), table: WeightTable::V2_DRAFT },
+            ScoreTableSpec::named("v1", WeightTable::V1),
+            ScoreTableSpec::named("v2-draft", WeightTable::V2_DRAFT),
         ];
         let (corpus, _) = generate(
             2,
@@ -3284,6 +3986,379 @@ mod tests {
         );
     }
 
+
+    // -----------------------------------------------------------------------
+    // Phase 3.5c V3 T2 — extended score tables (the §4.1 "17th column")
+    // -----------------------------------------------------------------------
+
+    /// The clause grammar `<name>=<base>[+<column>=<early>/<late>]…`, and the
+    /// pre-V3 spellings unchanged beside it.
+    #[test]
+    fn the_score_table_grammar_parses_extension_clauses() {
+        // Every pre-V3 spelling still builds exactly what it built before the
+        // clause grammar existed — an EMPTY clause list. That is what
+        // byte-compatibility means for a committed round command.
+        for spec in ["v1", "v2", "v2-draft"] {
+            let parsed = parse_score_table(spec).expect("a bare form parses");
+            assert!(parsed.extensions.is_empty(), "{spec} must carry no clause");
+            assert_eq!(parsed.name, spec);
+        }
+
+        // A named base with no clause at all is spellable now, and names the
+        // same table under a name of the caller's choosing.
+        assert_eq!(
+            parse_score_table("probe1=v2").expect("a named base parses"),
+            ScoreTableSpec::named("probe1", WeightTable::V2),
+        );
+
+        // One clause — the data-contact command's own spec.
+        let one = parse_score_table("probe1=v2+terminal_margin_now=4/4").expect("one clause");
+        assert_eq!(one.name, "probe1");
+        assert_eq!(one.table, WeightTable::V2);
+        assert_eq!(one.extensions, vec![(CandidateColumn::TerminalMarginNow, 4, 4)]);
+
+        // A clause on the `v1` base with a NEGATIVE late weight: the base is
+        // whatever the grammar names, and a weight pair is signed like any
+        // other feature's.
+        let on_v1 = parse_score_table("probe2=v1+money=3/-7").expect("a v1 base takes a clause");
+        assert_eq!(on_v1.table, WeightTable::V1);
+        assert_eq!(on_v1.extensions, vec![(CandidateColumn::Money, 3, -7)]);
+
+        // TWO clauses: stripped from the RIGHT, reported LEFT TO RIGHT.
+        let two = parse_score_table("probe3=v2+money=1/2+postclaim=3/4").expect("two clauses");
+        assert_eq!(
+            two.extensions,
+            vec![(CandidateColumn::Money, 1, 2), (CandidateColumn::PostClaim, 3, 4)],
+        );
+
+        // A clause on a VECTOR-form base: the greedy right-strip runs first, so
+        // the sixteen-per-side base is still there to parse behind it.
+        let early = (0..16).map(|i| (i as i64 - 3).to_string()).collect::<Vec<_>>().join(",");
+        let late = (0..16).map(|i| (40 - i as i64).to_string()).collect::<Vec<_>>().join(",");
+        let on_vector = parse_score_table(&format!("A1={early}/{late}+church_majority_margin=-2/5"))
+            .expect("a vector base takes a clause");
+        assert_eq!(on_vector.name, "A1");
+        assert_eq!(on_vector.table.early[0], -3);
+        assert_eq!(on_vector.table.late[15], 25);
+        assert_eq!(on_vector.extensions, vec![(CandidateColumn::ChurchMajorityMargin, -2, 5)]);
+
+        // A clause WEIGHT may carry an explicit `+`: after the clause's own `=`
+        // the sign is unambiguous, and the right-strip finds the clause behind
+        // it rather than mis-segmenting on the inner `+`.
+        assert_eq!(
+            parse_score_table("probe4=v2+money=+3/4").expect("a signed clause weight").extensions,
+            vec![(CandidateColumn::Money, 3, 4)],
+        );
+    }
+
+    /// Every clause refusal names what it SAW — the file's standing rule, and
+    /// the three the V3 spec calls out by name.
+    #[test]
+    fn an_extension_clause_refusal_names_what_it_saw() {
+        // An unknown column names the token AND what IS accepted.
+        let message = parse_score_table("probe1=v2+nosuch=1/2").expect_err("an unknown column");
+        assert!(message.contains("nosuch"), "{message}");
+        assert!(
+            message.contains("terminal_margin_now"),
+            "the refusal must list what IS accepted: {message}",
+        );
+
+        // A malformed clause names the clause it could not read.
+        for spec in ["probe1=v2+money=1/x", "probe1=v2+money=1", "probe1=v2+money=/2"] {
+            let clause = spec.rsplit_once('+').expect("the fixture has a clause").1;
+            let message = parse_score_table(spec).expect_err("a malformed clause is refused");
+            assert!(message.contains(clause), "{spec}: the refusal never named {clause:?}: {message}");
+        }
+
+        // A leading-`+` VECTOR entry names the AMBIGUITY: with `+` reserved for
+        // clause separation, `+1` in a vector is not a signed 1.
+        let sixteen = (0..16).map(|_| "1").collect::<Vec<_>>().join(",");
+        let message = parse_score_table(&format!("A1=+{sixteen}/{sixteen}"))
+            .expect_err("a leading-`+` vector entry is refused");
+        assert!(message.contains("+1"), "{message}");
+        assert!(message.contains("ambiguous"), "the refusal must name the ambiguity: {message}");
+
+        // An extension needs a NAME: `v2+…` has a base but nothing to report
+        // the row under.
+        let message = parse_score_table("v2+money=1/2").expect_err("an unnamed extension");
+        assert!(message.contains("v2+money=1/2"), "{message}");
+        assert!(message.contains("name"), "{message}");
+
+        // A column named TWICE is refused rather than silently summed — two
+        // clauses on one column would price it once at the sum and read in the
+        // report as two independent terms.
+        let message =
+            parse_score_table("probe1=v2+money=1/2+money=3/4").expect_err("a duplicate column");
+        assert!(message.contains("money"), "{message}");
+        assert!(message.to_lowercase().contains("twice"), "{message}");
+    }
+
+    /// The three HELD-OUT stage columns of one candidate, on a named arm.
+    fn held_columns(corpus: &Corpus, ordinal: usize, arm: Arm) -> [SplitColumn; 3] {
+        [
+            split_column_arm(corpus, ordinal, Stage::Early, Split::HeldOut, arm),
+            split_column_arm(corpus, ordinal, Stage::Mid, Split::HeldOut, arm),
+            split_column_arm(corpus, ordinal, Stage::Late, Split::HeldOut, arm),
+        ]
+    }
+
+    /// **REPRODUCTION PIN (a).** A zero-weight extension is INERT: it must
+    /// reproduce its base's row cell for cell, bit for bit — and be quoted
+    /// against the same resample stream, which is what keying the stream on the
+    /// BASE table buys.
+    #[test]
+    fn a_zero_weight_extension_reproduces_its_base_row_cell_for_cell() {
+        let rules = Rules::standard();
+        let candidates = vec![
+            parse_score_table("v2").expect("the plain base"),
+            parse_score_table("inert=v2+terminal_margin_now=0/0").expect("a zero-weight clause"),
+        ];
+        let (corpus, _) = generate(
+            2,
+            4,
+            ProbeContestant::Greedy { m: DEFAULT_RETREAT_SAMPLES },
+            &WeightTable::V1,
+            &rules,
+            SeedScheduleKind::Diagnostic(DEFAULT_MASTER),
+            true,
+            &[],
+            &candidates,
+        )
+        .expect("four 2P greedy games complete");
+
+        assert!(!corpus.cells.is_empty(), "a corpus with no cells proves nothing");
+        for cell in &corpus.cells {
+            assert_eq!(
+                cell.cand[1].to_bits(),
+                cell.cand[0].to_bits(),
+                "game {} stage {:?}: a 0/0 clause moved the total",
+                cell.game,
+                cell.stage,
+            );
+            // …and each candidate's own base arm is its own column when there
+            // is nothing priced between them.
+            assert_eq!(cell.base[0].to_bits(), cell.cand[0].to_bits());
+            assert_eq!(cell.base[1].to_bits(), cell.cand[1].to_bits());
+        }
+
+        let seed_plain = candidate_resample_seed(0xABCD, &candidates[0].table);
+        let seed_ext = candidate_resample_seed(0xABCD, &candidates[1].table);
+        assert_eq!(
+            seed_plain, seed_ext,
+            "an extension table and its base share one resample stream (review N4)",
+        );
+        let plain = held_out_intervals(&held_columns(&corpus, 0, Arm::Extended), 64, seed_plain);
+        let inert = held_out_intervals(&held_columns(&corpus, 1, Arm::Extended), 64, seed_ext);
+        for stage in 0..3 {
+            assert_eq!(plain[stage].0.to_bits(), inert[stage].0.to_bits(), "stage {stage} lo");
+            assert_eq!(plain[stage].1.to_bits(), inert[stage].1.to_bits(), "stage {stage} hi");
+        }
+    }
+
+    /// An extension is priced EXACTLY as a feature would be: the interpolated
+    /// weight times (viewer − opponent extreme). At 2P the opponent extreme is
+    /// the single opponent, so the cell arithmetic is readable against the
+    /// column's own relative row.
+    #[test]
+    fn an_extension_prices_its_column_exactly_as_a_feature_would() {
+        let rules = Rules::standard();
+        let candidates = vec![parse_score_table("m5=v2+money=5/5").expect("a flat clause")];
+        let (corpus, _) = generate(
+            2,
+            3,
+            ProbeContestant::Greedy { m: DEFAULT_RETREAT_SAMPLES },
+            &WeightTable::V1,
+            &rules,
+            SeedScheduleKind::Diagnostic(DEFAULT_MASTER),
+            true,
+            &[CandidateColumn::Money],
+            &candidates,
+        )
+        .expect("three 2P greedy games complete");
+
+        let slot = corpus
+            .rows
+            .iter()
+            .position(|r| matches!(r, Row::Candidate(CandidateColumn::Money)))
+            .expect("the money column was requested");
+        let mut moved = 0;
+        for cell in &corpus.cells {
+            let expected = cell.base[0] + 5.0 * cell.rel[slot];
+            assert!(
+                (cell.cand[0] - expected).abs() <= 1e-9 * (1.0 + expected.abs()),
+                "game {} stage {:?}: {} is not base {} + 5 x rel {}",
+                cell.game,
+                cell.stage,
+                cell.cand[0],
+                cell.base[0],
+                cell.rel[slot],
+            );
+            if cell.cand[0] != cell.base[0] {
+                moved += 1;
+            }
+        }
+        assert!(moved > 0, "a flat weight of 5 that never moved a cell proves nothing");
+    }
+
+    /// **The opponent rule is the MIRROR's, not a plain maximum.** A positive
+    /// weight picks the same opponent a plain max does; a NEGATIVE one must
+    /// sometimes pick a different seat, which is exactly what fails on an
+    /// extension loop that copied `row_values`' convention by mistake.
+    #[test]
+    fn an_extension_takes_the_signed_weight_opponent_not_the_plain_maximum() {
+        let rules = Rules::standard();
+        let candidates = vec![
+            parse_score_table("pos=v2+money=5/5").expect("a positive clause"),
+            parse_score_table("neg=v2+money=-5/-5").expect("a negative clause"),
+        ];
+        let (corpus, _) = generate(
+            4,
+            2,
+            ProbeContestant::Greedy { m: DEFAULT_RETREAT_SAMPLES },
+            &WeightTable::V1,
+            &rules,
+            SeedScheduleKind::Diagnostic(DEFAULT_MASTER),
+            true,
+            &[CandidateColumn::Money],
+            &candidates,
+        )
+        .expect("two 4P greedy games complete");
+
+        let slot = corpus
+            .rows
+            .iter()
+            .position(|r| matches!(r, Row::Candidate(CandidateColumn::Money)))
+            .expect("the money column was requested");
+        let mut disagreements = 0;
+        for cell in &corpus.cells {
+            let plain_max = cell.base[0] + 5.0 * cell.rel[slot];
+            assert!(
+                (cell.cand[0] - plain_max).abs() <= 1e-9 * (1.0 + plain_max.abs()),
+                "a POSITIVE weight maximizes the raw value, exactly as a plain max does",
+            );
+            if (cell.cand[1] - (cell.base[1] - 5.0 * cell.rel[slot])).abs() > 1e-6 {
+                disagreements += 1;
+            }
+        }
+        assert!(
+            disagreements > 0,
+            "at 4P a NEGATIVE weight must sometimes select a different opponent than the plain \
+             maximum — without a disagreement this pin passes on a plain-max extension loop",
+        );
+    }
+
+    /// **The §4.2 improvement interval is PAIRED.** A strictly increasing
+    /// transform of a column leaves every rank untouched, so the difference is
+    /// exactly zero in EVERY resample while each arm's own interval is wide:
+    /// two independent bootstraps, subtracted, would report a spread here.
+    #[test]
+    fn the_improvement_interval_is_a_paired_difference_and_not_two_bootstraps() {
+        let column = |f: &dyn Fn(f64) -> f64| {
+            let mut rows: Vec<(f64, u32, bool)> =
+                (0..12u32).map(|g| (f(f64::from(g)), g, g.is_multiple_of(3))).collect();
+            rows.sort_by(|a, b| a.0.partial_cmp(&b.0).expect("finite"));
+            let winners = rows.iter().filter(|r| r.2).count();
+            SplitColumn { rows, clusters: 12, winners }
+        };
+        let three = |f: &dyn Fn(f64) -> f64| [column(f), column(f), column(f)];
+
+        let base = three(&|v| v);
+        let rank_preserving = three(&|v| 2.0 * v + 1.0);
+        let improvement = paired_improvement_intervals(&rank_preserving, &base, 256, 0x51D5);
+        for (s, imp) in improvement.iter().enumerate() {
+            assert_eq!(imp.point, Some(0.0), "stage {s}: a rank-preserving transform gains nothing");
+            assert_eq!(
+                (imp.lo, imp.hi),
+                (0.0, 0.0),
+                "stage {s}: the PAIRED difference of a rank-preserving transform is exactly zero \
+                 in every resample",
+            );
+        }
+
+        // …and the arms are not themselves degenerate, so the zero width above
+        // is a property of the PAIRING and not of the fixture.
+        let marginal = held_out_intervals(&three(&|v| v), 256, 0x51D5);
+        assert!(
+            marginal[0].1 > marginal[0].0,
+            "the base arm's own interval must have width: {marginal:?}",
+        );
+
+        // A column that flips the ranking reads as a real, signed difference
+        // with a real interval — the arithmetic is a difference, not a flag.
+        let flipped = three(&|v| -v);
+        let worse = paired_improvement_intervals(&flipped, &base, 256, 0x51D5);
+        assert!(
+            worse[0].point.expect("both arms have both classes") > 0.0,
+            "this fixture's winners sit LOW, so negating the column improves it: {worse:?}",
+        );
+        assert!(worse[0].hi > worse[0].lo, "a real difference has a real interval: {worse:?}");
+
+        // An arm with no rows has no AUC, and the improvement says so rather
+        // than filling in a zero.
+        let empty = || SplitColumn { rows: Vec::new(), clusters: 12, winners: 0 };
+        let none = paired_improvement_intervals(&[empty(), empty(), empty()], &base, 256, 0x51D5);
+        assert_eq!(none[0].point, None, "an empty arm has no point estimate");
+        assert!(none[0].lo.is_nan() && none[0].hi.is_nan(), "…and no interval: {none:?}");
+    }
+
+    /// The report path: the clause echo, the improvement column on a NAMED
+    /// base, its stated absence on a vector-form base, and a zero-extension
+    /// candidate whose rows keep their pre-V3 shape.
+    #[test]
+    fn an_extension_tables_block_echoes_its_clauses_and_prints_the_improvement_interval() {
+        let rules = Rules::standard();
+        let sixteen = (0..16).map(|_| "1").collect::<Vec<_>>().join(",");
+        let candidates = vec![
+            parse_score_table("v2").expect("the plain base"),
+            parse_score_table("probe1=v2+terminal_margin_now=4/4").expect("a named base"),
+            parse_score_table(&format!("A1={sixteen}/{sixteen}+money=1/2"))
+                .expect("a vector base"),
+        ];
+        let (corpus, _) = generate(
+            2,
+            4,
+            ProbeContestant::Greedy { m: DEFAULT_RETREAT_SAMPLES },
+            &WeightTable::V1,
+            &rules,
+            SeedScheduleKind::Diagnostic(DEFAULT_MASTER),
+            true,
+            &[],
+            &candidates,
+        )
+        .expect("four 2P greedy games complete");
+
+        let first = render_candidate_tables(&corpus, &WeightTable::V1, &candidates, 64, 0xABCD);
+        let second = render_candidate_tables(&corpus, &WeightTable::V1, &candidates, 64, 0xABCD);
+        assert_eq!(first, second, "the candidate block must not depend on run order");
+
+        // The clause echo rides beside the early/late echo.
+        assert!(first.contains("terminal_margin_now=4/4"), "no clause echo:\n{first}");
+        assert!(first.contains("money=1/2"), "no clause echo:\n{first}");
+        // The header states what IS paired rather than the old blanket denial.
+        assert!(first.contains("paired"), "the header never mentions pairing:\n{first}");
+
+        let i1 = first.find("[1] candidate=v2").expect("the plain row");
+        let i2 = first.find("[2] candidate=probe1").expect("the named-base row");
+        let i3 = first.find("[3] candidate=A1").expect("the vector-base row");
+        let plain = &first[i1..i2];
+        let named_base = &first[i2..i3];
+        let vector_base = &first[i3..];
+
+        assert!(
+            !plain.contains('\u{0394}'),
+            "a table with NO clause gains no improvement column:\n{plain}",
+        );
+        assert!(named_base.contains("\u{0394} vs v2"), "no improvement column:\n{named_base}");
+        assert!(
+            !vector_base.contains("\u{0394} vs"),
+            "a vector-form base has no NAMED base to improve on:\n{vector_base}",
+        );
+        assert!(
+            vector_base.contains("no improvement interval"),
+            "an absent improvement column must say why:\n{vector_base}",
+        );
+    }
+
     /// A [`Corpus`] carrying nothing but cells — everything the split and the
     /// candidate columns read, and nothing they do not.
     fn test_corpus(cells: Vec<Cell>, games: u32) -> Corpus {
@@ -3293,6 +4368,8 @@ mod tests {
             games,
             snapshots: 0,
             proxy: Vec::new(),
+            anchor_rel: Vec::new(),
+            anchor_vp_product: QuantileSketch::default(),
             turns: QuantileSketch::default(),
             moves: QuantileSketch::default(),
             trigger: TriggerTally::default(),
@@ -3921,7 +4998,18 @@ mod tests {
         let mut rel = [0.0f64];
         let mut abs = [0.0f64];
         let mut cand: [f64; 0] = [];
-        row_values(&view, &rules, &WeightTable::V1, &rows, &[], &mut rel, &mut abs, &mut cand);
+        let mut base: [f64; 0] = [];
+        row_values(
+            &view,
+            &rules,
+            &WeightTable::V1,
+            &rows,
+            &[],
+            &mut rel,
+            &mut abs,
+            &mut cand,
+            &mut base,
+        );
         assert_eq!(rel[0], 0.0, "the relative form of a board-global column is zero by construction");
         assert_eq!(abs[0], 4.0, "the absolute form is the whole information this column carries");
 
@@ -3950,6 +5038,134 @@ mod tests {
         assert_eq!(column_value(CandidateColumn::Money, &view, 1, &rules), 13);
         seat_mut(&mut view, 0).money = 0;
         assert_eq!(column_value(CandidateColumn::Money, &view, 0, &rules), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // V3 C1 — `terminal_margin_now`
+    // -----------------------------------------------------------------------
+
+    /// How many applied moves one organic walk below plays before it stops.
+    ///
+    /// A PREFIX of a real game, not a truncated measurement: every state the
+    /// walk visits is reached by uniform-random legal play from a real setup,
+    /// which is all an equality pin needs. The cap is what keeps a per-edit
+    /// test off the long tail a uniform game has (`policy_diversity` measures
+    /// ~9,900 decision points for an uncapped uniform 4P game).
+    const WALK_MOVES: usize = 400;
+
+    /// Play one uniform-random organic game prefix, calling `at_turn_start` with
+    /// every state that OPENS a turn — the setup state included.
+    ///
+    /// Hand-rolled because the probe's tests have no state-yielding walk idiom:
+    /// `snapshot_game` folds a finished `GameRecord` into cells and yields the
+    /// caller no state, and `generate` hands back a `Corpus`. The turn-start
+    /// rule is `snapshot_game`'s verbatim — a change of `turn_number` — so the
+    /// states these pins visit are the states the instrument samples.
+    fn organic_turn_starts(
+        players: u8,
+        seed: u64,
+        rules: &Rules,
+        mut at_turn_start: impl FnMut(&GameState),
+    ) {
+        let pending =
+            new_game(GameConfig::for_player_count(players), rules, seed).expect("a standard setup");
+        let choices: Vec<_> = (0..players).map(|_| StartingOrderChoice::Keep(0)).collect();
+        let mut state = finalize_setup(pending, &choices).expect("the setup finalizes");
+        // Its own stream, keyed on the walk's seed: the pick must not perturb
+        // any seeded stream the engine itself derives from the setup seed.
+        let mut rng = ChaCha8Rng::seed_from_u64(seed ^ 0x5741_4c4b);
+        let mut last_turn = state.turn_number;
+        at_turn_start(&state);
+        for _ in 0..WALK_MOVES {
+            if is_game_over(&state) {
+                break;
+            }
+            let moves = get_legal_moves(&state, rules);
+            assert!(!moves.is_empty(), "a running {players}P game at seed {seed:#x} has no move");
+            let mv = moves[rng.gen_range(0..moves.len())].clone();
+            state = apply_move(&state, &mv, rules).expect("a move off the legal list applies");
+            if state.turn_number != last_turn {
+                last_turn = state.turn_number;
+                at_turn_start(&state);
+            }
+        }
+    }
+
+    /// **The C1 equality pin (V3 spec §2(a)).** At the MOVER's own view the
+    /// column equals `driven::true_margin_now` of the underlying state, over
+    /// organic play at 2P, 3P and 4P.
+    ///
+    /// The two arithmetics are independent. This column maxes
+    /// `ScoreStructure::final_total` over the seated non-dummy rivals of a
+    /// MASKED `PlayerView`; the reference ranks `final_result`'s official
+    /// standings over the FULL state and takes the best-RANKED rival. They
+    /// agree for two stated reasons: every component of a scored-now total is
+    /// public board state (an opponent's masked starting order scores nothing
+    /// while it sits in hand), and the standings sort on total first, so the
+    /// best-ranked rival's total IS the maximum total over rivals. Margin 0
+    /// stays not-a-win in both and no tie-break enters the margin.
+    ///
+    /// A failure here is a finding about ONE of the two arithmetics, and the
+    /// cycle stops to attribute it before any L1 figure is quoted (spec §2).
+    #[test]
+    fn the_terminal_margin_column_is_the_selection_side_truth_over_organic_play() {
+        let rules = Rules::standard();
+        let mut checked = 0usize;
+        let mut nonzero = 0usize;
+        let walks: [(u8, u64); 6] =
+            [(2, 0x51), (2, 0x52), (3, 0x53), (3, 0x54), (4, 0x55), (4, 0x56)];
+        for (players, seed) in walks {
+            organic_turn_starts(players, seed, &rules, |state| {
+                let mover = state.current_player;
+                let view = observe(state, mover).expect("a seated view");
+                let column =
+                    column_value(CandidateColumn::TerminalMarginNow, &view, mover.0, &rules);
+                let truth = yokohama_core::game::driven::true_margin_now(state, &rules);
+                assert_eq!(
+                    column, truth,
+                    "{players}P seed {seed:#x} turn {}: the view-side margin and the \
+                     selection-side truth disagree",
+                    state.turn_number,
+                );
+                checked += 1;
+                if column != 0 {
+                    nonzero += 1;
+                }
+            });
+        }
+        assert!(checked >= 60, "only {checked} snapshots checked — the walks stopped early");
+        assert!(nonzero > 0, "every checked margin was zero, which a stub also satisfies");
+    }
+
+    /// **The C1 antisymmetry pin (V3 spec §2(b)).** At 2P the two seats' columns
+    /// negate each other exactly: each has exactly one rival, so the two values
+    /// are `A − B` and `B − A` of the same two final totals.
+    #[test]
+    fn the_terminal_margin_column_negates_exactly_between_the_two_2p_seats() {
+        let rules = Rules::standard();
+        let mut checked = 0usize;
+        let mut nonzero = 0usize;
+        for seed in [0x61u64, 0x62] {
+            organic_turn_starts(2, seed, &rules, |state| {
+                let mut seats = [0i64; 2];
+                for seat in 0..2u8 {
+                    let view = observe(state, PlayerId(seat)).expect("a seated view");
+                    seats[usize::from(seat)] =
+                        column_value(CandidateColumn::TerminalMarginNow, &view, seat, &rules);
+                }
+                assert_eq!(
+                    seats[0], -seats[1],
+                    "seed {seed:#x} turn {}: the two 2P seats do not negate",
+                    state.turn_number,
+                );
+                checked += 1;
+                if seats[0] != 0 {
+                    nonzero += 1;
+                }
+            });
+        }
+        assert!(checked >= 20, "only {checked} snapshots checked — the walks stopped early");
+        assert!(nonzero > 0, "every 2P margin was zero, and 0 == -0 passes a stub");
     }
 
     /// Every variant is typeable, every token is unique, and nothing here moves
@@ -3996,6 +5212,18 @@ mod tests {
         for token in &tokens {
             assert!(message.contains(token), "the refusal never mentions {token:?}: {message}");
         }
+
+        // V3 T1: the registry is NINE, and the C1 column is in it. Spelled as a
+        // literal because the loops above are all self-referential — they read
+        // the array they are meant to be guarding, so a column dropped from it
+        // would take its own coverage with it.
+        assert_eq!(CANDIDATE_COLUMNS.len(), 9, "the candidate registry is nine columns at V3");
+        assert!(
+            CANDIDATE_COLUMNS.contains(&CandidateColumn::TerminalMarginNow),
+            "the C1 column is missing from the registry the command line reads",
+        );
+        assert_eq!(CandidateColumn::TerminalMarginNow.name(), "terminal_margin_now");
+        assert_eq!(CandidateColumn::TerminalMarginNow.token(), "terminal_margin_now");
 
         // The shipped feature list is untouched, the argument-free row vector is
         // the one every recorded appendix was rendered from, and the benchmark
@@ -4091,6 +5319,139 @@ mod tests {
             corpus.cells.iter().any(|cell| cell.abs[money] > 0.0),
             "no seat held a single yen all game",
         );
+    }
+
+    /// **The §4.2 anchor lines, over a real corpus.** One p90 per candidate
+    /// column plus the shared VP-term p50, each read off the sketch its line
+    /// names, and one observation folded per SNAPSHOT.
+    #[test]
+    fn the_anchor_stats_report_a_p90_per_candidate_column_and_the_shared_vp_p50() {
+        let rules = Rules::standard();
+        let columns =
+            [CandidateColumn::TerminalMarginNow, CandidateColumn::AchievementRaceProximity];
+        let (corpus, _) = generate(
+            2,
+            1,
+            ProbeContestant::Greedy { m: DEFAULT_RETREAT_SAMPLES },
+            &WeightTable::V1,
+            &rules,
+            SeedScheduleKind::Diagnostic(DEFAULT_MASTER),
+            true,
+            &columns,
+            &[],
+        )
+        .expect("a 2P greedy game completes");
+
+        let lines = render_anchor_stats(&corpus);
+        assert_eq!(
+            lines.len(),
+            2 + columns.len(),
+            "header + the shared line + one per column:\n{}",
+            lines.join("\n"),
+        );
+        assert!(lines[0].contains("ANCHOR STATS") && lines[0].contains("nearest-rank"), "{}", lines[0]);
+        assert_eq!(render_anchor_stats(&corpus), lines, "the lines must not depend on render order");
+
+        // Exactly one observation per snapshot, and only in the CANDIDATE slots.
+        assert!(corpus.snapshots > 0, "a corpus with no snapshots proves nothing");
+        assert_eq!(corpus.anchor_vp_product.len() as u64, corpus.snapshots);
+        for (slot, row) in corpus.rows.iter().enumerate() {
+            let n = corpus.anchor_rel[slot].len() as u64;
+            let expected = if matches!(row, Row::Candidate(_)) { corpus.snapshots } else { 0 };
+            assert_eq!(n, expected, "{} sketched {n} of {} snapshots", row.name(), corpus.snapshots);
+        }
+
+        // Each line reports THAT sketch's own nearest-rank statistic.
+        for column in columns {
+            let slot = corpus
+                .rows
+                .iter()
+                .position(|r| matches!(r, Row::Candidate(c) if *c == column))
+                .expect("every requested column is a row");
+            let p90 = corpus.anchor_rel[slot].quantile(9, 10).expect("a sketch with observations");
+            let line = lines
+                .iter()
+                .find(|l| l.contains(column.name()))
+                .unwrap_or_else(|| panic!("no line for {}:\n{}", column.name(), lines.join("\n")));
+            assert!(line.starts_with("  ANCHOR STATS"), "{line}");
+            assert!(line.contains(&format!("p90 = {p90}")), "{line} does not carry p90 {p90}");
+            assert!(line.contains(&format!("n = {}", corpus.snapshots)), "{line}");
+        }
+        let p50 = corpus.anchor_vp_product.quantile(1, 2).expect("a sketch with observations");
+        let shared = lines
+            .iter()
+            .find(|l| l.contains("vp_term_product_v2"))
+            .expect("the shared VP-term line");
+        assert!(shared.contains(&format!("p50 = {p50}")), "{shared}");
+
+        // Anti-vacuity: sketches of all zeros satisfy every equality above.
+        let margin = corpus
+            .rows
+            .iter()
+            .position(|r| matches!(r, Row::Candidate(c) if *c == CandidateColumn::TerminalMarginNow))
+            .expect("the C1 column is a row");
+        assert!(
+            corpus.anchor_rel[margin].quantiles().expect("observations").max > 0,
+            "the terminal margin was identically zero across a whole game",
+        );
+        assert!(p50 > 0, "the VP term product was zero at the median across a whole game");
+    }
+
+    /// The anchor lines' own arithmetic, on sketches with hand-derived order
+    /// statistics: nearest rank, the right sketch behind each line, and no
+    /// lines at all on a corpus that carries no candidate column.
+    #[test]
+    fn the_anchor_lines_are_nearest_rank_over_the_sketch_each_one_names() {
+        let mut corpus = test_corpus(Vec::new(), 0);
+        corpus.rows = Row::all(&[CandidateColumn::TerminalMarginNow]);
+        corpus.anchor_rel = vec![QuantileSketch::default(); corpus.rows.len()];
+        let slot = corpus
+            .rows
+            .iter()
+            .position(|r| matches!(r, Row::Candidate(_)))
+            .expect("one candidate row");
+        // 1..=10 ascending: nearest rank puts p90 at rank ceil(10 · 9/10) = 9,
+        // the 9th smallest of ten — 9 — where an INTERPOLATED p90 of 1..=10
+        // would read 9.1. The sketch's rule is nearest rank, and the two
+        // statistics are not the same number.
+        for v in 1..=10u64 {
+            corpus.anchor_rel[slot].observe(v);
+        }
+        // {4, 2, 6} out of order: p50 is the ceil(3 · 1/2) = 2nd smallest, 4.
+        for v in [4u64, 2, 6] {
+            corpus.anchor_vp_product.observe(v);
+        }
+
+        let lines = render_anchor_stats(&corpus);
+        assert_eq!(lines.len(), 3, "{}", lines.join("\n"));
+        // Whitespace-insensitive so the pin is on the CONTENT and its order,
+        // not on a column width a later row could widen.
+        assert_eq!(
+            lines[1].split_whitespace().collect::<Vec<_>>(),
+            ["ANCHOR", "STATS", "vp_term_product_v2", "(shared)", "p50", "=", "4", "(n", "=", "3)"],
+            "{}",
+            lines[1],
+        );
+        assert_eq!(
+            lines[2].split_whitespace().collect::<Vec<_>>(),
+            ["ANCHOR", "STATS", "terminal_margin_now", "p90", "=", "9", "(n", "=", "10)"],
+            "{}",
+            lines[2],
+        );
+
+        // An empty sketch reports no statistic rather than a zero.
+        let mut unobserved = test_corpus(Vec::new(), 0);
+        unobserved.rows = Row::all(&[CandidateColumn::Money]);
+        unobserved.anchor_rel = vec![QuantileSketch::default(); unobserved.rows.len()];
+        let empty = render_anchor_stats(&unobserved);
+        assert_eq!(empty.len(), 3, "{}", empty.join("\n"));
+        for line in &empty[1..] {
+            assert!(line.contains("= --"), "an empty sketch must not print a number: {line}");
+        }
+
+        // No candidate column, no lines at all — an argument-free run's report
+        // stays byte-identical to every recorded appendix.
+        assert!(render_anchor_stats(&test_corpus(Vec::new(), 0)).is_empty());
     }
 
     #[test]
