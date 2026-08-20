@@ -177,28 +177,6 @@ pub enum Contestant {
     MctsV1 { cap: Option<u32>, c_ppm: u32, scale: i64, m: u8, leaf: LeafRule },
 }
 
-/// `name@vN` or `name@vN{k=v,…}` — the ONE echo composer, over a descriptor's
-/// three parts rather than over a [`Contestant`].
-///
-/// Extracted from [`Contestant::echo`] (whose body this is) at the V3 adoption,
-/// because §5.1's pinned generating seat is a construction the `Contestant`
-/// grammar deliberately cannot name — its weight table is explicit rather than
-/// whatever the shipped constructors take today — and it must still echo in the
-/// one format every report, golden and CLI header reads. A second composer
-/// beside this one is exactly the drift the W1 grammar promotion exists to
-/// prevent, so there is one function and both callers route through it.
-pub(crate) fn descriptor_echo(
-    name: &str,
-    version: u32,
-    params: &BTreeMap<String, i64>,
-) -> String {
-    if params.is_empty() {
-        return format!("{name}@v{version}");
-    }
-    let knobs: Vec<String> = params.iter().map(|(k, v)| format!("{k}={v}")).collect();
-    format!("{name}@v{version}{{{}}}", knobs.join(","))
-}
-
 /// How a contestant resolves its dealt starting-order pair — the property spec
 /// §5.5 scopes the pairing doctrine on.
 ///
@@ -619,7 +597,11 @@ impl Contestant {
     /// record's two halves rather than over this string.
     pub fn echo(&self) -> String {
         let (name, version, params) = self.descriptor();
-        descriptor_echo(&name, version, &params)
+        if params.is_empty() {
+            return format!("{name}@v{version}");
+        }
+        let knobs: Vec<String> = params.iter().map(|(k, v)| format!("{k}={v}")).collect();
+        format!("{name}@v{version}{{{}}}", knobs.join(","))
     }
 
     /// Which starting-order rule this contestant plays (spec §5.5).
@@ -2584,20 +2566,11 @@ mod tests {
     /// The literals are what the module-private `contestant_echo` produced at
     /// HEAD `a61d642`, captured BEFORE the body moved onto the type. Both format
     /// branches are covered: knobless, and knob-bearing.
-    ///
-    /// **RE-CAPTURED at the V3 width move (2026-08-19).** `weights=` carries the
-    /// weight-table identity, which hashes every slot of both vectors — so
-    /// `Feature::ALL` widening 16 → 17 and the retained tables taking a `(0, 0)`
-    /// seventeenth slot moves the digest (`-7339724794018772210` →
-    /// `297092078925334212`) while V2's thirty-two numbers, and therefore the
-    /// play, do not move at all. Everything LEFT of `weights=` is what this
-    /// literal is really for and none of it moved: the controller name, the
-    /// version const, `eval_impl`, and the three knobs.
     #[test]
     fn the_echo_is_public_and_matches_the_spec_echo_format() {
         assert_eq!(
             Contestant::LOOKAHEAD_V1_DEFAULT.echo(),
-            "lookahead-v1@v2{b=4,eval_impl=3,k=1,m=8,weights=297092078925334212}",
+            "lookahead-v1@v2{b=4,eval_impl=3,k=1,m=8,weights=-7339724794018772210}",
         );
         assert_eq!(Contestant::Policy(RolloutPolicy::Uniform).echo(), "uniform@v1");
 

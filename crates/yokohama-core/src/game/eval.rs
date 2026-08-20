@@ -50,21 +50,15 @@
 //!
 //! # The score-structure mirrors (§2.2, landed at T2)
 //!
-//! Six of the seventeen features re-derive a piece of the rulebook's END
+//! Five of the sixteen features re-derive a piece of the rulebook's END
 //! SCORING from the view: the country-set bonus, the technology
 //! industry-value majority, the church and customs pawn majorities (with the
 //! 2-player dummy competitor priced exactly as the rules price it — finding
-//! D1), progress toward the three Achievement cards, and — since the V3
-//! mini-cycle's admission — nearness to the next Achievement CLAIM. They are
-//! DECOMPOSED, one feature each, never one projected-score scalar — research
-//! notes R1-3 measured `country_bonus_now` at AUC 0.6212 early against the whole
+//! D1), and progress toward the three Achievement cards. They are DECOMPOSED,
+//! one feature each, never one projected-score scalar — research notes R1-3
+//! measured `country_bonus_now` at AUC 0.6212 early against the whole
 //! projected scalar's 0.5806, so the aggregate is strictly worse than its own
 //! best component.
-//!
-//! The sixth is the odd one and its doc says so: [`achievement_race_proximity`]
-//! is not a piece of end scoring at all, it is a distance TO one, and it is
-//! derived here because it walks the same three cards the fifth walks. It is
-//! deliberately absent from [`ScoreStructure::final_total`].
 //!
 //! They are re-derivations, not calls: this file may not reach into the
 //! engine's scoring code (§2.1's guard), so the arithmetic is written here
@@ -72,12 +66,11 @@
 //! per-player breakdown over organic play in `tests/eval_core.rs`. Mirror plus
 //! drift pin is this repo's standard answer to a duplicated rule.
 //!
-//! **Cost shape, stated because it is easy to get wrong.** Four of the six
+//! **Cost shape, stated because it is easy to get wrong.** Four of the five
 //! are properties of the WHOLE table (a majority is a ranking over seats), not
 //! of one seat, so computing them inside a per-`(feature, player)` accessor
-//! would pay each ranking once per feature per player — up to seventeen times a
-//! call at 4P. The two per-seat ones both walk the three Achievement cards, so
-//! they have the same shape one rung down. [`ScoreStructure::derive`] computes every one of them ONCE per
+//! would pay each ranking once per feature per player — up to sixteen times a
+//! call at 4P. [`ScoreStructure::derive`] computes every one of them ONCE per
 //! [`score`] call into stack arrays indexed by seat, and the accessors just
 //! index. Nothing here allocates.
 //!
@@ -113,19 +106,10 @@
 //! tensions were acted on in the v2 rounds; the artifact stays the record of
 //! what was measured when.
 //!
-//! The FEATURE LIST was unchanged across both freezes at sixteen. The one
-//! feature-level change v2 made was inside a value rather than in the list:
+//! The FEATURE LIST is unchanged across both freezes at sixteen. The one
+//! feature-level change v2 made is inside a value rather than in the list:
 //! [`Feature::AchievementProgressSum`] now drops the legs of cards the valued
 //! seat has already claimed (T3's post-claim filter).
-//!
-//! **The V3 mini-cycle moved it to seventeen** (2026-08-19, spec
-//! `docs/plans/2026-08-19-phase3.5c-v3-spec.md` §5): the one candidate that
-//! cleared the pre-registered L2 rule, [`Feature::AchievementRaceProximity`], is
-//! appended last and priced in [`WeightTable::V3_DRAFT`] only. Every retained
-//! table pads the new slot with `(0, 0)`, so nothing that ships has changed what
-//! it plays — see `V3_DRAFT`'s doc for what the admission does and does not
-//! establish, and [`EVAL_IMPL_VERSION`]'s `4` entry for the identity re-keying
-//! the padding causes.
 
 use crate::game::rules::Rules;
 use crate::types::{AchievementType, Country, PlayerId, PlayerView, TurnPhase, VisiblePlayer};
@@ -146,9 +130,7 @@ use crate::types::{AchievementType, Country, PlayerId, PlayerView, TurnPhase, Vi
 /// corpus reader wants a version for; the finer key that says whether two
 /// records were produced by the same thirty numbers is the weight-table identity
 /// digest the greedy rung stamps beside this const in provenance, and that key
-/// did NOT move (`0xe1fedd5efc49d0f6` on both sides of that freeze — the
-/// SIXTEEN-wide spelling of V1; see `4` below for what the V3 width move did to
-/// every digest in this file).
+/// did NOT move (`0xe1fedd5efc49d0f6` on both sides of that freeze).
 ///
 /// **3 = THE PHASE-3.5c v2 FREEZE** (2026-08-10; protocol
 /// `docs/plans/2026-08-09-phase3.5c-evaluator-v2-protocol.md` §7, mechanics
@@ -160,8 +142,7 @@ use crate::types::{AchievementType, Country, PlayerId, PlayerView, TurnPhase, Vi
 ///   re-mix off R0's two contradicted early terms, plus the warehouse flatten)
 ///   and seven more in round 2 (the late church/five-power crossing, the
 ///   hand-size softening, the early extension). Thirty-two numbers, weight
-///   identity `0x9a240f2ff7624b0e` against V1's `0xe1fedd5efc49d0f6` (both the
-///   SIXTEEN-wide spellings; see `4` below).
+///   identity `0x9a240f2ff7624b0e` against V1's `0xe1fedd5efc49d0f6`.
 /// * **T3's post-claim filter reaches the call site** —
 ///   [`Feature::AchievementProgressSum`] is computed by
 ///   [`achievement_progress_postclaim_sum`] in [`ScoreStructure::derive`], so a
@@ -180,31 +161,6 @@ use crate::types::{AchievementType, Country, PlayerId, PlayerView, TurnPhase, Vi
 /// table, the 3.4 ADR's cells, the R0 corpora, and every round-screen figure in
 /// the ledger — each of which is still a valid record of what it measured, and
 /// none of which may be pooled with a v2 figure.
-///
-/// **4 = NOT YET TAKEN, AND THE V3 WIDTH MOVE IS WHY IT IS NAMED HERE ANYWAY.**
-/// The V3 mini-cycle's adoption commit (2026-08-19) widened [`Feature::ALL`]
-/// 16 → 17 with [`Feature::AchievementRaceProximity`] and padded every retained
-/// table's new slot with `(0, 0)` — spec §5's retention contract. **This const
-/// does NOT move for that**, deliberately: a zero weight contributes a zero
-/// product, so `score` and `explain` return exactly what they returned, move for
-/// move (measured: the committed evaluator golden's every non-echo value
-/// reproduced). What DID move is the weight-table identity digest, because it
-/// hashes every slot of both vectors:
-///
-/// | table | sixteen-wide | seventeen-wide (HEAD) |
-/// |---|---|---|
-/// | `V1` / `PRE_FREEZE_2026_07_27` | `0xe1fedd5efc49d0f6` | `0xd35eaafd3bdbcbdc` |
-/// | `V2` / `V2_DRAFT` | `0x9a240f2ff7624b0e` | `0x041f7babf5ed46c4` |
-/// | `V3_DRAFT` | — | `0xaf8160c4facd1d90` |
-///
-/// **Read that table as a RE-KEYING, never a re-pricing.** Every figure recorded
-/// under a sixteen-wide digest is still a record of exactly the thirty-two
-/// numbers it names, and those numbers are still in this file, unmoved. A corpus
-/// reader who joins on the digest alone will see two keys for one table and
-/// should join on this row instead. The bump to `4` belongs to a commit that
-/// SHIPS a different table — promoting [`WeightTable::V3_DRAFT`], if the cycle's
-/// behavioural gates get there — together with every per-controller version
-/// const, exactly as bump 3 was taken.
 pub const EVAL_IMPL_VERSION: u32 = 3;
 
 /// Full progress, in the ppm units [`progress_ppm`] reports.
@@ -253,10 +209,8 @@ pub const HAND_CORE_RESERVE: u8 = 2;
 // Features
 // ---------------------------------------------------------------------------
 
-/// The seventeen relative features of evaluator v1, in THE canonical order
-/// (spec §2.2's list, read top to bottom, AMENDED AT T3 by the in-hand split and
-/// EXTENDED at the V3 mini-cycle's one admission — appended last, never
-/// inserted, because every earlier index is a recorded weight-vector slot).
+/// The sixteen relative features of evaluator v1, in THE canonical order
+/// (spec §2.2's list, read top to bottom, AMENDED AT T3 by the in-hand split).
 /// The order is load-bearing: it indexes both weight vectors, it is the order
 /// `explain` reports terms in, and T4's probe reports per-feature figures
 /// against it.
@@ -331,26 +285,11 @@ pub enum Feature {
     /// Order cards in hand. R1-7: 0.4745/0.4171/0.3753 — NEGATIVE and growing
     /// (an unfulfilled order is a commitment, not an asset).
     HandSize,
-    /// How near this seat is to its NEXT achievement claim, negated so that
-    /// nearer reads HIGHER — the V3 mini-cycle's one admitted candidate
-    /// (`docs/plans/2026-08-19-phase3.5c-v3-round1-evidence.md` §2/§4). Value
-    /// arithmetic and the three decisions behind it:
-    /// [`achievement_race_proximity`].
-    ///
-    /// **A score-structure feature** ([`Feature::is_score_structure`] answers
-    /// TRUE): it reads the same achievement legs
-    /// [`Feature::AchievementProgressSum`] reads, so it is derived ONCE per
-    /// seat in [`ScoreStructure::derive`] beside them rather than recomputed
-    /// per accessor call. It is NOT a component of
-    /// [`ScoreStructure::final_total`] — proximity is not points, and folding
-    /// it into a final total would put a positional quantity into §2.6's
-    /// terminal ranking.
-    AchievementRaceProximity,
 }
 
 impl Feature {
     /// The canonical order. `ALL[f.index()] == f` for every feature.
-    pub const ALL: [Feature; 17] = [
+    pub const ALL: [Feature; 16] = [
         Feature::VictoryPoints,
         Feature::CountryBonusNow,
         Feature::TechBonusNow,
@@ -367,7 +306,6 @@ impl Feature {
         Feature::AchievementProgressSum,
         Feature::MercenariesTotal,
         Feature::HandSize,
-        Feature::AchievementRaceProximity,
     ];
 
     /// Length of [`Feature::ALL`] and of each weight vector.
@@ -397,7 +335,6 @@ impl Feature {
             Feature::AchievementProgressSum => 13,
             Feature::MercenariesTotal => 14,
             Feature::HandSize => 15,
-            Feature::AchievementRaceProximity => 16,
         }
     }
 
@@ -421,25 +358,15 @@ impl Feature {
             Feature::AchievementProgressSum => "achievement_progress_sum",
             Feature::MercenariesTotal => "mercenaries_total",
             Feature::HandSize => "hand_size",
-            Feature::AchievementRaceProximity => "achievement_race_proximity",
         }
     }
 
-    /// True for the six features whose value comes out of [`ScoreStructure`]
-    /// rather than off a field of the player — §2.2's four bonus mirrors,
-    /// achievement progress, and V3's race proximity. The structure is computed
-    /// once per [`score`] call, and this predicate is what lets the tests assert
-    /// that grouping instead of trusting a comment.
-    ///
-    /// **The set is not exactly "re-derived end scoring" any more, and the
-    /// difference is worth a sentence.** Five of the six ARE re-derived end
-    /// scoring and are what the drift pin holds against the engine's own
-    /// breakdown. The sixth, [`Feature::AchievementRaceProximity`], is a
-    /// DISTANCE to a claim rather than a piece of the final score; it answers
-    /// true because it is derived in the same pass off the same cards, and it is
-    /// deliberately outside [`ScoreStructure::final_total`] and outside the
-    /// drift pin's breakdown comparison — there is no engine quantity for it to
-    /// drift from.
+    /// True for the five features whose value is re-derived END SCORING
+    /// arithmetic rather than a field read (§2.2's four bonus mirrors plus
+    /// achievement progress). Their values come from [`ScoreStructure`], which
+    /// is computed once per [`score`] call — this predicate is what lets the
+    /// tests assert that grouping instead of trusting a comment, and it is the
+    /// set the drift pin holds against the engine's own breakdown.
     pub fn is_score_structure(self) -> bool {
         matches!(
             self,
@@ -448,7 +375,6 @@ impl Feature {
                 | Feature::ChurchBonusNow
                 | Feature::CustomsBonusNow
                 | Feature::AchievementProgressSum
-                | Feature::AchievementRaceProximity
         )
     }
 }
@@ -486,11 +412,9 @@ impl WeightTable {
     /// to the pre-filter tree and reproduce only at their recorded commits —
     /// the freeze review's MUST-1), the sign and ordering pins
     /// below, and the scenarios whose claim is table-independent. Its identity
-    /// digest was `0xe1fedd5efc49d0f6` and is `0xd35eaafd3bdbcbdc` at HEAD — the
-    /// same thirty-two numbers re-keyed by the V3 width move's `(0, 0)` padding,
-    /// with the reasoning and the whole table in [`EVAL_IMPL_VERSION`]'s `4`
-    /// entry. Everything this doc says about T4 is a statement about 2026-07-27
-    /// and stays true; the v2 freeze's own register is on `V2`.
+    /// digest is `0xe1fedd5efc49d0f6`. Everything this doc says about T4 is a
+    /// statement about 2026-07-27 and stays true; the v2 freeze's own register
+    /// is on `V2`.
     ///
     /// # What the freeze did, precisely
     ///
@@ -503,8 +427,7 @@ impl WeightTable {
     /// 12,000 (game × seat × tercile) cells, diagnostic master
     /// `0xE7A1_2026_0727_0001`, bootstrap B = 2,000 clustered on games.
     ///
-    /// **Result: the rule fired on ZERO of the sixteen features then measured,
-    /// so the pass
+    /// **Result: the rule fired on ZERO of the sixteen features, so the pass
     /// moved zero weights and this table IS the first cut.** Twenty-NINE of the
     /// thirty-two (feature × endpoint) signs came back CONFIRMED — interval
     /// wholly on the shipped side of 0.5 — and the other three were
@@ -631,14 +554,13 @@ impl WeightTable {
     /// authority on the order, and the sign test
     /// (`frozen_v1_weight_signs_follow_the_research_notes`) is what would
     /// actually catch a mis-indexed literal — it pins the sign of every one of
-    /// the sixteen measured slots (the seventeenth is the V3 admission's
-    /// PADDING, exempt by name in that test and required to be `(0, 0)`), with
+    /// the sixteen slots, with
     /// `the_hand_split_orders_core_above_board_above_excess_in_both_vectors`
     /// pinning the two ordering inequalities the assistant triple turns on.
     pub const V1: WeightTable = WeightTable {
-        //     [vp, ctry, tech, chur, cust, hCORE, hEXC, ware, brd, shop, trad, 5pw, imp, achv, merc, hnd#, prox]
-        early: [10,   12,    6,   -4,    3,    30,    4,  -10,  14,   12,   15,   8,   5,    2,    3,   -3,    0],
-        late:  [40,   30,   20,   16,   20,    20,    2,   -4,  10,   20,   25,  10,   8,    4,    4,   -6,    0],
+        //     [vp, ctry, tech, chur, cust, hCORE, hEXC, ware, brd, shop, trad, 5pw, imp, achv, merc, hnd#]
+        early: [10,   12,    6,   -4,    3,    30,    4,  -10,  14,   12,   15,   8,   5,    2,    3,   -3],
+        late:  [40,   30,   20,   16,   20,    20,    2,   -4,  10,   20,   25,  10,   8,    4,    4,   -6],
     };
 
     /// The hand-set first cut that GENERATED the T4 freeze corpus — the
@@ -668,9 +590,9 @@ impl WeightTable {
     /// record too, and the equality pin below is a statement about 2026-07-27
     /// that both of them still satisfy.
     pub const PRE_FREEZE_2026_07_27: WeightTable = WeightTable {
-        //     [vp, ctry, tech, chur, cust, hCORE, hEXC, ware, brd, shop, trad, 5pw, imp, achv, merc, hnd#, prox]
-        early: [10,   12,    6,   -4,    3,    30,    4,  -10,  14,   12,   15,   8,   5,    2,    3,   -3,    0],
-        late:  [40,   30,   20,   16,   20,    20,    2,   -4,  10,   20,   25,  10,   8,    4,    4,   -6,    0],
+        //     [vp, ctry, tech, chur, cust, hCORE, hEXC, ware, brd, shop, trad, 5pw, imp, achv, merc, hnd#]
+        early: [10,   12,    6,   -4,    3,    30,    4,  -10,  14,   12,   15,   8,   5,    2,    3,   -3],
+        late:  [40,   30,   20,   16,   20,    20,    2,   -4,  10,   20,   25,  10,   8,    4,    4,   -6],
     };
 
     /// **THE SHIPPED TABLE since the Phase-3.5c freeze (2026-08-10)** — what
@@ -678,11 +600,7 @@ impl WeightTable {
     /// arena contestant evaluate with. It is the evaluator-v2 protocol's
     /// iteration candidate promoted verbatim: the numbers below are the ones
     /// round 2 adopted, unchanged by the promotion, weight identity
-    /// **`0x9a240f2ff7624b0e`** at the freeze (V1's was `0xe1fedd5efc49d0f6`)
-    /// and **`0x041f7babf5ed46c4`** at HEAD — the same thirty-two numbers
-    /// re-keyed by the V3 width move's `(0, 0)` padding, never re-priced;
-    /// [`EVAL_IMPL_VERSION`]'s `4` entry carries the whole table and the reason
-    /// a re-keying is not a bump.
+    /// **`0x9a240f2ff7624b0e`** (V1's is `0xe1fedd5efc49d0f6`).
     ///
     /// [`WeightTable::V1`] is RETAINED VERBATIM beside it — byte-identical to
     /// what it was before the freeze — exactly as
@@ -765,9 +683,7 @@ impl WeightTable {
     /// is in fact the best of the nineteen on ALL SIX (corpus × stage) held-out
     /// columns, which is what makes a nineteen-way held-out selection
     /// defensible at this N. **`m22`'s weight identity was
-    /// `0x73bf3f54421717a8`** (the incumbent's was `0xe1fedd5efc49d0f6`) — both
-    /// sixteen-wide spellings, and `m22` is unrecoverable from this tree anyway,
-    /// so these two stay as the historical record they always were; the two
+    /// `0x73bf3f54421717a8`** (the incumbent's is `0xe1fedd5efc49d0f6`); the two
     /// no longer collided, so a screen against the draft became a real cell
     /// rather than the null one it had been. The identity the table carries
     /// TODAY is round 2's, below.
@@ -847,12 +763,8 @@ impl WeightTable {
     /// `trad_l 25→18` and the early `brd 6→5, exc 5→4` step, both below baseline
     /// on their home stages, the second negative on the greedy corpus too — which
     /// is the merge rule doing its job rather than a grid that happened to agree
-    /// with itself. **Weight identity `0x9a240f2ff7624b0e`**, verified at the
-    /// freeze commit against the probe's own digest of the two arrays below —
-    /// and `0x041f7babf5ed46c4` at HEAD, the V3 width move's re-keying of the
-    /// same two arrays (the pin that carries it is `eval_screen`'s frozen
-    /// identity test, which now asserts the sixteen values beside the digest so
-    /// a re-keying and a re-pricing cannot look the same).
+    /// with itself. **Weight identity `0x9a240f2ff7624b0e`**, verified at this
+    /// commit against the probe's own digest of the two arrays below.
     ///
     /// Read the honest limits with these numbers too, and they are round 1's
     /// unchanged: the AUCs are measured on INCUMBENT-play corpora and are
@@ -938,18 +850,16 @@ impl WeightTable {
     /// * **Two-player only.** Every corpus, fit, scenario and screen in the
     ///   trail is 2P. Nothing has measured what these weights do at 3–4P.
     pub const V2: WeightTable = WeightTable {
-        //     [vp, ctry, tech, chur, cust, hCORE, hEXC, ware, brd, shop, trad, 5pw, imp, achv, merc, hnd#, prox]
-        early: [ 1,   20,   14,   -4,    3,    30,    5,  -10,   6,   12,   15,   8,   5,    2,    3,   -1,    0],
-        late:  [40,   30,   20,    8,   20,    20,    2,  -10,  10,   20,   25,  14,   8,    4,    4,   -2,    0],
+        //     [vp, ctry, tech, chur, cust, hCORE, hEXC, ware, brd, shop, trad, 5pw, imp, achv, merc, hnd#]
+        early: [ 1,   20,   14,   -4,    3,    30,    5,  -10,   6,   12,   15,   8,   5,    2,    3,   -1],
+        late:  [40,   30,   20,    8,   20,    20,    2,  -10,  10,   20,   25,  14,   8,    4,    4,   -2],
     };
 
     /// **THE ITERATION CANDIDATE, retained as an ALIAS of [`WeightTable::V2`]
     /// now that its job is done.** Through rounds 1–3 this const WAS the
     /// candidate — it moved twice and every round instrument named it. The
     /// freeze promoted its final value to `V2` verbatim, so the two hold the
-    /// same thirty-two numbers and the same identity — `0x9a240f2ff7624b0e`
-    /// then, `0x041f7babf5ed46c4` since the V3 width move re-keyed both together
-    /// (they are one const; an alias cannot drift from what it aliases).
+    /// same thirty-two numbers and the same identity `0x9a240f2ff7624b0e`.
     ///
     /// **Why it is kept rather than deleted, and what that buys.** The round
     /// commands are committed, in the ledger rows and in both evidence
@@ -969,47 +879,6 @@ impl WeightTable {
     ///
     /// Prefer `V2` in new code. This spelling exists for the committed commands.
     pub const V2_DRAFT: WeightTable = Self::V2;
-
-    /// **THE V3 MINI-CYCLE'S CANDIDATE TABLE — padded [`WeightTable::V2`] plus
-    /// the one admitted candidate, and SHIPPED BY NOTHING.**
-    ///
-    /// `V2_DRAFT`'s job, one cycle later: `examples/eval_screen_round`'s
-    /// candidate arm reads this const and the incumbent arm reads `V2`, so an
-    /// adoption is a commit that moves THIS table and nothing else. Every
-    /// constructor, every arena contestant, the CLI's bot seats and the driven
-    /// harness's `root_table` all still name `V2`. Promotion — if it comes — is
-    /// the freeze commit's move, together with [`EVAL_IMPL_VERSION`] and every
-    /// per-controller version const (L12).
-    ///
-    /// **The rung is V3-R1's SELECTED one and its provenance is worth carrying**
-    /// (`docs/plans/2026-08-19-phase3.5c-v3-round1-evidence.md` §2): on the fixed
-    /// V3-L corpus the candidate's fit-half improvement at its MID stage was
-    /// best at the ladder's BOTTOM rung `(40, 40)` — `−0.0004`, the least
-    /// negative — and deteriorated monotonically above it (`r2 −0.0030` ·
-    /// `r3 −0.0130` · `r4 −0.0395` · `r5 −0.0831`). The selected rung's HELD-OUT
-    /// Δ was `+0.0003 [−0.0035, +0.0041]`: positive, and INSIDE its own interval
-    /// — a noise-level pass, visible as such, which is why the behavioural gates
-    /// rather than this number are what the cycle turns on.
-    ///
-    /// **A flat `(r, r)` pair is a starting point, not a finding.** The same
-    /// evidence records LATE Δ at this rung as `−0.0007 [−0.0027, +0.0012]`, so
-    /// the term must not be priced into late distortion; stage shaping is the
-    /// scenario step's job, within spec §6's bounds (below 40 needs a recorded
-    /// rationale). Nothing here has measured a magnitude — the L2 fit INFORMED a
-    /// hand-set number, which is not the same as tuning one.
-    pub const V3_DRAFT: WeightTable = {
-        let mut table = Self::V2;
-        // The admitted feature's slot. `Feature::index` is not a `const fn`, so
-        // the appended-last invariant is spelled here as the last index and
-        // ASSERTED by name in `v3_draft_is_padded_v2_plus_the_selected_proximity_rung`
-        // — which also holds every other slot equal to `V2`, so a further
-        // admission that stole this index would fail loudly rather than take
-        // this weight.
-        let slot = Feature::COUNT - 1;
-        table.early[slot] = 40;
-        table.late[slot] = 40;
-        table
-    };
 
     /// The all-zero table: a CONSTANT evaluator. Not a curiosity — spec §3.2's
     /// degeneracy pin and §0.2's targeted-mutation authoring rule both need one,
@@ -1074,8 +943,8 @@ pub struct TermContribution {
 /// used — while the raw `viewer_value`/`opponent_value` stay populated so a
 /// terminal explanation is still readable. The `terminal` value is then the
 /// whole score, and it is a named additive contribution rather than a
-/// [`Feature`] because it is not a feature: a rank is not a term of the linear
-/// form, whatever the list's width happens to be.
+/// seventeenth `Feature` because it is not a feature: §2.2's list is sixteen
+/// entries and a rank is not one of them.
 ///
 /// `PartialEq`/`Eq` are load-bearing, not conveniences: spec §0.4(ii)'s
 /// determinization cell asserts that a candidate's explanation is EQUAL across
@@ -1120,8 +989,8 @@ pub fn score(view: &PlayerView, rules: &Rules, weights: &WeightTable) -> i64 {
     let Some(me) = seated_viewer(view) else {
         return 0;
     };
-    // ONCE per call, not once per (feature, player): four of the six
-    // score-structure derivations are rankings over the whole table, so the
+    // ONCE per call, not once per (feature, player): four of the five
+    // score-structure re-derivations are rankings over the whole table, so the
     // naive shape would pay each of them `players` times over.
     let structure = ScoreStructure::derive(view, rules);
     if let Some(terminal) = terminal_standing_of(view, me, &structure) {
@@ -1154,9 +1023,8 @@ pub fn explain(view: &PlayerView, rules: &Rules, weights: &WeightTable) -> Expla
     let progress = progress_ppm(view, rules);
     let structure = ScoreStructure::derive(view, rules);
     // A view without its own seat is degenerate rather than fatal (`observe`
-    // cannot make one; a fixture can). It reports one zero term per feature and
-    // a zero total — the same answer `score` gives — instead of an empty
-    // explanation.
+    // cannot make one; a fixture can). It reports sixteen zero terms and a zero
+    // total — the same answer `score` gives — instead of an empty explanation.
     let me = seated_viewer(view);
     let terminal = me.and_then(|m| terminal_standing_of(view, m, &structure));
 
@@ -1289,12 +1157,11 @@ const DUMMY_SLOT: usize = MAX_SEATS;
 /// Three of these (technology, church, customs) are RANKINGS: computing one
 /// seat's value requires ranking every seat, so an accessor that computed them
 /// on demand would pay `O(track + seats)` once per `(feature, player)` pair —
-/// twelve rankings per 4P `score` call for three features. Deriving them once
-/// into stack arrays makes a `score` call pay each exactly once. The other three
-/// (country, achievement progress, race proximity) are per-seat but are folded
-/// in here anyway, so that "the score-structure features come from the
-/// structure" has no exceptions to remember — and the last two share a walk over
-/// the same three cards.
+/// sixteen rankings per 4P `score` call for four features. Deriving them once
+/// into stack arrays makes a `score` call pay each exactly once. The other two
+/// (country, achievement progress) are per-seat but are folded in here anyway,
+/// so that "the score-structure features come from the structure" has no
+/// exceptions to remember.
 ///
 /// # What the arrays hold
 ///
@@ -1337,11 +1204,6 @@ pub struct ScoreStructure {
     pub remainder: [i64; MAX_SEATS],
     /// Summed progress toward the three Achievement cards in play.
     pub achievement: [i64; MAX_SEATS],
-    /// Nearness to the seat's NEXT achievement claim, negated
-    /// ([`achievement_race_proximity`]). Derived here with the other
-    /// achievement arithmetic and deliberately NOT summed into
-    /// [`final_total`](Self::final_total) — proximity is not points.
-    pub race_proximity: [i64; MAX_SEATS],
 }
 
 impl ScoreStructure {
@@ -1356,7 +1218,6 @@ impl ScoreStructure {
             customs: [0; MAX_SEATS],
             remainder: [0; MAX_SEATS],
             achievement: [0; MAX_SEATS],
-            race_proximity: [0; MAX_SEATS],
         };
 
         for player in &view.players {
@@ -1370,11 +1231,6 @@ impl ScoreStructure {
             // cards THAT row's player has already claimed — an opponent's claim
             // leaves this seat's leg live, which is the rules' own shape.
             s.achievement[i] = achievement_progress_postclaim_sum(view, player);
-            // V3's admitted candidate, derived HERE for the reason the four
-            // majorities are: it walks the same three cards the line above
-            // walks, so an accessor computing it per `(feature, player)` call
-            // would pay that walk twice per seat per score.
-            s.race_proximity[i] = achievement_race_proximity(view, player);
         }
 
         technology_majority(view, rules, &mut s.tech);
@@ -1405,7 +1261,6 @@ impl ScoreStructure {
             Feature::ChurchBonusNow => structured(&self.church),
             Feature::CustomsBonusNow => structured(&self.customs),
             Feature::AchievementProgressSum => structured(&self.achievement),
-            Feature::AchievementRaceProximity => structured(&self.race_proximity),
 
             // The piecewise split, and the only place its shape lives: the two
             // raw values SUM to `in_hand` at every count, so the pair carries
@@ -1753,64 +1608,6 @@ pub fn achievement_progress_postclaim_sum(view: &PlayerView, player: &VisiblePla
         sum += i64::from(current.min(needed));
     }
     sum
-}
-
-/// **How near this seat is to its NEXT achievement claim, negated so that
-/// nearer reads HIGHER** — [`Feature::AchievementRaceProximity`]'s value, and
-/// the V3 mini-cycle's one admitted candidate.
-///
-/// Over the cards this seat has not already claimed, each card's remaining gap
-/// is `needed - min(current, needed)` on [`achievement_progress`]'s own
-/// arithmetic (the AND-shaped cards' per-leg caps included), and the value is
-/// minus the SMALLEST of them.
-///
-/// **Where it came from, and why it lives here rather than in the probe.** It
-/// was a probe-side CANDIDATE COLUMN from round 3 of the v2 protocol until the
-/// V3 mini-cycle admitted it (evidence
-/// `docs/plans/2026-08-19-phase3.5c-v3-round1-evidence.md` §2/§4: selected rung
-/// `(40, 40)`, held-out delta `+0.0003 [-0.0035, +0.0041]` at MID — a pass at
-/// the noise floor, recorded as such). A graduating column MOVES its arithmetic
-/// here and the probe's column re-points at this function, so the thing that was
-/// screened and the thing that ships can never become two things — the same
-/// discipline [`achievement_progress_postclaim_sum`] landed under.
-///
-/// **Three decisions, each recorded rather than implied:**
-///
-/// * **Cards claimed by an OPPONENT stay live.** The engine's claim gate
-///   refuses only a REPEAT claim by the SAME seat, so a card an opponent has
-///   taken is still worth its printed subsequent value to this seat, and
-///   dropping it would price a reachable reward at nothing. This is also why the
-///   value is SELF-guidance rather than a denial term: the owner's 2026-08-09
-///   canon batch rules achievement denial explicitly NOT canon and names
-///   achievements agenda-setters instead.
-/// * **The cap is inherited**, so hoarding past a requirement does not read as
-///   extra nearness — [`achievement_progress_sum`]'s reasoning exactly.
-/// * **A seat that has claimed all three reads 0**, which COLLIDES with the
-///   reading for a seat standing on a claimable card. Both are "nothing left to
-///   chase"; the state needs three claims by one seat to occur at all; and the
-///   alternative — a sentinel outside the scale — would put a discontinuity into
-///   a quantity whose whole content is an ordering. Stated so a reader of a
-///   report knows which zero they are looking at.
-///
-/// **NOT a component of [`ScoreStructure::final_total`].** Proximity is not
-/// points: it prices being NEAR a claim, and a final total that counted it would
-/// let §2.6's terminal ranking pay for progress that never landed. It is derived
-/// beside the scoring mirrors because it reads the same legs they read, not
-/// because it is one of them.
-///
-/// **View-measurable**, which is what makes it admissible at all: card progress
-/// and `claimed_by` are public state any seated player reads off the table.
-pub fn achievement_race_proximity(view: &PlayerView, player: &VisiblePlayer) -> i64 {
-    let mut nearest: Option<u32> = None;
-    for card in &view.achievements {
-        if card.claimed_by.contains(&player.id) {
-            continue;
-        }
-        let (current, needed) = achievement_progress(view, player, card.achievement_type);
-        let gap = needed.saturating_sub(current.min(needed));
-        nearest = Some(nearest.map_or(gap, |best| best.min(gap)));
-    }
-    -i64::from(nearest.unwrap_or(0))
 }
 
 /// One player's `(current, needed)` progress toward one achievement, mirroring
@@ -2265,12 +2062,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_feature_list_is_seventeen_features_in_a_canonical_order() {
+    fn the_feature_list_is_sixteen_features_in_a_canonical_order() {
         assert_eq!(
             Feature::COUNT,
-            17,
-            "spec §2.2's list is sixteen entries since T3's in-hand split, plus the V3 \
-             mini-cycle's one admitted candidate",
+            16,
+            "spec §2.2's list is sixteen entries since T3's in-hand split",
         );
         for (i, feature) in Feature::ALL.into_iter().enumerate() {
             assert_eq!(feature.index(), i, "{} is not at its own index", feature.name());
@@ -2281,106 +2077,8 @@ mod tests {
         let unique = names.len();
         names.dedup();
         assert_eq!(names.len(), unique, "duplicate feature name");
-        // The exact SIX whose values come from `ScoreStructure` — §2.2's four
-        // bonus mirrors, achievement progress, and V3's race proximity.
-        assert_eq!(Feature::ALL.iter().filter(|f| f.is_score_structure()).count(), 6);
-    }
-
-    /// **V3's admitted candidate, appended LAST** (`docs/plans/2026-08-19-phase3.5c-v3-spec.md`
-    /// §5; the L2 evidence artifact's §4 verdict). The width claim leads every
-    /// assertion here on purpose: `Feature::ALL` is the hand-maintained literal
-    /// with no compiler-checked relation to the variant set, so a variant given
-    /// its match arms and left out of `ALL` scores zero silently — this is the
-    /// pin that refuses that state.
-    #[test]
-    fn the_seventeenth_feature_is_the_achievement_race_proximity_column() {
-        assert_eq!(Feature::COUNT, 17, "the V3 admission moves the list 16 -> 17");
-        assert_eq!(
-            Feature::ALL.last().copied(),
-            Some(Feature::AchievementRaceProximity),
-            "the admitted feature is APPENDED, never inserted: every earlier index is a \
-             recorded weight-vector slot",
-        );
-        assert_eq!(Feature::AchievementRaceProximity.index(), 16);
-        assert_eq!(Feature::AchievementRaceProximity.name(), "achievement_race_proximity");
-        assert!(
-            Feature::AchievementRaceProximity.is_score_structure(),
-            "it reads the achievement legs the structure already derives",
-        );
-        assert_eq!(
-            Feature::ALL.iter().filter(|f| f.is_score_structure()).count(),
-            6,
-            "five mirrors plus the proximity column",
-        );
-    }
-
-    /// **Spec §5's RETENTION CONTRACT.** Physical byte-verbatim is impossible
-    /// across a width change, so what is pinned is: the sixteen historical
-    /// values unchanged, and a `(0, 0)` seventeenth slot in every retained
-    /// table. A zero weight contributes a zero product, so behaviour identity
-    /// is exact rather than approximate — the organic half of that claim is
-    /// `tests/eval_core.rs`'s inertness pin and the committed evaluator golden.
-    #[test]
-    fn the_retained_tables_pad_the_seventeenth_slot_with_zero() {
-        assert_eq!(Feature::COUNT, 17, "the V3 admission moves the list 16 -> 17");
-        for (label, table) in [
-            ("V1", WeightTable::V1),
-            ("V2", WeightTable::V2),
-            ("PRE_FREEZE_2026_07_27", WeightTable::PRE_FREEZE_2026_07_27),
-        ] {
-            assert_eq!(
-                table.get(Feature::AchievementRaceProximity),
-                (0, 0),
-                "{label} must PAD the new slot: a retained table prices no feature it was \
-                 never measured on",
-            );
-        }
-        // The sixteen that were there before are the sixteen that are there
-        // now, in order, in both vectors of both live tables.
-        assert_eq!(
-            WeightTable::V1.early[..16],
-            [10, 12, 6, -4, 3, 30, 4, -10, 14, 12, 15, 8, 5, 2, 3, -3],
-        );
-        assert_eq!(
-            WeightTable::V1.late[..16],
-            [40, 30, 20, 16, 20, 20, 2, -4, 10, 20, 25, 10, 8, 4, 4, -6],
-        );
-        assert_eq!(
-            WeightTable::V2.early[..16],
-            [1, 20, 14, -4, 3, 30, 5, -10, 6, 12, 15, 8, 5, 2, 3, -1],
-        );
-        assert_eq!(
-            WeightTable::V2.late[..16],
-            [40, 30, 20, 8, 20, 20, 2, -10, 10, 20, 25, 14, 8, 4, 4, -2],
-        );
-    }
-
-    /// **`V3_DRAFT` is padded `V2` plus the L2-selected rung, and NOTHING
-    /// else** — the candidate table the adoption commit introduces and that
-    /// nothing ships (spec §5; `eval_screen_round`'s candidate arm is its only
-    /// reader). The rung is V3-R1's SELECTED one: `(40, 40)`, the ladder's
-    /// bottom, chosen because every higher rung deteriorated monotonically.
-    #[test]
-    fn v3_draft_is_padded_v2_plus_the_selected_proximity_rung() {
-        assert_eq!(Feature::COUNT, 17, "the V3 admission moves the list 16 -> 17");
-        let draft = WeightTable::V3_DRAFT;
-        assert_ne!(draft, WeightTable::V2, "a draft equal to the shipped table screens nothing");
-        assert_eq!(
-            draft.get(Feature::AchievementRaceProximity),
-            (40, 40),
-            "V3-R1's selected rung is a1/4 = 40 in both vectors",
-        );
-        for feature in Feature::ALL {
-            if feature == Feature::AchievementRaceProximity {
-                continue;
-            }
-            assert_eq!(
-                draft.get(feature),
-                WeightTable::V2.get(feature),
-                "{}: the draft moves ONE slot — every other weight is padded V2 verbatim",
-                feature.name(),
-            );
-        }
+        // The exact five whose values come from `ScoreStructure`.
+        assert_eq!(Feature::ALL.iter().filter(|f| f.is_score_structure()).count(), 5);
     }
 
     #[test]
@@ -2463,37 +2161,14 @@ mod tests {
                     assert!(early < 0, "church must be negative EARLY (R1-5)");
                     assert!(late > 0, "church must be positive LATE (printed 6/3 VP)");
                 }
-                // **THE WIDTH MOVE'S SANCTIONED EXEMPTION (V3 T4, plan review
-                // M2).** V3 admitted a SEVENTEENTH feature and spec §5's
-                // retention contract pads every retained table's new slot with
-                // `(0, 0)` — a table may not price a feature it was never
-                // measured on. So this ONE feature is exempt from the
-                // strictly-positive default, by name, in both clauses of this
-                // test; the sixteen original features' assertions are untouched
-                // above and below. The exemption is EXACTLY as wide as the
-                // padding: if a future freeze prices this slot in `V1`, this arm
-                // is what must be re-decided, deliberately.
-                Feature::AchievementRaceProximity => {
-                    assert_eq!(
-                        (early, late),
-                        (0, 0),
-                        "a retained table pads the V3 slot — it does not price it",
-                    );
-                }
                 _ => assert!(early > 0 && late > 0, "{} must be positive", feature.name()),
             }
         }
 
         // The score-structure terms are LIVE, not staged: a zeroed pair here
         // would silently switch one of the five re-derivations off (the T1
-        // staging this replaced was exactly that shape, deliberately). The V3
-        // slot is the ONE exception, for the reason its arm above gives — and it
-        // is skipped BY NAME rather than by a predicate, so a second padded
-        // feature has to be admitted here on purpose.
-        for feature in Feature::ALL
-            .into_iter()
-            .filter(|f| f.is_score_structure() && *f != Feature::AchievementRaceProximity)
-        {
+        // staging this replaced was exactly that shape, deliberately).
+        for feature in Feature::ALL.into_iter().filter(|f| f.is_score_structure()) {
             let (early, late) = w.get(feature);
             assert!(
                 (early, late) != (0, 0),
@@ -2501,14 +2176,6 @@ mod tests {
                 feature.name()
             );
         }
-        assert_eq!(
-            Feature::ALL
-                .into_iter()
-                .filter(|f| f.is_score_structure() && w.get(*f) == (0, 0))
-                .collect::<Vec<_>>(),
-            vec![Feature::AchievementRaceProximity],
-            "exactly ONE score-structure feature may be unpriced in V1 — the V3 padding",
-        );
 
         // VP dominates LATE (and only late — R1-1).
         let (vp_early, vp_late) = w.get(Feature::VictoryPoints);
@@ -2523,7 +2190,7 @@ mod tests {
             .into_iter()
             .map(|f| w.get(f).0.abs())
             .max()
-            .expect("the feature list is never empty");
+            .expect("sixteen features");
         assert!(vp_early < early_max, "early VP must NOT dominate (R1-1)");
     }
 
@@ -2607,12 +2274,12 @@ mod tests {
         let pre = WeightTable::PRE_FREEZE_2026_07_27;
         assert_eq!(
             pre.early,
-            [10, 12, 6, -4, 3, 30, 4, -10, 14, 12, 15, 8, 5, 2, 3, -3, 0],
+            [10, 12, 6, -4, 3, 30, 4, -10, 14, 12, 15, 8, 5, 2, 3, -3],
             "the freeze corpus's EARLY vector is a historical fact and cannot be re-priced",
         );
         assert_eq!(
             pre.late,
-            [40, 30, 20, 16, 20, 20, 2, -4, 10, 20, 25, 10, 8, 4, 4, -6, 0],
+            [40, 30, 20, 16, 20, 20, 2, -4, 10, 20, 25, 10, 8, 4, 4, -6],
             "the freeze corpus's LATE vector is a historical fact and cannot be re-priced",
         );
         assert_eq!(

@@ -253,42 +253,6 @@
 //! LONGER at V2 (applied moves up ~35%), which is a fact about this two-unit
 //! cell and not a claim about the freeze.
 //!
-//! ## V3 width-move re-capture (2026-08-19, branch `phase3.5c-v3`)
-//!
-//! **ONE FIELD of one fixture moved, and it is not a play value: the evaluator
-//! cell's `spec_echo` weight digest.** The V3 mini-cycle admitted a seventeenth
-//! feature (`achievement_race_proximity`), so `Feature::ALL` widened 16 → 17 and
-//! every retained table took a `(0, 0)` seventeenth slot — spec §5's retention
-//! contract. `weight_table_identity` hashes every slot of both vectors, so the
-//! digest moved (`-7339724794018772210` → `297092078925334212`) while V2's
-//! thirty-two numbers did not move a digit.
-//!
-//! **What did NOT move is the evidence, and it is stronger than the previous
-//! two re-captures':**
-//!
-//! ```text
-//! spec_echo            x/y  weights identity
-//!                           -7339724794018772210 -> 297092078925334212
-//! everything else      unchanged, exactly: applied_by_seat, x_applied_moves,
-//!                      x_explanations, x_root_scored, x_candidates_scored,
-//!                      y_candidates_scored, vp_margin_mean, theta_hat,
-//!                      interval, x_unit_shares, trigger, seat0_wins
-//! four Policy fixtures unchanged (a rung carries no evaluator at all)
-//! ```
-//!
-//! That is the retention contract discharged as a measurement rather than an
-//! argument: a zero weight contributes a zero product, so a padded table plays
-//! the game the unpadded one played, move for move, over four games of
-//! `lookahead-v1` vs `greedy-v1`. The subset compare is what proves it — every
-//! captured non-echo value had to reproduce, and did.
-//!
-//! **Authority.** The width move is task T4 of the V3 mini-cycle
-//! (`docs/plans/2026-08-19-phase3.5c-v3-spec.md` §5), whose blast-radius list
-//! names this fixture and requires the re-capture to land in the SAME commit as
-//! the padding rather than silently at a later freeze. Recorded here at the same
-//! grade as the v2 freeze row above: a delegated authorization under a spec the
-//! owner ruled the cycle open on, not a ruling the owner gave about this file.
-//!
 //! ## On `compose_echo`
 //!
 //! `compose_echo` mirrors `stats.rs`'s private `policy_echo` body — it is a
@@ -391,12 +355,6 @@ const ECHO_KNOBBED_EXPLICIT: &str = "family-weighted@v1{recovery_min_of=5,retrea
 /// `EVAL_IMPL_VERSION`. Both are hand-typed here on purpose: they are exactly
 /// the tokens a version bump must be unable to slip past, so a bump that forgot
 /// one of the four consts fails on this literal.
-///
-/// **NEITHER moved at the V3 width move** (module doc, "V3 width-move
-/// re-capture"), which is the point of stopping these literals before the
-/// digest: padding the tables re-keyed `weights=` and touched nothing else, so
-/// the prefixes caught the difference between a re-keying and a re-pricing
-/// without being re-typed.
 const ECHO_LOOKAHEAD_PREFIX: &str = "lookahead-v1@v2{b=4,eval_impl=3,k=1,m=8,weights=";
 const ECHO_GREEDY_PREFIX: &str = "greedy-v1@v2{eval_impl=3,m=8,placement_cap=512,weights=";
 
