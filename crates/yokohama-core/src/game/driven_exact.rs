@@ -636,26 +636,45 @@ impl<'a> Solver<'a> {
 
         let mover_here = state.current_player;
         let maximizing = mover_here == self.mover;
-        // The children, materialized once. Ordering needs them all in hand, and
-        // the unordered path would clone each one anyway — so the only cost the
-        // knob adds is holding a node's siblings at the same time, bounded by
-        // the branching factor.
-        let mut children: Vec<GameState> = moves
-            .iter()
-            .filter_map(|mv| apply_move_unchecked(state, mv, self.rules).ok())
-            .collect();
-        if self.bounds.order_moves {
+        // THE VISIT ORDER, as indices into `moves` — never a materialized child
+        // list.
+        //
+        // The unordered path stays fully LAZY, and that is the point: a beta
+        // cutoff can stop after the first child, and applying every sibling up
+        // front to sort them would throw that saving away at exactly the wide
+        // nodes where it is worth most (this module's own Movement points run to
+        // hundreds of moves). Ordering pays for itself or it does not — the
+        // measurement in `ExactBounds::order_moves` says it does not — but the
+        // DEFAULT path must not pay for it at all.
+        let order: Vec<usize> = if self.bounds.order_moves {
             // Descending in the DECIDING seat's own victory points: whoever is
             // on the move wants their own score up, whichever side of the
-            // minimax they sit on. One field read, no table.
-            children.sort_by(|a, b| {
-                b.player(mover_here).victory_points.cmp(&a.player(mover_here).victory_points)
-            });
-        }
+            // minimax they sit on. One field read, no table. The keying pass
+            // applies each move once and throws the state away, so ordering
+            // costs a second apply per child — an honest part of the knob's
+            // price, and one reason the measurement came out against it.
+            let mut keyed: Vec<(u32, usize)> = moves
+                .iter()
+                .enumerate()
+                .filter_map(|(index, mv)| {
+                    apply_move_unchecked(state, mv, self.rules)
+                        .ok()
+                        .map(|next| (next.player(mover_here).victory_points, index))
+                })
+                .collect();
+            // Descending, so `Reverse` rather than a comparator clippy would
+            // (correctly) ask to be a key extraction.
+            keyed.sort_by_key(|&(vp, _)| std::cmp::Reverse(vp));
+            keyed.into_iter().map(|(_, index)| index).collect()
+        } else {
+            (0..moves.len()).collect()
+        };
+
         let mut best = if maximizing { ExactValue::NEG_INF } else { ExactValue::POS_INF };
-        for next in &children {
-            let child_entry = is_game_over(next) || next.current_player != mover_here;
-            let value = self.solve(next, alpha, beta, depth + 1, child_entry, candidate_index)?;
+        for &index in &order {
+            let Ok(next) = apply_move_unchecked(state, &moves[index], self.rules) else { continue };
+            let child_entry = is_game_over(&next) || next.current_player != mover_here;
+            let value = self.solve(&next, alpha, beta, depth + 1, child_entry, candidate_index)?;
             if maximizing {
                 best = best.max(value);
                 alpha = alpha.max(best);

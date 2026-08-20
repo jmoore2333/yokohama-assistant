@@ -1396,12 +1396,18 @@ pub fn render_world_invariance(read: &WorldInvariance) -> String {
     lines.push(String::new());
     if read.invariant {
         lines.push(
-            "  verdict        INVARIANT — the optimal set is the same in the true world and in              every world consistent with the mover's own view, so hidden information does not              bear on this decision and a pick outside the set is UNAMBIGUOUS MISPLAY."
+            "  verdict        INVARIANT — the optimal set is the same in the true world and \
+             in every world consistent with the mover's own view, so hidden \
+             information does not bear on this decision and a pick outside the set \
+             is UNAMBIGUOUS MISPLAY."
                 .to_string(),
         );
     } else {
         lines.push(
-            "  verdict        CONFOUNDED — the optimal set MOVES with the world, so the exact              verdict still resolves the policy disagreement but licenses NO misplay claim: a              seated player could not have known which world it was in."
+            "  verdict        CONFOUNDED — the optimal set MOVES with the world, so the \
+             exact verdict still resolves the policy disagreement but licenses NO \
+             misplay claim: a seated player could not have known which world it \
+             was in."
                 .to_string(),
         );
     }
@@ -2966,6 +2972,42 @@ mod tests {
         assert!(report.contains("world-invariance"), "{report}");
         assert!(report.contains("INVARIANT") || report.contains("CONFOUNDED"), "{report}");
         assert!(report.contains("misplay"), "the reading must be printed, not implied: {report}");
+    }
+
+    /// The rider's VERDICT sentences read as sentences.
+    ///
+    /// A formatting guard with a real scar behind it: those sentences were first
+    /// written as multi-line literals whose continuations collapsed into runs of
+    /// fourteen spaces, and the defect reached a real run's output before anyone
+    /// read it. Scoped to the verdict lines rather than the whole report,
+    /// because the tables' column gutters are deliberate and a blanket rule
+    /// would fail on them — which is itself the reason to scope rather than to
+    /// loosen the threshold until the bug slips back through.
+    #[test]
+    fn the_rider_verdict_reads_as_a_sentence() {
+        let rules = Rules::standard();
+        let read = driven_exact::world_invariance(
+            &exact_fixture_source(&rules),
+            &rules,
+            driven_exact::ExactBounds::default(),
+            FROZEN_EPSILON_VP,
+            0x8393_7F67_C176_F538,
+        )
+        .expect("the rider runs");
+        let report = render_world_invariance(&read);
+        let verdict = report
+            .lines()
+            .find(|l| l.starts_with("  verdict "))
+            .expect("the rider always prints a verdict");
+        let prose = verdict.trim_start_matches("  verdict ").trim_start();
+        assert!(
+            !prose.contains("  "),
+            "the verdict sentence carries a run of spaces:\n{verdict}"
+        );
+        assert!(
+            prose.to_lowercase().contains("misplay"),
+            "the verdict must state the reading it licenses, not leave it implied: {verdict}"
+        );
     }
 
     /// USAGE names EVERY subcommand and EVERY flag the parser accepts — read off
