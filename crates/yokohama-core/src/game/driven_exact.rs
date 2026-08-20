@@ -1260,6 +1260,21 @@ mod tests {
         let second = exact_table(&source, &rules, ExactBounds::default()).expect("solves");
         assert_eq!(first, second, "the exact table is not reproducible");
         assert_eq!(first.stats, second.stats, "the counters moved between identical runs");
+
+        // The solve consumes NO salt serial, so the `A3E1_D21E_*` family's next
+        // free one is unchanged by this lane. Asserted rather than asserted in
+        // prose: the three taken serials are 0006/0007/0008 and this module adds
+        // none, which is what makes the spec's claim checkable at HEAD.
+        assert_eq!(crate::game::driven_families::SALT_DRIVEN_FAMILY_READ, 0xA3E1_D21E_0000_0008);
+        // The needle is assembled at RUNTIME. Spelled as one literal it would
+        // appear in this file and the check would find itself — which it did,
+        // red, on the first attempt.
+        let next_free = ["0xA3E1_D21E_0000_", "0009"].concat();
+        let module = include_str!("driven_exact.rs");
+        assert!(
+            !module.contains(&next_free),
+            "this module claimed {next_free}, the salt family's next free serial"
+        );
     }
 
     /// At 2P the margin is ANTISYMMETRIC — the premise alpha-beta rests on.
