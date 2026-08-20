@@ -587,6 +587,9 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
                         .map_err(|_| format!("--max-memo {raw:?} is not a usize\n\n{USAGE}"))?,
                     None => defaults.max_memo_entries,
                 },
+                // Not a flag: ordering cannot change a value, so exposing it
+                // would offer a caller a choice with no answer attached.
+                order_moves: defaults.order_moves,
             };
             let eps_vp = match flags.get("eps") {
                 Some(raw) => i64::try_from(parse_u64(raw)?)

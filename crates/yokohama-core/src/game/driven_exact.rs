@@ -95,8 +95,12 @@ impl ExactValue {
     const POS_INF: Self = Self { margin: i64::MAX / 4, won: true };
 }
 
-/// The bounds that CONTAIN the solve. Never quality dials: exceeding one is a
-/// typed refusal (spec §2.2), because there is nothing to approximate down to.
+/// The bounds that CONTAIN the solve, plus its one COST knob.
+///
+/// The bounds are never quality dials: exceeding one is a typed refusal (spec
+/// §2.2), because there is nothing to approximate down to. The cost knob is not
+/// a dial either, in a different sense — **[`Self::order_moves`] cannot change
+/// any value this module returns**, and a cell pins that.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExactBounds {
     /// Expanded decision nodes.
@@ -106,11 +110,38 @@ pub struct ExactBounds {
     /// Transposition-table entries. **0 DISABLES memoization** (the soundness
     /// cell's switch); any positive value is a cap whose breach refuses.
     pub max_memo_entries: usize,
+    /// Try each node's children in a cheap heuristic order rather than the
+    /// engine's listing order.
+    ///
+    /// **A COST knob that cannot change a VALUE.** Alpha-beta returns the same
+    /// exact value under any ordering; ordering only changes how many nodes it
+    /// expands to get there. `ordering_changes_no_value` is the pin, and it is
+    /// what keeps this from becoming an approximation switch by accident.
+    ///
+    /// The heuristic is deliberately **table-free**: children are tried in
+    /// descending order of the deciding seat's own `victory_points`, a single
+    /// rules-derived field read. It does NOT consult `game::eval` or any weight
+    /// table — an analysis instrument whose cost depended on the artefact under
+    /// study would be a poor instrument, and the harness's own rule forbids a
+    /// second evaluation derivation besides.
+    ///
+    /// **DEFAULT OFF, on measurement.** At the anchor root (positive ordinal 9)
+    /// ordering expanded 103,113,333 nodes against 108,080,097 unordered — 4.6%
+    /// fewer — but cost 1m54.00s against 1m51.38s, 2.4% MORE wall: the sort
+    /// costs more than the nodes it saves. The knob and its pin stay so a
+    /// future heuristic can be measured against that same baseline rather than
+    /// adopted on plausibility.
+    pub order_moves: bool,
 }
 
 impl Default for ExactBounds {
     fn default() -> Self {
-        Self { max_nodes: 2_000_000_000, max_depth: 512, max_memo_entries: 4_000_000 }
+        Self {
+            max_nodes: 2_000_000_000,
+            max_depth: 512,
+            max_memo_entries: 4_000_000,
+            order_moves: false,
+        }
     }
 }
 
@@ -498,11 +529,26 @@ impl<'a> Solver<'a> {
 
         let mover_here = state.current_player;
         let maximizing = mover_here == self.mover;
+        // The children, materialized once. Ordering needs them all in hand, and
+        // the unordered path would clone each one anyway — so the only cost the
+        // knob adds is holding a node's siblings at the same time, bounded by
+        // the branching factor.
+        let mut children: Vec<GameState> = moves
+            .iter()
+            .filter_map(|mv| apply_move_unchecked(state, mv, self.rules).ok())
+            .collect();
+        if self.bounds.order_moves {
+            // Descending in the DECIDING seat's own victory points: whoever is
+            // on the move wants their own score up, whichever side of the
+            // minimax they sit on. One field read, no table.
+            children.sort_by(|a, b| {
+                b.player(mover_here).victory_points.cmp(&a.player(mover_here).victory_points)
+            });
+        }
         let mut best = if maximizing { ExactValue::NEG_INF } else { ExactValue::POS_INF };
-        for mv in &moves {
-            let Ok(next) = apply_move_unchecked(state, mv, self.rules) else { continue };
-            let child_entry = is_game_over(&next) || next.current_player != mover_here;
-            let value = self.solve(&next, alpha, beta, depth + 1, child_entry, candidate_index)?;
+        for next in &children {
+            let child_entry = is_game_over(next) || next.current_player != mover_here;
+            let value = self.solve(next, alpha, beta, depth + 1, child_entry, candidate_index)?;
             if maximizing {
                 best = best.max(value);
                 alpha = alpha.max(best);
@@ -1148,6 +1194,42 @@ mod tests {
         assert_eq!(
             argmax[0].candidate, best_playout.candidate,
             "the exact optimum and the unanimous robustness read point at different moves"
+        );
+    }
+
+    /// Move ordering changes the COST and never a VALUE.
+    ///
+    /// The guard that keeps a cost knob from silently becoming an approximation
+    /// switch: alpha-beta returns the same exact value under any ordering, so if
+    /// these two tables ever differ the ordering is not an ordering.
+    #[test]
+    fn ordering_changes_no_value() {
+        let rules = rules();
+        let (root, _) = handoff_root_at(&rules, 0x81, [1, 5, 2, 3], 20, 18, TurnPhase::AreaAction);
+        let source = RootSource::Constructed(root);
+        // BOTH arms set the knob explicitly: reading either off the default
+        // would make the cell go vacuous the moment the default moves, which is
+        // exactly what happened when the measurement flipped it off.
+        let ordered = exact_table(
+            &source,
+            &rules,
+            ExactBounds { order_moves: true, ..ExactBounds::default() },
+        )
+        .expect("solves");
+        let listed = exact_table(
+            &source,
+            &rules,
+            ExactBounds { order_moves: false, ..ExactBounds::default() },
+        )
+        .expect("solves");
+        let a: Vec<_> = ordered.rows.iter().map(|r| (&r.candidate, r.value)).collect();
+        let b: Vec<_> = listed.rows.iter().map(|r| (&r.candidate, r.value)).collect();
+        assert_eq!(a, b, "move ordering changed a value");
+        // Anti-vacuity: the two really did search differently.
+        assert_ne!(
+            ordered.stats.nodes, listed.stats.nodes,
+            "ANTI-VACUITY: ordering expanded the identical node count, so this cell compared \
+             two runs of the same search"
         );
     }
 
