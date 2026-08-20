@@ -45,13 +45,16 @@
 use std::collections::HashMap;
 
 use crate::game::apply_move::apply_move_unchecked;
+use crate::game::belief::BeliefSampler;
 use crate::game::driven::{require_eligible_root, DrivenError, RootDescriptor, RootError, RootSource};
 use crate::game::end_game::is_game_over;
 use crate::game::invariants::check_invariants;
 use crate::game::legal_moves::get_legal_moves;
 use crate::game::move_legality::{is_move_legal, PathMode};
 use crate::game::rules::Rules;
+use crate::game::observe::observe;
 use crate::game::scoring::final_result;
+use crate::game::seeds::SeedSchedule;
 use crate::game::semantics::{state_digest, SEMANTICS_REV};
 use crate::types::{GameState, Move, PlayerId};
 
@@ -390,6 +393,110 @@ pub fn exact_table(
     })
 }
 
+// ---------------------------------------------------------------------------
+// The W = 5 world-invariance rider (spec §3.4, orchestrator ruling 3)
+// ---------------------------------------------------------------------------
+
+/// The PRE-REGISTERED number of determinized worlds the rider reads.
+///
+/// **Fixed at registration and deliberately NOT a parameter.** A rider root that
+/// cannot afford five worlds BUDGET-REFUSES like anything else; W is never
+/// reduced to make a root fit, because a shrunk W is a quietly weakened
+/// pre-registration.
+pub const RIDER_WORLDS: u32 = 5;
+
+/// One determinized world's reading.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorldRead {
+    /// The world's seed, so a row reproduces without re-deriving the schedule.
+    pub world_seed: u64,
+    /// The top set this world produced, as candidates.
+    pub top_set: Vec<Move>,
+    /// Whether it is IDENTICAL to the true state's top set.
+    pub matches_truth: bool,
+}
+
+/// What the rider answers: does the hidden set bear on THIS decision?
+///
+/// **This is the half that turns a clairvoyant verdict into an attribution.**
+/// The exact table alone says what the position is worth under perfect
+/// information; it cannot say whether a subject that could not see the hidden
+/// five was wrong to pick differently. This can:
+///
+/// * [`Self::invariant`] TRUE — the optimal set is the same in the true world
+///   and in every determinization consistent with the mover's own view, so
+///   hidden information does not bear on the decision and a pick outside the set
+///   is **unambiguous misplay**.
+/// * FALSE — the optimal set MOVES with the world, so the clairvoyant verdict is
+///   **confounded**: it still resolves the policy disagreement, but it does not
+///   license a misplay claim.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorldInvariance {
+    /// The true-state top set every world is compared against.
+    pub truth_top_set: Vec<Move>,
+    /// One row per world, in draw order.
+    pub worlds: Vec<WorldRead>,
+    /// Every world agreed with the truth.
+    pub invariant: bool,
+    /// The master the worlds were drawn from — recorded before use, per the
+    /// standing policy, and printed with any figure this read produces.
+    pub master: u64,
+}
+
+/// Solve the root exactly in the true world and in [`RIDER_WORLDS`]
+/// determinizations of the MOVER'S OWN VIEW, and report whether the top set
+/// moved.
+///
+/// **The worlds come from the honest chain's own sampler** — `observe` then
+/// `BeliefSampler` — so they are exactly the worlds a seated player could not
+/// tell apart from the truth. Sampling from anything else would measure a
+/// different question.
+///
+/// **The seed derivation is the repo's existing diagnostic one**
+/// (`SeedSchedule::diagnostic(master)`), reused rather than invented: the
+/// harness names two seed disciplines precisely so a third does not appear, and
+/// this consumes no new salt serial. The master is the caller's to record before
+/// use.
+pub fn world_invariance(
+    source: &RootSource,
+    rules: &Rules,
+    bounds: ExactBounds,
+    eps_vp: i64,
+    master: u64,
+) -> Result<WorldInvariance, ExactError> {
+    let truth = exact_table(source, rules, bounds)?;
+    let truth_top_set: Vec<Move> =
+        truth.top_set(eps_vp).into_iter().map(|r| r.candidate.clone()).collect();
+
+    let (root, _) = source.resolve(rules).map_err(ExactError::Root)?;
+    let mover = root.current_player;
+    let view = observe(&root, mover).map_err(|e| ExactError::Unadjudicable(DrivenError::Unobservable {
+        seat: mover,
+        detail: e.to_string(),
+    }))?;
+
+    let mut schedule = SeedSchedule::diagnostic(master);
+    let mut worlds = Vec::with_capacity(RIDER_WORLDS as usize);
+    for _ in 0..RIDER_WORLDS {
+        let world_seed = schedule.next_world().0;
+        let mut sampler = BeliefSampler::from_view(&view, rules, world_seed).map_err(|e| {
+            ExactError::Unadjudicable(DrivenError::Unobservable {
+                seat: mover,
+                detail: format!("the belief sampler refused this view: {e}"),
+            })
+        })?;
+        let determinized = sampler.sample();
+        let table = exact_table(&RootSource::Constructed(determinized), rules, bounds)?;
+        let top_set: Vec<Move> =
+            table.top_set(eps_vp).into_iter().map(|r| r.candidate.clone()).collect();
+        let matches_truth = top_set == truth_top_set;
+        worlds.push(WorldRead { world_seed, top_set, matches_truth });
+    }
+
+    let invariant = worlds.iter().all(|w| w.matches_truth);
+    Ok(WorldInvariance { truth_top_set, worlds, invariant, master })
+}
+
 /// Whether a transposition entry is an exact value or only a bound.
 ///
 /// Needed because a value found under a NARROWED window is not the position's
@@ -607,9 +714,9 @@ mod tests {
     use crate::game::legal_moves::get_legal_moves;
     use crate::game::apply_move::apply_move_unchecked;
     use crate::game::driven::{adjudicate_root, DrivenOpts, ReplyPolicy, RootSource, SeatSpec};
+    use crate::game::driven_families::FROZEN_EPSILON_VP;
     use crate::game::seeds::WorldSeed;
     use crate::game::rules::Rules;
-    use crate::game::scoring::final_result;
     use crate::game::setup::{finalize_setup, new_game, StartingOrderChoice};
     use crate::types::{
         AreaId, BuildingSite, EndGameTrigger, GameConfig, GameState, MercenaryState, Move,
@@ -1230,6 +1337,82 @@ mod tests {
             ordered.stats.nodes, listed.stats.nodes,
             "ANTI-VACUITY: ordering expanded the identical node count, so this cell compared \
              two runs of the same search"
+        );
+    }
+
+    // =======================================================================
+    // Pins — the W = 5 world-invariance rider
+    // =======================================================================
+
+    /// The rider draws exactly the pre-registered five worlds, and it draws them
+    /// from the MOVER's own view.
+    ///
+    /// `W` is fixed at registration and is not a parameter: a shrunk W is a
+    /// quietly weakened pre-registration, which is the failure mode the fixed
+    /// value exists to prevent (spec §3.4, ruling 3).
+    #[test]
+    fn the_rider_draws_exactly_the_pre_registered_five_worlds() {
+        let rules = rules();
+        let (root, _, _) = near_terminal_building_root(&rules, 0x71, [1, 5, 2, 3], 20, 18);
+        let read = world_invariance(
+            &RootSource::Constructed(root),
+            &rules,
+            ExactBounds::default(),
+            FROZEN_EPSILON_VP,
+            0x0E00_2026_0820_0001,
+        )
+        .expect("the rider runs on this fixture");
+        assert_eq!(RIDER_WORLDS, 5);
+        assert_eq!(read.worlds.len(), RIDER_WORLDS as usize);
+        // Five DISTINCT worlds, not one world five times.
+        let mut seeds: Vec<u64> = read.worlds.iter().map(|w| w.world_seed).collect();
+        seeds.sort_unstable();
+        seeds.dedup();
+        assert_eq!(seeds.len(), RIDER_WORLDS as usize, "the rider drew a repeated world");
+    }
+
+    /// The rider is REPRODUCIBLE from its recorded master and from nothing else.
+    #[test]
+    fn the_rider_reproduces_from_its_recorded_master() {
+        let rules = rules();
+        let (root, _, _) = near_terminal_building_root(&rules, 0x72, [1, 5, 2, 3], 20, 18);
+        let source = RootSource::Constructed(root);
+        let a = world_invariance(&source, &rules, ExactBounds::default(), FROZEN_EPSILON_VP, 0x0E00_2026_0820_0002)
+            .expect("runs");
+        let b = world_invariance(&source, &rules, ExactBounds::default(), FROZEN_EPSILON_VP, 0x0E00_2026_0820_0002)
+            .expect("runs");
+        assert_eq!(a, b, "the rider is not reproducible from its master");
+        let c = world_invariance(&source, &rules, ExactBounds::default(), FROZEN_EPSILON_VP, 0x0E00_2026_0820_0003)
+            .expect("runs");
+        assert_ne!(
+            a.worlds[0].world_seed, c.worlds[0].world_seed,
+            "ANTI-VACUITY: two different masters drew the same world, so the reproduction cell \
+             above compares nothing"
+        );
+    }
+
+    /// Where the hidden set cannot bear on the decision, the rider reads
+    /// INVARIANT — and that is what licenses reading a miss as misplay.
+    ///
+    /// This fixture is the clean case by construction: every candidate's value
+    /// is decided by a printed building-space VP with the remainder forced, so
+    /// no determinization of the decks can move the optimal set.
+    #[test]
+    fn a_decision_the_hidden_set_cannot_touch_reads_invariant() {
+        let rules = rules();
+        let (root, _, _) = near_terminal_building_root(&rules, 0x73, [1, 5, 2, 3], 20, 18);
+        let read = world_invariance(
+            &RootSource::Constructed(root),
+            &rules,
+            ExactBounds::default(),
+            FROZEN_EPSILON_VP,
+            0x0E00_2026_0820_0004,
+        )
+        .expect("runs");
+        assert!(read.invariant, "a deck-independent decision read as world-sensitive");
+        assert!(
+            read.worlds.iter().all(|w| w.matches_truth),
+            "invariant was reported without every world agreeing"
         );
     }
 
