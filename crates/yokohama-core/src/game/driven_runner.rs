@@ -282,10 +282,15 @@ usage: driven <subcommand> [options]
                              UNAMBIGUOUS MISPLAY. CONFOUNDED means the optimal
                              set MOVES with the world, so the exact verdict still
                              resolves the policy disagreement but licenses NO
-                             misplay claim. Record the master BEFORE the run.
+                             misplay claim. VACUOUS means every determinization
+                             WAS the true position -- the view left nothing
+                             material unseen, so no alternative world existed to
+                             disagree and the read licenses NO attribution
+                             either way. Record the master BEFORE the run.
       COST is the ROOT's, not a knob's: this is an exhaustive solve of two turns
       of play. Minutes at a small root; hours at a wide one; some roots refuse.
-      The rider multiplies that by six (the truth plus five worlds).
+      The rider multiplies that by SIX -- the truth solve plus five worlds.
+      (The truth table is solved once and reused, so it is six and not seven.)
 
   family <id> --block pilot --master <u64> [--arm positive|control]
   family <id> --block confirmatory [--arm positive|control]
@@ -1450,8 +1455,11 @@ pub fn render_exact_table(table: &ExactTable, asked_for: &str, eps_vp: i64) -> S
             provenance.semantics_rev, provenance.rules_hash,
         ),
         format!("  mover          p{}", table.mover.0),
+        // N1: these are what the solve REALIZED, not the bounds it ran under —
+        // labelling them "bounds" invited a reader to take a node count for a
+        // node budget, which are opposite kinds of number.
         format!(
-            "  bounds         nodes={}  depth={}  memo={}",
+            "  realized       nodes={}  depth={}  memo={}",
             table.stats.nodes, table.stats.max_depth, table.stats.memo_entries,
         ),
     ];
@@ -3017,7 +3025,8 @@ mod tests {
         let prose = verdict.trim_start_matches("  verdict ").trim_start();
         assert!(
             !prose.contains("  "),
-            "the verdict sentence carries a run of spaces:\n{verdict}"
+            "the verdict sentence carries a run of 2+ spaces mid-prose (a collapsed \
+             line-continuation, the defect this cell exists for):\n{verdict}"
         );
         assert!(
             prose.to_lowercase().contains("misplay"),

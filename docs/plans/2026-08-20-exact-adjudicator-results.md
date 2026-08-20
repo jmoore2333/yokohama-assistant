@@ -301,7 +301,11 @@ recoverable from the admission-clause column above.
 
 ---
 
-## 7. A worked example (positive ordinal 9), verbatim
+## 7. A worked example (positive ordinal 9) — ABRIDGED
+
+**Abridged, not verbatim:** the provenance block's ecology lines are trimmed and the stats line
+carries its post-review label (`realized`, not `bounds` — those are what the solve REACHED, not
+what it ran under). Everything else is the report's own output.
 
 ```
 exact read: a PERFECT-INFORMATION solve of the remaining game over the TRUE state, hidden cards
@@ -315,7 +319,7 @@ contestant.
   root           gen:final-round-already-triggered:0xa3e1202608180004:9   generated@c74da36d9a21ebb5  event=825
   semantics      rev=7  rules=d85445c479cb1ead
   mover          p0
-  bounds         nodes=108080097  depth=25  memo=886
+  realized       nodes=108080097  depth=25  memo=886
   generated      predicate=final-round-already-triggered  master=0xa3e1202608180004  ordinal=9  game=4
   ecology        id=driven-generated-v1.1  players=2  games=16  per_game_cap=2
 
@@ -337,6 +341,16 @@ contestant.
   won at best    false   (margin 0 is NOT a win: the official tie-break decides it)
   memo           886 entries / 657 hits   (TURN-ENTRY states only)
 ```
+
+**Forward correction against the spec's own prototype figure.** Spec §6.5 records this root's best
+value as −15 VP; the shipped instrument reports **−14**, and the shipped value is authoritative.
+The prototype scored in a doubled scale (`2 × margin + tie`, so −29 here) and displayed the margin
+by flooring that halved — `(−29).div_euclid(2) = −15` — a **uniform 1-VP offset on losing
+positions** and nothing more. The shipped path takes its leaf values straight off `final_result`'s
+standings with `won` carried separately, which is what the terminal-provenance and margin-0 pins
+hold in place. The signature that it is a display shift rather than a different search: the cost
+counters are IDENTICAL across the two (108,080,097 nodes), and a uniform offset cannot change any
+comparison, so the same tree was explored either way.
 
 **One candidate is worth 17 VP more than any other.** Placing the single assistant at `AreaId(3)`
 holds the margin to −14; every other placement — including placing nothing — concedes −31 or worse.
@@ -362,6 +376,21 @@ best is known. That is a property of the search, recorded, not a result.
 
 Node counts are the load-independent figure; walls above overlapped other work and are recorded as
 approximate on purpose rather than quietly presented as clean.
+
+**The transposition key is 128-bit, and the reason is worth a line.** The table is keyed by
+FNV-1a **128** over the state's canonical JSON — deliberately NOT the engine's `state_digest`,
+which is FNV-1a **64**. As a record identity 64 bits is ample (it is checked against one known
+state). As a TRANSPOSITION key the exposure is different: every stored position is compared against
+every other, so the risk is birthday-shaped in the table's size, and a collision would hand one
+position another's value SILENTLY, with a wrong number propagating to the root looking exact. At
+the sizes seen here that probability was small — ~10⁻¹¹ at ordinal 15's 28,064 entries, ~10⁻⁸ at
+the ≥547,650 the unsolved roots reach — but an instrument whose whole claim is the word EXACT
+should not carry a probabilistic caveat it can retire for nothing. At 128 bits the same arithmetic
+is ~10⁻²⁸. **Widening changed no result**: ordinal 7 re-solved on the widened key returns
+`nodes = 36,330,750` with `memo = 5,520` entries and the same +15 optimum — byte-identical to the
+64-bit run, which incidentally also shows no collision was occurring there. (Widening
+`state_digest` itself was never an option: it is written into saved records, which is
+`SEMANTICS_REV` territory and out of this lane.)
 
 **Binary-drift check, because the solver changed mid-lane.** The roots above were solved before the
 lazy-expansion fix (commit `9b56488`), which was argued to leave node counts untouched — the counter
@@ -392,6 +421,29 @@ Every node count in this document reproduces at HEAD.
   instrument's parameters are unchanged; and only the already-read confirmatory ordinals 4..20 were
   touched — **the extension and escrow ordinals were never run**.
 - **The §3.1 placement finding is corroboration offered to the V4 lane, never a fitting input.**
+
+---
+
+## 9a. Review dispositions — what was declined, and on what grounds
+
+The diff review (2026-08-20, MERGE-WITH-NOTES, zero MUSTs) raised six SHOULDs and nine notes. All
+six SHOULDs were taken. Two items were **declined with grounds**, recorded here rather than left as
+silence:
+
+- **N8 — a belt-and-braces `distinct_worlds` re-run at ordinals 7 and 13.** DECLINED. The
+  ordinal-9 pin plus §6's disclosure already establish that a generated final-round root leaves
+  genuinely different worlds, and the attribution conclusion is **robust under either branch**: if
+  the world set were somehow vacuous, that would itself mean the mover's view pinned the state, and
+  a pick outside a fully-determined optimum licenses the misplay reading anyway. ~35 minutes of
+  busy-box compute buys no decision change.
+- **N7 — the candidate-order convention.** Recorded as **deliberate consistency with
+  `adjudicate_root`**, not an oversight: both take their candidates from `get_legal_moves` in its
+  own order, which is precisely what lets the two tables join row-for-row (§4's conversion depends
+  on it).
+
+Also on the record, confirmed by the orchestrator: **566e33c's citation of the rider ruling is
+accurate** — the option-(a) ruling with its three conditions was issued as quoted, and the commit's
+full text was reviewed directly.
 
 ---
 

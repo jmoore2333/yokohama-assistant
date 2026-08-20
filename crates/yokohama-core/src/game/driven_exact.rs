@@ -529,6 +529,42 @@ pub fn world_invariance(
     Ok(WorldInvariance { truth_top_set, worlds, invariant, distinct_worlds, master })
 }
 
+/// FNV-1a **128** over a `GameState`'s canonical `serde_json` serialization —
+/// this module's transposition key, and deliberately NOT
+/// [`crate::game::semantics::state_digest`].
+///
+/// **Why not reuse the record digest.** `state_digest` is FNV-1a **64**. As a
+/// RECORD identity that is ample: it is checked against one known state, so a
+/// collision would have to be adversarial. As a TRANSPOSITION key it is a
+/// different exposure — every stored position is compared against every other,
+/// so the risk is birthday-shaped in the table's size, and a collision would
+/// hand one position another's value SILENTLY, with the wrong number
+/// propagating to the root as if exact. At the observed table sizes that
+/// probability is small (~10⁻¹¹ at ordinal 15's 28,064 entries; ~10⁻⁸ at the
+/// ≥547,650 the refused roots reach), but an instrument whose entire claim is
+/// the word EXACT should not carry a probabilistic caveat it can retire for
+/// nothing. At 128 bits the same arithmetic is ~10⁻²⁸ and the caveat is gone.
+///
+/// The other reason it is local: widening `state_digest` itself would change a
+/// value written into saved records, which is `SEMANTICS_REV` territory and
+/// firmly out of this lane.
+///
+/// The serialization is the expensive half and is paid exactly once, as before;
+/// only the hash width changed. `GameState`'s maps are all `BTreeMap`s, so serde
+/// emits a deterministic string and two `PartialEq`-equal states key alike —
+/// the same property `state_digest`'s own doc rests on.
+fn memo_digest_128(state: &GameState) -> u128 {
+    const OFFSET_BASIS: u128 = 0x6c62_272e_07bb_0142_62b8_2175_6295_c58d;
+    const PRIME: u128 = 0x0000_0000_0100_0000_0000_0000_0000_013b;
+    let canon = serde_json::to_string(state).expect("GameState serializes to JSON");
+    let mut h = OFFSET_BASIS;
+    for &b in canon.as_bytes() {
+        h ^= u128::from(b);
+        h = h.wrapping_mul(PRIME);
+    }
+    h
+}
+
 /// Whether a transposition entry is an exact value or only a bound.
 ///
 /// Needed because a value found under a NARROWED window is not the position's
@@ -551,7 +587,7 @@ struct Solver<'a> {
     nodes: u64,
     memo_hits: u64,
     max_depth: u32,
-    memo: HashMap<String, (ExactValue, Flag)>,
+    memo: HashMap<u128, (ExactValue, Flag)>,
 }
 
 impl<'a> Solver<'a> {
@@ -639,14 +675,18 @@ impl<'a> Solver<'a> {
         }
         let moves = get_legal_moves(state, self.rules);
         if moves.is_empty() {
-            return self.terminal_value(state);
+            // A non-terminal state with no legal move is a DEAD END at ANY
+            // depth, not a leaf. Scoring it would silently hand the mover a
+            // final result the rules never produced, and the value would
+            // propagate up as if it were real.
+            return Err(ExactError::DeadEnd { seat: state.current_player });
         }
 
         let alpha_orig = alpha;
         let beta_orig = beta;
         let key = self.memo_key(state, turn_entry);
-        if let Some(k) = &key {
-            if let Some((value, flag)) = self.memo.get(k).copied() {
+        if let Some(k) = key {
+            if let Some((value, flag)) = self.memo.get(&k).copied() {
                 match flag {
                     Flag::Exact => {
                         self.memo_hits += 1;
@@ -704,7 +744,18 @@ impl<'a> Solver<'a> {
 
         let mut best = if maximizing { ExactValue::NEG_INF } else { ExactValue::POS_INF };
         for &index in &order {
-            let Ok(next) = apply_move_unchecked(state, &moves[index], self.rules) else { continue };
+            // NEVER a silent `continue`. A move `get_legal_moves` listed and
+            // `apply_move_unchecked` then refuses is an ENGINE BUG, and skipping
+            // it here would quietly narrow the search — the value would come
+            // back exact-looking, computed over fewer options than the position
+            // has. Same posture `adjudicate_root` takes at the root, applied at
+            // every depth.
+            let next = apply_move_unchecked(state, &moves[index], self.rules).map_err(|e| {
+                ExactError::ForcedMove {
+                    candidate: Box::new(moves[index].clone()),
+                    detail: e.to_string(),
+                }
+            })?;
             let child_entry = is_game_over(&next) || next.current_player != mover_here;
             let value = self.solve(&next, alpha, beta, depth + 1, child_entry, candidate_index)?;
             if maximizing {
@@ -717,6 +768,20 @@ impl<'a> Solver<'a> {
             if alpha >= beta {
                 break;
             }
+        }
+
+        // The sentinel must have been displaced by at least one real child. It
+        // cannot survive a non-empty move list unless every apply failed — which
+        // (b) now refuses — so reaching here with ±INF means the loop's
+        // invariant broke, and returning it would poison every ancestor with a
+        // value no position has.
+        debug_assert!(
+            best != ExactValue::NEG_INF && best != ExactValue::POS_INF,
+            "the child loop left the sentinel in place at a node with {} legal moves",
+            moves.len()
+        );
+        if best == ExactValue::NEG_INF || best == ExactValue::POS_INF {
+            return Err(ExactError::Unscorable { seat: mover_here });
         }
 
         if let Some(k) = key {
@@ -749,11 +814,11 @@ impl<'a> Solver<'a> {
     ///
     /// `max_memo_entries == 0` DISABLES memoization outright — the switch the
     /// soundness cell flips.
-    fn memo_key(&self, state: &GameState, turn_entry: bool) -> Option<String> {
+    fn memo_key(&self, state: &GameState, turn_entry: bool) -> Option<u128> {
         if self.bounds.max_memo_entries == 0 || !turn_entry {
             return None;
         }
-        Some(state_digest(state))
+        Some(memo_digest_128(state))
     }
 }
 
@@ -1228,7 +1293,7 @@ mod tests {
     /// COUNTED total — the lower bound that tells a later reader whether a
     /// bigger budget would help.
     #[test]
-    fn the_node_budget_refuses_the_whole_table_and_carries_its_count() {
+    fn the_node_budget_refuses_the_whole_table_and_names_bound_and_count() {
         let rules = rules();
         let (root, _) = handoff_root_at(&rules, 0x81, [1, 5, 2, 3], 20, 18, TurnPhase::AreaAction);
         let err = exact_table(
@@ -1243,6 +1308,60 @@ mod tests {
         assert_eq!(bound, 50);
         assert!(counted > bound, "the counted total must be a real lower bound: {counted}");
         // No partial table escaped: the error IS the whole return value.
+    }
+
+    /// The DEPTH bound refuses, and names the bound and the depth reached.
+    ///
+    /// The sibling of the node-budget cell: three bounds are declared and a
+    /// bound with no cell is a refusal nobody has ever seen fire.
+    #[test]
+    fn the_depth_bound_refuses_and_names_what_it_reached() {
+        let rules = rules();
+        let (root, _) = handoff_root_at(&rules, 0x81, [1, 5, 2, 3], 20, 18, TurnPhase::AreaAction);
+        let err = exact_table(
+            &RootSource::Constructed(root),
+            &rules,
+            ExactBounds { max_depth: 1, ..ExactBounds::default() },
+        )
+        .expect_err("a one-decision horizon cannot solve this root");
+        let ExactError::DepthBound { bound, reached } = err else {
+            panic!("expected DepthBound, got {err:?}")
+        };
+        assert_eq!(bound, 1);
+        assert!(reached > bound, "the reported depth must be the one that broke it: {reached}");
+    }
+
+    /// The MEMO cap refuses rather than silently ceasing to memoize.
+    ///
+    /// Load-bearing distinction: quietly dropping entries once full would leave
+    /// the solve CORRECT but its cost unbounded and its counters misleading, and
+    /// a caller who asked for a cap would never learn it was exceeded. The
+    /// bounds are refusals, not quality dials — this is that rule at the one
+    /// bound where degrading gracefully would have been tempting.
+    #[test]
+    fn the_memo_cap_refuses_rather_than_silently_dropping_entries() {
+        let rules = rules();
+        let (root, _) = handoff_root_at(&rules, 0x81, [1, 5, 2, 3], 20, 18, TurnPhase::AreaAction);
+        let err = exact_table(
+            &RootSource::Constructed(root),
+            &rules,
+            ExactBounds { max_memo_entries: 1, ..ExactBounds::default() },
+        )
+        .expect_err("one entry cannot hold this root's hand-offs");
+        let ExactError::MemoBudget { bound, entries } = err else {
+            panic!("expected MemoBudget, got {err:?}")
+        };
+        assert_eq!(bound, 1);
+        assert!(entries >= bound, "the reported entry count must show the cap was reached");
+        // 0 stays the DISABLE switch and must not be confused with a cap of 0.
+        assert!(exact_table(
+            &RootSource::Constructed(
+                handoff_root_at(&rules, 0x81, [1, 5, 2, 3], 20, 18, TurnPhase::AreaAction).0
+            ),
+            &rules,
+            ExactBounds { max_memo_entries: 0, ..ExactBounds::default() },
+        )
+        .is_ok());
     }
 
     // =======================================================================
