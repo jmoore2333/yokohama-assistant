@@ -36,11 +36,13 @@ use crate::game::driven::{
     self, Adjudication, DrivenOpts, DrivenOutcome, GeneratingEcology, RegistryEntry, ReplyPolicy,
     RootDescriptor, RootOrigin, RootPredicate, RootSource, RootTable, SeatSpec,
 };
+use crate::game::driven_exact::{self, ExactTable};
 use crate::game::driven_families::{
     families, run_family_block_with, AdmissionVerdict, BlockKind, BlockOpts, ExclusionReason,
     FamilyBlockReport, FamilyDecl, FamilyGenerator, FamilyLabel, FamilyRunError, FamilyVerdict,
     PassRule, RootRow, RootVerdict, TurnPredicate, DECLARED_BY_THE_ROOT,
-    FAMILY2_CONTROL_GENERATOR, PROXIMITY_CORNER_GENERATOR, RACE_CONTROL_GENERATOR,
+    FAMILY2_CONTROL_GENERATOR, FROZEN_EPSILON_VP, PROXIMITY_CORNER_GENERATOR,
+    RACE_CONTROL_GENERATOR,
 };
 use crate::game::lookahead::SearchStats;
 use crate::game::metrics::wilson_95;
@@ -52,13 +54,21 @@ use crate::types::{AreaAction, AreaId, GameConfig, Move, PlayerId};
 
 /// Every subcommand this runner answers. The parser reads it and
 /// [`USAGE`]'s completeness pin asserts every member is documented.
-pub const SUBCOMMANDS: &[&str] = &["list", "table", "run", "adjudicate", "family", "opening"];
+pub const SUBCOMMANDS: &[&str] =
+    &["list", "table", "run", "adjudicate", "exact", "family", "opening"];
 
 /// `list`'s flags: none.
 pub const LIST_FLAGS: &[&str] = &[];
 
 /// `table`'s flags.
 pub const TABLE_FLAGS: &[&str] = &["contestant", "decision-seed"];
+
+/// `exact`'s flags.
+///
+/// **`master` is deliberately ABSENT and its absence is enforced with a REASON**
+/// (see the parse arm): the exact solve draws no worlds, so accepting a master
+/// would advertise a dependence it does not have.
+pub const EXACT_FLAGS: &[&str] = &["max-nodes", "max-depth", "max-memo", "eps"];
 
 /// `family`'s flags.
 pub const FAMILY_FLAGS: &[&str] = &["block", "master", "arm"];
@@ -222,6 +232,44 @@ usage: driven <subcommand> [options]
       point, up to the hundreds at a money-saturated Movement point -- so the
       sizing choices are the ROOT and the reply seats, never a flag here. Rungs
       reply in milliseconds; two uncapped lookahead seats on a wide root is hours.
+
+  exact <root> [--max-nodes <n>] [--max-depth <n>] [--max-memo <n>] [--eps <vp>]
+      Solve the remaining game EXACTLY at an IN-FINAL-ROUND root and report every
+      candidate's exact value, the optimal set at eps=0, the top set at the
+      declared eps, and the gap for every other row. THE FIRST LINE OF THE OUTPUT
+      is the clairvoyance label and it is not optional: this is a
+      PERFECT-INFORMATION solve over the TRUE state with BOTH seats played
+      optimally, so a value is an UPPER BOUND on achievable quality and a pick
+      outside the optimal set is NOT by itself misplay.
+
+      NO --master, and the absence is the point: the solve draws no worlds and
+      derives no seed, so its answer is a pure function of (root, rules, bounds).
+      Supplying one is an error carrying that sentence rather than a bare
+      `unknown flag`.
+
+      SCOPE is enforced structurally, before anything is expanded. A MIDGAME root
+      (the end game not triggered) has an unbounded remainder and refuses by
+      name. A TRIGGER-ROUND root (triggered, final round not begun) carries a
+      whole further round and refuses as its OWN named class -- a different fact,
+      reported apart. 3-4P refuses too: best-rival-by-rank is not antisymmetric
+      there, so the margin is not zero-sum and minimax is unsound.
+
+      --max-nodes <n>        expanded decision nodes. A breach refuses the WHOLE
+                             table -- never a partial one, on the adjudicator's
+                             grounds -- and carries the COUNTED total as an
+                             honest lower bound on the root's tree.
+      --max-depth <n>        decisions from the root.
+      --max-memo <n>         transposition entries; 0 DISABLES memoization. The
+                             table stores TURN-ENTRY states only, a measured
+                             choice: storing every node cut expanded nodes 3.2x
+                             but cost 4.1x wall.
+      --eps <vp>             default 2, family 1's FROZEN parameter, so the exact
+                             verdict is comparable with the frozen instrument's
+                             on the tolerance the family actually ran at. On an
+                             exact read eps is a declared INDIFFERENCE BAND and
+                             not noise cover -- there is no sampling noise here.
+      COST is the ROOT's, not a knob's: this is an exhaustive solve of two turns
+      of play. Minutes at a small root; hours at a wide one; some roots refuse.
 
   family <id> --block pilot --master <u64> [--arm positive|control]
   family <id> --block confirmatory [--arm positive|control]
@@ -422,6 +470,17 @@ pub enum Command {
         replications: u32,
         seats: Option<Vec<SeatSpec>>,
     },
+    /// One EXACT bounded-tree adjudication (`game::driven_exact`).
+    ///
+    /// Carries no master and no seats: the solve is a pure function of the root,
+    /// the rules and its bounds, and both seats are played OPTIMALLY rather than
+    /// by any policy.
+    Exact {
+        root: RootRef,
+        bounds: driven_exact::ExactBounds,
+        /// The tolerance the top set is reported at, BESIDE the ε = 0 argmax.
+        eps_vp: i64,
+    },
     /// One declared block of one frozen family.
     ///
     /// `master` stays an `Option` all the way to
@@ -497,6 +556,44 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
                 replications,
                 seats: seats_of(&flags)?,
             })
+        }
+        "exact" => {
+            // Checked BEFORE `split_args`, so `--master` gets the sentence that
+            // says why rather than a bare "unknown flag" a caller would read as
+            // a typo on their own part.
+            if rest.iter().any(|a| a == "--master") {
+                return Err(format!(
+                    "exact takes no --master: the exact solve DRAWS NO worlds and derives no \
+                     seed — its answer is a pure function of (root, rules, bounds), so accepting \
+                     one would advertise a dependence it does not have. `adjudicate` requires \
+                     --master precisely because its playouts do need worlds.\n\n{USAGE}"
+                ));
+            }
+            let (positional, flags) = split_args(rest, EXACT_FLAGS)?;
+            let root = one_root(&positional, "exact")?;
+            let defaults = driven_exact::ExactBounds::default();
+            let bounds = driven_exact::ExactBounds {
+                max_nodes: match flags.get("max-nodes") {
+                    Some(raw) => parse_u64(raw)?,
+                    None => defaults.max_nodes,
+                },
+                max_depth: match flags.get("max-depth") {
+                    Some(raw) => u32::try_from(parse_u64(raw)?)
+                        .map_err(|_| format!("--max-depth {raw:?} is not a u32\n\n{USAGE}"))?,
+                    None => defaults.max_depth,
+                },
+                max_memo_entries: match flags.get("max-memo") {
+                    Some(raw) => usize::try_from(parse_u64(raw)?)
+                        .map_err(|_| format!("--max-memo {raw:?} is not a usize\n\n{USAGE}"))?,
+                    None => defaults.max_memo_entries,
+                },
+            };
+            let eps_vp = match flags.get("eps") {
+                Some(raw) => i64::try_from(parse_u64(raw)?)
+                    .map_err(|_| format!("--eps {raw:?} is not a non-negative integer\n\n{USAGE}"))?,
+                None => FROZEN_EPSILON_VP,
+            };
+            Ok(Command::Exact { root, bounds, eps_vp })
         }
         "family" => {
             let (positional, flags) = split_args(rest, FAMILY_FLAGS)?;
@@ -1238,6 +1335,86 @@ pub fn render_outcome(outcome: &DrivenOutcome, asked_for: &str) -> String {
     }
     lines.push(String::new());
     lines.push(format!("  digest         {}", outcome.digest()));
+    lines.join("\n")
+}
+
+/// One exact table. **Its FIRST LINE is [`driven_exact::EXACT_CLAIRVOYANT_READ`]
+/// verbatim**, on [`driven::ROBUSTNESS_READ`]'s rule and for a sharper version of
+/// its reason: this instrument reads PRIVILEGED information, and a table quoted
+/// without its label would read as a misplay verdict it cannot support.
+///
+/// Both tolerances are printed. ε = 0 is the true argmax; the ε the caller asked
+/// for defaults to family 1's FROZEN parameter so the two instruments' verdicts
+/// are comparable on the tolerance the family actually ran at — on an exact read
+/// that ε is a declared INDIFFERENCE BAND rather than noise cover.
+pub fn render_exact_table(table: &ExactTable, asked_for: &str, eps_vp: i64) -> String {
+    let provenance = &table.provenance;
+    let mut lines = vec![
+        driven_exact::EXACT_CLAIRVOYANT_READ.to_string(),
+        String::new(),
+        "=== driven exact ===".to_string(),
+        format!("  root           {asked_for}   {}", root_line(&provenance.root)),
+        format!(
+            "  semantics      rev={}  rules={}",
+            provenance.semantics_rev, provenance.rules_hash,
+        ),
+        format!("  mover          p{}", table.mover.0),
+        format!(
+            "  bounds         nodes={}  depth={}  memo={}",
+            table.stats.nodes, table.stats.max_depth, table.stats.memo_entries,
+        ),
+    ];
+    lines.extend(generated_lines(&provenance.root));
+    lines.push(String::new());
+
+    let best = table.best();
+    let argmax = table.argmax_set().len();
+    let top = table.top_set(eps_vp).len();
+    lines.push(format!(
+        "  candidates     {}   optimal set (eps=0) {} of {}   top set (eps={} VP) {} of {}",
+        table.rows.len(),
+        argmax,
+        table.rows.len(),
+        eps_vp,
+        top,
+        table.rows.len(),
+    ));
+    lines.push(String::new());
+    lines.push(format!(
+        "  {:>3}  {:>8}  {:>6}  {:>5}  {:>12}   candidate",
+        "#", "margin", "gap", "opt", "nodes",
+    ));
+    for (index, row) in table.rows.iter().enumerate() {
+        let gap = best.map_or(0, |b| b.margin - row.value.margin);
+        // Two marks, not one: `*` is the true optimum and `~` is inside the
+        // declared band but not optimal. Collapsing them would hide exactly the
+        // distinction the two printed set sizes exist to expose.
+        let mark = if best == Some(row.value) {
+            "*"
+        } else if gap <= eps_vp {
+            "~"
+        } else {
+            ""
+        };
+        lines.push(format!(
+            "  {:>3}  {:>8}  {:>6}  {:>5}  {:>12}   {:?}",
+            index + 1,
+            format!("{:+}", row.value.margin),
+            gap,
+            mark,
+            row.nodes,
+            row.candidate,
+        ));
+    }
+    lines.push(String::new());
+    lines.push(format!(
+        "  won at best    {}   (margin 0 is NOT a win: the official tie-break decides it)",
+        best.map_or_else(|| "-".to_string(), |b| b.won.to_string()),
+    ));
+    lines.push(format!(
+        "  memo           {} entries / {} hits   (TURN-ENTRY states only)",
+        table.stats.memo_entries, table.stats.memo_hits,
+    ));
     lines.join("\n")
 }
 
@@ -2109,6 +2286,17 @@ pub(crate) fn run_with(
             Ok(render_adjudication(&adjudication, &asked.asked_for))
         }
 
+        Command::Exact { root, bounds, eps_vp } => {
+            let asked = resolve(&root, entries, anchor, &rules)?;
+            // The root goes in as the descriptor the resolver already produced,
+            // exactly as `adjudicate` does, so the table names its origin once
+            // rather than rebuilding a claim about where it came from.
+            let (source, _) = resolve_once(&asked, None, &rules)?;
+            let table = driven_exact::exact_table(&source, &rules, bounds)
+                .map_err(|e| format!("{}: the exact solve did not complete: {e}", asked.asked_for))?;
+            Ok(render_exact_table(&table, &asked.asked_for, eps_vp))
+        }
+
         Command::Family { id, block, master, arm } => {
             // `one_family` already checked the id against the declarations, so
             // this lookup cannot miss — and it is written as a lookup rather
@@ -2311,7 +2499,10 @@ mod tests {
     use crate::game::rules::Rules;
     use crate::game::seeds::{SeedSchedule, WorldSeed};
     use crate::game::semantics::{state_digest, SEMANTICS_REV};
-    use crate::types::{GameState, PlayerId};
+    use crate::types::{
+        BuildingSite, EndGameTrigger, GameConfig, GameState, MercenaryState, PlayerId,
+        PresidentLocation, TradingHouseState, TurnPhase,
+    };
 
     /// This task's committed diagnostic master (Phase B, T5). The NAME of the
     /// constructor is the waiver, per `game::seeds`: a fixture cell wants
@@ -2488,6 +2679,163 @@ mod tests {
     // USAGE and the grammar
     // =======================================================================
 
+    // =======================================================================
+    // `exact` — the exact bounded-tree adjudicator's runner half
+    // =======================================================================
+
+    /// `exact` parses a root and its four bounds flags.
+    #[test]
+    fn exact_parses_a_root_and_its_bounds() {
+        let args = args(&[
+            "exact",
+            "gen:final-round-already-triggered:0xA3E1202608180004:9",
+            "--max-nodes",
+            "1234",
+            "--eps",
+            "2",
+        ]);
+        let Command::Exact { root, bounds, eps_vp } = parse(&args).expect("parses") else {
+            panic!("wrong command")
+        };
+        assert!(matches!(root, RootRef::Generated { .. }));
+        assert_eq!(bounds.max_nodes, 1234);
+        assert_eq!(eps_vp, 2);
+    }
+
+    /// The default ε is the FROZEN family parameter, 2 VP.
+    ///
+    /// Not a fresh choice: the exact read inherits family 1's declared tolerance
+    /// so the six recorded FAILs are re-read on the tolerance they failed under
+    /// (spec §7.3). On an exact read it is an INDIFFERENCE BAND, not noise cover.
+    #[test]
+    fn exact_defaults_epsilon_to_the_frozen_family_parameter() {
+        let args = args(&["exact", "gen:final-round-already-triggered:0xA3E1202608180004:9"]);
+        let Command::Exact { eps_vp, .. } = parse(&args).expect("parses") else {
+            panic!("wrong command")
+        };
+        assert_eq!(eps_vp, FROZEN_EPSILON_VP);
+    }
+
+    /// `--master` is REFUSED with the reason, not with "unknown flag".
+    ///
+    /// The exact solve draws no worlds, so accepting a master would advertise a
+    /// dependence it does not have — and a bare "unknown flag" would leave a
+    /// caller thinking they had merely mistyped it.
+    #[test]
+    fn exact_refuses_a_master_and_says_why() {
+        let args = args(&[
+            "exact",
+            "gen:final-round-already-triggered:0xA3E1202608180004:9",
+            "--master",
+            "0x1",
+        ]);
+        let err = parse(&args).expect_err("--master must be refused");
+        assert!(err.contains("draws no"), "the refusal must say why: {err}");
+        assert!(err.contains("--master"), "the refusal must name the flag: {err}");
+    }
+
+    /// The FIRST line of an exact report is the epistemic label, verbatim.
+    ///
+    /// `driven::ROBUSTNESS_READ`'s rule, one instrument over: the label rides the
+    /// OUTPUT and not only the docs, so a table pasted into a triage note carries
+    /// the claim it is entitled to make — and, here, the claim it is NOT.
+    #[test]
+    fn the_first_line_of_an_exact_report_is_the_clairvoyance_label() {
+        let rules = Rules::standard();
+        let table = exact_fixture_table(&rules);
+        let report = render_exact_table(&table, "constructed", FROZEN_EPSILON_VP);
+        let lines: Vec<&str> = report.lines().collect();
+        assert_eq!(lines[0], driven_exact::EXACT_CLAIRVOYANT_READ, "the first line is not the label");
+        assert_eq!(lines[1], "");
+        assert_eq!(lines[2], "=== driven exact ===");
+    }
+
+    /// The report names the optimal set at BOTH tolerances and marks the optimal
+    /// rows, so a reader never has to recompute the argmax from the values.
+    #[test]
+    fn the_exact_report_prints_both_top_sets_and_marks_the_optimum() {
+        let rules = Rules::standard();
+        let table = exact_fixture_table(&rules);
+        let report = render_exact_table(&table, "constructed", FROZEN_EPSILON_VP);
+        assert!(report.contains("optimal set (eps=0)"), "{report}");
+        assert!(report.contains(&format!("top set (eps={FROZEN_EPSILON_VP} VP)")), "{report}");
+        assert!(report.contains("  *  "), "the optimal rows are not marked:\n{report}");
+        assert!(report.contains("nodes"), "{report}");
+    }
+
+    /// A refusal is rendered as a refusal — never as an empty or partial table.
+    #[test]
+    fn an_out_of_scope_root_renders_a_named_refusal() {
+        let rules = Rules::standard();
+        let pending = new_game(GameConfig::for_player_count(2), &rules, 0x91)
+            .expect("new_game builds a 2P setup");
+        let midgame = finalize_setup(
+            pending,
+            &[StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)],
+        )
+        .expect("the setup finalizes");
+        let err = driven_exact::exact_table(
+            &RootSource::Constructed(midgame),
+            &rules,
+            driven_exact::ExactBounds::default(),
+        )
+        .expect_err("a midgame root refuses");
+        assert!(err.to_string().contains("midgame root"), "{err}");
+    }
+
+    /// A tiny in-final-round table, for the render cells.
+    fn exact_fixture_table(rules: &Rules) -> driven_exact::ExactTable {
+        let pending = new_game(GameConfig::for_player_count(2), rules, 0x92)
+            .expect("new_game builds a 2P setup");
+        let mut state = finalize_setup(
+            pending,
+            &[StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)],
+        )
+        .expect("the setup finalizes");
+        let n = state.config.player_count;
+        let start = state.config.start_player.0;
+        let mover = PlayerId::new((start + n - 1) % n);
+        for p in state.players.iter_mut() {
+            p.money = 0;
+            p.copper = 0;
+            p.silk = 0;
+            p.tea = 0;
+            p.seafood = 0;
+            p.imported_goods = 0;
+            p.mercenaries = MercenaryState::new();
+            p.victory_points = if p.id == mover { 20 } else { 18 };
+        }
+        let area = *state
+            .board_layout
+            .building_sites
+            .keys()
+            .next()
+            .expect("the 2P board carries a building site");
+        state.board_layout.building_sites.insert(area, BuildingSite::new([1, 5, 2, 3], 0));
+        {
+            let m = state.player_mut(mover);
+            m.president_location = PresidentLocation::OnBoard(area);
+            m.trading_houses = TradingHouseState::new();
+        }
+        state.current_player = mover;
+        state.turn_phase = TurnPhase::Building;
+        state.current_action_power = Some(4);
+        state.is_mercenary_action = false;
+        state.mercenary_target_area = None;
+        state.president_start_area = None;
+        state.pending_choices.clear();
+        state.end_game_triggered = true;
+        state.final_round = true;
+        state.trigger_reason = Some(EndGameTrigger::ChurchTrackFull);
+        state.trigger_player = Some(state.config.start_player);
+        driven_exact::exact_table(
+            &RootSource::Constructed(state),
+            rules,
+            driven_exact::ExactBounds::default(),
+        )
+        .expect("the fixture solves")
+    }
+
     /// USAGE names EVERY subcommand and EVERY flag the parser accepts — read off
     /// the parser's own whitelists, so a flag added without a line here fails
     /// rather than shipping undocumented.
@@ -2497,7 +2845,15 @@ mod tests {
             assert!(USAGE.contains(subcommand), "USAGE does not name `{subcommand}`");
         }
         for flags in
-            [LIST_FLAGS, TABLE_FLAGS, RUN_FLAGS, ADJUDICATE_FLAGS, FAMILY_FLAGS, OPENING_FLAGS]
+        [
+            LIST_FLAGS,
+            TABLE_FLAGS,
+            RUN_FLAGS,
+            ADJUDICATE_FLAGS,
+            EXACT_FLAGS,
+            FAMILY_FLAGS,
+            OPENING_FLAGS,
+        ]
         {
             for flag in flags {
                 assert!(USAGE.contains(&format!("--{flag}")), "USAGE does not name `--{flag}`");

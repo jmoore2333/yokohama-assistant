@@ -97,7 +97,7 @@ impl ExactValue {
 
 /// The bounds that CONTAIN the solve. Never quality dials: exceeding one is a
 /// typed refusal (spec §2.2), because there is nothing to approximate down to.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExactBounds {
     /// Expanded decision nodes.
     pub max_nodes: u64,
