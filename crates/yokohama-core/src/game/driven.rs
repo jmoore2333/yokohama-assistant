@@ -141,6 +141,7 @@ use crate::game::arena::{
     PlayError, PlayLimits, SeatBench, Slot, SALT_DRIVEN_REPLICATION,
 };
 use crate::game::belief::BeliefSampler;
+use crate::game::can_fulfill_order;
 use crate::game::end_game::is_game_over;
 use crate::game::eval::WeightTable;
 use crate::game::greedy::{GreedyAgent, DEFAULT_RETREAT_SAMPLES};
@@ -864,6 +865,58 @@ pub enum RootPredicate {
     /// two decisions away is not a claim in the legal list and a predicate that
     /// tried to see it would be searching, not selecting.
     AchievementClaimAvailable,
+    /// **V4 STEP 2, the S-group's development/escrow generator** (spec
+    /// `docs/plans/2026-08-20-phase3.5c-v4-spec-prereg.md` §6): the mover's turn
+    /// STARTS with ≥ 2 same-total placements into different area sets.
+    ///
+    /// The registration is one sentence and every word of it is a conjunct — see
+    /// [`is_mover_turn_start`] for "turn starts", [`turn_start_placements`] for
+    /// which placements are meant, and [`same_count_fork`] for "≥ 2 same-total
+    /// into different area sets". What is NOT here is as load-bearing:
+    ///
+    /// * **no width conjunct.** Families 2–4 carry [`MAX_ROOT_CANDIDATES`]
+    ///   because their reads ADJUDICATE (every root candidate, K playouts, the
+    ///   whole reply menu). A V4 development root is read by evaluating feature
+    ///   COLUMNS over the fork, which is cents per candidate — and the width a
+    ///   bound would measure at a turn-start state is the ADDITIONAL-ACTION
+    ///   list's, not the placement list's, so the conjunct would exclude the
+    ///   rich placement positions for a number computed at the wrong position.
+    /// * **no `!is_game_over`.** It is implied: `is_game_over` keys on
+    ///   [`TurnPhase::TurnEnd`] and nothing else ever assigns that phase, so a
+    ///   state in `AdditionalActionFirst` is never over. The pin says so rather
+    ///   than a redundant conjunct claiming to.
+    ///
+    /// **DISCLOSED LOOSENESS, measured rather than argued.** The literal rule is
+    /// satisfied by any turn start where the mover holds an assistant and can
+    /// afford two different single-area placements — which is most turn starts.
+    /// That is the registration, and this predicate implements the registration;
+    /// [`scan_capacity`] is the instrument that says how loose it is at a master,
+    /// and step 2's capacity measurement is where that number belongs.
+    PlacementForkSameCount,
+    /// **V4 STEP 2, the E-group's development/escrow generator** (spec §6): the
+    /// NON-MOVER holds ≥ 1 order, VISIBLE to the mover, whose requirements the
+    /// non-mover's own stocks satisfy.
+    ///
+    /// **The visibility qualifier is the whole point and it is not decorative.**
+    /// An unfulfilled hidden STARTING order is a card the mover cannot see, and
+    /// an E-column read over a card no seat could read would be a read about
+    /// privileged information. [`order_visible_to_others`] is the exact masking
+    /// rule `observe::visible_player` applies, mirrored here and PINNED against
+    /// `observe` itself rather than restated and hoped about.
+    ///
+    /// **The predicate still selects on TRUTH** (design §2), and the two facts
+    /// are not in tension: a generator reads the whole `GameState` because it is
+    /// choosing the position, and what it chooses here is a position where a
+    /// MOVER-VISIBLE fact holds. The stocks half is `can_fulfill_order`'s own
+    /// arithmetic on the holder — public goods, so nothing hidden enters either
+    /// half.
+    ///
+    /// `!is_game_over` IS a conjunct here and is a judgment call named as one:
+    /// spec §6's sentence does not carry it, but the §6 read is
+    /// "≥ 1 for the opponent WITH the do-nothing-successor contrast", and a
+    /// terminal state has no successor to contrast against. Every other layer-2
+    /// arm excludes the terminal position for the same reason.
+    OpponentSittingExecutable,
 }
 
 impl RootPredicate {
@@ -874,13 +927,15 @@ impl RootPredicate {
     /// [`Self::holds`] and [`Self::config`] — all three are exhaustive matches —
     /// but NOT here, so a new variant must be added to this array by hand. The
     /// name-distinctness pin is what catches a copy-paste that forgot to.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 8] = [
         Self::FinalRoundAlreadyTriggered,
         Self::TriggerRoundNotFinal,
         Self::EndFirableAheadInTruth,
         Self::EndFirableBehindInTruth,
         Self::ExclusiveRaceOneStep,
         Self::AchievementClaimAvailable,
+        Self::PlacementForkSameCount,
+        Self::OpponentSittingExecutable,
     ];
 
     /// The stable name, for descriptors and error text.
@@ -892,6 +947,8 @@ impl RootPredicate {
             Self::EndFirableBehindInTruth => "end-firable-behind-in-truth",
             Self::ExclusiveRaceOneStep => "exclusive-race-one-step",
             Self::AchievementClaimAvailable => "achievement-claim-available",
+            Self::PlacementForkSameCount => "placement-fork-same-count",
+            Self::OpponentSittingExecutable => "opponent-sitting-executable",
         }
     }
 
@@ -949,6 +1006,8 @@ impl RootPredicate {
                 width_ok_len(legal.len())
                     && legal.iter().any(|mv| matches!(mv, Move::FulfillAchievement { .. }))
             }
+            // RED: registered, named, and deliberately not yet implemented.
+            Self::PlacementForkSameCount | Self::OpponentSittingExecutable => false,
         }
     }
 
@@ -960,6 +1019,11 @@ impl RootPredicate {
     /// generates the SUBJECT'S OWN reachable positions — the right population
     /// for an on-policy checkpoint, and the reason the ecology is recorded on
     /// every descriptor rather than assumed.
+    ///
+    /// The two V4 arms scan the LOOKAHEAD ecology too, and that is spec §6's own
+    /// registration (`driven-generated-v2.2-lookahead`), not an inference: the
+    /// V4 read is about positions the SUBJECT reaches, so the population has to
+    /// be the subject's.
     pub fn ecology(self) -> GeneratingEcology {
         self.config().ecology
     }
@@ -973,9 +1037,58 @@ impl RootPredicate {
             Self::EndFirableAheadInTruth
             | Self::EndFirableBehindInTruth
             | Self::ExclusiveRaceOneStep
-            | Self::AchievementClaimAvailable => v2_lookahead_config(),
+            | Self::AchievementClaimAvailable
+            | Self::PlacementForkSameCount
+            | Self::OpponentSittingExecutable => v2_lookahead_config(),
         }
     }
+}
+
+/// The TWO predicates spec §6 declares ORDINAL BANDS for.
+///
+/// A named array rather than a method, so every consumer of the bands (the burn
+/// guard, the disjointness pins, the capacity report) reads ONE list and a third
+/// V4 predicate cannot be added to the bands by being added to
+/// [`RootPredicate::ALL`]. The other six arms have no band at all — family
+/// blocks run confirmatory ordinals 4..28 by declaration, so a band applied to
+/// them would refuse the frozen blocks.
+pub const V4_BANDED_PREDICATES: [RootPredicate; 2] =
+    [RootPredicate::PlacementForkSameCount, RootPredicate::OpponentSittingExecutable];
+
+/// Spec §6's DEVELOPMENT band, half-open, per predicate.
+pub const V4_DEVELOPMENT_ORDINALS: std::ops::Range<u32> = 0..4;
+
+/// Spec §6's DEVELOPMENT EXTENSION band — drawn only on a development supply
+/// miss, ledger-recorded, and still development.
+pub const V4_DEVELOPMENT_EXTENSION_ORDINALS: std::ops::Range<u32> = 4..8;
+
+/// Spec §6's ESCROW band, never re-purposed. The BURN RULE fences it: no
+/// `table` / `adjudicate` / read of any kind here before step 10.
+pub const V4_ESCROW_ORDINALS: std::ops::Range<u32> = 8..16;
+
+/// Are ordinals `a` and `b` GUARANTEED to come from different generated games,
+/// whatever any scan at any master happens to find?
+///
+/// **The stride lemma, and it is arithmetic rather than a hope.**
+/// [`generate_roots`] walks games in draw order and positions in play order,
+/// increments the ordinal once per kept hit, and stops walking a game the moment
+/// `per_game_cap` hits have been kept there. So the ordinals one game
+/// contributes are CONSECUTIVE and number at most `per_game_cap` — which makes
+/// two ordinals from one game differ by at most `per_game_cap - 1`, and any pair
+/// at least `per_game_cap` apart provably different games.
+///
+/// **This is a GUARANTEE and not a test.** A pair closer than the cap MAY still
+/// land in different games (they usually do); what this says is that nothing
+/// about the population can make a separated pair share one. Spec §6's
+/// independence claim is exactly this lemma at `GENERATED_STRIDE_CAP = 2`, and
+/// the place it does NOT reach is the development-EXTENSION boundary — ordinals
+/// 7 and 8 are one apart, so a game yielding a single hit can straddle them.
+/// `the_stride_separates_the_development_band_from_escrow_but_not_the_extension`
+/// pins both halves of that, and [`scan_capacity`] is what an orchestrator
+/// checks the straddle with if the extension is ever drawn.
+pub const fn ordinals_are_stride_separated(a: u32, b: u32, per_game_cap: u32) -> bool {
+    let gap = if a > b { a - b } else { b - a };
+    gap >= per_game_cap
 }
 
 // ---------------------------------------------------------------------------
@@ -8195,6 +8308,313 @@ mod tests {
         );
     }
 
+    // =======================================================================
+    // V4 step 2: the two frozen generator predicates (spec §6)
+    // =======================================================================
+
+    /// The V4 step-2 DEV-SMOKE master.
+    ///
+    /// **The 9999-convention throwaway and nothing else.** Spec §6 is
+    /// FREEZE-THEN-DRAW: the predicate implementations freeze first and only then
+    /// are M-PF / M-OSE drawn from OS entropy and ledger-recorded. A master
+    /// invented in a test file before that draw, and used at any ordinal, would
+    /// be a read taken before the thing it is a read of exists — so every cell
+    /// below runs on this one declared throwaway, whose trailing `9999` says out
+    /// loud that it is not anybody's recorded master.
+    const V4_MASTER: u64 = 0x0401_2026_0821_9999;
+
+    /// Move one order card from the top of the deck into `holder`'s hand — a
+    /// PORT TAKE's net effect on the conservation identity, and nothing else.
+    ///
+    /// Conservation is why this is a helper rather than three lines inline:
+    /// `check_invariants` counts deck + ports + hands + completed + removed = 36,
+    /// so a card CONJURED into a hand fails the net and a card moved deck → hand
+    /// does not. Every caller asserts the invariants afterwards.
+    fn deal_from_deck(state: &mut GameState, holder: PlayerId) -> OrderCardId {
+        let card = state.order_deck.pop().expect("the setup deck is not empty");
+        let idx = holder.0 as usize;
+        state.players[idx].order_cards_in_hand.push(card);
+        card
+    }
+
+    /// Raise `holder`'s trade goods until `order`'s requirements are met.
+    ///
+    /// Trade goods have NO conservation invariant (there is no pool — the engine
+    /// stores four per-player counters), so raising them is inside the net, and
+    /// the callers assert `check_invariants` to say so rather than assume it.
+    fn stock_for(state: &mut GameState, holder: PlayerId, order: OrderCardId, rules: &Rules) {
+        let req = rules.orders.get(order).expect("the registry knows the card").requirements;
+        let p = &mut state.players[holder.0 as usize];
+        p.copper = p.copper.max(req.copper as u32);
+        p.silk = p.silk.max(req.silk as u32);
+        p.tea = p.tea.max(req.tea as u32);
+        p.seafood = p.seafood.max(req.seafood as u32);
+    }
+
+    /// The seat that is NOT on the move.
+    fn non_mover(state: &GameState) -> PlayerId {
+        state
+            .players
+            .iter()
+            .map(|p| p.id)
+            .find(|id| *id != state.current_player)
+            .expect("a 2P fixture has a non-mover")
+    }
+
+    /// Both V4 arms are REGISTERED: spec-§6 names, in `ALL`, distinct, and
+    /// scanning the ecology §6 declares at the stride cap §6's independence
+    /// claim rests on.
+    #[test]
+    fn the_two_v4_predicates_are_registered_with_their_spec_names_and_ecology() {
+        assert_eq!(RootPredicate::PlacementForkSameCount.as_str(), "placement-fork-same-count");
+        assert_eq!(RootPredicate::OpponentSittingExecutable.as_str(), "opponent-sitting-executable");
+
+        let mut names: Vec<&str> = RootPredicate::ALL.into_iter().map(RootPredicate::as_str).collect();
+        assert_eq!(names.len(), 8, "the predicate vocabulary changed size");
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), 8, "two predicates answer to one name");
+
+        for predicate in V4_BANDED_PREDICATES {
+            assert!(
+                RootPredicate::ALL.contains(&predicate),
+                "{} is banded but not in ALL, so `gen:` cannot name it",
+                predicate.as_str(),
+            );
+            let ecology = predicate.ecology();
+            assert_eq!(
+                ecology.id, GENERATED_ECOLOGY_V2_LOOKAHEAD,
+                "{} does not scan the ecology spec §6 registers",
+                predicate.as_str(),
+            );
+            assert_eq!(
+                ecology.per_game_cap, GENERATED_STRIDE_CAP,
+                "{} does not carry the stride §6's independence claim rests on",
+                predicate.as_str(),
+            );
+            assert_eq!(ecology.games, GENERATED_V2_SCAN_GAMES);
+        }
+    }
+
+    /// The placement-fork predicate holds at a TURN START offering two
+    /// same-total placements into different area sets, and each conjunct is
+    /// shown refusing on its own.
+    ///
+    /// The positive is a FRESH 2P setup and the choice is deliberate: it is a
+    /// turn start by construction (`finalize_setup` hands the start player phase
+    /// A), every seat holds eight assistants, no President is on the board so
+    /// every placement is free, and nothing about it was selected after looking
+    /// at what the predicate says.
+    #[test]
+    fn the_placement_fork_predicate_needs_a_turn_start_and_a_same_count_fork() {
+        let rules = Rules::standard();
+        let fork = RootPredicate::PlacementForkSameCount;
+
+        let start = root_2p(&rules, world(40).0);
+        assert_eq!(start.turn_phase, TurnPhase::AdditionalActionFirst);
+        assert!(start.pending_choices.is_empty());
+        assert!(fork.holds(&start, &rules), "a fresh 2P turn start offers no same-count fork");
+
+        // THE FORK, re-derived here rather than trusted: the placements the
+        // mover reaches by declining every additional action, grouped by total.
+        let placing =
+            apply_move(&start, &Move::EndAdditionalPhase, &rules).expect("phase A always ends");
+        assert_eq!(placing.turn_phase, TurnPhase::Placement);
+        let mut by_total: BTreeMap<usize, BTreeSet<BTreeSet<AreaId>>> = BTreeMap::new();
+        for mv in get_legal_moves(&placing, &rules) {
+            let (total, areas) = match mv {
+                Move::PlaceThreeAreas { placements } => {
+                    (placements.len(), placements.into_iter().collect())
+                }
+                Move::PlaceTwoSameArea { area, adjacent_bonus } => {
+                    let mut areas: BTreeSet<AreaId> = BTreeSet::new();
+                    areas.insert(area);
+                    match adjacent_bonus {
+                        Some(adj) => {
+                            areas.insert(adj);
+                            (3, areas)
+                        }
+                        None => (2, areas),
+                    }
+                }
+                other => panic!("the Placement phase offered a non-placement move: {other:?}"),
+            };
+            by_total.entry(total).or_default().insert(areas);
+        }
+        assert!(
+            by_total.values().any(|sets| sets.len() >= 2),
+            "the independently derived fork is empty, so the positive proves nothing",
+        );
+
+        // NEGATIVE — NOT A TURN START: the SAME position one move on. Every
+        // placement the predicate is about is now in the legal list itself,
+        // which is exactly the position the registration does not name.
+        assert!(
+            !fork.holds(&placing, &rules),
+            "the Placement phase itself was read as a turn START",
+        );
+
+        // NEGATIVE — NO ASSISTANT TO PLACE: the only placement is the empty one,
+        // so no total has two sets. The eight assistants move hand → warehouse,
+        // which keeps each seat's total at the 20 `check_invariants` counts.
+        let mut empty_handed = start.clone();
+        {
+            let mover = empty_handed.current_player.0 as usize;
+            let p = &mut empty_handed.players[mover];
+            p.assistants.in_warehouse += p.assistants.in_hand;
+            p.assistants.in_hand = 0;
+        }
+        assert!(check_invariants(&empty_handed, &rules).is_ok(), "the doctor broke conservation");
+        assert!(
+            !fork.holds(&empty_handed, &rules),
+            "a mover with nothing in hand was read as facing a fork",
+        );
+    }
+
+    /// The sitting-executable predicate needs all three of its parts, and the
+    /// VISIBILITY part is the one that must be shown separately: a hidden
+    /// starting order the opponent could pay for RIGHT NOW does not count.
+    ///
+    /// The fixture is a fresh 2P setup, where each seat's whole hand is its KEPT
+    /// starting order — the masked slot itself. One deck card dealt into the
+    /// opponent's hand is the publicly-witnessed Port take that makes the
+    /// contrast a one-card difference on one state.
+    #[test]
+    fn the_sitting_executable_predicate_needs_a_visible_executable_opponent_order() {
+        let rules = Rules::standard();
+        let sitting = RootPredicate::OpponentSittingExecutable;
+
+        let base = root_2p(&rules, world(41).0);
+        let opponent = non_mover(&base);
+        let hidden = base.players[opponent.0 as usize].starting_order.expect("a kept deal");
+        assert_eq!(
+            base.players[opponent.0 as usize].order_cards_in_hand,
+            vec![hidden],
+            "the fixture's premise is that the opponent's whole hand is the masked slot",
+        );
+
+        // NEGATIVE — VISIBILITY: the hidden starting order, fully payable.
+        let mut hidden_only = base.clone();
+        stock_for(&mut hidden_only, opponent, hidden, &rules);
+        assert!(check_invariants(&hidden_only, &rules).is_ok());
+        assert!(
+            can_fulfill_order(&hidden_only, opponent, hidden, &rules.orders),
+            "anti-vacuity: the hidden card is not payable, so visibility is untested",
+        );
+        assert!(
+            !sitting.holds(&hidden_only, &rules),
+            "an unfulfilled HIDDEN starting order was counted as visible to the mover",
+        );
+
+        // POSITIVE: one publicly-witnessed card in the same hand, payable.
+        let mut visible = hidden_only.clone();
+        let taken = deal_from_deck(&mut visible, opponent);
+        stock_for(&mut visible, opponent, taken, &rules);
+        assert!(check_invariants(&visible, &rules).is_ok());
+        assert!(sitting.holds(&visible, &rules));
+
+        // NEGATIVE — STOCKS: the same visible card with the goods stripped.
+        let mut broke = visible.clone();
+        {
+            let p = &mut broke.players[opponent.0 as usize];
+            p.copper = 0;
+            p.silk = 0;
+            p.tea = 0;
+            p.seafood = 0;
+        }
+        assert!(check_invariants(&broke, &rules).is_ok());
+        assert!(
+            !can_fulfill_order(&broke, opponent, taken, &rules.orders),
+            "anti-vacuity: the stripped hand can still pay, so the stocks half is untested",
+        );
+        assert!(!sitting.holds(&broke, &rules));
+
+        // NEGATIVE — THE MOVER'S OWN: an executable visible card in the MOVER's
+        // hand is not the non-mover's, and the predicate says non-mover.
+        let mut mine = base.clone();
+        let mover = mine.current_player;
+        let own = deal_from_deck(&mut mine, mover);
+        stock_for(&mut mine, mover, own, &rules);
+        assert!(check_invariants(&mine, &rules).is_ok());
+        assert!(
+            can_fulfill_order(&mine, mover, own, &rules.orders),
+            "anti-vacuity: the mover cannot pay either, so the seat half is untested",
+        );
+        assert!(
+            !sitting.holds(&mine, &rules),
+            "the MOVER's own executable order satisfied a predicate about the NON-mover",
+        );
+
+        // NEGATIVE — TERMINAL: nothing is decided at a finished game, so there
+        // is no do-nothing successor for the §6 read to contrast against.
+        let terminal = harvest(&rules, C_MASTER, 4, "a terminal position", &mut |s| is_game_over(s));
+        let mut over = terminal.clone();
+        let over_opponent = non_mover(&over);
+        let over_card = deal_from_deck(&mut over, over_opponent);
+        stock_for(&mut over, over_opponent, over_card, &rules);
+        assert!(
+            can_fulfill_order(&over, over_opponent, over_card, &rules.orders),
+            "anti-vacuity: the terminal fixture has no executable visible order anyway",
+        );
+        assert!(!sitting.holds(&over, &rules));
+    }
+
+    /// Spec §6's ordinal bands are half-open, contiguous and disjoint, and the
+    /// escrow band's floor is the number the burn rule fences.
+    #[test]
+    fn the_v4_ordinal_bands_are_half_open_contiguous_and_disjoint() {
+        assert_eq!(V4_DEVELOPMENT_ORDINALS, 0..4);
+        assert_eq!(V4_DEVELOPMENT_EXTENSION_ORDINALS, 4..8);
+        assert_eq!(V4_ESCROW_ORDINALS, 8..16);
+        assert_eq!(V4_DEVELOPMENT_ORDINALS.end, V4_DEVELOPMENT_EXTENSION_ORDINALS.start);
+        assert_eq!(V4_DEVELOPMENT_EXTENSION_ORDINALS.end, V4_ESCROW_ORDINALS.start);
+        for ordinal in V4_DEVELOPMENT_ORDINALS.chain(V4_DEVELOPMENT_EXTENSION_ORDINALS) {
+            assert!(!V4_ESCROW_ORDINALS.contains(&ordinal), "ordinal {ordinal} is in two bands");
+        }
+        assert_eq!(V4_ESCROW_ORDINALS.len(), 8, "the escrow block is eight ordinals");
+    }
+
+    /// **THE STRIDE LEMMA, and the place it does not reach.**
+    ///
+    /// Spec §6 claims `GENERATED_STRIDE_CAP = 2` puts development and escrow
+    /// ordinals in different generated games. The arithmetic half of that is
+    /// [`ordinals_are_stride_separated`], and it is TRUE for the development
+    /// band {0..4} against escrow (min gap 5) and FALSE at the
+    /// development-EXTENSION boundary (ordinals 7 and 8 are one apart, and a
+    /// game contributing a single hit straddles them). Both halves are pinned,
+    /// because the second is a residual an orchestrator has to know about before
+    /// it draws the extension rather than after.
+    #[test]
+    fn the_stride_separates_the_development_band_from_escrow_but_not_the_extension() {
+        assert_eq!(GENERATED_STRIDE_CAP, 2, "the stride moved, so both claims below move with it");
+
+        for dev in V4_DEVELOPMENT_ORDINALS {
+            for escrow in V4_ESCROW_ORDINALS {
+                assert!(
+                    ordinals_are_stride_separated(dev, escrow, GENERATED_STRIDE_CAP),
+                    "development ordinal {dev} and escrow ordinal {escrow} can share a game",
+                );
+            }
+        }
+        // The lemma is not vacuous: adjacent ordinals are NOT separated.
+        assert!(!ordinals_are_stride_separated(0, 1, GENERATED_STRIDE_CAP));
+        assert!(ordinals_are_stride_separated(0, 2, GENERATED_STRIDE_CAP));
+
+        // THE RESIDUAL, stated as an assertion so it cannot be forgotten: the
+        // top of the development EXTENSION and the bottom of escrow are one
+        // apart, so the stride alone does not separate them.
+        let last_extension = V4_DEVELOPMENT_EXTENSION_ORDINALS.end - 1;
+        assert_eq!(last_extension + 1, V4_ESCROW_ORDINALS.start);
+        assert!(
+            !ordinals_are_stride_separated(
+                last_extension,
+                V4_ESCROW_ORDINALS.start,
+                GENERATED_STRIDE_CAP,
+            ),
+            "the extension/escrow boundary is separated after all — re-read the residual note",
+        );
+    }
+
     // -----------------------------------------------------------------------
     // Item 3: `firing_moves` and its short circuit
     // -----------------------------------------------------------------------
@@ -8686,7 +9106,9 @@ mod tests {
                 RootPredicate::EndFirableAheadInTruth
                 | RootPredicate::EndFirableBehindInTruth
                 | RootPredicate::ExclusiveRaceOneStep
-                | RootPredicate::AchievementClaimAvailable => GeneratingEcology::v2_lookahead(),
+                | RootPredicate::AchievementClaimAvailable
+                | RootPredicate::PlacementForkSameCount
+                | RootPredicate::OpponentSittingExecutable => GeneratingEcology::v2_lookahead(),
             };
             assert_eq!(
                 predicate.ecology(),
@@ -8716,6 +9138,8 @@ mod tests {
                 "end-firable-behind-in-truth",
                 "exclusive-race-one-step",
                 "achievement-claim-available",
+                "placement-fork-same-count",
+                "opponent-sitting-executable",
             ],
         );
         let unique: std::collections::BTreeSet<&str> = names.iter().copied().collect();
