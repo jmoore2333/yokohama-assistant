@@ -59,8 +59,8 @@ use crate::game::{
     check_invariants, finalize_setup, new_game, observe, Rules, StartingOrderChoice,
 };
 use crate::types::{
-    AchievementCategory, AchievementType, AreaId, GameConfig, GameState, PlayerId, PlayerView,
-    PresidentLocation, TechEffect, TurnPhase, VisiblePlayer,
+    AchievementCategory, AchievementType, AdditionalActionState, AreaId, GameConfig, GameState,
+    PlayerId, PlayerView, PresidentLocation, TechEffect, TurnPhase, VisiblePlayer,
 };
 
 // ---------------------------------------------------------------------------
@@ -592,6 +592,15 @@ pub struct TechDeclaration {
     /// registration states one — 11(d)'s "≤ 1 tech pre-purchase so
     /// `technologies.len()` never crosses 2 → 3 and the 4th-card duty stays off
     /// X1's future terms".
+    ///
+    /// **Scope: BOTH SEATS, which is over-strict on purpose.** 11(d)'s
+    /// constraint is about the SUBJECT's own duty threshold, but the bound is
+    /// checked over every seat, so an opponent holding more technologies than
+    /// the registration's number refuses too. A family-11 author who wants the
+    /// bound on the subject alone must leave this `None` and register the
+    /// intent as a note — the strict reading is the safe one here (it can only
+    /// refuse a fixture, never admit a wrong one), and it is stated rather than
+    /// discovered.
     pub max_owned: Option<usize>,
 }
 
@@ -709,6 +718,13 @@ pub struct PairDeclaration {
     /// legal take has happened, so a seat can hold at most the card it was
     /// dealt. A pair that must exceed it registers WHY here, and the reason
     /// enters the digest. `None` means the cap holds and is enforced.
+    ///
+    /// **Scope: BOTH SEATS.** The cap is checked over every seat, so a
+    /// registered deviation lifts it for the opponent as well as for the
+    /// subject — a pair needing a second card only in the subject's hand still
+    /// leaves the opponent's hand unchecked. Deliberate (the clause is about
+    /// the DECK's reachability, which is a property of the position, not of one
+    /// seat), and stated because the bounded re-read reads this doc.
     ///
     /// **This field is an INTERPRETATION** and is flagged as one: §5.1 states
     /// the clause but registers no deviation mechanism, and family 4(c)'s
@@ -1062,10 +1078,12 @@ impl PairFixture {
         // 9. Both seats' president declarations.
         let opponent = other_seat_2p(&greater, subject)?;
         for (side, state) in sides {
-            // S2-T3 FIX WAVE, RED: still reads the GREATER side's declaration
-            // for both sides — the M1 defect, kept visible until the green pass.
+            // PER SIDE, not per pair: §5.2's 6(d) and family 8 register pairs
+            // whose president SHAPE differs across the sides even though the
+            // president itself does not move. See [`SidedPresidents`].
+            let declared = declaration.presidents.side(side);
             check_president(
-                declaration.presidents.greater.subject,
+                declared.subject,
                 declaration.view_class,
                 side,
                 state,
@@ -1074,7 +1092,7 @@ impl PairFixture {
                 rules,
             )?;
             check_president(
-                declaration.presidents.greater.opponent,
+                declared.opponent,
                 declaration.view_class,
                 side,
                 state,
@@ -1266,6 +1284,18 @@ fn check_view_class(
                 return Err(mismatch(
                     "declared HAND-OFF but a mercenary sub-turn is running".to_string(),
                 ));
+            }
+            // The advance resets this in the same breath as the phase
+            // (apply_move.rs:278), and the FULL equality is the right check
+            // rather than `mercenary_used` alone: all three are once-per-turn
+            // flags cleared together, so any one of them set describes a turn
+            // already under way, not a seat that has just received one.
+            if state.additional_action_state != AdditionalActionState::new() {
+                return Err(mismatch(format!(
+                    "declared HAND-OFF but carries used once-per-turn flags \
+                     ({:?}); the seat advance resets them",
+                    state.additional_action_state,
+                )));
             }
         }
         ViewClass::MidTurn { phase, mercenary } => {
@@ -2166,7 +2196,7 @@ fn declared_category(index: usize) -> AchievementCategory {
 mod tests {
     use super::*;
     use crate::game::eval::{explain, WeightTable};
-    use crate::types::{AdditionalActionState, OrderCardId, TechCardId};
+    use crate::types::{OrderCardId, TechCardId};
 
     fn rules() -> Rules {
         Rules::standard()
@@ -2901,10 +2931,14 @@ mod tests {
         // not run.
         view_class: ViewClass::MidTurn { phase: TurnPhase::AreaAction, mercenary: false },
         stages: &[StageEndpoint::Early],
+        // The drained pawn returns to a hand already holding 7, so it lands
+        // PAST the two-assistant core reserve — `AssistantsInHandExcess` moves
+        // and `AssistantsInHandCore` does not. Clause 13 caught this list
+        // getting it backwards at authoring, which is the guard doing its job.
         expected_nonzero: &[
             FeatureId::Incumbent(Feature::VictoryPoints),
             FeatureId::Incumbent(Feature::AssistantsOnBoard),
-            FeatureId::Incumbent(Feature::AssistantsInHandCore),
+            FeatureId::Incumbent(Feature::AssistantsInHandExcess),
         ],
         ..THROWAWAY_VP
     };
