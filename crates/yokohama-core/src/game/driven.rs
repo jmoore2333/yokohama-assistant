@@ -892,6 +892,17 @@ pub enum RootPredicate {
     /// That is the registration, and this predicate implements the registration;
     /// [`scan_capacity`] is the instrument that says how loose it is at a master,
     /// and step 2's capacity measurement is where that number belongs.
+    ///
+    /// # MEASURED SUPPLY (2026-08-21, step-2 capacity read)
+    ///
+    /// `capacity placement-fork-same-count --master 0x0401_2026_0821_9999`
+    /// (the declared dev-smoke throwaway) reached its `--stop-after 4` bound in
+    /// TWO generated games — ordinals 0,1 from game 0 and 2,3 from game 1, i.e.
+    /// the stride cap was spent in both. So the supply is ample and the
+    /// looseness above is confirmed rather than merely suspected: this predicate
+    /// selects near the first turn start it sees. What makes a development root
+    /// worth reading is therefore the step-5 gate (the S columns take ≥ 2
+    /// distinct values across the fork's same-count set), not this selection.
     PlacementForkSameCount,
     /// **V4 STEP 2, the E-group's development/escrow generator** (spec §6): the
     /// NON-MOVER holds ≥ 1 order, VISIBLE to the mover, whose requirements the
@@ -916,6 +927,48 @@ pub enum RootPredicate {
     /// "≥ 1 for the opponent WITH the do-nothing-successor contrast", and a
     /// terminal state has no successor to contrast against. Every other layer-2
     /// arm excludes the terminal position for the same reason.
+    ///
+    /// # MEASURED SUPPLY: ZERO (2026-08-21, step-2 capacity read)
+    ///
+    /// `capacity opponent-sitting-executable --master 0x0401_2026_0821_9999`
+    /// (the declared dev-smoke throwaway) walked the WHOLE registered ecology —
+    /// all 240 games of `driven-generated-v2.2-lookahead`, EXHAUSTIVE, not
+    /// truncated — and found **0 strided ordinals**. This predicate has no
+    /// development band and no escrow band to draw at that master, and spec §6's
+    /// supply-miss recovery (a prefix-stable scan-games raise) cannot help a
+    /// rate that is not small but ZERO.
+    ///
+    /// **The zero is the POPULATION, not the implementation**, and the
+    /// diagnostic that separates them is recorded here because it is the whole
+    /// finding. Over 8 lookahead games (2,399 non-terminal positions, same
+    /// master, same seats):
+    ///
+    /// | quantity (position × held card)                   | count |
+    /// |---------------------------------------------------|-------|
+    /// | non-mover holds a VISIBLE card                     |   472 |
+    /// | non-mover holds a PAYABLE card (visible or not)    |    24 |
+    /// | non-mover holds a payable VISIBLE card (this arm)  | **0** |
+    /// | MOVER holds a payable visible card                 |    48 |
+    ///
+    /// Visible non-mover cards are common and payable visible cards exist — but
+    /// only ever in the hand of the seat ON THE MOVE. Every payable card a
+    /// NON-mover holds is its unfulfilled hidden STARTING order, which this arm
+    /// correctly excludes. The mechanism is not subtle: `Move::FulfillOrder` is
+    /// an additional action in BOTH of a turn's phases, a visible held card is a
+    /// CHOSEN Port take rather than a dealt one, and a non-mover's trade-good
+    /// stocks cannot change during the opponent's turn (the mover's actions move
+    /// no goods across seats; Trading House passive income is yen). So a seat
+    /// that fulfils what it can before handing off is a seat that never sits on
+    /// a visible executable order — and `lookahead-v1` does, at every one of
+    /// those positions.
+    ///
+    /// **The consequence reaches past root supply**: `O3(opponent)` — spec §3.2's
+    /// `ExecutableOrders` over KNOWN held orders, which is this arm's quantity
+    /// exactly — is a CONSTANT ZERO on this ecology's production bytes, which is
+    /// §8's business and not a generator's. Two scope limits keep that honest:
+    /// the ecology seats the SHIPPED `lookahead-v1` at `WeightTable::V2`, so a
+    /// fitted V4 identity may play differently; and hand-built pair fixtures
+    /// (family 4(b)) declare their own O3 and are untouched by any of this.
     OpponentSittingExecutable,
 }
 
