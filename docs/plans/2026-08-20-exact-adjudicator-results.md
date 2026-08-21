@@ -206,8 +206,9 @@ default **4,000,000-entry transposition cap** first. That is the more informativ
 worth saying why. A node bound would have said "more than four billion nodes" — a fact about how
 long we were willing to wait. This says the root has **more than 4,000,000 distinct turn-entry
 hand-off states**, against ordinal 15's **28,064** and ordinal 17's **2,781,365** — a hand-off space
-more than **142× larger than the largest root that solved**. That is a fact about the POSITION'S
-STRUCTURE, and no amount of patience changes it.
+more than **1.43× the largest root that solved**, and that is a lower bound: the cap records only
+"more than 4,000,000". That is a fact about the POSITION'S STRUCTURE, and no amount of patience
+changes it.
 
 **The comparison that frames it:** ordinal 17 solved at 2,781,365 entries — **69% of the same cap**
 16 blew through. The two roots were flagged together on their spec-phase mover-turn measurement
