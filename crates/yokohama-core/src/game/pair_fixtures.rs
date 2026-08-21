@@ -55,7 +55,9 @@
 //! and every number it prints is read through `eval`'s existing public surface.
 
 use crate::game::eval::{self, Feature, ScoreStructure, PROGRESS_FULL_PPM};
-use crate::game::{finalize_setup, new_game, Rules, StartingOrderChoice};
+use crate::game::{
+    check_invariants, finalize_setup, new_game, observe, Rules, StartingOrderChoice,
+};
 use crate::types::{
     AchievementCategory, AchievementType, AreaId, GameConfig, GameState, PlayerId, PlayerView,
     PresidentLocation, TechEffect, TurnPhase, VisiblePlayer,
@@ -832,8 +834,180 @@ impl PairFixture {
         subject: PlayerId,
         rules: &Rules,
     ) -> Result<Self, FixtureError> {
-        let _ = (declaration, stage, &greater, &lesser, subject, rules);
-        Err(FixtureError::Unimplemented("PairFixture::new"))
+        // 1. The endpoint is one this pair registers.
+        if !declaration.stages.contains(&stage) {
+            return Err(FixtureError::Declaration {
+                clause: "declared stage endpoint",
+                detail: format!(
+                    "{} registers stages {:?} and this realization asks for {}",
+                    declaration.id,
+                    declaration.stages.iter().map(|s| s.name()).collect::<Vec<_>>(),
+                    stage.name(),
+                ),
+            });
+        }
+
+        let sides = [(Side::Greater, &greater), (Side::Lesser, &lesser)];
+
+        // 2–4. Player count, engine validity, and the seat that signs the view.
+        for (side, state) in sides {
+            if state.config.player_count != 2 {
+                return Err(FixtureError::Declaration {
+                    clause: "2P-only",
+                    detail: format!(
+                        "the {} side has {} players; §5.1's stage realization is written at 2P \
+                         and §5.3's signature is 2P-only (above two seats `opponent_extreme` \
+                         orients by weight)",
+                        side.name(),
+                        state.config.player_count,
+                    ),
+                });
+            }
+            check_invariants(state, rules).map_err(|detail| FixtureError::NotEngineValid {
+                side: side.name(),
+                detail,
+            })?;
+            if !state.players.iter().any(|p| p.id == subject) {
+                return Err(FixtureError::Declaration {
+                    clause: "subject seat",
+                    detail: format!(
+                        "seat {} has no row on the {} side",
+                        subject.0,
+                        side.name()
+                    ),
+                });
+            }
+            if state.current_player != subject {
+                return Err(FixtureError::Declaration {
+                    clause: "the subject is the mover",
+                    detail: format!(
+                        "the {} side's mover is seat {} but the pair is signed from seat {}; \
+                         §5.3 signs the MOVER's view",
+                        side.name(),
+                        state.current_player.0,
+                        subject.0,
+                    ),
+                });
+            }
+        }
+
+        // 5. Both sides observable from the subject seat.
+        let greater_view = observe(&greater, subject).map_err(|e| FixtureError::NotObservable {
+            side: Side::Greater.name(),
+            detail: format!("{e}"),
+        })?;
+        let lesser_view = observe(&lesser, subject).map_err(|e| FixtureError::NotObservable {
+            side: Side::Lesser.name(),
+            detail: format!("{e}"),
+        })?;
+        let views = [(Side::Greater, &greater_view), (Side::Lesser, &lesser_view)];
+
+        // 6. Neither side is a finished game.
+        for (side, view) in views {
+            if let Some(standing) = eval::terminal_standing(view, rules) {
+                return Err(FixtureError::Declaration {
+                    clause: "non-terminal sides",
+                    detail: format!(
+                        "the {} side is terminal (rank {} of {}); a finished game's positional \
+                         vector does not govern at all",
+                        side.name(),
+                        standing.rank,
+                        standing.seats,
+                    ),
+                });
+            }
+        }
+
+        // 7. One stage, both sides, exactly.
+        let g_ppm = eval::progress_ppm(&greater_view, rules);
+        let l_ppm = eval::progress_ppm(&lesser_view, rules);
+        if g_ppm != l_ppm || g_ppm != stage.ppm() {
+            return Err(FixtureError::Declaration {
+                clause: "endpoint-exact progress",
+                detail: format!(
+                    "declared {} ({} ppm) but the greater side reads {g_ppm} and the lesser \
+                     {l_ppm}",
+                    stage.name(),
+                    stage.ppm(),
+                ),
+            });
+        }
+
+        // 8. The declared view class.
+        for (side, state) in sides {
+            check_view_class(declaration.view_class, side, state)?;
+        }
+
+        // 9. Both seats' president declarations.
+        let opponent = other_seat_2p(&greater, subject)?;
+        for (side, state) in sides {
+            check_president(
+                declaration.presidents.subject,
+                declaration.view_class,
+                side,
+                state,
+                subject,
+                "subject",
+                rules,
+            )?;
+            check_president(
+                declaration.presidents.opponent,
+                declaration.view_class,
+                side,
+                state,
+                opponent,
+                "opponent",
+                rules,
+            )?;
+        }
+
+        // 10. The achievement draws and §5.1's registered draw constraint.
+        check_draws(&declaration.draws)?;
+        for (side, state) in sides {
+            check_drawn_cards(&declaration.draws, side, state)?;
+        }
+
+        // 11. The technology declaration.
+        for (side, state) in sides {
+            check_techs(&declaration.techs, side, state, rules)?;
+        }
+
+        // 12. The stage's own construction clauses, on the FINAL states.
+        for (side, state) in sides {
+            check_stage_clauses(declaration, stage, side, state, rules)?;
+        }
+
+        let fixture = PairFixture {
+            declaration,
+            stage,
+            subject,
+            greater,
+            lesser,
+            greater_view,
+            lesser_view,
+        };
+
+        // 13. §5.1: an unlisted nonzero row is a fixture defect. The INCUMBENT
+        // half of that check is complete today; the candidate half joins at
+        // step 3 with the columns themselves.
+        let delta = fixture.incumbent_delta(rules);
+        for f in Feature::ALL {
+            if delta[f.index()] != 0
+                && !declaration.expected_nonzero.contains(&FeatureId::Incumbent(f))
+            {
+                return Err(FixtureError::Declaration {
+                    clause: "expected-nonzero rows",
+                    detail: format!(
+                        "{} moves by {} but is not listed as expected-nonzero — §5.1 calls an \
+                         unlisted nonzero row a fixture defect",
+                        f.name(),
+                        delta[f.index()],
+                    ),
+                });
+            }
+        }
+
+        Ok(fixture)
     }
 
     /// The declaration this fixture answers to.
@@ -924,6 +1098,342 @@ impl PairFixture {
     }
 }
 
+/// §5.1's VIEW CLASS, checked against one side's state.
+///
+/// HAND-OFF is checked STRUCTURALLY rather than by label. A non-terminal player
+/// hand-off is the state `game/apply_move.rs:276–288` leaves behind when it
+/// advances the seat: the phase is [`TurnPhase::AdditionalActionFirst`], the
+/// choice queue is empty (the queue invariant's own hand-off clause), the
+/// action power is cleared, and no mercenary sub-turn is running. `TurnEnd` is
+/// the only other hand-off the machine has and nothing but the FINAL round ever
+/// assigns it (`game/apply_move.rs:264`), so a non-terminal hand-off is exactly
+/// the first shape.
+fn check_view_class(
+    declared: ViewClass,
+    side: Side,
+    state: &GameState,
+) -> Result<(), FixtureError> {
+    let mismatch = |detail: String| FixtureError::Declaration {
+        clause: "view class",
+        detail: format!("the {} side: {detail}", side.name()),
+    };
+    match declared {
+        ViewClass::HandOff => {
+            if state.turn_phase != TurnPhase::AdditionalActionFirst {
+                return Err(mismatch(format!(
+                    "declared HAND-OFF but rests at {:?}; a non-terminal hand-off rests at \
+                     AdditionalActionFirst",
+                    state.turn_phase,
+                )));
+            }
+            if !state.pending_choices.is_empty() {
+                return Err(mismatch(format!(
+                    "declared HAND-OFF but {} choices are still queued",
+                    state.pending_choices.len(),
+                )));
+            }
+            if state.current_action_power.is_some() {
+                return Err(mismatch(
+                    "declared HAND-OFF but carries a current_action_power; the seat advance \
+                     clears it"
+                        .to_string(),
+                ));
+            }
+            if state.is_mercenary_action {
+                return Err(mismatch(
+                    "declared HAND-OFF but a mercenary sub-turn is running".to_string(),
+                ));
+            }
+        }
+        ViewClass::MidTurn { phase, mercenary } => {
+            if state.turn_phase != phase {
+                return Err(mismatch(format!(
+                    "declared MID-TURN at {phase:?} but rests at {:?}",
+                    state.turn_phase,
+                )));
+            }
+            if state.is_mercenary_action != mercenary {
+                return Err(mismatch(format!(
+                    "declared mercenary={mercenary} but the state reads {}",
+                    state.is_mercenary_action,
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// One seat's president declaration on one side, including §5.1's
+/// unreachable-post-Recovery rule and its Telephone exception.
+fn check_president(
+    declared: PresidentDecl,
+    view_class: ViewClass,
+    side: Side,
+    state: &GameState,
+    seat: PlayerId,
+    role: &'static str,
+    rules: &Rules,
+) -> Result<(), FixtureError> {
+    let mismatch = |detail: String| FixtureError::Declaration {
+        clause: "president location",
+        detail: format!("the {} side's {role} seat ({}): {detail}", side.name(), seat.0),
+    };
+    let player = state.player(seat);
+    let area = president_area(player);
+    match (declared, area) {
+        (PresidentDecl::InHand, None) => Ok(()),
+        (PresidentDecl::InHand, Some(a)) => Err(mismatch(format!(
+            "declared InHand (§5.1's DEFAULT) but stands on area {}",
+            a.0
+        ))),
+        (PresidentDecl::OnBoardEmptyArea, None) => {
+            Err(mismatch("declared on-board at an empty area but sits in hand".to_string()))
+        }
+        (PresidentDecl::OnBoardEmptyArea, Some(a)) => {
+            let held = player.assistants.in_area(a);
+            if held == 0 {
+                Ok(())
+            } else {
+                Err(mismatch(format!(
+                    "declared on-board at an EMPTY area but holds {held} own assistant(s) at \
+                     area {}",
+                    a.0
+                )))
+            }
+        }
+        (PresidentDecl::OnBoardWithOwnAssistants { .. }, None) => Err(mismatch(
+            "declared on-board with own assistants but sits in hand".to_string(),
+        )),
+        (PresidentDecl::OnBoardWithOwnAssistants { telephone_excepted }, Some(a)) => {
+            if player.assistants.in_area(a) == 0 {
+                return Err(mismatch(format!(
+                    "declared on-board WITH own assistants but holds none at area {}",
+                    a.0
+                )));
+            }
+            // The rule bites only at a hand-off: mid-turn, Recovery has not run.
+            if matches!(view_class, ViewClass::HandOff) {
+                if !telephone_excepted {
+                    return Err(mismatch(format!(
+                        "a HAND-OFF fixture stands this seat's president on area {} where it \
+                         holds assistants — §5.1 calls that unreachable post-Recovery, \
+                         Telephone excepted, and the exception is not claimed",
+                        a.0
+                    )));
+                }
+                if !owns_effect(state, seat, TechEffect::Telephone, rules) {
+                    return Err(mismatch(
+                        "claims §5.1's Telephone exception but the seat owns no Telephone \
+                         technology"
+                            .to_string(),
+                    ));
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
+/// §5.1's REGISTERED DRAW CONSTRAINT, read off the declaration alone.
+fn check_draws(draws: &AchievementDraws) -> Result<(), FixtureError> {
+    let bad = |detail: String| FixtureError::Declaration { clause: "achievement draws", detail };
+    for (i, drawn) in
+        [draws.category_a, draws.category_b, draws.category_c].into_iter().enumerate()
+    {
+        if drawn.category() != declared_category(i) {
+            return Err(bad(format!(
+                "slot {i} declares {drawn:?}, which is category {:?}, but setup always deals \
+                 category {:?} there",
+                drawn.category(),
+                declared_category(i),
+            )));
+        }
+    }
+    for moved in draws.goods_moved {
+        if moved.category() != AchievementCategory::A {
+            return Err(bad(format!(
+                "{moved:?} is listed in the moved-goods set but is not a Category-A card"
+            )));
+        }
+    }
+    if draws.goods_moved.contains(&draws.category_a) {
+        return Err(bad(format!(
+            "the drawn Category-A card {:?} names a good this pair's recipe moves — §5.1's \
+             registered draw constraint requires the drawn A-card's good to sit OUTSIDE the \
+             moved set (the always-drawn A leg reads raw goods)",
+            draws.category_a,
+        )));
+    }
+    if draws.moves_yen && draws.category_b == AchievementType::Money10 {
+        return Err(bad(
+            "the recipe moves yen and the drawn Category-B card is Money10 — the leg would \
+             shadow E1 (§2's veto identity), and §5.1's registered draw constraint forbids it"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// The three declared cards against the ones one side actually carries.
+fn check_drawn_cards(
+    draws: &AchievementDraws,
+    side: Side,
+    state: &GameState,
+) -> Result<(), FixtureError> {
+    let declared = [draws.category_a, draws.category_b, draws.category_c];
+    for (i, want) in declared.into_iter().enumerate() {
+        let got = state.achievements[i].achievement_type;
+        if got != want {
+            return Err(FixtureError::Declaration {
+                clause: "achievement draws",
+                detail: format!(
+                    "the {} side carries {got:?} in slot {i} but the registration declares \
+                     {want:?}",
+                    side.name(),
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// The technology declaration on one side.
+fn check_techs(
+    decl: &TechDeclaration,
+    side: Side,
+    state: &GameState,
+    rules: &Rules,
+) -> Result<(), FixtureError> {
+    for player in &state.players {
+        if let Some(max) = decl.max_owned {
+            if player.technologies.len() > max {
+                return Err(FixtureError::Declaration {
+                    clause: "technology declaration",
+                    detail: format!(
+                        "the {} side's seat {} owns {} technologies, past the registered \
+                         maximum of {max}",
+                        side.name(),
+                        player.id.0,
+                        player.technologies.len(),
+                    ),
+                });
+            }
+        }
+        for effect in decl.excluded_effects {
+            if owns_effect(state, player.id, *effect, rules) {
+                return Err(FixtureError::Declaration {
+                    clause: "technology declaration",
+                    detail: format!(
+                        "the {} side's seat {} owns {effect:?}, which this registration \
+                         excludes — it would change the marginal the pair calibrates",
+                        side.name(),
+                        player.id.0,
+                    ),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// §5.1's stage-realization clauses, re-checked on the FINAL state rather than
+/// on the base it was built from — a pair's own doctoring is exactly what could
+/// move a clock back off its endpoint.
+fn check_stage_clauses(
+    declaration: &PairDeclaration,
+    stage: StageEndpoint,
+    side: Side,
+    state: &GameState,
+    rules: &Rules,
+) -> Result<(), FixtureError> {
+    let bad = |clause: &'static str, detail: String| FixtureError::Declaration {
+        clause,
+        detail: format!("the {} side: {detail}", side.name()),
+    };
+    match stage {
+        StageEndpoint::Early => {
+            for player in &state.players {
+                if player.shophouses.total_built() != 0 || player.trading_houses.total_built() != 0
+                {
+                    return Err(bad(
+                        "p = 0 realization",
+                        format!("seat {} has built; §5.1's p = 0 requires ZERO buildings", player.id.0),
+                    ));
+                }
+                if declaration.early_hand_cap_deviation.is_none() {
+                    let over_cap = player.order_cards_in_hand.len() > 1
+                        || player
+                            .order_cards_in_hand
+                            .iter()
+                            .any(|c| Some(*c) != player.starting_order);
+                    if over_cap {
+                        return Err(bad(
+                            "p = 0 hand cap",
+                            format!(
+                                "seat {} holds {} order card(s) that are not its dealt starting \
+                                 order; at a FULL deck no port take has happened, so §5.1 caps \
+                                 the hand there — register an \
+                                 `early_hand_cap_deviation` if the recipe genuinely needs more",
+                                player.id.0,
+                                player.order_cards_in_hand.len(),
+                            ),
+                        ));
+                    }
+                }
+            }
+            if state.church_track.total_assistants() != 0
+                || state.customs_track.total_assistants() != 0
+            {
+                return Err(bad(
+                    "p = 0 realization",
+                    "a real pawn stands on a track; §5.1's p = 0 requires ZERO real pawns on \
+                     both tracks (the D1 dummy is not counted)"
+                        .to_string(),
+                ));
+            }
+            // The deck clause is the one the endpoint arithmetic rests on, and
+            // clause 7 has already checked the derived ppm; this names WHICH
+            // clock a failure would have been about.
+            let view = observe(state, state.current_player).map_err(|e| {
+                FixtureError::NotObservable { side: side.name(), detail: format!("{e}") }
+            })?;
+            let initial = eval::initial_order_deck_len(&view, rules)
+                .ok_or(FixtureError::OutOfStock("a derivable initial deck size"))?;
+            if state.order_deck.len() != initial {
+                return Err(bad(
+                    "p = 0 realization",
+                    format!(
+                        "the deck holds {} of its initial {initial} cards; §5.1's p = 0 \
+                         requires a FULL deck",
+                        state.order_deck.len(),
+                    ),
+                ));
+            }
+        }
+        StageEndpoint::Late => {
+            if !state.order_deck.is_empty() {
+                return Err(bad(
+                    "p = FULL realization",
+                    format!(
+                        "the deck still holds {} card(s); §5.1's late recipe is DECK \
+                         SATURATION",
+                        state.order_deck.len(),
+                    ),
+                ));
+            }
+            if !port_is_full(state) && !state.end_game_triggered {
+                return Err(bad(
+                    "p = FULL realization",
+                    "the port is not full and no end trigger is declared; §5.1's recipe is \
+                     \"deck empty, port full OR the trigger declared\""
+                        .to_string(),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// One view's RELATIVE feature vector from `subject`'s seat: `own − opponent`
 /// for each incumbent feature, at 2P.
 ///
@@ -975,8 +1485,9 @@ pub fn stage_base_2p(
 /// is therefore to ASSERT the arithmetic against the engine's own derivation, so
 /// that a change to any clock surfaces here instead of inside a pair.
 pub fn early_base_2p(seed: u64, rules: &Rules) -> Result<GameState, FixtureError> {
-    let _ = (seed, rules);
-    Err(FixtureError::Unimplemented("early_base_2p"))
+    let state = keep_game_2p(seed, rules)?;
+    assert_stage(&state, StageEndpoint::Early, rules)?;
+    Ok(state)
 }
 
 /// **§5.1's `p = PROGRESS_FULL_PPM` REALIZATION**, by DECK SATURATION: the deck
@@ -1001,8 +1512,72 @@ pub fn early_base_2p(seed: u64, rules: &Rules) -> Result<GameState, FixtureError
 /// §5.1 phrases the recipe as "deck empty, port full **or** the trigger
 /// declared".
 pub fn late_base_2p(seed: u64, rules: &Rules) -> Result<GameState, FixtureError> {
-    let _ = (seed, rules);
-    Err(FixtureError::Unimplemented("late_base_2p"))
+    let mut state = keep_game_2p(seed, rules)?;
+    saturate_deck_into_the_box(&mut state);
+    assert_stage(&state, StageEndpoint::Late, rules)?;
+    Ok(state)
+}
+
+/// Empty the order deck into `orders_removed`, leaving every other pile alone.
+///
+/// Exposed so a late pair that needs a different sink — cards in completed
+/// piles or hands, the reachable shape real play produces — can build its own
+/// construction on top of [`late_base_2p`]'s reasoning rather than re-deriving
+/// it. Order conservation is exact: the total over deck, ports, hands,
+/// completed piles and the box is unchanged (`game/invariants.rs:89–107`).
+pub fn saturate_deck_into_the_box(state: &mut GameState) {
+    let drained: Vec<_> = state.order_deck.drain(..).collect();
+    state.orders_removed.extend(drained);
+}
+
+/// Assert a base state realizes its endpoint, against the ENGINE's own clock
+/// derivation rather than a restatement of it.
+///
+/// [`eval::clock_ppm`] (`game/eval.rs:1956`) is the authority on all four
+/// clocks — order-deck depletion, church occupancy, customs occupancy, and the
+/// building race — and [`eval::progress_ppm`] (`game/eval.rs:1933`) is their
+/// maximum. Checking the components as well as the maximum is what makes the
+/// late base's claim specific: p = FULL by DECK saturation says the first clock
+/// is full and the other three are at zero, so §5.1's "track/building deltas
+/// inside a pair are absorbed by the max" is a fact about the base rather than
+/// a hope about the pair.
+fn assert_stage(
+    state: &GameState,
+    stage: StageEndpoint,
+    rules: &Rules,
+) -> Result<(), FixtureError> {
+    let view = observe(state, state.current_player).map_err(|e| FixtureError::NotObservable {
+        side: "base",
+        detail: format!("{e}"),
+    })?;
+    let clocks = eval::clock_ppm(&view, rules);
+    let expected = match stage {
+        StageEndpoint::Early => [0, 0, 0, 0],
+        StageEndpoint::Late => [PROGRESS_FULL_PPM, 0, 0, 0],
+    };
+    if clocks != expected {
+        return Err(FixtureError::Declaration {
+            clause: "stage realization",
+            detail: format!(
+                "the {} base reads clocks {clocks:?} (deck, church, customs, building) but \
+                 §5.1's construction is {expected:?}",
+                stage.name(),
+            ),
+        });
+    }
+    let ppm = eval::progress_ppm(&view, rules);
+    if ppm != stage.ppm() {
+        return Err(FixtureError::Declaration {
+            clause: "stage realization",
+            detail: format!(
+                "the {} base reads {ppm} ppm, not {}",
+                stage.name(),
+                stage.ppm()
+            ),
+        });
+    }
+    check_invariants(state, rules)
+        .map_err(|detail| FixtureError::NotEngineValid { side: "base", detail })
 }
 
 // ---------------------------------------------------------------------------
@@ -1162,8 +1737,15 @@ pub const DIGEST_FORMAT_VERSION: u32 = 1;
 /// `BTreeMap`s, so the encoding is total and deterministic without this module
 /// re-deriving what a state contains.
 pub fn state_fingerprint(state: &GameState) -> String {
-    let _ = state;
-    "0000000000000000".to_string()
+    // `to_vec` cannot fail on a `GameState`: every field is a plain serde
+    // derive over owned data with no non-string map keys. The fallback is a
+    // NAMED sentinel rather than a panic or a silent zero, so a future field
+    // that broke the encoding would print as broken instead of colliding with
+    // every other broken fingerprint.
+    match serde_json::to_vec(state) {
+        Ok(bytes) => format!("{:016x}", fnv1a(&bytes)),
+        Err(_) => "unencodable-state".to_string(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1211,8 +1793,149 @@ pub fn render_pair_report_with(
     rules: &Rules,
     columns: Option<CandidateColumns>,
 ) -> String {
-    let _ = (fixture, rules, columns);
-    String::new()
+    let d = fixture.declaration;
+    let stage = fixture.stage;
+    let mut out = String::new();
+
+    out.push_str(&format!("pair                {}  {}\n", d.id, d.name));
+    out.push_str(&format!("family              {}  ({})\n", d.family, d.role.canonical()));
+    out.push_str(&format!("greater             {}\n", d.greater_side));
+    out.push_str(&format!("lesser              {}\n", d.lesser_side));
+    out.push_str(&format!(
+        "stage               {} (p = {} ppm; realized {})\n",
+        stage.name(),
+        stage.ppm(),
+        fixture.progress_ppm(rules),
+    ));
+    out.push_str(&format!("view-class          {}\n", d.view_class.canonical()));
+    out.push_str(&format!(
+        "margin-class        {} (margin here: {})\n",
+        d.margin.canonical(),
+        d.margin.margin_at(stage).map_or_else(|| "-".to_string(), |m| m.to_string()),
+    ));
+    out.push_str(&format!("carrier             {}\n", d.carrier.map_or("-", |c| c.label())));
+    out.push_str(&format!(
+        "presidents          subject={} opponent={}\n",
+        d.presidents.subject.canonical(),
+        d.presidents.opponent.canonical(),
+    ));
+    out.push_str(&format!(
+        "draws               a={:?} b={:?} c={:?} (moved-goods {:?}, moves-yen {})\n",
+        d.draws.category_a,
+        d.draws.category_b,
+        d.draws.category_c,
+        d.draws.goods_moved,
+        d.draws.moves_yen,
+    ));
+    out.push_str(&format!(
+        "technologies        excluded={:?} max-owned={}\n",
+        d.techs.excluded_effects,
+        d.techs.max_owned.map_or_else(|| "-".to_string(), |n| n.to_string()),
+    ));
+    out.push_str(&format!("layout              {}\n", d.layout.canonical()));
+    for (key, value) in d.parameters {
+        out.push_str(&format!("parameter           {key} = {value}\n"));
+    }
+    if let Some(reason) = d.early_hand_cap_deviation {
+        out.push_str(&format!("hand-cap deviation  {reason}\n"));
+    }
+    out.push_str(&format!("subject seat        {}\n", fixture.subject.0));
+    out.push_str(&format!(
+        "state bytes         greater={} lesser={}\n",
+        state_fingerprint(&fixture.greater),
+        state_fingerprint(&fixture.lesser),
+    ));
+    out.push_str(&format!("package digest      {}\n", package_digest()));
+
+    // The delta table. Incumbents carry the relative form on both sides and its
+    // difference; candidates carry the same shape once step 3 wires `columns`.
+    let g_rel = relative_vector(&fixture.greater_view, fixture.subject, rules);
+    let l_rel = relative_vector(&fixture.lesser_view, fixture.subject, rules);
+    out.push('\n');
+    out.push_str(&push_row("row", "feature", "greater", "lesser", "delta", "expected-nonzero"));
+    for row in FeatureId::all() {
+        let listed = if d.expected_nonzero.contains(&row) { "yes" } else { "" };
+        match row {
+            FeatureId::Incumbent(f) => {
+                let g = g_rel[f.index()];
+                let l = l_rel[f.index()];
+                out.push_str(&push_row(
+                    &row.index().to_string(),
+                    f.name(),
+                    &g.to_string(),
+                    &l.to_string(),
+                    &(g - l).to_string(),
+                    listed,
+                ));
+            }
+            FeatureId::Candidate(c) => {
+                let cell = |view: &PlayerView| -> Option<i64> {
+                    let f = columns?;
+                    let me = view.players.iter().find(|p| p.id == fixture.subject)?;
+                    let mine = f(view, me, c, rules)?;
+                    let opponent =
+                        view.players.iter().find(|p| p.id != fixture.subject && !p.id.is_dummy());
+                    let theirs = match opponent {
+                        Some(o) => f(view, o, c, rules)?,
+                        None => 0,
+                    };
+                    Some(mine - theirs)
+                };
+                match (cell(&fixture.greater_view), cell(&fixture.lesser_view)) {
+                    (Some(g), Some(l)) => out.push_str(&push_row(
+                        &row.index().to_string(),
+                        c.name(),
+                        &g.to_string(),
+                        &l.to_string(),
+                        &(g - l).to_string(),
+                        listed,
+                    )),
+                    // ONE marker per row, in the DELTA column: the delta is the
+                    // number a solve row reads, so that is where "not built
+                    // yet" belongs, and the value columns print `-` rather
+                    // than a `0` that would read as a measurement.
+                    _ => out.push_str(&push_row(
+                        &row.index().to_string(),
+                        c.name(),
+                        "-",
+                        "-",
+                        CANDIDATE_PENDING,
+                        listed,
+                    )),
+                }
+            }
+        }
+    }
+
+    if !d.notes.is_empty() {
+        out.push('\n');
+        for note in d.notes {
+            out.push_str(&format!("note                {note}\n"));
+        }
+    }
+    out
+}
+
+/// One line of the delta table.
+///
+/// Every cell is a STRING, and every row goes through here, so the header, the
+/// incumbent rows and the candidate rows cannot drift into different widths —
+/// which matters because the candidate cell is [`CANDIDATE_PENDING`] rather
+/// than a number and a per-arm `format!` would silently ragged-edge the table
+/// exactly where a reader is scanning for what is not built yet. Trailing
+/// whitespace is trimmed so an unlisted row does not end in spaces.
+fn push_row(
+    index: &str,
+    feature: &str,
+    greater: &str,
+    lesser: &str,
+    delta: &str,
+    listed: &str,
+) -> String {
+    let line = format!(
+        "{index:<4} {feature:<28} {greater:>16} {lesser:>16} {delta:>16}  {listed}"
+    );
+    format!("{}\n", line.trim_end())
 }
 
 /// The registry's own manifest: what is registered, how far it is from §5.1's
@@ -1275,7 +1998,7 @@ pub fn port_is_full(state: &GameState) -> bool {
         .port_state
         .port_b
         .as_ref()
-        .map_or(true, |p| p.slots.iter().all(Option::is_some));
+        .is_none_or(|p| p.slots.iter().all(Option::is_some));
     a && b
 }
 
@@ -1309,7 +2032,6 @@ fn declared_category(index: usize) -> AchievementCategory {
 mod tests {
     use super::*;
     use crate::game::eval::{explain, WeightTable};
-    use crate::game::{check_invariants, observe};
     use crate::types::{OrderCardId, TechCardId};
 
     fn rules() -> Rules {
@@ -1447,10 +2169,27 @@ mod tests {
 
     const SEED: u64 = 0x5A2F_0001;
 
+    /// Write the three declared achievement cards onto a state.
+    ///
+    /// A registration DECLARES its draws (§5.1), so a fixture builds them
+    /// rather than accepting whatever the setup seed happened to shuffle up —
+    /// which is why every throwaway here goes through this. The cards are their
+    /// own components, not drawn from the order or technology decks, so nothing
+    /// about conservation moves; and both sides get the same three, so the
+    /// achievement-progress feature's delta is untouched.
+    fn set_draws(state: &mut GameState, draws: &AchievementDraws) {
+        state.achievements = [
+            crate::types::AchievementCard::new(draws.category_a),
+            crate::types::AchievementCard::new(draws.category_b),
+            crate::types::AchievementCard::new(draws.category_c),
+        ];
+    }
+
     /// The two sides of `THROWAWAY_VP` at one endpoint: identical states except
     /// one victory point on the greater side.
     fn vp_pair(stage: StageEndpoint, rules: &Rules) -> (GameState, GameState, PlayerId) {
-        let lesser = stage_base_2p(stage, SEED, rules).expect("a stage base builds");
+        let mut lesser = stage_base_2p(stage, SEED, rules).expect("a stage base builds");
+        set_draws(&mut lesser, &THROWAWAY_DRAWS);
         let subject = lesser.current_player;
         let mut greater = lesser.clone();
         greater.player_mut(subject).victory_points += 1;
@@ -1759,15 +2498,21 @@ mod tests {
     #[test]
     fn a_fixture_refuses_a_terminal_side() {
         let rules = rules();
-        let (mut greater, lesser, subject) = vp_pair(StageEndpoint::Late, &rules);
+        let (mut greater, mut lesser, subject) = vp_pair(StageEndpoint::Late, &rules);
         // The engine's own terminal shape (`eval::view_is_terminal`): triggered,
         // final round, a recorded trigger player, and the turn resting at the
-        // end of the seat before the start player.
+        // end of the seat before the start player. Both sides move the MOVER to
+        // that seat so the refusal is about terminality rather than about which
+        // seat signs the view (clause 4 runs first, and correctly).
         let seats = i32::from(greater.config.player_count);
         let last = (i32::from(greater.config.start_player.0) + seats - 1).rem_euclid(seats);
+        lesser.current_player = PlayerId(last as u8);
         greater.end_game_triggered = true;
         greater.final_round = true;
         greater.trigger_player = Some(greater.config.start_player);
+        // The engine's own trigger-coherence clause wants the reason too, and
+        // the deck is genuinely empty on a LATE base.
+        greater.trigger_reason = Some(crate::types::EndGameTrigger::OrderDeckEmpty);
         greater.current_player = PlayerId(last as u8);
         greater.turn_phase = TurnPhase::TurnEnd;
         let _ = subject;
@@ -1982,29 +2727,21 @@ mod tests {
     #[test]
     fn a_listed_row_that_does_not_move_is_reported_by_the_second_half_check() {
         let rules = rules();
-        let lesser = early_base_2p(SEED, &rules).expect("early base");
+        // Two IDENTICAL sides: nothing moves, so `new`'s own direction (a
+        // realized nonzero row must be listed) is vacuously satisfied and the
+        // fixture admits. `victory_points` is nonetheless LISTED, which is the
+        // other direction — and the one that only completes at step 3, so it
+        // is a call a caller makes rather than a constructor clause.
+        let mut lesser = early_base_2p(SEED, &rules).expect("early base");
+        set_draws(&mut lesser, &THROWAWAY_DRAWS);
         let subject = lesser.current_player;
         let greater = lesser.clone();
         let fixture =
-            PairFixture::new(&THROWAWAY_VP_UNLISTED, StageEndpoint::Early, greater, lesser, subject, &rules)
-                .expect("identical sides list nothing and move nothing");
-        // The same identical-sides fixture under the LISTING declaration would
-        // not admit at all, so the second half-check is exercised through the
-        // one declaration that lists a row it cannot move.
-        let _ = fixture;
-        let lesser = early_base_2p(SEED, &rules).expect("early base");
-        let greater = lesser.clone();
-        let err = PairFixture::new(
-            &THROWAWAY_VP,
-            StageEndpoint::Early,
-            greater,
-            lesser,
-            subject,
-            &rules,
-        )
-        .map(|f| f.listed_incumbent_rows_are_nonzero(&rules))
-        .expect("identical sides admit")
-        .expect_err("victory_points is listed but does not move");
+            PairFixture::new(&THROWAWAY_VP, StageEndpoint::Early, greater, lesser, subject, &rules)
+                .expect("identical sides admit: no row moves, so none is unlisted");
+        let err = fixture
+            .listed_incumbent_rows_are_nonzero(&rules)
+            .expect_err("victory_points is listed but does not move");
         assert!(format!("{err}").contains("victory_points"), "got: {err}");
     }
 
