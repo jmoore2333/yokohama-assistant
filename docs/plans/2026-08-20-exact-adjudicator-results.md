@@ -27,11 +27,14 @@ are genuinely outside the exact optimum — 13 → 13, 18 → 18, 19 → 20, 20 
 adjudicator was detecting real signal it had no way to adjudicate. That is a corroboration of the
 family-1 design, independent of this instrument's own verdicts.
 
-**The attribution mandate RETURNS A RESULT.** Positive 17 — the arm's only FAIL root, and the root
-the attribution question was actually written for — solved after all, in 93 m 54 s over 3.28 billion
-nodes, and converts to **EXACT-FAIL at 20 of 20**. Its rider was in flight when this document was
-written (§6). Only **ordinal 16** refused, and it refused structurally rather than for want of
-patience (§5).
+**The attribution mandate RETURNS AN EXACT VERDICT — AND NO ATTRIBUTION.** Positive 17 — the arm's
+only FAIL root, and the root the attribution question was actually written for — solved after all, in
+93 m 54 s over 3.28 billion nodes, and converts to **EXACT-FAIL at 20 of 20**. Its rider then
+**BUDGET-REFUSED** after 8 h 12 m: one of the five determinized worlds exceeded the raised
+8,000,000,000-node budget (§6). So the exact verdict stands and the misplay claim does not — ordinal
+17 joins ordinal 15 as an un-attributed failure against a privileged standard. Separately, **ordinal
+16** remains the one root whose exact SOLVE refused — structurally, rather than for want of patience
+(§5); the two refusals are different kinds and are not one story.
 
 **A directional detail that closes the corroboration story.** At ordinal 17 the FROZEN instrument
 recorded **11 of 20** misses; the exact read finds **20 of 20** outside. The exact instrument is
@@ -284,13 +287,34 @@ is attributed at all.
 | 9 | principle applied at discovered FAIL | 1 candidate | 5 of 5 | **INVARIANT** | 17 m 14.55 s |
 | 13 | principle applied at discovered FAIL | 1 candidate | 5 of 5 | **INVARIANT** | 30 m 10.72 s |
 | 15 | principle applies — NOT RUN (ruled, below) | — | — | — | — |
-| **17** | **NAMED SET** (the pre-registered FAIL root) | — | — | **IN FLIGHT** — verdict lands as a follow-up commit | ~9.4 h est. |
+| **17** | **NAMED SET** (the pre-registered FAIL root) | — | — | **BUDGET-REFUSED** (NodeBudget, in a determinized world) — **NO attribution** | 8 h 12 m 34.68 s |
 
 **Ordinal 17's rider is squarely inside the ORIGINAL instantiation** — it is the root the
 pre-registration named, so it needs no appeal to the applied-rule reading above. It was launched at
-the recorded master with **W = 5** after this document's roster run, and its verdict lands on this
-branch as a disclosed follow-up commit; the merge does not gate on it, and nothing else in this
-document depends on it.
+the recorded master with **W = 5** after this document's roster run, and it **BUDGET-REFUSED** after
+**8 h 12 m 34.68 s**, verbatim:
+
+```
+gen:final-round-already-triggered:0xa3e1202608180004:17: the rider did not complete: node budget
+8000000000 exceeded at candidate 10 (counted 8000000001 expanded decision nodes — a lower bound on
+this root's tree, never a ceiling)
+```
+
+**The refusal is in a DETERMINIZED WORLD, not in the truth solve.** The typed error does not say so;
+the structure fixes it. The runner's own table solve completed — the failure is reported as the
+RIDER's, not the solve's — and the rider's truth solve is that same deterministic solve, which
+completed at 3,282,444,115 nodes, comfortably inside the raised 8,000,000,000 budget. **Which** of
+the five worlds it was, the error does not name, and nothing here infers it.
+
+**So ordinal 17 is EXACT-FAIL at 20 of 20 and UN-ATTRIBUTED** — the same standing as ordinal 15 by a
+different route: 15 got no rider by ruling, 17 got one that could not finish. The §0 callout governs
+both. This costs the lane the single attribution it most wanted, and the record says so plainly
+rather than reaching for the weaker reading.
+
+*Cost note, measured rather than assumed:* the wall includes the truth solve **twice** — once for the
+printed table and once inside `world_invariance`, which re-solves it as the comparison pole. At this
+root that is ~3 h 8 m of the 8 h 12 m before any determinized world began. The completed riders at
+ordinals 7/9/13 carry the same double solve, so their walls sit on the same footing as this one.
 
 *Bounds raised for that run, disclosed:* memo cap 12,000,000 and node budget 8e9, because ordinal
 17's own truth solve used 2,781,365 entries — 69% of the 4,000,000 default — and a determinized
@@ -413,7 +437,7 @@ best is known. That is a property of the search, recorded, not a result.
 | exact ord 16 (REFUSED, MemoBudget) | 118 m 25.58 s |
 | exact ord 17 (SOLVED) | 93 m 54.38 s |
 | rider ord 7 / 9 / 13 | 5 m 09.75 s / 17 m 14.55 s / 30 m 10.72 s |
-| rider ord 17 | in flight (~9.4 h est.) |
+| rider ord 17 (BUDGET-REFUSED, NodeBudget) | **8 h 12 m 34.68 s** (estimate had been ~9.4 h; §6) |
 | fifteen-gate release roster (M5, quiet box) | **379 s — see §8.1** |
 | ordering measurement (ord 9, both arms) | 1 m 51.38 s / 1 m 54.00 s |
 
@@ -526,12 +550,13 @@ full text was reviewed directly.
    UNRESOLVED roots" figure counts nine control-arm roots the Phase-B design had already excluded,
    and §6.7's measurement confirms that exclusion. Should the owner rule otherwise, the spec §2.1
    predicate is the one line that moves.
-3. **The attribution mandate RETURNS A RESULT.** Positive 17 — the arm's only FAIL root and the
-   root the attribution question was written for — solved, converts to EXACT-FAIL at 20 of 20, and
-   its rider is in flight at the recorded master. Beside it, three roots that converted from
-   UNRESOLVED to EXACT-FAIL read INVARIANT under the rider: unambiguous final-round misplay,
-   quantified in VP. What remains unread is ordinal 15's attribution (ruled) and ordinal 16
-   entirely (refused).
+3. **The attribution mandate RETURNS AN EXACT VERDICT AND NO ATTRIBUTION.** Positive 17 — the
+   arm's only FAIL root and the root the attribution question was written for — solved and converts
+   to EXACT-FAIL at 20 of 20, but its rider BUDGET-REFUSED at the recorded master (§6), so the
+   misplay claim the rider exists to earn is NOT earned here. Beside it, three roots that converted
+   from UNRESOLVED to EXACT-FAIL read INVARIANT under the rider: unambiguous final-round misplay,
+   quantified in VP. What remains unread is ordinal 17's attribution (refused), ordinal 15's
+   (ruled), and ordinal 16 entirely (refused).
 4. **The §3.1 placement observation goes to the V4 lane as corroboration only.** It is a
    final-round finding from an instrument that knows nothing about the feature set, and it arrives
    at the same place the milestone's own diagnosis did. Under the map §1.5/§1.6 fence it is
