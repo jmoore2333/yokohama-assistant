@@ -376,13 +376,19 @@ roots (<root> above):
                    recorded move, so `table` requires --decision-seed and prints
                    NOT CHECKED, exactly as it does for a path root.
                    COST is the ECOLOGY's: the family-1 predicates scan a rung
-                   ecology (seconds); the four layer-2 predicates scan the v2
-                   LOOKAHEAD ecology, where both generating seats search, and
-                   that is minutes.
+                   ecology (seconds); the four layer-2 predicates and the two V4
+                   predicates scan the v2 LOOKAHEAD ecology, where both
+                   generating seats search, and that is minutes.
                    <predicate> is one of:
                      final-round-already-triggered | trigger-round-not-final
                      end-firable-ahead-in-truth | end-firable-behind-in-truth
                      exclusive-race-one-step | achievement-claim-available
+                     placement-fork-same-count | opponent-sitting-executable
+                   The last two are V4's step-2 pair (spec §6). They alone carry
+                   ORDINAL BANDS -- development 0..4, development extension 4..8,
+                   escrow 8..16 -- and the escrow band is fenced by the BURN
+                   RULE. The other six have no band: family blocks run
+                   confirmatory ordinals 4..28 by declaration.
 
 seats (--seats <a,b[,c,d]>, one spec per seat in seat order, default
 `lookahead-v1` on EVERY seat):

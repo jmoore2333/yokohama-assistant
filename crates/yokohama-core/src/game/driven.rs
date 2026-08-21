@@ -161,7 +161,7 @@ use crate::game::seeds::{SeedSchedule, WorldSeed};
 use crate::game::semantics::{record_digest, state_digest, SEMANTICS_REV};
 use crate::types::{
     AreaId, AreaType, ChurchTrack, CustomsTrack, EndGameTrigger, GameState, Move, OrderCardId,
-    PendingChoice, PlayerId, PlayerView, PresidentLocation,
+    PendingChoice, PlayerId, PlayerView, PresidentLocation, TurnPhase,
 };
 
 /// The decision guard's default: how many decisions a rooted run may apply
@@ -1006,8 +1006,32 @@ impl RootPredicate {
                 width_ok_len(legal.len())
                     && legal.iter().any(|mv| matches!(mv, Move::FulfillAchievement { .. }))
             }
-            // RED: registered, named, and deliberately not yet implemented.
-            Self::PlacementForkSameCount | Self::OpponentSittingExecutable => false,
+            Self::PlacementForkSameCount => {
+                if !is_mover_turn_start(state) {
+                    return false;
+                }
+                // The cheapest conjunct there is, and it comes before the
+                // clone: a mover holding nothing reaches exactly ONE placement
+                // (the always-legal empty one), which no total can fork on.
+                if state.player(state.current_player).assistants.in_hand == 0 {
+                    return false;
+                }
+                turn_start_placements(state, rules)
+                    .is_some_and(|placements| same_count_fork(&placements))
+            }
+            Self::OpponentSittingExecutable => {
+                if is_game_over(state) {
+                    return false;
+                }
+                let mover = state.current_player;
+                state.players.iter().any(|holder| {
+                    holder.id != mover
+                        && holder.order_cards_in_hand.iter().any(|&order| {
+                            order_visible_to_others(holder, order)
+                                && can_fulfill_order(state, holder.id, order, &rules.orders)
+                        })
+                })
+            }
         }
     }
 
@@ -1089,6 +1113,172 @@ pub const V4_ESCROW_ORDINALS: std::ops::Range<u32> = 8..16;
 pub const fn ordinals_are_stride_separated(a: u32, b: u32, per_game_cap: u32) -> bool {
     let gap = if a > b { a - b } else { b - a };
     gap >= per_game_cap
+}
+
+// ---------------------------------------------------------------------------
+// V4 step 2: the two predicates' shared conjuncts (spec §6)
+// ---------------------------------------------------------------------------
+
+/// Is the MOVER'S TURN at its first phase, with nothing queued and no nested
+/// sub-turn running?
+///
+/// **This is "the turn starts" as a state can express it, and the gap is named
+/// rather than papered over.** `GameState` is HISTORY-FREE by design, so no
+/// state-local rule can tell the FIRST decision of phase A from a later one:
+/// the mover may already have fulfilled an order or claimed an achievement
+/// there, and neither writes a flag ([`AdditionalActionState`] records only the
+/// mercenary / University / Spinning Mill once-per-turn locks — see
+/// `crate::types::AdditionalActionState`, which is the whole of it). A test that
+/// demanded a pristine `additional_action_state` would therefore be a PARTIAL
+/// rule wearing a total name — it would reject a mover who used University and
+/// accept one who fulfilled three orders. What this predicate actually needs is
+/// the property that IS total: the turn's PLACEMENT is still ahead of the mover,
+/// which is exactly `AdditionalActionFirst`.
+///
+/// `pending_choices.is_empty()` is load-bearing twice over — a queued choice is
+/// a different decision from the one the root is about, and
+/// `EndAdditionalPhase` (the probe [`turn_start_placements`] applies) refuses
+/// mid-queue by its own self-defence.
+///
+/// `!is_mercenary_action` is UNREACHABLE under legal play — a mercenary sub-turn
+/// runs in the AreaAction..Recovery phases and restores `AdditionalActionFirst`
+/// only as it clears the flag — and it is still checked, because `holds` must be
+/// total over hand-built states too, and a probe that ended the phase inside a
+/// nested sub-turn would enumerate placements the mover never reaches.
+fn is_mover_turn_start(state: &GameState) -> bool {
+    state.turn_phase == TurnPhase::AdditionalActionFirst
+        && state.pending_choices.is_empty()
+        && !state.is_mercenary_action
+}
+
+/// The placements the mover reaches by DECLINING every additional action —
+/// `None` at a position that is not a turn start.
+///
+/// **The probe applies the engine's own move and reads the engine's own list,
+/// and both halves are the point.** The placement family is not in the legal
+/// list at a turn start (phase A offers additional actions and
+/// `EndAdditionalPhase`), so a predicate that wanted to see it had two choices:
+/// re-derive the placement enumeration from hand count and board, or ADVANCE the
+/// state one move and ask `get_legal_moves`. The first is a second
+/// implementation of `generate_placement_moves_with_tech` — including the
+/// Newspaper 4-area case, the Telegram adjacency, the Canal exclusion and the
+/// per-President placement toll — and a generator whose population depended on a
+/// second opinion about legality is a generator nobody can check. This is the
+/// second.
+///
+/// `EndAdditionalPhase` is ALWAYS in the legal list at
+/// `AdditionalActionFirst` with no queue (`generate_additional_action_moves`
+/// pushes it unconditionally, first), so `apply_move_unchecked` is being handed
+/// a move drawn from the list exactly as its contract requires, and the `.ok()`
+/// is not a fallback: the only failure it can express is the pending-choice
+/// self-defence that [`is_mover_turn_start`] has already excluded.
+///
+/// **What this DOES fix is which line the fork is measured on**: the placements
+/// a mover reaches after using University (one more assistant) or a mercenary
+/// are a different set. Selecting on the plain line is a selection rule, stated;
+/// it is not a claim that the mover will take it.
+fn turn_start_placements(state: &GameState, rules: &Rules) -> Option<Vec<Move>> {
+    if !is_mover_turn_start(state) {
+        return None;
+    }
+    let placing = apply_move_unchecked(state, &Move::EndAdditionalPhase, rules).ok()?;
+    Some(get_legal_moves(&placing, rules))
+}
+
+/// One placement move's SHAPE: how many assistants it places, and the SET of
+/// areas it places them into.
+///
+/// The two encodings are not symmetric and the arithmetic says so:
+/// `PlaceThreeAreas` places ONE assistant per listed area (Option A's "1 in each
+/// of 1–N DIFFERENT areas", so the list is already distinct and the generator
+/// emits it in ascending area order — there is no `[A,B]` / `[B,A]` pair to
+/// collapse), while `PlaceTwoSameArea` places TWO into its area and, with
+/// Telegram, one more into an adjacent one. So the totals are `len`, 2 and 3,
+/// and the sets are 1-, 1- and 2-element.
+///
+/// `None` for anything else. Nothing else is reachable — the Placement phase
+/// generates only these two variants — and the caller SKIPS rather than panics,
+/// because a predicate is not the place to discover that the phase machine
+/// changed.
+fn placement_shape(mv: &Move) -> Option<(usize, BTreeSet<AreaId>)> {
+    match mv {
+        Move::PlaceThreeAreas { placements } => {
+            Some((placements.len(), placements.iter().copied().collect()))
+        }
+        Move::PlaceTwoSameArea { area, adjacent_bonus } => {
+            let mut areas = BTreeSet::new();
+            areas.insert(*area);
+            match adjacent_bonus {
+                Some(adjacent) => {
+                    areas.insert(*adjacent);
+                    Some((3, areas))
+                }
+                None => Some((2, areas)),
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Spec §6's "≥ 2 same-total placements into different area sets": does any ONE
+/// total carry two distinct area sets?
+///
+/// **SETS, because "sets" is what the registration says** — and the reading
+/// costs nothing, which is worth showing rather than asserting. The only pair a
+/// MULTISET reading would admit and this one would not is the Telegram swap:
+/// `{A:2, B:1}` against `{B:2, A:1}`, same total 3, same SET `{A, B}`. Wherever
+/// that pair is offered, the position also offers the two single-area placements
+/// `[A]` and `[B]` — total 1 with sets `{A}` and `{B}`, trivially different —
+/// because the Telegram move's own price is `cost(A,A) + cost(B)`, which
+/// dominates each of `cost(A)` and `cost(B)`, so a mover who can afford the swap
+/// can afford both singles. The two readings therefore never DISAGREE about a
+/// position; they differ only in which pair witnesses. The sweep in
+/// `the_set_reading_and_the_multiset_reading_never_disagree_about_a_position`
+/// is that argument made executable over organic states.
+///
+/// The scan runs this at every turn start of every generated game, so it returns
+/// the moment a total reaches two sets rather than tabulating the whole family.
+fn same_count_fork(placements: &[Move]) -> bool {
+    let mut by_total: BTreeMap<usize, BTreeSet<BTreeSet<AreaId>>> = BTreeMap::new();
+    for mv in placements {
+        let Some((total, areas)) = placement_shape(mv) else {
+            continue;
+        };
+        let sets = by_total.entry(total).or_default();
+        sets.insert(areas);
+        if sets.len() >= 2 {
+            return true;
+        }
+    }
+    false
+}
+
+/// Is `order`, held by `holder`, a card the OTHER seats can see?
+///
+/// **A MIRROR of `observe::visible_player`'s hand-masking branch, and the mirror
+/// is drift-pinned rather than trusted** (`the_visibility_mirror_agrees_with_
+/// observe_on_every_held_order`). The masking rule is one of the five hidden
+/// members, so the honest options were to CALL `observe` — which clones the
+/// whole board layout and every seat, at every position of a 240-game scan — or
+/// to restate the branch and hold it equal to its authority. This is the second,
+/// on `root_table`-mirrors-`Contestant::build`'s precedent.
+///
+/// The two arms are `visible_player`'s own, in its own order:
+///
+/// * `starting_order_hidden` — the LIVE-tracking fiction, where the dealt card
+///   is recorded NOWHERE and the view SYNTHESIZES a masked slot ahead of the
+///   hand. Every card actually in `order_cards_in_hand` is a witnessed Port take
+///   there, so every one of them is visible. (The invariant net makes the arm
+///   exclusive: a seat may not carry the flag AND an identity.)
+/// * otherwise the unfulfilled starting order is masked IN PLACE and nothing
+///   else is. Once fulfilled it has left the hand for the face-up completed
+///   pile, so the equality below stops masking exactly when the view does.
+fn order_visible_to_others(holder: &crate::types::PlayerState, order: OrderCardId) -> bool {
+    if holder.starting_order_hidden {
+        true
+    } else {
+        holder.starting_order != Some(order)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3407,7 +3597,103 @@ pub fn generate_roots(
     let Some(&highest) = wanted.iter().next_back() else {
         return Ok(Vec::new());
     };
-    // AFTER the empty-block return, so the probe counts WALKS and not calls.
+    let ecology = predicate.ecology();
+    let mut collected: BTreeMap<u32, (GameState, RootDescriptor)> = BTreeMap::new();
+    let walk = walk_scan(predicate, master, rules, &mut |hit| {
+        if wanted.contains(&hit.ordinal) {
+            let root_digest = state_digest(hit.state);
+            collected.insert(
+                hit.ordinal,
+                (
+                    hit.state.clone(),
+                    RootDescriptor {
+                        origin: RootOrigin::Generated {
+                            predicate,
+                            master,
+                            ordinal: hit.ordinal,
+                            game_index: hit.game_index,
+                            ecology: ecology.clone(),
+                        },
+                        event_index: Some(hit.position),
+                        root_digest,
+                    },
+                ),
+            );
+            if hit.ordinal == highest {
+                return ScanStep::Stop;
+            }
+        }
+        ScanStep::Continue
+    })?;
+
+    ordinals
+        .iter()
+        .map(|ordinal| {
+            collected.get(ordinal).cloned().ok_or(RootError::Exhausted {
+                predicate,
+                ordinal: *ordinal,
+                found: walk.found,
+                games: ecology.games,
+            })
+        })
+        .collect()
+}
+
+/// One hit a [`walk_scan`] kept — the strided ordinal, the game and position it
+/// was found at, and the state itself, BORROWED.
+///
+/// The lifetime is the honest part: a visitor that wants the state keeps it by
+/// CLONING, and one that only counts pays nothing. That is what lets
+/// [`scan_capacity`] measure a predicate's supply without any position ever
+/// leaving the walk.
+struct ScanHit<'a> {
+    ordinal: u32,
+    game_index: u32,
+    position: usize,
+    state: &'a GameState,
+}
+
+/// Whether a [`walk_scan`] visitor has seen enough.
+enum ScanStep {
+    Continue,
+    Stop,
+}
+
+/// What a completed [`walk_scan`] counted.
+struct ScanWalk {
+    /// Strided hits COUNTED — the number an [`RootError::Exhausted`] reports.
+    /// A visitor that stopped the walk early leaves this at the ordinal it
+    /// stopped on, exactly as the pre-split loop did.
+    found: u32,
+    /// Generated games actually played.
+    games_walked: u32,
+}
+
+/// THE SCAN WALK — one implementation, two consumers.
+///
+/// [`generate_roots`] resolves ordinals to roots and [`scan_capacity`] measures
+/// how many ordinals there are; both are the SAME sequence of games, positions,
+/// predicate evaluations and stride decisions, and one walk is what makes that a
+/// property rather than two functions agreeing today. The visitor sees every
+/// kept hit and decides whether the walk goes on.
+///
+/// **Every ordering rule the sequence depends on lives here**: games in
+/// `SeedSchedule::diagnostic(master)` draw order, positions within a game in
+/// PLAY order (`state_at`'s own index), the ordinal incremented once per KEPT
+/// hit and never restarted across games, and the STRIDE — at most
+/// `per_game_cap` hits per game, the rest skipped without consuming an ordinal,
+/// with the game abandoned the moment its cap is spent.
+///
+/// The `Stop` arm short-circuits BEFORE the ordinal increment and before the
+/// stride bookkeeping, which is where the pre-split loop's `break 'games` sat;
+/// the split is behaviour-preserving and `generate_roots`' own reproduction pins
+/// are what say so.
+fn walk_scan(
+    predicate: RootPredicate,
+    master: u64,
+    rules: &Rules,
+    on_hit: &mut dyn FnMut(ScanHit<'_>) -> ScanStep,
+) -> Result<ScanWalk, RootError> {
     #[cfg(test)]
     scan_probe::record_walk();
     let config = predicate.config();
@@ -3416,7 +3702,7 @@ pub fn generate_roots(
     let per_game_cap = ecology.per_game_cap;
     let mut schedule = SeedSchedule::diagnostic(master);
     let mut found: u32 = 0;
-    let mut collected: BTreeMap<u32, (GameState, RootDescriptor)> = BTreeMap::new();
+    let mut games_walked: u32 = 0;
 
     'games: for game_index in 0..games {
         let world = schedule.next_world();
@@ -3428,6 +3714,7 @@ pub fn generate_roots(
         };
         let stats = run_arena_game(world, config.players, rules, &mut make, true)
             .map_err(|e| RootError::Generate { game_index, detail: e.to_string() })?;
+        games_walked += 1;
 
         let events = &stats.record.events;
         let mut state = state_at(&stats.record, 0, rules)
@@ -3440,28 +3727,9 @@ pub fn generate_roots(
         // range one short would make the scan quietly predicate-specific.
         for position in 0..=events.len() {
             if predicate.holds(&state, rules) {
-                if wanted.contains(&found) {
-                    let root_digest = state_digest(&state);
-                    collected.insert(
-                        found,
-                        (
-                            state.clone(),
-                            RootDescriptor {
-                                origin: RootOrigin::Generated {
-                                    predicate,
-                                    master,
-                                    ordinal: found,
-                                    game_index,
-                                    ecology: ecology.clone(),
-                                },
-                                event_index: Some(position),
-                                root_digest,
-                            },
-                        ),
-                    );
-                    if found == highest {
-                        break 'games;
-                    }
+                let step = on_hit(ScanHit { ordinal: found, game_index, position, state: &state });
+                if matches!(step, ScanStep::Stop) {
+                    break 'games;
                 }
                 found += 1;
                 hits_this_game += 1;
@@ -3480,17 +3748,138 @@ pub fn generate_roots(
         }
     }
 
-    ordinals
-        .iter()
-        .map(|ordinal| {
-            collected.get(ordinal).cloned().ok_or(RootError::Exhausted {
-                predicate,
-                ordinal: *ordinal,
-                found,
-                games,
-            })
-        })
-        .collect()
+    Ok(ScanWalk { found, games_walked })
+}
+
+/// A CAPACITY measurement: how many strided ordinals a predicate's scan realizes
+/// at a master, and which generated game each one came from.
+///
+/// **THIS TYPE IS THE NO-BURN ARGUMENT.** Spec §6 permits — and requires —
+/// capacity measurement at step 2 while fencing every root-table read at ordinal
+/// ≥ 8 until step 10, and the fence is only worth something if "measuring" and
+/// "reading" are different acts. Here they are different by CONSTRUCTION: this
+/// struct carries counts and game indices and nothing else. There is no
+/// `GameState`, no [`RootDescriptor`], no digest, and no field a position could
+/// hide in — so a capacity report cannot tell anybody what an escrow root LOOKS
+/// like, whatever they do with it afterwards. [`scan_capacity`] builds no root
+/// table and clones no state; the borrow in [`ScanHit`] is what makes that
+/// cheap, and this type is what makes it checkable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScanCapacity {
+    /// The predicate measured.
+    pub predicate: RootPredicate,
+    /// The master measured at. RECORDED BY THE CALLER before use, as ever.
+    pub master: u64,
+    /// The generating ecology the scan ran under — without which a count is not
+    /// an identity, on the descriptor's own reasoning.
+    pub ecology: GeneratingEcology,
+    /// `game_of_ordinal[n]` is the generated game strided ordinal `n` was found
+    /// in. Its LENGTH is the realized supply (or the stop bound, if
+    /// [`truncated`](Self::truncated)).
+    pub game_of_ordinal: Vec<u32>,
+    /// Generated games actually played.
+    pub games_walked: u32,
+    /// The walk stopped at the caller's bound rather than exhausting the
+    /// ecology's games — so the supply is AT LEAST `game_of_ordinal.len()`,
+    /// never exactly it.
+    pub truncated: bool,
+}
+
+impl ScanCapacity {
+    /// Strided ordinals found (`>=` the true supply's lower bound; exactly the
+    /// supply when not [`truncated`](Self::truncated)).
+    pub fn found(&self) -> u32 {
+        self.game_of_ordinal.len() as u32
+    }
+
+    /// Whether ordinal `n` was realized by this measurement.
+    pub fn covers(&self, ordinal: u32) -> bool {
+        (ordinal as usize) < self.game_of_ordinal.len()
+    }
+
+    /// Do the ordinals in `left` and `right` come from DISJOINT generated games,
+    /// as measured?
+    ///
+    /// The MEASURED companion to [`ordinals_are_stride_separated`]'s guarantee,
+    /// and the instrument spec §6's independence claim needs where the lemma
+    /// does not reach — the development-EXTENSION boundary, where ordinals 7 and
+    /// 8 are one apart and a single-hit game can straddle them. `None` when the
+    /// measurement does not cover every ordinal asked about: an unmeasured
+    /// ordinal is not a disjoint one.
+    pub fn bands_are_disjoint(
+        &self,
+        left: std::ops::Range<u32>,
+        right: std::ops::Range<u32>,
+    ) -> Option<bool> {
+        let games_of = |band: std::ops::Range<u32>| -> Option<BTreeSet<u32>> {
+            band.map(|ordinal| self.game_of_ordinal.get(ordinal as usize).copied()).collect()
+        };
+        let left = games_of(left)?;
+        let right = games_of(right)?;
+        Some(left.is_disjoint(&right))
+    }
+}
+
+/// Measure a predicate's realized ordinal supply at `master` — WITHOUT building
+/// or reading any root table.
+///
+/// Spec §6: "Capacity measurement at step 2 is permitted, required, and not a
+/// burn (no root table read)." This is that measurement. It walks the same scan
+/// [`generate_roots`] walks (the same function, [`walk_scan`]), counts the
+/// strided hits and records which game each came from, and returns
+/// [`ScanCapacity`] — a type with nowhere to put a position. Nothing here calls
+/// `root_table`, `adjudicate_root` or `Contestant::build`, and no `GameState` is
+/// cloned out of the walk at all.
+///
+/// `stop_after` bounds the walk at that many ordinals, which is what makes a
+/// measurement affordable on the v2 lookahead ecology; the report says
+/// [`truncated`](ScanCapacity::truncated) so a bounded count is never read as an
+/// exact supply. `None` walks the ecology's whole game budget — the exact
+/// figure, at the ecology's whole price. `Some(0)` measures nothing and says so
+/// rather than walking.
+///
+/// **COST is the ECOLOGY's, and it is the same cost a scan pays**: the two V4
+/// predicates scan `driven-generated-v2.2-lookahead`, where both generating
+/// seats search — minutes to hours for the full walk. That is the price of the
+/// number, and knowing it before the masters are drawn is exactly why spec §6
+/// puts the measurement at step 2.
+pub fn scan_capacity(
+    predicate: RootPredicate,
+    master: u64,
+    stop_after: Option<u32>,
+    rules: &Rules,
+) -> Result<ScanCapacity, RootError> {
+    let ecology = predicate.ecology();
+    if stop_after == Some(0) {
+        return Ok(ScanCapacity {
+            predicate,
+            master,
+            ecology,
+            game_of_ordinal: Vec::new(),
+            games_walked: 0,
+            truncated: true,
+        });
+    }
+    let mut game_of_ordinal: Vec<u32> = Vec::new();
+    let mut truncated = false;
+    let walk = walk_scan(predicate, master, rules, &mut |hit| {
+        game_of_ordinal.push(hit.game_index);
+        match stop_after {
+            Some(bound) if game_of_ordinal.len() as u32 >= bound => {
+                truncated = true;
+                ScanStep::Stop
+            }
+            _ => ScanStep::Continue,
+        }
+    })?;
+    Ok(ScanCapacity {
+        predicate,
+        master,
+        ecology,
+        game_of_ordinal,
+        games_walked: walk.games_walked,
+        truncated,
+    })
 }
 
 /// A TEST-ONLY meter for the one thing a signature cannot state: how many times
@@ -7763,6 +8152,40 @@ mod tests {
         what: &str,
         want: &mut dyn FnMut(&GameState) -> bool,
     ) -> GameState {
+        let mut found = None;
+        sweep(rules, master, games, &mut |state| {
+            if want(state) {
+                found = Some(state.clone());
+                Visit::Stop
+            } else {
+                Visit::Continue
+            }
+        });
+        found.unwrap_or_else(|| {
+            panic!("anti-vacuity: no position in {games} rung games at {master:#018x} is {what}")
+        })
+    }
+
+    /// Whether a [`sweep`] visitor has seen enough.
+    enum Visit {
+        Continue,
+        Stop,
+    }
+
+    /// [`harvest`]'s walk, without the early return baked in: EVERY position of
+    /// the first `games` organic 2P rung games at `master`, in play order, until
+    /// the visitor stops it.
+    ///
+    /// Split out so the two shapes of cell share ONE walk — `harvest` wants the
+    /// first match and the V4 equivalence sweeps want all of them, and two
+    /// hand-written walks over the same population would eventually disagree
+    /// about which population that is.
+    fn sweep(
+        rules: &Rules,
+        master: u64,
+        games: u32,
+        visit: &mut dyn FnMut(&GameState) -> Visit,
+    ) {
         let mut schedule = SeedSchedule::diagnostic(master);
         for _ in 0..games {
             let world = schedule.next_world();
@@ -7775,8 +8198,8 @@ mod tests {
             let mut state =
                 state_at(&stats.record, 0, rules).expect("position 0 of any record replays");
             for position in 0..=events.len() {
-                if want(&state) {
-                    return state;
+                if matches!(visit(&state), Visit::Stop) {
+                    return;
                 }
                 if let Some(event) = events.get(position) {
                     state = replay_from(&state, std::slice::from_ref(event), rules)
@@ -7784,7 +8207,6 @@ mod tests {
                 }
             }
         }
-        panic!("anti-vacuity: no position in {games} rung games at {master:#018x} is {what}");
     }
 
     /// Doctor base VP until the mover's true margin is exactly `target`, and
@@ -8559,6 +8981,160 @@ mod tests {
         assert!(!sitting.holds(&over, &rules));
     }
 
+    /// **THE VISIBILITY DRIFT PIN.** `order_visible_to_others` is a MIRROR of
+    /// `observe::visible_player`'s hand-masking branch, and a mirror that is not
+    /// held equal to what it mirrors goes on producing plausible answers about a
+    /// masking rule nobody runs.
+    ///
+    /// The comparison is exact and total over the population: for every seat
+    /// pair at every swept position, the mirror's verdict on each held card
+    /// equals whether `observe` gave the mover a `HandCard::Known` for it. The
+    /// constructed half supplies the shape a sweep of on-policy games may not
+    /// reach quickly — ONE hand holding both a masked starting order and a
+    /// witnessed Port take — so the pin has a disagreement to find.
+    #[test]
+    fn the_visibility_mirror_agrees_with_observe_on_every_held_order() {
+        let rules = Rules::standard();
+
+        // The CONSTRUCTED half: one hand, one masked card, one witnessed card.
+        let mut mixed = root_2p(&rules, world(42).0);
+        let opponent = non_mover(&mixed);
+        let hidden =
+            mixed.players[opponent.0 as usize].starting_order.expect("a kept deal is recorded");
+        let taken = deal_from_deck(&mut mixed, opponent);
+        assert_ne!(hidden, taken, "the deal and the take must be different cards");
+        assert!(check_invariants(&mixed, &rules).is_ok());
+        assert!(
+            !order_visible_to_others(&mixed.players[opponent.0 as usize], hidden),
+            "the mirror let an unfulfilled starting order through",
+        );
+        assert!(
+            order_visible_to_others(&mixed.players[opponent.0 as usize], taken),
+            "the mirror masked a witnessed Port take",
+        );
+
+        let mut compared = 0_usize;
+        let mut masked_seen = 0_usize;
+        let mut check = |state: &GameState| {
+            let viewer = state.current_player;
+            let view = observe(state, viewer).expect("a generated seat's view is derivable");
+            for holder in &state.players {
+                if holder.id == viewer {
+                    continue;
+                }
+                // A `Vec` rather than a set: `OrderCardId` carries no `Ord`, and
+                // a hand holds at most three cards, so membership over the
+                // vector IS set membership at no cost worth a new bound.
+                let known: Vec<OrderCardId> = view.players[holder.id.0 as usize]
+                    .hand
+                    .iter()
+                    .filter_map(|card| match card {
+                        crate::types::HandCard::Known(id) => Some(*id),
+                        crate::types::HandCard::HiddenStartingOrder => None,
+                    })
+                    .collect();
+                for &order in &holder.order_cards_in_hand {
+                    let mirrored = order_visible_to_others(holder, order);
+                    assert_eq!(
+                        mirrored,
+                        known.contains(&order),
+                        "the mirror and `observe` disagree about p{}'s card {} at turn {}",
+                        holder.id.0,
+                        order.0,
+                        state.turn_number,
+                    );
+                    compared += 1;
+                    if !mirrored {
+                        masked_seen += 1;
+                    }
+                }
+            }
+        };
+
+        check(&mixed);
+        sweep(&rules, V4_MASTER, 2, &mut |state| {
+            if !is_game_over(state) {
+                check(state);
+            }
+            Visit::Continue
+        });
+        assert!(compared > 100, "the sweep compared only {compared} cards — too thin to mean much");
+        assert!(masked_seen > 0, "anti-vacuity: nothing in the population was ever masked");
+    }
+
+    /// **The SET reading and the MULTISET reading never disagree about a
+    /// POSITION**, though they do disagree about a move LIST — which is the
+    /// whole of `same_count_fork`'s "sets, because sets is what §6 says" note,
+    /// made executable.
+    ///
+    /// The first half is arithmetic on a synthetic pair: the Telegram swap is
+    /// two distinct multisets over ONE set, so the readings differ there. The
+    /// second half is the reason that never matters: over organic turn starts,
+    /// no position offers the swap without also offering the single-area
+    /// placements whose sets differ trivially, so the two readings agree
+    /// everywhere the scan can see.
+    #[test]
+    fn the_set_reading_and_the_multiset_reading_never_disagree_about_a_position() {
+        let rules = Rules::standard();
+
+        /// The MULTISET reading, computed only here: ≥ 2 same-total placements
+        /// whose per-area COUNTS differ.
+        fn multiset_fork(placements: &[Move]) -> bool {
+            let mut by_total: BTreeMap<usize, BTreeSet<BTreeMap<AreaId, u8>>> = BTreeMap::new();
+            for mv in placements {
+                let counts: BTreeMap<AreaId, u8> = match mv {
+                    Move::PlaceThreeAreas { placements } => {
+                        placements.iter().map(|&area| (area, 1)).collect()
+                    }
+                    Move::PlaceTwoSameArea { area, adjacent_bonus } => {
+                        let mut counts = BTreeMap::new();
+                        counts.insert(*area, 2);
+                        if let Some(adjacent) = adjacent_bonus {
+                            counts.insert(*adjacent, 1);
+                        }
+                        counts
+                    }
+                    _ => continue,
+                };
+                let total: usize = counts.values().map(|&n| n as usize).sum();
+                by_total.entry(total).or_default().insert(counts);
+            }
+            by_total.values().any(|shapes| shapes.len() >= 2)
+        }
+
+        // The readings DO differ on a LIST — the Telegram swap, alone.
+        let a = AreaId(0);
+        let b = AreaId(1);
+        let swap = [
+            Move::PlaceTwoSameArea { area: a, adjacent_bonus: Some(b) },
+            Move::PlaceTwoSameArea { area: b, adjacent_bonus: Some(a) },
+        ];
+        assert!(!same_count_fork(&swap), "the set reading found two sets in {{A, B}} twice");
+        assert!(multiset_fork(&swap), "the multiset reading missed a 2+1 / 1+2 difference");
+
+        // And they never differ on a POSITION, because the singles ride along.
+        let mut turn_starts = 0_usize;
+        let mut forks = 0_usize;
+        sweep(&rules, V4_MASTER, 2, &mut |state| {
+            if let Some(placements) = turn_start_placements(state, &rules) {
+                turn_starts += 1;
+                let set_reading = same_count_fork(&placements);
+                assert_eq!(
+                    set_reading,
+                    multiset_fork(&placements),
+                    "the two readings disagree at turn {} of a swept game",
+                    state.turn_number,
+                );
+                if set_reading {
+                    forks += 1;
+                }
+            }
+            Visit::Continue
+        });
+        assert!(turn_starts > 20, "only {turn_starts} turn starts swept — too thin to mean much");
+        assert!(forks > 0, "anti-vacuity: no swept turn start offered a fork at all");
+    }
+
     /// Spec §6's ordinal bands are half-open, contiguous and disjoint, and the
     /// escrow band's floor is the number the burn rule fences.
     #[test]
@@ -8572,6 +9148,86 @@ mod tests {
             assert!(!V4_ESCROW_ORDINALS.contains(&ordinal), "ordinal {ordinal} is in two bands");
         }
         assert_eq!(V4_ESCROW_ORDINALS.len(), 8, "the escrow block is eight ordinals");
+    }
+
+    /// The CAPACITY read counts the same sequence the resolving scan resolves,
+    /// and its report carries the ordinal → game map spec §6's independence
+    /// claim is checked with.
+    ///
+    /// Measured on the CHEAP rung ecology and a family-1 predicate on purpose,
+    /// and the choice costs the cell nothing it is about: the stride mechanics,
+    /// the ordinal sequence and the map are properties of [`walk_scan`], which
+    /// is ONE function for every predicate. Running this on a V4 predicate would
+    /// buy the same assertions for minutes of lookahead scan — and would put a
+    /// scan of a banded predicate in the per-edit suite, which is not a thing
+    /// this task should make routine.
+    #[test]
+    fn the_capacity_read_counts_the_sequence_the_scan_resolves() {
+        let rules = Rules::standard();
+        let predicate = RootPredicate::FinalRoundAlreadyTriggered;
+        assert_eq!(predicate.ecology().id, GENERATED_ECOLOGY_V1, "this cell is priced as a rung scan");
+
+        let capacity = scan_capacity(predicate, V4_MASTER, Some(6), &rules)
+            .expect("the rung scan supplies six strided ordinals");
+        assert_eq!(capacity.predicate, predicate);
+        assert_eq!(capacity.master, V4_MASTER);
+        assert_eq!(capacity.ecology, predicate.ecology(), "the report drops the ecology");
+        assert_eq!(capacity.found(), 6);
+        assert!(capacity.truncated, "a bounded walk must say it stopped at its bound");
+        assert!(capacity.covers(5) && !capacity.covers(6));
+        assert!(capacity.games_walked >= 1);
+
+        // THE STRIDE, measured: each game contributes a CONTIGUOUS run of at
+        // most `per_game_cap` ordinals, which is the whole of the lemma
+        // `ordinals_are_stride_separated` states as arithmetic.
+        let cap = capacity.ecology.per_game_cap;
+        let mut run_start = 0_usize;
+        for n in 1..=capacity.game_of_ordinal.len() {
+            let ends = n == capacity.game_of_ordinal.len()
+                || capacity.game_of_ordinal[n] != capacity.game_of_ordinal[run_start];
+            if ends {
+                assert!(
+                    (n - run_start) as u32 <= cap,
+                    "game {} contributed {} ordinals past a cap of {cap}",
+                    capacity.game_of_ordinal[run_start],
+                    n - run_start,
+                );
+                if n < capacity.game_of_ordinal.len() {
+                    assert!(
+                        capacity.game_of_ordinal[n] > capacity.game_of_ordinal[run_start],
+                        "the ordinal sequence revisited an earlier game",
+                    );
+                }
+                run_start = n;
+            }
+        }
+
+        // The map AGREES with the resolving scan: the descriptors
+        // `generate_roots` returns name the same games.
+        let roots = generate_roots(predicate, V4_MASTER, &[0, 1, 2, 3, 4, 5], &rules)
+            .expect("the same six ordinals resolve");
+        for (ordinal, (_, descriptor)) in roots.iter().enumerate() {
+            let RootOrigin::Generated { game_index, ordinal: recorded, .. } = descriptor.origin
+            else {
+                panic!("a generated root carries a non-generated origin");
+            };
+            assert_eq!(recorded, ordinal as u32);
+            assert_eq!(
+                capacity.game_of_ordinal[ordinal], game_index,
+                "the capacity map and the resolved descriptor disagree about ordinal {ordinal}",
+            );
+        }
+
+        // A bound of ZERO measures nothing and walks nothing.
+        let none = scan_capacity(predicate, V4_MASTER, Some(0), &rules).expect("a zero bound");
+        assert_eq!(none.found(), 0);
+        assert_eq!(none.games_walked, 0, "a zero-bound measurement played a game");
+        assert!(none.truncated);
+        assert_eq!(none.bands_are_disjoint(0..4, 8..16), None, "an unmeasured band read as disjoint");
+
+        // The measured disjointness instrument, over what WAS measured.
+        assert_eq!(capacity.bands_are_disjoint(0..2, 2..4), Some(true));
+        assert_eq!(capacity.bands_are_disjoint(0..2, 0..2), Some(false), "a band is not disjoint from itself");
     }
 
     /// **THE STRIDE LEMMA, and the place it does not reach.**
