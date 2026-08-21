@@ -665,6 +665,65 @@ pub struct PairDeclaration {
     pub notes: &'static [&'static str],
 }
 
+impl PairDeclaration {
+    /// The registration's own INTERNAL coherence — the clauses that are about
+    /// the declaration alone, before any state exists to check it against.
+    ///
+    /// [`PairFixture::new`] runs this FIRST, so a family task that registers an
+    /// incoherent tuple learns at the first fixture rather than at a registry
+    /// test it might not have run: a stage it declares but does not price has
+    /// no inequality for the solve to use, and a margin at an endpoint it does
+    /// not declare is a dangling registration that would silently price a row
+    /// no system reads.
+    ///
+    /// **Only the MARGINED arm can dangle.** DIRECTION-ONLY and WEAK answer at
+    /// both endpoints by construction — 1 and 0 are not prices, they are the
+    /// two shapes of "no price was registered" — so an unpriced-endpoint check
+    /// against them would fire on every single-endpoint direction-only pair,
+    /// which is most of §5.2.
+    pub fn check_consistency(&self) -> Result<(), FixtureError> {
+        let bad = |detail: String| FixtureError::Declaration {
+            clause: "registration coherence",
+            detail: format!("{}: {detail}", self.id),
+        };
+        if self.stages.is_empty() {
+            return Err(bad("registers no stage endpoint".to_string()));
+        }
+        for stage in StageEndpoint::ALL {
+            let declared = self.stages.contains(&stage);
+            let priced = self.margin.margin_at(stage).is_some();
+            if declared && !priced {
+                return Err(bad(format!(
+                    "declares the {} endpoint but registers no margin there",
+                    stage.name(),
+                )));
+            }
+            if !declared && priced && matches!(self.margin, MarginClass::Margined { .. }) {
+                return Err(bad(format!(
+                    "registers a {} margin but does not declare that endpoint",
+                    stage.name(),
+                )));
+            }
+        }
+        if self.stages.len() > StageEndpoint::ALL.len()
+            || (self.stages.len() == 2 && self.stages[0] == self.stages[1])
+        {
+            return Err(bad("repeats a stage endpoint".to_string()));
+        }
+        let mut rows: Vec<FeatureId> = self.expected_nonzero.to_vec();
+        let listed = rows.len();
+        rows.sort_unstable();
+        rows.dedup();
+        if rows.len() != listed {
+            return Err(bad("lists an expected-nonzero row twice".to_string()));
+        }
+        if !(1..=11).contains(&self.family) {
+            return Err(bad(format!("family {} is outside §5.2's 1..=11", self.family)));
+        }
+        Ok(())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The registry (spec §5.1's registered counts)
 // ---------------------------------------------------------------------------
@@ -831,6 +890,9 @@ impl PairFixture {
         subject: PlayerId,
         rules: &Rules,
     ) -> Result<Self, FixtureError> {
+        // 0. The registration is coherent on its own terms.
+        declaration.check_consistency()?;
+
         // 1. The endpoint is one this pair registers.
         if !declaration.stages.contains(&stage) {
             return Err(FixtureError::Declaration {
@@ -2059,7 +2121,10 @@ mod tests {
     const THROWAWAY_VP: PairDeclaration = PairDeclaration {
         id: "T(vp)",
         name: "THROWAWAY: one more VP ≻ one fewer",
-        family: 0,
+        // A §5.2 family number is required of every registration (1..=11); a
+        // throwaway borrows one without being that family, which is what the
+        // name and the note say out loud.
+        family: 1,
         greater_side: "one-vp",
         lesser_side: "zero-vp",
         role: PairRole::Diagnostic,
@@ -2337,21 +2402,88 @@ mod tests {
         ids.dedup();
         assert_eq!(ids.len(), total, "two registered pairs share an id");
         for pair in REGISTERED.iter() {
-            assert!(!pair.stages.is_empty(), "{} registers no stage endpoint", pair.id);
-            let mut seen: Vec<StageEndpoint> = pair.stages.to_vec();
-            seen.sort_unstable();
-            seen.dedup();
-            assert_eq!(seen.len(), pair.stages.len(), "{} repeats a stage", pair.id);
-            for stage in pair.stages {
-                assert!(
-                    pair.margin.margin_at(*stage).is_some(),
-                    "{} declares {} but registers no margin there",
-                    pair.id,
-                    stage.name(),
-                );
-            }
-            assert!((1..=11).contains(&pair.family), "{} has family {}", pair.id, pair.family);
+            pair.check_consistency().unwrap_or_else(|e| panic!("{e}"));
         }
+        // The registry is EMPTY today, so the loop above proves nothing on its
+        // own — the classic way a registry-hygiene test rots into a no-op. The
+        // throwaways below are real declarations exercising every arm of the
+        // rule, so the guard is proven working NOW rather than at whichever
+        // family task first trips it.
+        for pair in THROWAWAYS {
+            pair.check_consistency()
+                .unwrap_or_else(|e| panic!("a throwaway is incoherent: {e}"));
+        }
+    }
+
+    /// Every throwaway declaration in this file — the non-vacuity material for
+    /// the registry-hygiene guard, and the reason each arm of
+    /// `check_consistency` is exercised while `REGISTERED` is still empty.
+    const THROWAWAYS: [&PairDeclaration; 9] = [
+        &THROWAWAY_VP,
+        &THROWAWAY_VP_UNLISTED,
+        &THROWAWAY_PRESIDENT_EMPTY,
+        &THROWAWAY_PRESIDENT_OCCUPIED,
+        &THROWAWAY_PRESIDENT_TELEPHONE,
+        &THROWAWAY_MID_TURN,
+        &THROWAWAY_DRAW_CONSTRAINED,
+        &THROWAWAY_DRAWS_MONEY10,
+        &THROWAWAY_TECH_EXCLUDED,
+    ];
+
+    #[test]
+    fn an_incoherent_registration_is_refused_before_any_state_is_read() {
+        // A margin at an endpoint the pair does not declare: the registration
+        // would price a row no system reads.
+        const DANGLING: PairDeclaration = PairDeclaration {
+            id: "T(dangling)",
+            stages: &[StageEndpoint::Late],
+            margin: MarginClass::Margined {
+                early: Some(1),
+                late: Some(14),
+                carrier: FeatureId::Candidate(CandidateFeature::ProductionAccess),
+            },
+            ..THROWAWAY_VP
+        };
+        let err = DANGLING.check_consistency().expect_err("early is priced but not declared");
+        assert!(format!("{err}").contains("does not declare"), "got: {err}");
+
+        // A declared endpoint with no margin: no inequality for the solve.
+        const UNPRICED: PairDeclaration = PairDeclaration {
+            id: "T(unpriced)",
+            stages: &[StageEndpoint::Early, StageEndpoint::Late],
+            margin: MarginClass::Margined {
+                early: None,
+                late: Some(14),
+                carrier: FeatureId::Candidate(CandidateFeature::ProductionAccess),
+            },
+            ..THROWAWAY_VP
+        };
+        let err = UNPRICED.check_consistency().expect_err("early is declared but not priced");
+        assert!(format!("{err}").contains("no margin"), "got: {err}");
+
+        // A row listed twice, and a family outside §5.2's range.
+        const DOUBLED: PairDeclaration = PairDeclaration {
+            id: "T(doubled)",
+            expected_nonzero: &[
+                FeatureId::Incumbent(Feature::VictoryPoints),
+                FeatureId::Incumbent(Feature::VictoryPoints),
+            ],
+            ..THROWAWAY_VP
+        };
+        assert!(format!("{}", DOUBLED.check_consistency().expect_err("doubled row"))
+            .contains("twice"));
+        const FAMILY_0: PairDeclaration =
+            PairDeclaration { id: "T(fam0)", family: 0, ..THROWAWAY_VP };
+        assert!(format!("{}", FAMILY_0.check_consistency().expect_err("family 0"))
+            .contains("family 0"));
+
+        // And the constructor runs it FIRST, before it reads either state.
+        let rules = rules();
+        let (greater, lesser, subject) = vp_pair(StageEndpoint::Late, &rules);
+        let err =
+            PairFixture::new(&DANGLING, StageEndpoint::Late, greater, lesser, subject, &rules)
+                .expect_err("clause 0");
+        assert!(format!("{err}").contains("registration coherence"), "got: {err}");
     }
 
     // -----------------------------------------------------------------------
