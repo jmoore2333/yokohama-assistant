@@ -475,8 +475,9 @@ impl PresidentDecl {
     }
 }
 
-/// Both seats' president declarations. §5.1 requires both; the seat naming is
-/// relative to the pair's SUBJECT (the mover whose view §5.3 signs).
+/// Both seats' president declarations AT ONE SIDE of a pair. §5.1 requires
+/// both seats; the seat naming is relative to the pair's SUBJECT (the mover
+/// whose view §5.3 signs).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SeatPresidents {
     /// The subject seat — the mover.
@@ -490,6 +491,63 @@ impl SeatPresidents {
     /// §5.1's default: both InHand.
     pub const BOTH_IN_HAND: SeatPresidents =
         SeatPresidents { subject: PresidentDecl::InHand, opponent: PresidentDecl::InHand };
+}
+
+/// A pair's president declarations, PER SIDE.
+///
+/// # Why this is sided rather than one declaration for the whole pair
+///
+/// §5.2 registers pairs whose two sides differ in president SHAPE while the
+/// president itself never moves, and a single per-pair declaration cannot say
+/// so. **Family 6(d)** is the case that forces it: church and customs are
+/// acting-class, so the subject's president stands at the acted area on BOTH
+/// sides — but the registration is "the EXACTLY-ONE-assistant full-collapse
+/// case", so the PLACED side's area has been drained (that one assistant went
+/// to the track) while the UNPLACED side still holds it. One declaration must
+/// therefore describe an empty area and an occupied one at once:
+/// [`PresidentDecl::OnBoardEmptyArea`] refuses the unplaced side,
+/// [`PresidentDecl::OnBoardWithOwnAssistants`] refuses the placed side, and the
+/// registration's own arithmetic forbids adding a second pawn to escape.
+/// **Family 8** (RECALLED ≻ STRANDED) has the same shape from the other
+/// direction: its recalled side is InHand by construction and its stranded side
+/// is not.
+///
+/// # Why symmetric pairs stay terse
+///
+/// Most of §5.2 is symmetric — thirty-odd registrations whose two sides declare
+/// the same thing, and §5.1's DEFAULT is "both InHand". Those spell
+/// [`SidedPresidents::BOTH_IN_HAND`] or
+/// [`SidedPresidents::symmetric`] and read exactly as they did before the
+/// split; only a genuinely asymmetric pair pays the extra words, which is the
+/// pair that has something extra to say.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SidedPresidents {
+    /// The declared GREATER side's two seats.
+    pub greater: SeatPresidents,
+    /// The declared LESSER side's two seats.
+    pub lesser: SeatPresidents,
+}
+
+impl SidedPresidents {
+    /// §5.1's DEFAULT on both sides: all four presidents in hand.
+    pub const BOTH_IN_HAND: SidedPresidents = SidedPresidents {
+        greater: SeatPresidents::BOTH_IN_HAND,
+        lesser: SeatPresidents::BOTH_IN_HAND,
+    };
+
+    /// The same two-seat declaration on both sides — the shape every symmetric
+    /// registration wants, spelled once.
+    pub const fn symmetric(seats: SeatPresidents) -> SidedPresidents {
+        SidedPresidents { greater: seats, lesser: seats }
+    }
+
+    /// One side's declarations.
+    pub fn side(self, side: Side) -> SeatPresidents {
+        match side {
+            Side::Greater => self.greater,
+            Side::Lesser => self.lesser,
+        }
+    }
 }
 
 /// §5.1's ACHIEVEMENT DRAWS — "setup always draws exactly one Category-A card
@@ -633,7 +691,7 @@ pub struct PairDeclaration {
     /// production carrier").
     pub carrier: Option<FeatureId>,
     /// BOTH seats' president locations.
-    pub presidents: SeatPresidents,
+    pub presidents: SidedPresidents,
     /// The three achievement cards in play, and the registered draw constraint.
     pub draws: AchievementDraws,
     /// Technology ownership declarations.
@@ -1004,8 +1062,10 @@ impl PairFixture {
         // 9. Both seats' president declarations.
         let opponent = other_seat_2p(&greater, subject)?;
         for (side, state) in sides {
+            // S2-T3 FIX WAVE, RED: still reads the GREATER side's declaration
+            // for both sides — the M1 defect, kept visible until the green pass.
             check_president(
-                declaration.presidents.subject,
+                declaration.presidents.greater.subject,
                 declaration.view_class,
                 side,
                 state,
@@ -1014,7 +1074,7 @@ impl PairFixture {
                 rules,
             )?;
             check_president(
-                declaration.presidents.opponent,
+                declaration.presidents.greater.opponent,
                 declaration.view_class,
                 side,
                 state,
@@ -1746,9 +1806,11 @@ pub fn canonical_declaration(pair: &PairDeclaration) -> String {
         pair.carrier.map_or("-", |c| c.label())
     ));
     out.push_str(&format!(
-        "PRES|{id}|subject={}|opponent={}\n",
-        pair.presidents.subject.canonical(),
-        pair.presidents.opponent.canonical()
+        "PRES|{id}|greater:subject={}|greater:opponent={}|lesser:subject={}|lesser:opponent={}\n",
+        pair.presidents.greater.subject.canonical(),
+        pair.presidents.greater.opponent.canonical(),
+        pair.presidents.lesser.subject.canonical(),
+        pair.presidents.lesser.opponent.canonical()
     ));
     let moved: Vec<String> =
         pair.draws.goods_moved.iter().map(|a| format!("{a:?}")).collect();
@@ -1882,9 +1944,14 @@ pub fn render_pair_report_with(
     ));
     out.push_str(&format!("carrier             {}\n", d.carrier.map_or("-", |c| c.label())));
     out.push_str(&format!(
-        "presidents          subject={} opponent={}\n",
-        d.presidents.subject.canonical(),
-        d.presidents.opponent.canonical(),
+        "presidents/greater  subject={} opponent={}\n",
+        d.presidents.greater.subject.canonical(),
+        d.presidents.greater.opponent.canonical(),
+    ));
+    out.push_str(&format!(
+        "presidents/lesser   subject={} opponent={}\n",
+        d.presidents.lesser.subject.canonical(),
+        d.presidents.lesser.opponent.canonical(),
     ));
     out.push_str(&format!(
         "draws               a={:?} b={:?} c={:?} (moved-goods {:?}, moves-yen {})\n",
@@ -2099,7 +2166,7 @@ fn declared_category(index: usize) -> AchievementCategory {
 mod tests {
     use super::*;
     use crate::game::eval::{explain, WeightTable};
-    use crate::types::{OrderCardId, TechCardId};
+    use crate::types::{AdditionalActionState, OrderCardId, TechCardId};
 
     fn rules() -> Rules {
         Rules::standard()
@@ -2136,7 +2203,7 @@ mod tests {
         view_class: ViewClass::HandOff,
         margin: MarginClass::DirectionOnly,
         carrier: Some(FeatureId::Incumbent(Feature::VictoryPoints)),
-        presidents: SeatPresidents::BOTH_IN_HAND,
+        presidents: SidedPresidents::BOTH_IN_HAND,
         draws: THROWAWAY_DRAWS,
         techs: TechDeclaration::UNCONSTRAINED,
         layout: LayoutClass::StandardGenerated,
@@ -2154,10 +2221,10 @@ mod tests {
     /// A throwaway declaring the subject's president on-board at an EMPTY area.
     const THROWAWAY_PRESIDENT_EMPTY: PairDeclaration = PairDeclaration {
         id: "T(pres-empty)",
-        presidents: SeatPresidents {
+        presidents: SidedPresidents::symmetric(SeatPresidents {
             subject: PresidentDecl::OnBoardEmptyArea,
             opponent: PresidentDecl::InHand,
-        },
+        }),
         ..THROWAWAY_VP
     };
 
@@ -2165,20 +2232,20 @@ mod tests {
     /// assistants and NO Telephone exception — §5.1's unreachable shape.
     const THROWAWAY_PRESIDENT_OCCUPIED: PairDeclaration = PairDeclaration {
         id: "T(pres-occupied)",
-        presidents: SeatPresidents {
+        presidents: SidedPresidents::symmetric(SeatPresidents {
             subject: PresidentDecl::OnBoardWithOwnAssistants { telephone_excepted: false },
             opponent: PresidentDecl::InHand,
-        },
+        }),
         ..THROWAWAY_VP
     };
 
     /// The same, WITH the exception claimed.
     const THROWAWAY_PRESIDENT_TELEPHONE: PairDeclaration = PairDeclaration {
         id: "T(pres-telephone)",
-        presidents: SeatPresidents {
+        presidents: SidedPresidents::symmetric(SeatPresidents {
             subject: PresidentDecl::OnBoardWithOwnAssistants { telephone_excepted: true },
             opponent: PresidentDecl::InHand,
-        },
+        }),
         ..THROWAWAY_VP
     };
 
@@ -2810,6 +2877,153 @@ mod tests {
         assert!(format!("{err}").contains("Telephone"), "got: {err}");
     }
 
+    /// FAMILY 6(d)'s SHAPE — the M1 fix wave's subject.
+    ///
+    /// Acting-class, so the subject's president stands at the acted area on
+    /// BOTH sides; the PLACED (greater) side's area has been drained by the
+    /// track placement, the UNPLACED (lesser) side still holds its one
+    /// assistant. Nothing about the president moves — only what stands beneath
+    /// it — so the two sides need DIFFERENT [`PresidentDecl`]s.
+    const THROWAWAY_ACTING_ASYMMETRIC: PairDeclaration = PairDeclaration {
+        id: "T(6d-shape)",
+        presidents: SidedPresidents {
+            greater: SeatPresidents {
+                subject: PresidentDecl::OnBoardEmptyArea,
+                opponent: PresidentDecl::InHand,
+            },
+            lesser: SeatPresidents {
+                subject: PresidentDecl::OnBoardWithOwnAssistants { telephone_excepted: false },
+                opponent: PresidentDecl::InHand,
+            },
+        },
+        // 6(d) is MID-TURN (phase = AreaAction resolved), which is also what
+        // makes the occupied-area side legal without Telephone: Recovery has
+        // not run.
+        view_class: ViewClass::MidTurn { phase: TurnPhase::AreaAction, mercenary: false },
+        stages: &[StageEndpoint::Early],
+        expected_nonzero: &[
+            FeatureId::Incumbent(Feature::VictoryPoints),
+            FeatureId::Incumbent(Feature::AssistantsOnBoard),
+            FeatureId::Incumbent(Feature::AssistantsInHandCore),
+        ],
+        ..THROWAWAY_VP
+    };
+
+    /// The 6(d)-shaped pair: president on-board at one area both sides, the
+    /// assistant beneath it present on the lesser side and gone on the greater.
+    ///
+    /// The drained pawn goes to HAND rather than to a track, deliberately: a
+    /// real track placement would move the track clock off the early endpoint,
+    /// and this fixture's subject is the DECLARATION shape, not 6(d)'s own
+    /// arithmetic. The president-relevant fact — an occupied area on one side
+    /// and an empty one on the other, with the president fixed — is identical.
+    fn acting_asymmetric_pair(rules: &Rules) -> (GameState, GameState, PlayerId) {
+        let mut lesser = early_base_2p(SEED, rules).expect("early base");
+        set_draws(&mut lesser, &THROWAWAY_DRAWS);
+        let subject = lesser.current_player;
+        let area = some_non_canal_area(&lesser);
+        place_one(&mut lesser, subject, area);
+        lesser.player_mut(subject).president_location = PresidentLocation::OnBoard(area);
+        lesser.turn_phase = TurnPhase::AreaAction;
+
+        let mut greater = lesser.clone();
+        // The acted area is drained on the greater side.
+        let p = greater.player_mut(subject);
+        p.assistants.on_board.remove(&area);
+        p.assistants.in_hand += 1;
+        p.victory_points += 1;
+        (greater, lesser, subject)
+    }
+
+    #[test]
+    fn a_pair_may_declare_a_different_president_shape_on_each_side() {
+        // §5.2's family 6(d) and family 8 both need this: the president does
+        // not move, but what stands beneath it differs across the sides, so a
+        // single per-pair declaration cannot describe both.
+        let rules = rules();
+        let (greater, lesser, subject) = acting_asymmetric_pair(&rules);
+        PairFixture::new(
+            &THROWAWAY_ACTING_ASYMMETRIC,
+            StageEndpoint::Early,
+            greater,
+            lesser,
+            subject,
+            &rules,
+        )
+        .unwrap_or_else(|e| panic!("the 6(d) shape must be declarable: {e}"));
+    }
+
+    #[test]
+    fn a_sided_president_declaration_still_binds_each_side_separately() {
+        // The other direction: per-side expressiveness must not become
+        // per-side laxity. Swapping the two declarations refuses BOTH sides.
+        const SWAPPED: PairDeclaration = PairDeclaration {
+            id: "T(6d-swapped)",
+            presidents: SidedPresidents {
+                greater: SeatPresidents {
+                    subject: PresidentDecl::OnBoardWithOwnAssistants {
+                        telephone_excepted: false,
+                    },
+                    opponent: PresidentDecl::InHand,
+                },
+                lesser: SeatPresidents {
+                    subject: PresidentDecl::OnBoardEmptyArea,
+                    opponent: PresidentDecl::InHand,
+                },
+            },
+            ..THROWAWAY_ACTING_ASYMMETRIC
+        };
+        let rules = rules();
+        let (greater, lesser, subject) = acting_asymmetric_pair(&rules);
+        let err =
+            PairFixture::new(&SWAPPED, StageEndpoint::Early, greater, lesser, subject, &rules)
+                .expect_err("the greater side's area is empty, not occupied");
+        assert!(format!("{err}").contains("president"), "got: {err}");
+        assert!(format!("{err}").contains("greater"), "the GREATER side is the one named: {err}");
+    }
+
+    #[test]
+    fn the_symmetric_constructor_declares_the_same_shape_on_both_sides() {
+        let both = SidedPresidents::symmetric(SeatPresidents::BOTH_IN_HAND);
+        assert_eq!(both, SidedPresidents::BOTH_IN_HAND, "§5.1's default, spelled two ways");
+        assert_eq!(both.side(Side::Greater), both.side(Side::Lesser));
+        let sided = THROWAWAY_ACTING_ASYMMETRIC.presidents;
+        assert_ne!(
+            sided.side(Side::Greater),
+            sided.side(Side::Lesser),
+            "the 6(d) shape is asymmetric by construction",
+        );
+    }
+
+    #[test]
+    fn a_hand_off_refuses_a_state_whose_once_per_turn_flags_are_not_reset() {
+        // The seat advance resets `additional_action_state` to `new()`
+        // (apply_move.rs:278) in the same breath as it sets the phase, so a
+        // hand-off carrying a used once-per-turn flag is not a state the
+        // machine produces. Checking the phase alone let one through.
+        let rules = rules();
+        for dirty in [
+            AdditionalActionState { mercenary_used: true, ..AdditionalActionState::new() },
+            AdditionalActionState { spinning_mill_used: true, ..AdditionalActionState::new() },
+            AdditionalActionState { university_used: true, ..AdditionalActionState::new() },
+        ] {
+            let (mut greater, mut lesser, subject) = vp_pair(StageEndpoint::Early, &rules);
+            for side in [&mut greater, &mut lesser] {
+                side.additional_action_state = dirty.clone();
+            }
+            let err = PairFixture::new(
+                &THROWAWAY_VP,
+                StageEndpoint::Early,
+                greater,
+                lesser,
+                subject,
+                &rules,
+            )
+            .expect_err("a hand-off is the POST-ADVANCE shape, flags included");
+            assert!(format!("{err}").contains("view class"), "got: {err}");
+        }
+    }
+
     #[test]
     fn the_telephone_exception_requires_the_seat_to_actually_own_telephone() {
         let rules = rules();
@@ -3203,6 +3417,21 @@ mod tests {
         &body[..end]
     }
 
+    /// The declaration structs NESTED inside [`PairDeclaration`], each with the
+    /// field path a serializer or renderer must reach it by.
+    ///
+    /// SHARED by both drift guards deliberately: the digest guard scanned these
+    /// from the start and the report guard did not, so a future edit dropping
+    /// `opponent=` from the printed PRES line or `moved=` from DRAWS would have
+    /// passed. One list, two readers, no way for the two to diverge again.
+    const NESTED_DECLARATION_FIELDS: [(&str, &str); 5] = [
+        ("AchievementDraws", "draws"),
+        ("TechDeclaration", "techs"),
+        ("SidedPresidents", "presidents"),
+        ("SeatPresidents", "presidents.greater"),
+        ("SeatPresidents", "presidents.lesser"),
+    ];
+
     #[test]
     fn every_registered_field_reaches_the_digest() {
         // §5.1's digest is "a digest over the registered tuples". A field added
@@ -3217,11 +3446,7 @@ mod tests {
                  digest does not cover it",
             );
         }
-        for (owner, prefix) in [
-            ("AchievementDraws", "draws"),
-            ("TechDeclaration", "techs"),
-            ("SeatPresidents", "presidents"),
-        ] {
+        for (owner, prefix) in NESTED_DECLARATION_FIELDS {
             for field in fields_of(owner) {
                 assert!(
                     canon.contains(&format!("{prefix}.{field}")),
@@ -3243,6 +3468,14 @@ mod tests {
                 "PairDeclaration::{field} is never printed by render_pair_report_with",
             );
         }
+        for (owner, prefix) in NESTED_DECLARATION_FIELDS {
+            for field in fields_of(owner) {
+                assert!(
+                    report.contains(&format!("{prefix}.{field}")),
+                    "{owner}::{field} is never printed by render_pair_report_with",
+                );
+            }
+        }
     }
 
     #[test]
@@ -3254,6 +3487,10 @@ mod tests {
         assert!(fields.contains(&"expected_nonzero".to_string()));
         assert!(fields.contains(&"early_hand_cap_deviation".to_string()));
         assert_eq!(fields_of("SeatPresidents"), vec!["subject", "opponent"]);
+        assert_eq!(fields_of("SidedPresidents"), vec!["greater", "lesser"]);
+        for (owner, _) in NESTED_DECLARATION_FIELDS {
+            assert!(!fields_of(owner).is_empty(), "{owner} scanned to nothing");
+        }
         assert!(body_of("canonical_declaration").contains("PAIR|"));
         assert!(body_of("render_pair_report_with").contains("package digest"));
     }
