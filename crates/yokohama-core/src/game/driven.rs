@@ -940,8 +940,13 @@ pub enum RootPredicate {
     ///
     /// **The zero is the POPULATION, not the implementation**, and the
     /// diagnostic that separates them is recorded here because it is the whole
-    /// finding. Over 8 lookahead games (2,399 non-terminal positions, same
-    /// master, same seats):
+    /// finding. It was taken over THE WALK'S OWN FIRST EIGHT GAMES — the same
+    /// master, the same `SeedSchedule::diagnostic` draw order, the same
+    /// `LOOKAHEAD_V1_DEFAULT` at both seats on the same
+    /// `agent_stream_seed(world, seat, Slot(seat.0))` keying — instrumented to
+    /// count instead of to select. It is a PREFIX of the 240-game walk and not an
+    /// independent sample, and quoting it as corroboration would be quoting the
+    /// same games twice. Across those 2,399 non-terminal positions:
     ///
     /// | quantity (position × held card)                   | count |
     /// |---------------------------------------------------|-------|
@@ -1158,8 +1163,14 @@ pub const V4_ESCROW_ORDINALS: std::ops::Range<u32> = 8..16;
 /// land in different games (they usually do); what this says is that nothing
 /// about the population can make a separated pair share one. Spec §6's
 /// independence claim is exactly this lemma at `GENERATED_STRIDE_CAP = 2`, and
-/// the place it does NOT reach is the development-EXTENSION boundary — ordinals
-/// 7 and 8 are one apart, so a game yielding a single hit can straddle them.
+/// the place it does NOT reach is the development-EXTENSION boundary: ordinals 7
+/// and 8 are one apart, so a game contributing a TWO-ordinal run can land
+/// exactly `{7, 8}` and hold both. (The straddler is a two-hit game, never a
+/// one-hit one — a game contributing a single ordinal cannot hold two. What
+/// one-hit games do is shift the run boundaries: with every game yielding two
+/// hits the runs are `{0,1} {2,3} {4,5} {6,7} {8,9}` and 7/8 never share, and it
+/// takes an ODD number of ordinals ahead of a two-hit game to line it up on
+/// `{7, 8}`.)
 /// `the_stride_separates_the_development_band_from_escrow_but_not_the_extension`
 /// pins both halves of that, and [`scan_capacity`] is what an orchestrator
 /// checks the straddle with if the extension is ever drawn.
@@ -3855,9 +3866,9 @@ impl ScanCapacity {
     /// The MEASURED companion to [`ordinals_are_stride_separated`]'s guarantee,
     /// and the instrument spec §6's independence claim needs where the lemma
     /// does not reach — the development-EXTENSION boundary, where ordinals 7 and
-    /// 8 are one apart and a single-hit game can straddle them. `None` when the
-    /// measurement does not cover every ordinal asked about: an unmeasured
-    /// ordinal is not a disjoint one.
+    /// 8 are one apart, so a game contributing a TWO-ordinal run can land exactly
+    /// `{7, 8}` and hold both. `None` when the measurement does not cover every
+    /// ordinal asked about: an unmeasured ordinal is not a disjoint one.
     pub fn bands_are_disjoint(
         &self,
         left: std::ops::Range<u32>,
@@ -3879,9 +3890,12 @@ impl ScanCapacity {
 /// burn (no root table read)." This is that measurement. It walks the same scan
 /// [`generate_roots`] walks (the same function, [`walk_scan`]), counts the
 /// strided hits and records which game each came from, and returns
-/// [`ScanCapacity`] — a type with nowhere to put a position. Nothing here calls
-/// `root_table`, `adjudicate_root` or `Contestant::build`, and no `GameState` is
-/// cloned out of the walk at all.
+/// [`ScanCapacity`] — a type with nowhere to put a position. Nothing anywhere on
+/// this path calls `root_table` or `adjudicate_root`, and NO CONTESTANT IS BUILT
+/// TO EVALUATE ANY ROOT — the only builds are the GENERATING seats, the same
+/// ones [`generate_roots`] seats, which is what makes this the same walk rather
+/// than a cheaper imitation of it. No `GameState` is cloned out of the walk at
+/// all.
 ///
 /// `stop_after` bounds the walk at that many ordinals, which is what makes a
 /// measurement affordable on the v2 lookahead ecology; the report says
@@ -9044,6 +9058,17 @@ mod tests {
     /// constructed half supplies the shape a sweep of on-policy games may not
     /// reach quickly — ONE hand holding both a masked starting order and a
     /// witnessed Port take — so the pin has a disagreement to find.
+    ///
+    /// **The `starting_order_hidden` arm is constructed too, and it has to be**:
+    /// the mirror has TWO branches and the generator's domain contains only one.
+    /// A hidden deal is the LIVE-TRACKING fiction — a state no `new_game` ever
+    /// produces and no rooted run may start from (the viewer's own flag is a
+    /// typed `observe` refusal) — so a sweep can sweep forever without reaching
+    /// it, and this cell's name would over-promise. The fiction is three field
+    /// moves and they keep the conservation net: the dealt card goes hand →
+    /// `orders_removed` (the identity's total is unchanged), the recorded
+    /// identity is cleared (the invariant net forbids flag AND identity
+    /// together), and the flag goes up.
     #[test]
     fn the_visibility_mirror_agrees_with_observe_on_every_held_order() {
         let rules = Rules::standard();
@@ -9063,6 +9088,33 @@ mod tests {
         assert!(
             order_visible_to_others(&mixed.players[opponent.0 as usize], taken),
             "the mirror masked a witnessed Port take",
+        );
+
+        // THE OTHER BRANCH: the same hand under the LIVE-TRACKING fiction, where
+        // the deal is recorded nowhere and the view SYNTHESIZES the masked slot.
+        // Every card actually in the hand is then a witnessed take, so the arm
+        // answers `true` for all of them — including the one the identity arm
+        // above masked.
+        let mut unrecorded = mixed.clone();
+        {
+            let holder = &mut unrecorded.players[opponent.0 as usize];
+            holder.order_cards_in_hand.retain(|card| *card != hidden);
+            holder.starting_order = None;
+            holder.starting_order_hidden = true;
+        }
+        unrecorded.orders_removed.push(hidden);
+        assert!(
+            check_invariants(&unrecorded, &rules).is_ok(),
+            "the live-tracking fiction left an engine-invalid state",
+        );
+        assert!(
+            order_visible_to_others(&unrecorded.players[opponent.0 as usize], taken),
+            "the flag arm masked a card the view publishes as Known",
+        );
+        assert!(
+            order_visible_to_others(&unrecorded.players[opponent.0 as usize], hidden),
+            "the flag arm is not `true` for every recorded hand card — and the card it \
+             refused is not even in that hand, which is the fiction's whole point",
         );
 
         let mut compared = 0_usize;
@@ -9104,6 +9156,17 @@ mod tests {
         };
 
         check(&mixed);
+        // The `observe` half of the flag arm: the view synthesizes ONE masked
+        // slot for the unrecorded deal and publishes the take as Known, and the
+        // mirror is held to that, card by card, exactly as everywhere else.
+        check(&unrecorded);
+        assert_eq!(
+            observe(&unrecorded, unrecorded.current_player)
+                .expect("the MOVER's own deal is recorded, so its view derives")
+                .hidden_slot_count(),
+            1,
+            "anti-vacuity: the fiction produced no synthesized slot, so the arm is untested",
+        );
         sweep(&rules, V4_MASTER, 2, &mut |state| {
             if !is_game_over(state) {
                 check(state);
@@ -9288,10 +9351,10 @@ mod tests {
     /// ordinals in different generated games. The arithmetic half of that is
     /// [`ordinals_are_stride_separated`], and it is TRUE for the development
     /// band {0..4} against escrow (min gap 5) and FALSE at the
-    /// development-EXTENSION boundary (ordinals 7 and 8 are one apart, and a
-    /// game contributing a single hit straddles them). Both halves are pinned,
-    /// because the second is a residual an orchestrator has to know about before
-    /// it draws the extension rather than after.
+    /// development-EXTENSION boundary: ordinals 7 and 8 are one apart, so a game
+    /// contributing a TWO-ordinal run can land exactly {7, 8} and hold both.
+    /// Both halves are pinned, because the second is a residual an orchestrator
+    /// has to know about before it draws the extension rather than after.
     #[test]
     fn the_stride_separates_the_development_band_from_escrow_but_not_the_extension() {
         assert_eq!(GENERATED_STRIDE_CAP, 2, "the stride moved, so both claims below move with it");
