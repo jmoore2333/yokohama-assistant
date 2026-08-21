@@ -861,6 +861,10 @@ impl PairFixture {
     ///
     /// **The clauses, in order.**
     ///
+    /// 0. The registration is internally coherent
+    ///    ([`PairDeclaration::check_consistency`]) — first, because it needs no
+    ///    state at all and an incoherent tuple makes every later clause a
+    ///    statement about a registration nothing can satisfy.
     /// 1. `stage` is one the declaration registers.
     /// 2. Both sides are 2-player. §5.1's stage realization is written "at 2P",
     ///    and §5.3's signature is 2P-only because `opponent_extreme` orients by
