@@ -55,20 +55,33 @@ use crate::types::{AreaAction, AreaId, GameConfig, Move, PlayerId};
 /// Every subcommand this runner answers. The parser reads it and
 /// [`USAGE`]'s completeness pin asserts every member is documented.
 pub const SUBCOMMANDS: &[&str] =
-    &["list", "table", "run", "adjudicate", "exact", "family", "opening"];
+    &["list", "table", "run", "adjudicate", "exact", "family", "opening", "capacity"];
 
 /// `list`'s flags: none.
 pub const LIST_FLAGS: &[&str] = &[];
 
+/// The BURN-RULE acknowledgement, on every subcommand that READS a root.
+///
+/// **A valued flag rather than a bare switch, and the value is the ordinal being
+/// burned.** [`split_args`] has no bare-flag arm by design, and the design is
+/// right here for a second reason: a switch copied off somebody else's command
+/// line unlocks whatever it is pasted onto, while a flag that must NAME the
+/// ordinal can only unlock the read its typist meant. See [`deny_escrow_burn`].
+pub const ESCROW_READ_FLAG: &str = "escrow-read";
+
 /// `table`'s flags.
-pub const TABLE_FLAGS: &[&str] = &["contestant", "decision-seed"];
+pub const TABLE_FLAGS: &[&str] = &["contestant", "decision-seed", ESCROW_READ_FLAG];
 
 /// `exact`'s flags.
 ///
 /// **`master` is deliberately ABSENT and its absence is enforced with a REASON**
 /// (see the parse arm): the exact solve draws no worlds, so accepting a master
 /// would advertise a dependence it does not have.
-pub const EXACT_FLAGS: &[&str] = &["max-nodes", "max-depth", "max-memo", "eps", "rider"];
+pub const EXACT_FLAGS: &[&str] =
+    &["max-nodes", "max-depth", "max-memo", "eps", "rider", ESCROW_READ_FLAG];
+
+/// `capacity`'s flags.
+pub const CAPACITY_FLAGS: &[&str] = &["master", "stop-after"];
 
 /// `family`'s flags.
 pub const FAMILY_FLAGS: &[&str] = &["block", "master", "arm"];
@@ -101,10 +114,11 @@ pub const ARM_NAMES: [&str; 2] = ["positive", "control"];
 /// `run`'s flags. **`replications` is deliberately absent** — a single rooted
 /// run has nothing to replicate, and accepting the flag would silently ignore
 /// it.
-pub const RUN_FLAGS: &[&str] = &["master", "seats"];
+pub const RUN_FLAGS: &[&str] = &["master", "seats", ESCROW_READ_FLAG];
 
 /// `adjudicate`'s flags.
-pub const ADJUDICATE_FLAGS: &[&str] = &["master", "seats", "replications"];
+pub const ADJUDICATE_FLAGS: &[&str] =
+    &["master", "seats", "replications", ESCROW_READ_FLAG];
 
 /// The seat and contestant DEFAULT, spelled as the grammar spells it.
 ///
@@ -350,6 +364,25 @@ usage: driven <subcommand> [options]
                              needs no ranked surface, so a rung is a legitimate
                              (and much cheaper) subject.
 
+  capacity <predicate> --master <u64> [--stop-after <n>]
+      Measure how many strided ORDINALS a predicate's scan realizes at a master,
+      and which generated game each one came from. NO ROOT TABLE is built or
+      read and no position appears anywhere in the output -- which is why V4's
+      spec §6 calls this measurement permitted, required at step 2, and NOT a
+      burn. It takes a PREDICATE and not a <root>, deliberately: capacity is a
+      question about a predicate and a master, and taking a root would let the
+      one command §6 exempts be pointed at an ordinal.
+
+      --stop-after <n>       bound the walk at n ordinals. The report then says
+                             TRUNCATED and its count is a LOWER BOUND on the
+                             supply, never the supply. 0 is refused (a walk
+                             bounded at zero ordinals measures nothing). Omit it
+                             for the exact figure, at the ecology's whole price.
+      COST is the ECOLOGY's, and it is a scan's: seconds for the rung-scanned
+      family-1 pair, minutes to hours for the six that scan the v2 LOOKAHEAD
+      ecology. That price is the reason to know the number BEFORE a master is
+      drawn, which is where §6 puts the measurement.
+
 roots (<root> above):
   <fixture-name>   a name from `list`. Its record resolves against the WORKSPACE
                    ROOT, so one name means one file wherever the binary is
@@ -389,6 +422,17 @@ roots (<root> above):
                    escrow 8..16 -- and the escrow band is fenced by the BURN
                    RULE. The other six have no band: family blocks run
                    confirmatory ordinals 4..28 by declaration.
+
+the BURN RULE (--escrow-read <ordinal>, on table / run / adjudicate / exact):
+  Spec §6 fences every read at ordinal >= 8 of a BANDED predicate until step 10,
+  and `table` / `run` / `adjudicate` / `exact` REFUSE such a root rather than
+  taking it. The refusal names the predicate, the ordinal, the escrow floor and
+  the development bands. If this IS step 10, acknowledge the burn by naming the
+  ordinal: --escrow-read <that same ordinal>. It is an ACKNOWLEDGEMENT and not a
+  switch -- it must MATCH, and it is REFUSED where no burn is happening, so a
+  flag pasted off another command line can never unlock this one. The scope is
+  the two banded predicates alone: ordinal >= 8 is entirely ordinary for the
+  other six, whose frozen family blocks run confirmatory ordinals 4..28.
 
 seats (--seats <a,b[,c,d]>, one spec per seat in seat order, default
 `lookahead-v1` on EVERY seat):
@@ -572,6 +616,7 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
         "table" => {
             let (positional, flags) = split_args(rest, TABLE_FLAGS)?;
             let root = one_root(&positional, "table")?;
+            deny_escrow_burn(&root, flags.get(ESCROW_READ_FLAG), "table")?;
             let contestant = match flags.get("contestant") {
                 Some(spec) => Contestant::from_str_name(spec)
                     .map_err(|e| format!("--contestant {spec:?}: {e}\n\n{USAGE}"))?,
@@ -583,6 +628,7 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
         "run" => {
             let (positional, flags) = split_args(rest, RUN_FLAGS)?;
             let root = one_root(&positional, "run")?;
+            deny_escrow_burn(&root, flags.get(ESCROW_READ_FLAG), "run")?;
             Ok(Command::Run {
                 root,
                 master: master_of(&flags, "run")?,
@@ -592,6 +638,7 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
         "adjudicate" => {
             let (positional, flags) = split_args(rest, ADJUDICATE_FLAGS)?;
             let root = one_root(&positional, "adjudicate")?;
+            deny_escrow_burn(&root, flags.get(ESCROW_READ_FLAG), "adjudicate")?;
             let replications = match flags.get("replications") {
                 Some(raw) => u32::try_from(parse_u64(raw)?)
                     .map_err(|_| format!("--replications {raw:?} is not a u32\n\n{USAGE}"))?,
@@ -618,6 +665,7 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
             }
             let (positional, flags) = split_args(rest, EXACT_FLAGS)?;
             let root = one_root(&positional, "exact")?;
+            deny_escrow_burn(&root, flags.get(ESCROW_READ_FLAG), "exact")?;
             let defaults = driven_exact::ExactBounds::default();
             let bounds = driven_exact::ExactBounds {
                 max_nodes: match flags.get("max-nodes") {
@@ -695,7 +743,138 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
             };
             Ok(Command::Opening { master: master_of(&flags, "opening")?, games, contestant })
         }
+        "capacity" => {
+            let (positional, flags) = split_args(rest, CAPACITY_FLAGS)?;
+            let predicate = one_predicate(&positional)?;
+            let stop_after = match flags.get("stop-after") {
+                Some(raw) => {
+                    let bound = u32::try_from(parse_u64(raw)?).map_err(|_| {
+                        format!("--stop-after {raw:?} is not a u32\n\n{USAGE}")
+                    })?;
+                    if bound == 0 {
+                        return Err(format!(
+                            "capacity --stop-after 0 measures nothing: a walk bounded at zero \
+                             ordinals plays no game and counts no hit, so it reports neither a \
+                             supply nor a lower bound on one. Omit the flag to walk the whole \
+                             ecology.\n\n{USAGE}"
+                        ));
+                    }
+                    Some(bound)
+                }
+                None => None,
+            };
+            Ok(Command::Capacity {
+                predicate,
+                master: master_of(&flags, "capacity")?,
+                stop_after,
+            })
+        }
         other => Err(format!("unknown subcommand {other:?}\n\n{USAGE}")),
+    }
+}
+
+/// The ONE predicate `capacity` takes, named exactly as a `gen:` root names it.
+fn one_predicate(positional: &[String]) -> Result<RootPredicate, String> {
+    let [only] = positional else {
+        return Err(format!(
+            "capacity takes exactly ONE predicate, got {}: {positional:?}\n\n{USAGE}",
+            positional.len(),
+        ));
+    };
+    RootPredicate::ALL.into_iter().find(|candidate| candidate.as_str() == only).ok_or_else(|| {
+        let known: Vec<&str> = RootPredicate::ALL.into_iter().map(RootPredicate::as_str).collect();
+        format!(
+            "unknown predicate {only:?}: the scan predicates are {}\n\n{USAGE}",
+            known.join(" | "),
+        )
+    })
+}
+
+/// **THE BURN-RULE GUARD** (spec §6): no `table` / `adjudicate` / read of any
+/// kind at ordinal ≥ 8 of a BANDED predicate before step 10.
+///
+/// **Why a guard at all, when the rule is written down.** The existing
+/// [`BLOCK_NAMES`] note says out loud that escrow ordinals live in a freeze
+/// DOCUMENT so no command can burn one by accident — and then that the `gen:`
+/// escape hatch technically reaches one anyway, with the protection procedural.
+/// That was the honest disposition for a family block whose escrow lived in
+/// prose. V4's escrow band lives in CODE ([`driven::V4_ESCROW_ORDINALS`]), so
+/// the same honesty now buys a refusal instead of a sentence.
+///
+/// **Why SCOPED to [`driven::V4_BANDED_PREDICATES`].** Ordinal ≥ 8 is entirely
+/// ordinary for the other six: the frozen family blocks run confirmatory
+/// ordinals 4..28 by declaration, and a general fence would refuse the frozen
+/// blocks' own roots. Only the two V4 predicates have bands, so only they are
+/// fenced.
+///
+/// **Why ≥ 8 rather than the band 8..16.** The rule §6 states is "no read of any
+/// kind at ordinal ≥ 8", not "inside the escrow band" — an ordinal past the
+/// band is not a development ordinal either, and reading one would be a read of
+/// the same population the escrow block is drawn from.
+///
+/// **Why the acknowledgement takes the ORDINAL.** Step 10 has to be able to read
+/// escrow, so a refusal with no way through would only move the problem to a
+/// code edit made under time pressure. `--escrow-read <ordinal>` is a way
+/// through that cannot be taken by accident: it must be typed, it must MATCH,
+/// it lands verbatim in the commands-as-record, and it is REFUSED where no burn
+/// is happening — so it can never be a habit already present when the burn
+/// arrives.
+fn deny_escrow_burn(
+    root: &RootRef,
+    acknowledgement: Option<&String>,
+    subcommand: &str,
+) -> Result<(), String> {
+    let burning = match root {
+        RootRef::Generated { predicate, ordinal, .. }
+            if driven::V4_BANDED_PREDICATES.contains(predicate)
+                && *ordinal >= driven::V4_ESCROW_ORDINALS.start =>
+        {
+            Some((*predicate, *ordinal))
+        }
+        _ => None,
+    };
+    match (burning, acknowledgement) {
+        (None, None) => Ok(()),
+        (None, Some(raw)) => Err(format!(
+            "--{ESCROW_READ_FLAG} {raw:?} names a burn that is not happening: {subcommand} was \
+             pointed at a root that is not an escrow ordinal of a banded predicate. The flag is an \
+             ACKNOWLEDGEMENT of spec §6's burn rule, not a switch, and accepting it where there is \
+             nothing to acknowledge would let it become a habit that is already typed when the \
+             burn arrives.\n\n{USAGE}"
+        )),
+        (Some((predicate, ordinal)), None) => Err(format!(
+            "BURN RULE (spec §6): ordinal {ordinal} of `{}` is at or past the escrow floor {}, and \
+             no table / adjudicate / read of any kind may touch it before step 10. Development \
+             ordinals are {}..{} and the development extension is {}..{}. If this IS step 10, say \
+             so by naming the ordinal: --{ESCROW_READ_FLAG} {ordinal}. The step-10 ledger row \
+             records exactly which ordinals were read, and this command is what it \
+             records.\n\n{USAGE}",
+            predicate.as_str(),
+            driven::V4_ESCROW_ORDINALS.start,
+            driven::V4_DEVELOPMENT_ORDINALS.start,
+            driven::V4_DEVELOPMENT_ORDINALS.end,
+            driven::V4_DEVELOPMENT_EXTENSION_ORDINALS.start,
+            driven::V4_DEVELOPMENT_EXTENSION_ORDINALS.end,
+        )),
+        (Some((predicate, ordinal)), Some(raw)) => {
+            let acknowledged = raw.parse::<u32>().map_err(|e| {
+                format!(
+                    "--{ESCROW_READ_FLAG} {raw:?} is not a decimal ordinal: {e}. It acknowledges \
+                     the ordinal being burned, so it is that number and nothing else.\n\n{USAGE}"
+                )
+            })?;
+            if acknowledged == ordinal {
+                Ok(())
+            } else {
+                Err(format!(
+                    "--{ESCROW_READ_FLAG} {acknowledged} does not acknowledge ordinal {ordinal} of \
+                     `{}`, which is the escrow read this command would take. An acknowledgement \
+                     that did not have to match would unlock whichever command it was pasted \
+                     onto.\n\n{USAGE}",
+                    predicate.as_str(),
+                ))
+            }
+        }
     }
 }
 
@@ -2474,9 +2653,85 @@ pub(crate) fn run_with(
             Ok(render_opening(&probe))
         }
 
-        // RED: registered as a command shape, deliberately not yet wired.
-        Command::Capacity { .. } => Err("capacity is not wired yet".to_string()),
+        Command::Capacity { predicate, master, stop_after } => {
+            let capacity = driven::scan_capacity(predicate, master, stop_after, &rules)
+                .map_err(|e| format!("capacity {}: {e}", predicate.as_str()))?;
+            Ok(render_capacity(&capacity))
+        }
     }
+}
+
+/// What the capacity report says it did NOT do — spec §6's "not a burn" clause,
+/// on the page rather than only in the type.
+pub const CAPACITY_NO_TABLE: &str =
+    "NO ROOT TABLE was built or read: this walk counts strided hits and records which generated \
+     game each came from. Spec §6 permits and requires capacity measurement at step 2 for exactly \
+     that reason -- there is no position anywhere in this report.";
+
+/// ONE predicate's realized ordinal supply at a master.
+pub fn render_capacity(capacity: &driven::ScanCapacity) -> String {
+    let ecology = &capacity.ecology;
+    let bound = if capacity.truncated { "TRUNCATED at the caller's bound" } else { "EXHAUSTIVE" };
+    let mut lines = vec![
+        "=== driven capacity ===".to_string(),
+        format!("  {CAPACITY_NO_TABLE}"),
+        format!("  predicate      {}", capacity.predicate.as_str()),
+        format!("  master         {:#018x}", capacity.master),
+        format!(
+            "  ecology        {}   games={}   per_game_cap={}",
+            ecology.id, ecology.games, ecology.per_game_cap,
+        ),
+        format!(
+            "  found          {} strided ordinal(s) in {} game(s)   [{bound}]",
+            capacity.found(),
+            capacity.games_walked,
+        ),
+    ];
+    if capacity.truncated {
+        lines.push(
+            "  a TRUNCATED walk is a LOWER BOUND on the supply and never the supply itself"
+                .to_string(),
+        );
+    }
+    lines.push(String::new());
+    lines.push("  ordinal -> generated game".to_string());
+    for (ordinal, game) in capacity.game_of_ordinal.iter().enumerate() {
+        lines.push(format!("      ordinal {ordinal:>3}   game {game}"));
+    }
+    if capacity.game_of_ordinal.is_empty() {
+        lines.push("      (none)".to_string());
+    }
+
+    // The BAND verdicts, for the two banded predicates' own question. An
+    // unmeasured band reads UNMEASURED and never "disjoint" -- an ordinal the
+    // walk never reached is not one it found in another game.
+    lines.push(String::new());
+    lines.push("  band disjointness (measured, not the stride lemma)".to_string());
+    for (name, band) in [
+        ("development   vs escrow", driven::V4_DEVELOPMENT_ORDINALS),
+        ("dev extension vs escrow", driven::V4_DEVELOPMENT_EXTENSION_ORDINALS),
+    ] {
+        let verdict = match capacity.bands_are_disjoint(band, driven::V4_ESCROW_ORDINALS) {
+            Some(true) => "DISJOINT".to_string(),
+            Some(false) => "SHARES A GAME".to_string(),
+            None => "UNMEASURED (the walk did not reach every ordinal of both bands)".to_string(),
+        };
+        lines.push(format!("      {name}   {verdict}"));
+    }
+    lines.push(format!(
+        "      the STRIDE alone separates development {}..{} from escrow {}..{} (gap {} >= cap {}); \
+         it does NOT separate the extension's top ordinal {} from escrow's floor {}, which is what \
+         the measured line above is for",
+        driven::V4_DEVELOPMENT_ORDINALS.start,
+        driven::V4_DEVELOPMENT_ORDINALS.end,
+        driven::V4_ESCROW_ORDINALS.start,
+        driven::V4_ESCROW_ORDINALS.end,
+        driven::V4_ESCROW_ORDINALS.start - (driven::V4_DEVELOPMENT_ORDINALS.end - 1),
+        ecology.per_game_cap,
+        driven::V4_DEVELOPMENT_EXTENSION_ORDINALS.end - 1,
+        driven::V4_ESCROW_ORDINALS.start,
+    ));
+    lines.join("\n")
 }
 
 /// A root REFERENCE turned into the material a subcommand needs: the source
@@ -3074,6 +3329,7 @@ mod tests {
             EXACT_FLAGS,
             FAMILY_FLAGS,
             OPENING_FLAGS,
+            CAPACITY_FLAGS,
         ]
         {
             for flag in flags {
@@ -5827,7 +6083,20 @@ mod tests {
         assert!(rendered.contains(&format!("{V4_MASTER:#018x}")), "the master is missing: {rendered}");
         assert!(rendered.contains(GENERATED_ECOLOGY_V1), "the ecology is missing: {rendered}");
         assert!(rendered.contains("TRUNCATED"), "a bounded walk must say so: {rendered}");
-        assert!(rendered.contains("ordinal 3"), "the ordinal map is missing: {rendered}");
+        assert!(rendered.contains("ordinal -> generated game"), "no map section: {rendered}");
+        let mapped: Vec<&str> = rendered
+            .lines()
+            .filter(|line| line.trim_start().starts_with("ordinal ") && line.contains("game "))
+            .collect();
+        assert_eq!(
+            mapped.len(),
+            4,
+            "the map does not carry one line per measured ordinal: {rendered}",
+        );
+        assert!(
+            rendered.contains("development   vs escrow"),
+            "the band verdicts are missing: {rendered}",
+        );
         assert!(
             rendered.contains("NO ROOT TABLE"),
             "the report does not say what it did NOT do: {rendered}",

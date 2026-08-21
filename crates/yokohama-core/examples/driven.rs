@@ -1,11 +1,13 @@
 //! `driven` — the runner for the DRIVEN-FIXTURE harness (Phase B item 1, design
 //! `docs/plans/2026-08-17-phase-b-harness-design.md`).
 //!
-//! Six subcommands over `game::driven` and `game::driven_families`' public
+//! Subcommands over `game::driven` and `game::driven_families`' public
 //! surfaces: `list` the named roots, `table` ONE decision with every candidate
 //! the contestant valued, `run` a root to terminal once, `adjudicate` every root
-//! candidate by forcing it and playing the remainder out, `family` one declared
-//! block of one frozen family (Phase C), and `opening` the C-D probe.
+//! candidate by forcing it and playing the remainder out, `exact` the bounded
+//! optimal solve, `family` one declared block of one frozen family (Phase C),
+//! `opening` the C-D probe, and `capacity` one predicate's realized ordinal
+//! supply at a master (V4 step 2 — no root table is built or read).
 //!
 //! ```text
 //! cargo run --release -p yokohama-core --example driven -- list
@@ -24,6 +26,8 @@
 //!     family end-trigger --block pilot --master 0x... --arm control
 //! cargo run --release -p yokohama-core --example driven -- \
 //!     opening --master 0x... --games 200
+//! cargo run --release -p yokohama-core --example driven -- \
+//!     capacity placement-fork-same-count --master 0x... --stop-after 16
 //! ```
 //!
 //! # THIS FILE IS ARGV GLUE AND NOTHING ELSE

@@ -1111,8 +1111,7 @@ pub const V4_ESCROW_ORDINALS: std::ops::Range<u32> = 8..16;
 /// pins both halves of that, and [`scan_capacity`] is what an orchestrator
 /// checks the straddle with if the extension is ever drawn.
 pub const fn ordinals_are_stride_separated(a: u32, b: u32, per_game_cap: u32) -> bool {
-    let gap = if a > b { a - b } else { b - a };
-    gap >= per_game_cap
+    a.abs_diff(b) >= per_game_cap
 }
 
 // ---------------------------------------------------------------------------
@@ -3661,7 +3660,7 @@ enum ScanStep {
 
 /// What a completed [`walk_scan`] counted.
 struct ScanWalk {
-    /// Strided hits COUNTED — the number an [`RootError::Exhausted`] reports.
+    /// Strided hits COUNTED — the number a [`RootError::Exhausted`] reports.
     /// A visitor that stopped the walk early leaves this at the ordinal it
     /// stopped on, exactly as the pre-split loop did.
     found: u32,
