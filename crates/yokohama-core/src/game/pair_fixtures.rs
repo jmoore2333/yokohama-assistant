@@ -703,8 +703,6 @@ pub const REGISTERED_PAIR_TARGET: usize = 36;
 /// declared stage endpoint" is actionable and "assertion failed" is not.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FixtureError {
-    /// The S2-T3 stubs, before the green pass. Never constructed after it.
-    Unimplemented(&'static str),
     /// `new_game` / `finalize_setup` refused.
     Setup(&'static str),
     /// The state is not one `check_invariants` accepts.
@@ -735,7 +733,6 @@ pub enum FixtureError {
 impl std::fmt::Display for FixtureError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            FixtureError::Unimplemented(what) => write!(f, "not implemented yet: {what}"),
             FixtureError::Setup(e) => write!(f, "setup refused: {e}"),
             FixtureError::NotEngineValid { side, detail } => {
                 write!(f, "the {side} side is not a state the engine would accept: {detail}")
@@ -973,8 +970,8 @@ impl PairFixture {
         }
 
         // 12. The stage's own construction clauses, on the FINAL states.
-        for (side, state) in sides {
-            check_stage_clauses(declaration, stage, side, state, rules)?;
+        for ((side, state), (_, view)) in sides.into_iter().zip(views) {
+            check_stage_clauses(declaration, stage, side, state, view, rules)?;
         }
 
         let fixture = PairFixture {
@@ -1344,6 +1341,7 @@ fn check_stage_clauses(
     stage: StageEndpoint,
     side: Side,
     state: &GameState,
+    view: &PlayerView,
     rules: &Rules,
 ) -> Result<(), FixtureError> {
     let bad = |clause: &'static str, detail: String| FixtureError::Declaration {
@@ -1393,11 +1391,10 @@ fn check_stage_clauses(
             }
             // The deck clause is the one the endpoint arithmetic rests on, and
             // clause 7 has already checked the derived ppm; this names WHICH
-            // clock a failure would have been about.
-            let view = observe(state, state.current_player).map_err(|e| {
-                FixtureError::NotObservable { side: side.name(), detail: format!("{e}") }
-            })?;
-            let initial = eval::initial_order_deck_len(&view, rules)
+            // clock a failure would have been about. The view is the caller's,
+            // not a second `observe`: the two would be the same derivation and
+            // only one of them would be the one clause 7 measured.
+            let initial = eval::initial_order_deck_len(view, rules)
                 .ok_or(FixtureError::OutOfStock("a derivable initial deck size"))?;
             if state.order_deck.len() != initial {
                 return Err(bad(
@@ -1806,6 +1803,10 @@ pub fn render_pair_report_with(
         stage.name(),
         stage.ppm(),
         fixture.progress_ppm(rules),
+    ));
+    out.push_str(&format!(
+        "endpoints           {}\n",
+        d.stages.iter().map(|s| s.name()).collect::<Vec<_>>().join("+"),
     ));
     out.push_str(&format!("view-class          {}\n", d.view_class.canonical()));
     out.push_str(&format!(
@@ -2562,7 +2563,7 @@ mod tests {
             &rules,
         )
         .expect_err("§5.1's stage realization and §5.3's signature are 2P");
-        assert!(format!("{err}").contains("2P") || format!("{err}").contains("player"), "got: {err}");
+        assert!(format!("{err}").contains("2P-only"), "got: {err}");
     }
 
     #[test]
@@ -3020,6 +3021,105 @@ mod tests {
         assert!(manifest.contains(&package_digest()));
         assert!(manifest.contains(&format!("{REGISTERED_PAIR_COUNT} of {REGISTERED_PAIR_TARGET}")));
         assert!(manifest.contains(&format!("{AXIS_WIDTH}")));
+    }
+
+    // -----------------------------------------------------------------------
+    // The drift pin: a registered field that reaches neither the digest nor
+    // the report
+    // -----------------------------------------------------------------------
+
+    /// This module's own source, for the two structural pins below.
+    ///
+    /// Source scanning is this repo's standard answer to a hand-maintained
+    /// relation the compiler cannot check — `tests/eval_core.rs:135` reads
+    /// `eval.rs` for exactly that reason, and `Feature::ALL`'s doc names the
+    /// same hazard ("a variant given its match arms but left out of `ALL`
+    /// compiles clean").
+    const SOURCE: &str = include_str!("pair_fixtures.rs");
+
+    /// The `pub` field names of one struct in [`SOURCE`].
+    fn fields_of(struct_name: &str) -> Vec<String> {
+        let head = format!("pub struct {struct_name} {{");
+        let start = SOURCE.find(&head).unwrap_or_else(|| panic!("{struct_name} is declared here"))
+            + head.len();
+        let body = &SOURCE[start..];
+        let end = body.find("\n}").expect("the struct closes");
+        body[..end]
+            .lines()
+            .filter_map(|line| {
+                let t = line.trim_start();
+                let rest = t.strip_prefix("pub ")?;
+                let name = rest.split(':').next()?.trim();
+                (!name.is_empty() && name.chars().all(|c| c.is_ascii_lowercase() || c == '_'))
+                    .then(|| name.to_string())
+            })
+            .collect()
+    }
+
+    /// One function's body in [`SOURCE`], from its signature to the first
+    /// column-zero `}`.
+    fn body_of(fn_name: &str) -> &'static str {
+        let head = format!("pub fn {fn_name}");
+        let start =
+            SOURCE.find(&head).unwrap_or_else(|| panic!("{fn_name} is declared here"));
+        let body = &SOURCE[start..];
+        let end = body.find("\n}").expect("the function closes");
+        &body[..end]
+    }
+
+    #[test]
+    fn every_registered_field_reaches_the_digest() {
+        // §5.1's digest is "a digest over the registered tuples". A field added
+        // to a declaration but never serialized would let a registration change
+        // meaning without moving the hash — the one failure mode a content hash
+        // exists to prevent, and one no type check catches.
+        let canon = body_of("canonical_declaration");
+        for field in fields_of("PairDeclaration") {
+            assert!(
+                canon.contains(&format!("pair.{field}")),
+                "PairDeclaration::{field} never reaches canonical_declaration, so the package \
+                 digest does not cover it",
+            );
+        }
+        for (owner, prefix) in [
+            ("AchievementDraws", "draws"),
+            ("TechDeclaration", "techs"),
+            ("SeatPresidents", "presidents"),
+        ] {
+            for field in fields_of(owner) {
+                assert!(
+                    canon.contains(&format!("{prefix}.{field}")),
+                    "{owner}::{field} never reaches canonical_declaration",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_registered_field_reaches_the_printed_report() {
+        // The other half of the same hazard: §5.1 has every Part-A/B artifact
+        // print the pair's declaration, and a field the report omits is a fact
+        // the bounded re-read never sees.
+        let report = body_of("render_pair_report_with");
+        for field in fields_of("PairDeclaration") {
+            assert!(
+                report.contains(&format!("d.{field}")),
+                "PairDeclaration::{field} is never printed by render_pair_report_with",
+            );
+        }
+    }
+
+    #[test]
+    fn the_field_scanner_actually_finds_fields() {
+        // The pins above are vacuous if the scanner returns nothing, which is
+        // exactly how a source-scanning guard rots.
+        let fields = fields_of("PairDeclaration");
+        assert!(fields.len() >= 17, "found only {fields:?}");
+        assert!(fields.contains(&"expected_nonzero".to_string()));
+        assert!(fields.contains(&"early_hand_cap_deviation".to_string()));
+        assert_eq!(fields_of("SeatPresidents"), vec!["subject", "opponent"]);
+        assert!(body_of("canonical_declaration").contains("PAIR|"));
+        assert!(body_of("render_pair_report_with").contains("package digest"));
     }
 
     // -----------------------------------------------------------------------
