@@ -1880,7 +1880,19 @@ pub fn canonical_declaration(pair: &PairDeclaration) -> String {
 /// A format change moves every digest, which is correct — a re-read pinning a
 /// digest is pinning what the format meant when it was taken — and stamping it
 /// is what makes that legible instead of mysterious.
-pub const DIGEST_FORMAT_VERSION: u32 = 1;
+///
+/// | v | change |
+/// |---|--------|
+/// | 1 | the initial format |
+/// | 2 | the PRES line carries all FOUR president declarations (per side × per seat), not two — the M1 fix wave's [`SidedPresidents`] split |
+///
+/// The v2 bump is INERT today and is taken anyway. With [`REGISTERED`] empty
+/// there is no PRES line to write, so the emitted bytes were identical either
+/// way and no recorded digest is invalidated — but the same registration WOULD
+/// serialize differently under the two formats, and leaving the stamp at 1
+/// would make "v1" mean two different things. That is precisely the silent
+/// drift the version exists to prevent, so it moves while the move is free.
+pub const DIGEST_FORMAT_VERSION: u32 = 2;
 
 /// **ONE FIXTURE SIDE'S LITERAL-BYTE FINGERPRINT**: FNV-1a over the state's
 /// canonical JSON.
