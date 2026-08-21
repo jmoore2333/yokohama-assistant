@@ -87,6 +87,14 @@ pub mod driven;
 /// the rules in one file is what lets a reader check all of them at once against
 /// the freeze document. Callers write `driven_families::family_read`.
 pub mod driven_families;
+/// [`driven`]'s EXACT adjudicator: an exhaustive perfect-information solve of
+/// the remaining game at an IN-FINAL-ROUND root, where `driven`'s own
+/// `adjudicate_root` can only play the remainder out under named policies.
+/// SEPARATE from `driven` because it answers a different question — what the
+/// position is worth under best play, rather than what those policies reach —
+/// and its every number is a PRIVILEGED read that must never reach an
+/// evaluator. Callers write `driven_exact::exact_table`.
+pub mod driven_exact;
 /// [`driven`]'s RUNNER: the argv grammar and the report rendering behind
 /// `examples/driven.rs`. NAMESPACED for the same reason its subject is, and
 /// SEPARATE from `driven` itself because the harness answers questions while
