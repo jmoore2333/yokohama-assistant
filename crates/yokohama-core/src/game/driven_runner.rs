@@ -534,6 +534,19 @@ pub enum Command {
         games: u32,
         contestant: Contestant,
     },
+    /// ONE predicate's realized ordinal SUPPLY at a master — spec §6's step-2
+    /// capacity measurement.
+    ///
+    /// Deliberately NOT a `<root>` subcommand: capacity is a question about a
+    /// predicate and a master, not about a position, and taking a root here
+    /// would let the one command §6 calls "not a burn" be pointed at an ordinal.
+    Capacity {
+        predicate: RootPredicate,
+        master: u64,
+        /// `None` walks the ecology's whole game budget — the exact supply, at
+        /// the ecology's whole price.
+        stop_after: Option<u32>,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -2460,6 +2473,9 @@ pub(crate) fn run_with(
             let probe = run_opening(master, games, contestant, &rules)?;
             Ok(render_opening(&probe))
         }
+
+        // RED: registered as a command shape, deliberately not yet wired.
+        Command::Capacity { .. } => Err("capacity is not wired yet".to_string()),
     }
 }
 
@@ -2597,7 +2613,8 @@ mod tests {
     use crate::game::arena::{agent_stream_seed, run_arena_game, ArenaAgent, Slot};
     use crate::game::driven::{
         AdjudicationProvenance, AdjudicationSeat, CandidatePlayout, CandidateRow, DrivenOpts,
-        RootOrigin, RootSource, SampledWorld, SeatCounters, SESSION_BOT_SEAT,
+        RootOrigin, RootSource, SampledWorld, SeatCounters, GENERATED_ECOLOGY_V1,
+        SESSION_BOT_SEAT, V4_BANDED_PREDICATES,
     };
     use crate::game::driven_families::{
         AdmissionRead, AdmissionVerdict, CounterAnnotation, CounterCheck, ExclusionReason,
@@ -5722,5 +5739,194 @@ mod tests {
             anchor.0.display(),
         );
         assert_eq!(rendered, expected);
+    }
+
+    // =======================================================================
+    // V4 step 2 — the capacity read and the BURN-RULE guard (spec §6)
+    // =======================================================================
+
+    /// The V4 step-2 DEV-SMOKE master, the declared 9999-convention throwaway.
+    /// Spec §6 is FREEZE-THEN-DRAW, so no cell here may carry a recorded one.
+    const V4_MASTER: u64 = 0x0401_2026_0821_9999;
+
+    /// `capacity <predicate>` parses, takes the master everything else does, and
+    /// bounds its walk.
+    #[test]
+    fn the_capacity_subcommand_parses_a_predicate_a_master_and_a_bound() {
+        assert!(SUBCOMMANDS.contains(&"capacity"), "capacity is not in the subcommand list");
+
+        for predicate in RootPredicate::ALL {
+            let parsed = parse(&args(&["capacity", predicate.as_str(), "--master", "0x1"]))
+                .unwrap_or_else(|e| panic!("capacity {} must parse: {e}", predicate.as_str()));
+            match parsed {
+                Command::Capacity { predicate: got, master, stop_after } => {
+                    assert_eq!(got, predicate);
+                    assert_eq!(master, 1);
+                    assert_eq!(stop_after, None, "an absent bound is the whole ecology");
+                }
+                other => panic!("capacity parsed as {other:?}"),
+            }
+        }
+
+        match parse(&args(&["capacity", "placement-fork-same-count", "--master", "0x2", "--stop-after", "16"]))
+            .expect("a bounded capacity parses")
+        {
+            Command::Capacity { stop_after, .. } => assert_eq!(stop_after, Some(16)),
+            other => panic!("capacity parsed as {other:?}"),
+        }
+    }
+
+    /// Every way a `capacity` command can be wrong refuses on its own terms,
+    /// carrying USAGE.
+    #[test]
+    fn a_malformed_capacity_command_refuses_naming_what_is_wrong() {
+        let cases: [(&[&str], &str); 5] = [
+            // No predicate.
+            (&["capacity", "--master", "0x1"], "exactly ONE"),
+            // Two predicates.
+            (&["capacity", "trigger-round-not-final", "achievement-claim-available", "--master", "0x1"], "exactly ONE"),
+            // An unknown predicate — and the refusal names the vocabulary.
+            (&["capacity", "final-round", "--master", "0x1"], "final-round-already-triggered"),
+            // No master.
+            (&["capacity", "trigger-round-not-final"], "NO DEFAULT"),
+            // A zero bound measures nothing.
+            (&["capacity", "trigger-round-not-final", "--master", "0x1", "--stop-after", "0"], "measures nothing"),
+        ];
+        for (line, needle) in cases {
+            let err = parse(&args(line)).unwrap_err();
+            assert!(err.contains(needle), "{line:?}: the refusal hides {needle:?}: {err}");
+            assert!(err.contains(USAGE), "{line:?}: the refusal drops USAGE: {err}");
+        }
+    }
+
+    /// A `capacity` run reports the count, the ecology, the ordinal-to-game map
+    /// and the two band verdicts — and reads NO root table on the way.
+    ///
+    /// Run on the CHEAP rung ecology deliberately: the report's SHAPE is what a
+    /// cell can check, and a V4 predicate would buy the same shape for minutes
+    /// of lookahead scan.
+    #[test]
+    fn a_capacity_run_reports_the_map_and_never_reads_a_root_table() {
+        let anchor = TempRoot::make("capacity-run");
+        let rendered = run_with(
+            &args(&[
+                "capacity",
+                "final-round-already-triggered",
+                "--master",
+                &format!("{V4_MASTER:#018x}"),
+                "--stop-after",
+                "4",
+            ]),
+            &[],
+            &anchor.0,
+        )
+        .expect("a bounded rung capacity walk completes");
+
+        assert!(rendered.contains("=== driven capacity ==="), "no header: {rendered}");
+        assert!(rendered.contains("final-round-already-triggered"), "the predicate is missing: {rendered}");
+        assert!(rendered.contains(&format!("{V4_MASTER:#018x}")), "the master is missing: {rendered}");
+        assert!(rendered.contains(GENERATED_ECOLOGY_V1), "the ecology is missing: {rendered}");
+        assert!(rendered.contains("TRUNCATED"), "a bounded walk must say so: {rendered}");
+        assert!(rendered.contains("ordinal 3"), "the ordinal map is missing: {rendered}");
+        assert!(
+            rendered.contains("NO ROOT TABLE"),
+            "the report does not say what it did NOT do: {rendered}",
+        );
+    }
+
+    /// **THE BURN-RULE GUARD.** Spec §6 fences every read at ordinal >= 8 of the
+    /// two banded predicates until step 10, and the fence is a REFUSAL rather
+    /// than a comment: the `gen:` grammar reaches an escrow ordinal, so nothing
+    /// but a guard stops a copy-pasted command from burning one.
+    #[test]
+    fn an_escrow_ordinal_of_a_banded_predicate_refuses_on_every_root_taking_subcommand() {
+        for predicate in V4_BANDED_PREDICATES {
+            let spec = format!("gen:{}:0x1:8", predicate.as_str());
+            for line in [
+                vec!["table", &spec, "--decision-seed", "9"],
+                vec!["run", &spec, "--master", "0x1"],
+                vec!["adjudicate", &spec, "--master", "0x1"],
+                vec!["exact", &spec],
+            ] {
+                let err = parse(&args(&line)).unwrap_err();
+                assert!(err.contains("BURN RULE"), "{line:?}: the refusal does not name the rule: {err}");
+                assert!(err.contains(predicate.as_str()), "{line:?}: the refusal hides the predicate: {err}");
+                assert!(err.contains("--escrow-read"), "{line:?}: the refusal hides the way through: {err}");
+            }
+
+            // The band's FLOOR is 8 and ordinal 7 is the development extension:
+            // the guard must not fence a development read.
+            let development = format!("gen:{}:0x1:7", predicate.as_str());
+            parse(&args(&["table", &development, "--decision-seed", "9"]))
+                .unwrap_or_else(|e| panic!("a development ordinal must pass the guard: {e}"));
+
+            // Past the declared band is still >= 8, and the burn rule says >= 8.
+            let past = format!("gen:{}:0x1:99", predicate.as_str());
+            assert!(
+                parse(&args(&["table", &past, "--decision-seed", "9"])).is_err(),
+                "an ordinal past the escrow band escaped the >= 8 fence",
+            );
+        }
+    }
+
+    /// The guard is SCOPED to the two banded predicates: family blocks run
+    /// confirmatory ordinals 4..28, so fencing ordinal >= 8 in general would
+    /// refuse the frozen blocks' own roots.
+    #[test]
+    fn the_burn_guard_leaves_the_unbanded_predicates_alone() {
+        for predicate in RootPredicate::ALL {
+            if V4_BANDED_PREDICATES.contains(&predicate) {
+                continue;
+            }
+            let spec = format!("gen:{}:0x1:27", predicate.as_str());
+            parse(&args(&["table", &spec, "--decision-seed", "9"])).unwrap_or_else(|e| {
+                panic!("{} is unbanded and must not be fenced: {e}", predicate.as_str())
+            });
+        }
+    }
+
+    /// `--escrow-read` is an ACKNOWLEDGEMENT and not a switch: it takes the
+    /// ordinal being burned, must match it, and is refused where no burn is
+    /// happening.
+    #[test]
+    fn the_escrow_acknowledgement_must_name_the_ordinal_it_is_burning() {
+        let spec = format!("gen:{}:0x1:11", RootPredicate::PlacementForkSameCount.as_str());
+
+        // The MATCHING acknowledgement is the way through.
+        match parse(&args(&["table", &spec, "--decision-seed", "9", "--escrow-read", "11"]))
+            .expect("a matching acknowledgement passes the guard")
+        {
+            Command::Table { root, .. } => assert_eq!(
+                root,
+                RootRef::Generated {
+                    predicate: RootPredicate::PlacementForkSameCount,
+                    master: 1,
+                    ordinal: 11,
+                },
+            ),
+            other => panic!("table parsed as {other:?}"),
+        }
+
+        // A MISMATCH is a refusal — a flag copied off another command cannot
+        // unlock this one.
+        let err = parse(&args(&["table", &spec, "--decision-seed", "9", "--escrow-read", "8"]))
+            .expect_err("a mismatched acknowledgement must refuse");
+        assert!(err.contains("11"), "the refusal hides the ordinal asked for: {err}");
+        assert!(err.contains("8"), "the refusal hides the ordinal acknowledged: {err}");
+
+        // A non-numeric acknowledgement refuses as one.
+        assert!(parse(&args(&["table", &spec, "--decision-seed", "9", "--escrow-read", "yes"]))
+            .is_err());
+
+        // And the flag is refused where NO burn is happening, so it cannot
+        // become a habit that is already typed when the burn arrives.
+        let development =
+            format!("gen:{}:0x1:2", RootPredicate::PlacementForkSameCount.as_str());
+        let err = parse(&args(&["table", &development, "--decision-seed", "9", "--escrow-read", "2"]))
+            .expect_err("the flag must refuse where there is nothing to acknowledge");
+        assert!(err.contains("not happening"), "the refusal does not say why: {err}");
+
+        let fixture = parse(&args(&["run", "g1-e113-tiemass", "--master", "0x1", "--escrow-read", "8"]));
+        assert!(fixture.is_err(), "the flag was accepted on a registry root");
     }
 }
