@@ -105,6 +105,19 @@ pub mod driven_exact;
 /// grammar and a renderer written there would be untested by every per-edit
 /// gate. Callers write `driven_runner::run`.
 pub mod driven_runner;
+/// The V4 §5 PAIR-FIXTURE PACKAGE: the registered-tuple declarations, the
+/// fixture carrier and its construction invariants, the two stage-realization
+/// builders, the package digest, and the print seam the eighteen candidate
+/// columns join at step 3. NAMESPACED for the same reason [`eval`],
+/// [`driven`] and the rest are — `REGISTERED`, `Side` and `package_digest`
+/// say nothing about PAIR FIXTURES at the crate root. Callers write
+/// `pair_fixtures::PairFixture`.
+///
+/// It lives in the LIBRARY rather than in `tests/` because
+/// `examples/eval_probe` — where §13 puts the step-2..7 instruments — reaches
+/// only the crate's public surface, and rather than in the example because an
+/// example's `#[cfg(test)]` module runs under no command this repo documents.
+pub mod pair_fixtures;
 
 pub use power::*;
 pub use movement::*;
