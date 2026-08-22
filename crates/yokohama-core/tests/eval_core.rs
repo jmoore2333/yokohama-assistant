@@ -62,20 +62,22 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 
 use yokohama_core::game::driven_families::visible_power;
+use yokohama_core::actions::exported_reward;
 use yokohama_core::game::eval::{
     achievement_progress as view_achievement_progress, achievement_progress_postclaim_sum,
     achievement_progress_sum as prefreeze_achievement_sum, area_bit, areas_in, clock_ppm,
-    countries_in, country_bit, explain, initial_order_deck_len, interpolate, order_bit,
+    countries_in, country_bit, explain, initial_order_deck_len, interpolate, lab_bit, order_bit,
     order_cards_to_remove,
-    place_signal, progress_ppm, raw_value, realizable_power, score, set_bonus, terminal_standing,
+    place_signal, production_good, progress_ppm, raw_value, realizable_power, score, set_bonus,
+    terminal_standing,
     track_trigger, view_is_terminal, CountrySet, Explanation, Feature, OrderSet, ScoreStructure,
-    WeightTable, PROGRESS_FULL_PPM, TERMINAL_MARGIN_CLAMP, TERMINAL_MARGIN_STEP,
+    WeightTable, LAB_SLOTS, PROGRESS_FULL_PPM, TERMINAL_MARGIN_CLAMP, TERMINAL_MARGIN_STEP,
     TERMINAL_RANK_STEP,
 };
 use yokohama_core::{
     achievement_progress, apply_move_unchecked, calculate_power, final_result, finalize_setup,
-    get_legal_moves, is_game_over, is_possible_action_area_full, new_game, observe, AreaId,
-    AreaType, ChurchSlot, ChurchTrack, Country, CustomsSlot, CustomsTrack, DecisionHandle,
+    get_legal_moves, is_game_over, is_possible_action_area_full, new_game, observe, AreaAction,
+    AreaId, AreaType, ChurchSlot, ChurchTrack, Country, CustomsSlot, CustomsTrack, DecisionHandle,
     GameConfig, GameState, HandCard, Move, OrderCardId, PlayerId, PlayerView, PortBoard,
     PresidentLocation, RolloutPolicy, Rules, ScoreBreakdown, ShophouseState, StartingOrderChoice,
     TechCardId, TechEffect, TradingHouseState, TurnPhase, VisiblePlayer,
@@ -3315,6 +3317,36 @@ fn president_reachable_areas_in_hand_is_the_place_president_destination_count() 
 /// So the cleanliness scan's claim is precise: **the feature bodies name no
 /// money, goods or order field.** Nothing beneath them could supply one — that
 /// half rests on the guards named above, not on this list.
+/// The ECONOMIC side of §2's partition, as source-text needles: money, imported
+/// goods, the order pipeline and the four trade-good stocks.
+///
+/// Declared once and shared by all three cleanliness clauses. "No S helper reads
+/// these", "Group E is what reads these", and "only X reads BOTH sides" are only
+/// statements about one partition if the three scans look for the same words; a
+/// per-test copy would let the closer drift away from the clause it closes.
+const ECONOMIC_READS: [&str; 8] = [
+    ".money",
+    ".imported_goods",
+    ".hand",
+    ".completed_orders",
+    ".copper",
+    ".silk",
+    ".tea",
+    ".seafood",
+];
+
+/// The SPATIAL side of the same partition: power, presence, position and the
+/// board. See [`ECONOMIC_READS`] for why both lists live at file scope.
+const SPATIAL_READS: [&str; 7] = [
+    "realizable_power(",
+    ".assistants",
+    "president",
+    ".occupied",
+    ".built",
+    "station_location",
+    "board_layout",
+];
+
 const S_HELPER_HEADS: [&str; 9] = [
     "    pub fn production_access(",
     "    pub fn track_access(",
@@ -3394,19 +3426,9 @@ fn every_group_s_helper_takes_only_a_view_a_public_row_and_an_area() {
 /// matching anything at all fails here rather than passing everywhere.
 #[test]
 fn no_group_s_helper_reads_money_imports_or_order_cards() {
-    const FORBIDDEN_READS: [&str; 8] = [
-        ".money",
-        ".imported_goods",
-        ".hand",
-        ".completed_orders",
-        ".copper",
-        ".silk",
-        ".tea",
-        ".seafood",
-    ];
     for head in S_HELPER_HEADS {
         let source = s_helper_source(head);
-        for needle in FORBIDDEN_READS {
+        for needle in ECONOMIC_READS {
             assert!(
                 !source.contains(needle),
                 "`{head}` reads `{needle}` — Group S prices presence, power and position; \
@@ -3416,7 +3438,7 @@ fn no_group_s_helper_reads_money_imports_or_order_cards() {
     }
     // The needles are real field reads somewhere, or this scan proves nothing.
     let control = s_helper_source("fn remainder_bonus(");
-    let found = FORBIDDEN_READS.iter().filter(|n| control.contains(**n)).count();
+    let found = ECONOMIC_READS.iter().filter(|n| control.contains(**n)).count();
     assert!(
         found >= 5,
         "the control function matched only {found} of the forbidden needles — the scan has \
@@ -5338,18 +5360,9 @@ fn every_group_e_helper_takes_only_a_public_row_and_the_registries() {
 /// matching anything fails here rather than passing everywhere.
 #[test]
 fn no_group_e_helper_reads_power_or_presence() {
-    const FORBIDDEN_READS: [&str; 7] = [
-        "realizable_power(",
-        ".assistants",
-        "president",
-        ".occupied",
-        ".built",
-        "station_location",
-        "board_layout",
-    ];
     for head in E_HELPER_HEADS {
         let source = s_helper_source(head);
-        for needle in FORBIDDEN_READS {
+        for needle in SPATIAL_READS {
             assert!(
                 !source.contains(needle),
                 "`{head}` reads `{needle}` — Group E prices money, goods and the order \
@@ -5364,7 +5377,7 @@ fn no_group_e_helper_reads_power_or_presence() {
         .map(|h| s_helper_source(h))
         .collect::<Vec<_>>()
         .join("\n");
-    for needle in FORBIDDEN_READS {
+    for needle in SPATIAL_READS {
         assert!(
             control.contains(needle),
             "the control corpus no longer contains `{needle}` — the scan has stopped being \
@@ -5656,4 +5669,1407 @@ fn every_group_e_helper_allocates_nothing() {
     assert_eq!(stats.allocs, 0, "a Group-E helper allocated ({} allocations)", stats.allocs);
     assert!(sum > 0, "the fixture must exercise real values, or the meter measured nothing");
     println!("Group E: {sum} summed over 4P, {} allocs / {} peak bytes", stats.allocs, stats.peak_bytes);
+}
+
+// ---------------------------------------------------------------------------
+// V4 §3.2 — Group X: the interaction cell's fixtures
+// ---------------------------------------------------------------------------
+
+/// The Group-X FEATURE BODIES, by source-text head — hand-maintained for the
+/// same reason [`S_HELPER_HEADS`] and [`E_HELPER_HEADS`] are, and now backed by
+/// [`the_three_group_lists_name_every_feature_helper_eval_rs_declares`], which
+/// makes an unlisted helper a failure rather than a silence.
+const X_HELPER_HEADS: [&str; 3] = [
+    "    pub fn lab_takeable(",
+    "    pub fn port_takeable(",
+    "    pub fn matched_production_access(",
+];
+
+/// Every method head `eval.rs` declares inside one §3.2 group section — from the
+/// section's banner comment to the ruler that opens the next section.
+///
+/// Method heads only: a free function sits at column zero and is deliberately
+/// outside every list (`half_vp_face`, `port_offers` and their kin are guarded
+/// by the value pins their callers carry, not by a text scan).
+fn helper_heads_in_section(banner: &str) -> Vec<String> {
+    const SRC: &str = include_str!("../src/game/eval.rs");
+    let start = SRC.find(banner).unwrap_or_else(|| panic!("eval.rs carries the banner `{banner}`"));
+    let after_banner = &SRC[start..];
+    let body = after_banner
+        .find("\nimpl ScoreStructure {")
+        .unwrap_or_else(|| panic!("`{banner}` is not followed by an `impl ScoreStructure` block"));
+    let section = &after_banner[body..];
+    let end = section.find("\n// ------").unwrap_or(section.len());
+    section[..end]
+        .lines()
+        .filter(|line| line.starts_with("    pub fn ") || line.starts_with("    fn "))
+        .map(|line| line[..line.find('(').expect("a declaration opens its arguments") + 1].to_string())
+        .collect()
+}
+
+/// Put technologies into one lab board's six slots, leftmost first — board 0 is
+/// Lab A, board 1 Lab B.
+///
+/// Written OUTRIGHT, the way [`clear_labs`] empties them: the tech deck is not
+/// conserved by this file (unlike the thirty-six order cards, which
+/// [`cleared_order_table`] gathers and [`take_free_card`] hands out one at a
+/// time). What matters for Group X is which titles sit at which POSITIONS, and
+/// the assertion below is what keeps a fixture from planting one title twice by
+/// accident — the one lab state the rules cannot produce for a single-copy
+/// title.
+fn set_lab(state: &mut GameState, board: usize, ids: [Option<TechCardId>; 6]) {
+    let named: Vec<TechCardId> = ids.iter().flatten().copied().collect();
+    for (i, id) in named.iter().enumerate() {
+        assert!(!named[i + 1..].contains(id), "{id:?} is planted in two slots at once");
+    }
+    let lab = match board {
+        0 => &mut state.lab_state.lab_a,
+        _ => state.lab_state.lab_b.as_mut().expect("this board carries no Lab B"),
+    };
+    lab.slots = ids;
+}
+
+/// Put order cards into one port board's six slots, leftmost first, returning
+/// whatever stood there to the deck — board 0 is Port A, board 1 Port B.
+///
+/// POSITIONS are the point: X2's zone test is positional, so a fixture that
+/// could not say "this offer sits at index 4" could not exercise it. Cards come
+/// through [`take_free_card`], so the thirty-six-card conservation
+/// [`cleared_order_table`] asserts survives.
+fn set_port(state: &mut GameState, board: usize, ids: [Option<OrderCardId>; 6]) {
+    fn board_of(state: &mut GameState, board: usize) -> &mut PortBoard {
+        match board {
+            0 => &mut state.port_state.port_a,
+            _ => state.port_state.port_b.as_mut().expect("this table carries no Port B"),
+        }
+    }
+    let returned: Vec<OrderCardId> =
+        board_of(state, board).slots.iter_mut().filter_map(|slot| slot.take()).collect();
+    state.order_deck.extend(returned);
+    for (index, id) in ids.into_iter().enumerate() {
+        if let Some(id) = id {
+            take_free_card(state, id);
+            board_of(state, board).slots[index] = Some(id);
+        }
+    }
+}
+
+/// Give `seat` the named technologies outright — the owned-title list X1's
+/// EFFECT-equality filter and the 4th-card duty both read.
+fn own_techs(state: &mut GameState, seat: usize, ids: &[TechCardId]) {
+    state.players[seat].technologies = ids.to_vec();
+}
+
+/// `n` technology cards with PAIRWISE DISTINCT effects and the named printed
+/// gear cost, skipping every effect in `avoid`.
+///
+/// **`iter_sorted_by_id`, never the bare registry iterator.** Registry iteration
+/// is `HashMap`-backed and process-randomized (`observe.rs:220-222` names the
+/// failure in those words), so a cell that SEARCHES for a card off `iter` plants
+/// a different one every run: it passes each time and pins nothing. Every cell
+/// below prints the identities this returns, and they are the same in every
+/// process.
+fn distinct_effect_techs(
+    rules: &Rules,
+    n: usize,
+    cost: u8,
+    avoid: &[TechEffect],
+) -> Vec<TechCardId> {
+    let mut taken: Vec<TechEffect> = avoid.to_vec();
+    let mut out = Vec::new();
+    for tech in rules.techs.iter_sorted_by_id() {
+        if out.len() == n {
+            break;
+        }
+        if tech.industry_cost == cost && !taken.contains(&tech.effect) {
+            taken.push(tech.effect);
+            out.push(tech.id);
+        }
+    }
+    assert_eq!(out.len(), n, "the manifest prints fewer than {n} distinct titles at gear {cost}");
+    out
+}
+
+/// The FIRST title the manifest prints TWICE, as its two physical copies plus
+/// the effect they share.
+///
+/// Ten of the twenty titles circulate as two cards precisely so two seats can
+/// each own one (`actions/cards.rs:263-270`), and effect equality is the
+/// engine's own ownership-by-title test. Same `iter_sorted_by_id` discipline as
+/// above, and the caller prints what it resolved.
+fn two_copies_of_one_title(rules: &Rules) -> (TechCardId, TechCardId, TechEffect) {
+    let sorted = rules.techs.iter_sorted_by_id();
+    for (i, first) in sorted.iter().enumerate() {
+        for second in &sorted[i + 1..] {
+            if second.effect == first.effect {
+                return (first.id, second.id, first.effect);
+            }
+        }
+    }
+    panic!("the manifest prints no title twice — ten of the twenty are supposed to");
+}
+
+/// Does the ENGINE accept SOME payment for this Lab-A slot?
+///
+/// The exhaustive search over `validate_lab_action`'s own payment shapes — every
+/// extra-Yen amount the purse could cover (odd ones included, so the exact-cover
+/// refusal is exercised rather than assumed), every import count, and all three
+/// answers to the extra-technology surcharge. That makes the comparison below an
+/// ACCEPT/REJECT pin against the engine rather than against a restatement of its
+/// arithmetic.
+fn engine_accepts_lab_slot(
+    state: &GameState,
+    seat: PlayerId,
+    slot: usize,
+    power: u8,
+    rules: &Rules,
+) -> bool {
+    let row = state.player(seat);
+    let (money, imports) = (row.money.min(40) as u8, row.imported_goods.min(20) as u8);
+    for extra_yen in 0..=money {
+        for extra_imported in 0..=imports {
+            for payment in [None, Some(true), Some(false)] {
+                let ok = yokohama_core::actions::validate_lab_action(
+                    state,
+                    seat,
+                    &state.lab_state.lab_a,
+                    slot,
+                    extra_yen,
+                    extra_imported,
+                    payment,
+                    power,
+                    &rules.techs,
+                )
+                .is_ok();
+                if ok {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// The three Group-X values of one row, in §3.2's LABEL order — X1, X2, X3.
+fn x_values(
+    structure: &ScoreStructure,
+    view: &PlayerView,
+    player: &VisiblePlayer,
+    rules: &Rules,
+) -> [i64; 3] {
+    [
+        structure.lab_takeable(view, player),
+        structure.port_takeable(view, player, rules),
+        structure.matched_production_access(view, player, rules),
+    ]
+}
+
+/// The three Group-X values of each seat, as read from that seat's OWN view.
+fn group_x_row(state: &GameState, rules: &Rules) -> [[i64; 3]; 2] {
+    let mut out = [[0i64; 3]; 2];
+    for (seat, row) in out.iter_mut().enumerate() {
+        *row = read_s(state, rules, PlayerId(seat as u8), |s, view, p| x_values(s, view, p, rules));
+    }
+    out
+}
+
+/// One order card's printed requirement TOTAL against a stock vector — the
+/// per-offer cap X2 applies, computed here from the registry rather than from
+/// the helper it checks.
+fn matched_against(rules: &Rules, card: OrderCardId, stock: [u32; 4]) -> i64 {
+    let req = requirement_vector(rules, card);
+    (0..4).map(|g| i64::from(stock[g].min(req[g]))).sum()
+}
+
+/// §7 audit part 4 for X1, the SURCHARGE half: the context's all-in industry
+/// cost is the card's printed gear cost plus `lab_position_surcharge` at ALL SIX
+/// 0-based slot indices.
+///
+/// The engine's helper is the authority on the magnitudes (`0|1 → +0`,
+/// `2|3 → +1`, `4|5 → +2`; board art, not p.14 prose), and it is called here
+/// rather than restated, so the pin is a comparison and not a second copy of the
+/// same six numbers. The lab is filled with six EQUAL-gear titles precisely so
+/// that every difference across the six slots is the surcharge and nothing else.
+#[test]
+fn the_lab_context_prices_every_open_slot_at_gear_plus_the_engines_surcharge() {
+    let rules = Rules::standard();
+    let mut state = keep_game(2, 301, &rules);
+    let techs = distinct_effect_techs(&rules, 6, 3, &[]);
+    println!("lab slots 0..5 = {techs:?}");
+    set_lab(&mut state, 0, [
+        Some(techs[0]),
+        Some(techs[1]),
+        Some(techs[2]),
+        Some(techs[3]),
+        Some(techs[4]),
+        Some(techs[5]),
+    ]);
+
+    let view = observe(&state, PlayerId(0)).expect("seat 0 observes");
+    let context = ScoreStructure::derive(&view, &rules).context;
+    for slot in 0..LAB_SLOTS {
+        let card = rules.techs.get(techs[slot]).expect("a printed technology");
+        assert_eq!(
+            context.lab_industry_cost[0][slot],
+            card.industry_cost + yokohama_core::actions::lab_position_surcharge(slot),
+            "slot {slot}: gear {} plus the engine's own surcharge",
+            card.industry_cost
+        );
+    }
+    // Non-vacuity: the six all-in costs are NOT one number, or the surcharge
+    // could be zero everywhere and this cell would still pass.
+    assert_eq!(
+        context.lab_industry_cost[0],
+        [3, 3, 4, 4, 5, 5],
+        "six gear-3 titles under the +0/+0/+1/+1/+2/+2 board art"
+    );
+    // Lab B is absent at 2P, and an absent board prices nothing.
+    assert_eq!(context.lab_areas[1], 0, "a 2P table carries no Lab B area");
+    assert_eq!(context.lab_industry_cost[1], [0; LAB_SLOTS], "an absent board prices nothing");
+}
+
+/// §7 audit part 4 for X1, the OWNERSHIP half: a title is owned by EFFECT
+/// EQUALITY, on the fixture that separates that reading from an id comparison —
+/// the two PHYSICAL COPIES of one title, side by side in slots 0 and 1.
+///
+/// Ten of the twenty titles circulate as two cards so two seats can each own
+/// one, and the engine refuses a purchase whose EFFECT the buyer already holds
+/// (`actions/cards.rs:263-273`). So a seat holding copy A must see BOTH slots
+/// closed; a seat holding neither must see both open. An implementation
+/// comparing card ids would leave the twin open and fail here — which is the
+/// whole reason the fixture is built out of a two-copy title.
+#[test]
+fn the_lab_context_closes_both_physical_copies_of_a_title_the_seat_owns() {
+    let rules = Rules::standard();
+    let mut state = keep_game(2, 303, &rules);
+    let (first, second, effect) = two_copies_of_one_title(&rules);
+    println!("two-copy title {effect:?} = {first:?} + {second:?}");
+    let others = distinct_effect_techs(&rules, 4, 3, &[effect]);
+    set_lab(&mut state, 0, [
+        Some(first),
+        Some(second),
+        Some(others[0]),
+        Some(others[1]),
+        Some(others[2]),
+        Some(others[3]),
+    ]);
+    // Seat 0 owns ONE physical copy; seat 1 owns nothing.
+    own_techs(&mut state, 0, &[first]);
+
+    let view = observe(&state, PlayerId(0)).expect("seat 0 observes");
+    let context = ScoreStructure::derive(&view, &rules).context;
+    let open = |seat: usize, slot: usize| context.lab_unowned[seat] & lab_bit(0, slot) != 0;
+
+    assert!(!open(0, 0), "the seat holds this very card");
+    assert!(!open(0, 1), "the TWIN is the same title — effect equality, not id equality");
+    assert!(open(1, 0) && open(1, 1), "the other seat owns neither copy");
+    for slot in 2..LAB_SLOTS {
+        assert!(open(0, slot) && open(1, slot), "slot {slot} is a title neither seat owns");
+    }
+    // The engine agrees, on its own refusal path.
+    let refusal = yokohama_core::actions::validate_lab_action(
+        &state,
+        PlayerId(0),
+        &state.lab_state.lab_a,
+        1,
+        0,
+        0,
+        None,
+        5,
+        &rules.techs,
+    );
+    assert_eq!(
+        refusal,
+        Err("Already own a Technology card with this name"),
+        "the engine refuses the twin for the same reason"
+    );
+}
+
+/// **X1 `LabTakeable`** — the count of open lab slots the seat could take ALL
+/// IN, and the pooled 2¥-or-1-import arithmetic that decides it.
+///
+/// Six gear-3 titles at power 2 give deficits `[1, 1, 2, 2, 3, 3]` — the
+/// surcharge ladder, read through the feature. The budget is
+/// `floor(money/2) + imports`, and the cell walks it one step at a time, which
+/// is what makes the POOLING exact rather than incidental: two Yen and one
+/// import buy the same single point of industry, so `(money 4, imports 0)`,
+/// `(money 2, imports 1)` and `(money 0, imports 2)` must all read the same
+/// count.
+#[test]
+fn lab_takeable_counts_the_slots_the_pooled_all_in_purse_clears() {
+    let rules = Rules::standard();
+    let mut state = keep_game(2, 305, &rules);
+    let lab = area_typed(&state, AreaType::LaboratoryA);
+    let techs = distinct_effect_techs(&rules, 6, 3, &[]);
+    set_lab(&mut state, 0, [
+        Some(techs[0]),
+        Some(techs[1]),
+        Some(techs[2]),
+        Some(techs[3]),
+        Some(techs[4]),
+        Some(techs[5]),
+    ]);
+    place_assistants(&mut state, 0, lab, 1); // realizable power 1 + 1 = 2
+
+    let read = |state: &GameState| read_s(state, &rules, PlayerId(0), |s, v, p| s.lab_takeable(v, p));
+    for (money, imports, expected) in [
+        (0u32, 0u32, 0i64),
+        (1, 0, 0), // one Yen buys no industry — the halving is a FLOOR
+        (2, 0, 2),
+        (3, 0, 2),
+        (0, 1, 2),
+        (4, 0, 4),
+        (2, 1, 4),
+        (0, 2, 4),
+        (6, 0, 6),
+        (2, 2, 6),
+        (0, 3, 6),
+        (99, 99, 6), // never more than the open slots
+    ] {
+        state.players[0].money = money;
+        state.players[0].imported_goods = imports;
+        assert_eq!(read(&state), expected, "money {money}, imports {imports}");
+    }
+}
+
+/// §7's NAMED NEGATIVE boundary twin for X1: **the zero-deficit, duty-only
+/// refusal.**
+///
+/// Power over-covers every printed cost, so the industry deficit is ZERO at all
+/// six slots — and the seat still takes nothing, because it owns three
+/// technologies and the FOURTH card owes a surcharge of 2 Yen or 1 import that
+/// POWER MAY NOT PAY ("excess industry value is lost"). The six-lens round's
+/// counterexample, verbatim: power 5, cost ≤ 5, money 0, imports 0, three techs
+/// owned → 0 takeable.
+///
+/// Two controls keep the zero from being an accident of the fixture: dropping to
+/// TWO owned technologies (no duty) reads 6, and keeping three but adding two
+/// Yen reads 6 again. And the engine is asked directly — every payment shape
+/// `validate_lab_action` prices is refused at the duty-only state and accepted
+/// once the duty can be paid.
+#[test]
+fn lab_takeable_is_zero_on_a_duty_only_deficit_the_engine_also_refuses() {
+    let rules = Rules::standard();
+    let mut state = keep_game(2, 307, &rules);
+    let lab = area_typed(&state, AreaType::LaboratoryA);
+    let open = distinct_effect_techs(&rules, 6, 3, &[]);
+    let owned_effects: Vec<TechEffect> =
+        open.iter().map(|id| rules.techs.get(*id).expect("a printed technology").effect).collect();
+    let owned = distinct_effect_techs(&rules, 3, 4, &owned_effects);
+    println!("open {open:?}; owned {owned:?}");
+    set_lab(&mut state, 0, [
+        Some(open[0]),
+        Some(open[1]),
+        Some(open[2]),
+        Some(open[3]),
+        Some(open[4]),
+        Some(open[5]),
+    ]);
+    place_assistants(&mut state, 0, lab, 4); // realizable power 1 + 4 = 5
+    state.players[0].money = 0;
+    state.players[0].imported_goods = 0;
+    own_techs(&mut state, 0, &owned);
+
+    let read = |state: &GameState| read_s(state, &rules, PlayerId(0), |s, v, p| s.lab_takeable(v, p));
+    assert_eq!(read(&state), 0, "power over-covers the cost and still cannot pay the 4th-card duty");
+    for slot in 0..LAB_SLOTS {
+        assert!(
+            !engine_accepts_lab_slot(&state, PlayerId(0), slot, 5, &rules),
+            "the engine must refuse slot {slot} at the duty-only state"
+        );
+    }
+
+    // Control 1: the duty is what closed it — two owned technologies, not three.
+    let mut two = state.clone();
+    own_techs(&mut two, 0, &owned[..2]);
+    assert_eq!(read(&two), 6, "with no duty due, every zero-deficit slot is takeable");
+
+    // Control 2: the duty is PAYABLE, and two Yen is exactly its price.
+    let mut paid = state.clone();
+    paid.players[0].money = 2;
+    assert_eq!(read(&paid), 6, "two Yen pays the duty at every zero-deficit slot");
+    for slot in 0..LAB_SLOTS {
+        assert!(
+            engine_accepts_lab_slot(&paid, PlayerId(0), slot, 5, &rules),
+            "the engine must accept slot {slot} once the duty can be paid"
+        );
+    }
+}
+
+/// §7 audit part 4 for X1, the ACCEPT/REJECT half: over a grid of purses,
+/// powers and owned-title counts, **X1 equals the number of open slots the
+/// ENGINE would accept some payment for.**
+///
+/// Not a restatement of the arithmetic — `engine_accepts_lab_slot` searches
+/// `validate_lab_action`'s own payment space, so every clause the engine applies
+/// (the exact-cover rule, the odd-Yen refusal, the surcharge's two prices, the
+/// purse and import checks, the owned-title refusal) is inside the comparison.
+///
+/// The grid spans the duty on and off, deficits from negative to unpayable, and
+/// a purse split every way between Yen and imports. Both verdicts are asserted
+/// to occur, so the identity cannot pass by everything being accepted.
+#[test]
+fn lab_takeable_matches_the_engines_accept_reject_over_a_purchase_grid() {
+    let rules = Rules::standard();
+    let mut state = keep_game(2, 309, &rules);
+    let lab = area_typed(&state, AreaType::LaboratoryA);
+    let open = distinct_effect_techs(&rules, 6, 3, &[]);
+    let open_effects: Vec<TechEffect> =
+        open.iter().map(|id| rules.techs.get(*id).expect("a printed technology").effect).collect();
+    let owned_pool = distinct_effect_techs(&rules, 3, 4, &open_effects);
+    set_lab(&mut state, 0, [
+        Some(open[0]),
+        Some(open[1]),
+        Some(open[2]),
+        Some(open[3]),
+        Some(open[4]),
+        Some(open[5]),
+    ]);
+    place_assistants(&mut state, 0, lab, 4);
+
+    let (mut accepted, mut refused, mut cells) = (0usize, 0usize, 0usize);
+    // Power 1 is not in the grid and cannot be: `validate_lab_action` takes power
+    // as an ARGUMENT and has no presence clause, while X1's presence gate means
+    // an occupied lab always reads at least 1 (president) + 1 (assistant). The
+    // grid therefore spans exactly the powers X1 can report at an occupied lab.
+    for pawns in 1..=4u8 {
+        let mut sized = state.clone();
+        recover_assistants(&mut sized, 0, lab, 4 - pawns);
+        let power = 1 + pawns;
+        for owned in 0..=3usize {
+            own_techs(&mut sized, 0, &owned_pool[..owned]);
+            for money in [0u32, 1, 2, 3, 4, 6] {
+                for imports in [0u32, 1, 2] {
+                    sized.players[0].money = money;
+                    sized.players[0].imported_goods = imports;
+                    let engine = (0..LAB_SLOTS)
+                        .filter(|slot| {
+                            engine_accepts_lab_slot(&sized, PlayerId(0), *slot, power, &rules)
+                        })
+                        .count() as i64;
+                    let mine =
+                        read_s(&sized, &rules, PlayerId(0), |s, v, p| s.lab_takeable(v, p));
+                    assert_eq!(
+                        mine, engine,
+                        "power {power}, owned {owned}, money {money}, imports {imports}"
+                    );
+                    cells += 1;
+                    accepted += engine as usize;
+                    refused += LAB_SLOTS - engine as usize;
+                }
+            }
+        }
+    }
+    assert!(accepted > 0 && refused > 0, "the grid must span both verdicts");
+    println!("X1 vs validate_lab_action: {cells} cells, {accepted} accepts, {refused} refusals");
+}
+
+/// X1's PRESENCE gate and its family-11(d) boundary: the count is zero without
+/// an assistant at the lab, and it collapses to zero again at the Recovery that
+/// drains the acted area.
+///
+/// §3.2's presence sentence is the engine's own action-legality condition, and
+/// §3.2's X1 boundary paragraph says the purchase's presence drains at Recovery
+/// so X1 reads 0 at the following hand-off. Both halves are the same assertion
+/// from the two directions, which is why they sit in one cell.
+#[test]
+fn lab_takeable_needs_a_presence_and_drains_to_zero_at_recovery() {
+    let rules = Rules::standard();
+    let mut state = keep_game(2, 311, &rules);
+    let lab = area_typed(&state, AreaType::LaboratoryA);
+    let techs = distinct_effect_techs(&rules, 2, 3, &[]);
+    set_lab(&mut state, 0, [Some(techs[0]), Some(techs[1]), None, None, None, None]);
+    state.players[0].money = 99;
+
+    let read = |state: &GameState| read_s(state, &rules, PlayerId(0), |s, v, p| s.lab_takeable(v, p));
+    assert_eq!(read(&state), 0, "no assistant at the lab: no access to price");
+    place_assistants(&mut state, 0, lab, 1);
+    assert_eq!(read(&state), 2, "both open slots clear at an all-in purse");
+    recover_assistants(&mut state, 0, lab, 1);
+    assert_eq!(read(&state), 0, "family 11(d): the presence drains and the access goes with it");
+}
+
+/// **X2 `PortTakeable`** — the goods a face-up offer would match, summed over
+/// the offers the seat's power actually reaches, each capped by its OWN printed
+/// requirement.
+///
+/// The per-offer cap is what makes this a portfolio rather than a total: three
+/// Yen-worth of seafood against three cards each wanting one seafood matches
+/// three, not one. And the ZONES step with power exactly as the board prints
+/// them, which is the other half of the term.
+///
+/// Every expectation is computed from the registry by [`matched_against`] and
+/// then HARD-PINNED as a number, so a drift in either the helper or the fixture
+/// has to move both to stay green.
+#[test]
+fn port_takeable_sums_each_offers_own_capped_match_over_the_open_zones() {
+    let rules = Rules::standard();
+    let mut state = cleared_order_table(2, 313, &rules);
+    let port = area_typed(&state, AreaType::PortA);
+    const OFFERS: [OrderCardId; 6] = [
+        OrderCardId(1),
+        OrderCardId(2),
+        OrderCardId(3),
+        OrderCardId(4),
+        OrderCardId(5),
+        OrderCardId(6),
+    ];
+    set_port(&mut state, 0, OFFERS.map(Some));
+    const STOCK: [u32; 4] = [1, 1, 1, 1];
+    set_stocks(&mut state, 0, STOCK);
+
+    // The six per-offer matches, off the registry and then pinned.
+    let matches: Vec<i64> = OFFERS.iter().map(|c| matched_against(&rules, *c, STOCK)).collect();
+    assert_eq!(matches, vec![2, 2, 2, 3, 2, 3], "the printed requirements against one of each good");
+
+    let read = |state: &GameState| {
+        read_s(state, &rules, PlayerId(0), |s, v, p| s.port_takeable(v, p, &rules))
+    };
+    assert_eq!(read(&state), 0, "no assistant at the port: no access to price");
+    for (pawns, expected, why) in [
+        (1u8, 4i64, "power 2 opens LOW alone: slots 0 and 1"),
+        (2, 9, "power 3 adds MID: slots 2 and 3"),
+        (3, 14, "power 4 adds HIGH: slots 4 and 5"),
+        (4, 14, "power 5 opens nothing further"),
+    ] {
+        let mut sized = state.clone();
+        place_assistants(&mut sized, 0, port, pawns);
+        assert_eq!(read(&sized), expected, "{why}");
+    }
+}
+
+/// §7's NAMED boundary twin for X2, first half: **the hand-cap zeroing.**
+///
+/// The manual refuses a take into a hand already holding three orders, so the
+/// whole term collapses — not one offer's worth, all of them — and stays
+/// collapsed until a fulfillment empties a slot. §5.2's 4(f) is the pair that
+/// prices the collapse; this is the cell that says it happens at all.
+///
+/// The engine is asked in its own words: `validate_port_action` refuses the
+/// cheapest possible take at the cap.
+#[test]
+fn port_takeable_is_zero_at_the_three_card_hand_cap() {
+    let rules = Rules::standard();
+    let mut state = cleared_order_table(2, 315, &rules);
+    let port = area_typed(&state, AreaType::PortA);
+    set_port(&mut state, 0, [
+        Some(OrderCardId(1)),
+        Some(OrderCardId(2)),
+        None,
+        None,
+        None,
+        None,
+    ]);
+    set_stocks(&mut state, 0, [1, 1, 1, 1]);
+    place_assistants(&mut state, 0, port, 1);
+    deal_card(&mut state, 0, OrderCardId(10));
+    deal_card(&mut state, 0, OrderCardId(11));
+
+    let read = |state: &GameState| {
+        read_s(state, &rules, PlayerId(0), |s, v, p| s.port_takeable(v, p, &rules))
+    };
+    assert_eq!(read(&state), 4, "a two-card hand may still take");
+    let take = yokohama_core::actions::validate_port_action(
+        &state,
+        PlayerId(0),
+        &state.port_state.port_a,
+        &[OrderCardId(1)],
+        None,
+        2,
+    );
+    assert!(take.is_ok(), "the engine allows the take at hand size 2: {take:?}");
+
+    deal_card(&mut state, 0, OrderCardId(12));
+    assert_eq!(state.players[0].order_cards_in_hand.len(), 3, "the fixture is AT the cap");
+    assert_eq!(read(&state), 0, "the whole term collapses at the cap, not one offer's worth");
+    assert_eq!(
+        yokohama_core::actions::validate_port_action(
+            &state,
+            PlayerId(0),
+            &state.port_state.port_a,
+            &[OrderCardId(1)],
+            None,
+            2,
+        ),
+        Err("Would exceed Order card hand limit of 3"),
+        "the engine refuses for the reason the term collapses"
+    );
+
+    // PERSISTENT until a fulfillment: putting a card back re-opens the term.
+    let mut fulfilled = state.clone();
+    let card = fulfilled.players[0].order_cards_in_hand.pop().expect("a card to retire");
+    fulfilled.players[0].completed_orders.push(card);
+    assert_eq!(read(&fulfilled), 4, "the collapse lifts exactly when the hand drops below three");
+}
+
+/// §7's NAMED boundary twin for X2, second half: **a dry-deck `None` gap, and
+/// the zone read positionally across it.**
+///
+/// Once the order deck runs out the port stops refilling, so a `None` may sit at
+/// any index while cards remain to its right (`refill_port` compacts LEFT and
+/// fills from the right). The zone of an offer is its SLOT's zone — index 1 is
+/// LOW even when index 0 is empty — so the term must iterate positions, never
+/// the flattened list of present cards.
+///
+/// The fixture is chosen so the two readings DIFFER: with a gap at 0 and offers
+/// at 1 (LOW) and 5 (HIGH), a flatten-then-count implementation would call both
+/// of them LOW and read 5 at power 2 where the truth is 2.
+#[test]
+fn port_takeable_reads_the_slot_position_across_a_dry_deck_gap() {
+    let rules = Rules::standard();
+    let mut state = cleared_order_table(2, 317, &rules);
+    let port = area_typed(&state, AreaType::PortA);
+    set_port(&mut state, 0, [
+        None,
+        Some(OrderCardId(1)),
+        None,
+        None,
+        None,
+        Some(OrderCardId(6)),
+    ]);
+    const STOCK: [u32; 4] = [1, 1, 1, 1];
+    set_stocks(&mut state, 0, STOCK);
+    let low = matched_against(&rules, OrderCardId(1), STOCK);
+    let high = matched_against(&rules, OrderCardId(6), STOCK);
+    assert_eq!((low, high), (2, 3), "the two offers match different amounts");
+
+    let read = |state: &GameState| {
+        read_s(state, &rules, PlayerId(0), |s, v, p| s.port_takeable(v, p, &rules))
+    };
+    for (pawns, expected, why) in [
+        (1u8, low, "power 2: the LOW slot 1 only — the gap at 0 is not an offer"),
+        (2, low, "power 3: slot 5 is still HIGH"),
+        (3, low + high, "power 4: the HIGH slot 5 opens"),
+    ] {
+        let mut sized = state.clone();
+        place_assistants(&mut sized, 0, port, pawns);
+        assert_eq!(read(&sized), expected, "{why}");
+    }
+    // The discriminator, stated: flattening would read both offers as LOW.
+    assert_ne!(low, low + high, "the fixture must separate the two readings");
+}
+
+/// §7 audit part 4 for X2: **the zones the term opens are exactly the zones the
+/// engine's own `port_zone_accessible` opens**, at every power, over a full
+/// board.
+///
+/// The expectation is rebuilt per power from the engine's gate and the registry
+/// — never from a second copy of the 2/3/4 ladder — so this is the comparison
+/// §7 asks for.
+///
+/// **RECORDED, because the card states two gates and only one of them can ever
+/// fire.** §3.2 gates each board on `own_assistants >= 1` AND on
+/// `realizable_power >= 2`; but `realizable_power` is
+/// `min(5, own_assistants + 1 + …)`, so a board the seat has a presence at reads
+/// at least 2 by construction and the power gate is implied by the presence gate
+/// on every view. Both are implemented, because the card says both; the sweep
+/// below therefore starts at power 2, which is the lowest power an occupied port
+/// can report, rather than pretending to exercise power 1.
+#[test]
+fn port_takeable_opens_exactly_the_zones_the_engines_gate_opens() {
+    let rules = Rules::standard();
+    let mut state = cleared_order_table(2, 319, &rules);
+    let port = area_typed(&state, AreaType::PortA);
+    const OFFERS: [OrderCardId; 6] = [
+        OrderCardId(1),
+        OrderCardId(2),
+        OrderCardId(3),
+        OrderCardId(4),
+        OrderCardId(5),
+        OrderCardId(6),
+    ];
+    set_port(&mut state, 0, OFFERS.map(Some));
+    const STOCK: [u32; 4] = [2, 1, 1, 2];
+    set_stocks(&mut state, 0, STOCK);
+    place_assistants(&mut state, 0, port, 1);
+
+    let mut seen = std::collections::BTreeSet::new();
+    for pawns in 0..=4u8 {
+        let mut sized = state.clone();
+        place_assistants(&mut sized, 0, port, pawns);
+        // President + the standing assistant + the rest, capped where the engine
+        // caps. The zone ladder saturates at 4, so the cap changes no verdict —
+        // it is written because the reading it mirrors applies it.
+        let power = (1 + 1 + pawns).min(5);
+        let expected: i64 = OFFERS
+            .iter()
+            .enumerate()
+            .filter(|(slot, _)| {
+                yokohama_core::actions::port_zone_accessible(power, PortBoard::zone_of(*slot))
+            })
+            .map(|(_, card)| matched_against(&rules, *card, STOCK))
+            .sum();
+        let mine =
+            read_s(&sized, &rules, PlayerId(0), |s, v, p| s.port_takeable(v, p, &rules));
+        assert_eq!(mine, expected, "power {power}");
+        seen.insert(mine);
+    }
+    assert!(seen.len() >= 3, "the sweep must move the value, or the gate is untested: {seen:?}");
+    println!("X2 vs port_zone_accessible: values {seen:?}");
+}
+
+/// X2's PER-BOARD gates, on the one table that carries two port boards: at 3P
+/// the presence and the power are asked BOARD BY BOARD, and an offer on a board
+/// the seat does not stand at is worth nothing however rich it is.
+///
+/// This is the trap the term's shape exists to avoid — a flattened view of both
+/// displays would credit Port B's offers to a seat that only reaches Port A.
+#[test]
+fn port_takeable_gates_presence_and_power_board_by_board() {
+    let rules = Rules::standard();
+    let mut state = cleared_order_table(3, 321, &rules);
+    let port_a = area_typed(&state, AreaType::PortA);
+    let port_b = area_typed(&state, AreaType::PortB);
+    const A_OFFERS: [OrderCardId; 6] = [
+        OrderCardId(1),
+        OrderCardId(2),
+        OrderCardId(3),
+        OrderCardId(4),
+        OrderCardId(5),
+        OrderCardId(6),
+    ];
+    const B_OFFERS: [OrderCardId; 6] = [
+        OrderCardId(7),
+        OrderCardId(8),
+        OrderCardId(9),
+        OrderCardId(10),
+        OrderCardId(11),
+        OrderCardId(12),
+    ];
+    set_port(&mut state, 0, A_OFFERS.map(Some));
+    set_port(&mut state, 1, B_OFFERS.map(Some));
+    const STOCK: [u32; 4] = [1, 1, 1, 1];
+    set_stocks(&mut state, 0, STOCK);
+
+    let read = |state: &GameState| {
+        read_s(state, &rules, PlayerId(0), |s, v, p| s.port_takeable(v, p, &rules))
+    };
+    let a_low: i64 = A_OFFERS[..2].iter().map(|c| matched_against(&rules, *c, STOCK)).sum();
+    let b_low: i64 = B_OFFERS[..2].iter().map(|c| matched_against(&rules, *c, STOCK)).sum();
+    assert!(b_low > 0, "Port B's LOW zone must be worth something, or the gate is untested");
+
+    place_assistants(&mut state, 0, port_a, 1);
+    assert_eq!(read(&state), a_low, "Port B's offers belong to a board the seat does not stand at");
+    place_assistants(&mut state, 0, port_b, 1);
+    assert_eq!(read(&state), a_low + b_low, "both boards, each at its OWN power");
+}
+
+/// One seat's four trade-good stocks, in the `[copper, silk, tea, seafood]`
+/// order every Group-E and Group-X reader uses.
+fn stocks_of(state: &GameState, seat: PlayerId) -> [u32; 4] {
+    let p = state.player(seat);
+    [p.copper, p.silk, p.tea, p.seafood]
+}
+
+/// §7 audit part 4 for X3, the MAP half: the good `production_good` credits an
+/// area type to is the good the ENGINE's own production action pays there.
+///
+/// Read off ORGANIC play at 2/3/4P: every applied `ExecuteAreaAction` in the
+/// production family is checked against the printed reward the §13 dispatcher
+/// gives for the acting area's type at the power the engine itself recorded, and
+/// the named good must have risen by at least that much. A transposed map (tea
+/// for seafood, say) fails at the first tile that pays anything.
+///
+/// **The narrowing, stated rather than hidden:** the other three goods are NOT
+/// asserted unmoved. The same applied move can carry the automatic 5-Power
+/// bonus, whose token pays goods of its own choosing (`FivePowerEffect::Copper`
+/// and friends), so an equality there would be pinning the token and not the
+/// map. The `>=` form still discriminates, because a wrong good would have to be
+/// paid the right amount by an unrelated bonus at every sampled tile.
+#[test]
+fn the_production_good_map_is_the_good_the_engines_own_action_pays() {
+    let rules = Rules::standard();
+    let mut fired = [0usize; 4];
+    for (players, seed) in [(2u8, 401u64), (3, 403), (4, 405)] {
+        let mut state = keep_game(players, seed, &rules);
+        let mut rng = ChaCha8Rng::seed_from_u64(seed ^ 0x3F3F);
+        let policy = RolloutPolicy::FAMILY_WEIGHTED_DEFAULT;
+        for _ in 0..900usize {
+            if is_game_over(&state) {
+                break;
+            }
+            let mv = {
+                let handle = DecisionHandle::new(&state, &rules);
+                policy.pick(&handle, &mut rng).expect("the rung always finds a move")
+            };
+            let producing = matches!(
+                &mv,
+                Move::ExecuteAreaAction { action } if matches!(
+                    action,
+                    AreaAction::ProduceCopper
+                        | AreaAction::ProduceSilk
+                        | AreaAction::ProduceTea
+                        | AreaAction::ProduceSeafood
+                )
+            );
+            let actor = state.current_player;
+            let acting_area = if state.is_mercenary_action {
+                state.mercenary_target_area
+            } else {
+                match state.player(actor).president_location {
+                    PresidentLocation::OnBoard(a) => Some(a),
+                    PresidentLocation::InHand => None,
+                }
+            };
+            let power = state.current_action_power.unwrap_or(0);
+            let before = stocks_of(&state, actor);
+            let next = apply_move_unchecked(&state, &mv, &rules).expect("a sampled move applies");
+            if producing {
+                let area = acting_area.expect("a production action has an acting area");
+                let kind = state
+                    .board_layout
+                    .areas
+                    .get(&area)
+                    .expect("the acting area is on the board")
+                    .area_type;
+                let good = production_good(kind).expect("a production area names its good");
+                let reward = exported_reward(kind, power).expect("the dispatcher prices it");
+                let after = stocks_of(&next, actor);
+                assert!(
+                    after[good] >= before[good] + u32::from(reward),
+                    "{kind:?} at power {power} pays {reward} of good {good}: {before:?} -> {after:?}"
+                );
+                if reward > 0 {
+                    fired[good] += 1;
+                }
+            }
+            state = next;
+        }
+    }
+    for (good, count) in fired.iter().enumerate() {
+        assert!(*count > 0, "good {good} was never paid a positive reward — its arm is unexercised");
+    }
+    println!("production-good map: paying activations per good {fired:?}");
+    // Every non-production type is OUTSIDE the map's domain, the same way it is
+    // outside the dispatcher's.
+    for kind in [
+        AreaType::Bank,
+        AreaType::PortA,
+        AreaType::LaboratoryA,
+        AreaType::EmploymentAgency,
+        AreaType::Church,
+        AreaType::Customs,
+        AreaType::Canal,
+    ] {
+        assert_eq!(production_good(kind), None, "{kind:?} exports no trade good");
+    }
+}
+
+/// **X3 `MatchedProductionAccess`** — the export a production tile would pay,
+/// capped by what the seat's KNOWN held orders still NEED of that good.
+///
+/// Three tiles at three different readings in one fixture: a Tea Plantation
+/// whose export is worth every good of it, a Fishing Ground whose need runs out
+/// before its export does, and a Copper Mine at the power where the engine pays
+/// nothing at all (§3.2's cited sparsity fact — a satisfied presence gate can
+/// still contribute zero).
+///
+/// Then the boundary the card names: the need closes AS THE STOCK FILLS, one
+/// good at a time and with no cliff, because the term is a minimum.
+#[test]
+fn matched_production_access_is_the_export_capped_by_the_residual_need() {
+    let rules = Rules::standard();
+    let mut state = cleared_order_table(2, 323, &rules);
+    let tea = area_typed(&state, AreaType::TeaPlantation);
+    let fishing = area_typed(&state, AreaType::FishingGround);
+    let copper = area_typed(&state, AreaType::CopperMine);
+    // Card 26: French, 3 tea + 1 seafood.
+    const CARD: OrderCardId = OrderCardId(26);
+    assert_eq!(requirement_vector(&rules, CARD), [0, 0, 3, 1], "the fixture's printed requirements");
+    deal_card(&mut state, 0, CARD);
+    set_stocks(&mut state, 0, [0, 0, 0, 0]);
+    place_assistants(&mut state, 0, tea, 2); // power 3 -> tea export 3
+    place_assistants(&mut state, 0, fishing, 1); // power 2 -> seafood export 2
+    place_assistants(&mut state, 0, copper, 1); // power 2 -> copper export 0
+
+    let read = |state: &GameState| {
+        read_s(state, &rules, PlayerId(0), |s, v, p| s.matched_production_access(v, p, &rules))
+    };
+    // tea min(3, 3) + seafood min(2, 1) + copper min(0, 0)
+    assert_eq!(read(&state), 4, "three tiles, three different readings");
+
+    for (stock, expected, why) in [
+        ([0u32, 0, 1, 0], 3i64, "one tea banked: the tea need falls to 2"),
+        ([0, 0, 3, 0], 1, "the tea need closes; the seafood tile still reads"),
+        ([0, 0, 3, 1], 0, "both needs closed — the order is executable and X3 is 0"),
+        ([9, 9, 9, 9], 0, "a stock past every requirement stays at 0, never negative"),
+    ] {
+        let mut filled = state.clone();
+        set_stocks(&mut filled, 0, stock);
+        assert_eq!(read(&filled), expected, "{why}");
+    }
+
+    // The other boundary: a fulfillment retires the need with the card.
+    let mut fulfilled = state.clone();
+    let card = fulfilled.players[0].order_cards_in_hand.pop().expect("the dealt card");
+    fulfilled.players[0].completed_orders.push(card);
+    assert_eq!(read(&fulfilled), 0, "family 6(a): the need leaves the hand with the card");
+}
+
+/// §7 audit part 4 for X3: **the registered 10(d) fixture, read through the
+/// package's own public surface**, with the arithmetic re-derived from the
+/// engine's dispatcher and the printed requirements rather than restated.
+///
+/// `pair_fixtures.rs` is not touched by this batch — the frozen package is
+/// LOADED here as test input, which is what a registered gate fixture is for.
+/// 10(d) is X3's gate: one Fishing Ground pawn at realizable power 2, zero
+/// stocks, holding card 26 (which still needs a seafood) against card 5 (which
+/// does not).
+#[test]
+fn matched_production_access_reads_the_registered_10d_fixture_exactly() {
+    use yokohama_core::game::pair_fixtures::{
+        build_registered_pair, Side, StageEndpoint, FAMILY_10D_MATCHED_CARD,
+        FAMILY_10D_UNMATCHED_CARD, PAIR_10D,
+    };
+    let rules = Rules::standard();
+    let fixture = build_registered_pair(&PAIR_10D, StageEndpoint::Early, &rules)
+        .expect("10(d) builds at its registered stage");
+    let subject = fixture.subject();
+
+    let read = |side: Side| {
+        let view = fixture.view(side);
+        let structure = ScoreStructure::derive(view, &rules);
+        let row = row_of(view, subject);
+        (structure.matched_production_access(view, &row, &rules), structure, row)
+    };
+    let (greater, structure, row) = read(Side::Greater);
+    let (lesser, _, _) = read(Side::Lesser);
+
+    // The summation domain IS one tile, or the arithmetic below is about the
+    // wrong sum.
+    let occupied_production: Vec<AreaId> = areas_in(
+        structure.context.occupied[usize::from(subject.0)] & structure.context.production,
+    )
+    .collect();
+    assert_eq!(occupied_production.len(), 1, "10(d) registers ONE production presence");
+    let area = occupied_production[0];
+    let view = fixture.view(Side::Greater);
+    let kind = view.board_layout.areas.get(&area).expect("the tile is on the board").area_type;
+    assert_eq!(kind, AreaType::FishingGround, "10(d)'s registered tile");
+
+    // The two factors, each from its own authority.
+    let power = realizable_power(view, &row, area);
+    assert_eq!(power, 2, "10(d) registers realizable power 2");
+    let export = exported_reward(kind, power).expect("a production tile is priced");
+    assert_eq!(export, 2, "the dispatcher's Fishing Ground reading at power 2");
+    let need = requirement_vector(&rules, FAMILY_10D_MATCHED_CARD)[3];
+    assert_eq!(need, 1, "card 26 still needs one seafood at zero stocks");
+    assert_eq!(requirement_vector(&rules, FAMILY_10D_UNMATCHED_CARD)[3], 0, "card 5 needs none");
+
+    assert_eq!(greater, i64::from(export.min(need as u8)), "min(export 2, residual need 1)");
+    assert_eq!(greater, 1, "10(d)'s registered `x3_greater`");
+    assert_eq!(lesser, 0, "10(d)'s registered `x3_lesser`");
+    println!("10(d): X3 greater {greater}, lesser {lesser}, at {kind:?} power {power}");
+}
+
+/// A 2P table where the two seats differ in ALL THREE Group-X readings and
+/// NEITHER carries a masked slot — §5.2(b)'s constructible no-hidden-slot class,
+/// built rather than played into, and shared by the two cross-cutting cells
+/// below so they are read off one position.
+///
+/// Both seats stand at the lab, the port and the Tea Plantation; what differs is
+/// the purse, the power at each board, the hand and the owned title.
+fn group_x_fixture(seed: u64, rules: &Rules) -> GameState {
+    let mut state = cleared_order_table(2, seed, rules);
+    let lab = area_typed(&state, AreaType::LaboratoryA);
+    let port = area_typed(&state, AreaType::PortA);
+    let tea = area_typed(&state, AreaType::TeaPlantation);
+    let techs = distinct_effect_techs(rules, 6, 3, &[]);
+    set_lab(&mut state, 0, [
+        Some(techs[0]),
+        Some(techs[1]),
+        Some(techs[2]),
+        Some(techs[3]),
+        Some(techs[4]),
+        Some(techs[5]),
+    ]);
+    set_port(&mut state, 0, [
+        Some(OrderCardId(1)),
+        Some(OrderCardId(2)),
+        Some(OrderCardId(3)),
+        Some(OrderCardId(4)),
+        Some(OrderCardId(5)),
+        Some(OrderCardId(6)),
+    ]);
+    fulfilled_starting_order(&mut state, 0, OrderCardId(21));
+    fulfilled_starting_order(&mut state, 1, OrderCardId(22));
+
+    place_assistants(&mut state, 0, lab, 1);
+    place_assistants(&mut state, 0, port, 1);
+    place_assistants(&mut state, 0, tea, 2);
+    state.players[0].money = 6;
+    state.players[0].imported_goods = 0;
+    set_stocks(&mut state, 0, [1, 1, 1, 1]);
+    deal_card(&mut state, 0, OrderCardId(7));
+    own_techs(&mut state, 0, &[techs[5]]);
+
+    place_assistants(&mut state, 1, lab, 1);
+    place_assistants(&mut state, 1, port, 3);
+    place_assistants(&mut state, 1, tea, 1);
+    state.players[1].money = 0;
+    state.players[1].imported_goods = 0;
+    set_stocks(&mut state, 1, [1, 1, 1, 1]);
+    deal_card(&mut state, 1, OrderCardId(5));
+    state
+}
+
+/// §7 audit part 1 for Group X: **view honesty, at the type level.**
+///
+/// Every Group-X helper's parameter list names only a seat's view, a seat's
+/// PUBLIC row, and the printed registries. The group reads both sides of §2's
+/// partition, which is exactly why the claim is worth making off the
+/// declaration: what it may not take is engine state, and no argument carries
+/// any.
+#[test]
+fn every_group_x_helper_takes_only_a_view_a_public_row_and_the_registries() {
+    const ALLOWED_PARAM_TYPES: [&str; 3] = ["&PlayerView", "&VisiblePlayer", "&Rules"];
+    for head in X_HELPER_HEADS {
+        let source = s_helper_source(head);
+        let open = source.find('(').expect("a declaration has an argument list");
+        let close = source.find(')').expect("a declaration closes its argument list");
+        let params = &source[open + 1..close];
+        let mut named = 0usize;
+        for (i, param) in params.split(',').map(str::trim).filter(|p| !p.is_empty()).enumerate() {
+            if i == 0 {
+                assert_eq!(param, "&self", "`{head}` must be a method on the structure");
+                continue;
+            }
+            let ty = param.split(": ").nth(1).unwrap_or_else(|| panic!("`{param}` has no type"));
+            assert!(
+                ALLOWED_PARAM_TYPES.contains(&ty),
+                "`{head}` takes `{ty}`, which is not one of {ALLOWED_PARAM_TYPES:?} — a Group-X \
+                 helper is a function of a seat's VIEW, its public row and the registries"
+            );
+            named += 1;
+        }
+        assert!(named > 0, "`{head}` names no argument beyond `&self`");
+    }
+}
+
+/// §7's cross-group cleanliness assert, THE CLOSER: **only Group X reads both
+/// sides.**
+///
+/// The other two clauses are already executable — no S helper reads money,
+/// imports or orders; no E helper reads power or presence — and each is a
+/// NEGATIVE statement. On their own they are consistent with a third group that
+/// reads neither side, or with Group X being a fourth copy of Group S. This is
+/// the POSITIVE half: every Group-X body names at least one needle from EACH
+/// list, so the interaction cell is the interaction cell.
+///
+/// The three cells share [`ECONOMIC_READS`] and [`SPATIAL_READS`] rather than
+/// each declaring its own copy — the claim "only X reads both" is only about one
+/// partition if all three clauses are scanned for the same needles.
+#[test]
+fn every_group_x_helper_reads_both_sides_of_the_partition() {
+    for head in X_HELPER_HEADS {
+        let source = s_helper_source(head);
+        let economic: Vec<&str> =
+            ECONOMIC_READS.iter().copied().filter(|n| source.contains(n)).collect();
+        let spatial: Vec<&str> =
+            SPATIAL_READS.iter().copied().filter(|n| source.contains(n)).collect();
+        assert!(
+            !economic.is_empty(),
+            "`{head}` reads no money, goods or order field — an interaction term that reads only \
+             one side belongs in Group S"
+        );
+        assert!(
+            !spatial.is_empty(),
+            "`{head}` reads no power, presence or board field — an interaction term that reads \
+             only one side belongs in Group E"
+        );
+        println!("{head}: economic {economic:?}, spatial {spatial:?}");
+    }
+}
+
+/// The cleanliness sweep's EXHAUSTIVENESS half: every feature helper `eval.rs`
+/// declares inside the three `§3.2` group sections is named by exactly one of
+/// the three lists.
+///
+/// Without this the three scans are only as complete as three hand-maintained
+/// arrays, and a nineteenth helper added to a group would be scanned by nobody —
+/// the omission the group lists' own docs warn about, made impossible rather
+/// than merely warned about.
+#[test]
+fn the_three_group_lists_name_every_feature_helper_eval_rs_declares() {
+    let groups: [(&str, &str, &[&str]); 3] = [
+        ("Group S", "// V4 §3.2 — Group S", &S_HELPER_HEADS),
+        ("Group E", "// V4 §3.2 — Group E", &E_HELPER_HEADS),
+        ("Group X", "// V4 §3.2 — Group X", &X_HELPER_HEADS),
+    ];
+    let mut total = 0usize;
+    for (name, banner, listed) in groups {
+        let declared = helper_heads_in_section(banner);
+        assert!(!declared.is_empty(), "{name}'s section declares no helper at all");
+        for head in &declared {
+            assert!(
+                listed.contains(&head.as_str()),
+                "{name} declares `{head}`, which no cleanliness list names — add it, or the \
+                 scans do not cover it"
+            );
+        }
+        for head in listed {
+            assert!(
+                declared.contains(&head.to_string()),
+                "{name}'s list names `{head}`, which its section no longer declares"
+            );
+        }
+        total += declared.len();
+        println!("{name}: {} helpers", declared.len());
+    }
+    assert_eq!(total, 20, "nine Group-S bodies, eight Group-E, three Group-X");
+}
+
+/// §7 audit part 2(a) for Group X: **INDEX-PERMUTATION INVARIANCE** under a FULL
+/// seat relabel (§5.2 family 5(a)).
+///
+/// **Group X has NO registered cross-seat read** — unlike S4's in-hand branch and
+/// S7 (which read every seat's President) and O1's pool (which is a property of
+/// the table). What travels here instead is a per-SEAT context field: the lab's
+/// unowned-title mask is derived once per seat inside `derive`, so a relabel that
+/// moved the rows but not the mask would show up as a Group-X value attached to
+/// the wrong seat. That is what this cell is for, and the fixture gives the two
+/// seats DIFFERENT masks so the failure would be visible.
+#[test]
+fn group_x_values_permute_with_a_full_seat_relabel() {
+    let rules = Rules::standard();
+    let state = group_x_fixture(325, &rules);
+    let relabelled = relabel_seats_0_and_1(&state);
+
+    let masks = |state: &GameState| {
+        let view = observe(state, PlayerId(0)).expect("seat 0 observes");
+        ScoreStructure::derive(&view, &rules).context.lab_unowned
+    };
+    let before_masks = masks(&state);
+    assert_ne!(
+        before_masks[0], before_masks[1],
+        "the two seats must own different titles, or the mask's travel is invisible"
+    );
+    let after_masks = masks(&relabelled);
+    assert_eq!(after_masks[0], before_masks[1], "the unowned mask travels with the seat");
+    assert_eq!(after_masks[1], before_masks[0], "and so does the other");
+
+    let before = group_x_row(&state, &rules);
+    let after = group_x_row(&relabelled, &rules);
+    assert_ne!(before[0], before[1], "the two seats must differ, or the permutation is invisible");
+    assert_eq!(after[0], before[1], "seat 0 of the relabeled table is the old seat 1");
+    assert_eq!(after[1], before[0], "seat 1 of the relabeled table is the old seat 0");
+    println!("seat permutation: {before:?} -> {after:?}");
+}
+
+/// §7 audit part 2(b) for Group X: **CROSS-VIEW NEGATION at 2P**, on §5.2's
+/// constructible no-hidden-slot class.
+///
+/// With nothing masked, every Group-X value is a function of public state alone
+/// and must read IDENTICALLY from either seat's view; the registered identity —
+/// that the relative difference negates — follows and is asserted in its own
+/// right because it is the form §5.2(b) names.
+///
+/// All three features are required to separate the seats, which is what keeps
+/// the negation from holding trivially on a row of zeros.
+#[test]
+fn group_x_differences_negate_across_the_two_2p_views() {
+    let rules = Rules::standard();
+    let state = group_x_fixture(327, &rules);
+    let views = [
+        observe(&state, PlayerId(0)).expect("seat 0 observes"),
+        observe(&state, PlayerId(1)).expect("seat 1 observes"),
+    ];
+    for view in &views {
+        for player in &view.players {
+            assert!(
+                !player.hand.iter().any(|c| matches!(c, HandCard::HiddenStartingOrder)),
+                "the fixture must carry no masked slot: seat {:?}",
+                player.id
+            );
+        }
+    }
+
+    for (v, view) in views.iter().enumerate() {
+        let structure = ScoreStructure::derive(view, &rules);
+        let other = &views[1 - v];
+        let other_structure = ScoreStructure::derive(other, &rules);
+        for seat in 0..2u8 {
+            let here = x_values(&structure, view, &row_of(view, PlayerId(seat)), &rules);
+            let there =
+                x_values(&other_structure, other, &row_of(other, PlayerId(seat)), &rules);
+            assert_eq!(here, there, "seat {seat} reads differently from the two views");
+        }
+    }
+
+    let rows = group_x_row(&state, &rules);
+    let mut moved = 0usize;
+    for (f, (mine, theirs)) in rows[0].iter().zip(rows[1].iter()).enumerate() {
+        assert_eq!(mine - theirs, -(theirs - mine), "feature {f} does not negate across the views");
+        if mine != theirs {
+            moved += 1;
+        }
+    }
+    assert_eq!(moved, 3, "only {moved} of the three features separated the seats");
+    // THE FIELD PINS, the same discipline the Group-E row carries: every cell
+    // above reads one feature on a fixture built for it, so a helper reading the
+    // wrong field of the right kind would still pass them. Here both rows are
+    // pinned exactly, and the arithmetic is spelled out in the message.
+    assert_eq!(
+        rows[0],
+        [5, 4, 2],
+        "seat 0: five of six slots clear at budget 3; LOW alone at power 2; min(tea 3, need 2)"
+    );
+    assert_eq!(
+        rows[1],
+        [0, 14, 1],
+        "seat 1: an empty purse clears nothing; all six offers at power 4; min(tea 2, need 1)"
+    );
+}
+
+/// §7 audit part 2(c) for Group X: the **DECLARED-ASYMMETRY pin for X3**, the
+/// group's one Known-only reader (§5.2's (c) clause names it in that list).
+///
+/// The gap is computed INDEPENDENTLY, by evaluating the same helper on the
+/// holder's OWN row with the masked card removed from the hand — so the identity
+/// is not "the difference is some difference" but "the masking view reads
+/// exactly what the holder would read without that card".
+///
+/// X1 and X2 are deliberately not in the list and the cell says why by asserting
+/// it: X1 reads no hand at all, and X2 reads the hand's LENGTH, which is public
+/// for every seat (`observe` masks a starting order's IDENTITY, never its slot).
+/// Both therefore read the SAME from either view, and that equality is the
+/// scoping statement.
+#[test]
+fn the_masked_slot_term_is_exactly_the_cross_view_gap_for_x3() {
+    let rules = Rules::standard();
+    const MASKED: OrderCardId = OrderCardId(7); // 1 copper + 3 tea
+    const OPEN: OrderCardId = OrderCardId(5); // 1 copper + 2 tea
+    let mut state = cleared_order_table(2, 329, &rules);
+    let tea = area_typed(&state, AreaType::TeaPlantation);
+    place_assistants(&mut state, 1, tea, 2); // power 3 -> tea export 3
+    set_stocks(&mut state, 1, [0, 0, 0, 0]);
+    unfulfilled_starting_order(&mut state, 1, MASKED);
+    deal_card(&mut state, 1, OPEN);
+
+    let mine = observe(&state, PlayerId(1)).expect("seat 1 observes");
+    let my_structure = ScoreStructure::derive(&mine, &rules);
+    let full = row_of(&mine, PlayerId(1));
+    let mut without = full.clone();
+    without.hand.retain(|c| *c != HandCard::Known(MASKED));
+    assert_eq!(without.hand.len(), full.hand.len() - 1, "exactly one card removed");
+
+    let theirs = observe(&state, PlayerId(0)).expect("seat 0 observes");
+    let their_structure = ScoreStructure::derive(&theirs, &rules);
+    let masked_row = row_of(&theirs, PlayerId(1));
+    assert!(
+        masked_row.hand.contains(&HandCard::HiddenStartingOrder),
+        "seat 1's starting order must still be unfulfilled"
+    );
+
+    let with = my_structure.matched_production_access(&mine, &full, &rules);
+    let hidden = my_structure.matched_production_access(&mine, &without, &rules);
+    let term = with - hidden;
+    assert_ne!(term, 0, "the masked card contributes nothing — the pin is vacuous");
+    assert_eq!(
+        their_structure.matched_production_access(&theirs, &masked_row, &rules),
+        hidden,
+        "X3: the masking view must read the hand WITHOUT the masked card"
+    );
+    assert_eq!(
+        their_structure.matched_production_access(&theirs, &masked_row, &rules) - with,
+        -term,
+        "X3: the cross-view gap is exactly the masked slot's own term"
+    );
+
+    // The scoping half: the other two read the same from either view.
+    assert_eq!(
+        my_structure.lab_takeable(&mine, &full),
+        their_structure.lab_takeable(&theirs, &masked_row),
+        "X1 reads no hand — a masked slot cannot move it"
+    );
+    assert_eq!(
+        my_structure.port_takeable(&mine, &full, &rules),
+        their_structure.port_takeable(&theirs, &masked_row, &rules),
+        "X2 reads the hand's public LENGTH, which a masked slot does not change"
+    );
+}
+
+/// §3.2's ALLOCATION CONTRACT, the Group-X half: every helper is
+/// allocation-free.
+///
+/// `score`'s own allocs==0 pin covers `ScoreStructure::derive`'s lab pass — the
+/// context is derived once per call whether or not anything reads it. This cell
+/// covers the READERS, which that pin cannot until §7's step 8 moves
+/// `Feature::ALL`.
+///
+/// 4P for the widest table: TWO lab boards and TWO port boards, so both the
+/// per-board loops and the second board's slots are measured rather than
+/// short-circuited.
+#[test]
+fn every_group_x_helper_allocates_nothing() {
+    let rules = Rules::standard();
+    let mut state = cleared_order_table(4, 331, &rules);
+    let lab_a = area_typed(&state, AreaType::LaboratoryA);
+    let lab_b = area_typed(&state, AreaType::LaboratoryB);
+    let port_a = area_typed(&state, AreaType::PortA);
+    let port_b = area_typed(&state, AreaType::PortB);
+    let production = production_areas(&state);
+    let techs = distinct_effect_techs(&rules, 12, 3, &[]);
+    set_lab(&mut state, 0, [
+        Some(techs[0]),
+        Some(techs[1]),
+        Some(techs[2]),
+        Some(techs[3]),
+        Some(techs[4]),
+        Some(techs[5]),
+    ]);
+    set_lab(&mut state, 1, [
+        Some(techs[6]),
+        Some(techs[7]),
+        Some(techs[8]),
+        Some(techs[9]),
+        Some(techs[10]),
+        Some(techs[11]),
+    ]);
+    set_port(&mut state, 0, [
+        Some(OrderCardId(1)),
+        Some(OrderCardId(2)),
+        Some(OrderCardId(3)),
+        Some(OrderCardId(4)),
+        Some(OrderCardId(5)),
+        Some(OrderCardId(6)),
+    ]);
+    set_port(&mut state, 1, [
+        Some(OrderCardId(8)),
+        Some(OrderCardId(9)),
+        Some(OrderCardId(11)),
+        Some(OrderCardId(12)),
+        Some(OrderCardId(13)),
+        Some(OrderCardId(14)),
+    ]);
+    for area in [lab_a, lab_b, port_a, port_b] {
+        place_assistants(&mut state, 0, area, 2);
+    }
+    for area in production.iter().take(4) {
+        place_assistants(&mut state, 0, *area, 1);
+    }
+    state.players[0].money = 9;
+    state.players[0].imported_goods = 2;
+    set_stocks(&mut state, 0, [1, 1, 1, 1]);
+    deal_card(&mut state, 0, OrderCardId(7));
+    // A SECOND, masked row so the hidden-slot paths are measured too.
+    unfulfilled_starting_order(&mut state, 1, OrderCardId(27));
+
+    let view = observe(&state, PlayerId(0)).expect("seat 0 observes");
+    let structure = ScoreStructure::derive(&view, &rules);
+    let player = row_of(&view, PlayerId(0));
+    let masked = row_of(&view, PlayerId(1));
+    assert!(masked.hand.contains(&HandCard::HiddenStartingOrder), "the masked row is masked");
+
+    let (sum, stats) = meter::measure(|| {
+        let read = |p: &VisiblePlayer| {
+            structure.lab_takeable(&view, p)
+                + structure.port_takeable(&view, p, &rules)
+                + structure.matched_production_access(&view, p, &rules)
+        };
+        read(&player) + read(&masked)
+    });
+    assert_eq!(stats.allocs, 0, "a Group-X helper allocated ({} allocations)", stats.allocs);
+    assert!(sum > 0, "the fixture must exercise real values, or the meter measured nothing");
+    println!("Group X: {sum} summed over 4P, {} allocs / {} peak bytes", stats.allocs, stats.peak_bytes);
 }
