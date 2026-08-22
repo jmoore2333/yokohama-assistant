@@ -1340,19 +1340,29 @@ fn open_lab_techs(view: &PlayerView) -> impl Iterator<Item = TechCardId> + '_ {
 /// **What `score` DOES pay, stated because the hot path is measured elsewhere.**
 /// The context is derived unconditionally, so every `score` call now walks the
 /// area map and the adjacency map once more — at most 18 areas and their ≤ 6
-/// neighbours each, plus one pass over every seat's occupied areas. Fixed work,
-/// no allocation (§0.3(a)'s pin still binds), and bounded by the board rather
-/// than by the search. If a future measurement says that constant matters before
-/// step 8 makes it load-bearing, the answer is to make the derivation lazy, not
-/// to move it out of `derive` and give each feature its own scan.
+/// neighbours each, plus one pass over every seat's occupied areas — and, since
+/// the order-card fields landed, one pass over the 36-card order registry plus a
+/// per-seat scan of the hand and the two lab displays. Fixed work, no allocation
+/// (§0.3(a)'s pin still binds), and bounded by the board and the manifest rather
+/// than by the search.
 ///
-/// **The seam for the later batches** (§3.2's remaining view-context work):
-/// O1's located-card pool bitset and its running accumulators, O5's attainable
-/// -source scan, and Group X's lab/port context all belong HERE as further
-/// fields — a `u64` bitset and a pair of counters for the pool, masks for the
-/// card boards — for the same reason the board masks do. Nothing in this type
-/// is seat-relative except the two per-seat arrays, so adding a field costs one
-/// pass in [`ScoreStructure::derive`] and nothing anywhere else.
+/// **MEASURED, because the second half of that is no longer a small constant.**
+/// `tests/contestant_golden.rs` — the score-heaviest binary in the repo — runs
+/// **18.2s without the order-card pass and 23.8s with it**, a ~31% debug wall
+/// (M4 mini, 2026-08-22, A/B on one machine minutes apart, the pass deleted and
+/// restored; both configurations pass all six golden pins, which is the same
+/// A/B saying the pass is behaviourally inert). The dominant term is the lab
+/// scan: per seat, ≤ 12 open slots × a registry lookup × the seat's owned-title
+/// list. The recorded disposition is UNCHANGED and deliberate — §3.2 puts these
+/// derivations in `derive`, the figure is a debug one, and nothing on the hot
+/// path reads them until §7's step 8. If it has to move, the answer is to make
+/// the derivation lazy, not to give each feature its own scan.
+///
+/// **The seam for the last batch** (§3.2's remaining view-context work): Group
+/// X's lab/port context belongs HERE as further fields, for the same reason the
+/// board masks and the order-card fields do — and it will want the SAME lab
+/// walk O5's attainable scan already makes, which is the one place a future
+/// measurement should look before adding a second one.
 ///
 /// # Honesty
 ///
