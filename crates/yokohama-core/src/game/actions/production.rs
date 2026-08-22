@@ -2,9 +2,58 @@
 
 use crate::types::AreaType;
 
-/// STUB — the RED half of the §13 dispatcher. Replaced in the next commit.
-pub fn exported_reward(_area_type: AreaType, _power: u8) -> Option<u8> {
-    None
+/// The EXPORTED production reward of `area_type` at `power` — the V4 spec §13
+/// dispatcher over the four helpers below.
+///
+/// **A ROUTER, never a table.** Every arm CALLS the shipped helper; there is no
+/// second reward derivation anywhere in this function, which is the whole
+/// reason it exists (spec §13: "one job, one object, the dispatcher"). Its
+/// callers are V4's `X3 MatchedProductionAccess`, the §6 escrow recipe, and the
+/// §7 rules-arithmetic pins — three call sites that would otherwise each have
+/// grown their own `match`.
+///
+/// # The domain is the four production areas, and outside it the answer is `None`
+///
+/// Spec §13 scopes this to "the four production helpers", and §3.2's S1/X3 both
+/// sum "over production areas". So the ten other area types are OUTSIDE this
+/// function's domain rather than worth zero in it, and the return type says so.
+///
+/// The alternative — a bare `u8` with 0 outside the domain — would collide two
+/// different facts. `copper_mine_reward(2) == 0` is a REAL zero (spec §3.2's
+/// cited sparsity fact, and the dead side of §6's escrow recipe); the Bank
+/// exports 1..5 Yen through `bank_reward` and is simply not this router's
+/// business. A caller keying on nonzero-vs-zero — which is exactly what the §6
+/// recipe does — would read the second as the first and call the Bank a dead
+/// area. `None` makes that caller handle the domain question explicitly.
+///
+/// # Two declared narrowings
+///
+/// * **Power is an INPUT, not something computed here.** All four helpers take
+///   power and nothing else (no goods, no tech, no board state), so the caller
+///   supplies the power reading it means — V4 supplies `realizable_power`.
+/// * **Technology riders are the CALLER's**, exactly as they are for the
+///   helpers themselves: Mining Technology's +1 Copper per gain event is applied
+///   by `copper_bonus` at the gain site and is deliberately not baked in here.
+pub fn exported_reward(area_type: AreaType, power: u8) -> Option<u8> {
+    match area_type {
+        AreaType::CopperMine => Some(copper_mine_reward(power)),
+        AreaType::SilkMill => Some(silk_mill_reward(power)),
+        AreaType::TeaPlantation => Some(tea_plantation_reward(power)),
+        AreaType::FishingGround => Some(fishing_ground_reward(power)),
+        // EXHAUSTIVE, with no `_` arm: a new area type is a compile error here
+        // rather than a silent `None` that a caller would read as "exports
+        // nothing".
+        AreaType::Bank
+        | AreaType::PortA
+        | AreaType::PortB
+        | AreaType::LaboratoryA
+        | AreaType::LaboratoryB
+        | AreaType::EmploymentAgency
+        | AreaType::Chinatown
+        | AreaType::Church
+        | AreaType::Customs
+        | AreaType::Canal => None,
+    }
 }
 
 /// Calculate Copper Mine rewards based on power.
