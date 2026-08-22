@@ -3974,6 +3974,21 @@ fn set_stocks(state: &mut GameState, seat: usize, stocks: [u32; 4]) {
     p.seafood = stocks[3];
 }
 
+/// Empty both lab displays. The labs are a TECHNOLOGY site, so
+/// [`cleared_order_table`] leaves them alone; an O5 fixture that wants its
+/// attainable set to be the order sources alone has to say so, because an open
+/// lab slot is a flag on the table like any other.
+fn clear_labs(state: &mut GameState) {
+    for slot in state.lab_state.lab_a.slots.iter_mut() {
+        *slot = None;
+    }
+    if let Some(b) = state.lab_state.lab_b.as_mut() {
+        for slot in b.slots.iter_mut() {
+            *slot = None;
+        }
+    }
+}
+
 /// Move `card` into `seat`'s hand.
 fn deal_card(state: &mut GameState, seat: usize, card: OrderCardId) {
     take_free_card(state, card);
@@ -4160,14 +4175,7 @@ fn the_unseen_pool_floor_is_the_pools_mean_and_zero_when_nothing_is_unseen() {
 fn view_context_attainable_countries_are_the_hand_the_port_and_the_unowned_lab_titles() {
     let rules = Rules::standard();
     let mut state = cleared_order_table(2, 211, &rules);
-    for slot in state.lab_state.lab_a.slots.iter_mut() {
-        *slot = None;
-    }
-    if let Some(b) = state.lab_state.lab_b.as_mut() {
-        for slot in b.slots.iter_mut() {
-            *slot = None;
-        }
-    }
+    clear_labs(&mut state);
     for p in state.players.iter_mut() {
         p.technologies.clear();
     }
@@ -4627,9 +4635,28 @@ fn held_order_value_prices_a_masked_slot_at_the_unseen_pool_floor() {
 /// makes "differing only in the hidden identity" a checked claim about the
 /// fixture rather than a description of it.
 ///
-/// MUTATION-PROVEN at authoring by replacing this cell's view-honest read with
-/// a state-peeking one (the masked slot valued at the substituted card's true
-/// face); the invariance assertion fails, and the failure names the two faces.
+/// # MUTATION-PROVEN at authoring, both directions, message observed
+///
+/// A helper here CANNOT peek — no argument it takes carries a hidden identity,
+/// which is the type-level half of §7 part 1 and is pinned separately by
+/// [`every_group_e_helper_takes_only_a_public_row_and_the_registries`]. So the
+/// mutation is applied to the READER this cell uses, which is where the
+/// distinction between a view-honest evaluator and a state-peeking one lives:
+///
+///   - MUTANT (the masked slot valued at the substituted card's TRUE face,
+///     read off the state): FAILED — `assertion left == right failed: O1 moved
+///     with an identity seat 0 cannot see; left: [0, 8]  right: [0, 22]` (8 and
+///     22 being the substitute's and the dealt card's faces).
+///   - RESTORED (through `held_order_value`): passes, printing
+///     `faces [22, 8, 4], floor 12, opposite [0, 12], own [22, 8, 4]` — the
+///     opposite seat's reading pinned at the floor while the holder's own
+///     tracks every substituted face.
+///
+/// A second mutation, on the HELPER (a masked slot valued 0 rather than at the
+/// floor), leaves THIS cell green — 0 is substitution-invariant too — and is
+/// caught by four sibling cells, which is the division of labour intended: this
+/// one says the value cannot depend on the hidden identity, and the floor cells
+/// say what the value is.
 #[test]
 fn held_order_value_is_invariant_under_substitution_of_the_hidden_identity() {
     let rules = Rules::standard();
@@ -4943,9 +4970,7 @@ fn fulfillment_retires_the_cards_contribution_to_o2_o3_and_o6() {
 fn flag_icon_marginal_is_the_set_bonus_step_the_best_attainable_country_buys() {
     let rules = Rules::standard();
     let mut state = cleared_order_table(2, 249, &rules);
-    for slot in state.lab_state.lab_a.slots.iter_mut() {
-        *slot = None;
-    }
+    clear_labs(&mut state);
     state.players[0].technologies.clear();
     // Three distinct realized countries: English, American, French.
     for card in [OrderCardId(3), OrderCardId(1), OrderCardId(2)] {
@@ -4988,14 +5013,7 @@ fn flag_icon_marginal_is_the_set_bonus_step_the_best_attainable_country_buys() {
 fn flag_icon_marginal_is_zero_on_an_empty_attainable_set() {
     let rules = Rules::standard();
     let mut state = cleared_order_table(2, 251, &rules);
-    for slot in state.lab_state.lab_a.slots.iter_mut() {
-        *slot = None;
-    }
-    if let Some(b) = state.lab_state.lab_b.as_mut() {
-        for slot in b.slots.iter_mut() {
-            *slot = None;
-        }
-    }
+    clear_labs(&mut state);
     state.players[0].technologies.clear();
     for card in [OrderCardId(3), OrderCardId(1), OrderCardId(2), OrderCardId(4)] {
         complete_card(&mut state, 0, card);
@@ -5025,9 +5043,7 @@ fn flag_icon_marginal_is_zero_on_an_empty_attainable_set() {
 fn flag_icon_marginal_realizes_into_the_country_bonus_when_the_icon_lands() {
     let rules = Rules::standard();
     let mut state = cleared_order_table(2, 253, &rules);
-    for slot in state.lab_state.lab_a.slots.iter_mut() {
-        *slot = None;
-    }
+    clear_labs(&mut state);
     state.players[0].technologies.clear();
     for card in [OrderCardId(3), OrderCardId(1), OrderCardId(2), OrderCardId(4)] {
         complete_card(&mut state, 0, card);
@@ -5274,12 +5290,13 @@ fn group_e_differences_negate_across_the_two_2p_views() {
     let mut state = cleared_order_table(2, 259, &rules);
     // The no-hidden-slot class: each seat's starting order sits FULFILLED in
     // the face-up completed pile, the residual field still naming it.
+    clear_labs(&mut state); // the attainable sets are ORDER sources alone here
     fulfilled_starting_order(&mut state, 0, OrderCardId(1)); // American
     fulfilled_starting_order(&mut state, 1, OrderCardId(4)); // German
     deal_card(&mut state, 0, OrderCardId(10)); // English, movement 2
     deal_card(&mut state, 0, OrderCardId(3)); // English, 2 copper + 1 seafood
-    deal_card(&mut state, 1, OrderCardId(21)); // Dutch, pure VP
-    offer_card(&mut state, 0, OrderCardId(2)); // a French offer, an O5 source
+    deal_card(&mut state, 1, OrderCardId(36)); // German — a country seat 1 HAS
+    offer_card(&mut state, 0, OrderCardId(25)); // a German offer, the shared O5 source
     state.players[0].money = 7;
     set_stocks(&mut state, 0, [3, 0, 0, 1]);
     state.players[0].shophouses.in_hand = 2;
@@ -5322,8 +5339,48 @@ fn group_e_differences_negate_across_the_two_2p_views() {
             moved += 1;
         }
     }
-    assert!(moved >= 6, "only {moved} of the eight features separated the seats");
+    assert_eq!(moved, 8, "only {moved} of the eight features separated the seats");
     println!("cross-view negation: {moved} of eight separated; rows {rows:?}");
+
+    // THE FIELD PINS. Every cell above this one reads a feature on a fixture
+    // built to exercise THAT feature, so a helper reading the WRONG FIELD of
+    // the right kind — E2 summing the warehouse, E3 the built tokens, O2 the
+    // stock instead of the match, O6 the VP star instead of the icon — would
+    // still pass all of them. This is the one fixture where both seats hold
+    // different values of all eight at once, so pinning both rows exactly is
+    // what makes a mis-wired field visible.
+    //
+    // Every constant is DERIVED from the printed manifest, and the derivation
+    // is the comment beside it — the board is a shuffle, but nothing in Group E
+    // reads the board. The order is E1, E2, E3, O1, O2, O3, O5, O6.
+    assert_eq!(
+        rows[0],
+        [
+            7,  // E1: the purse
+            4,  // E2: 3 copper + 1 seafood
+            3,  // E3: two shophouse tokens and one trading-house token in hand
+            17, // O1: card 10's face 8 + card 3's face 9
+            4,  // O2: min(3, 4) copper + min(0, 1) tea + min(1, 2) seafood
+            1,  // O3: card 3 met; card 10 wants a tea the seat has not got
+            2,  // O5: one American icon, and either attainable flag makes a pair
+            2,  // O6: card 10's two movement faces, card 3 icon-free
+        ],
+        "seat 0 holds two English cards against three copper and one seafood"
+    );
+    assert_eq!(
+        rows[1],
+        [
+            1,  // E1
+            2,  // E2: two tea
+            0,  // E3: no token in hand — the warehouse holds them, and E3 is not S6
+            12, // O1: card 36's face 2·5 + 2
+            2,  // O2: min(2, 2) tea; the four silk it also wants are not held
+            0,  // O3: four silk short
+            0,  // O5: German realized, German attainable — one country is no pair
+            1,  // O6: card 36's one warehouse face
+        ],
+        "seat 1 holds one German card in a German position: its O5 step is CLOSED"
+    );
 }
 
 /// §7 audit part 2(c): the **DECLARED-ASYMMETRY pins** for O1, O2, O3 and O6 —
