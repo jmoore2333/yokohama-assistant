@@ -3137,6 +3137,19 @@ pub const PAIR_7: PairDeclaration = PairDeclaration {
          plus the president's +1 is power 2, and `silk_mill_reward(2)` is 1. §5.2's own \
          'not solve power' is honoured by the margin class — WEAK asks only for \
          greater ≥ lesser.",
+        "THE PRESIDENT DECLARATION DEPARTS §5.1's DEFAULT, and this note is the disclosure \
+         the re-read found missing — the only undisclosed departure in the package. §5.1 \
+         says 'DEFAULT: both InHand unless the registration states otherwise' and then \
+         enumerates the acting-class pairs that state otherwise (2(a), 4(f), 6(d), 11); \
+         family 7 is not in that list, yet its subject's president stands ON BOARD at the \
+         acted area holding its own assistant. The departure is FORCED, not chosen: this \
+         pair's view class is AreaAction-resolved, and a mid-turn state at that phase \
+         cannot exist with the actor's president in hand, because `current_action_power` \
+         is written when the president ARRIVES (`apply_move.rs:530`, `:591`) and the phase \
+         is only reachable through that arrival. §5.1's enumeration predates family 7's \
+         phase mapping — S2-T5 resolved 'AreaAction resolved' to `FivePowerBonus` and that \
+         resolution is what put family 7 in the acting class — so the list is stale rather \
+         than exclusive, and the registration states the departure here as §5.1 asks.",
     ],
 };
 
@@ -3907,12 +3920,34 @@ pub const PAIR_11D: PairDeclaration = PairDeclaration {
         "RESOLVED READING: 'CountryBonusNow/O5 per the flag' is realized as a NEW country — \
          the purchase takes the seat from one distinct country to two, so `CountryBonusNow` \
          moves 0 → 2 and its post-purchase icon count is 1, ODD, exactly as the mercenary \
-         clause registers. O5 was computed on both sides and does NOT move (a seat at one \
-         distinct country and a seat at two both have a best attainable marginal of 2 VP), \
-         so it is not listed.",
-        "X1 = 1 on the lesser side by construction: money 0 and no imports mean only a \
-         zero-deficit slot is takeable, and the Laboratory is stocked with exactly one \
-         cost-3 card, in slot 0 where the position surcharge is 0.",
+         clause registers. O5 does NOT move, and the claim's PROVENANCE is stated because \
+         no code computes O5 until step 3: it is RE-DERIVED BY HAND from §3.2's card — a \
+         seat at one distinct country and a seat at two both have a best attainable \
+         marginal of 2 VP, since `set_bonus` pays 2 at the first pair and the second \
+         country is the step that reaches it — and the S2-T4 derivation and the step-2 \
+         re-read's independent one agree at 2 against 2. Step 3's candidate columns VERIFY \
+         it; until then it is a registered prediction, and this note is where a mismatch \
+         would be caught.",
+        "THE TechBonusNow ROW IS A MAJORITY STEP, NOT AN INDUSTRY SUM, and the distinction \
+         is the whole size of the row. The purchase adds 3 printed industry, carrying the \
+         seat from 6 to 9 — but `TechBonusNow` re-derives the 10/5 technology MAJORITY, and \
+         what the extra 3 buys is CROSSING THE 2P DUMMY. D5 seats the dummy at industry \
+         value exactly 7.5 and the engine compares DOUBLED values, so the seat is 12 \
+         against the dummy's 15 before the purchase (second place, 5 VP) and 18 against 15 \
+         after it (first place, 10 VP). The realized row is therefore +5, the gap between \
+         the two places, and not the +3 of industry value; a purchase that left the seat on \
+         the same side of the dummy would move this row by ZERO at the same industry cost. \
+         [`PRE_OWNED_TECH`] is chosen at industry 6 for exactly that reason.",
+        "X1 = 1 on the lesser side by construction, and the mechanism is the POSITION \
+         SURCHARGE rather than a scarcity of cheap cards. Money 0 and no imports mean only \
+         a ZERO-DEFICIT slot is takeable; the registered Laboratory holds FOUR cost-3 cards \
+         (Brickyard, Gaslight, Ball and Patent System) and the surcharge — 0/0/+1/+1/+2/+2 \
+         over slots 0..5, `lab_position_surcharge`'s 0-based table — is what separates \
+         them. Against realizable power 3 the six deficits are 0 · 2 · 3 · 1 · 2 · 2, so \
+         slot 0 is the only zero and the other three cost-3 cards sit behind a surcharge \
+         they cannot pay for. [`LAB_STOCK`]'s own doc carries the same arithmetic per \
+         slot; the earlier wording here said 'exactly one cost-3 card, in slot 0', which \
+         named a scarcity the stock does not have.",
     ],
 };
 
