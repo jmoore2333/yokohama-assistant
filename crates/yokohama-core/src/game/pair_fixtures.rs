@@ -6554,9 +6554,10 @@ mod tests {
             "the array's length IS the count pin",
         );
         assert_eq!(
-            REGISTERED_PAIR_COUNT, 20,
+            REGISTERED_PAIR_COUNT, 29,
             "S2-T4 registered §5.2's family 1 (5) and family 11 (5); S2-T5 adds family 2 \
-             (3 gates + 1 diagnostic), family 6 (5) and family 7 (1). The remaining \
+             (3 gates + 1 diagnostic), family 6 (5) and family 7 (1); S2-T6 adds family 3 \
+             (4), family 8 (1) and family 10 (3 gates + 1 diagnostic). The remaining \
              families land in later tasks, and this number is what they bump toward \
              {REGISTERED_PAIR_TARGET}",
         );
@@ -6577,12 +6578,21 @@ mod tests {
                 "2(b)",
                 "2(d)",
                 "2(c)",
+                "3(a)",
+                "3(b)",
+                "3(c)",
+                "3(d)",
                 "6(a)",
                 "6(b)",
                 "6(c)",
                 "6(d-church)",
                 "6(d-customs)",
                 "7",
+                "8",
+                "10(a)",
+                "10(b)",
+                "10(c)",
+                "10(d)",
                 "11(a)",
                 "11(b)",
                 "11(c)",
@@ -6590,15 +6600,20 @@ mod tests {
                 "11(e)",
             ],
             "§5.2's own registration order — including family 2's, which prints its three \
-             gates (a)/(b)/(d) before the (c) diagnostic",
+             gates (a)/(b)/(d) before the (c) diagnostic, and family 10's, which prints its \
+             (c) diagnostic BETWEEN the gates because that is where §5.2 writes it",
         );
         for pair in REGISTERED.iter() {
-            // 2(c) is §5.1's "RECORDED DIAGNOSTIC, never a gate"; everything
-            // else registered so far is a constraint row.
-            let expected = if pair.id == "2(c)" { PairRole::Diagnostic } else { PairRole::Constraint };
+            // 2(c) and 10(c) are §5.1's two "RECORDED DIAGNOSTIC, never a gate"
+            // rows; everything else registered so far is a constraint row.
+            let expected = if matches!(pair.id, "2(c)" | "10(c)") {
+                PairRole::Diagnostic
+            } else {
+                PairRole::Constraint
+            };
             assert_eq!(pair.role, expected, "{} has the wrong pair→gate role", pair.id);
             assert!(
-                matches!(pair.family, 1 | 2 | 6 | 7 | 11),
+                matches!(pair.family, 1 | 2 | 3 | 6 | 7 | 8 | 10 | 11),
                 "{} claims family {}",
                 pair.id,
                 pair.family
