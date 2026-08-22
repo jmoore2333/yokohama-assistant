@@ -3006,6 +3006,18 @@ pub const PAIR_6C: PairDeclaration = PairDeclaration {
          both sides. 6(a)'s card carries the icon and is where §5.2's 'O6 retires' clause \
          is exercised — 6(c) inherits the rows of 6(a) that its own vehicle actually \
          moves, which is what 'plus 6(a)'s rows' can mean once a card is registered.",
+        "RULED 2026-08-22 (owner; the guidingpath four-flags row): the EARLY endpoint is \
+         KEPT, and the box-sourcing device is BLESSED for completed piles on CLOCK-PURITY \
+         (fulfillment moves none of the four clocks), in deliberate contrast to 4(c), \
+         which re-registered LATE-only because its early state was impossible IN \
+         PRINCIPLE. The owner's reachability verdict is part of the record: four \
+         pre-completions at a full deck are turn-arithmetic-unreachable in real play — \
+         acquiring beyond the dealt order needs port takes, and takes move the deck \
+         clock — so the row is RETAINED FOR LEGALITY, NOT REALISM ('any player that \
+         tried would never pass'). The weighting-neutrality condition attached to the \
+         ruling is discharged by the family's own shape: 6(c) is DIRECTION-ONLY and its \
+         set-step arithmetic reads no clock, so the early row binds the early column to \
+         the same mechanism-true direction the late row binds at saturation.",
     ],
 };
 

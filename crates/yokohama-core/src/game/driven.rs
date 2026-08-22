@@ -974,6 +974,18 @@ pub enum RootPredicate {
     /// the ecology seats the SHIPPED `lookahead-v1` at `WeightTable::V2`, so a
     /// fitted V4 identity may play differently; and hand-built pair fixtures
     /// (family 4(b)) declare their own O3 and are untouched by any of this.
+    ///
+    /// **RULED 2026-08-22 (owner; the guidingpath four-flags row): this
+    /// predicate's generated bands are STRUCK and its master (M-OSE) is closed
+    /// permanently undrawn.** The step-5/step-10 opponent-sitting reads re-scope
+    /// to the game-3 (table 896199544) opponent-pending RECORDED root plus the
+    /// constructed fixtures — the owner's grounds, recorded as design evidence:
+    /// human players deliberately sit on executable orders (batching
+    /// fulfillments, masking an import race, banking action-bonus icons), so the
+    /// phenomenon is real in the target distribution and this ecology's zero
+    /// only measures what the shipped never-declining policy cannot express.
+    /// The variant stays in the vocabulary: its refusal text and this record are
+    /// what a future ecology amendment would build from.
     OpponentSittingExecutable,
 }
 
