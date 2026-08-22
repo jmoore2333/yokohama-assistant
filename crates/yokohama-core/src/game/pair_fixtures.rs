@@ -1139,17 +1139,19 @@ pub const PAIR_1E: PairDeclaration = PairDeclaration {
          ring vs the same pawns placed disconnected (president-moved/shared-layout \
          construction). DIRECTION-ONLY, both endpoints, HAND-OFF. Collateral: S4 — listed \
          ({S4, S7} cluster).",
-        "RESOLVED READING (an S2-T4 judgment call, flagged for the bounded re-read): the \
-         registration's 'the same pawns placed disconnected' admits a pawns-moved reading, \
-         and that reading does not survive the 2P board. All TEN tiles of a 2P board carry \
-         DISTINCT types (the removal keeps exactly one of each production type), so a pawn \
-         cannot move between areas without changing the type beneath it — and holding the \
-         registered 'S1/S2/S5/S6 equal' would then need THREE pairs of areas whose \
-         contributions match at the realized powers, where a 2P board offers at most the \
-         Tea/Fishing pair (both 1:1) and the two card boards (zero to all four of those \
-         terms, but not to X1/X2). The president-moved reading — the construction class the \
-         parenthetical names, and 1(c)'s — is constructible and honours every declared row, \
-         so it is the one built.",
+        "NOT PURSUED (an S2-T4 judgment call, flagged for the bounded re-read): the \
+         registration's 'the same pawns placed disconnected' also admits a PAWNS-MOVED \
+         reading, which this fixture does not build. It is HARDER at 2P, not impossible, and \
+         an earlier draft of this note over-claimed. All ten 2P tiles carry DISTINCT types, \
+         so a moved pawn always changes the type beneath it and each MOVED pawn needs a \
+         partner area of matching contribution — but only the moved ones do, so a chain \
+         whose tail stays put needs TWO matching pairs rather than three, and a 2P board has \
+         at least two clean ones: Tea↔Fishing (equal 1:1 production reward) and \
+         Church↔Customs (equal `realizable_power` under S2, with S1/S5/S6 and the whole X \
+         group zero at both). Whether such a construction also lands the registered \
+         ΔS7 = +3 shape is untested here. The conclusion is unaffected either way: the \
+         registration's own parenthetical names the president-moved/shared-layout \
+         construction class, which is 1(c)'s and is what this pair builds.",
         "The geometry is 1(c)'s inverted: three SINGLE pawns strung along a chain, so S7 \
          (which counts areas) moves by 3 while S4 (which sums the ring) moves by 1. The two \
          pairs are therefore linearly independent rows over the {S3, S4, S7} cluster rather \
@@ -5794,6 +5796,3 @@ mod tests {
         assert_ne!(second, area);
     }
 }
-
-
-
