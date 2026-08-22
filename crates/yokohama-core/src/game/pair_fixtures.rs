@@ -71,8 +71,9 @@ use crate::game::{
     check_invariants, finalize_setup, new_game, observe, Rules, StartingOrderChoice,
 };
 use crate::types::{
-    AchievementCategory, AchievementType, AdditionalActionState, AreaId, GameConfig, GameState,
-    PlayerId, PlayerView, PresidentLocation, TechEffect, TurnPhase, VisiblePlayer,
+    AchievementCard, AchievementCategory, AchievementType, AdditionalActionState, AreaId, AreaType,
+    GameConfig, GameState, OrderCardId, PlayerId, PlayerView, PresidentLocation, TechCardId,
+    TechEffect, TurnPhase, VisiblePlayer,
 };
 
 // ---------------------------------------------------------------------------
@@ -2853,19 +2854,816 @@ pub fn registered(id: &str) -> Option<&'static PairDeclaration> {
 
 /// **Realize one registered pair at one declared endpoint**, admitted through
 /// [`PairFixture::new`]'s full clause list.
+///
+/// # How these states are reached, and what that costs
+///
+/// By DOCUMENTED DIRECT SURGERY on a stage base, not by replaying moves. The
+/// reason is the shape §5.1 asks for: a pair is two states that differ in ONE
+/// declared way at ONE exact `progress_ppm`, from the SAME mover's seat, and a
+/// move sequence reaching either one drags a turn's worth of incidental
+/// differences — a turn counter, a spent president move, whatever the opponent
+/// did with its own turn — into a comparison that is supposed to isolate a
+/// single axis. Every family-11 pair makes that concrete: its two sides are the
+/// same position with one different ACTIVATION CHOICE behind them, and no move
+/// sequence produces both from one root.
+///
+/// What replaces reachability is CHECKING. Every side goes through
+/// `check_invariants` (clause 3), every declared fact is re-read off the
+/// constructed state (clauses 6–12), and every realized incumbent row is
+/// checked against the registration (clause 13). Where a construction stands in
+/// for an engine effect it uses the ENGINE's own function rather than a
+/// restatement — `remove_and_slide_lab`/`refill_lab` for 11(d)'s purchase, the
+/// port's own total-compaction shape and `check_end_game_triggers` for 11(e)'s
+/// take — so the byte the fixture carries is the byte a real action would have
+/// produced.
 pub fn build_registered_pair(
     declaration: &'static PairDeclaration,
-    _stage: StageEndpoint,
-    _rules: &Rules,
+    stage: StageEndpoint,
+    rules: &Rules,
 ) -> Result<PairFixture, FixtureError> {
-    Err(FixtureError::Setup(declaration.id))
+    match declaration.id {
+        "1(a)" => build_1a(stage, rules),
+        "1(b)" => build_1b(stage, rules),
+        "1(c)" => build_1c(stage, rules),
+        "1(d)" => build_1d(stage, rules),
+        "1(e)" => build_1e(stage, rules),
+        "11(a)" => build_11a(stage, rules),
+        "11(b)" => build_11b(stage, rules),
+        "11(c)" => build_11c(stage, rules),
+        "11(d)" => build_11d(stage, rules),
+        "11(e)" => build_11e(stage, rules),
+        _ => Err(FixtureError::Declaration {
+            clause: "registered construction",
+            detail: format!("{} has a declaration but no construction", declaration.id),
+        }),
+    }
 }
+
+/// A stage base with its two seats named — the common prefix of every
+/// construction here.
+struct FamilyBase {
+    state: GameState,
+    subject: PlayerId,
+    opponent: PlayerId,
+}
+
+/// [`stage_base_2p`] at [`FIXTURE_SEED`], optionally re-typed onto a hand-built
+/// layout, carrying the registration's declared draws and the subject's
+/// registered order card.
+fn family_base(
+    stage: StageEndpoint,
+    declaration: &PairDeclaration,
+    layout: Option<[AreaType; TWO_PLAYER_AREAS]>,
+    rules: &Rules,
+) -> Result<FamilyBase, FixtureError> {
+    let mut state = stage_base_2p(stage, FIXTURE_SEED, rules)?;
+    if let Some(types) = layout {
+        retype_board_2p(&mut state, types)?;
+    }
+    let subject = state.current_player;
+    let opponent = other_seat_2p(&state, subject)?;
+    set_declared_draws(&mut state, &declaration.draws);
+    give_starting_order(&mut state, subject, FIXTURE_ORDER_CARD)?;
+    Ok(FamilyBase { state, subject, opponent })
+}
+
+// --- family 1 -------------------------------------------------------------
+
+fn build_1a(stage: StageEndpoint, rules: &Rules) -> Result<PairFixture, FixtureError> {
+    let base = family_base(stage, &PAIR_1A, None, rules)?;
+    let silk = find_area_of_type(&base.state, AreaType::SilkMill)?;
+    let copper = find_area_of_type(&base.state, AreaType::CopperMine)?;
+    let mut greater = base.state.clone();
+    place_from_hand(&mut greater, base.subject, silk, 1)?;
+    let mut lesser = base.state;
+    place_from_hand(&mut lesser, base.subject, copper, 1)?;
+    PairFixture::new(&PAIR_1A, stage, greater, lesser, base.subject, rules)
+}
+
+fn build_1b(stage: StageEndpoint, rules: &Rules) -> Result<PairFixture, FixtureError> {
+    let base = family_base(stage, &PAIR_1B, None, rules)?;
+    let silk = find_area_of_type(&base.state, AreaType::SilkMill)?;
+    let copper = find_area_of_type(&base.state, AreaType::CopperMine)?;
+    // §5.2's "the two areas non-adjacent" is what holds the registered ΔS4 at
+    // −1: if the Silk Mill touched the Copper Mine, the spread side's ring
+    // would sum 1 + 1 = 2 and match the stack side exactly.
+    if base.state.board_layout.adjacent_areas(silk).contains(&copper) {
+        return Err(FixtureError::Declaration {
+            clause: "non-adjacent areas",
+            detail: format!(
+                "1(b) registers the Silk Mill (area {}) and the Copper Mine (area {}) as \
+                 NON-ADJACENT, and the board generated at seed {FIXTURE_SEED:#x} makes them \
+                 neighbours; the registered ΔS4 = −1 does not hold on that board",
+                silk.0, copper.0,
+            ),
+        });
+    }
+    let mut greater = base.state.clone();
+    place_from_hand(&mut greater, base.subject, silk, 1)?;
+    place_from_hand(&mut greater, base.subject, copper, 1)?;
+    let mut lesser = base.state;
+    place_from_hand(&mut lesser, base.subject, copper, 2)?;
+    PairFixture::new(&PAIR_1B, stage, greater, lesser, base.subject, rules)
+}
+
+fn build_1c(stage: StageEndpoint, rules: &Rules) -> Result<PairFixture, FixtureError> {
+    let base = family_base(stage, &PAIR_1C, Some(RING_LAYOUT), rules)?;
+    let mut shared = base.state;
+    place_from_hand(&mut shared, base.subject, RING_ASSISTANT_AREA, 2)?;
+    let mut greater = shared.clone();
+    greater.player_mut(base.subject).president_location =
+        PresidentLocation::OnBoard(RING_NEAR_PRESIDENT_AREA);
+    let mut lesser = shared;
+    lesser.player_mut(base.subject).president_location =
+        PresidentLocation::OnBoard(RING_FAR_PRESIDENT_AREA);
+    PairFixture::new(&PAIR_1C, stage, greater, lesser, base.subject, rules)
+}
+
+fn build_1d(stage: StageEndpoint, rules: &Rules) -> Result<PairFixture, FixtureError> {
+    let mut base = family_base(stage, &PAIR_1D, None, rules)?;
+    // The registered stocks. All three zeroes are load-bearing: tea, seafood
+    // and a second yen would each buy another distinct Church payment type and
+    // carry the realizable total past the registered faith 4.
+    {
+        let p = base.state.player_mut(base.subject);
+        p.copper = 1;
+        p.silk = 1;
+        p.tea = 0;
+        p.seafood = 0;
+        p.imported_goods = 0;
+        p.money = 1;
+    }
+    let church = find_area_of_type(&base.state, AreaType::Church)?;
+    let copper = find_area_of_type(&base.state, AreaType::CopperMine)?;
+    let mut greater = base.state.clone();
+    place_from_hand(&mut greater, base.subject, church, 1)?;
+    let mut lesser = base.state;
+    place_from_hand(&mut lesser, base.subject, copper, 1)?;
+    PairFixture::new(&PAIR_1D, stage, greater, lesser, base.subject, rules)
+}
+
+fn build_1e(stage: StageEndpoint, rules: &Rules) -> Result<PairFixture, FixtureError> {
+    let base = family_base(stage, &PAIR_1E, Some(RING_LAYOUT), rules)?;
+    let mut shared = base.state;
+    for area in RING_CHAIN_AREAS {
+        place_from_hand(&mut shared, base.subject, area, 1)?;
+    }
+    let mut greater = shared.clone();
+    greater.player_mut(base.subject).president_location =
+        PresidentLocation::OnBoard(RING_NEAR_PRESIDENT_AREA);
+    let mut lesser = shared;
+    lesser.player_mut(base.subject).president_location =
+        PresidentLocation::OnBoard(RING_DISCONNECTED_PRESIDENT_AREA);
+    PairFixture::new(&PAIR_1E, stage, greater, lesser, base.subject, rules)
+}
+
+// --- family 11 ------------------------------------------------------------
+
+/// The two sides of a family-11 pair BEFORE the greater side's realized yield.
+///
+/// Both sides carry the same one surviving pawn count, the same hand, and the
+/// president standing where that side acted — everything the five pairs share.
+struct Family11Sides {
+    greater: GameState,
+    lesser: GameState,
+    subject: PlayerId,
+    opponent: PlayerId,
+}
+
+/// Family 11's shared construction: one pawn at each of the two acted areas
+/// before the turn, one of them drained to hand by that turn's Recovery, and
+/// the president standing on the area it acted at.
+fn family_11_sides(
+    declaration: &PairDeclaration,
+    stage: StageEndpoint,
+    high: AreaType,
+    rules: &Rules,
+) -> Result<Family11Sides, FixtureError> {
+    let layout = family_11_layout(high)?;
+    let base = family_base(stage, declaration, Some(layout), rules)?;
+    let hi = FAMILY_11_HIGH_ACCESS_AREA;
+    let copper = FAMILY_11_COPPER_AREA;
+
+    // GREATER acted at the high-access area: Recovery took that area's pawn to
+    // hand, so the surviving pawn is the one at the Copper Mine.
+    let mut greater = base.state.clone();
+    place_from_hand(&mut greater, base.subject, copper, 1)?;
+    greater.player_mut(base.subject).president_location = PresidentLocation::OnBoard(hi);
+
+    // LESSER acted at the Copper Mine, so the surviving pawn is the other one.
+    let mut lesser = base.state;
+    place_from_hand(&mut lesser, base.subject, hi, 1)?;
+    lesser.player_mut(base.subject).president_location = PresidentLocation::OnBoard(copper);
+
+    Ok(Family11Sides { greater, lesser, subject: base.subject, opponent: base.opponent })
+}
+
+fn build_11a(stage: StageEndpoint, rules: &Rules) -> Result<PairFixture, FixtureError> {
+    let sides = family_11_sides(&PAIR_11A, stage, AreaType::SilkMill, rules)?;
+    let Family11Sides { mut greater, lesser, subject, .. } = sides;
+    // `silk_mill_reward(realizable power 2) == 1`.
+    greater.player_mut(subject).silk += 1;
+    PairFixture::new(&PAIR_11A, stage, greater, lesser, subject, rules)
+}
+
+fn build_11b(stage: StageEndpoint, rules: &Rules) -> Result<PairFixture, FixtureError> {
+    let sides = family_11_sides(&PAIR_11B, stage, AreaType::Bank, rules)?;
+    let Family11Sides { mut greater, lesser, subject, .. } = sides;
+    // `bank_reward(realizable power 2) == 2`.
+    greater.player_mut(subject).money += 2;
+    PairFixture::new(&PAIR_11B, stage, greater, lesser, subject, rules)
+}
+
+fn build_11c(stage: StageEndpoint, rules: &Rules) -> Result<PairFixture, FixtureError> {
+    let sides = family_11_sides(&PAIR_11C, stage, AreaType::EmploymentAgency, rules)?;
+    let Family11Sides { mut greater, lesser, subject, .. } = sides;
+    // `employment_agency_tokens_allowed(realizable power 2) == 1`, spent on the
+    // free class: warehouse -> HAND, which is the only direction that counter
+    // ever moves.
+    {
+        let p = greater.player_mut(subject);
+        if p.assistants.in_warehouse == 0 {
+            return Err(FixtureError::OutOfStock("a warehouse assistant to retrieve"));
+        }
+        p.assistants.in_warehouse -= 1;
+        p.assistants.in_hand += 1;
+    }
+    PairFixture::new(&PAIR_11C, stage, greater, lesser, subject, rules)
+}
+
+fn build_11d(stage: StageEndpoint, rules: &Rules) -> Result<PairFixture, FixtureError> {
+    let sides = family_11_sides(&PAIR_11D, stage, AreaType::LaboratoryA, rules)?;
+    let Family11Sides { mut greater, mut lesser, subject, opponent } = sides;
+    let lab = FAMILY_11_HIGH_ACCESS_AREA;
+
+    // The shared PRE-PURCHASE position, identical on both sides.
+    for side in [&mut greater, &mut lesser] {
+        // Money 0 and no imports: the only takeable slot is then a ZERO-DEFICIT
+        // one, which is what pins X1 at exactly 1 on the lesser side.
+        side.player_mut(subject).money = 0;
+        side.player_mut(subject).imported_goods = 0;
+        grant_technology(side, subject, PRE_OWNED_TECH, rules)?;
+        // The third power point. See PAIR_11D's collision note: no printed
+        // technology costs less than 3 industry, so a zero-deficit purchase is
+        // unreachable at the family's own template power of 2. The Station
+        // token adds +1 for ALL players at its area, and the OPPONENT owns the
+        // technology that placed it, so the subject's registered "≤ 1 tech
+        // pre-purchase" is untouched.
+        grant_technology(side, opponent, TechEffect::Station, rules)?;
+        side.station_location = Some(lab);
+        stock_lab_a(side, LAB_STOCK, rules)?;
+    }
+
+    // The GREATER side's purchase, through the engine's own slide and refill.
+    let taken = crate::game::remove_and_slide_lab(&mut greater.lab_state.lab_a, PURCHASED_SLOT)
+        .ok_or(FixtureError::OutOfStock("a technology in the purchased slot"))?;
+    crate::game::refill_lab(&mut greater.lab_state.lab_a, &mut greater.tech_deck);
+    greater.player_mut(subject).technologies.push(taken);
+
+    PairFixture::new(&PAIR_11D, stage, greater, lesser, subject, rules)
+}
+
+fn build_11e(stage: StageEndpoint, rules: &Rules) -> Result<PairFixture, FixtureError> {
+    let sides = family_11_sides(&PAIR_11E, stage, AreaType::PortA, rules)?;
+    let Family11Sides { mut greater, mut lesser, subject, .. } = sides;
+
+    // The registered offer, on BOTH sides: the lesser side still sees it in the
+    // Low zone (that is what X2 reads), and the greater side is the one that
+    // took it.
+    for side in [&mut greater, &mut lesser] {
+        move_order_card_to_port_slot(side, FIXTURE_PORT_CARD, TAKEN_PORT_SLOT)?;
+    }
+
+    // The take, mirroring `execute_port_action`: lift the card, TOTAL-compact
+    // the remaining offers left, then refill rightmost-first from the deck —
+    // which at §5.1's late endpoint is empty, so the sixth slot stays open.
+    let port = &mut greater.port_state.port_a;
+    let taken = port.slots[TAKEN_PORT_SLOT]
+        .take()
+        .ok_or(FixtureError::OutOfStock("the registered port offer"))?;
+    let remaining: Vec<OrderCardId> = port.slots.iter_mut().filter_map(|s| s.take()).collect();
+    for (i, card) in remaining.into_iter().enumerate() {
+        port.slots[i] = Some(card);
+    }
+    crate::game::refill_port(&mut greater.port_state.port_a, &mut greater.order_deck);
+    greater.player_mut(subject).order_cards_in_hand.push(taken);
+
+    // The engine's own trigger check, on both sides rather than a hand-set
+    // flag: an empty deck plus the open slot the take just made IS
+    // `EndGameTrigger::OrderDeckEmpty`, and running the real function is what
+    // makes the greater side's declared trigger the engine's answer instead of
+    // this module's.
+    crate::game::check_end_game_triggers(&mut greater);
+    crate::game::check_end_game_triggers(&mut lesser);
+
+    PairFixture::new(&PAIR_11E, stage, greater, lesser, subject, rules)
+}
+
+// ---------------------------------------------------------------------------
+// The hand-built layouts (§5.1's step-2 open parameters for 1(c), 1(e), 11)
+// ---------------------------------------------------------------------------
+
+/// Areas on a 2-player board — `board_gen::expected_tile_count(2)`.
+pub const TWO_PLAYER_AREAS: usize = 10;
+
+/// **THE SHARED RING LAYOUT** that 1(c) and 1(e) are built on.
+///
+/// # The topology it sits on, which is NOT a choice
+///
+/// A 2P board is the staggered pyramid with rows 4/3/2/1 and AreaIds assigned
+/// row-major from the widest row, so the eighteen free edges are fixed before
+/// any type is placed: 0–{1,4} · 1–{0,2,4,5} · 2–{1,3,5,6} · 3–{2,6} ·
+/// 4–{0,1,5,7} · 5–{1,2,4,6,7,8} · 6–{2,3,5,8} · 7–{4,5,8,9} · 8–{5,6,7,9} ·
+/// 9–{7,8}. There is no Canal at 2P, so `canal_crossings` is empty and the free
+/// edges ARE `adjacency` — the subtraction S4 and S7 specify is a no-op here,
+/// stated so a reader does not go looking for it.
+///
+/// # What the layout chooses, and why it has to choose anything
+///
+/// Only WHICH TYPE SITS WHERE. That is the whole freedom a hand-built layout
+/// has: the shape, the adjacency and the ten-tile multiset are the engine's.
+/// And it is enough, because 1(c) and 1(e) need the areas their pawns stand on
+/// to have STATED types — the two pairs move the president over a fixed
+/// assistant set, so S1/S2/S5/S6 are equal by construction, and a reader
+/// checking that reads it off this table instead of off a seed's shuffle.
+///
+/// The four production tiles sit on the top row and the two management boards
+/// sit low, which puts 1(e)'s chain (areas 1 → 5 → 8) across three different
+/// type classes and keeps both president areas (0 and 9 for 1(c), 0 and 3 for
+/// 1(e)) free of own assistants in every construction here.
+pub const RING_LAYOUT: [AreaType; TWO_PLAYER_AREAS] = [
+    AreaType::CopperMine,       // 0 — 1(c)/1(e)'s NEAR president area
+    AreaType::SilkMill,         // 1 — the assistants' area / the chain head
+    AreaType::TeaPlantation,    // 2
+    AreaType::FishingGround,    // 3 — 1(e)'s DISCONNECTED president area
+    AreaType::Bank,             // 4
+    AreaType::PortA,            // 5 — 1(e)'s chain middle
+    AreaType::Church,           // 6
+    AreaType::Customs,          // 7
+    AreaType::LaboratoryA,      // 8 — 1(e)'s chain tail
+    AreaType::EmploymentAgency, // 9 — 1(c)'s FAR president area
+];
+
+/// 1(c)'s single assistant area — in [`RING_NEAR_PRESIDENT_AREA`]'s free ring
+/// and outside [`RING_FAR_PRESIDENT_AREA`]'s.
+pub const RING_ASSISTANT_AREA: AreaId = AreaId(1);
+/// The president area whose free ring holds the assistants (1(c) and 1(e)).
+pub const RING_NEAR_PRESIDENT_AREA: AreaId = AreaId(0);
+/// 1(c)'s far president area: its ring is {7, 8}, which holds none of them.
+pub const RING_FAR_PRESIDENT_AREA: AreaId = AreaId(9);
+/// 1(e)'s own-assistant chain, head first: 1–5 and 5–8 are both free edges, and
+/// 1 is in [`RING_NEAR_PRESIDENT_AREA`]'s ring.
+pub const RING_CHAIN_AREAS: [AreaId; 3] = [AreaId(1), AreaId(5), AreaId(8)];
+/// 1(e)'s disconnected president area: its ring is {2, 6}, so no own assistant
+/// is one free step away and the chain is unreachable.
+pub const RING_DISCONNECTED_PRESIDENT_AREA: AreaId = AreaId(3);
+
+/// The eight types family 11's layout distributes outside its two acted areas,
+/// in the fixed order they fill areas 0–6 and 9.
+const FAMILY_11_FILL: [AreaType; 9] = [
+    AreaType::SilkMill,
+    AreaType::TeaPlantation,
+    AreaType::FishingGround,
+    AreaType::Bank,
+    AreaType::PortA,
+    AreaType::LaboratoryA,
+    AreaType::EmploymentAgency,
+    AreaType::Church,
+    AreaType::Customs,
+];
+
+/// The areas family 11's layout fills with [`FAMILY_11_FILL`], in order —
+/// everything except the two acted areas.
+const FAMILY_11_FILL_AREAS: [usize; 8] = [0, 1, 2, 3, 4, 5, 6, 9];
+
+/// **FAMILY 11's SHARED HAND-BUILT LAYOUT**, one per pair: `high` at
+/// [`FAMILY_11_HIGH_ACCESS_AREA`], the Copper Mine at
+/// [`FAMILY_11_COPPER_AREA`], and the remaining eight types in a fixed order
+/// everywhere else.
+///
+/// # THE CONGRUENCE ARGUMENT (§5.2's registered requirement)
+///
+/// Family 11 requires the two acted areas' president neighbourhoods to be
+/// congruent, "so S4 and S7 are EQUAL by construction — a registered
+/// requirement, not a disjunction". Here that is a graph AUTOMORPHISM, which is
+/// the strongest form the claim can take and the one a re-read can check by
+/// reading the edge list rather than by trusting an arithmetic coincidence.
+///
+/// Let σ = (0 3)(1 2)(4 6)(7 8), fixing 5 and 9. σ is an automorphism of the 2P
+/// free-edge graph: it is the reflection of the staggered pyramid, and it maps
+/// every one of the eighteen edges to an edge — 0–1↦3–2, 0–4↦3–6, 1–4↦2–6,
+/// 1–5↦2–5, 1–2↦2–1, 2–6↦1–4, 4–5↦6–5, 4–7↦6–8, 5–7↦5–8, 5–6↦5–4, 6–8↦4–7,
+/// 7–8↦8–7, 7–9↦8–9, 8–9↦7–9, and the three within-row edges of the top row map
+/// among themselves. (`the_family_eleven_reflection_is_a_board_automorphism`
+/// checks this against the constructed layout rather than against this
+/// paragraph.)
+///
+/// σ swaps exactly the two acted areas, 7 and 8. So it carries the greater
+/// side's board position — president at 7, one own assistant at 8, none
+/// anywhere else — onto the lesser side's, president at 8, one own assistant at
+/// 7. S4 and S7 read own-assistant counts and free adjacency and nothing else,
+/// so an automorphism carrying one position onto the other makes them EQUAL,
+/// not merely equal-by-arithmetic: S4 = 1 (the acted area holds nothing after
+/// Recovery; its ring holds the one survivor) and S7 = 1 (that survivor is the
+/// whole reachable set) on both sides. S3 = 1 on both sides for the same
+/// reason.
+///
+/// The argument is indifferent to WHICH types sit at 7 and 8, because σ acts on
+/// the graph and the S-group's ring terms do not read types. That is exactly
+/// why the five pairs can vary the high-access type while keeping one
+/// congruence proof.
+pub fn family_11_layout(high: AreaType) -> Result<[AreaType; TWO_PLAYER_AREAS], FixtureError> {
+    if !FAMILY_11_FILL.contains(&high) {
+        return Err(FixtureError::Declaration {
+            clause: "family 11 layout",
+            detail: format!(
+                "{high:?} is not one of the eight types family 11 may seat at its \
+                 high-access area (the Copper Mine is the LESSER side's area, by \
+                 registration)"
+            ),
+        });
+    }
+    let mut out = [AreaType::CopperMine; TWO_PLAYER_AREAS];
+    let mut fill = FAMILY_11_FILL.iter().filter(|t| **t != high);
+    for area in FAMILY_11_FILL_AREAS {
+        out[area] = *fill
+            .next()
+            .ok_or(FixtureError::OutOfStock("a filler type for family 11's layout"))?;
+    }
+    out[FAMILY_11_HIGH_ACCESS_AREA.0 as usize] = high;
+    out[FAMILY_11_COPPER_AREA.0 as usize] = AreaType::CopperMine;
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// 11(d)'s registered technology and laboratory state
+// ---------------------------------------------------------------------------
+
+/// The technology 11(d)'s subject owns BEFORE its purchase.
+///
+/// Industry 6 and country US, and both numbers are doing work. Six is the
+/// largest industry value that still leaves the seat SECOND behind the 2P
+/// dummy's 7.5 (D5's doubled comparison: 12 against 15), so the cost-3 purchase
+/// carries it to 9 — doubled 18, past the dummy — and `TechBonusNow` moves
+/// 5 → 10. US is a country [`PURCHASED_TECH`] does not share, so the purchase
+/// takes the seat from one distinct country to two and `CountryBonusNow` moves
+/// 0 → 2 while the post-purchase icon count of each country stays at 1, ODD,
+/// which is the parity §5.2 registers so no mercenary is due.
+const PRE_OWNED_TECH: TechEffect = TechEffect::Telegram;
+
+/// The technology 11(d)'s greater side buys: industry 3 (the cheapest printed
+/// value) from slot 0 (position surcharge 0) at realizable power 3, so the
+/// registered deficit is exactly 0.
+const PURCHASED_TECH: TechEffect = TechEffect::Brickyard;
+
+/// The laboratory slot the purchase comes from.
+const PURCHASED_SLOT: usize = 0;
+
+/// **11(d)'s REGISTERED LABORATORY**, slot 0 first.
+///
+/// The stock is what pins X1 at exactly 1 on the lesser side. With money 0 and
+/// no imports, `floor(money/2) + imports = 0`, so a slot is takeable only at
+/// deficit 0 — and against realizable power 3 the deficits here are
+/// 3+0−3 = 0 · 5+0−3 = 2 · 5+1−3 = 3 · 3+1−3 = 1 · 3+2−3 = 2 · 3+2−3 = 2. One
+/// zero. Slots 2–5 are non-takeable for free, since the cheapest printed
+/// technology costs 3 and those positions surcharge 1 or 2; slot 1 is the one
+/// that has to be BOUGHT non-takeable, and Exposition's industry 5 does it.
+const LAB_STOCK: [TechEffect; 6] = [
+    TechEffect::Brickyard,    // slot 0 — industry 3, the registered purchase
+    TechEffect::Exposition,   // slot 1 — industry 5, the surcharge-free refusal
+    TechEffect::Newspaper,    // slot 2 — industry 5
+    TechEffect::Gaslight,     // slot 3 — industry 3
+    TechEffect::Ball,         // slot 4 — industry 3
+    TechEffect::PatentSystem, // slot 5 — industry 3
+];
+
+/// 11(e)'s port slot: index 0 is a LOW-zone position, and Low is the only zone
+/// realizable power 2 opens.
+const TAKEN_PORT_SLOT: usize = 0;
+
+// ---------------------------------------------------------------------------
+// Construction surgery — every mutation these ten fixtures make
+// ---------------------------------------------------------------------------
+
+/// Re-type a 2P board onto a hand-built layout.
+///
+/// The layout freedom §5.1 grants is WHICH TYPE SITS WHERE and nothing else, so
+/// this checks both halves of that: the board must have the shape it already
+/// had (ten areas, whatever `board_gen` built), and `types` must be a
+/// PERMUTATION of the tile multiset already on it. Adjacency, grid positions,
+/// building sites and 5-Power tokens are keyed by `AreaId` and are left exactly
+/// as generated — re-typing moves no edge and no site.
+fn retype_board_2p(
+    state: &mut GameState,
+    types: [AreaType; TWO_PLAYER_AREAS],
+) -> Result<(), FixtureError> {
+    let existing: Vec<AreaType> =
+        state.board_layout.areas.values().map(|cfg| cfg.area_type).collect();
+    if existing.len() != TWO_PLAYER_AREAS {
+        return Err(FixtureError::Declaration {
+            clause: "hand-built layout",
+            detail: format!(
+                "the board carries {} areas; a hand-built 2P layout re-types the {} a 2P \
+                 board has",
+                existing.len(),
+                TWO_PLAYER_AREAS,
+            ),
+        });
+    }
+    for t in &existing {
+        let want = types.iter().filter(|x| *x == t).count();
+        let have = existing.iter().filter(|x| *x == t).count();
+        if want != have {
+            return Err(FixtureError::Declaration {
+                clause: "hand-built layout",
+                detail: format!(
+                    "the layout seats {want} {t:?} tile(s) where the generated 2P tile set \
+                     has {have}; the layout freedom is which type sits WHERE, never the \
+                     multiset"
+                ),
+            });
+        }
+    }
+    for (index, area_type) in types.into_iter().enumerate() {
+        let id = AreaId(index as u8);
+        let cfg = state.board_layout.areas.get_mut(&id).ok_or(FixtureError::Declaration {
+            clause: "hand-built layout",
+            detail: format!("area {index} is not on this board"),
+        })?;
+        cfg.area_type = area_type;
+    }
+    Ok(())
+}
+
+/// The one area of a given type. At 2P every one of the ten tiles is a distinct
+/// type (the removal keeps one of each production type), so "the" is exact.
+fn find_area_of_type(state: &GameState, want: AreaType) -> Result<AreaId, FixtureError> {
+    let mut found = state
+        .board_layout
+        .areas
+        .iter()
+        .filter(|(_, cfg)| cfg.area_type == want)
+        .map(|(id, _)| *id);
+    let first = found.next().ok_or(FixtureError::OutOfStock("an area of the registered type"))?;
+    if found.next().is_some() {
+        return Err(FixtureError::Declaration {
+            clause: "registered area",
+            detail: format!("{want:?} appears more than once; a 2P board carries one of each"),
+        });
+    }
+    Ok(first)
+}
+
+/// Move `n` of a seat's hand assistants onto `area`.
+fn place_from_hand(
+    state: &mut GameState,
+    seat: PlayerId,
+    area: AreaId,
+    n: u8,
+) -> Result<(), FixtureError> {
+    let p = state.player_mut(seat);
+    if p.assistants.in_hand < n {
+        return Err(FixtureError::OutOfStock("hand assistants to place"));
+    }
+    p.assistants.in_hand -= n;
+    *p.assistants.on_board.entry(area).or_insert(0) += n;
+    Ok(())
+}
+
+/// Write a registration's three declared achievement cards onto a state.
+///
+/// A registration DECLARES its draws (§5.1), so a fixture builds them rather
+/// than accepting whatever the setup seed shuffled up. The cards are their own
+/// components — not drawn from the order or technology decks — so no
+/// conservation total moves, and both sides of a pair get the same three, so
+/// the achievement feature's delta is untouched by the substitution itself.
+fn set_declared_draws(state: &mut GameState, draws: &AchievementDraws) {
+    state.achievements = [
+        AchievementCard::new(draws.category_a),
+        AchievementCard::new(draws.category_b),
+        AchievementCard::new(draws.category_c),
+    ];
+}
+
+/// Swap a seat's dealt starting order for the registered one.
+///
+/// A SWAP, not a deal: the card the seat was dealt goes to wherever the
+/// registered card was standing, so every pile total is unchanged and order
+/// conservation (36 across deck, ports, hands, completed piles and the box) is
+/// exact. Both `order_cards_in_hand` and `starting_order` move together —
+/// invariant I11 wants the recorded identity to be in the hand, and §5.1's
+/// p = 0 hand cap wants the hand to hold nothing else.
+fn give_starting_order(
+    state: &mut GameState,
+    seat: PlayerId,
+    card: OrderCardId,
+) -> Result<(), FixtureError> {
+    let current = state
+        .player(seat)
+        .starting_order
+        .ok_or(FixtureError::OutOfStock("a recorded starting order to swap"))?;
+    if current == card {
+        return Ok(());
+    }
+    for p in &state.players {
+        if p.order_cards_in_hand.contains(&card) || p.completed_orders.contains(&card) {
+            return Err(FixtureError::Declaration {
+                clause: "registered order card",
+                detail: format!(
+                    "order {} is already held or completed by seat {}; the registered card \
+                     must be swappable out of the deck, the box or a port slot",
+                    card.0, p.id.0,
+                ),
+            });
+        }
+    }
+    if let Some(i) = state.order_deck.iter().position(|c| *c == card) {
+        state.order_deck[i] = current;
+    } else if let Some(i) = state.orders_removed.iter().position(|c| *c == card) {
+        state.orders_removed[i] = current;
+    } else if let Some(i) = port_a_slot_of(state, card) {
+        state.port_state.port_a.slots[i] = Some(current);
+    } else {
+        return Err(FixtureError::OutOfStock("the registered starting order card"));
+    }
+    let p = state.player_mut(seat);
+    let held = p
+        .order_cards_in_hand
+        .iter()
+        .position(|c| *c == current)
+        .ok_or(FixtureError::OutOfStock("the dealt starting order in hand"))?;
+    p.order_cards_in_hand[held] = card;
+    p.starting_order = Some(card);
+    Ok(())
+}
+
+/// Put a registered order card into a Port A slot, swapping out whatever stood
+/// there. Conservation is exact for the same reason [`give_starting_order`]'s
+/// is: nothing leaves a pile, two cards trade places.
+fn move_order_card_to_port_slot(
+    state: &mut GameState,
+    card: OrderCardId,
+    slot: usize,
+) -> Result<(), FixtureError> {
+    if port_a_slot_of(state, card) == Some(slot) {
+        return Ok(());
+    }
+    let displaced = state.port_state.port_a.slots[slot]
+        .ok_or(FixtureError::OutOfStock("a card in the registered port slot"))?;
+    for p in &state.players {
+        if p.order_cards_in_hand.contains(&card) || p.completed_orders.contains(&card) {
+            return Err(FixtureError::Declaration {
+                clause: "registered port offer",
+                detail: format!("order {} is already held by seat {}", card.0, p.id.0),
+            });
+        }
+    }
+    if let Some(i) = state.order_deck.iter().position(|c| *c == card) {
+        state.order_deck[i] = displaced;
+    } else if let Some(i) = state.orders_removed.iter().position(|c| *c == card) {
+        state.orders_removed[i] = displaced;
+    } else if let Some(i) = port_a_slot_of(state, card) {
+        state.port_state.port_a.slots[i] = Some(displaced);
+    } else {
+        return Err(FixtureError::OutOfStock("the registered port offer card"));
+    }
+    state.port_state.port_a.slots[slot] = Some(card);
+    Ok(())
+}
+
+/// The Port A slot holding `card`, if any. Port B is `None` at 2P by
+/// construction (`board_gen` removes it), so there is no second board to scan.
+fn port_a_slot_of(state: &GameState, card: OrderCardId) -> Option<usize> {
+    state.port_state.port_a.slots.iter().position(|s| *s == Some(card))
+}
+
+/// Give a seat one technology carrying `effect`, taken out of whichever pile it
+/// is standing in so that tech conservation (30 physical cards across deck,
+/// laboratories and owners) is exact.
+///
+/// Effect equality rather than title equality is the engine's own ownership
+/// test, and ten of the twenty titles print two physical copies — so this takes
+/// ANY available copy and reports which.
+fn grant_technology(
+    state: &mut GameState,
+    seat: PlayerId,
+    effect: TechEffect,
+    rules: &Rules,
+) -> Result<TechCardId, FixtureError> {
+    let has_effect =
+        |id: TechCardId| rules.techs.iter().any(|c| c.id == id && c.effect == effect);
+    if let Some(i) = state.tech_deck.iter().position(|id| has_effect(*id)) {
+        let id = state.tech_deck.remove(i);
+        state.player_mut(seat).technologies.push(id);
+        return Ok(id);
+    }
+    let labs = std::iter::once(&mut state.lab_state.lab_a).chain(state.lab_state.lab_b.as_mut());
+    for slot in labs.flat_map(|lab| lab.slots.iter_mut()) {
+        if slot.is_some_and(|id| has_effect(id)) {
+            let id = slot.take().expect("just matched Some");
+            state.player_mut(seat).technologies.push(id);
+            return Ok(id);
+        }
+    }
+    Err(FixtureError::OutOfStock("an unowned copy of the registered technology"))
+}
+
+/// Stock Laboratory A with six named effects, slot 0 first.
+///
+/// Every card currently on the board goes back to the deck first and the six
+/// are drawn out of it by effect, so the total across deck + laboratories +
+/// owners never moves. A card already OWNED cannot be stocked — the refusal
+/// says so rather than silently seating a seventh copy.
+fn stock_lab_a(
+    state: &mut GameState,
+    effects: [TechEffect; 6],
+    rules: &Rules,
+) -> Result<(), FixtureError> {
+    for slot in state.lab_state.lab_a.slots.iter_mut() {
+        if let Some(id) = slot.take() {
+            state.tech_deck.push(id);
+        }
+    }
+    for (index, effect) in effects.into_iter().enumerate() {
+        let position = state
+            .tech_deck
+            .iter()
+            .position(|id| rules.techs.iter().any(|c| c.id == *id && c.effect == effect))
+            .ok_or(FixtureError::OutOfStock("an unowned copy of a stocked technology"))?;
+        let id = state.tech_deck.remove(position);
+        state.lab_state.lab_a.slots[index] = Some(id);
+    }
+    Ok(())
+}
+
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::game::eval::{explain, WeightTable};
     use crate::types::{OrderCardId, TechCardId};
+
+    // -----------------------------------------------------------------------
+    // FIXTURE-GEOMETRY READERS
+    //
+    // These read the constructed STATE the §3.2 candidates will later read;
+    // they are NOT those features. Step 3 owns S4's and S7's implementations
+    // (in `eval.rs`, against the spec's own cards), and nothing here is a
+    // second derivation of them: `ring_own_assistants` folds a raw adjacency
+    // list, `own_assistant_reach` walks one, and both exist so the geometric
+    // claims a registration makes — "the ring holds the assistants", "the same
+    // pawns disconnected", "S4 and S7 are equal BY CONSTRUCTION" — are checked
+    // against the bytes instead of asserted in prose.
+    // -----------------------------------------------------------------------
+
+    /// The seat's assistants standing on `area`'s FREE-adjacent ring. At 2P
+    /// `canal_crossings` is empty, so the free ring IS `adjacent_areas`.
+    fn ring_own_assistants(state: &GameState, seat: PlayerId, area: AreaId) -> u32 {
+        let p = state.player(seat);
+        state
+            .board_layout
+            .adjacent_areas(area)
+            .iter()
+            .map(|n| u32::from(p.assistants.in_area(*n)))
+            .sum()
+    }
+
+    /// The areas holding the seat's assistants that are reachable from `from`
+    /// by stepping along free edges onto own-assistant areas — the chain
+    /// 1(e)'s registration is about, excluding the starting area itself.
+    fn own_assistant_reach(state: &GameState, seat: PlayerId, from: AreaId) -> Vec<AreaId> {
+        let p = state.player(seat);
+        let mut seen: Vec<AreaId> = Vec::new();
+        let mut frontier = vec![from];
+        while let Some(here) = frontier.pop() {
+            for n in state.board_layout.adjacent_areas(here) {
+                if p.assistants.in_area(*n) >= 1 && !seen.contains(n) {
+                    seen.push(*n);
+                    frontier.push(*n);
+                }
+            }
+        }
+        seen.retain(|a| *a != from);
+        seen.sort_unstable_by_key(|a| a.0);
+        seen
+    }
+
+    /// The areas holding at least one of the seat's assistants.
+    fn occupied_areas(state: &GameState, seat: PlayerId) -> Vec<AreaId> {
+        let p = state.player(seat);
+        let mut areas: Vec<AreaId> =
+            p.assistants.on_board.iter().filter(|(_, n)| **n > 0).map(|(a, _)| *a).collect();
+        areas.sort_unstable_by_key(|a| a.0);
+        areas
+    }
+
+    /// One side of a registered pair, built for a test to read.
+    fn built(id: &str, stage: StageEndpoint, rules: &Rules) -> PairFixture {
+        let declaration =
+            registered(id).unwrap_or_else(|| panic!("{id} is registered"));
+        build_registered_pair(declaration, stage, rules)
+            .unwrap_or_else(|e| panic!("{id} at {}: {e}", stage.name()))
+    }
 
     /// Every registered pair, at every endpoint it declares, admitted through
     /// the fourteen clauses.
@@ -2888,6 +3686,655 @@ mod tests {
                     panic!("{} at {}: {e}", pair.id, stage.name())
                 });
             }
+        }
+    }
+
+    #[test]
+    fn the_realized_incumbent_deltas_are_exactly_the_registered_ones() {
+        // Clause 13 refuses an UNLISTED nonzero row and
+        // `listed_incumbent_rows_are_nonzero` refuses a LISTED zero, so between
+        // them the SET is already pinned. What is not pinned by either is the
+        // VALUE, and the values are what three registrations actually say:
+        // 11(c)'s "−1 / +1", 11(d)'s "+industry", 11(e)'s "+1".
+        let rules = rules();
+        let expected: &[(&str, &[(Feature, i64)])] = &[
+            ("1(a)", &[]),
+            ("1(b)", &[]),
+            ("1(c)", &[]),
+            ("1(d)", &[]),
+            ("1(e)", &[]),
+            ("11(a)", &[]),
+            ("11(b)", &[]),
+            (
+                "11(c)",
+                &[
+                    (Feature::AssistantsInWarehouse, -1),
+                    (Feature::AssistantsInHandExcess, 1),
+                ],
+            ),
+            ("11(d)", &[(Feature::CountryBonusNow, 2), (Feature::TechBonusNow, 5)]),
+            ("11(e)", &[(Feature::HandSize, 1)]),
+        ];
+        for (id, rows) in expected {
+            let declaration = registered(id).expect("registered");
+            for stage in declaration.stages {
+                let delta = built(id, *stage, &rules).incumbent_delta(&rules);
+                for f in Feature::ALL {
+                    let want = rows
+                        .iter()
+                        .find(|(row, _)| *row == f)
+                        .map_or(0, |(_, value)| *value);
+                    assert_eq!(
+                        delta[f.index()],
+                        want,
+                        "{id} at {}: {} reads {} and the registration says {want}",
+                        stage.name(),
+                        f.name(),
+                        delta[f.index()],
+                    );
+                }
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // FAMILY 1 — the state facts each registration's rows rest on
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn one_a_parks_one_pawn_on_a_productive_area_against_one_on_a_dead_one() {
+        let rules = rules();
+        for stage in StageEndpoint::ALL {
+            let f = built("1(a)", stage, &rules);
+            let seat = f.subject();
+            let silk = find_area_of_type(f.state(Side::Greater), AreaType::SilkMill).unwrap();
+            let copper = find_area_of_type(f.state(Side::Lesser), AreaType::CopperMine).unwrap();
+            assert_eq!(occupied_areas(f.state(Side::Greater), seat), vec![silk]);
+            assert_eq!(occupied_areas(f.state(Side::Lesser), seat), vec![copper]);
+            for side in [Side::Greater, Side::Lesser] {
+                let state = f.state(side);
+                assert_eq!(
+                    state.player(seat).assistants.on_board.values().sum::<u8>(),
+                    1,
+                    "the single parked pawn is what holds S3/S4/S7 equal",
+                );
+                assert_eq!(state.player(seat).president_location, PresidentLocation::InHand);
+            }
+            // §5.2's own arithmetic, read off the engine's reward tables rather
+            // than restated: realizable power is 1 assistant + the president's
+            // unconditional +1.
+            assert_eq!(crate::game::actions::silk_mill_reward(2), 1);
+            assert_eq!(crate::game::actions::copper_mine_reward(2), 0);
+        }
+    }
+
+    #[test]
+    fn one_b_holds_the_exported_yield_equal_and_moves_only_the_spread() {
+        let rules = rules();
+        for stage in StageEndpoint::ALL {
+            let f = built("1(b)", stage, &rules);
+            let seat = f.subject();
+            let greater = f.state(Side::Greater);
+            let lesser = f.state(Side::Lesser);
+            let silk = find_area_of_type(greater, AreaType::SilkMill).unwrap();
+            let copper = find_area_of_type(greater, AreaType::CopperMine).unwrap();
+
+            // The registered EQUAL exported yield, computed WITH the president
+            // +1 — the fold-verification's correction, checked against the
+            // engine's tables at the powers the fixture realizes.
+            let spread = crate::game::actions::silk_mill_reward(1 + 1)
+                + crate::game::actions::copper_mine_reward(1 + 1);
+            let stack = crate::game::actions::copper_mine_reward(2 + 1);
+            assert_eq!(spread, 1);
+            assert_eq!(stack, 1, "split and stack export the SAME goods per activation");
+
+            assert!(
+                !greater.board_layout.adjacent_areas(silk).contains(&copper),
+                "the two areas are registered NON-ADJACENT",
+            );
+            assert_eq!(occupied_areas(greater, seat), {
+                let mut v = vec![silk, copper];
+                v.sort_unstable_by_key(|a| a.0);
+                v
+            });
+            assert_eq!(occupied_areas(lesser, seat), vec![copper]);
+            assert_eq!(greater.player(seat).assistants.in_area(copper), 1);
+            assert_eq!(lesser.player(seat).assistants.in_area(copper), 2);
+
+            // The registered collateral, as board facts: the stack side owns
+            // the larger local maximum (S4's in-hand branch reads a max over
+            // own-assistant areas of that area's own count plus its ring), and
+            // the spread side owns one more occupied area (S7's in-hand branch
+            // is the direct count).
+            let local = |state: &GameState, area: AreaId| {
+                u32::from(state.player(seat).assistants.in_area(area))
+                    + ring_own_assistants(state, seat, area)
+            };
+            assert_eq!(local(greater, silk).max(local(greater, copper)), 1);
+            assert_eq!(local(lesser, copper), 2);
+        }
+    }
+
+    #[test]
+    fn one_c_moves_the_president_over_a_fixed_stack_and_nothing_else() {
+        let rules = rules();
+        for stage in StageEndpoint::ALL {
+            let f = built("1(c)", stage, &rules);
+            let seat = f.subject();
+            let greater = f.state(Side::Greater);
+            let lesser = f.state(Side::Lesser);
+
+            // "same assistant multiset on one shared layout": byte-identical
+            // pawns, byte-identical board.
+            assert_eq!(greater.player(seat).assistants, lesser.player(seat).assistants);
+            assert_eq!(greater.board_layout.areas, lesser.board_layout.areas);
+            assert_eq!(occupied_areas(greater, seat), vec![RING_ASSISTANT_AREA]);
+            assert_eq!(greater.player(seat).assistants.in_area(RING_ASSISTANT_AREA), 2);
+
+            // The president's own area is EMPTY on both sides — §5.1's
+            // post-Recovery hand-off shape, and the reason clause 9 admits it.
+            for (side, area) in
+                [(greater, RING_NEAR_PRESIDENT_AREA), (lesser, RING_FAR_PRESIDENT_AREA)]
+            {
+                assert_eq!(side.player(seat).president_location, PresidentLocation::OnBoard(area));
+                assert_eq!(side.player(seat).assistants.in_area(area), 0);
+            }
+
+            // RING MASS is the carrier: two assistants one free step from the
+            // near president, none from the far one.
+            assert_eq!(ring_own_assistants(greater, seat, RING_NEAR_PRESIDENT_AREA), 2);
+            assert_eq!(ring_own_assistants(lesser, seat, RING_FAR_PRESIDENT_AREA), 0);
+            // S7's listed collateral moves by ONE — the stack is one area.
+            assert_eq!(
+                own_assistant_reach(greater, seat, RING_NEAR_PRESIDENT_AREA),
+                vec![RING_ASSISTANT_AREA],
+            );
+            assert!(own_assistant_reach(lesser, seat, RING_FAR_PRESIDENT_AREA).is_empty());
+        }
+    }
+
+    #[test]
+    fn one_d_realizes_church_faith_four_at_a_registered_empty_space() {
+        let rules = rules();
+        for stage in StageEndpoint::ALL {
+            let f = built("1(d)", stage, &rules);
+            let seat = f.subject();
+            let greater = f.state(Side::Greater);
+            let lesser = f.state(Side::Lesser);
+            let church = find_area_of_type(greater, AreaType::Church).unwrap();
+            let copper = find_area_of_type(lesser, AreaType::CopperMine).unwrap();
+            assert_eq!(occupied_areas(greater, seat), vec![church]);
+            assert_eq!(occupied_areas(lesser, seat), vec![copper]);
+
+            // The registered stocks, and the faith they realize — through the
+            // engine's own faith function, at the power one pawn plus the
+            // president's unconditional +1 gives.
+            let p = greater.player(seat);
+            assert_eq!((p.copper, p.silk, p.tea, p.seafood, p.imported_goods), (1, 1, 0, 0, 0));
+            assert_eq!(p.money, 1, "below the 2-Yen yen leg, so it buys no fifth faith");
+            assert_eq!(
+                crate::game::actions::calculate_church_faith(2, true, true, false, false, false, false),
+                4,
+                "§5.2's registered realizable total faith",
+            );
+            // And the stocks the fixture actually carries can afford exactly
+            // the two payment types the 4 is built from.
+            assert_eq!(
+                crate::game::actions::calculate_church_faith(
+                    2,
+                    p.copper >= 1,
+                    p.silk >= 1,
+                    p.tea >= 1,
+                    p.seafood >= 1,
+                    p.money >= 2,
+                    p.imported_goods >= 1,
+                ),
+                4,
+            );
+            assert_eq!(
+                crate::game::actions::eligible_church_spaces(&greater.church_track, 4),
+                vec![4],
+                "the registered empty eligible space, and the only one at this faith",
+            );
+            assert!(
+                lesser.player(seat).president_location == PresidentLocation::InHand
+                    && greater.player(seat).president_location == PresidentLocation::InHand,
+            );
+        }
+    }
+
+    #[test]
+    fn one_e_moves_the_president_off_the_head_of_a_three_area_chain() {
+        let rules = rules();
+        for stage in StageEndpoint::ALL {
+            let f = built("1(e)", stage, &rules);
+            let seat = f.subject();
+            let greater = f.state(Side::Greater);
+            let lesser = f.state(Side::Lesser);
+
+            assert_eq!(greater.player(seat).assistants, lesser.player(seat).assistants);
+            assert_eq!(occupied_areas(greater, seat), RING_CHAIN_AREAS.to_vec());
+            for area in RING_CHAIN_AREAS {
+                assert_eq!(greater.player(seat).assistants.in_area(area), 1);
+            }
+
+            // CONNECTED: the whole chain is reachable from the president's ring.
+            assert_eq!(
+                own_assistant_reach(greater, seat, RING_NEAR_PRESIDENT_AREA),
+                RING_CHAIN_AREAS.to_vec(),
+                "1 -> 5 -> 8 are free edges, and 1 is one step from area 0",
+            );
+            // DISCONNECTED: the same pawns, no first step.
+            assert!(
+                own_assistant_reach(lesser, seat, RING_DISCONNECTED_PRESIDENT_AREA).is_empty(),
+                "area 3's ring is {{2, 6}} and neither holds a pawn",
+            );
+            // S4 rides as the LISTED collateral, and moves by one against S7's
+            // three — which is what makes 1(e) a different row from 1(c).
+            assert_eq!(ring_own_assistants(greater, seat, RING_NEAR_PRESIDENT_AREA), 1);
+            assert_eq!(ring_own_assistants(lesser, seat, RING_DISCONNECTED_PRESIDENT_AREA), 0);
+            for (side, area) in [
+                (greater, RING_NEAR_PRESIDENT_AREA),
+                (lesser, RING_DISCONNECTED_PRESIDENT_AREA),
+            ] {
+                assert_eq!(side.player(seat).president_location, PresidentLocation::OnBoard(area));
+                assert_eq!(side.player(seat).assistants.in_area(area), 0);
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // FAMILY 11 — the congruence requirement, then each pair's own yield
+    // -----------------------------------------------------------------------
+
+    /// §5.2's reflection of the 2P staggered pyramid: (0 3)(1 2)(4 6)(7 8),
+    /// fixing 5 and 9. See [`family_11_layout`]'s congruence argument.
+    const FAMILY_11_REFLECTION: [u8; TWO_PLAYER_AREAS] = [3, 2, 1, 0, 6, 5, 4, 8, 7, 9];
+
+    #[test]
+    fn the_family_eleven_reflection_is_a_board_automorphism() {
+        // The congruence claim is a GRAPH claim, so it is checked on the graph:
+        // σ must carry every free edge to a free edge. If a future board-shape
+        // change broke that, family 11's "S4 and S7 equal by construction"
+        // would quietly become "equal by coincidence", and this is the cell
+        // that would say so.
+        let rules = rules();
+        let state = built("11(a)", StageEndpoint::Early, &rules).state(Side::Greater).clone();
+        let sigma = |a: AreaId| AreaId(FAMILY_11_REFLECTION[a.0 as usize]);
+        assert_eq!(state.board_layout.areas.len(), TWO_PLAYER_AREAS);
+        let mut images: Vec<u8> = FAMILY_11_REFLECTION.to_vec();
+        images.sort_unstable();
+        assert_eq!(images, (0..TWO_PLAYER_AREAS as u8).collect::<Vec<_>>(), "σ is a permutation");
+        for (area, neighbours) in &state.board_layout.adjacency {
+            for n in neighbours {
+                assert!(
+                    state.board_layout.adjacent_areas(sigma(*area)).contains(&sigma(*n)),
+                    "σ sends the edge {}–{} to {}–{}, which is not an edge",
+                    area.0,
+                    n.0,
+                    sigma(*area).0,
+                    sigma(*n).0,
+                );
+            }
+        }
+        assert_eq!(sigma(FAMILY_11_HIGH_ACCESS_AREA), FAMILY_11_COPPER_AREA);
+        assert_eq!(sigma(FAMILY_11_COPPER_AREA), FAMILY_11_HIGH_ACCESS_AREA);
+        // And re-typing moved no edge: the constructed board's adjacency is
+        // still the generator's own staggered graph.
+        for (a, b) in crate::game::staggered_adjacency(&crate::game::row_lengths(2)) {
+            assert!(state.board_layout.adjacent_areas(a).contains(&b));
+            assert!(state.board_layout.adjacent_areas(b).contains(&a));
+        }
+        assert!(state.board_layout.canal_crossings.is_empty(), "no Canal at 2P");
+    }
+
+    #[test]
+    fn every_family_eleven_pair_is_congruent_across_its_two_sides() {
+        // The registered requirement, per pair and per endpoint: σ carries the
+        // greater side's own-assistant position onto the lesser side's, so the
+        // two ring sums and the two reachable sets are EQUAL rather than
+        // separately computed to the same number.
+        let rules = rules();
+        let sigma = |a: AreaId| AreaId(FAMILY_11_REFLECTION[a.0 as usize]);
+        for id in ["11(a)", "11(b)", "11(c)", "11(d)", "11(e)"] {
+            let declaration = registered(id).expect("registered");
+            for stage in declaration.stages {
+                let f = built(id, *stage, &rules);
+                let seat = f.subject();
+                let greater = f.state(Side::Greater);
+                let lesser = f.state(Side::Lesser);
+
+                // The acted area is drained and the other one holds the
+                // survivor — the post-Recovery shape, mirrored across the sides.
+                assert_eq!(occupied_areas(greater, seat), vec![FAMILY_11_COPPER_AREA], "{id}");
+                assert_eq!(
+                    occupied_areas(lesser, seat),
+                    vec![FAMILY_11_HIGH_ACCESS_AREA],
+                    "{id}"
+                );
+                assert_eq!(
+                    greater.player(seat).president_location,
+                    PresidentLocation::OnBoard(FAMILY_11_HIGH_ACCESS_AREA),
+                    "{id}: the actor's president stands where it acted",
+                );
+                assert_eq!(
+                    lesser.player(seat).president_location,
+                    PresidentLocation::OnBoard(FAMILY_11_COPPER_AREA),
+                    "{id}",
+                );
+
+                // σ maps one position onto the other, pawn for pawn.
+                for (area, _) in greater.board_layout.areas.iter() {
+                    assert_eq!(
+                        greater.player(seat).assistants.in_area(*area),
+                        lesser.player(seat).assistants.in_area(sigma(*area)),
+                        "{id} at {}: σ does not carry area {} onto area {}",
+                        stage.name(),
+                        area.0,
+                        sigma(*area).0,
+                    );
+                }
+
+                // So the two quantities the requirement names are equal, and
+                // the ring is not empty — an all-zero congruence would satisfy
+                // the equality while measuring nothing.
+                let g_ring = ring_own_assistants(greater, seat, FAMILY_11_HIGH_ACCESS_AREA);
+                let l_ring = ring_own_assistants(lesser, seat, FAMILY_11_COPPER_AREA);
+                assert_eq!(g_ring, l_ring, "{id}: the ring sums differ");
+                assert_eq!(g_ring, 1, "{id}: the two acted areas are neighbours, so the \
+                     survivor stands in the actor's ring on both sides");
+                assert_eq!(
+                    own_assistant_reach(greater, seat, FAMILY_11_HIGH_ACCESS_AREA).len(),
+                    own_assistant_reach(lesser, seat, FAMILY_11_COPPER_AREA).len(),
+                    "{id}: the reachable sets differ",
+                );
+                assert_eq!(
+                    own_assistant_reach(greater, seat, FAMILY_11_HIGH_ACCESS_AREA).len(),
+                    1,
+                    "{id}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn eleven_a_trades_one_silk_of_access_for_one_silk_of_stock() {
+        let rules = rules();
+        for stage in StageEndpoint::ALL {
+            let f = built("11(a)", stage, &rules);
+            let seat = f.subject();
+            let greater = f.state(Side::Greater);
+            let lesser = f.state(Side::Lesser);
+            assert_eq!(
+                greater.board_layout.areas[&FAMILY_11_HIGH_ACCESS_AREA].area_type,
+                AreaType::SilkMill,
+            );
+            assert_eq!(greater.player(seat).silk, lesser.player(seat).silk + 1);
+            assert_eq!(crate::game::actions::silk_mill_reward(2), 1, "the realized yield");
+            // The conservation the family exists to state: the winner keeps the
+            // 0-reward pawn and the loser keeps the 1-reward pawn.
+            assert_eq!(crate::game::actions::copper_mine_reward(2), 0);
+            // And the registered order card is what keeps the extra silk out of
+            // O2/O3/X3: it needs none.
+            let card = rules.orders.get(FIXTURE_ORDER_CARD).expect("registered card");
+            assert_eq!(card.requirements.silk, 0);
+            assert!(card.requirements.copper <= 1);
+        }
+    }
+
+    #[test]
+    fn eleven_b_trades_two_yen_of_access_for_two_yen_of_stock() {
+        let rules = rules();
+        for stage in StageEndpoint::ALL {
+            let f = built("11(b)", stage, &rules);
+            let seat = f.subject();
+            let greater = f.state(Side::Greater);
+            let lesser = f.state(Side::Lesser);
+            assert_eq!(
+                greater.board_layout.areas[&FAMILY_11_HIGH_ACCESS_AREA].area_type,
+                AreaType::Bank,
+            );
+            assert_eq!(crate::game::actions::bank_reward(2), 2);
+            assert_eq!(greater.player(seat).money, lesser.player(seat).money + 2);
+        }
+    }
+
+    #[test]
+    fn eleven_c_trades_one_retrievable_token_for_one_retrieved_pawn() {
+        let rules = rules();
+        for stage in StageEndpoint::ALL {
+            let f = built("11(c)", stage, &rules);
+            let seat = f.subject();
+            let greater = f.state(Side::Greater);
+            let lesser = f.state(Side::Lesser);
+            assert_eq!(
+                greater.board_layout.areas[&FAMILY_11_HIGH_ACCESS_AREA].area_type,
+                AreaType::EmploymentAgency,
+            );
+            assert_eq!(crate::game::actions::employment_agency_tokens_allowed(2), 1);
+            let g = &greater.player(seat).assistants;
+            let l = &lesser.player(seat).assistants;
+            assert_eq!(g.in_warehouse + 1, l.in_warehouse, "warehouse only ever drains");
+            assert_eq!(g.in_hand, l.in_hand + 1, "and Recovery-and-retrieval land in HAND");
+            assert_eq!(g.total(), 20);
+            assert_eq!(l.total(), 20);
+            // The registration's "hand-core/excess" resolves to EXCESS: the
+            // hand is already past the two-pawn core reserve on both sides.
+            assert!(l.in_hand >= crate::game::eval::HAND_CORE_RESERVE);
+        }
+    }
+
+    #[test]
+    fn eleven_d_buys_at_zero_deficit_from_the_one_takeable_slot() {
+        let rules = rules();
+        let lab = FAMILY_11_HIGH_ACCESS_AREA;
+        for stage in StageEndpoint::ALL {
+            let f = built("11(d)", stage, &rules);
+            let seat = f.subject();
+            let rival = other_seat_2p(f.state(Side::Greater), seat).unwrap();
+            let greater = f.state(Side::Greater);
+            let lesser = f.state(Side::Lesser);
+            assert_eq!(greater.board_layout.areas[&lab].area_type, AreaType::LaboratoryA);
+
+            // The third power point, and where it comes from.
+            assert_eq!(lesser.station_location, Some(lab));
+            assert!(owns_effect(lesser, rival, TechEffect::Station, &rules));
+            assert!(!owns_effect(lesser, seat, TechEffect::Station, &rules));
+            assert_eq!(lesser.player(seat).assistants.in_area(lab), 1);
+            // THREE, and cross-checked against the engine rather than restated.
+            // `calculate_power` credits the president only where it actually
+            // stands, and §3.2's `realizable_power` credits it EVERYWHERE — so
+            // the number X1 will read at the lesser side's laboratory is the
+            // number the engine returns for the same board with the president
+            // standing there. That board is also the one the greater side's
+            // purchase was made on, before its Recovery drained the pawn.
+            let mut acting = lesser.clone();
+            acting.player_mut(seat).president_location = PresidentLocation::OnBoard(lab);
+            let power = crate::game::calculate_power(&acting, seat, lab);
+            assert_eq!(
+                power, 3,
+                "one own assistant + the president + the station token, capped last",
+            );
+            // The post-Recovery states themselves read one lower at the lab,
+            // which is the conservation this whole family is about.
+            assert_eq!(crate::game::calculate_power(greater, seat, lab), 2);
+
+            // Exactly ONE zero-deficit slot at that power, with money 0 and no
+            // imports — which is the whole of X1 = 1 on the lesser side.
+            assert_eq!(lesser.player(seat).money, 0);
+            assert_eq!(lesser.player(seat).imported_goods, 0);
+            let zero_deficit: Vec<usize> = (0..6)
+                .filter(|slot| {
+                    let id = lesser.lab_state.lab_a.slots[*slot].expect("a stocked slot");
+                    let cost = rules.techs.get(id).expect("registry").industry_cost;
+                    cost + crate::game::actions::lab_position_surcharge(*slot) <= power
+                })
+                .collect();
+            assert_eq!(zero_deficit, vec![PURCHASED_SLOT], "{stage:?}");
+
+            // The purchase itself: one more technology, of the registered
+            // effect, at the registered industry cost.
+            let owned_g = &greater.player(seat).technologies;
+            let owned_l = &lesser.player(seat).technologies;
+            assert_eq!(owned_l.len(), 1, "≤ 1 technology PRE-purchase");
+            assert_eq!(owned_g.len(), 2, "and 2 after — never the 3 that owes D2's duty");
+            assert!(owns_effect(greater, seat, PURCHASED_TECH, &rules));
+            assert!(!owns_effect(lesser, seat, PURCHASED_TECH, &rules));
+            let industry = |state: &GameState| -> u8 {
+                state
+                    .player(seat)
+                    .technologies
+                    .iter()
+                    .map(|id| rules.techs.get(*id).expect("registry").industry_cost)
+                    .sum()
+            };
+            assert_eq!(industry(lesser), 6, "the pre-owned technology's industry value");
+            assert_eq!(industry(greater), 9, "past the 2P dummy's 7.5 — D5's comparison");
+
+            // The registered icon parity: every country the seat holds is at an
+            // ODD count post-purchase, so `check_mercenary_eligibility`'s sweep
+            // has nothing to award.
+            let mut counts = std::collections::BTreeMap::new();
+            for id in owned_g {
+                *counts.entry(rules.techs.get(*id).expect("registry").country).or_insert(0) += 1;
+            }
+            assert_eq!(counts.len(), 2, "two DISTINCT countries — the flag is a new one");
+            for (country, n) in counts {
+                assert_eq!(n % 2, 1, "{country:?} sits at an even icon count");
+            }
+            assert!(greater.player(seat).completed_orders.is_empty(), "no order icons either");
+            // Technologies4 is not in play, per the registration.
+            assert!(!greater
+                .achievements
+                .iter()
+                .any(|c| c.achievement_type == AchievementType::Technologies4));
+        }
+    }
+
+    #[test]
+    fn eleven_e_takes_a_free_offer_and_fires_the_engines_own_trigger() {
+        let rules = rules();
+        let f = built("11(e)", StageEndpoint::Late, &rules);
+        let seat = f.subject();
+        let greater = f.state(Side::Greater);
+        let lesser = f.state(Side::Lesser);
+        assert_eq!(
+            greater.board_layout.areas[&FAMILY_11_HIGH_ACCESS_AREA].area_type,
+            AreaType::PortA,
+        );
+
+        // The lesser side still SEES the offer in the Low zone — index 0, the
+        // only zone realizable power 2 opens — and the greater side holds it.
+        assert_eq!(lesser.port_state.port_a.slots[TAKEN_PORT_SLOT], Some(FIXTURE_PORT_CARD));
+        assert!(greater.player(seat).order_cards_in_hand.contains(&FIXTURE_PORT_CARD));
+        assert_eq!(greater.player(seat).order_cards_in_hand.len(), 2);
+        assert_eq!(lesser.player(seat).order_cards_in_hand.len(), 1);
+        assert_eq!(greater.player(seat).money, lesser.player(seat).money, "the first card is free");
+
+        // Total compaction, then a refill that finds nothing: five offers left
+        // and the sixth slot open, which is exactly the trigger's condition.
+        assert!(greater.order_deck.is_empty());
+        assert_eq!(greater.port_state.port_a.slots.iter().flatten().count(), 5);
+        assert!(greater.port_state.port_a.slots[5].is_none());
+        assert!(port_is_full(lesser));
+        assert!(greater.end_game_triggered, "the engine's own check fired it");
+        assert_eq!(greater.trigger_reason, Some(crate::types::EndGameTrigger::OrderDeckEmpty));
+        assert_eq!(greater.trigger_player, Some(seat));
+        assert!(!greater.final_round, "and a trigger is not a finished game");
+        assert!(!lesser.end_game_triggered, "the untaking side's port is still full");
+        assert!(
+            eval::terminal_standing(f.view(Side::Greater), &rules).is_none(),
+            "clause 6 already refused a terminal side; this says WHY it is not one",
+        );
+
+        // The taken card's registered properties: it matches goods the seat
+        // holds (so O2 moves), needs more than the seat has (so O3 does not),
+        // and carries no icon face (so O6 does not).
+        let card = rules.orders.get(FIXTURE_PORT_CARD).expect("registered card");
+        let p = greater.player(seat);
+        assert!(
+            u32::from(card.requirements.tea) > p.tea
+                || u32::from(card.requirements.seafood) > p.seafood,
+            "the taken card stays unexecutable, so O3 does not move",
+        );
+        assert!(
+            u32::from(card.requirements.tea).min(p.tea) > 0,
+            "and it matches a good the seat holds, so O2 does",
+        );
+        assert_eq!((card.rewards.movement, card.rewards.warehouse_tokens), (0, 0));
+    }
+
+    // -----------------------------------------------------------------------
+    // The hand-built layouts as objects
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn a_hand_built_layout_is_a_permutation_of_the_generated_tile_set() {
+        let rules = rules();
+        let mut state = keep_game_2p(FIXTURE_SEED, &rules).expect("setup");
+        let generated: Vec<AreaType> =
+            state.board_layout.areas.values().map(|c| c.area_type).collect();
+        retype_board_2p(&mut state, RING_LAYOUT).expect("the ring layout is a permutation");
+        let mut before: Vec<String> = generated.iter().map(|t| format!("{t:?}")).collect();
+        let mut after: Vec<String> = state
+            .board_layout
+            .areas
+            .values()
+            .map(|c| format!("{:?}", c.area_type))
+            .collect();
+        before.sort();
+        after.sort();
+        assert_eq!(before, after, "the multiset is the engine's, not the layout's");
+        check_invariants(&state, &rules).expect("a re-typed 2P board is engine-valid");
+
+        // And a layout that is NOT a permutation is refused rather than seated.
+        let mut illegal = RING_LAYOUT;
+        illegal[0] = AreaType::SilkMill; // two Silk Mills, no Copper Mine
+        let err = retype_board_2p(&mut state, illegal).expect_err("multiset violation");
+        assert!(format!("{err}").contains("multiset"), "got: {err}");
+    }
+
+    #[test]
+    fn family_elevens_layout_seats_each_pairs_own_high_access_type() {
+        for (id, high) in [
+            ("11(a)", AreaType::SilkMill),
+            ("11(b)", AreaType::Bank),
+            ("11(c)", AreaType::EmploymentAgency),
+            ("11(d)", AreaType::LaboratoryA),
+            ("11(e)", AreaType::PortA),
+        ] {
+            let layout = family_11_layout(high).unwrap_or_else(|e| panic!("{id}: {e}"));
+            assert_eq!(layout[FAMILY_11_HIGH_ACCESS_AREA.0 as usize], high, "{id}");
+            assert_eq!(layout[FAMILY_11_COPPER_AREA.0 as usize], AreaType::CopperMine, "{id}");
+            let mut seen: Vec<String> = layout.iter().map(|t| format!("{t:?}")).collect();
+            seen.sort();
+            seen.dedup();
+            assert_eq!(seen.len(), TWO_PLAYER_AREAS, "{id}: every 2P type exactly once");
+        }
+        // The Copper Mine is the LESSER side's area by registration, so it is
+        // not a high-access type and the builder says so.
+        let err = family_11_layout(AreaType::CopperMine).expect_err("refused");
+        assert!(format!("{err}").contains("CopperMine"), "got: {err}");
+    }
+
+    #[test]
+    fn every_registered_pair_renders_a_report_over_the_full_axis() {
+        let rules = rules();
+        for pair in REGISTERED.iter() {
+            let declaration = registered(pair.id).expect("registered");
+            let stage = declaration.stages[0];
+            let report = render_pair_report(&built(pair.id, stage, &rules), &rules);
+            assert!(report.contains(pair.id), "{}: the id", pair.id);
+            assert!(report.contains(&package_digest()), "{}: the digest", pair.id);
+            for row in FeatureId::all() {
+                assert!(report.contains(row.name()), "{}: {} has no row", pair.id, row.name());
+            }
+            assert_eq!(
+                report.matches(CANDIDATE_PENDING).count(),
+                CandidateFeature::COUNT,
+                "{}: every candidate column is still PENDING at step 2",
+                pair.id,
+            );
         }
     }
 
@@ -4305,4 +5752,5 @@ mod tests {
         assert_ne!(second, area);
     }
 }
+
 
