@@ -1643,8 +1643,10 @@ pub const PAIR_3B: PairDeclaration = PairDeclaration {
          pile, and the completed pile is the second arm. The fulfillment moves none of \
          `clock_ppm`'s four clocks (it moves no deck card, no track pawn and no building), so \
          p = 0 survives it, and the LATE side needs no different device: the same fulfillment \
-         runs on the deck-saturated base. The construction is 6(a)'s greater side exactly, \
-         which S2-T5 already admitted through this frame.",
+         runs on the deck-saturated base. The SHAPE is 6(a)'s greater side — a different \
+         registered card, the same empty hand over a completed starting order — which S2-T5 \
+         already admitted through this frame, so the clause needed resolving rather than \
+         proving.",
         "THE FULFILLED CARD'S OWN EFFECTS, walked. Order 22 pays 8 VP and nothing else — no \
          money, no imports, no goods back, and no movement or warehouse icon face, so no \
          choice is queued and the state stays a structural hand-off. Both sides fulfil it, so \
