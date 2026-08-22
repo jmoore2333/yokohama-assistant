@@ -1765,6 +1765,817 @@ pub const PAIR_3D: PairDeclaration = PairDeclaration {
 };
 
 // ---------------------------------------------------------------------------
+// §5.2 FAMILY 4 — orders (7)
+// ---------------------------------------------------------------------------
+
+/// **4(a)'s MATCHED card** — printed corner index 26 (French; 3 tea +
+/// 1 seafood; 1 VP + 2 Yen; icon-free).
+///
+/// It is 10(d)'s matched card, in the SAME direction, and the reuse is the
+/// registration's own argument rather than a shortcut. §5.2 asks 4(a) for two
+/// "same-value orders" whose requirements differ in what the seat holds, and
+/// the manifest's cleanest such pair is the one 10(d) already registers and its
+/// review already checked: cards 26 and 5 are both French, both icon-free, and
+/// both worth 4 in O1's own half-VP units (`2·VP + 2·imports + money` — 2 + 0 +
+/// 2 against 2 + 2 + 0), so country, face and icons are equal by the same
+/// arithmetic there and here.
+///
+/// What differs is the CROSS. 10(d) holds ZERO stocks and one Fishing Ground
+/// pawn, so O2 reads 0 on both sides and X3 separates them; 4(a) holds ONE
+/// seafood and NO pawn, so X3 reads 0 on both sides and O2 separates them. The
+/// two registrations are the same two cards read through the two halves of the
+/// access × need split, which is what makes the attribution visible rather than
+/// merely asserted.
+pub const FAMILY_4A_MATCHED_CARD: OrderCardId = OrderCardId(26);
+/// 4(a)'s UNMATCHED card — printed corner index 5 (French; 1 copper + 2 tea;
+/// 1 VP + 1 imported good; icon-free). See [`FAMILY_4A_MATCHED_CARD`].
+pub const FAMILY_4A_UNMATCHED_CARD: OrderCardId = OrderCardId(5);
+
+/// 4(a)'s registered stocks, `[copper, silk, tea, seafood]` — ONE seafood.
+///
+/// One good, held once, is the sharpest reading O2 admits: the matched card
+/// needs a seafood and reads `min(1, 1) = 1`, the unmatched card needs copper
+/// and tea and reads `min(1, 0) + min(0, 1) + min(0, 2) = 0`, and neither card
+/// is executable, so §5.2's "sized non-executable both sides (O3 = 0 both)"
+/// holds without a second registered fact. A larger stock would risk making one
+/// side executable and would put the separation at the mercy of which good the
+/// deal happened to give.
+pub const FAMILY_4A_STOCKS: [u32; 4] = [0, 0, 0, 1];
+
+/// **4(b)'s EXECUTABLE card** — printed corner index 13 (English; 2 copper +
+/// 1 silk + 2 seafood; 8 VP + 1 imported good; icon-free).
+///
+/// **4(b)'s LESSER card is index 24** (English; 3 copper + 1 silk + 2 seafood;
+/// 7 VP + 2 Yen + 1 imported good; icon-free), and the two are the manifest's
+/// ONLY pair that satisfies §5.2's registered equalization at all. The search
+/// is small enough to state: over every ordered pair of the 36 printed orders
+/// with equal half-VP face and equal icon count, at the stock vector that makes
+/// the first card exactly executable, exactly one pair leaves the second card
+/// NON-executable at the SAME O2. It is this one, and the reason is visible in
+/// the requirements — 24 is 13 plus one copper.
+///
+/// So at [`FAMILY_4B_STOCKS`] card 13 is executable (O3 = 1) while card 24 is
+/// one copper short (O3 = 0), and O2 reads `2 + 1 + 0 + 2 = 5` on both sides:
+/// the greater side because every requirement is met, the lesser side because
+/// the copper leg CAPS at the stock (`min(2, 3) = 2`) and the other three legs
+/// are identical. Both cards are English and worth 18 half-VP
+/// (`2·8 + 2·1 + 0` against `2·7 + 2·1 + 2`), so face, country and icons move
+/// nothing.
+pub const FAMILY_4B_EXECUTABLE_CARD: OrderCardId = OrderCardId(13);
+/// 4(b)'s DISTANT card — see [`FAMILY_4B_EXECUTABLE_CARD`].
+pub const FAMILY_4B_DISTANT_CARD: OrderCardId = OrderCardId(24);
+
+/// 4(b)'s registered stocks — EXACTLY the executable card's requirements.
+///
+/// Exactly, not at least: a surplus copper would make the distant card
+/// executable too and the pair would separate nothing, and a surplus of any
+/// other good would leave O2's cap unbound on the lesser side and break the
+/// registered equalization.
+pub const FAMILY_4B_STOCKS: [u32; 4] = [2, 1, 0, 2];
+
+/// **4(c)'s RICHER HAND** — printed corner indices 15 (English; 3 copper +
+/// 1 silk + 1 tea; 9 VP + 1 imported good) and 21 (Dutch; 2 silk + 2 tea +
+/// 2 seafood; 11 VP), summed face 42 half-VP.
+///
+/// # Why the hand is TWO cards, and why that forced the ruling
+///
+/// §5.2 asks for "requirements EQUAL AS THE HAND-SUMMED VECTOR" at a
+/// DIFFERENT face with icons unmoved. A ONE-card hand cannot do it: the
+/// manifest's only requirement twins are orders 10 and 32, and their icon
+/// faces differ (10 carries two movement icons, 32 none). At §5.1's p = 0 the
+/// hand is capped at the single dealt starting order, so the early row is not
+/// merely awkward — it names a state the deck arithmetic cannot reach. That
+/// collision is what the owner ruled on 2026-08-22 (guidingpath's decision log,
+/// that date): **4(c) re-registers LATE-ONLY**, on the same recorded footing
+/// `w_O5(early)` already has from 4(e)'s rev-8 re-registration, and
+/// `w_O1(early)` binds through §9(c)'s E-order group gates instead. The frozen
+/// §5.2 text still reads "both endpoints"; this registry realizes the ruling,
+/// which is what §5.1's "the realized exact-tuple registry IS the completed
+/// pre-registration" makes it for.
+///
+/// # What the two hands hold equal
+///
+/// Summed requirements are `(3, 3, 3, 2)` on both sides — 15's `(3, 1, 1, 0)`
+/// plus 21's `(0, 2, 2, 2)`, and 24's `(3, 1, 0, 2)` plus 30's `(0, 2, 3, 0)`.
+/// Summed icon faces are 0 on both sides. Hand SIZE is 2 on both sides, so the
+/// incumbent `HandSize` row cannot move either. The faces are 20 + 22 = 42
+/// against 18 + 10 = 28, a registered gap of 14 half-VP.
+pub const FAMILY_4C_RICH_HAND: [OrderCardId; 2] = [OrderCardId(15), OrderCardId(21)];
+/// 4(c)'s POORER HAND — indices 24 (English; 3 copper + 1 silk + 2 seafood) and
+/// 30 (French; 2 silk + 3 tea), summed face 28 half-VP. See
+/// [`FAMILY_4C_RICH_HAND`].
+pub const FAMILY_4C_POOR_HAND: [OrderCardId; 2] = [OrderCardId(24), OrderCardId(30)];
+
+/// 4(c)'s registered stocks — one of each good, which is what setup deals.
+///
+/// Written rather than inherited, and NOT zeroed, because zero stocks would
+/// make the registered summed-vector equality VACUOUS: O2 would read 0 on both
+/// sides for want of any goods at all. At one of each good, every leg of the
+/// shared `(3, 3, 3, 2)` requirement vector is capped by the stock, so O2 reads
+/// 4 on both sides — equal because the vectors are equal, which is the fact the
+/// registration is resting on. No card is executable at one of each (both hands
+/// need 3 of something), so O3 is 0 on both sides too.
+pub const FAMILY_4C_STOCKS: [u32; 4] = [1, 1, 1, 1];
+
+/// **THE FOUR-COUNTRY REALIZED SET** that 4(d)'s greater side and BOTH of
+/// 4(e)'s sides complete — English, French, German, American, one order each
+/// (printed corner indices 32, 26, 25, 16).
+///
+/// One constant for two registrations because it is one registered fact: §5.2
+/// writes 4(e)'s realized icons as "{DE, GB, FR, US}, four distinct (the SAME
+/// four completed orders both sides)", and 4(d)'s greater side is the state
+/// that has just ARRIVED at that set. Registering them apart would be two
+/// spellings of one position, and the pair of registrations reads as what it is
+/// — 4(d) asks what the fourth country was worth, 4(e) asks what the fifth
+/// would be — only if the set itself is the same bytes.
+///
+/// Dutch is the country deliberately ABSENT, since it is the fifth 4(e)'s
+/// greater side is registered to be able to attain.
+///
+/// The cards come out of the BOX ([`complete_order_from_the_box`]), so no clock
+/// moves and the port keeps its fill; every one of the four is a card the
+/// generated deal leaves unlocated at [`FIXTURE_SEED`], which is what makes the
+/// completion a swap rather than a theft from a port slot.
+pub const FAMILY_4_REALIZED_SET: [OrderCardId; 4] =
+    [OrderCardId(32), OrderCardId(26), OrderCardId(25), OrderCardId(16)];
+
+/// **4(d)'s DUPLICATE card** — printed corner index 5 (French; 1 copper +
+/// 2 tea; 1 VP + 1 imported good), the fourth completion on the LESSER side.
+///
+/// French duplicates [`FAMILY_4_REALIZED_SET`]'s French card, so the lesser
+/// side completes four orders across THREE distinct countries and
+/// `country_set_bonus` reads 4 (three distinct score 4, and the leftover single
+/// icon forms no second set) against the greater side's 8. That +4 is the
+/// pair's registered margin carrier.
+///
+/// Its FACE is doing the second job. §5.2 registers 4(d)'s collateral as "O1
+/// (completed-order sets differ)", and a completed card is LOCATED for O1's
+/// pool, so the row moves only if the two fourth cards differ enough in half-VP
+/// to shift the pool's integer floor. Card 5 is worth 4 against card 16's 18;
+/// over the 25-card pool those 14 half-VP move the floor by exactly 1
+/// (`⌊329/25⌋ = 13` against `⌊315/25⌋ = 12`), and the sign is the helpful one —
+/// the opponent's hidden slot is estimated HIGHER on the lesser side, so the
+/// differenced ΔO1 is +1 rather than a collateral pulling against the margin.
+pub const FAMILY_4D_DUPLICATE_CARD: OrderCardId = OrderCardId(5);
+
+/// **4(e)'s RICHER card** — printed corner index 6 (Dutch; 1 copper + 1 tea +
+/// 2 seafood; 2 VP + 1 Yen + 1 imported good; icon-free), face 7 half-VP.
+///
+/// §5.2 names both cards outright, and the two properties it names them for are
+/// checkable: `2·2 + 2·1 + 1 = 7` for card 6 and `2·2 + 2·1 + 1 = 7` for
+/// card 9, so O1's own term is EQUAL, and neither carries a movement or
+/// warehouse icon, so O6 is 0 on both sides. What separates them is country
+/// alone — Dutch against German — and the registered board is what turns that
+/// into O5's whole delta.
+pub const FAMILY_4E_DUTCH_CARD: OrderCardId = OrderCardId(6);
+/// 4(e)'s POORER card — printed corner index 9 (German; 3 silk + 1 seafood;
+/// 2 VP + 1 Yen + 1 imported good; icon-free), face 7 half-VP. See
+/// [`FAMILY_4E_DUTCH_CARD`].
+pub const FAMILY_4E_GERMAN_CARD: OrderCardId = OrderCardId(9);
+
+/// **4(e)'s SIX PORT-A OFFERS**, slot 0 first — printed corner indices 13, 27,
+/// 20, 17, 12, 18 (English, English, English, German, American, American).
+///
+/// §5.2's registered board is "deck empty + PORT FULL … all six port offers
+/// non-NL", and the generated port at [`FIXTURE_SEED`] fails it twice: slot 2
+/// holds card 11, which is Dutch, and slot 3 holds card 9, which the LESSER
+/// side needs in hand. Those two slots are the only ones this restock moves;
+/// cards 13, 27, 12 and 18 stand where the deal put them.
+///
+/// Why it has to be exact: the port offers are an O5 ATTAINABLE source, and
+/// they are the reason "every OTHER attainable card is inert" is true rather
+/// than hoped. Every one of the six sits in a country already inside
+/// [`FAMILY_4_REALIZED_SET`], so its marginal is 0; the ONLY Dutch source
+/// anywhere in either side's attainable set is the greater side's own held
+/// card. They are also LOCATED for O1's pool, which is why both sides carry the
+/// same six.
+pub const FAMILY_4E_PORT_OFFERS: [OrderCardId; 6] = [
+    OrderCardId(13),
+    OrderCardId(27),
+    OrderCardId(20),
+    OrderCardId(17),
+    OrderCardId(12),
+    OrderCardId(18),
+];
+
+/// **4(e)'s SIX LABORATORY-A CARDS**, slot 0 first — the other half of §5.2's
+/// registered board ("lab open slots all non-NL titles").
+///
+/// The generated laboratory at [`FIXTURE_SEED`] seats two Dutch titles (System
+/// of Stock at slot 4, Newspaper at slot 5), and an OPEN lab slot is an O5
+/// attainable source exactly as a port offer is. These six are German, German,
+/// French, English, French, German — four countries, none of them Dutch, so the
+/// whole laboratory's marginal is 0 on both sides.
+///
+/// The three Dutch-only titles the manifest carries (Newspaper, System of
+/// Stock, Letter Press Printing) are the ones this list must avoid; every other
+/// effect chosen here has at least one unowned copy in the technology deck once
+/// [`stock_lab_a`] returns the board's own cards to it.
+pub const FAMILY_4E_LAB_STOCK: [TechEffect; 6] = [
+    TechEffect::Brickyard,        // German, industry 3
+    TechEffect::Exposition,       // German, industry 5
+    TechEffect::Gaslight,         // French, industry 3
+    TechEffect::Ball,             // English, industry 3
+    TechEffect::PatentSystem,     // French, industry 3
+    TechEffect::MiningTechnology, // German, industry 3
+];
+
+/// **4(f)'s TAKEN offer** — [`FIXTURE_PORT_CARD`], printed corner index 2
+/// (French; 1 seafood + 2 tea; 3 VP; icon-free), seated at Port-A slot 0.
+///
+/// 11(e) registered the same card for the same three properties and they are
+/// the properties 4(f) needs too: it matches a good the seat holds (so O2
+/// moves), it needs more tea than the seat has (so O3 stays 0 and the take does
+/// not silently create an executable order), and its reward face is pure VP
+/// (so O6 stays 0). Slot 0 is a LOW-zone position, and Low is the only zone
+/// realizable power 2 opens.
+pub const FAMILY_4F_PORT_SLOT: usize = 0;
+
+/// **4(f)'s SECOND held card** — printed corner index 35 (American; 2 silk +
+/// 4 seafood; 7 VP + 2 Yen; icon-free).
+///
+/// §5.2 registers the take as "hand 2 → 3", and the second card is what makes
+/// the AFTER side land exactly on X2's `hand.len() >= 3` refusal. Its
+/// requirements name no tea, which is what keeps the pre-take O2 at 0 against
+/// [`FAMILY_4F_STOCKS`]; it is icon-free, so O6 is 0 on both sides; and it is
+/// not executable at one tea, so O3 is 0 on both sides.
+pub const FAMILY_4F_SECOND_CARD: OrderCardId = OrderCardId(35);
+
+/// 4(f)'s registered stocks — ONE tea and nothing else.
+///
+/// The whole pre/post arithmetic rests on this vector. Neither held card needs
+/// tea, so the pre-take summed requirement in tea is 0 and O2 reads 0; the
+/// taken card needs two, so the post-take leg reads `min(1, 2) = 1` and ΔO2 is
+/// +1. The same single tea is what makes X2 nonzero BEFORE the take — of the
+/// two LOW-zone offers only the registered one requires tea, so X2 reads 1 —
+/// and the take then collapses it to 0 through the hand cap rather than through
+/// anything about the offers.
+pub const FAMILY_4F_STOCKS: [u32; 4] = [0, 0, 1, 0];
+
+/// **4(g)'s ICON card** — printed corner index 27 (English; 2 copper +
+/// 2 seafood; 1 VP + 2 Yen + ONE warehouse icon), face 4 half-VP.
+///
+/// **4(g)'s ICON-FREE card is index 26** (French; 3 tea + 1 seafood; 1 VP +
+/// 2 Yen), face 4 half-VP. §5.2 names both, and the face equality is exact in
+/// O1's own units rather than in printed VP: `2·1 + 2·0 + 2 = 4` for each.
+/// O6 is therefore the SOLE mover — 1 against 0 — with O2 and O3 held at 0 by
+/// the registered zero stocks and O5 held at 0 by the empty realized set (a
+/// FIRST distinct country scores nothing, so the differing countries buy no
+/// marginal on either side).
+pub const FAMILY_4G_ICON_CARD: OrderCardId = OrderCardId(27);
+/// 4(g)'s ICON-FREE card — see [`FAMILY_4G_ICON_CARD`].
+pub const FAMILY_4G_PLAIN_CARD: OrderCardId = OrderCardId(26);
+
+/// The achievement triple 4(g) draws.
+///
+/// The pair's construction FULFILS the opponent's dealt starting order, which
+/// spends two copper and one seafood and pays four VP and one Yen. It happens
+/// on the SHARED base, so every leg it touches differences to zero across the
+/// pair — but §5.1's registered draw constraint is about what the recipe
+/// TOUCHES, not about what survives the subtraction, so the moved goods are
+/// named and the yen flag is set. Tea7 is outside the moved set and Category B
+/// is `Orders5` rather than `Money10`, so both halves of the constraint are
+/// checked by `check_draws` rather than argued here.
+const DRAWS_4G_OPPONENT_FULFILLMENT: AchievementDraws = AchievementDraws {
+    goods_moved: &[AchievementType::Copper5, AchievementType::Seafood7],
+    moves_yen: true,
+    ..DRAWS_TEA_LEG
+};
+
+/// §5.2 4(a) — **MATCHED ≻ UNMATCHED**, O2's carrier.
+pub const PAIR_4A: PairDeclaration = PairDeclaration {
+    id: "4(a)",
+    name: "MATCHED ≻ UNMATCHED",
+    family: 4,
+    greater_side: "holding order 26 (3 tea + 1 seafood) against the seat's one seafood",
+    lesser_side: "holding order 5 (1 copper + 2 tea) against the same one seafood",
+    role: PairRole::Constraint,
+    stages: &[StageEndpoint::Early],
+    view_class: ViewClass::HandOff,
+    margin: MarginClass::DirectionOnly,
+    carrier: Some(FeatureId::Candidate(CandidateFeature::OrderMatchedGoods)),
+    presidents: SidedPresidents::BOTH_IN_HAND,
+    draws: DRAWS_TEA_LEG,
+    techs: TechDeclaration { excluded_effects: NO_CONVERSION_TECHS, max_owned: Some(0) },
+    layout: LayoutClass::StandardGenerated,
+    parameters: &[
+        ("setup_seed", FIXTURE_SEED as i64),
+        ("greater_order_card", FAMILY_4A_MATCHED_CARD.0 as i64),
+        ("lesser_order_card", FAMILY_4A_UNMATCHED_CARD.0 as i64),
+        ("subject_copper", FAMILY_4A_STOCKS[0] as i64),
+        ("subject_silk", FAMILY_4A_STOCKS[1] as i64),
+        ("subject_tea", FAMILY_4A_STOCKS[2] as i64),
+        ("subject_seafood", FAMILY_4A_STOCKS[3] as i64),
+        ("card_face_half_vp", 4),
+        ("o2_greater", 1),
+        ("o2_lesser", 0),
+        ("o3_both_sides", 0),
+    ],
+    expected_nonzero: &[FeatureId::Candidate(CandidateFeature::OrderMatchedGoods)],
+    early_hand_cap_deviation: None,
+    notes: &[
+        "§5.2: same-value orders sized non-executable both sides (O3 = 0 both), one \
+         requiring held goods, one not. DIRECTION-ONLY, EARLY, HAND-OFF. Collateral: none \
+         (O1/HandSize equal).",
+        "'SAME-VALUE' IS READ IN O1'S OWN HALF-VP UNITS, not in printed VP — the T6 10(d) \
+         lesson. Card 26 pays 1 VP + 2 Yen and card 5 pays 1 VP + 1 imported good, which \
+         are two different printed faces and the SAME `2·VP + 2·imports + money` = 4. \
+         Reading the equality off the printed star alone would have registered a pair whose \
+         O1 row moves by 2.",
+        "NEITHER SIDE IS EXECUTABLE, and the registered stock is what makes both refusals \
+         hold at once: at one seafood, card 26 is short three tea and card 5 is short one \
+         copper and two tea. So O3 is 0 on both sides and the pair reads O2 alone — §5.2's \
+         'sized non-executable both sides' realized rather than asserted.",
+        "THE OTHER O-ROWS ARE EQUAL BY REGISTRATION, one reason each. O1: equal faces, and \
+         the pool floor is invariant under the 5↔26 swap because the swap exchanges which \
+         of two EQUAL-half-VP cards is located (10(d)'s recorded argument, same two cards). \
+         O6: both icon-free. O5: the seat holds no completed order and no technology, so \
+         its realized icon set is EMPTY and a first distinct country scores nothing — every \
+         attainable marginal is 0 on both sides, which is why the two cards may share a \
+         country without that being load-bearing (they do: both French).",
+        "X3 IS 0 ON BOTH SIDES BECAUSE THE SEAT STANDS NOWHERE. The pair places no \
+         assistant at all, so every access term in the S group and every X term reads 0, \
+         and the residual need the two cards differ in has no production access to be \
+         conditioned on. That is the deliberate contrast with 10(d), which holds the same \
+         two cards at zero stocks with a Fishing Ground pawn and separates on X3 instead.",
+    ],
+};
+
+/// §5.2 4(b) — **EXECUTABLE ≻ DISTANT**, O3's carrier.
+pub const PAIR_4B: PairDeclaration = PairDeclaration {
+    id: "4(b)",
+    name: "EXECUTABLE ≻ DISTANT",
+    family: 4,
+    greater_side: "holding order 13, whose every requirement the registered stock meets",
+    lesser_side: "holding order 24 — the same requirements plus one copper the seat lacks",
+    role: PairRole::Constraint,
+    stages: &[StageEndpoint::Early, StageEndpoint::Late],
+    view_class: ViewClass::HandOff,
+    margin: MarginClass::DirectionOnly,
+    carrier: Some(FeatureId::Candidate(CandidateFeature::ExecutableOrders)),
+    presidents: SidedPresidents::BOTH_IN_HAND,
+    draws: DRAWS_TEA_LEG,
+    techs: TechDeclaration { excluded_effects: NO_CONVERSION_TECHS, max_owned: Some(0) },
+    layout: LayoutClass::StandardGenerated,
+    parameters: &[
+        ("setup_seed", FIXTURE_SEED as i64),
+        ("greater_order_card", FAMILY_4B_EXECUTABLE_CARD.0 as i64),
+        ("lesser_order_card", FAMILY_4B_DISTANT_CARD.0 as i64),
+        ("subject_copper", FAMILY_4B_STOCKS[0] as i64),
+        ("subject_silk", FAMILY_4B_STOCKS[1] as i64),
+        ("subject_tea", FAMILY_4B_STOCKS[2] as i64),
+        ("subject_seafood", FAMILY_4B_STOCKS[3] as i64),
+        ("card_face_half_vp", 18),
+        ("o2_both_sides", 5),
+        ("o3_greater", 1),
+        ("o3_lesser", 0),
+        ("lesser_copper_shortfall", 1),
+    ],
+    expected_nonzero: &[FeatureId::Candidate(CandidateFeature::ExecutableOrders)],
+    early_hand_cap_deviation: None,
+    notes: &[
+        "§5.2: equal hand size and faces; the distant side's requirements partially matched \
+         so O2 is EQUAL both sides (the registered equalization — otherwise O2 carries the \
+         pair and O3 is unconstrained). DIRECTION-ONLY, both endpoints, HAND-OFF. \
+         Collateral: none after equalization.",
+        "THE EQUALIZATION IS THE PAIR, and it is arithmetic rather than luck: card 24's \
+         requirement vector is card 13's plus one copper. At a stock equal to card 13's \
+         requirements the greater side's O2 is the whole sum 2 + 1 + 0 + 2 = 5, and the \
+         lesser side's copper leg CAPS at the stock — min(2, 3) = 2 — with the other three \
+         legs identical, so its O2 is 5 as well. One extra copper anywhere would make the \
+         lesser card executable too and the pair would separate nothing.",
+        "THIS IS THE MANIFEST'S ONLY SUCH PAIR, stated as a search result rather than a \
+         preference: over every ordered pair of the 36 printed orders with equal half-VP \
+         face and equal icon count, evaluated at the stock vector that makes the first \
+         exactly executable, 13/24 is the only one leaving the second NON-executable at the \
+         same O2. A re-read wanting a different pair is looking for something that is not \
+         there.",
+        "EQUAL FACES ARE AGAIN THE HALF-VP READING: card 13 pays 8 VP + 1 imported good and \
+         card 24 pays 7 VP + 2 Yen + 1 imported good — 2·8 + 2·1 + 0 = 18 against \
+         2·7 + 2·1 + 2 = 18. Both are English and both icon-free, so O1, O5 and O6 are \
+         equal by construction; the pool floor is invariant for 10(d)'s reason (equal-face \
+         cards trading places in the located set).",
+        "CARD 13 STANDS AT A PORT SLOT at [`FIXTURE_SEED`], so the construction parks BOTH \
+         registered cards off the face-up offers before either is dealt — 10(d)'s device, \
+         for 10(d)'s reason: face-up offers are LOCATED for O1's pool and deck and box \
+         cards are not, so dealing one out of a port slot would move the pool underneath a \
+         pair whose registered collateral is none.",
+    ],
+};
+
+/// §5.2 4(c) — **HIGHER FACES ≻ LOWER**, O1's carrier. **LATE-ONLY per the
+/// owner's 2026-08-22 ruling** — see [`FAMILY_4C_RICH_HAND`].
+pub const PAIR_4C: PairDeclaration = PairDeclaration {
+    id: "4(c)",
+    name: "HIGHER FACES ≻ LOWER",
+    family: 4,
+    greater_side: "holding orders 15 and 21 — 42 half-VP against the shared requirement vector",
+    lesser_side: "holding orders 24 and 30 — 28 half-VP against the same vector",
+    role: PairRole::Constraint,
+    stages: &[StageEndpoint::Late],
+    view_class: ViewClass::HandOff,
+    margin: MarginClass::DirectionOnly,
+    carrier: Some(FeatureId::Candidate(CandidateFeature::HeldOrderValue)),
+    presidents: SidedPresidents::BOTH_IN_HAND,
+    draws: DRAWS_TEA_LEG,
+    techs: TechDeclaration { excluded_effects: NO_CONVERSION_TECHS, max_owned: Some(0) },
+    layout: LayoutClass::StandardGenerated,
+    parameters: &[
+        ("setup_seed", FIXTURE_SEED as i64),
+        ("hand_size_both_sides", 2),
+        ("greater_hand_faces", 42),
+        ("lesser_hand_faces", 28),
+        ("summed_requirement_copper", 3),
+        ("summed_requirement_silk", 3),
+        ("summed_requirement_tea", 3),
+        ("summed_requirement_seafood", 2),
+        ("summed_icons_both_sides", 0),
+        ("pool_cards", 28),
+        ("greater_opponent_floor", 11),
+        ("lesser_opponent_floor", 12),
+        ("subject_own_floor_both_sides", 0),
+        ("differenced_delta_o1", 15),
+    ],
+    expected_nonzero: &[FeatureId::Candidate(CandidateFeature::HeldOrderValue)],
+    early_hand_cap_deviation: None,
+    notes: &[
+        "§5.2: same hand size, requirements EQUAL AS THE HAND-SUMMED VECTOR (the per-card \
+         reading is near-infeasible — the manifest's only requirement twins are 10/32, \
+         whose movement icons differ; summed equality is what O2/O3 read), higher half-VP \
+         face total, icon faces equal (O6 unmoved). DIRECTION-ONLY, both endpoints, \
+         HAND-OFF. Collateral: the pool floor moves with the located set and is COMMON to \
+         both seats' O1 rows, so the DIFFERENCED ΔO1 = Δfaces + Δfloor_own − Δfloor_opp \
+         with the floors listed per seat.",
+        "THE ONE DEPARTURE FROM THE FROZEN TEXT ABOVE, and it is a RULING rather than a \
+         choice: §5.2 registers both endpoints, and pair 4(c) here registers LATE ONLY. The \
+         early row names an unreachable state — §5.1's p = 0 caps the hand at the single \
+         dealt starting order, and no ONE card can differ in face while holding the \
+         requirement vector and the icon faces equal, because the manifest's only \
+         requirement twins (10 and 32) differ in icons. The owner ruled the recommended \
+         option in session on 2026-08-22 (guidingpath's decision log, that date): 4(c) \
+         re-registers LATE-ONLY on the exact rev-8 4(e)/O5 precedent, `w_O1(early)` goes \
+         unconstrained by Part B, and §9(c)'s E-order group gates bind it through the \
+         group's early rows. Recorded FORWARD: the frozen spec text stands and this registry \
+         realizes the ruling.",
+        "THE FLOOR ARITHMETIC, realized rather than described. O1's located set is \
+         completed orders (none here) plus Known hands plus the port's six offers plus the \
+         viewer's own starting order, and the pool is its complement: 6 + 2 = 8 located, so \
+         28 pool cards on both sides. The 36 printed orders carry 447 half-VP between them, \
+         the port carries 72, and the hands carry 42 and 28 — so the pool sums are 333 and \
+         347 and the OPPONENT's hidden-slot floors are ⌊333/28⌋ = 11 and ⌊347/28⌋ = 12. The \
+         SUBJECT reads no floor at all on either side (its own hand is Known to it and its \
+         own starting order is named), so Δfloor_own is 0 and the identity closes: \
+         ΔO1 = 14 + 0 − (11 − 12) = 15.",
+        "THE COLLATERAL RUNS WITH THE DIRECTION HERE, which is worth stating because it \
+         could have run against it: the richer hand LOCATES more value, which leaves the \
+         pool poorer and the opponent's estimated slot LOWER, so the relative form gains \
+         the difference twice. A re-read checking the sign should expect +15 rather than \
+         +14.",
+        "STOCKS ARE ONE OF EACH GOOD, NOT ZERO, and that is what keeps the registered \
+         summed-vector equality from being vacuous: at zero stocks O2 would read 0 on both \
+         sides for want of goods rather than because the vectors match. At one of each, \
+         every leg of the shared (3, 3, 3, 2) vector is stock-capped and O2 reads 4 on both \
+         sides. Nothing is executable at one of each — every card in both hands needs three \
+         of something — so O3 is 0 on both sides and HandSize is 2 on both.",
+    ],
+};
+
+/// §5.2 4(d) — **COMPLETING ICON ≻ FRESH ICON**, the realized-set compatibility
+/// constraint on the incumbent.
+pub const PAIR_4D: PairDeclaration = PairDeclaration {
+    id: "4(d)",
+    name: "COMPLETING ICON ≻ FRESH ICON",
+    family: 4,
+    greater_side: "four completed orders in FOUR distinct countries — the set closed at 8 VP",
+    lesser_side: "four completed orders in THREE — the fourth a French duplicate, 4 VP",
+    role: PairRole::Constraint,
+    stages: &[StageEndpoint::Late],
+    view_class: ViewClass::HandOff,
+    margin: MarginClass::Margined {
+        early: None,
+        late: Some(160),
+        carrier: FeatureId::Incumbent(Feature::CountryBonusNow),
+    },
+    carrier: None,
+    presidents: SidedPresidents::BOTH_IN_HAND,
+    draws: DRAWS_TEA_LEG,
+    techs: TechDeclaration { excluded_effects: NO_CONVERSION_TECHS, max_owned: Some(0) },
+    layout: LayoutClass::StandardGenerated,
+    parameters: &[
+        ("setup_seed", FIXTURE_SEED as i64),
+        ("completed_orders_both_sides", 4),
+        ("greater_distinct_countries", 4),
+        ("lesser_distinct_countries", 3),
+        ("country_set_bonus_greater", 8),
+        ("country_set_bonus_lesser", 4),
+        ("margin_vp", 4),
+        ("greater_fourth_card", FAMILY_4_REALIZED_SET[3].0 as i64),
+        ("lesser_fourth_card", FAMILY_4D_DUPLICATE_CARD.0 as i64),
+        ("subject_order_card", FIXTURE_ORDER_CARD.0 as i64),
+        ("owned_technologies", 0),
+        ("o5_both_sides", 4),
+        ("pool_cards", 25),
+        ("greater_opponent_floor", 12),
+        ("lesser_opponent_floor", 13),
+        ("differenced_delta_o1", 1),
+    ],
+    expected_nonzero: &[
+        FeatureId::Incumbent(Feature::CountryBonusNow),
+        FeatureId::Candidate(CandidateFeature::HeldOrderValue),
+    ],
+    early_hand_cap_deviation: None,
+    notes: &[
+        "§5.2: a REALIZED-set compatibility constraint on the INCUMBENT — no production \
+         carrier: the state after gaining the 4th-distinct icon ≻ after a duplicate icon. \
+         MARGINED, carrier `CountryBonusNow` (set-bonus VP scores 1:1 in `final_total`): \
+         margin_vp = 4 → late 160. LATE, icons ORDER-sourced (no TechBonusNow collateral). \
+         Collateral: O1 (completed-order sets differ) — listed.",
+        "RECORDED, AND CARRIED FORWARD FROM §5.2 VERBATIM: this forces `w_ctry(late) ≥ 40` \
+         against V2's shipped 30 — the shipped table is deliberately NOT a witness; the box \
+         keeps it satisfiable, and §9's 'registered-margin repair' hand-set class exists \
+         for exactly this. The arithmetic is one line: the margin is \
+         max(1, ⌈4 × w_vp(late) = 40⌉) = 160, `CountryBonusNow` moves by 4, and 4·w ≥ 160 \
+         is w ≥ 40.",
+        "THE 2/4/8/12 CURVE IS WHY THE FOURTH COUNTRY IS WORTH FOUR. Four icons in four \
+         distinct countries form ONE set of four and score 8; four icons in three distinct \
+         countries form one set of three (4 VP) and leave a single leftover icon, which \
+         forms no set at all — so 8 against 4, a clean +4. `country_set_bonus` is the \
+         engine's own greedy loop and the fixture reads its answer rather than restating \
+         it.",
+        "O5 IS EQUAL AT 4 ON BOTH SIDES, which is what keeps §5.2's collateral list to O1 \
+         alone. The greater side's best attainable step is the FIFTH country (8 → 12, +4) \
+         and the lesser side's is its own fourth distinct (4 → 8, +4); the Dutch and \
+         American offers the generated port carries make both of those attainable, so the \
+         row differences to zero. A construction that closed either seat's attainable set \
+         would break the registration.",
+        "ICONS ARE ORDER-SOURCED, so `TechBonusNow` is 0 on both sides: neither seat owns a \
+         technology, and the registration's max_owned = 0 is what checks it. The completed \
+         cards' own printed rewards are NOT credited on either side — \
+         `complete_order_from_the_box` is a legality construction, 6(c)'s standing trade — \
+         so `VictoryPoints` reads 0 on both sides and cannot ride the margin.",
+        "THE O1 COLLATERAL IS THE POOL FLOOR, and it moves because a completed order is \
+         LOCATED. Both sides locate 11 cards (4 completed + the subject's one held card + 6 \
+         port offers), so the pool is 25 either way; the fourth completions differ by 14 \
+         half-VP (18 against 4) and the floors come out ⌊315/25⌋ = 12 and ⌊329/25⌋ = 13. \
+         The subject's own O1 is equal — the same card in hand on both sides — so the \
+         differenced ΔO1 is 0 − (12 − 13) = +1.",
+    ],
+};
+
+/// §5.2 4(e) — **RICHER PROSPECT ≻ POORER**, O5's carrier and its SOLE mover.
+pub const PAIR_4E: PairDeclaration = PairDeclaration {
+    id: "4(e)",
+    name: "RICHER PROSPECT ≻ POORER",
+    family: 4,
+    greater_side: "holding card 6 — Dutch, the FIFTH country against a four-country set",
+    lesser_side: "holding card 9 — German, a country the set already carries",
+    role: PairRole::Constraint,
+    stages: &[StageEndpoint::Late],
+    view_class: ViewClass::HandOff,
+    margin: MarginClass::DirectionOnly,
+    carrier: Some(FeatureId::Candidate(CandidateFeature::FlagIconMarginal)),
+    presidents: SidedPresidents::BOTH_IN_HAND,
+    draws: DRAWS_TEA_LEG,
+    techs: TechDeclaration { excluded_effects: NO_CONVERSION_TECHS, max_owned: Some(0) },
+    layout: LayoutClass::StandardGenerated,
+    parameters: &[
+        ("setup_seed", FIXTURE_SEED as i64),
+        ("greater_order_card", FAMILY_4E_DUTCH_CARD.0 as i64),
+        ("lesser_order_card", FAMILY_4E_GERMAN_CARD.0 as i64),
+        ("card_face_half_vp", 7),
+        ("completed_orders_both_sides", 4),
+        ("realized_distinct_countries", 4),
+        ("country_set_bonus_both_sides", 8),
+        ("owned_technologies", 0),
+        ("o5_greater", 4),
+        ("o5_lesser", 0),
+        ("subject_copper", 0),
+        ("subject_silk", 0),
+        ("subject_tea", 0),
+        ("subject_seafood", 0),
+        ("own_assistants_on_board", 0),
+        ("dutch_port_offers", 0),
+        ("dutch_lab_slots", 0),
+    ],
+    expected_nonzero: &[FeatureId::Candidate(CandidateFeature::FlagIconMarginal)],
+    early_hand_cap_deviation: None,
+    notes: &[
+        "§5.2 (re-registered at the rev-8 fold-verification on the FOUR-DISTINCT-ICONS \
+         construction, its empty-lab predecessor having been proven unreachable — an empty \
+         lab forces ≥ 10 owned techs — and vacuous under any reachable lab, O5 being a \
+         MAX): each side holds ONE card — card 6 (NL, face 7, icon-free) vs card 9 (DE, \
+         face 7, icon-free) — with realized icons = {DE, GB, FR, US}, four distinct (the \
+         SAME four completed orders both sides; zero owned techs), so attainable NL is the \
+         FIFTH distinct (set bonus 8 → 12, marginal +4) while attainable DE duplicates \
+         (marginal 0) — and every OTHER attainable card is inert, because its country \
+         already sits in the realized set. Registered board: deck empty + PORT FULL (the \
+         §5.1 p = FULL recipe verbatim — no end-trigger fires), all six port offers non-NL; \
+         lab open slots all non-NL titles. Zero trade-good stocks (O2 = O3 = 0), NO own \
+         assistant at any production area (S1 = X3 = 0 — at zero stocks the residual equals \
+         each card's requirement vector), identical non-production assistant placement both \
+         sides. O1 equal (face 7 both; the pool floor is invariant under the 6↔9 swap — \
+         equal half-VP faces), O6 equal (0 both), `CountryBonusNow` equal (8 both), X2 \
+         equal (identical port presence declared: none). DIRECTION-ONLY, LATE, HAND-OFF, \
+         presidents InHand. Collateral: none.",
+        "THE GREATER SIDE'S OWN HELD CARD IS THE ONLY DUTCH SOURCE IN EITHER ATTAINABLE \
+         SET, and that is the registration's whole mechanism rather than a side condition. \
+         O5's attainable set is the countries of KNOWN held orders, face-up port offers and \
+         unowned open lab techs; [`FAMILY_4E_PORT_OFFERS`] and [`FAMILY_4E_LAB_STOCK`] are \
+         registered to be non-Dutch to the card, so the lesser side can reach nothing but \
+         countries already inside [`FAMILY_4_REALIZED_SET`] and its max marginal is 0.",
+        "'IDENTICAL NON-PRODUCTION ASSISTANT PLACEMENT BOTH SIDES' IS REALIZED AS THE EMPTY \
+         PLACEMENT (an S2-T7 judgment call, flagged for the bounded re-read). §5.2 \
+         constrains the placement to be identical and off the production areas; standing no \
+         pawn at all satisfies both and additionally pins X1, X2 and every S-group access \
+         term at 0 on both sides, which is what the registration's 'X2 equal (identical \
+         port presence declared: none)' asks for. A non-empty placement would be legal but \
+         would need its own registered areas.",
+        "THE ORDER-CARD ACCOUNTING, walked card by card because §5.2's board is exact. The \
+         late base empties the ten-card deck into the box (28 boxed); the port restock \
+         swaps two boxed cards for the Dutch offer at slot 2 and the German card at slot 3, \
+         leaving the box at 28 and the port FULL at six; the four completions take four \
+         cards out of the box (24); and each side's deal swaps the base's held card back \
+         into the box for its own registered card. Deck 0 + port 6 + hands 1 + 1 + completed \
+         4 + box 24 = 36, on both sides.",
+        "NO END TRIGGER FIRES, which §5.1's late recipe requires and this construction earns \
+         rather than declares: `EndGameTrigger::OrderDeckEmpty` needs an empty deck AND an \
+         empty port slot, and the restock keeps all six offers face-up. The state is \
+         therefore non-terminal with the deck clock alone at full — the p = FULL realization \
+         §5.1 names.",
+        "THE POOL FLOOR IS INVARIANT UNDER THE 6↔9 SWAP for 10(d)'s recorded reason: the \
+         located set is the same eleven cards on both sides but for which of two \
+         EQUAL-half-VP cards sits in the hand, so the pool's running (count, half-VP sum) is \
+         unchanged and the opponent's hidden-slot estimate cannot move. Both deals are \
+         BOX-sourced — the port restock happens first, precisely so the German card is out \
+         of the port before it is dealt.",
+    ],
+};
+
+/// §5.2 4(f) — **TAKEN ≻ NOT-TAKEN**, the port-take boundary control.
+pub const PAIR_4F: PairDeclaration = PairDeclaration {
+    id: "4(f)",
+    name: "TAKEN ≻ NOT-TAKEN",
+    family: 4,
+    greater_side: "the registered Low-zone offer taken — hand 3, the port one slot short",
+    lesser_side: "the same activation declined — hand 2, the port full",
+    role: PairRole::Constraint,
+    stages: &[StageEndpoint::Late],
+    view_class: AREA_ACTION_RESOLVED,
+    margin: MarginClass::DirectionOnly,
+    carrier: None,
+    presidents: SidedPresidents::symmetric(SeatPresidents {
+        subject: PresidentDecl::OnBoardWithOwnAssistants { telephone_excepted: false },
+        opponent: PresidentDecl::InHand,
+    }),
+    draws: DRAWS_TEA_LEG,
+    techs: TechDeclaration { excluded_effects: NO_CONVERSION_TECHS, max_owned: Some(0) },
+    layout: LayoutClass::StandardGenerated,
+    parameters: &[
+        ("setup_seed", FIXTURE_SEED as i64),
+        ("taken_order_card", FIXTURE_PORT_CARD.0 as i64),
+        ("taken_port_slot", FAMILY_4F_PORT_SLOT as i64),
+        ("second_held_card", FAMILY_4F_SECOND_CARD.0 as i64),
+        ("subject_order_card", FIXTURE_ORDER_CARD.0 as i64),
+        ("port_assistants", 1),
+        ("realizable_power", 2),
+        ("hand_before", 2),
+        ("hand_after", 3),
+        ("subject_tea", FAMILY_4F_STOCKS[2] as i64),
+        ("taken_card_face_half_vp", 6),
+        ("o2_before", 0),
+        ("o2_after", 1),
+        ("x2_before", 1),
+        ("x2_after", 0),
+        ("end_trigger_on_the_taken_side", 1),
+    ],
+    expected_nonzero: &[
+        FeatureId::Incumbent(Feature::HandSize),
+        FeatureId::Candidate(CandidateFeature::HeldOrderValue),
+        FeatureId::Candidate(CandidateFeature::OrderMatchedGoods),
+        FeatureId::Candidate(CandidateFeature::PortTakeable),
+    ],
+    early_hand_cap_deviation: None,
+    notes: &[
+        "§5.2: identical states except one side took a named face-up offer (hand 2 → 3). \
+         Direction: after ≻ before. DIRECTION-ONLY, LATE (deck-empty construction — the \
+         refill moves the deck clock at any earlier stage; the end-trigger flip on the \
+         after side is declared and non-terminal). MID-TURN (phase = AreaAction resolved). \
+         Collateral (all listed): O1/O2 +, HandSize +1, X2 → 0 (the persistent hand-cap \
+         collapse — priced net-positive by this pair, the misincentive control the owner's \
+         ¼–⅓ note makes most expensive to omit).",
+        "THE X2 COLLAPSE, RE-DERIVED AGAINST §3.2's CARD RATHER THAN TRANSCRIBED: X2 reads \
+         0 whenever `hand.len() >= 3` — the manual's take refusal, and a PERSISTENT \
+         collapse until a fulfillment, since nothing but leaving the hand lowers the count. \
+         The lesser side holds two cards and one own assistant at the port at realizable \
+         power 2, so the LOW zone is open and its two offers are read: the registered card \
+         needs two tea against the seat's one (match 1) and the other needs copper and \
+         seafood the seat does not hold (match 0), so X2 is 1. The take carries the hand to \
+         three and X2 to 0 — through the cap, not through the offers.",
+        "BOTH SIDES ARE ENGINE-DRIVEN FROM ONE ROOT, which is what makes 'identical states \
+         except' a legality claim rather than a construction claim: the seat's own turn is \
+         played through `EndAdditionalPhase`, a one-area placement, `PlacePresident` and \
+         `ExecuteAreaAction`, each through the CHECKED `apply_move`. The greater side's \
+         action is the registered `AreaAction::Port` take and the lesser side's is the \
+         port's own `Skip` — 6(d)'s shape, and the reason one view class describes both.",
+        "THE END-TRIGGER FLIP IS THE ENGINE'S OWN, and the two sides pass §5.1's late \
+         recipe through its two DIFFERENT disjuncts. `apply_move` runs \
+         `check_end_game_triggers` after every move; the take empties a port slot against \
+         an already-empty deck, so `EndGameTrigger::OrderDeckEmpty` fires on the taken side \
+         and the recipe's 'or the trigger declared' arm carries it, while the declined side \
+         keeps a full port and passes on the first arm. Neither side is terminal — \
+         `view_is_terminal` additionally wants `final_round` and a last-seat `TurnEnd`, and \
+         this state is mid-turn at `FivePowerBonus`.",
+        "THE DECK CLOCK IS UNMOVED BY THE TAKE, which the pair needs and does not merely \
+         hope for: `initial_order_deck_len` derives the denominator from the port's SLOT \
+         COUNT (`slots.len()`, six whether or not a slot holds a card), never from how many \
+         are filled — so both sides read the same initial size against an empty deck and \
+         `progress_ppm` is PROGRESS_FULL_PPM on both.",
+        "O3 AND O6 ARE HELD AT 0 BY THE REGISTERED CARDS: the taken card needs two tea \
+         against the seat's one and both held cards need goods the seat does not hold, so \
+         nothing is executable on either side; all three are icon-free. O5 is 0 on both \
+         sides — no completed order and no technology, so the realized set is empty and a \
+         first distinct country scores nothing. The card moves from a face-up offer into \
+         the hand, and BOTH are located sets for O1's pool, so the opponent's floor does not \
+         move and the O1 row is the taken card's own face alone.",
+    ],
+};
+
+/// §5.2 4(g) — **ICONS ≻ NO ICONS**, O6's carrier and its SOLE mover.
+pub const PAIR_4G: PairDeclaration = PairDeclaration {
+    id: "4(g)",
+    name: "ICONS ≻ NO ICONS",
+    family: 4,
+    greater_side: "holding card 27 — face 4, one warehouse icon",
+    lesser_side: "holding card 26 — the same face 4, icon-free",
+    role: PairRole::Constraint,
+    stages: &[StageEndpoint::Early, StageEndpoint::Late],
+    view_class: ViewClass::HandOff,
+    margin: MarginClass::DirectionOnly,
+    carrier: Some(FeatureId::Candidate(CandidateFeature::HeldOrderIcons)),
+    presidents: SidedPresidents::BOTH_IN_HAND,
+    draws: DRAWS_4G_OPPONENT_FULFILLMENT,
+    techs: TechDeclaration { excluded_effects: NO_CONVERSION_TECHS, max_owned: Some(0) },
+    layout: LayoutClass::StandardGenerated,
+    parameters: &[
+        ("setup_seed", FIXTURE_SEED as i64),
+        ("greater_order_card", FAMILY_4G_ICON_CARD.0 as i64),
+        ("lesser_order_card", FAMILY_4G_PLAIN_CARD.0 as i64),
+        ("card_face_half_vp", 4),
+        ("greater_icon_faces", 1),
+        ("lesser_icon_faces", 0),
+        ("subject_copper", 0),
+        ("subject_silk", 0),
+        ("subject_tea", 0),
+        ("subject_seafood", 0),
+        ("opponent_hand_cards", 0),
+        ("opponent_completed_orders", 1),
+        ("realized_icons_subject", 0),
+    ],
+    expected_nonzero: &[FeatureId::Candidate(CandidateFeature::HeldOrderIcons)],
+    early_hand_cap_deviation: None,
+    notes: &[
+        "§5.2: card 27 (GB, face 4, one warehouse icon) vs card 26 (FR, face 4, icon-free) \
+         at ZERO stocks (O2 = O3 = 0), ZERO realized icons (a single attainable icon of ANY \
+         country has marginal 0 — one distinct scores nothing — so O5 = 0 both sides \
+         despite the differing countries), the opponent's starting order FULFILLED (no \
+         pool-floor read). O1 equal (face 4 both). DIRECTION-ONLY, both endpoints, HAND-OFF, \
+         presidents InHand. Collateral: none.",
+        "THE FACE EQUALITY IS EXACT IN O1'S UNITS: card 27 pays 1 VP + 2 Yen and card 26 \
+         pays 1 VP + 2 Yen, so `2·VP + 2·imports + money` is 4 for each. They differ in \
+         country (English against French) and in requirements, and neither difference \
+         reaches a row: O5 is 0 on both sides at an empty realized set, and O2 and O3 are 0 \
+         on both sides at zero stocks.",
+        "THE OPPONENT'S FULFILLMENT IS WHAT REMOVES THE FLOOR READ, and it is taken through \
+         the ENGINE rather than written. The opponent's dealt card is stocked for exactly \
+         and fulfilled by `apply_move` at its OWN seat — the mover is set to the opponent \
+         for the one move and restored, which is the state a real hand-off from that seat \
+         leaves behind — so the completed pile, the card's rewards and \
+         `check_mercenary_eligibility`'s five-country sweep are the engine's own bytes. \
+         Afterwards the opponent's hand is EMPTY, so the subject's view carries no \
+         `HiddenStartingOrder` slot at all and O1's pool floor is read by neither seat.",
+        "AN S2-T7 JUDGMENT CALL, flagged for the bounded re-read: the mover swap is \
+         SURGERY, and the honest reading of it is that the opponent fulfilled during its own \
+         turn and then passed. Nothing else is written — the phase is the hand-off phase \
+         `FulfillOrder` is offered at and does not advance, the queue is empty because the \
+         dealt card is icon-free (the construction refuses if it is not), and \
+         `check_invariants` accepts the result. The alternative — moving the card to the \
+         completed pile by hand — would award no VP, spend no goods and run no mercenary \
+         check, which is a fake fulfillment wearing the real one's name.",
+        "THE MERCENARY SWEEP DOES NOT FIRE: the opponent's completed pile goes from empty \
+         to ONE English icon, and the engine awards at each EVEN post-count, so an odd \
+         post-count awards nothing and `MercenariesTotal` is 0 on both sides. Its \
+         `CountryBonusNow` stays 0 for the same shape — one distinct country forms no set.",
+        "EVERY ROW THE OPPONENT'S FULFILLMENT MOVES IS MOVED ON THE SHARED BASE, so all of \
+         them difference to zero: its four VP, its one Yen, its emptied stocks, its \
+         completed count and its own O5 (which rises to 2, the marginal of a second distinct \
+         country) are identical across the pair. The registered draw constraint is checked \
+         anyway — `goods_moved` names Copper5 and Seafood7 and `moves_yen` is set — because \
+         §5.1's clause is about what the recipe TOUCHES, not about what survives the \
+         subtraction.",
+    ],
+};
+
+// ---------------------------------------------------------------------------
 // §5.2 FAMILY 6 — post-action persistence (5): the C2 controls
 // ---------------------------------------------------------------------------
 
@@ -3116,9 +3927,11 @@ pub const PAIR_11E: PairDeclaration = PairDeclaration {
 // The registry (spec §5.1's registered counts)
 // ---------------------------------------------------------------------------
 
-/// **THE REGISTERED PAIRS.** Families 1 and 11 (S2-T4), families 2, 6 and 7
-/// (S2-T5) and families 3, 8 and 10 (S2-T6) today; each remaining §5.2 family
-/// lands as its own later registration.
+/// **THE REGISTERED PAIRS — ALL THIRTY-SIX.** Families 1 and 11 (S2-T4),
+/// families 2, 6 and 7 (S2-T5), families 3, 8 and 10 (S2-T6) and family 4
+/// (S2-T7), which completes §5.1's registered counts: the 34 gate pairs plus
+/// the 2(c) and 10(c) diagnostics. Families 5 and 9 register audit properties
+/// and step-5/9 controls rather than pairs, so nothing further lands here.
 ///
 /// The order is §5.2's own, family by family — and inside a family that means
 /// the section's literal order, not a tidied one: family 2 prints its three
@@ -3145,6 +3958,13 @@ pub const REGISTERED: [PairDeclaration; REGISTERED_PAIR_COUNT] = [
     PAIR_3B,
     PAIR_3C,
     PAIR_3D,
+    PAIR_4A,
+    PAIR_4B,
+    PAIR_4C,
+    PAIR_4D,
+    PAIR_4E,
+    PAIR_4F,
+    PAIR_4G,
     PAIR_6A,
     PAIR_6B,
     PAIR_6C,
@@ -3164,7 +3984,7 @@ pub const REGISTERED: [PairDeclaration; REGISTERED_PAIR_COUNT] = [
 ];
 
 /// Length of [`REGISTERED`], bumped by each family registration task.
-pub const REGISTERED_PAIR_COUNT: usize = 29;
+pub const REGISTERED_PAIR_COUNT: usize = 36;
 
 /// §5.1's registered counts, summed: family 1: 5 · 2: 3 · 3: 4 · 4: 7 · 6: 5 ·
 /// 7: 1 · 8: 1 · 10-gates: 3 · 11: 5 = **34 gate pairs**, plus the two recorded
@@ -4575,6 +5395,13 @@ pub fn registered(id: &str) -> Option<&'static PairDeclaration> {
         "3(b)" => Some(&PAIR_3B),
         "3(c)" => Some(&PAIR_3C),
         "3(d)" => Some(&PAIR_3D),
+        "4(a)" => Some(&PAIR_4A),
+        "4(b)" => Some(&PAIR_4B),
+        "4(c)" => Some(&PAIR_4C),
+        "4(d)" => Some(&PAIR_4D),
+        "4(e)" => Some(&PAIR_4E),
+        "4(f)" => Some(&PAIR_4F),
+        "4(g)" => Some(&PAIR_4G),
         "6(a)" => Some(&PAIR_6A),
         "6(b)" => Some(&PAIR_6B),
         "6(c)" => Some(&PAIR_6C),
@@ -6307,6 +7134,23 @@ mod tests {
                 carrier: FeatureId::Candidate(BankAccess),
             }),
             ("3(d)", candidate(EmploymentAgencyAccess), &[StageEndpoint::Early], MarginClass::DirectionOnly),
+            ("4(a)", candidate(OrderMatchedGoods), &[StageEndpoint::Early], MarginClass::DirectionOnly),
+            ("4(b)", candidate(ExecutableOrders), &[StageEndpoint::Early, StageEndpoint::Late], MarginClass::DirectionOnly),
+            // 4(c)'s stage column is the ONE row here that departs from §5.2's
+            // frozen text, and the departure is the owner's 2026-08-22 RULING
+            // rather than a transcription slip: the spec registers both
+            // endpoints, the early one is unconstructible under §5.1's p = 0
+            // hand cap, and the ruling re-registers the pair LATE-ONLY on the
+            // rev-8 4(e)/O5 precedent. See PAIR_4C's second note.
+            ("4(c)", candidate(HeldOrderValue), &[StageEndpoint::Late], MarginClass::DirectionOnly),
+            ("4(d)", None, &[StageEndpoint::Late], MarginClass::Margined {
+                early: None,
+                late: Some(160),
+                carrier: FeatureId::Incumbent(Feature::CountryBonusNow),
+            }),
+            ("4(e)", candidate(FlagIconMarginal), &[StageEndpoint::Late], MarginClass::DirectionOnly),
+            ("4(f)", None, &[StageEndpoint::Late], MarginClass::DirectionOnly),
+            ("4(g)", candidate(HeldOrderIcons), &[StageEndpoint::Early, StageEndpoint::Late], MarginClass::DirectionOnly),
             ("6(a)", None, &[StageEndpoint::Early, StageEndpoint::Late], MarginClass::DirectionOnly),
             ("6(b)", None, &[StageEndpoint::Early, StageEndpoint::Late], MarginClass::DirectionOnly),
             ("6(c)", None, &[StageEndpoint::Early, StageEndpoint::Late], MarginClass::DirectionOnly),
@@ -6391,6 +7235,19 @@ mod tests {
             ("3(b)", &[]),
             ("3(c)", &[]),
             ("3(d)", &[]),
+            // Family 4 is almost entirely candidate-axis: held-order value,
+            // matched goods, executability and icon faces are four rows the
+            // sixteen do not carry. The two exceptions are the two that
+            // CHANGE something an incumbent counts — 4(d)'s completed set,
+            // which is what `CountryBonusNow` re-derives, and 4(f)'s take,
+            // which adds a card to the hand.
+            ("4(a)", &[]),
+            ("4(b)", &[]),
+            ("4(c)", &[]),
+            ("4(d)", &[(Feature::CountryBonusNow, 4)]),
+            ("4(e)", &[]),
+            ("4(f)", &[(Feature::HandSize, 1)]),
+            ("4(g)", &[]),
             ("6(a)", &[(Feature::VictoryPoints, 5), (Feature::HandSize, -1)]),
             (
                 "6(b)",
@@ -7883,6 +8740,641 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // FAMILY 4 — orders: the state facts each registration's rows rest on
+    // -----------------------------------------------------------------------
+
+    /// One order card's face in O1's own HALF-VP units — `2·VP + 2·imports +
+    /// money` (§3.2's O1 card).
+    ///
+    /// A FIXTURE-ARITHMETIC READER, not O1: it folds one card's printed reward
+    /// face and knows nothing about hands, pools or hidden slots. It exists
+    /// because "same-value orders" and "face 7 both" are claims four family-4
+    /// registrations make about the printed manifest, and the T6 10(d) lesson
+    /// is that reading them off the printed VP star instead gets them wrong.
+    fn half_vp_face(rules: &Rules, card: OrderCardId) -> i64 {
+        let o = rules.orders.get(card).expect("a printed order card");
+        i64::from(2 * u32::from(o.rewards.victory_points)
+            + 2 * u32::from(o.rewards.imported_goods)
+            + u32::from(o.rewards.money))
+    }
+
+    /// One order card's ICON faces — movement plus warehouse (§3.2's O6 card).
+    /// The same kind of reader as [`half_vp_face`], for the same reason.
+    fn icon_faces(rules: &Rules, card: OrderCardId) -> u32 {
+        let o = rules.orders.get(card).expect("a printed order card");
+        u32::from(o.rewards.movement) + u32::from(o.rewards.warehouse_tokens)
+    }
+
+    /// One order card's printed requirements as `[copper, silk, tea, seafood]`.
+    fn requirement_vector(rules: &Rules, card: OrderCardId) -> [u32; 4] {
+        let r = rules.orders.get(card).expect("a printed order card").requirements;
+        [u32::from(r.copper), u32::from(r.silk), u32::from(r.tea), u32::from(r.seafood)]
+    }
+
+    /// O2's arithmetic over one seat's KNOWN hand, folded from the bytes —
+    /// `Σ_g min(stock_g, Σ_cards req_g)`.
+    ///
+    /// Again a claim-checker rather than the feature: four registrations here
+    /// declare an O2 LEVEL (4(a)'s 1 against 0, 4(b)'s 5 against 5, 4(c)'s 4
+    /// against 4, 4(f)'s 0 against 1) and step 3 has not built the column yet,
+    /// so this is what makes those numbers checked facts instead of prose.
+    fn matched_goods(state: &GameState, seat: PlayerId, rules: &Rules) -> u32 {
+        let p = state.player(seat);
+        let mut need = [0u32; 4];
+        for card in &p.order_cards_in_hand {
+            let r = requirement_vector(rules, *card);
+            for (slot, add) in need.iter_mut().zip(r) {
+                *slot += add;
+            }
+        }
+        let stock = [p.copper, p.silk, p.tea, p.seafood];
+        need.iter().zip(stock).map(|(n, s)| (*n).min(s)).sum()
+    }
+
+    /// O3's arithmetic over one seat's KNOWN hand — the count of held orders
+    /// every one of whose four requirements the stock meets.
+    fn executable_orders(state: &GameState, seat: PlayerId, rules: &Rules) -> usize {
+        let p = state.player(seat);
+        let stock = [p.copper, p.silk, p.tea, p.seafood];
+        p.order_cards_in_hand
+            .iter()
+            .filter(|card| {
+                requirement_vector(rules, **card).iter().zip(stock).all(|(n, s)| *n <= s)
+            })
+            .count()
+    }
+
+    /// O1's POOL as the registrations describe it: the located set is completed
+    /// orders (all seats) plus Known hands (all seats) plus the port's face-up
+    /// offers plus the viewer's own starting order, and the pool is its
+    /// complement over the 36 printed cards. Returns
+    /// `(pool_cards, pool_half_vp_sum, floor)`.
+    ///
+    /// **This is a claim-checker, not O1 and not its helper.** 4(c) and 4(d)
+    /// register an INTEGER floor per seat and a differenced ΔO1 that rests on
+    /// it, and a registration whose arithmetic nothing reads is prose. Step 3
+    /// owns the real derivation (allocation-free, inside `ScoreStructure`); this
+    /// folds a Vec and is deliberately nothing like it.
+    ///
+    /// The seat argument is the VIEWER: an opponent's hidden starting order is
+    /// not located, which is exactly why the floor exists.
+    fn opponent_slot_floor(
+        state: &GameState,
+        viewer: PlayerId,
+        rules: &Rules,
+    ) -> (usize, i64, i64) {
+        let mut located: Vec<OrderCardId> = Vec::new();
+        let locate = |v: &mut Vec<OrderCardId>, c: OrderCardId| {
+            if !v.contains(&c) {
+                v.push(c);
+            }
+        };
+        for p in &state.players {
+            for card in p.completed_orders.clone() {
+                locate(&mut located, card);
+            }
+        }
+        for card in state.player(viewer).order_cards_in_hand.clone() {
+            locate(&mut located, card);
+        }
+        for card in state.port_state.port_a.slots.iter().flatten().copied().collect::<Vec<_>>() {
+            locate(&mut located, card);
+        }
+        let printed: i64 = rules.orders.iter().map(|c| half_vp_face(rules, c.id)).sum();
+        let located_sum: i64 = located.iter().map(|c| half_vp_face(rules, *c)).sum();
+        let count = rules.orders.iter().count() - located.len();
+        let sum = printed - located_sum;
+        (count, sum, sum / count as i64)
+    }
+
+    #[test]
+    fn four_a_reads_o2_alone_at_one_seafood_and_two_face_equal_french_orders() {
+        let rules = rules();
+        let f = built("4(a)", StageEndpoint::Early, &rules);
+        let seat = f.subject();
+
+        assert_eq!(
+            f.state(Side::Greater).player(seat).order_cards_in_hand,
+            vec![FAMILY_4A_MATCHED_CARD],
+        );
+        assert_eq!(
+            f.state(Side::Lesser).player(seat).order_cards_in_hand,
+            vec![FAMILY_4A_UNMATCHED_CARD],
+        );
+
+        // §5.2's "same-value", in O1's own units rather than in printed VP.
+        assert_eq!(half_vp_face(&rules, FAMILY_4A_MATCHED_CARD), 4);
+        assert_eq!(half_vp_face(&rules, FAMILY_4A_UNMATCHED_CARD), 4);
+        assert_eq!(icon_faces(&rules, FAMILY_4A_MATCHED_CARD), 0);
+        assert_eq!(icon_faces(&rules, FAMILY_4A_UNMATCHED_CARD), 0);
+        assert_eq!(
+            rules.orders.get(FAMILY_4A_MATCHED_CARD).unwrap().country,
+            rules.orders.get(FAMILY_4A_UNMATCHED_CARD).unwrap().country,
+            "both French: O5's attainable set is identical, though at an empty realized \
+             set every marginal is 0 anyway",
+        );
+
+        // The separation, and the two zeroes that leave it alone.
+        assert_eq!(matched_goods(f.state(Side::Greater), seat, &rules), 1);
+        assert_eq!(matched_goods(f.state(Side::Lesser), seat, &rules), 0);
+        for side in [Side::Greater, Side::Lesser] {
+            let state = f.state(side);
+            assert_eq!(
+                stocks(state, seat),
+                (
+                    FAMILY_4A_STOCKS[0],
+                    FAMILY_4A_STOCKS[1],
+                    FAMILY_4A_STOCKS[2],
+                    FAMILY_4A_STOCKS[3],
+                ),
+            );
+            assert_eq!(
+                executable_orders(state, seat, &rules),
+                0,
+                "§5.2: sized non-executable BOTH sides",
+            );
+            assert!(
+                occupied_areas(state, seat).is_empty(),
+                "no presence anywhere: X3 and every access term read 0",
+            );
+            assert_eq!(state.player(seat).president_location, PresidentLocation::InHand);
+            assert!(state.player(seat).completed_orders.is_empty(), "an EMPTY realized set");
+            assert_eq!(port_a_slot_of(state, FAMILY_4A_MATCHED_CARD), None);
+            assert_eq!(port_a_slot_of(state, FAMILY_4A_UNMATCHED_CARD), None);
+        }
+        // Equal faces make the pool floor invariant under the swap — checked
+        // rather than inherited from 10(d)'s note.
+        let other = other_seat_2p(f.state(Side::Greater), seat).unwrap();
+        assert_eq!(
+            opponent_slot_floor(f.state(Side::Greater), seat, &rules),
+            opponent_slot_floor(f.state(Side::Lesser), seat, &rules),
+        );
+        assert_eq!(
+            f.state(Side::Greater).player(other).order_cards_in_hand.len(),
+            1,
+            "the opponent still holds its dealt card — the hidden slot the floor is for",
+        );
+    }
+
+    #[test]
+    fn four_b_equalizes_o2_by_capping_the_distant_cards_extra_copper() {
+        let rules = rules();
+        for stage in [StageEndpoint::Early, StageEndpoint::Late] {
+            let f = built("4(b)", stage, &rules);
+            let seat = f.subject();
+
+            assert_eq!(
+                f.state(Side::Greater).player(seat).order_cards_in_hand,
+                vec![FAMILY_4B_EXECUTABLE_CARD],
+            );
+            assert_eq!(
+                f.state(Side::Lesser).player(seat).order_cards_in_hand,
+                vec![FAMILY_4B_DISTANT_CARD],
+            );
+
+            // The distant card IS the executable one plus a copper, which is
+            // the whole equalization.
+            let executable = requirement_vector(&rules, FAMILY_4B_EXECUTABLE_CARD);
+            let distant = requirement_vector(&rules, FAMILY_4B_DISTANT_CARD);
+            assert_eq!(executable, FAMILY_4B_STOCKS, "the stock is the executable card's own face");
+            assert_eq!(distant, [executable[0] + 1, executable[1], executable[2], executable[3]]);
+
+            assert_eq!(half_vp_face(&rules, FAMILY_4B_EXECUTABLE_CARD), 18);
+            assert_eq!(half_vp_face(&rules, FAMILY_4B_DISTANT_CARD), 18);
+            assert_eq!(icon_faces(&rules, FAMILY_4B_EXECUTABLE_CARD), 0);
+            assert_eq!(icon_faces(&rules, FAMILY_4B_DISTANT_CARD), 0);
+
+            assert_eq!(executable_orders(f.state(Side::Greater), seat, &rules), 1);
+            assert_eq!(executable_orders(f.state(Side::Lesser), seat, &rules), 0);
+            assert_eq!(
+                matched_goods(f.state(Side::Greater), seat, &rules),
+                matched_goods(f.state(Side::Lesser), seat, &rules),
+                "§5.2's registered equalization: O2 EQUAL both sides",
+            );
+            assert_eq!(matched_goods(f.state(Side::Greater), seat, &rules), 5);
+
+            for side in [Side::Greater, Side::Lesser] {
+                let state = f.state(side);
+                assert!(occupied_areas(state, seat).is_empty());
+                assert_eq!(state.player(seat).president_location, PresidentLocation::InHand);
+                // Both registered cards are off the face-up offers before
+                // either is dealt — 10(d)'s pool-neutrality device.
+                assert_eq!(port_a_slot_of(state, FAMILY_4B_EXECUTABLE_CARD), None);
+                assert_eq!(port_a_slot_of(state, FAMILY_4B_DISTANT_CARD), None);
+            }
+            assert_eq!(
+                opponent_slot_floor(f.state(Side::Greater), seat, &rules),
+                opponent_slot_floor(f.state(Side::Lesser), seat, &rules),
+                "equal faces: the pool is invariant under the swap",
+            );
+        }
+    }
+
+    #[test]
+    fn four_c_registers_late_only_and_holds_the_summed_requirement_vector_equal() {
+        let rules = rules();
+        assert_eq!(
+            PAIR_4C.stages,
+            &[StageEndpoint::Late],
+            "the owner's 2026-08-22 ruling: 4(c) re-registers LATE-ONLY because §5.1's \
+             p = 0 hand cap makes the early row unconstructible",
+        );
+        let f = built("4(c)", StageEndpoint::Late, &rules);
+        let seat = f.subject();
+
+        let hand = |side: Side| f.state(side).player(seat).order_cards_in_hand.clone();
+        assert_eq!(hand(Side::Greater), FAMILY_4C_RICH_HAND.to_vec());
+        assert_eq!(hand(Side::Lesser), FAMILY_4C_POOR_HAND.to_vec());
+        assert_eq!(hand(Side::Greater).len(), hand(Side::Lesser).len(), "§5.2: same hand size");
+
+        let summed = |cards: [OrderCardId; 2]| -> [u32; 4] {
+            let mut out = [0u32; 4];
+            for card in cards {
+                for (slot, add) in out.iter_mut().zip(requirement_vector(&rules, card)) {
+                    *slot += add;
+                }
+            }
+            out
+        };
+        assert_eq!(summed(FAMILY_4C_RICH_HAND), [3, 3, 3, 2]);
+        assert_eq!(
+            summed(FAMILY_4C_RICH_HAND),
+            summed(FAMILY_4C_POOR_HAND),
+            "§5.2: requirements EQUAL AS THE HAND-SUMMED VECTOR",
+        );
+        let faces = |cards: [OrderCardId; 2]| -> i64 {
+            cards.iter().map(|c| half_vp_face(&rules, *c)).sum()
+        };
+        assert_eq!(faces(FAMILY_4C_RICH_HAND), 42);
+        assert_eq!(faces(FAMILY_4C_POOR_HAND), 28);
+        let icons = |cards: [OrderCardId; 2]| -> u32 {
+            cards.iter().map(|c| icon_faces(&rules, *c)).sum()
+        };
+        assert_eq!(icons(FAMILY_4C_RICH_HAND), 0);
+        assert_eq!(icons(FAMILY_4C_POOR_HAND), 0, "§5.2: icon faces equal (O6 unmoved)");
+
+        for side in [Side::Greater, Side::Lesser] {
+            let state = f.state(side);
+            assert_eq!(
+                stocks(state, seat),
+                (
+                    FAMILY_4C_STOCKS[0],
+                    FAMILY_4C_STOCKS[1],
+                    FAMILY_4C_STOCKS[2],
+                    FAMILY_4C_STOCKS[3],
+                ),
+            );
+            assert_eq!(
+                matched_goods(state, seat, &rules),
+                4,
+                "every leg of the shared vector is stock-capped: the equality is not vacuous",
+            );
+            assert_eq!(executable_orders(state, seat, &rules), 0);
+            assert!(occupied_areas(state, seat).is_empty());
+        }
+
+        // The registered floors, and the identity they close.
+        let (count_g, _, floor_g) = opponent_slot_floor(f.state(Side::Greater), seat, &rules);
+        let (count_l, _, floor_l) = opponent_slot_floor(f.state(Side::Lesser), seat, &rules);
+        assert_eq!((count_g, count_l), (28, 28));
+        assert_eq!(floor_g, 11);
+        assert_eq!(floor_l, 12);
+        // Δfloor_own is a TERM of §5.2's identity, not a rounding of it: the
+        // viewer's own hand is Known to it and its own starting order is
+        // named, so it reads no floor at all and the term is 0 by
+        // construction. Spelling it out is what makes the identity checkable
+        // rather than a subtraction that happens to come out right.
+        let delta_floor_own: i64 = 0;
+        assert_eq!(
+            (faces(FAMILY_4C_RICH_HAND) - faces(FAMILY_4C_POOR_HAND)) + delta_floor_own
+                - (floor_g - floor_l),
+            15,
+            "ΔO1 = Δfaces + Δfloor_own − Δfloor_opp",
+        );
+    }
+
+    #[test]
+    fn four_d_closes_the_fourth_country_against_a_duplicate_at_equal_completed_counts() {
+        let rules = rules();
+        let f = built("4(d)", StageEndpoint::Late, &rules);
+        let seat = f.subject();
+
+        let completed = |side: Side| f.state(side).player(seat).completed_orders.clone();
+        assert_eq!(completed(Side::Greater), FAMILY_4_REALIZED_SET.to_vec());
+        assert_eq!(
+            completed(Side::Lesser),
+            vec![
+                FAMILY_4_REALIZED_SET[0],
+                FAMILY_4_REALIZED_SET[1],
+                FAMILY_4_REALIZED_SET[2],
+                FAMILY_4D_DUPLICATE_CARD,
+            ],
+        );
+        assert_eq!(completed(Side::Greater).len(), completed(Side::Lesser).len());
+
+        let distinct = |side: Side| -> usize {
+            let mut seen: Vec<crate::types::Country> = Vec::new();
+            for card in completed(side) {
+                let c = rules.orders.get(card).expect("card").country;
+                if !seen.contains(&c) {
+                    seen.push(c);
+                }
+            }
+            seen.len()
+        };
+        assert_eq!(distinct(Side::Greater), 4);
+        assert_eq!(distinct(Side::Lesser), 3, "the fourth completion duplicates a country");
+
+        // The mirror's ABSOLUTE levels, not merely the difference.
+        assert_eq!(own_value(&f, Side::Greater, seat, Feature::CountryBonusNow, &rules), 8);
+        assert_eq!(own_value(&f, Side::Lesser, seat, Feature::CountryBonusNow, &rules), 4);
+        assert_eq!(
+            f.incumbent_delta(&rules)[Feature::CountryBonusNow.index()],
+            4,
+            "the registered margin_vp",
+        );
+        assert_eq!(
+            PAIR_4D.margin.margin_at(StageEndpoint::Late),
+            Some(160),
+            "max(1, ceil(4 × w_vp(late) = 40))",
+        );
+        assert!(
+            160 > 4 * WeightTable::V2.late[Feature::CountryBonusNow.index()],
+            "RECORDED: the shipped table is deliberately NOT a witness — 4 × 30 < 160, so \
+             the pair forces w_ctry(late) >= 40",
+        );
+
+        // The Dutch and American offers that keep O5 equal at 4.
+        let offers: Vec<crate::types::Country> = f
+            .state(Side::Greater)
+            .port_state
+            .port_a
+            .slots
+            .iter()
+            .flatten()
+            .map(|c| rules.orders.get(*c).expect("card").country)
+            .collect();
+        assert!(offers.contains(&crate::types::Country::Dutch), "the greater side's fifth");
+        assert!(offers.contains(&crate::types::Country::American), "the lesser side's fourth");
+
+        for side in [Side::Greater, Side::Lesser] {
+            let state = f.state(side);
+            assert!(state.player(seat).technologies.is_empty(), "icons are ORDER-sourced");
+            assert_eq!(state.player(seat).order_cards_in_hand, vec![FIXTURE_ORDER_CARD]);
+            assert_eq!(stocks(state, seat), (0, 0, 0, 0));
+            assert_eq!(state.player(seat).victory_points, 0, "the completion credits no reward");
+            assert!(occupied_areas(state, seat).is_empty());
+        }
+        let (count_g, _, floor_g) = opponent_slot_floor(f.state(Side::Greater), seat, &rules);
+        let (count_l, _, floor_l) = opponent_slot_floor(f.state(Side::Lesser), seat, &rules);
+        assert_eq!((count_g, count_l), (25, 25));
+        assert_eq!((floor_g, floor_l), (12, 13));
+        // The subject's own O1 is equal — the same card in hand on both sides
+        // — so the whole differenced row is the opponent floor's own move.
+        let delta_floor_own: i64 = 0;
+        assert_eq!(
+            delta_floor_own - (floor_g - floor_l),
+            1,
+            "the registered ΔO1: the O1 collateral §5.2 lists",
+        );
+    }
+
+    #[test]
+    fn four_e_leaves_the_dutch_step_reachable_from_the_held_card_alone() {
+        let rules = rules();
+        let f = built("4(e)", StageEndpoint::Late, &rules);
+        let seat = f.subject();
+
+        assert_eq!(
+            f.state(Side::Greater).player(seat).order_cards_in_hand,
+            vec![FAMILY_4E_DUTCH_CARD],
+        );
+        assert_eq!(
+            f.state(Side::Lesser).player(seat).order_cards_in_hand,
+            vec![FAMILY_4E_GERMAN_CARD],
+        );
+        assert_eq!(half_vp_face(&rules, FAMILY_4E_DUTCH_CARD), 7);
+        assert_eq!(half_vp_face(&rules, FAMILY_4E_GERMAN_CARD), 7);
+        assert_eq!(icon_faces(&rules, FAMILY_4E_DUTCH_CARD), 0);
+        assert_eq!(icon_faces(&rules, FAMILY_4E_GERMAN_CARD), 0);
+        assert_eq!(
+            rules.orders.get(FAMILY_4E_DUTCH_CARD).unwrap().country,
+            crate::types::Country::Dutch,
+        );
+        assert_eq!(
+            rules.orders.get(FAMILY_4E_GERMAN_CARD).unwrap().country,
+            crate::types::Country::German,
+        );
+
+        for side in [Side::Greater, Side::Lesser] {
+            let state = f.state(side);
+            assert_eq!(state.player(seat).completed_orders, FAMILY_4_REALIZED_SET.to_vec());
+            assert_eq!(own_value(&f, side, seat, Feature::CountryBonusNow, &rules), 8);
+            assert!(state.player(seat).technologies.is_empty(), "zero owned techs");
+            assert_eq!(stocks(state, seat), (0, 0, 0, 0), "§5.2: ZERO trade-good stocks");
+            assert_eq!(matched_goods(state, seat, &rules), 0);
+            assert_eq!(executable_orders(state, seat, &rules), 0);
+            assert!(
+                occupied_areas(state, seat).is_empty(),
+                "the registered identical non-production placement is the EMPTY one",
+            );
+            assert_eq!(state.player(seat).president_location, PresidentLocation::InHand);
+
+            // §5.1's p = FULL recipe, verbatim, on both sides.
+            assert!(state.order_deck.is_empty(), "deck empty");
+            assert!(port_is_full(state), "PORT FULL");
+            assert!(!state.end_game_triggered, "no end-trigger fires");
+
+            // The registered board: no Dutch source anywhere but the greater
+            // side's own held card.
+            assert_eq!(
+                state.port_state.port_a.slots,
+                FAMILY_4E_PORT_OFFERS.map(Some),
+                "the six registered offers, slot 0 first",
+            );
+            for card in state.port_state.port_a.slots.iter().flatten() {
+                assert_ne!(
+                    rules.orders.get(*card).expect("card").country,
+                    crate::types::Country::Dutch,
+                    "all six port offers non-NL",
+                );
+            }
+            for slot in state.lab_state.lab_a.slots.iter().flatten() {
+                assert_ne!(
+                    rules.techs.get(*slot).expect("tech").country,
+                    crate::types::Country::Dutch,
+                    "lab open slots all non-NL titles",
+                );
+            }
+        }
+
+        // The 36-card accounting §5.2's exact board turns into a conservation
+        // claim, walked on both sides.
+        for side in [Side::Greater, Side::Lesser] {
+            let state = f.state(side);
+            let held: usize = state.players.iter().map(|p| p.order_cards_in_hand.len()).sum();
+            let done: usize = state.players.iter().map(|p| p.completed_orders.len()).sum();
+            let offers = state.port_state.port_a.slots.iter().flatten().count();
+            assert_eq!(
+                (state.order_deck.len(), offers, held, done, state.orders_removed.len()),
+                (0, 6, 2, 4, 24),
+                "deck + port + hands + completed + box = 36",
+            );
+        }
+        assert_eq!(
+            opponent_slot_floor(f.state(Side::Greater), seat, &rules),
+            opponent_slot_floor(f.state(Side::Lesser), seat, &rules),
+            "the pool floor is invariant under the 6↔9 swap: equal half-VP faces",
+        );
+    }
+
+    #[test]
+    fn four_f_takes_a_low_zone_offer_and_collapses_the_hand_cap_behind_it() {
+        let rules = rules();
+        let f = built("4(f)", StageEndpoint::Late, &rules);
+        let seat = f.subject();
+        let port = find_area_of_type(f.state(Side::Greater), AreaType::PortA).unwrap();
+
+        let before = f.state(Side::Lesser);
+        let after = f.state(Side::Greater);
+        assert_eq!(
+            before.player(seat).order_cards_in_hand,
+            vec![FIXTURE_ORDER_CARD, FAMILY_4F_SECOND_CARD],
+        );
+        assert_eq!(
+            after.player(seat).order_cards_in_hand,
+            vec![FIXTURE_ORDER_CARD, FAMILY_4F_SECOND_CARD, FIXTURE_PORT_CARD],
+            "§5.2: hand 2 → 3",
+        );
+        assert_eq!(f.incumbent_delta(&rules)[Feature::HandSize.index()], 1);
+
+        // The two sides ARE one activation apart, at the resolved phase.
+        for side in [Side::Greater, Side::Lesser] {
+            let state = f.state(side);
+            assert_eq!(state.turn_phase, TurnPhase::FivePowerBonus);
+            assert_eq!(state.current_action_power, Some(2), "one own pawn plus the president");
+            assert!(state.pending_choices.is_empty());
+            assert_eq!(state.player(seat).assistants.in_area(port), 1);
+            assert_eq!(state.player(seat).president_location, PresidentLocation::OnBoard(port));
+            assert_eq!(stocks(state, seat), (0, 0, FAMILY_4F_STOCKS[2], 0));
+            assert_eq!(executable_orders(state, seat, &rules), 0, "the take creates no O3");
+            assert!(state.order_deck.is_empty(), "the LATE deck-empty construction");
+        }
+
+        // O2 and O1 move with the card; the port's own zone map is what X2 read.
+        assert_eq!(matched_goods(before, seat, &rules), 0);
+        assert_eq!(matched_goods(after, seat, &rules), 1);
+        assert_eq!(half_vp_face(&rules, FIXTURE_PORT_CARD), 6);
+        assert_eq!(icon_faces(&rules, FIXTURE_PORT_CARD), 0);
+        assert_eq!(
+            crate::types::PortBoard::zone_of(FAMILY_4F_PORT_SLOT),
+            crate::types::PortZone::Low,
+            "power 2 opens LOW alone",
+        );
+        assert_eq!(before.port_state.port_a.slots[FAMILY_4F_PORT_SLOT], Some(FIXTURE_PORT_CARD));
+        // X2's pre-take level, folded from the offers the open zone carries.
+        let low_match: u32 = before
+            .port_state
+            .port_a
+            .slots
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| crate::types::PortBoard::zone_of(*i) == crate::types::PortZone::Low)
+            .filter_map(|(_, s)| *s)
+            .map(|card| {
+                let r = requirement_vector(&rules, card);
+                let p = before.player(seat);
+                let stock = [p.copper, p.silk, p.tea, p.seafood];
+                r.iter().zip(stock).map(|(n, s)| (*n).min(s)).sum::<u32>()
+            })
+            .sum();
+        assert_eq!(low_match, 1, "only the registered offer matches the seat's single tea");
+        assert!(
+            after.player(seat).order_cards_in_hand.len() >= 3,
+            "X2's persistent collapse is the hand cap, not the offers",
+        );
+
+        // The end-trigger flip: §5.1's late recipe through its two disjuncts.
+        assert!(port_is_full(before), "the declined side keeps a full port");
+        assert!(!before.end_game_triggered);
+        assert!(!port_is_full(after), "the take leaves the sixth slot open");
+        assert!(after.end_game_triggered, "the engine's own OrderDeckEmpty trigger");
+        assert_eq!(after.trigger_reason, Some(crate::types::EndGameTrigger::OrderDeckEmpty));
+        for side in [Side::Greater, Side::Lesser] {
+            assert!(
+                eval::terminal_standing(f.view(side), &rules).is_none(),
+                "declared non-terminal: `final_round` is unset and the phase is mid-turn",
+            );
+        }
+        assert_eq!(f.progress_ppm(&rules), PROGRESS_FULL_PPM, "one stage, both sides");
+    }
+
+    #[test]
+    fn four_g_moves_o6_alone_with_the_opponents_starting_order_already_fulfilled() {
+        let rules = rules();
+        for stage in [StageEndpoint::Early, StageEndpoint::Late] {
+            let f = built("4(g)", stage, &rules);
+            let seat = f.subject();
+            let other = other_seat_2p(f.state(Side::Greater), seat).unwrap();
+
+            assert_eq!(
+                f.state(Side::Greater).player(seat).order_cards_in_hand,
+                vec![FAMILY_4G_ICON_CARD],
+            );
+            assert_eq!(
+                f.state(Side::Lesser).player(seat).order_cards_in_hand,
+                vec![FAMILY_4G_PLAIN_CARD],
+            );
+            assert_eq!(half_vp_face(&rules, FAMILY_4G_ICON_CARD), 4);
+            assert_eq!(half_vp_face(&rules, FAMILY_4G_PLAIN_CARD), 4);
+            assert_eq!(icon_faces(&rules, FAMILY_4G_ICON_CARD), 1, "one warehouse icon");
+            assert_eq!(icon_faces(&rules, FAMILY_4G_PLAIN_CARD), 0);
+
+            for side in [Side::Greater, Side::Lesser] {
+                let state = f.state(side);
+                assert_eq!(stocks(state, seat), (0, 0, 0, 0), "§5.2: ZERO stocks");
+                assert_eq!(matched_goods(state, seat, &rules), 0);
+                assert_eq!(executable_orders(state, seat, &rules), 0);
+                assert!(
+                    state.player(seat).completed_orders.is_empty(),
+                    "ZERO realized icons for the SUBJECT",
+                );
+                assert!(state.player(seat).technologies.is_empty());
+                assert!(occupied_areas(state, seat).is_empty());
+                assert_eq!(state.player(seat).president_location, PresidentLocation::InHand);
+
+                // The opponent's fulfillment: an EMPTY hand, so no hidden slot
+                // and no pool-floor read anywhere in the pair.
+                assert!(
+                    state.player(other).order_cards_in_hand.is_empty(),
+                    "§5.2: the opponent's starting order FULFILLED",
+                );
+                assert_eq!(
+                    state.player(other).completed_orders,
+                    vec![state.player(other).starting_order.expect("the dealt identity")],
+                );
+                assert_eq!(
+                    state.player(other).victory_points,
+                    4,
+                    "the engine paid the card's own face, equally on both sides",
+                );
+                assert_eq!(
+                    own_value(&f, side, other, Feature::CountryBonusNow, &rules),
+                    0,
+                    "one distinct country forms no set",
+                );
+                assert_eq!(state.player(other).mercenaries.total(), 0, "an ODD post-count awards none");
+                assert_eq!(state.player(seat).mercenaries.total(), 0);
+            }
+            assert_eq!(
+                f.incumbent_delta(&rules),
+                [0i64; Feature::COUNT],
+                "§5.2: collateral NONE — O6 is the sole mover and it is a candidate row",
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // The hand-built layouts as objects
     // -----------------------------------------------------------------------
 
@@ -8235,12 +9727,12 @@ mod tests {
             "the array's length IS the count pin",
         );
         assert_eq!(
-            REGISTERED_PAIR_COUNT, 29,
+            REGISTERED_PAIR_COUNT, REGISTERED_PAIR_TARGET,
             "S2-T4 registered §5.2's family 1 (5) and family 11 (5); S2-T5 adds family 2 \
              (3 gates + 1 diagnostic), family 6 (5) and family 7 (1); S2-T6 adds family 3 \
-             (4), family 8 (1) and family 10 (3 gates + 1 diagnostic). The remaining \
-             families land in later tasks, and this number is what they bump toward \
-             {REGISTERED_PAIR_TARGET}",
+             (4), family 8 (1) and family 10 (3 gates + 1 diagnostic); S2-T7 adds family 4 \
+             (7) and CLOSES the registry at §5.1's target — families 5 and 9 carry audit \
+             properties and controls, not pairs, so this count does not move again",
         );
         assert_eq!(
             REGISTERED_PAIR_TARGET, 36,
@@ -8263,6 +9755,13 @@ mod tests {
                 "3(b)",
                 "3(c)",
                 "3(d)",
+                "4(a)",
+                "4(b)",
+                "4(c)",
+                "4(d)",
+                "4(e)",
+                "4(f)",
+                "4(g)",
                 "6(a)",
                 "6(b)",
                 "6(c)",
@@ -8294,7 +9793,7 @@ mod tests {
             };
             assert_eq!(pair.role, expected, "{} has the wrong pair→gate role", pair.id);
             assert!(
-                matches!(pair.family, 1 | 2 | 3 | 6 | 7 | 8 | 10 | 11),
+                matches!(pair.family, 1 | 2 | 3 | 4 | 6 | 7 | 8 | 10 | 11),
                 "{} claims family {}",
                 pair.id,
                 pair.family
@@ -9400,4 +10899,5 @@ mod tests {
         assert_ne!(second, area);
     }
 }
+
 
