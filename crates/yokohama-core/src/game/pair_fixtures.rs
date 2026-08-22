@@ -71,9 +71,9 @@ use crate::game::{
     check_invariants, finalize_setup, new_game, observe, Rules, StartingOrderChoice,
 };
 use crate::types::{
-    AchievementCard, AchievementCategory, AchievementType, AdditionalActionState, AreaId, AreaType,
-    GameConfig, GameState, OrderCardId, PlayerId, PlayerView, PresidentLocation, TechCardId,
-    TechEffect, TurnPhase, VisiblePlayer,
+    AchievementCard, AchievementCategory, AchievementType, AdditionalActionState, AreaAction,
+    AreaId, AreaType, GameConfig, GameState, Move, OrderCardId, PendingChoice, PlayerId,
+    PlayerView, PresidentLocation, TechCardId, TechEffect, TurnPhase, VisiblePlayer,
 };
 
 // ---------------------------------------------------------------------------
@@ -1557,14 +1557,22 @@ pub const FIXTURE_FULFILLED_CARD: OrderCardId = OrderCardId(4);
 pub const FIXTURE_SET_CARD: OrderCardId = OrderCardId(11);
 
 /// **6(c)'s FOUR PRE-COMPLETED ORDERS**, one per non-Dutch country — English,
-/// French, German, American (printed corner indices 3, 5, 9, 12).
+/// French, German, American (printed corner indices 32, 5, 9, 12).
 ///
-/// One icon each, so `check_mercenary_eligibility`'s sweep reads an odd count
+/// One icon each, so `check_mercenary_eligibility`'s sweep reads an ODD count
 /// in every country and awards nothing on either side (the engine awards at
-/// EVEN post-counts). All four are icon-free on the face, which matters only
-/// for tidiness — O6 reads HELD orders, never completed ones.
+/// EVEN post-counts). The faces are otherwise inert: a completed card's reward
+/// was paid when it was completed, and O6 reads HELD orders, never completed
+/// ones.
+///
+/// The English slot is card 32 rather than card 3, and the reason is a
+/// CONSTRUCTIBILITY COLLISION found at S2-T5 rather than a preference: at
+/// [`FIXTURE_SEED`] card 3 is the OPPONENT's dealt starting order, and
+/// [`complete_order_from_the_box`] refuses a card another seat already holds
+/// rather than quietly conjuring a second copy. The refusal named the card and
+/// the seat, which is what made the swap a one-line answer.
 pub const FAMILY_6C_COMPLETED: [OrderCardId; 4] =
-    [OrderCardId(3), OrderCardId(5), OrderCardId(9), OrderCardId(12)];
+    [OrderCardId(32), OrderCardId(5), OrderCardId(9), OrderCardId(12)];
 
 /// **6(d)'s REGISTERED ORDER CARD** — printed corner index 26 (French; 3 tea +
 /// 1 seafood; 1 VP + 2 Yen; icon-free).
@@ -1600,6 +1608,11 @@ const CHURCH_FAITH_SPACE: u8 = 4;
 /// 5 VP and, at index 0 against the dummy at index 3, takes second place for 4
 /// VP of `CustomsBonusNow` on the same rightmost-tie rule as the church.
 const CUSTOMS_SPACE: u8 = 1;
+
+/// The imported goods 6(d-customs) pays — the whole payable range at power 2,
+/// since `customs_max_imported_goods(2)` is 1 and the payment must match a
+/// printed space cost EXACTLY.
+const CUSTOMS_IMPORTS_PAID: u8 = 1;
 
 /// §5.2 6(a) — **FULFILLED ≻ UNFULFILLED**.
 pub const PAIR_6A: PairDeclaration = PairDeclaration {
@@ -3752,6 +3765,16 @@ pub fn build_registered_pair(
         "1(c)" => build_1c(stage, rules),
         "1(d)" => build_1d(stage, rules),
         "1(e)" => build_1e(stage, rules),
+        "2(a)" => build_2a(stage, rules),
+        "2(b)" => build_2b(stage, rules),
+        "2(c)" => build_2c(stage, rules),
+        "2(d)" => build_2d(stage, rules),
+        "6(a)" => build_6a(stage, rules),
+        "6(b)" => build_6b(stage, rules),
+        "6(c)" => build_6c(stage, rules),
+        "6(d-church)" => build_6d_church(stage, rules),
+        "6(d-customs)" => build_6d_customs(stage, rules),
+        "7" => build_7(stage, rules),
         "11(a)" => build_11a(stage, rules),
         "11(b)" => build_11b(stage, rules),
         "11(c)" => build_11c(stage, rules),
@@ -3781,6 +3804,24 @@ fn family_base(
     layout: Option<[AreaType; TWO_PLAYER_AREAS]>,
     rules: &Rules,
 ) -> Result<FamilyBase, FixtureError> {
+    family_base_with_order(stage, declaration, layout, FIXTURE_ORDER_CARD, rules)
+}
+
+/// [`family_base`] with the subject's starting order NAMED.
+///
+/// Family 6's fulfillment pairs each register their own card, and §5.1's
+/// p = 0 hand cap is what forces the card into the STARTING-ORDER slot rather
+/// than beside it: at a full deck no port take has happened, so a seat may hold
+/// exactly the card it was dealt. Swapping the deal is therefore the only way
+/// to register a fulfilled card at the early endpoint without registering a
+/// hand-cap deviation as well.
+fn family_base_with_order(
+    stage: StageEndpoint,
+    declaration: &PairDeclaration,
+    layout: Option<[AreaType; TWO_PLAYER_AREAS]>,
+    order_card: OrderCardId,
+    rules: &Rules,
+) -> Result<FamilyBase, FixtureError> {
     let mut state = stage_base_2p(stage, FIXTURE_SEED, rules)?;
     if let Some(types) = layout {
         retype_board_2p(&mut state, types)?;
@@ -3788,7 +3829,7 @@ fn family_base(
     let subject = state.current_player;
     let opponent = other_seat_2p(&state, subject)?;
     set_declared_draws(&mut state, &declaration.draws);
-    give_starting_order(&mut state, subject, FIXTURE_ORDER_CARD)?;
+    give_starting_order(&mut state, subject, order_card)?;
     Ok(FamilyBase { state, subject, opponent })
 }
 
@@ -3880,6 +3921,339 @@ fn build_1e(stage: StageEndpoint, rules: &Rules) -> Result<PairFixture, FixtureE
     lesser.player_mut(base.subject).president_location =
         PresidentLocation::OnBoard(RING_DISCONNECTED_PRESIDENT_AREA);
     PairFixture::new(&PAIR_1E, stage, greater, lesser, base.subject, rules)
+}
+
+// --- families 2, 6 and 7: the engine-driven turn -------------------------
+
+/// Play the subject's OWN TURN, through the engine's CHECKED boundary, from a
+/// hand-off state to the instant the area action resolves.
+///
+/// # Why these pairs are driven rather than doctored
+///
+/// [`build_registered_pair`]'s doc explains why family 11 cannot be reached by
+/// replay — its two sides are one position behind two different activation
+/// choices. The acting-class pairs registered here are the opposite case: each
+/// side IS the image of a real move sequence from one root, and `apply_move`
+/// refuses anything absent from `get_legal_moves`, so driving them is a
+/// LEGALITY PROOF the frame's clause list cannot otherwise give. Four moves do
+/// it — end the additional-action phase, make the registered placement, bring
+/// the president in from hand (which is what writes `current_action_power`,
+/// `game/apply_move.rs:591`), and resolve the registered action into
+/// [`TurnPhase::FivePowerBonus`].
+///
+/// The returned state may still carry a pending-choice queue: a church
+/// placement queues its movement riders, a customs payment its space choice
+/// and then that space's own riders. Resolving them is the CALLER's, because
+/// which resolution a pair takes is a registered fact about the pair rather
+/// than a property of the drive.
+fn drive_to_resolved_area_action(
+    state: &GameState,
+    placement: Move,
+    destination: AreaId,
+    action: AreaAction,
+    rules: &Rules,
+) -> Result<GameState, FixtureError> {
+    let script = [
+        Move::EndAdditionalPhase,
+        placement,
+        Move::PlacePresident { destination },
+        Move::ExecuteAreaAction { action },
+    ];
+    let mut out = state.clone();
+    for mv in script {
+        out = crate::game::apply_move(&out, &mv, rules).map_err(|e| FixtureError::Declaration {
+            clause: "engine-driven activation",
+            detail: format!("the engine refused {mv:?}: {e}"),
+        })?;
+    }
+    Ok(out)
+}
+
+/// Answer the queue head with the pair's REGISTERED resolution, refusing if
+/// the head is not the choice the registration expects.
+///
+/// The guard is the point: a fixture that answered whatever happened to be
+/// queued would silently register a different fixture the day an engine change
+/// queued something else first.
+fn resolve_registered_choice(
+    state: &mut GameState,
+    expected: PendingChoice,
+    resolution: Move,
+    rules: &Rules,
+) -> Result<(), FixtureError> {
+    if state.pending_choices.first() != Some(&expected) {
+        return Err(FixtureError::Declaration {
+            clause: "registered choice resolution",
+            detail: format!(
+                "the registration answers {expected:?} but the queue head is {:?}",
+                state.pending_choices.first(),
+            ),
+        });
+    }
+    *state = crate::game::apply_move(state, &resolution, rules).map_err(|e| {
+        FixtureError::Declaration {
+            clause: "registered choice resolution",
+            detail: format!("the engine refused {resolution:?}: {e}"),
+        }
+    })?;
+    Ok(())
+}
+
+/// DECLINE every remaining queued choice, and report how many were declined.
+///
+/// Only the two declinable heads are handled. `ChurchSpace`, `CustomsSpace`,
+/// `AnyGood`, `RecoveryLeave` and `StationPlace` have no Decline arm at all,
+/// so a pair whose action queues one registers the answer through
+/// [`resolve_registered_choice`] instead — and meeting one here is a typed
+/// refusal naming it rather than a silent wrong resolution.
+fn decline_every_queued_choice(
+    state: &mut GameState,
+    rules: &Rules,
+) -> Result<usize, FixtureError> {
+    let mut declined = 0;
+    while let Some(head) = state.pending_choices.first() {
+        let resolution = match head {
+            PendingChoice::AssistantMove => Move::DeclineAssistantMove,
+            PendingChoice::WarehouseTake => Move::DeclineWarehouseTake,
+            other => {
+                return Err(FixtureError::Declaration {
+                    clause: "declined choice riders",
+                    detail: format!(
+                        "{other:?} heads the queue and carries no Decline arm; a pair whose \
+                         action queues one registers its resolution"
+                    ),
+                })
+            }
+        };
+        *state =
+            crate::game::apply_move(state, &resolution, rules).map_err(|e| {
+                FixtureError::Declaration {
+                    clause: "declined choice riders",
+                    detail: format!("the engine refused {resolution:?}: {e}"),
+                }
+            })?;
+        declined += 1;
+    }
+    Ok(declined)
+}
+
+// --- family 2 -------------------------------------------------------------
+
+fn build_2a(stage: StageEndpoint, rules: &Rules) -> Result<PairFixture, FixtureError> {
+    let mut base = family_base(stage, &PAIR_2A, None, rules)?;
+    let silk = find_area_of_type(&base.state, AreaType::SilkMill)?;
+    set_trade_goods(&mut base.state, base.subject, [0, 0, 0, 0]);
+    // TWO pawns in one area is Option B's encoding, and two plus the
+    // president's +1 is the realizable power 3 the registered yield rests on.
+    let greater = drive_to_resolved_area_action(
+        &base.state,
+        Move::PlaceTwoSameArea { area: silk, adjacent_bonus: None },
+        silk,
+        AreaAction::ProduceSilk,
+        rules,
+    )?;
+    let mut lesser = greater.clone();
+    // The ONE declared difference, taken back off the engine-produced side —
+    // read from the shipped table rather than restated.
+    lesser.player_mut(base.subject).silk -= u32::from(crate::game::actions::silk_mill_reward(3));
+    PairFixture::new(&PAIR_2A, stage, greater, lesser, base.subject, rules)
+}
+
+fn build_2b(stage: StageEndpoint, rules: &Rules) -> Result<PairFixture, FixtureError> {
+    let base = family_base(stage, &PAIR_2B, None, rules)?;
+    let areas = productive_trio_areas(&base.state)?;
+    let lesser = base.state.clone();
+    let mut greater = base.state;
+    for area in areas {
+        place_from_warehouse(&mut greater, base.subject, area, 1)?;
+    }
+    PairFixture::new(&PAIR_2B, stage, greater, lesser, base.subject, rules)
+}
+
+fn build_2c(stage: StageEndpoint, rules: &Rules) -> Result<PairFixture, FixtureError> {
+    let base = family_base(stage, &PAIR_2C, None, rules)?;
+    let areas = productive_trio_areas(&base.state)?;
+    let lesser = base.state.clone();
+    let mut greater = base.state;
+    // 2(b)'s deployment, paid for out of the HAND — the one difference
+    // between the gate and the diagnostic.
+    for area in areas {
+        place_from_hand(&mut greater, base.subject, area, 1)?;
+    }
+    PairFixture::new(&PAIR_2C, stage, greater, lesser, base.subject, rules)
+}
+
+fn build_2d(stage: StageEndpoint, rules: &Rules) -> Result<PairFixture, FixtureError> {
+    let mut base = family_base(stage, &PAIR_2D, None, rules)?;
+    let ea = find_area_of_type(&base.state, AreaType::EmploymentAgency)?;
+    place_from_hand(&mut base.state, base.subject, ea, FAMILY_2D_EA_PAWNS)?;
+    {
+        let p = base.state.player_mut(base.subject);
+        // The warehouse drains to the registered three assistants; the rest
+        // go to HAND, which is the only direction that keeps the twenty-pawn
+        // total and moves no other counter this pair reads.
+        let surplus = p
+            .assistants
+            .in_warehouse
+            .checked_sub(FAMILY_2D_WAREHOUSE_ASSISTANTS)
+            .ok_or(FixtureError::OutOfStock("warehouse assistants to drain to the registered three"))?;
+        p.assistants.in_warehouse = FAMILY_2D_WAREHOUSE_ASSISTANTS;
+        p.assistants.in_hand += surplus;
+        // Both building-token classes leave the warehouse entirely: the EA's
+        // basket is a SUM over all three, and any token left behind would
+        // carry it past the power cap and pin S6 on both sides.
+        p.trading_houses.in_hand += p.trading_houses.in_warehouse;
+        p.trading_houses.in_warehouse = 0;
+        p.shophouses.in_hand += p.shophouses.in_warehouse;
+        p.shophouses.in_warehouse = 0;
+    }
+    let greater = base.state.clone();
+    let mut lesser = base.state;
+    {
+        // The LESSER side is the one token short of ready — the whole pair.
+        let p = lesser.player_mut(base.subject);
+        p.shophouses.in_hand = p
+            .shophouses
+            .in_hand
+            .checked_sub(1)
+            .ok_or(FixtureError::OutOfStock("a shophouse token to leave in the warehouse"))?;
+        p.shophouses.in_warehouse += 1;
+    }
+    PairFixture::new(&PAIR_2D, stage, greater, lesser, base.subject, rules)
+}
+
+// --- family 6 -------------------------------------------------------------
+
+fn build_6a(stage: StageEndpoint, rules: &Rules) -> Result<PairFixture, FixtureError> {
+    let mut base = family_base_with_order(stage, &PAIR_6A, None, FIXTURE_FULFILLED_CARD, rules)?;
+    stock_exactly_the_requirements(&mut base.state, base.subject, FIXTURE_FULFILLED_CARD, rules)?;
+    let lesser = base.state;
+    // Through the engine, so the queued warehouse icon, the completed pile and
+    // `check_mercenary_eligibility`'s verdict are the engine's own bytes.
+    let greater = fulfill_through_the_engine(&lesser, FIXTURE_FULFILLED_CARD, rules)?;
+    PairFixture::new(&PAIR_6A, stage, greater, lesser, base.subject, rules)
+}
+
+fn build_6b(stage: StageEndpoint, rules: &Rules) -> Result<PairFixture, FixtureError> {
+    let mut base = family_base(stage, &PAIR_6B, None, rules)?;
+    set_trade_goods(&mut base.state, base.subject, [0, 0, 0, 0]);
+    {
+        // The threshold is read off the engine's own progress arm rather than
+        // written as a literal, so a re-priced card moves the fixture with it.
+        let (_, needed) = crate::game::achievement_progress(
+            &base.state,
+            base.subject,
+            AchievementType::Money10,
+        );
+        base.state.player_mut(base.subject).money = needed;
+    }
+    let lesser = base.state;
+    let greater = crate::game::apply_move(
+        &lesser,
+        &Move::FulfillAchievement { achievement: AchievementType::Money10 },
+        rules,
+    )
+    .map_err(|e| FixtureError::Declaration {
+        clause: "engine-driven claim",
+        detail: format!("the engine refused the Money10 claim: {e}"),
+    })?;
+    PairFixture::new(&PAIR_6B, stage, greater, lesser, base.subject, rules)
+}
+
+fn build_6c(stage: StageEndpoint, rules: &Rules) -> Result<PairFixture, FixtureError> {
+    let mut base = family_base_with_order(stage, &PAIR_6C, None, FIXTURE_SET_CARD, rules)?;
+    for card in FAMILY_6C_COMPLETED {
+        complete_order_from_the_box(&mut base.state, base.subject, card)?;
+    }
+    stock_exactly_the_requirements(&mut base.state, base.subject, FIXTURE_SET_CARD, rules)?;
+    let lesser = base.state;
+    let greater = fulfill_through_the_engine(&lesser, FIXTURE_SET_CARD, rules)?;
+    PairFixture::new(&PAIR_6C, stage, greater, lesser, base.subject, rules)
+}
+
+fn build_6d_church(stage: StageEndpoint, rules: &Rules) -> Result<PairFixture, FixtureError> {
+    let mut base = family_base_with_order(stage, &PAIR_6D_CHURCH, None, FIXTURE_TRACK_CARD, rules)?;
+    let church = find_area_of_type(&base.state, AreaType::Church)?;
+    // ONE copper and ONE silk: two distinct payment types, and
+    // `min(power 2, 5) + 2` is the registered total faith of 4. A third type
+    // would carry the faith past 4 and change which spaces qualify.
+    set_trade_goods(&mut base.state, base.subject, [1, 1, 0, 0]);
+    base.state.player_mut(base.subject).imported_goods = 0;
+    let placement = Move::PlaceThreeAreas { placements: vec![church] };
+
+    let mut greater = drive_to_resolved_area_action(
+        &base.state,
+        placement.clone(),
+        church,
+        AreaAction::Church {
+            copper: true,
+            silk: true,
+            tea: false,
+            seafood: false,
+            yen: false,
+            imported_good: false,
+        },
+        rules,
+    )?;
+    // Faith 4 leaves exactly one eligible space, so the placement resolves
+    // INLINE and what remains queued is the space's movement rider.
+    decline_every_queued_choice(&mut greater, rules)?;
+
+    // The LESSER side is the church's own Skip — a real move from the same
+    // root, which is what lets one view class describe both sides.
+    let lesser =
+        drive_to_resolved_area_action(&base.state, placement, church, AreaAction::Skip, rules)?;
+    PairFixture::new(&PAIR_6D_CHURCH, stage, greater, lesser, base.subject, rules)
+}
+
+fn build_6d_customs(stage: StageEndpoint, rules: &Rules) -> Result<PairFixture, FixtureError> {
+    let mut base =
+        family_base_with_order(stage, &PAIR_6D_CUSTOMS, None, FIXTURE_TRACK_CARD, rules)?;
+    let customs = find_area_of_type(&base.state, AreaType::Customs)?;
+    set_trade_goods(&mut base.state, base.subject, [0, 0, 0, 0]);
+    base.state.player_mut(base.subject).imported_goods = u32::from(CUSTOMS_IMPORTS_PAID);
+    let placement = Move::PlaceThreeAreas { placements: vec![customs] };
+
+    let mut greater = drive_to_resolved_area_action(
+        &base.state,
+        placement.clone(),
+        customs,
+        AreaAction::Customs { imported_goods_paid: CUSTOMS_IMPORTS_PAID },
+        rules,
+    )?;
+    // Cost 1 maps to spaces {1, 2} and both are empty, so the engine queues
+    // the choice and the registration answers it.
+    resolve_registered_choice(
+        &mut greater,
+        PendingChoice::CustomsSpace { cost: CUSTOMS_IMPORTS_PAID },
+        Move::ChooseCustomsSpace { space: CUSTOMS_SPACE },
+        rules,
+    )?;
+    // Space 1's two warehouse takes, declined per §5.2.
+    decline_every_queued_choice(&mut greater, rules)?;
+
+    let lesser =
+        drive_to_resolved_area_action(&base.state, placement, customs, AreaAction::Skip, rules)?;
+    PairFixture::new(&PAIR_6D_CUSTOMS, stage, greater, lesser, base.subject, rules)
+}
+
+// --- family 7 -------------------------------------------------------------
+
+fn build_7(stage: StageEndpoint, rules: &Rules) -> Result<PairFixture, FixtureError> {
+    let mut base = family_base(stage, &PAIR_7, None, rules)?;
+    let silk = find_area_of_type(&base.state, AreaType::SilkMill)?;
+    set_trade_goods(&mut base.state, base.subject, [0, 0, 0, 0]);
+    // 2(a)'s construction at ONE pawn: power 2, and `silk_mill_reward(2)` = 1.
+    let greater = drive_to_resolved_area_action(
+        &base.state,
+        Move::PlaceThreeAreas { placements: vec![silk] },
+        silk,
+        AreaAction::ProduceSilk,
+        rules,
+    )?;
+    let mut lesser = greater.clone();
+    lesser.player_mut(base.subject).silk -= u32::from(crate::game::actions::silk_mill_reward(2));
+    PairFixture::new(&PAIR_7, stage, greater, lesser, base.subject, rules)
 }
 
 // --- family 11 ------------------------------------------------------------
@@ -4292,6 +4666,151 @@ fn place_from_hand(
     }
     p.assistants.in_hand -= n;
     *p.assistants.on_board.entry(area).or_insert(0) += n;
+    Ok(())
+}
+
+/// The board areas carrying [`PRODUCTIVE_TRIO`]'s three types, in `AreaId`
+/// order.
+fn productive_trio_areas(state: &GameState) -> Result<[AreaId; 3], FixtureError> {
+    let mut out = [AreaId(0); 3];
+    for (slot, want) in out.iter_mut().zip(PRODUCTIVE_TRIO) {
+        *slot = find_area_of_type(state, want)?;
+    }
+    out.sort_unstable_by_key(|a| a.0);
+    Ok(out)
+}
+
+/// Set a seat's four trade-good stocks outright, `[copper, silk, tea,
+/// seafood]`.
+///
+/// Registered stocks are written rather than left to the deal in every pair
+/// that reads them: the goods are what E2, O2, X3 and the Category-A
+/// achievement leg all key on, so "whatever setup happened to give" is four
+/// unregistered facts at once.
+fn set_trade_goods(state: &mut GameState, seat: PlayerId, goods: [u32; 4]) {
+    let p = state.player_mut(seat);
+    p.copper = goods[0];
+    p.silk = goods[1];
+    p.tea = goods[2];
+    p.seafood = goods[3];
+}
+
+/// Set a seat's stocks to EXACTLY one order card's printed requirements.
+///
+/// Exactly, not at least: a surplus would survive the fulfillment and leave
+/// O2's per-good `min` reading the leftover rather than the retired
+/// requirement, which is the row §5.2 registers as retiring.
+fn stock_exactly_the_requirements(
+    state: &mut GameState,
+    seat: PlayerId,
+    card: OrderCardId,
+    rules: &Rules,
+) -> Result<(), FixtureError> {
+    let order = rules
+        .orders
+        .get(card)
+        .ok_or(FixtureError::OutOfStock("the registered order card's printed face"))?;
+    let r = order.requirements;
+    set_trade_goods(
+        state,
+        seat,
+        [u32::from(r.copper), u32::from(r.silk), u32::from(r.tea), u32::from(r.seafood)],
+    );
+    state.player_mut(seat).imported_goods = 0;
+    Ok(())
+}
+
+/// Fulfil a registered order through the engine's CHECKED boundary.
+///
+/// `apply_move` refuses anything `get_legal_moves` does not offer, so this is
+/// simultaneously the construction and the proof that the seat could legally
+/// have made the move — including `can_fulfill_order`'s per-good check, the
+/// phase gate, the queued icon choices and
+/// `check_mercenary_eligibility`'s five-country sweep.
+fn fulfill_through_the_engine(
+    state: &GameState,
+    card: OrderCardId,
+    rules: &Rules,
+) -> Result<GameState, FixtureError> {
+    crate::game::apply_move(state, &Move::FulfillOrder { order_id: card }, rules).map_err(|e| {
+        FixtureError::Declaration {
+            clause: "engine-driven fulfillment",
+            detail: format!("the engine refused fulfilling order {}: {e}", card.0),
+        }
+    })
+}
+
+/// Move `n` of a seat's WAREHOUSE assistants onto `area`.
+///
+/// **No rule does this**, and the helper's name is where that is said rather
+/// than discovered. The warehouse is a one-way source — three code paths drain
+/// it and none refills it — and Recovery returns board pawns to HAND, never to
+/// the warehouse. That is exactly why §5.2's 2(b) is registered as the
+/// RETRIEVAL-economy comparison rather than the recovery one (the dossier's
+/// 2026-08-20 re-reading), and why its two sides are constructed rather than
+/// played.
+fn place_from_warehouse(
+    state: &mut GameState,
+    seat: PlayerId,
+    area: AreaId,
+    n: u8,
+) -> Result<(), FixtureError> {
+    let p = state.player_mut(seat);
+    if p.assistants.in_warehouse < n {
+        return Err(FixtureError::OutOfStock("warehouse assistants to deploy"));
+    }
+    p.assistants.in_warehouse -= n;
+    *p.assistants.on_board.entry(area).or_insert(0) += n;
+    Ok(())
+}
+
+/// Push a registered order card onto a seat's COMPLETED pile.
+///
+/// **The BOX pays in every case**, and that is the whole design. A card
+/// standing in the deck or at a port offer trades places with a boxed card
+/// first, so the deck keeps its LENGTH (§5.1's p = 0 realization wants a full
+/// one) and the port keeps its FILL (at 2P a non-full port implies an
+/// exhausted deck, so a p = 0 fixture cannot show one). Net movement is always
+/// box −1, completed +1, and the 36-card conservation total never moves.
+///
+/// It is a legality construction, not a reachability one: a real seat reaches
+/// four completed orders by drawing through the port, which would have moved
+/// the deck clock off zero. 6(c) registers both endpoints and this is what
+/// lets the early one exist.
+fn complete_order_from_the_box(
+    state: &mut GameState,
+    seat: PlayerId,
+    card: OrderCardId,
+) -> Result<(), FixtureError> {
+    for p in &state.players {
+        if p.order_cards_in_hand.contains(&card) || p.completed_orders.contains(&card) {
+            return Err(FixtureError::Declaration {
+                clause: "registered completed order",
+                detail: format!(
+                    "order {} is already held or completed by seat {}; a pre-completed \
+                     order must be swappable out of the deck, the box or a port slot",
+                    card.0, p.id.0,
+                ),
+            });
+        }
+    }
+    if let Some(i) = state.orders_removed.iter().position(|c| *c == card) {
+        state.orders_removed.remove(i);
+    } else {
+        let boxed = state
+            .orders_removed
+            .pop()
+            .ok_or(FixtureError::OutOfStock("a boxed order to trade places with"))?;
+        if let Some(i) = state.order_deck.iter().position(|c| *c == card) {
+            state.order_deck[i] = boxed;
+        } else if let Some(i) = port_a_slot_of(state, card) {
+            state.port_state.port_a.slots[i] = Some(boxed);
+        } else {
+            state.orders_removed.push(boxed);
+            return Err(FixtureError::OutOfStock("the registered completed-order card"));
+        }
+    }
+    state.player_mut(seat).completed_orders.push(card);
     Ok(())
 }
 
