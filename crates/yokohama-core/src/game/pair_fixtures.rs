@@ -1609,6 +1609,15 @@ const CHURCH_FAITH_SPACE: u8 = 4;
 /// VP of `CustomsBonusNow` on the same rightmost-tie rule as the church.
 const CUSTOMS_SPACE: u8 = 1;
 
+/// The movement riders faith-4 queues, all DECLINED: `ChurchTrack`'s rider
+/// table is 1,1,2,2,2,2,3,3 for faith 4..11, so the registered space queues
+/// exactly one.
+const CHURCH_RIDERS_DECLINED: usize = 1;
+
+/// The warehouse takes customs space 1 queues, all DECLINED: its rider is
+/// `(2 warehouse takes, 0 yen)`.
+const CUSTOMS_RIDERS_DECLINED: usize = 2;
+
 /// The imported goods 6(d-customs) pays — the whole payable range at power 2,
 /// since `customs_max_imported_goods(2)` is 1 and the payment must match a
 /// printed space cost EXACTLY.
@@ -1837,7 +1846,7 @@ pub const PAIR_6D_CHURCH: PairDeclaration = PairDeclaration {
         ("space_vp", 3),
         ("church_majority_place", 2),
         ("church_bonus_gained", 3),
-        ("declined_movement_riders", 1),
+        ("declined_movement_riders", CHURCH_RIDERS_DECLINED as i64),
         ("subject_order_card", FIXTURE_TRACK_CARD.0 as i64),
     ],
     expected_nonzero: &[
@@ -1914,7 +1923,7 @@ pub const PAIR_6D_CUSTOMS: PairDeclaration = PairDeclaration {
         ("space_vp", 5),
         ("customs_majority_place", 2),
         ("customs_bonus_gained", 4),
-        ("declined_warehouse_takes", 2),
+        ("declined_warehouse_takes", CUSTOMS_RIDERS_DECLINED as i64),
         ("subject_order_card", FIXTURE_TRACK_CARD.0 as i64),
     ],
     expected_nonzero: &[
@@ -3999,13 +4008,38 @@ fn resolve_registered_choice(
     Ok(())
 }
 
-/// DECLINE every remaining queued choice, and report how many were declined.
+/// DECLINE every remaining queued choice, and refuse unless EXACTLY the
+/// registered number were there to decline.
+///
+/// The count is a registered parameter of both 6(d) pairs — the church space's
+/// movement riders, the customs space's warehouse takes — so checking it here
+/// is what keeps those parameters facts rather than annotations: a space whose
+/// rider table changed would otherwise be declined away silently.
 ///
 /// Only the two declinable heads are handled. `ChurchSpace`, `CustomsSpace`,
 /// `AnyGood`, `RecoveryLeave` and `StationPlace` have no Decline arm at all,
 /// so a pair whose action queues one registers the answer through
 /// [`resolve_registered_choice`] instead — and meeting one here is a typed
 /// refusal naming it rather than a silent wrong resolution.
+fn decline_the_registered_riders(
+    state: &mut GameState,
+    expected: usize,
+    rules: &Rules,
+) -> Result<(), FixtureError> {
+    let declined = decline_every_queued_choice(state, rules)?;
+    if declined != expected {
+        return Err(FixtureError::Declaration {
+            clause: "declined choice riders",
+            detail: format!(
+                "the registration declines {expected} rider(s) and the action queued \
+                 {declined}"
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// The loop [`decline_the_registered_riders`] counts.
 fn decline_every_queued_choice(
     state: &mut GameState,
     rules: &Rules,
@@ -4196,8 +4230,9 @@ fn build_6d_church(stage: StageEndpoint, rules: &Rules) -> Result<PairFixture, F
         rules,
     )?;
     // Faith 4 leaves exactly one eligible space, so the placement resolves
-    // INLINE and what remains queued is the space's movement rider.
-    decline_every_queued_choice(&mut greater, rules)?;
+    // INLINE and what remains queued is the space's movement rider — one of
+    // them, which is the registered count this refuses to differ from.
+    decline_the_registered_riders(&mut greater, CHURCH_RIDERS_DECLINED, rules)?;
 
     // The LESSER side is the church's own Skip — a real move from the same
     // root, which is what lets one view class describe both sides.
@@ -4230,7 +4265,7 @@ fn build_6d_customs(stage: StageEndpoint, rules: &Rules) -> Result<PairFixture, 
         rules,
     )?;
     // Space 1's two warehouse takes, declined per §5.2.
-    decline_every_queued_choice(&mut greater, rules)?;
+    decline_the_registered_riders(&mut greater, CUSTOMS_RIDERS_DECLINED, rules)?;
 
     let lesser =
         drive_to_resolved_area_action(&base.state, placement, customs, AreaAction::Skip, rules)?;
@@ -5784,6 +5819,19 @@ mod tests {
         (p.copper, p.silk, p.tea, p.seafood)
     }
 
+    /// One seat's OWN value of an incumbent feature on one side — the
+    /// un-differenced half of what `incumbent_delta` subtracts.
+    ///
+    /// A difference of +4 is consistent with 8 → 12 and with 0 → 4, and the
+    /// registrations that turn on a mirror's ABSOLUTE level (6(c)'s set step,
+    /// 6(d)'s second place) mean the first. This is how those say so.
+    fn own_value(f: &PairFixture, side: Side, seat: PlayerId, feature: Feature, rules: &Rules) -> i64 {
+        let view = f.view(side);
+        let structure = ScoreStructure::derive(view, rules);
+        let player = view.players.iter().find(|p| p.id == seat).expect("the seat has a row");
+        structure.value_of(player, feature)
+    }
+
     #[test]
     fn two_a_takes_the_silk_mills_two_goods_and_leaves_the_presence_standing() {
         let rules = rules();
@@ -6011,6 +6059,18 @@ mod tests {
             );
             // No mercenary on either side: every country's icon count is odd.
             assert_eq!(greater.player(seat).mercenaries.total(), 0);
+
+            // The registered set step, at its ABSOLUTE levels — 8 → 12 is the
+            // 2/4/8/12 curve's fifth-country move, and it is the only step
+            // where the +4 the delta pin sees also collapses O5's marginal.
+            assert_eq!(own_value(&f, Side::Lesser, seat, Feature::CountryBonusNow, &rules), 8);
+            assert_eq!(own_value(&f, Side::Greater, seat, Feature::CountryBonusNow, &rules), 12);
+            let rival = other_seat_2p(greater, seat).unwrap();
+            assert_eq!(
+                own_value(&f, Side::Greater, rival, Feature::CountryBonusNow, &rules),
+                0,
+                "the opponent completes nothing, so the relative form is the subject's own",
+            );
         }
     }
 
@@ -6039,6 +6099,15 @@ mod tests {
         assert!(greater.church_track.slots[index].is_some_and(|s| s.player == seat));
         assert!(lesser.church_track.slots[index].is_none());
         assert_eq!(crate::types::ChurchTrack::vp_reward(CHURCH_FAITH_SPACE), 3);
+        assert_eq!(
+            crate::game::actions::calculate_church_faith(2, true, true, false, false, false, false),
+            CHURCH_FAITH_SPACE,
+            "min(power 2, 5) + one per distinct payment type IS the registered total faith",
+        );
+        // SECOND place, not first: the dummy at faith-7 ties on count and wins
+        // on RIGHTMOST, consuming the 6 and leaving the 3.
+        assert_eq!(own_value(&f, Side::Greater, seat, Feature::ChurchBonusNow, &rules), 3);
+        assert_eq!(own_value(&f, Side::Lesser, seat, Feature::ChurchBonusNow, &rules), 0);
 
         // The payment, and the empty queue the declined rider leaves.
         assert_eq!(stocks(lesser, seat), (1, 1, 0, 0));
@@ -6072,6 +6141,8 @@ mod tests {
         let index = crate::types::CustomsTrack::space_to_index(CUSTOMS_SPACE).unwrap();
         assert!(greater.customs_track.slots[index].is_some_and(|s| s.player == seat));
         assert_eq!(crate::types::CustomsTrack::vp_reward(CUSTOMS_SPACE), 5);
+        assert_eq!(own_value(&f, Side::Greater, seat, Feature::CustomsBonusNow, &rules), 4);
+        assert_eq!(own_value(&f, Side::Lesser, seat, Feature::CustomsBonusNow, &rules), 0);
         // The registered space is the one whose riders are warehouse takes,
         // and they were DECLINED — so nothing left the warehouse.
         assert_eq!(
