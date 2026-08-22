@@ -1141,12 +1141,15 @@ pub const PAIR_1E: PairDeclaration = PairDeclaration {
          ({S4, S7} cluster).",
         "RESOLVED READING (an S2-T4 judgment call, flagged for the bounded re-read): the \
          registration's 'the same pawns placed disconnected' admits a pawns-moved reading, \
-         and that reading is NOT constructible at 2P with the registered collateral. All TEN \
-         tiles of a 2P board carry DISTINCT types (one of each production type survives the \
-         removal), so no pawn can move between areas without changing the type beneath it, \
-         and S1/S2/S5/S6 cannot all be held equal. The president-moved reading — the \
-         construction class the parenthetical names, and 1(c)'s — is constructible and \
-         honours every declared row, so it is the one built.",
+         and that reading does not survive the 2P board. All TEN tiles of a 2P board carry \
+         DISTINCT types (the removal keeps exactly one of each production type), so a pawn \
+         cannot move between areas without changing the type beneath it — and holding the \
+         registered 'S1/S2/S5/S6 equal' would then need THREE pairs of areas whose \
+         contributions match at the realized powers, where a 2P board offers at most the \
+         Tea/Fishing pair (both 1:1) and the two card boards (zero to all four of those \
+         terms, but not to X1/X2). The president-moved reading — the construction class the \
+         parenthetical names, and 1(c)'s — is constructible and honours every declared row, \
+         so it is the one built.",
         "The geometry is 1(c)'s inverted: three SINGLE pawns strung along a chain, so S7 \
          (which counts areas) moves by 3 while S4 (which sums the ring) moves by 1. The two \
          pairs are therefore linearly independent rows over the {S3, S4, S7} cluster rather \
@@ -3329,7 +3332,7 @@ const PURCHASED_SLOT: usize = 0;
 /// technology costs 3 and those positions surcharge 1 or 2; slot 1 is the one
 /// that has to be BOUGHT non-takeable, and Exposition's industry 5 does it.
 const LAB_STOCK: [TechEffect; 6] = [
-    TechEffect::Brickyard,    // slot 0 — industry 3, the registered purchase
+    PURCHASED_TECH,           // slot 0 — industry 3, the registered purchase
     TechEffect::Exposition,   // slot 1 — industry 5, the surcharge-free refusal
     TechEffect::Newspaper,    // slot 2 — industry 5
     TechEffect::Gaslight,     // slot 3 — industry 3
@@ -3559,7 +3562,7 @@ fn grant_technology(
     }
     let labs = std::iter::once(&mut state.lab_state.lab_a).chain(state.lab_state.lab_b.as_mut());
     for slot in labs.flat_map(|lab| lab.slots.iter_mut()) {
-        if slot.is_some_and(|id| has_effect(id)) {
+        if slot.is_some_and(&has_effect) {
             let id = slot.take().expect("just matched Some");
             state.player_mut(seat).technologies.push(id);
             return Ok(id);
@@ -3687,6 +3690,54 @@ mod tests {
                 });
             }
         }
+    }
+
+    #[test]
+    fn the_ten_tuples_transcribe_the_specs_carrier_map_stages_and_margins() {
+        // §5.1's carrier map and §5.2's stage and margin columns, restated here
+        // as data and checked against the registrations. This is a
+        // TRANSCRIPTION pin, and transcription is what the bounded re-read is
+        // hunting: a pair silently registered against the wrong carrier would
+        // still build, still print, and still solve — as a constraint on a
+        // feature it was never designed to bind.
+        use CandidateFeature::*;
+        let expected: &[(&str, CandidateFeature, &[StageEndpoint], MarginClass)] = &[
+            ("1(a)", ProductionAccess, &[StageEndpoint::Early, StageEndpoint::Late], MarginClass::Margined {
+                early: Some(1),
+                late: Some(14),
+                carrier: FeatureId::Candidate(ProductionAccess),
+            }),
+            ("1(b)", AssistantAreasDistinct, &[StageEndpoint::Early, StageEndpoint::Late], MarginClass::DirectionOnly),
+            ("1(c)", PresidentLocalAccess, &[StageEndpoint::Early, StageEndpoint::Late], MarginClass::DirectionOnly),
+            ("1(d)", TrackAccess, &[StageEndpoint::Early, StageEndpoint::Late], MarginClass::DirectionOnly),
+            ("1(e)", PresidentReachableAreas, &[StageEndpoint::Early, StageEndpoint::Late], MarginClass::DirectionOnly),
+            ("11(a)", ProductionAccess, &[StageEndpoint::Early, StageEndpoint::Late], MarginClass::DirectionOnly),
+            ("11(b)", BankAccess, &[StageEndpoint::Early, StageEndpoint::Late], MarginClass::DirectionOnly),
+            ("11(c)", EmploymentAgencyAccess, &[StageEndpoint::Early, StageEndpoint::Late], MarginClass::DirectionOnly),
+            ("11(d)", LabTakeable, &[StageEndpoint::Early, StageEndpoint::Late], MarginClass::DirectionOnly),
+            ("11(e)", PortTakeable, &[StageEndpoint::Late], MarginClass::DirectionOnly),
+        ];
+        assert_eq!(expected.len(), REGISTERED_PAIR_COUNT);
+        for (id, carrier, stages, margin) in expected {
+            let d = registered(id).unwrap_or_else(|| panic!("{id} is registered"));
+            assert_eq!(
+                d.carrier,
+                Some(FeatureId::Candidate(*carrier)),
+                "{id}: §5.1's carrier map names {}",
+                carrier.label(),
+            );
+            assert_eq!(d.stages, *stages, "{id}: §5.2's stage column");
+            assert_eq!(d.margin, *margin, "{id}: §5.2's margin class");
+            assert!(
+                d.expected_nonzero.contains(&FeatureId::Candidate(*carrier)),
+                "{id}: a carrier that is not expected to move is not a carrier",
+            );
+        }
+        // 1(a) is the only MARGINED pair here, and §5.1's early floor makes its
+        // early row identical in force to DIRECTION-ONLY — the reason §5.4
+        // keeps an early-stage rescale diagnostic.
+        assert_eq!(PAIR_1A.margin.margin_at(StageEndpoint::Early), Some(1));
+        assert_eq!(PAIR_1A.margin.margin_at(StageEndpoint::Late), Some(14));
     }
 
     #[test]
@@ -4024,7 +4075,7 @@ mod tests {
                 );
 
                 // σ maps one position onto the other, pawn for pawn.
-                for (area, _) in greater.board_layout.areas.iter() {
+                for area in greater.board_layout.areas.keys() {
                     assert_eq!(
                         greater.player(seat).assistants.in_area(*area),
                         lesser.player(seat).assistants.in_area(sigma(*area)),
@@ -4476,20 +4527,11 @@ mod tests {
 
     const SEED: u64 = 0x5A2F_0001;
 
-    /// Write the three declared achievement cards onto a state.
-    ///
-    /// A registration DECLARES its draws (§5.1), so a fixture builds them
-    /// rather than accepting whatever the setup seed happened to shuffle up —
-    /// which is why every throwaway here goes through this. The cards are their
-    /// own components, not drawn from the order or technology decks, so nothing
-    /// about conservation moves; and both sides get the same three, so the
-    /// achievement-progress feature's delta is untouched.
+    /// Write the three declared achievement cards onto a state — the
+    /// registered constructions' own [`set_declared_draws`], so the throwaways
+    /// exercise the function the ten registered pairs actually use.
     fn set_draws(state: &mut GameState, draws: &AchievementDraws) {
-        state.achievements = [
-            crate::types::AchievementCard::new(draws.category_a),
-            crate::types::AchievementCard::new(draws.category_b),
-            crate::types::AchievementCard::new(draws.category_c),
-        ];
+        set_declared_draws(state, draws);
     }
 
     /// The two sides of `THROWAWAY_VP` at one endpoint: identical states except
@@ -5752,5 +5794,6 @@ mod tests {
         assert_ne!(second, area);
     }
 }
+
 
 
