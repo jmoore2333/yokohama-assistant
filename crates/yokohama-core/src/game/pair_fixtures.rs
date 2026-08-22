@@ -4630,8 +4630,15 @@ mod tests {
         // Clause 13 refuses an UNLISTED nonzero row and
         // `listed_incumbent_rows_are_nonzero` refuses a LISTED zero, so between
         // them the SET is already pinned. What is not pinned by either is the
-        // VALUE, and the values are what three registrations actually say:
-        // 11(c)'s "−1 / +1", 11(d)'s "+industry", 11(e)'s "+1".
+        // VALUE, and the values are what the registrations actually say:
+        // 11(c)'s "−1 / +1", 11(d)'s "+industry", 11(e)'s "+1", 6(a)'s "VP
+        // +face", 6(b)'s "+9 first place", 6(d)'s "VP +space" and both
+        // majority mirrors.
+        //
+        // Every value below was PREDICTED from the rules before the
+        // construction existed, which is the point of pinning it: a
+        // construction that lands a different number is telling the
+        // registration something.
         let rules = rules();
         let expected: &[(&str, &[(Feature, i64)])] = &[
             ("1(a)", &[]),
@@ -4639,6 +4646,53 @@ mod tests {
             ("1(c)", &[]),
             ("1(d)", &[]),
             ("1(e)", &[]),
+            // 2(a) and 2(d) are pure candidate-axis separators: goods and
+            // hand-held building tokens are both invisible to all sixteen.
+            ("2(a)", &[]),
+            (
+                "2(b)",
+                &[(Feature::AssistantsInWarehouse, -3), (Feature::AssistantsOnBoard, 3)],
+            ),
+            ("2(d)", &[]),
+            (
+                "2(c)",
+                &[(Feature::AssistantsInHandExcess, -3), (Feature::AssistantsOnBoard, 3)],
+            ),
+            ("6(a)", &[(Feature::VictoryPoints, 5), (Feature::HandSize, -1)]),
+            (
+                "6(b)",
+                &[
+                    (Feature::VictoryPoints, 9),
+                    (Feature::AchievementProgressSum, -10),
+                    (Feature::AssistantsInHandExcess, -1),
+                ],
+            ),
+            (
+                "6(c)",
+                &[
+                    (Feature::VictoryPoints, 5),
+                    (Feature::CountryBonusNow, 4),
+                    (Feature::HandSize, -1),
+                ],
+            ),
+            (
+                "6(d-church)",
+                &[
+                    (Feature::VictoryPoints, 3),
+                    (Feature::ChurchBonusNow, 3),
+                    (Feature::AssistantsOnBoard, -1),
+                ],
+            ),
+            (
+                "6(d-customs)",
+                &[
+                    (Feature::VictoryPoints, 5),
+                    (Feature::CustomsBonusNow, 4),
+                    (Feature::ImportedGoods, -1),
+                    (Feature::AssistantsOnBoard, -1),
+                ],
+            ),
+            ("7", &[]),
             ("11(a)", &[]),
             ("11(b)", &[]),
             (
@@ -5198,6 +5252,347 @@ mod tests {
             "and it matches a good the seat holds, so O2 does",
         );
         assert_eq!((card.rewards.movement, card.rewards.warehouse_tokens), (0, 0));
+    }
+
+    // -----------------------------------------------------------------------
+    // FAMILY 2 — the state facts each registration's rows rest on
+    // -----------------------------------------------------------------------
+
+    /// The subject's four trade-good stocks on one side, in the order
+    /// `(copper, silk, tea, seafood)`.
+    fn stocks(state: &GameState, seat: PlayerId) -> (u32, u32, u32, u32) {
+        let p = state.player(seat);
+        (p.copper, p.silk, p.tea, p.seafood)
+    }
+
+    #[test]
+    fn two_a_takes_the_silk_mills_two_goods_and_leaves_the_presence_standing() {
+        let rules = rules();
+        let f = built("2(a)", StageEndpoint::Late, &rules);
+        let seat = f.subject();
+        let greater = f.state(Side::Greater);
+        let lesser = f.state(Side::Lesser);
+        let silk = find_area_of_type(greater, AreaType::SilkMill).unwrap();
+
+        // The registered yield, read off the engine's own table at the power
+        // the fixture realizes: two assistants plus the president's +1.
+        assert_eq!(crate::game::actions::silk_mill_reward(2 + 1), 2);
+        assert_eq!(stocks(greater, seat), (0, 2, 0, 0));
+        assert_eq!(stocks(lesser, seat), (0, 0, 0, 0));
+
+        for side in [Side::Greater, Side::Lesser] {
+            let state = f.state(side);
+            // PRESENCE UNCHANGED is the phase's doing, not the fixture's:
+            // Recovery has not run at FivePowerBonus.
+            assert_eq!(state.player(seat).assistants.in_area(silk), 2);
+            assert_eq!(occupied_areas(state, seat), vec![silk]);
+            assert_eq!(state.turn_phase, TurnPhase::FivePowerBonus);
+            assert_eq!(
+                state.current_action_power,
+                Some(3),
+                "the resolved-area-action phase carries the power the president arrived with",
+            );
+            assert_eq!(state.player(seat).president_location, PresidentLocation::OnBoard(silk));
+            assert!(state.pending_choices.is_empty(), "a production action queues nothing");
+        }
+    }
+
+    #[test]
+    fn two_b_moves_three_pawns_out_of_the_warehouse_and_nothing_else() {
+        let rules = rules();
+        let f = built("2(b)", StageEndpoint::Early, &rules);
+        let seat = f.subject();
+        let greater = f.state(Side::Greater);
+        let lesser = f.state(Side::Lesser);
+
+        let mut want: Vec<AreaId> = PRODUCTIVE_TRIO
+            .iter()
+            .map(|t| find_area_of_type(greater, *t).unwrap())
+            .collect();
+        want.sort_unstable_by_key(|a| a.0);
+        assert_eq!(occupied_areas(greater, seat), want);
+        assert!(occupied_areas(lesser, seat).is_empty());
+
+        let g = greater.player(seat);
+        let l = lesser.player(seat);
+        assert_eq!(u32::from(g.assistants.in_warehouse) + 3, u32::from(l.assistants.in_warehouse));
+        assert_eq!(g.assistants.in_hand, l.assistants.in_hand, "the HAND is what stays equal");
+        assert_eq!(g.assistants.total(), 20);
+        assert_eq!(l.assistants.total(), 20);
+
+        // The registered exported yield of the trio, at one pawn plus the
+        // president's +1 apiece.
+        let per_area: u8 = PRODUCTIVE_TRIO
+            .iter()
+            .map(|t| crate::game::actions::exported_reward(*t, 2).unwrap())
+            .sum();
+        assert_eq!(per_area, 5, "silk(2) + tea(2) + fishing(2) = 1 + 2 + 2");
+    }
+
+    #[test]
+    fn two_c_is_two_bs_construction_with_the_pawns_coming_from_hand() {
+        let rules = rules();
+        let b = built("2(b)", StageEndpoint::Early, &rules);
+        let c = built("2(c)", StageEndpoint::Early, &rules);
+        let seat = c.subject();
+        assert_eq!(b.subject(), seat);
+
+        // The two GREATER sides are the same deployment; only the pawns'
+        // origin differs, which is the whole comparison.
+        assert_eq!(
+            occupied_areas(b.state(Side::Greater), seat),
+            occupied_areas(c.state(Side::Greater), seat),
+        );
+        let g = c.state(Side::Greater).player(seat);
+        let l = c.state(Side::Lesser).player(seat);
+        assert_eq!(u32::from(g.assistants.in_hand) + 3, u32::from(l.assistants.in_hand));
+        assert_eq!(g.assistants.in_warehouse, l.assistants.in_warehouse, "the WAREHOUSE stays equal");
+        // V2's core reserve is full on both sides at a hand of eight, so the
+        // whole −3 lands in the excess bucket rather than splitting.
+        assert!(g.assistants.in_hand >= 2 && l.assistants.in_hand >= 2);
+        assert_eq!(c.declaration().role, PairRole::Diagnostic);
+    }
+
+    #[test]
+    fn two_d_binds_the_employment_agencys_min_on_the_warehouse_basket() {
+        let rules = rules();
+        let f = built("2(d)", StageEndpoint::Early, &rules);
+        let seat = f.subject();
+        let ea = find_area_of_type(f.state(Side::Greater), AreaType::EmploymentAgency).unwrap();
+
+        // The cap the basket has to bind against, from the engine's own table.
+        assert_eq!(crate::game::actions::employment_agency_tokens_allowed(5), 4);
+
+        let basket = |side: Side| {
+            let p = f.state(side).player(seat);
+            u32::from(p.assistants.in_warehouse)
+                + u32::from(p.shophouses.in_warehouse)
+                + u32::from(p.trading_houses.in_warehouse)
+        };
+        assert_eq!(basket(Side::Lesser), 4, "the lesser basket sits exactly AT the cap");
+        assert_eq!(basket(Side::Greater), 3, "and the retrieval drops it below");
+
+        for side in [Side::Greater, Side::Lesser] {
+            let p = f.state(side).player(seat);
+            assert_eq!(p.assistants.in_area(ea), 4, "four pawns is what buys power 5");
+            assert_eq!(p.assistants.in_warehouse, FAMILY_2D_WAREHOUSE_ASSISTANTS);
+            assert_eq!(p.trading_houses.in_warehouse, 0, "a trading house left here would unbind the min");
+            assert_eq!(p.trading_houses.in_hand, 4);
+            assert_eq!(p.shophouses.total_built(), 0);
+        }
+        let g = f.state(Side::Greater).player(seat);
+        let l = f.state(Side::Lesser).player(seat);
+        assert_eq!((g.shophouses.in_hand, g.shophouses.in_warehouse), (8, 0));
+        assert_eq!((l.shophouses.in_hand, l.shophouses.in_warehouse), (7, 1));
+        assert_eq!(g.money, l.money, "§5.2: the fixture sets equal money");
+    }
+
+    // -----------------------------------------------------------------------
+    // FAMILY 6 — the C2 controls
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn six_a_fulfills_through_the_engine_and_leaves_the_icon_queued() {
+        let rules = rules();
+        for stage in StageEndpoint::ALL {
+            let f = built("6(a)", stage, &rules);
+            let seat = f.subject();
+            let greater = f.state(Side::Greater);
+            let lesser = f.state(Side::Lesser);
+            let card = rules.orders.get(FIXTURE_FULFILLED_CARD).expect("the registered card");
+
+            assert!(lesser.player(seat).order_cards_in_hand.contains(&FIXTURE_FULFILLED_CARD));
+            assert!(greater.player(seat).completed_orders.contains(&FIXTURE_FULFILLED_CARD));
+            assert!(greater.player(seat).order_cards_in_hand.is_empty());
+
+            // The requirements were in stock on the lesser side and are spent
+            // on the greater — exactly the printed amounts, no more.
+            let r = card.requirements;
+            assert_eq!(
+                stocks(lesser, seat),
+                (0, u32::from(r.silk), u32::from(r.tea), u32::from(r.seafood)),
+            );
+            assert_eq!(stocks(greater, seat), (0, 0, 0, 0));
+
+            // The registered queue state: ONE warehouse take, unresolved.
+            assert!(lesser.pending_choices.is_empty());
+            assert_eq!(greater.pending_choices, vec![crate::types::PendingChoice::WarehouseTake]);
+            assert_eq!(u32::from(card.rewards.warehouse_tokens), 1);
+
+            // The inert parity: one German icon after, so no award fires.
+            assert_eq!(
+                greater.mercenary_supply.german, lesser.mercenary_supply.german,
+                "the shared German supply is untouched, so no award fired",
+            );
+            for side in [Side::Greater, Side::Lesser] {
+                assert_eq!(f.state(side).player(seat).mercenaries.total(), 0);
+                assert_eq!(f.state(side).turn_phase, TurnPhase::AdditionalActionFirst);
+            }
+        }
+    }
+
+    #[test]
+    fn six_b_claims_money_ten_out_of_the_hands_excess() {
+        let rules = rules();
+        for stage in StageEndpoint::ALL {
+            let f = built("6(b)", stage, &rules);
+            let seat = f.subject();
+            let greater = f.state(Side::Greater);
+            let lesser = f.state(Side::Lesser);
+
+            assert_eq!(greater.achievements[1].achievement_type, AchievementType::Money10);
+            assert!(greater.achievements[1].claimed_by.contains(&seat), "claimed, for FIRST place");
+            assert!(lesser.achievements[1].claimed_by.is_empty());
+            assert_eq!(AchievementType::Money10.first_place_vp(), 9);
+
+            for side in [Side::Greater, Side::Lesser] {
+                assert_eq!(f.state(side).player(seat).money, 10, "the claim costs no money");
+            }
+            let g = greater.player(seat);
+            let l = lesser.player(seat);
+            assert_eq!(u32::from(g.assistants.in_hand) + 1, u32::from(l.assistants.in_hand));
+            assert_eq!(u32::from(g.assistants.on_achievements), u32::from(l.assistants.on_achievements) + 1);
+            assert!(g.assistants.in_hand > 2, "past the core reserve, so the EXCESS bucket pays");
+            assert_eq!(stocks(greater, seat), stocks(lesser, seat), "the E group is untouched");
+        }
+    }
+
+    #[test]
+    fn six_c_closes_the_fifth_country_set() {
+        let rules = rules();
+        for stage in StageEndpoint::ALL {
+            let f = built("6(c)", stage, &rules);
+            let seat = f.subject();
+            let greater = f.state(Side::Greater);
+            let lesser = f.state(Side::Lesser);
+
+            let countries = |state: &GameState| {
+                let mut cs: Vec<crate::types::Country> = state
+                    .player(seat)
+                    .completed_orders
+                    .iter()
+                    .map(|id| rules.orders.get(*id).expect("a completed order").country)
+                    .collect();
+                cs.sort_unstable_by_key(|c| format!("{c:?}"));
+                cs.dedup();
+                cs
+            };
+            assert_eq!(countries(lesser).len(), 4, "four distinct before");
+            assert_eq!(countries(greater).len(), 5, "and the Dutch card closes the set");
+            assert_eq!(lesser.player(seat).completed_orders.len(), 4);
+            assert_eq!(greater.player(seat).completed_orders.len(), 5);
+            assert!(lesser.player(seat).order_cards_in_hand.contains(&FIXTURE_SET_CARD));
+
+            // The registered card queues nothing — 6(a) is where the icon case
+            // lives.
+            assert!(greater.pending_choices.is_empty());
+            assert_eq!(
+                rules.orders.get(FIXTURE_SET_CARD).expect("the registered card").rewards.warehouse_tokens,
+                0,
+            );
+            // No mercenary on either side: every country's icon count is odd.
+            assert_eq!(greater.player(seat).mercenaries.total(), 0);
+        }
+    }
+
+    #[test]
+    fn six_d_church_pays_the_area_first_pawn_onto_faith_four() {
+        let rules = rules();
+        let f = built("6(d-church)", StageEndpoint::Late, &rules);
+        let seat = f.subject();
+        let greater = f.state(Side::Greater);
+        let lesser = f.state(Side::Lesser);
+        let church = find_area_of_type(greater, AreaType::Church).unwrap();
+
+        // D6 area-first: the pawn came off the ACTED AREA, not out of hand.
+        assert_eq!(greater.player(seat).assistants.in_area(church), 0);
+        assert_eq!(lesser.player(seat).assistants.in_area(church), 1);
+        assert_eq!(
+            greater.player(seat).assistants.in_hand,
+            lesser.player(seat).assistants.in_hand,
+            "the hand is untouched — the correction D6 makes to the pre-rev-7 model",
+        );
+        assert_eq!(greater.player(seat).assistants.on_church, 1);
+        assert_eq!(lesser.player(seat).assistants.on_church, 0);
+
+        // The registered space, and the faith arithmetic that forced it.
+        let index = crate::types::ChurchTrack::faith_to_index(CHURCH_FAITH_SPACE).unwrap();
+        assert!(greater.church_track.slots[index].is_some_and(|s| s.player == seat));
+        assert!(lesser.church_track.slots[index].is_none());
+        assert_eq!(crate::types::ChurchTrack::vp_reward(CHURCH_FAITH_SPACE), 3);
+
+        // The payment, and the empty queue the declined rider leaves.
+        assert_eq!(stocks(lesser, seat), (1, 1, 0, 0));
+        assert_eq!(stocks(greater, seat), (0, 0, 0, 0));
+        for side in [Side::Greater, Side::Lesser] {
+            assert!(f.state(side).pending_choices.is_empty());
+            assert_eq!(f.state(side).turn_phase, TurnPhase::FivePowerBonus);
+            assert_eq!(
+                f.state(side).player(seat).president_location,
+                PresidentLocation::OnBoard(church),
+            );
+        }
+    }
+
+    #[test]
+    fn six_d_customs_answers_the_queued_space_choice_with_the_registered_one() {
+        let rules = rules();
+        let f = built("6(d-customs)", StageEndpoint::Late, &rules);
+        let seat = f.subject();
+        let greater = f.state(Side::Greater);
+        let lesser = f.state(Side::Lesser);
+        let customs = find_area_of_type(greater, AreaType::Customs).unwrap();
+
+        assert_eq!(greater.player(seat).assistants.in_area(customs), 0);
+        assert_eq!(lesser.player(seat).assistants.in_area(customs), 1);
+        assert_eq!(greater.player(seat).assistants.on_customs, 1);
+        assert_eq!(greater.player(seat).imported_goods, 0);
+        assert_eq!(lesser.player(seat).imported_goods, 1);
+        assert_eq!(crate::game::actions::customs_max_imported_goods(2), 1);
+
+        let index = crate::types::CustomsTrack::space_to_index(CUSTOMS_SPACE).unwrap();
+        assert!(greater.customs_track.slots[index].is_some_and(|s| s.player == seat));
+        assert_eq!(crate::types::CustomsTrack::vp_reward(CUSTOMS_SPACE), 5);
+        // The registered space is the one whose riders are warehouse takes,
+        // and they were DECLINED — so nothing left the warehouse.
+        assert_eq!(
+            greater.player(seat).assistants.in_warehouse,
+            lesser.player(seat).assistants.in_warehouse,
+        );
+        assert_eq!(greater.player(seat).money, lesser.player(seat).money, "space 1 pays no yen rider");
+        for side in [Side::Greater, Side::Lesser] {
+            assert!(f.state(side).pending_choices.is_empty());
+            assert_eq!(f.state(side).turn_phase, TurnPhase::FivePowerBonus);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // FAMILY 7 — anti-parking
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn seven_is_two_as_construction_at_one_pawn() {
+        let rules = rules();
+        let f = built("7", StageEndpoint::Late, &rules);
+        let seat = f.subject();
+        let silk = find_area_of_type(f.state(Side::Greater), AreaType::SilkMill).unwrap();
+
+        assert_eq!(crate::game::actions::silk_mill_reward(1 + 1), 1);
+        assert_eq!(stocks(f.state(Side::Greater), seat), (0, 1, 0, 0));
+        assert_eq!(stocks(f.state(Side::Lesser), seat), (0, 0, 0, 0));
+        for side in [Side::Greater, Side::Lesser] {
+            let state = f.state(side);
+            assert_eq!(state.player(seat).assistants.in_area(silk), 1);
+            assert_eq!(state.current_action_power, Some(2));
+        }
+        // The two pairs are the same shape at different sizes, which is what
+        // keeps family 7 from being 2(a) re-registered at a weaker margin.
+        let two_a = built("2(a)", StageEndpoint::Late, &rules);
+        assert_ne!(
+            state_fingerprint(f.state(Side::Greater)),
+            state_fingerprint(two_a.state(Side::Greater)),
+        );
+        assert_eq!(f.declaration().margin, MarginClass::Weak);
     }
 
     // -----------------------------------------------------------------------
