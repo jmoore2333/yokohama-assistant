@@ -2,12 +2,24 @@
 //! `docs/plans/2026-08-20-phase3.5c-v4-spec-prereg.md` §5.1/§5.2, checkpoint §7
 //! step 2).
 //!
-//! This module is the FRAME the §5.2 pairs land in, and nothing else: the
-//! registered-tuple declaration type, the fixture carrier with its construction
-//! invariants, the two stage-realization builders, the package digest, and the
-//! print seam. **The registry ships EMPTY** — every one of §5.2's thirty-four
-//! gate pairs and two diagnostics is a later task's registration on top of this
-//! surface, and [`REGISTERED_PAIR_TARGET`] is what says so out loud.
+//! This module is the FRAME the §5.2 pairs land in, and the pairs themselves as
+//! each family task registers them: the registered-tuple declaration type, the
+//! fixture carrier with its construction invariants, the two stage-realization
+//! builders, the package digest, the print seam — and, since S2-T4, §5.2's
+//! FAMILY 1 (placement location) and FAMILY 11 (activation choice) as ten
+//! registered tuples with the constructions that realize them. The remaining
+//! twenty-six of §5.2's thirty-four gate pairs and two diagnostics land the same
+//! way, and [`REGISTERED_PAIR_TARGET`] is what says how far there is to go.
+//!
+//! # Why a registration and its construction live in ONE file
+//!
+//! §5.1's step-2 gate is "the realized exact-tuple registry IS the completed
+//! pre-registration", and the review that gate sends the package to reads a
+//! declaration against the bytes that realize it. A declaration in one file and
+//! its construction in another is two halves of one claim, and the half a
+//! reviewer skips is the half that drifts. So [`PAIR_1A`]'s tuple, its
+//! construction and the state facts its registered rows rest on are one
+//! contiguous read, and each later family appends its own such block.
 //!
 //! # Why it lives in the LIBRARY
 //!
@@ -799,21 +811,635 @@ impl PairDeclaration {
 }
 
 // ---------------------------------------------------------------------------
+// Registered construction constants (§5.1's step-2 open parameters, closed)
+// ---------------------------------------------------------------------------
+
+/// The setup seed every family-1 and family-11 fixture is built from.
+///
+/// §5.1 leaves "each fixture's literal state bytes" open to step 2, and a seed
+/// is the shortest honest way to close it: the whole base state — board types,
+/// port and laboratory contents, the deal — follows from this number plus
+/// `Rules::standard()`. ONE seed across both families so the ten fixtures share
+/// a base and a re-read has one number to check rather than ten.
+///
+/// It is not arbitrary in one respect, and the pin says so: at this seed the
+/// generated 2P board places the Silk Mill and the Copper Mine NON-ADJACENT,
+/// which 1(b)'s registered ΔS4 = −1 requires. The construction asserts that
+/// rather than trusting it, so a change to the board generator surfaces as a
+/// named refusal instead of as a silently different collateral row.
+pub const FIXTURE_SEED: u64 = 0x5A2F_0001;
+
+/// The order card every fixture puts in the SUBJECT's hand as its dealt
+/// starting order — printed corner index 22 (US; 4 seafood + 1 copper; 8 VP).
+///
+/// Registered rather than dealt because three separate rows depend on its
+/// requirement vector. It needs NO silk and ONE copper against a seat holding
+/// one of each, so `residual_need` is zero for both goods and X3 reads 0
+/// wherever a fixture parks a pawn on the Silk Mill or the Copper Mine (1(a),
+/// 1(b), 11(a)). Its four-seafood leg keeps it unexecutable, so O3 is 0 on both
+/// sides everywhere; and its reward face is pure VP, so O6 is 0 and adding it
+/// to a hand cannot queue an icon.
+pub const FIXTURE_ORDER_CARD: crate::types::OrderCardId = crate::types::OrderCardId(22);
+
+/// The order card 11(e)'s port take moves into the subject's hand — printed
+/// corner index 2 (FR; 1 seafood + 2 tea; 3 VP).
+///
+/// Registered for the three properties 11(e)'s row list needs: it matches goods
+/// the seat holds (so O2 moves), it needs more tea than the seat has (so O3
+/// stays 0 and the take does not silently create an executable order), and its
+/// reward face is pure VP (so O6 stays 0).
+pub const FIXTURE_PORT_CARD: crate::types::OrderCardId = crate::types::OrderCardId(2);
+
+/// Family 11's HIGH-ACCESS area on the shared hand-built layout — the area the
+/// greater side acted at. See [`family_11_layout`] for the congruence argument.
+pub const FAMILY_11_HIGH_ACCESS_AREA: AreaId = AreaId(7);
+
+/// Family 11's Copper Mine on the shared hand-built layout — the power-dead
+/// area the lesser side acted at.
+pub const FAMILY_11_COPPER_AREA: AreaId = AreaId(8);
+
+// ---------------------------------------------------------------------------
+// §5.2 FAMILY 1 — placement location (5)
+// ---------------------------------------------------------------------------
+
+/// The achievement triple every family-1 and family-11 registration draws,
+/// except where a recipe's moved good forces a different Category-A card.
+///
+/// **Tea7 / Orders5 / Commercial4 is a CHOICE, and these are its reasons.**
+/// Category A is always dealt (§5.1: "no goods achievement" is not a legal
+/// state) and its leg reads RAW GOODS, so the drawn A-card names the one good
+/// no registered recipe here may move: Tea. Category B is `Orders5` rather than
+/// `Money10` because Money10's leg is algebraically E1 over money ≤ 10 (§2's
+/// veto identity) — 11(b) moves yen and would shadow its own carrier — and
+/// rather than `Technologies4` because 11(d)'s registration excludes that card
+/// by name. Category C is `Commercial4`, a BUILDING count: §5.1's p = 0
+/// realization forbids buildings outright, so the leg reads 0 on both sides of
+/// every pair here and cannot become collateral.
+const DRAWS_TEA_LEG: AchievementDraws = AchievementDraws {
+    category_a: AchievementType::Tea7,
+    category_b: AchievementType::Orders5,
+    category_c: AchievementType::Commercial4,
+    goods_moved: &[],
+    moves_yen: false,
+};
+
+/// The same triple for a recipe that moves SILK — 11(a)'s production tick.
+/// §5.1's registered draw constraint is then checkable rather than asserted:
+/// `goods_moved` names Silk6 and the constructor refuses a drawn A-card inside
+/// that set.
+const DRAWS_SILK_MOVED: AchievementDraws =
+    AchievementDraws { goods_moved: &[AchievementType::Silk6], ..DRAWS_TEA_LEG };
+
+/// The same triple for a recipe that moves YEN — 11(b)'s bank tick. The
+/// constraint this switches on is the Money10 veto, not a goods set.
+const DRAWS_YEN_MOVED: AchievementDraws =
+    AchievementDraws { moves_yen: true, ..DRAWS_TEA_LEG };
+
+/// Technologies no seat may own in family 1 or family 11.
+///
+/// Three of the four are the dossier's own fixture recommendation (2026-08-20,
+/// the additional-action and residual-money entries): Stock Market's turn-start
+/// refill to 2¥ makes a money-0 fixture one advance away from money 2 — 11(d)
+/// builds exactly such a seat — while University (1¥ → a warehouse assistant)
+/// and Textile Mill (1 silk → 2¥) are in-turn conversions between the two
+/// stocks 11(b)/11(c)/11(a) are calibrating. The fourth is structural: §5.1's
+/// Telephone exception is the ONE way a hand-off fixture may stand a seat's
+/// president on its own assistants, and every pair here declares the ordinary
+/// post-Recovery shape instead — excluding the technology is what makes that a
+/// checked fact rather than an assumption about the construction.
+const NO_CONVERSION_TECHS: &[TechEffect] = &[
+    TechEffect::SystemOfStock,
+    TechEffect::University,
+    TechEffect::SpinningMill,
+    TechEffect::Telephone,
+];
+
+/// §5.2 1(a) — **PRODUCTIVE ≻ POWER-DEAD**, S1's margin carrier.
+pub const PAIR_1A: PairDeclaration = PairDeclaration {
+    id: "1(a)",
+    name: "PRODUCTIVE ≻ POWER-DEAD",
+    family: 1,
+    greater_side: "one assistant at the Silk Mill (realizable power 2 → 1 silk)",
+    lesser_side: "one assistant at the Copper Mine (realizable power 2 → 0)",
+    role: PairRole::Constraint,
+    stages: &[StageEndpoint::Early, StageEndpoint::Late],
+    view_class: ViewClass::HandOff,
+    margin: MarginClass::Margined {
+        early: Some(1),
+        late: Some(14),
+        carrier: FeatureId::Candidate(CandidateFeature::ProductionAccess),
+    },
+    carrier: Some(FeatureId::Candidate(CandidateFeature::ProductionAccess)),
+    presidents: SidedPresidents::BOTH_IN_HAND,
+    draws: DRAWS_TEA_LEG,
+    techs: TechDeclaration { excluded_effects: NO_CONVERSION_TECHS, max_owned: Some(0) },
+    layout: LayoutClass::StandardGenerated,
+    parameters: &[
+        ("setup_seed", FIXTURE_SEED as i64),
+        ("assistants_per_side", 1),
+        ("subject_order_card", FIXTURE_ORDER_CARD.0 as i64),
+    ],
+    expected_nonzero: &[FeatureId::Candidate(CandidateFeature::ProductionAccess)],
+    early_hand_cap_deviation: None,
+    notes: &[
+        "§5.2: MARGINED (amortized ⅓ VP/good): early 1 / late 14. Both endpoints, \
+         HAND-OFF. Presidents: both seats InHand. Collateral: none (S3/S4/S7 equal — \
+         single parked pawn both sides; S4-in-hand = 1 both; S7-in-hand = 1 both).",
+        "The single parked pawn is what holds the three collateral rows equal: S3 counts \
+         ONE occupied area on each side, and both S4 and S7 run their in-hand branch over \
+         that same one-area set (local sum 1, direct count 1).",
+        "X3 is held at 0 on BOTH sides rather than left to the deal: the lesser side reads \
+         min(copper_mine_reward(2) = 0, ·) = 0 by the reward table, and the greater side \
+         reads min(1, residual silk need) = 0 because the registered order card needs no \
+         silk. Without that card constraint the productive side would carry an unlisted X3 \
+         row and 'Collateral: none' would be false.",
+        "NO incumbent row moves at all: the two sides differ only in WHICH area holds the \
+         one pawn, and `eval`'s sixteen count pawns rather than place them. The pair is \
+         therefore a pure candidate-axis separator, which is what makes it S1's carrier.",
+    ],
+};
+
+/// §5.2 1(b) — **SPREAD ≻ STACK**, S3's carrier, cluster-constrained.
+pub const PAIR_1B: PairDeclaration = PairDeclaration {
+    id: "1(b)",
+    name: "SPREAD ≻ STACK",
+    family: 1,
+    greater_side: "one assistant at the Silk Mill + one at the Copper Mine (S1 = 1 + 0)",
+    lesser_side: "two assistants at the Copper Mine (realizable power 3 → S1 = 1)",
+    role: PairRole::Constraint,
+    stages: &[StageEndpoint::Early, StageEndpoint::Late],
+    view_class: ViewClass::HandOff,
+    margin: MarginClass::DirectionOnly,
+    carrier: Some(FeatureId::Candidate(CandidateFeature::AssistantAreasDistinct)),
+    presidents: SidedPresidents::BOTH_IN_HAND,
+    draws: DRAWS_TEA_LEG,
+    techs: TechDeclaration { excluded_effects: NO_CONVERSION_TECHS, max_owned: Some(0) },
+    layout: LayoutClass::StandardGenerated,
+    parameters: &[
+        ("setup_seed", FIXTURE_SEED as i64),
+        ("assistants_per_side", 2),
+        ("subject_order_card", FIXTURE_ORDER_CARD.0 as i64),
+    ],
+    expected_nonzero: &[
+        FeatureId::Candidate(CandidateFeature::AssistantAreasDistinct),
+        FeatureId::Candidate(CandidateFeature::PresidentLocalAccess),
+        FeatureId::Candidate(CandidateFeature::PresidentReachableAreas),
+    ],
+    early_hand_cap_deviation: None,
+    notes: &[
+        "§5.2: DIRECTION-ONLY (S3's registered sign prior at equal exported yield — the \
+         rules-decidable rule: areas chosen so the summed exported reward at realizable \
+         power is EQUAL and only the spread differs). Both endpoints, HAND-OFF, presidents \
+         InHand, the two areas non-adjacent. Collateral: S7 +1 (spread side), S4 −1 (stack \
+         side has the larger local max) — the pair constrains the {S3, S4, S7} cluster sum, \
+         stated.",
+        "The equal-yield arithmetic is computed WITH the president +1, per §3.2's \
+         `realizable_power`: silk(1+1) = 1 and copper(1+1) = 0 sum to 1 on the spread side, \
+         and copper(2+1) = 1 on the stack side.",
+        "NON-ADJACENCY is load-bearing for the registered collateral, not decoration: S4's \
+         ring term would give the spread side 1 + 1 = 2 if the two areas touched, and the \
+         registered ΔS4 = −1 would become 0.",
+    ],
+};
+
+/// §5.2 1(c) — **NEAR-PRESIDENT ≻ FAR**, S4's carrier (RING MASS).
+pub const PAIR_1C: PairDeclaration = PairDeclaration {
+    id: "1(c)",
+    name: "NEAR-PRESIDENT ≻ FAR",
+    family: 1,
+    greater_side: "president on-board in the assistants' free-adjacent ring",
+    lesser_side: "president on-board far from the same assistants",
+    role: PairRole::Constraint,
+    stages: &[StageEndpoint::Early, StageEndpoint::Late],
+    view_class: ViewClass::HandOff,
+    margin: MarginClass::DirectionOnly,
+    carrier: Some(FeatureId::Candidate(CandidateFeature::PresidentLocalAccess)),
+    presidents: SidedPresidents::symmetric(SeatPresidents {
+        subject: PresidentDecl::OnBoardEmptyArea,
+        opponent: PresidentDecl::InHand,
+    }),
+    draws: DRAWS_TEA_LEG,
+    techs: TechDeclaration { excluded_effects: NO_CONVERSION_TECHS, max_owned: Some(0) },
+    layout: LayoutClass::HandBuilt,
+    parameters: &[
+        ("setup_seed", FIXTURE_SEED as i64),
+        ("assistant_area", 1),
+        ("assistants_stacked", 2),
+        ("near_president_area", 0),
+        ("far_president_area", 9),
+        ("subject_order_card", FIXTURE_ORDER_CARD.0 as i64),
+    ],
+    expected_nonzero: &[
+        FeatureId::Candidate(CandidateFeature::PresidentLocalAccess),
+        FeatureId::Candidate(CandidateFeature::PresidentReachableAreas),
+    ],
+    early_hand_cap_deviation: None,
+    notes: &[
+        "§5.2: same assistant multiset on one shared layout; the PRESIDENT differs — \
+         on-board at an area whose free-adjacent ring holds the assistants vs on-board far \
+         from them (president-moved construction: types identical by definition; the \
+         president's own area empty both sides — the post-Recovery hand-off shape). \
+         DIRECTION-ONLY, both endpoints, HAND-OFF. Collateral: S7 (different root) — \
+         listed; S1/S2/S5/S6 equal (same assistants).",
+        "S1/S2/S5/S6 are equal for a stronger reason than 'same types': §3.2's \
+         `realizable_power` carries its president term UNCONDITIONALLY, so it does not read \
+         `president_location` at all. Moving the president moves S4 and S7 and NOTHING else \
+         on the whole axis.",
+        "The two assistants are STACKED on one area so that S4 (which sums assistants) \
+         separates from S7 (which counts areas): ΔS4 = 2 against ΔS7 = 1, and the pair is \
+         S4-dominant. 1(e) is the same construction class with the geometry inverted.",
+    ],
+};
+
+/// §5.2 1(d) — **CHURCH ACCESS ≻ POWER-DEAD**, S2's carrier.
+pub const PAIR_1D: PairDeclaration = PairDeclaration {
+    id: "1(d)",
+    name: "CHURCH ACCESS ≻ POWER-DEAD",
+    family: 1,
+    greater_side: "one assistant at the Church, stocks {1 copper, 1 silk} (realizable faith 4)",
+    lesser_side: "one assistant at the Copper Mine, same stocks",
+    role: PairRole::Constraint,
+    stages: &[StageEndpoint::Early, StageEndpoint::Late],
+    view_class: ViewClass::HandOff,
+    margin: MarginClass::DirectionOnly,
+    carrier: Some(FeatureId::Candidate(CandidateFeature::TrackAccess)),
+    presidents: SidedPresidents::BOTH_IN_HAND,
+    draws: DRAWS_TEA_LEG,
+    techs: TechDeclaration { excluded_effects: NO_CONVERSION_TECHS, max_owned: Some(0) },
+    layout: LayoutClass::StandardGenerated,
+    parameters: &[
+        ("setup_seed", FIXTURE_SEED as i64),
+        ("assistants_per_side", 1),
+        ("subject_copper", 1),
+        ("subject_silk", 1),
+        ("subject_money", 1),
+        ("realizable_faith", 4),
+        ("empty_eligible_church_faith", 4),
+        ("subject_order_card", FIXTURE_ORDER_CARD.0 as i64),
+    ],
+    expected_nonzero: &[FeatureId::Candidate(CandidateFeature::TrackAccess)],
+    early_hand_cap_deviation: None,
+    notes: &[
+        "§5.2: 1 assistant at Church, stocks {1 copper, 1 silk} making REALIZABLE total \
+         faith 4 (the acting-turn reading — at the registered hand-off itself the president \
+         is in hand and the actual church action is Skip-only, which is exactly S2's \
+         declared optimistic proxy; the fixture builds for the realizable read, stated so no \
+         author builds for actual faith) with a registered empty eligible space ≻ 1 at \
+         Copper Mine, same stocks. DIRECTION-ONLY, both endpoints, HAND-OFF, presidents \
+         InHand. Draws declared (the A-card's good held EQUALLY both sides). Collateral: \
+         none.",
+        "Faith 4 = `calculate_church_faith(power 2, copper, silk)` = 2 power-steps + 1 per \
+         distinct affordable payment type. It fixes THREE stocks, not two: tea and seafood \
+         are zeroed and money is held at 1, because each of those would buy another payment \
+         type and read faith 5, 6 or 7. The 2-Yen yen leg (D1) is why money 1 and not the \
+         dealt 3.",
+        "The Church side is the registered one and the Customs side is not, on the dossier's \
+         ruling: at zero imports a Customs action is Skip-only at every power, so S2's \
+         carrier would be measured on its degenerate half.",
+    ],
+};
+
+/// §5.2 1(e) — **CONNECTED ≻ DISCONNECTED**, S7's carrier.
+pub const PAIR_1E: PairDeclaration = PairDeclaration {
+    id: "1(e)",
+    name: "CONNECTED ≻ DISCONNECTED",
+    family: 1,
+    greater_side: "president on-board at the head of an own-assistant chain",
+    lesser_side: "president on-board disconnected from the same chain",
+    role: PairRole::Constraint,
+    stages: &[StageEndpoint::Early, StageEndpoint::Late],
+    view_class: ViewClass::HandOff,
+    margin: MarginClass::DirectionOnly,
+    carrier: Some(FeatureId::Candidate(CandidateFeature::PresidentReachableAreas)),
+    presidents: SidedPresidents::symmetric(SeatPresidents {
+        subject: PresidentDecl::OnBoardEmptyArea,
+        opponent: PresidentDecl::InHand,
+    }),
+    draws: DRAWS_TEA_LEG,
+    techs: TechDeclaration { excluded_effects: NO_CONVERSION_TECHS, max_owned: Some(0) },
+    layout: LayoutClass::HandBuilt,
+    parameters: &[
+        ("setup_seed", FIXTURE_SEED as i64),
+        ("chain_assistants", 3),
+        ("chain_area_head", 1),
+        ("chain_area_middle", 5),
+        ("chain_area_tail", 8),
+        ("connected_president_area", 0),
+        ("disconnected_president_area", 3),
+        ("subject_order_card", FIXTURE_ORDER_CARD.0 as i64),
+    ],
+    expected_nonzero: &[
+        FeatureId::Candidate(CandidateFeature::PresidentReachableAreas),
+        FeatureId::Candidate(CandidateFeature::PresidentLocalAccess),
+    ],
+    early_hand_cap_deviation: None,
+    notes: &[
+        "§5.2: same multiset, president on-board; own-assistant chain from the president's \
+         ring vs the same pawns placed disconnected (president-moved/shared-layout \
+         construction). DIRECTION-ONLY, both endpoints, HAND-OFF. Collateral: S4 — listed \
+         ({S4, S7} cluster).",
+        "RESOLVED READING (an S2-T4 judgment call, flagged for the bounded re-read): the \
+         registration's 'the same pawns placed disconnected' admits a pawns-moved reading, \
+         and that reading is NOT constructible at 2P with the registered collateral. All TEN \
+         tiles of a 2P board carry DISTINCT types (one of each production type survives the \
+         removal), so no pawn can move between areas without changing the type beneath it, \
+         and S1/S2/S5/S6 cannot all be held equal. The president-moved reading — the \
+         construction class the parenthetical names, and 1(c)'s — is constructible and \
+         honours every declared row, so it is the one built.",
+        "The geometry is 1(c)'s inverted: three SINGLE pawns strung along a chain, so S7 \
+         (which counts areas) moves by 3 while S4 (which sums the ring) moves by 1. The two \
+         pairs are therefore linearly independent rows over the {S3, S4, S7} cluster rather \
+         than one row written twice.",
+    ],
+};
+
+// ---------------------------------------------------------------------------
+// §5.2 FAMILY 11 — activation choice (5): the conservation gates
+// ---------------------------------------------------------------------------
+
+/// §5.2 11(a) — **ACTED-AT-SILK ≻ ACTED-AT-COPPER**.
+pub const PAIR_11A: PairDeclaration = PairDeclaration {
+    id: "11(a)",
+    name: "ACTED-AT-SILK ≻ ACTED-AT-COPPER",
+    family: 11,
+    greater_side: "acted at the Silk Mill and recovered (+1 silk; the Copper pawn kept)",
+    lesser_side: "acted at the Copper Mine and recovered (no yield; the Silk pawn kept)",
+    role: PairRole::Constraint,
+    stages: &[StageEndpoint::Early, StageEndpoint::Late],
+    view_class: ViewClass::HandOff,
+    margin: MarginClass::DirectionOnly,
+    carrier: Some(FeatureId::Candidate(CandidateFeature::ProductionAccess)),
+    presidents: SidedPresidents::symmetric(SeatPresidents {
+        subject: PresidentDecl::OnBoardEmptyArea,
+        opponent: PresidentDecl::InHand,
+    }),
+    draws: DRAWS_SILK_MOVED,
+    techs: TechDeclaration { excluded_effects: NO_CONVERSION_TECHS, max_owned: Some(0) },
+    layout: LayoutClass::HandBuilt,
+    parameters: &[
+        ("setup_seed", FIXTURE_SEED as i64),
+        ("high_access_area", FAMILY_11_HIGH_ACCESS_AREA.0 as i64),
+        ("copper_mine_area", FAMILY_11_COPPER_AREA.0 as i64),
+        ("assistants_per_area", 1),
+        ("silk_gained", 1),
+        ("subject_order_card", FIXTURE_ORDER_CARD.0 as i64),
+    ],
+    expected_nonzero: &[
+        FeatureId::Candidate(CandidateFeature::ProductionAccess),
+        FeatureId::Candidate(CandidateFeature::TradeGoodsStock),
+    ],
+    early_hand_cap_deviation: None,
+    notes: &[
+        "§5.2: Expected nonzero rows: E2 +1, S1 −1 (the winner keeps the 0-reward Copper \
+         pawn, the loser the 1-reward Silk pawn — the row pair that makes this the ORDERING \
+         constraint w_E2 − w_S1 ≥ 1). Both endpoints, HAND-OFF, DIRECTION-ONLY.",
+        "The registered draw constraint binds here: the recipe moves SILK, so the drawn \
+         Category-A card may not be Silk6 — otherwise the achievement leg would read the \
+         produced good and `AchievementProgressSum` would move as unlisted collateral.",
+        "The order card is registered needing no silk, which is what holds O2, O3 and X3 \
+         equal across a side that owns one more silk than the other.",
+    ],
+};
+
+/// §5.2 11(b) — **ACTED-AT-BANK ≻ ACTED-AT-COPPER**.
+pub const PAIR_11B: PairDeclaration = PairDeclaration {
+    id: "11(b)",
+    name: "ACTED-AT-BANK ≻ ACTED-AT-COPPER",
+    family: 11,
+    greater_side: "acted at the Bank and recovered (+2 yen; the Copper pawn kept)",
+    lesser_side: "acted at the Copper Mine and recovered (no yield; the Bank pawn kept)",
+    role: PairRole::Constraint,
+    stages: &[StageEndpoint::Early, StageEndpoint::Late],
+    view_class: ViewClass::HandOff,
+    margin: MarginClass::DirectionOnly,
+    carrier: Some(FeatureId::Candidate(CandidateFeature::BankAccess)),
+    presidents: SidedPresidents::symmetric(SeatPresidents {
+        subject: PresidentDecl::OnBoardEmptyArea,
+        opponent: PresidentDecl::InHand,
+    }),
+    draws: DRAWS_YEN_MOVED,
+    techs: TechDeclaration { excluded_effects: NO_CONVERSION_TECHS, max_owned: Some(0) },
+    layout: LayoutClass::HandBuilt,
+    parameters: &[
+        ("setup_seed", FIXTURE_SEED as i64),
+        ("high_access_area", FAMILY_11_HIGH_ACCESS_AREA.0 as i64),
+        ("copper_mine_area", FAMILY_11_COPPER_AREA.0 as i64),
+        ("assistants_per_area", 1),
+        ("yen_gained", 2),
+        ("subject_order_card", FIXTURE_ORDER_CARD.0 as i64),
+    ],
+    expected_nonzero: &[
+        FeatureId::Candidate(CandidateFeature::MoneyStock),
+        FeatureId::Candidate(CandidateFeature::BankAccess),
+    ],
+    early_hand_cap_deviation: None,
+    notes: &[
+        "§5.2: Expected nonzero: E1 +2, S5 −2. Both endpoints.",
+        "`bank_reward(realizable power 2) = 2` is the whole of both rows: the yield is +2 \
+         yen on the acting side, and the SAME 2 is what the non-acting side still has on \
+         tap through its undrained Bank presence.",
+        "The registered draw constraint's yen half binds: the drawn Category-B card may not \
+         be Money10, whose leg is `min(money, 10)` and would shadow E1 exactly.",
+    ],
+};
+
+/// §5.2 11(c) — **ACTED-AT-EA ≻ ACTED-AT-COPPER**.
+pub const PAIR_11C: PairDeclaration = PairDeclaration {
+    id: "11(c)",
+    name: "ACTED-AT-EA ≻ ACTED-AT-COPPER",
+    family: 11,
+    greater_side: "acted at the Employment Agency and recovered (one assistant retrieved)",
+    lesser_side: "acted at the Copper Mine and recovered (the EA pawn kept)",
+    role: PairRole::Constraint,
+    stages: &[StageEndpoint::Early, StageEndpoint::Late],
+    view_class: ViewClass::HandOff,
+    margin: MarginClass::DirectionOnly,
+    carrier: Some(FeatureId::Candidate(CandidateFeature::EmploymentAgencyAccess)),
+    presidents: SidedPresidents::symmetric(SeatPresidents {
+        subject: PresidentDecl::OnBoardEmptyArea,
+        opponent: PresidentDecl::InHand,
+    }),
+    draws: DRAWS_TEA_LEG,
+    techs: TechDeclaration { excluded_effects: NO_CONVERSION_TECHS, max_owned: Some(0) },
+    layout: LayoutClass::HandBuilt,
+    parameters: &[
+        ("setup_seed", FIXTURE_SEED as i64),
+        ("high_access_area", FAMILY_11_HIGH_ACCESS_AREA.0 as i64),
+        ("copper_mine_area", FAMILY_11_COPPER_AREA.0 as i64),
+        ("assistants_per_area", 1),
+        ("tokens_taken", 1),
+        ("subject_order_card", FIXTURE_ORDER_CARD.0 as i64),
+    ],
+    expected_nonzero: &[
+        FeatureId::Incumbent(Feature::AssistantsInWarehouse),
+        FeatureId::Incumbent(Feature::AssistantsInHandExcess),
+        FeatureId::Candidate(CandidateFeature::EmploymentAgencyAccess),
+    ],
+    early_hand_cap_deviation: None,
+    notes: &[
+        "§5.2: Expected nonzero: `AssistantsInWarehouse` −1, hand-core/excess +1, S6 −1. \
+         Both endpoints.",
+        "RESOLVED READING (an S2-T4 judgment call): the registration writes \
+         'hand-core/excess +1' without saying which. The retrieved pawn lands in a hand \
+         already holding seven, past the two-pawn core reserve, so it is \
+         `AssistantsInHandExcess` that moves and `AssistantsInHandCore` that does not — and \
+         only the row that moves is listed, since a listed row that does not move is the \
+         other half of §5.1's defect rule.",
+        "`employment_agency_tokens_allowed(realizable power 2) = 1` and assistants are the \
+         free class in the basket, which is why the take moves the two pawn counters and \
+         leaves E1 alone.",
+    ],
+};
+
+/// §5.2 11(d) — **ACTED-AT-LAB ≻ ACTED-AT-COPPER**.
+pub const PAIR_11D: PairDeclaration = PairDeclaration {
+    id: "11(d)",
+    name: "ACTED-AT-LAB ≻ ACTED-AT-COPPER",
+    family: 11,
+    greater_side: "acted at the Laboratory and recovered (a zero-deficit technology bought)",
+    lesser_side: "acted at the Copper Mine and recovered (the Laboratory pawn kept)",
+    role: PairRole::Constraint,
+    stages: &[StageEndpoint::Early, StageEndpoint::Late],
+    view_class: ViewClass::HandOff,
+    margin: MarginClass::DirectionOnly,
+    carrier: Some(FeatureId::Candidate(CandidateFeature::LabTakeable)),
+    presidents: SidedPresidents::symmetric(SeatPresidents {
+        subject: PresidentDecl::OnBoardEmptyArea,
+        opponent: PresidentDecl::InHand,
+    }),
+    draws: DRAWS_TEA_LEG,
+    techs: TechDeclaration {
+        excluded_effects: NO_CONVERSION_TECHS,
+        // The registered constraint is "≤ 1 tech PRE-purchase" on the subject;
+        // this field is checked over BOTH seats and over the FINAL states, so
+        // the realized bound is 2 (the subject after its purchase). What the
+        // registration actually protects — `technologies.len()` never reaching
+        // 3, where D2's 4th-card duty would enter X1's future terms — is what
+        // a bound of 2 enforces, on every seat at once.
+        max_owned: Some(2),
+    },
+    layout: LayoutClass::HandBuilt,
+    parameters: &[
+        ("setup_seed", FIXTURE_SEED as i64),
+        ("high_access_area", FAMILY_11_HIGH_ACCESS_AREA.0 as i64),
+        ("copper_mine_area", FAMILY_11_COPPER_AREA.0 as i64),
+        ("assistants_per_area", 1),
+        ("station_power_at_the_lab", 1),
+        ("realizable_power_at_the_lab", 3),
+        ("purchased_industry_cost", 3),
+        ("purchased_slot_index", 0),
+        ("purchase_deficit", 0),
+        ("subject_money", 0),
+        ("techs_owned_pre_purchase", 1),
+        ("subject_order_card", FIXTURE_ORDER_CARD.0 as i64),
+    ],
+    expected_nonzero: &[
+        FeatureId::Incumbent(Feature::CountryBonusNow),
+        FeatureId::Incumbent(Feature::TechBonusNow),
+        FeatureId::Candidate(CandidateFeature::LabTakeable),
+    ],
+    early_hand_cap_deviation: None,
+    notes: &[
+        "§5.2: a zero-deficit, no-duty purchase registered; REGISTERED CONSTRAINTS: the seat \
+         owns ≤ 1 tech pre-purchase so `technologies.len()` never crosses 2 → 3 and the \
+         4th-card duty stays off X1's future terms; Technologies4 NOT among the drawn \
+         achievements; the purchased flag's icon parity declared ODD post-purchase so \
+         `check_mercenary_eligibility`'s sweep moves nothing — the award fires at EVEN \
+         post-counts. Expected nonzero: `TechBonusNow` +industry, `CountryBonusNow`/O5 per \
+         the flag, X1 −1 takeable; E1 unchanged.",
+        "CONSTRUCTIBILITY COLLISION, resolved and reported (S2-T4): a zero-deficit purchase \
+         is IMPOSSIBLE at family 11's own template power of 2, because the cheapest \
+         technology in the printed registry costs 3 industry — `deficit = max(0, cost + \
+         position surcharge − power)` is at least 1 for every card at every slot. The third \
+         power point comes from a STATION TOKEN standing at the Laboratory (the token adds \
+         +1 for all players; the OPPONENT owns the Station technology, so the subject's own \
+         '≤ 1 tech pre-purchase' is untouched). That keeps the pre-action position \
+         symmetric, keeps the Copper Mine at power 2, and leaves the congruence argument \
+         alone, since S4 and S7 read own assistants and adjacency and never read power.",
+        "RESOLVED READING: 'CountryBonusNow/O5 per the flag' is realized as a NEW country — \
+         the purchase takes the seat from one distinct country to two, so `CountryBonusNow` \
+         moves 0 → 2 and its post-purchase icon count is 1, ODD, exactly as the mercenary \
+         clause registers. O5 was computed on both sides and does NOT move (a seat at one \
+         distinct country and a seat at two both have a best attainable marginal of 2 VP), \
+         so it is not listed.",
+        "X1 = 1 on the lesser side by construction: money 0 and no imports mean only a \
+         zero-deficit slot is takeable, and the Laboratory is stocked with exactly one \
+         cost-3 card, in slot 0 where the position surcharge is 0.",
+    ],
+};
+
+/// §5.2 11(e) — **ACTED-AT-PORT ≻ ACTED-AT-COPPER**.
+pub const PAIR_11E: PairDeclaration = PairDeclaration {
+    id: "11(e)",
+    name: "ACTED-AT-PORT ≻ ACTED-AT-COPPER",
+    family: 11,
+    greater_side: "acted at the Port and recovered (one order card taken free)",
+    lesser_side: "acted at the Copper Mine and recovered (the Port pawn kept)",
+    role: PairRole::Constraint,
+    stages: &[StageEndpoint::Late],
+    view_class: ViewClass::HandOff,
+    margin: MarginClass::DirectionOnly,
+    carrier: Some(FeatureId::Candidate(CandidateFeature::PortTakeable)),
+    presidents: SidedPresidents::symmetric(SeatPresidents {
+        subject: PresidentDecl::OnBoardEmptyArea,
+        opponent: PresidentDecl::InHand,
+    }),
+    draws: DRAWS_TEA_LEG,
+    techs: TechDeclaration { excluded_effects: NO_CONVERSION_TECHS, max_owned: Some(0) },
+    layout: LayoutClass::HandBuilt,
+    parameters: &[
+        ("setup_seed", FIXTURE_SEED as i64),
+        ("high_access_area", FAMILY_11_HIGH_ACCESS_AREA.0 as i64),
+        ("copper_mine_area", FAMILY_11_COPPER_AREA.0 as i64),
+        ("assistants_per_area", 1),
+        ("taken_port_slot", 0),
+        ("taken_order_card", FIXTURE_PORT_CARD.0 as i64),
+        ("subject_order_card", FIXTURE_ORDER_CARD.0 as i64),
+    ],
+    expected_nonzero: &[
+        FeatureId::Incumbent(Feature::HandSize),
+        FeatureId::Candidate(CandidateFeature::HeldOrderValue),
+        FeatureId::Candidate(CandidateFeature::OrderMatchedGoods),
+        FeatureId::Candidate(CandidateFeature::PortTakeable),
+    ],
+    early_hand_cap_deviation: None,
+    notes: &[
+        "§5.2: (a free take). Expected nonzero: O1/O2 +, HandSize +1, X2 per the hand count \
+         and the drained presence. LATE (the refill clock, as 4(f)).",
+        "The late endpoint is what makes the take a REGISTERED construction rather than an \
+         accident: §5.1's late recipe empties the deck, so the taken slot cannot refill, and \
+         the engine's own `OrderDeckEmpty` trigger (deck empty AND a port slot open) fires \
+         on the taking side. §5.1's late clause reads \"deck empty, port full OR the trigger \
+         declared\" precisely for this shape — the greater side declares the trigger, the \
+         lesser side keeps a full port, and both sit at p = FULL.",
+        "The trigger does NOT make the side terminal: `view_is_terminal` also wants \
+         `final_round` and the turn resting at the last seat's TurnEnd, and neither holds \
+         here.",
+        "The taken card is registered rather than drawn: it must match a good the seat holds \
+         (so O2 moves), stay unexecutable (so O3 does not), and carry no movement or \
+         warehouse icon face (so O6 does not).",
+    ],
+};
+
+// ---------------------------------------------------------------------------
 // The registry (spec §5.1's registered counts)
 // ---------------------------------------------------------------------------
 
-/// **THE REGISTERED PAIRS.** Empty at S2-T3: this task builds the frame, and
-/// each §5.2 family lands as its own later registration.
+/// **THE REGISTERED PAIRS.** Families 1 and 11 today (S2-T4); each remaining
+/// §5.2 family lands as its own later registration.
 ///
 /// The array's LENGTH is its own pin — [`REGISTERED_PAIR_COUNT`] — on
 /// `tests/scenario_suite.rs`'s discipline: a registry whose size is a type is a
 /// registry a deletion cannot quietly shrink. A family task bumps the constant
 /// and the array together, and the count test's message says what the target
 /// is.
-pub const REGISTERED: [PairDeclaration; REGISTERED_PAIR_COUNT] = [];
+pub const REGISTERED: [PairDeclaration; REGISTERED_PAIR_COUNT] = [
+    PAIR_1A, PAIR_1B, PAIR_1C, PAIR_1D, PAIR_1E, PAIR_11A, PAIR_11B, PAIR_11C, PAIR_11D,
+    PAIR_11E,
+];
 
 /// Length of [`REGISTERED`], bumped by each family registration task.
-pub const REGISTERED_PAIR_COUNT: usize = 0;
+pub const REGISTERED_PAIR_COUNT: usize = 10;
 
 /// §5.1's registered counts, summed: family 1: 5 · 2: 3 · 3: 4 · 4: 7 · 6: 5 ·
 /// 7: 1 · 8: 1 · 10-gates: 3 · 11: 5 = **34 gate pairs**, plus the two recorded
