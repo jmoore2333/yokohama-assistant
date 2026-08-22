@@ -1414,12 +1414,12 @@ pub struct ViewContext {
     /// Its COMPLEMENT within the printed registry is O1's unseen pool — the
     /// deck, the boxed setup discards, and every opponent's still-masked
     /// starting order, which is exactly the population a masked slot is drawn
-    /// from. The viewer's own `starting_order` term is redundant on every view
-    /// `observe` can produce (a kept card sits in the hand until it is
-    /// fulfilled and in `completed_orders` after); §3.2's O1 card names it for
-    /// the live-tracking case where a seat's own deal was recorded before its
-    /// hand was reconciled, and the audit cell against
-    /// `PlayerView::unseen_orders` is what keeps the redundancy true.
+    /// from. The starting-order term is the VIEWER's alone, as §3.2's O1 card
+    /// states it; it is redundant on every view `observe` can produce (a kept
+    /// card sits in the hand until it is fulfilled and in `completed_orders`
+    /// after), and the card names it for the live-tracking case where a seat's
+    /// own deal was recorded before its hand was reconciled. The audit cell
+    /// against `PlayerView::unseen_orders` is what keeps the redundancy true.
     pub located_orders: OrderSet,
     /// How many printed order cards [`Self::located_orders`] does NOT account
     /// for — the unseen pool's size.
@@ -1669,8 +1669,15 @@ impl ScoreStructure {
             for id in &p.completed_orders {
                 s.context.located_orders |= order_bit(*id);
             }
-            if let Some(id) = p.starting_order {
-                s.context.located_orders |= order_bit(id);
+            // The VIEWER's own starting order, and only the viewer's — §3.2's
+            // O1 card names that term precisely. `observe` fills the field for
+            // no other row, so the restriction changes nothing it can produce;
+            // what it rules out is a hand-built view locating an OPPONENT's
+            // card through a field that seat is not entitled to read.
+            if p.id == view.viewer {
+                if let Some(id) = p.starting_order {
+                    s.context.located_orders |= order_bit(id);
+                }
             }
         }
         // ONE pass over the registry, testing membership rather than looking
