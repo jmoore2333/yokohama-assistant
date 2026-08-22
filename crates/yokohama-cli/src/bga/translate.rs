@@ -217,6 +217,29 @@ fn describe_candidates(candidates: &[(Move, u32)]) -> String {
         .join(", ")
 }
 
+/// The BGA move boundaries that fall strictly INSIDE one engine-atomic Port
+/// action — the ones whose counters describe a state the engine steps over.
+///
+/// Two things can stretch a Port action across BGA moves, and they stack:
+///
+/// * a **5-Power bonus**, booked by BGA at the president-placement move while
+///   the engine books it inside the atomic action (with the take it requires),
+///   so every boundary from the bonus up to the take is interior;
+/// * a **two-card take split across moves** (first measured at m169/m170),
+///   whose intervening boundary is interior for the same reason.
+///
+/// The last take's OWN move is never interior — that boundary is where the
+/// composite's outcome gets pinned. With no bonus this is exactly the
+/// `first_take..second_take` span the pair handling has always used, which is
+/// what keeps every already-green checkpoint on the healthy captures green.
+fn port_composite_interior(
+    bonus_move: Option<u64>,
+    first_take: u64,
+    second_take: Option<u64>,
+) -> std::ops::Range<u64> {
+    bonus_move.unwrap_or(first_take)..second_take.unwrap_or(first_take)
+}
+
 pub struct Translator<'a> {
     session: Session,
     resolved: &'a Resolved,
@@ -1475,8 +1498,35 @@ impl<'a> Translator<'a> {
         }
     }
 
+    /// The move of the 5-Power Port bonus BGA is about to book ahead of this
+    /// take, if it booked one.
+    ///
+    /// The bonus arrives as a NOTE fact (`PortAccess` with a nonzero
+    /// `vp_bonus`), so it is skipped rather than consumed — and it has to be
+    /// read BEFORE the take's `consume_drive`, because that call is what runs
+    /// the checkpoint on the bonus's own move. Scanning forward from the cursor
+    /// to the next drive fact is exactly the window of notes that call will
+    /// skip.
+    /// Returns `(bonus_move, take_move)`.
+    fn pending_port_bonus(&self, seat: u8) -> Option<(u64, u64)> {
+        let next = self.next_drive_index(self.cursor)?;
+        let take_move = self.facts[next].move_id;
+        self.facts[self.cursor..next]
+            .iter()
+            .find(|tf| {
+                matches!(tf.fact, Fact::PortAccess { seat: s, vp_bonus } if s == seat && vp_bonus > 0)
+            })
+            .map(|tf| (tf.move_id, take_move))
+    }
+
     fn step_port_take(&mut self, move_id: u64) -> Result<(), ImportError> {
         let seat = self.current_seat();
+        // Mark the bonus boundary BEFORE consuming: `consume_drive` is the call
+        // that runs the checkpoint standing on it, so marking afterwards would
+        // be marking a boundary that has already stopped the replay.
+        if let Some((bonus, take)) = self.pending_port_bonus(seat) {
+            self.mid_composite_moves.extend(port_composite_interior(Some(bonus), take, None));
+        }
         // First take fact.
         let Some(first) = self.consume_drive() else {
             return Err(self.drive_absence(move_id, "port take fact vanished"));
@@ -1497,15 +1547,13 @@ impl<'a> Translator<'a> {
                 // The pair can SPAN BGA moves (measured at m169/m170) — every
                 // boundary strictly inside the span carries counters for a
                 // state the atomic engine Port move steps over.
-                for interior in first.move_id..m2 {
-                    self.mid_composite_moves.insert(interior);
-                }
+                self.mid_composite_moves
+                    .extend(port_composite_interior(None, first.move_id, Some(m2)));
             }
             Some(TimedFact { fact: Fact::PortSecondDeclined { seat: s }, move_id: m2, .. }) if s == seat => {
                 self.consume_drive_uncheckpointed();
-                for interior in first.move_id..m2 {
-                    self.mid_composite_moves.insert(interior);
-                }
+                self.mid_composite_moves
+                    .extend(port_composite_interior(None, first.move_id, Some(m2)));
             }
             _ => {}
         }
@@ -2469,6 +2517,34 @@ mod tests {
             t.pending_checkpoint_error.is_none(),
             "the stashed error must be taken, not left to surface again"
         );
+    }
+
+    /// **The m105-boundary shape (BGA table 896199544), as arithmetic.**
+    ///
+    /// A Port action at 5 Power books its +3 VP at the PRESIDENT-PLACEMENT move,
+    /// one move before the take; the engine books it inside the atomic Port
+    /// action, with the take. So the boundary carrying "bonus granted, nothing
+    /// taken" is a state the engine steps over — mid-composite by granularity,
+    /// exactly like the m169/m170 two-move take pair already handled — and the
+    /// composite's interior has to START at the bonus rather than at the first
+    /// take. Before this, m105 fell outside the span, was CHECKED, and stopped
+    /// the whole import on a divergence that was pure bookkeeping order.
+    ///
+    /// The no-bonus rows are the ones that must not move: with `None` the span
+    /// is byte-identical to the old `first.move_id..m2`, which is what keeps
+    /// every already-green checkpoint on the healthy captures green.
+    #[test]
+    fn the_port_composite_interior_starts_at_the_bonus_and_is_unchanged_without_one() {
+        // Game 3's shape: bonus at m105, takes at m106 and m107. Both interior
+        // boundaries are skipped; the LAST take's own move stays checked.
+        assert_eq!(port_composite_interior(Some(105), 106, Some(107)), 105..107);
+        // A single take after a bonus: the bonus boundary alone.
+        assert_eq!(port_composite_interior(Some(105), 106, None), 105..106);
+
+        // NO bonus — the pre-existing behaviour, unchanged. The m169/m170 pair:
+        assert_eq!(port_composite_interior(None, 169, Some(170)), 169..170);
+        // and a lone take spans nothing at all.
+        assert!(port_composite_interior(None, 169, None).is_empty());
     }
 
     /// F2 (lens-2 MUST): the T9 counter cross-check gets its NEGATIVE pin. A
