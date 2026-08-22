@@ -2830,11 +2830,66 @@ fn declared_category(index: usize) -> AchievementCategory {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The constructions (§5.2 families 1 and 11)
+// ---------------------------------------------------------------------------
+
+/// The declaration registered under `id`, or `None`.
+pub fn registered(id: &str) -> Option<&'static PairDeclaration> {
+    match id {
+        "1(a)" => Some(&PAIR_1A),
+        "1(b)" => Some(&PAIR_1B),
+        "1(c)" => Some(&PAIR_1C),
+        "1(d)" => Some(&PAIR_1D),
+        "1(e)" => Some(&PAIR_1E),
+        "11(a)" => Some(&PAIR_11A),
+        "11(b)" => Some(&PAIR_11B),
+        "11(c)" => Some(&PAIR_11C),
+        "11(d)" => Some(&PAIR_11D),
+        "11(e)" => Some(&PAIR_11E),
+        _ => None,
+    }
+}
+
+/// **Realize one registered pair at one declared endpoint**, admitted through
+/// [`PairFixture::new`]'s full clause list.
+pub fn build_registered_pair(
+    declaration: &'static PairDeclaration,
+    _stage: StageEndpoint,
+    _rules: &Rules,
+) -> Result<PairFixture, FixtureError> {
+    Err(FixtureError::Setup(declaration.id))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::game::eval::{explain, WeightTable};
     use crate::types::{OrderCardId, TechCardId};
+
+    /// Every registered pair, at every endpoint it declares, admitted through
+    /// the fourteen clauses.
+    ///
+    /// The ONE test that says the package is real: a tuple nothing can build is
+    /// a pre-registration, and §5.1's step-2 gate asks for a realized registry.
+    #[test]
+    fn every_registered_pair_builds_at_every_endpoint_it_declares() {
+        let rules = rules();
+        for pair in REGISTERED.iter() {
+            let declaration = registered(pair.id)
+                .unwrap_or_else(|| panic!("{} is registered but has no lookup arm", pair.id));
+            for stage in declaration.stages {
+                let fixture = build_registered_pair(declaration, *stage, &rules)
+                    .unwrap_or_else(|e| panic!("{} at {}: {e}", pair.id, stage.name()));
+                assert_eq!(fixture.declaration().id, pair.id);
+                assert_eq!(fixture.stage(), *stage);
+                assert_eq!(fixture.progress_ppm(&rules), stage.ppm());
+                fixture.listed_incumbent_rows_are_nonzero(&rules).unwrap_or_else(|e| {
+                    panic!("{} at {}: {e}", pair.id, stage.name())
+                });
+            }
+        }
+    }
 
     fn rules() -> Rules {
         Rules::standard()
