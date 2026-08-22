@@ -686,7 +686,11 @@ impl PairRole {
 pub enum LayoutClass {
     /// `Rules::standard()` on a seeded `new_game` board.
     StandardGenerated,
-    /// A hand-constructed layout the registration names.
+    /// A hand-constructed layout the registration names — and, since the
+    /// step-2 promotion, ENCODES: every pair declaring this carries exactly one
+    /// `"REGISTERED ARRANGEMENT: "` note holding the tile-by-tile seating, and
+    /// a cell checks that note against the constructed board on both sides at
+    /// every declared endpoint.
     HandBuilt,
 }
 
@@ -745,6 +749,24 @@ pub struct PairDeclaration {
     pub layout: LayoutClass,
     /// Registered scalar parameters a construction takes — 2(b)'s `n = 3` is
     /// "REGISTERED, not open" and this is where it lives.
+    ///
+    /// **THE CONVENTION, and it is the SECOND one this field has had.** The
+    /// package grew up under "register what DIFFERS across the sides";
+    /// everything else was a construction detail a builder could pick. The
+    /// step-2 bounded re-read found the hole that leaves — an identity BOTH
+    /// sides share is exactly the kind a later task re-chooses silently, and a
+    /// silent re-choice of (say) 6(c)'s four pre-completed orders moves every
+    /// collateral row underneath a declaration whose digest never notices. The
+    /// rule is now **register every RE-CHOOSABLE IDENTITY**, whether or not it
+    /// differs across the sides, and it SUPERSEDES the earlier one.
+    ///
+    /// This field is `i64`-valued, so it takes the identities that are
+    /// numbers: order-card ids, slot indices, counts, stocks. The identities
+    /// that are NOT numbers — tile arrangements, laboratory stocks — are
+    /// registered in [`PairDeclaration::notes`] under documented prefixes, for
+    /// the reason given there. Both ride `canonical_declaration`, so both move
+    /// the digest, and both are pinned against their constants by the
+    /// registered-identity cells.
     pub parameters: &'static [(&'static str, i64)],
     /// §5.1's EXPECTED-NONZERO ROWS over the full 34-feature axis. "An unlisted
     /// nonzero row at run time is a fixture defect."
@@ -771,7 +793,26 @@ pub struct PairDeclaration {
     /// faces, and hold icons equal at once). Registering the deviation makes
     /// the tension visible to the bounded re-read rather than silent.
     pub early_hand_cap_deviation: Option<&'static str>,
-    /// §5.2's registered collateral prose, verbatim, one entry per clause.
+    /// §5.2's registered collateral prose, verbatim, one entry per clause —
+    /// and, since the step-2 re-read's promotion, the REGISTERED IDENTITIES
+    /// that are not numbers.
+    ///
+    /// Two prefixes are reserved and machine-read:
+    ///
+    /// - `"REGISTERED ARRANGEMENT: "` — a hand-built board, encoded
+    ///   `0=Type 1=Type …` in `AreaId` order. Every
+    ///   [`LayoutClass::HandBuilt`] pair carries exactly one, and no generated
+    ///   pair carries any (a seeded board is already determined by its seed, so
+    ///   a note there would be a second copy free to drift).
+    /// - `"REGISTERED LABORATORY: "` — a stocked laboratory, encoded
+    ///   `0=Effect 1=Effect …` in slot order. It registers the stock the
+    ///   construction PASSES, which is why 10(b)'s and 11(d)'s realized boards
+    ///   legitimately differ from it.
+    ///
+    /// A note under either prefix is the encoding and NOTHING ELSE — the
+    /// reasoning lives in the constants' own docs — so the canonical package
+    /// diffs one line per arrangement. See [`PairDeclaration::parameters`] for
+    /// why the split exists and which convention both halves now serve.
     pub notes: &'static [&'static str],
 }
 
@@ -1072,6 +1113,8 @@ pub const PAIR_1C: PairDeclaration = PairDeclaration {
         "The two assistants are STACKED on one area so that S4 (which sums assistants) \
          separates from S7 (which counts areas): ΔS4 = 2 against ΔS7 = 1, and the pair is \
          S4-dominant. 1(e) is the same construction class with the geometry inverted.",
+        "REGISTERED ARRANGEMENT: 0=CopperMine 1=SilkMill 2=TeaPlantation 3=FishingGround 4=Bank \
+         5=PortA 6=Church 7=Customs 8=LaboratoryA 9=EmploymentAgency",
     ],
 };
 
@@ -1179,6 +1222,8 @@ pub const PAIR_1E: PairDeclaration = PairDeclaration {
          (which counts areas) moves by 3 while S4 (which sums the ring) moves by 1. The two \
          pairs are therefore linearly independent rows over the {S3, S4, S7} cluster rather \
          than one row written twice.",
+        "REGISTERED ARRANGEMENT: 0=CopperMine 1=SilkMill 2=TeaPlantation 3=FishingGround 4=Bank \
+         5=PortA 6=Church 7=Customs 8=LaboratoryA 9=EmploymentAgency",
     ],
 };
 
@@ -2232,6 +2277,10 @@ pub const PAIR_4C: PairDeclaration = PairDeclaration {
         ("lesser_opponent_floor", 12),
         ("subject_own_floor_both_sides", 0),
         ("differenced_delta_o1", 15),
+        ("greater_hand_card_1", FAMILY_4C_RICH_HAND[0].0 as i64),
+        ("greater_hand_card_2", FAMILY_4C_RICH_HAND[1].0 as i64),
+        ("lesser_hand_card_1", FAMILY_4C_POOR_HAND[0].0 as i64),
+        ("lesser_hand_card_2", FAMILY_4C_POOR_HAND[1].0 as i64),
     ],
     expected_nonzero: &[FeatureId::Candidate(CandidateFeature::HeldOrderValue)],
     early_hand_cap_deviation: None,
@@ -2315,6 +2364,9 @@ pub const PAIR_4D: PairDeclaration = PairDeclaration {
         ("greater_opponent_floor", 12),
         ("lesser_opponent_floor", 13),
         ("differenced_delta_o1", 1),
+        ("completed_english", FAMILY_4_REALIZED_SET[0].0 as i64),
+        ("completed_french", FAMILY_4_REALIZED_SET[1].0 as i64),
+        ("completed_german", FAMILY_4_REALIZED_SET[2].0 as i64),
     ],
     expected_nonzero: &[
         FeatureId::Incumbent(Feature::CountryBonusNow),
@@ -2393,6 +2445,16 @@ pub const PAIR_4E: PairDeclaration = PairDeclaration {
         ("own_assistants_on_board", 0),
         ("dutch_port_offers", 0),
         ("dutch_lab_slots", 0),
+        ("completed_english", FAMILY_4_REALIZED_SET[0].0 as i64),
+        ("completed_french", FAMILY_4_REALIZED_SET[1].0 as i64),
+        ("completed_german", FAMILY_4_REALIZED_SET[2].0 as i64),
+        ("completed_american", FAMILY_4_REALIZED_SET[3].0 as i64),
+        ("port_slot_0", FAMILY_4E_PORT_OFFERS[0].0 as i64),
+        ("port_slot_1", FAMILY_4E_PORT_OFFERS[1].0 as i64),
+        ("port_slot_2", FAMILY_4E_PORT_OFFERS[2].0 as i64),
+        ("port_slot_3", FAMILY_4E_PORT_OFFERS[3].0 as i64),
+        ("port_slot_4", FAMILY_4E_PORT_OFFERS[4].0 as i64),
+        ("port_slot_5", FAMILY_4E_PORT_OFFERS[5].0 as i64),
     ],
     expected_nonzero: &[FeatureId::Candidate(CandidateFeature::FlagIconMarginal)],
     early_hand_cap_deviation: None,
@@ -2445,6 +2507,8 @@ pub const PAIR_4E: PairDeclaration = PairDeclaration {
          unchanged and the opponent's hidden-slot estimate cannot move. Both deals are \
          BOX-sourced — the port restock happens first, precisely so the German card is out \
          of the port before it is dealt.",
+        "REGISTERED LABORATORY: 0=Brickyard 1=Exposition 2=Gaslight 3=Ball 4=PatentSystem \
+         5=MiningTechnology",
     ],
 };
 
@@ -2907,6 +2971,10 @@ pub const PAIR_6C: PairDeclaration = PairDeclaration {
         ("distinct_countries_after", 5),
         ("country_set_bonus_before", 8),
         ("country_set_bonus_after", 12),
+        ("precompleted_english", FAMILY_6C_COMPLETED[0].0 as i64),
+        ("precompleted_french", FAMILY_6C_COMPLETED[1].0 as i64),
+        ("precompleted_german", FAMILY_6C_COMPLETED[2].0 as i64),
+        ("precompleted_american", FAMILY_6C_COMPLETED[3].0 as i64),
     ],
     expected_nonzero: &[
         FeatureId::Incumbent(Feature::VictoryPoints),
@@ -3298,6 +3366,8 @@ pub const PAIR_8: PairDeclaration = PairDeclaration {
          `legal_moves.rs` offers a recovery option for every subset of the seat's board pawns, \
          and refuses the pair unless the resulting president location and assistant \
          distribution are the greater side's byte for byte.",
+        "REGISTERED ARRANGEMENT: 0=Church 1=CopperMine 2=SilkMill 3=TeaPlantation 4=LaboratoryA \
+         5=FishingGround 6=Bank 7=PortA 8=Customs 9=EmploymentAgency",
     ],
 };
 
@@ -3574,6 +3644,8 @@ pub const PAIR_10B: PairDeclaration = PairDeclaration {
         "The five non-target cards are chosen so the whole board is non-takeable on BOTH \
          sides — X1 reads 1 against 0 rather than n+1 against n. [`FAMILY_10B_LAB_STOCK`] \
          carries the per-slot table.",
+        "REGISTERED LABORATORY: 0=Brickyard 1=Exposition 2=Gaslight 3=Ball 4=Newspaper \
+         5=PatentSystem",
     ],
 };
 
@@ -3759,6 +3831,8 @@ pub const PAIR_11A: PairDeclaration = PairDeclaration {
          produced good and `AchievementProgressSum` would move as unlisted collateral.",
         "The order card is registered needing no silk, which is what holds O2, O3 and X3 \
          equal across a side that owns one more silk than the other.",
+        "REGISTERED ARRANGEMENT: 0=TeaPlantation 1=FishingGround 2=Bank 3=PortA 4=LaboratoryA \
+         5=EmploymentAgency 6=Church 7=SilkMill 8=CopperMine 9=Customs",
     ],
 };
 
@@ -3801,6 +3875,8 @@ pub const PAIR_11B: PairDeclaration = PairDeclaration {
          tap through its undrained Bank presence.",
         "The registered draw constraint's yen half binds: the drawn Category-B card may not \
          be Money10, whose leg is `min(money, 10)` and would shadow E1 exactly.",
+        "REGISTERED ARRANGEMENT: 0=SilkMill 1=TeaPlantation 2=FishingGround 3=PortA 4=LaboratoryA \
+         5=EmploymentAgency 6=Church 7=Bank 8=CopperMine 9=Customs",
     ],
 };
 
@@ -3849,6 +3925,8 @@ pub const PAIR_11C: PairDeclaration = PairDeclaration {
         "`employment_agency_tokens_allowed(realizable power 2) = 1` and assistants are the \
          free class in the basket, which is why the take moves the two pawn counters and \
          leaves E1 alone.",
+        "REGISTERED ARRANGEMENT: 0=SilkMill 1=TeaPlantation 2=FishingGround 3=Bank 4=PortA \
+         5=LaboratoryA 6=Church 7=EmploymentAgency 8=CopperMine 9=Customs",
     ],
 };
 
@@ -3948,6 +4026,10 @@ pub const PAIR_11D: PairDeclaration = PairDeclaration {
          they cannot pay for. [`LAB_STOCK`]'s own doc carries the same arithmetic per \
          slot; the earlier wording here said 'exactly one cost-3 card, in slot 0', which \
          named a scarcity the stock does not have.",
+        "REGISTERED ARRANGEMENT: 0=SilkMill 1=TeaPlantation 2=FishingGround 3=Bank 4=PortA \
+         5=EmploymentAgency 6=Church 7=LaboratoryA 8=CopperMine 9=Customs",
+        "REGISTERED LABORATORY: 0=Brickyard 1=Exposition 2=Newspaper 3=Gaslight 4=Ball \
+         5=PatentSystem",
     ],
 };
 
@@ -4001,6 +4083,8 @@ pub const PAIR_11E: PairDeclaration = PairDeclaration {
         "The taken card is registered rather than drawn: it must match a good the seat holds \
          (so O2 moves), stay unexecutable (so O3 does not), and carry no movement or \
          warehouse icon face (so O6 does not).",
+        "REGISTERED ARRANGEMENT: 0=SilkMill 1=TeaPlantation 2=FishingGround 3=Bank 4=LaboratoryA \
+         5=EmploymentAgency 6=Church 7=PortA 8=CopperMine 9=Customs",
     ],
 };
 
@@ -11632,6 +11716,7 @@ mod tests {
         assert_ne!(second, area);
     }
 }
+
 
 
 
