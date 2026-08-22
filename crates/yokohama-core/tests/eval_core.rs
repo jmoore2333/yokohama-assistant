@@ -2441,10 +2441,18 @@ fn track_access_collapses_when_a_d6_placement_takes_the_last_assistant() {
     assert_eq!(token_stock(&after, 0), token_stock(&before, 0), "the placement MOVES the pawn");
 
     let read = |state: &GameState| {
-        read_s(state, &rules, PlayerId(0), |s, view, player| s.track_access(view, player))
+        read_s(state, &rules, PlayerId(0), |s, view, player| {
+            (s.track_access(view, player), s.assistant_areas_distinct(player))
+        })
     };
-    assert_eq!(read(&before), 2, "one assistant plus the arriving president");
-    assert_eq!(read(&after), 0, "the sole board assistant is now ON the track, not at the area");
+    assert_eq!(read(&before).0, 2, "one assistant plus the arriving president");
+    assert_eq!(read(&after).0, 0, "the sole board assistant is now ON the track, not at the area");
+
+    // S3's boundary paragraph names this same instant — "−1 at … every D6 track
+    // placement emptying one" — so the second half of that paragraph is closed
+    // here rather than in a fixture that would only rebuild this one.
+    assert_eq!(read(&before).1, 1, "S3 counts the occupied Church before the placement");
+    assert_eq!(read(&after).1, 0, "and steps down by exactly one after it");
 }
 
 /// **THE OPTIMISTIC-PROXY DECLARATION, pinned rather than repaired** (spec §3.2:
@@ -2676,6 +2684,32 @@ fn employment_agency_access_gates_supply_and_not_affordability() {
         s.employment_agency_access(view, player)
     });
     assert_eq!(s6, 2, "the allowance at power 3 binds; affordability is deliberately not read");
+}
+
+/// The second half of S6's boundary paragraph — "presence drains at Recovery" —
+/// closed for symmetry with S1's and S5's drain cells. The first half (the take
+/// converting warehouse stock into hand stock) is the SUPPLY side of
+/// `employment_agency_access_is_the_allowance_capped_by_the_warehouse_supply`,
+/// where exactly that conversion drops the reading to the remaining token.
+///
+/// The conservation half of both is family 11(c)'s, weight-side, and is not
+/// this cell's to assert.
+#[test]
+fn employment_agency_access_drains_to_zero_when_recovery_empties_the_agency() {
+    let rules = Rules::standard();
+    let mut before = keep_game(2, 139, &rules);
+    let agency = area_typed(&before, AreaType::EmploymentAgency);
+    place_assistants(&mut before, 0, agency, 3);
+    let mut after = before.clone();
+    recover_assistants(&mut after, 0, agency, 3);
+
+    let read = |state: &GameState| {
+        read_s(state, &rules, PlayerId(0), |s, view, player| {
+            s.employment_agency_access(view, player)
+        })
+    };
+    assert_eq!(read(&before), 3, "three assistants plus the arriving president allows three tokens");
+    assert_eq!(read(&after), 0, "the drained agency no longer satisfies the presence gate");
 }
 
 // ---------------------------------------------------------------------------
@@ -2949,6 +2983,13 @@ fn president_local_access_switches_branches_when_the_president_is_recalled() {
     };
     assert_eq!(read(&on_board), 1, "anchored on the thin area, the ring reaches nothing");
     assert_eq!(read(&recalled), 4, "in hand, the best re-entry is the rich area");
+
+    // The paragraph's OTHER half — "movement re-centers" — is the same position
+    // with the president standing somewhere else. The fees that movement really
+    // costs are E1's; what S4 shows is the re-centring itself.
+    let mut recentred = base.clone();
+    recentred.players[0].president_location = PresidentLocation::OnBoard(rich);
+    assert_eq!(read(&recentred), 4, "moving the president moves the centre, and the value with it");
 }
 
 // ---------------------------------------------------------------------------
@@ -2980,6 +3021,11 @@ fn chain_of_three(state: &GameState, context: &yokohama_core::game::eval::ViewCo
 /// reachable; with the middle link EMPTY the far one is not, even though it
 /// still holds the seat's pawns. A helper that counted own-assistant areas
 /// without walking would read 1 on the second side instead of 0.
+///
+/// Read in the other direction, this pair IS S7's boundary paragraph: placement
+/// on the middle link extends the frontier by two areas at once, and a Recovery
+/// that empties it shrinks the frontier back to nothing. The recall branch of
+/// the same paragraph has its own cell below.
 #[test]
 fn president_reachable_areas_walks_the_assistant_chain_along_free_edges() {
     let rules = Rules::standard();
