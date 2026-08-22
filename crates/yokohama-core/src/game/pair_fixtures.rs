@@ -1965,8 +1965,9 @@ pub const FAMILY_4E_PORT_OFFERS: [OrderCardId; 6] = [
 /// The generated laboratory at [`FIXTURE_SEED`] seats two Dutch titles (System
 /// of Stock at slot 4, Newspaper at slot 5), and an OPEN lab slot is an O5
 /// attainable source exactly as a port offer is. These six are German, German,
-/// French, English, French, German — four countries, none of them Dutch, so the
-/// whole laboratory's marginal is 0 on both sides.
+/// French, English, French, German — THREE countries, all of them already
+/// inside [`FAMILY_4_REALIZED_SET`] and none of them Dutch, so the whole
+/// laboratory's marginal is 0 on both sides.
 ///
 /// The three Dutch-only titles the manifest carries (Newspaper, System of
 /// Stock, Letter Press Printing) are the ones this list must avoid; every other
