@@ -240,6 +240,67 @@ fn port_composite_interior(
     bonus_move.unwrap_or(first_take)..second_take.unwrap_or(first_take)
 }
 
+/// One Laboratory payment variant, written as the PRICES it debits.
+///
+/// A summed scalar cannot describe these: `4 yen + 1 import` and
+/// `2 yen + 2 imports` are different debits, and a reader deciding whether the
+/// import guessed right needs to see both currencies. The 4th-tech surcharge is
+/// labelled as such, because two variants can differ ONLY there and would
+/// otherwise render identically.
+fn lab_payment_label(action: &AreaAction) -> String {
+    let AreaAction::Laboratory { extra_yen, extra_imported, extra_tech_payment, .. } = action else {
+        return "not a Laboratory action".to_string();
+    };
+    let plural = |n: u8| if n == 1 { "import" } else { "imports" };
+    let mut parts: Vec<String> = Vec::new();
+    if *extra_yen > 0 {
+        parts.push(format!("{extra_yen} yen"));
+    }
+    if *extra_imported > 0 {
+        parts.push(format!("{extra_imported} {}", plural(*extra_imported)));
+    }
+    match extra_tech_payment {
+        Some(true) => parts.push("4th-tech surcharge 2 yen".to_string()),
+        Some(false) => parts.push("4th-tech surcharge 1 import".to_string()),
+        None => {}
+    }
+    if parts.is_empty() {
+        return "nothing beyond power".to_string();
+    }
+    parts.join(" + ")
+}
+
+/// Choose the Laboratory payment the capture DETERMINES, or refuse with the
+/// candidates it left open.
+///
+/// **Every exact-cover variant pays the same industry value**, by construction:
+/// `generate_lab_actions` emits `extra_imported = k` with
+/// `extra_yen = 2*(deficit-k)`, so the value is `k + (deficit-k) = deficit` for
+/// every `k`, and the 4th-tech surcharge forks 2 yen against 1 import for the
+/// same entitlement. There is therefore no cheaper mix to prefer — the variants
+/// are INCOMPARABLE, and which one was paid is a choice the player made.
+///
+/// The declared policy has always been that the payment must be unique or the
+/// import refuses. What defeated it was the old ranking key, which summed yen
+/// and imports as if one unit: on BGA table 896199544 m118 it ranked
+/// `2 yen + 2 imports` (sum 4) below `4 yen + 1 import` (sum 5), found that
+/// "minimum" unique, and silently debited a payment the player never made —
+/// diverging the economy for the rest of the game. A key that cannot invent an
+/// ordering cannot manufacture uniqueness, so this simply asks whether the legal
+/// list left exactly one.
+fn select_lab_payment(variants: Vec<Move>) -> Result<Move, Vec<String>> {
+    match variants.len() {
+        1 => Ok(variants.into_iter().next().expect("checked len")),
+        _ => Err(variants
+            .iter()
+            .map(|m| match m {
+                Move::ExecuteAreaAction { action } => lab_payment_label(action),
+                _ => "not an area action".to_string(),
+            })
+            .collect()),
+    }
+}
+
 pub struct Translator<'a> {
     session: Session,
     resolved: &'a Resolved,
@@ -1693,8 +1754,9 @@ impl<'a> Translator<'a> {
             .get(&key)
             .ok_or_else(|| rerr(move_id, format!("tech_key {key} has no resolved engine card")))?;
         self.lab_shadow.retain(|k| *k != key);
-        // Payment variant: the minimal-extra legal variant must be unique.
-        let mut variants: Vec<Move> = self
+        // Payment variant: the legal list must leave exactly ONE, or the
+        // capture did not determine what was paid (see `select_lab_payment`).
+        let variants: Vec<Move> = self
             .session
             .legal()
             .into_iter()
@@ -1702,34 +1764,21 @@ impl<'a> Translator<'a> {
                 matches!(m, Move::ExecuteAreaAction { action: AreaAction::Laboratory { card_id, .. } } if *card_id == card)
             })
             .collect();
-        variants.sort_by_key(|m| match m {
-            Move::ExecuteAreaAction { action: AreaAction::Laboratory { extra_yen, extra_imported, .. } } => {
-                (*extra_yen as u32) + (*extra_imported as u32)
-            }
-            _ => u32::MAX,
-        });
-        let minimal_cost = variants.first().map(|m| match m {
-            Move::ExecuteAreaAction { action: AreaAction::Laboratory { extra_yen, extra_imported, .. } } => {
-                (*extra_yen as u32) + (*extra_imported as u32)
-            }
-            _ => u32::MAX,
-        });
-        let minimal: Vec<&Move> = variants
-            .iter()
-            .filter(|m| match m {
-                Move::ExecuteAreaAction { action: AreaAction::Laboratory { extra_yen, extra_imported, .. } } => {
-                    Some((*extra_yen as u32) + (*extra_imported as u32)) == minimal_cost
-                }
-                _ => false,
-            })
-            .collect();
-        let mv = match minimal.as_slice() {
-            [one] => (*one).clone(),
-            [] => return Err(rerr(move_id, format!("no legal Laboratory take of {card:?}"))),
-            several => {
+        if variants.is_empty() {
+            return Err(rerr(move_id, format!("no legal Laboratory take of {card:?}")));
+        }
+        let mv = match select_lab_payment(variants) {
+            Ok(one) => one,
+            Err(candidates) => {
                 return Err(rerr(
                     move_id,
-                    format!("ambiguous lab payment variants for {card:?}: {several:?}"),
+                    format!(
+                        "ambiguous lab payment variants for {card:?}: the capture names no \
+                         payment and {} legal mixes debit different resources for the same \
+                         industry value — {}",
+                        candidates.len(),
+                        candidates.join(" | ")
+                    ),
                 ))
             }
         };
@@ -2516,6 +2565,69 @@ mod tests {
         assert!(
             t.pending_checkpoint_error.is_none(),
             "the stashed error must be taken, not left to surface again"
+        );
+    }
+
+    fn lab(extra_yen: u8, extra_imported: u8, extra_tech_payment: Option<bool>) -> Move {
+        Move::ExecuteAreaAction {
+            action: AreaAction::Laboratory {
+                card_id: yokohama_core::TechCardId(4),
+                extra_yen,
+                extra_imported,
+                extra_tech_payment,
+            },
+        }
+    }
+
+    /// **The m118 shape (BGA table 896199544), and why the old key was wrong.**
+    ///
+    /// Seat 1 buys Tram: industry cost 5, slot surcharge +1, president power 3,
+    /// so the deficit is 3 — and holding 4 yen and 2 imports, exactly TWO mixes
+    /// are affordable. `k=1` debits 4 yen + 1 import (what the human paid, and
+    /// what BGA's counters show); `k=2` debits 2 yen + 2 imports.
+    ///
+    /// Both pay the SAME industry value — every exact-cover variant does, since
+    /// `extra_yen = 2*(deficit-k)` makes the value `k + (deficit-k) = deficit`
+    /// for every `k`. So there is no "cheaper" mix to prefer: they are
+    /// incomparable choices a player makes, and the capture's notification does
+    /// not say which. The old key summed yen and imports as if they were one
+    /// unit, ranked `k=2` (sum 4) below `k=1` (sum 5), found its "minimum"
+    /// unique, and silently paid the wrong one — diverging the economy for the
+    /// rest of the game. FALSE uniqueness, manufactured by the key.
+    ///
+    /// The declared policy is that the payment must be UNIQUE or the import
+    /// refuses; with a key that cannot invent an ordering, this shape refuses,
+    /// and it names each candidate by the prices it debits.
+    #[test]
+    fn two_affordable_lab_mixes_refuse_and_name_both_by_what_they_debit() {
+        let variants = vec![lab(4, 1, None), lab(2, 2, None)];
+        let Err(candidates) = select_lab_payment(variants) else {
+            panic!("two incomparable payment mixes must not resolve to one");
+        };
+        assert_eq!(candidates, vec!["4 yen + 1 import", "2 yen + 2 imports"]);
+    }
+
+    /// The other half: one legal variant is EVIDENCE, not a guess, and still
+    /// resolves — including the deficit-0 case that pays nothing at all.
+    #[test]
+    fn a_single_legal_lab_payment_still_resolves() {
+        assert_eq!(select_lab_payment(vec![lab(0, 0, None)]).unwrap(), lab(0, 0, None));
+        assert_eq!(select_lab_payment(vec![lab(2, 1, None)]).unwrap(), lab(2, 1, None));
+    }
+
+    /// The 4th-tech surcharge forks the SAME way — 2 yen or 1 import for the
+    /// same entitlement — so two variants differing only there are two real
+    /// choices too, and the label has to say which is the surcharge or the two
+    /// rows would read identically.
+    #[test]
+    fn the_fourth_tech_surcharge_fork_is_named_as_a_surcharge() {
+        let variants = vec![lab(0, 0, Some(true)), lab(0, 0, Some(false))];
+        let Err(candidates) = select_lab_payment(variants) else {
+            panic!("the surcharge fork is a real choice, not a tie to break");
+        };
+        assert_eq!(
+            candidates,
+            vec!["4th-tech surcharge 2 yen", "4th-tech surcharge 1 import"]
         );
     }
 
