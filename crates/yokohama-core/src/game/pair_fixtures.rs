@@ -1291,6 +1291,12 @@ pub const PAIR_2A: PairDeclaration = PairDeclaration {
          carrier E2 via the amortized ⅓ VP/good terminal rate: late 27. Late endpoint. \
          Tech exclusions apply. Collateral: E2 +2; O2/legs excluded by draw/hand \
          construction.",
+        "§5.1's carrier MAP and §5.2's named carrier are DIFFERENT CLAIMS, and this pair \
+         makes only the second. The map names, for each feature, the pair that witnesses \
+         its non-implication — one infeasible at `w_f = 0` — and E2's witness there is \
+         3(b). What §5.2 names here is the feature this pair's MARGIN is priced through. \
+         Registering E2 in the second sense is not a claim to the first, and a re-read \
+         diffing the two lists should expect to see E2 twice.",
         "The registered margin is the spec's own arithmetic, re-derived: 2 goods at the \
          amortized ⅓ VP/good rate against the pinned w_vp(late) = 40 is \
          max(1, ceil(2 × 40 / 3)) = 27. The rate is an AVERAGE, not a marginal — \
@@ -1647,6 +1653,7 @@ pub const PAIR_6A: PairDeclaration = PairDeclaration {
         ("warehouse_icons_queued", 1),
         ("german_icons_before", 0),
         ("german_icons_after", 1),
+        ("german_mercenary_supply", 2),
         ("mercenaries_awarded", 0),
     ],
     expected_nonzero: &[
@@ -1671,8 +1678,17 @@ pub const PAIR_6A: PairDeclaration = PairDeclaration {
          seat holds no completed orders and no technologies, so its German icon count is \
          0 BEFORE and 1 after; `check_mercenary_eligibility` awards at each EVEN count, \
          so an odd post-count awards nothing and `MercenariesTotal` is declared unmoved \
-         on both sides. Firing the award instead would need a pre-completed German order, \
-         which would also move `CountryBonusNow` and make this pair 6(c).",
+         on both sides. The German supply is registered anyway, at its full 2, so the \
+         other arm of §5.2's clause is closed too: the award does not fire, and it is not \
+         an exhausted supply that stopped it. Firing it instead would need a \
+         pre-completed German order, which would also move `CountryBonusNow` and make \
+         this pair 6(c).",
+        "`CountryBonusNow` is NOT listed, and the omission is the registration's, not an \
+         oversight: §5.2 lists the row 'on a set step', and a FIRST completed order takes \
+         the seat from zero distinct countries to one, where `country_set_bonus` still \
+         reads 0 — it needs two. Keeping this pair off a set step is what makes 6(a) and \
+         6(c) two independent rows rather than one written twice, and the set step itself \
+         is 6(c)'s whole subject.",
         "THE QUEUED CHOICE IS CARRIED, NOT RESOLVED (an S2-T5 judgment call). The card's \
          warehouse icon pushes one `PendingChoice::WarehouseTake`, and the greater side is \
          the state the engine leaves behind at the instant of fulfillment — queue and \
@@ -5988,8 +6004,9 @@ mod tests {
 
             // The inert parity: one German icon after, so no award fires.
             assert_eq!(
-                greater.mercenary_supply.german, lesser.mercenary_supply.german,
-                "the shared German supply is untouched, so no award fired",
+                (greater.mercenary_supply.german, lesser.mercenary_supply.german),
+                (2, 2),
+                "the shared German supply stands full on both sides: no award fired, and                  it was not an exhausted supply that stopped it",
             );
             for side in [Side::Greater, Side::Lesser] {
                 assert_eq!(f.state(side).player(seat).mercenaries.total(), 0);
