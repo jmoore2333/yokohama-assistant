@@ -9728,6 +9728,220 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // THE REGISTERED IDENTITIES (§5.1's step-2 promotion)
+    //
+    // THE CONVENTION THESE PINS ENFORCE, and it SUPERSEDES the one the package
+    // grew up under. The earlier rule was "register what DIFFERS across the
+    // sides" — everything else was a construction detail a builder could pick.
+    // The step-2 re-read found the hole that leaves: an identity BOTH sides
+    // share is exactly the kind a later task re-chooses silently, and a silent
+    // re-choice of, say, 6(c)'s four pre-completed orders or family 8's tile
+    // arrangement moves every collateral row underneath a declaration whose
+    // digest never notices. The rule is now "register every RE-CHOOSABLE
+    // IDENTITY", and these three cells are what make it a property of the
+    // crate rather than a habit.
+    //
+    // Two shapes, because `parameters` is `i64`-valued by the frame's own type:
+    // card ids are PARAMs, and the identities that are not numbers — tile
+    // arrangements, laboratory stocks, named technologies — are NOTES carrying
+    // a documented encoding. Both ride `canonical_declaration`, so both move
+    // the digest; and both are pinned here against the constants that realize
+    // them, which is the half a digest alone cannot give.
+    // -----------------------------------------------------------------------
+
+    /// The registered encoding of a 2P board: `0=Type 1=Type …` in `AreaId`
+    /// order.
+    fn board_arrangement(state: &GameState) -> String {
+        (0..TWO_PLAYER_AREAS)
+            .map(|i| {
+                let cfg = state
+                    .board_layout
+                    .areas
+                    .get(&AreaId(i as u8))
+                    .expect("a 2P board seats areas 0..9");
+                format!("{i}={:?}", cfg.area_type)
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// The registered encoding of a laboratory stock: `0=Effect 1=Effect …` in
+    /// slot order.
+    fn lab_stock_encoding(effects: &[TechEffect]) -> String {
+        effects
+            .iter()
+            .enumerate()
+            .map(|(i, e)| format!("{i}={e:?}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// The body of the ONE note carrying `prefix`, or `None`. Two such notes is
+    /// a defect in its own right — a reader would not know which one binds.
+    fn registered_note_body(pair: &PairDeclaration, prefix: &str) -> Option<&'static str> {
+        let mut hits = pair.notes.iter().filter_map(|n| n.strip_prefix(prefix));
+        let first = hits.next();
+        assert!(hits.next().is_none(), "{}: more than one '{prefix}' note", pair.id);
+        first
+    }
+
+    const ARRANGEMENT_PREFIX: &str = "REGISTERED ARRANGEMENT: ";
+    const LABORATORY_PREFIX: &str = "REGISTERED LABORATORY: ";
+
+    #[test]
+    fn every_hand_built_layout_registers_the_arrangement_it_seats() {
+        let rules = rules();
+        let mut seen = 0;
+        for pair in REGISTERED.iter() {
+            let body = registered_note_body(pair, ARRANGEMENT_PREFIX);
+            match pair.layout {
+                LayoutClass::StandardGenerated => {
+                    assert!(
+                        body.is_none(),
+                        "{}: a generated board is fully determined by the setup seed, so an \
+                         arrangement note would register a second, drifting copy of it",
+                        pair.id,
+                    );
+                    continue;
+                }
+                LayoutClass::HandBuilt => {}
+            }
+            let body = body.unwrap_or_else(|| {
+                panic!(
+                    "{} declares a HAND-BUILT layout and registers no '{ARRANGEMENT_PREFIX}' \
+                     note; the arrangement is the whole freedom a hand-built layout has",
+                    pair.id,
+                )
+            });
+            seen += 1;
+            for stage in pair.stages {
+                let f = built(pair.id, *stage, &rules);
+                for side in [Side::Greater, Side::Lesser] {
+                    assert_eq!(
+                        board_arrangement(f.state(side)),
+                        body,
+                        "{} at {} ({}): the constructed board is not the registered \
+                         arrangement",
+                        pair.id,
+                        stage.name(),
+                        side.name(),
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            seen, 8,
+            "§5.1's hand-built layouts: 1(c) and 1(e) share the ring, family 8 has its own, \
+             and each of family 11's five seats a different high-access type",
+        );
+    }
+
+    #[test]
+    fn every_registered_laboratory_stock_is_registered_as_a_note() {
+        // SCOPE, stated because it is narrower than the arrangement pin: this
+        // binds the NOTE to the CONSTANT the construction passes to
+        // `stock_lab_a`, not to a realized board. The realized boards
+        // deliberately differ from it — 10(b)'s lesser side swaps two slots and
+        // 11(d)'s greater side has bought slot 0 and refilled — and each of
+        // those movements is pinned by that pair's own cell. What this cell
+        // stops is a silent re-choice of the stock itself.
+        let expected: &[(&str, &[TechEffect])] = &[
+            ("4(e)", &FAMILY_4E_LAB_STOCK),
+            ("10(b)", &FAMILY_10B_LAB_STOCK),
+            ("11(d)", &LAB_STOCK),
+        ];
+        for (id, effects) in expected {
+            let pair = registered(id).unwrap_or_else(|| panic!("{id} is registered"));
+            let body = registered_note_body(pair, LABORATORY_PREFIX).unwrap_or_else(|| {
+                panic!("{id} stocks a laboratory and registers no '{LABORATORY_PREFIX}' note")
+            });
+            assert_eq!(body, lab_stock_encoding(effects), "{id}: the note and the stock differ");
+        }
+        // And nothing else claims one, so the list above is the whole set.
+        for pair in REGISTERED.iter() {
+            if !expected.iter().any(|(id, _)| *id == pair.id) {
+                assert!(
+                    registered_note_body(pair, LABORATORY_PREFIX).is_none(),
+                    "{} registers a laboratory note but stocks no laboratory",
+                    pair.id,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_multi_card_identity_is_a_registered_parameter() {
+        // Each row is (pair, parameter key, the CONSTANT it must equal). The
+        // pin runs constant -> parameter, which is the direction a silent
+        // re-choice breaks: a task that edits the constant and forgets the
+        // registration fails here rather than at a solver run.
+        let expected: &[(&str, &str, i64)] = &[
+            ("4(c)", "greater_hand_card_1", FAMILY_4C_RICH_HAND[0].0 as i64),
+            ("4(c)", "greater_hand_card_2", FAMILY_4C_RICH_HAND[1].0 as i64),
+            ("4(c)", "lesser_hand_card_1", FAMILY_4C_POOR_HAND[0].0 as i64),
+            ("4(c)", "lesser_hand_card_2", FAMILY_4C_POOR_HAND[1].0 as i64),
+            ("4(d)", "completed_english", FAMILY_4_REALIZED_SET[0].0 as i64),
+            ("4(d)", "completed_french", FAMILY_4_REALIZED_SET[1].0 as i64),
+            ("4(d)", "completed_german", FAMILY_4_REALIZED_SET[2].0 as i64),
+            ("4(d)", "greater_fourth_card", FAMILY_4_REALIZED_SET[3].0 as i64),
+            ("4(d)", "lesser_fourth_card", FAMILY_4D_DUPLICATE_CARD.0 as i64),
+            ("4(e)", "completed_english", FAMILY_4_REALIZED_SET[0].0 as i64),
+            ("4(e)", "completed_french", FAMILY_4_REALIZED_SET[1].0 as i64),
+            ("4(e)", "completed_german", FAMILY_4_REALIZED_SET[2].0 as i64),
+            ("4(e)", "completed_american", FAMILY_4_REALIZED_SET[3].0 as i64),
+            ("4(e)", "port_slot_0", FAMILY_4E_PORT_OFFERS[0].0 as i64),
+            ("4(e)", "port_slot_1", FAMILY_4E_PORT_OFFERS[1].0 as i64),
+            ("4(e)", "port_slot_2", FAMILY_4E_PORT_OFFERS[2].0 as i64),
+            ("4(e)", "port_slot_3", FAMILY_4E_PORT_OFFERS[3].0 as i64),
+            ("4(e)", "port_slot_4", FAMILY_4E_PORT_OFFERS[4].0 as i64),
+            ("4(e)", "port_slot_5", FAMILY_4E_PORT_OFFERS[5].0 as i64),
+            ("6(c)", "precompleted_english", FAMILY_6C_COMPLETED[0].0 as i64),
+            ("6(c)", "precompleted_french", FAMILY_6C_COMPLETED[1].0 as i64),
+            ("6(c)", "precompleted_german", FAMILY_6C_COMPLETED[2].0 as i64),
+            ("6(c)", "precompleted_american", FAMILY_6C_COMPLETED[3].0 as i64),
+        ];
+        for (id, key, value) in expected {
+            let pair = registered(id).unwrap_or_else(|| panic!("{id} is registered"));
+            let got = pair
+                .parameters
+                .iter()
+                .find(|(k, _)| k == key)
+                .unwrap_or_else(|| panic!("{id} registers no parameter named {key}"));
+            assert_eq!(got.1, *value, "{id}: {key} is registered against the wrong card");
+        }
+
+        // And the constants reach the BYTES, which is what the registration is
+        // ultimately about. The piles below are the ones the promoted
+        // identities build.
+        let rules = rules();
+        let four_c = built("4(c)", StageEndpoint::Late, &rules);
+        let seat = four_c.subject();
+        assert_eq!(
+            four_c.state(Side::Greater).player(seat).order_cards_in_hand,
+            FAMILY_4C_RICH_HAND.to_vec(),
+        );
+        assert_eq!(
+            four_c.state(Side::Lesser).player(seat).order_cards_in_hand,
+            FAMILY_4C_POOR_HAND.to_vec(),
+        );
+        let four_e = built("4(e)", StageEndpoint::Late, &rules);
+        assert_eq!(
+            four_e.state(Side::Greater).player(four_e.subject()).completed_orders,
+            FAMILY_4_REALIZED_SET.to_vec(),
+        );
+        assert_eq!(
+            four_e.state(Side::Greater).port_state.port_a.slots,
+            FAMILY_4E_PORT_OFFERS.map(Some),
+        );
+        let six_c = built("6(c)", StageEndpoint::Early, &rules);
+        assert_eq!(
+            six_c.state(Side::Lesser).player(six_c.subject()).completed_orders,
+            FAMILY_6C_COMPLETED.to_vec(),
+            "the four pre-completed orders, before the fifth-country fulfillment",
+        );
+    }
+
+    // -----------------------------------------------------------------------
     // The hand-built layouts as objects
     // -----------------------------------------------------------------------
 
