@@ -1248,12 +1248,16 @@ pub fn country_bit(country: Country) -> CountrySet {
     1u8 << country_index(country)
 }
 
-/// The countries of a set, in [`country_index`] order.
+/// The countries of a set, in [`country_index`] order — [`country_bit`]'s
+/// inverse, and public for the same reason it is: O5 walks a mask back into
+/// flags to ask [`set_bonus`] what each one buys, so the two have to agree, and
+/// §7's audit cell pins the round trip directly rather than through a value the
+/// two happen to disagree about.
 ///
 /// Order is not load-bearing — O5 takes a MAX over the set and the country-set
 /// loop is symmetric in the flags — and the iterator is the `u8` itself,
 /// cleared one low bit at a time, so nothing allocates.
-fn countries_in(set: CountrySet) -> impl Iterator<Item = Country> {
+pub fn countries_in(set: CountrySet) -> impl Iterator<Item = Country> {
     let mut rest = set;
     std::iter::from_fn(move || {
         if rest == 0 {

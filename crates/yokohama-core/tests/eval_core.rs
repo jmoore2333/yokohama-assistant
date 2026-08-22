@@ -65,10 +65,12 @@ use yokohama_core::game::driven_families::visible_power;
 use yokohama_core::game::eval::{
     achievement_progress as view_achievement_progress, achievement_progress_postclaim_sum,
     achievement_progress_sum as prefreeze_achievement_sum, area_bit, areas_in, clock_ppm,
-    country_bit, explain, initial_order_deck_len, interpolate, order_bit, order_cards_to_remove,
+    countries_in, country_bit, explain, initial_order_deck_len, interpolate, order_bit,
+    order_cards_to_remove,
     place_signal, progress_ppm, raw_value, realizable_power, score, set_bonus, terminal_standing,
-    track_trigger, view_is_terminal, Explanation, Feature, OrderSet, ScoreStructure, WeightTable,
-    PROGRESS_FULL_PPM, TERMINAL_MARGIN_CLAMP, TERMINAL_MARGIN_STEP, TERMINAL_RANK_STEP,
+    track_trigger, view_is_terminal, CountrySet, Explanation, Feature, OrderSet, ScoreStructure,
+    WeightTable, PROGRESS_FULL_PPM, TERMINAL_MARGIN_CLAMP, TERMINAL_MARGIN_STEP,
+    TERMINAL_RANK_STEP,
 };
 use yokohama_core::{
     achievement_progress, apply_move_unchecked, calculate_power, final_result, finalize_setup,
@@ -4221,6 +4223,27 @@ fn view_context_attainable_countries_are_the_hand_the_port_and_the_unowned_lab_t
         0,
         "no source shows a Dutch flag — the scan must not invent one"
     );
+
+    // THE ROUND TRIP, pinned locally. O5 walks a mask back into countries to
+    // ask `set_bonus` what each one buys, so `country_bit` and the walk's
+    // inverse have to agree — a permuted inverse would price the wrong flag's
+    // step. Two O5 cells below catch that today, but only as a value they
+    // happen to disagree about; this says it directly.
+    const EVERY_COUNTRY: [Country; 5] = [
+        Country::English,
+        Country::American,
+        Country::French,
+        Country::German,
+        Country::Dutch,
+    ];
+    let all: CountrySet = EVERY_COUNTRY.iter().copied().map(country_bit).fold(0, |a, b| a | b);
+    assert_eq!(all.count_ones(), 5, "five flags, five distinct bits");
+    for country in EVERY_COUNTRY {
+        let one: Vec<Country> = countries_in(country_bit(country)).collect();
+        assert_eq!(one, vec![country], "a one-flag mask walks back to that flag");
+    }
+    assert_eq!(countries_in(all).count(), 5, "and the full mask walks back to all five");
+    assert_eq!(countries_in(0).count(), 0, "the empty mask walks back to nothing");
 }
 
 /// §13's `set_bonus` refactor: ONE derivation, both callers.
