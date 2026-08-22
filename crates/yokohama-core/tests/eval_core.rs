@@ -4163,6 +4163,117 @@ fn the_unseen_pool_floor_is_the_pools_mean_and_zero_when_nothing_is_unseen() {
     assert_eq!(empty_context.unseen_order_floor(), 0, "an empty pool's floor is 0");
 }
 
+/// §3.2's O1 card names the pool's fourth term as **the VIEWER's OWN starting
+/// order**, and this is the cell that makes the word "own" load-bearing.
+///
+/// # Why it needs its own fixture, and why no other cell can carry it
+///
+/// `observe` fills `starting_order` for no seat but the viewer
+/// (`observe.rs:197`), so on every view the engine can produce, "the viewer's
+/// row" and "every row" are the SAME SET and the two readings agree exactly.
+/// Every other cell in this file reaches the evaluator through `observe`, which
+/// means a widened read is invisible to all of them — the narrowing would rest
+/// on the code and a comment alone.
+///
+/// The class the card cites is the one built here: a HAND-BUILT view carrying an
+/// opponent-row `starting_order`. The edit is in-idiom for this file (§5.2(c)'s
+/// cell edits a row's `hand` the same way), and it is precisely the shape a
+/// live-tracking or fixture author could produce by accident. A widened read
+/// would locate a card that seat is not entitled to point at, shrinking the pool
+/// and moving the masked opponent's O1 through the floor.
+///
+/// # Anti-vacuity, permanent rather than by mutation record
+///
+/// The planted card is chosen to be one the table CANNOT already point at AND
+/// one whose removal from the pool actually MOVES the floor — searched for, with
+/// the search asserted to succeed. So the pins below cannot pass by the
+/// counterfactual being identical; the closing assertion states that
+/// counterfactual as arithmetic. The masked slot is asserted present too, since
+/// without one O1 never reads the pool at all.
+///
+/// MUTATION-PROVEN at authoring: re-widening the derivation to
+/// `p.id == view.viewer || true` turns exactly this cell red (message in the
+/// batch report) and leaves the other 82 green. The mutant was never committed.
+#[test]
+fn the_pool_locates_the_viewers_own_starting_order_and_no_other_seats() {
+    let rules = Rules::standard();
+    let state = keep_game(2, 265, &rules);
+    let honest = observe(&state, PlayerId(0)).expect("seat 0 observes");
+    let honest_structure = ScoreStructure::derive(&honest, &rules);
+    let honest_context = honest_structure.context;
+    let floor = honest_context.unseen_order_floor();
+
+    assert!(
+        row_of(&honest, PlayerId(1)).hand.contains(&HandCard::HiddenStartingOrder),
+        "the opponent must carry a masked slot, or O1 never reads the pool"
+    );
+
+    // A card the table cannot point at, AND one whose removal moves the floor.
+    //
+    // `iter_sorted_by_id`, NOT `iter`: the registry is `HashMap`-backed and its
+    // iteration order is process-randomized, so a `find` over `iter` would plant
+    // a DIFFERENT card on every run — the cell would still pass, and its printed
+    // identity would be irreproducible, which is the silent failure
+    // `observe.rs:220-222` names in exactly these words.
+    let planted = rules
+        .orders
+        .iter_sorted_by_id()
+        .into_iter()
+        .map(|c| c.id)
+        .filter(|id| honest_context.located_orders & order_bit(*id) == 0)
+        .find(|id| {
+            let count = i64::from(honest_context.unseen_orders) - 1;
+            let sum = honest_context.unseen_order_halfvp - half_vp_face(&rules, *id);
+            count > 0 && sum / count != floor
+        })
+        .expect("some unlocated card's removal would move the pool floor");
+
+    let mut widened = honest.clone();
+    let opponent =
+        widened.players.iter_mut().find(|p| p.id == PlayerId(1)).expect("the opponent's row");
+    assert_eq!(
+        opponent.starting_order, None,
+        "`observe` fills this field for no seat but the viewer — the fixture PLANTS it"
+    );
+    opponent.starting_order = Some(planted);
+
+    let widened_structure = ScoreStructure::derive(&widened, &rules);
+    let widened_context = widened_structure.context;
+    assert_eq!(
+        widened_context.located_orders, honest_context.located_orders,
+        "an opponent-row `starting_order` located a card the viewer cannot see"
+    );
+    assert_eq!(widened_context.unseen_orders, honest_context.unseen_orders, "the pool shrank");
+    assert_eq!(
+        widened_context.unseen_order_halfvp, honest_context.unseen_order_halfvp,
+        "the pool's value moved"
+    );
+    assert_eq!(widened_context.unseen_order_floor(), floor, "the floor moved");
+
+    // BOTH rows, because the pool is table-wide: a widened read moves the masked
+    // seat's reading through the floor and leaves the viewer's alone, so pinning
+    // both says which is which rather than only that something is unmoved.
+    for seat in [PlayerId(0), PlayerId(1)] {
+        assert_eq!(
+            widened_structure.held_order_value(&row_of(&widened, seat), &rules),
+            honest_structure.held_order_value(&row_of(&honest, seat), &rules),
+            "seat {seat:?}'s O1 moved with a field that seat is not entitled to read"
+        );
+    }
+
+    // THE COUNTERFACTUAL, as arithmetic: had the planted card been located, the
+    // pins above would have failed. Without this the cell could pass by the
+    // fixture being unable to tell the two readings apart.
+    let would_count = i64::from(honest_context.unseen_orders) - 1;
+    let would_sum = honest_context.unseen_order_halfvp - half_vp_face(&rules, planted);
+    assert_ne!(would_sum / would_count, floor, "the planted card's removal must move the floor");
+    println!(
+        "viewer-only pool: planted {planted:?} (face {}), floor {floor} vs the widened {}",
+        half_vp_face(&rules, planted),
+        would_sum / would_count
+    );
+}
+
 /// §7 audit part 4 for O5's SOURCES: the attainable-country scan is exactly the
 /// seat's KNOWN hand, the face-up port offers, and the open lab titles the seat
 /// does not already own by EFFECT equality — the engine's own ownership test
