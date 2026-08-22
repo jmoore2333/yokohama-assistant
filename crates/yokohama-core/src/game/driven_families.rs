@@ -1486,7 +1486,16 @@ fn view_area_of(view: &PlayerView, wanted: AreaType) -> Option<AreaId> {
 /// a field the view already carries, which is the whole point: a threat
 /// computed here cannot accidentally read a hidden deal, because a hidden deal
 /// is not in scope.
-fn visible_power(view: &PlayerView, player: &VisiblePlayer, area: AreaId) -> u8 {
+///
+/// `pub` for exactly one external caller: spec §7's cross-pin against
+/// `eval::realizable_power` (`eval_core.rs`), which gives this mirror its first
+/// drift pin — this fn keeps the CONDITIONAL president term, so the two agree
+/// only where the president stands at the queried area, and differ by the
+/// capped `+1` everywhere else. The one-token visibility change realizes the
+/// step-3 carry recorded in the 2026-08-22 four-flags era (the S3-T1 batch's
+/// owed-forward item); the adjudicator-lane fence that deferred it lifted when
+/// that lane merged.
+pub fn visible_power(view: &PlayerView, player: &VisiblePlayer, area: AreaId) -> u8 {
     let mut power: u8 = 0;
     if player.president_location == PresidentLocation::OnBoard(area) {
         power += 1;

@@ -61,6 +61,7 @@ mod meter;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 
+use yokohama_core::game::driven_families::visible_power;
 use yokohama_core::game::eval::{
     achievement_progress as view_achievement_progress, achievement_progress_postclaim_sum,
     achievement_progress_sum as prefreeze_achievement_sum, area_bit, areas_in, clock_ppm, explain,
@@ -3601,20 +3602,16 @@ fn every_group_s_helper_allocates_nothing() {
 ///   the cell counts those cases and floors them, so the equality above cannot
 ///   pass by the two readings being the same function.
 ///
-/// # WHAT THIS CELL DOES NOT DO, and why — carried forward
+/// # The second comparator, landed at the batch boundary
 ///
 /// §7's contract names a SECOND comparator for this row: the harness's own
-/// view-side mirror, `visible_power`. It is a PRIVATE function of
-/// `driven_families.rs` (declared at :1489), and this batch's charter fences
-/// every `driven*` file against the adjudicator lane, so the comparison cannot
-/// be written here without a one-token visibility change this batch may not
-/// make. The pin is therefore OWED FORWARD, with the unblock recorded: make
-/// `visible_power` `pub`, then assert it against this reading on
-/// president-at-the-area fixtures. The content lost meanwhile is small and
-/// worth stating exactly — `visible_power` is a term-for-term mirror of
-/// `calculate_power`, which is the authority this cell already compares
-/// against, and it carries no drift pin of its own today, so the cross-pin's
-/// real value is that it would give the HARNESS mirror one.
+/// view-side mirror, `visible_power`. It was PRIVATE to `driven_families.rs`
+/// and this batch's charter fenced every `driven*` file, so the S3-T1 batch
+/// delivered this cell alone and recorded the cross-pin as owed forward. The
+/// orchestrator landed the one-token unblock at the T1 boundary (the fence's
+/// reason — the adjudicator lane — had merged), and the cross-pin now lives in
+/// [`realizable_power_and_the_harness_mirror_agree_where_the_president_stands`]
+/// directly below, which is the HARNESS mirror's first drift pin.
 #[test]
 fn realizable_power_equals_the_engines_reading_where_the_president_stands() {
     let rules = Rules::standard();
@@ -3659,4 +3656,72 @@ fn realizable_power_equals_the_engines_reading_where_the_president_stands() {
     println!(
         "president-at-area equality: {coincident} coincident, {divergent} divergent elsewhere"
     );
+}
+
+/// **The §7 cross-pin, both halves exact**: `realizable_power` vs the harness's
+/// own view-side mirror, `driven_families::visible_power` — landed at the S3-T1
+/// boundary once the one-token `pub` unblock was made (the cell above records
+/// the deferral).
+///
+/// §7 asks for equality "on president-at-the-queried-area fixtures" with the
+/// divergence documented. This cell pins MORE than the ask, because the
+/// divergence is not noise but an exact identity: `visible_power` keeps the
+/// CONDITIONAL president term, so
+///
+/// * president at the area  ⇒ `realizable == visible` (both carry the +1), and
+/// * president anywhere else ⇒ `realizable == min(5, visible + 1)` — the
+///   unconditional term added to the mirror's reading, capped LAST exactly as
+///   both functions cap.
+///
+/// Asserting the second half as an identity (rather than counting divergences)
+/// means a drift in EITHER function's term list or cap placement fails the
+/// walk at the first state it touches. Same organic walk as the cell above, so
+/// the two pins sample the same distribution; both branches assert they fired.
+#[test]
+fn realizable_power_and_the_harness_mirror_agree_where_the_president_stands() {
+    let rules = Rules::standard();
+    let (mut at_area, mut elsewhere) = (0usize, 0usize);
+    for (players, seed) in [(2u8, 135u64), (3, 137)] {
+        let mut state = keep_game(players, seed, &rules);
+        let mut rng = ChaCha8Rng::seed_from_u64(seed ^ 0x2E2E);
+        let policy = RolloutPolicy::FAMILY_WEIGHTED_DEFAULT;
+        for step in 0..120usize {
+            if is_game_over(&state) {
+                break;
+            }
+            if step.is_multiple_of(4) {
+                for i in 0..players {
+                    let seat = PlayerId(i);
+                    let view = observe(&state, seat).expect("the seat observes");
+                    let player = view.players.iter().find(|p| p.id == seat).expect("a row");
+                    for area in view.board_layout.areas.keys().copied() {
+                        let mine = realizable_power(&view, player, area);
+                        let mirror = visible_power(&view, player, area);
+                        if player.president_location == PresidentLocation::OnBoard(area) {
+                            assert_eq!(
+                                mine, mirror,
+                                "{players}P seed {seed} step {step}: seat {i} at its own {area:?}"
+                            );
+                            at_area += 1;
+                        } else {
+                            assert_eq!(
+                                mine,
+                                (mirror + 1).min(5),
+                                "{players}P seed {seed} step {step}: seat {i} away from {area:?}"
+                            );
+                            elsewhere += 1;
+                        }
+                    }
+                }
+            }
+            let mv = {
+                let handle = DecisionHandle::new(&state, &rules);
+                policy.pick(&handle, &mut rng).expect("the rung always finds a move")
+            };
+            state = apply_move_unchecked(&state, &mv, &rules).expect("a sampled move applies");
+        }
+    }
+    assert!(at_area > 0, "no sampled area ever held the queried seat's President");
+    assert!(elsewhere > 0, "every sampled area held the President — the +1 half never fired");
+    println!("harness-mirror cross-pin: {at_area} at-area, {elsewhere} elsewhere");
 }
