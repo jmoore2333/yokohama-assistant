@@ -3867,6 +3867,10 @@ fn row_of(view: &PlayerView, seat: PlayerId) -> VisiblePlayer {
     view.players.iter().find(|p| p.id == seat).expect("the seat has a row").clone()
 }
 
+/// One Group-E helper, as a value — the shape §7's family-5(c) cell folds over
+/// so its three features read through one loop rather than three copies of it.
+type EReader = fn(&ScoreStructure, &VisiblePlayer, &Rules) -> i64;
+
 /// The eight Group-E values of one row, in §3.2's LABEL order —
 /// E1, E2, E3, O1, O2, O3, O5, O6 (the order `CandidateFeature` declares, so a
 /// printed row here reads against the fixture package's own axis).
@@ -3892,83 +3896,139 @@ fn group_e_row(state: &GameState, rules: &Rules) -> [[i64; 8]; 2] {
     out
 }
 
-/// A 2P Keep game with every ORDER-CARD site EMPTIED — the port display, both
-/// hands, both completed piles — and every card returned to the deck, so the
-/// fixtures below state exactly which of the thirty-six cards sit where.
+/// A Keep game with every ORDER-CARD site EMPTIED — the port display, every
+/// hand, every completed pile, and the boxed setup discards — and all
+/// thirty-six cards gathered into the deck, so a fixture below states exactly
+/// which card sits where instead of inheriting a shuffle.
 ///
-/// `starting_order` is cleared with the hand, deliberately. The field records a
-/// card the seat can SEE, and O1's pool locates it for that reason; leaving it
-/// pointing at a card this helper has just pushed back into the deck would make
-/// the fixture claim a deck card is located, which is a state no `observe` can
-/// produce and not a position worth pinning against.
-fn cleared_order_table(seed: u64, rules: &Rules) -> GameState {
-    let mut state = keep_game(2, seed, rules);
-    let mut returned: Vec<OrderCardId> = Vec::new();
+/// `starting_order` is cleared with the hand, deliberately: the field records a
+/// card the seat can SEE, and O1's pool locates it for that reason, so leaving
+/// it pointing at a card this helper has just pushed back into the deck would
+/// make the fixture claim a deck card is located — a state no `observe` can
+/// produce. The two helpers below put a starting order back, in whichever of
+/// the two registered conditions a cell needs.
+fn cleared_order_table(players: u8, seed: u64, rules: &Rules) -> GameState {
+    let mut state = keep_game(players, seed, rules);
+    let mut gathered: Vec<OrderCardId> = std::mem::take(&mut state.orders_removed);
     for slot in state.port_state.port_a.slots.iter_mut() {
         if let Some(id) = slot.take() {
-            returned.push(id);
+            gathered.push(id);
         }
     }
     if let Some(b) = state.port_state.port_b.as_mut() {
         for slot in b.slots.iter_mut() {
             if let Some(id) = slot.take() {
-                returned.push(id);
+                gathered.push(id);
             }
         }
     }
     for p in state.players.iter_mut() {
-        returned.append(&mut p.order_cards_in_hand);
-        returned.append(&mut p.completed_orders);
+        gathered.append(&mut p.order_cards_in_hand);
+        gathered.append(&mut p.completed_orders);
         p.starting_order = None;
     }
-    state.order_deck.extend(returned);
+    state.order_deck.extend(gathered);
+    assert_eq!(state.order_deck.len(), 36, "every printed card is now free");
     state
 }
 
-/// Move `card` out of the order deck and into `seat`'s hand — the only way a
-/// fixture below adds a hand card, so no cell can double-locate one.
-fn deal_from_deck(state: &mut GameState, seat: usize, card: OrderCardId) {
-    let at = state
-        .order_deck
-        .iter()
-        .position(|c| *c == card)
-        .unwrap_or_else(|| panic!("card {card:?} is not in the deck"));
-    state.order_deck.remove(at);
+/// Take `card` out of the only sites a fixture may take one from — the deck,
+/// the boxed discards, or the port display. A card in a hand or a completed
+/// pile is NOT free: it is already somebody's, and a cell that moved it would
+/// be rewriting the position rather than building one.
+fn take_free_card(state: &mut GameState, card: OrderCardId) {
+    if let Some(i) = state.order_deck.iter().position(|c| *c == card) {
+        state.order_deck.remove(i);
+        return;
+    }
+    if let Some(i) = state.orders_removed.iter().position(|c| *c == card) {
+        state.orders_removed.remove(i);
+        return;
+    }
+    for slot in state.port_state.port_a.slots.iter_mut() {
+        if *slot == Some(card) {
+            *slot = None;
+            return;
+        }
+    }
+    if let Some(b) = state.port_state.port_b.as_mut() {
+        for slot in b.slots.iter_mut() {
+            if *slot == Some(card) {
+                *slot = None;
+                return;
+            }
+        }
+    }
+    panic!("{card:?} is in no free site — it is already in a hand or a completed pile");
+}
+
+/// Set `seat`'s four trade-good stocks OUTRIGHT, as `[copper, silk, tea,
+/// seafood]`. Every seat starts with ONE of each good, so a fixture that set
+/// only the two it cares about would be measuring those two plus a setup
+/// constant — which is exactly how an E2 expectation drifts two off.
+fn set_stocks(state: &mut GameState, seat: usize, stocks: [u32; 4]) {
+    let p = &mut state.players[seat];
+    p.copper = stocks[0];
+    p.silk = stocks[1];
+    p.tea = stocks[2];
+    p.seafood = stocks[3];
+}
+
+/// Move `card` into `seat`'s hand.
+fn deal_card(state: &mut GameState, seat: usize, card: OrderCardId) {
+    take_free_card(state, card);
     state.players[seat].order_cards_in_hand.push(card);
 }
 
-/// Move `card` out of the order deck and onto port A's slot `index`.
-fn offer_from_deck(state: &mut GameState, index: usize, card: OrderCardId) {
-    let at = state
-        .order_deck
-        .iter()
-        .position(|c| *c == card)
-        .unwrap_or_else(|| panic!("card {card:?} is not in the deck"));
-    state.order_deck.remove(at);
+/// Move `card` into `seat`'s face-up completed pile.
+fn complete_card(state: &mut GameState, seat: usize, card: OrderCardId) {
+    take_free_card(state, card);
+    state.players[seat].completed_orders.push(card);
+}
+
+/// Move `card` onto port A's slot `index`.
+fn offer_card(state: &mut GameState, index: usize, card: OrderCardId) {
+    take_free_card(state, card);
     assert!(state.port_state.port_a.slots[index].is_none(), "slot {index} is already offered");
     state.port_state.port_a.slots[index] = Some(card);
 }
 
+/// Give `seat` a still-UNFULFILLED starting order: the card in the hand with
+/// the residual field naming it — the one state `observe` masks from every
+/// other seat ("Mask ONLY while unfulfilled", `observe.rs:169-171`).
+fn unfulfilled_starting_order(state: &mut GameState, seat: usize, card: OrderCardId) {
+    deal_card(state, seat, card);
+    state.players[seat].starting_order = Some(card);
+}
+
+/// Give `seat` a FULFILLED starting order: the card face-up in the completed
+/// pile with the residual field still naming it. §5.2(b)'s constructible
+/// no-hidden-slot class, built rather than played into.
+fn fulfilled_starting_order(state: &mut GameState, seat: usize, card: OrderCardId) {
+    complete_card(state, seat, card);
+    state.players[seat].starting_order = Some(card);
+}
+
 /// Replace `seat`'s still-unfulfilled starting order with `card`, which must be
-/// in the deck; the displaced card takes the substitute's deck POSITION.
+/// FREE; the displaced card takes the substitute's exact place.
 ///
-/// Card counts, hand length and deck length are all preserved, and the hand
-/// INDEX of the masked slot does not move — so the two states differ in exactly
-/// one thing, the hidden identity, and in nothing an opponent's view can name.
+/// Card counts, hand length, deck length and the hand INDEX of the masked slot
+/// are all preserved, so two states built this way differ in exactly one thing
+/// — the hidden identity — and in nothing an opponent's view can name.
 fn substitute_starting_order(state: &GameState, seat: usize, card: OrderCardId) -> GameState {
     let mut out = state.clone();
-    let old = out.players[seat].starting_order.expect("the Keep shape records a starting order");
+    let old = out.players[seat].starting_order.expect("the seat holds a starting order");
     let hand_at = out.players[seat]
         .order_cards_in_hand
         .iter()
         .position(|c| *c == old)
         .expect("the starting order is still unfulfilled");
-    let deck_at = out
-        .order_deck
-        .iter()
-        .position(|c| *c == card)
-        .unwrap_or_else(|| panic!("the substitute {card:?} is not in the deck"));
-    out.order_deck[deck_at] = old;
+    if let Some(i) = out.order_deck.iter().position(|c| *c == card) {
+        out.order_deck[i] = old;
+    } else {
+        take_free_card(&mut out, card);
+        out.order_deck.push(old);
+    }
     out.players[seat].order_cards_in_hand[hand_at] = card;
     out.players[seat].starting_order = Some(card);
     out
@@ -4074,7 +4134,7 @@ fn the_unseen_pool_floor_is_the_pools_mean_and_zero_when_nothing_is_unseen() {
 
     // THE BOUNDARY: every printed card located. Reachable only by construction
     // — a real table always has a deck — and the answer must be 0, not a panic.
-    let mut state = cleared_order_table(209, &rules);
+    let mut state = cleared_order_table(2, 209, &rules);
     let all: Vec<OrderCardId> = rules.orders.iter().map(|c| c.id).collect();
     state.order_deck.clear();
     state.orders_removed.clear();
@@ -4093,13 +4153,13 @@ fn the_unseen_pool_floor_is_the_pools_mean_and_zero_when_nothing_is_unseen() {
 ///
 /// The fixture makes all four clauses bite at once and makes the ownership
 /// clause PER SEAT: seat 0 owns one copy of the two-copy Gaslight title, so the
-/// lab's other Gaslight copy is unattainable for seat 0 and attainable for seat
-/// 1. Two seats reading DIFFERENT sets off the same table is what separates a
+/// lab's other Gaslight copy is unattainable for seat 0 and attainable for
+/// seat 1. Two seats reading DIFFERENT sets off one table is what separates a
 /// per-seat ownership test from a table-wide one.
 #[test]
 fn view_context_attainable_countries_are_the_hand_the_port_and_the_unowned_lab_titles() {
     let rules = Rules::standard();
-    let mut state = cleared_order_table(211, &rules);
+    let mut state = cleared_order_table(2, 211, &rules);
     for slot in state.lab_state.lab_a.slots.iter_mut() {
         *slot = None;
     }
@@ -4128,8 +4188,8 @@ fn view_context_attainable_countries_are_the_hand_the_port_and_the_unowned_lab_t
         .expect("the German Brickyard")
         .id;
 
-    deal_from_deck(&mut state, 0, OrderCardId(3)); // English
-    offer_from_deck(&mut state, 0, OrderCardId(1)); // American
+    deal_card(&mut state, 0, OrderCardId(3)); // English
+    offer_card(&mut state, 0, OrderCardId(1)); // American
     state.lab_state.lab_a.slots[0] = Some(brickyard); // German, unowned by both
     state.lab_state.lab_a.slots[1] = Some(gaslight[1]); // French
     state.players[0].technologies.push(gaslight[0]); // ... the OTHER copy
@@ -4175,7 +4235,7 @@ fn set_bonus_is_the_one_derivation_behind_the_country_bonus_and_the_flag_margina
     assert_eq!(set_bonus([1, 1, 1, 1, 1]), 12, "five distinct");
     assert_eq!(set_bonus([2, 2, 2, 2, 2]), 24, "two full sets");
     assert_eq!(set_bonus([2, 1, 1, 0, 0]), 4, "the second round has one country left");
-    assert_eq!(set_bonus([3, 3, 1, 0, 0]), 4 + 2, "a three-set then a two-set");
+    assert_eq!(set_bonus([3, 3, 1, 0, 0]), 4 + 2 + 2, "a three-set, then two two-sets");
 
     let rules = Rules::standard();
     let mut compared = 0usize;
@@ -4217,7 +4277,56 @@ fn set_bonus_is_the_one_derivation_behind_the_country_bonus_and_the_flag_margina
         }
     }
     assert!(compared > 0, "the sweep compared nothing");
-    assert!(nonzero > 0, "every comparison was 0 == 0 — the identity is vacuous");
+
+    // The organic arm is the DRIFT pin and it is where the two derivations meet
+    // under real play; it is not where the identity is exercised at a nonzero
+    // value, because a rung game rarely completes orders of two countries and a
+    // sweep that HAPPENED to would be a flaky floor. The constructed arm carries
+    // that half: icons out of BOTH face-up piles, across the whole ladder.
+    let mut state = cleared_order_table(2, 217, &rules);
+    for p in state.players.iter_mut() {
+        p.technologies.clear();
+    }
+    let english_tech = rules
+        .techs
+        .iter()
+        .find(|t| t.country == Country::English)
+        .expect("an English technology")
+        .id;
+    let steps = [
+        (vec![OrderCardId(3)], false, 0),                                   // one country
+        (vec![OrderCardId(3), OrderCardId(1)], false, 2),                   // two
+        (vec![OrderCardId(3), OrderCardId(1), OrderCardId(2)], false, 4),   // three
+        (vec![OrderCardId(3), OrderCardId(1), OrderCardId(2)], true, 4),    // + a 2nd English
+        (
+            vec![OrderCardId(3), OrderCardId(1), OrderCardId(2), OrderCardId(4)],
+            false,
+            8,
+        ), // four
+        (
+            vec![OrderCardId(3), OrderCardId(1), OrderCardId(2), OrderCardId(4), OrderCardId(6)],
+            false,
+            12,
+        ), // five
+    ];
+    for (completed, owns_tech, expected) in steps {
+        let mut fixture = state.clone();
+        for card in &completed {
+            complete_card(&mut fixture, 0, *card);
+        }
+        if owns_tech {
+            fixture.players[0].technologies.push(english_tech);
+        }
+        let read = read_s(&fixture, &rules, PlayerId(0), |s, _, p| {
+            s.value_of(p, Feature::CountryBonusNow)
+        });
+        assert_eq!(read, expected, "the incumbent ladder at {completed:?} (tech: {owns_tech})");
+        compared += 1;
+        if read > 0 {
+            nonzero += 1;
+        }
+    }
+    assert!(nonzero >= 5, "only {nonzero} comparisons were nonzero — the identity is vacuous");
     println!("set_bonus identity: {compared} rows compared, {nonzero} nonzero");
 }
 
@@ -4338,11 +4447,10 @@ fn trade_goods_stock_is_the_four_good_sum_over_organic_play() {
 fn trade_goods_stock_drops_by_exactly_the_printed_requirements_at_a_fulfillment() {
     let rules = Rules::standard();
     const FULFILLED: OrderCardId = OrderCardId(27); // English, requires 2 copper + 2 seafood
-    let mut state = cleared_order_table(223, &rules);
-    deal_from_deck(&mut state, 0, FULFILLED);
-    deal_from_deck(&mut state, 0, OrderCardId(3));
-    state.players[0].copper = 3;
-    state.players[0].seafood = 2;
+    let mut state = cleared_order_table(2, 223, &rules);
+    deal_card(&mut state, 0, FULFILLED);
+    deal_card(&mut state, 0, OrderCardId(3));
+    set_stocks(&mut state, 0, [3, 0, 0, 2]);
 
     let before = read_s(&state, &rules, PlayerId(0), |s, _, p| s.trade_goods_stock(p));
     let requirements = requirement_vector(&rules, FULFILLED);
@@ -4350,10 +4458,10 @@ fn trade_goods_stock_drops_by_exactly_the_printed_requirements_at_a_fulfillment(
     assert_eq!(total, 4, "card 27's printed requirement total");
 
     // The instant: the goods leave, the card joins the face-up pile.
-    state.players[0].copper -= requirements[0] as u32;
-    state.players[0].silk -= requirements[1] as u32;
-    state.players[0].tea -= requirements[2] as u32;
-    state.players[0].seafood -= requirements[3] as u32;
+    state.players[0].copper -= requirements[0];
+    state.players[0].silk -= requirements[1];
+    state.players[0].tea -= requirements[2];
+    state.players[0].seafood -= requirements[3];
     state.players[0].order_cards_in_hand.retain(|c| *c != FULFILLED);
     state.players[0].completed_orders.push(FULFILLED);
 
@@ -4447,9 +4555,9 @@ fn held_order_value_is_the_half_vp_face_of_every_known_card() {
     assert_eq!(half_vp_face(&rules, WITH_MONEY), 4);
     assert_eq!(half_vp_face(&rules, WITH_IMPORT), 4);
 
-    let mut state = cleared_order_table(229, &rules);
+    let mut state = cleared_order_table(2, 229, &rules);
     for card in [PURE_VP, WITH_MONEY, WITH_IMPORT] {
-        deal_from_deck(&mut state, 0, card);
+        deal_card(&mut state, 0, card);
     }
     let o1 = read_s(&state, &rules, PlayerId(0), |s, _, p| s.held_order_value(p, &rules));
     assert_eq!(o1, 22 + 4 + 4, "the summed half-VP face");
@@ -4469,8 +4577,9 @@ fn held_order_value_is_the_half_vp_face_of_every_known_card() {
 #[test]
 fn held_order_value_prices_a_masked_slot_at_the_unseen_pool_floor() {
     let rules = Rules::standard();
-    let mut state = keep_game(2, 231, &rules);
-    deal_from_deck(&mut state, 1, OrderCardId(21)); // a known card beside the masked one
+    let mut state = cleared_order_table(2, 231, &rules);
+    unfulfilled_starting_order(&mut state, 1, OrderCardId(27));
+    deal_card(&mut state, 1, OrderCardId(21)); // a known card beside the masked one
 
     let view = observe(&state, PlayerId(0)).expect("seat 0 observes");
     let structure = ScoreStructure::derive(&view, &rules);
@@ -4524,8 +4633,12 @@ fn held_order_value_prices_a_masked_slot_at_the_unseen_pool_floor() {
 #[test]
 fn held_order_value_is_invariant_under_substitution_of_the_hidden_identity() {
     let rules = Rules::standard();
-    let base = keep_game(2, 233, &rules);
-    let dealt = base.players[1].starting_order.expect("the Keep shape records one");
+    let base = {
+        let mut state = cleared_order_table(2, 233, &rules);
+        unfulfilled_starting_order(&mut state, 1, OrderCardId(21));
+        state
+    };
+    let dealt = base.players[1].starting_order.expect("the fixture records one");
     // Two substitutes from the DECK, so nothing an opponent can see moves.
     let substitutes: Vec<OrderCardId> = base
         .order_deck
@@ -4541,7 +4654,7 @@ fn held_order_value_is_invariant_under_substitution_of_the_hidden_identity() {
         .collect();
     let faces: Vec<i64> = states
         .iter()
-        .map(|s| half_vp_face(&rules, s.players[1].starting_order.expect("one")))
+        .map(|s| half_vp_face(&rules, s.players[1].starting_order.expect("a starting order")))
         .collect();
     assert!(
         faces.iter().collect::<std::collections::BTreeSet<_>>().len() >= 2,
@@ -4589,17 +4702,16 @@ fn held_order_value_is_invariant_under_substitution_of_the_hidden_identity() {
 #[test]
 fn held_order_value_iterates_a_four_card_live_tracking_hand() {
     let rules = Rules::standard();
-    let mut state = keep_game(2, 235, &rules);
+    let mut state = cleared_order_table(2, 235, &rules);
     // The live `Unknown` fiction on seat 1: the dealt card is in NEITHER
-    // storage site, so it moves to the removed pile and the slot is synthesized.
-    let dealt = state.players[1].starting_order.expect("the Keep shape records one");
-    state.players[1].order_cards_in_hand.retain(|c| *c != dealt);
-    state.players[1].starting_order = None;
+    // storage site, so it sits in the removed pile and the slot is synthesized
+    // AHEAD of the witnessed takes rather than replacing one of them.
+    take_free_card(&mut state, OrderCardId(2));
     state.players[1].starting_order_hidden = true;
-    state.orders_removed.push(dealt);
+    state.orders_removed.push(OrderCardId(2));
     let known = [OrderCardId(21), OrderCardId(27), OrderCardId(5)];
     for card in known {
-        deal_from_deck(&mut state, 1, card);
+        deal_card(&mut state, 1, card);
     }
 
     let view = observe(&state, PlayerId(0)).expect("seat 0 observes");
@@ -4625,8 +4737,10 @@ fn held_order_value_iterates_a_four_card_live_tracking_hand() {
 #[test]
 fn held_order_value_reads_one_table_wide_pool_for_every_seat() {
     let rules = Rules::standard();
-    let mut state = keep_game(3, 237, &rules);
-    deal_from_deck(&mut state, 1, OrderCardId(21));
+    let mut state = cleared_order_table(3, 237, &rules);
+    unfulfilled_starting_order(&mut state, 1, OrderCardId(27));
+    unfulfilled_starting_order(&mut state, 2, OrderCardId(26));
+    deal_card(&mut state, 1, OrderCardId(21));
 
     let view = observe(&state, PlayerId(0)).expect("seat 0 observes");
     let structure = ScoreStructure::derive(&view, &rules);
@@ -4670,11 +4784,10 @@ fn order_matched_goods_caps_each_good_against_the_summed_requirement() {
     assert_eq!(requirement_vector(&rules, A), [2, 0, 0, 1]);
     assert_eq!(requirement_vector(&rules, B), [2, 0, 0, 2]);
 
-    let mut state = cleared_order_table(239, &rules);
-    deal_from_deck(&mut state, 0, A);
-    deal_from_deck(&mut state, 0, B);
-    state.players[0].copper = 3;
-    state.players[0].seafood = 1;
+    let mut state = cleared_order_table(2, 239, &rules);
+    deal_card(&mut state, 0, A);
+    deal_card(&mut state, 0, B);
+    set_stocks(&mut state, 0, [3, 0, 0, 1]);
 
     let (o2, e2) = read_s(&state, &rules, PlayerId(0), |s, _, p| {
         (s.order_matched_goods(p, &rules), s.trade_goods_stock(p))
@@ -4682,9 +4795,11 @@ fn order_matched_goods_caps_each_good_against_the_summed_requirement() {
     assert_eq!(o2, 4, "min(3, 4) copper + min(1, 3) seafood — the SUMMED cap, not 2 + 2 + 1");
     assert_eq!(e2, 4, "at these stocks every good is matched and O2 meets its ceiling");
 
-    // Hidden slots contribute NOTHING to the requirement sum: seat 1 reads its
-    // own masked-free hand, and seat 0 reading seat 1 sees no requirement at all.
-    let mut masked = keep_game(2, 239, &rules);
+    // Hidden slots contribute NOTHING to the requirement sum: seat 1 holds a
+    // masked card that needs two copper and nine copper to spend on it, and
+    // seat 0 still reads 0, because it can see no requirement to match.
+    let mut masked = cleared_order_table(2, 239, &rules);
+    unfulfilled_starting_order(&mut masked, 1, B);
     masked.players[1].copper = 9;
     let view = observe(&masked, PlayerId(0)).expect("seat 0 observes");
     let structure = ScoreStructure::derive(&view, &rules);
@@ -4745,11 +4860,10 @@ fn executable_orders_counts_the_hands_whose_four_requirements_the_stock_meets() 
     let rules = Rules::standard();
     const MET: OrderCardId = OrderCardId(3); // 2 copper, 1 seafood
     const SHORT: OrderCardId = OrderCardId(27); // 2 copper, 2 seafood
-    let mut state = cleared_order_table(245, &rules);
-    deal_from_deck(&mut state, 0, MET);
-    deal_from_deck(&mut state, 0, SHORT);
-    state.players[0].copper = 3;
-    state.players[0].seafood = 1;
+    let mut state = cleared_order_table(2, 245, &rules);
+    deal_card(&mut state, 0, MET);
+    deal_card(&mut state, 0, SHORT);
+    set_stocks(&mut state, 0, [3, 0, 0, 1]);
 
     assert_eq!(
         read_s(&state, &rules, PlayerId(0), |s, _, p| s.executable_orders(p, &rules)),
@@ -4791,11 +4905,10 @@ fn fulfillment_retires_the_cards_contribution_to_o2_o3_and_o6() {
     assert_eq!(icon_faces(&rules, FULFILLED), 1, "card 27 carries one warehouse icon");
     assert_eq!(icon_faces(&rules, KEPT), 0, "card 3 is icon-free");
 
-    let mut state = cleared_order_table(247, &rules);
-    deal_from_deck(&mut state, 0, FULFILLED);
-    deal_from_deck(&mut state, 0, KEPT);
-    state.players[0].copper = 3;
-    state.players[0].seafood = 2;
+    let mut state = cleared_order_table(2, 247, &rules);
+    deal_card(&mut state, 0, FULFILLED);
+    deal_card(&mut state, 0, KEPT);
+    set_stocks(&mut state, 0, [3, 0, 0, 2]);
 
     let read = |state: &GameState| {
         read_s(state, &rules, PlayerId(0), |s, _, p| {
@@ -4829,20 +4942,22 @@ fn fulfillment_retires_the_cards_contribution_to_o2_o3_and_o6() {
 #[test]
 fn flag_icon_marginal_is_the_set_bonus_step_the_best_attainable_country_buys() {
     let rules = Rules::standard();
-    let mut state = cleared_order_table(249, &rules);
+    let mut state = cleared_order_table(2, 249, &rules);
     for slot in state.lab_state.lab_a.slots.iter_mut() {
         *slot = None;
     }
     state.players[0].technologies.clear();
     // Three distinct realized countries: English, American, French.
-    state.players[0].completed_orders = vec![OrderCardId(3), OrderCardId(1), OrderCardId(2)];
+    for card in [OrderCardId(3), OrderCardId(1), OrderCardId(2)] {
+        complete_card(&mut state, 0, card);
+    }
     let base = read_s(&state, &rules, PlayerId(0), |s, _, p| {
         s.value_of(p, Feature::CountryBonusNow)
     });
     assert_eq!(base, 4, "three distinct countries");
 
     // A country already held: the marginal is 0.
-    offer_from_deck(&mut state, 0, OrderCardId(10)); // English
+    offer_card(&mut state, 0, OrderCardId(10)); // English
     assert_eq!(
         read_s(&state, &rules, PlayerId(0), |s, _, p| s.flag_icon_marginal(p, &rules)),
         0,
@@ -4850,7 +4965,7 @@ fn flag_icon_marginal_is_the_set_bonus_step_the_best_attainable_country_buys() {
     );
 
     // The missing fourth: 4 -> 8.
-    offer_from_deck(&mut state, 1, OrderCardId(4)); // German
+    offer_card(&mut state, 1, OrderCardId(4)); // German
     assert_eq!(
         read_s(&state, &rules, PlayerId(0), |s, _, p| s.flag_icon_marginal(p, &rules)),
         4,
@@ -4872,7 +4987,7 @@ fn flag_icon_marginal_is_the_set_bonus_step_the_best_attainable_country_buys() {
 #[test]
 fn flag_icon_marginal_is_zero_on_an_empty_attainable_set() {
     let rules = Rules::standard();
-    let mut state = cleared_order_table(251, &rules);
+    let mut state = cleared_order_table(2, 251, &rules);
     for slot in state.lab_state.lab_a.slots.iter_mut() {
         *slot = None;
     }
@@ -4882,8 +4997,9 @@ fn flag_icon_marginal_is_zero_on_an_empty_attainable_set() {
         }
     }
     state.players[0].technologies.clear();
-    state.players[0].completed_orders =
-        vec![OrderCardId(3), OrderCardId(1), OrderCardId(2), OrderCardId(4)];
+    for card in [OrderCardId(3), OrderCardId(1), OrderCardId(2), OrderCardId(4)] {
+        complete_card(&mut state, 0, card);
+    }
 
     let view = observe(&state, PlayerId(0)).expect("seat 0 observes");
     let structure = ScoreStructure::derive(&view, &rules);
@@ -4893,7 +5009,7 @@ fn flag_icon_marginal_is_zero_on_an_empty_attainable_set() {
     assert_eq!(structure.flag_icon_marginal(&row, &rules), 0, "nowhere to get the fifth");
 
     // The CONTROL: one Dutch offer, and the same position reads the 8 -> 12 step.
-    offer_from_deck(&mut state, 0, OrderCardId(6)); // Dutch
+    offer_card(&mut state, 0, OrderCardId(6)); // Dutch
     assert_eq!(
         read_s(&state, &rules, PlayerId(0), |s, _, p| s.flag_icon_marginal(p, &rules)),
         4,
@@ -4908,14 +5024,15 @@ fn flag_icon_marginal_is_zero_on_an_empty_attainable_set() {
 #[test]
 fn flag_icon_marginal_realizes_into_the_country_bonus_when_the_icon_lands() {
     let rules = Rules::standard();
-    let mut state = cleared_order_table(253, &rules);
+    let mut state = cleared_order_table(2, 253, &rules);
     for slot in state.lab_state.lab_a.slots.iter_mut() {
         *slot = None;
     }
     state.players[0].technologies.clear();
-    state.players[0].completed_orders =
-        vec![OrderCardId(3), OrderCardId(1), OrderCardId(2), OrderCardId(4)];
-    deal_from_deck(&mut state, 0, OrderCardId(8)); // Dutch, and it STAYS in hand
+    for card in [OrderCardId(3), OrderCardId(1), OrderCardId(2), OrderCardId(4)] {
+        complete_card(&mut state, 0, card);
+    }
+    deal_card(&mut state, 0, OrderCardId(8)); // Dutch, and it STAYS in hand
 
     let read = |state: &GameState| {
         read_s(state, &rules, PlayerId(0), |s, _, p| {
@@ -4927,12 +5044,12 @@ fn flag_icon_marginal_realizes_into_the_country_bonus_when_the_icon_lands() {
 
     // A DIFFERENT Dutch card completes; the hand card that made Dutch
     // attainable is untouched.
-    state.players[0].completed_orders.push(OrderCardId(6));
+    complete_card(&mut state, 0, OrderCardId(6));
     let (o5_after, country_after) = read(&state);
     assert_eq!(country_after - country_before, o5_before, "the step landed where O5 priced it");
     assert_eq!(o5_after, 0, "post-set shrinkage: a sixth flag of five countries buys nothing");
     assert_ne!(
-        read_s(&state, &rules, PlayerId(0), |s, _, p| s.context.attainable(0)),
+        read_s(&state, &rules, PlayerId(0), |s, _, _| s.context.attainable(0)),
         0,
         "the Dutch source is still on the table — the collapse is curvature, not absence"
     );
@@ -4964,18 +5081,19 @@ fn held_order_icons_matches_the_generated_manifests_icon_census() {
     assert_eq!(icon_faces(&rules, MOVES), 2);
     assert_eq!(icon_faces(&rules, STORES), 1);
 
-    let mut state = cleared_order_table(255, &rules);
-    deal_from_deck(&mut state, 0, MOVES);
-    deal_from_deck(&mut state, 0, STORES);
-    deal_from_deck(&mut state, 0, OrderCardId(3)); // icon-free
+    let mut state = cleared_order_table(2, 255, &rules);
+    deal_card(&mut state, 0, MOVES);
+    deal_card(&mut state, 0, STORES);
+    deal_card(&mut state, 0, OrderCardId(3)); // icon-free
     assert_eq!(
         read_s(&state, &rules, PlayerId(0), |s, _, p| s.held_order_icons(p, &rules)),
         3,
         "movement and warehouse faces summed in ICON units, never VP-mapped"
     );
 
-    // Hidden slots contribute 0.
-    let masked = keep_game(2, 255, &rules);
+    // Hidden slots contribute 0 — even a masked card that DOES carry a face.
+    let mut masked = cleared_order_table(2, 255, &rules);
+    unfulfilled_starting_order(&mut masked, 1, OrderCardId(31)); // movement 2
     let view = observe(&masked, PlayerId(0)).expect("seat 0 observes");
     assert_eq!(
         ScoreStructure::derive(&view, &rules).held_order_icons(&row_of(&view, PlayerId(1)), &rules),
@@ -5106,23 +5224,22 @@ fn no_group_e_helper_reads_power_or_presence() {
 #[test]
 fn group_e_values_permute_with_a_full_seat_relabel() {
     let rules = Rules::standard();
-    let mut state = cleared_order_table(257, &rules);
-    deal_from_deck(&mut state, 0, OrderCardId(10)); // English, movement 2
-    deal_from_deck(&mut state, 0, OrderCardId(3)); // English, 2 copper + 1 seafood
-    deal_from_deck(&mut state, 1, OrderCardId(21)); // Dutch, pure VP
-    offer_from_deck(&mut state, 0, OrderCardId(4)); // German offer, an O5 source
+    let mut state = cleared_order_table(2, 257, &rules);
+    deal_card(&mut state, 0, OrderCardId(10)); // English, movement 2
+    deal_card(&mut state, 0, OrderCardId(3)); // English, 2 copper + 1 seafood
+    deal_card(&mut state, 1, OrderCardId(21)); // Dutch, pure VP
+    offer_card(&mut state, 0, OrderCardId(4)); // German offer, an O5 source
     state.players[0].money = 7;
-    state.players[0].copper = 3;
-    state.players[0].seafood = 1;
+    set_stocks(&mut state, 0, [3, 0, 0, 1]);
     state.players[0].shophouses.in_hand = 2;
     state.players[0].trading_houses.in_hand = 1;
-    state.players[0].completed_orders = vec![OrderCardId(1), OrderCardId(2)];
+    complete_card(&mut state, 0, OrderCardId(1));
+    complete_card(&mut state, 0, OrderCardId(2));
     state.players[1].money = 1;
-    state.players[1].tea = 2;
-    state.players[1].silk = 1;
+    set_stocks(&mut state, 1, [0, 1, 2, 0]);
     state.players[1].shophouses.in_hand = 0;
     state.players[1].trading_houses.in_hand = 0;
-    state.players[1].completed_orders = vec![OrderCardId(5)];
+    complete_card(&mut state, 1, OrderCardId(5));
 
     let relabelled = relabel_seats_0_and_1(&state);
     let before = group_e_row(&state, &rules);
@@ -5154,24 +5271,21 @@ fn group_e_values_permute_with_a_full_seat_relabel() {
 #[test]
 fn group_e_differences_negate_across_the_two_2p_views() {
     let rules = Rules::standard();
-    let mut state = keep_game(2, 259, &rules);
-    // The no-hidden-slot class: each seat's starting order moves from the hand
-    // into the face-up completed pile ("Mask ONLY while unfulfilled").
-    for p in state.players.iter_mut() {
-        let card = p.starting_order.expect("the Keep shape records a starting order");
-        p.order_cards_in_hand.retain(|c| *c != card);
-        p.completed_orders.push(card);
-    }
-    deal_from_deck(&mut state, 0, OrderCardId(10));
-    deal_from_deck(&mut state, 0, OrderCardId(3));
-    deal_from_deck(&mut state, 1, OrderCardId(21));
+    let mut state = cleared_order_table(2, 259, &rules);
+    // The no-hidden-slot class: each seat's starting order sits FULFILLED in
+    // the face-up completed pile, the residual field still naming it.
+    fulfilled_starting_order(&mut state, 0, OrderCardId(1)); // American
+    fulfilled_starting_order(&mut state, 1, OrderCardId(4)); // German
+    deal_card(&mut state, 0, OrderCardId(10)); // English, movement 2
+    deal_card(&mut state, 0, OrderCardId(3)); // English, 2 copper + 1 seafood
+    deal_card(&mut state, 1, OrderCardId(21)); // Dutch, pure VP
+    offer_card(&mut state, 0, OrderCardId(2)); // a French offer, an O5 source
     state.players[0].money = 7;
-    state.players[0].copper = 3;
-    state.players[0].seafood = 1;
+    set_stocks(&mut state, 0, [3, 0, 0, 1]);
     state.players[0].shophouses.in_hand = 2;
     state.players[0].trading_houses.in_hand = 1;
     state.players[1].money = 1;
-    state.players[1].tea = 2;
+    set_stocks(&mut state, 1, [0, 0, 2, 0]);
     state.players[1].shophouses.in_hand = 0;
     state.players[1].trading_houses.in_hand = 0;
 
@@ -5231,10 +5345,10 @@ fn the_masked_slot_term_is_exactly_the_cross_view_gap_for_o1_o2_o3_and_o6() {
     let rules = Rules::standard();
     const MASKED: OrderCardId = OrderCardId(27); // 2 copper + 2 seafood, one warehouse icon
     const OPEN: OrderCardId = OrderCardId(3); // 2 copper + 1 seafood, icon-free
-    let mut state = substitute_starting_order(&keep_game(2, 261, &rules), 1, MASKED);
-    deal_from_deck(&mut state, 1, OPEN);
-    state.players[1].copper = 3;
-    state.players[1].seafood = 2;
+    let mut state = cleared_order_table(2, 261, &rules);
+    unfulfilled_starting_order(&mut state, 1, MASKED);
+    deal_card(&mut state, 1, OPEN);
+    set_stocks(&mut state, 1, [3, 0, 0, 2]);
 
     let mine = observe(&state, PlayerId(1)).expect("seat 1 observes");
     let my_structure = ScoreStructure::derive(&mine, &rules);
@@ -5252,7 +5366,7 @@ fn the_masked_slot_term_is_exactly_the_cross_view_gap_for_o1_o2_o3_and_o6() {
     );
 
     // O2 / O3 / O6: the masking view reads EXACTLY the without-the-card value.
-    let readers: [(&str, fn(&ScoreStructure, &VisiblePlayer, &Rules) -> i64); 3] = [
+    let readers: [(&str, EReader); 3] = [
         ("O2", |s, p, r| s.order_matched_goods(p, r)),
         ("O3", |s, p, r| s.executable_orders(p, r)),
         ("O6", |s, p, r| s.held_order_icons(p, r)),
@@ -5305,29 +5419,38 @@ fn the_masked_slot_term_is_exactly_the_cross_view_gap_for_o1_o2_o3_and_o6() {
 #[test]
 fn every_group_e_helper_allocates_nothing() {
     let rules = Rules::standard();
-    let mut state = keep_game(4, 263, &rules);
-    deal_from_deck(&mut state, 0, OrderCardId(10));
-    deal_from_deck(&mut state, 0, OrderCardId(3));
+    let mut state = cleared_order_table(4, 263, &rules);
+    deal_card(&mut state, 0, OrderCardId(10));
+    deal_card(&mut state, 0, OrderCardId(3));
     state.players[0].money = 5;
-    state.players[0].copper = 3;
-    state.players[0].seafood = 2;
+    set_stocks(&mut state, 0, [3, 0, 0, 2]);
     state.players[0].shophouses.in_hand = 2;
     state.players[0].trading_houses.in_hand = 1;
-    state.players[0].completed_orders = vec![OrderCardId(1), OrderCardId(2)];
+    complete_card(&mut state, 0, OrderCardId(1));
+    complete_card(&mut state, 0, OrderCardId(2));
+    // A SECOND, masked row, so O1's pool-floor branch and the three
+    // hidden-slot zeros are measured too — not only the Known path.
+    unfulfilled_starting_order(&mut state, 1, OrderCardId(27));
+    offer_card(&mut state, 0, OrderCardId(6));
 
     let view = observe(&state, PlayerId(0)).expect("seat 0 observes");
     let structure = ScoreStructure::derive(&view, &rules);
     let player = row_of(&view, PlayerId(0));
+    let masked = row_of(&view, PlayerId(1));
+    assert!(masked.hand.contains(&HandCard::HiddenStartingOrder), "the masked row is masked");
 
     let (sum, stats) = meter::measure(|| {
-        structure.money_stock(&player)
-            + structure.trade_goods_stock(&player)
-            + structure.building_tokens_ready(&player)
-            + structure.held_order_value(&player, &rules)
-            + structure.order_matched_goods(&player, &rules)
-            + structure.executable_orders(&player, &rules)
-            + structure.flag_icon_marginal(&player, &rules)
-            + structure.held_order_icons(&player, &rules)
+        let read = |p: &VisiblePlayer| {
+            structure.money_stock(p)
+                + structure.trade_goods_stock(p)
+                + structure.building_tokens_ready(p)
+                + structure.held_order_value(p, &rules)
+                + structure.order_matched_goods(p, &rules)
+                + structure.executable_orders(p, &rules)
+                + structure.flag_icon_marginal(p, &rules)
+                + structure.held_order_icons(p, &rules)
+        };
+        read(&player) + read(&masked)
     });
     assert_eq!(stats.allocs, 0, "a Group-E helper allocated ({} allocations)", stats.allocs);
     assert!(sum > 0, "the fixture must exercise real values, or the meter measured nothing");

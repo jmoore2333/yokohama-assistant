@@ -121,8 +121,8 @@ use crate::game::rules::Rules;
 // allowlist names this line, which is what makes widening it a deliberate act.
 use crate::game::actions::{bank_reward, employment_agency_tokens_allowed, exported_reward};
 use crate::types::{
-    AchievementType, AreaId, AreaType, Country, PlayerId, PlayerView, PresidentLocation, TurnPhase,
-    VisiblePlayer,
+    AchievementType, AreaId, AreaType, Country, HandCard, OrderCard, OrderCardId, PlayerId,
+    PlayerView, PresidentLocation, TechCardId, TurnPhase, VisiblePlayer,
 };
 
 /// Bumped on ANY behavior-affecting change to the evaluator — the feature list,
@@ -1212,6 +1212,109 @@ pub fn areas_in(set: AreaSet) -> impl Iterator<Item = AreaId> {
     })
 }
 
+/// A set of order cards, one bit per `OrderCardId`.
+///
+/// The printed manifest is thirty-six cards keyed by printed corner index
+/// 1..=36, so a `u64` holds the whole deck in ONE register with bit 0 spare —
+/// which is what lets O1's located set and its complement ride
+/// [`ScoreStructure::derive`] under §3.2's allocation contract, exactly as
+/// [`AreaSet`] does for the board.
+pub type OrderSet = u64;
+
+/// One order card's bit, or the EMPTY set for an id outside a `u64`'s reach.
+///
+/// `OrderCardId` is a bare newtype over `u8` with no validated range, so an
+/// id past 63 is representable by a hand-built registry. It reads here as "in
+/// no set" rather than as a shift overflow; the debug assertion is what says
+/// that answer is a defence and not a supported width.
+pub fn order_bit(card: OrderCardId) -> OrderSet {
+    debug_assert!(card.0 < 64, "an order id past 63 has no bit in an OrderSet");
+    if card.0 < 64 {
+        1u64 << card.0
+    } else {
+        0
+    }
+}
+
+/// A set of countries, one bit per flag — the five-wide axis O5's attainable
+/// scan and the country-set bonus both speak.
+pub type CountrySet = u8;
+
+/// One country's bit. Public because §7's audit cells read
+/// [`ViewContext::attainable`] against named flags, and a test that had to
+/// know the bit layout would be asserting the implementation rather than the
+/// set.
+pub fn country_bit(country: Country) -> CountrySet {
+    1u8 << country_index(country)
+}
+
+/// The countries of a set, in [`country_index`] order.
+///
+/// Order is not load-bearing — O5 takes a MAX over the set and the country-set
+/// loop is symmetric in the flags — and the iterator is the `u8` itself,
+/// cleared one low bit at a time, so nothing allocates.
+fn countries_in(set: CountrySet) -> impl Iterator<Item = Country> {
+    let mut rest = set;
+    std::iter::from_fn(move || {
+        if rest == 0 {
+            return None;
+        }
+        let i = rest.trailing_zeros() as usize;
+        rest &= rest - 1;
+        Some(COUNTRY_BY_INDEX[i])
+    })
+}
+
+/// [`country_index`]'s inverse, as a table so the two cannot drift: the index
+/// is an array position, and this is the array.
+const COUNTRY_BY_INDEX: [Country; 5] = [
+    Country::English,
+    Country::American,
+    Country::French,
+    Country::German,
+    Country::Dutch,
+];
+
+/// One order card's face in O1's HALF-VP units — `2·victory_points +
+/// 2·imported_goods + money` (§3.2's O1 card).
+///
+/// The doubling is what keeps the two amortized terminal identities integer:
+/// one imported good is one VP, and two Yen are one VP, so the card's value in
+/// half-VP is a sum of whole numbers rather than a rounded one. **Icon faces
+/// are deliberately absent** — they are O6's, in ICON units, and §3.1's owner
+/// ruling is that they are never VP-mapped.
+fn half_vp_face(card: &OrderCard) -> i64 {
+    i64::from(
+        2 * u32::from(card.rewards.victory_points)
+            + 2 * u32::from(card.rewards.imported_goods)
+            + u32::from(card.rewards.money),
+    )
+}
+
+/// Every order card the port displays, both boards. Allocation-free: an
+/// `Option<PortBoard>` iterates as at most one element.
+fn port_offers(view: &PlayerView) -> impl Iterator<Item = OrderCardId> + '_ {
+    view.port_state
+        .port_a
+        .slots
+        .iter()
+        .flatten()
+        .copied()
+        .chain(view.port_state.port_b.iter().flat_map(|b| b.slots.iter().flatten().copied()))
+}
+
+/// Every technology card the labs display, both boards. Same shape, same
+/// reason.
+fn open_lab_techs(view: &PlayerView) -> impl Iterator<Item = TechCardId> + '_ {
+    view.lab_state
+        .lab_a
+        .slots
+        .iter()
+        .flatten()
+        .copied()
+        .chain(view.lab_state.lab_b.iter().flat_map(|b| b.slots.iter().flatten().copied()))
+}
+
 /// The PUBLIC board and seat context V4 spec §3.2's view-context features read,
 /// derived once per [`ScoreStructure::derive`] and indexed by `AreaId` or by
 /// seat number.
@@ -1290,6 +1393,36 @@ pub struct ViewContext {
     /// the President is in hand. Read across seats: an opponent's President
     /// bars S4's re-entry targets and S7's counted areas.
     pub president: [AreaSet; MAX_SEATS],
+    /// Every order card THIS view can point at: the completed piles of all
+    /// seats, the Known entries of all hands, the face-up port offers, and the
+    /// viewer's own starting order.
+    ///
+    /// Its COMPLEMENT within the printed registry is O1's unseen pool — the
+    /// deck, the boxed setup discards, and every opponent's still-masked
+    /// starting order, which is exactly the population a masked slot is drawn
+    /// from. The viewer's own `starting_order` term is redundant on every view
+    /// `observe` can produce (a kept card sits in the hand until it is
+    /// fulfilled and in `completed_orders` after); §3.2's O1 card names it for
+    /// the live-tracking case where a seat's own deal was recorded before its
+    /// hand was reconciled, and the audit cell against
+    /// `PlayerView::unseen_orders` is what keeps the redundancy true.
+    pub located_orders: OrderSet,
+    /// How many printed order cards [`Self::located_orders`] does NOT account
+    /// for — the unseen pool's size.
+    pub unseen_orders: u32,
+    /// The summed [`half_vp_face`] of that pool. With the count above it is
+    /// everything O1 needs from the pool, which is why the pool is two
+    /// accumulators rather than a list.
+    pub unseen_order_halfvp: i64,
+    /// Per seat: the countries that seat could still ADD an icon of — O5's
+    /// attainable set. The seat's KNOWN held orders, the face-up port offers,
+    /// and the open lab titles the seat does not already own by EFFECT
+    /// equality.
+    ///
+    /// Per SEAT rather than per table because the lab clause is: the rulebook
+    /// lets each player own one card of a name, so the same open slot is a
+    /// source for one seat and not for another.
+    pub attainable_countries: [CountrySet; MAX_SEATS],
 }
 
 impl ViewContext {
@@ -1304,6 +1437,10 @@ impl ViewContext {
         free_adjacency: [0; MAX_AREAS],
         occupied: [0; MAX_SEATS],
         president: [0; MAX_SEATS],
+        located_orders: 0,
+        unseen_orders: 0,
+        unseen_order_halfvp: 0,
+        attainable_countries: [0; MAX_SEATS],
     };
 
     /// The areas `area` reaches across a FREE edge (see
@@ -1348,6 +1485,33 @@ impl ViewContext {
     /// it.
     pub fn reentry_targets(&self, seat: usize) -> AreaSet {
         self.occupied_placeable(seat) & !self.opponent_presidents(seat)
+    }
+
+    /// The FLOOR of the unseen pool's mean half-VP face — what O1 pays for an
+    /// opponent's masked `HiddenStartingOrder` slot, and 0 on an empty pool.
+    ///
+    /// **p-INDEPENDENT** (§5.2 family 5(a)'s registered cross-seat read): the
+    /// pool is a property of the table, so every masked slot at a view reads
+    /// this one number whichever seat's row is being valued.
+    ///
+    /// The floor rather than the mean because the feature axis is integer, and
+    /// the estimator's two registered biases pull opposite ways anyway: a kept
+    /// starting order is selection-biased UP out of two dealt cards, and the
+    /// boxed twin biases the pool DOWN.
+    pub fn unseen_order_floor(&self) -> i64 {
+        if self.unseen_orders == 0 {
+            return 0;
+        }
+        self.unseen_order_halfvp / i64::from(self.unseen_orders)
+    }
+
+    /// The countries `seat` could still add an icon of — O5's summation
+    /// domain; the empty set for a seat outside the printed range.
+    pub fn attainable(&self, seat: usize) -> CountrySet {
+        if seat >= MAX_SEATS {
+            return 0;
+        }
+        self.attainable_countries[seat]
     }
 }
 
@@ -1470,8 +1634,67 @@ impl ScoreStructure {
             }
         }
 
+        // V4 §3.2's ORDER-CARD context, also before the seat loop: O1's pool is
+        // the complement of a set every seat contributes to, so it has to be
+        // complete before any row can be valued against it. Port offers are
+        // walked once here because they feed BOTH the located set and the
+        // seat-independent half of O5's attainable sources.
+        let mut offered_countries: CountrySet = 0;
+        for id in port_offers(view) {
+            s.context.located_orders |= order_bit(id);
+            if let Some(card) = rules.orders.get(id) {
+                offered_countries |= country_bit(card.country);
+            }
+        }
+        for p in &view.players {
+            for card in &p.hand {
+                if let HandCard::Known(id) = card {
+                    s.context.located_orders |= order_bit(*id);
+                }
+            }
+            for id in &p.completed_orders {
+                s.context.located_orders |= order_bit(*id);
+            }
+            if let Some(id) = p.starting_order {
+                s.context.located_orders |= order_bit(id);
+            }
+        }
+        // ONE pass over the registry, testing membership rather than looking
+        // each located card up again: the accumulators are the pool's, so the
+        // complement is taken here and never materialized.
+        for card in rules.orders.iter() {
+            if s.context.located_orders & order_bit(card.id) == 0 {
+                s.context.unseen_orders += 1;
+                s.context.unseen_order_halfvp += half_vp_face(card);
+            }
+        }
+
         for player in &view.players {
             let Some(i) = seat_index(player) else { continue };
+            // O5's attainable sources: the offers every seat shares, this
+            // seat's KNOWN hand, and the open lab titles it does not own.
+            let mut attainable = offered_countries;
+            for card in &player.hand {
+                if let HandCard::Known(id) = card {
+                    if let Some(order) = rules.orders.get(*id) {
+                        attainable |= country_bit(order.country);
+                    }
+                }
+            }
+            for id in open_lab_techs(view) {
+                let Some(tech) = rules.techs.get(id) else { continue };
+                // EFFECT equality IS the ownership-by-title test the engine
+                // applies (`actions/cards.rs:268-270`): effects are 1:1 with
+                // printed names, and ten of the twenty titles circulate as two
+                // physical copies precisely so two seats can each hold one.
+                let owns_title = player.technologies.iter().any(|owned| {
+                    rules.techs.get(*owned).is_some_and(|t| t.effect == tech.effect)
+                });
+                if !owns_title {
+                    attainable |= country_bit(tech.country);
+                }
+            }
+            s.context.attainable_countries[i] = attainable;
             s.seats = s.seats.max(i + 1);
             for (area, count) in &player.assistants.on_board {
                 if *count >= 1 {
@@ -1592,21 +1815,13 @@ fn country_index(country: Country) -> usize {
     }
 }
 
-/// The country-set end bonus: 2/3/4/5 DISTINCT countries in one set score
-/// 2/4/8/12 VP, and a player forms as many sets as the icons allow.
+/// The country icons a seat's two FACE-UP piles carry, as a five-wide count
+/// array indexed by [`country_index`].
 ///
-/// Icon sources are the two face-up piles — completed orders and owned
-/// technologies. The matching is the greedy one the rules describe and the
-/// engine implements: repeatedly take one icon of every country still
-/// available, score that set's size, and stop when fewer than two countries
-/// remain. Greedy is not a heuristic here — taking one of each available
-/// country is simultaneously the largest set formable and the one that leaves
-/// the most behind, so the loop is order-independent and the array's country
-/// order cannot matter. Icons do NOT inflate a set: four English icons are one
-/// English country, four times over across four sets.
-///
-/// Termination: every iteration decrements at least two counters.
-fn country_set_bonus(player: &VisiblePlayer, rules: &Rules) -> i64 {
+/// Completed orders and owned technologies, and nothing else — hand cards are
+/// commitments, not icons. Public information on both counts, which is why the
+/// incumbent country bonus and O5's marginal can both be read from a view.
+fn country_icons(player: &VisiblePlayer, rules: &Rules) -> [u8; 5] {
     let mut icons = [0u8; 5];
     for id in &player.completed_orders {
         if let Some(card) = rules.orders.get(*id) {
@@ -1620,7 +1835,34 @@ fn country_set_bonus(player: &VisiblePlayer, rules: &Rules) -> i64 {
             icons[i] = icons[i].saturating_add(1);
         }
     }
+    icons
+}
 
+/// The country-set end bonus over an icon multiset: 2/3/4/5 DISTINCT countries
+/// in one set score 2/4/8/12 VP, and a player forms as many sets as the icons
+/// allow.
+///
+/// # ONE derivation (§13's refactor)
+///
+/// This is the CORE lifted out of [`country_set_bonus`], and it is `pub`
+/// because O5 `FlagIconMarginal` is defined as a STEP of this function —
+/// `set_bonus(icons + 1_c) − set_bonus(icons)`. A marginal computed against a
+/// second copy of the ladder would be a second place for the 2/4/8/12 curve to
+/// live; §3.2 says one, so there is one, and the incumbent feature and the
+/// candidate marginal are the same arithmetic by construction.
+///
+/// The matching is the greedy one the rules describe and the engine implements:
+/// repeatedly take one icon of every country still available, score that set's
+/// size, and stop when fewer than two countries remain. Greedy is not a
+/// heuristic here — taking one of each available country is simultaneously the
+/// largest set formable and the one that leaves the most behind, so the loop is
+/// order-independent and the array's country order cannot matter. Icons do NOT
+/// inflate a set: four English icons are one English country, four times over
+/// across four sets.
+///
+/// Termination: every iteration decrements at least two counters.
+pub fn set_bonus(icons: [u8; 5]) -> i64 {
+    let mut icons = icons;
     let mut total = 0i64;
     loop {
         let distinct = icons.iter().filter(|n| **n > 0).count();
@@ -1639,6 +1881,11 @@ fn country_set_bonus(player: &VisiblePlayer, rules: &Rules) -> i64 {
         }
     }
     total
+}
+
+/// The incumbent `CountryBonusNow`: [`set_bonus`] over the seat's own icons.
+fn country_set_bonus(player: &VisiblePlayer, rules: &Rules) -> i64 {
+    set_bonus(country_icons(player, rules))
 }
 
 /// The technology end bonus: 10 VP to the largest total industry value, 5 to
@@ -2286,6 +2533,240 @@ impl ScoreStructure {
                 reached & self.context.placeable & !self.context.opponent_presidents(seat)
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// V4 §3.2 — Group E: economic stocks and the order pipeline
+// ---------------------------------------------------------------------------
+
+/// The eight Group-E candidate features of V4 spec §3.2 — the three
+/// E-resource cards (E1, E2, E3) and the five E-order cards (O1, O2, O3, O5,
+/// O6) — one method per formula card.
+///
+/// # Shape, and how it differs from Group S's
+///
+/// Each is a per-seat `-> i64` over PUBLIC row state, in the same
+/// "derive once, answer per seat" split. **Not one of them takes a
+/// `&PlayerView`**: this group needs no board, no station token and no track.
+/// What the five order cards take instead is `&Rules` — the printed order and
+/// technology registries, which are on the table in the most literal sense.
+/// Three take neither, being folds of the row's own integers.
+///
+/// The signature is the honesty claim, and §7's audit cell reads it off the
+/// declaration rather than inferring it: a helper here can see a seat's money,
+/// its goods, its face-up piles and the Known entries of its hand, and it can
+/// see the manifest. It cannot see a masked card, because no argument carries
+/// one.
+///
+/// # The two context terms
+///
+/// O1 and O5 ride [`ScoreStructure::derive`]'s order-card pass rather than
+/// scanning for themselves, for the reason the board masks do: O1's pool is a
+/// complement over the WHOLE table (every seat's piles and hands, and the port
+/// display), and O5's attainable set folds the same offers for every seat. One
+/// pass, two accumulators and a five-bit mask per seat; see [`ViewContext`].
+///
+/// # What Group E may read (§7's cross-group cleanliness assert)
+///
+/// Money, goods, tokens in hand, and the order pipeline. **No power, no
+/// presence, no position, no board** — those are Group S's, and §3.2 registers
+/// the interaction cell (Group X) as the ONLY group that reads both sides.
+/// `tests/eval_core.rs` scans these bodies for the forbidden fields.
+///
+/// # The registered epistemic asymmetry
+///
+/// O1 is the one card here that prices something it cannot see. A seat's own
+/// cards are valued at their true face; an opponent's masked slot is valued at
+/// the unseen pool's floor. That is an ASYMMETRY, not an inconsistency, and it
+/// is exactly what makes O1 a function of the view: substituting the hidden
+/// card changes the holder's own reading and leaves every other seat's
+/// untouched.
+impl ScoreStructure {
+    /// **E1 `MoneyStock`** — the purse, linear. Units are Yen.
+    ///
+    /// Every spend class (placement and movement fees, the church 2¥ leg, lab
+    /// supplements at 2¥ per industry value, Employment-Agency token costs, the
+    /// port's second card) debits this at the instant it is paid; nonlinear
+    /// shapes — deficit pricing, timing — are a deferred layer, not a term.
+    pub fn money_stock(&self, player: &VisiblePlayer) -> i64 {
+        i64::from(player.money)
+    }
+
+    /// **E2 `TradeGoodsStock`** — `copper + silk + tea + seafood`, linear.
+    /// Units are goods.
+    ///
+    /// Boundary: a fulfillment consumes exactly the printed requirements before
+    /// the rewards land, and a church donation consumes singles. The
+    /// after ≻ before ordering at those instants is a weight-side question
+    /// (§5.2 families 6(a)/6(d)), not this term's.
+    pub fn trade_goods_stock(&self, player: &VisiblePlayer) -> i64 {
+        i64::from(player.copper)
+            + i64::from(player.silk)
+            + i64::from(player.tea)
+            + i64::from(player.seafood)
+    }
+
+    /// **E3 `BuildingTokensReady`** — shophouse plus trading-house tokens IN
+    /// HAND: retrieved from the warehouse and deployment-ready. Units are
+    /// tokens.
+    ///
+    /// **The partition is the whole point** (§3.2): warehouse stock is S6's
+    /// visible supply, hand tokens are E3's, and BUILT tokens are the
+    /// incumbents' (`ShophousesBuilt` / `TradingHousesBuilt`). Without this
+    /// middle term an Employment-Agency retrieval would trade S6-visible supply
+    /// for nothing at all until the build lands — a boundary collapse, which is
+    /// why the term is owner-ruled IN. The take that creates a token pays its
+    /// printed cost, and E1 feels that.
+    pub fn building_tokens_ready(&self, player: &VisiblePlayer) -> i64 {
+        i64::from(player.shophouses.in_hand) + i64::from(player.trading_houses.in_hand)
+    }
+
+    /// **O1 `HeldOrderValue`** — the seat's hand in HALF-VP units: a Known card
+    /// at `2·victory_points + 2·imported_goods + money`, an opponent's masked
+    /// `HiddenStartingOrder` slot at the unseen pool's floor.
+    ///
+    /// **Icon faces are NOT priced here** — they are O6's, in ICON units, never
+    /// VP-mapped (§3.1's owner ruling). What O1 carries is the resource-face
+    /// residue: the printed VP star and the two amortized terminal identities.
+    ///
+    /// The hand is iterated WITHOUT assuming its length. The rules cap it at
+    /// three; a live-tracking view can carry FOUR, because the masked slot is
+    /// SYNTHESIZED ahead of the publicly-witnessed Port takes rather than
+    /// replacing one of them.
+    ///
+    /// Partition: the commitment burden an unfulfilled order carries stays with
+    /// the incumbent `HandSize`, which is negative and growing. O1 prices what
+    /// the cards are worth; `HandSize` prices what holding them costs.
+    pub fn held_order_value(&self, player: &VisiblePlayer, rules: &Rules) -> i64 {
+        let floor = self.context.unseen_order_floor();
+        player
+            .hand
+            .iter()
+            .map(|card| match card {
+                HandCard::Known(id) => rules.orders.get(*id).map_or(0, half_vp_face),
+                HandCard::HiddenStartingOrder => floor,
+            })
+            .sum()
+    }
+
+    /// **O2 `OrderMatchedGoods`** — `Σ_g min(stock_g, total_req_g)` over the
+    /// seat's KNOWN held orders. Units are matched goods.
+    ///
+    /// **The cap is per good and SUMMED across the hand**, which is what makes
+    /// `O2 ≤ E2` an identity rather than a coincidence: each good contributes at
+    /// most its own stock. A per-CARD cap would double-count a good two cards
+    /// both need, and would break the bound.
+    ///
+    /// Masked slots contribute 0 — reading a requirement off a card the seat
+    /// cannot see is exactly the honesty §3.1 excludes. Boundary: a fulfillment
+    /// retires the card's contribution (§5.2 family 6(a)).
+    pub fn order_matched_goods(&self, player: &VisiblePlayer, rules: &Rules) -> i64 {
+        let mut required = [0u32; 4];
+        for card in &player.hand {
+            let HandCard::Known(id) = card else { continue };
+            let Some(order) = rules.orders.get(*id) else { continue };
+            required[0] += u32::from(order.requirements.copper);
+            required[1] += u32::from(order.requirements.silk);
+            required[2] += u32::from(order.requirements.tea);
+            required[3] += u32::from(order.requirements.seafood);
+        }
+        let stock = [player.copper, player.silk, player.tea, player.seafood];
+        stock.iter().zip(required.iter()).map(|(s, r)| i64::from(*s.min(r))).sum()
+    }
+
+    /// **O3 `ExecutableOrders`** — how many KNOWN held orders the seat could
+    /// fulfil right now, each judged INDEPENDENTLY against the full stock.
+    ///
+    /// Independent rather than jointly allocated because the rules are: both
+    /// Additional Action phases can fulfil, uncapped, and this is a static read
+    /// of executability rather than of a sequence. Sequencing is the search's.
+    ///
+    /// **Imports and money never substitute for a trade good.** Masked slots
+    /// are not counted.
+    pub fn executable_orders(&self, player: &VisiblePlayer, rules: &Rules) -> i64 {
+        player
+            .hand
+            .iter()
+            .filter(|card| {
+                let HandCard::Known(id) = card else { return false };
+                let Some(order) = rules.orders.get(*id) else { return false };
+                let r = order.requirements;
+                player.copper >= u32::from(r.copper)
+                    && player.silk >= u32::from(r.silk)
+                    && player.tea >= u32::from(r.tea)
+                    && player.seafood >= u32::from(r.seafood)
+            })
+            .count() as i64
+    }
+
+    /// **O5 `FlagIconMarginal`** — the best [`set_bonus`] STEP the seat could
+    /// still buy: the maximum over its ATTAINABLE countries
+    /// ([`ViewContext::attainable`]) of `set_bonus(icons + 1_c) −
+    /// set_bonus(icons)`, where `icons` is the multiset over
+    /// `completed_orders + technologies`. Units are VP.
+    ///
+    /// **0 on an empty attainable set** — a real zero, and the reason the
+    /// computation is written over an `Option` rather than seeded at 0: the
+    /// card says "max over the set, 0 when the set is empty", and those are two
+    /// statements. (They happen to coincide, because adding an icon can never
+    /// lower the bonus; writing the maximum exactly means a future curve where
+    /// they did not coincide would be read correctly rather than clamped.)
+    ///
+    /// **No power or affordability gating** — that is Group X's half of the
+    /// attribution split. This prices the STEP; whether the seat can reach and
+    /// pay for the card is X1's and X2's question.
+    ///
+    /// Boundary: realizing the icon moves the step into `CountryBonusNow`, and
+    /// the marginal then collapses — the 2/4/8/12 curve's own curvature, not the
+    /// source disappearing.
+    pub fn flag_icon_marginal(&self, player: &VisiblePlayer, rules: &Rules) -> i64 {
+        let Some(seat) = seat_index(player) else { return 0 };
+        let icons = country_icons(player, rules);
+        let base = set_bonus(icons);
+        let mut best: Option<i64> = None;
+        for country in countries_in(self.context.attainable(seat)) {
+            let mut with = icons;
+            let i = country_index(country);
+            with[i] = with[i].saturating_add(1);
+            let step = set_bonus(with) - base;
+            best = Some(best.map_or(step, |b: i64| b.max(step)));
+        }
+        best.unwrap_or(0)
+    }
+
+    /// **O6 `HeldOrderIcons`** — the movement and warehouse faces printed on the
+    /// seat's KNOWN held orders, summed. Units are ICONS.
+    ///
+    /// **Never converted to VP**, and that is the owner's ruling with its
+    /// grounds (§3.1): an icon's true value is action COMPRESSION — a
+    /// fulfillment that also moves assistants or pulls tokens out of the
+    /// warehouse can save a whole turn — and compression is sequencing value the
+    /// §3 contract assigns to SEARCH. Within the search's horizon the icons
+    /// price themselves exactly, because a fulfillment queues them as real
+    /// choice-moves. This leaf term prices only the HELD OPTION, in its own
+    /// unit, and the fit sets the tempo weight.
+    ///
+    /// The manifest carries two movement cards and five warehouse cards of
+    /// thirty-six; the any-good face is structurally unreachable from an order.
+    /// Masked slots show no face and contribute 0. Boundary: a fulfillment
+    /// retires the count at the instant the icons' real value is realized
+    /// through the choice queue — no double count, since the realized effects
+    /// land in incumbent-priced stocks and positions.
+    pub fn held_order_icons(&self, player: &VisiblePlayer, rules: &Rules) -> i64 {
+        player
+            .hand
+            .iter()
+            .map(|card| match card {
+                HandCard::Known(id) => rules.orders.get(*id).map_or(0, |order| {
+                    i64::from(
+                        u32::from(order.rewards.movement)
+                            + u32::from(order.rewards.warehouse_tokens),
+                    )
+                }),
+                HandCard::HiddenStartingOrder => 0,
+            })
+            .sum()
     }
 }
 
