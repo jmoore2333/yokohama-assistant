@@ -7184,7 +7184,7 @@ mod tests {
             // Everything but money is byte-identical, which is what makes the
             // pair a pure E1 separator.
             assert_ne!(state_fingerprint(greater), state_fingerprint(lesser));
-            assert_eq!(f.declaration().draws.moves_yen, true);
+            assert!(f.declaration().draws.moves_yen);
             assert_ne!(f.declaration().draws.category_b, AchievementType::Money10);
         }
     }
