@@ -9744,6 +9744,16 @@ mod tests {
             );
         }
         assert_eq!(f.progress_ppm(&rules), PROGRESS_FULL_PPM, "one stage, both sides");
+        // The card moves from a face-up offer into the hand, and BOTH are
+        // located sets for O1's pool — so the opponent's hidden-slot floor is
+        // unchanged and the O1 row is the taken card's own face alone. The
+        // registration says so in prose; this is the byte-level check, on
+        // 4(c)'s own helper.
+        assert_eq!(
+            opponent_slot_floor(before, seat, &rules),
+            opponent_slot_floor(after, seat, &rules),
+            "a take moves a card between two LOCATED sets: the pool cannot move",
+        );
     }
 
     #[test]
@@ -9809,6 +9819,155 @@ mod tests {
                 "§5.2: collateral NONE — O6 is the sole mover and it is a candidate row",
             );
         }
+    }
+
+    /// **THE WHOLE-REGISTRY CONSERVATION SWEEP** — every declared
+    /// `(pair, stage)` at both sides, against the totals no construction may
+    /// move.
+    ///
+    /// # Why this is one cell rather than a clause per pair
+    ///
+    /// [`PairFixture::new`] already runs `check_invariants` on every side, and
+    /// the engine's own invariants cover the 36-order and 30-technology
+    /// conservation totals. This sweep is NOT a second copy of that: it is the
+    /// step-2 re-read's own instrument, graduated into the module so the thing
+    /// the re-read actually did — walk every constructed state and total the
+    /// components — is a property of the crate instead of a run that happened
+    /// once. The re-read swept 106 states and found none broken; this keeps
+    /// that true.
+    ///
+    /// What it adds beyond `check_invariants` is the FIXTURE-side facts: the
+    /// per-seat token totals a hand-written surgery could quietly spend, the
+    /// D1 dummy's two seats (which several constructions write tracks near),
+    /// the board's ten distinct tiles (which every `retype_board_2p` caller
+    /// could permute into a multiset the generator never produces), and the
+    /// declared endpoint. None of those is an engine invariant, and each is a
+    /// way a construction can be wrong while remaining a legal game state.
+    #[test]
+    fn the_whole_registry_conserves_every_component_at_every_declared_endpoint() {
+        let rules = rules();
+        let printed_orders = rules.orders.iter().count();
+        let printed_techs = rules.techs.iter().count();
+        assert_eq!((printed_orders, printed_techs), (36, 30), "the printed registries");
+
+        let mut swept = 0;
+        for pair in REGISTERED.iter() {
+            for stage in pair.stages {
+                let f = built(pair.id, *stage, &rules);
+                assert_eq!(
+                    f.progress_ppm(&rules),
+                    stage.ppm(),
+                    "{} at {}: the declared endpoint",
+                    pair.id,
+                    stage.name(),
+                );
+                for side in [Side::Greater, Side::Lesser] {
+                    let state = f.state(side);
+                    let where_ = || format!("{} at {} ({})", pair.id, stage.name(), side.name());
+                    swept += 1;
+
+                    // The 36 order cards, across all five piles.
+                    let ports: usize = std::iter::once(&state.port_state.port_a)
+                        .chain(state.port_state.port_b.as_ref())
+                        .map(|b| b.slots.iter().flatten().count())
+                        .sum();
+                    let held: usize =
+                        state.players.iter().map(|p| p.order_cards_in_hand.len()).sum();
+                    let done: usize = state.players.iter().map(|p| p.completed_orders.len()).sum();
+                    assert_eq!(
+                        state.order_deck.len() + ports + held + done + state.orders_removed.len(),
+                        printed_orders,
+                        "{}: deck + ports + hands + completed + box",
+                        where_(),
+                    );
+
+                    // The 30 physical technology cards.
+                    let lab_cards: usize = std::iter::once(&state.lab_state.lab_a)
+                        .chain(state.lab_state.lab_b.as_ref())
+                        .map(|b| b.slots.iter().flatten().count())
+                        .sum();
+                    let owned: usize = state.players.iter().map(|p| p.technologies.len()).sum();
+                    assert_eq!(
+                        state.tech_deck.len() + lab_cards + owned,
+                        printed_techs,
+                        "{}: tech deck + laboratories + owners",
+                        where_(),
+                    );
+
+                    // Each seat's printed components. The assistant total
+                    // counts the track and achievement pawns too, which is the
+                    // half a naive hand + warehouse + board sum would miss.
+                    for p in &state.players {
+                        assert_eq!(
+                            p.assistants.total(),
+                            20,
+                            "{}: seat {} assistants (hand + warehouse + board + achievements \
+                             + church + customs)",
+                            where_(),
+                            p.id.0,
+                        );
+                        assert_eq!(
+                            usize::from(p.shophouses.in_hand)
+                                + usize::from(p.shophouses.in_warehouse)
+                                + p.shophouses.total_built(),
+                            8,
+                            "{}: seat {} shophouse tokens",
+                            where_(),
+                            p.id.0,
+                        );
+                        assert_eq!(
+                            usize::from(p.trading_houses.in_hand)
+                                + usize::from(p.trading_houses.in_warehouse)
+                                + p.trading_houses.total_built(),
+                            4,
+                            "{}: seat {} trading-house tokens",
+                            where_(),
+                            p.id.0,
+                        );
+                    }
+
+                    // Finding D1's furniture, on BOTH tracks. It is a real slot
+                    // occupant, so a construction that wrote a track without
+                    // reading it could displace it.
+                    assert_eq!(
+                        state.church_track.slots
+                            [crate::types::ChurchTrack::faith_to_index(7).expect("faith 7")]
+                        .map(|s| s.player),
+                        Some(PlayerId::DUMMY),
+                        "{}: the 2P dummy holds Church faith-7",
+                        where_(),
+                    );
+                    assert_eq!(
+                        state.customs_track.slots
+                            [crate::types::CustomsTrack::space_to_index(4).expect("space 4")]
+                        .map(|s| s.player),
+                        Some(PlayerId::DUMMY),
+                        "{}: the 2P dummy holds Customs space-4",
+                        where_(),
+                    );
+
+                    // Ten areas, ten DISTINCT types — what `retype_board_2p`
+                    // permits and what the generator produces at 2P.
+                    let mut types: Vec<AreaType> =
+                        state.board_layout.areas.values().map(|c| c.area_type).collect();
+                    assert_eq!(types.len(), TWO_PLAYER_AREAS, "{}: board size", where_());
+                    let total = types.len();
+                    types.sort_by_key(|t| format!("{t:?}"));
+                    types.dedup();
+                    assert_eq!(
+                        types.len(),
+                        total,
+                        "{}: a 2P board seats one tile of each type",
+                        where_(),
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            swept, 106,
+            "the re-read's own figure: two sides at every declared (pair, stage) across the \
+             36 registrations",
+        );
     }
 
     // -----------------------------------------------------------------------
