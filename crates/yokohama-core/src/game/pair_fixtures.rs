@@ -3695,51 +3695,74 @@ mod tests {
     }
 
     #[test]
-    fn the_ten_tuples_transcribe_the_specs_carrier_map_stages_and_margins() {
+    fn the_registered_tuples_transcribe_the_specs_carriers_stages_and_margins() {
         // §5.1's carrier map and §5.2's stage and margin columns, restated here
         // as data and checked against the registrations. This is a
         // TRANSCRIPTION pin, and transcription is what the bounded re-read is
         // hunting: a pair silently registered against the wrong carrier would
         // still build, still print, and still solve — as a constraint on a
         // feature it was never designed to bind.
+        //
+        // The carrier column is an OPTION because §5.2 names a carrier for only
+        // some pairs. Family 6 registers the C2 CONTROLS — §5.1's carrier map
+        // assigns them nothing, and the field's own doc reserves `None` for
+        // exactly that ("the rows that carry no production feature at all") —
+        // and family 7's row is a coverage registration §5.2 itself calls
+        // implied by 3(b). Where §5.2 DOES name one (2(a)'s E2, 2(b)'s
+        // warehouse weight, 2(d)'s E3), it is transcribed here.
         use CandidateFeature::*;
-        let expected: &[(&str, CandidateFeature, &[StageEndpoint], MarginClass)] = &[
-            ("1(a)", ProductionAccess, &[StageEndpoint::Early, StageEndpoint::Late], MarginClass::Margined {
+        let candidate = |f: CandidateFeature| Some(FeatureId::Candidate(f));
+        let expected: &[(&str, Option<FeatureId>, &[StageEndpoint], MarginClass)] = &[
+            ("1(a)", candidate(ProductionAccess), &[StageEndpoint::Early, StageEndpoint::Late], MarginClass::Margined {
                 early: Some(1),
                 late: Some(14),
                 carrier: FeatureId::Candidate(ProductionAccess),
             }),
-            ("1(b)", AssistantAreasDistinct, &[StageEndpoint::Early, StageEndpoint::Late], MarginClass::DirectionOnly),
-            ("1(c)", PresidentLocalAccess, &[StageEndpoint::Early, StageEndpoint::Late], MarginClass::DirectionOnly),
-            ("1(d)", TrackAccess, &[StageEndpoint::Early, StageEndpoint::Late], MarginClass::DirectionOnly),
-            ("1(e)", PresidentReachableAreas, &[StageEndpoint::Early, StageEndpoint::Late], MarginClass::DirectionOnly),
-            ("11(a)", ProductionAccess, &[StageEndpoint::Early, StageEndpoint::Late], MarginClass::DirectionOnly),
-            ("11(b)", BankAccess, &[StageEndpoint::Early, StageEndpoint::Late], MarginClass::DirectionOnly),
-            ("11(c)", EmploymentAgencyAccess, &[StageEndpoint::Early, StageEndpoint::Late], MarginClass::DirectionOnly),
-            ("11(d)", LabTakeable, &[StageEndpoint::Early, StageEndpoint::Late], MarginClass::DirectionOnly),
-            ("11(e)", PortTakeable, &[StageEndpoint::Late], MarginClass::DirectionOnly),
+            ("1(b)", candidate(AssistantAreasDistinct), &[StageEndpoint::Early, StageEndpoint::Late], MarginClass::DirectionOnly),
+            ("1(c)", candidate(PresidentLocalAccess), &[StageEndpoint::Early, StageEndpoint::Late], MarginClass::DirectionOnly),
+            ("1(d)", candidate(TrackAccess), &[StageEndpoint::Early, StageEndpoint::Late], MarginClass::DirectionOnly),
+            ("1(e)", candidate(PresidentReachableAreas), &[StageEndpoint::Early, StageEndpoint::Late], MarginClass::DirectionOnly),
+            ("2(a)", candidate(TradeGoodsStock), &[StageEndpoint::Late], MarginClass::Margined {
+                early: None,
+                late: Some(27),
+                carrier: FeatureId::Candidate(TradeGoodsStock),
+            }),
+            ("2(b)", Some(FeatureId::Incumbent(Feature::AssistantsInWarehouse)), &[StageEndpoint::Early], MarginClass::DirectionOnly),
+            ("2(d)", candidate(BuildingTokensReady), &[StageEndpoint::Early], MarginClass::DirectionOnly),
+            ("2(c)", None, &[StageEndpoint::Early], MarginClass::Weak),
+            ("6(a)", None, &[StageEndpoint::Early, StageEndpoint::Late], MarginClass::DirectionOnly),
+            ("6(b)", None, &[StageEndpoint::Early, StageEndpoint::Late], MarginClass::DirectionOnly),
+            ("6(c)", None, &[StageEndpoint::Early, StageEndpoint::Late], MarginClass::DirectionOnly),
+            ("6(d-church)", None, &[StageEndpoint::Late], MarginClass::DirectionOnly),
+            ("6(d-customs)", None, &[StageEndpoint::Late], MarginClass::DirectionOnly),
+            ("7", None, &[StageEndpoint::Late], MarginClass::Weak),
+            ("11(a)", candidate(ProductionAccess), &[StageEndpoint::Early, StageEndpoint::Late], MarginClass::DirectionOnly),
+            ("11(b)", candidate(BankAccess), &[StageEndpoint::Early, StageEndpoint::Late], MarginClass::DirectionOnly),
+            ("11(c)", candidate(EmploymentAgencyAccess), &[StageEndpoint::Early, StageEndpoint::Late], MarginClass::DirectionOnly),
+            ("11(d)", candidate(LabTakeable), &[StageEndpoint::Early, StageEndpoint::Late], MarginClass::DirectionOnly),
+            ("11(e)", candidate(PortTakeable), &[StageEndpoint::Late], MarginClass::DirectionOnly),
         ];
         assert_eq!(expected.len(), REGISTERED_PAIR_COUNT);
         for (id, carrier, stages, margin) in expected {
             let d = registered(id).unwrap_or_else(|| panic!("{id} is registered"));
-            assert_eq!(
-                d.carrier,
-                Some(FeatureId::Candidate(*carrier)),
-                "{id}: §5.1's carrier map names {}",
-                carrier.label(),
-            );
+            assert_eq!(d.carrier, *carrier, "{id}: §5.2's named carrier");
             assert_eq!(d.stages, *stages, "{id}: §5.2's stage column");
             assert_eq!(d.margin, *margin, "{id}: §5.2's margin class");
-            assert!(
-                d.expected_nonzero.contains(&FeatureId::Candidate(*carrier)),
-                "{id}: a carrier that is not expected to move is not a carrier",
-            );
+            if let Some(row) = carrier {
+                assert!(
+                    d.expected_nonzero.contains(row),
+                    "{id}: a carrier that is not expected to move is not a carrier",
+                );
+            }
         }
-        // 1(a) is the only MARGINED pair here, and §5.1's early floor makes its
-        // early row identical in force to DIRECTION-ONLY — the reason §5.4
-        // keeps an early-stage rescale diagnostic.
+        // §5.1's early floor makes 1(a)'s early row identical in force to
+        // DIRECTION-ONLY — the reason §5.4 keeps an early-stage rescale
+        // diagnostic. 2(a) is registered LATE-only and so never meets it.
         assert_eq!(PAIR_1A.margin.margin_at(StageEndpoint::Early), Some(1));
         assert_eq!(PAIR_1A.margin.margin_at(StageEndpoint::Late), Some(14));
+        let two_a = registered("2(a)").expect("2(a) is registered");
+        assert_eq!(two_a.margin.margin_at(StageEndpoint::Early), None);
+        assert_eq!(two_a.margin.margin_at(StageEndpoint::Late), Some(27));
     }
 
     #[test]
@@ -4662,15 +4685,16 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn the_registry_holds_families_one_and_eleven_and_is_pinned_to_the_spec_target() {
+    fn the_registry_holds_the_landed_families_and_is_pinned_to_the_spec_target() {
         assert_eq!(
             REGISTERED.len(),
             REGISTERED_PAIR_COUNT,
             "the array's length IS the count pin",
         );
         assert_eq!(
-            REGISTERED_PAIR_COUNT, 10,
-            "S2-T4 registers §5.2's family 1 (5) and family 11 (5); the remaining \
+            REGISTERED_PAIR_COUNT, 20,
+            "S2-T4 registered §5.2's family 1 (5) and family 11 (5); S2-T5 adds family 2 \
+             (3 gates + 1 diagnostic), family 6 (5) and family 7 (1). The remaining \
              families land in later tasks, and this number is what they bump toward \
              {REGISTERED_PAIR_TARGET}",
         );
@@ -4682,15 +4706,37 @@ mod tests {
         assert_eq!(
             ids,
             vec![
-                "1(a)", "1(b)", "1(c)", "1(d)", "1(e)", "11(a)", "11(b)", "11(c)", "11(d)",
+                "1(a)",
+                "1(b)",
+                "1(c)",
+                "1(d)",
+                "1(e)",
+                "2(a)",
+                "2(b)",
+                "2(d)",
+                "2(c)",
+                "6(a)",
+                "6(b)",
+                "6(c)",
+                "6(d-church)",
+                "6(d-customs)",
+                "7",
+                "11(a)",
+                "11(b)",
+                "11(c)",
+                "11(d)",
                 "11(e)",
             ],
-            "§5.2's own registration order, family 1 then family 11",
+            "§5.2's own registration order — including family 2's, which prints its three \
+             gates (a)/(b)/(d) before the (c) diagnostic",
         );
         for pair in REGISTERED.iter() {
-            assert_eq!(pair.role, PairRole::Constraint, "{} is a gate pair", pair.id);
+            // 2(c) is §5.1's "RECORDED DIAGNOSTIC, never a gate"; everything
+            // else registered so far is a constraint row.
+            let expected = if pair.id == "2(c)" { PairRole::Diagnostic } else { PairRole::Constraint };
+            assert_eq!(pair.role, expected, "{} has the wrong pair→gate role", pair.id);
             assert!(
-                pair.family == 1 || pair.family == 11,
+                matches!(pair.family, 1 | 2 | 6 | 7 | 11),
                 "{} claims family {}",
                 pair.id,
                 pair.family
