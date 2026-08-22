@@ -10821,6 +10821,172 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // THE CONSTRUCTION HELPERS' OWN REFUSALS
+    //
+    // Seven guard arms that no positive fixture reaches, because a positive
+    // fixture is exactly the case where the guard does not fire. Each of them
+    // exists to stop a construction from silently becoming a DIFFERENT
+    // construction — a queue answered with whatever happened to be at its head,
+    // a rider table that grew, a card conjured into two places at once — so a
+    // guard nothing exercises is a guard nobody knows still works. The S2-T5
+    // review asked for these; S2-T7 lands them together with the two arms its
+    // own devices added.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn the_choice_resolver_refuses_a_queue_head_the_registration_does_not_name() {
+        let rules = rules();
+        let mut state = keep_game_2p(SEED, &rules).expect("setup");
+        // An EMPTY queue is the sharpest form of "not the head the
+        // registration names": 6(d-customs) answers a `CustomsSpace`, and a
+        // fixture that answered nothing at all would apply its resolution to
+        // whatever move the phase happened to offer.
+        let err = resolve_registered_choice(
+            &mut state,
+            PendingChoice::CustomsSpace { cost: 1 },
+            Move::ChooseCustomsSpace { space: 1 },
+            &rules,
+        )
+        .expect_err("the queue is empty");
+        let text = format!("{err}");
+        assert!(text.contains("registered choice resolution"), "got: {text}");
+        assert!(text.contains("CustomsSpace"), "the refusal names what was expected: {text}");
+    }
+
+    #[test]
+    fn the_rider_decliner_refuses_a_count_the_action_did_not_queue() {
+        let rules = rules();
+        let mut state = keep_game_2p(SEED, &rules).expect("setup");
+        // 6(d-church) registers ONE rider and 6(d-customs) TWO. The count is a
+        // registered parameter, so a space whose rider table changed must
+        // refuse rather than be declined away silently.
+        let err = decline_the_registered_riders(&mut state, CHURCH_RIDERS_DECLINED, &rules)
+            .expect_err("nothing was queued to decline");
+        let text = format!("{err}");
+        assert!(text.contains("declined choice riders"), "got: {text}");
+        assert!(text.contains("queued 0"), "the refusal names both counts: {text}");
+    }
+
+    #[test]
+    fn the_rider_decliner_refuses_a_head_with_no_decline_arm() {
+        let rules = rules();
+        let mut state = keep_game_2p(SEED, &rules).expect("setup");
+        // `ChurchSpace` carries no Decline at all (`types/choices.rs`), so a
+        // pair whose action queues one registers its answer through
+        // `resolve_registered_choice` instead. Meeting one here must be a typed
+        // refusal NAMING it rather than a silent wrong resolution.
+        state.pending_choices.push(PendingChoice::ChurchSpace { total_faith: 4 });
+        let err = decline_every_queued_choice(&mut state, &rules)
+            .expect_err("the head carries no Decline arm");
+        let text = format!("{err}");
+        assert!(text.contains("declined choice riders"), "got: {text}");
+        assert!(text.contains("ChurchSpace"), "the refusal names the head it met: {text}");
+    }
+
+    #[test]
+    fn a_box_sourced_card_refuses_a_seat_that_already_holds_it() {
+        let rules = rules();
+        let mut state = keep_game_2p(SEED, &rules).expect("setup");
+        let subject = state.current_player;
+        let dealt = state.player(subject).starting_order.expect("a dealt identity");
+        // The collision S2-T5 actually hit: 6(c)'s English slot moved from card
+        // 3 to card 32 because card 3 is the OPPONENT's deal. Both piles refuse
+        // for the same reason and through the same sourcing helper, so both
+        // arms are exercised.
+        for (label, err) in [
+            (
+                "completed",
+                complete_order_from_the_box(&mut state, subject, dealt)
+                    .expect_err("the card is in a hand"),
+            ),
+            (
+                "held",
+                hold_order_from_the_box(&mut state, subject, dealt)
+                    .expect_err("the card is in a hand"),
+            ),
+        ] {
+            let text = format!("{err}");
+            assert!(text.contains("already held or completed"), "{label}: {text}");
+            assert!(text.contains(&format!("order {}", dealt.0)), "{label} names the card: {text}");
+        }
+        assert!(
+            matches!(
+                complete_order_from_the_box(&mut state, subject, dealt),
+                Err(FixtureError::Declaration { clause: "registered completed order", .. }),
+            ),
+            "each caller keeps its own clause through the shared sourcing helper",
+        );
+        assert!(matches!(
+            hold_order_from_the_box(&mut state, subject, dealt),
+            Err(FixtureError::Declaration { clause: "registered held order", .. }),
+        ));
+    }
+
+    #[test]
+    fn the_starting_order_swap_refuses_a_card_another_seat_holds() {
+        let rules = rules();
+        let mut state = keep_game_2p(SEED, &rules).expect("setup");
+        let subject = state.current_player;
+        let other = other_seat_2p(&state, subject).expect("a rival");
+        let theirs = state.player(other).starting_order.expect("a dealt identity");
+        let err = give_starting_order(&mut state, subject, theirs)
+            .expect_err("the card is in the other seat's hand");
+        let text = format!("{err}");
+        assert!(text.contains("registered order card"), "got: {text}");
+        assert!(text.contains(&format!("seat {}", other.0)), "the refusal names the seat: {text}");
+        // And a card standing in NO pile is the other refusal: the swap has
+        // nowhere to send the card it displaces, so it must say so rather than
+        // deal a card that is already somewhere else.
+        let mut emptied = state.clone();
+        let boxed = emptied.orders_removed.pop().expect("a boxed card");
+        assert_eq!(
+            give_starting_order(&mut emptied, subject, boxed),
+            Err(FixtureError::OutOfStock("the registered starting order card")),
+        );
+    }
+
+    #[test]
+    fn the_opponent_side_fulfillment_refuses_a_card_that_queues_a_choice() {
+        let rules = rules();
+        let mut state = keep_game_2p(SEED, &rules).expect("setup");
+        let subject = state.current_player;
+        let other = other_seat_2p(&state, subject).expect("a rival");
+        // 4(g) rests on the opponent's dealt card being ICON-FREE, so the
+        // fulfillment leaves an empty queue and the hand-off shape survives.
+        // Card 4 carries a warehouse icon, and the guard is what stops a fixture
+        // built on it from quietly carrying a pending choice into a HAND-OFF
+        // view class.
+        give_starting_order(&mut state, other, FIXTURE_FULFILLED_CARD).expect("the swap");
+        let err = fulfill_the_opponents_starting_order(&state, other, &rules)
+            .expect_err("the card's warehouse icon queues a choice");
+        let text = format!("{err}");
+        assert!(text.contains("opponent-side fulfillment"), "got: {text}");
+        assert!(text.contains("WarehouseTake"), "the refusal names what was queued: {text}");
+    }
+
+    #[test]
+    fn the_opponent_side_fulfillment_restores_the_mover_and_leaves_the_seat_empty_handed() {
+        let rules = rules();
+        let state = keep_game_2p(SEED, &rules).expect("setup");
+        let subject = state.current_player;
+        let other = other_seat_2p(&state, subject).expect("a rival");
+        let dealt = state.player(other).starting_order.expect("a dealt identity");
+        let after = fulfill_the_opponents_starting_order(&state, other, &rules).expect("icon-free");
+
+        assert_eq!(after.current_player, subject, "the mover comes back — the turn passed");
+        assert_eq!(after.turn_phase, TurnPhase::AdditionalActionFirst, "the phase never advanced");
+        assert!(after.pending_choices.is_empty());
+        assert!(after.player(other).order_cards_in_hand.is_empty());
+        assert_eq!(after.player(other).completed_orders, vec![dealt]);
+        assert_eq!(
+            after.player(subject).order_cards_in_hand,
+            state.player(subject).order_cards_in_hand,
+            "the subject's own hand is untouched",
+        );
+        check_invariants(&after, &rules).expect("the engine accepts the state it produced");
+    }
+
+    // -----------------------------------------------------------------------
     // The delta read
     // -----------------------------------------------------------------------
 
@@ -11172,5 +11338,6 @@ mod tests {
         assert_ne!(second, area);
     }
 }
+
 
 
