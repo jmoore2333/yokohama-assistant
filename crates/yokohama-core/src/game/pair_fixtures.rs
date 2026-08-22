@@ -2,14 +2,15 @@
 //! `docs/plans/2026-08-20-phase3.5c-v4-spec-prereg.md` §5.1/§5.2, checkpoint §7
 //! step 2).
 //!
-//! This module is the FRAME the §5.2 pairs land in, and the pairs themselves as
-//! each family task registers them: the registered-tuple declaration type, the
-//! fixture carrier with its construction invariants, the two stage-realization
-//! builders, the package digest, the print seam — and, since S2-T4, §5.2's
-//! FAMILY 1 (placement location) and FAMILY 11 (activation choice) as ten
-//! registered tuples with the constructions that realize them. The remaining
-//! twenty-six of §5.2's thirty-four gate pairs and two diagnostics land the same
-//! way, and [`REGISTERED_PAIR_TARGET`] is what says how far there is to go.
+//! This module is the FRAME the §5.2 pairs land in and the pairs themselves:
+//! the registered-tuple declaration type, the fixture carrier with its
+//! construction invariants, the two stage-realization builders, the package
+//! digest, the print seam — and, since S2-T7 closed family 4, ALL THIRTY-SIX of
+//! §5.2's registrations (the 34 gate pairs plus the 2(c) and 10(c) diagnostics)
+//! as tuples with the constructions that realize them. Families 5 and 9 carry
+//! audit properties and step-5/9 controls rather than pairs, so
+//! [`REGISTERED_PAIR_COUNT`] has reached [`REGISTERED_PAIR_TARGET`] and stays
+//! there.
 //!
 //! # Why a registration and its construction live in ONE file
 //!
@@ -19,7 +20,7 @@
 //! its construction in another is two halves of one claim, and the half a
 //! reviewer skips is the half that drifts. So [`PAIR_1A`]'s tuple, its
 //! construction and the state facts its registered rows rest on are one
-//! contiguous read, and each later family appends its own such block.
+//! contiguous read, and every family after it appended its own such block.
 //!
 //! # Why it lives in the LIBRARY
 //!
@@ -61,10 +62,10 @@
 //!
 //! # What this module deliberately does NOT do
 //!
-//! It implements no candidate FORMULA (step 3), registers no pair (later step-2
-//! tasks), fits nothing, and reads no root. It touches neither `eval`'s
-//! behaviour nor `SEMANTICS_REV` nor the oracle: everything here is additive,
-//! and every number it prints is read through `eval`'s existing public surface.
+//! It implements no candidate FORMULA (step 3), fits nothing, and reads no
+//! root. It touches neither `eval`'s behaviour nor `SEMANTICS_REV` nor the
+//! oracle: everything here is additive, and every number it prints is read
+//! through `eval`'s existing public surface.
 
 use crate::game::eval::{self, Feature, ScoreStructure, PROGRESS_FULL_PPM};
 use crate::game::{
@@ -5465,6 +5466,13 @@ pub fn build_registered_pair(
         "3(b)" => build_3b(stage, rules),
         "3(c)" => build_3c(stage, rules),
         "3(d)" => build_3d(stage, rules),
+        "4(a)" => build_4a(stage, rules),
+        "4(b)" => build_4b(stage, rules),
+        "4(c)" => build_4c(stage, rules),
+        "4(d)" => build_4d(stage, rules),
+        "4(e)" => build_4e(stage, rules),
+        "4(f)" => build_4f(stage, rules),
+        "4(g)" => build_4g(stage, rules),
         "6(a)" => build_6a(stage, rules),
         "6(b)" => build_6b(stage, rules),
         "6(c)" => build_6c(stage, rules),
@@ -5678,6 +5686,176 @@ fn build_3d(stage: StageEndpoint, rules: &Rules) -> Result<PairFixture, FixtureE
     let mut lesser = base.state;
     place_from_hand(&mut lesser, base.subject, copper, 1)?;
     PairFixture::new(&PAIR_3D, stage, greater, lesser, base.subject, rules)
+}
+
+// --- family 4 -------------------------------------------------------------
+
+/// Family 4's shared prefix: the stage base with the subject's stocks written
+/// and the pair's registered cards taken OFF the face-up offers.
+///
+/// The parking is 10(d)'s device and it is here for 10(d)'s reason. Port offers
+/// are LOCATED for O1's pool and deck and box cards are not, so a card dealt
+/// out of a port slot moves the located set on ONE side and the pool floor
+/// underneath it. Parking every registered card first makes both sides' deals
+/// box-or-deck-sourced and the port byte-identical across them — which is what
+/// lets 4(a), 4(b) and 4(g) register "collateral: none" and what makes 4(c)'s
+/// registered floors a property of the hands alone.
+///
+/// A card that is not standing at a port slot is left exactly where it is
+/// ([`park_order_off_the_port`] returns early), so calling this with cards the
+/// generated deal never seated is free and says the intent anyway.
+fn family_4_base(
+    stage: StageEndpoint,
+    declaration: &PairDeclaration,
+    registered_cards: &[OrderCardId],
+    stocks: [u32; 4],
+    rules: &Rules,
+) -> Result<FamilyBase, FixtureError> {
+    let mut base = family_base(stage, declaration, None, rules)?;
+    for card in registered_cards {
+        park_order_off_the_port(&mut base.state, *card)?;
+    }
+    set_trade_goods(&mut base.state, base.subject, stocks);
+    base.state.player_mut(base.subject).imported_goods = 0;
+    Ok(base)
+}
+
+fn build_4a(stage: StageEndpoint, rules: &Rules) -> Result<PairFixture, FixtureError> {
+    let base = family_4_base(
+        stage,
+        &PAIR_4A,
+        &[FAMILY_4A_MATCHED_CARD, FAMILY_4A_UNMATCHED_CARD],
+        FAMILY_4A_STOCKS,
+        rules,
+    )?;
+    let mut greater = base.state.clone();
+    give_starting_order(&mut greater, base.subject, FAMILY_4A_MATCHED_CARD)?;
+    let mut lesser = base.state;
+    give_starting_order(&mut lesser, base.subject, FAMILY_4A_UNMATCHED_CARD)?;
+    PairFixture::new(&PAIR_4A, stage, greater, lesser, base.subject, rules)
+}
+
+fn build_4b(stage: StageEndpoint, rules: &Rules) -> Result<PairFixture, FixtureError> {
+    let base = family_4_base(
+        stage,
+        &PAIR_4B,
+        &[FAMILY_4B_EXECUTABLE_CARD, FAMILY_4B_DISTANT_CARD],
+        FAMILY_4B_STOCKS,
+        rules,
+    )?;
+    let mut greater = base.state.clone();
+    give_starting_order(&mut greater, base.subject, FAMILY_4B_EXECUTABLE_CARD)?;
+    let mut lesser = base.state;
+    give_starting_order(&mut lesser, base.subject, FAMILY_4B_DISTANT_CARD)?;
+    PairFixture::new(&PAIR_4B, stage, greater, lesser, base.subject, rules)
+}
+
+fn build_4c(stage: StageEndpoint, rules: &Rules) -> Result<PairFixture, FixtureError> {
+    let registered_cards: Vec<OrderCardId> =
+        FAMILY_4C_RICH_HAND.iter().chain(FAMILY_4C_POOR_HAND.iter()).copied().collect();
+    let base = family_4_base(stage, &PAIR_4C, &registered_cards, FAMILY_4C_STOCKS, rules)?;
+    // The dealt slot FIRST on each side, then the second card: the swap
+    // replaces whichever hand entry holds the recorded starting order, so
+    // pushing the second card first would leave the hand in the other order and
+    // the registration names the pair of cards, not a set.
+    let mut greater = base.state.clone();
+    give_starting_order(&mut greater, base.subject, FAMILY_4C_RICH_HAND[0])?;
+    hold_order_from_the_box(&mut greater, base.subject, FAMILY_4C_RICH_HAND[1])?;
+    let mut lesser = base.state;
+    give_starting_order(&mut lesser, base.subject, FAMILY_4C_POOR_HAND[0])?;
+    hold_order_from_the_box(&mut lesser, base.subject, FAMILY_4C_POOR_HAND[1])?;
+    PairFixture::new(&PAIR_4C, stage, greater, lesser, base.subject, rules)
+}
+
+fn build_4d(stage: StageEndpoint, rules: &Rules) -> Result<PairFixture, FixtureError> {
+    // NOTHING is parked here, and the contrast with the three pairs above is
+    // the registration: 4(d)'s completed sets DIFFER by design, so its pool
+    // floor is registered to move rather than to stay put. What the two sides
+    // do share is the port, because the completions are box-sourced — every one
+    // of the five registered cards is unlocated at this seed.
+    let mut base = family_base(stage, &PAIR_4D, None, rules)?;
+    set_trade_goods(&mut base.state, base.subject, [0, 0, 0, 0]);
+    base.state.player_mut(base.subject).imported_goods = 0;
+
+    let mut greater = base.state.clone();
+    for card in FAMILY_4_REALIZED_SET {
+        complete_order_from_the_box(&mut greater, base.subject, card)?;
+    }
+    let mut lesser = base.state;
+    for card in FAMILY_4_REALIZED_SET.iter().take(3).copied().chain([FAMILY_4D_DUPLICATE_CARD]) {
+        complete_order_from_the_box(&mut lesser, base.subject, card)?;
+    }
+    PairFixture::new(&PAIR_4D, stage, greater, lesser, base.subject, rules)
+}
+
+fn build_4e(stage: StageEndpoint, rules: &Rules) -> Result<PairFixture, FixtureError> {
+    let mut base = family_base(stage, &PAIR_4E, None, rules)?;
+    // THE PORT FIRST, and the order is load-bearing twice over: the generated
+    // deal seats the LESSER side's own card at a face-up offer, and it seats a
+    // Dutch offer §5.2 forbids. Restocking before either deal is what makes
+    // both deals box-sourced and the registered board exact.
+    stock_port_a(&mut base.state, FAMILY_4E_PORT_OFFERS)?;
+    for card in FAMILY_4_REALIZED_SET {
+        complete_order_from_the_box(&mut base.state, base.subject, card)?;
+    }
+    stock_lab_a(&mut base.state, FAMILY_4E_LAB_STOCK, rules)?;
+    set_trade_goods(&mut base.state, base.subject, [0, 0, 0, 0]);
+    base.state.player_mut(base.subject).imported_goods = 0;
+
+    let mut greater = base.state.clone();
+    give_starting_order(&mut greater, base.subject, FAMILY_4E_DUTCH_CARD)?;
+    let mut lesser = base.state;
+    give_starting_order(&mut lesser, base.subject, FAMILY_4E_GERMAN_CARD)?;
+    PairFixture::new(&PAIR_4E, stage, greater, lesser, base.subject, rules)
+}
+
+fn build_4f(stage: StageEndpoint, rules: &Rules) -> Result<PairFixture, FixtureError> {
+    let mut base = family_base(stage, &PAIR_4F, None, rules)?;
+    hold_order_from_the_box(&mut base.state, base.subject, FAMILY_4F_SECOND_CARD)?;
+    move_order_card_to_port_slot(&mut base.state, FIXTURE_PORT_CARD, FAMILY_4F_PORT_SLOT)?;
+    set_trade_goods(&mut base.state, base.subject, FAMILY_4F_STOCKS);
+    base.state.player_mut(base.subject).imported_goods = 0;
+    let port = find_area_of_type(&base.state, AreaType::PortA)?;
+    let placement = Move::PlaceThreeAreas { placements: vec![port] };
+
+    // Both sides are the SAME turn from the SAME root, differing in the one
+    // registered choice: the engine's own port take against the port's own
+    // Skip. `apply_move` refuses anything absent from `get_legal_moves`, so the
+    // hand cap, the zone map and the end-game trigger are all the engine's
+    // verdicts rather than this module's.
+    let greater = drive_to_resolved_area_action(
+        &base.state,
+        placement.clone(),
+        port,
+        AreaAction::Port {
+            cards_taken: vec![FIXTURE_PORT_CARD],
+            second_card_payment: None,
+        },
+        rules,
+    )?;
+    let lesser =
+        drive_to_resolved_area_action(&base.state, placement, port, AreaAction::Skip, rules)?;
+    PairFixture::new(&PAIR_4F, stage, greater, lesser, base.subject, rules)
+}
+
+fn build_4g(stage: StageEndpoint, rules: &Rules) -> Result<PairFixture, FixtureError> {
+    let base = family_4_base(
+        stage,
+        &PAIR_4G,
+        &[FAMILY_4G_ICON_CARD, FAMILY_4G_PLAIN_CARD],
+        [0, 0, 0, 0],
+        rules,
+    )?;
+    // The opponent's own fulfillment, on the SHARED base — so every row it
+    // moves differences to zero across the pair, and what survives is the one
+    // thing the pair wants from it: an EMPTY opponent hand, hence no
+    // `HiddenStartingOrder` slot and no pool-floor read anywhere.
+    let shared = fulfill_the_opponents_starting_order(&base.state, base.opponent, rules)?;
+    let mut greater = shared.clone();
+    give_starting_order(&mut greater, base.subject, FAMILY_4G_ICON_CARD)?;
+    let mut lesser = shared;
+    give_starting_order(&mut lesser, base.subject, FAMILY_4G_PLAIN_CARD)?;
+    PairFixture::new(&PAIR_4G, stage, greater, lesser, base.subject, rules)
 }
 
 // --- family 8 -------------------------------------------------------------
@@ -6714,31 +6892,35 @@ fn recall_through_the_engine(
     Ok(recalled.player(seat).clone())
 }
 
-/// Push a registered order card onto a seat's COMPLETED pile.
+/// Lift a registered order card OUT of play — the deck, the box or a port
+/// slot — with the BOX paying in every case.
 ///
-/// **The BOX pays in every case**, and that is the whole design. A card
-/// standing in the deck or at a port offer trades places with a boxed card
-/// first, so the deck keeps its LENGTH (§5.1's p = 0 realization wants a full
-/// one) and the port keeps its FILL (at 2P a non-full port implies an
-/// exhausted deck, so a p = 0 fixture cannot show one). Net movement is always
-/// box −1, completed +1, and the 36-card conservation total never moves.
+/// **The BOX pays, and that is the whole design.** A card standing in the deck
+/// or at a port offer trades places with a boxed card first, so the deck keeps
+/// its LENGTH (§5.1's p = 0 realization wants a full one) and the port keeps
+/// its FILL (at 2P a non-full port implies an exhausted deck, so a p = 0
+/// fixture cannot show one). Net movement is always box −1 and one seat's pile
+/// +1, and the 36-card conservation total never moves.
 ///
 /// It is a legality construction, not a reachability one: a real seat reaches
-/// four completed orders by drawing through the port, which would have moved
-/// the deck clock off zero. 6(c) registers both endpoints and this is what
-/// lets the early one exist.
-fn complete_order_from_the_box(
+/// four completed orders, or a second card in hand, by drawing through the
+/// port, which would have moved the deck clock off zero. 6(c) registers both
+/// endpoints and this is what lets the early one exist.
+///
+/// The `clause` is the CALLER's, because the two callers are refused for
+/// different registered reasons and one shared name would fit neither.
+fn lift_order_out_of_play(
     state: &mut GameState,
-    seat: PlayerId,
     card: OrderCardId,
+    clause: &'static str,
 ) -> Result<(), FixtureError> {
     for p in &state.players {
         if p.order_cards_in_hand.contains(&card) || p.completed_orders.contains(&card) {
             return Err(FixtureError::Declaration {
-                clause: "registered completed order",
+                clause,
                 detail: format!(
-                    "order {} is already held or completed by seat {}; a pre-completed \
-                     order must be swappable out of the deck, the box or a port slot",
+                    "order {} is already held or completed by seat {}; a registered card \
+                     must be swappable out of the deck, the box or a port slot",
                     card.0, p.id.0,
                 ),
             });
@@ -6746,22 +6928,113 @@ fn complete_order_from_the_box(
     }
     if let Some(i) = state.orders_removed.iter().position(|c| *c == card) {
         state.orders_removed.remove(i);
-    } else {
-        let boxed = state
-            .orders_removed
-            .pop()
-            .ok_or(FixtureError::OutOfStock("a boxed order to trade places with"))?;
-        if let Some(i) = state.order_deck.iter().position(|c| *c == card) {
-            state.order_deck[i] = boxed;
-        } else if let Some(i) = port_a_slot_of(state, card) {
-            state.port_state.port_a.slots[i] = Some(boxed);
-        } else {
-            state.orders_removed.push(boxed);
-            return Err(FixtureError::OutOfStock("the registered completed-order card"));
-        }
+        return Ok(());
     }
+    let boxed = state
+        .orders_removed
+        .pop()
+        .ok_or(FixtureError::OutOfStock("a boxed order to trade places with"))?;
+    if let Some(i) = state.order_deck.iter().position(|c| *c == card) {
+        state.order_deck[i] = boxed;
+    } else if let Some(i) = port_a_slot_of(state, card) {
+        state.port_state.port_a.slots[i] = Some(boxed);
+    } else {
+        state.orders_removed.push(boxed);
+        return Err(FixtureError::OutOfStock("the registered order card"));
+    }
+    Ok(())
+}
+
+/// Push a registered order card onto a seat's COMPLETED pile, sourced through
+/// [`lift_order_out_of_play`].
+fn complete_order_from_the_box(
+    state: &mut GameState,
+    seat: PlayerId,
+    card: OrderCardId,
+) -> Result<(), FixtureError> {
+    lift_order_out_of_play(state, card, "registered completed order")?;
     state.player_mut(seat).completed_orders.push(card);
     Ok(())
+}
+
+/// Push a registered order card into a seat's HAND, sourced the same way.
+///
+/// The SECOND-CARD device, and the two pairs that use it need it for the same
+/// structural reason: §5.1's p = 0 hand cap comes from the DECK's reachability
+/// ("no port take ever"), so a hand of more than one card is a late-endpoint
+/// shape, and at the late endpoint every unlocated card stands in the box.
+/// 4(c) needs two cards to hold a summed requirement vector equal at different
+/// faces; 4(f) needs two so that its take lands exactly on X2's
+/// `hand.len() >= 3` refusal.
+///
+/// The three-card rules cap is NOT enforced here, and the omission is
+/// deliberate: `validate_port_action` (`actions/cards.rs:55`) is the engine's
+/// own gate on it and 4(f) drives its take through that gate, so a fixture that
+/// tried to exceed the cap by TAKING would be refused by the rules rather than
+/// by this module. A registration that wrote a fourth card straight into a hand
+/// would be registering a state the rules do not reach, which is §5.1's
+/// constructibility mandate to catch, not a helper's.
+fn hold_order_from_the_box(
+    state: &mut GameState,
+    seat: PlayerId,
+    card: OrderCardId,
+) -> Result<(), FixtureError> {
+    lift_order_out_of_play(state, card, "registered held order")?;
+    state.player_mut(seat).order_cards_in_hand.push(card);
+    Ok(())
+}
+
+/// Fulfil the OPPONENT's dealt starting order through the engine, at the
+/// opponent's own seat, and hand the state back with the mover restored.
+///
+/// # Why the mover moves, and why that is the honest reading
+///
+/// [`PairFixture::new`]'s clause 4 requires the SUBJECT to be the mover on both
+/// sides, and `apply_move` acts for `current_player` — so a fixture whose
+/// registered position includes an opponent-side fulfillment cannot reach it
+/// without naming the opponent as mover for the one move. The intermediate
+/// state is a REAL one rather than a convenience: `FulfillOrder` is offered at
+/// the hand-off phase `AdditionalActionFirst` and does not advance it
+/// (`game/legal_moves.rs:13–16, 74–90`; `game/apply_move.rs:148–154`), so what
+/// this writes is the opponent's own hand-off, and restoring the mover is the
+/// turn passing to the subject.
+///
+/// What the detour buys is the ENGINE's bytes instead of this module's: the
+/// goods are spent, the card's printed face is paid, the completed pile is
+/// pushed and `check_mercenary_eligibility`'s five-country sweep runs. Moving
+/// the card by hand would award no VP, spend no goods and run no sweep — a fake
+/// fulfillment wearing the real one's name — and 4(g) registers the opponent's
+/// EMPTY hand precisely because a real fulfillment is what empties it.
+///
+/// The queue is REFUSED rather than declined: 4(g)'s registration rests on the
+/// dealt card being icon-free, so anything queued means a different card is
+/// being fulfilled and the fixture should say so rather than tidy it away.
+fn fulfill_the_opponents_starting_order(
+    state: &GameState,
+    opponent: PlayerId,
+    rules: &Rules,
+) -> Result<GameState, FixtureError> {
+    let card = state
+        .player(opponent)
+        .starting_order
+        .ok_or(FixtureError::OutOfStock("the opponent's recorded starting order"))?;
+    let mover = state.current_player;
+    let mut acting = state.clone();
+    acting.current_player = opponent;
+    stock_exactly_the_requirements(&mut acting, opponent, card, rules)?;
+    let mut out = fulfill_through_the_engine(&acting, card, rules)?;
+    if !out.pending_choices.is_empty() {
+        return Err(FixtureError::Declaration {
+            clause: "opponent-side fulfillment",
+            detail: format!(
+                "fulfilling order {} queued {:?}; the registration names an icon-free dealt \
+                 card, so a queued choice means a different card is being fulfilled",
+                card.0, out.pending_choices,
+            ),
+        });
+    }
+    out.current_player = mover;
+    Ok(out)
 }
 
 /// Write a registration's three declared achievement cards onto a state.
