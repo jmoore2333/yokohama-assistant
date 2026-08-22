@@ -6378,6 +6378,17 @@ mod tests {
                 "2(c)",
                 &[(Feature::AssistantsInHandExcess, -3), (Feature::AssistantsOnBoard, 3)],
             ),
+            // All four of family 3 are pure candidate-axis separators. Money
+            // and trade goods are not among the sixteen; the one parked pawn
+            // stands on a different AREA across the sides, and every incumbent
+            // pawn counter reads totals rather than places. 3(b) additionally
+            // fulfils the same card on both sides, so the VP, hand-size and
+            // completed-pile effects of its hand-emptying device difference to
+            // zero.
+            ("3(a)", &[]),
+            ("3(b)", &[]),
+            ("3(c)", &[]),
+            ("3(d)", &[]),
             ("6(a)", &[(Feature::VictoryPoints, 5), (Feature::HandSize, -1)]),
             (
                 "6(b)",
@@ -6413,6 +6424,22 @@ mod tests {
                 ],
             ),
             ("7", &[]),
+            // Family 8's two incumbent rows, and their sizes are the pair's
+            // own arithmetic: two pawns leave the board for a hand that already
+            // holds six, so the whole +2 lands past the two-pawn core reserve.
+            (
+                "8",
+                &[(Feature::AssistantsInHandExcess, 2), (Feature::AssistantsOnBoard, -2)],
+            ),
+            // Family 10's four are candidate-axis separators too — a port
+            // permutation, a laboratory permutation, a redistribution of equal
+            // goods, and a swap between two face-equal order cards. The
+            // sixteen see none of it, which is exactly what each registration
+            // claims.
+            ("10(a)", &[]),
+            ("10(b)", &[]),
+            ("10(c)", &[]),
+            ("10(d)", &[]),
             ("11(a)", &[]),
             ("11(b)", &[]),
             (
