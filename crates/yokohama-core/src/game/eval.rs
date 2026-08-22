@@ -112,8 +112,17 @@
 //! seat has already claimed (T3's post-claim filter).
 
 use crate::game::rules::Rules;
+// V4 spec §3.2's registered engine paths, and the ONE reason this module reaches
+// past the registries: S1, S5 and S6 price an option at the reward the ENGINE
+// pays for it. Re-deriving those tables here would be a second copy of the
+// rulebook's own numbers — the exact duplication §13's dispatcher exists to
+// prevent — so the shipped helpers are called instead. Nothing here reads state:
+// all three take a power and return a printed quantity. The §2.1 guard's
+// allowlist names this line, which is what makes widening it a deliberate act.
+use crate::game::actions::{bank_reward, employment_agency_tokens_allowed, exported_reward};
 use crate::types::{
-    AchievementType, AreaId, Country, PlayerId, PlayerView, TurnPhase, VisiblePlayer,
+    AchievementType, AreaId, AreaType, Country, PlayerId, PlayerView, PresidentLocation, TurnPhase,
+    VisiblePlayer,
 };
 
 /// Bumped on ANY behavior-affecting change to the evaluator — the feature list,
@@ -1151,6 +1160,197 @@ const MAX_CONTENDERS: usize = MAX_SEATS + 1;
 /// Where the dummy's tally lives in a [`MAX_CONTENDERS`]-wide array.
 const DUMMY_SLOT: usize = MAX_SEATS;
 
+// ---------------------------------------------------------------------------
+// V4 §3.2 — the view context the candidate features ride
+// ---------------------------------------------------------------------------
+
+/// The widest area vector any real board carries: `AreaId`'s own validated
+/// range is `0..18`, and 4P's staggered pyramid (6+5+4+3) fills it exactly.
+/// 2P and 3P carry 10 and 14, so the tail of every array below is unset rather
+/// than absent — the arrays are sized by the TYPE, not by the position.
+pub const MAX_AREAS: usize = 18;
+
+/// A set of areas, one bit per `AreaId`.
+///
+/// Eighteen areas fit in a `u32` with fourteen bits spare, so every set the V4
+/// features build is ONE register: the reachable-set walk `S7` runs has a
+/// fixed-size bitset frontier rather than a queue, which is what keeps
+/// §0.3(a)'s `score` allocs==0 pin true with [`ScoreStructure::derive`] on its
+/// path (§3.2's allocation contract, in the words it uses: "counters / fixed
+/// arrays / bitsets").
+pub type AreaSet = u32;
+
+/// One area's bit, or the EMPTY set for an area outside the printed range.
+///
+/// `AreaId::unchecked` exists for deserialization and does not validate, so an
+/// out-of-range id is representable. It reads here as "in no set", which is the
+/// answer every consumer below wants — a phantom area holds no assistants, is
+/// adjacent to nothing, and is not on the board — rather than a shift overflow.
+pub fn area_bit(area: AreaId) -> AreaSet {
+    let i = usize::from(area.0);
+    if i < MAX_AREAS {
+        1 << i
+    } else {
+        0
+    }
+}
+
+/// The areas of a set, ascending by `AreaId`.
+///
+/// Ascending order is load-bearing where a card breaks ties by lowest `AreaId`
+/// (S4's best re-entry anchor), and allocation-free everywhere: the iterator is
+/// the `u32` itself, cleared one low bit at a time.
+pub fn areas_in(set: AreaSet) -> impl Iterator<Item = AreaId> {
+    let mut rest = set;
+    std::iter::from_fn(move || {
+        if rest == 0 {
+            return None;
+        }
+        let i = rest.trailing_zeros();
+        rest &= rest - 1;
+        Some(AreaId(i as u8))
+    })
+}
+
+/// The PUBLIC board and seat context V4 spec §3.2's view-context features read,
+/// derived once per [`ScoreStructure::derive`] and indexed by `AreaId` or by
+/// seat number.
+///
+/// # Why a context rather than seven private scans
+///
+/// §3.2 registers ten view-context features (S1–S7, X1–X3) plus two more
+/// derivations, and every one of them starts from the same three questions:
+/// what KIND of area is this, which areas hold this seat's assistants, and
+/// which edges may a President cross for free. Deriving those once per call
+/// makes each feature a fold over a `u32`; deriving them per feature would pay
+/// the board scan up to eighteen times a call and would give eighteen places
+/// for the Canal rule to be spelled differently.
+///
+/// # What is here, and what deliberately is not
+///
+/// This is CONTEXT, not values: the feature helpers compute from it on demand
+/// rather than being folded into `derive` themselves. That split is the
+/// milestone's own — the candidate features are probe-space until §7's step 8
+/// moves `Feature::ALL`, and `score` must not pay for a reachability walk it
+/// does not yet use.
+///
+/// **What `score` DOES pay, stated because the hot path is measured elsewhere.**
+/// The context is derived unconditionally, so every `score` call now walks the
+/// area map and the adjacency map once more — at most 18 areas and their ≤ 6
+/// neighbours each, plus one pass over every seat's occupied areas. Fixed work,
+/// no allocation (§0.3(a)'s pin still binds), and bounded by the board rather
+/// than by the search. If a future measurement says that constant matters before
+/// step 8 makes it load-bearing, the answer is to make the derivation lazy, not
+/// to move it out of `derive` and give each feature its own scan.
+///
+/// **The seam for the later batches** (§3.2's remaining view-context work):
+/// O1's located-card pool bitset and its running accumulators, O5's attainable
+/// -source scan, and Group X's lab/port context all belong HERE as further
+/// fields — a `u64` bitset and a pair of counters for the pool, masks for the
+/// card boards — for the same reason the board masks do. Nothing in this type
+/// is seat-relative except the two per-seat arrays, so adding a field costs one
+/// pass in [`ScoreStructure::derive`] and nothing anywhere else.
+///
+/// # Honesty
+///
+/// Every input is public: the board layout and the station token are on the
+/// table, and assistant positions and President locations are face-up for every
+/// seat. Nothing here is masked information, and the type could not be handed
+/// any — its only constructor reads a [`PlayerView`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ViewContext {
+    /// Every area the layout carries. The bound on every other mask.
+    pub present: AreaSet,
+    /// Areas a pawn may stand on — [`Self::present`] minus the Canal. **A 2P
+    /// board carries no Canal tile at all**, so this equals `present` there.
+    pub placeable: AreaSet,
+    /// The production areas (Copper Mine, Silk Mill, Tea Plantation, Fishing
+    /// Ground) — S1's and X3's summation domain.
+    pub production: AreaSet,
+    /// The Church and the Customs House — S2's summation domain.
+    pub tracks: AreaSet,
+    /// The Bank — S5's.
+    pub bank: AreaSet,
+    /// The Employment Agency — S6's.
+    pub employment_agency: AreaSet,
+    /// FREE adjacency per area: the layout's `adjacency` MINUS its
+    /// `canal_crossings`.
+    ///
+    /// A REAL subtraction, not a defensive one. The board generator adds each
+    /// tolled crossing pair to BOTH maps (`board_gen.rs`'s
+    /// `derive_canal_crossings` doc: "The caller adds each returned pair to both
+    /// adjacency and `canal_crossings`"), so the raw adjacency map already
+    /// contains the paid transits. S4's ring and S7's step relation are both
+    /// declared over the FREE edges.
+    pub free_adjacency: [AreaSet; MAX_AREAS],
+    /// Per seat: the areas holding at least one of that seat's assistants —
+    /// the engine's own action-legality condition (§3.2's presence gate).
+    pub occupied: [AreaSet; MAX_SEATS],
+    /// Per seat: the singleton set of that seat's President's area, EMPTY when
+    /// the President is in hand. Read across seats: an opponent's President
+    /// bars S4's re-entry targets and S7's counted areas.
+    pub president: [AreaSet; MAX_SEATS],
+}
+
+impl ViewContext {
+    /// An empty context — no board, no seats.
+    const EMPTY: Self = Self {
+        present: 0,
+        placeable: 0,
+        production: 0,
+        tracks: 0,
+        bank: 0,
+        employment_agency: 0,
+        free_adjacency: [0; MAX_AREAS],
+        occupied: [0; MAX_SEATS],
+        president: [0; MAX_SEATS],
+    };
+
+    /// The areas `area` reaches across a FREE edge (see
+    /// [`free_adjacency`](Self::free_adjacency)); the empty set for an area
+    /// outside the printed range.
+    pub fn free_adjacent(&self, area: AreaId) -> AreaSet {
+        let i = usize::from(area.0);
+        if i < MAX_AREAS {
+            self.free_adjacency[i]
+        } else {
+            0
+        }
+    }
+
+    /// Areas holding some OTHER seat's President, from `seat`'s side. The
+    /// registered cross-seat read of §5.2's family 5(a).
+    pub fn opponent_presidents(&self, seat: usize) -> AreaSet {
+        let mut set = 0;
+        for (other, mask) in self.president.iter().enumerate() {
+            if other != seat {
+                set |= mask;
+            }
+        }
+        set
+    }
+
+    /// The seat's own-assistant areas, Canal excluded — S3's count, and the
+    /// domain S4 and S7 narrow further.
+    pub fn occupied_placeable(&self, seat: usize) -> AreaSet {
+        if seat >= MAX_SEATS {
+            return 0;
+        }
+        self.occupied[seat] & self.placeable
+    }
+
+    /// The `PlacePresident` target class MODULO the placement fee: the seat's
+    /// own-assistant, non-Canal, opponent-President-free areas
+    /// (`legal_moves.rs:275-282` gates exactly these three, then filters by
+    /// affordability, which §3.2's S4 card declares unmodeled).
+    ///
+    /// S4's in-hand branch maximizes over this set; S7's in-hand branch counts
+    /// it.
+    pub fn reentry_targets(&self, seat: usize) -> AreaSet {
+        self.occupied_placeable(seat) & !self.opponent_presidents(seat)
+    }
+}
+
 /// Every quantity that is a property of the WHOLE table rather than of one
 /// seat, re-derived from the view ONCE and indexed by seat number.
 ///
@@ -1206,6 +1406,10 @@ pub struct ScoreStructure {
     pub remainder: [i64; MAX_SEATS],
     /// Summed progress toward the three Achievement cards in play.
     pub achievement: [i64; MAX_SEATS],
+    /// V4 §3.2's view context — the board and seat facts the candidate feature
+    /// helpers read. Derived unconditionally beside the rest; see
+    /// [`ViewContext`] for why it is context rather than values.
+    pub context: ViewContext,
 }
 
 impl ScoreStructure {
@@ -1220,11 +1424,67 @@ impl ScoreStructure {
             customs: [0; MAX_SEATS],
             remainder: [0; MAX_SEATS],
             achievement: [0; MAX_SEATS],
+            context: ViewContext::EMPTY,
         };
+
+        // V4 §3.2's board context, BEFORE the seat loop: the per-seat masks
+        // below are narrowed to the areas the layout actually carries, so the
+        // board pass has to have run first.
+        for (area, config) in &view.board_layout.areas {
+            let bit = area_bit(*area);
+            s.context.present |= bit;
+            if config.area_type.allows_placement() {
+                s.context.placeable |= bit;
+            }
+            if config.area_type.is_production() {
+                s.context.production |= bit;
+            }
+            if matches!(config.area_type, AreaType::Church | AreaType::Customs) {
+                s.context.tracks |= bit;
+            }
+            if config.area_type == AreaType::Bank {
+                s.context.bank |= bit;
+            }
+            if config.area_type == AreaType::EmploymentAgency {
+                s.context.employment_agency |= bit;
+            }
+        }
+        for (area, neighbours) in &view.board_layout.adjacency {
+            let i = usize::from(area.0);
+            if i >= MAX_AREAS {
+                continue;
+            }
+            for n in neighbours {
+                s.context.free_adjacency[i] |= area_bit(*n);
+            }
+        }
+        // The tolled pairs come OUT of both directions — the layout carries
+        // them in `adjacency` too (see [`ViewContext::free_adjacency`]).
+        for (a, b) in &view.board_layout.canal_crossings {
+            let (i, j) = (usize::from(a.0), usize::from(b.0));
+            if i < MAX_AREAS {
+                s.context.free_adjacency[i] &= !area_bit(*b);
+            }
+            if j < MAX_AREAS {
+                s.context.free_adjacency[j] &= !area_bit(*a);
+            }
+        }
 
         for player in &view.players {
             let Some(i) = seat_index(player) else { continue };
             s.seats = s.seats.max(i + 1);
+            for (area, count) in &player.assistants.on_board {
+                if *count >= 1 {
+                    s.context.occupied[i] |= area_bit(*area);
+                }
+            }
+            // Narrowed to the board: an `on_board` key the layout does not
+            // carry is a phantom, and one dropped here is dropped for every
+            // consumer at once.
+            s.context.occupied[i] &= s.context.present;
+            if let PresidentLocation::OnBoard(area) = player.president_location {
+                s.context.president[i] = area_bit(area);
+            }
             s.base_vp[i] = i64::from(player.victory_points);
             s.country[i] = country_set_bonus(player, rules);
             s.remainder[i] = remainder_bonus(player);
@@ -1767,6 +2027,260 @@ pub fn realizable_power(view: &PlayerView, player: &VisiblePlayer, area: AreaId)
     }
     // 6. Cap LAST, over the summed terms.
     power.min(5)
+}
+
+// ---------------------------------------------------------------------------
+// V4 §3.2 — Group S: spatial and action affordance
+// ---------------------------------------------------------------------------
+
+/// The seven Group-S candidate features of V4 spec §3.2, one method per formula
+/// card.
+///
+/// # Shape, and why it is this one
+///
+/// Each is a per-seat `-> i64` over PUBLIC view state, riding
+/// [`ScoreStructure::derive`]'s [`ViewContext`] — the same "derive once, answer
+/// per seat" split [`ScoreStructure::value_of`] already uses for the five
+/// score-structure mirrors. What differs is that these are CONTEXT-fed rather
+/// than precomputed: they are probe-space until §7's step 8 moves
+/// `Feature::ALL`, and `score` must not pay for a reachability walk it does not
+/// yet use.
+///
+/// **The signatures are not uniform, deliberately.** Four of the seven take the
+/// view because they price an option at [`realizable_power`] (whose station term
+/// is a view field) or need an area's TYPE; the three that are pure topology
+/// take only the seat's row. A signature that named an input the feature does
+/// not read would weaken the §7 cleanliness claim it is there to support.
+///
+/// # The probe adapter's seam
+///
+/// §7's probe columns dispatch through a
+/// `(view, player, candidate label, rules) -> Option<i64>` function. That
+/// adapter belongs on the FIXTURE side, not here: the candidate labels are the
+/// fixture module's enum, and an evaluator that imported them would invert the
+/// dependency — the fixture harness reads `eval`, never the other way round.
+/// So the adapter derives a [`ScoreStructure`] and matches its label onto these
+/// methods, exactly as [`raw_value`] does for the incumbent sixteen.
+///
+/// # What Group S may read (§7's cross-group cleanliness assert)
+///
+/// Presence, power, position and the board. **No money, no imported goods, no
+/// order cards** — those are Group E's and Group O's, and only Group X reads
+/// both sides. `tests/eval_core.rs` scans these bodies for the forbidden fields.
+///
+/// # The declared shapes ride here
+///
+/// [`realizable_power`]'s three declared shapes (portfolio pricing, the barred
+/// current area keeping its +1, unapplied reachability) are inherited by every
+/// caller below, and S2 and S6 each add one of their own — both registered in
+/// §3.2 as DECLARED SHAPES with a known positive bias, both pinned as
+/// declarations in the audit cells rather than repaired.
+impl ScoreStructure {
+    /// **S1 `ProductionAccess`** — Σ over production areas the seat occupies of
+    /// the engine's EXPORTED reward at [`realizable_power`].
+    ///
+    /// The reward comes from the §13 dispatcher (`actions/production.rs:37`),
+    /// never from a table restated here: one job, one object. Units are
+    /// goods per activation.
+    ///
+    /// Sparsity is real and is not a gate failure: a Copper Mine at power 2
+    /// exports NOTHING, so a satisfied presence gate can still sum to zero
+    /// (§3.2's cited fact; the dispatcher returns `Some(0)` there precisely so
+    /// this reads as a price rather than as "not my area").
+    pub fn production_access(&self, view: &PlayerView, player: &VisiblePlayer) -> i64 {
+        let Some(seat) = seat_index(player) else { return 0 };
+        let mut total = 0i64;
+        for area in areas_in(self.context.occupied[seat] & self.context.production) {
+            let Some(config) = view.board_layout.areas.get(&area) else { continue };
+            let reward = exported_reward(config.area_type, realizable_power(view, player, area));
+            debug_assert!(
+                reward.is_some(),
+                "the production mask admitted an area the dispatcher does not price"
+            );
+            total += i64::from(reward.unwrap_or(0));
+        }
+        total
+    }
+
+    /// **S2 `TrackAccess`** — Σ over the Church and the Customs House, where the
+    /// seat has a presence, of [`realizable_power`]. Units are power-steps.
+    ///
+    /// **An ACCESS potential, deliberately NOT a legality mirror** (§3.2's
+    /// OPTIMISTIC-PROXY DECLARATION). This reads > 0 at states where the track
+    /// action is Skip-only — Church below total faith 4, Customs at zero
+    /// imports, and full or blocked eligible spaces (the 2P dummy occupies
+    /// faith-7 and space-4 all game). The positive bias is declared and known;
+    /// `tests/eval_core.rs` pins the declaration against the engine's own
+    /// eligibility functions so that "fixing" it into a legality mirror is a
+    /// spec change rather than a tidy-up.
+    pub fn track_access(&self, view: &PlayerView, player: &VisiblePlayer) -> i64 {
+        let Some(seat) = seat_index(player) else { return 0 };
+        areas_in(self.context.occupied[seat] & self.context.tracks)
+            .map(|area| i64::from(realizable_power(view, player, area)))
+            .sum()
+    }
+
+    /// **S3 `AssistantAreasDistinct`** — the count of non-Canal areas holding at
+    /// least one of the seat's assistants. Units are areas.
+    ///
+    /// The SPREAD axis, in tension with the building legs by construction: a
+    /// build needs power ≥ 4 at ONE area, which is a stacking requirement. A
+    /// count has no cliff — every Recovery of a sole-pawn area, and every
+    /// D6 track placement that empties one, is worth exactly one step.
+    pub fn assistant_areas_distinct(&self, player: &VisiblePlayer) -> i64 {
+        let Some(seat) = seat_index(player) else { return 0 };
+        i64::from(self.context.occupied_placeable(seat).count_ones())
+    }
+
+    /// **S4 `PresidentLocalAccess`** — the assistants within one FREE step of the
+    /// President's centre.
+    ///
+    /// Two branches, and they answer different questions:
+    ///
+    /// * `OnBoard(a)`: the ANCHOR `own_assistants(a)` plus the RING — the same
+    ///   sum over `a`'s free-adjacent areas (free = the layout's adjacency MINUS
+    ///   its tolled canal crossings).
+    /// * `InHand`: the MAXIMUM of that same local sum over the seat's re-entry
+    ///   targets ([`ViewContext::reentry_targets`] — the `PlacePresident` class
+    ///   modulo the placement fee, which §3.2 declares unmodeled), and 0 when
+    ///   the seat has no board assistants. Ties go to the lowest `AreaId`; the
+    ///   ascending walk is what implements that, and the returned VALUE is
+    ///   tie-invariant either way.
+    ///
+    /// **DECLARED ASYMMETRY** (§3.2): at the seat's own hand-off the anchor term
+    /// is structurally 0 — Recovery drains the acted area, Telephone excepted —
+    /// so the RING carries the hand-off signal, and the anchor is live at the
+    /// mid-turn states the beam orders (`lookahead.rs:1230`).
+    pub fn president_local_access(&self, player: &VisiblePlayer) -> i64 {
+        let Some(seat) = seat_index(player) else { return 0 };
+        match player.president_location {
+            PresidentLocation::OnBoard(area) => self.local_assistant_mass(player, area),
+            PresidentLocation::InHand => {
+                let mut best = 0i64;
+                for area in areas_in(self.context.reentry_targets(seat)) {
+                    let mass = self.local_assistant_mass(player, area);
+                    // STRICT: the first (lowest-`AreaId`) maximiser wins the tie.
+                    if mass > best {
+                        best = mass;
+                    }
+                }
+                best
+            }
+        }
+    }
+
+    /// S4's local sum at one centre: the anchor plus its free-adjacent ring.
+    ///
+    /// The ring is NOT filtered to placeable areas and does not need to be — no
+    /// pawn may ever stand on the Canal, so its term is structurally zero.
+    fn local_assistant_mass(&self, player: &VisiblePlayer, area: AreaId) -> i64 {
+        let anchor = i64::from(player.assistants.in_area(area));
+        let ring: i64 = areas_in(self.context.free_adjacent(area))
+            .map(|n| i64::from(player.assistants.in_area(n)))
+            .sum();
+        anchor + ring
+    }
+
+    /// **S5 `BankAccess`** — the engine's `bank_reward` at [`realizable_power`],
+    /// gated on a presence at the Bank. Units are yen per activation (manual
+    /// p.12: 1..5).
+    pub fn bank_access(&self, view: &PlayerView, player: &VisiblePlayer) -> i64 {
+        let Some(seat) = seat_index(player) else { return 0 };
+        areas_in(self.context.occupied[seat] & self.context.bank)
+            .map(|area| i64::from(bank_reward(realizable_power(view, player, area))))
+            .sum()
+    }
+
+    /// **S6 `EmploymentAgencyAccess`** — the engine's token allowance at
+    /// [`realizable_power`] (0/0/1/2/3/4 per power, manual p.14), capped by what
+    /// the seat's warehouse actually holds, gated on a presence at the agency.
+    /// Units are retrievable tokens.
+    ///
+    /// **The warehouse minimum repairs a structural zero** (§3.2): the warehouse
+    /// is one-way and only drains, so an ungated allowance over-credits
+    /// monotonically as the game runs.
+    ///
+    /// **OPTIMISTIC-PROXY DECLARATION**: the minimum gates SUPPLY, not
+    /// AFFORDABILITY. A warehouse holding only trading-house tokens against an
+    /// empty purse is Skip-only while this reads > 0 — token costs (assistants
+    /// free, shophouses 2¥, trading houses 4/5/6/7) belong to the money term, and
+    /// the affordability conditional is declared family-10-class. Pinned as a
+    /// declaration in `tests/eval_core.rs`, not repaired.
+    pub fn employment_agency_access(&self, view: &PlayerView, player: &VisiblePlayer) -> i64 {
+        let Some(seat) = seat_index(player) else { return 0 };
+        let warehouse = i64::from(player.assistants.in_warehouse)
+            + i64::from(player.shophouses.in_warehouse)
+            + i64::from(player.trading_houses.in_warehouse);
+        areas_in(self.context.occupied[seat] & self.context.employment_agency)
+            .map(|area| {
+                let allowed =
+                    employment_agency_tokens_allowed(realizable_power(view, player, area));
+                i64::from(allowed).min(warehouse)
+            })
+            .sum()
+    }
+
+    /// **S7 `PresidentReachableAreas`** — how many areas are actionable in
+    /// principle from where the President is. Units are areas.
+    ///
+    /// The count of [`Self::president_reachable_set`]; see that method for the
+    /// walk, the two exclusions and the declared narrowings.
+    pub fn president_reachable_areas(&self, player: &VisiblePlayer) -> i64 {
+        i64::from(self.president_reachable_set(player).count_ones())
+    }
+
+    /// S7's counted SET, exposed because §7's audit contract compares it against
+    /// the engine's own possible-action-area set rather than only its size.
+    ///
+    /// # On board: a walk, then two exclusions
+    ///
+    /// From the President's area, step along FREE edges ONTO areas holding at
+    /// least one of the seat's assistants — the shape of the engine's own hop
+    /// predicate (`can_step_onto` movement.rs:256-260), which has NO President
+    /// clause. **Transit through an opponent's President is therefore
+    /// UNRESTRICTED**; what an opponent's President blocks is STOPPING
+    /// (`is_possible_action_area_full` movement.rs:92-101, waivable by Postal
+    /// System), so those areas are walked through and then excluded from the
+    /// count, along with the Canal.
+    ///
+    /// The President's OWN area is excluded at the step gate, which does double
+    /// duty: it is `can_step_onto`'s `to != start` canonicalization, and it is
+    /// §3.2's "MINUS the president's current area" — the no-return-to-start rule
+    /// bars acting there next turn (`apply_move.rs:241-250`), and at a hand-off
+    /// state the barred start area IS the current area.
+    ///
+    /// # In hand: no walk at all
+    ///
+    /// `PlacePresident` reaches every own-assistant, non-Canal,
+    /// opponent-President-free area with no chain (`legal_moves.rs:275-282`), so
+    /// the in-hand reading is the DIRECT [`ViewContext::reentry_targets`] set —
+    /// no BFS, no anchor, and 0 with no board assistants.
+    ///
+    /// # Declared narrowings
+    ///
+    /// Tram, Postal System and mercenary bypasses, and every fee — placement,
+    /// pass-through and canal tolls — are unmodeled (§3.1's scope).
+    pub fn president_reachable_set(&self, player: &VisiblePlayer) -> AreaSet {
+        let Some(seat) = seat_index(player) else { return 0 };
+        match player.president_location {
+            PresidentLocation::InHand => self.context.reentry_targets(seat),
+            PresidentLocation::OnBoard(start) => {
+                // The one bitset the walk needs: areas the seat occupies, minus
+                // the President's own area (both exclusions, one mask).
+                let steppable = self.context.occupied[seat] & !area_bit(start);
+                let mut reached: AreaSet = 0;
+                let mut frontier: AreaSet = area_bit(start);
+                while frontier != 0 {
+                    let here = frontier.trailing_zeros() as usize;
+                    frontier &= frontier - 1;
+                    let next = self.context.free_adjacency[here] & steppable & !reached;
+                    reached |= next;
+                    frontier |= next;
+                }
+                reached & self.context.placeable & !self.context.opponent_presidents(seat)
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
