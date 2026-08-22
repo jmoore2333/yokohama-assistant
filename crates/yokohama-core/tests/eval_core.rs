@@ -1833,3 +1833,123 @@ fn realizable_power_caps_last_at_five() {
         "five assistants plus the arriving president is six, capped to five"
     );
 }
+
+/// **THE PER-TERM CELL, and it exists because the organic sweep does not cover
+/// its own subject.** Of the 1116 comparisons
+/// `realizable_power_is_the_arriving_power_oracle_over_organic_play` makes, the
+/// trading-house term is live in ZERO and the station term in ZERO (the
+/// shophouse term in six): organic 2P/3P play under the weighted rung rarely
+/// builds and never places the Station token in the sampled window. A field
+/// typo in either term — a shophouse map consulted where a trading-house set
+/// was meant, say — would pass every other cell in this file. So the terms get
+/// a CONSTRUCTED position that carries all five power sources at one area.
+///
+/// Every stock is MOVED, never invented: the seat's twenty assistants, eight
+/// shophouses and four trading houses are asserted equal before and after, so
+/// the fixture is a position the engine could hold rather than a convenient
+/// pile of fields.
+///
+/// The reading is pinned against the engine at every variant, on exactly the
+/// organic cell's oracle — `calculate_power` on the president-relocated clone.
+#[test]
+fn realizable_power_counts_the_shophouse_the_trading_house_and_the_station() {
+    let rules = Rules::standard();
+    let base = keep_game(2, 49, &rules);
+    let seat = PlayerId(0);
+    let area = *observe(&base, seat).unwrap().board_layout.areas.keys().next().unwrap();
+
+    // What the fixture claims to start from, asserted rather than assumed — a
+    // setup that already carried one of these would make the deltas below
+    // measure something other than the term they name.
+    assert_eq!(base.players[0].assistants.on_board.get(&area).copied().unwrap_or(0), 0);
+    assert!(!base.players[0].shophouses.built.contains_key(&area));
+    assert!(!base.players[0].trading_houses.built.contains(&area));
+    assert_eq!(base.station_location, None);
+    assert_ne!(
+        base.players[0].president_location,
+        PresidentLocation::OnBoard(area),
+        "the president must be ELSEWHERE, so the term this reading adds is the unconditional one"
+    );
+
+    let mut full = base.clone();
+    {
+        let p = &mut full.players[0];
+        p.assistants.in_hand -= 1;
+        p.assistants.on_board.insert(area, 1);
+        p.shophouses.in_warehouse -= 1;
+        p.shophouses.built.insert(area, 0);
+        p.trading_houses.in_warehouse -= 1;
+        p.trading_houses.built.push(area);
+    }
+    full.station_location = Some(area);
+
+    // The constructibility mandate, made executable: tokens moved, never
+    // invented (20 assistants / 8 shophouses / 4 trading houses).
+    let stock = |s: &GameState| {
+        let p = &s.players[0];
+        let assistants = u32::from(p.assistants.in_hand)
+            + u32::from(p.assistants.in_warehouse)
+            + p.assistants.on_board.values().map(|n| u32::from(*n)).sum::<u32>()
+            + u32::from(p.assistants.on_achievements)
+            + u32::from(p.assistants.on_church)
+            + u32::from(p.assistants.on_customs);
+        let shophouses = u32::from(p.shophouses.in_hand)
+            + u32::from(p.shophouses.in_warehouse)
+            + p.shophouses.built.len() as u32;
+        let trading = u32::from(p.trading_houses.in_hand)
+            + u32::from(p.trading_houses.in_warehouse)
+            + p.trading_houses.built.len() as u32;
+        (assistants, shophouses, trading)
+    };
+    assert_eq!(stock(&full), stock(&base), "the fixture moved tokens; it must not invent them");
+    assert_eq!(stock(&full), (20, 8, 4), "the printed per-seat token supplies");
+
+    let read = |state: &GameState| {
+        let view = observe(state, seat).unwrap();
+        let player = view.players.iter().find(|p| p.id == seat).expect("the viewer has a row");
+        realizable_power(&view, player, area)
+    };
+    let oracle =
+        |state: &GameState| calculate_power(&president_relocated(state, seat, area), seat, area);
+
+    // 1 president + 1 assistant + 1 shophouse + 1 trading house + 1 station = 5,
+    // which is the cap exactly, so no term is hidden behind it.
+    assert_eq!(read(&full), 5, "all five power sources at one area");
+    assert_eq!(read(&full), oracle(&full));
+
+    // PER-TERM: drop one source at a time; the reading must fall by exactly
+    // one, and must still agree with the engine. This is what the two dead
+    // terms have instead of organic coverage.
+    let mut without: Vec<(&str, GameState)> = Vec::new();
+
+    let mut no_assistant = full.clone();
+    no_assistant.players[0].assistants.on_board.remove(&area);
+    no_assistant.players[0].assistants.in_hand += 1;
+    without.push(("assistant", no_assistant));
+
+    let mut no_shophouse = full.clone();
+    no_shophouse.players[0].shophouses.built.remove(&area);
+    no_shophouse.players[0].shophouses.in_warehouse += 1;
+    without.push(("shophouse", no_shophouse));
+
+    let mut no_trading_house = full.clone();
+    no_trading_house.players[0].trading_houses.built.retain(|a| *a != area);
+    no_trading_house.players[0].trading_houses.in_warehouse += 1;
+    without.push(("trading house", no_trading_house));
+
+    let mut no_station = full.clone();
+    no_station.station_location = None;
+    without.push(("station", no_station));
+
+    for (term, state) in &without {
+        assert_eq!(stock(state), (20, 8, 4), "the {term} variant lost a token");
+        assert_eq!(read(state), 4, "dropping the {term} did not cost exactly one power");
+        assert_eq!(read(state), oracle(state), "the {term} variant disagrees with the engine");
+    }
+    // Names what it exercised, so a future reader can see the coverage claim is
+    // about four separate terms rather than one sum.
+    println!(
+        "realizable_power per-term: {} terms each worth exactly 1 at the cap boundary",
+        without.len()
+    );
+}
