@@ -2266,8 +2266,14 @@ impl ScoreStructure {
             PresidentLocation::InHand => self.context.reentry_targets(seat),
             PresidentLocation::OnBoard(start) => {
                 // The one bitset the walk needs: areas the seat occupies, minus
-                // the President's own area (both exclusions, one mask).
-                let steppable = self.context.occupied[seat] & !area_bit(start);
+                // the President's own area (both exclusions, one mask), and
+                // placeable — the Canal is not a hop the engine's own predicate
+                // allows either (`can_step_onto`'s `allows_placement` test).
+                // Card-literal conformance is unchanged: no view the rules can
+                // reach stands a pawn on the Canal, so this narrows nothing in
+                // play. It is here so a CONSTRUCTED view cannot transit it.
+                let steppable =
+                    self.context.occupied[seat] & self.context.placeable & !area_bit(start);
                 let mut reached: AreaSet = 0;
                 let mut frontier: AreaSet = area_bit(start);
                 while frontier != 0 {

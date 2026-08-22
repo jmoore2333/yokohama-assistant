@@ -2274,24 +2274,36 @@ fn token_stock(state: &GameState, seat: usize) -> (u32, u32, u32) {
 /// were wired to the wrong helper as well as an S1 that summed the wrong areas.
 ///
 /// The PRESENCE GATE rides the same fixture: one production area is left empty,
-/// and its reward at the power the seat would arrive with is asserted nonzero,
+/// and its reward at the power the seat would arrive with is ASSERTED nonzero,
 /// so "the gate excluded it" and "the gate was never tested" cannot look alike.
+///
+/// **Which tile is left empty is a choice, not an accident.** At the empty tile
+/// the arriving power is 1 — the president alone — and at power 1 a Copper Mine
+/// and a Silk Mill both export NOTHING. Leaving either of those empty would give
+/// a control that reads 0 for the tile's own reason rather than for the gate's,
+/// which is exactly the inert control this cell used to have. So the empty tile
+/// is the Tea Plantation: 1:1 in power, and therefore worth 1 at the very
+/// bottom of its range.
 #[test]
 fn production_access_is_the_engines_exported_reward_at_realizable_power() {
     let rules = Rules::standard();
     let mut state = keep_game(2, 81, &rules);
-    let areas = production_areas(&state);
-    assert_eq!(areas.len(), 4, "a 2P board carries one tile of each production type");
+    let all = production_areas(&state);
+    assert_eq!(all.len(), 4, "a 2P board carries one tile of each production type");
 
-    // Three occupied at different strengths, one deliberately empty.
-    place_assistants(&mut state, 0, areas[0], 1);
-    place_assistants(&mut state, 0, areas[1], 2);
-    place_assistants(&mut state, 0, areas[2], 4);
+    let empty = area_typed(&state, AreaType::TeaPlantation);
+    let occupied: Vec<AreaId> = all.iter().copied().filter(|a| *a != empty).collect();
+    assert_eq!(occupied.len(), 3, "the other three production tiles");
+
+    // Three occupied at different strengths, the Tea Plantation deliberately empty.
+    place_assistants(&mut state, 0, occupied[0], 1);
+    place_assistants(&mut state, 0, occupied[1], 2);
+    place_assistants(&mut state, 0, occupied[2], 4);
     assert_eq!(token_stock(&state, 0), (20, 8, 4), "the fixture moved pawns; it must not invent them");
 
     let expected: i64 = read_s(&state, &rules, PlayerId(0), |_, view, player| {
         let mut total = 0i64;
-        for area in &areas[..3] {
+        for area in &occupied {
             let power = realizable_power(view, player, *area);
             let printed = match view.board_layout.areas[area].area_type {
                 AreaType::CopperMine => yokohama_core::actions::copper_mine_reward(power),
@@ -2310,18 +2322,23 @@ fn production_access_is_the_engines_exported_reward_at_realizable_power() {
     assert_eq!(s1, expected, "S1 must be the summed printed exports at the arriving power");
 
     // The gate is legality, not a scope cut: the empty tile WOULD pay.
-    let unoccupied_would_pay = read_s(&state, &rules, PlayerId(0), |_, view, player| {
-        let power = realizable_power(view, player, areas[3]);
-        yokohama_core::actions::exported_reward(view.board_layout.areas[&areas[3]].area_type, power)
-            .expect("a production tile is in the dispatcher's domain")
+    let (unoccupied_would_pay, present) = read_s(&state, &rules, PlayerId(0), |_, view, player| {
+        let power = realizable_power(view, player, empty);
+        let pay = yokohama_core::actions::exported_reward(
+            view.board_layout.areas[&empty].area_type,
+            power,
+        )
+        .expect("a production tile is in the dispatcher's domain");
+        (pay, player.assistants.in_area(empty))
     });
-    assert_eq!(
-        read_s(&state, &rules, PlayerId(0), |_, _, player| player.assistants.in_area(areas[3])),
-        0,
-        "the fourth tile is the ungated control and must be empty"
+    assert_eq!(present, 0, "the control tile is the ungated one and must be empty");
+    assert!(
+        unoccupied_would_pay > 0,
+        "the control tile would pay {unoccupied_would_pay} at its arriving power — a control \
+         that pays nothing cannot show the gate excluded anything"
     );
     println!(
-        "S1 = {s1}; the ungated fourth tile would have paid {unoccupied_would_pay} at its arriving power"
+        "S1 = {s1}; the ungated Tea Plantation would have paid {unoccupied_would_pay} at its arriving power"
     );
 }
 
@@ -2695,6 +2712,19 @@ fn employment_agency_access_gates_supply_and_not_affordability() {
 ///
 /// The conservation half of both is family 11(c)'s, weight-side, and is not
 /// this cell's to assert.
+///
+/// # The third state exists to KILL the presence gate, and nothing else did
+///
+/// A drained agency reads 0 for TWO reasons at once, and only one of them is the
+/// gate: with no assistants the arriving power is 1, and
+/// `employment_agency_tokens_allowed(1)` is 0 — so deleting the gate from the
+/// helper leaves every other fixture in this file green.
+///
+/// The `stationed` state separates them. The station token raises the arriving
+/// power to 2, where the printed allowance is one token, at an agency the seat
+/// has still never touched and with a full warehouse behind it. An UNGATED S6
+/// reads 1 there; the gated one must read 0, and that assert is the gate's only
+/// executable witness in the repo.
 #[test]
 fn employment_agency_access_drains_to_zero_when_recovery_empties_the_agency() {
     let rules = Rules::standard();
@@ -2706,11 +2736,38 @@ fn employment_agency_access_drains_to_zero_when_recovery_empties_the_agency() {
 
     let read = |state: &GameState| {
         read_s(state, &rules, PlayerId(0), |s, view, player| {
-            s.employment_agency_access(view, player)
+            (s.employment_agency_access(view, player), realizable_power(view, player, agency))
         })
     };
-    assert_eq!(read(&before), 3, "three assistants plus the arriving president allows three tokens");
-    assert_eq!(read(&after), 0, "the drained agency no longer satisfies the presence gate");
+    assert_eq!(
+        read(&before).0,
+        3,
+        "three assistants plus the arriving president allows three tokens"
+    );
+    assert_eq!(read(&after).0, 0, "the drained agency no longer satisfies the presence gate");
+
+    let mut stationed = after.clone();
+    stationed.station_location = Some(agency);
+    let (s6, power) = read(&stationed);
+    assert_eq!(
+        stationed.players[0].assistants.in_area(agency),
+        0,
+        "the gate-killing state must have NO presence at the agency"
+    );
+    assert_eq!(power, 2, "the arriving president plus the station token");
+    assert_eq!(
+        yokohama_core::actions::employment_agency_tokens_allowed(power),
+        1,
+        "an ungated read would find an allowance of 1 here — that is the mutant this kills"
+    );
+    assert!(
+        stationed.players[0].assistants.in_warehouse
+            + stationed.players[0].shophouses.in_warehouse
+            + stationed.players[0].trading_houses.in_warehouse
+            > 0,
+        "the warehouse must be stocked, or the min would hide the gate again"
+    );
+    assert_eq!(s6, 0, "presence is the gate, and the seat has none at this agency");
 }
 
 // ---------------------------------------------------------------------------
@@ -2906,12 +2963,14 @@ fn president_local_access_in_hand_maximises_over_the_reentry_targets() {
     let mut state = keep_game(2, 113, &rules);
     state.players[0].president_location = PresidentLocation::InHand;
 
-    // No board assistants at all: the declared 0.
-    assert_eq!(
-        read_s(&state, &rules, PlayerId(0), |s, _, p| s.president_local_access(p)),
-        0,
-        "a seat with no board presence has no re-entry"
-    );
+    // No board assistants at all: the declared 0 — for S4 and, on the same
+    // state and for the same reason, for S7's in-hand branch, whose card
+    // carries the identical "0 with no board assistants" sentence.
+    let (s4_empty, s7_empty) = read_s(&state, &rules, PlayerId(0), |s, _, p| {
+        (s.president_local_access(p), s.president_reachable_areas(p))
+    });
+    assert_eq!(s4_empty, 0, "a seat with no board presence has no re-entry");
+    assert_eq!(s7_empty, 0, "and no area is actionable in principle from a hand it cannot leave");
 
     let context = {
         let view = observe(&state, PlayerId(0)).unwrap();
@@ -3229,10 +3288,31 @@ fn president_reachable_areas_in_hand_is_the_place_president_destination_count() 
 // V4 §7 audit contract — Group S, the cross-cutting parts
 // ---------------------------------------------------------------------------
 
-/// Every function a Group-S read executes, by its source-text head. The list is
-/// the SUBJECT of the two scans below, and it is hand-maintained on purpose: a
-/// new S helper that is not added here is a helper neither scan covers, which is
-/// exactly the omission an eighth feature would make silently.
+/// The Group-S FEATURE BODIES, by source-text head — the subject of the two
+/// scans below. Hand-maintained on purpose: a new S helper not added here is a
+/// helper neither scan covers, which is exactly the omission an eighth feature
+/// would make silently.
+///
+/// **This is not every function a Group-S read executes, and the difference
+/// matters when reading what the scans certify.** Four kinds of code run below
+/// these bodies and are deliberately outside the list, because each already has
+/// a guard that suits it better than a text scan:
+///
+/// * `realizable_power` — pinned as arithmetic against the engine's own power
+///   function by the four cells at the end of this file, which is a stronger
+///   statement than "its text mentions no money".
+/// * `ViewContext`'s accessors (`free_adjacent`, `opponent_presidents`,
+///   `occupied_placeable`, `reentry_targets`) and the `derive` pass that fills
+///   them — pinned VALUE-wise by the three `view_context_*` cells against the
+///   board layout they are derived from.
+/// * `area_bit` / `areas_in` / `seat_index` — index arithmetic over an `AreaId`
+///   or a seat number, with no player row in scope to read a field of.
+/// * The engine's three printed-reward helpers, which take a `u8` and return a
+///   `u8`.
+///
+/// So the cleanliness scan's claim is precise: **the feature bodies name no
+/// money, goods or order field.** Nothing beneath them could supply one — that
+/// half rests on the guards named above, not on this list.
 const S_HELPER_HEADS: [&str; 9] = [
     "    pub fn production_access(",
     "    pub fn track_access(",
@@ -3532,6 +3612,30 @@ fn group_s_differences_negate_across_the_two_2p_views() {
     }
     assert!(moved >= 5, "only {moved} of the seven features separated the seats");
     println!("cross-view negation: {moved} of the seven Group-S features separated the seats");
+
+    // THE DOMAIN PINS. Every cell above this one reads a feature on a fixture
+    // built to exercise THAT feature, so a helper whose area mask had been
+    // widened — S2 summing power over every occupied area rather than the two
+    // tracks, S5 over every area rather than the Bank, S6 over every area
+    // rather than the agency — would still pass all of them. This fixture is
+    // the one place two seats hold DIFFERENT area classes at once (seat 0 the
+    // production tiles and the Bank, seat 1 the Church and the agency), so
+    // pinning both rows at their exact values is what makes a widened domain
+    // visible: each widening moves a zero off zero.
+    //
+    // The constants are MEASURED, not derived — the board is a shuffle, so the
+    // production types and the adjacency behind S1/S4/S7 are the seed's to
+    // choose. The order is S1..S7.
+    assert_eq!(
+        rows[0],
+        [4, 0, 3, 2, 2, 0, 0],
+        "seat 0 holds production tiles and the Bank: S2 and S6 MUST be zero"
+    );
+    assert_eq!(
+        rows[1],
+        [0, 3, 2, 2, 0, 2, 2],
+        "seat 1 holds the Church and the agency: S1 and S5 MUST be zero"
+    );
 }
 
 /// §3.2's ALLOCATION CONTRACT, the Group-S half: every helper is
