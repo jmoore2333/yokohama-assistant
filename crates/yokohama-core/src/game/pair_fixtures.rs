@@ -7282,6 +7282,16 @@ mod tests {
             assert_eq!(p.trading_houses.in_warehouse, 4);
             assert_eq!(p.assistants.on_board.values().sum::<u8>(), 1);
             assert_eq!(p.president_location, PresidentLocation::InHand);
+            assert_eq!(
+                stocks(f.state(side), seat),
+                (
+                    FAMILY_3_STOCKS[0],
+                    FAMILY_3_STOCKS[1],
+                    FAMILY_3_STOCKS[2],
+                    FAMILY_3_STOCKS[3],
+                ),
+                "the registered stocks are written, not dealt",
+            );
         }
         // Nothing is taken: 3(d) is the ACCESS pair and 11(c) is the take.
         let g = f.state(Side::Greater).player(seat);
@@ -7534,6 +7544,22 @@ mod tests {
         let greater = f.state(Side::Greater);
         let lesser = f.state(Side::Lesser);
 
+        // The registered layout seats the three types the "exhausted" claim
+        // rests on, and the fixture reads them off the board rather than off
+        // the constant.
+        assert_eq!(
+            find_area_of_type(lesser, AreaType::CopperMine).unwrap(),
+            FAMILY_8_STRANDED_AREAS[0],
+        );
+        assert_eq!(
+            find_area_of_type(lesser, AreaType::LaboratoryA).unwrap(),
+            FAMILY_8_STRANDED_AREAS[1],
+        );
+        assert_eq!(
+            find_area_of_type(lesser, AreaType::Church).unwrap(),
+            FAMILY_8_PRESIDENT_AREA,
+        );
+
         // The STRANDED side: president on an own-empty area, both pawns in its
         // free ring, and both areas exhausted by the engine's own arithmetic.
         assert_eq!(
@@ -7661,6 +7687,11 @@ mod tests {
         for side in [Side::Greater, Side::Lesser] {
             let state = f.state(side);
             assert_eq!(occupied_areas(state, seat), vec![port]);
+            assert_eq!(
+                state.player(seat).assistants.in_area(port),
+                1,
+                "one pawn plus the president's +1 is the registered realizable power 2",
+            );
             assert_eq!(
                 stocks(state, seat),
                 (
@@ -7859,18 +7890,19 @@ mod tests {
         let mut state = keep_game_2p(FIXTURE_SEED, &rules).expect("setup");
         let generated: Vec<AreaType> =
             state.board_layout.areas.values().map(|c| c.area_type).collect();
-        retype_board_2p(&mut state, RING_LAYOUT).expect("the ring layout is a permutation");
         let mut before: Vec<String> = generated.iter().map(|t| format!("{t:?}")).collect();
-        let mut after: Vec<String> = state
-            .board_layout
-            .areas
-            .values()
-            .map(|c| format!("{:?}", c.area_type))
-            .collect();
         before.sort();
-        after.sort();
-        assert_eq!(before, after, "the multiset is the engine's, not the layout's");
-        check_invariants(&state, &rules).expect("a re-typed 2P board is engine-valid");
+        // Both registered hand-built tables, since S2-T6 added a second one.
+        for layout in [RING_LAYOUT, FAMILY_8_LAYOUT] {
+            let mut copy = state.clone();
+            retype_board_2p(&mut copy, layout).expect("a registered layout is a permutation");
+            let mut after: Vec<String> =
+                copy.board_layout.areas.values().map(|c| format!("{:?}", c.area_type)).collect();
+            after.sort();
+            assert_eq!(before, after, "the multiset is the engine's, not the layout's");
+            check_invariants(&copy, &rules).expect("a re-typed 2P board is engine-valid");
+        }
+        retype_board_2p(&mut state, RING_LAYOUT).expect("the ring layout is a permutation");
 
         // And a layout that is NOT a permutation is refused rather than seated.
         let mut illegal = RING_LAYOUT;
