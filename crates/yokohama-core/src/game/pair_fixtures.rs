@@ -2490,21 +2490,40 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn the_registry_is_empty_at_this_task_and_pinned_to_the_spec_target() {
+    fn the_registry_holds_families_one_and_eleven_and_is_pinned_to_the_spec_target() {
         assert_eq!(
             REGISTERED.len(),
             REGISTERED_PAIR_COUNT,
             "the array's length IS the count pin",
         );
         assert_eq!(
-            REGISTERED_PAIR_COUNT, 0,
-            "S2-T3 builds the frame; every §5.2 pair lands in a later task, and this \
-             number is what those tasks bump toward {REGISTERED_PAIR_TARGET}",
+            REGISTERED_PAIR_COUNT, 10,
+            "S2-T4 registers §5.2's family 1 (5) and family 11 (5); the remaining \
+             families land in later tasks, and this number is what they bump toward \
+             {REGISTERED_PAIR_TARGET}",
         );
         assert_eq!(
             REGISTERED_PAIR_TARGET, 36,
             "§5.1's registered counts: 34 gate pairs plus the 2(c)/10(c) diagnostics",
         );
+        let ids: Vec<&str> = REGISTERED.iter().map(|p| p.id).collect();
+        assert_eq!(
+            ids,
+            vec![
+                "1(a)", "1(b)", "1(c)", "1(d)", "1(e)", "11(a)", "11(b)", "11(c)", "11(d)",
+                "11(e)",
+            ],
+            "§5.2's own registration order, family 1 then family 11",
+        );
+        for pair in REGISTERED.iter() {
+            assert_eq!(pair.role, PairRole::Constraint, "{} is a gate pair", pair.id);
+            assert!(
+                pair.family == 1 || pair.family == 11,
+                "{} claims family {}",
+                pair.id,
+                pair.family
+            );
+        }
     }
 
     #[test]
@@ -3605,3 +3624,4 @@ mod tests {
         assert_ne!(second, area);
     }
 }
+
