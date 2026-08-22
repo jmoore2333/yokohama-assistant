@@ -550,6 +550,50 @@ mod tests {
         );
     }
 
+    /// The ALLOCATION-FREE core, stated as the three printed gates (manual
+    /// p.13): LOW opens at power 2, MID at 3, HIGH at 4. V4 spec §13 registers
+    /// this refactor, and §7 names it as X2's rules-arithmetic comparator.
+    ///
+    /// The sweep runs 0..=6 — past the printed range on both ends, since power
+    /// 0 and 1 open nothing and the engine caps at 5.
+    #[test]
+    fn port_zone_accessible_is_the_three_printed_power_gates() {
+        for power in 0..=6u8 {
+            assert_eq!(
+                port_zone_accessible(power, PortZone::Low),
+                power >= 2,
+                "LOW at power {power}"
+            );
+            assert_eq!(
+                port_zone_accessible(power, PortZone::Mid),
+                power >= 3,
+                "MID at power {power}"
+            );
+            assert_eq!(
+                port_zone_accessible(power, PortZone::High),
+                power >= 4,
+                "HIGH at power {power}"
+            );
+        }
+    }
+
+    /// BEHAVIOUR IDENTITY: the allocating list is exactly the core's `true`
+    /// zones, in the printed Low/Mid/High order, at every power.
+    ///
+    /// This is what makes the refactor single-sourcing rather than a second
+    /// derivation — `validate_port_action` and `legal_moves` keep calling the
+    /// list, and the list now calls the core, so the two can no longer drift.
+    #[test]
+    fn the_accessible_zone_list_is_exactly_the_cores_true_zones() {
+        for power in 0..=6u8 {
+            let expected: Vec<PortZone> = [PortZone::Low, PortZone::Mid, PortZone::High]
+                .into_iter()
+                .filter(|zone| port_zone_accessible(power, *zone))
+                .collect();
+            assert_eq!(port_accessible_zones(power), expected, "power {power}");
+        }
+    }
+
     #[test]
     fn test_port_validate_zone_accessibility_by_power() {
         let state = create_test_state();
