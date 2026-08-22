@@ -2455,7 +2455,7 @@ pub const PAIR_8: PairDeclaration = PairDeclaration {
 ///
 /// | slot | card | requirement | match at one seafood |
 /// |------|------|-------------|----------------------|
-/// | 0 | 3 (English) | 2 copper, 1 seafood | 1 |
+/// | 0 | 13 (English) | 2 copper, 1 silk, 2 seafood | 1 |
 /// | 1 | 9 (German) | 3 silk, 1 seafood | 1 |
 /// | 2 | 15 (English) | 3 copper, 1 silk, 1 tea | never read (MID closed) |
 /// | 3 | 33 (German) | 3 silk, 3 tea | never read (MID closed) |
@@ -2466,8 +2466,14 @@ pub const PAIR_8: PairDeclaration = PairDeclaration {
 /// SET must be identical across the sides — O1's pool is the complement of the
 /// located cards, and two different mid-zone offers would move the pool floor
 /// underneath a pair whose collateral is registered as none.
+///
+/// **Order 3 is NOT among them, and the exclusion is a finding rather than a
+/// preference:** at [`FIXTURE_SEED`] the OPPONENT is dealt order 3, and a held
+/// card cannot be seated at a port slot. [`stock_port_a`] refuses such a
+/// registration by name rather than silently seating something else, which is
+/// how the collision surfaced.
 pub const FAMILY_10A_PORT_OFFERS: [OrderCardId; 6] = [
-    OrderCardId(3),
+    OrderCardId(13),
     OrderCardId(9),
     OrderCardId(15),
     OrderCardId(33),
@@ -2547,6 +2553,34 @@ pub const FAMILY_10C_SPREAD_STOCKS: [u32; 4] = [5, 1, 1, 1];
 /// cannot see the difference; the Church can, at three payment types against
 /// six.
 pub const FAMILY_10C_CONCENTRATED_STOCKS: [u32; 4] = [8, 0, 0, 0];
+
+/// The achievement triple 10(c) draws.
+///
+/// **Copper5 is the ONLY Category-A card this diagnostic can carry.** The two
+/// sides differ in silk, tea and seafood — the spread side holds one of each and
+/// the concentrated side none — so a Silk6, Tea7 or Seafood7 leg would move and
+/// the pair's whole claim (that NO row moves) would be false. `goods_moved`
+/// names those three, so §5.1's registered draw constraint is checked by
+/// `check_draws` rather than trusted.
+///
+/// **Copper differs too, 5 against 8, and is deliberately OUTSIDE the moved
+/// set** — because its leg provably cannot move. `achievement_progress` reports
+/// `min(current, needed)` and Copper5's threshold is 5, which BOTH sides are at
+/// or past. That saturation is the construction's own device (it is why the
+/// spread side carries five coppers rather than one), and the realized row is
+/// checked by [`PairFixture::new`]'s expected-nonzero clause whatever this
+/// declaration claims.
+const DRAWS_10C_SPREAD: AchievementDraws = AchievementDraws {
+    category_a: AchievementType::Copper5,
+    category_b: AchievementType::Orders5,
+    category_c: AchievementType::Commercial4,
+    goods_moved: &[
+        AchievementType::Silk6,
+        AchievementType::Tea7,
+        AchievementType::Seafood7,
+    ],
+    moves_yen: false,
+};
 
 /// 10(c)'s registered purse and imports, equal on both sides: they buy the yen
 /// and imported-good payment types, which no distribution of GOODS can
@@ -2684,7 +2718,7 @@ pub const PAIR_10C: PairDeclaration = PairDeclaration {
     margin: MarginClass::Weak,
     carrier: None,
     presidents: SidedPresidents::BOTH_IN_HAND,
-    draws: DRAWS_TEA_LEG,
+    draws: DRAWS_10C_SPREAD,
     techs: TechDeclaration { excluded_effects: NO_CONVERSION_TECHS, max_owned: Some(0) },
     layout: LayoutClass::StandardGenerated,
     parameters: &[
@@ -4598,12 +4632,21 @@ pub fn build_registered_pair(
         "2(b)" => build_2b(stage, rules),
         "2(c)" => build_2c(stage, rules),
         "2(d)" => build_2d(stage, rules),
+        "3(a)" => build_3a(stage, rules),
+        "3(b)" => build_3b(stage, rules),
+        "3(c)" => build_3c(stage, rules),
+        "3(d)" => build_3d(stage, rules),
         "6(a)" => build_6a(stage, rules),
         "6(b)" => build_6b(stage, rules),
         "6(c)" => build_6c(stage, rules),
         "6(d-church)" => build_6d_church(stage, rules),
         "6(d-customs)" => build_6d_customs(stage, rules),
         "7" => build_7(stage, rules),
+        "8" => build_8(stage, rules),
+        "10(a)" => build_10a(stage, rules),
+        "10(b)" => build_10b(stage, rules),
+        "10(c)" => build_10c(stage, rules),
+        "10(d)" => build_10d(stage, rules),
         "11(a)" => build_11a(stage, rules),
         "11(b)" => build_11b(stage, rules),
         "11(c)" => build_11c(stage, rules),
@@ -4750,6 +4793,182 @@ fn build_1e(stage: StageEndpoint, rules: &Rules) -> Result<PairFixture, FixtureE
     lesser.player_mut(base.subject).president_location =
         PresidentLocation::OnBoard(RING_DISCONNECTED_PRESIDENT_AREA);
     PairFixture::new(&PAIR_1E, stage, greater, lesser, base.subject, rules)
+}
+
+// --- family 3 -------------------------------------------------------------
+
+fn build_3a(stage: StageEndpoint, rules: &Rules) -> Result<PairFixture, FixtureError> {
+    let base = family_base(stage, &PAIR_3A, None, rules)?;
+    // No placement, no stock write, no draw beyond the registered three: §5.2's
+    // "all else identical" is honoured by touching exactly ONE field.
+    let mut greater = base.state.clone();
+    greater.player_mut(base.subject).money = FAMILY_3A_GREATER_MONEY;
+    let mut lesser = base.state;
+    lesser.player_mut(base.subject).money = FAMILY_3A_LESSER_MONEY;
+    PairFixture::new(&PAIR_3A, stage, greater, lesser, base.subject, rules)
+}
+
+fn build_3b(stage: StageEndpoint, rules: &Rules) -> Result<PairFixture, FixtureError> {
+    let mut base = family_base(stage, &PAIR_3B, None, rules)?;
+    // §5.2's "hand constructed empty", built the only way p = 0 admits: the
+    // dealt starting order is stocked for and then FULFILLED through the
+    // engine, which moves it to the completed pile (invariant I11's second
+    // arm) and moves none of `clock_ppm`'s four clocks. The registered stocks
+    // are written afterwards, on top of the zeroes the fulfillment leaves.
+    stock_exactly_the_requirements(&mut base.state, base.subject, FIXTURE_ORDER_CARD, rules)?;
+    let emptied = fulfill_through_the_engine(&base.state, FIXTURE_ORDER_CARD, rules)?;
+    let mut greater = emptied.clone();
+    set_trade_goods(&mut greater, base.subject, [0, 0, FAMILY_3B_GREATER_TEA, 0]);
+    let mut lesser = emptied;
+    set_trade_goods(&mut lesser, base.subject, [0, 0, FAMILY_3B_LESSER_TEA, 0]);
+    PairFixture::new(&PAIR_3B, stage, greater, lesser, base.subject, rules)
+}
+
+fn build_3c(stage: StageEndpoint, rules: &Rules) -> Result<PairFixture, FixtureError> {
+    let mut base = family_base(stage, &PAIR_3C, None, rules)?;
+    set_trade_goods(&mut base.state, base.subject, FAMILY_3_STOCKS);
+    let bank = find_area_of_type(&base.state, AreaType::Bank)?;
+    let copper = find_area_of_type(&base.state, AreaType::CopperMine)?;
+    let mut greater = base.state.clone();
+    place_from_hand(&mut greater, base.subject, bank, 1)?;
+    let mut lesser = base.state;
+    place_from_hand(&mut lesser, base.subject, copper, 1)?;
+    PairFixture::new(&PAIR_3C, stage, greater, lesser, base.subject, rules)
+}
+
+fn build_3d(stage: StageEndpoint, rules: &Rules) -> Result<PairFixture, FixtureError> {
+    let mut base = family_base(stage, &PAIR_3D, None, rules)?;
+    set_trade_goods(&mut base.state, base.subject, FAMILY_3_STOCKS);
+    let ea = find_area_of_type(&base.state, AreaType::EmploymentAgency)?;
+    let copper = find_area_of_type(&base.state, AreaType::CopperMine)?;
+    // The warehouse is left exactly as setup dealt it — §5.2's registered
+    // "warehouse non-empty", which is what makes the POWER CAP the binding
+    // side of S6's min rather than the basket.
+    let mut greater = base.state.clone();
+    place_from_hand(&mut greater, base.subject, ea, 1)?;
+    let mut lesser = base.state;
+    place_from_hand(&mut lesser, base.subject, copper, 1)?;
+    PairFixture::new(&PAIR_3D, stage, greater, lesser, base.subject, rules)
+}
+
+// --- family 8 -------------------------------------------------------------
+
+fn build_8(stage: StageEndpoint, rules: &Rules) -> Result<PairFixture, FixtureError> {
+    let mut base = family_base(stage, &PAIR_8, Some(FAMILY_8_LAYOUT), rules)?;
+    // The registered purse: nothing, which is what makes the Laboratory pawn
+    // exhausted rather than merely idle.
+    base.state.player_mut(base.subject).money = FAMILY_8_SUBJECT_MONEY;
+
+    // The RECALLED side is the base itself — president in hand, no pawn
+    // standing. The STRANDED side is the same seat one turn earlier in its
+    // history, with the two pawns out and the president among them.
+    let greater = base.state.clone();
+    let mut lesser = base.state;
+    for area in FAMILY_8_STRANDED_AREAS {
+        place_from_hand(&mut lesser, base.subject, area, 1)?;
+    }
+    lesser.player_mut(base.subject).president_location =
+        PresidentLocation::OnBoard(FAMILY_8_PRESIDENT_AREA);
+
+    // And the two are one ENGINE recall apart, checked rather than asserted.
+    let recalled = recall_through_the_engine(&lesser, base.subject, rules)?;
+    {
+        let want = greater.player(base.subject);
+        if recalled.president_location != want.president_location
+            || recalled.assistants != want.assistants
+        {
+            return Err(FixtureError::Declaration {
+                clause: "engine-driven recall",
+                detail: format!(
+                    "the engine's own `ReturnPresidentToHand` leaves the seat at {:?} with \
+                     {:?}, and the recalled side carries {:?} with {:?}",
+                    recalled.president_location,
+                    recalled.assistants,
+                    want.president_location,
+                    want.assistants,
+                ),
+            });
+        }
+    }
+    PairFixture::new(&PAIR_8, stage, greater, lesser, base.subject, rules)
+}
+
+// --- family 10 ------------------------------------------------------------
+
+fn build_10a(stage: StageEndpoint, rules: &Rules) -> Result<PairFixture, FixtureError> {
+    let mut base = family_base(stage, &PAIR_10A, None, rules)?;
+    set_trade_goods(&mut base.state, base.subject, FAMILY_10A_STOCKS);
+    let port = find_area_of_type(&base.state, AreaType::PortA)?;
+    place_from_hand(&mut base.state, base.subject, port, 1)?;
+    stock_port_a(&mut base.state, FAMILY_10A_PORT_OFFERS)?;
+
+    let greater = base.state.clone();
+    let mut lesser = base.state;
+    // The PERMUTATION, and nothing else: the two LOW offers and the two HIGH
+    // offers trade places, so the located set is fixed and only the zone each
+    // card sits in moves.
+    lesser.port_state.port_a.slots.swap(0, 4);
+    lesser.port_state.port_a.slots.swap(1, 5);
+    PairFixture::new(&PAIR_10A, stage, greater, lesser, base.subject, rules)
+}
+
+fn build_10b(stage: StageEndpoint, rules: &Rules) -> Result<PairFixture, FixtureError> {
+    let mut base = family_base(stage, &PAIR_10B, None, rules)?;
+    let lab = find_area_of_type(&base.state, AreaType::LaboratoryA)?;
+    place_from_hand(&mut base.state, base.subject, lab, 1)?;
+    {
+        let p = base.state.player_mut(base.subject);
+        p.money = FAMILY_10B_MONEY;
+        p.imported_goods = 0;
+    }
+    stock_lab_a(&mut base.state, FAMILY_10B_LAB_STOCK, rules)?;
+
+    let greater = base.state.clone();
+    let mut lesser = base.state;
+    lesser.lab_state.lab_a.slots.swap(FAMILY_10B_CHEAP_SLOT, FAMILY_10B_DEAR_SLOT);
+    PairFixture::new(&PAIR_10B, stage, greater, lesser, base.subject, rules)
+}
+
+fn build_10c(stage: StageEndpoint, rules: &Rules) -> Result<PairFixture, FixtureError> {
+    let mut base = family_base(stage, &PAIR_10C, None, rules)?;
+    let church = find_area_of_type(&base.state, AreaType::Church)?;
+    place_from_hand(&mut base.state, base.subject, church, 1)?;
+    // 3(b)'s hand-emptying device, for a different reason: ANY held order
+    // reads a different O2 against two stock vectors that differ, and the
+    // diagnostic's whole claim is that NO row moves.
+    stock_exactly_the_requirements(&mut base.state, base.subject, FIXTURE_ORDER_CARD, rules)?;
+    let emptied = fulfill_through_the_engine(&base.state, FIXTURE_ORDER_CARD, rules)?;
+
+    let mut greater = emptied.clone();
+    set_trade_goods(&mut greater, base.subject, FAMILY_10C_SPREAD_STOCKS);
+    let mut lesser = emptied;
+    set_trade_goods(&mut lesser, base.subject, FAMILY_10C_CONCENTRATED_STOCKS);
+    for side in [&mut greater, &mut lesser] {
+        let p = side.player_mut(base.subject);
+        p.money = FAMILY_10C_MONEY;
+        p.imported_goods = FAMILY_10C_IMPORTS;
+    }
+    PairFixture::new(&PAIR_10C, stage, greater, lesser, base.subject, rules)
+}
+
+fn build_10d(stage: StageEndpoint, rules: &Rules) -> Result<PairFixture, FixtureError> {
+    let mut base = family_base(stage, &PAIR_10D, None, rules)?;
+    // BOTH registered cards go off the face-up offers BEFORE either is dealt.
+    // Port offers are LOCATED for O1's pool and deck and box cards are not, so
+    // dealing one out of a port slot would move the pool underneath a pair
+    // whose registered collateral is none.
+    park_order_off_the_port(&mut base.state, FAMILY_10D_MATCHED_CARD)?;
+    park_order_off_the_port(&mut base.state, FAMILY_10D_UNMATCHED_CARD)?;
+    let fishing = find_area_of_type(&base.state, AreaType::FishingGround)?;
+    place_from_hand(&mut base.state, base.subject, fishing, 1)?;
+    set_trade_goods(&mut base.state, base.subject, [0, 0, 0, 0]);
+    base.state.player_mut(base.subject).imported_goods = 0;
+
+    let mut greater = base.state.clone();
+    give_starting_order(&mut greater, base.subject, FAMILY_10D_MATCHED_CARD)?;
+    let mut lesser = base.state;
+    give_starting_order(&mut lesser, base.subject, FAMILY_10D_UNMATCHED_CARD)?;
+    PairFixture::new(&PAIR_10D, stage, greater, lesser, base.subject, rules)
 }
 
 // --- families 2, 6 and 7: the engine-driven turn -------------------------
@@ -5814,6 +6033,60 @@ fn move_order_card_to_port_slot(
         return Err(FixtureError::OutOfStock("the registered port offer card"));
     }
     state.port_state.port_a.slots[slot] = Some(card);
+    Ok(())
+}
+
+/// Seat six registered order cards in Port A's six slots, slot 0 first.
+///
+/// Sequential swaps are SAFE for a set of distinct cards, and the reason is
+/// worth stating because it is not obvious. Step `k` places `cards[k]` at slot
+/// `k` and sends the displaced card to `cards[k]`'s old home. That old home
+/// cannot be an already-finalized slot `j < k`: slot `j` holds `cards[j]` after
+/// step `j`, so `cards[k]` standing there would mean `cards[j] == cards[k]`,
+/// which distinctness forbids. The final read-back is kept anyway — the
+/// argument is about the input, and a caller passing a repeat should be refused
+/// rather than left with a quietly wrong port.
+fn stock_port_a(state: &mut GameState, cards: [OrderCardId; 6]) -> Result<(), FixtureError> {
+    for (slot, card) in cards.into_iter().enumerate() {
+        move_order_card_to_port_slot(state, card, slot)?;
+    }
+    for (slot, card) in cards.into_iter().enumerate() {
+        if state.port_state.port_a.slots[slot] != Some(card) {
+            return Err(FixtureError::Declaration {
+                clause: "registered port offers",
+                detail: format!(
+                    "slot {slot} holds {:?} after stocking, not the registered order {}; the \
+                     six registered offers must be DISTINCT",
+                    state.port_state.port_a.slots[slot].map(|c| c.0),
+                    card.0,
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Move a registered order card OFF the face-up offers, into the box.
+///
+/// The inverse of [`move_order_card_to_port_slot`], and it exists for one
+/// reason: face-up port offers are LOCATED for O1's pool while deck and box
+/// cards are not, so a pair that deals a card out of a port slot moves the pool
+/// on that side alone. 10(d) parks both of its registered cards first so the
+/// two deals are pool-neutral.
+///
+/// A boxed card trades places with it, so the port keeps its FILL and the box
+/// keeps its SIZE; the 36-card conservation total never moves. A card already
+/// off the port is left exactly where it is.
+fn park_order_off_the_port(state: &mut GameState, card: OrderCardId) -> Result<(), FixtureError> {
+    let Some(slot) = port_a_slot_of(state, card) else {
+        return Ok(());
+    };
+    let boxed = state
+        .orders_removed
+        .pop()
+        .ok_or(FixtureError::OutOfStock("a boxed order to trade places with"))?;
+    state.port_state.port_a.slots[slot] = Some(boxed);
+    state.orders_removed.push(card);
     Ok(())
 }
 
@@ -9066,3 +9339,4 @@ mod tests {
         assert_ne!(second, area);
     }
 }
+
