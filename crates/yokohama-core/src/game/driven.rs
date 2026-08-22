@@ -1449,6 +1449,17 @@ pub struct RecipePair {
 pub enum RecipeMiss {
     /// The root is not a mover turn start.
     NotATurnStart,
+    /// A placement the engine's own legal list offered did not apply.
+    ///
+    /// UNREACHABLE under a sound engine — the list is `get_legal_moves`' and
+    /// the application is the internal fast path's, exactly the contract
+    /// `apply_move_unchecked` states — and typed anyway, on
+    /// [`BuilderError::MissingArea`](crate::game::driven_families::BuilderError)'s
+    /// precedent: an engine change must surface HERE, naming itself, rather
+    /// than as a candidate quietly missing from a frozen recipe's population.
+    /// Mapping it onto one of the other arms would have the recipe report a
+    /// fact about the POSITION when what moved was the engine.
+    CandidateDidNotApply(String),
     /// The mover's own view is unavailable.
     MoverViewUnavailable,
     /// The turn-start probe found no placement-shaped move at all.
@@ -1471,6 +1482,9 @@ impl std::fmt::Display for RecipeMiss {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NotATurnStart => write!(f, "the root is not a mover turn start"),
+            Self::CandidateDidNotApply(detail) => {
+                write!(f, "a legal placement did not apply: {detail}")
+            }
             Self::MoverViewUnavailable => write!(f, "the mover's own view is unavailable"),
             Self::NoPlacementCandidates => write!(f, "the turn start offers no placement"),
             Self::NoEligibleCandidate => {
@@ -1523,7 +1537,8 @@ pub fn classify_recipe_candidates(
         let Some((total, areas)) = placement_shape(mv) else {
             continue;
         };
-        let placed = apply_move_unchecked(root, mv, rules).map_err(|_| RecipeMiss::NotATurnStart)?;
+        let placed = apply_move_unchecked(root, mv, rules)
+            .map_err(|e| RecipeMiss::CandidateDidNotApply(e.to_string()))?;
         let view = observe(&placed, mover).map_err(|_| RecipeMiss::MoverViewUnavailable)?;
         let player =
             view.players.iter().find(|p| p.id == mover).ok_or(RecipeMiss::MoverViewUnavailable)?;
@@ -1544,8 +1559,10 @@ pub fn classify_recipe_candidates(
                     all_zero = false;
                     sum += u32::from(reward);
                 }
-                // Outside the four production helpers: neither side, whatever
-                // the area pays through some other one.
+                // Outside the four production helpers — whatever the area pays
+                // through some other one — or (unreachably, since a placement
+                // names a board area) an area the layout does not carry.
+                // Neither side, either way.
                 None => {
                     all_exporting = false;
                     all_zero = false;
