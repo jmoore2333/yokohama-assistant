@@ -143,7 +143,7 @@ use crate::game::arena::{
 use crate::game::belief::BeliefSampler;
 use crate::game::can_fulfill_order;
 use crate::game::end_game::is_game_over;
-use crate::game::eval::WeightTable;
+use crate::game::eval::{realizable_power, WeightTable};
 use crate::game::greedy::{GreedyAgent, DEFAULT_RETREAT_SAMPLES};
 use crate::game::invariants::check_invariants;
 use crate::game::legal_moves::get_legal_moves;
@@ -1348,7 +1348,36 @@ fn order_visible_to_others(holder: &crate::types::PlayerState, order: OrderCardI
 // V4 step 2: the §6 ESCROW RECIPE (spec §6's placement-fork pair recipe)
 // ---------------------------------------------------------------------------
 
-/// Which side of the §6 recipe one placement candidate is on. STUB.
+/// Which side of the §6 recipe one placement candidate is on.
+///
+/// **THREE outcomes, not two, and the third is the load-bearing one.** §6's
+/// recipe wants a pair whose value distinctness is RULES-DERIVED and
+/// unambiguous, so a candidate qualifies as a side only when its whole placed
+/// set agrees:
+///
+/// * every placed area is a production area and every one of them exports a
+///   nonzero reward → [`Productive`](Self::Productive);
+/// * every placed area is a production area and every one of them exports zero
+///   → [`Dead`](Self::Dead);
+/// * anything else → [`Ineligible`](Self::Ineligible).
+///
+/// The `Ineligible` bucket holds three genuinely different positions, all of
+/// which would corrupt the read if admitted:
+///
+/// 1. **A placement touching a NON-production area.** The dispatcher is silent
+///    outside the four production types, and silence is not zero: a Bank
+///    placement exports 1..5 Yen through a different helper, so calling it dead
+///    would state a rules falsehood.
+/// 2. **A MIXED production placement** — some placed areas exporting, some not.
+///    §6 asks for the candidate placing into "areas whose exported action
+///    reward … is nonzero" against "one where it is zero"; a mixed candidate
+///    answers to neither description, and admitting it would make the pair's
+///    direction a matter of which reading a reader picked.
+/// 3. **The EMPTY placement.** `PlaceThreeAreas { placements: vec![] }` is
+///    always in the list — it is how a mover declines to place — and both "all
+///    exporting" and "all not exporting" are VACUOUSLY true of an empty set. A
+///    classifier that let the vacuous truth decide would pair a placement
+///    against a non-placement and call the difference a value distinction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecipeSide {
     /// Every placed area is a production area and every one of them exports a
@@ -1362,7 +1391,11 @@ pub enum RecipeSide {
     Ineligible,
 }
 
-/// One placement candidate, classified. STUB.
+/// One placement candidate from the fork, classified.
+///
+/// Carried as DATA so the step-10 ledger row can record what the recipe saw
+/// rather than only what it chose — a miss is then diagnosable from the same
+/// call that produced it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecipeCandidate {
     /// The placement move itself, as the engine enumerated it.
@@ -1375,7 +1408,17 @@ pub struct RecipeCandidate {
     pub side: RecipeSide,
 }
 
-/// The §6 recipe PAIR. STUB.
+/// The §6 recipe PAIR: two same-total placements from one fork, separated by
+/// the ENGINE-EXPORTED rules quantity and by nothing else.
+///
+/// **It fixes the recipe's QUANTITIES and no more than that** (spec §13's
+/// driven-side clause). It carries no feature column, no weight, no evaluator
+/// reading and no direction claim: the three things §6's escrow read then asks
+/// of this pair — that the frozen raw definitions separate it, that no blocking
+/// collision sits between its sides, and that the locked production identity's
+/// weighted preference agrees with the rules-derived direction — are asked of
+/// it by the READ, at step 10, over an object that was fixed before any of them
+/// could influence it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecipePair {
     /// The seat whose turn is starting.
@@ -1394,7 +1437,14 @@ pub struct RecipePair {
     pub dead_areas: BTreeSet<AreaId>,
 }
 
-/// Why a root yields no §6 recipe pair. STUB.
+/// Why a root yields no §6 recipe pair.
+///
+/// **Typed, and every arm is a STOP.** The recipe's whole claim is that its
+/// pair is rules-distinct; a nearest-available pair would be a pair whose
+/// distinctness nobody established, and the escrow read riding it would be
+/// wrong with no way to notice. So there is no fallback arm anywhere below —
+/// the ordinal simply does not carry the read, which is a fact the step-10
+/// ledger row records rather than a failure to work around.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecipeMiss {
     /// The root is not a mover turn start.
@@ -1403,7 +1453,13 @@ pub enum RecipeMiss {
     MoverViewUnavailable,
     /// The turn-start probe found no placement-shaped move at all.
     NoPlacementCandidates,
-    /// No candidate places into production areas that all export nonzero.
+    /// Candidates exist and not one of them is a side: the mover can only
+    /// DECLINE to place (the empty placement is the whole list — no assistant in
+    /// hand, or no placement it can afford), or every candidate it can afford
+    /// touches a non-production area or mixes paying and non-paying ones.
+    NoEligibleCandidate,
+    /// Some candidate is eligible, but none places into production areas that
+    /// all export nonzero.
     NoProductiveSide,
     /// No candidate places into production areas that all export zero.
     NoDeadSide,
@@ -1417,6 +1473,9 @@ impl std::fmt::Display for RecipeMiss {
             Self::NotATurnStart => write!(f, "the root is not a mover turn start"),
             Self::MoverViewUnavailable => write!(f, "the mover's own view is unavailable"),
             Self::NoPlacementCandidates => write!(f, "the turn start offers no placement"),
+            Self::NoEligibleCandidate => {
+                write!(f, "no candidate is a recipe side at all")
+            }
             Self::NoProductiveSide => {
                 write!(f, "no candidate places into all-nonzero production areas")
             }
@@ -1428,24 +1487,180 @@ impl std::fmt::Display for RecipeMiss {
     }
 }
 
-/// STUB — the RED half of the §6 recipe classifier. Replaced in the next commit.
+/// Every placement the fork offers, with the exported production reward it
+/// would realize.
+///
+/// **Two engine calls do all the work, and both are deliberate.**
+///
+/// * The candidate list is [`turn_start_placements`]' — the SAME probe the
+///   frozen §6 predicate selects the position with, so the recipe keys on
+///   exactly the population the generator drew rather than on a second opinion
+///   about which placements a turn start offers.
+/// * Each candidate is APPLIED, and the reward is read on the successor. The
+///   placement is what creates the access being priced, so a pre-placement
+///   reading would call every empty area dead however many assistants the
+///   candidate puts there; and applying is also what makes the Telegram swap,
+///   the multi-area spreads and the per-President tolls come out right without
+///   this function knowing anything about them.
+///
+/// The reward itself is [`exported_reward`] at
+/// [`realizable_power`](crate::game::eval::realizable_power) — the §13
+/// dispatcher and §3.2's shared arithmetic, CALLED rather than restated, which
+/// is why this helper can be frozen without freezing a copy of the reward table
+/// beside it. It observes the MOVER's own view to do so: every term of the
+/// power sum is public, so the seat the view belongs to cannot change the
+/// answer, and taking the reading through a view is what keeps the recipe's
+/// quantity the same object a seated evaluator would compute.
 pub fn classify_recipe_candidates(
-    _root: &GameState,
-    _rules: &Rules,
+    root: &GameState,
+    rules: &Rules,
 ) -> Result<Vec<RecipeCandidate>, RecipeMiss> {
-    Err(RecipeMiss::NotATurnStart)
+    let placements = turn_start_placements(root, rules).ok_or(RecipeMiss::NotATurnStart)?;
+    let mover = root.current_player;
+
+    let mut candidates = Vec::new();
+    for mv in &placements {
+        let Some((total, areas)) = placement_shape(mv) else {
+            continue;
+        };
+        let placed = apply_move_unchecked(root, mv, rules).map_err(|_| RecipeMiss::NotATurnStart)?;
+        let view = observe(&placed, mover).map_err(|_| RecipeMiss::MoverViewUnavailable)?;
+        let player =
+            view.players.iter().find(|p| p.id == mover).ok_or(RecipeMiss::MoverViewUnavailable)?;
+
+        // The three-way classification of the WHOLE placed set. `exporting`
+        // stays true only while every area is production AND pays; `dead` only
+        // while every area is production and pays nothing. An empty set leaves
+        // both true, which is why emptiness is refused before they are read.
+        let mut sum = 0u32;
+        let mut all_exporting = true;
+        let mut all_zero = true;
+        for area in &areas {
+            let area_type = view.board_layout.areas.get(area).map(|config| config.area_type);
+            match area_type.and_then(|t| exported_reward(t, realizable_power(&view, player, *area)))
+            {
+                Some(0) => all_exporting = false,
+                Some(reward) => {
+                    all_zero = false;
+                    sum += u32::from(reward);
+                }
+                // Outside the four production helpers: neither side, whatever
+                // the area pays through some other one.
+                None => {
+                    all_exporting = false;
+                    all_zero = false;
+                }
+            }
+        }
+
+        let side = if areas.is_empty() {
+            RecipeSide::Ineligible
+        } else if all_exporting {
+            RecipeSide::Productive(sum)
+        } else if all_zero {
+            RecipeSide::Dead
+        } else {
+            RecipeSide::Ineligible
+        };
+        candidates.push(RecipeCandidate { mv: mv.clone(), total, areas, side });
+    }
+
+    Ok(candidates)
 }
 
-/// STUB — the RED half of the §6 recipe selection rule. Replaced in the next
-/// commit.
+/// §6's pair, chosen from classified candidates.
+///
+/// **The rule, stated once because it is FROZEN**: scan placement totals
+/// ASCENDING and take the first total carrying both a productive and a dead
+/// candidate; within it take each side's LOWEST area set.
+///
+/// Both halves are selection, not optimization, and that is the point. The
+/// smallest total is the least confounded pair available — fewest assistants
+/// moved, smallest fee, smallest collateral change to everything else the
+/// escrow read will look at — and a total carrying only one side is SKIPPED
+/// rather than refused, so a position offering its pair only at two assistants
+/// still carries the read. The within-total tie-break is the area set's own
+/// order, which has no value content in it; picking (say) the largest reward
+/// instead would be the recipe quietly optimizing the very quantity the read
+/// exists to test.
+///
+/// The refusals are a LATTICE, ordered so the name says the most specific true
+/// thing: no candidates at all, then none of them a side, then no side of one
+/// kind anywhere, then both kinds but never together. A miss recorded in a
+/// step-10 ledger row is then a fact about the position rather than a shrug.
 fn select_recipe_pair(
-    _mover: PlayerId,
-    _candidates: &[RecipeCandidate],
+    mover: PlayerId,
+    candidates: &[RecipeCandidate],
 ) -> Result<RecipePair, RecipeMiss> {
-    Err(RecipeMiss::NoProductiveSide)
+    if candidates.is_empty() {
+        return Err(RecipeMiss::NoPlacementCandidates);
+    }
+    let is_productive = |c: &RecipeCandidate| matches!(c.side, RecipeSide::Productive(_));
+    let is_dead = |c: &RecipeCandidate| c.side == RecipeSide::Dead;
+    if candidates.iter().all(|c| c.side == RecipeSide::Ineligible) {
+        return Err(RecipeMiss::NoEligibleCandidate);
+    }
+    if !candidates.iter().any(is_productive) {
+        return Err(RecipeMiss::NoProductiveSide);
+    }
+    if !candidates.iter().any(is_dead) {
+        return Err(RecipeMiss::NoDeadSide);
+    }
+
+    let totals: BTreeSet<usize> = candidates.iter().map(|c| c.total).collect();
+    for total in totals {
+        let at_total = || candidates.iter().filter(move |c| c.total == total);
+        // `min_by` keeps the FIRST minimum, so equal area sets fall back to the
+        // engine's own enumeration order — deterministic either way.
+        let live = at_total().filter(|c| is_productive(c)).min_by(|a, b| a.areas.cmp(&b.areas));
+        let gone = at_total().filter(|c| is_dead(c)).min_by(|a, b| a.areas.cmp(&b.areas));
+        let (Some(live), Some(gone)) = (live, gone) else {
+            continue;
+        };
+        let RecipeSide::Productive(reward) = live.side else {
+            unreachable!("filtered to the productive side");
+        };
+        return Ok(RecipePair {
+            mover,
+            total,
+            productive: live.mv.clone(),
+            productive_areas: live.areas.clone(),
+            productive_reward: reward,
+            dead: gone.mv.clone(),
+            dead_areas: gone.areas.clone(),
+        });
+    }
+    Err(RecipeMiss::NoSharedTotal)
 }
 
-/// STUB — the RED half of the §6 escrow recipe. Replaced in the next commit.
+/// **THE §6 ESCROW RECIPE** (spec `docs/plans/2026-08-20-phase3.5c-v4-spec-prereg.md`
+/// §6, the escrow-read paragraph): from a placement-fork root, the pair of
+/// same-count placements that the ENGINE-EXPORTED rules quantity separates —
+/// one placing into areas whose exported action reward at realizable power is
+/// nonzero, one where it is zero.
+///
+/// # What this object is, and what it is deliberately not
+///
+/// **FROZEN as of the commit that lands it**, and INSTANTIATED only at step 10.
+/// Nothing here reads a feature column, a weight or an evaluator: §6 requires
+/// value-distinctness to be rules-derived BEFORE the read, so this helper is
+/// independent of `Feature::ALL` and stays independent of it — a later feature
+/// list, a later fit, a later shipping identity all leave the pair it names
+/// unmoved. That independence is what lets the step-10 read be a test of the
+/// features rather than of itself.
+///
+/// It fixes the recipe's QUANTITIES only. The direction claim, the collision
+/// check and the weighted-preference clause are the READ's, over the pair this
+/// returns.
+///
+/// # Selection is by RULES, tie-broken structurally
+///
+/// The pair comes from [`classify_recipe_candidates`] and
+/// [`select_recipe_pair`]; between them they call the §13 reward dispatcher and
+/// §3.2's shared power arithmetic and derive nothing of their own. A root that
+/// carries no such pair gets a TYPED [`RecipeMiss`] naming which half is
+/// missing — never a nearest-available pair, because a pair whose distinctness
+/// nobody established is exactly the thing the recipe exists to rule out.
 pub fn escrow_recipe_pair(root: &GameState, rules: &Rules) -> Result<RecipePair, RecipeMiss> {
     let candidates = classify_recipe_candidates(root, rules)?;
     select_recipe_pair(root.current_player, &candidates)
@@ -11647,7 +11862,7 @@ mod tests {
     fn every_organic_recipe_pair_witnesses_the_frozen_fork_predicate() {
         let rules = Rules::standard();
         let mut pairs = 0usize;
-        let mut misses = 0usize;
+        let mut misses: BTreeMap<String, usize> = BTreeMap::new();
         for index in [11u64, 12] {
             let stats = rung_game(&rules, world(index));
             let events = stats.record.events.len();
@@ -11673,12 +11888,23 @@ mod tests {
                             "event {k}: the recipe is not a function of the root"
                         );
                     }
-                    Err(_) => misses += 1,
+                    Err(miss) => *misses.entry(miss.to_string()).or_default() += 1,
                 }
             }
         }
-        assert!(pairs > 0, "the sweep found no recipe pair at all ({misses} misses)");
-        println!("escrow recipe over organic play: {pairs} pairs, {misses} misses");
+        assert!(pairs > 0, "the sweep found no recipe pair at all ({misses:?})");
+        // RECORDED, never asserted: the yield at a turn start is what says
+        // whether §6's "≥ 6 of 8 ordinals" block rule is comfortable or tight,
+        // and it is a property of the ecology rather than of this helper.
+        let off_turn_start = misses.get(&RecipeMiss::NotATurnStart.to_string()).copied().unwrap_or(0);
+        println!(
+            "escrow recipe over organic play: {pairs} pairs, {off_turn_start} positions off a \
+             turn start, other misses {:?}",
+            misses
+                .iter()
+                .filter(|(name, _)| *name != &RecipeMiss::NotATurnStart.to_string())
+                .collect::<Vec<_>>()
+        );
     }
 
     /// The selection rule's five arms, each from data.
@@ -11692,6 +11918,13 @@ mod tests {
         assert_eq!(select_recipe_pair(mover, &[]), Err(RecipeMiss::NoPlacementCandidates));
         assert_eq!(
             select_recipe_pair(mover, &[candidate(1, &[3], RecipeSide::Ineligible)]),
+            Err(RecipeMiss::NoEligibleCandidate)
+        );
+        assert_eq!(
+            select_recipe_pair(
+                mover,
+                &[candidate(1, &[3], RecipeSide::Dead), candidate(1, &[4], RecipeSide::Ineligible)]
+            ),
             Err(RecipeMiss::NoProductiveSide)
         );
         assert_eq!(
