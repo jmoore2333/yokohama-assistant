@@ -1451,9 +1451,39 @@ pub enum RecipeMiss {
     NotATurnStart,
     /// A placement the engine's own legal list offered did not apply.
     ///
-    /// UNREACHABLE under a sound engine — the list is `get_legal_moves`' and
-    /// the application is the internal fast path's, exactly the contract
-    /// `apply_move_unchecked` states — and typed anyway, on
+    /// # Unreachable today, and the argument is NOT "it came from the legal list"
+    ///
+    /// [`classify_recipe_candidates`] enumerates on the state AFTER
+    /// `EndAdditionalPhase` (phase `Placement`) and then applies each candidate
+    /// to the ROOT (phase `AdditionalActionFirst`). The two applications agree
+    /// BYTE FOR BYTE, but not because a move drawn from a legal list always
+    /// applies — it is because of three facts about those particular arms, and
+    /// a step-10 debugger reading this arm deserves the real ones:
+    ///
+    /// 1. The successor differs from the root in `turn_phase` and in NOTHING
+    ///    ELSE. `advance_phase`'s `AdditionalActionFirst` arm is the single
+    ///    assignment `AdditionalActionFirst => Placement`
+    ///    (apply_move.rs:252–254); every other side effect of that function —
+    ///    the mover, the turn number, the additional-action locks, the
+    ///    turn-start tech effects — lives in the `AdditionalActionSecond` arm
+    ///    and is not on this path.
+    /// 2. **Both placement arms are PHASE-BLIND.** Neither `PlaceThreeAreas`
+    ///    nor `PlaceTwoSameArea` reads `turn_phase` — their self-defence is the
+    ///    count cap, distinctness, Telegram ownership and adjacency, and
+    ///    per-area membership/placeability/supply/fees — and each ENDS by
+    ///    overwriting `turn_phase` with `Movement`. So the one field that
+    ///    differs is neither read nor preserved.
+    /// 3. The queue guard is pre-satisfied: [`is_mover_turn_start`] already
+    ///    required `pending_choices.is_empty()`, and the placement arms do not
+    ///    consult the queue at all.
+    ///
+    /// **So the unreachability DEPENDS on fact 2 holding.** If a placement arm
+    /// ever grew a `turn_phase` conjunct, every root would refuse loudly
+    /// through this arm rather than silently returning a recipe computed from a
+    /// thinned candidate set — which is the designed failure mode and the
+    /// reason this is a typed variant instead of a `continue`.
+    ///
+    /// Typed on
     /// [`BuilderError::MissingArea`](crate::game::driven_families::BuilderError)'s
     /// precedent: an engine change must surface HERE, naming itself, rather
     /// than as a candidate quietly missing from a frozen recipe's population.
