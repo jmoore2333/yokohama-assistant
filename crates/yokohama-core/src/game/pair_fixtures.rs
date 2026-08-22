@@ -582,8 +582,30 @@ pub struct AchievementDraws {
     pub category_b: AchievementType,
     /// `achievements[2]` — always Category C.
     pub category_c: AchievementType,
-    /// The Category-A cards whose GOOD this pair's recipe moves. The drawn
-    /// `category_a` may not be among them (§5.1's registered draw constraint).
+    /// The Category-A cards whose LEG this pair's recipe could move — the
+    /// author's declaration of which achievement legs are AT RISK, not a
+    /// mechanical list of which goods change somewhere in the construction.
+    /// The drawn `category_a` may not be among them (§5.1's registered draw
+    /// constraint).
+    ///
+    /// **The purpose reading is what the two extreme uses need**, and they pull
+    /// in opposite directions:
+    ///
+    /// - **10(c) reads it NARROWLY.** Its two sides differ in COPPER, 5 against
+    ///   8 — yet Copper5 is deliberately outside the set and is the drawn
+    ///   A-card, because `achievement_progress` reports `min(current, needed)`
+    ///   and both sides sit at or past the threshold of 5, so that leg
+    ///   provably cannot move however much the raw good does. A "which goods
+    ///   change" reading would have refused the only Category-A card the
+    ///   diagnostic can carry.
+    /// - **4(g) reads it BROADLY.** Its recipe spends the opponent's copper and
+    ///   seafood on the SHARED base, so no leg can move across the pair at all
+    ///   — and both cards are named anyway, because the clause is about what
+    ///   the recipe TOUCHES rather than about what survives the subtraction.
+    ///
+    /// So `check_draws`'s membership test is a SUFFICIENT condition for the
+    /// drawn leg being still, never a necessary one, and the field is a
+    /// declaration a re-read holds the author to rather than a derivation.
     pub goods_moved: &'static [AchievementType],
     /// True when the recipe moves YEN — then `category_b` may not be
     /// [`AchievementType::Money10`] (§2's veto identity: the leg would shadow
@@ -1166,12 +1188,12 @@ pub const PAIR_1E: PairDeclaration = PairDeclaration {
 
 /// **THE PHASE §5.2 CALLS "AreaAction resolved"** — an S2-T5 judgment call the
 /// frame deliberately left open, resolved here once for every pair that names
-/// it (2(a), 6(d-church), 6(d-customs), 7).
+/// it. FIVE pairs do: 2(a), 4(f), 6(d-church), 6(d-customs) and 7.
 ///
 /// It is [`TurnPhase::FivePowerBonus`], and the phase machine leaves no second
 /// candidate. `Move::ExecuteAreaAction` is the ONLY move that resolves an area
 /// action and it hard-assigns `turn_phase = FivePowerBonus`
-/// (`game/apply_move.rs:118–121`); a state still resting AT
+/// (`game/apply_move.rs:116–119`); a state still resting AT
 /// [`TurnPhase::AreaAction`] is one whose action is PENDING, since that is the
 /// phase `MovePresident`/`PlacePresident` hand over (`:99`, `:106`). So
 /// "resolved" and "AreaAction" name the two sides of one transition, and the
@@ -1179,11 +1201,24 @@ pub const PAIR_1E: PairDeclaration = PairDeclaration {
 ///
 /// Two consequences the pairs below rely on. `current_action_power` is
 /// `Some(power)` at this phase — it is written when the president ARRIVES
-/// (`:530`, `:591`) and cleared only at the hand-off (`:279`) — so these
-/// fixtures carry it, which is exactly what makes them a different evaluation
-/// subject from a hand-off. And Recovery has NOT run, so the acted area's
-/// pawns are still standing: §5.2's "presence unchanged" is a property of the
-/// phase, not something the construction arranges.
+/// (`:530`, `:591`) — so these fixtures carry it, which is exactly what makes
+/// them a different evaluation subject from a hand-off. And Recovery has NOT
+/// run, so the acted area's pawns are still standing: §5.2's "presence
+/// unchanged" is a property of the phase, not something the construction
+/// arranges.
+///
+/// **The seat hand-off is not the only site that clears the power**, and the
+/// earlier reading of this doc said it was. There are TWO clearing sites and a
+/// third writing one: the hand-off clears it (`:279`), `apply_mercenary` WRITES
+/// it for the sub-turn (`:1252`), and `finish_recovery_transition`'s mercenary
+/// arm clears it when that sub-turn ends (`:1178`). Both mercenary sites are
+/// INERT for every pair here, and by declaration rather than by luck — the
+/// view class itself carries `mercenary: false`, [`check_view_class`] refuses a
+/// side whose `is_mercenary_action` disagrees, and no registered construction
+/// takes a mercenary action at all. The correction is recorded rather than
+/// silently applied because a reader checking "cleared only at the hand-off"
+/// against the engine would have found two more sites and no way to tell
+/// whether the fixtures had considered them.
 const AREA_ACTION_RESOLVED: ViewClass =
     ViewClass::MidTurn { phase: TurnPhase::FivePowerBonus, mercenary: false };
 
@@ -3385,6 +3420,15 @@ pub const FAMILY_10C_CONCENTRATED_STOCKS: [u32; 4] = [8, 0, 0, 0];
 /// spread side carries five coppers rather than one), and the realized row is
 /// checked by [`PairFixture::new`]'s expected-nonzero clause whatever this
 /// declaration claims.
+///
+/// This pair is therefore the NARROW pole of
+/// [`AchievementDraws::goods_moved`]'s purpose reading — the field names the
+/// legs at RISK, and a leg pinned at its own cap on both sides is not one. The
+/// broad pole is 4(g), which names two cards whose legs cannot move either,
+/// for the opposite reason (its recipe runs on the shared base). Reading the
+/// field as "which goods change" instead would refuse the only Category-A card
+/// this diagnostic can carry, which is the shape the S2 re-read asked to have
+/// written down here.
 const DRAWS_10C_SPREAD: AchievementDraws = AchievementDraws {
     category_a: AchievementType::Copper5,
     category_b: AchievementType::Orders5,
