@@ -113,15 +113,8 @@
 
 use crate::game::rules::Rules;
 use crate::types::{
-    AchievementType, AreaId, Country, PlayerId, PlayerView, PresidentLocation, TurnPhase,
-    VisiblePlayer,
+    AchievementType, AreaId, Country, PlayerId, PlayerView, TurnPhase, VisiblePlayer,
 };
-
-/// STUB — the RED half of V4 §3.2's shared arithmetic. Replaced in the next
-/// commit.
-pub fn realizable_power(_view: &PlayerView, _player: &VisiblePlayer, _area: AreaId) -> u8 {
-    0
-}
 
 /// Bumped on ANY behavior-affecting change to the evaluator — the feature list,
 /// the relative form, the stage shape, or the weight tables (T4's freeze is a
@@ -1698,6 +1691,82 @@ fn building_areas(view: &PlayerView, player: &VisiblePlayer, kind: AreaKind) -> 
         }
     }
     count
+}
+
+// ---------------------------------------------------------------------------
+// V4 §3.2 — shared arithmetic: the arriving-power reading
+// ---------------------------------------------------------------------------
+
+/// The power `player` would ARRIVE at `area` with — V4 spec §3.2's shared
+/// arithmetic, registered there as
+/// `min(5, own_assistants(a) + 1 + own_shophouse(a) + own_trading_house(a) +
+/// station(a))`.
+///
+/// Implemented ONCE, here, because §3.2 says once: S1, S2, S5, S6, X1, X2 and
+/// X3 all price an option at the power the seat could act with, and seven
+/// copies of one sum is seven things that can drift apart.
+///
+/// # A MIRROR, and it names what it mirrors
+///
+/// The engine's own power function (`power.rs:17-48`) is unreachable from this
+/// module by §2.1's rule, so every term is restated here in the shipped ORDER —
+/// president, assistants, shophouse, trading house, station token, then the cap
+/// applied LAST — over fields the view already carries. Restating a rule is only
+/// honest with a drift pin against its authority, and §7's audit contract part 4
+/// is that pin: `tests/eval_core.rs`'s
+/// `realizable_power_is_the_arriving_power_oracle_over_organic_play` compares
+/// this reading, at every seat and every area of organic 2P and 3P play, against
+/// the engine's own function evaluated on the same position with that seat's
+/// president CONSTRUCTED AT the queried area.
+///
+/// # The one clause that is NOT the engine's, and why
+///
+/// **The president term is UNCONDITIONAL.** The engine adds it where the
+/// president STANDS, because it is reporting the power of an action being taken
+/// now; this reports the power an option would be REALIZED at, and reaching an
+/// area is what a President move is for. The cap is applied after the sum, so
+/// adding the term before capping is the arriving reading rather than a capped
+/// reading plus one.
+///
+/// **Three DECLARED SHAPES ride that choice** (§3.2, verbatim in substance —
+/// they are declared, not defects, and the bias they carry is positive and
+/// known):
+///
+/// 1. These terms price an option PORTFOLIO. At most one area is activatable per
+///    turn — two with an unused mercenary, whose power carries NO president +1
+///    (`apply_move.rs:1226-1236`), so a mercenary activation is one power lower
+///    than priced here.
+/// 2. The president's CURRENT area is barred as next turn's destination by the
+///    no-return-to-start rule, and still receives the +1.
+/// 3. Reachability — the own-assistant chain and the fees along it — is not
+///    applied inside the features that call this.
+///
+/// # Presence is the CALLER's gate
+///
+/// This function answers "with what power", never "may the seat act there":
+/// `own_assistants >= 1` is the engine's action-legality condition and each
+/// calling feature applies it itself (§3.2's presence-gate sentence). A caller
+/// that skipped it would read a nonzero power at an area the seat has never
+/// touched, since the president term alone is 1.
+pub fn realizable_power(view: &PlayerView, player: &VisiblePlayer, area: AreaId) -> u8 {
+    // 1. The president — UNCONDITIONAL; see above.
+    let mut power: u8 = 1;
+    // 2. Assistants.
+    power += player.assistants.in_area(area);
+    // 3. Shophouse.
+    if player.shophouses.built.contains_key(&area) {
+        power += 1;
+    }
+    // 4. Trading house.
+    if player.trading_houses.built.contains(&area) {
+        power += 1;
+    }
+    // 5. The station token, which is +1 for whoever acts there.
+    if view.station_location == Some(area) {
+        power += 1;
+    }
+    // 6. Cap LAST, over the summed terms.
+    power.min(5)
 }
 
 // ---------------------------------------------------------------------------
