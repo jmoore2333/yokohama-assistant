@@ -1496,6 +1496,273 @@ pub const PAIR_2C: PairDeclaration = PairDeclaration {
 };
 
 // ---------------------------------------------------------------------------
+// §5.2 FAMILY 3 — economics (4)
+// ---------------------------------------------------------------------------
+
+/// The achievement triple 3(b) draws — §5.2's own worked example, verbatim:
+/// "+1 of a good whose Category-A card is NOT the drawn one (registered draw,
+/// e.g. vary tea with Copper5 drawn)".
+///
+/// `goods_moved` names Tea7 so §5.1's registered draw constraint is CHECKED
+/// rather than asserted: `check_draws` refuses a drawn A-card inside the moved
+/// set, and Copper5 is outside it. Category B stays `Orders5` — its leg counts
+/// completed orders, and 3(b)'s hand-emptying fulfillment moves that leg by one
+/// on BOTH sides, so it differences to zero (family 6 excludes Orders5 for the
+/// opposite reason: there the fulfillment IS the axis).
+const DRAWS_TEA_MOVED: AchievementDraws = AchievementDraws {
+    category_a: AchievementType::Copper5,
+    category_b: AchievementType::Orders5,
+    category_c: AchievementType::Commercial4,
+    goods_moved: &[AchievementType::Tea7],
+    moves_yen: false,
+};
+
+/// 3(a)'s two registered money levels.
+///
+/// **The EVEN-MONEY REALIZATION NOTE §5.2 asks for, made concrete.** The
+/// carrier's amortized rate is ½ VP per yen, but the terminal conversion is
+/// `money / 2` as an INTEGER FLOOR (scoring.rs:341–357), so 2 → 3 realizes
+/// `floor(2/2) = 1` against `floor(3/2) = 1` — a terminal delta of ZERO. The
+/// pair is registered at exactly that variant deliberately: §5.1 forbids citing
+/// a realized terminal delta as the carrier's evidence ("a single unit realizes
+/// 0-or-1, never ½"), and a fixture sitting on the odd step would let a reader
+/// mistake the realization for the argument.
+const FAMILY_3A_GREATER_MONEY: u32 = 3;
+/// 3(a)'s lesser side — see [`FAMILY_3A_GREATER_MONEY`].
+const FAMILY_3A_LESSER_MONEY: u32 = 2;
+
+/// 3(b)'s two registered tea levels, after the hand-emptying fulfillment has
+/// consumed the dealt stocks.
+///
+/// One apart, and neither at zero: the pair is "MORE GOODS ≻ FEWER", and a
+/// lesser side holding nothing at all would additionally be the boundary case
+/// where every good-reading term collapses for a second reason.
+const FAMILY_3B_GREATER_TEA: u32 = 2;
+/// 3(b)'s lesser side — see [`FAMILY_3B_GREATER_TEA`].
+const FAMILY_3B_LESSER_TEA: u32 = 1;
+
+/// The stocks 3(c) and 3(d) register EQUALLY on both sides — §5.2's "stocks
+/// equal" written down rather than left to the deal.
+///
+/// The dealt one-of-each is what setup gives (`types/player.rs:245–248`), and
+/// writing it is what makes the registration checkable: neither pair's carrier
+/// reads goods, but X3 and the Category-A leg do, and "whatever the seed gave"
+/// would be four unregistered facts underneath a pair whose collateral is
+/// registered as NONE.
+const FAMILY_3_STOCKS: [u32; 4] = [1, 1, 1, 1];
+
+/// §5.2 3(a) — **MORE YEN ≻ FEWER**, E1's margin carrier.
+pub const PAIR_3A: PairDeclaration = PairDeclaration {
+    id: "3(a)",
+    name: "MORE YEN ≻ FEWER",
+    family: 3,
+    greater_side: "three yen",
+    lesser_side: "two yen, and nothing else different",
+    role: PairRole::Constraint,
+    stages: &[StageEndpoint::Early, StageEndpoint::Late],
+    view_class: ViewClass::HandOff,
+    margin: MarginClass::Margined {
+        early: Some(1),
+        late: Some(20),
+        carrier: FeatureId::Candidate(CandidateFeature::MoneyStock),
+    },
+    carrier: Some(FeatureId::Candidate(CandidateFeature::MoneyStock)),
+    presidents: SidedPresidents::BOTH_IN_HAND,
+    draws: DRAWS_YEN_MOVED,
+    techs: TechDeclaration { excluded_effects: NO_CONVERSION_TECHS, max_owned: Some(0) },
+    layout: LayoutClass::StandardGenerated,
+    parameters: &[
+        ("setup_seed", FIXTURE_SEED as i64),
+        ("greater_money", FAMILY_3A_GREATER_MONEY as i64),
+        ("lesser_money", FAMILY_3A_LESSER_MONEY as i64),
+        ("assistants_on_board", 0),
+        ("subject_order_card", FIXTURE_ORDER_CARD.0 as i64),
+    ],
+    expected_nonzero: &[FeatureId::Candidate(CandidateFeature::MoneyStock)],
+    early_hand_cap_deviation: None,
+    notes: &[
+        "§5.2: +1 yen, all else identical. MARGINED (amortized ½ VP/yen): early 1 / late 20. \
+         Both endpoints, HAND-OFF, presidents InHand. Constraints: the drawn Category-B card \
+         is NOT Money10 (else the leg shadows E1 — §2's veto identity); tech exclusions; the \
+         realization note (even-money variant recorded). Collateral: none.",
+        "THE REGISTERED EVEN-MONEY VARIANT: 2 → 3 realizes floor(2/2) = 1 against \
+         floor(3/2) = 1, a terminal delta of ZERO. That is deliberate — §5.1 states that the \
+         amortized ½ VP/yen carrier may never be evidenced by a realized terminal delta, and \
+         a pair sitting on the odd step would invite exactly that reading.",
+        "'ALL ELSE IDENTICAL' is built as literally as it reads: NO assistant stands on the \
+         board on either side. Money is not one of `eval`'s sixteen, and with no presence \
+         anywhere every S term and every X term reads its own structural zero (X1 and X2 are \
+         gated on own presence at the lab and the port, which is what stops money moving X1 \
+         through its `floor(money/2) + imports` purse). E1 is the sole mover on the whole \
+         thirty-four-row axis.",
+        "The Money10 veto is CHECKED, not trusted: `moves_yen` is set on the registered \
+         draws, and `check_draws` refuses the Money10 Category-B card outright.",
+    ],
+};
+
+/// §5.2 3(b) — **MORE GOODS ≻ FEWER**, E2's margin carrier.
+pub const PAIR_3B: PairDeclaration = PairDeclaration {
+    id: "3(b)",
+    name: "MORE GOODS ≻ FEWER",
+    family: 3,
+    greater_side: "two tea",
+    lesser_side: "one tea, and nothing else different",
+    role: PairRole::Constraint,
+    stages: &[StageEndpoint::Early, StageEndpoint::Late],
+    view_class: ViewClass::HandOff,
+    margin: MarginClass::Margined {
+        early: Some(1),
+        late: Some(14),
+        carrier: FeatureId::Candidate(CandidateFeature::TradeGoodsStock),
+    },
+    carrier: Some(FeatureId::Candidate(CandidateFeature::TradeGoodsStock)),
+    presidents: SidedPresidents::BOTH_IN_HAND,
+    draws: DRAWS_TEA_MOVED,
+    techs: TechDeclaration { excluded_effects: NO_CONVERSION_TECHS, max_owned: Some(0) },
+    layout: LayoutClass::StandardGenerated,
+    parameters: &[
+        ("setup_seed", FIXTURE_SEED as i64),
+        ("greater_tea", FAMILY_3B_GREATER_TEA as i64),
+        ("lesser_tea", FAMILY_3B_LESSER_TEA as i64),
+        ("other_goods", 0),
+        ("assistants_on_board", 0),
+        ("subject_order_card", FIXTURE_ORDER_CARD.0 as i64),
+        ("hand_emptied_by_fulfilling", FIXTURE_ORDER_CARD.0 as i64),
+    ],
+    expected_nonzero: &[FeatureId::Candidate(CandidateFeature::TradeGoodsStock)],
+    early_hand_cap_deviation: None,
+    notes: &[
+        "§5.2: +1 of a good whose Category-A card is NOT the drawn one (registered draw, e.g. \
+         vary tea with Copper5 drawn — \"no goods achievement live\" is not a legal state). \
+         MARGINED: early 1 / late 14. Both endpoints, HAND-OFF. Tech exclusions. Collateral: \
+         O2 if a held order requires the good — hand constructed empty.",
+        "HOW AN EMPTY HAND IS CONSTRUCTED, and why the clause is honourable as written (the \
+         S2-T6 resolution of §5.1's open byte). At p = 0 the hand cap admits exactly the \
+         dealt starting order, so an EMPTY hand means that card has been FULFILLED — \
+         invariant I11 wants the recorded `starting_order` in the hand OR in the completed \
+         pile, and the completed pile is the second arm. The fulfillment moves none of \
+         `clock_ppm`'s four clocks (it moves no deck card, no track pawn and no building), so \
+         p = 0 survives it, and the LATE side needs no different device: the same fulfillment \
+         runs on the deck-saturated base. The construction is 6(a)'s greater side exactly, \
+         which S2-T5 already admitted through this frame.",
+        "THE FULFILLED CARD'S OWN EFFECTS, walked. Order 22 pays 8 VP and nothing else — no \
+         money, no imports, no goods back, and no movement or warehouse icon face, so no \
+         choice is queued and the state stays a structural hand-off. Both sides fulfil it, so \
+         VP, the completed pile, `CountryBonusNow` (one distinct country scores nothing) and \
+         the Orders5 leg all difference to zero. The post-fulfillment American icon count is \
+         1, ODD, so `check_mercenary_eligibility`'s sweep awards nothing.",
+        "The registered stocks are written AFTER the fulfillment has consumed the dealt ones, \
+         which is why 'other goods 0' is a registration rather than an accident: the \
+         requirements are exactly what the seat held, so the fulfillment leaves all four \
+         stocks at zero and the pair writes tea back on top.",
+        "O2 is held at zero on BOTH sides by the empty hand rather than by a card that happens \
+         not to need tea — the registration's own device, kept even though the dealt order \
+         card would also have sufficed (it needs copper and seafood, never tea). Building the \
+         weaker version would have made 'Collateral: O2 …' true by luck.",
+    ],
+};
+
+/// §5.2 3(c) — **BANK ACCESS ≻ POWER-DEAD**, S5's margin carrier.
+pub const PAIR_3C: PairDeclaration = PairDeclaration {
+    id: "3(c)",
+    name: "BANK ACCESS ≻ POWER-DEAD",
+    family: 3,
+    greater_side: "one assistant at the Bank (realizable power 2 → 2 yen)",
+    lesser_side: "one assistant at the Copper Mine (realizable power 2 → 0)",
+    role: PairRole::Constraint,
+    stages: &[StageEndpoint::Early, StageEndpoint::Late],
+    view_class: ViewClass::HandOff,
+    margin: MarginClass::Margined {
+        early: Some(1),
+        late: Some(40),
+        carrier: FeatureId::Candidate(CandidateFeature::BankAccess),
+    },
+    carrier: Some(FeatureId::Candidate(CandidateFeature::BankAccess)),
+    presidents: SidedPresidents::BOTH_IN_HAND,
+    draws: DRAWS_TEA_LEG,
+    techs: TechDeclaration { excluded_effects: NO_CONVERSION_TECHS, max_owned: Some(0) },
+    layout: LayoutClass::StandardGenerated,
+    parameters: &[
+        ("setup_seed", FIXTURE_SEED as i64),
+        ("assistants_per_side", 1),
+        ("subject_copper", FAMILY_3_STOCKS[0] as i64),
+        ("subject_silk", FAMILY_3_STOCKS[1] as i64),
+        ("subject_tea", FAMILY_3_STOCKS[2] as i64),
+        ("subject_seafood", FAMILY_3_STOCKS[3] as i64),
+        ("subject_order_card", FIXTURE_ORDER_CARD.0 as i64),
+    ],
+    expected_nonzero: &[FeatureId::Candidate(CandidateFeature::BankAccess)],
+    early_hand_cap_deviation: None,
+    notes: &[
+        "§5.2: 1 assistant at Bank (power 2 → 2¥) ≻ 1 at Copper Mine. MARGINED (amortized, \
+         one activation's 2¥ ≈ 1 VP): early 1 / late 40. Both endpoints, HAND-OFF, presidents \
+         InHand, stocks equal. Collateral: none.",
+        "It is 1(a)'s construction with the Bank in the Silk Mill's place, and the collateral \
+         is none for the same three reasons: ONE parked pawn per side holds S3 at 1, and both \
+         S4 and S7 run their in-hand branch over that same one-area set (local sum 1, direct \
+         count 1).",
+        "The two rewards are read off the engine's own tables, not restated: \
+         `bank_reward(2) = 2` (commercial.rs:8, 1 yen per power) against \
+         `copper_mine_reward(2) = 0` (production.rs:60, §3.2's cited sparsity fact). The \
+         Bank is not a production area, so S1 is 0 on the greater side as well as on the \
+         lesser — the pair moves S5 and NOTHING else on the axis.",
+        "The margin's REALIZATION-PROBABILITY-1 assumption is §5.1's, named there as a \
+         candidate margin cause for the Part-B core inspection: late 40 prices forty \
+         activations' worth of access at 1 VP each, and the pair does not claim the \
+         activations happen.",
+    ],
+};
+
+/// §5.2 3(d) — **EA ACCESS ≻ POWER-DEAD**, S6's carrier.
+pub const PAIR_3D: PairDeclaration = PairDeclaration {
+    id: "3(d)",
+    name: "EA ACCESS ≻ POWER-DEAD",
+    family: 3,
+    greater_side: "one assistant at the Employment Agency (realizable power 2 → 1 takeable token)",
+    lesser_side: "one assistant at the Copper Mine (realizable power 2 → 0)",
+    role: PairRole::Constraint,
+    stages: &[StageEndpoint::Early],
+    view_class: ViewClass::HandOff,
+    margin: MarginClass::DirectionOnly,
+    carrier: Some(FeatureId::Candidate(CandidateFeature::EmploymentAgencyAccess)),
+    presidents: SidedPresidents::BOTH_IN_HAND,
+    draws: DRAWS_TEA_LEG,
+    techs: TechDeclaration { excluded_effects: NO_CONVERSION_TECHS, max_owned: Some(0) },
+    layout: LayoutClass::StandardGenerated,
+    parameters: &[
+        ("setup_seed", FIXTURE_SEED as i64),
+        ("assistants_per_side", 1),
+        ("warehouse_assistants", 12),
+        ("warehouse_shophouses", 6),
+        ("warehouse_trading_houses", 4),
+        ("subject_copper", FAMILY_3_STOCKS[0] as i64),
+        ("subject_silk", FAMILY_3_STOCKS[1] as i64),
+        ("subject_tea", FAMILY_3_STOCKS[2] as i64),
+        ("subject_seafood", FAMILY_3_STOCKS[3] as i64),
+        ("subject_order_card", FIXTURE_ORDER_CARD.0 as i64),
+    ],
+    expected_nonzero: &[FeatureId::Candidate(CandidateFeature::EmploymentAgencyAccess)],
+    early_hand_cap_deviation: None,
+    notes: &[
+        "§5.2: 1 assistant at EA (power 2 → 1 takeable token; warehouse non-empty declared, \
+         matching S6's min-gate) ≻ 1 at Copper Mine. DIRECTION-ONLY, EARLY, HAND-OFF, \
+         presidents InHand. Collateral: none.",
+        "THE WAREHOUSE-NON-EMPTY DECLARATION is the untouched setup warehouse, and the three \
+         parameters say so rather than leaving it implied: 12 assistants, 6 shophouse tokens \
+         and 4 trading-house tokens (`types/player.rs`'s three constructors). S6 is a MIN, so \
+         the declaration is what stops the term reading its structural zero for the wrong \
+         reason — with an empty basket both sides would read 0 and the pair would separate \
+         nothing.",
+        "`employment_agency_tokens_allowed(2) = 1` (commercial.rs:13) is the binding side of \
+         that min at this power, so S6 is 1 on the greater side and 0 on the lesser. Nothing \
+         is TAKEN here — 3(d) is a pure ACCESS pair, and the take is 11(c)'s.",
+        "EARLY only, transcribed from §5.2. The stage column is the registration's, not a \
+         construction limit: the same two states are buildable on the deck-saturated base, \
+         and registering the late endpoint would add a solve row §5.2 did not register.",
+    ],
+};
+
+// ---------------------------------------------------------------------------
 // §5.2 FAMILY 6 — post-action persistence (5): the C2 controls
 // ---------------------------------------------------------------------------
 
@@ -2024,6 +2291,524 @@ pub const PAIR_7: PairDeclaration = PairDeclaration {
 };
 
 // ---------------------------------------------------------------------------
+// §5.2 FAMILY 8 — recovery/hand ordering (1)
+// ---------------------------------------------------------------------------
+
+/// The area family 8's STRANDED president stands on — empty of its own
+/// assistants, and free-adjacent to both of them.
+///
+/// Area 0's free ring is `{1, 4}` on the 2P staggered pyramid (the edge list is
+/// [`RING_LAYOUT`]'s doc), which is exactly [`FAMILY_8_STRANDED_AREAS`]. That
+/// adjacency is what makes the two PAA-class rows MOVE rather than read zero on
+/// both sides: an isolated president would give S4 = 0 + 0 and S7 = 0, matching
+/// the recalled side's structural zeroes and registering two collateral rows
+/// that never fire.
+pub const FAMILY_8_PRESIDENT_AREA: AreaId = AreaId(0);
+
+/// The two EXHAUSTED areas family 8's last pawns stand on.
+///
+/// Exhausted is an ARITHMETIC claim here, not an adjective. Area 1 carries the
+/// Copper Mine and one pawn plus the president's +1 is realizable power 2, where
+/// `copper_mine_reward(2) = 0` — S1 and X3 both read zero off the reward table.
+/// Area 4 carries Laboratory A, where the registered purse of
+/// [`FAMILY_8_SUBJECT_MONEY`] yen buys `floor(0/2) + 0 = 0` against a cheapest
+/// printed deficit of `3 + 0 − 2 = 1` — X1 reads zero because nothing on the
+/// board is takeable. Every other S and X term is gated on presence the seat
+/// does not have.
+pub const FAMILY_8_STRANDED_AREAS: [AreaId; 2] = [AreaId(1), AreaId(4)];
+
+/// Family 8's registered purse: nothing.
+///
+/// It is what makes the Laboratory pawn exhausted (see
+/// [`FAMILY_8_STRANDED_AREAS`]), and it is equal on both sides, so E1
+/// differences to zero and the registration's "exhausted" is a checkable fact
+/// rather than a description.
+pub const FAMILY_8_SUBJECT_MONEY: u32 = 0;
+
+/// **FAMILY 8's HAND-BUILT LAYOUT.**
+///
+/// # Why family 8 needs one at all — an S2-T6 judgment call, flagged
+///
+/// §5.1 names "the hand-built layouts of 1(c)/1(e)/11" among its open
+/// parameters and does not name family 8. This layout is registered anyway,
+/// under the same clause's other half ("each fixture's literal state bytes"),
+/// because the registration's own words are geometric: the pawns sit on
+/// EXHAUSTED areas and the president is left standing among them, which is a
+/// claim about which types sit next to which. On the seeded board the Copper
+/// Mine and the Laboratory happen to fall where they fall, and a pair whose
+/// registered collateral depends on a shuffle is a pair that re-rolls its own
+/// rows. [`LayoutClass::HandBuilt`] is declared so the digest carries it.
+///
+/// # What it seats, and why each seat is load-bearing
+///
+/// Area 0 is the Church: the stranded president stands there holding none of
+/// its own assistants, and a Church with no own pawn reads S2 = 0 by the term's
+/// presence gate, so the president's own tile contributes nothing to either
+/// side. Areas 1 and 4 are the two exhausted areas
+/// ([`FAMILY_8_STRANDED_AREAS`]). The remaining seven types fill the remaining
+/// seven areas, where no pawn of either seat ever stands.
+pub const FAMILY_8_LAYOUT: [AreaType; TWO_PLAYER_AREAS] = [
+    AreaType::Church,           // 0 — the stranded president's area, own-empty
+    AreaType::CopperMine,       // 1 — exhausted: copper_mine_reward(2) = 0
+    AreaType::SilkMill,         // 2
+    AreaType::TeaPlantation,    // 3
+    AreaType::LaboratoryA,      // 4 — exhausted: nothing takeable at money 0
+    AreaType::FishingGround,    // 5
+    AreaType::Bank,             // 6
+    AreaType::PortA,            // 7
+    AreaType::Customs,          // 8
+    AreaType::EmploymentAgency, // 9
+];
+
+/// §5.2 family 8 — **RECALLED ≻ STRANDED**.
+pub const PAIR_8: PairDeclaration = PairDeclaration {
+    id: "8",
+    name: "RECALLED ≻ STRANDED",
+    family: 8,
+    greater_side: "the president recalled to hand with the last two pawns",
+    lesser_side: "the president left on the board and the two pawns left on exhausted areas",
+    role: PairRole::Constraint,
+    stages: &[StageEndpoint::Late],
+    view_class: ViewClass::HandOff,
+    margin: MarginClass::DirectionOnly,
+    // §5.1's carrier map names no feature for family 8 — the registration is a
+    // hand-ordering row, and the field's own doc reserves `None` for exactly
+    // the rows that carry no production feature.
+    carrier: None,
+    presidents: SidedPresidents {
+        greater: SeatPresidents::BOTH_IN_HAND,
+        lesser: SeatPresidents {
+            subject: PresidentDecl::OnBoardEmptyArea,
+            opponent: PresidentDecl::InHand,
+        },
+    },
+    draws: DRAWS_TEA_LEG,
+    techs: TechDeclaration { excluded_effects: NO_CONVERSION_TECHS, max_owned: Some(0) },
+    layout: LayoutClass::HandBuilt,
+    parameters: &[
+        ("setup_seed", FIXTURE_SEED as i64),
+        ("president_area", FAMILY_8_PRESIDENT_AREA.0 as i64),
+        ("stranded_area_a", FAMILY_8_STRANDED_AREAS[0].0 as i64),
+        ("stranded_area_b", FAMILY_8_STRANDED_AREAS[1].0 as i64),
+        ("recalled_pawns", 2),
+        ("subject_money", FAMILY_8_SUBJECT_MONEY as i64),
+        ("subject_order_card", FIXTURE_ORDER_CARD.0 as i64),
+    ],
+    expected_nonzero: &[
+        FeatureId::Incumbent(Feature::AssistantsInHandExcess),
+        FeatureId::Incumbent(Feature::AssistantsOnBoard),
+        FeatureId::Candidate(CandidateFeature::AssistantAreasDistinct),
+        FeatureId::Candidate(CandidateFeature::PresidentLocalAccess),
+        FeatureId::Candidate(CandidateFeature::PresidentReachableAreas),
+    ],
+    early_hand_cap_deviation: None,
+    notes: &[
+        "§5.2: RECALLED ≻ STRANDED (late-game `ReturnPresidentToHand` refilling hand-core vs \
+         leaving the last pawns on exhausted areas). DIRECTION-ONLY, LATE, HAND-OFF \
+         (president InHand on the recalled side — S4/S7 switch to their in-hand forms; both \
+         PAA-class counts, deltas listed). The V2 hand ordering (`core > on_board > excess`, \
+         both vectors) rides the solve as standing constraints.",
+        "THE PER-SIDE PRESIDENT DECLARATION IS THE NATURAL READING and is declared as one: \
+         the recall is what the pair is about, so the recalled side's president is InHand and \
+         the stranded side's is on the board — one `SidedPresidents` describing two shapes, \
+         exactly the case the type was split for. The stranded president stands on an area \
+         holding none of its own assistants, which is §5.1's post-Recovery hand-off shape.",
+        "RESOLVED READING (an S2-T6 judgment call, 11(c)'s precedent): the registration says \
+         'refilling hand-core', and at the constructed hand the refill lands in EXCESS. The \
+         two recovered pawns arrive in a hand already holding six, past the two-pawn core \
+         reserve, so `AssistantsInHandCore` reads 2 on both sides and does not move while \
+         `AssistantsInHandExcess` moves by 2 — and only the row that moves is listed, since a \
+         listed row that does not move is the other half of §5.1's defect rule. The task's own \
+         framing settles it: the V2 hand ordering is a registered NOTE riding the solve, not a \
+         fixture axis, so nothing here is built to make the core term fire.",
+        "BOTH PAA-CLASS COUNTS MOVE, and their SIGN is the pair's whole difficulty rather than \
+         a defect. The recalled side has no board assistants at all, so S4 and S7 both read \
+         their in-hand-branch zero; the stranded side reads S4 = 0 + 1 + 1 = 2 (the president's \
+         own area is empty, its free ring holds both pawns) and S7 = 2 (both pawns are \
+         reachable, and the barred own area is not in the set to subtract). So ΔS4 = ΔS7 = −2, \
+         and the registered direction asks the solve to pay for the hand refill and the \
+         recovered flexibility ANYWAY. §3.2's S7 boundary names the branch switch as a \
+         structural step in the recalled direction; that step is not what carries this pair, \
+         and saying so is more useful than building around it.",
+        "The recall is verified through the ENGINE's own `ReturnPresidentToHand`: the \
+         construction applies it to the stranded layout at the Movement phase, where \
+         `legal_moves.rs` offers a recovery option for every subset of the seat's board pawns, \
+         and refuses the pair unless the resulting president location and assistant \
+         distribution are the greater side's byte for byte.",
+    ],
+};
+
+// ---------------------------------------------------------------------------
+// §5.2 FAMILY 10 — crossed access-and-need (3 gates + 1 diagnostic)
+// ---------------------------------------------------------------------------
+
+/// **10(a)'s SIX PORT-A OFFERS**, in the greater side's slot order.
+///
+/// Slots 0–1 are the LOW zone, 2–3 MID, 4–5 HIGH
+/// (`PortBoard::zone_of`, pinned in `actions/cards.rs:532`), and realizable
+/// power 2 opens LOW alone (`port_accessible_zones(2)`). So the two GOODS-
+/// MATCHING offers are seated at 0–1 on the greater side and the two inert ones
+/// at 4–5; the lesser side is the same six cards with those two pairs swapped.
+///
+/// Matching is measured against [`FAMILY_10A_STOCKS`] — one seafood and nothing
+/// else — through X2's own `Σ_g min(stock_g, req_g(offer))`:
+///
+/// | slot | card | requirement | match at one seafood |
+/// |------|------|-------------|----------------------|
+/// | 0 | 3 (English) | 2 copper, 1 seafood | 1 |
+/// | 1 | 9 (German) | 3 silk, 1 seafood | 1 |
+/// | 2 | 15 (English) | 3 copper, 1 silk, 1 tea | never read (MID closed) |
+/// | 3 | 33 (German) | 3 silk, 3 tea | never read (MID closed) |
+/// | 4 | 25 (German) | 3 silk, 1 tea | 0 |
+/// | 5 | 30 (French) | 2 silk, 3 tea | 0 |
+///
+/// The MID pair is registered rather than left to the seed because the LOCATED
+/// SET must be identical across the sides — O1's pool is the complement of the
+/// located cards, and two different mid-zone offers would move the pool floor
+/// underneath a pair whose collateral is registered as none.
+pub const FAMILY_10A_PORT_OFFERS: [OrderCardId; 6] = [
+    OrderCardId(3),
+    OrderCardId(9),
+    OrderCardId(15),
+    OrderCardId(33),
+    OrderCardId(25),
+    OrderCardId(30),
+];
+
+/// 10(a)'s registered stocks, `[copper, silk, tea, seafood]`.
+///
+/// One seafood and nothing else, so an offer's X2 match is 1 exactly when it
+/// requires seafood and 0 otherwise — the cleanest separation the term admits,
+/// and the reason the zone swap moves X2 by 2 rather than by a number that
+/// depends on how much of each good the seat happens to hold.
+pub const FAMILY_10A_STOCKS: [u32; 4] = [0, 0, 0, 1];
+
+/// **10(b)'s SIX LABORATORY-A CARDS**, in the greater side's slot order.
+///
+/// The position surcharges are `0|1 → +0`, `2|3 → +1`, `4|5 → +2`
+/// (`lab_position_surcharge`, cards.rs:222, 0-BASED), the seat's realizable
+/// power at the lab is 2 (one own assistant plus the president's +1), and the
+/// registered purse of [`FAMILY_10B_MONEY`] yen buys `floor(2/2) + 0 = 1` of
+/// deficit. X1's per-slot deficit is
+/// `max(0, industry_cost + surcharge − min(5, power))`:
+///
+/// | slot | effect | cost | surcharge | deficit | takeable at purse 1 |
+/// |------|--------|------|-----------|---------|---------------------|
+/// | 0 | Brickyard | 3 | +0 | 1 | YES — the target |
+/// | 1 | Exposition | 5 | +0 | 3 | no |
+/// | 2 | Gaslight | 3 | +1 | 2 | no |
+/// | 3 | Ball | 3 | +1 | 2 | no |
+/// | 4 | Newspaper | 5 | +2 | 5 | no |
+/// | 5 | Patent System | 3 | +2 | 3 | no |
+///
+/// The lesser side swaps slots 0 and 4, which puts Brickyard at deficit
+/// `3 + 2 − 2 = 3` and Newspaper at `5 + 0 − 2 = 3`. Neither clears the purse,
+/// so X1 falls to 0 — and Exposition's industry 5 is at slot 1 for exactly that
+/// reason: a cheap card in the OTHER surcharge-free position would be takeable
+/// on both sides and the pair would separate nothing.
+pub const FAMILY_10B_LAB_STOCK: [TechEffect; 6] = [
+    TechEffect::Brickyard,    // slot 0 — industry 3, the registered target
+    TechEffect::Exposition,   // slot 1 — industry 5, the surcharge-free refusal
+    TechEffect::Gaslight,     // slot 2 — industry 3
+    TechEffect::Ball,         // slot 3 — industry 3
+    TechEffect::Newspaper,    // slot 4 — industry 5
+    TechEffect::PatentSystem, // slot 5 — industry 3
+];
+
+/// 10(b)'s registered purse: two yen, no imports.
+///
+/// X1 pools money and imports at the same 2¥-or-1-import rate, so this is
+/// exactly ONE unit of deficit — enough for the cheap slot's 1 and short of the
+/// dear slot's 3. §5.2's "money registered so the all-in clears only at the
+/// cheap slot" is this number.
+pub const FAMILY_10B_MONEY: u32 = 2;
+
+/// The lab slot 10(b)'s target technology sits at on the GREATER side.
+pub const FAMILY_10B_CHEAP_SLOT: usize = 0;
+/// The lab slot it sits at on the LESSER side — surcharge +2.
+pub const FAMILY_10B_DEAR_SLOT: usize = 4;
+
+/// 10(c)'s SPREAD side, `[copper, silk, tea, seafood]`.
+///
+/// Four distinct good types plus the registered yen and imported good make SIX
+/// distinct Church payment types, which is `calculate_church_faith`'s maximum
+/// stock contribution — §5.2's "+6 faith is stock-buyable" realized rather than
+/// described.
+///
+/// The five coppers are the trick that keeps the diagnostic's rows equal: the
+/// drawn Category-A card is Copper5, whose leg is `min(copper, 5)`, so both
+/// sides saturate it and `AchievementProgressSum` differences to zero even
+/// though their copper holdings differ by three.
+pub const FAMILY_10C_SPREAD_STOCKS: [u32; 4] = [5, 1, 1, 1];
+
+/// 10(c)'s CONCENTRATED side — the SAME eight goods in ONE type.
+///
+/// E2 is a linear sum, so eight is eight on both sides and the goods term
+/// cannot see the difference; the Church can, at three payment types against
+/// six.
+pub const FAMILY_10C_CONCENTRATED_STOCKS: [u32; 4] = [8, 0, 0, 0];
+
+/// 10(c)'s registered purse and imports, equal on both sides: they buy the yen
+/// and imported-good payment types, which no distribution of GOODS can
+/// concentrate away.
+pub const FAMILY_10C_MONEY: u32 = 2;
+/// See [`FAMILY_10C_MONEY`].
+pub const FAMILY_10C_IMPORTS: u32 = 1;
+
+/// 10(d)'s GREATER card — printed corner index 26 (French; 3 tea + 1 seafood;
+/// 1 VP + 2 Yen).
+pub const FAMILY_10D_MATCHED_CARD: OrderCardId = OrderCardId(26);
+/// 10(d)'s LESSER card — printed corner index 5 (French; 1 copper + 2 tea;
+/// 1 VP + 1 imported good).
+pub const FAMILY_10D_UNMATCHED_CARD: OrderCardId = OrderCardId(5);
+
+/// §5.2 10(a) — **OPEN-ZONE ≻ CLOSED-ZONE**, X2's gate.
+pub const PAIR_10A: PairDeclaration = PairDeclaration {
+    id: "10(a)",
+    name: "OPEN-ZONE ≻ CLOSED-ZONE",
+    family: 10,
+    greater_side: "the two goods-matching offers in the LOW zone (port slots 0–1)",
+    lesser_side: "the same six offers with those two in the HIGH zone (slots 4–5)",
+    role: PairRole::Constraint,
+    stages: &[StageEndpoint::Early],
+    view_class: ViewClass::HandOff,
+    margin: MarginClass::DirectionOnly,
+    carrier: Some(FeatureId::Candidate(CandidateFeature::PortTakeable)),
+    presidents: SidedPresidents::BOTH_IN_HAND,
+    draws: DRAWS_TEA_LEG,
+    techs: TechDeclaration { excluded_effects: NO_CONVERSION_TECHS, max_owned: Some(0) },
+    layout: LayoutClass::StandardGenerated,
+    parameters: &[
+        ("setup_seed", FIXTURE_SEED as i64),
+        ("port_assistants", 1),
+        ("realizable_power", 2),
+        ("low_slot_0", FAMILY_10A_PORT_OFFERS[0].0 as i64),
+        ("low_slot_1", FAMILY_10A_PORT_OFFERS[1].0 as i64),
+        ("mid_slot_2", FAMILY_10A_PORT_OFFERS[2].0 as i64),
+        ("mid_slot_3", FAMILY_10A_PORT_OFFERS[3].0 as i64),
+        ("high_slot_4", FAMILY_10A_PORT_OFFERS[4].0 as i64),
+        ("high_slot_5", FAMILY_10A_PORT_OFFERS[5].0 as i64),
+        ("subject_seafood", FAMILY_10A_STOCKS[3] as i64),
+        ("subject_order_card", FIXTURE_ORDER_CARD.0 as i64),
+    ],
+    expected_nonzero: &[FeatureId::Candidate(CandidateFeature::PortTakeable)],
+    early_hand_cap_deviation: None,
+    notes: &[
+        "§5.2: identical stocks, hand, presence, realizable power 2; the SAME six Port-A cards \
+         PERMUTED so the goods-matching offers sit in LOW (indices 0–1) vs HIGH (4–5). The \
+         located-card SET is unchanged → O1's pool, O2, O3, HandSize all equal; no incumbent \
+         reads slot positions (eval.rs:2017 reads only `slots.len()`); the OPPONENT holds no \
+         port presence (registered — through the relative form its X2 would otherwise move \
+         too). DIRECTION-ONLY, EARLY, HAND-OFF.",
+        "THE eval.rs CITATION VERIFIED AT HEAD, with a line-number correction recorded rather \
+         than silently followed: the only read of port state anywhere in `eval.rs` is \
+         `view.port_state.port_a.slots.len()` inside `initial_order_deck_len`, which sits at \
+         eval.rs:2095 today, not :2017. The CLAIM the citation makes is exact — the read is of \
+         the slot COUNT, so a permutation of the six offers is invisible to all sixteen \
+         incumbents — and the drift is in the line number alone.",
+        "The permutation is a permutation, which is what keeps the located set fixed: the same \
+         six cards stand in the port on both sides, so O1's 36-bit located bitset and its \
+         complement pool are identical and the opponent's hidden-slot floor cannot move. The \
+         MID pair is registered for the same reason even though power 2 never reads it.",
+        "X2 reads 2 on the greater side (two offers each matching one seafood) and 0 on the \
+         lesser, where the LOW zone holds the two seafood-free offers. The gate conjuncts are \
+         both live: the seat holds one own assistant at the port and realizable power 2, and \
+         its hand holds one card, clear of the `hand.len() >= 3` persistent collapse.",
+    ],
+};
+
+/// §5.2 10(b) — **CHEAP-SLOT ≻ DEAR-SLOT**, X1's gate.
+pub const PAIR_10B: PairDeclaration = PairDeclaration {
+    id: "10(b)",
+    name: "CHEAP-SLOT ≻ DEAR-SLOT",
+    family: 10,
+    greater_side: "the target technology at laboratory slot 0 (position surcharge +0)",
+    lesser_side: "the same six cards with the target at slot 4 (surcharge +2)",
+    role: PairRole::Constraint,
+    stages: &[StageEndpoint::Early],
+    view_class: ViewClass::HandOff,
+    margin: MarginClass::DirectionOnly,
+    carrier: Some(FeatureId::Candidate(CandidateFeature::LabTakeable)),
+    presidents: SidedPresidents::BOTH_IN_HAND,
+    draws: DRAWS_TEA_LEG,
+    techs: TechDeclaration { excluded_effects: NO_CONVERSION_TECHS, max_owned: Some(0) },
+    layout: LayoutClass::StandardGenerated,
+    parameters: &[
+        ("setup_seed", FIXTURE_SEED as i64),
+        ("lab_assistants", 1),
+        ("realizable_power", 2),
+        ("subject_money", FAMILY_10B_MONEY as i64),
+        ("subject_imports", 0),
+        ("all_in_purse", 1),
+        ("cheap_slot", FAMILY_10B_CHEAP_SLOT as i64),
+        ("dear_slot", FAMILY_10B_DEAR_SLOT as i64),
+        ("target_industry_cost", 3),
+        ("cheap_deficit", 1),
+        ("dear_deficit", 3),
+        ("subject_order_card", FIXTURE_ORDER_CARD.0 as i64),
+    ],
+    expected_nonzero: &[FeatureId::Candidate(CandidateFeature::LabTakeable)],
+    early_hand_cap_deviation: None,
+    notes: &[
+        "§5.2: identical money, imports, power, presence; the SAME Lab-A cards permuted so the \
+         target sits at slot index 0 (+0) vs 4 (+2), money registered so the all-in clears \
+         only at the cheap slot. No incumbent reads `lab_state` (verified: zero hits in \
+         eval.rs). DIRECTION-ONLY, EARLY, HAND-OFF.",
+        "THE 'ZERO HITS' CLAIM RE-VERIFIED AT HEAD: `lab_state` appears nowhere in `eval.rs`, \
+         so the entire sixteen-feature incumbent half is blind to which slot a technology \
+         stands in and X1 is the sole mover by construction rather than by arithmetic.",
+        "THE DEFICIT ARITHMETIC, re-derived from the engine's own helpers rather than from \
+         §3.2's prose: `lab_position_surcharge` (cards.rs:222) is 0-BASED with 0|1 → +0, \
+         2|3 → +1, 4|5 → +2; the cheapest printed industry value in the registry is 3; \
+         realizable power at the lab is one own assistant plus the president's unconditional \
+         +1. So the target's deficit is `max(0, 3 + 0 − 2) = 1` at the cheap slot and \
+         `max(0, 3 + 2 − 2) = 3` at the dear one, and a purse of two yen buys \
+         `floor(2/2) + 0 = 1`. The DUTY term is 0 on both sides: the seat owns no \
+         technologies, so `technologies.len() >= 3` is false.",
+        "The five non-target cards are chosen so the whole board is non-takeable on BOTH \
+         sides — X1 reads 1 against 0 rather than n+1 against n. [`FAMILY_10B_LAB_STOCK`] \
+         carries the per-slot table.",
+    ],
+};
+
+/// §5.2 10(c) — **CHURCH STOCK-FAITH**, the RECORDED DIAGNOSTIC.
+pub const PAIR_10C: PairDeclaration = PairDeclaration {
+    id: "10(c)",
+    name: "SPREAD ≻ CONCENTRATED (church stock-faith)",
+    family: 10,
+    greater_side: "eight goods spread over all four types, one yen leg and one import leg",
+    lesser_side: "the same eight goods in ONE type, the same yen and import legs",
+    role: PairRole::Diagnostic,
+    stages: &[StageEndpoint::Early],
+    view_class: ViewClass::HandOff,
+    margin: MarginClass::Weak,
+    carrier: None,
+    presidents: SidedPresidents::BOTH_IN_HAND,
+    draws: DRAWS_TEA_LEG,
+    techs: TechDeclaration { excluded_effects: NO_CONVERSION_TECHS, max_owned: Some(0) },
+    layout: LayoutClass::StandardGenerated,
+    parameters: &[
+        ("setup_seed", FIXTURE_SEED as i64),
+        ("church_assistants", 1),
+        ("realizable_power", 2),
+        ("greater_copper", FAMILY_10C_SPREAD_STOCKS[0] as i64),
+        ("greater_silk", FAMILY_10C_SPREAD_STOCKS[1] as i64),
+        ("greater_tea", FAMILY_10C_SPREAD_STOCKS[2] as i64),
+        ("greater_seafood", FAMILY_10C_SPREAD_STOCKS[3] as i64),
+        ("lesser_copper", FAMILY_10C_CONCENTRATED_STOCKS[0] as i64),
+        ("subject_money", FAMILY_10C_MONEY as i64),
+        ("subject_imports", FAMILY_10C_IMPORTS as i64),
+        ("greater_realizable_faith", 8),
+        ("lesser_realizable_faith", 5),
+        ("residual_faith", 3),
+        ("hand_emptied_by_fulfilling", FIXTURE_ORDER_CARD.0 as i64),
+    ],
+    expected_nonzero: &[],
+    early_hand_cap_deviation: None,
+    notes: &[
+        "§5.2: CHURCH STOCK-FAITH cross — DIAGNOSTIC (the union residual where largest: up to \
+         +6 faith is stock-buyable).",
+        "THE CONSTRUCTION IS AN ALL-ROWS-EQUAL PAIR, and that is the diagnostic's whole point: \
+         every one of the thirty-four rows differences to ZERO while the two sides' realizable \
+         Church faith differs by 3. `calculate_church_faith` (tracks.rs:119) adds one faith per \
+         DISTINCT affordable payment type — copper, silk, tea, seafood, yen, import — over \
+         `church_faith_from_power`, and S2 reads the power term alone. So the spread side \
+         realizes faith 2 + 6 = 8 and the concentrated side 2 + 3 = 5, and no term in the union \
+         S+E identity, nor any of the sixteen incumbents, can tell them apart.",
+        "HOW THE ROWS ARE HELD EQUAL, since it is not automatic. E2 is a linear SUM, so eight \
+         goods are eight goods either way. The Category-A leg is the one that would otherwise \
+         fire — it reads a RAW good — and Copper5's `min(copper, 5)` SATURATES at five on both \
+         sides (5 against 8), which is why the spread side carries five coppers rather than \
+         one. Money and imports are equal by registration, because no distribution of goods can \
+         concentrate the yen and import payment types away. And the hand is emptied by the same \
+         fulfillment 3(b) uses, because ANY held order would read a different O2 against two \
+         stock vectors that differ.",
+        "RECORDED: +3 IS THE MAXIMUM RESIDUAL AN ALL-ROWS-EQUAL PAIR CAN CARRY, and §5.2's \
+         '+6' is the greater side's ABSOLUTE stock contribution, which this fixture realizes in \
+         full. Four good types against one is a three-type spread, and the yen and import legs \
+         cannot be moved without moving E1 and `ImportedGoods`. A +6 DELTA would need a lesser \
+         side holding no goods, no money and no imports at all — three rows moving, and a \
+         diagnostic whose rows move cannot say 'the union cannot see this'. The trade is \
+         recorded rather than taken.",
+        "Naming the spread side GREATER fixes the print's sign (§5.1: Δv = greater − lesser) \
+         and asserts no direction; WEAK is the frame's inert margin class, and §5.1's pair→gate \
+         mapping keeps a `PairRole::Diagnostic` row out of Part B's constraint system and Part \
+         A's blocking set entirely.",
+        "AN UNDERDETERMINED BYTE, flagged for the bounded re-read: §5.2 registers no stage for \
+         10(c). EARLY is transcribed from the family — 10(a), (b) and (d) are all EARLY — and \
+         is a choice, not a reading.",
+    ],
+};
+
+/// §5.2 10(d) — **MATCHED ≻ UNMATCHED PRODUCTION ACCESS**, X3's gate.
+pub const PAIR_10D: PairDeclaration = PairDeclaration {
+    id: "10(d)",
+    name: "MATCHED ≻ UNMATCHED PRODUCTION ACCESS",
+    family: 10,
+    greater_side: "holding order 26 (French; 3 tea + 1 seafood) at one Fishing Ground pawn",
+    lesser_side: "holding order 5 (French; 1 copper + 2 tea) at the same pawn",
+    role: PairRole::Constraint,
+    stages: &[StageEndpoint::Early],
+    view_class: ViewClass::HandOff,
+    margin: MarginClass::DirectionOnly,
+    carrier: Some(FeatureId::Candidate(CandidateFeature::MatchedProductionAccess)),
+    presidents: SidedPresidents::BOTH_IN_HAND,
+    draws: DRAWS_TEA_LEG,
+    techs: TechDeclaration { excluded_effects: NO_CONVERSION_TECHS, max_owned: Some(0) },
+    layout: LayoutClass::StandardGenerated,
+    parameters: &[
+        ("setup_seed", FIXTURE_SEED as i64),
+        ("fishing_ground_assistants", 1),
+        ("realizable_power", 2),
+        ("greater_order_card", FAMILY_10D_MATCHED_CARD.0 as i64),
+        ("lesser_order_card", FAMILY_10D_UNMATCHED_CARD.0 as i64),
+        ("subject_copper", 0),
+        ("subject_silk", 0),
+        ("subject_tea", 0),
+        ("subject_seafood", 0),
+        ("fishing_ground_reward", 2),
+        ("greater_residual_seafood", 1),
+        ("x3_greater", 1),
+        ("x3_lesser", 0),
+    ],
+    expected_nonzero: &[FeatureId::Candidate(CandidateFeature::MatchedProductionAccess)],
+    early_hand_cap_deviation: None,
+    notes: &[
+        "§5.2: 1 assistant at Fishing Ground, ZERO stocks, holding card 26 (FR — requires 1 \
+         seafood) ≻ holding card 5 (FR — requires no seafood): equal face (4 both), equal \
+         country (FR — O5's attainable set identical), equal icons (0 both), O2 = O3 = 0 at \
+         zero stocks; X3 = min(fishing_ground_reward(2) = 2, residual seafood need 1) = 1 vs \
+         0 — X3 the SOLE mover (the manifest guarantees 5/26's requirements differ: only \
+         10/32 share a requirement vector). DIRECTION-ONLY, EARLY, HAND-OFF, presidents \
+         InHand.",
+        "THE MANIFEST FIGURES, re-read at HEAD rather than transcribed: card 26 is French, \
+         requires 3 tea + 1 seafood and pays 1 VP + 2 Yen; card 5 is French, requires 1 copper \
+         + 2 tea and pays 1 VP + 1 imported good. O1's half-VP face is \
+         `2·VP + 2·imports + money` — 2 + 0 + 2 = 4 for card 26 and 2 + 2 + 0 = 4 for card 5 — \
+         so the two are face-equal in the term's own units, not merely in printed VP. Neither \
+         carries a movement or warehouse icon, so O6 is 0 on both sides.",
+        "THE POOL FLOOR IS INVARIANT UNDER THE 5↔26 SWAP for 4(e)'s recorded reason: O1's pool \
+         is the complement of the located set, the swap exchanges which of two EQUAL-half-VP \
+         cards is located, and the pool's running (count, half-VP sum) is therefore unchanged. \
+         The construction protects that by parking BOTH cards off the port before either is \
+         dealt — a card taken out of a PORT SLOT would move the located set for real, since \
+         face-up offers are located and deck and box cards are not.",
+        "ZERO STOCKS IS CONSTRUCTION SURGERY, and the honest accounting is this: §5.1's p = 0 \
+         base deals one of each good (`types/player.rs:245–248`), and this pair writes all \
+         four to zero. Nothing is conserved by the write — trade goods come from a general \
+         supply and appear in no invariant's conservation total, unlike the 36 orders and the \
+         30 technologies — and a seat at zero stocks is entirely ordinary play, since goods \
+         leave on every fulfillment and every Church donation. It is registered as four \
+         parameters so a re-read sees the choice rather than inferring it.",
+        "At zero stocks the residual need EQUALS each card's printed requirement, which is what \
+         makes the pair a clean read of X3's conditional: the greater side's Fishing Ground \
+         access is worth `min(2, 1) = 1` needed seafood and the lesser side's the same access \
+         is worth `min(2, 0) = 0`. S1 reads `fishing_ground_reward(2) = 2` on BOTH sides — the \
+         unconditional access term does not separate them, which is the whole reason X3 exists.",
+    ],
+};
+
+// ---------------------------------------------------------------------------
 // §5.2 FAMILY 11 — activation choice (5): the conservation gates
 // ---------------------------------------------------------------------------
 
@@ -2295,14 +3080,15 @@ pub const PAIR_11E: PairDeclaration = PairDeclaration {
 // The registry (spec §5.1's registered counts)
 // ---------------------------------------------------------------------------
 
-/// **THE REGISTERED PAIRS.** Families 1 and 11 (S2-T4) and families 2, 6 and 7
-/// (S2-T5) today; each remaining §5.2 family lands as its own later
-/// registration.
+/// **THE REGISTERED PAIRS.** Families 1 and 11 (S2-T4), families 2, 6 and 7
+/// (S2-T5) and families 3, 8 and 10 (S2-T6) today; each remaining §5.2 family
+/// lands as its own later registration.
 ///
-/// The order is §5.2's own, family by family — and inside family 2 that means
-/// the three gates (a)/(b)/(d) print before the (c) diagnostic, which is the
-/// order §5.2 itself writes them in. Transcribing it rather than tidying it is
-/// what lets the bounded re-read diff the registry against the section.
+/// The order is §5.2's own, family by family — and inside a family that means
+/// the section's literal order, not a tidied one: family 2 prints its three
+/// gates (a)/(b)/(d) before the (c) diagnostic, and family 10 prints its (c)
+/// diagnostic BETWEEN its gates. Transcribing it rather than tidying it is what
+/// lets the bounded re-read diff the registry against the section.
 ///
 /// The array's LENGTH is its own pin — [`REGISTERED_PAIR_COUNT`] — on
 /// `tests/scenario_suite.rs`'s discipline: a registry whose size is a type is a
@@ -2319,12 +3105,21 @@ pub const REGISTERED: [PairDeclaration; REGISTERED_PAIR_COUNT] = [
     PAIR_2B,
     PAIR_2D,
     PAIR_2C,
+    PAIR_3A,
+    PAIR_3B,
+    PAIR_3C,
+    PAIR_3D,
     PAIR_6A,
     PAIR_6B,
     PAIR_6C,
     PAIR_6D_CHURCH,
     PAIR_6D_CUSTOMS,
     PAIR_7,
+    PAIR_8,
+    PAIR_10A,
+    PAIR_10B,
+    PAIR_10C,
+    PAIR_10D,
     PAIR_11A,
     PAIR_11B,
     PAIR_11C,
@@ -2333,7 +3128,7 @@ pub const REGISTERED: [PairDeclaration; REGISTERED_PAIR_COUNT] = [
 ];
 
 /// Length of [`REGISTERED`], bumped by each family registration task.
-pub const REGISTERED_PAIR_COUNT: usize = 20;
+pub const REGISTERED_PAIR_COUNT: usize = 29;
 
 /// §5.1's registered counts, summed: family 1: 5 · 2: 3 · 3: 4 · 4: 7 · 6: 5 ·
 /// 7: 1 · 8: 1 · 10-gates: 3 · 11: 5 = **34 gate pairs**, plus the two recorded
@@ -3740,12 +4535,21 @@ pub fn registered(id: &str) -> Option<&'static PairDeclaration> {
         "2(b)" => Some(&PAIR_2B),
         "2(c)" => Some(&PAIR_2C),
         "2(d)" => Some(&PAIR_2D),
+        "3(a)" => Some(&PAIR_3A),
+        "3(b)" => Some(&PAIR_3B),
+        "3(c)" => Some(&PAIR_3C),
+        "3(d)" => Some(&PAIR_3D),
         "6(a)" => Some(&PAIR_6A),
         "6(b)" => Some(&PAIR_6B),
         "6(c)" => Some(&PAIR_6C),
         "6(d-church)" => Some(&PAIR_6D_CHURCH),
         "6(d-customs)" => Some(&PAIR_6D_CUSTOMS),
         "7" => Some(&PAIR_7),
+        "8" => Some(&PAIR_8),
+        "10(a)" => Some(&PAIR_10A),
+        "10(b)" => Some(&PAIR_10B),
+        "10(c)" => Some(&PAIR_10C),
+        "10(d)" => Some(&PAIR_10D),
         "11(a)" => Some(&PAIR_11A),
         "11(b)" => Some(&PAIR_11B),
         "11(c)" => Some(&PAIR_11C),
@@ -5140,6 +5944,11 @@ mod tests {
         // and family 7's row is a coverage registration §5.2 itself calls
         // implied by 3(b). Where §5.2 DOES name one (2(a)'s E2, 2(b)'s
         // warehouse weight, 2(d)'s E3), it is transcribed here.
+        //
+        // Family 8 and 10(c) are the two other `None`s: §5.1's carrier map
+        // runs S1→…→X3 without ever naming family 8, whose row is about hand
+        // ordering rather than about a production feature, and 10(c) is one of
+        // the two recorded diagnostics, which carry nothing by definition.
         use CandidateFeature::*;
         let candidate = |f: CandidateFeature| Some(FeatureId::Candidate(f));
         let expected: &[(&str, Option<FeatureId>, &[StageEndpoint], MarginClass)] = &[
@@ -5160,12 +5969,33 @@ mod tests {
             ("2(b)", Some(FeatureId::Incumbent(Feature::AssistantsInWarehouse)), &[StageEndpoint::Early], MarginClass::DirectionOnly),
             ("2(d)", candidate(BuildingTokensReady), &[StageEndpoint::Early], MarginClass::DirectionOnly),
             ("2(c)", None, &[StageEndpoint::Early], MarginClass::Weak),
+            ("3(a)", candidate(MoneyStock), &[StageEndpoint::Early, StageEndpoint::Late], MarginClass::Margined {
+                early: Some(1),
+                late: Some(20),
+                carrier: FeatureId::Candidate(MoneyStock),
+            }),
+            ("3(b)", candidate(TradeGoodsStock), &[StageEndpoint::Early, StageEndpoint::Late], MarginClass::Margined {
+                early: Some(1),
+                late: Some(14),
+                carrier: FeatureId::Candidate(TradeGoodsStock),
+            }),
+            ("3(c)", candidate(BankAccess), &[StageEndpoint::Early, StageEndpoint::Late], MarginClass::Margined {
+                early: Some(1),
+                late: Some(40),
+                carrier: FeatureId::Candidate(BankAccess),
+            }),
+            ("3(d)", candidate(EmploymentAgencyAccess), &[StageEndpoint::Early], MarginClass::DirectionOnly),
             ("6(a)", None, &[StageEndpoint::Early, StageEndpoint::Late], MarginClass::DirectionOnly),
             ("6(b)", None, &[StageEndpoint::Early, StageEndpoint::Late], MarginClass::DirectionOnly),
             ("6(c)", None, &[StageEndpoint::Early, StageEndpoint::Late], MarginClass::DirectionOnly),
             ("6(d-church)", None, &[StageEndpoint::Late], MarginClass::DirectionOnly),
             ("6(d-customs)", None, &[StageEndpoint::Late], MarginClass::DirectionOnly),
             ("7", None, &[StageEndpoint::Late], MarginClass::Weak),
+            ("8", None, &[StageEndpoint::Late], MarginClass::DirectionOnly),
+            ("10(a)", candidate(PortTakeable), &[StageEndpoint::Early], MarginClass::DirectionOnly),
+            ("10(b)", candidate(LabTakeable), &[StageEndpoint::Early], MarginClass::DirectionOnly),
+            ("10(c)", None, &[StageEndpoint::Early], MarginClass::Weak),
+            ("10(d)", candidate(MatchedProductionAccess), &[StageEndpoint::Early], MarginClass::DirectionOnly),
             ("11(a)", candidate(ProductionAccess), &[StageEndpoint::Early, StageEndpoint::Late], MarginClass::DirectionOnly),
             ("11(b)", candidate(BankAccess), &[StageEndpoint::Early, StageEndpoint::Late], MarginClass::DirectionOnly),
             ("11(c)", candidate(EmploymentAgencyAccess), &[StageEndpoint::Early, StageEndpoint::Late], MarginClass::DirectionOnly),
