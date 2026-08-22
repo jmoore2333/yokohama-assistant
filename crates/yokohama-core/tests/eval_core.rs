@@ -4359,11 +4359,21 @@ fn country_slot(country: Country) -> usize {
 /// **E1 `MoneyStock`** — the purse, linear, and §3.2's boundary: every spend
 /// class debits it AT THE INSTANT PAID (the F4 repair).
 ///
-/// The boundary is read off organic play rather than a constructed subtraction:
-/// the rung pays placement fees, movement tolls, the church 2¥ leg and the lab
-/// supplements as it plays, and this cell asserts E1 tracks the purse across
-/// every one of them and counts the debits so the "at the instant" half is
-/// witnessed rather than asserted.
+/// The boundary is read off organic play rather than a constructed
+/// subtraction, and the claim is exactly as wide as the cell: E1 equals the
+/// purse at EVERY sampled state of two rung games, and the purse is observed to
+/// move in both directions, so "at the instant paid" is witnessed rather than
+/// asserted.
+///
+/// **What this cell deliberately does NOT do is enumerate the spend CLASSES**
+/// §3.2's E1 paragraph lists (placement and movement fees, the church 2¥ leg,
+/// the lab supplements, Employment-Agency costs, the port's second card): the
+/// counters below say a debit happened, not which class produced it. A
+/// per-class cell would be vacuous here in a way it is not for the access
+/// terms — E1 IS `player.money`, so every class debits the same field by
+/// construction, and a fixture per class would be re-testing the engine's own
+/// pricing under this feature's name. What could break — E1 reading a stale
+/// copy, or a different field — is what the equality across every row catches.
 #[test]
 fn money_stock_is_the_purse_and_moves_by_exactly_what_a_spend_debits() {
     let rules = Rules::standard();
