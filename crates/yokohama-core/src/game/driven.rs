@@ -11776,7 +11776,7 @@ mod tests {
     #[test]
     fn the_escrow_recipe_pairs_a_dead_production_placement_against_a_productive_one() {
         let rules = Rules::standard();
-        let root = root_2p(&rules, 0x0401_2026_0822_0001);
+        let root = root_2p(&rules, world(93).0);
         let pair =
             escrow_recipe_pair(&root, &rules).expect("a fresh 2P turn start carries the recipe");
 
@@ -11812,7 +11812,7 @@ mod tests {
     #[test]
     fn the_recipe_reads_the_exported_reward_after_the_placement_lands() {
         let rules = Rules::standard();
-        let root = root_2p(&rules, 0x0401_2026_0822_0002);
+        let root = root_2p(&rules, world(94).0);
         let copper = area_of(&root, AreaType::CopperMine);
         let candidates = classify_recipe_candidates(&root, &rules).expect("a turn start classifies");
 
@@ -11845,7 +11845,7 @@ mod tests {
     #[test]
     fn the_empty_placement_is_never_a_side_of_the_recipe() {
         let rules = Rules::standard();
-        let root = root_2p(&rules, 0x0401_2026_0822_0003);
+        let root = root_2p(&rules, world(95).0);
         let candidates = classify_recipe_candidates(&root, &rules).expect("a turn start classifies");
         let empty: Vec<&RecipeCandidate> = candidates.iter().filter(|c| c.total == 0).collect();
         assert_eq!(empty.len(), 1, "the decline-to-place move is offered exactly once");
@@ -11858,7 +11858,7 @@ mod tests {
     #[test]
     fn the_recipe_refuses_a_position_that_is_not_a_turn_start() {
         let rules = Rules::standard();
-        let root = root_2p(&rules, 0x0401_2026_0822_0004);
+        let root = root_2p(&rules, world(96).0);
         let placing = apply_move_unchecked(&root, &Move::EndAdditionalPhase, &rules)
             .expect("ending the additional phase is always legal at a turn start");
         assert_eq!(escrow_recipe_pair(&placing, &rules), Err(RecipeMiss::NotATurnStart));

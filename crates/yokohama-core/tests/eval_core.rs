@@ -1725,7 +1725,7 @@ fn realizable_power_is_the_arriving_power_oracle_over_organic_play() {
     let rules = Rules::standard();
     let mut checked = 0usize;
     let mut with_president_here = 0usize;
-    for (players, seed) in [(2u8, 0xE7A1_2026_0821_0001u64), (3, 0xE7A1_2026_0821_0002)] {
+    for (players, seed) in [(2u8, 41u64), (3, 43)] {
         let mut state = keep_game(players, seed, &rules);
         let mut rng = ChaCha8Rng::seed_from_u64(seed ^ 0x5A5A);
         let policy = RolloutPolicy::FAMILY_WEIGHTED_DEFAULT;
@@ -1745,7 +1745,7 @@ fn realizable_power_is_the_arriving_power_oracle_over_organic_play() {
                         assert_eq!(
                             realizable_power(&view, player, area),
                             oracle,
-                            "{players}P seed {seed:#x} step {step}: seat {i} at {area:?}"
+                            "{players}P seed {seed} step {step}: seat {i} at {area:?}"
                         );
                         checked += 1;
                         if player.president_location == PresidentLocation::OnBoard(area) {
@@ -1782,7 +1782,7 @@ fn realizable_power_is_the_arriving_power_oracle_over_organic_play() {
 #[test]
 fn realizable_power_keeps_the_president_term_wherever_the_president_stands() {
     let rules = Rules::standard();
-    let state = keep_game(2, 0xE7A1_2026_0821_0003, &rules);
+    let state = keep_game(2, 45, &rules);
     let seat = PlayerId(0);
     let areas: Vec<AreaId> = observe(&state, seat).unwrap().board_layout.areas.keys().copied().collect();
     let (here, elsewhere) = (areas[0], areas[1]);
@@ -1815,7 +1815,7 @@ fn realizable_power_keeps_the_president_term_wherever_the_president_stands() {
 #[test]
 fn realizable_power_caps_last_at_five() {
     let rules = Rules::standard();
-    let mut state = keep_game(2, 0xE7A1_2026_0821_0004, &rules);
+    let mut state = keep_game(2, 47, &rules);
     let seat = PlayerId(0);
     let area = *observe(&state, seat).unwrap().board_layout.areas.keys().next().unwrap();
 
