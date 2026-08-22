@@ -5619,6 +5619,53 @@ fn place_from_warehouse(
     Ok(())
 }
 
+/// Apply the ENGINE's own `ReturnPresidentToHand` to a stranded layout and hand
+/// back the seat's resulting player state.
+///
+/// # Why family 8 is constructed AND engine-checked
+///
+/// Its two sides are one TURN apart, not one move: a driven recall runs
+/// `ReturnPresidentToHand` → `AdditionalActionSecond` → the seat hand-off, and
+/// at a 2P hand-off the mover is the OPPONENT, which
+/// [`PairFixture::new`]'s clause 4 refuses. So the greater side is built rather
+/// than played.
+///
+/// What is not restated is the RECALL. This drops the stranded state into the
+/// Movement phase, where `game/legal_moves.rs:386` offers a
+/// `ReturnPresidentToHand` for every subset of the seat's board pawns — the
+/// "emergency exit, always available" arm — and lets `apply_move`'s checked
+/// boundary produce the bytes. The construction then refuses unless the greater
+/// side carries exactly those bytes, so "the president came home with the last
+/// two pawns" is the engine's own answer rather than this module's.
+///
+/// The phase write is the only surgery, and it is the minimum: the move reads
+/// neither `president_start_area` (`apply_move.rs:111` CLEARS it) nor
+/// `current_action_power`, so nothing else needs staging to make the Movement
+/// step describable.
+fn recall_through_the_engine(
+    stranded: &GameState,
+    seat: PlayerId,
+    rules: &Rules,
+) -> Result<crate::types::PlayerState, FixtureError> {
+    let mut mid_turn = stranded.clone();
+    mid_turn.turn_phase = TurnPhase::Movement;
+    let recover: std::collections::BTreeMap<AreaId, u8> = stranded
+        .player(seat)
+        .assistants
+        .on_board
+        .iter()
+        .filter(|(_, n)| **n > 0)
+        .map(|(a, n)| (*a, *n))
+        .collect();
+    let recalled =
+        crate::game::apply_move(&mid_turn, &Move::ReturnPresidentToHand { recover }, rules)
+            .map_err(|e| FixtureError::Declaration {
+                clause: "engine-driven recall",
+                detail: format!("the engine refused the recall of every stranded pawn: {e}"),
+            })?;
+    Ok(recalled.player(seat).clone())
+}
+
 /// Push a registered order card onto a seat's COMPLETED pile.
 ///
 /// **The BOX pays in every case**, and that is the whole design. A card
@@ -6801,6 +6848,149 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // FAMILY 3 — the state facts each registration's rows rest on
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn three_a_moves_one_yen_and_stands_no_pawn_anywhere() {
+        let rules = rules();
+        for stage in StageEndpoint::ALL {
+            let f = built("3(a)", stage, &rules);
+            let seat = f.subject();
+            let greater = f.state(Side::Greater);
+            let lesser = f.state(Side::Lesser);
+
+            assert_eq!(greater.player(seat).money, FAMILY_3A_GREATER_MONEY);
+            assert_eq!(lesser.player(seat).money, FAMILY_3A_LESSER_MONEY);
+            // The even-money realization the registration records: the
+            // terminal conversion is an integer floor, and this step realizes
+            // nothing. `money / 2` is scoring.rs's rate, restated here as the
+            // arithmetic the note is about.
+            assert_eq!(
+                FAMILY_3A_GREATER_MONEY / 2,
+                FAMILY_3A_LESSER_MONEY / 2,
+                "the registered variant is the one whose realized terminal delta is ZERO",
+            );
+
+            for side in [Side::Greater, Side::Lesser] {
+                let state = f.state(side);
+                assert!(
+                    occupied_areas(state, seat).is_empty(),
+                    "'all else identical' is built as no presence at all",
+                );
+                assert_eq!(state.player(seat).president_location, PresidentLocation::InHand);
+                assert_eq!(stocks(state, seat), stocks(greater, seat), "goods stay equal");
+            }
+            // Everything but money is byte-identical, which is what makes the
+            // pair a pure E1 separator.
+            assert_ne!(state_fingerprint(greater), state_fingerprint(lesser));
+            assert_eq!(f.declaration().draws.moves_yen, true);
+            assert_ne!(f.declaration().draws.category_b, AchievementType::Money10);
+        }
+    }
+
+    #[test]
+    fn three_b_empties_the_hand_by_fulfilling_and_writes_the_tea_back() {
+        let rules = rules();
+        for stage in StageEndpoint::ALL {
+            let f = built("3(b)", stage, &rules);
+            let seat = f.subject();
+            let greater = f.state(Side::Greater);
+            let lesser = f.state(Side::Lesser);
+
+            for side in [Side::Greater, Side::Lesser] {
+                let state = f.state(side);
+                let p = state.player(seat);
+                assert!(p.order_cards_in_hand.is_empty(), "§5.2: hand constructed empty");
+                assert_eq!(
+                    p.starting_order,
+                    Some(FIXTURE_ORDER_CARD),
+                    "the recorded identity survives the fulfillment",
+                );
+                assert!(
+                    p.completed_orders.contains(&FIXTURE_ORDER_CARD),
+                    "I11's second arm is where an emptied starting order lives",
+                );
+                assert!(state.pending_choices.is_empty(), "the registered card queues nothing");
+                assert!(occupied_areas(state, seat).is_empty());
+            }
+            assert_eq!(stocks(greater, seat), (0, 0, FAMILY_3B_GREATER_TEA, 0));
+            assert_eq!(stocks(lesser, seat), (0, 0, FAMILY_3B_LESSER_TEA, 0));
+            assert_eq!(
+                f.declaration().draws.category_a,
+                AchievementType::Copper5,
+                "the A-leg must read a good the recipe does not move",
+            );
+        }
+    }
+
+    #[test]
+    fn three_c_parks_one_pawn_at_the_bank_against_one_on_a_dead_area() {
+        let rules = rules();
+        for stage in StageEndpoint::ALL {
+            let f = built("3(c)", stage, &rules);
+            let seat = f.subject();
+            let bank = find_area_of_type(f.state(Side::Greater), AreaType::Bank).unwrap();
+            let copper = find_area_of_type(f.state(Side::Lesser), AreaType::CopperMine).unwrap();
+
+            assert_eq!(occupied_areas(f.state(Side::Greater), seat), vec![bank]);
+            assert_eq!(occupied_areas(f.state(Side::Lesser), seat), vec![copper]);
+            // §5.2's own arithmetic, off the engine's tables at the realizable
+            // power one pawn plus the president's +1 buys.
+            assert_eq!(crate::game::actions::bank_reward(2), 2);
+            assert_eq!(crate::game::actions::copper_mine_reward(2), 0);
+            // The Bank is not production, so the greater side's S1 is zero too
+            // — the pair moves S5 alone.
+            assert!(crate::game::actions::exported_reward(AreaType::Bank, 2).is_none());
+
+            for side in [Side::Greater, Side::Lesser] {
+                let state = f.state(side);
+                assert_eq!(state.player(seat).assistants.on_board.values().sum::<u8>(), 1);
+                assert_eq!(state.player(seat).president_location, PresidentLocation::InHand);
+                assert_eq!(
+                    stocks(state, seat),
+                    (
+                        FAMILY_3_STOCKS[0],
+                        FAMILY_3_STOCKS[1],
+                        FAMILY_3_STOCKS[2],
+                        FAMILY_3_STOCKS[3],
+                    ),
+                    "§5.2: stocks equal, and registered rather than dealt",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn three_d_binds_the_employment_agencys_power_cap_against_a_full_warehouse() {
+        let rules = rules();
+        let f = built("3(d)", StageEndpoint::Early, &rules);
+        let seat = f.subject();
+        let ea = find_area_of_type(f.state(Side::Greater), AreaType::EmploymentAgency).unwrap();
+        let copper = find_area_of_type(f.state(Side::Lesser), AreaType::CopperMine).unwrap();
+
+        assert_eq!(occupied_areas(f.state(Side::Greater), seat), vec![ea]);
+        assert_eq!(occupied_areas(f.state(Side::Lesser), seat), vec![copper]);
+        assert_eq!(crate::game::actions::employment_agency_tokens_allowed(2), 1);
+
+        for side in [Side::Greater, Side::Lesser] {
+            let p = f.state(side).player(seat);
+            // §5.2's "warehouse non-empty declared, matching S6's min-gate" —
+            // the untouched setup basket, so the CAP is what binds the min.
+            assert_eq!(p.assistants.in_warehouse, 12);
+            assert_eq!(p.shophouses.in_warehouse, 6);
+            assert_eq!(p.trading_houses.in_warehouse, 4);
+            assert_eq!(p.assistants.on_board.values().sum::<u8>(), 1);
+            assert_eq!(p.president_location, PresidentLocation::InHand);
+        }
+        // Nothing is taken: 3(d) is the ACCESS pair and 11(c) is the take.
+        let g = f.state(Side::Greater).player(seat);
+        let l = f.state(Side::Lesser).player(seat);
+        assert_eq!(g.assistants.in_hand, l.assistants.in_hand);
+        assert_eq!(g.money, l.money);
+    }
+
+    // -----------------------------------------------------------------------
     // FAMILY 6 — the C2 controls
     // -----------------------------------------------------------------------
 
@@ -7030,6 +7220,333 @@ mod tests {
             state_fingerprint(two_a.state(Side::Greater)),
         );
         assert_eq!(f.declaration().margin, MarginClass::Weak);
+    }
+
+    // -----------------------------------------------------------------------
+    // FAMILY 8 — recovery/hand ordering
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn eight_recalls_the_president_and_the_last_two_pawns_through_the_engine() {
+        let rules = rules();
+        let f = built("8", StageEndpoint::Late, &rules);
+        let seat = f.subject();
+        let greater = f.state(Side::Greater);
+        let lesser = f.state(Side::Lesser);
+
+        // The STRANDED side: president on an own-empty area, both pawns in its
+        // free ring, and both areas exhausted by the engine's own arithmetic.
+        assert_eq!(
+            lesser.player(seat).president_location,
+            PresidentLocation::OnBoard(FAMILY_8_PRESIDENT_AREA),
+        );
+        assert_eq!(
+            lesser.player(seat).assistants.in_area(FAMILY_8_PRESIDENT_AREA),
+            0,
+            "§5.1's hand-off rule bars a seat's president from its own assistants",
+        );
+        assert_eq!(occupied_areas(lesser, seat), FAMILY_8_STRANDED_AREAS.to_vec());
+        assert_eq!(
+            ring_own_assistants(lesser, seat, FAMILY_8_PRESIDENT_AREA),
+            2,
+            "both pawns are one free step away — this is what makes S4 move",
+        );
+        assert_eq!(
+            own_assistant_reach(lesser, seat, FAMILY_8_PRESIDENT_AREA),
+            FAMILY_8_STRANDED_AREAS.to_vec(),
+            "and both are reachable — this is what makes S7 move",
+        );
+
+        // EXHAUSTED, as arithmetic. The Copper Mine yields nothing at the
+        // realizable power one pawn plus the president's +1 buys, and the
+        // Laboratory is unaffordable at the registered purse.
+        assert_eq!(crate::game::actions::copper_mine_reward(2), 0);
+        assert_eq!(lesser.player(seat).money, FAMILY_8_SUBJECT_MONEY);
+        assert_eq!(FAMILY_8_SUBJECT_MONEY / 2, 0, "the all-in purse buys no deficit at all");
+        assert_eq!(lesser.player(seat).imported_goods, 0);
+
+        // The RECALLED side: nothing on the board, president in hand, and the
+        // two pawns landed in the hand rather than in the warehouse.
+        assert_eq!(greater.player(seat).president_location, PresidentLocation::InHand);
+        assert!(occupied_areas(greater, seat).is_empty());
+        assert_eq!(
+            u32::from(greater.player(seat).assistants.in_hand),
+            u32::from(lesser.player(seat).assistants.in_hand) + 2,
+        );
+        assert_eq!(
+            greater.player(seat).assistants.in_warehouse,
+            lesser.player(seat).assistants.in_warehouse,
+            "recovery returns pawns to HAND; the warehouse is a one-way source",
+        );
+        // The registration's own resolved reading: the refill lands in EXCESS.
+        assert!(lesser.player(seat).assistants.in_hand >= eval::HAND_CORE_RESERVE);
+        assert_eq!(greater.player(seat).assistants.total(), 20);
+        assert_eq!(lesser.player(seat).assistants.total(), 20);
+
+        // And the recall is the ENGINE's, not a restatement of it: applying
+        // `ReturnPresidentToHand` to the stranded layout reproduces the
+        // greater side's president location and assistant distribution.
+        let recalled = recall_through_the_engine(lesser, seat, &rules)
+            .expect("the stranded layout admits its own recall");
+        assert_eq!(recalled.president_location, greater.player(seat).president_location);
+        assert_eq!(recalled.assistants, greater.player(seat).assistants);
+    }
+
+    // -----------------------------------------------------------------------
+    // FAMILY 10 — crossed access-and-need
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn ten_a_permutes_the_same_six_offers_between_the_low_and_high_zones() {
+        let rules = rules();
+        let f = built("10(a)", StageEndpoint::Early, &rules);
+        let seat = f.subject();
+        let greater = f.state(Side::Greater);
+        let lesser = f.state(Side::Lesser);
+        let port = find_area_of_type(greater, AreaType::PortA).unwrap();
+
+        let slots = |state: &GameState| -> Vec<OrderCardId> {
+            state.port_state.port_a.slots.iter().flatten().copied().collect()
+        };
+        assert_eq!(slots(greater), FAMILY_10A_PORT_OFFERS.to_vec());
+        assert_eq!(
+            slots(lesser),
+            vec![
+                FAMILY_10A_PORT_OFFERS[4],
+                FAMILY_10A_PORT_OFFERS[5],
+                FAMILY_10A_PORT_OFFERS[2],
+                FAMILY_10A_PORT_OFFERS[3],
+                FAMILY_10A_PORT_OFFERS[0],
+                FAMILY_10A_PORT_OFFERS[1],
+            ],
+            "the LOW pair and the HIGH pair trade places and nothing else moves",
+        );
+        // A permutation, so the located SET — what O1's pool complements — is
+        // identical, which is the registration's own equality argument.
+        let mut g = slots(greater);
+        let mut l = slots(lesser);
+        g.sort_unstable_by_key(|c| c.0);
+        l.sort_unstable_by_key(|c| c.0);
+        assert_eq!(g, l);
+
+        // The zone map the permutation exploits, off the engine's own helpers.
+        assert_eq!(crate::game::actions::port_accessible_zones(2), vec![crate::types::PortZone::Low]);
+        for (index, zone) in [
+            (0, crate::types::PortZone::Low),
+            (1, crate::types::PortZone::Low),
+            (4, crate::types::PortZone::High),
+            (5, crate::types::PortZone::High),
+        ] {
+            assert_eq!(crate::types::PortBoard::zone_of(index), zone);
+        }
+
+        // The match arithmetic X2 reads, at the registered stocks.
+        let matched = |card: OrderCardId| -> u32 {
+            let r = rules.orders.get(card).expect("a printed face").requirements;
+            [
+                (FAMILY_10A_STOCKS[0], u32::from(r.copper)),
+                (FAMILY_10A_STOCKS[1], u32::from(r.silk)),
+                (FAMILY_10A_STOCKS[2], u32::from(r.tea)),
+                (FAMILY_10A_STOCKS[3], u32::from(r.seafood)),
+            ]
+            .iter()
+            .map(|(stock, req)| (*stock).min(*req))
+            .sum()
+        };
+        assert_eq!(matched(FAMILY_10A_PORT_OFFERS[0]), 1);
+        assert_eq!(matched(FAMILY_10A_PORT_OFFERS[1]), 1);
+        assert_eq!(matched(FAMILY_10A_PORT_OFFERS[4]), 0);
+        assert_eq!(matched(FAMILY_10A_PORT_OFFERS[5]), 0);
+
+        for side in [Side::Greater, Side::Lesser] {
+            let state = f.state(side);
+            assert_eq!(occupied_areas(state, seat), vec![port]);
+            assert_eq!(
+                stocks(state, seat),
+                (
+                    FAMILY_10A_STOCKS[0],
+                    FAMILY_10A_STOCKS[1],
+                    FAMILY_10A_STOCKS[2],
+                    FAMILY_10A_STOCKS[3],
+                ),
+            );
+            assert_eq!(state.player(seat).order_cards_in_hand.len(), 1, "clear of the hand cap");
+            // §5.2 registers the OPPONENT as holding no port presence.
+            let other = other_seat_2p(state, seat).unwrap();
+            assert_eq!(state.player(other).assistants.in_area(port), 0);
+        }
+    }
+
+    #[test]
+    fn ten_b_permutes_the_same_six_lab_cards_between_a_free_and_a_surcharged_slot() {
+        let rules = rules();
+        let f = built("10(b)", StageEndpoint::Early, &rules);
+        let seat = f.subject();
+        let lab = find_area_of_type(f.state(Side::Greater), AreaType::LaboratoryA).unwrap();
+
+        let effect_at = |state: &GameState, slot: usize| -> TechEffect {
+            let id = state.lab_state.lab_a.slots[slot].expect("a stocked slot");
+            rules.techs.iter().find(|c| c.id == id).expect("a printed card").effect
+        };
+        assert_eq!(effect_at(f.state(Side::Greater), FAMILY_10B_CHEAP_SLOT), FAMILY_10B_LAB_STOCK[0]);
+        assert_eq!(effect_at(f.state(Side::Lesser), FAMILY_10B_DEAR_SLOT), FAMILY_10B_LAB_STOCK[0]);
+        assert_eq!(effect_at(f.state(Side::Lesser), FAMILY_10B_CHEAP_SLOT), FAMILY_10B_LAB_STOCK[4]);
+
+        // The surcharge table and the deficit arithmetic, off the engine.
+        assert_eq!(crate::game::actions::lab_position_surcharge(FAMILY_10B_CHEAP_SLOT), 0);
+        assert_eq!(crate::game::actions::lab_position_surcharge(FAMILY_10B_DEAR_SLOT), 2);
+        let cost_of = |effect: TechEffect| -> u8 {
+            rules.techs.iter().find(|c| c.effect == effect).expect("a printed card").industry_cost
+        };
+        assert_eq!(cost_of(FAMILY_10B_LAB_STOCK[0]), 3, "the cheapest printed industry value");
+        let purse = FAMILY_10B_MONEY / 2;
+        assert_eq!(purse, 1, "§5.2's registered all-in purse");
+        let deficit = |effect: TechEffect, slot: usize| -> u32 {
+            u32::from(cost_of(effect) + crate::game::actions::lab_position_surcharge(slot))
+                .saturating_sub(2)
+        };
+        assert_eq!(deficit(FAMILY_10B_LAB_STOCK[0], FAMILY_10B_CHEAP_SLOT), 1);
+        assert_eq!(deficit(FAMILY_10B_LAB_STOCK[0], FAMILY_10B_DEAR_SLOT), 3);
+        // Every OTHER slot is out of reach on BOTH sides, which is what makes
+        // X1 read 1 against 0 rather than n+1 against n.
+        for (slot, effect) in FAMILY_10B_LAB_STOCK.iter().enumerate().skip(1) {
+            assert!(
+                deficit(*effect, slot) > purse,
+                "slot {slot} ({effect:?}) is takeable and would ride both sides",
+            );
+        }
+
+        for side in [Side::Greater, Side::Lesser] {
+            let state = f.state(side);
+            assert_eq!(occupied_areas(state, seat), vec![lab]);
+            assert_eq!(state.player(seat).money, FAMILY_10B_MONEY);
+            assert_eq!(state.player(seat).imported_goods, 0);
+            assert!(state.player(seat).technologies.is_empty(), "the 4th-card duty stays off");
+            let other = other_seat_2p(state, seat).unwrap();
+            assert_eq!(state.player(other).assistants.in_area(lab), 0);
+        }
+    }
+
+    #[test]
+    fn ten_c_spreads_the_same_eight_goods_over_four_types_against_one() {
+        let rules = rules();
+        let f = built("10(c)", StageEndpoint::Early, &rules);
+        let seat = f.subject();
+        let church = find_area_of_type(f.state(Side::Greater), AreaType::Church).unwrap();
+
+        assert_eq!(f.declaration().role, PairRole::Diagnostic);
+        let g = f.state(Side::Greater).player(seat);
+        let l = f.state(Side::Lesser).player(seat);
+        assert_eq!(
+            (g.copper, g.silk, g.tea, g.seafood),
+            (
+                FAMILY_10C_SPREAD_STOCKS[0],
+                FAMILY_10C_SPREAD_STOCKS[1],
+                FAMILY_10C_SPREAD_STOCKS[2],
+                FAMILY_10C_SPREAD_STOCKS[3],
+            ),
+        );
+        assert_eq!(
+            (l.copper, l.silk, l.tea, l.seafood),
+            (
+                FAMILY_10C_CONCENTRATED_STOCKS[0],
+                FAMILY_10C_CONCENTRATED_STOCKS[1],
+                FAMILY_10C_CONCENTRATED_STOCKS[2],
+                FAMILY_10C_CONCENTRATED_STOCKS[3],
+            ),
+        );
+        assert_eq!(
+            g.total_trade_goods(),
+            l.total_trade_goods(),
+            "E2 is a linear sum: eight goods either way",
+        );
+        assert_eq!((g.money, g.imported_goods), (FAMILY_10C_MONEY, FAMILY_10C_IMPORTS));
+        assert_eq!((l.money, l.imported_goods), (FAMILY_10C_MONEY, FAMILY_10C_IMPORTS));
+
+        // The residual the diagnostic exists to print, through the engine's
+        // own faith arithmetic at the shared realizable power.
+        let faith = |p: &crate::types::PlayerState| {
+            crate::game::actions::calculate_church_faith(
+                2,
+                p.copper >= 1,
+                p.silk >= 1,
+                p.tea >= 1,
+                p.seafood >= 1,
+                p.money >= 2,
+                p.imported_goods >= 1,
+            )
+        };
+        assert_eq!(faith(g), 8, "power 2 plus all SIX distinct payment types");
+        assert_eq!(faith(l), 5, "power 2 plus copper, yen and import");
+        assert_eq!(faith(g) - faith(l), 3, "§5.2's residual, at the maximum an equal-row pair allows");
+
+        for side in [Side::Greater, Side::Lesser] {
+            let state = f.state(side);
+            assert_eq!(occupied_areas(state, seat), vec![church]);
+            assert!(state.player(seat).order_cards_in_hand.is_empty(), "any held order moves O2");
+            assert_eq!(state.player(seat).president_location, PresidentLocation::InHand);
+        }
+        // The Category-A leg saturates on BOTH sides, which is the trick that
+        // keeps `AchievementProgressSum` from firing on the copper difference.
+        for side in [Side::Greater, Side::Lesser] {
+            let (current, needed) = crate::game::achievement_progress(
+                f.state(side),
+                seat,
+                AchievementType::Copper5,
+            );
+            assert_eq!(current.min(needed), needed, "min(copper, 5) is at its cap on both sides");
+        }
+    }
+
+    #[test]
+    fn ten_d_crosses_one_fishing_ground_pawn_with_two_face_equal_orders() {
+        let rules = rules();
+        let f = built("10(d)", StageEndpoint::Early, &rules);
+        let seat = f.subject();
+        let fishing = find_area_of_type(f.state(Side::Greater), AreaType::FishingGround).unwrap();
+
+        assert_eq!(
+            f.state(Side::Greater).player(seat).order_cards_in_hand,
+            vec![FAMILY_10D_MATCHED_CARD],
+        );
+        assert_eq!(
+            f.state(Side::Lesser).player(seat).order_cards_in_hand,
+            vec![FAMILY_10D_UNMATCHED_CARD],
+        );
+
+        let matched = rules.orders.get(FAMILY_10D_MATCHED_CARD).expect("card 26");
+        let unmatched = rules.orders.get(FAMILY_10D_UNMATCHED_CARD).expect("card 5");
+        // §5.2's four equalities, each read off the printed faces.
+        assert_eq!(matched.country, unmatched.country, "equal country: O5's set is identical");
+        let half_vp = |o: &crate::types::OrderCard| {
+            2 * u32::from(o.rewards.victory_points)
+                + 2 * u32::from(o.rewards.imported_goods)
+                + u32::from(o.rewards.money)
+        };
+        assert_eq!(half_vp(matched), 4);
+        assert_eq!(half_vp(unmatched), 4, "equal face in O1's own half-VP units");
+        for o in [matched, unmatched] {
+            assert_eq!((o.rewards.movement, o.rewards.warehouse_tokens), (0, 0), "equal icons");
+        }
+        // X3's arithmetic at ZERO stocks, where the residual need IS the
+        // printed requirement.
+        assert_eq!(crate::game::actions::fishing_ground_reward(2), 2);
+        assert_eq!(u32::from(matched.requirements.seafood).min(2), 1);
+        assert_eq!(u32::from(unmatched.requirements.seafood).min(2), 0);
+
+        for side in [Side::Greater, Side::Lesser] {
+            let state = f.state(side);
+            assert_eq!(occupied_areas(state, seat), vec![fishing]);
+            assert_eq!(stocks(state, seat), (0, 0, 0, 0), "§5.2: ZERO stocks");
+            assert_eq!(state.player(seat).president_location, PresidentLocation::InHand);
+            // Neither registered card may sit at a face-up offer: the located
+            // set is what O1's pool complements, and a port swap would move it.
+            assert_eq!(port_a_slot_of(state, FAMILY_10D_MATCHED_CARD), None);
+            assert_eq!(port_a_slot_of(state, FAMILY_10D_UNMATCHED_CARD), None);
+        }
+        // And the port itself is byte-identical across the sides.
+        let offers = |side: Side| f.state(side).port_state.port_a.slots;
+        assert_eq!(offers(Side::Greater), offers(Side::Lesser));
     }
 
     // -----------------------------------------------------------------------
