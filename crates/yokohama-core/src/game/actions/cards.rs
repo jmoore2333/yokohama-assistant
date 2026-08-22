@@ -3,14 +3,33 @@
 use crate::types::{AreaType, GameState, LabBoard, MoveError, OrderCardId, PlayerId, PortBoard, PortZone, PortPayment, PresidentLocation, TechCardId, TechEffect};
 use crate::game::cards::{check_mercenary_eligibility, refill_port, refill_lab, remove_and_slide_lab, OrderRegistry, TechRegistry};
 
-/// Which Port zones are accessible at a given power level.
-pub fn port_accessible_zones(power: u8) -> Vec<PortZone> {
-    match power {
-        0..=1 => vec![],
-        2 => vec![PortZone::Low],
-        3 => vec![PortZone::Low, PortZone::Mid],
-        _ => vec![PortZone::Low, PortZone::Mid, PortZone::High], // 4-5
+/// Is one Port zone accessible at `power`? The three printed gates, and the
+/// ONE place they are written down (V4 spec §13's registered refactor).
+///
+/// Allocation-free by construction, which is why it exists: the evaluator's
+/// `PortTakeable` term asks this question once per port SLOT while scoring a
+/// position, and the list form below builds a `Vec` to answer it. The list is
+/// now this function's caller, so there is one derivation of the gate rather
+/// than two that can drift.
+pub fn port_zone_accessible(power: u8, zone: PortZone) -> bool {
+    match zone {
+        PortZone::Low => power >= 2,
+        PortZone::Mid => power >= 3,
+        PortZone::High => power >= 4,
     }
+}
+
+/// Which Port zones are accessible at a given power level.
+///
+/// The zones [`port_zone_accessible`] admits, in the board's printed
+/// Low/Mid/High order — the order every caller's `contains` already ignores and
+/// the tests pin anyway, so that the delegation is byte-for-byte the list this
+/// function used to build.
+pub fn port_accessible_zones(power: u8) -> Vec<PortZone> {
+    [PortZone::Low, PortZone::Mid, PortZone::High]
+        .into_iter()
+        .filter(|zone| port_zone_accessible(power, *zone))
+        .collect()
 }
 
 /// Validate Port action. Cards are named by id (not slot, since slots shift
