@@ -112,7 +112,16 @@
 //! seat has already claimed (T3's post-claim filter).
 
 use crate::game::rules::Rules;
-use crate::types::{AchievementType, Country, PlayerId, PlayerView, TurnPhase, VisiblePlayer};
+use crate::types::{
+    AchievementType, AreaId, Country, PlayerId, PlayerView, PresidentLocation, TurnPhase,
+    VisiblePlayer,
+};
+
+/// STUB — the RED half of V4 §3.2's shared arithmetic. Replaced in the next
+/// commit.
+pub fn realizable_power(_view: &PlayerView, _player: &VisiblePlayer, _area: AreaId) -> u8 {
+    0
+}
 
 /// Bumped on ANY behavior-affecting change to the evaluator — the feature list,
 /// the relative form, the stage shape, or the weight tables (T4's freeze is a

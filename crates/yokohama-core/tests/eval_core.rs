@@ -65,16 +65,16 @@ use yokohama_core::game::eval::{
     achievement_progress as view_achievement_progress, achievement_progress_postclaim_sum,
     achievement_progress_sum as prefreeze_achievement_sum, clock_ppm, explain,
     initial_order_deck_len, interpolate, order_cards_to_remove, place_signal,
-    progress_ppm, raw_value, score, terminal_standing, track_trigger, view_is_terminal,
-    Explanation, Feature, ScoreStructure, WeightTable, PROGRESS_FULL_PPM, TERMINAL_MARGIN_CLAMP,
-    TERMINAL_MARGIN_STEP, TERMINAL_RANK_STEP,
+    progress_ppm, raw_value, realizable_power, score, terminal_standing, track_trigger,
+    view_is_terminal, Explanation, Feature, ScoreStructure, WeightTable, PROGRESS_FULL_PPM,
+    TERMINAL_MARGIN_CLAMP, TERMINAL_MARGIN_STEP, TERMINAL_RANK_STEP,
 };
 use yokohama_core::{
-    achievement_progress, apply_move_unchecked, final_result, finalize_setup, is_game_over,
-    new_game, observe, ChurchSlot, ChurchTrack, CustomsSlot, CustomsTrack, DecisionHandle,
-    GameConfig, GameState, OrderCardId, PlayerId, PlayerView, PortBoard, RolloutPolicy, Rules,
-    ScoreBreakdown, ShophouseState, StartingOrderChoice, TradingHouseState, TurnPhase,
-    VisiblePlayer,
+    achievement_progress, apply_move_unchecked, calculate_power, final_result, finalize_setup,
+    is_game_over, new_game, observe, AreaId, ChurchSlot, ChurchTrack, CustomsSlot, CustomsTrack,
+    DecisionHandle, GameConfig, GameState, OrderCardId, PlayerId, PlayerView, PortBoard,
+    PresidentLocation, RolloutPolicy, Rules, ScoreBreakdown, ShophouseState, StartingOrderChoice,
+    TradingHouseState, TurnPhase, VisiblePlayer,
 };
 
 /// A Keep-shaped game: every seat's deal is recorded, so EVERY seat is
@@ -1688,4 +1688,148 @@ fn score_allocates_nothing_on_the_terminal_branch_too() {
     // The value itself is rank-dominated — sanity, not the subject.
     assert!(s.abs() >= TERMINAL_RANK_STEP - TERMINAL_MARGIN_STEP * TERMINAL_MARGIN_CLAMP);
     println!("terminal score: {} allocs / {} peak bytes", hot.allocs, hot.peak_bytes);
+}
+
+// ---------------------------------------------------------------------------
+// V4 §3.2 — `realizable_power`, the ARRIVING-POWER oracle
+// ---------------------------------------------------------------------------
+
+/// The president-relocated READ-ONLY clone the §7 pin compares against: this
+/// same position, with `seat`'s president standing at `area`.
+///
+/// **Its only consumer is `calculate_power`**, which reads the president
+/// location, the assistant counts, the two building maps and the station token
+/// and nothing else. Nothing is applied to this clone, replayed from it, scored
+/// on it or handed to an agent — so it does not have to be a position the rules
+/// could reach (two presidents may land on one area here). It has to be the
+/// position whose power `realizable_power` CLAIMS to report, which is the
+/// definition of the oracle this pins against.
+fn president_relocated(state: &GameState, seat: PlayerId, area: AreaId) -> GameState {
+    let mut moved = state.clone();
+    moved.players[seat.0 as usize].president_location = PresidentLocation::OnBoard(area);
+    moved
+}
+
+/// V4 spec §3.2's shared arithmetic, pinned as §7's audit contract part 4 asks:
+/// `realizable_power(seat, a)` is the power the seat would ARRIVE at `a` with,
+/// i.e. the engine's own full-state power function evaluated on this position
+/// with that seat's president CONSTRUCTED AT `a`.
+///
+/// The sweep is over ORGANIC play at 2P and 3P, every seat, every area, so the
+/// two readings meet at president-present areas (where the engine already adds
+/// the term), at president-elsewhere areas (where the view-side mirror adds it
+/// and the engine does not), and at the president-in-hand states that open
+/// every game.
+#[test]
+fn realizable_power_is_the_arriving_power_oracle_over_organic_play() {
+    let rules = Rules::standard();
+    let mut checked = 0usize;
+    let mut with_president_here = 0usize;
+    for (players, seed) in [(2u8, 0xE7A1_2026_0821_0001u64), (3, 0xE7A1_2026_0821_0002)] {
+        let mut state = keep_game(players, seed, &rules);
+        let mut rng = ChaCha8Rng::seed_from_u64(seed ^ 0x5A5A);
+        let policy = RolloutPolicy::FAMILY_WEIGHTED_DEFAULT;
+        for step in 0..120usize {
+            if is_game_over(&state) {
+                break;
+            }
+            if step.is_multiple_of(7) {
+                for i in 0..players {
+                    let seat = PlayerId(i);
+                    let view = observe(&state, seat).unwrap();
+                    let player =
+                        view.players.iter().find(|p| p.id == seat).expect("the viewer has a row");
+                    for area in view.board_layout.areas.keys().copied() {
+                        let oracle =
+                            calculate_power(&president_relocated(&state, seat, area), seat, area);
+                        assert_eq!(
+                            realizable_power(&view, player, area),
+                            oracle,
+                            "{players}P seed {seed:#x} step {step}: seat {i} at {area:?}"
+                        );
+                        checked += 1;
+                        if player.president_location == PresidentLocation::OnBoard(area) {
+                            with_president_here += 1;
+                        }
+                    }
+                }
+            }
+            let mv = {
+                let handle = DecisionHandle::new(&state, &rules);
+                policy.pick(&handle, &mut rng).expect("the rung always finds a move")
+            };
+            state = apply_move_unchecked(&state, &mv, &rules).expect("a sampled move applies");
+        }
+    }
+    // Anti-vacuity in BOTH directions: the sweep must have met areas where the
+    // president actually stands (the branch on which the two readings agree for
+    // the engine's own reason) and areas where it does not.
+    assert!(checked > 500, "the sweep only made {checked} comparisons");
+    assert!(with_president_here > 0, "no sampled area ever held the viewer's president");
+    assert!(with_president_here < checked, "every sampled area held the viewer's president");
+    println!("realizable_power oracle: {checked} comparisons, {with_president_here} president-here");
+}
+
+/// The one clause that makes this NOT a copy of the engine's power function:
+/// the president term is UNCONDITIONAL (spec §3.2, "with the president term
+/// unconditional"). Two positions differing ONLY in where this seat's president
+/// stands must read the same realizable power at the queried area — that is the
+/// whole content of "arriving".
+///
+/// The declared consequence rides here too: the president's CURRENT area is
+/// barred as next turn's destination by the no-return-to-start rule and STILL
+/// receives the +1 (§3.2's declared shape, positive and known).
+#[test]
+fn realizable_power_keeps_the_president_term_wherever_the_president_stands() {
+    let rules = Rules::standard();
+    let state = keep_game(2, 0xE7A1_2026_0821_0003, &rules);
+    let seat = PlayerId(0);
+    let areas: Vec<AreaId> = observe(&state, seat).unwrap().board_layout.areas.keys().copied().collect();
+    let (here, elsewhere) = (areas[0], areas[1]);
+
+    let at_here = observe(&president_relocated(&state, seat, here), seat).unwrap();
+    let at_elsewhere = observe(&president_relocated(&state, seat, elsewhere), seat).unwrap();
+    let row = |view: &PlayerView| view.players.iter().find(|p| p.id == seat).unwrap().clone();
+
+    assert_eq!(
+        realizable_power(&at_here, &row(&at_here), here),
+        realizable_power(&at_elsewhere, &row(&at_elsewhere), here),
+        "the arriving reading must not move with the president"
+    );
+    // ... and the divergence from the engine's own reading is real, so this is
+    // not a pin that would pass on a plain mirror.
+    assert_ne!(
+        calculate_power(&president_relocated(&state, seat, here), seat, here),
+        calculate_power(&president_relocated(&state, seat, elsewhere), seat, here),
+        "the engine's conditional term must differ across the pair, or the cell is vacuous"
+    );
+}
+
+/// The cap is applied LAST, over the summed terms (spec §3.2, "cap LAST";
+/// the engine's own ordering).
+///
+/// The fixture moves five of the seat's eight hand assistants onto one area —
+/// `in_hand` 8 → 3, `on_board[area]` 0 → 5, so the seat's twenty-pawn
+/// conservation identity is untouched — and the sixth term is the president
+/// the arriving reading always adds.
+#[test]
+fn realizable_power_caps_last_at_five() {
+    let rules = Rules::standard();
+    let mut state = keep_game(2, 0xE7A1_2026_0821_0004, &rules);
+    let seat = PlayerId(0);
+    let area = *observe(&state, seat).unwrap().board_layout.areas.keys().next().unwrap();
+
+    let pawns = &mut state.players[0].assistants;
+    assert_eq!(pawns.in_hand, 8, "the setup deals eight assistants to hand");
+    assert_eq!(pawns.on_board.get(&area).copied().unwrap_or(0), 0);
+    pawns.in_hand -= 5;
+    pawns.on_board.insert(area, 5);
+
+    let view = observe(&state, seat).unwrap();
+    let player = view.players.iter().find(|p| p.id == seat).unwrap();
+    assert_eq!(
+        realizable_power(&view, player, area),
+        5,
+        "five assistants plus the arriving president is six, capped to five"
+    );
 }
