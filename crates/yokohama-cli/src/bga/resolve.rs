@@ -313,15 +313,95 @@ fn rewards_fit_distinct_spaces(
     false
 }
 
+/// One built tile awaiting a site card: the cell it occupies, the reward
+/// multiset its builds granted, and every site that can host that multiset.
+struct ConstrainedCell {
+    board_index: usize,
+    area: AreaType,
+    rewards: Vec<SpaceReward>,
+    candidates: Vec<u8>,
+}
+
+/// How many candidate placements the assignment search may try before it
+/// refuses rather than running unbounded.
+///
+/// Feasibility here is bipartite matching, where a plain depth-first search is
+/// worst-case exponential. The real inputs are tiny — at most one constrained
+/// cell per board tile, each with at most 24 candidates, and in every capture
+/// measured so far the first descent succeeds outright — so this ceiling is
+/// astronomically out of reach in practice. It exists so that a pathological
+/// capture STOPS with a typed refusal instead of hanging: an import that cannot
+/// decide is an import that says so.
+const ASSIGNMENT_SEARCH_BUDGET: u64 = 1_000_000;
+
+/// Assign a distinct site card to every constrained cell, in board order,
+/// trying each cell's candidates in ascending index order and BACKTRACKING when
+/// a later cell is left with nothing.
+///
+/// **This strictly generalizes the first-pick walk it replaced.** Both take the
+/// lowest available candidate at each cell in the same order, so wherever the
+/// old walk succeeded its picks ARE this search's first descent and nothing
+/// backtracks — the assignment and the declared assumptions come out identical.
+/// The difference is only what happens at a dead end, where the old walk
+/// refused and this one reconsiders an earlier cell.
+///
+/// `chosen` accumulates, per depth, the candidates that were still available at
+/// that cell together with the pick made there. Recording availability along
+/// the SUCCESSFUL path (rather than at first visit) is what keeps a declared
+/// assumption's candidate list honest after a backtrack.
+fn assign_sites(
+    cells: &[ConstrainedCell],
+    depth: usize,
+    used: &mut BTreeSet<u8>,
+    chosen: &mut Vec<(Vec<u8>, u8)>,
+    budget: &mut u64,
+) -> Result<bool, ImportError> {
+    let Some(cell) = cells.get(depth) else {
+        return Ok(true);
+    };
+    let available: Vec<u8> =
+        cell.candidates.iter().copied().filter(|c| !used.contains(c)).collect();
+    for &pick in &available {
+        if *budget == 0 {
+            return Err(ImportError::Sheet {
+                detail: format!(
+                    "the building-site assignment search hit its {ASSIGNMENT_SEARCH_BUDGET}-step \
+                     ceiling over {} built tile(s) without deciding — this capture is not \
+                     resolvable within the bound and is refused rather than guessed (drift STOP)",
+                    cells.len()
+                ),
+            });
+        }
+        *budget -= 1;
+        used.insert(pick);
+        chosen.push((available.clone(), pick));
+        if assign_sites(cells, depth + 1, used, chosen, budget)? {
+            return Ok(true);
+        }
+        chosen.pop();
+        used.remove(&pick);
+    }
+    Ok(false)
+}
+
 /// Resolve the building-site assignment: constrained cells (built tiles whose
-/// granted rewards name candidate sites) take the lowest matching unused
-/// index; free cells take the lowest unused index. Multi-candidate picks are
-/// declared. A tile built MORE than once (measured live at table 896157897:
-/// Church takes seat 1's copper-1 build at m56 and seat 0's silk-2 build at
-/// m87) constrains its site to one hosting the whole reward MULTISET on
-/// distinct spaces — which typically NARROWS the candidate set (the live pair
-/// names site_005 uniquely, where copper-1 alone matched it plus nothing else
-/// but silk-2 alone matched several).
+/// granted rewards name candidate sites) are matched to distinct site cards by
+/// the board-order backtracking search above; free cells then take the lowest
+/// unused index. Multi-candidate picks are declared. A tile built MORE than
+/// once (measured live at table 896157897: Church takes seat 1's copper-1 build
+/// at m56 and seat 0's silk-2 build at m87) constrains its site to one hosting
+/// the whole reward MULTISET on distinct spaces — which typically NARROWS the
+/// candidate set (the live pair names site_005 uniquely, where copper-1 alone
+/// matched it plus nothing else but silk-2 alone matched several).
+///
+/// **Two refusals, and they say DIFFERENT things** — the distinction was worth
+/// a bug (BGA table 896199544, the game-3 import). A cell whose own candidate
+/// set is empty is unexplainable on its own: no site card in the verified data
+/// hosts what was observed there, which is genuine data drift. A cell that runs
+/// out only because another cell needs the same card is a CONFLICT between
+/// cells, and saying "no site carries these rewards" about it is simply false —
+/// one does. Game 3 was the second kind and was refused with the first kind's
+/// text for want of backtracking.
 fn resolve_sites(
     answers: &SetupAnswers,
     stream: &FactStream,
@@ -355,30 +435,72 @@ fn resolve_sites(
     };
     let mut used: BTreeSet<u8> = BTreeSet::new();
     let mut out: Vec<Option<u8>> = vec![None; board.len()];
-    // Constrained cells first.
+
+    // Constrained cells, in board order, with their candidate sites.
+    let mut cells: Vec<ConstrainedCell> = Vec::new();
     for (i, area) in board.iter().enumerate() {
         if let Some((_, rewards)) = built.iter().find(|(a, _)| a == area) {
-            let cands: Vec<u8> = candidates_for(rewards).into_iter().filter(|c| !used.contains(c)).collect();
-            let pick = *cands.first().ok_or_else(|| ImportError::Sheet {
-                detail: format!(
-                    "no engine building site carries distinct spaces for all observed build \
-                     rewards {rewards:?} — the build(s) on {area:?} are unexplainable (drift STOP)"
-                ),
-            })?;
-            used.insert(pick);
-            if cands.len() > 1 {
-                assumptions.push(Assumption {
-                    what: format!("building site on {area:?}"),
-                    candidates: cands.iter().map(|c| format!("site index {c}")).collect::<Vec<_>>().join(" | "),
-                    picked: format!("site index {pick}"),
-                    why_inert: format!(
-                        "constrained by the observed build reward(s) {rewards:?}; the candidates \
-                         differ only in spaces never built in this capture"
+            let candidates = candidates_for(rewards);
+            // Empty ON ITS OWN, before any competition: nothing in the verified
+            // site data hosts what was observed here. Genuine drift.
+            if candidates.is_empty() {
+                return Err(ImportError::Sheet {
+                    detail: format!(
+                        "no engine building site carries distinct spaces for all observed build \
+                         rewards {rewards:?} — the build(s) on {area:?} are unexplainable (drift STOP)"
                     ),
                 });
             }
-            out[i] = Some(pick);
+            cells.push(ConstrainedCell {
+                board_index: i,
+                area: *area,
+                rewards: rewards.clone(),
+                candidates,
+            });
         }
+    }
+
+    let mut chosen: Vec<(Vec<u8>, u8)> = Vec::new();
+    let mut budget = ASSIGNMENT_SEARCH_BUDGET;
+    if !assign_sites(&cells, 0, &mut used, &mut chosen, &mut budget)? {
+        // Every cell is individually explainable, so the failure is a conflict
+        // BETWEEN cells competing for the same card(s).
+        let conflict = cells
+            .iter()
+            .map(|c| {
+                let list =
+                    c.candidates.iter().map(|s| s.to_string()).collect::<Vec<_>>().join(", ");
+                format!("{:?} [{}]", c.area, list)
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(ImportError::Sheet {
+            detail: format!(
+                "no consistent assignment of engine building sites to the built tiles exists — \
+                 every site hosting one tile's observed build rewards is needed by another \
+                 (drift STOP); tiles and the sites that can host them: {conflict}"
+            ),
+        });
+    }
+
+    for (cell, (available, pick)) in cells.iter().zip(chosen.iter()) {
+        if available.len() > 1 {
+            let (area, rewards) = (cell.area, &cell.rewards);
+            assumptions.push(Assumption {
+                what: format!("building site on {area:?}"),
+                candidates: available
+                    .iter()
+                    .map(|c| format!("site index {c}"))
+                    .collect::<Vec<_>>()
+                    .join(" | "),
+                picked: format!("site index {pick}"),
+                why_inert: format!(
+                    "constrained by the observed build reward(s) {rewards:?}; the candidates \
+                     differ only in spaces never built in this capture"
+                ),
+            });
+        }
+        out[cell.board_index] = Some(*pick);
     }
     // Free cells.
     for (i, area) in board.iter().enumerate() {
@@ -664,6 +786,176 @@ mod tests {
             }
             other => panic!("expected Sheet drift STOP, got {other:?}"),
         }
+    }
+
+    /// Game 3's board order (BGA table 896199544, from the `--answers` sheet).
+    const GAME3_BOARD: [AreaType; 10] = [
+        AreaType::Church,
+        AreaType::SilkMill,
+        AreaType::LaboratoryA,
+        AreaType::Bank,
+        AreaType::Customs,
+        AreaType::CopperMine,
+        AreaType::PortA,
+        AreaType::TeaPlantation,
+        AreaType::FishingGround,
+        AreaType::EmploymentAgency,
+    ];
+
+    /// Rebuild `stream` carrying ONLY the given builds, on the given board.
+    fn sited(
+        board: Vec<AreaType>,
+        builds: &[(AreaType, SpaceReward)],
+    ) -> (SetupAnswers, FactStream) {
+        let (_feed, mut answers, mut stream) = excerpt();
+        answers.board_tiles =
+            Evidence::Evidenced { value: board, provenance: "test fixture".to_string() };
+        stream.facts.retain(|tf| !matches!(tf.fact, Fact::BuildShop { .. }));
+        for (i, (tile, reward)) in builds.iter().enumerate() {
+            stream.facts.push(super::super::facts::TimedFact {
+                move_id: 100 + i as u64,
+                kind: "buildShop".to_string(),
+                fact: Fact::BuildShop { seat: 0, tile: *tile, reward: *reward },
+            });
+        }
+        (answers, stream)
+    }
+
+    fn movement2() -> SpaceReward {
+        SpaceReward { movement: 2, ..SpaceReward::default() }
+    }
+    fn vp4() -> SpaceReward {
+        SpaceReward { vp: 4, ..SpaceReward::default() }
+    }
+
+    /// **The game-3 regression (BGA table 896199544), and it is an ASSIGNMENT
+    /// bug rather than a data drift.** Five builds land in that game, two of
+    /// them on FishingGround — 2 movement and 4 VP — so its site must host both
+    /// on distinct spaces, and in the verified data exactly ONE card does
+    /// (site index 8 / `site_009`: TR vp-4, MR assistants-2). But `{movement:2}`
+    /// alone matches sites [8, 9, 10, 11, 12], and the old resolver walked the
+    /// board in order taking `cands.first()` with no backtracking — so
+    /// CopperMine (board index 5) consumed site 8 before FishingGround (board
+    /// index 8) was ever reached, leaving it an empty candidate set and
+    /// STOPPING the whole import.
+    ///
+    /// A consistent global assignment exists the whole time (FishingGround→8,
+    /// CopperMine and TeaPlantation→9/10, SilkMill→2), which is what the
+    /// backtracking search finds. The most-constrained tile being visited LAST
+    /// is exactly the shape greedy cannot handle.
+    #[test]
+    fn the_most_constrained_tile_may_be_reached_last_and_still_resolve() {
+        let rules = Rules::standard();
+        let (answers, stream) = sited(
+            GAME3_BOARD.to_vec(),
+            &[
+                (AreaType::SilkMill, vp4()),
+                (AreaType::FishingGround, movement2()),
+                (AreaType::TeaPlantation, movement2()),
+                (AreaType::FishingGround, vp4()),
+                (AreaType::CopperMine, movement2()),
+            ],
+        );
+        let mut assumptions = Vec::new();
+        let sites = resolve_sites(&answers, &stream, &rules, &mut assumptions)
+            .expect("a consistent global assignment exists and must be found");
+
+        let at = |tile: AreaType| {
+            let i = GAME3_BOARD.iter().position(|a| *a == tile).expect("tile on board");
+            sites[i].expect("constrained tile assigned")
+        };
+        // The only site hosting movement-2 AND vp-4 on distinct spaces.
+        assert_eq!(at(AreaType::FishingGround), 8, "FishingGround must take its unique site");
+
+        // Every constrained tile's site really hosts its observed rewards, and
+        // no two cells share a site card.
+        for (tile, rewards) in [
+            (AreaType::SilkMill, vec![vp4()]),
+            (AreaType::TeaPlantation, vec![movement2()]),
+            (AreaType::CopperMine, vec![movement2()]),
+            (AreaType::FishingGround, vec![movement2(), vp4()]),
+        ] {
+            let site = &rules.building_sites[at(tile) as usize];
+            let mut used = vec![false; site.spaces.len()];
+            assert!(
+                rewards_fit_distinct_spaces(&rewards, &site.spaces, &mut used),
+                "{tile:?} assigned a site that cannot host its builds"
+            );
+        }
+        let assigned: Vec<u8> = sites.iter().flatten().copied().collect();
+        let distinct: BTreeSet<u8> = assigned.iter().copied().collect();
+        assert_eq!(assigned.len(), distinct.len(), "a site card was assigned to two cells");
+    }
+
+    /// The genuine global refusal, and the message must say what is TRUE.
+    ///
+    /// Two tiles each observe `{movement:2, vp:4}`, so each on its own is
+    /// perfectly explainable — site 8 hosts either — but only ONE card in the
+    /// data hosts that pair, so no assignment can satisfy both. The old text
+    /// ("no engine building site carries distinct spaces for all observed build
+    /// rewards") would be false here, exactly as it was false on game 3: a site
+    /// DOES carry them. The refusal names the conflict instead.
+    #[test]
+    fn a_globally_unsatisfiable_assignment_stops_and_says_so() {
+        let rules = Rules::standard();
+        let (answers, stream) = sited(
+            GAME3_BOARD.to_vec(),
+            &[
+                (AreaType::FishingGround, movement2()),
+                (AreaType::FishingGround, vp4()),
+                (AreaType::TeaPlantation, movement2()),
+                (AreaType::TeaPlantation, vp4()),
+            ],
+        );
+        let mut assumptions = Vec::new();
+        let Err(err) = resolve_sites(&answers, &stream, &rules, &mut assumptions) else {
+            panic!("two tiles competing for one site cannot both be assigned");
+        };
+        match err {
+            ImportError::Sheet { detail } => {
+                assert!(detail.contains("drift STOP"), "{detail}");
+                assert!(
+                    detail.contains("no consistent assignment"),
+                    "the refusal must name the CONFLICT, not claim no site fits: {detail}"
+                );
+                assert!(detail.contains("FishingGround"), "{detail}");
+                assert!(detail.contains("TeaPlantation"), "{detail}");
+                assert!(
+                    !detail.contains("no engine building site carries"),
+                    "a site DOES carry these rewards — the old text would be a falsehood: {detail}"
+                );
+            }
+            other => panic!("expected Sheet drift STOP, got {other:?}"),
+        }
+    }
+
+    /// The search must not change what greedy already got right: where the old
+    /// first-pick walk succeeded, the first descent of the DFS makes the SAME
+    /// picks (it never had to backtrack there), so assignments and declared
+    /// assumptions are unchanged. Pinned on a shape greedy handled — one
+    /// unconstrained multi-candidate tile plus one uniquely-constrained tile.
+    #[test]
+    fn where_greedy_succeeded_the_search_makes_the_same_picks() {
+        let rules = Rules::standard();
+        let (answers, stream) = sited(
+            GAME3_BOARD.to_vec(),
+            &[(AreaType::SilkMill, vp4()), (AreaType::CopperMine, movement2())],
+        );
+        let mut assumptions = Vec::new();
+        let sites = resolve_sites(&answers, &stream, &rules, &mut assumptions).expect("resolves");
+        let at = |tile: AreaType| {
+            let i = GAME3_BOARD.iter().position(|a| *a == tile).expect("tile on board");
+            sites[i].expect("assigned")
+        };
+        // Greedy's own answer: lowest matching unused index, board order.
+        assert_eq!(at(AreaType::SilkMill), 2, "vp-4 candidates are [2,8,18,19,21,22]");
+        assert_eq!(at(AreaType::CopperMine), 8, "movement-2 candidates are [8,9,10,11,12]");
+        let silk = assumptions
+            .iter()
+            .find(|a| a.what.contains("building site on SilkMill"))
+            .expect("a multi-candidate constrained pick is declared");
+        assert_eq!(silk.candidates, "site index 2 | site index 8 | site index 18 | site index 19 | site index 21 | site index 22");
+        assert_eq!(silk.picked, "site index 2");
     }
 
     #[test]
