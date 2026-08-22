@@ -421,6 +421,31 @@ impl<'a> Translator<'a> {
         Some(tf)
     }
 
+    /// What a `consume_drive()` that returned `None` ACTUALLY means.
+    ///
+    /// **`None` is two unrelated facts wearing one shape**, and telling them
+    /// apart is the whole point of this helper. Either the drive queue is
+    /// genuinely empty, or [`Self::consume_drive`] ran the checkpoints below the
+    /// next fact, one of them FAILED, and the real error was stashed in
+    /// `pending_checkpoint_error` (which is only read at the next [`Self::step`]
+    /// entry — too late for a caller that is about to return an error of its
+    /// own from inside the current one).
+    ///
+    /// So the stashed error WINS whenever there is one, and `when_empty` — the
+    /// caller's description of an exhausted queue — is reachable only when
+    /// nothing was stashed. Reporting a checkpoint divergence as a missing fact
+    /// cost a whole diagnosis on BGA table 896199544, where "port take fact
+    /// vanished" printed at m106 with the `orderAcquisition` notification
+    /// sitting in the feed and the true stop a T9 divergence one move earlier.
+    ///
+    /// Taking the error CLEARS it, so one failure is never reported twice.
+    fn drive_absence(&mut self, move_id: u64, when_empty: &str) -> ImportError {
+        match self.pending_checkpoint_error.take() {
+            Some(e) => e,
+            None => rerr(move_id, when_empty),
+        }
+    }
+
     /// Consume WITHOUT advancing the checkpoint boundary — for the 2nd+
     /// fact of one gathering decide (a port pair, a composed assistant move),
     /// whose engine apply has not happened yet. Their checkpoints run at the
@@ -1453,7 +1478,9 @@ impl<'a> Translator<'a> {
     fn step_port_take(&mut self, move_id: u64) -> Result<(), ImportError> {
         let seat = self.current_seat();
         // First take fact.
-        let first = self.consume_drive().ok_or_else(|| rerr(move_id, "port take fact vanished"))?;
+        let Some(first) = self.consume_drive() else {
+            return Err(self.drive_absence(move_id, "port take fact vanished"));
+        };
         let Fact::PortTake { card: card1, .. } = first.fact else {
             return Err(rerr(move_id, "port take arm consumed a non-take fact"));
         };
@@ -1558,7 +1585,9 @@ impl<'a> Translator<'a> {
     }
 
     fn step_lab_take(&mut self, move_id: u64) -> Result<(), ImportError> {
-        let tf = self.consume_drive().ok_or_else(|| rerr(move_id, "lab take fact vanished"))?;
+        let Some(tf) = self.consume_drive() else {
+            return Err(self.drive_absence(move_id, "lab take fact vanished"));
+        };
         let Fact::LabTake { tech_name, tech_id_key, .. } = tf.fact else {
             return Err(rerr(move_id, "lab take arm consumed a non-take fact"));
         };
@@ -2330,6 +2359,116 @@ mod tests {
             .to_string();
         assert!(detail.contains("T9 counter divergence"), "{detail}");
         assert!(detail.contains("board_assists") || detail.contains("hand_assists"), "{detail}");
+    }
+
+    /// The owned prerequisites of a translator over the committed excerpt, with
+    /// `checkpoints` as its ENTIRE checkpoint set — the shape
+    /// [`a_checkpoint_no_state_satisfies_stops_with_its_field_level_diff`]
+    /// established, factored out so several cells can place a checkpoint
+    /// wherever the mechanism under test needs one. Returns the parts rather
+    /// than a `Translator` because a translator BORROWS its feed and resolution,
+    /// so both have to outlive it in the caller's frame. `seat0_pid` is handed
+    /// back too: `resolve` consumes the answers a caller would read it from.
+    ///
+    /// `checkpoints` is built from seat 0's player id rather than passed in,
+    /// since every cell that places one needs that id to key it.
+    fn excerpt_parts(
+        checkpoints: impl FnOnce(&str) -> Vec<super::super::facts::CounterCheckpoint>,
+    ) -> (
+        yokohama_bridge::feed::CollapsedFeed,
+        super::super::resolve::Resolved,
+        super::super::facts::FactStream,
+        Rules,
+    ) {
+        let text = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../yokohama-bridge/tests/data/excerpt-895724349.ndjson"
+        ))
+        .unwrap();
+        let rules = Rules::standard();
+        let feed = yokohama_bridge::feed::read_and_collapse(&text, None).unwrap();
+        let answers = super::super::setup::synthesize(&feed, &rules).unwrap();
+        let mapper = super::super::orders::OrderMapper::from_rules(&rules).unwrap();
+        let seats = answers.seats.clone();
+        let seat0_pid = answers.seats[0].bga_player_id.clone();
+        let mut stream = super::super::facts::extract(
+            &feed,
+            &|pid| seats.iter().find(|s| s.bga_player_id == pid).map(|s| s.seat),
+            &mapper,
+        )
+        .unwrap();
+        stream.checkpoints = checkpoints(&seat0_pid);
+        let resolved = super::super::resolve::resolve(answers, &feed, &stream, &rules).unwrap();
+        (feed, resolved, stream, rules)
+    }
+
+    /// **The message-masking regression (BGA table 896199544, the game-3 m106
+    /// stop).** `consume_drive` returns `None` for TWO unrelated reasons — the
+    /// drive queue is empty, or a checkpoint FAILED and its real error was
+    /// stashed in `pending_checkpoint_error`. The take arms turned the second
+    /// into a claim about the first ("lab/port take fact vanished"), and because
+    /// that fabricated error throws from INSIDE the current `step()`, the stashed
+    /// diagnosis is never reached at `step()`'s entry and is discarded outright.
+    ///
+    /// On the live capture this printed "port take fact vanished" while the
+    /// m106 `orderAcquisition` notification was sitting right there in the feed —
+    /// the real stop being a T9 divergence at m105. The shape is reproduced here
+    /// on the LAB arm, which carries the identical defect: the excerpt's lab take
+    /// at m6 consumes the checkpoint placed at m5, so the failure lands inside
+    /// `step_lab_take`'s `consume_drive`.
+    #[test]
+    fn a_checkpoint_failure_inside_a_take_arm_surfaces_the_real_divergence() {
+        // m5 (the president placement onto the Laboratory) is real-turn era and
+        // inside the excerpt's clean window; the m6 lab take is the first fact
+        // consumed past it, so ITS `consume_drive` runs this checkpoint.
+        let (feed, resolved, stream, rules) = excerpt_parts(|pid| {
+            vec![super::super::facts::CounterCheckpoint {
+                move_id: 5,
+                per_player: BTreeMap::from([(pid.to_string(), serde_json::json!({ "yens": 9999 }))]),
+            }]
+        });
+        let session = super::super::setup::build_session(&resolved.answers, rules).unwrap();
+        let mut t = Translator::new(session, &resolved, stream, &feed).unwrap();
+        let detail = t.run().expect_err("a checkpoint no engine state satisfies must STOP").to_string();
+        assert!(
+            detail.contains("T9 counter divergence"),
+            "the REAL error must survive the take arm: {detail}"
+        );
+        assert!(detail.contains("`yens`"), "the diff names the counter: {detail}");
+        assert!(detail.contains("BGA 9999"), "the diff carries BGA's value: {detail}");
+        assert!(
+            !detail.contains("vanished"),
+            "a checkpoint failure must never be reported as a missing fact: {detail}"
+        );
+    }
+
+    /// The general mechanism, both arms, at the helper every paraphrasing site
+    /// now goes through: a stashed checkpoint error WINS, and the caller's own
+    /// "vanished" wording is reachable ONLY when nothing was stashed — i.e. only
+    /// when the queue is genuinely empty.
+    #[test]
+    fn drive_absence_prefers_the_stashed_error_and_only_then_the_callers_wording() {
+        let (feed, resolved, stream, rules) = excerpt_parts(|_| vec![]);
+        let session = super::super::setup::build_session(&resolved.answers, rules).unwrap();
+        let mut t = Translator::new(session, &resolved, stream, &feed).unwrap();
+
+        // Nothing stashed: the caller's wording stands, and the caller is the
+        // only one who can describe an empty queue.
+        let empty = t.drive_absence(42, "port take fact vanished").to_string();
+        assert!(empty.contains("port take fact vanished"), "{empty}");
+        assert!(empty.contains("42"), "the caller's move id rides the error: {empty}");
+
+        // A stashed checkpoint error: it wins, and the wording is never applied.
+        t.pending_checkpoint_error = Some(rerr(7, "T9 counter divergence — seat 0 `yens`"));
+        let stashed = t.drive_absence(42, "port take fact vanished").to_string();
+        assert!(stashed.contains("T9 counter divergence"), "the stashed error wins: {stashed}");
+        assert!(!stashed.contains("vanished"), "the fabricated claim is gone: {stashed}");
+
+        // And taking it CLEARS it, so one failure is never reported twice.
+        assert!(
+            t.pending_checkpoint_error.is_none(),
+            "the stashed error must be taken, not left to surface again"
+        );
     }
 
     /// F2 (lens-2 MUST): the T9 counter cross-check gets its NEGATIVE pin. A
