@@ -3630,7 +3630,7 @@ mod tests {
     };
     use yokohama_core::{
         apply_move, get_legal_moves, is_game_over, AchievementCard, AchievementType, ChurchSlot,
-        ChurchTrack, CustomsSlot, CustomsTrack, GameConfig, HandCard, OrderCardId,
+        ChurchTrack, CustomsSlot, CustomsTrack, GameConfig, HandCard, OrderCardId, PendingChoice,
         StartingOrderChoice, TechCardId,
     };
 
@@ -6184,5 +6184,235 @@ mod tests {
             fixtures.len(),
             CandidateFeature::COUNT,
         );
+    }
+
+    /// **CARRY 4 — no candidate column reads the choice queue (lens B NF-3).**
+    ///
+    /// The claim is 6(a)'s own, written into its registration: "THE QUEUED
+    /// CHOICE IS CARRIED, NOT RESOLVED … no row on the thirty-four-wide axis
+    /// reads `pending_choices`." It needs checking rather than trusting for a
+    /// concrete reason — **`PlayerView` CARRIES `pending_choices`**
+    /// (`types/view.rs:119`), so this is not a boundary the signature enforces.
+    /// A helper reading it would compile, would be view-honest by every other
+    /// measure, and would make a fixture's columns depend on a decision the
+    /// registration deliberately did not make.
+    ///
+    /// The TEXT half scans `eval.rs`'s non-test region for the field name at
+    /// all, which subsumes the per-helper form: if the file never spells it, no
+    /// helper does, and no head list has to be kept in step here (the
+    /// per-helper discipline and its `S_/E_/X_HELPER_HEADS` templates stay in
+    /// `tests/eval_core.rs`, where the other §7 scans live). It is a TRIPWIRE
+    /// rather than a proof, on `eval_core`'s own stated grounds.
+    ///
+    /// The BEHAVIOURAL half is the one that cannot be talked around: every
+    /// column is recomputed over the whole frozen package with the queue
+    /// EMPTIED, with a one-element queue and with a three-element one, and
+    /// every one of the eighteen must read identically at every seat. Editing
+    /// the VIEW rather than rebuilding the state is deliberate — it isolates
+    /// the field exactly, with no second difference riding along and no
+    /// question about whether the drained state is constructible.
+    ///
+    /// BOTH HALVES MUTATION-PROVEN, and separately, since the text half runs
+    /// first and would otherwise mask the other. `production_access` was given
+    /// `let mut total = view.pending_choices.len() as i64;`:
+    ///   - text half:        FAILED — "eval.rs names `pending_choices` outside
+    ///     its test module".
+    ///   - behavioural half, with the text assert temporarily relaxed: FAILED —
+    ///     "1(a) greater seat 0: S1 moves when the choice queue is replaced by
+    ///     [AnyGood]".
+    #[test]
+    fn no_candidate_column_reads_the_choice_queue() {
+        // The text half.
+        const SRC: &str = include_str!("../src/game/eval.rs");
+        let non_test = SRC.split("#[cfg(test)]").next().expect("eval.rs has a test module");
+        assert!(
+            !non_test.contains("pending_choices"),
+            "eval.rs names `pending_choices` outside its test module — a candidate column that \
+             read the queue would make a fixture's row depend on a decision its registration \
+             deliberately left unresolved (6(a)'s note)",
+        );
+        // ANTI-VACUITY: the needle is a real spelling of a real field.
+        const VIEW_SRC: &str = include_str!("../src/types/view.rs");
+        assert!(
+            VIEW_SRC.contains("pub pending_choices"),
+            "the scanned needle no longer names a field of `PlayerView`",
+        );
+
+        // The behavioural half.
+        let rules = Rules::standard();
+        let fixtures = every_registered_fixture(&rules);
+        let queues: [Vec<PendingChoice>; 3] = [
+            Vec::new(),
+            vec![PendingChoice::AnyGood],
+            vec![
+                PendingChoice::WarehouseTake,
+                PendingChoice::AssistantMove,
+                PendingChoice::StationPlace,
+            ],
+        ];
+        let mut carried_a_queue: Vec<String> = Vec::new();
+        for (decl, fixture) in &fixtures {
+            for side in [Side::Greater, Side::Lesser] {
+                let view = fixture.view(side);
+                if !view.pending_choices.is_empty() {
+                    carried_a_queue.push(format!(
+                        "{} {} ({:?})",
+                        decl.id,
+                        side.name(),
+                        view.pending_choices,
+                    ));
+                }
+                for queue in &queues {
+                    let mut edited = view.clone();
+                    edited.pending_choices.clone_from(queue);
+                    let s = ScoreStructure::derive(&edited, &rules);
+                    let base = ScoreStructure::derive(view, &rules);
+                    for player in &view.players {
+                        let mirror = edited
+                            .players
+                            .iter()
+                            .find(|p| p.id == player.id)
+                            .expect("the edit touched only the queue");
+                        for label in CandidateFeature::ALL {
+                            assert_eq!(
+                                candidate_columns(&edited, mirror, label, &rules),
+                                candidate_columns(view, player, label, &rules),
+                                "{} {} seat {}: {} moves when the choice queue is replaced by \
+                                 {queue:?}",
+                                decl.id,
+                                side.name(),
+                                player.id.0,
+                                label.label(),
+                            );
+                        }
+                    }
+                    // The context the columns ride is queue-blind too, which is
+                    // where a future column would inherit the leak from.
+                    assert_eq!(s.context, base.context, "{} {}: the view context", decl.id, side.name());
+                }
+            }
+        }
+        // The EXECUTABLE half needs a real unresolved queue somewhere, or
+        // "emptied" is the same view three times: 6(a)'s greater side is the
+        // registration that carries one.
+        assert_eq!(
+            carried_a_queue,
+            vec![
+                "6(a) greater ([WarehouseTake])".to_string(),
+                "6(a) greater ([WarehouseTake])".to_string(),
+            ],
+            "the package's unresolved queues are not where the registration says",
+        );
+    }
+
+    /// One label's value for the subject seat, at one side of one fixture.
+    fn subject_column(fixture: &PairFixture, side: Side, label: CandidateFeature, rules: &Rules)
+        -> i64 {
+        let view = fixture.view(side);
+        let seat = view
+            .players
+            .iter()
+            .find(|p| p.id == fixture.subject())
+            .expect("the subject has a row in its own view");
+        candidate_columns(view, seat, label, rules).expect("the adapter never declines")
+    }
+
+    /// The same, for a view built by hand off an edited state.
+    fn subject_column_of(view: &PlayerView, seat: PlayerId, label: CandidateFeature, rules: &Rules)
+        -> i64 {
+        let row = view.players.iter().find(|p| p.id == seat).expect("the seat has a row");
+        candidate_columns(view, row, label, rules).expect("the adapter never declines")
+    }
+
+    /// **CARRY 5 — 11(d)'s slot-5 inertness, at the computed X1 column.**
+    ///
+    /// 11(d) is family 11's X1 conservation gate, and the whole pair rests on
+    /// one arithmetic claim its registration makes in prose: with money 0, no
+    /// imports and realizable power 3 at the Laboratory, "the six deficits are
+    /// 0 · 2 · 3 · 1 · 2 · 2, so slot 0 is the only zero and the other three
+    /// cost-3 cards sit behind a surcharge they cannot pay for". Slot 5 is one
+    /// of those three. Until this commit the claim was checked by the fixture's
+    /// own slot arithmetic (`pair_fixtures`' `eleven_d_buys_at_zero_deficit…`
+    /// re-derives the deficits); what it was NOT checked against is the X1
+    /// FORMULA, which is the thing the solve will read.
+    ///
+    /// Inertness is proven by MUTATION rather than by re-deriving the table a
+    /// third time. Slot 5 is emptied, and then filled with EVERY printed
+    /// technology CARD in turn — all thirty of them, which is twenty titles
+    /// with ten circulating as two physical copies, walked by
+    /// `iter_sorted_by_id` so the order is the registry's rather than a
+    /// `HashMap`'s — and X1 may not move for any of them. The cards rather than
+    /// the titles because X1's ownership clause is EFFECT equality and the
+    /// second copy of a title is the case that clause exists for.
+    ///
+    /// That is a stronger statement than the registration's: not
+    /// merely that Patent System is unaffordable there, but that NO printed
+    /// card is, because the cheapest printed industry is 3 and slot 5
+    /// surcharges +2 against a power of 3 and an empty purse.
+    ///
+    /// Both stages, both sides. The greater side's lab is NOT the registered
+    /// stock — its purchase ran the engine's own slide and refill — so running
+    /// the sweep there asks the same question of a board the registration does
+    /// not write out.
+    #[test]
+    fn eleven_d_slot_five_is_inert_at_the_computed_x1_column() {
+        let rules = Rules::standard();
+        let decl = registered("11(d)").expect("11(d) is registered");
+        let titles = rules.techs.iter_sorted_by_id();
+        assert_eq!(titles.len(), 30, "the printed technology registry: 20 titles, 30 cards");
+        for stage in decl.stages {
+            let fixture = build_registered_pair(decl, *stage, &rules)
+                .unwrap_or_else(|e| panic!("11(d) at {}: {e:?}", stage.name()));
+            let subject = fixture.subject();
+            for side in [Side::Greater, Side::Lesser] {
+                let base = subject_column(&fixture, side, CandidateFeature::LabTakeable, &rules);
+                println!("11(d) {} {} X1 = {base}", stage.name(), side.name());
+                let mut variants: Vec<(String, Option<TechCardId>)> =
+                    vec![("empty".to_string(), None)];
+                for card in &titles {
+                    variants.push((format!("{:?}", card.effect), Some(card.id)));
+                }
+                for (name, slot) in variants {
+                    let mut edited = fixture.state(side).clone();
+                    edited.lab_state.lab_a.slots[5] = slot;
+                    let view = observe(&edited, subject).expect("the subject observes its own seat");
+                    assert_eq!(
+                        subject_column_of(&view, subject, CandidateFeature::LabTakeable, &rules),
+                        base,
+                        "11(d) {} {}: X1 moved when lab slot 5 was set to {name} — slot 5 is \
+                         registered inert at realizable power 3 against an empty purse",
+                        stage.name(),
+                        side.name(),
+                    );
+                }
+            }
+            // The registered direction, at the column rather than at the stock:
+            // the purchase spends the one takeable slot.
+            let takeable = (
+                subject_column(&fixture, Side::Greater, CandidateFeature::LabTakeable, &rules),
+                subject_column(&fixture, Side::Lesser, CandidateFeature::LabTakeable, &rules),
+            );
+            assert_eq!(
+                takeable,
+                (0, 1),
+                "11(d) at {}: the registration declares X1 -1 takeable",
+                stage.name(),
+            );
+
+            // ANTI-VACUITY, and it is the control the inertness sweep needs:
+            // the SAME edit at SLOT 0 does move the column. Without it, "X1
+            // never moved" would be satisfied just as well by an X1 that reads
+            // the lab not at all.
+            let mut without_slot_zero = fixture.state(Side::Lesser).clone();
+            without_slot_zero.lab_state.lab_a.slots[0] = None;
+            let view = observe(&without_slot_zero, subject).expect("the subject observes");
+            assert_eq!(
+                subject_column_of(&view, subject, CandidateFeature::LabTakeable, &rules),
+                0,
+                "11(d) at {}: emptying the ONE takeable slot must move X1, or the slot-5 sweep \
+                 proves nothing",
+                stage.name(),
+            );
+        }
     }
 }
