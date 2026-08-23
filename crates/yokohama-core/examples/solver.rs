@@ -48,13 +48,13 @@
 
 use std::process::ExitCode;
 
-use yokohama_core::game::eval::{Feature, WeightTable};
+use yokohama_core::game::eval::{Feature, ScoreStructure, WeightTable};
 use yokohama_core::game::greedy::weight_table_identity;
 use yokohama_core::game::pair_fixtures::{
-    package_digest, CandidateFeature, FeatureId, MarginClass, PairDeclaration, PairRole,
-    StageEndpoint, AXIS_WIDTH, REGISTERED,
+    build_registered_pair, package_digest, CandidateFeature, FeatureId, MarginClass,
+    PairDeclaration, PairRole, Side, StageEndpoint, AXIS_WIDTH, REGISTERED,
 };
-use yokohama_core::SEMANTICS_REV;
+use yokohama_core::{PlayerId, PlayerView, Rules, VisiblePlayer, SEMANTICS_REV};
 
 // ---------------------------------------------------------------------------
 // The registered constants of the arithmetic model (§5.4's first paragraph)
@@ -1143,6 +1143,184 @@ fn rederive_by_enumeration(sys: &System, columns: &[usize]) -> Verdict {
     }
 }
 
+// ---------------------------------------------------------------------------
+// §5.4 (3) — minimization, inspection, and the two scale diagnostics
+// ---------------------------------------------------------------------------
+
+/// §5.4's box-widening diagnostic: "re-decide at |w| ≤ 128".
+const WIDENED_BOX_LIMIT: i64 = 128;
+
+/// §5.4's early-rescale ladder: "the LCD of its margin_vp values, equivalently
+/// `w_vp(early) ∈ {1, 2, 3, 6}`".
+const EARLY_RESCALE_LADDER: [i64; 4] = [1, 2, 3, 6];
+
+/// The sentence §5.4 requires the minimized set to be read as, printed verbatim.
+///
+/// "The artifact is an **irreducible infeasible subsystem (IIS),
+/// order-dependent, not necessarily minimum-cardinality** — stated in those
+/// words."
+const IIS_READING: &str = "THIS SET IS AN IRREDUCIBLE INFEASIBLE SUBSYSTEM (IIS), ORDER-DEPENDENT, \
+     AND NOT NECESSARILY MINIMUM-CARDINALITY. A different deletion order can yield a different \
+     set of a different size; this one is §5.2's literal document order, then the hand-ordering \
+     rows.";
+
+/// What deletion-minimization produced.
+#[derive(Clone, Debug)]
+struct Minimization {
+    /// The IIS, in deletion order — the rows that survived every probe.
+    kept: Vec<Row>,
+    /// The rows deletion removed, in the order it removed them.
+    dropped: Vec<String>,
+    /// Set when an INCONCLUSIVE child HALTED the minimization. §5.4: the
+    /// artifact then "reports the current (non-minimal) infeasible set with the
+    /// INCONCLUSIVE named".
+    halted: Option<String>,
+}
+
+/// **§5.4 (3) — deletion-minimization against the exact oracle.**
+///
+/// One pass in deletion order. A row whose removal leaves the system UNSAT was
+/// not needed and stays out; a row whose removal makes it SAT is needed and goes
+/// back. An INCONCLUSIVE child HALTS the pass — §5.4 is explicit that §5B
+/// inspection then proceeds on a non-minimal set with that caveat, "never on a
+/// completed-looking core".
+fn minimize(_sys: &System) -> Minimization {
+    unimplemented!("task C")
+}
+
+/// §5.4's two registered scale diagnostics, run on an UNSAT.
+///
+/// Neither deletes anything: "the `w_vp` pins and the box are NOT
+/// deletion-eligible but are probed by two registered diagnostics".
+#[derive(Clone, Debug)]
+struct ScaleDiagnostics {
+    /// Re-decided at |w| ≤ 128. SAT under widening is a SCALE finding under
+    /// checkpoint §5B.
+    widened: Verdict,
+    /// Early systems only: re-decided along the `w_vp(early) ∈ {1, 2, 3, 6}`
+    /// ladder. SAT under rescale is integer granularity, "a SCALE finding,
+    /// never architecture".
+    rescaled: Vec<(i64, Verdict)>,
+}
+
+fn scale_diagnostics(_sys: &System) -> ScaleDiagnostics {
+    unimplemented!("task C")
+}
+
+/// §5.4's witness reporting owes "the count of constraints implied by the rest
+/// (drop-one re-test)".
+///
+/// Read RIGOROUSLY: row `c` is IMPLIED by the rest when the rest plus the
+/// NEGATION of `c` is infeasible. Over the integers the negation of
+/// `Σ a·w ≥ rhs` is `Σ a·w ≤ rhs − 1`, so the probe is an exact-oracle question
+/// and its answer carries the oracle's trichotomy. The weaker reading — drop the
+/// row, re-run the descent, see whether the point still satisfies it — would
+/// report a property of the search, and §5.4 already has one of those.
+#[derive(Clone, Debug, Default)]
+struct ImplicationReport {
+    implied: Vec<String>,
+    independent: Vec<String>,
+    undecided: Vec<String>,
+}
+
+fn implied_by_the_rest(_sys: &System) -> ImplicationReport {
+    unimplemented!("task C")
+}
+
+// ---------------------------------------------------------------------------
+// The real path (§7 step 4's Part-B run — built here, invoked after the freeze)
+// ---------------------------------------------------------------------------
+
+/// The eighteen candidate columns for one seat of one view.
+///
+/// **This is a SECOND implementation of a seam `pair_fixtures` declares and
+/// deliberately does not own.** `pair_fixtures::CandidateColumns`
+/// (`game/pair_fixtures.rs:5287`) is a function POINTER type — "step 3 builds
+/// the eighteen helpers in `eval.rs` (spec §13) and passes an adapter of this
+/// shape" — and `eval_probe`'s adapter is private to that example target, which
+/// no other target can call. The helpers themselves are shared: every arm below
+/// dispatches to `ScoreStructure`, and this file derives nothing of its own.
+///
+/// The drift defence is not this file's honour. It is the extraction's
+/// `expected_nonzero` check ([`row_from_signatures`]): a swapped arm puts a
+/// nonzero at a row the registration does not list, and the real run REFUSES
+/// naming it rather than solving.
+fn candidate_dispatch(
+    _s: &ScoreStructure,
+    _view: &PlayerView,
+    _player: &VisiblePlayer,
+    _feature: CandidateFeature,
+    _rules: &Rules,
+) -> i64 {
+    unimplemented!("task C")
+}
+
+/// One view's 34-wide MOVER-RELATIVE vector, `mine − theirs`.
+///
+/// The same quantity `eval_probe`'s §5.3 signature takes, and for the same
+/// reason: a weight multiplies `mine − theirs` (`game/eval.rs`), so §5.4's row
+/// `Σ_f w_f·Δv_f ≥ margin` is the DIFFERENCE of two of these.
+fn relative_vector(
+    _view: &PlayerView,
+    _mover: PlayerId,
+    _rules: &Rules,
+) -> Result<Vec<i64>, String> {
+    unimplemented!("task C")
+}
+
+/// Turn one pair's two signed sides into its registered row, or REFUSE.
+///
+/// The refusals are the extraction's whole safety story, and each names its
+/// clause:
+///
+/// * a nonzero at a row the registration does not list is §5.1's "unlisted
+///   nonzero row at run time is a fixture defect";
+/// * an identically-zero row against a positive margin is unsatisfiable by
+///   construction and would poison the system silently — Part A's zero-blocking
+///   result says no registered row is one, so meeting one here is a finding;
+/// * a missing margin is [`margin_of`]'s refusal.
+fn row_from_signatures(
+    _pair: &'static PairDeclaration,
+    _stage: StageEndpoint,
+    _greater: &[i64],
+    _lesser: &[i64],
+) -> Result<Row, String> {
+    unimplemented!("task C")
+}
+
+/// Assemble one stage's system: extracted pair rows in DELETION ORDER, then the
+/// two hand-ordering rows, over the box with `w_vp` pinned.
+///
+/// Separate from the extraction so the assembly can be exercised on synthetic
+/// rows: §5.4's freeze-before-solve clause keeps the frozen thirty-four out of
+/// this batch entirely, and a wiring test that had to build them would break it.
+fn assemble(_stage: StageEndpoint, _pair_rows: Vec<Row>, _box_limit: i64) -> System {
+    unimplemented!("task C")
+}
+
+/// Extract one registered pair's row at one endpoint, through the frozen
+/// package's own public surface.
+///
+/// **NOT EXERCISED IN THIS BATCH, and that is the point.** §5.4's
+/// freeze-before-solve clause says "development uses toy systems only"; the
+/// three functions this one composes — [`build_registered_pair`],
+/// [`relative_vector`], [`row_from_signatures`] — are each tested on their own,
+/// and this is the glue that would touch the frozen thirty-four.
+fn extract_row(
+    pair: &'static PairDeclaration,
+    stage: StageEndpoint,
+    rules: &Rules,
+) -> Result<Row, String> {
+    let fixture = build_registered_pair(pair, stage, rules)
+        .map_err(|e| format!("{} at {}: {e:?}", pair.id, stage.name()))?;
+    let subject = fixture.subject();
+    let greater = relative_vector(fixture.view(Side::Greater), subject, rules)
+        .map_err(|e| format!("{} greater: {e}", pair.id))?;
+    let lesser = relative_vector(fixture.view(Side::Lesser), subject, rules)
+        .map_err(|e| format!("{} lesser: {e}", pair.id))?;
+    row_from_signatures(pair, stage, &greater, &lesser)
+}
+
 /// One toy row as the builder takes it: label, sparse `(index, coef)` entries,
 /// and the right-hand side.
 type ToyRow<'a> = (&'a str, &'a [(usize, i64)], i64);
@@ -2144,6 +2322,321 @@ mod tests {
     fn the_node_and_enumeration_budgets_are_the_registered_ones() {
         assert_eq!(NODE_BUDGET, 10_000_000, "§5.4: 10^7 nodes per stage system");
         assert_eq!(ENUMERATION_BUDGET, 10_000_000, "§5.4: 10^7 points");
+    }
+
+    /// A plain seeded 2P game — deliberately NOT a registered fixture, so the
+    /// real-path unit tests exercise the machinery without touching the frozen
+    /// thirty-four (§5.4's freeze-before-solve clause).
+    fn plain_two_player_state(rules: &Rules) -> yokohama_core::GameState {
+        let pending =
+            yokohama_core::new_game(yokohama_core::GameConfig::for_player_count(2), rules, 0x50_1E)
+                .expect("a 2P setup");
+        yokohama_core::finalize_setup(
+            pending,
+            &[
+                yokohama_core::StartingOrderChoice::Keep(0),
+                yokohama_core::StartingOrderChoice::Keep(0),
+            ],
+        )
+        .expect("finalized")
+    }
+
+    // -- minimization ------------------------------------------------------
+
+    /// Deletion drops what the contradiction does not need and keeps what it
+    /// does.
+    #[test]
+    fn minimization_keeps_the_rows_the_contradiction_needs() {
+        // Two contradicting rows plus a bystander that no infeasibility uses.
+        let sys = toy(
+            StageEndpoint::Early,
+            &[
+                ("S1 up", &[(col("S1"), 1)], 1),
+                ("a bystander", &[(col("E1"), 1)], -60),
+                ("S1 down", &[(col("S1"), -1)], 1),
+            ],
+            BOX_LIMIT,
+        );
+        assert!(matches!(decide(&sys), Verdict::Unsat { .. }), "the system starts infeasible");
+        let result = minimize(&sys);
+        assert!(result.halted.is_none(), "nothing was inconclusive here");
+        let kept: Vec<&str> = result.kept.iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(kept, vec!["S1 up", "S1 down"]);
+        assert_eq!(result.dropped, vec!["a bystander".to_string()]);
+        let reduced = System { rows: result.kept.clone(), ..sys.clone() };
+        assert!(matches!(decide(&reduced), Verdict::Unsat { .. }), "the IIS is still infeasible");
+        // Irreducible: removing any one of them makes it satisfiable.
+        for i in 0..result.kept.len() {
+            let mut rows = result.kept.clone();
+            rows.remove(i);
+            let smaller = System { rows, ..sys.clone() };
+            assert!(
+                matches!(decide(&smaller), Verdict::Sat { .. }),
+                "dropping row {i} of the IIS must relieve the infeasibility",
+            );
+        }
+    }
+
+    /// §5.4's registered "deletion-order reproducibility pin".
+    ///
+    /// Two rows are interchangeable — either one alone contradicts the first —
+    /// so the IIS is NOT unique and the ORDER decides which survives. The pin
+    /// names the survivor, which is what makes "order-dependent, not
+    /// necessarily minimum-cardinality" a checked property rather than a
+    /// disclaimer.
+    #[test]
+    fn the_deletion_order_decides_which_of_two_interchangeable_rows_survives() {
+        let sys = toy(
+            StageEndpoint::Early,
+            &[
+                ("A: S1 up", &[(col("S1"), 1)], 1),
+                ("B: S1 down, first copy", &[(col("S1"), -1)], 1),
+                ("C: S1 down, second copy", &[(col("S1"), -1)], 1),
+            ],
+            BOX_LIMIT,
+        );
+        let result = minimize(&sys);
+        let kept: Vec<&str> = result.kept.iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(
+            kept,
+            vec!["A: S1 up", "C: S1 down, second copy"],
+            "B is probed first and its removal leaves {{A, C}} infeasible, so B goes and C stays",
+        );
+        assert_eq!(result.dropped, vec!["B: S1 down, first copy".to_string()]);
+        // Reproducible: the same order gives the same set, every time.
+        for _ in 0..3 {
+            let again = minimize(&sys);
+            assert_eq!(
+                again.kept.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(),
+                kept,
+            );
+            assert_eq!(again.dropped, result.dropped);
+        }
+    }
+
+    #[test]
+    fn the_iis_reading_sentence_is_the_one_the_spec_registers() {
+        assert!(IIS_READING.contains("IRREDUCIBLE INFEASIBLE SUBSYSTEM"));
+        assert!(IIS_READING.contains("ORDER-DEPENDENT"));
+        assert!(IIS_READING.contains("NOT NECESSARILY MINIMUM-CARDINALITY"));
+    }
+
+    // -- the two scale diagnostics -----------------------------------------
+
+    /// §5.4's box-widening diagnostic, on the toy built to make it fire.
+    #[test]
+    fn box_widening_finds_the_scale_case_and_leaves_the_others_alone() {
+        let scaled = toys::named("unsat-box-widening").expect("registered");
+        assert!(matches!(decide(&scaled), Verdict::Unsat { .. }));
+        assert!(
+            matches!(scale_diagnostics(&scaled).widened, Verdict::Sat { .. }),
+            "the spread 129 needs |w| <= 128 and gets it -- a SCALE finding",
+        );
+
+        let genuine = toys::named("unsat-direct").expect("registered");
+        assert!(
+            matches!(scale_diagnostics(&genuine).widened, Verdict::Unsat { .. }),
+            "a real contradiction does not dissolve when the box widens",
+        );
+    }
+
+    /// §5.4's early-rescale diagnostic, on the fractional-margin toy built to
+    /// make it fire.
+    #[test]
+    fn the_early_rescale_ladder_resolves_the_fractional_margin_system() {
+        let sys = toys::named("unsat-fractional-margin").expect("registered");
+        let rungs = scale_diagnostics(&sys).rescaled;
+        assert_eq!(
+            rungs.iter().map(|(v, _)| *v).collect::<Vec<_>>(),
+            EARLY_RESCALE_LADDER.to_vec(),
+            "the registered ladder, in order",
+        );
+        let at = |pin: i64| {
+            rungs.iter().find(|(v, _)| *v == pin).map(|(_, verdict)| verdict).expect("a rung")
+        };
+        assert!(matches!(at(1), Verdict::Unsat { .. }), "the shipped pin is where it contradicts");
+        assert!(
+            matches!(at(3), Verdict::Sat { .. }),
+            "at w_vp = 3 the 1/3-VP rate admits w_E1 = 1 and the floored margin is satisfiable: \
+             the contradiction was the 3x early floor, not the architecture",
+        );
+    }
+
+    #[test]
+    fn a_late_system_runs_no_early_rescale() {
+        let sys = toy(
+            StageEndpoint::Late,
+            &[("S1 up", &[(col("S1"), 1)], 1), ("S1 down", &[(col("S1"), -1)], 1)],
+            BOX_LIMIT,
+        );
+        assert!(
+            scale_diagnostics(&sys).rescaled.is_empty(),
+            "§5.4 scopes the rescale ladder to an IIS lying wholly in the EARLY system",
+        );
+    }
+
+    // -- the drop-one implication read --------------------------------------
+
+    #[test]
+    fn a_row_the_others_already_force_is_reported_as_implied() {
+        let sys = toy(
+            StageEndpoint::Early,
+            &[
+                ("S1 at least 5", &[(col("S1"), 1)], 5),
+                ("S1 at least 1", &[(col("S1"), 1)], 1),
+                ("E1 at least 1", &[(col("E1"), 1)], 1),
+            ],
+            BOX_LIMIT,
+        );
+        let report = implied_by_the_rest(&sys);
+        assert_eq!(
+            report.implied,
+            vec!["S1 at least 1".to_string()],
+            "`>= 5` forces `>= 1`, and nothing forces the other two",
+        );
+        assert_eq!(
+            report.independent,
+            vec!["S1 at least 5".to_string(), "E1 at least 1".to_string()],
+        );
+        assert!(report.undecided.is_empty());
+    }
+
+    // -- the real path, exercised without the frozen thirty-four -------------
+
+    /// The 18-arm dispatcher against the same helpers, restated arm by arm from
+    /// the helper NAMES rather than from the dispatcher.
+    ///
+    /// A plain seeded game, NOT a registered fixture: §5.4's freeze-before-solve
+    /// clause keeps the frozen package out of this batch.
+    #[test]
+    fn the_candidate_dispatcher_reaches_the_helper_each_label_names() {
+        let rules = Rules::standard();
+        let state = plain_two_player_state(&rules);
+        let view = yokohama_core::observe(&state, state.current_player).expect("observable");
+        let me = view
+            .players
+            .iter()
+            .find(|p| p.id == state.current_player)
+            .expect("the mover has a row");
+        let s = ScoreStructure::derive(&view, &rules);
+        let expected: [(CandidateFeature, i64); 18] = [
+            (CandidateFeature::ProductionAccess, s.production_access(&view, me)),
+            (CandidateFeature::TrackAccess, s.track_access(&view, me)),
+            (CandidateFeature::AssistantAreasDistinct, s.assistant_areas_distinct(me)),
+            (CandidateFeature::PresidentLocalAccess, s.president_local_access(me)),
+            (CandidateFeature::BankAccess, s.bank_access(&view, me)),
+            (CandidateFeature::EmploymentAgencyAccess, s.employment_agency_access(&view, me)),
+            (CandidateFeature::PresidentReachableAreas, s.president_reachable_areas(me)),
+            (CandidateFeature::MoneyStock, s.money_stock(me)),
+            (CandidateFeature::TradeGoodsStock, s.trade_goods_stock(me)),
+            (CandidateFeature::BuildingTokensReady, s.building_tokens_ready(me)),
+            (CandidateFeature::HeldOrderValue, s.held_order_value(me, &rules)),
+            (CandidateFeature::OrderMatchedGoods, s.order_matched_goods(me, &rules)),
+            (CandidateFeature::ExecutableOrders, s.executable_orders(me, &rules)),
+            (CandidateFeature::FlagIconMarginal, s.flag_icon_marginal(me, &rules)),
+            (CandidateFeature::HeldOrderIcons, s.held_order_icons(me, &rules)),
+            (CandidateFeature::LabTakeable, s.lab_takeable(&view, me)),
+            (CandidateFeature::PortTakeable, s.port_takeable(&view, me, &rules)),
+            (CandidateFeature::MatchedProductionAccess, s.matched_production_access(&view, me, &rules)),
+        ];
+        assert_eq!(expected.len(), CandidateFeature::COUNT, "every column is restated");
+        for (feature, want) in expected {
+            assert_eq!(
+                candidate_dispatch(&s, &view, me, feature, &rules),
+                want,
+                "{} dispatches to the helper its label names",
+                feature.label(),
+            );
+        }
+    }
+
+    #[test]
+    fn the_relative_vector_is_mover_minus_opponent_and_refuses_an_absent_seat() {
+        let rules = Rules::standard();
+        let state = plain_two_player_state(&rules);
+        let view = yokohama_core::observe(&state, state.current_player).expect("observable");
+        let v = relative_vector(&view, state.current_player, &rules).expect("the mover is seated");
+        assert_eq!(v.len(), AXIS_WIDTH);
+        assert!(
+            relative_vector(&view, PlayerId(7), &rules).is_err(),
+            "an absent seat is a refusal, never a zero vector that collides with everything",
+        );
+    }
+
+    /// The extraction's refusals, on SYNTHETIC signatures — no fixture built.
+    #[test]
+    fn the_extraction_refuses_an_unlisted_nonzero_row() {
+        let pair = REGISTERED.iter().find(|p| p.id == "3(c)").expect("registered");
+        let carrier = col("S5"); // 3(c)'s registered expected-nonzero row.
+        let stage = StageEndpoint::Late;
+
+        let mut greater = vec![0i64; AXIS_WIDTH];
+        greater[carrier] = 2;
+        let lesser = vec![0i64; AXIS_WIDTH];
+        let row = row_from_signatures(pair, stage, &greater, &lesser).expect("a listed row only");
+        assert_eq!(row.coef[carrier], 2);
+        assert_eq!(row.rhs, 40, "3(c)'s registered late margin");
+        assert_eq!(row.kind, RowKind::Pair { id: "3(c)".to_string(), order: 11 });
+
+        let mut stray = greater.clone();
+        stray[col("X1")] = 1;
+        let refusal = row_from_signatures(pair, stage, &stray, &lesser)
+            .expect_err("an unlisted nonzero row is a fixture defect");
+        assert!(refusal.contains("X1"), "the refusal names the row it saw: {refusal}");
+    }
+
+    #[test]
+    fn the_extraction_refuses_an_identically_zero_row() {
+        let pair = REGISTERED.iter().find(|p| p.id == "3(c)").expect("registered");
+        let zero = vec![0i64; AXIS_WIDTH];
+        let refusal = row_from_signatures(pair, StageEndpoint::Late, &zero, &zero)
+            .expect_err("a zero row against a positive margin is unsatisfiable by construction");
+        assert!(refusal.contains("identically zero"), "{refusal}");
+    }
+
+    /// The assembly, on synthetic rows: deletion order, the standing rows, the
+    /// pin and the box.
+    #[test]
+    fn assembly_puts_the_pair_rows_in_document_order_then_the_hand_orderings() {
+        let mut coef = vec![0i64; AXIS_WIDTH];
+        coef[col("S1")] = 1;
+        let synthetic: Vec<Row> = [("4(a)", 13), ("1(a)", 0), ("3(c)", 11)]
+            .into_iter()
+            .map(|(id, order)| Row {
+                label: format!("pair {id} early"),
+                kind: RowKind::Pair { id: id.to_string(), order },
+                coef: coef.clone(),
+                rhs: 1,
+            })
+            .collect();
+        let sys = assemble(StageEndpoint::Early, synthetic, BOX_LIMIT);
+        let labels: Vec<&str> = sys.rows.iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            vec![
+                "pair 1(a) early",
+                "pair 3(c) early",
+                "pair 4(a) early",
+                "hand: core > on_board",
+                "hand: on_board > excess",
+            ],
+            "§5.2 document order, then the hand-ordering rows",
+        );
+        assert_eq!(sys.pin_vp, 1, "w_vp is pinned to V2's early entry");
+        assert_eq!(sys.lo[Feature::VictoryPoints.index()], 1);
+        assert_eq!(sys.hi[Feature::VictoryPoints.index()], 1);
+        assert_eq!(sys.box_limit, BOX_LIMIT);
+    }
+
+    /// V2 itself satisfies the two standing hand-ordering rows at BOTH stages —
+    /// the claim §5.4 makes when it calls them standing constraints.
+    #[test]
+    fn v2_satisfies_its_own_hand_ordering_at_both_stages() {
+        for stage in StageEndpoint::ALL {
+            let sys = assemble(stage, Vec::new(), BOX_LIMIT);
+            assert_eq!(sys.violation(&sys.v2_padded()), 0, "{} stage", stage.name());
+            assert!(matches!(decide(&sys), Verdict::Sat { .. }), "{} stage", stage.name());
+        }
     }
 
     // -- document order ----------------------------------------------------
