@@ -132,6 +132,7 @@ usage: eval_probe <subcommand> [options]
                         [--invariants | --no-invariants]
                         [--bootstrap <B>] [--blocks <list>]
                         [--score-table <spec>]... [--candidate-columns <list>]
+                        [--dump-matrix <path>]
       Generate a self-play corpus and report the blocks in <list> (default all):
         features  per-feature AUC per stage tercile, game-clustered bootstrap
         proxy     progress_ppm against the post-hoc terciles
@@ -206,6 +207,27 @@ usage: eval_probe <subcommand> [options]
                                    final total minus the best other seat's.
                                    View-honest — every component of a
                                    scored-now total is public board state
+      --dump-matrix <path>   Write the §8 SNAPSHOT MATRIX to <path>: a header
+                             block, then ONE ROW PER (turn start x seat) — the
+                             SAME points the analysis cells are folded from,
+                             taken inside the same loop so the two populations
+                             cannot drift. Each row is
+                               game_index seat turn_index turns_in_game
+                               progress_ppm
+                               <16 incumbent + 18 candidate RELATIVE values,
+                                FeatureId::all() order>
+                               seat_win_flag seat_final_margin
+                             in the RELATIVE currency `signature` already signs
+                             the collision, collinearity and rooted instruments
+                             with — the SAME adapter, never a second spelling.
+                             Terciles are NOT a column: they are the L2
+                             machinery's post-hoc `stage_of(turn_index,
+                             turns_in_game)`, which the two turn columns carry
+                             everything needed to recompute. 2P ONLY, for
+                             `collinearity`'s reason. Nothing is fitted here —
+                             the file is the fitting stage's INPUT, regenerable
+                             by the command its own header echoes, and
+                             scratchpad material that is never committed.
 
   table [--weights v1|v2|pre-freeze]
       Print a weight table with its provenance identity. No games are played.
@@ -2039,6 +2061,14 @@ fn blocks_from(flags: &BTreeMap<String, String>) -> Result<Blocks, String> {
 struct Corpus {
     rows: Vec<Row>,
     cells: Vec<Cell>,
+    /// The §8 SNAPSHOT MATRIX's rows, one per (turn start × seat) — the same
+    /// population [`cells`](Self::cells) is the per-(game, seat, stage) mean
+    /// of, kept un-aggregated for the fitting stage.
+    ///
+    /// EMPTY (allocation-free) unless the run asked for `--dump-matrix`, which
+    /// is what keeps an argument-free run byte-identical to every recorded
+    /// appendix — [`anchor_rel`](Self::anchor_rel)'s rule, for its reason.
+    matrix: Vec<MatrixRow>,
     games: u32,
     snapshots: u64,
     /// `(progress_ppm, post-hoc stage)` at every turn start (seat-invariant, so
@@ -2110,6 +2140,7 @@ fn generate(
     invariants: bool,
     columns: &[CandidateColumn],
     candidates: &[ScoreTableSpec],
+    matrix: bool,
 ) -> Result<(Corpus, u64), String> {
     let (mut schedule, master_value) = match master {
         SeedScheduleKind::Diagnostic(m) => (SeedSchedule::diagnostic(m), m),
@@ -2120,6 +2151,7 @@ fn generate(
     let mut corpus = Corpus {
         rows: rows.clone(),
         cells: Vec::new(),
+        matrix: Vec::new(),
         games: 0,
         snapshots: 0,
         proxy: Vec::new(),
@@ -2193,7 +2225,9 @@ fn generate(
             corpus.identity_mismatches += mismatches;
         }
 
-        snapshot_game(&stats, players, weights, rules, &rows, candidates, game, &mut corpus)?;
+        snapshot_game(
+            &stats, players, weights, rules, &rows, candidates, game, matrix, &mut corpus,
+        )?;
     }
     corpus.wall = started.elapsed().as_secs_f64();
 
@@ -2339,6 +2373,7 @@ fn snapshot_game(
     rows: &[Row],
     candidates: &[ScoreTableSpec],
     game: u32,
+    matrix: bool,
     corpus: &mut Corpus,
 ) -> Result<(), String> {
     let starts = turn_start_states(stats, rules, game)?;
@@ -2352,6 +2387,12 @@ fn snapshot_game(
     let mut abs = vec![0.0f64; rows.len()];
     let mut cand = vec![0.0f64; candidates.len()];
     let mut base = vec![0.0f64; candidates.len()];
+    // RED: the (turn start × seat) fold below does not yet write the §8 matrix
+    // rows. The sink, the row type, the renderer, the reader and the command
+    // surface are all here; what is missing is the ONE decision this task
+    // exists to get right — that the matrix's rows are the SAME points the
+    // accumulator folds, taken inside the same loop so the two cannot drift.
+    let _wants_matrix = matrix;
     // Looked up once per game rather than per snapshot; `None` only if the
     // shipped feature list ever stops carrying running VP.
     let vp_slot = rows.iter().position(|row| matches!(row, Row::Feature(Feature::VictoryPoints)));
@@ -2424,10 +2465,358 @@ fn snapshot_game(
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// §8's snapshot matrix (`--dump-matrix`)
+// ---------------------------------------------------------------------------
+
+/// The matrix file's SCHEMA VERSION, carried in its own header field.
+///
+/// Version 1 is the §8 registration's row exactly: `(game_index, seat,
+/// turn_index, turns_in_game, progress_ppm, the 16 incumbent + 18 candidate
+/// differenced values, seat_win_flag, seat_final_margin)`. A reader that meets
+/// a version it does not know REFUSES rather than reading the columns it
+/// happens to recognize — the row layout is the one thing a wrong guess here
+/// silently corrupts.
+const MATRIX_SCHEMA: u32 = 1;
+
+/// The five KEY columns that open every row, in order.
+const MATRIX_KEY_COLUMNS: [&str; 5] =
+    ["game_index", "seat", "turn_index", "turns_in_game", "progress_ppm"];
+
+/// The two OUTCOME columns that close every row, in order.
+const MATRIX_OUTCOME_COLUMNS: [&str; 2] = ["seat_win_flag", "seat_final_margin"];
+
+/// Fields per row: the five keys, the thirty-four differenced values, the two
+/// outcome columns.
+const MATRIX_WIDTH: usize = MATRIX_KEY_COLUMNS.len() + AXIS_WIDTH + MATRIX_OUTCOME_COLUMNS.len();
+
+/// The header's keys, in the order they are written and REQUIRED to be read.
+///
+/// Order is part of the format rather than a convention: a reader that accepted
+/// them in any order could not promise `render(parse(bytes)) == bytes`, and the
+/// round-trip is what lets a matrix be re-read, re-written and compared without
+/// a second serializer entering the picture.
+const MATRIX_HEADER_KEYS: [&str; 10] = [
+    "schema",
+    "command",
+    "master",
+    "players",
+    "games",
+    "contestant",
+    "weights",
+    "semantics_rev",
+    "package_digest",
+    "columns",
+];
+
+/// Every column name, in row order: the five keys, `FeatureId::all()`'s
+/// thirty-four (sixteen incumbents in `Feature::ALL` order, then the eighteen
+/// candidates in `CandidateFeature::ALL` order), then the two outcome columns.
+///
+/// The names come off [`FeatureId::name`] — the axis's own snake_case spelling
+/// — so the header cannot describe a different axis than the rows carry.
+fn matrix_columns() -> Vec<String> {
+    let mut names: Vec<String> = MATRIX_KEY_COLUMNS.iter().map(|s| (*s).to_string()).collect();
+    names.extend(FeatureId::all().iter().map(|id| id.name().to_string()));
+    names.extend(MATRIX_OUTCOME_COLUMNS.iter().map(|s| (*s).to_string()));
+    names
+}
+
+/// One matrix row: a single (turn start × seat) snapshot.
+///
+/// Every column is an INTEGER, and deliberately so. The differenced values are
+/// `mine − theirs` over `i64` feature levels, and §8's objective is
+/// `Σ_f interpolate(early, late, progress) · rel_f` under `eval`'s own
+/// saturating `i64` arithmetic — so an `f64` column would force the fitter to
+/// convert back before it could reproduce `candidate_total` exactly. The row
+/// keeps the currency the arithmetic is defined in.
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct MatrixRow {
+    game: u32,
+    seat: u8,
+    /// Index of the turn start WITHIN the game, 0-based — half of what
+    /// `stage_of` needs, which is why the tercile is not a column.
+    turn_index: u32,
+    /// The game's realized turn-start count: the other half of `stage_of`, and
+    /// a POST-HOC quantity no in-game view could carry.
+    turns_in_game: u32,
+    progress_ppm: u32,
+    /// `mine − theirs` at `FeatureId::all()` positions — the RELATIVE currency
+    /// [`signature`] signs the collision, collinearity and rooted instruments
+    /// with, from the same function.
+    dv: [i64; AXIS_WIDTH],
+    /// The seat's outcome label — the same boolean [`Cell::label`] carries.
+    win: bool,
+    /// The seat's final official total minus the BEST OTHER seat's. Constant
+    /// across one (game, seat)'s rows.
+    margin: i64,
+}
+
+/// A matrix file's header block.
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct MatrixHeader {
+    schema: u32,
+    /// The generation command, `eval_probe` first: argv with its own path
+    /// dropped, so the echo names the same command this file's doc examples do
+    /// and a matrix digest does not change with where the binary was built.
+    command: String,
+    /// The RESOLVED master — the drawn one under `--os-entropy`, which is the
+    /// number a re-run needs.
+    master: u64,
+    players: u8,
+    games: u32,
+    /// [`ProbeContestant::echo`]'s string: the run header's own identity line.
+    contestant: String,
+    weights: String,
+    semantics_rev: u32,
+    /// The pair-fixture package digest — the CANDIDATE COLUMNS' identity, since
+    /// the digest covers the thirty-four-row axis itself.
+    package_digest: String,
+    columns: Vec<String>,
+}
+
+/// A parsed matrix: its header and its rows.
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct Matrix {
+    header: MatrixHeader,
+    rows: Vec<MatrixRow>,
+}
+
+/// Render a matrix to the bytes that go on disk.
+///
+/// The one serializer: [`write_matrix`] calls it and so do the tests, so a
+/// round-trip cell is comparing the shipped format against itself rather than
+/// against a second spelling of it.
+fn render_matrix(matrix: &Matrix) -> String {
+    let h = &matrix.header;
+    let mut out = String::with_capacity(1024 + matrix.rows.len() * 160);
+    out.push_str(&format!("# schema {}\n", h.schema));
+    out.push_str(&format!("# command {}\n", h.command));
+    out.push_str(&format!("# master {:#018x}\n", h.master));
+    out.push_str(&format!("# players {}\n", h.players));
+    out.push_str(&format!("# games {}\n", h.games));
+    out.push_str(&format!("# contestant {}\n", h.contestant));
+    out.push_str(&format!("# weights {}\n", h.weights));
+    out.push_str(&format!("# semantics_rev {}\n", h.semantics_rev));
+    out.push_str(&format!("# package_digest {}\n", h.package_digest));
+    out.push_str(&format!("# columns {}\n", h.columns.join(" ")));
+    for row in &matrix.rows {
+        out.push_str(&format!(
+            "{} {} {} {} {}",
+            row.game, row.seat, row.turn_index, row.turns_in_game, row.progress_ppm,
+        ));
+        for value in row.dv {
+            out.push_str(&format!(" {value}"));
+        }
+        out.push_str(&format!(" {} {}\n", u8::from(row.win), row.margin));
+    }
+    out
+}
+
+/// Read a matrix file's bytes back into the typed struct.
+///
+/// STRICT, and about the two things a loose reader would corrupt silently: the
+/// schema version (which says what the row layout IS) and the column names
+/// (which say what each position MEANS). Provenance fields — the master, the
+/// rev, the package digest — are parsed and handed back unjudged: they are the
+/// fitting stage's to adjudicate, and a reader that refused on them could not
+/// be used to inspect the file that disagreed.
+///
+/// Splitting on a single space rather than on whitespace is deliberate: it
+/// makes `render_matrix(&parse_matrix(bytes)?) == bytes` total for anything
+/// this file wrote, since a doubled space would parse as an empty field and be
+/// refused instead of being quietly normalized away.
+///
+/// The `dead_code` waiver says where the READER lives: the cells below and the
+/// FITTING stage, which reads a dumped matrix back in. The `run` path only ever
+/// writes one, so this half of the format has no caller in the shipped binary
+/// until `fit` lands beside it.
+#[allow(dead_code)]
+fn parse_matrix(text: &str) -> Result<Matrix, String> {
+    let mut header: Vec<(&str, &str)> = Vec::new();
+    let mut row_lines: Vec<(usize, &str)> = Vec::new();
+    for (i, line) in text.lines().enumerate() {
+        let number = i + 1;
+        if let Some(rest) = line.strip_prefix("# ") {
+            if !row_lines.is_empty() {
+                return Err(format!("matrix line {number}: a header line after the rows began"));
+            }
+            let (key, value) = rest
+                .split_once(' ')
+                .ok_or_else(|| format!("matrix line {number}: header field {rest:?} has no value"))?;
+            header.push((key, value));
+        } else if line.is_empty() {
+            return Err(format!("matrix line {number}: blank (the format has none)"));
+        } else {
+            row_lines.push((number, line));
+        }
+    }
+
+    let keys: Vec<&str> = header.iter().map(|(k, _)| *k).collect();
+    if keys != MATRIX_HEADER_KEYS {
+        return Err(format!(
+            "matrix header keys {keys:?} are not {MATRIX_HEADER_KEYS:?} (in that order)"
+        ));
+    }
+    let value = |key: &str| header.iter().find(|(k, _)| *k == key).expect("key order checked").1;
+    let number = |key: &str| -> Result<u64, String> {
+        value(key).parse::<u64>().map_err(|e| format!("matrix header {key}: {e}"))
+    };
+
+    let schema = u32::try_from(number("schema")?).map_err(|e| format!("matrix schema: {e}"))?;
+    if schema != MATRIX_SCHEMA {
+        return Err(format!(
+            "matrix schema {schema} is not {MATRIX_SCHEMA} (this reader knows one layout, and \
+             guessing at another one silently mis-reads every column)"
+        ));
+    }
+    let columns: Vec<String> = value("columns").split(' ').map(str::to_string).collect();
+    if columns != matrix_columns() {
+        return Err(format!(
+            "matrix column names are not this build's axis ({} names, expected {})",
+            columns.len(),
+            MATRIX_WIDTH,
+        ));
+    }
+    let header = MatrixHeader {
+        schema,
+        command: value("command").to_string(),
+        master: parse_u64(value("master")).map_err(|e| format!("matrix header master: {e}"))?,
+        players: u8::try_from(number("players")?).map_err(|e| format!("matrix players: {e}"))?,
+        games: u32::try_from(number("games")?).map_err(|e| format!("matrix games: {e}"))?,
+        contestant: value("contestant").to_string(),
+        weights: value("weights").to_string(),
+        semantics_rev: u32::try_from(number("semantics_rev")?)
+            .map_err(|e| format!("matrix semantics_rev: {e}"))?,
+        package_digest: value("package_digest").to_string(),
+        columns,
+    };
+
+    let mut rows = Vec::with_capacity(row_lines.len());
+    for (number, line) in row_lines {
+        let fields: Vec<&str> = line.split(' ').collect();
+        if fields.len() != MATRIX_WIDTH {
+            return Err(format!(
+                "matrix line {number}: {} fields, expected {MATRIX_WIDTH}",
+                fields.len(),
+            ));
+        }
+        let at = |i: usize| -> Result<i64, String> {
+            fields[i]
+                .parse::<i64>()
+                .map_err(|e| format!("matrix line {number} field {i}: {e}"))
+        };
+        let bounded = |i: usize, hi: i64| -> Result<u32, String> {
+            let raw = at(i)?;
+            if !(0..=hi).contains(&raw) {
+                return Err(format!("matrix line {number} field {i}: {raw} out of range"));
+            }
+            Ok(raw as u32)
+        };
+        let mut dv = [0i64; AXIS_WIDTH];
+        for (slot, target) in dv.iter_mut().enumerate() {
+            *target = at(MATRIX_KEY_COLUMNS.len() + slot)?;
+        }
+        let win = match fields[MATRIX_KEY_COLUMNS.len() + AXIS_WIDTH] {
+            "1" => true,
+            "0" => false,
+            other => {
+                return Err(format!("matrix line {number}: seat_win_flag {other:?} is not 0 or 1"))
+            }
+        };
+        rows.push(MatrixRow {
+            game: bounded(0, i64::from(u32::MAX))?,
+            seat: u8::try_from(bounded(1, i64::from(u8::MAX))?)
+                .map_err(|e| format!("matrix line {number} seat: {e}"))?,
+            turn_index: bounded(2, i64::from(u32::MAX))?,
+            turns_in_game: bounded(3, i64::from(u32::MAX))?,
+            progress_ppm: bounded(4, i64::from(u32::MAX))?,
+            dv,
+            win,
+            margin: at(MATRIX_KEY_COLUMNS.len() + AXIS_WIDTH + 1)?,
+        });
+    }
+    Ok(Matrix { header, rows })
+}
+
+/// Write a matrix to disk, refusing a header value the one-line-per-field
+/// format could not read back.
+///
+/// The guard is not hypothetical politeness: `command` is built from argv, and
+/// a value carrying a line break would produce a file this file's own reader
+/// rejects — found at read time, long after the corpus that produced it is
+/// gone.
+fn write_matrix(path: &str, matrix: &Matrix) -> Result<(), String> {
+    for (field, value) in [
+        ("command", &matrix.header.command),
+        ("contestant", &matrix.header.contestant),
+        ("weights", &matrix.header.weights),
+        ("package_digest", &matrix.header.package_digest),
+    ] {
+        if value.contains('\n') || value.contains('\r') {
+            return Err(format!(
+                "--dump-matrix: the {field} header value carries a line break, which the \
+                 one-field-per-line format cannot round-trip"
+            ));
+        }
+    }
+    std::fs::write(path, render_matrix(matrix))
+        .map_err(|e| format!("--dump-matrix {path}: {e}"))
+}
+
+/// The generation command, as the header echoes it.
+///
+/// `eval_probe` in place of argv[0]: the echo then names the command this
+/// file's own doc examples name, and a matrix's bytes do not depend on where
+/// the example binary happens to live.
+fn command_echo() -> String {
+    let mut parts = vec!["eval_probe".to_string()];
+    parts.extend(std::env::args().skip(1));
+    parts.join(" ")
+}
+
+/// Each seat's FINAL margin: its official total minus the BEST OTHER seat's.
+///
+/// "Best other" is the first non-self row of `final_result`'s standings, which
+/// arrive already in official order (total descending, then the clockwise
+/// tie-break) — `driven::verdict`'s own rule, so this column and the harness's
+/// margins agree by construction rather than by coincidence. **Margin 0 is
+/// therefore NOT a win**: it is exactly the case the ranking decides, and both
+/// seats of a level 2P game read 0.
+#[allow(dead_code)] // RED: only the fold this commit withholds calls it.
+fn seat_final_margins(stats: &ArenaGameStats, players: u8) -> Result<Vec<i64>, String> {
+    (0..players)
+        .map(|seat| {
+            let me = PlayerId(seat);
+            let mine = stats
+                .result
+                .standings
+                .iter()
+                .find(|s| s.player == me)
+                .ok_or_else(|| format!("seat {seat} is not among the game's standings"))?;
+            let rival = stats
+                .result
+                .standings
+                .iter()
+                .find(|s| s.player != me)
+                .ok_or_else(|| format!("seat {seat} has no rival among the game's standings"))?;
+            Ok(i64::from(mine.breakdown.total) - i64::from(rival.breakdown.total))
+        })
+        .collect()
+}
+
 fn cmd_run(args: &[String]) -> Result<(), String> {
     let (positional, flags, repeated) = split_args(
         args,
-        &["contestant", "weights", "master", "bootstrap", "blocks", "candidate-columns"],
+        &[
+            "contestant",
+            "weights",
+            "master",
+            "bootstrap",
+            "blocks",
+            "candidate-columns",
+            "dump-matrix",
+        ],
         &["os-entropy", "invariants", "no-invariants"],
         &["score-table"],
     )?;
@@ -2473,9 +2862,10 @@ fn cmd_run(args: &[String]) -> Result<(), String> {
         .map(|specs| specs.iter().map(|s| parse_score_table(s)).collect::<Result<Vec<_>, _>>())
         .transpose()?
         .unwrap_or_default();
+    let dump_matrix = flags.get("dump-matrix").cloned();
 
     let rules = Rules::standard();
-    let (corpus, master_value) = generate(
+    let (mut corpus, master_value) = generate(
         players,
         games,
         contestant,
@@ -2485,6 +2875,7 @@ fn cmd_run(args: &[String]) -> Result<(), String> {
         invariants,
         &columns,
         &candidates,
+        dump_matrix.is_some(),
     )?;
 
     // Derived from the DESIGN, printed, and never from the outcomes.
@@ -2520,6 +2911,32 @@ fn cmd_run(args: &[String]) -> Result<(), String> {
         println!(
             "  WARNING: DEBUG build. Wall figures are unoptimized; the AUCs and counters are \
              deterministic and unaffected, but re-run with --release before recording anything."
+        );
+    }
+
+    // BEFORE the reporting blocks: the file is this run's product, and a
+    // reporting panic should not be what stands between a finished corpus and
+    // the bytes the fitting stage reads.
+    if let Some(path) = &dump_matrix {
+        let matrix = Matrix {
+            header: MatrixHeader {
+                schema: MATRIX_SCHEMA,
+                command: command_echo(),
+                master: master_value,
+                players,
+                games: corpus.games,
+                contestant: contestant.echo(&weights, weights_label),
+                weights: weights_label.to_string(),
+                semantics_rev: SEMANTICS_REV,
+                package_digest: package_digest(),
+                columns: matrix_columns(),
+            },
+            rows: std::mem::take(&mut corpus.matrix),
+        };
+        write_matrix(path, &matrix)?;
+        println!(
+            "  matrix rows={} columns={MATRIX_WIDTH} schema={MATRIX_SCHEMA} -> {path}",
+            matrix.rows.len(),
         );
     }
 
@@ -7840,6 +8257,7 @@ mod tests {
             true,
             &[],
             &[],
+            false,
         )
         .expect("a 2P lookahead game completes");
         assert_eq!(master, DEFAULT_MASTER);
@@ -7886,6 +8304,7 @@ mod tests {
             true,
             &[],
             &[],
+            false,
         )
         .expect("a 2P greedy game completes");
         assert_eq!(greedy.ply_cap_hits, None, "a one-ply argmax has no continuation to truncate");
@@ -8069,6 +8488,7 @@ mod tests {
                 true,
                 &[],
                 &[ScoreTableSpec::named("v1", WeightTable::V1)],
+                false,
             )
             .expect("a greedy game completes");
 
@@ -8110,6 +8530,7 @@ mod tests {
             true,
             &[],
             &candidates,
+            false,
         )
         .expect("two 2P greedy games complete");
 
@@ -8265,6 +8686,7 @@ mod tests {
             true,
             &[],
             &candidates,
+            false,
         )
         .expect("four 2P greedy games complete");
 
@@ -8315,6 +8737,7 @@ mod tests {
             true,
             &[CandidateColumn::Money],
             &candidates,
+            false,
         )
         .expect("three 2P greedy games complete");
 
@@ -8363,6 +8786,7 @@ mod tests {
             true,
             &[CandidateColumn::Money],
             &candidates,
+            false,
         )
         .expect("two 4P greedy games complete");
 
@@ -8466,6 +8890,7 @@ mod tests {
             true,
             &[],
             &candidates,
+            false,
         )
         .expect("four 2P greedy games complete");
 
@@ -8507,6 +8932,7 @@ mod tests {
         Corpus {
             rows: Row::all(&[]),
             cells,
+            matrix: Vec::new(),
             games,
             snapshots: 0,
             proxy: Vec::new(),
@@ -9429,6 +9855,7 @@ mod tests {
             true,
             &CANDIDATE_COLUMNS,
             &[],
+            false,
         )
         .expect("a 2P greedy game completes");
 
@@ -9481,6 +9908,7 @@ mod tests {
             true,
             &columns,
             &[],
+            false,
         )
         .expect("a 2P greedy game completes");
 
@@ -12293,5 +12721,504 @@ mod tests {
         assert!(at(ExhibitOutcome::NotRun { reason: "unviewable".to_string() })
             .columns()
             .is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // §7 step 6 — the §8 SNAPSHOT MATRIX (`--dump-matrix`)
+    //
+    // The corpora here are TINY and 2P GREEDY on the committed diagnostic
+    // master: every property below is structural — an addressing, a schema, an
+    // identity between two populations — so N buys nothing and costs debug
+    // wall. The replays are INDEPENDENT of `generate`'s own fold (they re-run
+    // the same schedule through `play_one`), which is what makes the
+    // cross-pins statements about the matrix rather than restatements of it.
+    // -----------------------------------------------------------------------
+
+    /// The tiny corpus every matrix cell reads, WITH the matrix folded.
+    const MATRIX_GAMES: u32 = 2;
+
+    fn matrix_contestant() -> ProbeContestant {
+        ProbeContestant::Greedy { m: DEFAULT_RETREAT_SAMPLES }
+    }
+
+    fn matrix_corpus(rules: &Rules, games: u32) -> Corpus {
+        generate(
+            2,
+            games,
+            matrix_contestant(),
+            &WeightTable::V1,
+            rules,
+            SeedScheduleKind::Diagnostic(DEFAULT_MASTER),
+            true,
+            &[],
+            &[],
+            true,
+        )
+        .expect("a tiny 2P greedy corpus completes")
+        .0
+    }
+
+    /// Re-run the SAME games off the SAME schedule, keeping each game's stats
+    /// and its turn-start states.
+    ///
+    /// Deliberately not a by-product of [`matrix_corpus`]: a cross-pin against
+    /// the very fold under test would prove only that the fold agrees with
+    /// itself. `cmd_collinearity` walks a corpus exactly this way.
+    fn matrix_replay(rules: &Rules, games: u32) -> Vec<(ArenaGameStats, Vec<GameState>)> {
+        let mut schedule = SeedSchedule::diagnostic(DEFAULT_MASTER);
+        (0..games)
+            .map(|game| {
+                let seed = schedule.next_world();
+                let (stats, _) = play_one(
+                    seed,
+                    2,
+                    matrix_contestant(),
+                    &WeightTable::V1,
+                    rules,
+                    DEFAULT_MASTER,
+                    true,
+                )
+                .expect("the replayed game completes");
+                let starts =
+                    turn_start_states(&stats, rules, game).expect("the replay walks its record");
+                (stats, starts)
+            })
+            .collect()
+    }
+
+    /// A header whose provenance fields are the corpus's, so a round-trip cell
+    /// exercises the real strings rather than placeholders.
+    fn matrix_header_for(corpus: &Corpus) -> MatrixHeader {
+        MatrixHeader {
+            schema: MATRIX_SCHEMA,
+            command: "eval_probe run 2 2 --dump-matrix /tmp/x --master 0xE7A1202607270001"
+                .to_string(),
+            master: DEFAULT_MASTER,
+            players: 2,
+            games: corpus.games,
+            contestant: matrix_contestant().echo(&WeightTable::V1, "v1"),
+            weights: "v1".to_string(),
+            semantics_rev: SEMANTICS_REV,
+            package_digest: package_digest(),
+            columns: matrix_columns(),
+        }
+    }
+
+    fn matrix_temp_path(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir()
+            .join(format!("yokohama_matrix_{tag}_{}.txt", std::process::id()))
+    }
+
+    /// The matrix goes to disk and comes back BYTE-IDENTICAL through this
+    /// file's own reader — in both directions.
+    ///
+    /// `parse(render(m)) == m` alone would pass a renderer that dropped a
+    /// column the reader also ignored; `render(parse(bytes)) == bytes` is the
+    /// half that catches it. The strictness controls at the end are what make
+    /// the second identity total: a format that silently normalized whitespace
+    /// or a short row could not promise it.
+    #[test]
+    fn the_dumped_matrix_round_trips_through_its_own_reader() {
+        let rules = Rules::standard();
+        let corpus = matrix_corpus(&rules, MATRIX_GAMES);
+        assert!(
+            !corpus.matrix.is_empty(),
+            "a corpus asked for the matrix folded no rows — there is nothing to round-trip",
+        );
+        let matrix = Matrix { header: matrix_header_for(&corpus), rows: corpus.matrix.clone() };
+
+        let path = matrix_temp_path("roundtrip");
+        let name = path.to_str().expect("a UTF-8 temp path").to_string();
+        write_matrix(&name, &matrix).expect("the matrix writes");
+        let bytes = std::fs::read_to_string(&path).expect("the matrix reads back");
+        let _ = std::fs::remove_file(&path);
+
+        let parsed = parse_matrix(&bytes).expect("the matrix parses");
+        assert_eq!(parsed, matrix, "the reader lost or changed something the writer wrote");
+        assert_eq!(render_matrix(&parsed), bytes, "re-rendering a parsed matrix moved a byte");
+
+        // Strictness, not politeness: each of these would otherwise be read as
+        // a well-formed row that means something else.
+        assert!(parse_matrix(&bytes.replace("# schema 1", "# schema 2"))
+            .is_err_and(|e| e.contains("schema")));
+        assert!(parse_matrix(&bytes.replace("game_index", "game_idx"))
+            .is_err_and(|e| e.contains("column names")));
+        assert!(parse_matrix(&format!("{bytes}\n")).is_err_and(|e| e.contains("blank")));
+        let widened = bytes.replacen("\n0 0 0", "\n0  0 0", 1);
+        assert!(parse_matrix(&widened).is_err_and(|e| e.contains("fields")));
+    }
+
+    /// The row and header SHAPE §8 registered, pinned name by name.
+    ///
+    /// The column list is the header's promise about what each row position
+    /// means, so it is checked against the axis itself — sixteen incumbents in
+    /// `Feature::ALL` order, then eighteen candidates in
+    /// `CandidateFeature::ALL` order — rather than against a transcription.
+    #[test]
+    fn the_matrix_schema_is_the_registered_row_and_header_shape() {
+        let names = matrix_columns();
+        assert_eq!(MATRIX_WIDTH, 5 + 16 + 18 + 2, "§8's row: 5 keys + 34 values + 2 outcomes");
+        assert_eq!(names.len(), MATRIX_WIDTH);
+        assert_eq!(names[..5], MATRIX_KEY_COLUMNS.map(str::to_string));
+        assert_eq!(names[MATRIX_WIDTH - 2..], MATRIX_OUTCOME_COLUMNS.map(str::to_string));
+        for (offset, f) in Feature::ALL.into_iter().enumerate() {
+            assert_eq!(names[5 + offset], f.name(), "incumbent slot {offset}");
+        }
+        for (offset, c) in CandidateFeature::ALL.into_iter().enumerate() {
+            assert_eq!(names[5 + Feature::COUNT + offset], c.name(), "candidate slot {offset}");
+        }
+
+        let rules = Rules::standard();
+        let corpus = matrix_corpus(&rules, 1);
+        let matrix = Matrix { header: matrix_header_for(&corpus), rows: corpus.matrix.clone() };
+        let text = render_matrix(&matrix);
+        let (head, body): (Vec<&str>, Vec<&str>) =
+            text.lines().partition(|l| l.starts_with("# "));
+        assert_eq!(
+            head.iter().map(|l| l[2..].split(' ').next().unwrap()).collect::<Vec<_>>(),
+            MATRIX_HEADER_KEYS,
+            "the header keys, in the registered order",
+        );
+        for needle in [
+            &format!("# schema {MATRIX_SCHEMA}"),
+            &format!("# master {DEFAULT_MASTER:#018x}"),
+            &format!("# semantics_rev {SEMANTICS_REV}"),
+            &format!("# package_digest {}", package_digest()),
+            "# players 2",
+            "# weights v1",
+        ] {
+            assert!(text.contains(needle.as_ref() as &str), "the header never says {needle:?}");
+        }
+        assert!(!body.is_empty(), "a one-game matrix with no rows");
+        for line in &body {
+            assert_eq!(line.split(' ').count(), MATRIX_WIDTH, "row {line:?}");
+        }
+    }
+
+    /// Every value in a row is the SINGLE-SOURCED one, at the snapshot the
+    /// row's own key columns name.
+    ///
+    /// Three independent recomputations, and the content of each is the
+    /// ADDRESSING — which view a row belongs to, and which way round its
+    /// difference runs:
+    ///   * the sixteen incumbents against `row_values`, the FROZEN L2
+    ///     machinery's own relative form (a different code path, not a
+    ///     restatement);
+    ///   * the eighteen candidates against `candidate_value`, the one match
+    ///     the `CandidateColumns` adapter and `signature` both go through;
+    ///   * the whole thirty-four-vector against `signature` itself — the exact
+    ///     function `cmd_collinearity` signs its matrix with, so "the same
+    ///     values as the collinearity path" is checked rather than asserted.
+    #[test]
+    fn the_matrix_columns_are_the_single_sourced_relative_axis() {
+        let rules = Rules::standard();
+        let corpus = matrix_corpus(&rules, MATRIX_GAMES);
+        let replay = matrix_replay(&rules, MATRIX_GAMES);
+        assert!(!corpus.matrix.is_empty(), "no rows to check");
+
+        let probe_rows = Row::all(&[]);
+        let mut rel = vec![0.0f64; probe_rows.len()];
+        let mut abs = vec![0.0f64; probe_rows.len()];
+        let mut candidate_nonzero = 0usize;
+
+        for row in &corpus.matrix {
+            let (_, starts) = &replay[row.game as usize];
+            let start = &starts[row.turn_index as usize];
+            let seat = PlayerId(row.seat);
+            let view = observe(start, seat).expect("the snapshot's view");
+            let me = view.players.iter().find(|p| p.id == seat).expect("the viewer is seated");
+            let opponent = view
+                .players
+                .iter()
+                .find(|p| p.id != seat && !p.id.is_dummy())
+                .expect("a 2P view has one opponent");
+
+            assert_eq!(
+                row.progress_ppm,
+                progress_ppm(&view, &rules),
+                "game {} turn {} seat {}: the proxy column",
+                row.game,
+                row.turn_index,
+                row.seat,
+            );
+
+            row_values(&view, &rules, &WeightTable::V1, &probe_rows, &[], &mut rel, &mut abs,
+                &mut [], &mut []);
+            for f in Feature::ALL {
+                let expected = rel[f.index()];
+                let got = row.dv[FeatureId::Incumbent(f).index()] as f64;
+                assert!(
+                    got == expected,
+                    "game {} turn {} seat {}: {} reads {got} against the cell machinery's \
+                     {expected}",
+                    row.game,
+                    row.turn_index,
+                    row.seat,
+                    f.name(),
+                );
+            }
+
+            let structure = ScoreStructure::derive(&view, &rules);
+            for c in CandidateFeature::ALL {
+                let expected = candidate_value(&structure, &view, me, c, &rules)
+                    - candidate_value(&structure, &view, opponent, c, &rules);
+                let got = row.dv[FeatureId::Candidate(c).index()];
+                assert_eq!(
+                    got,
+                    expected,
+                    "game {} turn {} seat {}: {} reads {got} against the adapter's {expected}",
+                    row.game,
+                    row.turn_index,
+                    row.seat,
+                    c.name(),
+                );
+                candidate_nonzero += usize::from(got != 0);
+            }
+
+            let signed = signature(&view, seat, &rules).expect("the collinearity signature");
+            assert_eq!(row.dv, signed.dv, "the row is not the collinearity path's vector");
+            assert_eq!(row.progress_ppm, signed.ppm);
+        }
+        assert!(
+            candidate_nonzero > 0,
+            "every candidate column read zero everywhere — a stub passes this cell otherwise",
+        );
+    }
+
+    /// The matrix's rows ARE the population the analysis cells average.
+    ///
+    /// The strongest form of "the same points": for every (game, seat, stage)
+    /// the mean of the matrix's incumbent columns is the cell's own `rel`
+    /// entry, summed in the same order and divided by the same count, so the
+    /// two agree to the BIT. A matrix sampled anywhere else — mid-turn, once
+    /// per turn instead of once per seat, or over a different stage rule —
+    /// fails here and nowhere else.
+    #[test]
+    fn the_matrix_rows_are_exactly_the_population_the_cells_average() {
+        let rules = Rules::standard();
+        let corpus = matrix_corpus(&rules, MATRIX_GAMES);
+        // Every stage of every seat is non-empty in these games, which is what
+        // makes the cell index arithmetic below sound; `snapshot_game` drops an
+        // empty tercile, so the guard is the assertion, not a comment.
+        assert_eq!(
+            corpus.cells.len(),
+            MATRIX_GAMES as usize * 2 * STAGES.len(),
+            "a dropped tercile would re-point every index below",
+        );
+
+        for game in 0..MATRIX_GAMES {
+            for seat in 0u8..2 {
+                for stage in STAGES {
+                    let cell = &corpus.cells[game as usize * 6 + usize::from(seat) * 3
+                        + stage.index()];
+                    assert_eq!(cell.game, game);
+                    assert_eq!(cell.stage, stage);
+
+                    let mut n = 0u64;
+                    let mut sums = [0.0f64; Feature::COUNT];
+                    let mut label = None;
+                    for row in corpus.matrix.iter().filter(|r| {
+                        r.game == game
+                            && r.seat == seat
+                            && stage_of(r.turn_index as usize, r.turns_in_game as usize) == stage
+                    }) {
+                        n += 1;
+                        for f in Feature::ALL {
+                            sums[f.index()] += row.dv[FeatureId::Incumbent(f).index()] as f64;
+                        }
+                        assert_eq!(*label.get_or_insert(row.win), row.win, "one label per seat");
+                    }
+                    assert!(n > 0, "game {game} seat {seat} {stage:?}: the cell has no rows");
+                    assert_eq!(label, Some(cell.label), "the matrix and the cell disagree on who won");
+                    for f in Feature::ALL {
+                        let mean = sums[f.index()] / n as f64;
+                        assert!(
+                            mean == cell.rel[f.index()],
+                            "game {game} seat {seat} {stage:?} {}: mean {mean} against the \
+                             cell's {}",
+                            f.name(),
+                            cell.rel[f.index()],
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// The two outcome columns are the game's OFFICIAL result, read off the
+    /// same standings the harness reads.
+    ///
+    /// Margin 0 is deliberately not excluded: at 2P a level game is decided by
+    /// the clockwise rank, so the winner's margin is `>= 0` and the loser's
+    /// `<= 0` — asserting strict signs would be asserting that ties never
+    /// happen, which is a different claim and a false one.
+    #[test]
+    fn the_matrix_labels_and_margins_are_the_games_official_outcome() {
+        let rules = Rules::standard();
+        let corpus = matrix_corpus(&rules, MATRIX_GAMES);
+        let replay = matrix_replay(&rules, MATRIX_GAMES);
+
+        for game in 0..MATRIX_GAMES {
+            let (stats, _) = &replay[game as usize];
+            let margins = seat_final_margins(stats, 2).expect("both seats stand");
+            assert_eq!(margins[0], -margins[1], "at 2P the two margins are exact negatives");
+
+            let mut winners = 0;
+            for seat in 0u8..2 {
+                let rows: Vec<&MatrixRow> = corpus
+                    .matrix
+                    .iter()
+                    .filter(|r| r.game == game && r.seat == seat)
+                    .collect();
+                assert!(!rows.is_empty(), "game {game} seat {seat} contributed no rows");
+                let won = stats.result.winner == PlayerId(seat);
+                winners += usize::from(won);
+                for row in rows {
+                    assert_eq!(row.win, won, "game {game} seat {seat}: the outcome label");
+                    assert_eq!(
+                        row.margin, margins[usize::from(seat)],
+                        "game {game} seat {seat}: the margin is constant across the seat's rows",
+                    );
+                }
+                if won {
+                    assert!(margins[usize::from(seat)] >= 0, "a winner never trails on totals");
+                } else {
+                    assert!(margins[usize::from(seat)] <= 0, "a loser never leads on totals");
+                }
+            }
+            assert_eq!(winners, 1, "game {game} has exactly one winning seat");
+        }
+    }
+
+    /// Turn accounting: every turn start of every game reaches the matrix once
+    /// per seat, and `turns_in_game` is the count `stage_of` needs.
+    ///
+    /// The tercile is not a column precisely because these two are — so a row
+    /// that mis-stated either would make every post-hoc stage label wrong
+    /// while every value in the row stayed right.
+    #[test]
+    fn the_matrix_turn_accounting_covers_every_turn_start_of_every_game() {
+        let rules = Rules::standard();
+        let corpus = matrix_corpus(&rules, MATRIX_GAMES);
+        let replay = matrix_replay(&rules, MATRIX_GAMES);
+        assert_eq!(
+            corpus.matrix.len() as u64,
+            corpus.snapshots,
+            "one matrix row per snapshot the corpus counted",
+        );
+
+        for game in 0..MATRIX_GAMES {
+            let turns = replay[game as usize].1.len() as u32;
+            for seat in 0u8..2 {
+                let mut seen: Vec<u32> = corpus
+                    .matrix
+                    .iter()
+                    .filter(|r| r.game == game && r.seat == seat)
+                    .map(|r| {
+                        assert_eq!(r.turns_in_game, turns, "game {game}: turns_in_game");
+                        r.turn_index
+                    })
+                    .collect();
+                seen.sort_unstable();
+                assert_eq!(
+                    seen,
+                    (0..turns).collect::<Vec<_>>(),
+                    "game {game} seat {seat}: every turn start exactly once",
+                );
+            }
+            let highest = corpus
+                .matrix
+                .iter()
+                .filter(|r| r.game == game)
+                .map(|r| r.turn_index)
+                .max()
+                .expect("the game contributed rows");
+            assert_eq!(highest + 1, turns, "turns_in_game is the realized turn-start count");
+        }
+    }
+
+    /// `--dump-matrix` is 2P ONLY, and refuses BEFORE it plays anything.
+    ///
+    /// `collinearity`'s reason exactly: at 3–4P "theirs" is `opponent_extreme`,
+    /// which orients BY WEIGHT, and a matrix in a weight-oriented currency
+    /// would be a statement about the incumbent weights rather than about the
+    /// columns. The absent file is the half that says the refusal is a refusal
+    /// and not a discarded result.
+    #[test]
+    fn dump_matrix_is_refused_away_from_two_players() {
+        let refused = matrix_temp_path("refused");
+        let _ = std::fs::remove_file(&refused);
+        let name = refused.to_str().expect("a UTF-8 temp path").to_string();
+        let arg = |s: &str| s.to_string();
+
+        let message = cmd_run(&[arg("3"), arg("1"), arg("--dump-matrix"), arg(&name)])
+            .expect_err("a 3P dump must be refused");
+        assert!(
+            message.contains("2P only") && message.contains("got 3"),
+            "the refusal names neither the rule nor what it saw: {message}",
+        );
+        assert!(!refused.exists(), "the refusal still wrote a file");
+
+        // The control: at 2P the same path runs and produces the file, so the
+        // assertion above is about the player count and not about the flag
+        // being inert.
+        let ok = matrix_temp_path("cmdrun");
+        let ok_name = ok.to_str().expect("a UTF-8 temp path").to_string();
+        cmd_run(&[
+            arg("2"),
+            arg("1"),
+            arg("--blocks"),
+            arg("proxy"),
+            arg("--dump-matrix"),
+            arg(&ok_name),
+        ])
+        .expect("a 2P dump runs");
+        let text = std::fs::read_to_string(&ok).expect("the command wrote its matrix");
+        let _ = std::fs::remove_file(&ok);
+        let parsed = parse_matrix(&text).expect("the command's matrix parses");
+        assert_eq!(parsed.header.players, 2);
+        assert_eq!(parsed.header.games, 1);
+        assert!(!parsed.rows.is_empty(), "the command wrote a header and no rows");
+        assert!(
+            parsed.header.command.starts_with("eval_probe"),
+            "the command echo does not name the instrument: {:?}",
+            parsed.header.command,
+        );
+    }
+
+    /// The dump is INERT toward everything the run measures.
+    ///
+    /// A control rather than a driver — it passes before the fold exists too —
+    /// and it is here for the argument-free honesty rule: asking for the matrix
+    /// must not move a cell, a snapshot count or a proxy point, or the file
+    /// would describe a corpus the report never saw.
+    #[test]
+    fn asking_for_the_matrix_changes_nothing_the_run_measures() {
+        let rules = Rules::standard();
+        let plain = generate(
+            2,
+            1,
+            matrix_contestant(),
+            &WeightTable::V1,
+            &rules,
+            SeedScheduleKind::Diagnostic(DEFAULT_MASTER),
+            true,
+            &[],
+            &[],
+            false,
+        )
+        .expect("the corpus completes")
+        .0;
+        let dumped = matrix_corpus(&rules, 1);
+
+        assert!(plain.matrix.is_empty(), "an un-asked matrix must allocate nothing");
+        assert_eq!(plain.snapshots, dumped.snapshots);
+        assert_eq!(plain.proxy, dumped.proxy);
+        assert_eq!(plain.cells.len(), dumped.cells.len());
+        for (a, b) in plain.cells.iter().zip(dumped.cells.iter()) {
+            assert_eq!((a.game, a.stage, a.label), (b.game, b.stage, b.label));
+            assert_eq!(a.rel, b.rel);
+            assert_eq!(a.abs, b.abs);
+        }
     }
 }
