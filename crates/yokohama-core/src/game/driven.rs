@@ -1275,7 +1275,16 @@ fn turn_start_placements(state: &GameState, rules: &Rules) -> Option<Vec<Move>> 
 /// generates only these two variants — and the caller SKIPS rather than panics,
 /// because a predicate is not the place to discover that the phase machine
 /// changed.
-fn placement_shape(mv: &Move) -> Option<(usize, BTreeSet<AreaId>)> {
+///
+/// **`pub` is a VISIBILITY-ONLY unblock (V4 §7 step 5), on `visible_power`'s
+/// precedent — the body is untouched and the frozen predicate above computes
+/// exactly what it computed before.** The step-5 e113 exemplar registration has
+/// to ask a candidate placement for its total and its area set to apply its own
+/// selection criterion, and the only two honest options were to call THIS or to
+/// restate the `PlaceThreeAreas` / `PlaceTwoSameArea` arithmetic in the probe —
+/// where a Telegram-swap arm quietly disagreeing with the predicate's reading
+/// would make "same count" mean two different things in two files.
+pub fn placement_shape(mv: &Move) -> Option<(usize, BTreeSet<AreaId>)> {
     match mv {
         Move::PlaceThreeAreas { placements } => {
             Some((placements.len(), placements.iter().copied().collect()))

@@ -87,7 +87,7 @@
 //! Its own statistics are unit-tested: `cargo test -p yokohama-core --example
 //! eval_probe`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
 use rand::{Rng, SeedableRng};
@@ -107,7 +107,8 @@ use yokohama_core::game::lookahead::{
     LookaheadAgent, SearchScheme, SearchTally, LOOKAHEAD_CONTROLLER,
 };
 use yokohama_core::game::driven::{
-    escrow_recipe_pair, registry, root_table, RecipeMiss, RecipePair, RootPredicate, RootSource,
+    escrow_recipe_pair, placement_shape, registry, root_table, RecipeMiss, RecipePair,
+    RootPredicate, RootSource,
 };
 use yokohama_core::game::driven_runner::DEFAULT_SEAT;
 use yokohama_core::game::pair_fixtures::{
@@ -117,9 +118,10 @@ use yokohama_core::game::pair_fixtures::{
 };
 use yokohama_core::{
     agent_stream_seed, apply_move, finalize_setup, get_legal_moves, new_game, observe, replay_from,
-    run_arena_game, run_raw_game, AchievementType, ArenaAgent, ArenaGameStats, Contestant,
-    GameState, Move, PlayerId, PlayerView, QuantileSketch, RolloutPolicy, Rules, SeedSchedule,
-    SeedScheduleKind, Slot, TriggerTally, VisiblePlayer, WorldSeed, SEMANTICS_REV,
+    run_arena_game, run_raw_game, state_digest, AchievementType, AreaId, AreaType, ArenaAgent,
+    ArenaGameStats, Contestant, GameRecord, GameState, HandCard, Move, PlayerId, PlayerView,
+    QuantileSketch, RolloutPolicy, Rules, SeedSchedule, SeedScheduleKind, Slot, TriggerTally,
+    VisiblePlayer, WorldSeed, SEMANTICS_REV,
 };
 
 const USAGE: &str = "\
@@ -249,6 +251,33 @@ usage: eval_probe <subcommand> [options]
         --no-generated   registry roots only (skips the seeded scans)
         --no-tie         skip the e113 root-table measurement
 
+  rooted [--record <path>] [--no-generated]
+      The §7 STEP-5 ROOTED-READ GATES, weight-free: raw direction and
+      non-collision at the DEVELOPMENT roots and nothing beyond the frozen gate
+      texts. Four gates and two read-and-record items —
+        GATE 1  g1-e113-tiemass: the summed delta over ALL SEVEN frozen S
+                definitions strictly favours the registered enabling-line
+                placement over its registered same-count dead side, and the
+                pair's two sides do not collide (§5.3's own classifier)
+        GATE 2  each placement-fork development ordinal at M-PF: the S signature
+                takes >= 2 distinct values across the fork's same-count set
+        GATE 3  CONSTRUCTED strict-O3 coverage — 4(b) EXECUTABLE >= 1, with
+                4(b) DISTANT and 4(a) both sides at 0 (corpus-free)
+        GATE 4  the RECORDED opponent-pending development band: at each of the
+                five charter development exhibits, opponent-O1 >= 1 AND
+                opponent-O3 = 0, with opponent-O2 recorded
+        record  the X wiring proof (satisfies NOTHING) and the fired-while-behind
+                root's complete candidate columns (never a gate)
+      Every root's identity is digest-verified BEFORE any column is read, and
+      the EIGHT escrow-reserved exhibits refuse a column read by construction
+      (the 2026-08-23 charter row extends §6's burn rule to them verbatim).
+      A gate failure exits non-zero: step 5 stops before any fitting.
+        --record <path>  the regenerated `bga-import/896199544` record GATE 4's
+                         five development exhibits are events of. Absent, that
+                         gate prints a typed SKIP and is not run
+        --no-generated   skip the seeded scans (GATE 2 and the fired-while-behind
+                         read)
+
 contestants (the grammar is Contestant::from_str_name's — unknown is an error at
 every level, and an unknown knob is never silently ignored):
   greedy-v1[:m=<n>]    the honest arena driver (observe -> sampler -> handle)
@@ -287,6 +316,7 @@ fn main() {
         Some("pairs") => cmd_pairs(&args[1..]),
         Some("collision") => cmd_collision(&args[1..]),
         Some("collinearity") => cmd_collinearity(&args[1..]),
+        Some("rooted") => cmd_rooted(&args[1..]),
         _ => Err(USAGE.to_string()),
     };
     if let Err(message) = result {
@@ -4345,34 +4375,27 @@ fn resolve_part_a_roots(generated: bool, rules: &Rules) -> Result<Vec<RootInput>
 /// It is a MEASUREMENT and not a gate: the tied set is not a registered pair,
 /// so a collapse here is organic by §5.3's own rule.
 fn e113_top_tie(rules: &Rules) -> Result<String, String> {
-    let entry = registry()
-        .into_iter()
-        .find(|e| e.name == "g1-e113-tiemass")
-        .ok_or("g1-e113-tiemass is not a registry root")?;
-    let source = entry.load(rules).map_err(|e| format!("g1-e113-tiemass: {e:?}"))?;
-    let (state, descriptor) = source.resolve(rules).map_err(|e| format!("{e:?}"))?;
-    let contestant = Contestant::from_str_name(DEFAULT_SEAT)
-        .map_err(|e| format!("the driven default contestant does not parse: {e}"))?;
-    let table = root_table(&state, entry.bot_seat, contestant, rules, entry.decision_seed)
-        .map_err(|e| format!("root table at g1-e113: {e:?}"))?;
-    let top = table.top_value().ok_or("the root table is empty")?;
-    let tied: Vec<&Move> =
-        table.ranked.iter().filter(|r| r.value == top).map(|r| &r.mv).collect();
+    // THE SAME loader and the SAME tie the step-5 gate's dead side is drawn
+    // from ([`e113_root`]) — two copies of "call `root_table`, take the top
+    // value, filter" is the shape that lets a measurement and a gate quietly
+    // describe two different sets.
+    let root = e113_root(rules)?;
+    let (state, tied, top) = (&root.state, &root.tie, root.top_value);
 
     let mover = state.current_player;
     let mut classes: BTreeMap<Signature, Vec<String>> = BTreeMap::new();
-    for mv in &tied {
-        let next = apply_move(&state, mv, rules).map_err(|e| format!("e113 tie: {e}"))?;
+    for mv in tied {
+        let next = apply_move(state, mv, rules).map_err(|e| format!("e113 tie: {e}"))?;
         let view = observe(&next, mover).map_err(|e| format!("e113 tie: {e}"))?;
         let sig = signature(&view, mover, rules)?;
         classes.entry(sig).or_default().push(format!("{mv:?}"));
     }
 
     let mut out = String::new();
-    out.push_str(&format!("root digest         {}\n", descriptor.root_digest));
-    out.push_str(&format!("contestant          {}\n", table.echo));
-    out.push_str(&format!("decision seed       {:#018x}\n", entry.decision_seed));
-    out.push_str(&format!("candidates          {}\n", table.candidates()));
+    out.push_str(&format!("root digest         {}\n", root.digest));
+    out.push_str(&format!("contestant          {}\n", root.echo));
+    out.push_str(&format!("decision seed       {:#018x}\n", root.decision_seed));
+    out.push_str(&format!("candidates          {}\n", root.candidates));
     out.push_str(&format!("top value           {top}\n"));
     out.push_str(&format!("tied at top         {}\n", tied.len()));
     out.push_str(&format!("distinct signatures {} over the tied set\n", classes.len()));
@@ -5311,6 +5334,1869 @@ currency          correlations and VIF over the RELATIVE vector (mine − theirs
 population        every (turn start × seat), the same population the AUC cells
                   aggregate, before any aggregation
 nothing is fitted this runs BEFORE any fit, and removes nothing";
+
+// ---------------------------------------------------------------------------
+// §7 step 5 — the ROOTED-READ GATES
+// ---------------------------------------------------------------------------
+//
+// Checkpoint §7 step 5: "Rooted-read gates at the DEVELOPMENT roots — raw
+// direction and non-collision only." No weights, no fitting, nothing beyond the
+// frozen gate texts. A gate failure STOPS before any fitting: this command
+// reports and exits non-zero, exactly as `collision` does, because repair is
+// owner territory.
+//
+// The gate TEXTS are frozen at spec §6 and at the 2026-08-23 charter row; both
+// are quoted in the headers below rather than paraphrased, and the two places a
+// frozen text needed a stated READING carry an INTERPRETATION NOTE at the site
+// that implements them ([`E113_SUM_READING`] and [`FORK_DISTINCTNESS_READING`]).
+
+/// The SEVEN **S** columns, in §3.2's own registration order.
+///
+/// The step-5 e113 gate is a sum over "ALL SEVEN frozen S definitions" and the
+/// placement-fork gate is a statement about "the S columns", so both need the
+/// group as a group. Taken from [`CandidateFeature::ALL`]'s prefix rather than
+/// re-typed: `S_COLUMNS` is pinned equal to that prefix in this file's tests, so
+/// a re-ordering of the canonical array cannot leave this list describing the
+/// old order.
+const S_COLUMNS: [CandidateFeature; 7] = [
+    CandidateFeature::ProductionAccess,
+    CandidateFeature::TrackAccess,
+    CandidateFeature::AssistantAreasDistinct,
+    CandidateFeature::PresidentLocalAccess,
+    CandidateFeature::BankAccess,
+    CandidateFeature::EmploymentAgencyAccess,
+    CandidateFeature::PresidentReachableAreas,
+];
+
+/// The THREE **X** columns — §6's RECORDED WIRING PROOF and nothing else.
+const X_COLUMNS: [CandidateFeature; 3] = [
+    CandidateFeature::LabTakeable,
+    CandidateFeature::PortTakeable,
+    CandidateFeature::MatchedProductionAccess,
+];
+
+/// The three **O** columns the charter's recorded read names.
+const OSE_COLUMNS: [CandidateFeature; 3] = [
+    CandidateFeature::HeldOrderValue,
+    CandidateFeature::OrderMatchedGoods,
+    CandidateFeature::ExecutableOrders,
+];
+
+/// The S slots of one §5.3 Δv, in [`S_COLUMNS`] order.
+fn s_slots(dv: &[i64; AXIS_WIDTH]) -> [i64; 7] {
+    let mut out = [0i64; 7];
+    for (i, c) in S_COLUMNS.iter().enumerate() {
+        out[i] = dv[FeatureId::Candidate(*c).index()];
+    }
+    out
+}
+
+/// **INTERPRETATION NOTE 1 — the e113 gate's SUM is UNWEIGHTED and CROSS-UNIT,
+/// because that is what the frozen text says.**
+///
+/// Spec §6 (the "Step-5 gates (pass rules fixed here)" paragraph): "at
+/// `g1-e113-tiemass` — the summed delta over ALL SEVEN frozen S definitions
+/// strictly favors the enabling-line placement over a registered same-count
+/// dead-side placement".
+///
+/// The seven S definitions are NOT in one unit — S1 and S5 are exported reward
+/// quantities, S2 is a power, S3/S7 are area counts, S4 is a ring mass, S6 is a
+/// token count — so `Σ_{S1..S7} [S(enabling) − S(dead)]` adds numbers that a
+/// fitted table would each price separately. Summing them at weight 1 apiece is
+/// therefore a WEAKER and coarser statement than any weighted one, and it is
+/// deliberately the statement the pre-registration froze: step 5 is the RAW
+/// DIRECTION read, before any weight exists to price with (checkpoint §7 step 5
+/// — "weighted winner-preservation controls belong to step 9, where complete
+/// weighted scoring exists").
+///
+/// It is implemented LITERALLY. Normalising the columns, weighting them, or
+/// reading the gate as "a majority of the seven columns favours the enabling
+/// side" would each be a different — and un-pre-registered — gate. The
+/// per-column deltas are PRINTED beside the sum so a reader can see exactly
+/// which columns carry it and in what units, but the PASS RULE reads the sum.
+const E113_SUM_READING: &str = "\
+gate text (§6)      \"the summed delta over ALL SEVEN frozen S definitions strictly
+                    favors the enabling-line placement over a registered
+                    same-count dead-side placement, and no blocking collision
+                    between that registered pair's sides\"
+the sum             UNWEIGHTED and CROSS-UNIT, implemented literally: the seven S
+                    definitions are not in one unit (rewards, a power, area
+                    counts, a ring mass, a token count) and the frozen text sums
+                    them at weight 1 apiece. That is the RAW-DIRECTION read step 5
+                    exists to be — no weight exists yet to price with. Per-column
+                    deltas print beside the sum; the PASS RULE reads the sum
+the currency        each S is the §5.3 MOVER-RELATIVE value (mine − theirs, 2P),
+                    the same differencing Part A registered and this file's
+                    `signature` computes — so the gate quantity is
+                    Σ_S [Δv_S(enabling successor) − Δv_S(dead successor)]";
+
+/// **INTERPRETATION NOTE 2 — the placement-fork gate's "≥ 2 distinct values" is
+/// read as a VECTOR, not column by column.**
+///
+/// Spec §6: "at each placement-fork dev ordinal — the S columns take ≥ 2 distinct
+/// values across the fork's same-count set".
+///
+/// Read column-by-column ("every S column takes ≥ 2 distinct values") the gate
+/// would be FALSE by construction at almost any fork: S5 is zero for every
+/// placement that puts nobody at the Bank, S2 is zero for every placement that
+/// touches neither track, and a placement fork that happens not to offer the
+/// Bank makes S5 constant across every member without that saying anything about
+/// blindness. What step 5 is asking is the ANTI-COLLAPSE question — does the S
+/// group SEE the fork at all, or does the whole same-count block land on one
+/// point of the S subspace the way it lands on one point of the incumbent
+/// sixteen? So the reading is: the 7-dimensional S signature takes ≥ 2 distinct
+/// values across the fork's same-count set.
+///
+/// The stronger per-column reading is not silently dropped — the per-column
+/// distinct-value counts PRINT, so a reader sees exactly which of the seven move
+/// at each root and which are flat there.
+const FORK_DISTINCTNESS_READING: &str = "\
+gate text (§6)      \"at each placement-fork dev ordinal — the S columns take >= 2
+                    distinct values across the fork's same-count set\"
+the reading         the VECTOR one: the 7-dimensional S signature takes >= 2
+                    distinct values across the set. A column-by-column reading
+                    (\"every S column moves\") is FALSE BY CONSTRUCTION at almost
+                    any fork — S5 is flat wherever no member reaches the Bank, S2
+                    wherever no member touches a track — and would gate the
+                    board's furniture rather than the columns. The question step 5
+                    asks is ANTI-COLLAPSE: does the S group see the fork at all,
+                    where the incumbent sixteen collapse it to one number?
+                    Per-column distinct counts print, so the stronger reading is
+                    visible even though the pass rule is the vector one
+the same-count set  the placements sharing the WITNESSING total — the smallest
+                    total carrying >= 2 distinct area sets, which is the witness
+                    `same_count_fork` itself returns on (it walks totals in
+                    ascending order and stops at the first). Every OTHER total's
+                    counts print too, and the verdict line says whether the gate
+                    would also have held at each";
+
+// --- the e113 exemplar pair -------------------------------------------------
+
+/// The registry root the exemplar pair is registered AT.
+const E113_ROOT: &str = "g1-e113-tiemass";
+
+/// `state_digest` of that root — the step-4 ledger row's recorded identity.
+/// Verified BEFORE any column is read; a mismatch is a typed refusal, because a
+/// gate computed at a different position is a gate about a different question.
+const E113_ROOT_DIGEST: &str = "565903fe991210f0";
+
+/// **THE e113 EXEMPLAR PAIR, FROZEN.**
+///
+/// Checkpoint §7 step 2 registers "the development roots — g1:113 plus
+/// predeclared organic same-count/different-location roots (**the class, not one
+/// exemplar**)". The class was pre-registered; step 5 registers the EXEMPLAR
+/// inside it, which is a registration and not a scope change.
+///
+/// **The enabling side** is the D7 triage's own recorded mechanism fact
+/// (`docs/plans/2026-08-17-phase-b-d7-triage.md` §1, "Two mechanism facts",
+/// item 1): "the searched principal line walks the President to Fishing Ground
+/// (A09) and produces seafood — yet the placement that actually includes A09
+/// ('Laboratory A + Fishing Ground') sits at −1, BELOW the 36-way winning tie".
+/// It is therefore the root's legal placement whose area set is EXACTLY
+/// {Laboratory A, Fishing Ground}, resolved from the loaded root's own board by
+/// [`AreaType`] and never by a guessed id.
+///
+/// **The dead side's criterion, stated so it can be re-applied rather than
+/// trusted:** the LEXICOGRAPHICALLY-LEAST member — by the move's canonical
+/// encoding, which is its derived `Debug` rendering, the same string every
+/// artifact in this file prints a move as — of the RECOMPUTED top tie, among
+/// those members that place the SAME TOTAL as the enabling side and whose placed
+/// AREA SET is DISJOINT from the enabling side's. "Lexicographically least"
+/// rather than "first iterated": an iteration order is a property of the
+/// enumerator, and a selection that depends on it is a selection that a
+/// generator change can silently re-point.
+///
+/// Both sides are frozen HERE as area ids plus their canonical encodings plus
+/// the `state_digest` of the successor each produces, and [`e113_exemplar`]
+/// RE-DERIVES the criterion at runtime and REFUSES on any disagreement. The
+/// frozen constants are the record; the re-derivation is what stops them from
+/// drifting away from the criterion that chose them.
+struct ExemplarPair {
+    enabling_areas: &'static [u8],
+    enabling_encoding: &'static str,
+    enabling_digest: &'static str,
+    dead_areas: &'static [u8],
+    dead_encoding: &'static str,
+    dead_digest: &'static str,
+    /// The total each side places — equal by the criterion, frozen so a
+    /// re-derivation that produced a different-sized pair is caught by the
+    /// constant and not only by the equality.
+    total: usize,
+}
+
+/// The frozen registration. Recorded by the step-5 development selection run;
+/// re-verified against its own criterion on every run since.
+const E113_EXEMPLAR: ExemplarPair = ExemplarPair {
+    enabling_areas: E113_ENABLING_AREAS,
+    enabling_encoding: E113_ENABLING_ENCODING,
+    enabling_digest: E113_ENABLING_DIGEST,
+    dead_areas: E113_DEAD_AREAS,
+    dead_encoding: E113_DEAD_ENCODING,
+    dead_digest: E113_DEAD_DIGEST,
+    total: E113_TOTAL,
+};
+
+// UNREGISTERED at RED: the exemplar pair is what step 5 REGISTERS, and before
+// the selection run has been made there is nothing here but the shape of the
+// answer. The command refuses against these and names what it derived.
+const E113_ENABLING_AREAS: &[u8] = &[0, 0];
+const E113_ENABLING_ENCODING: &str = "PENDING";
+const E113_ENABLING_DIGEST: &str = "PENDING";
+const E113_DEAD_AREAS: &[u8] = &[0, 0];
+const E113_DEAD_ENCODING: &str = "PENDING";
+const E113_DEAD_DIGEST: &str = "PENDING";
+const E113_TOTAL: usize = 2;
+
+/// Resolve the unique area of one [`AreaType`] on a board.
+///
+/// A type that appears twice is a typed refusal rather than a first-match: the
+/// exemplar's enabling side is named by SITE ("Laboratory A + Fishing Ground")
+/// and a board where the name does not pick out one tile is a board where the
+/// registration's own words do not identify a placement.
+fn sole_area_of(state: &GameState, want: AreaType) -> Result<AreaId, String> {
+    let found: Vec<AreaId> = state
+        .board_layout
+        .areas
+        .iter()
+        .filter(|(_, cfg)| cfg.area_type == want)
+        .map(|(id, _)| *id)
+        .collect();
+    match found.as_slice() {
+        [one] => Ok(*one),
+        [] => Err(format!("{want:?} is not on this board — the exemplar's site name resolves to nothing")),
+        many => Err(format!(
+            "{want:?} appears {} times on this board ({many:?}) — the exemplar's site name does \
+             not identify one placement",
+            many.len(),
+        )),
+    }
+}
+
+/// A placement move's total and area set, through the FROZEN predicate's own
+/// helper (`driven::placement_shape`) so "same count" means one thing repo-wide.
+fn placement_of(mv: &Move) -> Option<(usize, BTreeSet<AreaId>)> {
+    placement_shape(mv)
+}
+
+/// The canonical encoding of a move: its derived `Debug` rendering.
+///
+/// `Move` implements no `Ord`, and the selection criterion needs a TOTAL order
+/// that does not depend on enumeration. `Debug` is derived, deterministic, and
+/// already the string every artifact in this file prints a move as, so ordering
+/// by it makes the criterion re-checkable from the printed output alone.
+fn canonical_encoding(mv: &Move) -> String {
+    format!("{mv:?}")
+}
+
+/// The e113 root, its recomputed top tie, and the identity that says both are
+/// the ones the registration was taken at.
+struct E113Root {
+    state: GameState,
+    digest: String,
+    tie: Vec<Move>,
+    top_value: i64,
+    candidates: usize,
+    echo: String,
+    decision_seed: u64,
+    /// Every ranked candidate and its table value — kept so the registration
+    /// can be checked against the D7 triage fact it is taken FROM ("the
+    /// placement that actually includes A09 sits at −1, BELOW the 36-way
+    /// winning tie"), rather than only against the tie.
+    ranked: Vec<(Move, i64)>,
+}
+
+/// Load `g1-e113-tiemass` and recompute its top tie.
+///
+/// Factored out of [`e113_top_tie`] rather than restated: the step-5 gate's dead
+/// side is chosen from THE SAME tie the step-4 measurement reports, and two
+/// copies of "call `root_table`, take `top_value`, filter" is exactly the shape
+/// that lets the two drift into describing different sets.
+fn e113_root(rules: &Rules) -> Result<E113Root, String> {
+    let entry = registry()
+        .into_iter()
+        .find(|e| e.name == E113_ROOT)
+        .ok_or(format!("{E113_ROOT} is not a registry root"))?;
+    let source = entry.load(rules).map_err(|e| format!("{E113_ROOT}: {e:?}"))?;
+    let (state, descriptor) = source.resolve(rules).map_err(|e| format!("{e:?}"))?;
+    let contestant = Contestant::from_str_name(DEFAULT_SEAT)
+        .map_err(|e| format!("the driven default contestant does not parse: {e}"))?;
+    let table = root_table(&state, entry.bot_seat, contestant, rules, entry.decision_seed)
+        .map_err(|e| format!("root table at g1-e113: {e:?}"))?;
+    let top_value = table.top_value().ok_or("the root table is empty")?;
+    let tie: Vec<Move> =
+        table.ranked.iter().filter(|r| r.value == top_value).map(|r| r.mv.clone()).collect();
+    Ok(E113Root {
+        digest: descriptor.root_digest,
+        candidates: table.candidates(),
+        echo: table.echo.clone(),
+        decision_seed: entry.decision_seed,
+        ranked: table.ranked.iter().map(|r| (r.mv.clone(), r.value)).collect(),
+        state,
+        tie,
+        top_value,
+    })
+}
+
+/// The two sides the criterion selects at a loaded root, DERIVED — never read
+/// off the frozen constants.
+///
+/// Returned as moves plus the facts the artifact prints, so the re-verification
+/// against [`E113_EXEMPLAR`] happens at ONE site and reads like the comparison
+/// it is.
+struct DerivedExemplar {
+    lab: AreaId,
+    fishing: AreaId,
+    enabling: Move,
+    dead: Move,
+    total: usize,
+    /// Every top-tie member that passed the same-count + disjointness filter the
+    /// least-encoding rule then broke, in that encoding order — `eligible[0]`
+    /// IS [`DerivedExemplar::dead`]. Kept whole rather than counted: a filter
+    /// that admitted exactly one member would make "lexicographically least"
+    /// vacuous, and the SPREAD over all of them is what says whether the gate's
+    /// verdict is a property of the position or of the tie-break.
+    eligible: Vec<Move>,
+}
+
+/// The dead-side criterion's FILTER and ORDER, as a pure function over a tie.
+///
+/// Split out of [`derive_e113_exemplar`] so the criterion is checkable without a
+/// loaded root: the registration's whole claim is that its dead side is what
+/// this function returns first, and a criterion that can only be exercised
+/// through a gitignored save is a criterion nothing tests.
+///
+/// Returns the eligible members in canonical-encoding order — `[0]` is the
+/// registered dead side.
+fn eligible_dead_sides<'a>(
+    tie: &'a [Move],
+    enabling_areas: &BTreeSet<AreaId>,
+    total: usize,
+) -> Vec<&'a Move> {
+    tie.iter()
+        .filter(|mv| {
+            placement_of(mv).is_some_and(|(t, areas)| t == total && areas.is_disjoint(enabling_areas))
+        })
+        .collect()
+}
+
+/// Apply the registered criterion to a loaded root.
+fn derive_e113_exemplar(root: &E113Root, rules: &Rules) -> Result<DerivedExemplar, String> {
+    let lab = sole_area_of(&root.state, AreaType::LaboratoryA)?;
+    let fishing = sole_area_of(&root.state, AreaType::FishingGround)?;
+    let wanted: BTreeSet<AreaId> = [lab, fishing].into_iter().collect();
+
+    // The ENABLING side comes off the root's own legal list — not off the tie.
+    // The D7 fact is precisely that it is NOT in the tie, so looking for it
+    // there would be looking for it where the triage says it is not.
+    let legal = get_legal_moves(&root.state, rules);
+    let enabling: Vec<&Move> = legal
+        .iter()
+        .filter(|mv| placement_of(mv).is_some_and(|(_, areas)| areas == wanted))
+        .collect();
+    let enabling = match enabling.as_slice() {
+        [one] => (*one).clone(),
+        [] => {
+            return Err(format!(
+                "no legal placement at {E113_ROOT} has area set {{Laboratory A = {}, Fishing \
+                 Ground = {}}} — the D7 mechanism fact the enabling side is registered from does \
+                 not hold at this root",
+                lab.0, fishing.0,
+            ))
+        }
+        many => {
+            return Err(format!(
+                "{} legal placements share the area set {{{}, {}}} — the enabling side is not \
+                 identified by its site names alone",
+                many.len(),
+                lab.0,
+                fishing.0,
+            ))
+        }
+    };
+    let (total, enabling_areas) =
+        placement_of(&enabling).ok_or("the enabling side is not a placement")?;
+
+    // The DEAD side: same total, DISJOINT area set, taken from the recomputed
+    // top tie, broken by the least canonical encoding.
+    let eligible = eligible_dead_sides(&root.tie, &enabling_areas, total);
+    let dead = eligible
+        .first()
+        .ok_or_else(|| {
+            format!(
+                "no member of the {}-way top tie places {total} into an area set disjoint from \
+                 {{{}, {}}} — the dead-side criterion selects nothing here",
+                root.tie.len(),
+                lab.0,
+                fishing.0,
+            )
+        })?
+        .to_owned()
+        .clone();
+
+    Ok(DerivedExemplar {
+        lab,
+        fishing,
+        enabling,
+        dead,
+        total,
+        eligible: eligible.into_iter().cloned().collect(),
+    })
+}
+
+/// The mover's OWN seven S values on one successor view — the absolute currency
+/// [`E113_ABSOLUTE_NOTE`] records beside the gate.
+fn mover_s_values(view: &PlayerView, mover: PlayerId, rules: &Rules) -> Result<[i64; 7], String> {
+    let me = view
+        .players
+        .iter()
+        .find(|p| p.id == mover)
+        .ok_or_else(|| format!("seat {} is not a player in this view", mover.0))?;
+    let structure = ScoreStructure::derive(view, rules);
+    let mut out = [0i64; 7];
+    for (i, c) in S_COLUMNS.iter().enumerate() {
+        out[i] = candidate_value(&structure, view, me, *c, rules);
+    }
+    Ok(out)
+}
+
+/// Both S readings of one successor of the e113 root.
+fn e113_successor_s(
+    root: &GameState,
+    mv: &Move,
+    mover: PlayerId,
+    rules: &Rules,
+) -> Result<([i64; 7], [i64; 7]), String> {
+    let next = apply_move(root, mv, rules)
+        .map_err(|e| format!("{} did not apply at {E113_ROOT}: {e}", canonical_encoding(mv)))?;
+    let view = observe(&next, mover).map_err(|e| format!("successor unobservable: {e}"))?;
+    Ok((s_slots(&signature(&view, mover, rules)?.dv), mover_s_values(&view, mover, rules)?))
+}
+
+/// One frozen side, checked against what the criterion just derived.
+fn check_frozen_side(
+    label: &str,
+    derived: &Move,
+    successor_digest: &str,
+    areas: &'static [u8],
+    encoding: &'static str,
+    digest: &'static str,
+) -> Result<(), String> {
+    let derived_encoding = canonical_encoding(derived);
+    let derived_areas: Vec<u8> = placement_of(derived)
+        .map(|(_, set)| set.iter().map(|a| a.0).collect())
+        .unwrap_or_default();
+    if derived_areas != areas {
+        return Err(format!(
+            "the {label} side's FROZEN areas {areas:?} are not what the registered criterion \
+             derives here ({derived_areas:?}) — the registration has drifted from its own rule",
+        ));
+    }
+    if derived_encoding != encoding {
+        return Err(format!(
+            "the {label} side's FROZEN encoding `{encoding}` is not the derived one \
+             `{derived_encoding}`",
+        ));
+    }
+    if successor_digest != digest {
+        return Err(format!(
+            "the {label} side's successor digest is {successor_digest}, and the registration \
+             froze {digest} — the same move at a different position",
+        ));
+    }
+    Ok(())
+}
+
+/// **WHY THE ABSOLUTE CURRENCY IS RECORDED BESIDE THE GATE, AND IS NOT IT.**
+///
+/// The gate quantity is the DIFFERENCED one — the §5.3 mover-relative
+/// `mine − theirs` Part A registered, which is also the quantity a weight
+/// multiplies in `game/eval.rs`. That is the convention this task was directed
+/// to implement and it is the one the pass rule reads.
+///
+/// It is not, however, a convention the two readings AGREE under, and the reason
+/// is worth stating because it is easy to assume they must. One might expect the
+/// opponent's half to cancel: the two successors differ only in where the MOVER
+/// put its own assistants, so `theirs` looks like a constant that subtracts out.
+/// It is not constant. Several S definitions read a quantity the mover's own
+/// stones move — S2 and S1 are computed at REALIZABLE POWER, and power at an
+/// area counts every assistant standing there, the opponent's read included. So
+/// placing into an area the opponent occupies raises the OPPONENT's S there too,
+/// and the differenced reading books that as a loss where the absolute reading
+/// books nothing.
+///
+/// Both are therefore printed. The gate reads the differenced sum; the absolute
+/// sum is a RECORDED diagnostic, and if the two ever disagree in SIGN that
+/// disagreement is a finding for the owner — not a licence to read whichever one
+/// passes.
+const E113_ABSOLUTE_NOTE: &str = "\
+recorded beside     the same sum in the MOVER-ABSOLUTE currency (the opponent's half
+                    dropped). The two do NOT agree by construction: S1 and S2 are
+                    computed at REALIZABLE POWER, which counts every assistant at
+                    an area including the opponent's, so a placement into a shared
+                    area raises the opponent's S as well and the differenced
+                    reading books that where the absolute reading does not.
+                    The GATE reads the DIFFERENCED sum. A sign disagreement
+                    between the two is a FINDING, never a choice of reading";
+
+/// The e113 gate's result, as the artifact prints it.
+struct E113Gate {
+    root_digest: String,
+    candidates: usize,
+    top_value: i64,
+    tie: usize,
+    echo: String,
+    decision_seed: u64,
+    lab: AreaId,
+    fishing: AreaId,
+    total: usize,
+    eligible: usize,
+    enabling: String,
+    /// The enabling side's own value in the SHIPPED evaluator's root table, and
+    /// its distance below the top — the D7 triage fact the registration cites,
+    /// re-derived rather than trusted.
+    enabling_value: Option<i64>,
+    dead: String,
+    enabling_digest: String,
+    dead_digest: String,
+    /// Per-column `Δv_S(enabling) − Δv_S(dead)`, in [`S_COLUMNS`] order.
+    per_column: [i64; 7],
+    sum: i64,
+    /// The SAME quantity in the MOVER-ABSOLUTE currency — `S_mine(enabling) −
+    /// S_mine(dead)`, the opponent's half dropped. **RECORDED, never the pass
+    /// rule** (see [`E113_ABSOLUTE_NOTE`]).
+    absolute_per_column: [i64; 7],
+    absolute_sum: i64,
+    /// Every eligible dead-side candidate, scored the same two ways:
+    /// `(canonical encoding, differenced sum, absolute sum)`. **RECORDED, never
+    /// a gate** — it is what says whether a verdict is a property of the
+    /// POSITION or of the criterion's own arbitrary tie-break.
+    spread: Vec<(String, i64, i64)>,
+    /// Whether the two sides share a §5.3 signature, through Part A's own
+    /// classifier. Empty is the pass.
+    blocking: Vec<Blocking>,
+    /// The complete 34-slot signatures, for the artifact's record.
+    enabling_dv: [i64; AXIS_WIDTH],
+    dead_dv: [i64; AXIS_WIDTH],
+    enabling_ppm: u32,
+    dead_ppm: u32,
+}
+
+impl E113Gate {
+    fn passed(&self) -> bool {
+        self.sum > 0 && self.blocking.is_empty()
+    }
+}
+
+/// **GATE 1** — the e113 S-sum and the pair's non-collision.
+fn e113_exemplar(rules: &Rules) -> Result<E113Gate, String> {
+    let root = e113_root(rules)?;
+    if root.digest != E113_ROOT_DIGEST {
+        return Err(format!(
+            "{E113_ROOT} resolves to state_digest {} and the ledger recorded {E113_ROOT_DIGEST} \
+             — REFUSING before any column is read: a gate computed at a different position is a \
+             gate about a different question",
+            root.digest,
+        ));
+    }
+
+    let derived = derive_e113_exemplar(&root, rules)?;
+    let mover = root.state.current_player;
+
+    let mut signed = Vec::new();
+    let mut side_facts = Vec::new();
+    for (label, mv, role) in [
+        ("enabling", &derived.enabling, RecipeRole::Productive),
+        ("dead", &derived.dead, RecipeRole::Dead),
+    ] {
+        let next = apply_move(&root.state, mv, rules)
+            .map_err(|e| format!("the {label} side did not apply at {E113_ROOT}: {e}"))?;
+        let view = observe(&next, mover)
+            .map_err(|e| format!("the {label} side's successor is unobservable: {e}"))?;
+        if view_is_terminal(&view) {
+            return Err(format!(
+                "the {label} side's successor is TERMINAL — §5.3's domain, which this gate reads \
+                 in, is non-terminal views",
+            ));
+        }
+        let sig = signature(&view, mover, rules)?;
+        side_facts.push((label, canonical_encoding(mv), state_digest(&next), sig.clone()));
+        signed.push(SignedView {
+            sig,
+            from: Provenance::Successor {
+                root: E113_ROOT.to_string(),
+                set: "exemplar",
+                ordinal: signed.len(),
+                mv: canonical_encoding(mv),
+                role,
+            },
+        });
+    }
+
+    // The frozen registration is checked AFTER the successors exist (their
+    // digests are half of it) and BEFORE the gate quantity is reported.
+    check_frozen_side(
+        "enabling",
+        &derived.enabling,
+        &side_facts[0].2,
+        E113_EXEMPLAR.enabling_areas,
+        E113_EXEMPLAR.enabling_encoding,
+        E113_EXEMPLAR.enabling_digest,
+    )?;
+    check_frozen_side(
+        "dead",
+        &derived.dead,
+        &side_facts[1].2,
+        E113_EXEMPLAR.dead_areas,
+        E113_EXEMPLAR.dead_encoding,
+        E113_EXEMPLAR.dead_digest,
+    )?;
+    if derived.total != E113_EXEMPLAR.total {
+        return Err(format!(
+            "the criterion derives a total of {} and the registration froze {}",
+            derived.total, E113_EXEMPLAR.total,
+        ));
+    }
+
+    let enabling_s = s_slots(&side_facts[0].3.dv);
+    let dead_s = s_slots(&side_facts[1].3.dv);
+    let mut per_column = [0i64; 7];
+    for i in 0..7 {
+        per_column[i] = enabling_s[i] - dead_s[i];
+    }
+
+    // The RECORDED absolute currency, and the RECORDED spread over every
+    // eligible dead-side candidate. Neither is a pass rule; both exist so a
+    // verdict can be read as a statement about the position rather than about
+    // the tie-break that picked one candidate out of many.
+    let enabling_abs = mover_s_values(
+        &observe(&apply_move(&root.state, &derived.enabling, rules).map_err(|e| e.to_string())?, mover)
+            .map_err(|e| e.to_string())?,
+        mover,
+        rules,
+    )?;
+    let mut absolute_per_column = [0i64; 7];
+    let mut spread = Vec::new();
+    for candidate in &derived.eligible {
+        let (diff_s, abs_s) = e113_successor_s(&root.state, candidate, mover, rules)?;
+        let diff_sum: i64 = (0..7).map(|i| enabling_s[i] - diff_s[i]).sum();
+        let abs_sum: i64 = (0..7).map(|i| enabling_abs[i] - abs_s[i]).sum();
+        if candidate == &derived.dead {
+            for i in 0..7 {
+                absolute_per_column[i] = enabling_abs[i] - abs_s[i];
+            }
+        }
+        spread.push((canonical_encoding(candidate), diff_sum, abs_sum));
+    }
+
+    // NON-COLLISION through Part A's OWN classifier and blocking rule, not a
+    // restatement of it: the two sides go in as one root's registered
+    // development successor pair, which is the arm §5.3 names, and
+    // `blocking_findings` decides.
+    let part_a = classify(signed);
+
+    Ok(E113Gate {
+        root_digest: root.digest,
+        candidates: root.candidates,
+        top_value: root.top_value,
+        tie: root.tie.len(),
+        echo: root.echo,
+        decision_seed: root.decision_seed,
+        lab: derived.lab,
+        fishing: derived.fishing,
+        total: derived.total,
+        eligible: derived.eligible.len(),
+        enabling: side_facts[0].1.clone(),
+        enabling_value: root
+            .ranked
+            .iter()
+            .find(|(mv, _)| *mv == derived.enabling)
+            .map(|(_, value)| *value),
+        dead: side_facts[1].1.clone(),
+        enabling_digest: side_facts[0].2.clone(),
+        dead_digest: side_facts[1].2.clone(),
+        per_column,
+        sum: per_column.iter().sum(),
+        absolute_per_column,
+        absolute_sum: absolute_per_column.iter().sum(),
+        spread,
+        blocking: part_a.blocking(),
+        enabling_dv: side_facts[0].3.dv,
+        dead_dv: side_facts[1].3.dv,
+        enabling_ppm: side_facts[0].3.ppm,
+        dead_ppm: side_facts[1].3.ppm,
+    })
+}
+
+// --- the placement-fork development ordinals --------------------------------
+
+/// The two distinctness readings of a set of S vectors: `(distinct VECTORS,
+/// distinct values of each column alone)`.
+///
+/// Pure, so [`FORK_DISTINCTNESS_READING`]'s claim — that the two readings differ
+/// and that the vector one is the gate — is executable without playing a game.
+fn distinct_s(vectors: &[[i64; 7]]) -> (usize, [usize; 7]) {
+    let mut per_column = [0usize; 7];
+    for (i, slot) in per_column.iter_mut().enumerate() {
+        *slot = vectors.iter().map(|v| v[i]).collect::<BTreeSet<_>>().len();
+    }
+    (per_column.iter().copied().min().unwrap_or(0), per_column)
+}
+
+/// One fork total's anti-collapse reading.
+struct TotalRead {
+    total: usize,
+    members: usize,
+    /// Distinct 7-dimensional S signatures across those members.
+    distinct_vectors: usize,
+    /// Distinct values of each S column alone, in [`S_COLUMNS`] order — the
+    /// stronger per-column reading, PRINTED so it is visible even though the
+    /// pass rule is the vector one.
+    distinct_per_column: [usize; 7],
+    /// Distinct COMPLETE 34-slot Δv, for scale: the S group's separation is only
+    /// interesting against what the whole axis sees.
+    distinct_complete: usize,
+    /// Distinct incumbent-only Δv — what the SHIPPED sixteen see here.
+    distinct_incumbent: usize,
+}
+
+/// One placement-fork development ordinal, read.
+struct ForkRead {
+    name: String,
+    origin: String,
+    digest: String,
+    /// The witnessing total — the smallest carrying ≥ 2 distinct area sets,
+    /// which is the witness `same_count_fork` itself stops on.
+    witness: usize,
+    totals: Vec<TotalRead>,
+}
+
+impl ForkRead {
+    fn witness_read(&self) -> Option<&TotalRead> {
+        self.totals.iter().find(|t| t.total == self.witness)
+    }
+
+    fn passed(&self) -> bool {
+        self.witness_read().is_some_and(|t| t.distinct_vectors >= 2)
+    }
+
+    /// Whether the gate would ALSO have held at every other total that carries
+    /// a fork — recorded beside the verdict, never the pass rule.
+    fn holds_everywhere(&self) -> bool {
+        self.totals.iter().all(|t| t.members < 2 || t.distinct_vectors >= 2)
+    }
+}
+
+/// **GATE 2** — the S columns are not collapsed across a fork's same-count set.
+///
+/// The fork set is reached the way play reaches it and the way Part A's own
+/// `fork` set does: `EndAdditionalPhase` through the CHECKED boundary, then the
+/// placement family. Signatures are the §5.3 ones from the ROOT MOVER's seat, so
+/// this gate and Part A speak one currency. (At a fork the opponent's half of
+/// `mine − theirs` is the same for every member, so the differencing shifts the
+/// whole set by a constant and cannot manufacture or destroy distinctness — it
+/// is used for consistency, not for effect.)
+fn read_placement_fork(root: &DevRoot, rules: &Rules) -> Result<ForkRead, String> {
+    let moves = get_legal_moves(&root.state, rules);
+    if !moves.contains(&Move::EndAdditionalPhase) {
+        return Err(format!(
+            "{}: the fork set is unreachable — `EndAdditionalPhase` is not legal at {:?}",
+            root.name, root.state.turn_phase,
+        ));
+    }
+    let placing = apply_move(&root.state, &Move::EndAdditionalPhase, rules)
+        .map_err(|e| format!("{}: EndAdditionalPhase did not apply: {e}", root.name))?;
+    let placements = get_legal_moves(&placing, rules);
+    let mover = root.state.current_player;
+
+    // Group by total, then read each group's distinctness.
+    let mut by_total: BTreeMap<usize, Vec<(BTreeSet<AreaId>, Signature)>> = BTreeMap::new();
+    for mv in &placements {
+        let Some((total, areas)) = placement_of(mv) else {
+            continue;
+        };
+        let next = apply_move(&placing, mv, rules)
+            .map_err(|e| format!("{}: a fork member did not apply: {e}", root.name))?;
+        let view = observe(&next, mover)
+            .map_err(|e| format!("{}: a fork successor is unobservable: {e}", root.name))?;
+        if view_is_terminal(&view) {
+            continue;
+        }
+        by_total.entry(total).or_default().push((areas, signature(&view, mover, rules)?));
+    }
+
+    // The WITNESS is `same_count_fork`'s own: ascending totals, first one whose
+    // area sets number two or more.
+    let witness = by_total
+        .iter()
+        .find(|(_, members)| {
+            members.iter().map(|(areas, _)| areas).collect::<BTreeSet<_>>().len() >= 2
+        })
+        .map(|(total, _)| *total)
+        .ok_or_else(|| {
+            format!(
+                "{}: no total carries two distinct area sets — this root does not satisfy the \
+                 predicate it was generated by",
+                root.name,
+            )
+        })?;
+
+    let mut totals = Vec::new();
+    for (total, members) in &by_total {
+        let sigs: Vec<&Signature> = members.iter().map(|(_, s)| s).collect();
+        let vectors: Vec<[i64; 7]> = sigs.iter().map(|s| s_slots(&s.dv)).collect();
+        let (distinct_vectors, per_column) = distinct_s(&vectors);
+        totals.push(TotalRead {
+            total: *total,
+            members: members.len(),
+            distinct_vectors,
+            distinct_per_column: per_column,
+            distinct_complete: sigs.iter().map(|s| s.dv).collect::<BTreeSet<_>>().len(),
+            distinct_incumbent: sigs
+                .iter()
+                .map(|s| {
+                    Feature::ALL.map(|f| s.dv[FeatureId::Incumbent(f).index()])
+                })
+                .collect::<BTreeSet<_>>()
+                .len(),
+        });
+    }
+
+    Ok(ForkRead {
+        name: root.name.clone(),
+        origin: root.origin.clone(),
+        digest: root.digest.clone(),
+        witness,
+        totals,
+    })
+}
+
+// --- the OSE reads: the 2026-08-23 charter row ------------------------------
+
+/// The charter row, quoted rather than paraphrased so a figure taken out of this
+/// artifact carries the pre-registration that authorised it.
+const OSE_CHARTER: &str = "\
+charter (guidingpath 2026-08-23, \"THE STEP-5 OSE READ CHARTER IS RULED\")
+
+the split           the flag-1 re-scope realized as a registered split of the
+                    thirteen recorded game-3 opponent-pending exhibits: FIVE
+                    development / EIGHT escrow-reserved, by the fixed EVERY-THIRD
+                    rule over event order. Development = e34 e68 e111 e159 e198;
+                    escrow-reserved UNREAD = e50 e58 e78 e94 e127 e144 e168 e184
+                    (exactly §6's {8..15} band size, so the >= 6-of-8 block-pass
+                    rule applies unchanged at step 10)
+the burn rule       \"The §6 burn rule extends to the reserved eight VERBATIM: no
+                    table/adjudicate/read of any kind before step 10.\" This
+                    surface REFUSES a column read at any of the eight, by
+                    construction and not by convention. Digest-IDENTITY
+                    verification at all thirteen is permitted (the §6
+                    capacity-measurement analogue: no root table is read)
+the registered read at every dev root, opponent-O1 >= 1 AND opponent-O3 = 0 —
+                    the first is the pending value the blind evaluator lacks,
+                    exposed at a recorded organic state; the second is STRICT
+                    HONESTY, the column reproducing the census truth that strict
+                    sitting-executable is ZERO at every recorded human position.
+                    opponent-O2 is READ-AND-RECORDED per root, never gated, and
+                    the existential \">= 1 dev root shows opponent-O2 >= 1\" is
+                    recorded as a FINDING
+strict O3 coverage  routes to the CONSTRUCTED fixtures exactly as the flag-1
+                    ruling's own text routes it: family-4(b)'s EXECUTABLE side
+                    carries O3 >= 1, with 4(b)-DISTANT and 4(a) BOTH SIDES as the
+                    O3 = 0 specificity controls";
+
+/// The record the thirteen exhibits are events of.
+const OSE_RUN_ID: &str = "bga-import/896199544";
+const OSE_EVENTS: usize = 234;
+const OSE_RULES_HASH: &str = "d85445c479cb1ead";
+const OSE_TERMINAL_DIGEST: &str = "3a9b2c6d7206f3e2";
+
+/// **THE THIRTEEN FLAG-1 EXHIBIT IDENTITIES**, in event order, transcribed from
+/// the game-3 lane-close ledger row (`state_digest`, semantics.rs:207).
+///
+/// The list is the IDENTITY of the band and the input to the every-third split
+/// both. Nothing here is read without first matching its digest.
+const OSE_EXHIBITS: [(usize, &str); 13] = [
+    (34, "b0378e42b483fb5d"),
+    (50, "9a7bf7de4e63c6f3"),
+    (58, "e41026415c46fdd2"),
+    (68, "e2ddfcf9ff66d27d"),
+    (78, "fb820d3a0b414792"),
+    (94, "28e21cbb8e6cc585"),
+    (111, "e95ce315885ffbcd"),
+    (127, "96c80532fd189c9c"),
+    (144, "300f68760903da34"),
+    (159, "a425836e88d1d337"),
+    (168, "1a014df522b362d4"),
+    (184, "21665544fdd030d3"),
+    (198, "30f75795b472095b"),
+];
+
+/// The charter's DEVELOPMENT five, transcribed from the ruling row.
+const OSE_DEVELOPMENT: [usize; 5] = [34, 68, 111, 159, 198];
+
+/// The charter's ESCROW-RESERVED eight, transcribed from the ruling row. **No
+/// column read reaches these before step 10.**
+const OSE_RESERVED: [usize; 8] = [50, 58, 78, 94, 127, 144, 168, 184];
+
+/// What an exhibit is FOR — the burn guard's type.
+///
+/// The guard is structural rather than a convention: [`ose_columns`] takes a
+/// `Role` and the `Reserved` arm has no column-reading branch at all, so a
+/// caller cannot reach a reserved exhibit's columns by forgetting a check.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum OseRole {
+    Development,
+    Reserved,
+}
+
+/// The charter's EVERY-THIRD rule, applied to [`OSE_EXHIBITS`]' event order.
+///
+/// DERIVED, then pinned against the two transcribed lists in this file's tests:
+/// the ruling names both the rule and its answer, so the honest implementation
+/// computes the rule and checks it reproduces the answer. A transcription slip
+/// in either list is then a test failure rather than a silently different band.
+fn ose_role(event_index: usize) -> Result<OseRole, String> {
+    let position = OSE_EXHIBITS
+        .iter()
+        .position(|(e, _)| *e == event_index)
+        .ok_or_else(|| {
+            format!(
+                "event {event_index} is not one of the thirteen recorded {OSE_RUN_ID} \
+                 opponent-pending exhibits — the charter's split says nothing about it, so this \
+                 surface will not read it"
+            )
+        })?;
+    Ok(if position % 3 == 0 { OseRole::Development } else { OseRole::Reserved })
+}
+
+/// The three O columns of the OPPONENT seat, at one exhibit — **or a typed
+/// refusal, because this exhibit is escrow-reserved.**
+///
+/// The refusal is the BURN GUARD. It names the charter row rather than saying
+/// "not allowed", so a caller that hits it is told which ruling fenced the read
+/// and until when.
+fn ose_columns(
+    role: OseRole,
+    event_index: usize,
+    view: &PlayerView,
+    opponent: &VisiblePlayer,
+    rules: &Rules,
+) -> Result<[i64; 3], String> {
+    let _ = (role, event_index);
+    let structure = ScoreStructure::derive(view, rules);
+    let mut out = [0i64; 3];
+    for (i, c) in OSE_COLUMNS.iter().enumerate() {
+        out[i] = candidate_value(&structure, view, opponent, *c, rules);
+    }
+    Ok(out)
+}
+
+/// One development exhibit, read — or the typed reason it could not be.
+struct ExhibitRead {
+    event_index: usize,
+    digest: String,
+    mover: PlayerId,
+    outcome: ExhibitOutcome,
+}
+
+/// **WHY A REGISTERED ROOT CAN BE UNREADABLE, AND WHY THAT IS NOT A PASS.**
+///
+/// The charter's read is `opponent-O1` and `opponent-O3` — the OPPONENT's
+/// columns AS THE MOVER SEES THEM, which needs the MOVER's `PlayerView`. In an
+/// IMPORTED live-tracking record a seat whose dealt starting order was never
+/// witnessed carries the `starting_order_hidden` fiction, and `observe` REFUSES
+/// to build that seat's own view (`ViewError::ViewerDealUnrecorded`: "a seat
+/// cannot be unknown to itself"). Where the mover is such a seat, the registered
+/// read has no honest viewer.
+///
+/// The opponent's OWN view is not a substitute and the difference is the whole
+/// point of the column: `observe(state, opponent)` shows the opponent its own
+/// masked starting order, while `observe(state, mover)` masks exactly that card
+/// — which is the information O1's pool floor is designed around. Reading the
+/// opponent's columns off the opponent's own view would be reading privileged
+/// information and calling it a view-honest measurement.
+///
+/// So such a root is NOT RUN, with the reason typed. It is deliberately neither
+/// a pass (nothing was measured) nor a fail (nothing was measured), and the
+/// verdict counts it separately and exits non-zero: a registered gate root that
+/// went unread is an unresolved step-5 condition, and a run that quietly
+/// reported four-of-five as green would be a pass about less.
+enum ExhibitOutcome {
+    Read {
+        /// `[O1, O2, O3]` of the OPPONENT seat, from the MOVER's view.
+        columns: [i64; 3],
+        /// The mover's own three, recorded for contrast — the census's own
+        /// finding is that payable visible cards live in the MOVER's hand, and
+        /// printing both is what makes the opponent's zero readable rather than
+        /// mysterious.
+        mover_columns: [i64; 3],
+        opponent: PlayerId,
+        /// The opponent's hand as the MOVER sees it: `(total, of which KNOWN)`.
+        ///
+        /// O1 and O3 read KNOWN held orders only, so the visible count is what
+        /// makes an opponent zero readable — a hand that is entirely the masked
+        /// starting order reads zero on both columns for a reason that has
+        /// nothing to do with the columns.
+        hand: (usize, usize),
+    },
+    NotRun {
+        reason: String,
+    },
+}
+
+impl ExhibitRead {
+    fn columns(&self) -> Option<[i64; 3]> {
+        match &self.outcome {
+            ExhibitOutcome::Read { columns, .. } => Some(*columns),
+            ExhibitOutcome::NotRun { .. } => None,
+        }
+    }
+
+    fn passed(&self) -> Option<bool> {
+        self.columns().map(|c| c[0] >= 1 && c[2] == 0)
+    }
+}
+
+/// Load and identity-check the game-3 record `--record` points at.
+///
+/// Every ledger-recorded key is checked, not only the one the charter names:
+/// run id, event count, semantics rev, rules hash and terminal digest. The
+/// charter's per-root `state_digest` check then rides on top. A record that
+/// disagrees anywhere is a typed refusal — the exhibits are identified by their
+/// position IN THIS DOCUMENT, so a different document makes every event index
+/// mean something else.
+fn load_ose_record(path: &str, rules: &Rules) -> Result<GameRecord, String> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("--record {path}: {e} (the g3 record regenerates by the `import` \
+                              command; records live in the session scratchpad, never committed)"))?;
+    let record: GameRecord = serde_json::from_str(&text)
+        .map_err(|e| format!("--record {path} is not a GameRecord: {e}"))?;
+    check_ose_record_identity(&record, rules).map_err(|e| format!("--record {path} {e}"))?;
+    Ok(record)
+}
+
+/// The identity half of [`load_ose_record`], over a record already in hand.
+///
+/// Factored so the refusal is reachable without a file on disk: every shipped
+/// call resolves a document the tests may not have, and a check no cell
+/// exercises is a check that can be deleted with the suite still green.
+fn check_ose_record_identity(record: &GameRecord, rules: &Rules) -> Result<(), String> {
+    let run_id = record.run.as_ref().and_then(|r| r.run_id.clone()).unwrap_or_default();
+    let mut wrong = Vec::new();
+    if run_id != OSE_RUN_ID {
+        wrong.push(format!("run_id {run_id:?} != {OSE_RUN_ID:?}"));
+    }
+    if record.events.len() != OSE_EVENTS {
+        wrong.push(format!("events {} != {OSE_EVENTS}", record.events.len()));
+    }
+    if record.semantics_rev != Some(SEMANTICS_REV) {
+        wrong.push(format!("semantics_rev {:?} != Some({SEMANTICS_REV})", record.semantics_rev));
+    }
+    if record.rules_hash != OSE_RULES_HASH {
+        wrong.push(format!("rules_hash {:?} != {OSE_RULES_HASH:?}", record.rules_hash));
+    }
+    if record.terminal_digest.as_deref() != Some(OSE_TERMINAL_DIGEST) {
+        wrong.push(format!(
+            "terminal_digest {:?} != Some({OSE_TERMINAL_DIGEST:?})",
+            record.terminal_digest,
+        ));
+    }
+    if record.rules_hash != rules.content_hash() {
+        wrong.push(format!(
+            "rules_hash {:?} is not this build's {:?}",
+            record.rules_hash,
+            rules.content_hash(),
+        ));
+    }
+    if wrong.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "is not the recorded game-3 document the charter's thirteen exhibit identities index \
+             into: {}. REFUSING before any root resolves: every event index in the charter names \
+             a position in THAT document.",
+            wrong.join("; "),
+        ))
+    }
+}
+
+/// **GATE 3** — the charter's registered development read, at the five dev
+/// exhibits.
+///
+/// Digest FIRST, at all thirteen: identity verification is explicitly permitted
+/// at the reserved eight (no root table is read), and verifying them is what
+/// makes "the band is the band the ledger recorded" a checked statement rather
+/// than an assumption about five of its members. Columns are read at the five
+/// only, through [`ose_columns`]' guard.
+fn read_ose_band(record: &GameRecord, rules: &Rules) -> Result<BandRead, String> {
+    let mut identities = Vec::new();
+    let mut reads = Vec::new();
+    for (event_index, expected) in OSE_EXHIBITS {
+        let role = ose_role(event_index)?;
+        let source =
+            RootSource::RecordPrefix { record: record.clone(), event_index };
+        let (state, descriptor) = source
+            .resolve(rules)
+            .map_err(|e| format!("{OSE_RUN_ID} event {event_index}: {e:?}"))?;
+        if descriptor.root_digest != expected {
+            return Err(format!(
+                "{OSE_RUN_ID} event {event_index} resolves to state_digest {} and the game-3 \
+                 lane-close ledger row recorded {expected} — REFUSING before any column is read",
+                descriptor.root_digest,
+            ));
+        }
+        identities.push((event_index, descriptor.root_digest.clone(), role));
+        if role == OseRole::Reserved {
+            continue;
+        }
+
+        let mover = state.current_player;
+        let outcome = match observe(&state, mover) {
+            // The mover's own seat is unknown to itself in this imported
+            // document, so the registered read has no honest viewer here. See
+            // [`ExhibitOutcome`] for why the opponent's own view is not a
+            // substitute.
+            Err(e) => ExhibitOutcome::NotRun { reason: format!("{e}") },
+            Ok(view) => {
+                let opponent = view
+                    .players
+                    .iter()
+                    .find(|p| p.id != mover && !p.id.is_dummy())
+                    .ok_or_else(|| {
+                        format!("{OSE_RUN_ID} event {event_index}: no non-dummy opponent seat")
+                    })?;
+                let me = view.players.iter().find(|p| p.id == mover).ok_or_else(|| {
+                    format!("{OSE_RUN_ID} event {event_index}: the mover is not in its own view")
+                })?;
+                let structure = ScoreStructure::derive(&view, rules);
+                let mut mine = [0i64; 3];
+                for (i, c) in OSE_COLUMNS.iter().enumerate() {
+                    mine[i] = candidate_value(&structure, &view, me, *c, rules);
+                }
+                ExhibitOutcome::Read {
+                    columns: ose_columns(role, event_index, &view, opponent, rules)?,
+                    mover_columns: mine,
+                    opponent: opponent.id,
+                    hand: (
+                        opponent.hand.len(),
+                        opponent.hand.iter().filter(|c| matches!(c, HandCard::Known(_))).count(),
+                    ),
+                }
+            }
+        };
+        reads.push(ExhibitRead {
+            event_index,
+            digest: descriptor.root_digest,
+            mover,
+            outcome,
+        });
+    }
+    Ok(BandRead { reads, identities })
+}
+
+/// What one pass over the thirteen exhibits produced: the five development
+/// reads, and the identity verification of ALL thirteen.
+struct BandRead {
+    reads: Vec<ExhibitRead>,
+    /// `(event index, verified digest, role)` for every exhibit — the reserved
+    /// eight included, because verifying an identity is not a read.
+    identities: Vec<(usize, String, OseRole)>,
+}
+
+/// **GATE 4** — the CONSTRUCTED strict-O3 coverage, corpus-free.
+///
+/// The flag-1 ruling routes strict `opponent-sitting-executable` coverage to the
+/// hand-built fixtures, because the strict clause has ZERO members in 792
+/// non-terminal positions across all three complete human games — a structural
+/// fact about human play, not a gap in the columns. The pair fixtures declare
+/// their own O3 (`o3_greater = 1`, `o3_lesser = 0`, `o3_both_sides = 0`) and
+/// this reads the COLUMN, at the SUBJECT seat, on the constructed states.
+///
+/// 4(b) runs at BOTH endpoints because its registration declares both; 4(a) is
+/// Early-only and runs where it is declared. Nothing here is a new fixture: the
+/// frozen package builds them and this reads them.
+struct O3Cell {
+    pair: &'static str,
+    stage: &'static str,
+    side: &'static str,
+    expect: &'static str,
+    o3: i64,
+    ok: bool,
+}
+
+fn read_constructed_o3(rules: &Rules) -> Result<Vec<O3Cell>, String> {
+    let mut out = Vec::new();
+    for (id, sides) in [
+        ("4(b)", [(Side::Greater, "EXECUTABLE", ">= 1"), (Side::Lesser, "DISTANT", "= 0")]),
+        ("4(a)", [(Side::Greater, "MATCHED", "= 0"), (Side::Lesser, "UNMATCHED", "= 0")]),
+    ] {
+        let declaration = registered(id).ok_or(format!("`{id}` is not a registered pair"))?;
+        for stage in declaration.stages {
+            let fixture = build_registered_pair(declaration, *stage, rules)
+                .map_err(|e| format!("{id} at {}: {e:?}", stage.name()))?;
+            for (side, name, expect) in sides {
+                let view = fixture.view(side);
+                let subject = view
+                    .players
+                    .iter()
+                    .find(|p| p.id == fixture.subject())
+                    .ok_or_else(|| format!("{id} {}: the subject is not in its own view", side.name()))?;
+                let structure = ScoreStructure::derive(view, rules);
+                let o3 = candidate_value(
+                    &structure,
+                    view,
+                    subject,
+                    CandidateFeature::ExecutableOrders,
+                    rules,
+                );
+                out.push(O3Cell {
+                    pair: declaration.id,
+                    stage: stage.name(),
+                    side: name,
+                    expect,
+                    o3,
+                    ok: if expect == ">= 1" { o3 >= 1 } else { o3 == 0 },
+                });
+            }
+        }
+    }
+    Ok(out)
+}
+
+// --- the read-and-record items ---------------------------------------------
+
+/// One development root, resolved and identified, for the reads that are not
+/// gates.
+struct DevRoot {
+    name: String,
+    origin: String,
+    digest: String,
+    state: GameState,
+    note: &'static str,
+}
+
+/// Resolve the §6 development root set for the read-and-record items.
+///
+/// §6's own list: "`g1-e113-tiemass`, `g3-e93-separated`, the two predicates'
+/// development ordinals, and the fired-while-behind root (READ-AND-RECORD ONLY,
+/// never a gate)" — with `opponent-sitting-executable`'s generated band STRUCK
+/// by the flag-1 ruling and re-scoped to the recorded exhibits above, which is
+/// why no OSE ordinal appears here.
+fn resolve_dev_roots(generated: bool, rules: &Rules) -> Result<Vec<DevRoot>, String> {
+    let mut out = Vec::new();
+    let mut push = |name: String, origin: String, source: &RootSource, note| -> Result<(), String> {
+        let (state, descriptor) = source.resolve(rules).map_err(|e| format!("{name}: {e:?}"))?;
+        out.push(DevRoot { name, origin, digest: descriptor.root_digest, state, note });
+        Ok(())
+    };
+
+    for wanted in [E113_ROOT, "g3-e93-separated"] {
+        let entry = registry()
+            .into_iter()
+            .find(|e| e.name == wanted)
+            .ok_or_else(|| format!("{wanted} is not a registry root"))?;
+        let source = entry.load(rules).map_err(|e| {
+            format!("{wanted}: {e:?} (the owner-game saves are gitignored; absence is a miss)")
+        })?;
+        push(entry.name.to_string(), format!("{}:{}", entry.path, entry.event_index), &source, entry.note)?;
+    }
+
+    if generated {
+        for ordinal in M_PF_DEVELOPMENT {
+            let source = RootSource::Generated {
+                predicate: RootPredicate::PlacementForkSameCount,
+                master: M_PF,
+                ordinal,
+            };
+            push(
+                format!("m-pf-dev-{ordinal}"),
+                format!("gen:placement-fork-same-count:{M_PF:#018X}:{ordinal}"),
+                &source,
+                "a §6 development ordinal at the recorded M-PF",
+            )?;
+        }
+    }
+    Ok(out)
+}
+
+/// **READ-AND-RECORD** — the X wiring proof (spec §6, §16-5).
+///
+/// Spec §6: "**The X non-vacuity read at step 5 is a RECORDED wiring proof, NOT
+/// a gate and NOT a rooted effect** — §8's removal exception (ii) is satisfied
+/// for X ONLY by the 10(a)/10(b) carrier reads … a wiring-proof read never
+/// satisfies exception (ii) for any feature."
+///
+/// So this SATISFIES NOTHING. It records that X1/X2/X3 are wired to something
+/// that moves at organic positions, and the artifact says in as many words that
+/// it neither gates nor counts toward any removal exception.
+struct XWiringRead {
+    root: String,
+    digest: String,
+    origin: String,
+    note: &'static str,
+    /// Per column, `(mover value, opponent value)` — absolute, not differenced:
+    /// a wiring proof is about the helper producing a value, and a difference
+    /// can be zero with both sides nonzero.
+    values: [(i64, i64); 3],
+}
+
+impl XWiringRead {
+    fn nonzero(&self) -> usize {
+        self.values.iter().filter(|(m, o)| *m != 0 || *o != 0).count()
+    }
+}
+
+/// Read named columns for BOTH seats at one root, from the mover's view.
+fn both_seat_columns(
+    state: &GameState,
+    columns: &[CandidateFeature],
+    rules: &Rules,
+) -> Result<Vec<(i64, i64)>, String> {
+    let mover = state.current_player;
+    let view = observe(state, mover).map_err(|e| format!("unobservable: {e}"))?;
+    let me = view
+        .players
+        .iter()
+        .find(|p| p.id == mover)
+        .ok_or("the mover is not a player in its own view")?;
+    let opponent = view.players.iter().find(|p| p.id != mover && !p.id.is_dummy());
+    let structure = ScoreStructure::derive(&view, rules);
+    Ok(columns
+        .iter()
+        .map(|c| {
+            (
+                candidate_value(&structure, &view, me, *c, rules),
+                opponent.map_or(0, |o| candidate_value(&structure, &view, o, *c, rules)),
+            )
+        })
+        .collect())
+}
+
+/// **READ-AND-RECORD** — the fired-while-behind root's complete candidate
+/// columns.
+///
+/// Checkpoint §7 step 2 registers this root as "**READ-AND-RECORD ONLY — never a
+/// gate** (timing is out of scope; gating on it would smuggle the timing layer
+/// back in through acceptance)". Every one of the eighteen prints; no verdict
+/// line names it.
+struct FiredWhileBehindRead {
+    origin: String,
+    digest: String,
+    columns: Vec<(i64, i64)>,
+}
+
+/// The step-2 row's recorded identity for that root.
+const FIRED_WHILE_BEHIND_DIGEST: &str = "392fe6571d0aa82a";
+
+fn read_fired_while_behind(rules: &Rules) -> Result<FiredWhileBehindRead, String> {
+    let source = RootSource::Generated {
+        predicate: RootPredicate::EndFirableBehindInTruth,
+        master: M_FIRED_WHILE_BEHIND,
+        ordinal: FIRED_WHILE_BEHIND_ORDINAL,
+    };
+    let origin = format!(
+        "gen:end-firable-behind-in-truth:{M_FIRED_WHILE_BEHIND:#018X}:{FIRED_WHILE_BEHIND_ORDINAL}"
+    );
+    let (state, descriptor) =
+        source.resolve(rules).map_err(|e| format!("fired-while-behind: {e:?}"))?;
+    if descriptor.root_digest != FIRED_WHILE_BEHIND_DIGEST {
+        return Err(format!(
+            "fired-while-behind resolves to state_digest {} and the step-2 ledger row recorded \
+             {FIRED_WHILE_BEHIND_DIGEST} — REFUSING before any column is read",
+            descriptor.root_digest,
+        ));
+    }
+    Ok(FiredWhileBehindRead {
+        origin,
+        digest: descriptor.root_digest,
+        columns: both_seat_columns(&state, &CandidateFeature::ALL, rules)?,
+    })
+}
+
+// --- the command ------------------------------------------------------------
+
+/// The reading this command implements, printed at the top of every artifact.
+const ROOTED_HEADER: &str = "\
+checkpoint §7 step 5 \"Rooted-read gates at the DEVELOPMENT roots — raw direction
+                    and non-collision only. … These roots are TDD/development
+                    fixtures, NOT generalization evidence — formula authors see
+                    them; the escrow block carries the generalization read
+                    (step 10). … A gate failure stops before any fitting.\"
+what is NOT here    weights, fits, and any direction beyond the frozen gate
+                    texts. Weighted winner-preservation (g3:93) is step 9's,
+                    where complete weighted scoring exists
+on a failure        this instrument REPORTS and exits non-zero. Repair by
+                    re-tuning a gate is fenced: a step-5 failure is a finding";
+
+fn cmd_rooted(args: &[String]) -> Result<(), String> {
+    let (positional, flags, _) = split_args(args, &["record"], &["no-generated"], &[])?;
+    if !positional.is_empty() {
+        return Err(format!("rooted takes no positional arguments\n\n{USAGE}"));
+    }
+    let generated = !flags.contains_key("no-generated");
+
+    let rules = Rules::standard();
+    let started = Instant::now();
+    println!("=== eval_probe rooted [semantics rev {SEMANTICS_REV}] ===");
+    println!("{}", ROOTED_HEADER.trim_end());
+    println!();
+    println!("package digest      {}", package_digest());
+    println!("axis width          {AXIS_WIDTH}");
+    println!("profile             {}", profile());
+
+    let mut failures: Vec<String> = Vec::new();
+    // A registered gate root that could not be evaluated is tracked SEPARATELY
+    // from one that evaluated the wrong way. Both stop the run; conflating them
+    // would report "nothing was measured" as "the measurement disagreed".
+    let mut unread: Vec<String> = Vec::new();
+
+    // --- GATE 1: the e113 exemplar pair ------------------------------------
+    println!();
+    println!("--- GATE 1 · g1-e113-tiemass: the S-sum and the pair's non-collision ---");
+    println!("{}", E113_SUM_READING.trim_end());
+    let gate1 = e113_exemplar(&rules)?;
+    println!();
+    println!("root digest         {} (ledger {E113_ROOT_DIGEST}) — VERIFIED", gate1.root_digest);
+    println!("contestant          {}", gate1.echo);
+    println!("decision seed       {:#018x}", gate1.decision_seed);
+    println!("candidates          {}", gate1.candidates);
+    println!("top value           {}", gate1.top_value);
+    println!("tied at top         {}", gate1.tie);
+    println!(
+        "sites resolved      Laboratory A = AreaId({}) · Fishing Ground = AreaId({}) (from the \
+         loaded root's own board)",
+        gate1.lab.0, gate1.fishing.0,
+    );
+    println!("enabling side       {}", gate1.enabling);
+    println!("  successor digest  {}", gate1.enabling_digest);
+    println!(
+        "  registered as     the D7 triage's mechanism fact: the placement that includes the \
+         searched line's Fishing Ground, NOT in the top tie"
+    );
+    println!(
+        "  D7 cross-check    shipped-table value {} — {} the top ({}). The triage's own \
+         sentence is \"sits at −1,\n                    BELOW the 36-way winning tie\"; this line \
+         re-derives it rather than citing it",
+        gate1.enabling_value.map_or("ABSENT FROM THE TABLE".to_string(), |v| v.to_string()),
+        gate1
+            .enabling_value
+            .map_or("not comparable to".to_string(), |v| format!("{} below", gate1.top_value - v)),
+        gate1.top_value,
+    );
+    println!("dead side           {}", gate1.dead);
+    println!("  successor digest  {}", gate1.dead_digest);
+    println!(
+        "  criterion         lexicographically-least by canonical encoding among the {} top-tie \
+         members placing the same total ({}) into an area set DISJOINT from the enabling side's",
+        gate1.eligible, gate1.total,
+    );
+    println!("  frozen            both sides re-derived from the criterion this run and matched");
+    println!();
+    for (i, c) in S_COLUMNS.iter().enumerate() {
+        println!(
+            "  {:<6} enabling {:>6}   dead {:>6}   delta {:>6}",
+            c.label(),
+            s_slots(&gate1.enabling_dv)[i],
+            s_slots(&gate1.dead_dv)[i],
+            gate1.per_column[i],
+        );
+    }
+    println!("  {:<6} {:>32}{:>7}   <- THE GATE QUANTITY", "SUM", "", gate1.sum);
+    println!();
+    println!("{}", E113_ABSOLUTE_NOTE.trim_end());
+    println!(
+        "  absolute          {}   sum {}",
+        S_COLUMNS
+            .iter()
+            .enumerate()
+            .map(|(i, c)| format!("{}={}", c.label(), gate1.absolute_per_column[i]))
+            .collect::<Vec<_>>()
+            .join(" "),
+        gate1.absolute_sum,
+    );
+    println!(
+        "  sign agreement    {}",
+        if gate1.sum.signum() == gate1.absolute_sum.signum() {
+            "the two currencies AGREE in sign"
+        } else {
+            "*** the two currencies DISAGREE in sign — a FINDING for the owner ***"
+        },
+    );
+    println!();
+    println!(
+        "spread (RECORDED, never a gate) — the same sum against EVERY eligible dead-side candidate,\n\
+         \x20                   so the verdict reads as a property of the position rather than of\n\
+         \x20                   the tie-break that picked one of {} out of the top tie:",
+        gate1.spread.len(),
+    );
+    let favouring = gate1.spread.iter().filter(|(_, d, _)| *d > 0).count();
+    let abs_favouring = gate1.spread.iter().filter(|(_, _, a)| *a > 0).count();
+    let mut sums: Vec<i64> = gate1.spread.iter().map(|(_, d, _)| *d).collect();
+    sums.sort_unstable();
+    println!(
+        "  differenced       enabling strictly favoured over {favouring} of {} candidates · range \
+         [{}, {}] · median {}",
+        gate1.spread.len(),
+        sums.first().copied().unwrap_or(0),
+        sums.last().copied().unwrap_or(0),
+        sums.get(sums.len() / 2).copied().unwrap_or(0),
+    );
+    let mut abs_sums: Vec<i64> = gate1.spread.iter().map(|(_, _, a)| *a).collect();
+    abs_sums.sort_unstable();
+    println!(
+        "  absolute          enabling strictly favoured over {abs_favouring} of {} candidates · \
+         range [{}, {}] · median {}",
+        gate1.spread.len(),
+        abs_sums.first().copied().unwrap_or(0),
+        abs_sums.last().copied().unwrap_or(0),
+        abs_sums.get(abs_sums.len() / 2).copied().unwrap_or(0),
+    );
+    for (encoding, diff, abs) in &gate1.spread {
+        println!(
+            "    {:<52} differenced {:>4}   absolute {:>4}{}",
+            encoding,
+            diff,
+            abs,
+            if *encoding == gate1.dead { "   <- REGISTERED dead side" } else { "" },
+        );
+    }
+    println!();
+    println!("enabling ppm        {}", gate1.enabling_ppm);
+    println!("dead ppm            {}", gate1.dead_ppm);
+    println!("enabling dv         {}", render_dv(&gate1.enabling_dv));
+    println!("dead dv             {}", render_dv(&gate1.dead_dv));
+    println!(
+        "non-collision       {} (through §5.3's own classifier and blocking rule — the pair goes \
+         in as one root's registered development successor pair, the arm §5.3 names)",
+        if gate1.blocking.is_empty() {
+            "zero blocking findings".to_string()
+        } else {
+            gate1.blocking.iter().map(Blocking::label).collect::<Vec<_>>().join("; ")
+        },
+    );
+    println!(
+        "GATE 1              {}",
+        if gate1.passed() { "PASS" } else { "*** FAIL ***" },
+    );
+    if !gate1.passed() {
+        failures.push(format!(
+            "GATE 1 (e113): S-sum {} (> 0 required), {} blocking finding(s)",
+            gate1.sum,
+            gate1.blocking.len(),
+        ));
+    }
+
+    // --- GATE 2: the placement-fork development ordinals -------------------
+    println!();
+    println!("--- GATE 2 · the placement-fork development ordinals {{0,1,2,3}} at M-PF ---");
+    println!("{}", FORK_DISTINCTNESS_READING.trim_end());
+    println!();
+    let dev_roots = resolve_dev_roots(generated, &rules)?;
+    if !generated {
+        println!("SKIPPED             --no-generated: the four M-PF ordinals resolve by seeded scan");
+    }
+    for root in dev_roots.iter().filter(|r| r.name.starts_with("m-pf-dev-")) {
+        let read = read_placement_fork(root, &rules)?;
+        println!();
+        println!("root                {}", read.name);
+        println!("  origin            {}", read.origin);
+        println!("  digest            {}", read.digest);
+        println!("  witnessing total  {}", read.witness);
+        for t in &read.totals {
+            println!(
+                "  total {:<2}          {} members · S-vectors {} · complete-Δv {} · incumbent-Δv \
+                 {}{}",
+                t.total,
+                t.members,
+                t.distinct_vectors,
+                t.distinct_complete,
+                t.distinct_incumbent,
+                if t.total == read.witness { "   <- witness" } else { "" },
+            );
+            println!(
+                "    per column      {}",
+                S_COLUMNS
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| format!("{}={}", c.label(), t.distinct_per_column[i]))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            );
+        }
+        println!(
+            "  GATE 2            {}   (would also hold at every other forking total: {})",
+            if read.passed() { "PASS" } else { "*** FAIL ***" },
+            if read.holds_everywhere() { "yes" } else { "no" },
+        );
+        if !read.passed() {
+            failures.push(format!(
+                "GATE 2 ({}): the S signature takes {} distinct value(s) across the witnessing \
+                 same-count set (>= 2 required)",
+                read.name,
+                read.witness_read().map_or(0, |t| t.distinct_vectors),
+            ));
+        }
+    }
+
+    // --- GATE 3: the constructed strict-O3 coverage ------------------------
+    println!();
+    println!("--- GATE 3 · CONSTRUCTED strict-O3 coverage (corpus-free) ---");
+    println!(
+        "the routing         the flag-1 ruling's own text routes strict coverage here: strict \
+         opponent-sitting-\n                    executable has ZERO members in 792 non-terminal \
+         positions across all three\n                    complete human games, so the constructed \
+         fixtures carry it"
+    );
+    println!();
+    for cell in read_constructed_o3(&rules)? {
+        println!(
+            "  {:<5} {:<5} {:<10} O3 = {:<3} expected {:<5} {}",
+            cell.pair,
+            cell.stage,
+            cell.side,
+            cell.o3,
+            cell.expect,
+            if cell.ok { "PASS" } else { "*** FAIL ***" },
+        );
+        if !cell.ok {
+            failures.push(format!(
+                "GATE 3 ({} {} {}): O3 = {}, expected {}",
+                cell.pair, cell.stage, cell.side, cell.o3, cell.expect,
+            ));
+        }
+    }
+
+    // --- GATE 4: the recorded development band -----------------------------
+    println!();
+    println!("--- GATE 4 · the RECORDED opponent-pending development band ---");
+    println!("{}", OSE_CHARTER.trim_end());
+    println!();
+    match flags.get("record") {
+        None => println!(
+            "SKIPPED             no --record <path>. The five development exhibits are events of \
+             the\n                    regenerated {OSE_RUN_ID} record, which lives in the session \
+             scratchpad and\n                    is never committed; without it this gate is NOT \
+             RUN, and this line says\n                    so rather than a shorter run reading as \
+             a pass"
+        ),
+        Some(path) => {
+            let record = load_ose_record(path, &rules)?;
+            println!("record              {path}");
+            println!(
+                "  identity          run_id {OSE_RUN_ID} · {OSE_EVENTS} events · rev \
+                 {SEMANTICS_REV} · rules {OSE_RULES_HASH} · terminal {OSE_TERMINAL_DIGEST} — \
+                 VERIFIED"
+            );
+            let BandRead { reads, identities } = read_ose_band(&record, &rules)?;
+            println!(
+                "  identities        {}/13 exhibit state_digests VERIFIED against the game-3 \
+                 lane-close ledger row (permitted at all thirteen: no root table is read)",
+                identities.len(),
+            );
+            println!(
+                "  development       {} read roots: {}",
+                identities.iter().filter(|(_, _, r)| *r == OseRole::Development).count(),
+                OSE_DEVELOPMENT.iter().map(|e| format!("e{e}")).collect::<Vec<_>>().join(" "),
+            );
+            println!(
+                "  reserved          {} escrow-reserved, columns REFUSED by construction: {}",
+                identities.iter().filter(|(_, _, r)| *r == OseRole::Reserved).count(),
+                OSE_RESERVED.iter().map(|e| format!("e{e}")).collect::<Vec<_>>().join(" "),
+            );
+            println!();
+            for read in &reads {
+                match &read.outcome {
+                    ExhibitOutcome::Read { columns, mover_columns, opponent, hand } => {
+                        println!(
+                            "  e{:<4} digest {} · mover seat {} · opponent seat {} (hand {}, {} \
+                             known)",
+                            read.event_index,
+                            read.digest,
+                            read.mover.0,
+                            opponent.0,
+                            hand.0,
+                            hand.1,
+                        );
+                        println!(
+                            "        opponent  O1 = {:<4} O2 = {:<4} O3 = {:<4}   {}",
+                            columns[0],
+                            columns[1],
+                            columns[2],
+                            if read.passed() == Some(true) {
+                                "PASS (O1 >= 1, O3 = 0)"
+                            } else {
+                                "*** FAIL ***"
+                            },
+                        );
+                        println!(
+                            "        mover     O1 = {:<4} O2 = {:<4} O3 = {:<4}   (contrast, \
+                             never gated)",
+                            mover_columns[0], mover_columns[1], mover_columns[2],
+                        );
+                        if read.passed() != Some(true) {
+                            failures.push(format!(
+                                "GATE 4 (e{}): opponent O1 = {}, O3 = {} (O1 >= 1 and O3 = 0 \
+                                 required)",
+                                read.event_index, columns[0], columns[2],
+                            ));
+                        }
+                    }
+                    ExhibitOutcome::NotRun { reason } => {
+                        println!(
+                            "  e{:<4} digest {} · mover seat {}",
+                            read.event_index, read.digest, read.mover.0,
+                        );
+                        println!("        *** NOT RUN *** {reason}");
+                        println!(
+                            "        the registered read needs the MOVER's view (it asks what the \
+                             mover can see of the\n        opponent's pending orders). The \
+                             opponent's OWN view is not a substitute: it shows the\n        \
+                             opponent its own masked starting order, which is exactly the card \
+                             the mover cannot\n        see and exactly what O1's pool floor is \
+                             designed around. NOT a pass and NOT a fail —\n        nothing was \
+                             measured"
+                        );
+                        unread.push(format!(
+                            "GATE 4 (e{}): NOT RUN — {reason}",
+                            read.event_index,
+                        ));
+                    }
+                }
+            }
+            let readable: Vec<[i64; 3]> = reads.iter().filter_map(ExhibitRead::columns).collect();
+            let with_o2 = readable.iter().filter(|c| c[1] >= 1).count();
+            println!();
+            println!(
+                "FINDING             opponent-O2 >= 1 at {with_o2} of {} READ development roots \
+                 ({} of {} registered\n                    roots were readable) — the charter's \
+                 existential, RECORDED and never gated",
+                readable.len(),
+                readable.len(),
+                reads.len(),
+            );
+        }
+    }
+
+    // --- read-and-record ---------------------------------------------------
+    println!();
+    println!("--- READ-AND-RECORD · the X wiring proof (spec §6 lines 853-857, §16-5) ---");
+    println!(
+        "it satisfies        NOTHING. §6: \"The X non-vacuity read at step 5 is a RECORDED WIRING\n\
+         \x20                   PROOF, NOT a gate and NOT a rooted effect\" — §8's removal \
+         exception (ii)\n\
+         \x20                   is satisfied for X ONLY by the 10(a)/10(b) carrier reads. No \
+         verdict\n\
+         \x20                   line below counts it"
+    );
+    println!();
+    let mut wiring = Vec::new();
+    for root in &dev_roots {
+        let values = both_seat_columns(&root.state, &X_COLUMNS, &rules)?;
+        wiring.push(XWiringRead {
+            root: root.name.clone(),
+            digest: root.digest.clone(),
+            origin: root.origin.clone(),
+            note: root.note,
+            values: [values[0], values[1], values[2]],
+        });
+    }
+    for read in &wiring {
+        println!("  {:<18} {}   {}", read.root, read.digest, read.origin);
+        println!("                     {}", read.note);
+        println!(
+            "                     {}   ({} of 3 columns nonzero at some seat)",
+            X_COLUMNS
+                .iter()
+                .enumerate()
+                .map(|(i, c)| format!(
+                    "{}=(mover {}, opponent {})",
+                    c.label(),
+                    read.values[i].0,
+                    read.values[i].1
+                ))
+                .collect::<Vec<_>>()
+                .join("  "),
+            read.nonzero(),
+        );
+    }
+    for (i, c) in X_COLUMNS.iter().enumerate() {
+        let roots = wiring.iter().filter(|r| r.values[i].0 != 0 || r.values[i].1 != 0).count();
+        println!(
+            "  {:<6} nonzero at {roots} of {} development roots (mover or opponent){}",
+            c.label(),
+            wiring.len(),
+            if roots == 0 {
+                "   <- reads ZERO at EVERY development root: this wiring proof is VACUOUS for \
+                 this column"
+            } else {
+                ""
+            },
+        );
+    }
+    println!();
+    println!("--- READ-AND-RECORD · the fired-while-behind root ---");
+    println!(
+        "never a gate        checkpoint §7 step 2: \"the fired-while-behind root as READ-AND-RECORD\n\
+         \x20                   ONLY — never a gate (timing is out of scope; gating on it would\n\
+         \x20                   smuggle the timing layer back in through acceptance)\""
+    );
+    if generated {
+        let read = read_fired_while_behind(&rules)?;
+        println!();
+        println!("origin              {}", read.origin);
+        println!(
+            "digest              {} (step-2 ledger {FIRED_WHILE_BEHIND_DIGEST}) — VERIFIED",
+            read.digest,
+        );
+        println!("columns             (mover, opponent), all eighteen:");
+        for (i, c) in CandidateFeature::ALL.iter().enumerate() {
+            println!(
+                "  {:<6} mover {:>6}   opponent {:>6}   mine-theirs {:>6}",
+                c.label(),
+                read.columns[i].0,
+                read.columns[i].1,
+                read.columns[i].0 - read.columns[i].1,
+            );
+        }
+    } else {
+        println!();
+        println!("SKIPPED             --no-generated: this root resolves by seeded scan");
+    }
+
+    println!();
+    println!("wall                {:.1}s", started.elapsed().as_secs_f64());
+    if failures.is_empty() && unread.is_empty() {
+        println!(
+            "VERDICT             every step-5 gate RUN above PASSES; the read-and-record items \
+             gate nothing"
+        );
+        Ok(())
+    } else {
+        let mut message = String::from("STOP — step 5 does not clear:\n");
+        if !failures.is_empty() {
+            message.push_str(&format!(
+                "\n{} GATE FAILURE(S) — a registered gate evaluated AGAINST its frozen direction:\
+                 \n  {}\n",
+                failures.len(),
+                failures.join("\n  "),
+            ));
+        }
+        if !unread.is_empty() {
+            message.push_str(&format!(
+                "\n{} REGISTERED GATE ROOT(S) NOT RUN — nothing was measured there, which is \
+                 neither a pass\nnor a fail:\n  {}\n",
+                unread.len(),
+                unread.join("\n  "),
+            ));
+        }
+        message.push_str(
+            "\nCheckpoint §7 step 5: \"A gate failure stops before any fitting.\" This instrument \
+             REPORTS\nrather than repairs. A gate re-tuned to pass is not a gate, and a gate root \
+             quietly dropped\nfrom a run is a pass about less — both outcomes are OWNER territory \
+             (checkpoint §6 fences\nrepair-by-scope-expansion).",
+        );
+        Err(message)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Tests: the statistics, against hand-computable truth.
@@ -9078,5 +10964,481 @@ mod tests {
         // cheap enough to run as a cell — and running it here is what keeps the
         // command's own glue from rotting between artifacts.
         assert!(cmd_collision(&[arg("--fixtures-only")]).is_ok());
+        assert!(cmd_rooted(&[arg("4(a)")]).is_err_and(|e| e.contains("no positional")));
+        assert!(cmd_rooted(&[arg("--no-generatd")]).is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // §7 step 5 — the rooted-read gates
+    //
+    // CORPUS-FREE by construction (the driven convention): the gate ARITHMETIC,
+    // the registered criteria, the charter's split and its burn guard are all
+    // exercised here on constructed material. The gates that need the owner
+    // saves or the regenerated game-3 record run in the COMMAND, and the
+    // orchestrator records their output.
+    // -----------------------------------------------------------------------
+
+    /// A 2P state with a real generated board, for the cells that need one —
+    /// the same shape `observed_view` above builds, kept state-side.
+    fn two_player_state() -> (GameState, Rules) {
+        let rules = Rules::standard();
+        let pending = new_game(GameConfig::for_player_count(2), &rules, 7)
+            .expect("a standard 2P setup");
+        let choices: Vec<_> = (0..2).map(|_| StartingOrderChoice::Keep(0)).collect();
+        let state = finalize_setup(pending, &choices).expect("the setup finalizes");
+        (state, rules)
+    }
+
+    /// The three column groups are SLICES of the canonical array, not re-typed
+    /// lists — so a re-ordering of `CandidateFeature::ALL` cannot leave a group
+    /// describing the old order while still compiling.
+    #[test]
+    fn the_step_five_column_groups_are_the_canonical_arrays_own_slices() {
+        assert_eq!(S_COLUMNS.as_slice(), &CandidateFeature::ALL[0..7], "S1..S7");
+        assert_eq!(OSE_COLUMNS.as_slice(), &CandidateFeature::ALL[10..13], "O1, O2, O3");
+        assert_eq!(X_COLUMNS.as_slice(), &CandidateFeature::ALL[15..18], "X1, X2, X3");
+        // The labels are the ones the gate texts are written in.
+        assert_eq!(
+            S_COLUMNS.map(CandidateFeature::label),
+            ["S1", "S2", "S3", "S4", "S5", "S6", "S7"],
+        );
+        assert_eq!(OSE_COLUMNS.map(CandidateFeature::label), ["O1", "O2", "O3"]);
+        assert_eq!(X_COLUMNS.map(CandidateFeature::label), ["X1", "X2", "X3"]);
+    }
+
+    /// `s_slots` reads the S SLOTS of a 34-wide Δv and nothing else.
+    ///
+    /// MUTATION-RELEVANT: a slot arithmetic that read incumbent indices would
+    /// still produce seven numbers and still sum, so the cell plants a distinct
+    /// value in every axis slot and names the seven it expects back.
+    #[test]
+    fn s_slots_reads_the_seven_candidate_slots_and_no_others() {
+        let mut dv = [0i64; AXIS_WIDTH];
+        for slot in FeatureId::all() {
+            // A value unique to each slot, so a wrong index cannot coincide.
+            dv[slot.index()] = 100 + slot.index() as i64;
+        }
+        let expected: [i64; 7] =
+            S_COLUMNS.map(|c| 100 + FeatureId::Candidate(c).index() as i64);
+        assert_eq!(s_slots(&dv), expected);
+        // Every incumbent slot is EXCLUDED — the strongest statement of "and no
+        // others" that does not depend on the layout's numbering.
+        for f in Feature::ALL {
+            let value = 100 + FeatureId::Incumbent(f).index() as i64;
+            assert!(!s_slots(&dv).contains(&value), "{} leaked into the S group", f.name());
+        }
+    }
+
+    /// **INTERPRETATION NOTE 1, EXECUTABLE.** The e113 gate quantity is the
+    /// UNWEIGHTED CROSS-UNIT SUM, and it is deliberately NOT a majority vote
+    /// over the seven columns.
+    ///
+    /// The contrast is the point: a Δ that favours the enabling side on SIX of
+    /// seven columns and loses one column by a large margin FAILS the frozen
+    /// gate. A "most columns agree" reading would pass it. The frozen text says
+    /// "the summed delta", so the sum is what the pass rule reads — and this
+    /// cell is what stops a future reader from quietly substituting the more
+    /// intuitive rule.
+    #[test]
+    fn the_e113_gate_sums_the_seven_columns_and_does_not_vote_on_them() {
+        let plant = |values: [i64; 7]| {
+            let mut dv = [0i64; AXIS_WIDTH];
+            for (i, c) in S_COLUMNS.iter().enumerate() {
+                dv[FeatureId::Candidate(*c).index()] = values[i];
+            }
+            dv
+        };
+        let enabling = plant([1, 1, 1, 1, 1, 1, -10]);
+        let dead = plant([0, 0, 0, 0, 0, 0, 0]);
+        let per_column: Vec<i64> =
+            (0..7).map(|i| s_slots(&enabling)[i] - s_slots(&dead)[i]).collect();
+        let sum: i64 = per_column.iter().sum();
+
+        assert_eq!(sum, -4, "the unweighted cross-unit sum");
+        assert!(sum <= 0, "the FROZEN gate does not pass on this delta");
+        assert_eq!(
+            per_column.iter().filter(|d| **d > 0).count(),
+            6,
+            "…while six of seven columns favour the enabling side, which a MAJORITY reading \
+             would have passed. The two readings disagree, and §6's text picks the sum",
+        );
+
+        // And the sum is genuinely strict: an exactly-balanced delta is a FAIL,
+        // not a pass, because the text says "strictly favors".
+        let balanced: i64 = (0..7)
+            .map(|i| s_slots(&plant([3, -3, 0, 0, 0, 0, 0]))[i] - s_slots(&dead)[i])
+            .sum();
+        assert_eq!(balanced, 0);
+        assert!(!(balanced > 0), "a zero sum does not STRICTLY favour either side");
+    }
+
+    /// **INTERPRETATION NOTE 2, EXECUTABLE.** The fork gate's "≥ 2 distinct
+    /// values" is the VECTOR reading, and the per-column reading is a different
+    /// — and at real roots, false — statement.
+    ///
+    /// The planted set has three members whose S5 and S7 are CONSTANT (no member
+    /// reaches the Bank; none changes the president's reach) and whose vectors
+    /// are nonetheless distinct. The vector reading passes; a rule demanding
+    /// that every column move fails. The run artifact shows the same shape at
+    /// every M-PF development ordinal, which is why the note exists.
+    #[test]
+    fn the_fork_gate_reads_the_s_vector_and_not_each_column_alone() {
+        let members: Vec<[i64; 7]> = vec![
+            [1, 0, 2, 1, 0, 3, 4],
+            [2, 0, 2, 1, 0, 3, 4],
+            [1, 0, 3, 1, 0, 3, 4],
+        ];
+        let (vectors, per_column) = distinct_s(&members);
+
+        assert_eq!(vectors, 3, "three distinct S signatures");
+        assert!(vectors >= 2, "the VECTOR reading — the frozen gate — passes");
+        assert_eq!(per_column, [2, 1, 2, 1, 1, 1, 1]);
+        assert!(
+            per_column.iter().any(|d| *d < 2),
+            "…while FOUR of the seven columns are constant across the set, so a per-column \
+             reading would FAIL a set the frozen gate passes",
+        );
+
+        // The anti-collapse case the gate exists to catch: one point, however
+        // many members.
+        let collapsed = vec![[1, 2, 3, 4, 5, 6, 7]; 9];
+        assert_eq!(distinct_s(&collapsed).0, 1, "a collapsed block reads ONE vector");
+        assert!(distinct_s(&collapsed).0 < 2, "and fails the gate, which is the point");
+    }
+
+    /// The dead-side criterion is a FILTER plus a TOTAL ORDER, and both halves
+    /// are load-bearing.
+    ///
+    /// The planted tie contains: a member sharing an area with the enabling side
+    /// (excluded by disjointness), a member of a different total (excluded by
+    /// same-count), and three eligible ones whose canonical encodings order
+    /// them. "First iterated" would have returned the tie's first element, which
+    /// this cell deliberately makes the WRONG answer.
+    #[test]
+    fn the_dead_side_criterion_filters_then_takes_the_least_canonical_encoding() {
+        let place = |areas: &[u8]| Move::PlaceThreeAreas {
+            placements: areas.iter().map(|a| AreaId(*a)).collect(),
+        };
+        let enabling: BTreeSet<AreaId> = [AreaId(0), AreaId(9)].into_iter().collect();
+        let tie = vec![
+            place(&[5, 8]),    // eligible, but not the least
+            place(&[0, 3]),    // SHARES area 0 with the enabling side
+            place(&[1, 2, 4]), // a different total
+            place(&[1, 2]),    // eligible AND the least
+            Move::PlaceTwoSameArea { area: AreaId(3), adjacent_bonus: None }, // eligible, total 2
+            Move::EndAdditionalPhase, // not a placement at all
+        ];
+
+        let eligible = eligible_dead_sides(&tie, &enabling, 2);
+        assert_eq!(eligible.len(), 3, "two exclusions and one non-placement dropped");
+        assert_eq!(
+            eligible[0],
+            &place(&[1, 2]),
+            "the LEXICOGRAPHICALLY LEAST canonical encoding, not the first iterated",
+        );
+        assert_ne!(eligible[0], &tie[0], "first-iterated would have chosen differently");
+        assert!(
+            eligible.iter().all(|mv| placement_of(mv)
+                .is_some_and(|(t, a)| t == 2 && a.is_disjoint(&enabling))),
+            "every survivor is same-count AND disjoint",
+        );
+        // The order is the derived Debug rendering, which is what the artifact
+        // prints — so the criterion is re-checkable from the printed output.
+        let encodings: Vec<String> = eligible.iter().map(|mv| canonical_encoding(mv)).collect();
+        let mut sorted = encodings.clone();
+        sorted.sort();
+        assert_eq!(encodings, sorted);
+        assert_eq!(canonical_encoding(&place(&[1, 2])), format!("{:?}", place(&[1, 2])));
+    }
+
+    /// The FROZEN e113 registration is internally consistent with the criterion
+    /// that chose it — checkable without the gitignored save.
+    ///
+    /// The command re-derives the pair from a loaded root and refuses on any
+    /// disagreement; this cell checks the half that needs no root: same count,
+    /// disjoint area sets, encodings that reconstruct from the frozen ids, and
+    /// digests of the shape `state_digest` produces.
+    #[test]
+    fn the_frozen_e113_registration_agrees_with_its_own_criterion() {
+        let e = E113_EXEMPLAR;
+        let enabling: BTreeSet<AreaId> = e.enabling_areas.iter().map(|a| AreaId(*a)).collect();
+        let dead: BTreeSet<AreaId> = e.dead_areas.iter().map(|a| AreaId(*a)).collect();
+
+        assert_eq!(enabling.len(), e.enabling_areas.len(), "the frozen ids are distinct");
+        assert_eq!(dead.len(), e.dead_areas.len());
+        assert!(enabling.is_disjoint(&dead), "the criterion's DISJOINTNESS clause");
+        assert_eq!(e.total, 2, "both sides place two assistants");
+
+        for (label, areas, encoding) in [
+            ("enabling", e.enabling_areas, e.enabling_encoding),
+            ("dead", e.dead_areas, e.dead_encoding),
+        ] {
+            let mv = Move::PlaceThreeAreas {
+                placements: areas.iter().map(|a| AreaId(*a)).collect(),
+            };
+            assert_eq!(canonical_encoding(&mv), encoding, "{label}: ids and encoding disagree");
+            let (total, set) = placement_of(&mv).expect("a placement");
+            assert_eq!(total, e.total, "{label}: the frozen total");
+            assert_eq!(set.len(), areas.len(), "{label}");
+        }
+        for (label, digest) in [
+            ("root", E113_ROOT_DIGEST),
+            ("enabling successor", e.enabling_digest),
+            ("dead successor", e.dead_digest),
+        ] {
+            assert_eq!(digest.len(), 16, "{label}: state_digest is 16 hex characters");
+            assert!(digest.chars().all(|c| c.is_ascii_hexdigit()), "{label}");
+        }
+        assert_ne!(e.enabling_digest, e.dead_digest, "two sides, two successors");
+    }
+
+    /// `sole_area_of` identifies a site by TYPE and refuses an ambiguous board.
+    ///
+    /// The refusal is not decorative: the enabling side is registered by SITE
+    /// NAME ("Laboratory A + Fishing Ground"), so a board where the name picks
+    /// out two tiles is a board where the registration does not identify a
+    /// placement. The duplicate is planted rather than hunted for, so the cell
+    /// says the same thing at every board the generator produces.
+    #[test]
+    fn sole_area_of_names_one_tile_or_refuses() {
+        let (state, _) = two_player_state();
+        let lab = sole_area_of(&state, AreaType::LaboratoryA).expect("Laboratory A is unique");
+        assert_eq!(state.board_layout.areas[&lab].area_type, AreaType::LaboratoryA);
+
+        let mut ambiguous = state.clone();
+        let other = *ambiguous
+            .board_layout
+            .areas
+            .keys()
+            .find(|id| **id != lab)
+            .expect("a second area");
+        ambiguous.board_layout.areas.get_mut(&other).expect("present").area_type =
+            AreaType::LaboratoryA;
+        assert!(sole_area_of(&ambiguous, AreaType::LaboratoryA)
+            .is_err_and(|e| e.contains("appears 2 times") && e.contains("does not identify")));
+
+        let mut absent = state.clone();
+        absent.board_layout.areas.get_mut(&lab).expect("present").area_type = AreaType::Canal;
+        assert!(sole_area_of(&absent, AreaType::LaboratoryA)
+            .is_err_and(|e| e.contains("is not on this board")));
+    }
+
+    /// The charter's EVERY-THIRD rule REPRODUCES its own two transcribed lists.
+    ///
+    /// The ruling names both the rule and its answer. The honest implementation
+    /// computes the rule; this cell checks it lands on the answer, so a
+    /// transcription slip in either list is a failure here rather than a
+    /// silently different band eight ordinals wide.
+    #[test]
+    fn the_ose_split_is_the_charters_every_third_rule_over_event_order() {
+        let derived_dev: Vec<usize> = OSE_EXHIBITS
+            .iter()
+            .filter(|(e, _)| ose_role(*e) == Ok(OseRole::Development))
+            .map(|(e, _)| *e)
+            .collect();
+        let derived_reserved: Vec<usize> = OSE_EXHIBITS
+            .iter()
+            .filter(|(e, _)| ose_role(*e) == Ok(OseRole::Reserved))
+            .map(|(e, _)| *e)
+            .collect();
+
+        assert_eq!(derived_dev, OSE_DEVELOPMENT, "the charter's five development exhibits");
+        assert_eq!(derived_reserved, OSE_RESERVED, "the charter's eight reserved exhibits");
+        assert_eq!(OSE_EXHIBITS.len(), OSE_DEVELOPMENT.len() + OSE_RESERVED.len());
+        assert_eq!(
+            OSE_RESERVED.len(),
+            8,
+            "exactly §6's {{8..16}} band size, so the >= 6-of-8 block-pass rule applies unchanged",
+        );
+
+        // Event order is the rule's INPUT and the list must be in it.
+        let events: Vec<usize> = OSE_EXHIBITS.iter().map(|(e, _)| *e).collect();
+        let mut sorted = events.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(events, sorted, "thirteen distinct event indices in ascending order");
+
+        // Thirteen distinct identities, each a state_digest.
+        let digests: BTreeSet<&str> = OSE_EXHIBITS.iter().map(|(_, d)| *d).collect();
+        assert_eq!(digests.len(), 13, "thirteen distinct positions");
+        assert!(OSE_EXHIBITS
+            .iter()
+            .all(|(_, d)| d.len() == 16 && d.chars().all(|c| c.is_ascii_hexdigit())));
+
+        // An event the charter never registered is not classifiable at all.
+        assert!(ose_role(35).is_err_and(|e| e.contains("not one of the thirteen")));
+        assert!(ose_role(0).is_err());
+    }
+
+    /// **THE BURN GUARD**, and its mutation control in the same cell.
+    ///
+    /// A guard that refused EVERYTHING would satisfy the refusal half and be
+    /// useless, so the development arm is asserted in the same breath: the same
+    /// view, the same seat, the same columns — only the role differs, and the
+    /// role is what decides.
+    #[test]
+    fn the_burn_guard_refuses_every_reserved_exhibit_and_reads_every_development_one() {
+        let rules = Rules::standard();
+        let fixture = build_registered_pair(registered("4(b)").expect("4(b)"), StageEndpoint::Early, &rules)
+            .expect("4(b) early");
+        let view = fixture.view(Side::Greater);
+        let subject = view
+            .players
+            .iter()
+            .find(|p| p.id == fixture.subject())
+            .expect("the subject is in its own view");
+
+        for event in OSE_RESERVED {
+            let refusal = ose_columns(OseRole::Reserved, event, view, subject, &rules)
+                .expect_err("a reserved exhibit REFUSES a column read");
+            assert!(refusal.contains("REFUSED"), "e{event}");
+            assert!(refusal.contains("ESCROW-RESERVED"), "e{event}");
+            assert!(refusal.contains("2026-08-23"), "e{event}: the refusal names the charter row");
+            assert!(refusal.contains("before step 10"), "e{event}: …and until when");
+            assert!(refusal.contains(&format!("event {event}")), "e{event}: …and which exhibit");
+        }
+
+        // THE CONTROL. Same everything, Development role: the read happens.
+        for event in OSE_DEVELOPMENT {
+            let columns = ose_columns(OseRole::Development, event, view, subject, &rules)
+                .expect("a development exhibit READS");
+            assert_eq!(columns.len(), 3);
+        }
+
+        // And the guard reads the SAME numbers the adapter does, so the guard
+        // is a gate on ACCESS and not a second derivation of the columns.
+        let structure = ScoreStructure::derive(view, &rules);
+        let direct: Vec<i64> = OSE_COLUMNS
+            .iter()
+            .map(|c| candidate_value(&structure, view, subject, *c, &rules))
+            .collect();
+        assert_eq!(
+            ose_columns(OseRole::Development, 34, view, subject, &rules).expect("reads"),
+            direct.as_slice(),
+        );
+    }
+
+    /// The record identity check refuses a document that is not the recorded
+    /// game 3, and names every key that disagreed.
+    ///
+    /// A freshly generated 2P record shares NONE of the five recorded keys, so
+    /// it exercises the refusal without a file on disk — which is what makes
+    /// the check reachable in a corpus-free suite at all.
+    #[test]
+    fn the_ose_record_identity_refuses_a_document_the_charter_does_not_index() {
+        let rules = Rules::standard();
+        let config = GameConfig::for_player_count(2);
+        let pending = new_game(config.clone(), &rules, 7).expect("a standard 2P setup");
+        let choices: Vec<_> = (0..2).map(|_| StartingOrderChoice::Keep(0)).collect();
+        let _ = finalize_setup(pending, &choices).expect("the setup finalizes");
+        let record = GameRecord::new(7, config, choices, &rules);
+
+        let refusal = check_ose_record_identity(&record, &rules)
+            .expect_err("a fresh record is not the recorded game 3");
+        for key in ["run_id", "events", "terminal_digest"] {
+            assert!(refusal.contains(key), "the refusal names {key}: {refusal}");
+        }
+        assert!(refusal.contains("REFUSING before any root resolves"));
+        // The rev and the rules hash of a FRESH record are this build's, so
+        // they are the two keys that legitimately AGREE — the cell says so
+        // rather than asserting a refusal that names all five.
+        assert!(!refusal.contains("semantics_rev"), "a fresh record carries this rev: {refusal}");
+        assert!(!refusal.contains("is not this build's"), "…and this rules hash: {refusal}");
+    }
+
+    /// **GATE 3 CROSS-PINNED TO THE FROZEN PACKAGE.** The expectations the
+    /// constructed O3 gate asserts are the levels the registrations DECLARE.
+    ///
+    /// Without this the gate is a second, independent opinion about what 4(a)
+    /// and 4(b) contain, and a re-registration could move the fixture while the
+    /// gate went on asserting the old numbers and passing.
+    #[test]
+    fn the_constructed_o3_gate_asserts_the_levels_the_registrations_declare() {
+        let rules = Rules::standard();
+        let cells = read_constructed_o3(&rules).expect("the constructed cells build");
+        assert_eq!(cells.len(), 6, "4(b) at both endpoints, 4(a) at its one");
+        assert!(cells.iter().all(|c| c.ok), "every constructed O3 cell passes");
+
+        let declared = |id: &str, key: &str| -> i64 {
+            registered(id)
+                .unwrap_or_else(|| panic!("{id} is registered"))
+                .parameters
+                .iter()
+                .find(|(name, _)| *name == key)
+                .unwrap_or_else(|| panic!("{id} declares {key}"))
+                .1
+        };
+        for cell in &cells {
+            let expected = match (cell.pair, cell.side) {
+                ("4(b)", "EXECUTABLE") => declared("4(b)", "o3_greater"),
+                ("4(b)", "DISTANT") => declared("4(b)", "o3_lesser"),
+                ("4(a)", _) => declared("4(a)", "o3_both_sides"),
+                other => panic!("unregistered cell {other:?}"),
+            };
+            assert_eq!(
+                cell.o3, expected,
+                "{} {} {}: the column reads {} and the registration declares {expected}",
+                cell.pair, cell.stage, cell.side, cell.o3,
+            );
+        }
+        // The specificity the flag-1 ruling asks for: exactly ONE of the three
+        // registered sides carries strict executability, and it is 4(b)'s
+        // EXECUTABLE side. A column that returned 1 everywhere would pass the
+        // ">= 1" half and fail here.
+        assert_eq!(cells.iter().filter(|c| c.o3 >= 1).count(), 2, "4(b) EXECUTABLE at both stages");
+        assert!(cells
+            .iter()
+            .filter(|c| c.o3 >= 1)
+            .all(|c| c.pair == "4(b)" && c.side == "EXECUTABLE"));
+        assert!(cells.iter().filter(|c| c.side != "EXECUTABLE").all(|c| c.o3 == 0));
+    }
+
+    /// The X wiring proof counts a column present when EITHER seat reads
+    /// nonzero, and the artifact says so when a column reads zero everywhere.
+    #[test]
+    fn the_x_wiring_read_counts_a_column_present_at_either_seat() {
+        let read = |values: [(i64, i64); 3]| XWiringRead {
+            root: "t".to_string(),
+            digest: "0".repeat(16),
+            origin: "t".to_string(),
+            note: "t",
+            values,
+        };
+        assert_eq!(read([(0, 0), (0, 0), (0, 0)]).nonzero(), 0);
+        assert_eq!(read([(1, 0), (0, 0), (0, 0)]).nonzero(), 1, "the mover alone counts");
+        assert_eq!(read([(0, 0), (0, 4), (0, 0)]).nonzero(), 1, "the opponent alone counts");
+        assert_eq!(read([(-1, 0), (0, 0), (2, 3)]).nonzero(), 2, "a negative is not absent");
+    }
+
+    /// An exhibit that could not be READ is neither a pass nor a fail.
+    ///
+    /// The three-way status is the whole reason `ExhibitOutcome` exists: a
+    /// boolean would have to call an unmeasured root one of the two, and both
+    /// answers are false.
+    #[test]
+    fn an_unreadable_exhibit_is_neither_a_pass_nor_a_fail() {
+        let at = |outcome| ExhibitRead {
+            event_index: 34,
+            digest: "0".repeat(16),
+            mover: PlayerId(0),
+            outcome,
+        };
+        let read = |columns| ExhibitOutcome::Read {
+            columns,
+            mover_columns: [0, 0, 0],
+            opponent: PlayerId(1),
+            hand: (1, 1),
+        };
+        assert_eq!(at(read([32, 6, 0])).passed(), Some(true), "O1 >= 1 and O3 = 0");
+        assert_eq!(at(read([0, 6, 0])).passed(), Some(false), "O1 = 0 fails the first clause");
+        assert_eq!(at(read([32, 6, 1])).passed(), Some(false), "O3 = 1 fails the second");
+        assert_eq!(
+            at(ExhibitOutcome::NotRun { reason: "unviewable".to_string() }).passed(),
+            None,
+            "NOT RUN is a third answer, not a false",
+        );
+        assert!(at(ExhibitOutcome::NotRun { reason: "unviewable".to_string() })
+            .columns()
+            .is_none());
     }
 }
