@@ -92,11 +92,15 @@ use yokohama_core::game::greedy::{
 use yokohama_core::game::lookahead::{
     LookaheadAgent, SearchScheme, SearchTally, LOOKAHEAD_CONTROLLER,
 };
+use yokohama_core::game::pair_fixtures::{
+    build_registered_pair, package_digest, registered, render_pair_report_with,
+    render_registry_manifest, CandidateFeature, StageEndpoint, REGISTERED,
+};
 use yokohama_core::{
     agent_stream_seed, finalize_setup, new_game, observe, replay_from, run_arena_game,
     run_raw_game, ArenaAgent, ArenaGameStats, Contestant, GameState, PlayerId, PlayerView,
     QuantileSketch, RolloutPolicy, Rules, SeedSchedule, SeedScheduleKind, Slot, TriggerTally,
-    WorldSeed, SEMANTICS_REV,
+    VisiblePlayer, WorldSeed, SEMANTICS_REV,
 };
 
 const USAGE: &str = "\
@@ -185,6 +189,21 @@ usage: eval_probe <subcommand> [options]
   table [--weights v1|v2|pre-freeze]
       Print a weight table with its provenance identity. No games are played.
 
+  pairs [--pair <id>] [--stage early|late] [--manifest]
+      Dump the V4 §5 pair-fixture package's reports with ALL THIRTY-FOUR delta
+      rows REAL: the sixteen incumbents through `eval`'s public surface as
+      before, and the eighteen §3.2 candidates through this instrument's
+      CandidateColumns adapter (§7's probe space for every column until
+      step 8 moves them into `Feature::ALL`). No games are played and nothing
+      is fitted — this is the DUMP the collision instrument and the solver read
+      their inputs off, and every report prints the package digest.
+        --pair <id>    one registration only, e.g. `4(c)` (default: all)
+        --stage early|late
+                       one endpoint only (default: every endpoint the
+                       registration declares; a pair that does not declare the
+                       named one is skipped, and the count says so)
+        --manifest     the registry manifest alone, no reports
+
 contestants (the grammar is Contestant::from_str_name's — unknown is an error at
 every level, and an unknown knob is never silently ignored):
   greedy-v1[:m=<n>]    the honest arena driver (observe -> sampler -> handle)
@@ -220,6 +239,7 @@ fn main() {
     let result = match args.first().map(String::as_str) {
         Some("run") => cmd_run(&args[1..]),
         Some("table") => cmd_table(&args[1..]),
+        Some("pairs") => cmd_pairs(&args[1..]),
         _ => Err(USAGE.to_string()),
     };
     if let Err(message) = result {
@@ -3472,6 +3492,126 @@ fn cmd_table(args: &[String]) -> Result<(), String> {
 }
 
 // ---------------------------------------------------------------------------
+// `pairs` — the V4 §5 fixture package at all thirty-four columns
+// ---------------------------------------------------------------------------
+
+/// **THE STEP-3 ADAPTER.** One candidate feature, for one seat of one view.
+///
+/// This is the function `pair_fixtures::CandidateColumns` was declared to
+/// receive, and it is deliberately nothing but a MATCH: the eighteen §3.2
+/// helpers live on `eval::ScoreStructure` (spec §13 — "`eval.rs` itself carries
+/// the eighteen helpers"), and a second derivation of any of them here would be
+/// the one thing that could make the probe's columns and the shipped evaluator's
+/// disagree. `CandidateColumns`' own doc names the shape it wants:
+/// `eval::raw_value`'s, so that "the adapter is a match, not a translation
+/// layer".
+///
+/// **The structure is derived ONCE per call**, as `raw_value` does — the four
+/// track majorities and the whole §3.2 view context are properties of the table,
+/// so a helper-by-helper re-derivation would pay for them eighteen times per
+/// seat. A print harness can afford the per-call derive that `raw_value` also
+/// pays; the inner loops that cannot (the corpus sweep above, and step 4's
+/// collision instrument) derive once and call the methods directly, which is
+/// exactly what the adapter's identity pin checks they may do.
+///
+/// **It never declines.** `CandidateColumns` returns an `Option` because the
+/// print harness needs a "not built yet" path — that is what
+/// `pair_fixtures::CANDIDATE_PENDING` renders, and it is reached by passing
+/// `None` for the whole adapter rather than by a label refusing. Every one of
+/// the eighteen helpers is total on any view `observe` can produce, so every arm
+/// here returns `Some`, and the pin says so: a `None` from this function would
+/// print as PENDING and read as "step 3 never built that column".
+///
+/// A NON-CAPTURING free fn because `CandidateColumns` is a plain `fn` pointer,
+/// not a boxed closure — the seam is deliberately capture-free so a fixture
+/// report cannot be rendered against columns that quietly carry state.
+fn candidate_columns(
+    view: &PlayerView,
+    player: &VisiblePlayer,
+    feature: CandidateFeature,
+    rules: &Rules,
+) -> Option<i64> {
+    let s = ScoreStructure::derive(view, rules);
+    Some(match feature {
+        CandidateFeature::ProductionAccess => s.production_access(view, player),
+        CandidateFeature::TrackAccess => s.track_access(view, player),
+        CandidateFeature::AssistantAreasDistinct => s.assistant_areas_distinct(player),
+        CandidateFeature::PresidentLocalAccess => s.president_local_access(player),
+        CandidateFeature::BankAccess => s.bank_access(view, player),
+        CandidateFeature::EmploymentAgencyAccess => s.employment_agency_access(view, player),
+        CandidateFeature::PresidentReachableAreas => s.president_reachable_areas(player),
+        CandidateFeature::MoneyStock => s.money_stock(player),
+        CandidateFeature::TradeGoodsStock => s.trade_goods_stock(player),
+        CandidateFeature::BuildingTokensReady => s.building_tokens_ready(player),
+        CandidateFeature::HeldOrderValue => s.held_order_value(player, rules),
+        CandidateFeature::OrderMatchedGoods => s.order_matched_goods(player, rules),
+        CandidateFeature::ExecutableOrders => s.executable_orders(player, rules),
+        CandidateFeature::FlagIconMarginal => s.flag_icon_marginal(player, rules),
+        CandidateFeature::HeldOrderIcons => s.held_order_icons(player, rules),
+        CandidateFeature::LabTakeable => s.lab_takeable(view, player),
+        CandidateFeature::PortTakeable => s.port_takeable(view, player, rules),
+        CandidateFeature::MatchedProductionAccess => {
+            s.matched_production_access(view, player, rules)
+        }
+    })
+}
+
+fn cmd_pairs(args: &[String]) -> Result<(), String> {
+    let (positional, flags, _) = split_args(args, &["pair", "stage"], &["manifest"], &[])?;
+    if !positional.is_empty() {
+        return Err(format!("pairs takes no positional arguments\n\n{USAGE}"));
+    }
+    let only_stage = match flags.get("stage").map(String::as_str) {
+        None => None,
+        Some("early") => Some(StageEndpoint::Early),
+        Some("late") => Some(StageEndpoint::Late),
+        Some(other) => return Err(format!("unknown stage `{other}` (early|late)")),
+    };
+    // An unknown id is an ERROR, never an empty dump: a mistyped `--pair 4c`
+    // that printed a header and no reports reads exactly like a package that
+    // lost a registration.
+    let only_pair = match flags.get("pair") {
+        None => None,
+        Some(id) => Some(
+            registered(id).ok_or_else(|| format!("`{id}` is not a registered pair"))?,
+        ),
+    };
+
+    let rules = Rules::standard();
+    println!("=== eval_probe pairs [semantics rev {SEMANTICS_REV}] ===");
+    print!("{}", render_registry_manifest());
+    if flags.contains_key("manifest") {
+        return Ok(());
+    }
+
+    let mut printed = 0usize;
+    let mut skipped = 0usize;
+    for pair in REGISTERED.iter() {
+        if only_pair.is_some_and(|p| p.id != pair.id) {
+            continue;
+        }
+        for stage in pair.stages {
+            if only_stage.is_some_and(|s| s != *stage) {
+                skipped += 1;
+                continue;
+            }
+            let fixture = build_registered_pair(pair, *stage, &rules)
+                .map_err(|e| format!("{} at {}: {e:?}", pair.id, stage.name()))?;
+            println!();
+            print!("{}", render_pair_report_with(&fixture, &rules, Some(candidate_columns)));
+            printed += 1;
+        }
+    }
+    println!();
+    println!(
+        "reports             {printed} printed, {skipped} outside the named endpoint  \
+         (digest {})",
+        package_digest(),
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Tests: the statistics, against hand-computable truth.
 //
 // Run with `cargo test -p yokohama-core --example eval_probe`. They are here
@@ -5499,12 +5639,6 @@ mod tests {
             }
         }
         out
-    }
-
-    /// One seat's row inside one side's view, or `None` where the view does
-    /// not carry that seat (the 2P dummy has no row).
-    fn row<'a>(view: &'a PlayerView, seat: PlayerId) -> Option<&'a VisiblePlayer> {
-        view.players.iter().find(|p| p.id == seat)
     }
 
     /// Every `(fixture, side, seat-row)` triple the registry offers — the
