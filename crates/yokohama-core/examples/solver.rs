@@ -359,6 +359,14 @@ impl System {
     /// i128 because the accumulation is free there and the alternative is
     /// reasoning about a bound: coefficients are feature deltas whose size the
     /// fixtures decide, not this file.
+    ///
+    /// N-8, the bound that makes the unchecked arithmetic here and in
+    /// [`propagate`] safe rather than lucky. A weight is always inside the box,
+    /// so `|w| ≤ 128` at the widest rung; a coefficient is an `i64`. Each term
+    /// is therefore under `2^70`, and at most 34 are summed, so `|Σ| < 2^76` —
+    /// comfortably inside i128's `2^127`, with the same argument covering
+    /// `propagate`'s `reach` and `need`. Checked arithmetic is reserved for the
+    /// LP, which multiplies rationals by rationals and genuinely can escape.
     fn slack_of(row: &Row, w: &[i64]) -> i128 {
         let dot: i128 =
             row.coef.iter().zip(w).map(|(&c, &x)| i128::from(c) * i128::from(x)).sum();
@@ -939,6 +947,16 @@ fn active_columns(rows: &[Row]) -> Vec<usize> {
 /// solution the enumeration would have found, and the enumeration is what
 /// decides.
 fn decide(sys: &System) -> Verdict {
+    // N-1: an identically-zero deletable row is a construction defect, not a
+    // system. `row_from_signatures` refuses one on the real path (Part A's zero
+    // blocking says no registered row is one), so reaching here with one means a
+    // caller built it by hand. Debug-only because a release verdict on such a
+    // system is still SOUND -- at a positive margin it is honestly UNSAT.
+    debug_assert!(
+        !sys.rows.iter().any(|r| r.coef.iter().all(|c| *c == 0)),
+        "a deletable row is identically zero; it constrains nothing and, at a positive margin, \
+         is unsatisfiable by construction rather than by contradiction",
+    );
     let all = sys.inequalities();
     let columns = active_columns(&sys.rows);
     // Rows over no active column were dropped with their columns: each is a box
@@ -1342,7 +1360,7 @@ fn scale_diagnostics(sys: &System) -> ScaleDiagnostics {
         StageEndpoint::Late => Vec::new(),
         StageEndpoint::Early => EARLY_RESCALE_LADDER
             .into_iter()
-            .map(|pin| (pin, decide(&System::new(sys.stage, sys.rows.clone(), sys.box_limit, pin))))
+            .map(|pin| (pin, decide(&repriced_at(sys, pin))))
             .collect(),
     };
     ScaleDiagnostics { widened, rescaled }
@@ -1558,7 +1576,9 @@ fn row_from_signatures(
         kind: RowKind::Pair { id: pair.id.to_string(), order },
         coef,
         rhs: margin,
-        margin_vp: None,
+        // MARGINED rows carry the fraction their integer was evaluated from, so
+        // §5.4's rescale ladder can re-evaluate it when it moves the pin.
+        margin_vp: margin_fraction(pair.id),
     })
 }
 
@@ -1763,18 +1783,27 @@ mod toys {
             // granularity §5.1 warns about made concrete: the contradiction is
             // the 3x floor, not the architecture -- which is why §5.4 keeps an
             // early-rescale diagnostic, and this toy is what fires it.
-            "unsat-fractional-margin" => toy(
-                StageEndpoint::Early,
-                &[
-                    ("E1 floored margin", &[(e1, 1)], 1),
-                    (
-                        "the 1/3 VP rate itself",
-                        &[(e1, -3), (Feature::VictoryPoints.index(), 1)],
-                        0,
-                    ),
-                ],
-                BOX_LIMIT,
-            ),
+            "unsat-fractional-margin" => {
+                let mut built = toy(
+                    StageEndpoint::Early,
+                    &[
+                        ("E1 floored margin", &[(e1, 1)], 1),
+                        (
+                            "the 1/3 VP rate itself",
+                            &[(e1, -3), (Feature::VictoryPoints.index(), 1)],
+                            0,
+                        ),
+                    ],
+                    BOX_LIMIT,
+                );
+                // The margin row DECLARES the rate it was floored from, so the
+                // rescale ladder re-prices it exactly as it will re-price a
+                // registered MARGINED row. Without this the toy would exercise
+                // the diagnostic's uncalibrated half and prove nothing about
+                // the calibrated one.
+                built.rows[0].margin_vp = Some((1, 3));
+                built
+            }
             // Relaxation-FEASIBLE (w_S1 = 1/2 satisfies both rows) and
             // integer-infeasible. No Farkas certificate exists, so this is the
             // toy that exercises §5.4's other admitted shape: the exhaustive
@@ -1898,10 +1927,20 @@ fn census_block() -> String {
          LATE {FROZEN_LATE}\n",
         realized.early, realized.late,
     ));
-    if realized.early == FROZEN_EARLY && realized.late == FROZEN_LATE {
-        out.push_str("                     realized == frozen\n");
-    } else {
-        out.push_str(&format!("RULING               {CENSUS_RULING}\n"));
+    // N-3: the ruling explains ONE shape of gap and only that shape. Printing
+    // it for any mismatch would let a registry that had drifted somewhere else
+    // borrow the ruling's authority, which is exactly §5.4's "mismatch = registry
+    // defect" clause being talked out of firing.
+    match (realized.early, realized.late) {
+        (FROZEN_EARLY, FROZEN_LATE) => {
+            out.push_str("                     realized == frozen\n");
+        }
+        (24, 27) => out.push_str(&format!("RULING               {CENSUS_RULING}\n")),
+        (early, late) => out.push_str(&format!(
+            "REGISTRY DEFECT      realized EARLY {early} / LATE {late} matches neither the frozen \
+             text ({FROZEN_EARLY}/{FROZEN_LATE}) nor the 4(c) ruling's 24/27. §5.4: a mismatch is \
+             a registry defect, not a result. NOTHING here may be read as a Part-B answer.\n",
+        )),
     }
     out
 }
@@ -3063,6 +3102,60 @@ mod tests {
         let orderings = repriced_at(&sys, 6);
         for row in orderings.rows.iter().filter(|r| r.kind == RowKind::HandOrdering) {
             assert_eq!(row.rhs, 1, "a hand-ordering row is not a price and does not re-price");
+        }
+    }
+
+    /// **The cell that proves the LADDER re-prices, not merely that
+    /// [`repriced_at`] can.**
+    ///
+    /// My first pass at S-1 checked `repriced_at` directly and never asserted
+    /// that `scale_diagnostics` calls it — a mutation reverting the ladder to
+    /// the uncalibrated form passed every test. This cell closes that: it is
+    /// built so the two forms DISAGREE, and it asserts which one ships.
+    ///
+    /// A margined row at `margin_vp = 1` (3(c)'s rate) against a plain cap of 1.
+    /// At the shipped pin the margin is 1 and the cap admits it. At rung 2 the
+    /// formula makes the margin 2 while the cap still says 1 — so the CALIBRATED
+    /// ladder reports UNSAT and the UNCALIBRATED one reports SAT. Since a
+    /// rescale-SAT is printed as a SCALE finding, the defect's answer would have
+    /// filed a live contradiction as integer granularity, which is the
+    /// anti-conservative failure §5B must not make.
+    #[test]
+    fn the_rescale_ladder_reports_the_calibrated_verdict_where_the_two_forms_disagree() {
+        let mut sys = toy(
+            StageEndpoint::Early,
+            &[
+                ("a margined row at rate 1/1", &[(col("S5"), 1)], 1),
+                ("a cap of 1", &[(col("S5"), -1)], -1),
+            ],
+            BOX_LIMIT,
+        );
+        sys.rows[0].margin_vp = Some((1, 1));
+
+        let uncalibrated =
+            decide(&System::new(sys.stage, sys.rows.clone(), sys.box_limit, 2));
+        assert!(
+            matches!(uncalibrated, Verdict::Sat { .. }),
+            "the DEFECT's answer at rung 2: the pin moved, the margin did not, and the cap of 1 \
+             still admits the shipped margin of 1",
+        );
+
+        let rungs = scale_diagnostics(&sys).rescaled;
+        let at = |pin: i64| {
+            rungs.iter().find(|(p, _)| *p == pin).map(|(_, v)| v).expect("a registered rung")
+        };
+        assert!(
+            matches!(at(1), Verdict::Sat { .. }),
+            "at the shipped pin the margin is 1 and the cap admits it",
+        );
+        assert!(
+            matches!(at(2), Verdict::Unsat { .. }),
+            "THE CALIBRATED ANSWER: at rung 2 the formula prices the margin at 2 and the cap of \
+             1 cannot meet it. Reporting SAT here would file a live contradiction as a SCALE \
+             finding.",
+        );
+        for pin in [3, 6] {
+            assert!(matches!(at(pin), Verdict::Unsat { .. }), "and above it, rung {pin}");
         }
     }
 
