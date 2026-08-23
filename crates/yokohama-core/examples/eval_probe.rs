@@ -300,6 +300,49 @@ usage: eval_probe <subcommand> [options]
         --no-generated   skip the seeded scans (GATE 2 and the fired-while-behind
                          read)
 
+  fit --matrix <path> (--evaluate <table> | --descend <set>)
+      The §8 FITTING CORE, over a matrix `run --dump-matrix` wrote. Reads the
+      file, REFUSES one whose SEMANTICS_REV or pair-fixture package digest is
+      not this build's (naming both values), and then does exactly one of two
+      things. Deterministic and master-free: §8 says `Deterministic; no master`,
+      and the only inputs are the bytes, the set and the init.
+
+      --evaluate <table>  Score the matrix under <table> and print the §8
+                          objective on BOTH halves: exact score per snapshot row
+                          -> the MEAN per (game x seat x stage) CELL -> per-stage
+                          AUC over cells against the seat outcome label -> the
+                          mean of the three. NOTHING is fitted. <table> is
+                            v2      the V2-PADDED table (incumbents at V2,
+                                    candidates 0) — §8's V2-start init
+                            zero    the all-zero table — §8's other init
+                            <e0,...,e33>/<l0,...,l33>
+                                    thirty-four i64 per vector, FeatureId::all()
+                                    order, written bare or `-`-signed exactly as
+                                    a --score-table vector is
+                          The whole thirty-four-wide axis is priced; a zero
+                          candidate weight contributes zero, so `v2` here reads
+                          identically to `v2` over the sixteen incumbents alone.
+      --descend <set>     FIT <set> by §8's coordinate descent from BOTH inits
+                          and print each init's vectors and statistics, the
+                          better FIT-half objective (an exact tie keeps
+                          v2-start), and the chosen fit's held-out figures.
+                          Canonical order = FeatureId::all() order with each
+                          feature's EARLY coordinate before its LATE; ladder
+                          {+-16, +-8, +-4, +-2, +-1}; best strict improvement,
+                          ties toward the smaller resulting |w| then the
+                          earlier-listed step; a no-move sweep ends the search
+                          and 12 sweeps cap it; box |w| <= 64, and a step that
+                          would leave the box is SKIPPED, never clamped onto the
+                          bound. <set> is
+                            incumbents  the sixteen alone
+                            all         the whole thirty-four-wide axis
+                            S1,E1,X1,...
+                                        the sixteen PLUS the named §3.2
+                                        candidates, by registration label
+                          These are MECHANICAL sets, NOT §8's seven cells: the
+                          cell inventory and the protocol that runs it are a
+                          later task's, and naming a set here registers nothing.
+
 contestants (the grammar is Contestant::from_str_name's — unknown is an error at
 every level, and an unknown knob is never silently ignored):
   greedy-v1[:m=<n>]    the honest arena driver (observe -> sampler -> handle)
@@ -339,6 +382,7 @@ fn main() {
         Some("collision") => cmd_collision(&args[1..]),
         Some("collinearity") => cmd_collinearity(&args[1..]),
         Some("rooted") => cmd_rooted(&args[1..]).map(exit_with),
+        Some("fit") => cmd_fit(&args[1..]),
         _ => Err(USAGE.to_string()),
     };
     if let Err(message) = result {
@@ -2690,11 +2734,10 @@ fn render_matrix(matrix: &Matrix) -> String {
 /// this file wrote, since a doubled space would parse as an empty field and be
 /// refused instead of being quietly normalized away.
 ///
-/// The `dead_code` waiver says where the READER lives: the cells below and the
-/// FITTING stage, which reads a dumped matrix back in. The `run` path only ever
-/// writes one, so this half of the format has no caller in the shipped binary
-/// until `fit` lands beside it.
-#[allow(dead_code)]
+/// The READER's shipped caller is [`cmd_fit`] — `run` only ever writes a
+/// matrix, and `fit --matrix` is the half that reads one back in. The judging
+/// this reader refuses to do lives there too: [`check_matrix_provenance`] is
+/// what compares the file's rev and package digest against the running build.
 fn parse_matrix(text: &str) -> Result<Matrix, String> {
     let mut header: Vec<(&str, &str)> = Vec::new();
     let mut row_lines: Vec<(usize, &str)> = Vec::new();
@@ -4087,6 +4130,898 @@ fn report_counters(corpus: &Corpus, contestant: ProbeContestant) {
             interval.lo,
             interval.hi,
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// §7 step 6 — the §8 FITTING CORE (`fit`)
+//
+// The fitter reads a `--dump-matrix` file back in and EVALUATES or FITS a
+// thirty-four-wide weight table on it under spec-prereg §8's frozen protocol.
+// Everything here is deterministic and master-free — §8 says "Deterministic; no
+// master", and the only inputs are the matrix bytes, the feature set and the
+// init.
+//
+// THE ONE THING THIS SECTION EXISTS TO GET RIGHT is that its objective is the
+// L2 statistic the `run` path already computes and NOT a cousin of it. §8:
+// "exact score per snapshot row -> the MEAN per (game x seat x stage) CELL (the
+// probe's own `Cell` aggregation, eval_probe.rs — cells, not raw rows, so long
+// games do not overweight) -> per-stage AUC over cells against the seat outcome
+// label -> the FIT-half mean of the three stage AUCs (tie-handling = the frozen
+// implementation's)". Every clause of that sentence names something that
+// already exists in this file — [`stage_of`], [`Cell`], [`auc_weighted`],
+// [`Split`] — and the fitter CALLS those rather than restating them.
+// `the_fitters_objective_reproduces_the_frozen_l2_statistic` is the executable
+// form, against `split_column` + `auc_weighted` themselves over a real corpus.
+// ---------------------------------------------------------------------------
+
+/// §8's box: "box |w| ≤ 64".
+///
+/// The same number and the same name as `examples/solver.rs`'s `BOX_LIMIT`,
+/// deliberately: §5.4's witness search and §8's fit are two coordinate descents
+/// over the same axis under the same registered bound, and a second spelling of
+/// 64 is a second place for it to drift.
+const FIT_BOX_LIMIT: i64 = 64;
+
+/// §8's ladder, IN THE ORDER THE REGISTRATION WRITES IT: "all steps
+/// {±16, ±8, ±4, ±2, ±1}".
+///
+/// **The order is load-bearing**, and it is the LAST tie-break. The 2026-08-23
+/// coherence-pass sentence 10 reads: "Among equal best strict improvements at
+/// one coordinate, ties resolve toward the smaller resulting |w|, then the
+/// earlier-listed step — §5.4's frozen witness-search rule, mirrored." This
+/// array IS "listed order", and it is a byte-for-byte mirror of
+/// `solver.rs`'s `STEP_SET` so that "mirrored" is a fact about two arrays
+/// rather than a claim about two readings.
+const FIT_STEP_SET: [i64; 10] = [16, -16, 8, -8, 4, -4, 2, -2, 1, -1];
+
+/// §8: "≤ 12 sweeps". A CAP, not a target — a full sweep that changes nothing
+/// ends the descent first, which is the ordinary exit.
+const FIT_MAX_SWEEPS: usize = 12;
+
+/// A thirty-four-wide EARLY/LATE integer weight table over the `FeatureId` axis.
+///
+/// Index space is [`FeatureId::all`]'s — the sixteen incumbents in
+/// `Feature::ALL` order, then the eighteen candidates in
+/// `CandidateFeature::ALL` order — which is exactly the matrix's own column
+/// order, so a weight and the column it prices share a subscript and no
+/// re-mapping happens anywhere in the fit.
+///
+/// Deliberately NOT a `WeightTable`: that type is sixteen wide and SHIPS, and
+/// §4.1's rule has held since the clause grammar landed — `Feature::ALL` does
+/// not move at step 6. A fit table is the arithmetic preview of a wider axis,
+/// not the axis.
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct FitTable {
+    early: [i64; AXIS_WIDTH],
+    late: [i64; AXIS_WIDTH],
+}
+
+/// One coordinate of the descent: an axis slot and one of its two endpoints.
+///
+/// A FEATURE is two coordinates, never one — §9's registered rounding phrase
+/// ("`Feature::ALL` × early-then-late order") is the same ordering sentence
+/// coherence-pass sentence 9 extends to candidates, and both halves of a
+/// feature's pair move independently.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct Coordinate {
+    slot: usize,
+    endpoint: StageEndpoint,
+}
+
+impl FitTable {
+    /// **The V2-START init: V2-PADDED.** Incumbents at `WeightTable::V2`'s
+    /// pairs, candidates at zero.
+    ///
+    /// V2 defines no candidate weights, so "start from V2" on a cell that
+    /// carries candidates has exactly one reading, and it is the one §5.4's
+    /// witness search already uses (`solver.rs`'s `v2_padded`, same name for
+    /// the same construction).
+    fn v2_padded() -> Self {
+        let mut table = FitTable { early: [0; AXIS_WIDTH], late: [0; AXIS_WIDTH] };
+        for f in Feature::ALL {
+            let (early, late) = WeightTable::V2.get(f);
+            let slot = FeatureId::Incumbent(f).index();
+            table.early[slot] = early;
+            table.late[slot] = late;
+        }
+        table
+    }
+
+    /// The ALL-ZERO init — §8's second start, and a constant evaluator.
+    fn zero() -> Self {
+        FitTable { early: [0; AXIS_WIDTH], late: [0; AXIS_WIDTH] }
+    }
+
+    fn at(&self, coord: Coordinate) -> i64 {
+        match coord.endpoint {
+            StageEndpoint::Early => self.early[coord.slot],
+            StageEndpoint::Late => self.late[coord.slot],
+        }
+    }
+
+    fn set(&mut self, coord: Coordinate, value: i64) {
+        match coord.endpoint {
+            StageEndpoint::Early => self.early[coord.slot] = value,
+            StageEndpoint::Late => self.late[coord.slot] = value,
+        }
+    }
+
+    /// Both vectors as the `--evaluate` grammar writes them.
+    fn render_vectors(&self) -> String {
+        let join = |v: &[i64; AXIS_WIDTH]| {
+            v.iter().map(i64::to_string).collect::<Vec<_>>().join(",")
+        };
+        format!("{}/{}", join(&self.early), join(&self.late))
+    }
+}
+
+/// Which of the thirty-four axis positions are IN a cell's feature set.
+///
+/// A masked-out feature is NOT a coordinate and contributes NOTHING to a score
+/// — the two halves of one statement, since a feature the descent cannot move
+/// but the objective still prices would make an "off" column carry its init's
+/// weight forever.
+///
+/// **Every §8 set contains all sixteen incumbents** — the seven cells are `B`
+/// plus candidate groups, and coherence-pass sentence 7 says the control arms
+/// fit "over the sixteen incumbent columns plus the arm column only". The
+/// general [`FeatureMask::of`] exists underneath because the three named
+/// constructors are all built from it; the protocol's own sets come from
+/// [`FeatureMask::cell`], which puts the incumbents in by construction.
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct FeatureMask {
+    in_set: [bool; AXIS_WIDTH],
+}
+
+impl FeatureMask {
+    fn of(ids: &[FeatureId]) -> Self {
+        let mut mask = FeatureMask { in_set: [false; AXIS_WIDTH] };
+        for id in ids {
+            mask.in_set[id.index()] = true;
+        }
+        mask
+    }
+
+    /// The whole axis: sixteen incumbents and eighteen candidates.
+    fn all() -> Self {
+        Self::of(&FeatureId::all())
+    }
+
+    /// The sixteen incumbents alone — cell `B`'s set, and the base every other
+    /// set extends.
+    fn incumbents() -> Self {
+        Self::of(&Feature::ALL.map(FeatureId::Incumbent))
+    }
+
+    /// The sixteen incumbents PLUS the named candidates: a §8 cell's set.
+    fn cell(candidates: &[CandidateFeature]) -> Self {
+        let mut mask = Self::incumbents();
+        for c in candidates {
+            mask.in_set[FeatureId::Candidate(*c).index()] = true;
+        }
+        mask
+    }
+
+    fn holds(&self, slot: usize) -> bool {
+        self.in_set[slot]
+    }
+
+    fn members(&self) -> Vec<FeatureId> {
+        FeatureId::all().into_iter().filter(|id| self.in_set[id.index()]).collect()
+    }
+
+    /// **§8's CANONICAL ORDER**, per coherence-pass sentence 9: "the frozen
+    /// solver's realized `FeatureId::all` order (the sixteen incumbents in
+    /// `Feature::ALL` order, then the cell's candidates in
+    /// `CandidateFeature::ALL` order), with each feature's EARLY coordinate
+    /// before its LATE".
+    ///
+    /// `FeatureId::all()` is already that order and `FeatureId::index` is its
+    /// own inverse, so the sequence is ascending slot with the two endpoints
+    /// interleaved — read off the axis rather than transcribed from it.
+    fn coordinates(&self) -> Vec<Coordinate> {
+        let mut out = Vec::with_capacity(2 * AXIS_WIDTH);
+        for id in FeatureId::all() {
+            let slot = id.index();
+            if !self.in_set[slot] {
+                continue;
+            }
+            out.push(Coordinate { slot, endpoint: StageEndpoint::Early });
+            out.push(Coordinate { slot, endpoint: StageEndpoint::Late });
+        }
+        out
+    }
+}
+
+/// **§8's "exact score per snapshot row", and it is `candidate_total`'s
+/// arithmetic over a wider axis.**
+///
+/// `Σ_f interpolate(early_f, late_f, progress_ppm) · dv_f`, accumulated with
+/// `saturating_add` over `i64` and multiplied with `saturating_mul` — the same
+/// operations in the same order [`candidate_total`] uses, with [`interpolate`]
+/// CALLED rather than mirrored (it is `pub` at `eval.rs`, truncating toward
+/// zero, and a second implementation of that truncation is a second rounding
+/// rule waiting to disagree).
+///
+/// **Why one multiplication is enough here and two are needed there.** At 2P
+/// `candidate_total`'s `mine.saturating_sub(theirs)` is `mine −` the single
+/// opponent, and `opponent_extreme`'s signed-weight maximum over ONE opponent
+/// is that opponent — so the matrix's `dv` column, signed by [`signature`] with
+/// the same dummy exclusion, is already the difference the shipped loop forms.
+/// The matrix is 2P ONLY for exactly this reason; at 3–4P the two rules diverge
+/// and this identity would be false.
+///
+/// Terminal views do not arise: snapshots are turn STARTS, and a finished game
+/// records no further turn start ([`candidate_total`]'s own doc says the branch
+/// is defensively unreachable on any corpus this instrument generates), so the
+/// fitter has no terminal arm to get wrong.
+fn score_row(table: &FitTable, mask: &FeatureMask, row: &MatrixRow) -> i64 {
+    let mut total: i64 = 0;
+    for id in FeatureId::all() {
+        let slot = id.index();
+        if !mask.holds(slot) {
+            continue;
+        }
+        let weight = interpolate(table.early[slot], table.late[slot], row.progress_ppm);
+        total = total.saturating_add(weight.saturating_mul(row.dv[slot]));
+    }
+    total
+}
+
+/// One (game × seat × stage) analysis cell of a parsed matrix — [`Cell`]'s own
+/// grouping, addressed by ROW POSITIONS instead of by folded sums.
+///
+/// **The two seats of one turn start are two cells, never one.** [`MatrixRow`]'s
+/// doc says why in full: the sixteen incumbent columns negate exactly at 2P but
+/// six of the eighteen candidate columns provably do not, so a fitter that
+/// folded a turn start's two rows into one signed observation would halve the
+/// candidate evidence and mis-sign those six.
+struct FitCell {
+    game: u32,
+    seat: u8,
+    stage: Stage,
+    label: bool,
+    split: Split,
+    /// The game's index among the games on its OWN side of the split — the
+    /// cluster id [`auc_weighted`] indexes its multiplicities by.
+    cluster: u32,
+    /// Positions into `Matrix::rows`, IN MATRIX ROW ORDER.
+    ///
+    /// Matrix row order is the accumulator's own fold order — `snapshot_game`
+    /// writes the row inside the loop that folds the cell — so summing these in
+    /// sequence reproduces [`CellAcc`]'s summation to the BIT, which is what the
+    /// parity pin rests on.
+    rows: Vec<usize>,
+}
+
+/// A matrix's cell structure, resolved ONCE.
+///
+/// Holds no arithmetic and no scores: only the row→cell addressing, which is a
+/// function of the five key columns and the outcome flag and cannot change with
+/// a weight table. Every objective evaluation is a FULL RECOMPUTE over these
+/// rows (the charter's determinism-over-speed refinement) — this type exists so
+/// the recompute does not re-derive the same addressing a few hundred thousand
+/// times, not so it can skip arithmetic.
+struct MatrixPlan {
+    cells: Vec<FitCell>,
+}
+
+/// Group a parsed matrix into its cells, refusing what would make the grouping
+/// a lie.
+fn plan_matrix(matrix: &Matrix) -> Result<MatrixPlan, String> {
+    if matrix.rows.is_empty() {
+        return Err("fit: the matrix carries a header and no rows".to_string());
+    }
+    let mut cells: Vec<FitCell> = Vec::new();
+    let mut index: BTreeMap<(u32, u8, usize), usize> = BTreeMap::new();
+    let mut labels: BTreeMap<(u32, u8), bool> = BTreeMap::new();
+    for (position, row) in matrix.rows.iter().enumerate() {
+        // The cluster arithmetic reads the game count off the HEADER (the
+        // design), the way `Split::clusters` does, so a row naming a game the
+        // header does not cover would index a multiplicity vector that is too
+        // short — a panic deep inside the AUC instead of a sentence here.
+        if row.game >= matrix.header.games {
+            return Err(format!(
+                "fit: matrix row {position} names game {} but the header declares {} games",
+                row.game, matrix.header.games,
+            ));
+        }
+        if row.turns_in_game == 0 {
+            return Err(format!("fit: matrix row {position} declares zero turns in its game"));
+        }
+        // One outcome per (game, seat): the label is a property of the finished
+        // game, and a cell whose rows disagreed about it would have no honest
+        // class to be scored against.
+        match labels.insert((row.game, row.seat), row.win) {
+            Some(seen) if seen != row.win => {
+                return Err(format!(
+                    "fit: matrix row {position} gives game {} seat {} seat_win_flag {} against \
+                     {seen} earlier — one outcome per (game, seat)",
+                    row.game, row.seat, u8::from(row.win),
+                ));
+            }
+            _ => {}
+        }
+        let stage = stage_of(row.turn_index as usize, row.turns_in_game as usize);
+        let key = (row.game, row.seat, stage.index());
+        let slot = match index.get(&key) {
+            Some(existing) => *existing,
+            None => {
+                let split = Split::of(row.game);
+                let fresh = cells.len();
+                cells.push(FitCell {
+                    game: row.game,
+                    seat: row.seat,
+                    stage,
+                    label: row.win,
+                    split,
+                    cluster: split.cluster(row.game),
+                    rows: Vec::new(),
+                });
+                index.insert(key, fresh);
+                fresh
+            }
+        };
+        cells[slot].rows.push(position);
+    }
+    Ok(MatrixPlan { cells })
+}
+
+/// One half's objective: the three stage AUCs and their mean.
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct HalfObjective {
+    /// Per stage, in [`STAGES`] order. `None` is [`auc_weighted`]'s own
+    /// non-answer — one class empty, or no cell at all — never a filled-in 0.5.
+    stages: [Option<f64>; 3],
+    /// **§8's "mean of the three stage AUCs", over the DEFINED ones.**
+    ///
+    /// The frozen machinery never aggregates the three stages, so there is no
+    /// existing rule to copy for a missing one — but it does say what an
+    /// undefined AUC IS worth: `point_render` prints `--`, and
+    /// `held_out_intervals` DROPS a replicate whose AUC came back `None`
+    /// instead of substituting anything. Both refuse to invent a number, and
+    /// this mean does the same: it averages the stages that have an answer and
+    /// is `None` when none does.
+    ///
+    /// In practice the set of defined stages is a property of the LABELS in a
+    /// half's cells and not of the weight table — `auc_weighted` returns `None`
+    /// exactly when one class is empty — so it is CONSTANT across a whole
+    /// descent, and a fit cannot change which stages count.
+    ///
+    /// A CONSTANT column is a different case and is NOT dropped: every cell
+    /// holding the same value is an AUC of exactly 0.5 by the tie rule, which
+    /// is the arithmetic answer, and `point_render`'s `constant` is a refusal to
+    /// print an INTERVAL rather than a refusal to compute the point. The
+    /// all-zero init makes every column constant, so a fit that dropped them
+    /// could not start at all.
+    mean: Option<f64>,
+    /// Cells per stage on this half — the denominator behind each AUC.
+    cells: [usize; 3],
+}
+
+impl HalfObjective {
+    fn render_mean(&self) -> String {
+        self.mean.map_or_else(|| "  --  ".to_string(), |m| format!("{m:.4}"))
+    }
+
+    fn render_stage(&self, stage: usize) -> String {
+        self.stages[stage].map_or_else(|| "  --  ".to_string(), |a| format!("{a:.4}"))
+    }
+}
+
+/// **§8's objective, end to end, on one half of the split.**
+///
+/// Exact score per row → the mean per (game × seat × stage) cell → the
+/// per-stage AUC over cells against the seat outcome label → the mean of the
+/// three. [`auc_weighted`] is CALLED, with all-ones multiplicities, exactly as
+/// `point_render` calls it for the run report's point estimate; the ascending
+/// sort is `split_column`'s own comparator, for the same reason (a second
+/// spelling of "sort by value" is a second place for the tie GROUPING to
+/// drift, and the tie grouping is what keeps an integer column from reading
+/// near 1 for free).
+fn half_objective(
+    plan: &MatrixPlan,
+    matrix: &Matrix,
+    table: &FitTable,
+    mask: &FeatureMask,
+    split: Split,
+) -> HalfObjective {
+    let mut columns: [Vec<(f64, u32, bool)>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+    for cell in &plan.cells {
+        if cell.split != split {
+            continue;
+        }
+        // RED: the fitter scores the rows and then hands the RAW ROWS to the
+        // AUC — the cousin §8 names in as many words ("cells, not raw rows, so
+        // long games do not overweight"). GREEN folds each cell to its mean
+        // first.
+        for &position in &cell.rows {
+            let value = score_row(table, mask, &matrix.rows[position]) as f64;
+            columns[cell.stage.index()].push((value, cell.cluster, cell.label));
+        }
+    }
+    let mult = vec![1u32; split.clusters(matrix.header.games)];
+    let mut stages: [Option<f64>; 3] = [None; 3];
+    let mut cells = [0usize; 3];
+    for (s, column) in columns.iter_mut().enumerate() {
+        cells[s] = column.len();
+        column.sort_by(|a, b| a.0.partial_cmp(&b.0).expect("cell scores are finite"));
+        stages[s] = auc_weighted(column, &mult);
+    }
+    let defined: Vec<f64> = stages.iter().filter_map(|a| *a).collect();
+    let mean =
+        (!defined.is_empty()).then(|| defined.iter().sum::<f64>() / defined.len() as f64);
+    HalfObjective { stages, mean, cells }
+}
+
+/// One init's descent: where it landed and what it cost.
+#[derive(Clone, Debug)]
+struct FitOutcome {
+    table: FitTable,
+    /// The FIT-half objective at [`table`](Self::table) — the quantity §8
+    /// descends on and the one the two inits are compared by.
+    objective: HalfObjective,
+    /// Sweeps ENTERED, including the final no-move sweep that ends the search.
+    sweeps: usize,
+    /// Coordinates moved, over the whole descent.
+    moves: usize,
+    /// Objective evaluations paid, the init's own included.
+    evaluations: u64,
+}
+
+/// **§8's algorithm**: "coordinate descent, canonical order, all steps
+/// {±16, ±8, ±4, ±2, ±1}, best strict improvement, ties keep incumbent;
+/// ≤ 12 sweeps; box |w| ≤ 64".
+///
+/// A byte-level mirror of `solver.rs`'s `witness_search` with the sign of the
+/// objective flipped — that search MINIMIZES a violation, this one MAXIMIZES an
+/// AUC mean — and the mirror is the point: coherence-pass sentence 10 makes
+/// §5.4's tie rule the fit's tie rule by name, so the two loops are the same
+/// loop.
+fn descend(
+    plan: &MatrixPlan,
+    matrix: &Matrix,
+    mask: &FeatureMask,
+    init: &FitTable,
+) -> Result<FitOutcome, String> {
+    let coordinates = mask.coordinates();
+    let mut w = init.clone();
+    let mut evaluations = 1u64;
+    let mut objective = half_objective(plan, matrix, &w, mask, Split::Fit);
+    let mut current = objective.mean.ok_or_else(|| {
+        "fit: the FIT half's objective is undefined at the init (every stage has one class \
+         empty or no cells at all), and a descent on an undefined objective would be a \
+         descent on nothing"
+            .to_string()
+    })?;
+    let mut sweeps = 0usize;
+    let mut moves = 0usize;
+
+    while sweeps < FIT_MAX_SWEEPS {
+        sweeps += 1;
+        let mut moved = false;
+        for coord in &coordinates {
+            let previous = w.at(*coord);
+            let mut best: Option<(f64, i64)> = None;
+            for &step in &FIT_STEP_SET {
+                // RED: an out-of-box step is CLAMPED to the bound. The frozen
+                // witness search SKIPS it (`solver.rs:446`), and GREEN mirrors
+                // that.
+                let candidate = (previous + step).clamp(-FIT_BOX_LIMIT, FIT_BOX_LIMIT);
+                w.set(*coord, candidate);
+                let trial = half_objective(plan, matrix, &w, mask, Split::Fit);
+                evaluations += 1;
+                w.set(*coord, previous);
+                let Some(value) = trial.mean else { continue };
+                if value > current {
+                    // RED: the FIRST strict improvement in ladder order wins.
+                    // §8 says BEST strict improvement, and sentence 10 says how
+                    // equal bests are separated; GREEN scores all ten.
+                    best = Some((value, candidate));
+                    break;
+                }
+            }
+            if let Some((value, candidate)) = best {
+                w.set(*coord, candidate);
+                objective = half_objective(plan, matrix, &w, mask, Split::Fit);
+                evaluations += 1;
+                debug_assert_eq!(
+                    objective.mean,
+                    Some(value),
+                    "the accepted move re-evaluated to a different objective",
+                );
+                current = value;
+                moves += 1;
+                moved = true;
+            }
+        }
+        if !moved {
+            break;
+        }
+    }
+
+    Ok(FitOutcome { table: w, objective, sweeps, moves, evaluations })
+}
+
+/// Which of §8's two inits a cell's fit came from.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum FitInit {
+    V2Start,
+    AllZero,
+}
+
+impl FitInit {
+    fn name(self) -> &'static str {
+        match self {
+            FitInit::V2Start => "v2-start",
+            FitInit::AllZero => "all-zero",
+        }
+    }
+}
+
+/// One cell's FIT: both inits run, the better FIT-half objective chosen.
+#[derive(Clone, Debug)]
+struct CellFit {
+    v2_start: FitOutcome,
+    all_zero: FitOutcome,
+    chosen: FitInit,
+}
+
+impl CellFit {
+    fn outcome(&self) -> &FitOutcome {
+        match self.chosen {
+            FitInit::V2Start => &self.v2_start,
+            FitInit::AllZero => &self.all_zero,
+        }
+    }
+}
+
+/// §8: "two inits per cell (V2-start; all-zero), the better FIT-half objective
+/// is the cell's fit."
+///
+/// **The tie goes to V2-start**, per the 2026-08-23 coherence-pass sentence 1:
+/// "On an exact tie between the two inits' FIT-half objectives, the V2-start
+/// init's vectors and statistics are the cell's fit." A strict `>` on the
+/// all-zero side is the whole rule — an exact tie falls through to the
+/// incumbent start, and the two inits reaching the same objective by DIFFERENT
+/// vectors is the case that makes the sentence necessary rather than decorative.
+fn fit_cell(plan: &MatrixPlan, matrix: &Matrix, mask: &FeatureMask) -> Result<CellFit, String> {
+    let v2_start = descend(plan, matrix, mask, &FitTable::v2_padded())?;
+    let all_zero = descend(plan, matrix, mask, &FitTable::zero())?;
+    let better = match (all_zero.objective.mean, v2_start.objective.mean) {
+        (Some(zero), Some(v2)) => zero > v2,
+        _ => false,
+    };
+    let chosen = if better { FitInit::AllZero } else { FitInit::V2Start };
+    Ok(CellFit { v2_start, all_zero, chosen })
+}
+
+/// Refuse a matrix this build cannot honestly fit on.
+///
+/// T1's reader parses the provenance fields and judges NONE of them — a reader
+/// that refused on them could not be used to inspect the file that disagreed —
+/// so the judging lands HERE, at the one caller that goes on to compute
+/// something. Both the rev and the package digest are checked because they
+/// answer different questions: `SEMANTICS_REV` says whether the GAMES behind
+/// the rows are still this engine's games, and the pair-fixture package digest
+/// says whether the thirty-four-column AXIS is still this build's axis. Either
+/// mismatch names BOTH values, since "which one is stale" is the reader's next
+/// question and the message is where it gets answered.
+fn check_matrix_provenance(header: &MatrixHeader) -> Result<(), String> {
+    if header.semantics_rev != SEMANTICS_REV {
+        return Err(format!(
+            "fit: the matrix was generated at SEMANTICS_REV {} and this build is {SEMANTICS_REV} \
+             — the rows are a different engine's games, and re-fitting them here would price this \
+             build's features on that one's play",
+            header.semantics_rev,
+        ));
+    }
+    let digest = package_digest();
+    if header.package_digest != digest {
+        return Err(format!(
+            "fit: the matrix carries pair-fixture package digest {} and this build's is {digest} \
+             — the thirty-four columns are a different axis, so column k does not name the same \
+             feature in both",
+            header.package_digest,
+        ));
+    }
+    if header.players != 2 {
+        return Err(format!(
+            "fit: the matrix declares {} players and the relative currency is 2P only (at 3-4P \
+             `signature`'s first-opponent difference and `candidate_total`'s signed-weight \
+             extreme are different quantities, so the score identity this fitter rests on is \
+             false there)",
+            header.players,
+        ));
+    }
+    Ok(())
+}
+
+/// The `--evaluate` grammar, mirroring `--score-table`'s vector arm one axis
+/// wider.
+///
+/// * `v2` — the V2-PADDED table (incumbents at V2, candidates 0), §8's
+///   V2-start init;
+/// * `zero` — the ALL-ZERO table, §8's other init;
+/// * `<e0,…,e33>/<l0,…,l33>` — thirty-four comma-separated `i64` per vector, in
+///   `FeatureId::all()` order.
+///
+/// The width is read off `AXIS_WIDTH` rather than written as 34, and a leading
+/// `+` on an entry is refused by name — both are `parse_score_table`'s rules,
+/// kept so the two vector grammars in this file cannot drift apart.
+fn parse_fit_table(spec: &str) -> Result<(String, FitTable), String> {
+    const FORMS: &str = "(v2 | zero | <34 comma-separated i64>/<34 comma-separated i64> in \
+                         FeatureId::all() order)";
+    match spec {
+        "v2" => return Ok(("v2".to_string(), FitTable::v2_padded())),
+        "zero" => return Ok(("zero".to_string(), FitTable::zero())),
+        _ => {}
+    }
+    let Some((early, late)) = spec.split_once('/') else {
+        return Err(format!(
+            "fit --evaluate {spec:?} names no LATE vector: the two vectors are separated by `/` \
+             {FORMS}"
+        ));
+    };
+    let parse_vector = |raw: &str, which: &str| -> Result<[i64; AXIS_WIDTH], String> {
+        let entries: Vec<&str> = raw.split(',').collect();
+        if entries.len() != AXIS_WIDTH {
+            return Err(format!(
+                "fit --evaluate {spec:?}: the {which} vector has {} entries, and the axis has \
+                 {AXIS_WIDTH} — every weight is named or none is",
+                entries.len(),
+            ));
+        }
+        let mut out = [0i64; AXIS_WIDTH];
+        for (slot, entry) in entries.iter().enumerate() {
+            let entry = entry.trim();
+            if entry.starts_with('+') {
+                return Err(format!(
+                    "fit --evaluate {spec:?}: the {which} vector's entry {} ({entry:?}) opens \
+                     with `+`, which is written bare or `-`-signed here as it is in \
+                     --score-table",
+                    slot + 1,
+                ));
+            }
+            out[slot] = entry.parse::<i64>().map_err(|e| {
+                format!(
+                    "fit --evaluate {spec:?}: the {which} vector's entry {} ({entry:?}) is not an \
+                     i64: {e}",
+                    slot + 1,
+                )
+            })?;
+        }
+        Ok(out)
+    };
+    Ok((
+        "vector".to_string(),
+        FitTable { early: parse_vector(early, "EARLY")?, late: parse_vector(late, "LATE")? },
+    ))
+}
+
+/// The `--descend` grammar: which features are IN the set.
+///
+/// * `incumbents` — the sixteen alone;
+/// * `all` — the whole thirty-four-wide axis;
+/// * `S1,E1,X1,…` — the sixteen incumbents PLUS the named §3.2 candidates, by
+///   their registration labels.
+///
+/// **These are MECHANICAL sets and NOT §8's seven cells.** The cell inventory,
+/// its names and the protocol that runs it are the next task's; naming a set
+/// here fits a table and registers nothing.
+fn parse_fit_mask(spec: &str) -> Result<(String, FeatureMask), String> {
+    match spec {
+        "incumbents" => return Ok(("incumbents".to_string(), FeatureMask::incumbents())),
+        "all" => return Ok(("all".to_string(), FeatureMask::all())),
+        _ => {}
+    }
+    let mut candidates = Vec::new();
+    for token in spec.split(',') {
+        let token = token.trim();
+        let Some(found) = CandidateFeature::ALL.iter().find(|c| c.label() == token) else {
+            return Err(format!(
+                "fit --descend {spec:?}: {token:?} is not a candidate label (incumbents | all | a \
+                 comma-separated list of {:?})",
+                CandidateFeature::ALL.iter().map(|c| c.label()).collect::<Vec<_>>(),
+            ));
+        };
+        if candidates.contains(found) {
+            return Err(format!("fit --descend {spec:?}: {token:?} is named twice"));
+        }
+        candidates.push(*found);
+    }
+    Ok((spec.to_string(), FeatureMask::cell(&candidates)))
+}
+
+/// The matrix's own identity line, shared by both readings.
+fn render_fit_matrix_header(matrix: &Matrix, plan: &MatrixPlan) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "  matrix: master={:#018x} players={} games={} rows={} cells={}",
+        matrix.header.master,
+        matrix.header.players,
+        matrix.header.games,
+        matrix.rows.len(),
+        plan.cells.len(),
+    );
+    let _ = writeln!(
+        out,
+        "          contestant={} weights={} semantics_rev={} package_digest={}",
+        matrix.header.contestant,
+        matrix.header.weights,
+        matrix.header.semantics_rev,
+        matrix.header.package_digest,
+    );
+    let _ = writeln!(out, "          command: {}", matrix.header.command);
+    // The cell census, by the two keys a fold could silently collapse. A turn
+    // start's two seats are TWO cells (see [`FitCell`]), and a report that
+    // never counted the seats could not tell a reader whether they still are.
+    let games: BTreeSet<u32> = plan.cells.iter().map(|c| c.game).collect();
+    let seats: BTreeSet<u8> = plan.cells.iter().map(|c| c.seat).collect();
+    let _ = writeln!(
+        out,
+        "  cells: {} over {} games x {} seats x {} stages (the two seats of a turn start are TWO \
+         observations, never one signed pair)",
+        plan.cells.len(),
+        games.len(),
+        seats.len(),
+        STAGES.len(),
+    );
+    let _ = writeln!(
+        out,
+        "  split: fit = EVEN generation index · held-out = ODD — clusters fit {} · held-out {}",
+        Split::Fit.clusters(matrix.header.games),
+        Split::HeldOut.clusters(matrix.header.games),
+    );
+    out
+}
+
+/// One table's per-stage AUCs and three-AUC mean on BOTH halves.
+///
+/// Returned rather than printed, `render_candidate_tables`' rule and for its
+/// reason: a block that only ever reaches stdout cannot be compared with itself,
+/// and the determinism claim is exactly a comparison of two runs' bytes.
+fn render_fit_evaluation(
+    matrix: &Matrix,
+    plan: &MatrixPlan,
+    name: &str,
+    table: &FitTable,
+    mask: &FeatureMask,
+) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    let _ = writeln!(out, "--- fit --evaluate {name}: the §8 objective on both halves ---");
+    out.push_str(&render_fit_matrix_header(matrix, plan));
+    let _ = writeln!(
+        out,
+        "  set: {} features, {} coordinates",
+        mask.members().len(),
+        mask.coordinates().len(),
+    );
+    let _ = writeln!(out, "  early={:?}", table.early);
+    let _ = writeln!(out, "  late ={:?}", table.late);
+    let _ = writeln!(
+        out,
+        "  objective = mean per (game x seat x stage) CELL -> per-stage AUC over cells -> mean of \
+         the three (the frozen L2 statistic; NOTHING here is fitted)",
+    );
+    let _ = writeln!(
+        out,
+        "      {:<10} {:>8} {:>8} {:>8} {:>8}   cells E/M/L",
+        "half", "EARLY", "MID", "LATE", "mean",
+    );
+    for split in [Split::Fit, Split::HeldOut] {
+        let objective = half_objective(plan, matrix, table, mask, split);
+        let _ = writeln!(
+            out,
+            "      {:<10} {:>8} {:>8} {:>8} {:>8}   {}/{}/{}",
+            split.name(),
+            objective.render_stage(0),
+            objective.render_stage(1),
+            objective.render_stage(2),
+            objective.render_mean(),
+            objective.cells[0],
+            objective.cells[1],
+            objective.cells[2],
+        );
+    }
+    out
+}
+
+/// One set's FIT: both inits, their vectors and statistics, and the choice.
+fn render_fit_descent(
+    matrix: &Matrix,
+    plan: &MatrixPlan,
+    name: &str,
+    mask: &FeatureMask,
+    fit: &CellFit,
+) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    let _ = writeln!(out, "--- fit --descend {name}: §8's coordinate descent, both inits ---");
+    out.push_str(&render_fit_matrix_header(matrix, plan));
+    let _ = writeln!(
+        out,
+        "  set: {} features, {} coordinates in FeatureId::all() order, EARLY before LATE",
+        mask.members().len(),
+        mask.coordinates().len(),
+    );
+    let _ = writeln!(
+        out,
+        "  ladder {FIT_STEP_SET:?} · box |w| <= {FIT_BOX_LIMIT} · <= {FIT_MAX_SWEEPS} sweeps · \
+         best strict improvement, ties toward smaller |w| then the earlier-listed step",
+    );
+    for (init, outcome) in
+        [(FitInit::V2Start, &fit.v2_start), (FitInit::AllZero, &fit.all_zero)]
+    {
+        let _ = writeln!(
+            out,
+            "\n  [{}] fit-half {} (EARLY {} · MID {} · LATE {})  sweeps={} moves={} evals={}{}",
+            init.name(),
+            outcome.objective.render_mean(),
+            outcome.objective.render_stage(0),
+            outcome.objective.render_stage(1),
+            outcome.objective.render_stage(2),
+            outcome.sweeps,
+            outcome.moves,
+            outcome.evaluations,
+            if init == fit.chosen { "  <- the set's fit" } else { "" },
+        );
+        let _ = writeln!(out, "      early={:?}", outcome.table.early);
+        let _ = writeln!(out, "      late ={:?}", outcome.table.late);
+    }
+    let _ = writeln!(
+        out,
+        "\n  chosen: {} (better FIT-half objective; an exact tie keeps v2-start)",
+        fit.chosen.name(),
+    );
+    let held = half_objective(plan, matrix, &fit.outcome().table, mask, Split::HeldOut);
+    let _ = writeln!(
+        out,
+        "  held-out at the chosen fit: {} (EARLY {} · MID {} · LATE {}) — RECORDED, never the \
+         thing descended on",
+        held.render_mean(),
+        held.render_stage(0),
+        held.render_stage(1),
+        held.render_stage(2),
+    );
+    let _ = writeln!(out, "  vectors: {}", fit.outcome().table.render_vectors());
+    out
+}
+
+fn cmd_fit(args: &[String]) -> Result<(), String> {
+    let (positional, flags, _) = split_args(args, &["matrix", "evaluate", "descend"], &[], &[])?;
+    if !positional.is_empty() {
+        return Err(format!("fit takes no positional arguments\n\n{USAGE}"));
+    }
+    let Some(path) = flags.get("matrix") else {
+        return Err(format!("fit needs --matrix <path>\n\n{USAGE}"));
+    };
+    let text = std::fs::read_to_string(path).map_err(|e| format!("fit --matrix {path}: {e}"))?;
+    let matrix = parse_matrix(&text)?;
+    check_matrix_provenance(&matrix.header)?;
+    let plan = plan_matrix(&matrix)?;
+
+    match (flags.get("evaluate"), flags.get("descend")) {
+        (Some(spec), None) => {
+            let (name, table) = parse_fit_table(spec)?;
+            print!("{}", render_fit_evaluation(&matrix, &plan, &name, &table, &FeatureMask::all()));
+            Ok(())
+        }
+        (None, Some(spec)) => {
+            let (name, mask) = parse_fit_mask(spec)?;
+            let fit = fit_cell(&plan, &matrix, &mask)?;
+            print!("{}", render_fit_descent(&matrix, &plan, &name, &mask, &fit));
+            Ok(())
+        }
+        (Some(_), Some(_)) => Err("fit: --evaluate and --descend are two readings; ask for one \
+                                   (an evaluation fits nothing and a descent evaluates its own \
+                                   result)"
+            .to_string()),
+        (None, None) => Err(format!("fit needs --evaluate <table> or --descend <set>\n\n{USAGE}")),
     }
 }
 
@@ -13486,5 +14421,740 @@ mod tests {
             assert_eq!(a.rel, b.rel);
             assert_eq!(a.abs, b.abs);
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // §7 step 6 — the §8 FITTING CORE (`fit`)
+    //
+    // Two kinds of fixture, and the split is deliberate.
+    //
+    // THE PARITY PIN runs on a REAL corpus, because the thing it claims is an
+    // identity between two implementations of one statistic and only real cells
+    // exercise both. Everything else runs on SYNTHETIC matrices written out by
+    // hand, because the thing those claim is an EXACT trajectory — which
+    // coordinate moved, by which step, to which integer — and a golden anyone
+    // can recompute on paper is worth more than a golden read off the
+    // instrument. Every synthetic below states the arithmetic that forces its
+    // answer.
+    //
+    // The synthetic layout convention, used by all of them: `turns_in_game`
+    // rows land in `stage_of`'s terciles, and each row's `progress_ppm` is 0 or
+    // PROGRESS_FULL_PPM so `interpolate` returns the EARLY or the LATE weight
+    // exactly. That makes each coordinate govern a named set of rows and the
+    // hand-computation total.
+    // -----------------------------------------------------------------------
+
+    /// The VictoryPoints slot on the thirty-four-wide axis — position 0, and
+    /// V2's `(1, 40)` pair, which is what makes it the useful incumbent for a
+    /// V2-start fixture.
+    fn fit_vp_slot() -> usize {
+        FeatureId::Incumbent(Feature::VictoryPoints).index()
+    }
+
+    /// The S1 (`ProductionAccess`) slot — the first candidate, position 16.
+    fn fit_s1_slot() -> usize {
+        FeatureId::Candidate(CandidateFeature::ProductionAccess).index()
+    }
+
+    /// One synthetic row, naming only the columns the fixture means.
+    #[allow(clippy::too_many_arguments)]
+    fn fit_row(
+        game: u32,
+        seat: u8,
+        turn_index: u32,
+        turns_in_game: u32,
+        progress_ppm: u32,
+        win: bool,
+        dv: &[(usize, i64)],
+    ) -> MatrixRow {
+        let mut columns = [0i64; AXIS_WIDTH];
+        for (slot, value) in dv {
+            columns[*slot] = *value;
+        }
+        MatrixRow {
+            game,
+            seat,
+            turn_index,
+            turns_in_game,
+            progress_ppm,
+            dv: columns,
+            win,
+            margin: if win { 7 } else { -7 },
+        }
+    }
+
+    /// **THE GOLDEN DESCENT FIXTURE.** Two features, four coordinates, and an
+    /// answer that can be recomputed on paper.
+    ///
+    /// Two fit-half games (0 and 2), two seats each, three turn starts each, so
+    /// every (game × seat × stage) cell holds exactly ONE row and a cell mean is
+    /// that row's score. Turn 0 and turn 1 carry `progress_ppm = 0` (the EARLY
+    /// weight prices them); turn 2 carries `PROGRESS_FULL_PPM` (the LATE weight
+    /// does). The MID rows are all-zero, so the MID column is constant at 0.5
+    /// under every table and the two endpoints are fully decoupled: the EARLY
+    /// coordinates move the EARLY stage's AUC and nothing else, the LATE
+    /// coordinates move the LATE stage's.
+    ///
+    /// # The arithmetic, in full
+    ///
+    /// Positives are `(0, seat 0)` and `(2, seat 1)`; negatives are
+    /// `(0, seat 1)` and `(2, seat 0)`, so each stage's AUC is over 2 × 2 = 4
+    /// pairs. Writing `v` for the VictoryPoints weight and `s` for S1's:
+    ///
+    /// EARLY scores are `(10v, −10v, 4v − s, −4v + s)`. At `v = 1, s = 0` that
+    /// is `(10, −10, 4, −4)` → three concordant pairs of four → 0.75. No `v`
+    /// improves on 0.75 (positive `v` reproduces it, `v = 0` is constant at
+    /// 0.5, negative `v` gives 0.25), so VictoryPoints EARLY does not move. `s`
+    /// buys the fourth pair only once `−4v + s > 4v − s`, i.e. `s ≥ 5` at
+    /// `v = 1` — a threshold the ladder cannot land on, so the best strict
+    /// improvement (AUC 1.0) is reached at `s ∈ {16, 8}` and the smaller
+    /// resulting |w| takes it: **S1 EARLY = 8, by the +8 step**. That is the
+    /// non-trivial step size this fixture exists to pin.
+    ///
+    /// LATE scores are `(v, −v, −s, s)`. At `v = 40, s = 0` the two game-2 cells
+    /// tie at 0 → 3.5/4 = 0.875, and every in-ladder `v` is positive and gives
+    /// the same, so VictoryPoints LATE does not move either. Any `s > 0` breaks
+    /// the tie for 1.0, so the smallest wins: **S1 LATE = 1**.
+    ///
+    /// From ALL-ZERO the same two candidate coordinates land in the same place,
+    /// and the two incumbent coordinates each take their smallest improving
+    /// step: `v` = 1 EARLY (0.5 → 0.75) and `v` = 1 LATE (0.5 → 0.875). Both
+    /// inits therefore finish at `(1.0 + 0.5 + 1.0)/3` — an EXACT tie on
+    /// DIFFERENT vectors, which is what the init-tie sentence is for.
+    fn golden_matrix() -> Matrix {
+        let vp = fit_vp_slot();
+        let s1 = fit_s1_slot();
+        let mut rows = Vec::new();
+        // (game, seat, wins, EARLY dv_vp, EARLY dv_s1, LATE dv_vp, LATE dv_s1)
+        for (game, seat, win, e_vp, e_s1, l_vp, l_s1) in [
+            (0u32, 0u8, true, 10i64, 0i64, 1i64, 0i64),
+            (0, 1, false, -10, 0, -1, 0),
+            (2, 0, false, 4, -1, 0, -1),
+            (2, 1, true, -4, 1, 0, 1),
+        ] {
+            rows.push(fit_row(game, seat, 0, 3, 0, win, &[(vp, e_vp), (s1, e_s1)]));
+            rows.push(fit_row(game, seat, 1, 3, 0, win, &[]));
+            rows.push(fit_row(
+                game,
+                seat,
+                2,
+                3,
+                PROGRESS_FULL_PPM,
+                win,
+                &[(vp, l_vp), (s1, l_s1)],
+            ));
+        }
+        // Three declared games so the ODD half exists in the design; it holds no
+        // rows, which is how the report's `--` for an undefined half gets
+        // exercised at all.
+        Matrix { header: matrix_header_for(3), rows }
+    }
+
+    /// The golden's own feature set: VictoryPoints and S1, nothing else.
+    fn golden_mask() -> FeatureMask {
+        FeatureMask::of(&[
+            FeatureId::Incumbent(Feature::VictoryPoints),
+            FeatureId::Candidate(CandidateFeature::ProductionAccess),
+        ])
+    }
+
+    /// A corpus with the matrix folded AND `--score-table v2` scored, so the
+    /// parity pin has both populations off one generation.
+    fn parity_corpus(rules: &Rules, games: u32) -> Corpus {
+        let v2 = parse_score_table("v2").expect("the shipped base parses");
+        generate(
+            2,
+            games,
+            matrix_contestant(),
+            &WeightTable::V1,
+            rules,
+            SeedScheduleKind::Diagnostic(DEFAULT_MASTER),
+            true,
+            &[],
+            std::slice::from_ref(&v2),
+            true,
+        )
+        .expect("a tiny 2P greedy corpus completes")
+        .0
+    }
+
+    /// **THE PARITY PIN — the cell this whole task exists to make true.**
+    ///
+    /// §8 froze the objective as "the L2 statistic ... EXACTLY", and the L2
+    /// statistic already has an implementation in this file: the `run` path's
+    /// `--score-table` block, which scores every view through
+    /// [`candidate_total`], folds the per-(game, seat, stage) means in
+    /// [`CellAcc`], splits them with [`split_column`] and ranks them with
+    /// [`auc_weighted`]. The fitter reaches the same six numbers by a
+    /// completely different route: it reads the DUMPED MATRIX back, prices each
+    /// row from its own thirty-four `dv` columns under a V2-padded
+    /// [`FitTable`], and folds the cells itself.
+    ///
+    /// Bit-equality across all three stages of BOTH halves is the claim. It is
+    /// not approximate agreement and it cannot be: the cell means are sums of
+    /// the same `i64`-derived `f64` values in the same order over the same
+    /// counts (matrix row order IS the accumulator's fold order — one loop
+    /// writes both), and `auc_weighted` groups ties by exact `f64` equality, so
+    /// a single ULP of drift in one cell would re-group a tie and move an AUC.
+    ///
+    /// **If this cell cannot pass, a §8 premise is wrong** — the fit would be
+    /// optimizing a cousin of the frozen statistic — and that is an owner
+    /// question, not an implementation one.
+    #[test]
+    fn the_fitters_objective_reproduces_the_frozen_l2_statistic_bit_for_bit() {
+        const GAMES: u32 = 4;
+        let rules = Rules::standard();
+        let corpus = parity_corpus(&rules, GAMES);
+        assert!(!corpus.matrix.is_empty(), "the corpus folded no matrix rows");
+        assert_eq!(corpus.games, GAMES);
+
+        let matrix = Matrix { header: matrix_header_for(GAMES), rows: corpus.matrix.clone() };
+        let plan = plan_matrix(&matrix).expect("the corpus's own matrix plans");
+        let table = FitTable::v2_padded();
+        let mask = FeatureMask::incumbents();
+
+        let mut compared = 0;
+        for split in [Split::Fit, Split::HeldOut] {
+            let mine = half_objective(&plan, &matrix, &table, &mask, split);
+            for stage in STAGES {
+                // The run path's own arithmetic, called rather than restated:
+                // `point_render`'s exact expression for a candidate column's
+                // point estimate.
+                let column = split_column(&corpus, 0, stage, split);
+                let theirs = auc_weighted(&column.rows, &vec![1u32; column.clusters]);
+                assert_eq!(
+                    mine.cells[stage.index()],
+                    column.rows.len(),
+                    "{split:?} {stage:?}: the fitter and the run path disagree on the CELL COUNT, \
+                     so any AUC agreement below would be a coincidence",
+                );
+                match (mine.stages[stage.index()], theirs) {
+                    (Some(a), Some(b)) => {
+                        assert_eq!(
+                            a.to_bits(),
+                            b.to_bits(),
+                            "{split:?} {stage:?}: the fitter reads {a} and the frozen L2 \
+                             machinery reads {b} — the fit would be optimizing a cousin of the \
+                             registered statistic",
+                        );
+                        compared += 1;
+                    }
+                    (None, None) => {}
+                    (a, b) => panic!("{split:?} {stage:?}: definedness disagrees ({a:?} vs {b:?})"),
+                }
+            }
+        }
+        assert_eq!(compared, 6, "all three stages of both halves must be defined and compared");
+
+        // Anti-vacuity: the six figures must not all be the same number, or a
+        // fitter that returned a constant would pass the identity above.
+        let spread: BTreeSet<u64> = [Split::Fit, Split::HeldOut]
+            .into_iter()
+            .flat_map(|split| {
+                let objective = half_objective(&plan, &matrix, &table, &mask, split);
+                STAGES.map(|s| objective.stages[s.index()].expect("defined above").to_bits())
+            })
+            .collect();
+        assert!(spread.len() > 1, "every stage read the same AUC — the pin would be vacuous");
+
+        // The candidate half is inert under a V2-PADDED table, so pricing the
+        // whole axis is bit-identical to pricing the sixteen. That is what lets
+        // `fit --evaluate v2` use the full mask and still be this same number.
+        for split in [Split::Fit, Split::HeldOut] {
+            let narrow = half_objective(&plan, &matrix, &table, &mask, split);
+            let wide = half_objective(&plan, &matrix, &table, &FeatureMask::all(), split);
+            assert_eq!(narrow, wide, "a zero candidate weight moved a {split:?} figure");
+        }
+    }
+
+    /// The thirty-four-term loop prices a CANDIDATE weight exactly as it prices
+    /// an incumbent one, and a masked-out column prices at nothing.
+    ///
+    /// Hand-built rows and hand-written expectations, with [`interpolate`]
+    /// called explicitly on each term — so the cell is checking the loop's
+    /// addressing and its masking, not re-running the loop and agreeing with
+    /// itself.
+    #[test]
+    fn the_fit_table_prices_every_masked_column_through_interpolate() {
+        let vp = fit_vp_slot();
+        let s1 = fit_s1_slot();
+        let x3 = FeatureId::Candidate(CandidateFeature::MatchedProductionAccess).index();
+
+        let mut table = FitTable::zero();
+        table.early[vp] = 3;
+        table.late[vp] = -5;
+        table.early[s1] = 7;
+        table.late[s1] = 2;
+        table.early[x3] = -4;
+        table.late[x3] = 9;
+
+        let mask = FeatureMask::of(&[
+            FeatureId::Incumbent(Feature::VictoryPoints),
+            FeatureId::Candidate(CandidateFeature::ProductionAccess),
+        ]);
+
+        for ppm in [0u32, 1, 333_333, 500_000, 999_999, PROGRESS_FULL_PPM] {
+            let row = fit_row(0, 0, 0, 1, ppm, true, &[(vp, 6), (s1, -2), (x3, 11)]);
+            let expected = interpolate(3, -5, ppm) * 6 + interpolate(7, 2, ppm) * -2;
+            assert_eq!(
+                score_row(&table, &mask, &row),
+                expected,
+                "ppm {ppm}: the masked pair priced differently than interpolate says",
+            );
+            // The X3 column is OUT of the mask and carries a nonzero weight and
+            // a nonzero value, so a loop that priced it would land somewhere
+            // else entirely.
+            let wide = FeatureMask::all();
+            assert_eq!(
+                score_row(&table, &wide, &row),
+                expected + interpolate(-4, 9, ppm) * 11,
+                "ppm {ppm}: widening the mask must add exactly the X3 term",
+            );
+        }
+    }
+
+    /// **THE GOLDEN DESCENT.** Both inits' exact fitted vectors, statistics and
+    /// trajectories on [`golden_matrix`].
+    ///
+    /// Order, ladder, tie rule and termination are pinned JOINTLY here — a
+    /// descent that visited LATE before EARLY, took the first improvement
+    /// instead of the best, or resolved a tie toward the larger |w| lands on a
+    /// different integer and fails. The evaluation counts are asserted for the
+    /// same reason: `10 · coordinates` per sweep is what "try ALL of
+    /// {±16, ±8, ±4, ±2, ±1}" costs, and a first-improvement search costs less.
+    #[test]
+    fn the_golden_descent_lands_the_hand_computed_vectors_from_both_inits() {
+        let matrix = golden_matrix();
+        let plan = plan_matrix(&matrix).expect("the golden plans");
+        let mask = golden_mask();
+        let vp = fit_vp_slot();
+        let s1 = fit_s1_slot();
+        assert_eq!(mask.coordinates().len(), 4, "two features, four coordinates");
+
+        let objective: f64 = (1.0 + 0.5 + 1.0) / 3.0;
+
+        let from_v2 = descend(&plan, &matrix, &mask, &FitTable::v2_padded())
+            .expect("the V2-start descent runs");
+        assert_eq!(
+            (from_v2.table.early[vp], from_v2.table.late[vp]),
+            (1, 40),
+            "VictoryPoints must not move: V2's pair is already the EARLY and LATE optimum here",
+        );
+        assert_eq!(
+            (from_v2.table.early[s1], from_v2.table.late[s1]),
+            (8, 1),
+            "S1 EARLY needs |w| >= 5 and the ladder's smallest reach is 8; S1 LATE needs any \
+             positive and takes 1",
+        );
+        assert_eq!(from_v2.objective.stages, [Some(1.0), Some(0.5), Some(1.0)]);
+        assert_eq!(from_v2.objective.mean.map(f64::to_bits), Some(objective.to_bits()));
+        assert_eq!((from_v2.sweeps, from_v2.moves), (2, 2), "one working sweep, one to confirm");
+        assert_eq!(from_v2.evaluations, 1 + (4 * 10 + 2) + 4 * 10);
+
+        let from_zero =
+            descend(&plan, &matrix, &mask, &FitTable::zero()).expect("the all-zero descent runs");
+        assert_eq!(
+            (from_zero.table.early[vp], from_zero.table.late[vp]),
+            (1, 1),
+            "from zero each VictoryPoints endpoint takes its SMALLEST improving step",
+        );
+        assert_eq!((from_zero.table.early[s1], from_zero.table.late[s1]), (8, 1));
+        assert_eq!(from_zero.objective.mean.map(f64::to_bits), Some(objective.to_bits()));
+        assert_eq!((from_zero.sweeps, from_zero.moves), (2, 4));
+        assert_eq!(from_zero.evaluations, 1 + (4 * 10 + 4) + 4 * 10);
+
+        // Nothing outside the set moved, from either start.
+        for id in FeatureId::all() {
+            let slot = id.index();
+            if slot == vp || slot == s1 {
+                continue;
+            }
+            let v2 = FitTable::v2_padded();
+            assert_eq!(
+                (from_v2.table.early[slot], from_v2.table.late[slot]),
+                (v2.early[slot], v2.late[slot]),
+                "{} is outside the set and moved off its init",
+                id.name(),
+            );
+            assert_eq!((from_zero.table.early[slot], from_zero.table.late[slot]), (0, 0));
+        }
+    }
+
+    /// **THE INIT TIE.** Both inits reach the same FIT-half objective by
+    /// DIFFERENT vectors, and the V2-start init's are the set's fit.
+    ///
+    /// The 2026-08-23 coherence-pass sentence 1, executable: "On an exact tie
+    /// between the two inits' FIT-half objectives, the V2-start init's vectors
+    /// and statistics are the cell's fit." The tie is EXACT — both sides
+    /// compute `(1.0 + 0.5 + 1.0)/3` from the same expression — and the vectors
+    /// differ at VictoryPoints LATE (40 against 1), so a selection rule that
+    /// preferred the later init, or compared with `>=`, reports a different
+    /// table and fails here.
+    #[test]
+    fn an_exact_init_tie_reports_the_v2_start_vectors_as_the_fit() {
+        let matrix = golden_matrix();
+        let plan = plan_matrix(&matrix).expect("the golden plans");
+        let mask = golden_mask();
+        let fit = fit_cell(&plan, &matrix, &mask).expect("both inits run");
+        let vp = fit_vp_slot();
+
+        assert_eq!(
+            fit.v2_start.objective.mean.map(f64::to_bits),
+            fit.all_zero.objective.mean.map(f64::to_bits),
+            "the fixture is only a tie test if the two objectives are bit-equal",
+        );
+        assert_ne!(
+            fit.v2_start.table, fit.all_zero.table,
+            "the fixture is only a tie test if the two vectors DIFFER",
+        );
+        assert_eq!(fit.chosen, FitInit::V2Start, "an exact tie keeps the V2-start init");
+        assert_eq!(fit.outcome().table.late[vp], 40, "the reported fit is V2-start's, not zero's");
+    }
+
+    /// **THE STEP TIES**, both of them, in one fixture.
+    ///
+    /// One feature, two coordinates, four one-row cells in a single tercile —
+    /// the two positives priced by the EARLY weight (`+1` and `−1` on the same
+    /// column, so their SCORE MULTISET is invariant under a sign flip of that
+    /// weight) and the two negatives priced by the LATE weight.
+    ///
+    /// * EARLY, from `w = 1`: every candidate of |w| ≥ 3 separates one positive
+    ///   from both negatives (AUC 0.5) and nothing does better, so the best
+    ///   improvement is reached at |w| = 3 by TWO candidates — `−3` from the
+    ///   `−4` step and `+3` from the `+2` step. The multiset invariance makes
+    ///   their objectives bit-equal, so |w| cannot separate them and the
+    ///   LISTED ORDER must: `−4` precedes `+2` in the ladder, so the fitted
+    ///   weight is **−3**. That is coherence-pass sentence 10's second clause,
+    ///   and it is the only clause a fixture can isolate.
+    /// * LATE, from `w = 2` with EARLY now at `−3`: pushing both negatives
+    ///   below both positives reaches AUC 1.0, and TWO candidates do it — `−14`
+    ///   from the `−16` step and `−6` from the `−8` step. Equal objectives,
+    ///   unequal |w|, so the first clause decides: the fitted weight is **−6**.
+    #[test]
+    fn equal_best_improvements_resolve_by_smaller_weight_then_by_listed_step_order() {
+        let vp = fit_vp_slot();
+        // (game, seat, wins, progress, dv_vp) — the positives at progress 0
+        // (EARLY prices them), the negatives at full progress (LATE does).
+        let rows = vec![
+            fit_row(0, 0, 0, 1, 0, true, &[(vp, 1)]),
+            fit_row(0, 1, 0, 1, PROGRESS_FULL_PPM, false, &[(vp, 1)]),
+            fit_row(2, 0, 0, 1, PROGRESS_FULL_PPM, false, &[(vp, 1)]),
+            fit_row(2, 1, 0, 1, 0, true, &[(vp, -1)]),
+        ];
+        let matrix = Matrix { header: matrix_header_for(3), rows };
+        let plan = plan_matrix(&matrix).expect("the tie fixture plans");
+        let mask = FeatureMask::of(&[FeatureId::Incumbent(Feature::VictoryPoints)]);
+
+        let mut init = FitTable::zero();
+        init.early[vp] = 1;
+        init.late[vp] = 2;
+        let fitted = descend(&plan, &matrix, &mask, &init).expect("the tie descent runs");
+
+        assert_eq!(
+            fitted.table.early[vp], -3,
+            "|w| ties at 3 between the -4 and +2 steps, and the earlier-listed step takes it",
+        );
+        assert_eq!(
+            fitted.table.late[vp], -6,
+            "-14 and -6 tie on the objective, and the smaller resulting |w| takes it",
+        );
+        assert_eq!(fitted.objective.stages, [Some(1.0), None, None], "a one-turn game is all EARLY");
+        assert_eq!(fitted.objective.mean, Some(1.0), "the mean is over the DEFINED stages");
+        assert_eq!((fitted.sweeps, fitted.moves), (2, 2));
+    }
+
+    /// **THE BOX.** `|w| ≤ 64`, and a step that would leave it is SKIPPED
+    /// rather than clamped onto the bound.
+    ///
+    /// The convention is `solver.rs`'s, mirrored: `witness_search` tests
+    /// `candidate < lo || candidate > hi` and `continue`s (`solver.rs:446-448`),
+    /// so an out-of-box step is not a move to the boundary — it is not a move.
+    ///
+    /// The fixture separates the two readings. From EARLY `w = 51`, the `+16`
+    /// step proposes 67, which is out of the box; every in-box candidate tops
+    /// out at 59. The two negatives sit at 61 (the LATE weight), so a positive
+    /// cell only outranks them above 61: SKIPPING leaves EARLY at 51 with no
+    /// improvement, while CLAMPING would take 67 down to 64, find an
+    /// improvement there and fit **64**. The asserted 51 is what says which
+    /// rule ran.
+    #[test]
+    fn the_box_skips_an_out_of_range_step_rather_than_clamping_onto_the_bound() {
+        let vp = fit_vp_slot();
+        let rows = vec![
+            fit_row(0, 0, 0, 1, 0, true, &[(vp, 1)]),
+            fit_row(0, 1, 0, 1, PROGRESS_FULL_PPM, false, &[(vp, 1)]),
+            fit_row(2, 0, 0, 1, PROGRESS_FULL_PPM, false, &[(vp, 1)]),
+            fit_row(2, 1, 0, 1, 0, true, &[(vp, 1)]),
+        ];
+        let matrix = Matrix { header: matrix_header_for(3), rows };
+        let plan = plan_matrix(&matrix).expect("the box fixture plans");
+        let mask = FeatureMask::of(&[FeatureId::Incumbent(Feature::VictoryPoints)]);
+
+        let mut init = FitTable::zero();
+        init.early[vp] = 51;
+        init.late[vp] = 61;
+        let fitted = descend(&plan, &matrix, &mask, &init).expect("the box descent runs");
+
+        assert_eq!(
+            fitted.table.early[vp], 51,
+            "the +16 step proposes 67, which is OUT of the box; a clamp would have fitted 64",
+        );
+        assert_eq!(
+            fitted.table.late[vp], 45,
+            "the LATE coordinate's only improving in-box candidate is 61 - 16",
+        );
+        assert_eq!(fitted.objective.mean, Some(1.0));
+        assert_eq!((fitted.sweeps, fitted.moves), (2, 1));
+        for id in FeatureId::all() {
+            let slot = id.index();
+            assert!(
+                fitted.table.early[slot].abs() <= FIT_BOX_LIMIT
+                    && fitted.table.late[slot].abs() <= FIT_BOX_LIMIT,
+                "{} left the box",
+                id.name(),
+            );
+        }
+    }
+
+    /// **KNOWN-SIGNAL RECOVERY** — the shape §8's optimizer-adequacy controls
+    /// take, run here as an implementation cell rather than as a control.
+    ///
+    /// The arm column IS the outcome: `+1` for a winning seat, `−1` for a losing
+    /// one, constant across that seat's rows, with all sixteen incumbent
+    /// columns identically zero. A descent from all-zero that cannot fit a
+    /// nonzero correct-signed weight to a column that separates the classes
+    /// perfectly is an optimizer defect, and §8 says so ("either arm's failure
+    /// stops the fitting stage as an instrument defect").
+    ///
+    /// The incumbents are in the set and carry zero information, so they are
+    /// also the cell's own control: a search that moved one of them moved on
+    /// noise that is not there.
+    #[test]
+    fn a_descent_from_all_zero_recovers_a_positive_weight_on_an_outcome_signed_column() {
+        let arm = fit_s1_slot();
+        let mut rows = Vec::new();
+        for game in 0u32..4 {
+            for seat in 0u8..2 {
+                let win = u32::from(seat) == game % 2;
+                let sign = if win { 1 } else { -1 };
+                for (turn, ppm) in [(0u32, 0u32), (1, 500_000), (2, PROGRESS_FULL_PPM)] {
+                    rows.push(fit_row(game, seat, turn, 3, ppm, win, &[(arm, sign)]));
+                }
+            }
+        }
+        let matrix = Matrix { header: matrix_header_for(4), rows };
+        let plan = plan_matrix(&matrix).expect("the recovery fixture plans");
+        let mask = FeatureMask::cell(&[CandidateFeature::ProductionAccess]);
+        assert_eq!(mask.members().len(), 17, "sixteen incumbents plus the arm — sentence 7's set");
+
+        let fitted =
+            descend(&plan, &matrix, &mask, &FitTable::zero()).expect("the recovery descent runs");
+        assert!(
+            fitted.table.early[arm] > 0 && fitted.table.late[arm] > 0,
+            "the arm fitted ({}, {}) against a column that IS the label",
+            fitted.table.early[arm],
+            fitted.table.late[arm],
+        );
+        assert_eq!(
+            (fitted.table.early[arm], fitted.table.late[arm]),
+            (1, 1),
+            "a perfectly separating column is separated by the SMALLEST improving weight",
+        );
+        assert_eq!(fitted.objective.mean, Some(1.0), "a column that is the label separates fully");
+        for f in Feature::ALL {
+            let slot = FeatureId::Incumbent(f).index();
+            assert_eq!(
+                (fitted.table.early[slot], fitted.table.late[slot]),
+                (0, 0),
+                "{} carries no information here and must not have moved",
+                f.name(),
+            );
+        }
+    }
+
+    /// **THE SEAT-FOLD GUARD.** A turn start's two seats are TWO cells.
+    ///
+    /// [`MatrixRow`]'s doc is the reason and it is not a style point: the
+    /// sixteen incumbent columns negate exactly at 2P, but `{O1, O2, O3, O5,
+    /// O6, X3}` provably do NOT — a seat reads its own held orders while the
+    /// opponent's are masked counts — so a fitter that folded the two rows into
+    /// one signed observation would halve the candidate evidence and mis-sign
+    /// six columns. This cell walks a REAL corpus and asserts the grouping the
+    /// objective is built on: two cells per (game, stage), one per seat, every
+    /// row in exactly one of them.
+    #[test]
+    fn the_fit_cells_keep_the_two_seats_of_a_turn_start_apart() {
+        let rules = Rules::standard();
+        let corpus = matrix_corpus(&rules, MATRIX_GAMES);
+        let matrix =
+            Matrix { header: matrix_header_for(MATRIX_GAMES), rows: corpus.matrix.clone() };
+        let plan = plan_matrix(&matrix).expect("the corpus's matrix plans");
+
+        let mut by_key: BTreeMap<(u32, usize), Vec<u8>> = BTreeMap::new();
+        let mut covered = 0usize;
+        for cell in &plan.cells {
+            by_key.entry((cell.game, cell.stage.index())).or_default().push(cell.seat);
+            covered += cell.rows.len();
+            for &position in &cell.rows {
+                let row = &matrix.rows[position];
+                assert_eq!(row.seat, cell.seat, "a cell swallowed the other seat's row");
+                assert_eq!(row.game, cell.game);
+                assert_eq!(row.win, cell.label);
+            }
+        }
+        assert_eq!(covered, matrix.rows.len(), "the cells must partition the rows exactly");
+        assert_eq!(
+            by_key.len(),
+            MATRIX_GAMES as usize * STAGES.len(),
+            "every (game, stage) of these games is populated",
+        );
+        for ((game, stage), mut seats) in by_key {
+            seats.sort_unstable();
+            assert_eq!(
+                seats,
+                vec![0u8, 1],
+                "game {game} stage {stage} folded its seats into {} cell(s)",
+                seats.len(),
+            );
+        }
+
+        // And the objective's own columns carry both: one stage of the FIT half
+        // holds one cell per (game, seat), never one per game.
+        let objective = half_objective(
+            &plan,
+            &matrix,
+            &FitTable::v2_padded(),
+            &FeatureMask::all(),
+            Split::Fit,
+        );
+        let fit_games = Split::Fit.clusters(MATRIX_GAMES);
+        assert_eq!(objective.cells, [fit_games * 2; 3], "a stage column is seats x games");
+    }
+
+    /// Two fits from identical inputs agree on everything, printed bytes
+    /// included.
+    ///
+    /// §8: "Deterministic; no master." Nothing in the descent draws, samples or
+    /// reads a clock, so this is a cheap cell — and it is the one that would
+    /// catch a hash-ordered iteration or an `f64` accumulation that depended on
+    /// allocation order sneaking in later.
+    #[test]
+    fn two_fits_from_identical_inputs_agree_to_the_byte() {
+        let matrix = golden_matrix();
+        let plan = plan_matrix(&matrix).expect("the golden plans");
+        let mask = golden_mask();
+
+        let first = fit_cell(&plan, &matrix, &mask).expect("the first fit runs");
+        let second = fit_cell(&plan, &matrix, &mask).expect("the second fit runs");
+        assert_eq!(first.chosen, second.chosen);
+        for (a, b) in [
+            (&first.v2_start, &second.v2_start),
+            (&first.all_zero, &second.all_zero),
+        ] {
+            assert_eq!(a.table, b.table);
+            assert_eq!(a.objective.mean.map(f64::to_bits), b.objective.mean.map(f64::to_bits));
+            assert_eq!((a.sweeps, a.moves, a.evaluations), (b.sweeps, b.moves, b.evaluations));
+        }
+        assert_eq!(
+            render_fit_descent(&matrix, &plan, "golden", &mask, &first),
+            render_fit_descent(&matrix, &plan, "golden", &mask, &second),
+        );
+
+        let table = FitTable::v2_padded();
+        assert_eq!(
+            render_fit_evaluation(&matrix, &plan, "v2", &table, &FeatureMask::all()),
+            render_fit_evaluation(&matrix, &plan, "v2", &table, &FeatureMask::all()),
+        );
+    }
+
+    /// `fit` REFUSES a matrix from another build, naming both values — and the
+    /// READER still parses it.
+    ///
+    /// T1's adjudication put the two halves in different places on purpose: a
+    /// reader that refused on provenance could not be used to inspect the file
+    /// that disagreed, so [`parse_matrix`] reports and does not judge, and the
+    /// judging lands at the one caller that goes on to compute something. Both
+    /// halves are asserted here, because either alone is a different design.
+    #[test]
+    fn fit_refuses_a_foreign_matrix_while_the_reader_still_parses_it() {
+        let matrix = golden_matrix();
+        let bytes = render_matrix(&matrix);
+        let path = matrix_temp_path("fitprov");
+        let name = path.to_str().expect("a UTF-8 temp path").to_string();
+
+        for (from, to, expect) in [
+            (
+                format!("# semantics_rev {SEMANTICS_REV}\n"),
+                "# semantics_rev 999\n".to_string(),
+                vec!["999".to_string(), SEMANTICS_REV.to_string()],
+            ),
+            (
+                format!("# package_digest {}\n", package_digest()),
+                "# package_digest deadbeefdeadbeef\n".to_string(),
+                vec!["deadbeefdeadbeef".to_string(), package_digest()],
+            ),
+        ] {
+            assert!(bytes.contains(&from), "the rendered header has no line to mutate");
+            let mutated = bytes.replace(&from, &to);
+            // The reader is unchanged by the mutation: it parses and hands the
+            // provenance back unjudged.
+            parse_matrix(&mutated).expect("the reader must still parse a foreign matrix");
+
+            std::fs::write(&path, &mutated).expect("the fixture writes");
+            let message = cmd_fit(&[
+                "--matrix".to_string(),
+                name.clone(),
+                "--evaluate".to_string(),
+                "v2".to_string(),
+            ])
+            .expect_err("fit must refuse a matrix from another build");
+            for needle in &expect {
+                assert!(
+                    message.contains(needle),
+                    "the refusal does not name {needle:?}: {message}",
+                );
+            }
+        }
+
+        // The control: unmutated, the same command runs.
+        std::fs::write(&path, &bytes).expect("the fixture writes");
+        cmd_fit(&["--matrix".to_string(), name, "--evaluate".to_string(), "v2".to_string()])
+            .expect("this build's own matrix evaluates");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The two `fit` grammars parse their forms and name what they refuse.
+    #[test]
+    fn the_fit_grammars_parse_their_forms_and_name_what_they_refuse() {
+        assert_eq!(parse_fit_table("v2").expect("v2 parses").1, FitTable::v2_padded());
+        assert_eq!(parse_fit_table("zero").expect("zero parses").1, FitTable::zero());
+
+        let vector = FitTable::v2_padded().render_vectors();
+        let (name, parsed) = parse_fit_table(&vector).expect("a full vector parses");
+        assert_eq!(name, "vector");
+        assert_eq!(parsed, FitTable::v2_padded(), "the vector form round-trips the V2 padding");
+
+        for (spec, needle) in [
+            ("v3", "names no LATE vector"),
+            ("1,2/3,4", "entries, and the axis has"),
+            (&format!("{}/{}", vec!["+1"; AXIS_WIDTH].join(","), vec!["1"; AXIS_WIDTH].join(",")), "opens \
+             with `+`"),
+            (&format!("{}/{}", vec!["x"; AXIS_WIDTH].join(","), vec!["1"; AXIS_WIDTH].join(",")), "is not an i64"),
+        ] {
+            let message = parse_fit_table(spec).expect_err("{spec:?} must be refused");
+            assert!(message.contains(needle), "{spec:?}: {message}");
+        }
+
+        assert_eq!(parse_fit_mask("incumbents").expect("parses").1, FeatureMask::incumbents());
+        assert_eq!(parse_fit_mask("all").expect("parses").1, FeatureMask::all());
+        let (name, mask) = parse_fit_mask("S1,X1").expect("a label list parses");
+        assert_eq!(name, "S1,X1");
+        assert_eq!(
+            mask,
+            FeatureMask::cell(&[CandidateFeature::ProductionAccess, CandidateFeature::LabTakeable]),
+        );
+        assert_eq!(mask.members().len(), 18, "sixteen incumbents plus the two named");
+        assert!(parse_fit_mask("S1,S1").expect_err("a duplicate").contains("twice"));
+        assert!(parse_fit_mask("O4").expect_err("no such label").contains("not a candidate label"));
     }
 }
