@@ -303,9 +303,11 @@ usage: eval_probe <subcommand> [options]
   fit --matrix <path> (--evaluate <table> | --descend <set>)
       The §8 FITTING CORE, over a matrix `run --dump-matrix` wrote. Reads the
       file, REFUSES one whose SEMANTICS_REV or pair-fixture package digest is
-      not this build's (naming both values), and then does exactly one of two
-      things. Deterministic and master-free: §8 says `Deterministic; no master`,
-      and the only inputs are the bytes, the set and the init.
+      not this build's (naming both values) or that was generated away from 2P
+      (the relative currency is 2P only, for `collinearity`'s reason), and then
+      does exactly one of two things. Deterministic and master-free: §8 says
+      `Deterministic; no master`, and the only inputs are the bytes, the set and
+      the init.
 
       --evaluate <table>  Score the matrix under <table> and print the §8
                           objective on BOTH halves: exact score per snapshot row
@@ -399,8 +401,10 @@ fn main() {
 /// "fine", 2 for "errored") cannot say "found nothing wrong, but did not look
 /// everywhere".
 ///
-/// Only the `rooted` arm routes through this; the other four keep the plain
-/// `Result<(), String>` contract and their exit behaviour is untouched.
+/// Only the `rooted` arm routes through this; every other subcommand keeps the
+/// plain `Result<(), String>` contract and its exit behaviour is untouched. The
+/// count of those is deliberately not written here — it was, and it went stale
+/// the moment `fit` landed.
 fn exit_with(code: i32) {
     if code == 0 {
         return;
@@ -4435,10 +4439,16 @@ fn plan_matrix(matrix: &Matrix) -> Result<MatrixPlan, String> {
         // class to be scored against.
         match labels.insert((row.game, row.seat), row.win) {
             Some(seen) if seen != row.win => {
+                // Both flags in the COLUMN's own 0/1 spelling, so the message
+                // reads in the same alphabet as the bytes it is complaining
+                // about rather than mixing `1` with `false`.
                 return Err(format!(
                     "fit: matrix row {position} gives game {} seat {} seat_win_flag {} against \
-                     {seen} earlier — one outcome per (game, seat)",
-                    row.game, row.seat, u8::from(row.win),
+                     {} earlier — one outcome per (game, seat)",
+                    row.game,
+                    row.seat,
+                    u8::from(row.win),
+                    u8::from(seen),
                 ));
             }
             _ => {}
@@ -14631,6 +14641,14 @@ mod tests {
     /// writes both), and `auc_weighted` groups ties by exact `f64` equality, so
     /// a single ULP of drift in one cell would re-group a tie and move an AUC.
     ///
+    /// **The fitter's side reads BYTES.** The composition under test is
+    /// `render_matrix` → text → `parse_matrix` → plan → evaluate, so the
+    /// serializer and the reader are inside the identity rather than beside it:
+    /// a format change that survived T1's round-trip cell but lost a column's
+    /// meaning would land here. The rows are checked equal to the in-memory
+    /// ones first, which is what makes "it traversed the bytes AND the bytes
+    /// were faithful" two claims instead of one.
+    ///
     /// **If this cell cannot pass, a §8 premise is wrong** — the fit would be
     /// optimizing a cousin of the frozen statistic — and that is an owner
     /// question, not an implementation one.
@@ -14642,7 +14660,9 @@ mod tests {
         assert!(!corpus.matrix.is_empty(), "the corpus folded no matrix rows");
         assert_eq!(corpus.games, GAMES);
 
-        let matrix = Matrix { header: matrix_header_for(GAMES), rows: corpus.matrix.clone() };
+        let dumped = Matrix { header: matrix_header_for(GAMES), rows: corpus.matrix.clone() };
+        let matrix = parse_matrix(&render_matrix(&dumped)).expect("the dumped matrix reads back");
+        assert_eq!(matrix.rows, dumped.rows, "the bytes did not carry the corpus's own rows");
         let plan = plan_matrix(&matrix).expect("the corpus's own matrix plans");
         let table = FitTable::v2_padded();
         let mask = FeatureMask::incumbents();
@@ -15127,6 +15147,17 @@ mod tests {
                 "# package_digest deadbeefdeadbeef\n".to_string(),
                 vec!["deadbeefdeadbeef".to_string(), package_digest()],
             ),
+            // The THIRD arm, and it fails differently from the other two: rev
+            // and digest say the rows came from another build, while the player
+            // count says the relative currency in them is not the one the score
+            // identity rests on. `signature`'s first-opponent difference and
+            // `candidate_total`'s signed-weight extreme agree at 2P and diverge
+            // above it, so a 3P matrix would fit a quantity nothing shipped.
+            (
+                "# players 2\n".to_string(),
+                "# players 3\n".to_string(),
+                vec!["3".to_string(), "2P only".to_string()],
+            ),
         ] {
             assert!(bytes.contains(&from), "the rendered header has no line to mutate");
             let mutated = bytes.replace(&from, &to);
@@ -15155,6 +15186,187 @@ mod tests {
         cmd_fit(&["--matrix".to_string(), name, "--evaluate".to_string(), "v2".to_string()])
             .expect("this build's own matrix evaluates");
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// The fitter refuses a malformed MATRIX and a malformed INVOCATION, each
+    /// refusal naming what it saw.
+    ///
+    /// Corpus-free: every arm is a hand-built `Matrix` or an argv, because what
+    /// is under test is a guard and not a statistic.
+    ///
+    /// The game-bound arm is the one worth reading twice. `Split::cluster`
+    /// indexes the multiplicity vector `auc_weighted` is handed, and that
+    /// vector is sized from the HEADER's game count — so a row naming a game
+    /// the header does not cover is the difference between this sentence and an
+    /// out-of-bounds panic several frames deep inside the AUC, on a matrix
+    /// whose corpus is long gone.
+    #[test]
+    fn the_fitter_refuses_a_malformed_matrix_and_a_malformed_invocation() {
+        let vp = fit_vp_slot();
+        let header = matrix_header_for(1);
+
+        for (rows, needle, what) in [
+            (vec![], "carries a header and no rows", "an empty matrix"),
+            (
+                vec![fit_row(3, 0, 0, 1, 0, true, &[(vp, 1)])],
+                "names game 3 but the header declares 1 games",
+                "a row outside the header's game count",
+            ),
+            (
+                vec![fit_row(0, 0, 0, 0, 0, true, &[(vp, 1)])],
+                "declares zero turns in its game",
+                "a game with no turns for `stage_of` to divide",
+            ),
+            (
+                vec![
+                    fit_row(0, 0, 0, 2, 0, true, &[(vp, 1)]),
+                    fit_row(0, 0, 1, 2, 0, false, &[(vp, 1)]),
+                ],
+                "seat_win_flag 0 against 1 earlier",
+                "one seat with two outcomes",
+            ),
+        ] {
+            let Err(message) = plan_matrix(&Matrix { header: header.clone(), rows }) else {
+                panic!("{what} planned instead of being refused");
+            };
+            assert!(message.contains(needle), "{what}: {message}");
+        }
+
+        // The INVOCATION arms. The first two are refused before any file is
+        // opened; the last two need a readable matrix, because `cmd_fit`
+        // decides what to DO only after it knows it has something to do it to.
+        let path = matrix_temp_path("fitargs");
+        let name = path.to_str().expect("a UTF-8 temp path").to_string();
+        std::fs::write(&path, render_matrix(&golden_matrix())).expect("the fixture writes");
+        let arg = |s: &str| s.to_string();
+
+        for (argv, needle, what) in [
+            (vec![arg("2")], "takes no positional arguments", "a positional argument"),
+            (
+                vec![arg("--evaluate"), arg("v2")],
+                "fit needs --matrix <path>",
+                "no matrix at all",
+            ),
+            (
+                vec![
+                    arg("--matrix"),
+                    arg(&name),
+                    arg("--evaluate"),
+                    arg("v2"),
+                    arg("--descend"),
+                    arg("incumbents"),
+                ],
+                "two readings",
+                "both readings at once",
+            ),
+            (
+                vec![arg("--matrix"), arg(&name)],
+                "needs --evaluate <table> or --descend <set>",
+                "neither reading",
+            ),
+        ] {
+            let Err(message) = cmd_fit(&argv) else {
+                panic!("{what} ran instead of being refused");
+            };
+            assert!(message.contains(needle), "{what}: {message}");
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A descent needs a defined objective to descend on, and says so rather
+    /// than descending on nothing.
+    ///
+    /// The fixture is deliberately impossible in play: both EVEN games are
+    /// recorded as won by BOTH seats, so every FIT-half cell is a positive and
+    /// `auc_weighted` returns `None` at all three stages (an AUC over no
+    /// discordant pair is undefined, not 0.5 — its own doc says so). That is
+    /// the one shape where the objective has no answer for any table, since
+    /// definedness is a property of the LABELS and not of the weights.
+    #[test]
+    fn a_descent_refuses_an_init_whose_fit_half_objective_is_undefined() {
+        let vp = fit_vp_slot();
+        let mut rows = Vec::new();
+        for game in [0u32, 2] {
+            for seat in 0u8..2 {
+                for turn in 0u32..3 {
+                    rows.push(fit_row(game, seat, turn, 3, 0, true, &[(vp, i64::from(seat))]));
+                }
+            }
+        }
+        let matrix = Matrix { header: matrix_header_for(3), rows };
+        let plan = plan_matrix(&matrix).expect("the fixture plans");
+        let mask = FeatureMask::incumbents();
+
+        let objective = half_objective(&plan, &matrix, &FitTable::v2_padded(), &mask, Split::Fit);
+        assert_eq!(objective.stages, [None; 3], "one class empty is an undefined AUC");
+        assert_eq!(objective.mean, None, "a mean over no defined stage is not a number");
+        assert_eq!(objective.cells, [4; 3], "the cells are there — it is the CLASSES that are not");
+
+        let message = descend(&plan, &matrix, &mask, &FitTable::v2_padded())
+            .expect_err("a descent on an undefined objective must refuse");
+        assert!(
+            message.contains("undefined at the init"),
+            "the refusal does not name what is undefined: {message}",
+        );
+    }
+
+    /// **The fit's ladder IS the frozen witness search's ladder**, checked
+    /// against `solver.rs`'s own SOURCE TEXT.
+    ///
+    /// `FIT_STEP_SET`'s doc claims it is "a byte-for-byte mirror of
+    /// `solver.rs`'s `STEP_SET`", and coherence-pass sentence 10 rests on that
+    /// claim — it makes §5.4's tie rule the fit's tie rule BY NAME, which is
+    /// only true if the two ladders are the same ladder in the same order. The
+    /// two files are separate example targets and cannot `use` each other, so
+    /// nothing but a source read can hold them together: re-price the solver's
+    /// ladder, or reorder it, and this cell is the only thing that notices.
+    /// `guide_sync`'s precedent, applied to two consts instead of two documents.
+    ///
+    /// The scan is tolerant of whitespace and of the array spanning lines: it
+    /// finds the declaration by its first two WORDS and then takes the text
+    /// between the assignment and the semicolon.
+    #[test]
+    fn the_fit_ladder_and_box_are_the_frozen_solvers_own_constants() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/solver.rs");
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("the frozen solver's source must be readable: {e}"));
+
+        let literal = |name: &str| -> String {
+            let line = source
+                .lines()
+                .position(|line| {
+                    let mut words = line.split_whitespace();
+                    words.next() == Some("const")
+                        && words.next().is_some_and(|w| w.trim_end_matches(':') == name)
+                })
+                .unwrap_or_else(|| panic!("solver.rs declares no `const {name}`"));
+            let tail: String = source.lines().skip(line).collect::<Vec<_>>().join("\n");
+            let assign = tail.find('=').expect("a const declaration assigns");
+            let end = tail[assign..].find(';').expect("a const declaration ends") + assign;
+            tail[assign + 1..end].trim().to_string()
+        };
+
+        let steps = literal("STEP_SET");
+        let entries: Vec<i64> = steps
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .split(',')
+            .map(str::trim)
+            .filter(|entry| !entry.is_empty())
+            .map(|entry| entry.parse::<i64>().expect("a step is an integer literal"))
+            .collect();
+        assert_eq!(
+            entries,
+            FIT_STEP_SET.to_vec(),
+            "the fit's ladder has drifted from the frozen witness search's — sentence 10's \
+             'earlier-listed step' names THAT list, so a reorder here silently re-decides every \
+             step tie",
+        );
+        assert_eq!(
+            literal("BOX_LIMIT").parse::<i64>().expect("the box is an integer literal"),
+            FIT_BOX_LIMIT,
+            "§5.4's box and §8's box are the same registered bound and must read alike",
+        );
     }
 
     /// The two `fit` grammars parse their forms and name what they refuse.
