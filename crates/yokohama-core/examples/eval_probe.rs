@@ -6415,4 +6415,121 @@ mod tests {
             );
         }
     }
+
+    /// **CARRY 8 — family 11's congruence, re-verified through the computed S
+    /// columns.**
+    ///
+    /// The family's whole design rests on a geometric claim §5.2 registers as a
+    /// requirement rather than a hope: the two acted areas' President
+    /// neighbourhoods are congruent, "so S4 and S7 are EQUAL by construction —
+    /// a registered requirement, not a disjunction". `pair_fixtures` proves the
+    /// geometry (`the_family_eleven_reflection_is_a_board_automorphism`, and a
+    /// per-pair ring/reach comparison) and says in as many words why it stops
+    /// there: "Step 3 owns S4's and S7's implementations … and nothing here is a
+    /// second derivation of them". This is the other end of that sentence — the
+    /// automorphism argument read off the FORMULAS it was made about.
+    ///
+    /// `family_11_layout`'s doc states the realized values, not just the
+    /// equality: "S4 = 1 (the acted area holds nothing after Recovery; its ring
+    /// holds the one survivor) and S7 = 1 (that survivor is the whole reachable
+    /// set) on both sides. S3 = 1 on both sides for the same reason." All three
+    /// are pinned at their VALUES, because an equality at 0 would hold just as
+    /// well for a fixture whose pawns had all vanished.
+    ///
+    /// The registered per-pair deltas ride the same sweep, in §5.2's own words:
+    /// 11(a) "E2 +1, S1 −1", 11(b) "E1 +2, S5 −2", 11(c) "S6 −1", 11(d)
+    /// "X1 −1 takeable; E1 unchanged".
+    ///
+    /// **OWN AND RELATIVE COINCIDE HERE, and that is asserted rather than
+    /// assumed.** §5.2 writes family 11's deltas in the subject's own values
+    /// while a solve row reads the relative form; the two agree only because
+    /// the pair's two sides differ in the SUBJECT's activation alone and leave
+    /// the opponent identical. A construction that disturbed the opponent would
+    /// leave every prose delta above true and every solve row wrong, so the
+    /// coincidence is checked for all eighteen labels before the deltas are.
+    #[test]
+    fn family_elevens_congruence_and_registered_deltas_hold_at_the_computed_columns() {
+        use CandidateFeature::{
+            AssistantAreasDistinct, BankAccess, EmploymentAgencyAccess, LabTakeable, MoneyStock,
+            PresidentLocalAccess, PresidentReachableAreas, ProductionAccess, TradeGoodsStock,
+        };
+        // §5.2's registered candidate deltas, greater minus lesser.
+        let deltas: &[(&str, CandidateFeature, i64)] = &[
+            ("11(a)", ProductionAccess, -1),
+            ("11(a)", TradeGoodsStock, 1),
+            ("11(b)", BankAccess, -2),
+            ("11(b)", MoneyStock, 2),
+            ("11(c)", EmploymentAgencyAccess, -1),
+            ("11(d)", LabTakeable, -1),
+            ("11(d)", MoneyStock, 0),
+        ];
+
+        let rules = Rules::standard();
+        let mut pairs = 0usize;
+        let mut checked = 0usize;
+        for (decl, fixture) in every_registered_fixture(&rules) {
+            if decl.family != 11 {
+                continue;
+            }
+            pairs += 1;
+            let (g_own, g_theirs) = candidate_pair(&fixture, Side::Greater, &rules);
+            let (l_own, l_theirs) = candidate_pair(&fixture, Side::Lesser, &rules);
+            let at = format!("{} at {}", decl.id, fixture.stage().name());
+
+            // The opponent is untouched by the activation choice, so the two
+            // currencies are the same number.
+            for label in CandidateFeature::ALL {
+                let i = label.index();
+                assert_eq!(
+                    g_theirs[i], l_theirs[i],
+                    "{at}: the opponent's {} differs across the sides, so §5.2's own-value \
+                     deltas are not the relative rows a solve reads",
+                    label.label(),
+                );
+            }
+
+            // The congruence, at its registered VALUES.
+            for label in [AssistantAreasDistinct, PresidentLocalAccess, PresidentReachableAreas] {
+                let i = label.index();
+                assert_eq!(
+                    (g_own[i], l_own[i]),
+                    (1, 1),
+                    "{at}: `family_11_layout` registers {} = 1 on both sides — the automorphism \
+                     carries one board position onto the other",
+                    label.label(),
+                );
+            }
+
+            for (id, label, declared) in deltas {
+                if *id != decl.id {
+                    continue;
+                }
+                let i = label.index();
+                assert_eq!(
+                    g_own[i] - l_own[i],
+                    *declared,
+                    "{at}: §5.2 registers {} = {declared} and the computed columns read {}. \
+                     THIS IS A STOP.",
+                    label.label(),
+                    g_own[i] - l_own[i],
+                );
+                checked += 1;
+            }
+            println!(
+                "{at:<20} S1 {:>3} S3 {:>3} S4 {:>3} S5 {:>3} S6 {:>3} S7 {:>3} X1 {:>3}",
+                g_own[ProductionAccess.index()] - l_own[ProductionAccess.index()],
+                g_own[AssistantAreasDistinct.index()] - l_own[AssistantAreasDistinct.index()],
+                g_own[PresidentLocalAccess.index()] - l_own[PresidentLocalAccess.index()],
+                g_own[BankAccess.index()] - l_own[BankAccess.index()],
+                g_own[EmploymentAgencyAccess.index()] - l_own[EmploymentAgencyAccess.index()],
+                g_own[PresidentReachableAreas.index()] - l_own[PresidentReachableAreas.index()],
+                g_own[LabTakeable.index()] - l_own[LabTakeable.index()],
+            );
+        }
+        // Nine (pair, stage) fixtures: four both-endpoint pairs and 11(e) late.
+        assert_eq!(pairs, 9, "family 11 realizes 9 (pair, stage) fixtures");
+        // Fourteen rather than seven: every declared delta is checked at every
+        // endpoint its pair registers, and four of the five pairs register two.
+        assert_eq!(checked, 14, "the registered family-11 candidate deltas, per endpoint");
+    }
 }
