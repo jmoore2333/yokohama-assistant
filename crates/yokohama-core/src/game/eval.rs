@@ -120,9 +120,15 @@ use crate::game::rules::Rules;
 // all three take a power and return a printed quantity. The §2.1 guard's
 // allowlist names this line, which is what makes widening it a deliberate act.
 use crate::game::actions::{bank_reward, employment_agency_tokens_allowed, exported_reward};
+// V4 §3.2's Group X, on the same grounds as the line above and no wider: X1's
+// slot surcharge and X2's zone gate are the ENGINE's arithmetic, printed on the
+// two card boards. Both are pure functions of a number — a slot index and a
+// power — and neither can carry state into a module whose whole contract is that
+// it holds none. The §2.1 guard's allowlist names this line as its third entry.
+use crate::game::actions::{lab_position_surcharge, port_zone_accessible};
 use crate::types::{
     AchievementType, AreaId, AreaType, Country, HandCard, OrderCard, OrderCardId, PlayerId,
-    PlayerView, PresidentLocation, TechCardId, TurnPhase, VisiblePlayer,
+    PlayerView, PortBoard, PresidentLocation, TechCardId, TurnPhase, VisiblePlayer,
 };
 
 /// Bumped on ANY behavior-affecting change to the evaluator — the feature list,
@@ -1170,6 +1176,28 @@ const DUMMY_SLOT: usize = MAX_SEATS;
 /// than absent — the arrays are sized by the TYPE, not by the position.
 pub const MAX_AREAS: usize = 18;
 
+/// How many of each CARD BOARD a table can carry — an A board always, a B board
+/// at 3P (port) and 4P (lab). Index 0 is A, index 1 is B throughout.
+pub const CARD_BOARDS: usize = 2;
+
+/// The printed slot count of one lab board (`LabBoard::slots`), and of one port
+/// board: six each, two per surcharge step and two per port zone.
+pub const LAB_SLOTS: usize = 6;
+
+/// One lab slot's bit in [`ViewContext::lab_unowned`] — `board * LAB_SLOTS +
+/// slot`, and the EMPTY mask for a board or slot outside the printed range.
+///
+/// Twelve bits of a `u16`, so a seat's whole "which titles may I still take"
+/// answer is one register — the same fixed-array-and-bitset discipline §3.2's
+/// allocation contract asks of every view-context derivation.
+pub fn lab_bit(board: usize, slot: usize) -> u16 {
+    if board < CARD_BOARDS && slot < LAB_SLOTS {
+        1 << (board * LAB_SLOTS + slot)
+    } else {
+        0
+    }
+}
+
 /// A set of areas, one bit per `AreaId`.
 ///
 /// Eighteen areas fit in a `u32` with fourteen bits spare, so every set the V4
@@ -1295,6 +1323,30 @@ fn half_vp_face(card: &OrderCard) -> i64 {
     )
 }
 
+/// The printed requirements of a seat's KNOWN held orders, SUMMED per good as
+/// `[copper, silk, tea, seafood]`.
+///
+/// **One derivation, two readers.** O2 caps this against the stock; X3 subtracts
+/// the stock FROM it. §2's partition table registers `{X3, S1, O2}` as one
+/// collinearity group precisely because they share this quantity, and two copies
+/// of the fold would be two places for it to drift — the O2 ≤ E2 identity and
+/// X3's residual would then be answering slightly different questions.
+///
+/// Masked slots contribute nothing: reading a requirement off a card the seat
+/// cannot see is exactly the honesty §3.1 excludes.
+fn summed_requirements(player: &VisiblePlayer, rules: &Rules) -> [u32; 4] {
+    let mut required = [0u32; 4];
+    for card in &player.hand {
+        let HandCard::Known(id) = card else { continue };
+        let Some(order) = rules.orders.get(*id) else { continue };
+        required[0] += u32::from(order.requirements.copper);
+        required[1] += u32::from(order.requirements.silk);
+        required[2] += u32::from(order.requirements.tea);
+        required[3] += u32::from(order.requirements.seafood);
+    }
+    required
+}
+
 /// Every order card the port displays, both boards. Allocation-free: an
 /// `Option<PortBoard>` iterates as at most one element.
 fn port_offers(view: &PlayerView) -> impl Iterator<Item = OrderCardId> + '_ {
@@ -1307,16 +1359,35 @@ fn port_offers(view: &PlayerView) -> impl Iterator<Item = OrderCardId> + '_ {
         .chain(view.port_state.port_b.iter().flat_map(|b| b.slots.iter().flatten().copied()))
 }
 
-/// Every technology card the labs display, both boards. Same shape, same
-/// reason.
-fn open_lab_techs(view: &PlayerView) -> impl Iterator<Item = TechCardId> + '_ {
-    view.lab_state
-        .lab_a
-        .slots
-        .iter()
-        .flatten()
-        .copied()
-        .chain(view.lab_state.lab_b.iter().flat_map(|b| b.slots.iter().flatten().copied()))
+/// Every technology card the labs display, as `(board, slot, id)` — board 0 is
+/// the A board, board 1 the B board, and `slot` is the 0-based printed position.
+///
+/// **Positional, where the port's twin is flat, and the asymmetry is the
+/// rulebook's.** A port offer's zone comes from its slot and a lab slot's
+/// surcharge comes from its slot, so both would need positions; what differs is
+/// that the port term reads its display directly (X2 iterates
+/// `view.port_state` at the moment it needs the requirements) while the lab
+/// display is walked ONCE HERE, inside `derive`, for every reader at once.
+///
+/// That single walk is a measured constraint and not a preference. It is the
+/// dominant term in `ScoreStructure::derive`'s cost (see [`ViewContext`]'s
+/// MEASURED paragraph: ~31% of a debug `contestant_golden` wall), so O5's
+/// attainable scan and X1's slot pricing share it rather than each taking one.
+///
+/// Allocation-free: an `Option<LabBoard>` iterates as at most one element, and
+/// the two-element array of borrows never leaves the stack.
+fn open_lab_slots(view: &PlayerView) -> impl Iterator<Item = (usize, usize, TechCardId)> + '_ {
+    [Some(&view.lab_state.lab_a), view.lab_state.lab_b.as_ref()]
+        .into_iter()
+        .enumerate()
+        .flat_map(|(board, lab)| {
+            lab.into_iter().flat_map(move |lab| {
+                lab.slots
+                    .iter()
+                    .enumerate()
+                    .filter_map(move |(slot, card)| card.map(|id| (board, slot, id)))
+            })
+        })
 }
 
 /// The PUBLIC board and seat context V4 spec §3.2's view-context features read,
@@ -1362,11 +1433,17 @@ fn open_lab_techs(view: &PlayerView) -> impl Iterator<Item = TechCardId> + '_ {
 /// path reads them until §7's step 8. If it has to move, the answer is to make
 /// the derivation lazy, not to give each feature its own scan.
 ///
-/// **The seam for the last batch** (§3.2's remaining view-context work): Group
-/// X's lab/port context belongs HERE as further fields, for the same reason the
-/// board masks and the order-card fields do — and it will want the SAME lab
-/// walk O5's attainable scan already makes, which is the one place a future
-/// measurement should look before adding a second one.
+/// **THE SEAM IS CLOSED, and it cost nothing measurable.** Group X's lab and
+/// port context landed here as further fields, and X1 rides the SAME lab walk
+/// O5's attainable scan makes rather than taking one of its own: the walk now
+/// yields `(board, slot, id)` and each pass records the slot's all-in price and
+/// the seat's unowned-title bit beside the country it already collected. A/B on
+/// the same machine minutes apart, the same protocol as the figures above:
+/// **24.12s with the entry file, 24.70s with this one** — inside the run-to-run
+/// band, and nowhere near the doubling a second ownership scan would have cost.
+/// The remaining lab/port reads (X2's offers, X3's tiles) are per-CALL rather
+/// than per-derive by design, because they need the printed requirements and the
+/// helpers already hold `&Rules`.
 ///
 /// # Honesty
 ///
@@ -1437,6 +1514,34 @@ pub struct ViewContext {
     /// lets each player own one card of a name, so the same open slot is a
     /// source for one seat and not for another.
     pub attainable_countries: [CountrySet; MAX_SEATS],
+    /// Per LAB board (0 = the A board, 1 = the B board): the singleton set of
+    /// the area that board sits at, EMPTY where the board is not in play.
+    ///
+    /// A per-board mask rather than one merged set because X1's gates are
+    /// per-board: the presence and the power that price Lab B's slots are the
+    /// ones at Lab B's area, and a seat standing at Lab A alone may take nothing
+    /// from Lab B however cheap it looks.
+    pub lab_areas: [AreaSet; CARD_BOARDS],
+    /// Per PORT board, the same, for the same reason ([`Self::lab_areas`]).
+    pub port_areas: [AreaSet; CARD_BOARDS],
+    /// Per `(lab board, slot)`: the ALL-IN industry value an open slot costs —
+    /// the card's printed gear cost plus `lab_position_surcharge(slot)`.
+    ///
+    /// A property of the TABLE, not of a seat: what a slot costs is printed on
+    /// the board and on the card. What the SEAT brings to it — power, purse and
+    /// the fourth-card duty — is X1's arithmetic. Meaningful exactly where
+    /// [`Self::lab_unowned`] has a bit set; an empty slot and an absent board
+    /// both read 0 and are never consulted.
+    pub lab_industry_cost: [[u8; LAB_SLOTS]; CARD_BOARDS],
+    /// Per seat: the open lab slots whose TITLE that seat does not already own
+    /// by EFFECT equality — a bitset over `board * LAB_SLOTS + slot`
+    /// ([`lab_bit`]).
+    ///
+    /// The same test O5's attainable set applies, recorded rather than repeated:
+    /// both readers want "may this seat still take this card", the ownership
+    /// scan is the expensive half of `derive`'s lab pass, and running it twice
+    /// would double the measured cost for one bit of information.
+    pub lab_unowned: [u16; MAX_SEATS],
 }
 
 impl ViewContext {
@@ -1455,6 +1560,10 @@ impl ViewContext {
         unseen_orders: 0,
         unseen_order_halfvp: 0,
         attainable_countries: [0; MAX_SEATS],
+        lab_areas: [0; CARD_BOARDS],
+        port_areas: [0; CARD_BOARDS],
+        lab_industry_cost: [[0; LAB_SLOTS]; CARD_BOARDS],
+        lab_unowned: [0; MAX_SEATS],
     };
 
     /// The areas `area` reaches across a FREE edge (see
@@ -1626,6 +1735,15 @@ impl ScoreStructure {
             if config.area_type == AreaType::EmploymentAgency {
                 s.context.employment_agency |= bit;
             }
+            // The two card boards, kept PER BOARD: X1 and X2 gate presence and
+            // power at the board they are pricing, so A and B may not merge.
+            match config.area_type {
+                AreaType::LaboratoryA => s.context.lab_areas[0] |= bit,
+                AreaType::LaboratoryB => s.context.lab_areas[1] |= bit,
+                AreaType::PortA => s.context.port_areas[0] |= bit,
+                AreaType::PortB => s.context.port_areas[1] |= bit,
+                _ => {}
+            }
         }
         for (area, neighbours) in &view.board_layout.adjacency {
             let i = usize::from(area.0);
@@ -1702,7 +1820,12 @@ impl ScoreStructure {
                     }
                 }
             }
-            for id in open_lab_techs(view) {
+            // THE ONE LAB WALK. Two readers share it — O5's attainable set and
+            // X1's takeable count — because the ownership scan inside it is the
+            // dominant term in this whole derivation (see [`ViewContext`]'s
+            // MEASURED paragraph), and a second walk would pay it twice for the
+            // same bit of information.
+            for (board, slot, id) in open_lab_slots(view) {
                 let Some(tech) = rules.techs.get(id) else { continue };
                 // EFFECT equality IS the ownership-by-title test the engine
                 // applies (`actions/cards.rs:268-270`): effects are 1:1 with
@@ -1713,6 +1836,15 @@ impl ScoreStructure {
                 });
                 if !owns_title {
                     attainable |= country_bit(tech.country);
+                    s.context.lab_unowned[i] |= lab_bit(board, slot);
+                }
+                // The all-in price is a fact about the TABLE, so every seat's
+                // pass writes the same number here. Written inside the walk
+                // rather than in a pass of its own, which is the point: the
+                // second pass this saves is over the same twelve slots.
+                if board < CARD_BOARDS && slot < LAB_SLOTS {
+                    s.context.lab_industry_cost[board][slot] =
+                        tech.industry_cost + lab_position_surcharge(slot);
                 }
             }
             s.context.attainable_countries[i] = attainable;
@@ -2297,6 +2429,47 @@ pub fn realizable_power(view: &PlayerView, player: &VisiblePlayer, area: AreaId)
     power.min(5)
 }
 
+/// WHICH good a production area exports, as its index in the
+/// `[copper, silk, tea, seafood]` vector every stock and requirement reader in
+/// this module uses — and `None` for every area that exports no trade good.
+///
+/// # Why this is here rather than imported
+///
+/// The engine has a reward DISPATCHER (`exported_reward`, §13) but no
+/// area-type-to-good accessor: the correspondence lives inside the apply path's
+/// four production arms, each of which names its own field. So X3 — which has to
+/// pair "how much would this tile pay" with "how much of THAT good is still
+/// needed" — restates the pairing, and the repo's standing answer to a
+/// restatement applies: pin it. `tests/eval_core.rs`'s
+/// `the_production_good_map_is_the_good_the_engines_own_action_pays` reads the
+/// map off ORGANIC play at 2/3/4P, requiring the named good to rise by at least
+/// the dispatcher's printed reward at every applied production action, with all
+/// four arms required to fire.
+///
+/// # The domain, and why it is an `Option`
+///
+/// The same shape, and the same reason, as the dispatcher's: the ten other area
+/// types are OUTSIDE this function rather than worth index-zero in it. The match
+/// is exhaustive with no `_` arm, so a new area type is a compile error here.
+pub fn production_good(area_type: AreaType) -> Option<usize> {
+    match area_type {
+        AreaType::CopperMine => Some(0),
+        AreaType::SilkMill => Some(1),
+        AreaType::TeaPlantation => Some(2),
+        AreaType::FishingGround => Some(3),
+        AreaType::Bank
+        | AreaType::PortA
+        | AreaType::PortB
+        | AreaType::LaboratoryA
+        | AreaType::LaboratoryB
+        | AreaType::EmploymentAgency
+        | AreaType::Chinatown
+        | AreaType::Church
+        | AreaType::Customs
+        | AreaType::Canal => None,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // V4 §3.2 — Group S: spatial and action affordance
 // ---------------------------------------------------------------------------
@@ -2683,15 +2856,7 @@ impl ScoreStructure {
     /// cannot see is exactly the honesty §3.1 excludes. Boundary: a fulfillment
     /// retires the card's contribution (§5.2 family 6(a)).
     pub fn order_matched_goods(&self, player: &VisiblePlayer, rules: &Rules) -> i64 {
-        let mut required = [0u32; 4];
-        for card in &player.hand {
-            let HandCard::Known(id) = card else { continue };
-            let Some(order) = rules.orders.get(*id) else { continue };
-            required[0] += u32::from(order.requirements.copper);
-            required[1] += u32::from(order.requirements.silk);
-            required[2] += u32::from(order.requirements.tea);
-            required[3] += u32::from(order.requirements.seafood);
-        }
+        let required = summed_requirements(player, rules);
         let stock = [player.copper, player.silk, player.tea, player.seafood];
         stock.iter().zip(required.iter()).map(|(s, r)| i64::from(*s.min(r))).sum()
     }
@@ -2788,6 +2953,233 @@ impl ScoreStructure {
                 HandCard::HiddenStartingOrder => 0,
             })
             .sum()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// V4 §3.2 — Group X: joint availability, the interaction cell's three terms
+// ---------------------------------------------------------------------------
+
+/// The three Group-X candidate features of V4 spec §3.2 — one method per formula
+/// card, and the ONLY group that reads both sides of §2's partition.
+///
+/// # What makes these the interaction cell's, and not Group S's or Group E's
+///
+/// Every card here is a CONJUNCTION the rulebook itself writes. A lab slot is
+/// takeable when the seat can reach it (presence, power) AND pay the industry it
+/// still owes (money, imports). A port offer is worth taking when the seat can
+/// reach the zone it sits in AND holds goods the card wants and room in hand for
+/// it. A production tile is worth activating for goods a held order still NEEDS.
+/// Split across two groups, each half prices an option that may not exist:
+/// §3.2's attribution split gives access to Group S, resources to Group E, and
+/// the CROSS to these three.
+///
+/// So the cleanliness assert §7 closes with — "no S helper reads money/imports/
+/// orders; no E helper reads power/presence; only X reads both" — is a statement
+/// about these bodies, and `tests/eval_core.rs` scans them for BOTH needle lists
+/// rather than for neither.
+///
+/// # What they ride, and what they do not
+///
+/// X1 reads the lab context [`ScoreStructure::derive`] fills on its one lab walk
+/// and needs no registry of its own. X2 and X3 take `&Rules` because they read
+/// PRINTED REQUIREMENTS — of a face-up port offer and of a card in the seat's own
+/// hand — which are on the table in the most literal sense. None takes engine
+/// state, and none can be handed a masked card: X3 and X2 see `HandCard::Known`
+/// entries and hand LENGTH, both of which `observe` leaves public.
+///
+/// # The declared shapes ride here too
+///
+/// [`realizable_power`]'s three (portfolio pricing, the barred current area
+/// keeping its +1, unapplied reachability) are inherited by all three, and each
+/// card adds its own — X1's third-purchase duty raising every later cost, X2's
+/// post-take refill discontinuity, X3's need closing from both ends. All are
+/// §3.2 DECLARED SHAPES, pinned as declarations rather than repaired.
+impl ScoreStructure {
+    /// **X1 `LabTakeable`** — how many open lab slots the seat could take ALL IN
+    /// right now. Units are takeable cards.
+    ///
+    /// Per lab board the seat has a presence at:
+    ///
+    /// ```text
+    /// deficit = max(0, gear_cost + lab_position_surcharge(slot) − realizable_power)
+    /// duty    = 1 if the seat already owns 3 technologies, else 0
+    /// takeable ⟺ title unowned AND floor(money/2) + imports ≥ deficit + duty
+    /// ```
+    ///
+    /// # The pooled comparison is EXACT, and that is the whole card
+    ///
+    /// Both legs price at the same rate — two Yen or one imported good buys one
+    /// point of industry, and the fourth-card duty costs two Yen or one imported
+    /// good — so a single budget covers both and the halving is a FLOOR because
+    /// an odd Yen buys nothing (`validate_lab_action`'s exact-cover rule refuses
+    /// it outright).
+    ///
+    /// **POWER NEVER PAYS THE DUTY.** Excess industry value is lost, so a seat
+    /// whose power over-covers every printed cost still takes NOTHING once it
+    /// owns three technologies and holds no money and no imports: deficit 0,
+    /// duty 1, budget 0. That is the six-lens round's counterexample, it is
+    /// `validate_lab_action`'s own refusal, and it is the negative cell §7 names
+    /// by hand.
+    ///
+    /// Boundary: the purchase realizes the card into `TechBonusNow` /
+    /// `CountryBonusNow` and O5's recompute, and the presence drains at
+    /// Recovery — so this reads 0 at the following hand-off (family 11(d)). The
+    /// third purchase also raises every future cost by the duty, which is
+    /// declared rather than smoothed.
+    pub fn lab_takeable(&self, view: &PlayerView, player: &VisiblePlayer) -> i64 {
+        let Some(seat) = seat_index(player) else { return 0 };
+        // The FLOOR is the rule, not a rounding convenience: an odd Yen is not
+        // half a point of industry, it is nothing.
+        let budget = i64::from(player.money / 2) + i64::from(player.imported_goods);
+        let duty = i64::from(player.technologies.len() >= 3);
+        let mut takeable = 0i64;
+        for board in 0..CARD_BOARDS {
+            for area in areas_in(self.context.occupied[seat] & self.context.lab_areas[board]) {
+                // Already capped at 5 by `realizable_power`, which is the
+                // `min(5, ...)` the card writes around this term.
+                let power = i64::from(realizable_power(view, player, area));
+                for slot in 0..LAB_SLOTS {
+                    if self.context.lab_unowned[seat] & lab_bit(board, slot) == 0 {
+                        continue;
+                    }
+                    let cost = i64::from(self.context.lab_industry_cost[board][slot]);
+                    let deficit = (cost - power).max(0);
+                    if deficit + duty <= budget {
+                        takeable += 1;
+                    }
+                }
+            }
+        }
+        takeable
+    }
+
+    /// **X2 `PortTakeable`** — the goods the seat's face-up, REACHABLE port
+    /// offers would match, each offer capped by its own printed requirement.
+    /// Units are matched goods toward takeable orders.
+    ///
+    /// # Three gates, and the order they are asked in
+    ///
+    /// The hand cap first, because it is a property of the SEAT and collapses
+    /// everything: the manual refuses a take into a hand already holding three
+    /// orders, so the term is 0 — not one offer's worth, all of it — and stays 0
+    /// until a fulfillment. A PERSISTENT collapse, declared; §5.2's 4(f) is the
+    /// pair that prices it.
+    ///
+    /// Then, per port board, the seat's presence and its power at THAT board's
+    /// area. (The card states the power gate as `>= 2`; a board the seat has a
+    /// presence at reads at least 2 by construction, since `realizable_power`
+    /// adds the President's own +1 to a count that is already ≥ 1. Both are
+    /// written, because the card writes both.)
+    ///
+    /// Then, per SLOT, the zone gate — `port_zone_accessible`, the engine's own,
+    /// against `PortBoard::zone_of(slot)`. **The zone is POSITIONAL**: once the
+    /// order deck runs dry the port stops refilling and a `None` may sit at any
+    /// index, so the offer at index 1 is a LOW offer whether or not index 0 holds
+    /// anything. Iterating the flattened list of present cards would call it
+    /// whatever its rank happened to be.
+    ///
+    /// Boundary: the take moves the card into O1/O2/O3 and `HandSize`; the refill
+    /// left-compacts and can slide a High card down into an open zone, so this
+    /// can JUMP UP after a take; and through the relative form the opponent's
+    /// reading moves discontinuously when I take. All declared. The presence
+    /// drains at Recovery — family 11(e).
+    pub fn port_takeable(&self, view: &PlayerView, player: &VisiblePlayer, rules: &Rules) -> i64 {
+        if player.hand.len() >= 3 {
+            return 0;
+        }
+        let Some(seat) = seat_index(player) else { return 0 };
+        let stock = [player.copper, player.silk, player.tea, player.seafood];
+        let boards = [Some(&view.port_state.port_a), view.port_state.port_b.as_ref()];
+        let mut total = 0i64;
+        for (board, port) in boards.into_iter().enumerate() {
+            let Some(port) = port else { continue };
+            for area in areas_in(self.context.occupied[seat] & self.context.port_areas[board]) {
+                let power = realizable_power(view, player, area);
+                if power < 2 {
+                    continue;
+                }
+                for (slot, offer) in port.slots.iter().enumerate() {
+                    let Some(id) = offer else { continue };
+                    if !port_zone_accessible(power, PortBoard::zone_of(slot)) {
+                        continue;
+                    }
+                    let Some(order) = rules.orders.get(*id) else { continue };
+                    let required = [
+                        u32::from(order.requirements.copper),
+                        u32::from(order.requirements.silk),
+                        u32::from(order.requirements.tea),
+                        u32::from(order.requirements.seafood),
+                    ];
+                    // The cap is PER OFFER, which is what makes the sum a
+                    // portfolio: three cards each wanting one seafood, against
+                    // one seafood in stock, match three — the seat may only take
+                    // one of them, and which one is the search's question.
+                    total += (0..4).map(|g| i64::from(stock[g].min(required[g]))).sum::<i64>();
+                }
+            }
+        }
+        total
+    }
+
+    /// **X3 `MatchedProductionAccess`** — the export each occupied production
+    /// tile would pay, capped by what the seat's KNOWN held orders STILL NEED of
+    /// that good. Units are needed-goods per activation.
+    ///
+    /// ```text
+    /// residual_need(g) = max(0, summed_requirement(g) − stock(g))
+    /// X3 = Σ over occupied production areas a of
+    ///          min(exported_reward(kind(a), realizable_power(a)), residual_need(good(a)))
+    /// ```
+    ///
+    /// # What it prices, precisely
+    ///
+    /// REQUIREMENT-DISTANCE-CONDITIONED access: access to goods an order still
+    /// needs, which is the PRE-EXECUTABLE horizon. Once an order is executable
+    /// its residual is zero and this correctly reads 0 — the access has done its
+    /// work and the value has moved into O3 and E2. The reward comes from the §13
+    /// dispatcher and the requirements from [`summed_requirements`], the same
+    /// fold O2 caps against, so the two terms of §2's `{X3, S1, O2}` group cannot
+    /// drift apart.
+    ///
+    /// **The sum is a PORTFOLIO, and at 3–4P that is visible.** A board carrying
+    /// two tiles of one good credits the residual TWICE — each tile is priced
+    /// against the whole remaining need, because each is a separate option and
+    /// only one area is activatable per turn. That is [`realizable_power`]'s
+    /// first declared shape applied to this card, the same shape X2's per-offer
+    /// cap has, and it is declared rather than deduplicated: which tile to spend
+    /// the turn at is the SEARCH's question, not a leaf term's. At 2P — the
+    /// milestone's whole fitting domain — the board carries one tile of each
+    /// good and the question does not arise.
+    ///
+    /// Boundary: the need closes at a fulfillment (family 6(a)) or as the stock
+    /// fills — each production tick shrinks the residual by one, so there is no
+    /// cliff, only a minimum — and the acted tile's presence drains at Recovery
+    /// like every access term. Gate: family 10(d).
+    pub fn matched_production_access(
+        &self,
+        view: &PlayerView,
+        player: &VisiblePlayer,
+        rules: &Rules,
+    ) -> i64 {
+        let Some(seat) = seat_index(player) else { return 0 };
+        let required = summed_requirements(player, rules);
+        let stock = [player.copper, player.silk, player.tea, player.seafood];
+        let mut total = 0i64;
+        for area in areas_in(self.context.occupied[seat] & self.context.production) {
+            let Some(config) = view.board_layout.areas.get(&area) else { continue };
+            let kind = config.area_type;
+            let reward = exported_reward(kind, realizable_power(view, player, area));
+            let good = production_good(kind);
+            debug_assert!(
+                reward.is_some() && good.is_some(),
+                "the production mask admitted an area the dispatcher does not price"
+            );
+            let (Some(reward), Some(good)) = (reward, good) else { continue };
+            let residual = required[good].saturating_sub(stock[good]);
+            total += i64::from(reward).min(i64::from(residual));
+        }
+        total
     }
 }
 

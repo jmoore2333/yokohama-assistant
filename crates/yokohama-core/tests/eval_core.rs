@@ -122,9 +122,25 @@ fn keep_game(players: u8, seed: u64, rules: &Rules) -> GameState {
 /// boundary, and the forbidden-identifier scan below — which is whole-file and
 /// untouched — is what holds it. This entry buys three reward tables, not a
 /// state handle.
-const GAME_IMPORT_ALLOWLIST: [&str; 2] = [
+///
+/// **Entry 3, the two CARD-BOARD gates — WIDENED AT V4 §3.2's Group X, on the
+/// same grounds and no wider.** `lab_position_surcharge` is the board art's
+/// `+0/+0/+1/+1/+2/+2` ladder and `port_zone_accessible` is the printed
+/// `2/3/4` power ladder; X1 and X2 are each defined AS the engine's own gate
+/// applied to a slot, so restating either would put a second copy of a printed
+/// board in the crate — the duplication §13 registered the
+/// `port_zone_accessible` refactor to prevent in the first place.
+///
+/// The argument that keeps this narrow is the ARGUMENT LIST, and it is the same
+/// one entry 2 makes: `lab_position_surcharge` takes a slot index and returns a
+/// number; `port_zone_accessible` takes a power and a zone and returns a `bool`.
+/// Neither takes engine state, neither reads a card, and neither could carry a
+/// masked identity into this module if it wanted to. Three entries buy five
+/// printed ladders between them, and not one state handle.
+const GAME_IMPORT_ALLOWLIST: [&str; 3] = [
     "use crate::game::rules::Rules;",
     "use crate::game::actions::{bank_reward, employment_agency_tokens_allowed, exported_reward};",
+    "use crate::game::actions::{lab_position_surcharge, port_zone_accessible};",
 ];
 
 /// Identifiers whose mere presence means the evaluator has stopped being a
@@ -5907,8 +5923,8 @@ fn the_lab_context_prices_every_open_slot_at_gear_plus_the_engines_surcharge() {
 
     let view = observe(&state, PlayerId(0)).expect("seat 0 observes");
     let context = ScoreStructure::derive(&view, &rules).context;
-    for slot in 0..LAB_SLOTS {
-        let card = rules.techs.get(techs[slot]).expect("a printed technology");
+    for (slot, planted) in techs.iter().enumerate().take(LAB_SLOTS) {
+        let card = rules.techs.get(*planted).expect("a printed technology");
         assert_eq!(
             context.lab_industry_cost[0][slot],
             card.industry_cost + yokohama_core::actions::lab_position_surcharge(slot),
@@ -6709,7 +6725,12 @@ fn group_x_fixture(seed: u64, rules: &Rules) -> GameState {
     state.players[1].money = 0;
     state.players[1].imported_goods = 0;
     set_stocks(&mut state, 1, [1, 1, 1, 1]);
-    deal_card(&mut state, 1, OrderCardId(5));
+    // Card 14 (1 copper + 2 silk + 2 tea) rather than the smaller card 5,
+    // deliberately: card 5 sits in the port display above, and dealing a card
+    // OUT of the display would have quietly emptied a slot and moved X2 for the
+    // other seat. Only the tea leg matters here — seat 1 stands at no other
+    // production tile — and both cards carry two of it.
+    deal_card(&mut state, 1, OrderCardId(14));
     state
 }
 
@@ -7008,7 +7029,19 @@ fn every_group_x_helper_allocates_nothing() {
     let lab_b = area_typed(&state, AreaType::LaboratoryB);
     let port_a = area_typed(&state, AreaType::PortA);
     let port_b = area_typed(&state, AreaType::PortB);
-    let production = production_areas(&state);
+    // A 4P board carries TWO of each production type; the tea tiles are named
+    // because they are the ones the fixture's hand still needs a good from, so
+    // X3 has a nonzero term rather than only its zero-residual arm.
+    let tea_tiles: Vec<AreaId> = production_areas(&state)
+        .into_iter()
+        .filter(|a| {
+            state.board_layout.areas[a].area_type == AreaType::TeaPlantation
+        })
+        .collect();
+    let other_tile = production_areas(&state)
+        .into_iter()
+        .find(|a| state.board_layout.areas[a].area_type != AreaType::TeaPlantation)
+        .expect("a 4P board carries production tiles of more than one type");
     let techs = distinct_effect_techs(&rules, 12, 3, &[]);
     set_lab(&mut state, 0, [
         Some(techs[0]),
@@ -7042,11 +7075,11 @@ fn every_group_x_helper_allocates_nothing() {
         Some(OrderCardId(13)),
         Some(OrderCardId(14)),
     ]);
-    for area in [lab_a, lab_b, port_a, port_b] {
-        place_assistants(&mut state, 0, area, 2);
-    }
-    for area in production.iter().take(4) {
-        place_assistants(&mut state, 0, *area, 1);
+    // Seven of the seat's EIGHT starting hand assistants — one at each of the
+    // four card boards and at three production tiles. Moved, never invented:
+    // a seat owns twenty pawns and only eight of them start in hand.
+    for area in [lab_a, lab_b, port_a, port_b, tea_tiles[0], tea_tiles[1], other_tile] {
+        place_assistants(&mut state, 0, area, 1);
     }
     state.players[0].money = 9;
     state.players[0].imported_goods = 2;
