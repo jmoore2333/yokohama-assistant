@@ -3630,7 +3630,8 @@ mod tests {
     };
     use yokohama_core::{
         apply_move, get_legal_moves, is_game_over, AchievementCard, AchievementType, ChurchSlot,
-        ChurchTrack, CustomsSlot, CustomsTrack, GameConfig, HandCard, OrderCardId, PendingChoice,
+        check_invariants, ChurchTrack, CustomsSlot, CustomsTrack, GameConfig, HandCard,
+        OrderCardId, PendingChoice,
         StartingOrderChoice, TechCardId,
     };
 
@@ -6531,5 +6532,287 @@ mod tests {
         // Fourteen rather than seven: every declared delta is checked at every
         // endpoint its pair registers, and four of the five pairs register two.
         assert_eq!(checked, 14, "the registered family-11 candidate deltas, per endpoint");
+    }
+
+    /// The seat that is not `subject`, in a 2P fixture.
+    fn other_seat(fixture: &PairFixture, side: Side) -> PlayerId {
+        fixture
+            .view(side)
+            .players
+            .iter()
+            .map(|p| p.id)
+            .find(|id| *id != fixture.subject() && !id.is_dummy())
+            .expect("a 2P fixture has a rival seat")
+    }
+
+    /// Whether any seat's hand in `view` carries a masked starting order —
+    /// §5.2(b)'s class test, read off the view rather than off a label.
+    fn carries_a_masked_slot(view: &PlayerView) -> bool {
+        view.players
+            .iter()
+            .any(|p| p.hand.iter().any(|c| matches!(c, HandCard::HiddenStartingOrder)))
+    }
+
+    /// One seat's relative candidate vector as read from ITS OWN view.
+    fn relative_from(view: &PlayerView, me: PlayerId, rules: &Rules)
+        -> [i64; CandidateFeature::COUNT] {
+        let mut out = [0i64; CandidateFeature::COUNT];
+        for label in CandidateFeature::ALL {
+            let read = |seat: Option<&VisiblePlayer>| {
+                seat.map_or(0, |p| {
+                    candidate_columns(view, p, label, rules).expect("the adapter never declines")
+                })
+            };
+            let mine = read(view.players.iter().find(|p| p.id == me));
+            let theirs = read(view.players.iter().find(|p| p.id != me && !p.id.is_dummy()));
+            out[label.index()] = mine - theirs;
+        }
+        out
+    }
+
+    /// **CARRY 7(b) — §5.2 family 5's CROSS-VIEW NEGATION, over the registry.**
+    ///
+    /// The property §5.2(b) registers is: at 2P, on a fixture where NEITHER
+    /// view carries a masked hand slot, the relative vector read from one
+    /// seat's view is the exact negation of the one read from the other's.
+    ///
+    /// **THE FROZEN PACKAGE REALIZES NO SUCH FIXTURE, and this cell records
+    /// that as a measured fact rather than leaving it implicit.** All 106
+    /// (fixture, side) pairs carry a masked slot in at least one of the two
+    /// views, which is structural rather than accidental: a 2P state with no
+    /// `HiddenStartingOrder` anywhere needs BOTH seats' starting orders
+    /// fulfilled, and no registration asks for that. 4(g) comes closest and its
+    /// note says exactly how far — "the subject's view carries no
+    /// `HiddenStartingOrder` slot at all" — but the OPPONENT still sees the
+    /// subject's own dealt card masked, so 4(g) is one view short of the class.
+    /// §5.2(b)'s identity is therefore pinned where it can be: on states
+    /// `tests/eval_core.rs` builds for it (`group_s_/e_/x_differences_negate_
+    /// across_the_two_2p_views`), and NOT duplicated here.
+    ///
+    /// **WHAT THE REGISTRY CAN SAY, and it is not nothing:** twelve of the
+    /// eighteen labels negate across the two views at every one of the 106
+    /// sides, masked slot or not, because they read nothing masking can touch.
+    /// The six that do not are asserted AS A SET, so a thirteenth label
+    /// becoming view-sensitive fails here rather than passing quietly into the
+    /// solve.
+    ///
+    /// **THE SET IS `{O1, O2, O3, O5, O6, X3}` — ONE MORE THAN §5.2(c)'s
+    /// DECLARED-ASYMMETRY LIST**, and the extra member is O5. That is not a
+    /// contradiction and it is worth stating plainly. §5.2(c) lists the
+    /// features whose cross-view gap EQUALS the masked slot's own additive
+    /// term, and `eval_core`'s pin for it records why O5 is left out: "O5 is a
+    /// MAX over a set, not a sum over a hand, so a masked card has no additive
+    /// term to be the gap." Being undecomposable is not the same as being
+    /// symmetric — a seat's own Known card puts a country in its attainable set
+    /// that the opponent cannot see — so O5 IS view-asymmetric, in a form no
+    /// (c)-style identity captures. Step 4's collision instrument and step 5's
+    /// solver read relative vectors from ONE seat's view; this is the row where
+    /// "which seat's view" is a question with an answer and no closed form.
+    #[test]
+    fn twelve_candidate_columns_negate_across_the_two_2p_views_at_every_registered_side() {
+        let rules = Rules::standard();
+        let mut sides = 0usize;
+        let mut in_class: Vec<String> = Vec::new();
+        let mut subject_side_unmasked: Vec<String> = Vec::new();
+        let mut unobservable: Vec<String> = Vec::new();
+        let mut breaks: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+        for (decl, fixture) in every_registered_fixture(&rules) {
+            let subject = fixture.subject();
+            for side in [Side::Greater, Side::Lesser] {
+                let at = format!("{} {} {}", decl.id, fixture.stage().name(), side.name());
+                let opponent = other_seat(&fixture, side);
+                let mine = fixture.view(side);
+                let theirs = match observe(fixture.state(side), opponent) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        unobservable.push(format!("{at}: {e:?}"));
+                        continue;
+                    }
+                };
+                sides += 1;
+                if !carries_a_masked_slot(mine) {
+                    subject_side_unmasked.push(at.clone());
+                    if !carries_a_masked_slot(&theirs) {
+                        in_class.push(at.clone());
+                    }
+                }
+                let a = relative_from(mine, subject, &rules);
+                let b = relative_from(&theirs, opponent, &rules);
+                for label in CandidateFeature::ALL {
+                    let i = label.index();
+                    if a[i] != -b[i] {
+                        breaks.insert(label.label());
+                    }
+                }
+            }
+        }
+        assert!(
+            unobservable.is_empty(),
+            "the package carries sides whose rival seat `observe` refuses: {unobservable:#?}",
+        );
+        assert_eq!(sides, 106, "53 (pair, stage) fixtures, two sides each");
+
+        // The class is empty, and 4(g) is exactly how close the package gets.
+        assert!(
+            in_class.is_empty(),
+            "a registered fixture now falls in §5.2(b)'s no-hidden-slot class ({in_class:?}) — \
+             the identity is newly exercisable here and this cell should assert it rather than \
+             record its absence",
+        );
+        assert_eq!(
+            subject_side_unmasked,
+            vec![
+                "4(g) early greater".to_string(),
+                "4(g) early lesser".to_string(),
+                "4(g) late greater".to_string(),
+                "4(g) late lesser".to_string(),
+            ],
+            "4(g)'s note — \"the subject's view carries no `HiddenStartingOrder` slot at all\" — \
+             names the package's only masked-free subject views",
+        );
+
+        // The twelve that negate everywhere, stated as the complement of the six
+        // that do not.
+        let expected: std::collections::BTreeSet<&str> =
+            ["O1", "O2", "O3", "O5", "O6", "X3"].into_iter().collect();
+        assert_eq!(
+            breaks, expected,
+            "the view-asymmetric labels are not the registered set; the other {} negate at every \
+             one of the {sides} sides",
+            CandidateFeature::COUNT - expected.len(),
+        );
+        println!(
+            "cross-view negation: {} of {} labels negate at all {sides} registered sides; \
+             asymmetric = {breaks:?}",
+            CandidateFeature::COUNT - breaks.len(),
+            CandidateFeature::COUNT,
+        );
+    }
+
+    /// Swap the LABELS of seats 0 and 1 — the rows trade places and EVERY
+    /// `PlayerId` the rest of the state names travels with them.
+    ///
+    /// `tests/eval_core.rs` has a relabel of the same name for its hand-built
+    /// 5(a) fixtures, and this is deliberately not that one: it is a lib-facing
+    /// test helper an example cannot reach, and the frozen package needs two
+    /// fields that one does not touch. `BuildingSite::shophouses_built` and
+    /// `trading_house_owner` name their owners inside `board_layout`, so a
+    /// relabel that skipped them would leave a built shophouse credited to a
+    /// seat whose own `shophouses.built` map had moved — an INCOHERENT state,
+    /// which is why the caller re-checks invariants rather than trusting this
+    /// list to be complete.
+    fn relabel_seats_0_and_1(state: &GameState) -> GameState {
+        let swap = |p: PlayerId| match p.0 {
+            0 => PlayerId(1),
+            1 => PlayerId(0),
+            _ => p,
+        };
+        let mut out = state.clone();
+        out.players.swap(0, 1);
+        out.players[0].id = PlayerId(0);
+        out.players[1].id = PlayerId(1);
+        for slot in out.church_track.slots.iter_mut().flatten() {
+            slot.player = swap(slot.player);
+        }
+        for slot in out.customs_track.slots.iter_mut().flatten() {
+            slot.player = swap(slot.player);
+        }
+        for card in out.achievements.iter_mut() {
+            for claimant in card.claimed_by.iter_mut() {
+                *claimant = swap(*claimant);
+            }
+        }
+        for site in out.board_layout.building_sites.values_mut() {
+            for owner in site.shophouses_built.iter_mut().flatten() {
+                *owner = swap(*owner);
+            }
+            site.trading_house_owner = site.trading_house_owner.map(swap);
+        }
+        out.current_player = swap(out.current_player);
+        out.config.start_player = swap(out.config.start_player);
+        out.trigger_player = out.trigger_player.map(swap);
+        out
+    }
+
+    /// Each seat's OWN eighteen values, read from that seat's OWN view.
+    fn own_rows(state: &GameState, rules: &Rules) -> [[i64; CandidateFeature::COUNT]; 2] {
+        let mut out = [[0i64; CandidateFeature::COUNT]; 2];
+        for (seat, row) in out.iter_mut().enumerate() {
+            let id = PlayerId(seat as u8);
+            let view = observe(state, id).expect("a 2P fixture seat observes");
+            for label in CandidateFeature::ALL {
+                row[label.index()] = subject_column_of(&view, id, label, rules);
+            }
+        }
+        out
+    }
+
+    /// **CARRY 7(a) — §5.2 family 5's INDEX-PERMUTATION INVARIANCE, over the
+    /// registry.**
+    ///
+    /// Relabeling the seats permutes every candidate feature's per-seat values
+    /// identically. §5.2 names the registered cross-seat reads this is really
+    /// about — S4's in-hand branch and S7 read ALL seats' President locations,
+    /// since an opponent's President bars a re-entry target and un-counts a
+    /// reachable area — so the claim is not the trivial one that each feature
+    /// reads one row; it is that the cross-seat reads follow the relabeling too.
+    ///
+    /// `tests/eval_core.rs` pins this per group on ONE state built to make the
+    /// two seats differ. Running it over the frozen package asks the harder
+    /// version: whether it survives every position the solve will actually read
+    /// — hand-built layouts, mid-turn states, a purchased laboratory, a drained
+    /// port.
+    ///
+    /// **THE RELABEL IS RE-CHECKED, NOT TRUSTED.** A relabel that missed a
+    /// `PlayerId` would produce a state whose seats no longer own what the board
+    /// says they own, and the columns would differ for that reason rather than
+    /// for a feature-locality one — a FALSE failure on a frozen package. So
+    /// every relabeled state goes through `check_invariants` before anything is
+    /// read off it, and a refusal is reported as a relabel defect in as many
+    /// words rather than as a permutation failure.
+    #[test]
+    fn every_candidate_column_permutes_with_a_full_seat_relabel_at_every_registered_side() {
+        let rules = Rules::standard();
+        let mut sides = 0usize;
+        let mut discriminating = 0usize;
+        for (decl, fixture) in every_registered_fixture(&rules) {
+            for side in [Side::Greater, Side::Lesser] {
+                let at = format!("{} {} {}", decl.id, fixture.stage().name(), side.name());
+                let state = fixture.state(side);
+                let relabelled = relabel_seats_0_and_1(state);
+                check_invariants(&relabelled, &rules).unwrap_or_else(|e| {
+                    panic!(
+                        "{at}: the relabeled state is incoherent ({e}) — this is a DEFECT IN THE \
+                         RELABEL HELPER, not a permutation failure: some `PlayerId` the state \
+                         names did not travel with the rows"
+                    )
+                });
+                let before = own_rows(state, &rules);
+                let after = own_rows(&relabelled, &rules);
+                sides += 1;
+                if before[0] != before[1] {
+                    discriminating += 1;
+                }
+                for label in CandidateFeature::ALL {
+                    let i = label.index();
+                    assert_eq!(
+                        (after[0][i], after[1][i]),
+                        (before[1][i], before[0][i]),
+                        "{at}: {} does not permute with the seat labels",
+                        label.label(),
+                    );
+                }
+            }
+        }
+        assert_eq!(sides, 106, "53 (pair, stage) fixtures, two sides each");
+        // ANTI-VACUITY: on a side whose two seats read identically the
+        // permutation is invisible, so the claim rests on the sides where they
+        // do not. Measured before it was set.
+        assert_eq!(
+            discriminating, 106,
+            "only {discriminating} of {sides} sides have seats that read differently, so the \
+             permutation is invisible on the rest",
+        );
+        println!("seat relabel: {discriminating} of {sides} sides discriminate, all permute");
     }
 }
