@@ -3626,7 +3626,8 @@ mod tests {
     use yokohama_core::game::greedy::DEFAULT_RETREAT_SAMPLES;
     use yokohama_core::game::lookahead::{DEFAULT_BEAM, DEFAULT_WORLDS};
     use yokohama_core::game::pair_fixtures::{
-        build_registered_pair, FeatureId, PairDeclaration, PairFixture, Side, REGISTERED,
+        build_registered_pair, FeatureId, PairDeclaration, PairFixture, Side, CANDIDATE_PENDING,
+        REGISTERED,
     };
     use yokohama_core::{
         apply_move, get_legal_moves, is_game_over, AchievementCard, AchievementType, ChurchSlot,
@@ -6814,5 +6815,108 @@ mod tests {
              permutation is invisible on the rest",
         );
         println!("seat relabel: {discriminating} of {sides} sides discriminate, all permute");
+    }
+
+    /// **CARRY 1's OTHER HALF — the print seam itself.** With the adapter
+    /// supplied every one of the thirty-four rows carries a number; WITHOUT it
+    /// the eighteen candidate rows still render `CANDIDATE_PENDING`, in the
+    /// same columns.
+    ///
+    /// The pending path is not dead code now that step 3 has built the columns,
+    /// and its width behaviour is what this pins. `push_row`'s doc gives the
+    /// reason it exists: "the candidate cell is `CANDIDATE_PENDING` rather than
+    /// a number and a per-arm `format!` would silently ragged-edge the table
+    /// exactly where a reader is scanning for what is not built yet". So the
+    /// marker is asserted to FIT the delta column exactly, and both renderings
+    /// are asserted to put their delta field at the same character offset —
+    /// which is the property a reader relies on and the one a future edit to
+    /// either arm could break without any test noticing.
+    ///
+    /// `CANDIDATE_PENDING`'s own doc explains why the value columns print `-`
+    /// rather than 0: "A zero in a delta table is a MEASUREMENT". That is
+    /// checked too — a pending row must carry no digit anywhere.
+    #[test]
+    fn the_print_seam_renders_thirty_four_real_rows_and_still_aligns_its_pending_path() {
+        // The delta field is `{index:<4} {feature:<28} {greater:>16} {lesser:>16}
+        // {delta:>16}` — 84 characters up to and including the delta column.
+        const DELTA_FIELD: std::ops::Range<usize> = 68..84;
+        assert_eq!(
+            CANDIDATE_PENDING.len(),
+            DELTA_FIELD.len(),
+            "the pending marker no longer fits the delta column, so the table ragged-edges",
+        );
+
+        let rules = Rules::standard();
+        let decl = registered("4(c)").expect("4(c) is registered");
+        let fixture = build_registered_pair(decl, StageEndpoint::Late, &rules).expect("4(c) builds");
+        let real = render_pair_report_with(&fixture, &rules, Some(candidate_columns));
+        let pending = render_pair_report_with(&fixture, &rules, None);
+
+        // Both reports print the digest §5.1 requires of every artifact.
+        for report in [&real, &pending] {
+            assert!(report.contains(&package_digest()), "every report prints the digest");
+        }
+
+        let rows = |report: &str| -> Vec<String> {
+            report
+                .lines()
+                .filter(|l| l.len() >= DELTA_FIELD.end)
+                .filter(|l| l.split_whitespace().next().is_some_and(|w| w.parse::<usize>().is_ok()))
+                .map(str::to_string)
+                .collect()
+        };
+        let real_rows = rows(&real);
+        let pending_rows = rows(&pending);
+        assert_eq!(real_rows.len(), 34, "the whole §3.2 axis, 16 incumbents + 18 candidates");
+        assert_eq!(pending_rows.len(), 34, "the pending rendering carries the same axis");
+
+        assert!(
+            !real.contains(CANDIDATE_PENDING),
+            "a candidate row still renders as pending with the adapter supplied",
+        );
+        for (i, (r, p)) in real_rows.iter().zip(&pending_rows).enumerate() {
+            // The incumbent half is identical between the two renderings; the
+            // candidate half differs only in the three value columns.
+            let candidate = i >= 16;
+            assert_eq!(
+                r[..34],
+                p[..34],
+                "row {i}: the index and feature columns differ between the two renderings",
+            );
+            if candidate {
+                assert_eq!(&p[DELTA_FIELD], CANDIDATE_PENDING, "row {i}: the pending marker");
+                assert!(
+                    !p[34..DELTA_FIELD.start].contains(|c: char| c.is_ascii_digit()),
+                    "row {i}: a pending row printed a digit in a VALUE column — a zero in a \
+                     delta table is a MEASUREMENT, which is the claim `CANDIDATE_PENDING` exists \
+                     to avoid making (the marker's own `3` lives in the delta column)",
+                );
+                assert!(
+                    r[DELTA_FIELD].trim().parse::<i64>().is_ok(),
+                    "row {i}: the real rendering must carry a number where the marker was",
+                );
+            } else {
+                assert_eq!(r, p, "row {i}: an incumbent row must render identically either way");
+            }
+        }
+    }
+
+    /// The `pairs` command's argv discipline: an unknown narrowing is an ERROR,
+    /// never an empty dump.
+    ///
+    /// A mistyped `--pair 4c` that printed a header and no reports reads exactly
+    /// like a package that lost a registration — the same reasoning
+    /// [`split_args`] applies to unknown flags one level up.
+    #[test]
+    fn the_pairs_command_refuses_an_unknown_narrowing_rather_than_dumping_nothing() {
+        let arg = |s: &str| s.to_string();
+        assert!(cmd_pairs(&[arg("--pair"), arg("4c")])
+            .is_err_and(|e| e.contains("`4c` is not a registered pair")));
+        assert!(cmd_pairs(&[arg("--stage"), arg("mid")])
+            .is_err_and(|e| e.contains("unknown stage `mid`")));
+        assert!(cmd_pairs(&[arg("4(a)")]).is_err_and(|e| e.contains("no positional arguments")));
+        assert!(cmd_pairs(&[arg("--os-entropi")]).is_err(), "an unknown flag is never ignored");
+        // The narrowings that ARE spelled correctly resolve.
+        assert!(cmd_pairs(&[arg("--pair"), arg("4(c)"), arg("--manifest")]).is_ok());
     }
 }
