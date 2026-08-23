@@ -5917,8 +5917,16 @@ struct E113Gate {
 }
 
 impl E113Gate {
-    fn passed(&self) -> bool {
-        self.sum > 0 && self.blocking.is_empty()
+    /// The RAW DIRECTION read — §6's frozen "strictly favors" over the summed
+    /// delta. Whether it is a verdict input is [`Verdict`]'s business, not this
+    /// type's; here it is simply what the sum says.
+    fn direction_favours_enabling(&self) -> bool {
+        self.sum > 0
+    }
+
+    /// The pair's NON-COLLISION, through Part A's own classifier.
+    fn non_collision(&self) -> bool {
+        self.blocking.is_empty()
     }
 }
 
@@ -6795,6 +6803,78 @@ what is NOT here    weights, fits, and any direction beyond the frozen gate
 on a failure        this instrument REPORTS and exits non-zero. Repair by
                     re-tuning a gate is fenced: a step-5 failure is a finding";
 
+/// **WHAT COUNTS AT STEP 5**, in one place so it can be asserted rather than
+/// read off a hundred lines of printing.
+///
+/// Every gate result and every recorded read passes through a `take_*` method,
+/// and [`Verdict::clears`] is the only thing the exit code reads. Before this
+/// type the rule lived inline in the command, where the single cell that could
+/// have pinned it would have had to run the whole corpus-gated command to do so.
+struct Verdict {
+    /// Findings from gates that COUNT. Non-empty ⇒ the run stops.
+    failures: Vec<String>,
+    /// Registered gate roots that could not be evaluated at all.
+    unread: Vec<String>,
+}
+
+impl Verdict {
+    fn new() -> Self {
+        Self { failures: Vec::new(), unread: Vec::new() }
+    }
+
+    /// GATE 1 — the e113 exemplar pair.
+    fn take_e113(&mut self, gate: &E113Gate) {
+        if !(gate.direction_favours_enabling() && gate.non_collision()) {
+            self.failures.push(format!(
+                "GATE 1 (e113): S-sum {} (> 0 required), {} blocking finding(s)",
+                gate.sum,
+                gate.blocking.len(),
+            ));
+        }
+    }
+
+    /// GATE 2 — one placement-fork development ordinal.
+    fn take_fork(&mut self, read: &ForkRead) {
+        if !read.passed() {
+            self.failures.push(format!(
+                "GATE 2 ({}): the S signature takes {} distinct value(s) across the witnessing \
+                 same-count set (>= 2 required)",
+                read.name,
+                read.witness_read().map_or(0, |t| t.distinct_vectors),
+            ));
+        }
+    }
+
+    /// GATE 3 — one constructed strict-O3 cell.
+    fn take_o3(&mut self, cell: &O3Cell) {
+        if !cell.ok {
+            self.failures.push(format!(
+                "GATE 3 ({} {} {}): O3 = {}, expected {}",
+                cell.pair, cell.stage, cell.side, cell.o3, cell.expect,
+            ));
+        }
+    }
+
+    /// GATE 4 — one recorded opponent-pending exhibit.
+    fn take_exhibit(&mut self, read: &ExhibitRead) {
+        match (&read.outcome, read.passed()) {
+            (_, Some(true)) => {}
+            (ExhibitOutcome::Read { columns, .. }, _) => self.failures.push(format!(
+                "GATE 4 (e{}): opponent O1 = {}, O3 = {} (O1 >= 1 and O3 = 0 required)",
+                read.event_index, columns[0], columns[2],
+            )),
+            (ExhibitOutcome::NotRun { reason }, _) => {
+                self.unread.push(format!("GATE 4 (e{}): NOT RUN — {reason}", read.event_index))
+            }
+        }
+    }
+
+    /// Whether step 5 clears. The ONLY thing the exit code reads.
+    fn clears(&self) -> bool {
+        self.failures.is_empty() && self.unread.is_empty()
+    }
+}
+
 fn cmd_rooted(args: &[String]) -> Result<(), String> {
     let (positional, flags, _) = split_args(args, &["record"], &["no-generated"], &[])?;
     if !positional.is_empty() {
@@ -6811,11 +6891,10 @@ fn cmd_rooted(args: &[String]) -> Result<(), String> {
     println!("axis width          {AXIS_WIDTH}");
     println!("profile             {}", profile());
 
-    let mut failures: Vec<String> = Vec::new();
     // A registered gate root that could not be evaluated is tracked SEPARATELY
     // from one that evaluated the wrong way. Both stop the run; conflating them
     // would report "nothing was measured" as "the measurement disagreed".
-    let mut unread: Vec<String> = Vec::new();
+    let mut verdict = Verdict::new();
 
     // --- GATE 1: the e113 exemplar pair ------------------------------------
     println!();
@@ -6951,15 +7030,13 @@ fn cmd_rooted(args: &[String]) -> Result<(), String> {
     );
     println!(
         "GATE 1              {}",
-        if gate1.passed() { "PASS" } else { "*** FAIL ***" },
+        if gate1.direction_favours_enabling() && gate1.non_collision() {
+            "PASS"
+        } else {
+            "*** FAIL ***"
+        },
     );
-    if !gate1.passed() {
-        failures.push(format!(
-            "GATE 1 (e113): S-sum {} (> 0 required), {} blocking finding(s)",
-            gate1.sum,
-            gate1.blocking.len(),
-        ));
-    }
+    verdict.take_e113(&gate1);
 
     // --- GATE 2: the placement-fork development ordinals -------------------
     println!();
@@ -7003,14 +7080,7 @@ fn cmd_rooted(args: &[String]) -> Result<(), String> {
             if read.passed() { "PASS" } else { "*** FAIL ***" },
             if read.holds_everywhere() { "yes" } else { "no" },
         );
-        if !read.passed() {
-            failures.push(format!(
-                "GATE 2 ({}): the S signature takes {} distinct value(s) across the witnessing \
-                 same-count set (>= 2 required)",
-                read.name,
-                read.witness_read().map_or(0, |t| t.distinct_vectors),
-            ));
-        }
+        verdict.take_fork(&read);
     }
 
     // --- GATE 3: the constructed strict-O3 coverage ------------------------
@@ -7033,12 +7103,7 @@ fn cmd_rooted(args: &[String]) -> Result<(), String> {
             cell.expect,
             if cell.ok { "PASS" } else { "*** FAIL ***" },
         );
-        if !cell.ok {
-            failures.push(format!(
-                "GATE 3 ({} {} {}): O3 = {}, expected {}",
-                cell.pair, cell.stage, cell.side, cell.o3, cell.expect,
-            ));
-        }
+        verdict.take_o3(&cell);
     }
 
     // --- GATE 4: the recorded development band -----------------------------
@@ -7108,13 +7173,6 @@ fn cmd_rooted(args: &[String]) -> Result<(), String> {
                              never gated)",
                             mover_columns[0], mover_columns[1], mover_columns[2],
                         );
-                        if read.passed() != Some(true) {
-                            failures.push(format!(
-                                "GATE 4 (e{}): opponent O1 = {}, O3 = {} (O1 >= 1 and O3 = 0 \
-                                 required)",
-                                read.event_index, columns[0], columns[2],
-                            ));
-                        }
                     }
                     ExhibitOutcome::NotRun { reason } => {
                         println!(
@@ -7131,12 +7189,9 @@ fn cmd_rooted(args: &[String]) -> Result<(), String> {
                              designed around. NOT a pass and NOT a fail —\n        nothing was \
                              measured"
                         );
-                        unread.push(format!(
-                            "GATE 4 (e{}): NOT RUN — {reason}",
-                            read.event_index,
-                        ));
                     }
                 }
+                verdict.take_exhibit(read);
             }
             let readable: Vec<[i64; 3]> = reads.iter().filter_map(ExhibitRead::columns).collect();
             let with_o2 = readable.iter().filter(|c| c[1] >= 1).count();
@@ -7240,7 +7295,7 @@ fn cmd_rooted(args: &[String]) -> Result<(), String> {
 
     println!();
     println!("wall                {:.1}s", started.elapsed().as_secs_f64());
-    if failures.is_empty() && unread.is_empty() {
+    if verdict.clears() {
         println!(
             "VERDICT             every step-5 gate RUN above PASSES; the read-and-record items \
              gate nothing"
@@ -7248,20 +7303,20 @@ fn cmd_rooted(args: &[String]) -> Result<(), String> {
         Ok(())
     } else {
         let mut message = String::from("STOP — step 5 does not clear:\n");
-        if !failures.is_empty() {
+        if !verdict.failures.is_empty() {
             message.push_str(&format!(
                 "\n{} GATE FAILURE(S) — a registered gate evaluated AGAINST its frozen direction:\
                  \n  {}\n",
-                failures.len(),
-                failures.join("\n  "),
+                verdict.failures.len(),
+                verdict.failures.join("\n  "),
             ));
         }
-        if !unread.is_empty() {
+        if !verdict.unread.is_empty() {
             message.push_str(&format!(
                 "\n{} REGISTERED GATE ROOT(S) NOT RUN — nothing was measured there, which is \
                  neither a pass\nnor a fail:\n  {}\n",
-                unread.len(),
-                unread.join("\n  "),
+                verdict.unread.len(),
+                verdict.unread.join("\n  "),
             ));
         }
         message.push_str(
@@ -11149,31 +11204,202 @@ mod tests {
             gate_over(per_column, Vec::new())
         };
         assert!(
-            !planted([1, 1, 1, 1, 1, 1, -10]).passed(),
-            "SIX of seven columns favour the enabling side and the SUM is -4: the frozen gate \
-             FAILS, and a majority reading substituted into `passed` would pass it",
+            !planted([1, 1, 1, 1, 1, 1, -10]).direction_favours_enabling(),
+            "SIX of seven columns favour the enabling side and the SUM is -4: the frozen read \
+             says NO, and a majority reading substituted into it would say yes",
         );
-        assert!(planted([1, 1, 1, 1, 1, 1, -5]).passed(), "sum +1 — the same six-of-seven shape \
-                 the other way round, so the cell above is about the SUM and not about the shape");
+        assert!(
+            planted([1, 1, 1, 1, 1, 1, -5]).direction_favours_enabling(),
+            "sum +1 — the same six-of-seven shape the other way round, so the cell above is about \
+             the SUM and not about the shape",
+        );
 
-        // And the sum is genuinely strict: an exactly-balanced delta is a FAIL,
-        // not a pass, because the text says "strictly favors".
+        // And the sum is genuinely strict: an exactly-balanced delta does not
+        // favour anything, because the text says "strictly favors".
         assert_eq!(planted([3, -3, 0, 0, 0, 0, 0]).sum, 0);
         assert!(
-            !planted([3, -3, 0, 0, 0, 0, 0]).passed(),
+            !planted([3, -3, 0, 0, 0, 0, 0]).direction_favours_enabling(),
             "a zero sum does not STRICTLY favour either side",
         );
 
-        // The non-collision half is conjunctive: a passing sum with a blocking
-        // finding still fails, so neither clause can carry the gate alone.
+        // WHAT THIS CELL NO LONGER SAYS, and why. Until the 2026-08-23 ruling it
+        // ended by pinning the gate as CONJUNCTIVE — sum AND non-collision — and
+        // that assertion was CORRECT for the frozen gates. The ruling
+        // re-registers the direction claim forward to step 9(b) and leaves
+        // non-collision as the step-5 gate, so the conjunction is no longer the
+        // rule and asserting it here would pin a registration that has been
+        // superseded. The two halves are now pinned where they belong: the
+        // direction as a RECORDED read above, and non-collision as a gate in
+        // `a_blocking_collision_at_the_exemplar_pair_still_stops_step_five`.
         assert!(
             !gate_over(
                 [1, 1, 1, 1, 1, 1, -5],
                 vec![Blocking::RootPair { root: E113_ROOT.to_string() }],
             )
-            .passed(),
-            "sum +1 but the pair collides — the gate is BOTH clauses",
+            .non_collision(),
+            "a colliding pair reads as colliding whatever the sum says",
         );
+    }
+
+    /// A [`Verdict`] over the shape the instrument actually measures at HEAD —
+    /// the e113 direction failing, the two structurally unviewable exhibits, and
+    /// everything else passing.
+    fn measured_verdict() -> Verdict {
+        let mut verdict = Verdict::new();
+        // GATE 1: the measured deltas [1,-3,-1,1,0,0,0], sum -2, no collision.
+        verdict.take_e113(&gate_over([1, -3, -1, 1, 0, 0, 0], Vec::new()));
+        // GATE 2: four ordinals, each separating.
+        for name in ["m-pf-dev-0", "m-pf-dev-1", "m-pf-dev-2", "m-pf-dev-3"] {
+            verdict.take_fork(&fork_over(name, 6));
+        }
+        // GATE 3: the six constructed cells, all as declared.
+        for (pair, side, expect, o3) in [
+            ("4(b)", "EXECUTABLE", ">= 1", 1),
+            ("4(b)", "DISTANT", "= 0", 0),
+            ("4(a)", "MATCHED", "= 0", 0),
+        ] {
+            verdict.take_o3(&O3Cell {
+                pair,
+                stage: "early",
+                side,
+                expect,
+                o3,
+                ok: true,
+            });
+        }
+        // GATE 4: three that read and pass, two structurally unviewable.
+        for (event, columns) in [(111, [32, 6, 0]), (159, [18, 4, 0]), (198, [14, 3, 0])] {
+            verdict.take_exhibit(&exhibit_read(event, ExhibitOutcome::Read {
+                columns,
+                mover_columns: [0, 0, 0],
+                opponent: PlayerId(1),
+                hand: (1, 1),
+            }));
+        }
+        for event in [34, 68] {
+            verdict.take_exhibit(&exhibit_read(
+                event,
+                ExhibitOutcome::NotRun {
+                    reason: "seat 0's own starting-order deal was never recorded; it cannot view \
+                             itself"
+                        .to_string(),
+                },
+            ));
+        }
+        verdict
+    }
+
+    fn exhibit_read(event_index: usize, outcome: ExhibitOutcome) -> ExhibitRead {
+        ExhibitRead { event_index, digest: "0".repeat(16), mover: PlayerId(0), outcome }
+    }
+
+    fn fork_over(name: &str, distinct_vectors: usize) -> ForkRead {
+        ForkRead {
+            name: name.to_string(),
+            origin: String::new(),
+            digest: "0".repeat(16),
+            witness: 1,
+            totals: vec![TotalRead {
+                total: 1,
+                members: 10,
+                distinct_vectors,
+                distinct_per_column: [3, 2, 1, 1, 2, 2, 1],
+                distinct_complete: 8,
+                distinct_incumbent: 1,
+            }],
+        }
+    }
+
+    /// **THE RE-REGISTERED GATE SET CLEARS ON THE MEASURED SHAPE.**
+    ///
+    /// guidingpath 2026-08-23, "THE TWO STEP-5 FINDINGS ARE RULED": the e113
+    /// direction claim re-registers forward to step 9(b) and the OSE development
+    /// band re-registers as {e111, e159, e198} with e34/e68 recorded
+    /// NOT-RUN-STRUCTURAL. What remains a step-5 gate is the exemplar pair's
+    /// NON-COLLISION, GATE 2, GATE 3 and the re-registered GATE 4 — and on the
+    /// measured data all of them pass, so the run clears.
+    #[test]
+    fn the_re_registered_gate_set_clears_on_the_measured_shape() {
+        let verdict = measured_verdict();
+        assert!(
+            verdict.clears(),
+            "step 5 clears under the re-registered gate set; failures {:?}",
+            verdict.failures,
+        );
+    }
+
+    /// The e113 DIRECTION read is recorded and is no longer a verdict input.
+    ///
+    /// Its CONTROL sits in the same cell: a blocking collision at the same pair
+    /// still stops the run, so what changed is which half of GATE 1 gates — not
+    /// that GATE 1 stopped mattering.
+    #[test]
+    fn the_e113_direction_failure_is_recorded_and_does_not_stop_step_five() {
+        let mut recorded_only = Verdict::new();
+        recorded_only.take_e113(&gate_over([1, -3, -1, 1, 0, 0, 0], Vec::new()));
+        assert!(
+            recorded_only.clears(),
+            "the direction claim re-registers to step 9(b): FAILED-AS-REGISTERED at step 5 is a \
+             RECORDING, not a stop. failures {:?}",
+            recorded_only.failures,
+        );
+        assert!(
+            !recorded_only.failures.iter().any(|f| f.contains("GATE 1")),
+            "…and it is not filed as a GATE 1 failure either",
+        );
+    }
+
+    /// A blocking collision at the exemplar pair STILL stops step 5.
+    #[test]
+    fn a_blocking_collision_at_the_exemplar_pair_still_stops_step_five() {
+        let mut colliding = Verdict::new();
+        // Direction PASSING, so only the collision can be doing the work.
+        colliding.take_e113(&gate_over(
+            [1, 1, 1, 1, 1, 1, 1],
+            vec![Blocking::RootPair { root: E113_ROOT.to_string() }],
+        ));
+        assert!(
+            !colliding.clears(),
+            "non-collision is step-5 content and STAYS a gate — the ruling re-registered the \
+             direction claim, not the whole of GATE 1",
+        );
+        assert!(colliding.failures.iter().any(|f| f.contains("GATE 1")));
+    }
+
+    /// A structurally unviewable exhibit is the REGISTERED SHAPE, not a stop —
+    /// with the control that a root which DID read and failed still stops.
+    #[test]
+    fn a_structurally_unviewable_exhibit_does_not_stop_step_five() {
+        let mut structural = Verdict::new();
+        structural.take_exhibit(&exhibit_read(
+            34,
+            ExhibitOutcome::NotRun { reason: "ViewerDealUnrecorded".to_string() },
+        ));
+        assert!(
+            structural.clears(),
+            "e34/e68 are re-registered OUT of the development band and recorded \
+             NOT-RUN-STRUCTURAL; they no longer stop the run",
+        );
+
+        // THE CONTROL. A root that DID read and read the wrong way is still a
+        // gate failure, so the arm above is about unviewability and not about
+        // GATE 4 having been switched off.
+        let mut wrong = Verdict::new();
+        wrong.take_exhibit(&exhibit_read(111, ExhibitOutcome::Read {
+            columns: [0, 6, 0],
+            mover_columns: [0, 0, 0],
+            opponent: PlayerId(1),
+            hand: (1, 1),
+        }));
+        assert!(!wrong.clears(), "opponent-O1 = 0 at a re-registered dev root still fails");
+        let mut executable = Verdict::new();
+        executable.take_exhibit(&exhibit_read(111, ExhibitOutcome::Read {
+            columns: [32, 6, 1],
+            mover_columns: [0, 0, 0],
+            opponent: PlayerId(1),
+            hand: (1, 1),
+        }));
+        assert!(!executable.clears(), "opponent-O3 = 1 still fails the strict-honesty clause");
     }
 
     /// An [`E113Gate`] over planted columns, for the cells that exercise the
