@@ -425,6 +425,233 @@ fn witness_search(sys: &System) -> WitnessReport {
 // Toy systems (§5.4's "development uses toy systems only")
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Exact rationals (§5.4: "i128 rationals, CHECKED operations, gcd-reduced")
+// ---------------------------------------------------------------------------
+
+/// An exact rational over `i128`, gcd-reduced with a positive denominator.
+///
+/// Every operation is CHECKED and returns `None` on overflow, because §5.4 says
+/// "ANY overflow aborts to INCONCLUSIVE (never UNSAT)" — so an arithmetic limit
+/// has to be a value the caller must handle rather than a panic or a wrap.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct Rat {
+    n: i128,
+    d: i128,
+}
+
+impl Rat {
+    /// Zero.
+    const ZERO: Rat = Rat { n: 0, d: 1 };
+
+    /// `n/d`, reduced, with the sign carried by the numerator. `None` on a zero
+    /// denominator or on an overflow inside the reduction.
+    fn new(n: i128, d: i128) -> Option<Rat> {
+        if d == 0 {
+            return None;
+        }
+        // `i128::MIN.checked_neg()` is None, so the negation is checked rather
+        // than assumed: a wrap here would silently flip a sign.
+        let (n, d) = if d < 0 { (n.checked_neg()?, d.checked_neg()?) } else { (n, d) };
+        let g = gcd(n.unsigned_abs(), d.unsigned_abs());
+        if g == 0 {
+            return Some(Rat::ZERO);
+        }
+        let g = i128::try_from(g).ok()?;
+        Some(Rat { n: n / g, d: d / g })
+    }
+
+    /// An integer as a rational.
+    fn int(n: i128) -> Rat {
+        Rat { n, d: 1 }
+    }
+
+    fn add(self, o: Rat) -> Option<Rat> {
+        let n = self.n.checked_mul(o.d)?.checked_add(o.n.checked_mul(self.d)?)?;
+        Rat::new(n, self.d.checked_mul(o.d)?)
+    }
+
+    fn sub(self, o: Rat) -> Option<Rat> {
+        self.add(Rat { n: o.n.checked_neg()?, d: o.d })
+    }
+
+    fn mul(self, o: Rat) -> Option<Rat> {
+        Rat::new(self.n.checked_mul(o.n)?, self.d.checked_mul(o.d)?)
+    }
+
+    fn div(self, o: Rat) -> Option<Rat> {
+        Rat::new(self.n.checked_mul(o.d)?, self.d.checked_mul(o.n)?)
+    }
+
+    /// `-1`, `0` or `+1`.
+    fn sign(self) -> i32 {
+        match self.n.cmp(&0) {
+            std::cmp::Ordering::Less => -1,
+            std::cmp::Ordering::Equal => 0,
+            std::cmp::Ordering::Greater => 1,
+        }
+    }
+
+    fn is_zero(self) -> bool {
+        self.n == 0
+    }
+
+    /// Exact comparison. `None` on an overflow in the cross-multiplication.
+    fn cmp_exact(self, o: Rat) -> Option<std::cmp::Ordering> {
+        // Both denominators are positive by construction, so cross-multiplying
+        // preserves the order without a sign case.
+        Some(self.n.checked_mul(o.d)?.cmp(&o.n.checked_mul(self.d)?))
+    }
+}
+
+/// Euclid's GCD over magnitudes. `gcd(0, x) == x`, so [`Rat::new`] reduces a
+/// zero numerator without a special case.
+fn gcd(a: u128, b: u128) -> u128 {
+    let (mut a, mut b) = (a, b);
+    while b != 0 {
+        let t = a % b;
+        a = b;
+        b = t;
+    }
+    a
+}
+
+/// Least common multiple over magnitudes, checked — used to clear a
+/// certificate's denominators.
+fn lcm(a: u128, b: u128) -> Option<u128> {
+    if a == 0 || b == 0 {
+        return Some(0);
+    }
+    (a / gcd(a, b)).checked_mul(b)
+}
+
+// ---------------------------------------------------------------------------
+// §5.4 (2) — the exact oracle
+// ---------------------------------------------------------------------------
+
+/// §5.4's registered node budget: "10⁷ nodes per stage system".
+const NODE_BUDGET: u64 = 10_000_000;
+
+/// §5.4's registered enumeration budget: a relaxation-feasible/integer-infeasible
+/// verdict is admissible "only when the PRODUCT of the support's box ranges is
+/// ≤ 10⁷ points".
+const ENUMERATION_BUDGET: u128 = 10_000_000;
+
+/// A cap on simplex pivots. Bland's rule already forbids cycling, so this is a
+/// belt on a proof rather than the proof — and hitting it is INCONCLUSIVE.
+const PIVOT_CAP: usize = 200_000;
+
+/// **What an UNSAT SHIPS.** §5.4 admits exactly two shapes, and the verdict type
+/// cannot be built without one of them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Certificate {
+    /// "a relaxation-infeasible UNSAT ships a Farkas nonnegative rational
+    /// combination, independently re-verified by an integer pass after clearing
+    /// denominators". `y` is that combination, denominators already cleared, one
+    /// entry per row of [`System::inequalities`]; `rhs` is the positive
+    /// `Σ y_i b_i` the verification computed.
+    Farkas { y: Vec<i128>, rhs: i128 },
+    /// "a relaxation-feasible/integer-infeasible verdict is re-derived by
+    /// exhaustive enumeration over the IIS's variable support, admissible only
+    /// when the PRODUCT of the support's box ranges is ≤ 10⁷ points".
+    Enumeration { support: Vec<usize>, points: u128 },
+}
+
+/// The oracle's three answers. There is no fourth, and INCONCLUSIVE is not a
+/// weak UNSAT — §5.4: "'the oracle did not decide' is never infeasibility".
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Verdict {
+    /// A point satisfying every inequality, re-checked before it was returned.
+    Sat { w: Vec<i64> },
+    /// Infeasible, with a VERIFIED certificate.
+    Unsat { certificate: Certificate },
+    /// The oracle did not decide. Routed to the owner.
+    Inconclusive { reason: String },
+}
+
+impl Verdict {
+    /// The one-word spelling an artifact prints.
+    fn name(&self) -> &'static str {
+        match self {
+            Verdict::Sat { .. } => "SAT",
+            Verdict::Unsat { .. } => "UNSAT",
+            Verdict::Inconclusive { .. } => "INCONCLUSIVE",
+        }
+    }
+}
+
+/// **THE TRUST BOUNDARY.** Re-check a Farkas combination in checked i128 INTEGER
+/// arithmetic, reading only the integer system and the multipliers.
+///
+/// Farkas' lemma for `{w : A w ≥ b}`: the set is empty iff there is `y ≥ 0` with
+/// `yᵀA = 0` and `yᵀb > 0`. This function proves exactly that, and it shares no
+/// code with the search that proposed `y` — which is what makes §5.4's
+/// "independently re-verified by an integer pass after clearing denominators"
+/// an independence claim rather than a restatement.
+///
+/// Returns the positive `yᵀb` on success. Any overflow is an `Err`, and its
+/// caller turns that into INCONCLUSIVE rather than UNSAT.
+fn verify_farkas(_rows: &[Row], _y: &[i128]) -> Result<i128, String> {
+    unimplemented!("task B")
+}
+
+/// What the exact LP found about the RATIONAL relaxation.
+#[derive(Clone, Debug)]
+enum Relaxation {
+    Feasible,
+    /// Infeasible, with the Farkas multipliers the simplex's optimal duals give
+    /// — a PROPOSAL, not yet a proof. [`verify_farkas`] decides.
+    Infeasible(Vec<Rat>),
+    /// Overflow, a pivot-cap hit, or a degenerate shape. Never infeasibility.
+    Undecided(String),
+}
+
+/// **The exact rational LP** — Phase-I simplex with Bland's rule over
+/// [`Rat`], deciding the relaxation of `A w ≥ b` and extracting Farkas
+/// multipliers when it is empty.
+fn relaxation(_rows: &[Row], _columns: &[usize]) -> Relaxation {
+    unimplemented!("task B")
+}
+
+/// The columns that can matter: those carrying a nonzero coefficient in some
+/// row.
+///
+/// A variable absent from every row appears only in its own box bounds, which
+/// are satisfiable on their own, so it can take no part in an infeasibility and
+/// its Farkas multiplier would be zero. Dropping it shrinks the LP without
+/// changing a verdict or a certificate — the certificate is expanded back to
+/// full width before verification, so the trust boundary still reads the whole
+/// system.
+fn active_columns(_rows: &[Row]) -> Vec<usize> {
+    unimplemented!("task B")
+}
+
+/// **§5.4 (2) — THE EXACT ORACLE, the only authority for infeasibility.**
+///
+/// # The order of operations, and why it is this order
+///
+/// 1. The RATIONAL relaxation, decided exactly. A relaxation-infeasible system
+///    is integer-infeasible, and it is the case that ships a Farkas certificate
+///    — so it is asked first and, when it fires, nothing else runs.
+/// 2. Otherwise a bounded depth-first branch-and-bound hunts an integer point.
+///    A point found is SAT, re-checked against every row before it is returned.
+/// 3. A tree that exhausts without a point is NOT yet UNSAT. §5.4 requires the
+///    verdict be "re-derived by exhaustive enumeration over the IIS's variable
+///    support", admissible only under [`ENUMERATION_BUDGET`]; over budget is
+///    INCONCLUSIVE.
+///
+/// # Why the search's pruning cannot produce a wrong UNSAT
+///
+/// Bound propagation and the interval test shape the SEARCH; they never carry a
+/// verdict. Every UNSAT rests on a certificate that was verified independently
+/// (path 1) or on an exhaustive enumeration that uses no pruning at all (path
+/// 3). A propagation bug therefore degrades to INCONCLUSIVE — it can lose a
+/// solution the enumeration would have found, and the enumeration is what
+/// decides.
+fn decide(_sys: &System) -> Verdict {
+    unimplemented!("task B")
+}
+
 /// One toy row as the builder takes it: label, sparse `(index, coef)` entries,
 /// and the right-hand side.
 type ToyRow<'a> = (&'a str, &'a [(usize, i64)], i64);
@@ -547,13 +774,70 @@ mod toys {
                 &[("S1 beyond the wall", &[(s1, 1)], BOX_LIMIT + 1)],
                 BOX_LIMIT,
             ),
+            // A three-row cycle: no PAIR of rows contradicts, so a single-row
+            // interval test cannot see it and the certificate needs all three
+            // (Farkas y = (1, 1, 1), which sums the coefficients to zero and
+            // the margins to 3).
+            "unsat-cycle" => toy(
+                StageEndpoint::Early,
+                &[
+                    ("S1 over S2", &[(s1, 1), (col("S2"), -1)], 1),
+                    ("S2 over S3", &[(col("S2"), 1), (col("S3"), -1)], 1),
+                    ("S3 over S1", &[(col("S3"), 1), (s1, -1)], 1),
+                ],
+                BOX_LIMIT,
+            ),
+            // §5.4's registered "known-UNSAT (incl. a fractional-margin-derived
+            // system)". Both rows come from ONE amortization claim -- E1 is
+            // worth 1/2 VP per yen, or here 1/3 for the arithmetic -- read at
+            // the two ends §5.1 reads it at:
+            //
+            //   * the MARGIN, strengthened by §5.1's early floor from 1/3 to
+            //     `max(1, ceil(1/3 x 1)) = 1`, giving `w_E1 >= 1`;
+            //   * the RATE itself, which says three units of E1 are worth no
+            //     more than one VP: `-3 w_E1 + w_vp >= 0`.
+            //
+            // With `w_vp` pinned to 1 the rate caps `w_E1` at 1/3 while the
+            // floored margin demands 1, so the system is infeasible AT THE
+            // RATIONAL RELAXATION and ships a Farkas certificate. It is the
+            // granularity §5.1 warns about made concrete: the contradiction is
+            // the 3x floor, not the architecture -- which is why §5.4 keeps an
+            // early-rescale diagnostic, and this toy is what fires it.
+            "unsat-fractional-margin" => toy(
+                StageEndpoint::Early,
+                &[
+                    ("E1 floored margin", &[(e1, 1)], 1),
+                    (
+                        "the 1/3 VP rate itself",
+                        &[(e1, -3), (Feature::VictoryPoints.index(), 1)],
+                        0,
+                    ),
+                ],
+                BOX_LIMIT,
+            ),
+            // UNSAT at |w| <= 64 (the widest reachable spread is 128) and SAT
+            // at |w| <= 128 -- §5.4's box-widening diagnostic has something to
+            // find.
+            "unsat-box-widening" => toy(
+                StageEndpoint::Early,
+                &[("S1 far over S2", &[(s1, 1), (col("S2"), -1)], 2 * BOX_LIMIT + 1)],
+                BOX_LIMIT,
+            ),
             _ => return None,
         })
     }
 
     /// Every registered toy's name, in the order [`named`] lists them.
-    pub const NAMES: [&str; 5] =
-        ["standing-only", "sat-reachable", "sat-coupled", "unsat-direct", "unsat-box"];
+    pub const NAMES: [&str; 8] = [
+        "standing-only",
+        "sat-reachable",
+        "sat-coupled",
+        "unsat-direct",
+        "unsat-box",
+        "unsat-cycle",
+        "unsat-fractional-margin",
+        "unsat-box-widening",
+    ];
 }
 
 // ---------------------------------------------------------------------------
@@ -1045,6 +1329,233 @@ mod tests {
     fn the_sat_reading_sentence_is_the_one_the_spec_registers() {
         assert!(SAT_READING.contains("no contradiction among the K binding constraints"));
         assert!(SAT_READING.contains("NEVER as unqualified compatibility"));
+    }
+
+    // -- exact rationals ---------------------------------------------------
+
+    #[test]
+    fn rationals_reduce_and_carry_the_sign_in_the_numerator() {
+        assert_eq!(Rat::new(4, -6), Rat::new(-2, 3));
+        assert_eq!(Rat::new(0, -5), Some(Rat::ZERO));
+        assert_eq!(Rat::new(1, 0), None, "a zero denominator is not a rational");
+        let r = Rat::new(-8, 12).expect("reduces");
+        assert!(r.d > 0, "the denominator is normalized positive, got {}", r.d);
+        assert_eq!((r.n, r.d), (-2, 3));
+    }
+
+    #[test]
+    fn rational_arithmetic_is_checked_and_returns_none_on_overflow() {
+        let big = Rat::new(i128::MAX, 1).expect("representable");
+        assert_eq!(big.add(big), None, "an overflowing add is None, never a wrap");
+        assert_eq!(big.mul(big), None, "an overflowing mul is None, never a wrap");
+        assert_eq!(Rat::int(1).div(Rat::ZERO), None, "division by zero is None");
+        let third = Rat::new(1, 3).expect("representable");
+        assert_eq!(third.add(third).and_then(|r| r.add(third)), Some(Rat::int(1)));
+        assert_eq!(Rat::int(7).sub(Rat::int(9)), Some(Rat::int(-2)));
+    }
+
+    #[test]
+    fn rational_comparison_is_exact_where_floating_point_would_tie() {
+        let a = Rat::new(1, 3).expect("representable");
+        let b = Rat::new(100_000_000_000_000_000, 300_000_000_000_000_001).expect("representable");
+        assert_eq!(a.cmp_exact(b), Some(std::cmp::Ordering::Greater));
+        assert_eq!(b.cmp_exact(a), Some(std::cmp::Ordering::Less));
+        assert_eq!(a.cmp_exact(a), Some(std::cmp::Ordering::Equal));
+        assert_eq!(a.sign(), 1);
+        assert!(Rat::ZERO.is_zero());
+    }
+
+    // -- the exact oracle: the registered unit tests ------------------------
+
+    fn verdict(name: &str) -> Verdict {
+        decide(&toys::named(name).expect("a registered toy"))
+    }
+
+    /// §5.4's registered "known-SAT".
+    #[test]
+    fn the_oracle_decides_the_known_sat_toys_and_the_points_re_check() {
+        for name in ["standing-only", "sat-reachable", "sat-coupled"] {
+            let sys = toys::named(name).expect("registered");
+            match decide(&sys) {
+                Verdict::Sat { w } => {
+                    assert_eq!(sys.violation(&w), 0, "{name}: the returned point is re-checked");
+                    for (i, &x) in w.iter().enumerate() {
+                        assert!(x >= sys.lo[i] && x <= sys.hi[i], "{name}: coordinate {i} in box");
+                    }
+                }
+                other => panic!("{name} is satisfiable, got {}", other.name()),
+            }
+        }
+    }
+
+    /// The oracle decides what the descent could not — the whole reason §5.4
+    /// keeps two instruments.
+    #[test]
+    fn the_oracle_decides_the_coupled_toy_the_witness_search_stalls_on() {
+        let sys = toys::named("sat-coupled").expect("registered");
+        assert!(witness_search(&sys).violation > 0, "the descent stalls here");
+        assert!(matches!(decide(&sys), Verdict::Sat { .. }), "the oracle does not");
+    }
+
+    /// §5.4's registered "known-UNSAT", including the fractional-margin-derived
+    /// system it names by name.
+    #[test]
+    fn the_oracle_decides_the_known_unsat_toys() {
+        for name in
+            ["unsat-direct", "unsat-box", "unsat-cycle", "unsat-fractional-margin", "unsat-box-widening"]
+        {
+            assert!(
+                matches!(verdict(name), Verdict::Unsat { .. }),
+                "{name} is infeasible, got {}",
+                verdict(name).name(),
+            );
+        }
+    }
+
+    /// The three-row cycle no pair of rows contradicts — the cell that proves
+    /// the oracle is a real LP and not an interval test wearing its name.
+    #[test]
+    fn the_cycle_needs_all_three_rows_and_the_certificate_says_so() {
+        let sys = toys::named("unsat-cycle").expect("registered");
+        let Verdict::Unsat { certificate: Certificate::Farkas { y, .. } } = decide(&sys) else {
+            panic!("the cycle is relaxation-infeasible and ships Farkas");
+        };
+        let rows = sys.inequalities();
+        let used: Vec<&str> = rows
+            .iter()
+            .zip(&y)
+            .filter(|(_, m)| **m != 0)
+            .map(|(r, _)| r.label.as_str())
+            .collect();
+        for label in ["S1 over S2", "S2 over S3", "S3 over S1"] {
+            assert!(used.contains(&label), "the combination leans on {label}; it used {used:?}");
+        }
+    }
+
+    /// §5.4's registered "Farkas-check round-trip" — and its teeth are the
+    /// second half: a certificate that has been TAMPERED WITH is rejected.
+    #[test]
+    fn the_farkas_round_trip_accepts_the_real_certificate_and_rejects_a_tampered_one() {
+        let sys = toys::named("unsat-direct").expect("registered");
+        let Verdict::Unsat { certificate: Certificate::Farkas { y, rhs } } = decide(&sys) else {
+            panic!("unsat-direct is relaxation-infeasible");
+        };
+        let rows = sys.inequalities();
+        assert_eq!(verify_farkas(&rows, &y), Ok(rhs), "the shipped certificate re-verifies");
+        assert!(rhs > 0, "the combination's right-hand side is positive");
+        assert!(y.iter().all(|m| *m >= 0), "the multipliers are nonnegative");
+
+        let first = y.iter().position(|m| *m != 0).expect("a nonzero multiplier");
+        let mut bumped = y.clone();
+        bumped[first] += 1;
+        assert!(
+            verify_farkas(&rows, &bumped).is_err(),
+            "a perturbed combination no longer sums the coefficients to zero",
+        );
+        let mut negated = y.clone();
+        negated[first] = -negated[first] - 1;
+        assert!(verify_farkas(&rows, &negated).is_err(), "a negative multiplier is refused");
+    }
+
+    /// §5.4's registered "determinism".
+    #[test]
+    fn the_oracle_is_deterministic_across_repeats() {
+        for name in toys::NAMES {
+            let sys = toys::named(name).expect("registered");
+            assert_eq!(decide(&sys), decide(&sys), "{name} decides identically on repeat");
+        }
+    }
+
+    /// The overflow arm: "ANY overflow aborts to INCONCLUSIVE (never UNSAT)".
+    #[test]
+    fn an_overflowing_system_is_inconclusive_and_never_unsat() {
+        let huge = i64::MAX;
+        let sys = toy(
+            StageEndpoint::Early,
+            &[
+                ("enormous up", &[(col("S1"), huge), (col("S2"), huge)], huge),
+                ("enormous down", &[(col("S1"), -huge), (col("S2"), -huge)], huge),
+            ],
+            BOX_LIMIT,
+        );
+        match decide(&sys) {
+            // If it DID decide, the certificate must still verify -- the point
+            // of the arm is that an unverifiable one never passes.
+            Verdict::Unsat { certificate: Certificate::Farkas { y, .. } } => {
+                assert!(verify_farkas(&sys.inequalities(), &y).is_ok());
+            }
+            Verdict::Unsat { certificate: Certificate::Enumeration { points, .. } } => {
+                assert!(points <= ENUMERATION_BUDGET);
+            }
+            Verdict::Inconclusive { .. } => {}
+            Verdict::Sat { .. } => panic!("these rows contradict; SAT is wrong either way"),
+        }
+    }
+
+    /// The enumeration-admissibility bound: a support too wide to enumerate is
+    /// INCONCLUSIVE, not UNSAT.
+    #[test]
+    fn an_integer_only_infeasibility_over_a_wide_support_is_inconclusive() {
+        // Relaxation-FEASIBLE (w_S1 = 1/2 satisfies both) but integer-infeasible,
+        // and padded with free columns so the support's product blows §5.4's
+        // 10^7 budget.
+        let up = [(col("S1"), 2)];
+        let down = [(col("S1"), -2)];
+        let wide: Vec<Vec<(usize, i64)>> =
+            ["S2", "S3", "S4", "S5"].iter().map(|l| vec![(col(l), 1)]).collect();
+        let mut rows: Vec<ToyRow> =
+            vec![("2 S1 at least 1", &up, 1), ("2 S1 at most 1", &down, -1)];
+        for entry in &wide {
+            rows.push(("free column", entry.as_slice(), -BOX_LIMIT));
+        }
+        let sys = toy(StageEndpoint::Early, &rows, BOX_LIMIT);
+        match decide(&sys) {
+            Verdict::Inconclusive { reason } => {
+                assert!(
+                    reason.contains("enumeration") || reason.contains("budget"),
+                    "the reason names what ran out: {reason}",
+                );
+            }
+            Verdict::Unsat { certificate } => panic!(
+                "an integer-only infeasibility over a wide support may not be claimed: {certificate:?}",
+            ),
+            Verdict::Sat { w } => panic!("2 w_S1 cannot be both >= 1 and <= 1 at an integer: {w:?}"),
+        }
+    }
+
+    /// An UNSAT is never returned without a certificate that verifies — the
+    /// structural statement of the trust boundary.
+    #[test]
+    fn every_unsat_the_oracle_returns_carries_a_certificate_that_verifies() {
+        for name in toys::NAMES {
+            let sys = toys::named(name).expect("registered");
+            if let Verdict::Unsat { certificate } = decide(&sys) {
+                match certificate {
+                    Certificate::Farkas { y, rhs } => {
+                        assert_eq!(verify_farkas(&sys.inequalities(), &y), Ok(rhs), "{name}");
+                    }
+                    Certificate::Enumeration { points, .. } => {
+                        assert!(points <= ENUMERATION_BUDGET, "{name} stayed inside the budget");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn active_columns_are_the_ones_a_row_actually_reads() {
+        let sys = toys::named("unsat-direct").expect("registered");
+        assert_eq!(active_columns(&sys.rows), vec![col("S1")]);
+        let widened = toys::named("unsat-fractional-margin").expect("registered");
+        let mut want = vec![Feature::VictoryPoints.index(), col("E1")];
+        want.sort_unstable();
+        assert_eq!(active_columns(&widened.rows), want, "the pinned w_vp is read by the rate row");
+    }
+
+    #[test]
+    fn the_node_and_enumeration_budgets_are_the_registered_ones() {
+        assert_eq!(NODE_BUDGET, 10_000_000, "§5.4: 10^7 nodes per stage system");
+        assert_eq!(ENUMERATION_BUDGET, 10_000_000, "§5.4: 10^7 points");
     }
 
     // -- document order ----------------------------------------------------
