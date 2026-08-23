@@ -113,6 +113,13 @@ struct Row {
     kind: RowKind,
     coef: Vec<i64>,
     rhs: i64,
+    /// The registered `margin_vp` fraction, for MARGINED pair rows ONLY.
+    ///
+    /// `Some` exactly where §5.1's margin is a FUNCTION of the pin, so the
+    /// early-rescale ladder can re-evaluate it at each rung. `None` for
+    /// DIRECTION-ONLY and WEAK rows, whose 1 and 0 are not prices and do not
+    /// move with the pin, and for every box, pin and hand-ordering row.
+    margin_vp: Option<(i64, i64)>,
 }
 
 /// One stage's constraint system.
@@ -166,6 +173,46 @@ fn margin_of(d: &PairDeclaration, stage: StageEndpoint) -> Result<i64, String> {
             stage.name(),
         )
     })
+}
+
+/// **§5.2's MARGINED pairs and the VP FRACTIONS their integers come from**,
+/// transcribed from the document.
+///
+/// §5.1 defines a MARGINED margin as `max(1, ceil(margin_vp × w_vp(stage)))` —
+/// a FUNCTION of the pin, of which the registered integer is one evaluation, at
+/// the shipped `w_vp = (1, 40)`. The registry stores the evaluation; this table
+/// stores the function's other argument, which is what §5.4's early-rescale
+/// diagnostic needs when it MOVES the pin.
+///
+/// Transcribed from §5.2's own prose: 1(a) "amortized ⅓ VP/good" over one good ·
+/// 2(a) the same ⅓ rate over goods +2 · 3(a) "amortized ½ VP/yen" over one yen ·
+/// 3(b) the ⅓ rate over one good · 3(c) "one activation's 2¥ ≈ 1 VP" ·
+/// 4(d) "margin_vp = 4".
+const MARGIN_VP: [(&str, i64, i64); 6] =
+    [("1(a)", 1, 3), ("2(a)", 2, 3), ("3(a)", 1, 2), ("3(b)", 1, 3), ("3(c)", 1, 1), ("4(d)", 4, 1)];
+
+/// §5.1's MARGINED formula, `max(1, ceil(margin_vp × w_vp))`, at an ARBITRARY
+/// pin.
+///
+/// The registered integers are this evaluated at the shipped pin. The
+/// early-rescale ladder evaluates it again at each rung, because a margin left
+/// at its shipped value while the pin moves is a margin that has silently
+/// changed meaning.
+fn margined_integer(numerator: i64, denominator: i64, w_vp: i64) -> i64 {
+    let scaled = numerator * w_vp;
+    let ceiling = scaled.div_euclid(denominator) + i64::from(scaled.rem_euclid(denominator) > 0);
+    ceiling.max(1)
+}
+
+/// The registered VP fraction of a MARGINED pair, or `None` for the
+/// DIRECTION-ONLY and WEAK classes.
+///
+/// Those two are deliberately absent rather than stored as 1/1 and 0/1: §5.1's
+/// own words are that 1 and 0 "are not prices, they are the two shapes of 'no
+/// price was registered'", so they do NOT move with the pin and a fraction for
+/// them would be a fiction that re-priced them.
+fn margin_fraction(id: &str) -> Option<(i64, i64)> {
+    MARGIN_VP.iter().find(|(pair, _, _)| *pair == id).map(|(_, n, d)| (*n, *d))
 }
 
 /// The §5.2 DOCUMENT-ORDER index of a registered pair — the deletion order.
@@ -292,6 +339,7 @@ impl System {
                 kind: kind.clone(),
                 coef: lower,
                 rhs: self.lo[i],
+                margin_vp: None,
             });
             let mut upper = vec![0i64; AXIS_WIDTH];
             upper[i] = -1;
@@ -300,6 +348,7 @@ impl System {
                 kind,
                 coef: upper,
                 rhs: -self.hi[i],
+                margin_vp: None,
             });
         }
         all
@@ -1255,6 +1304,33 @@ struct ScaleDiagnostics {
     rescaled: Vec<(i64, Verdict)>,
 }
 
+/// **The system re-priced at a diagnostic pin.**
+///
+/// §5.1 makes a MARGINED margin `max(1, ceil(margin_vp × w_vp(stage)))`, so it
+/// is a FUNCTION of the pin and moving the pin without re-evaluating it changes
+/// what the row claims. Leaving the shipped integers in place UNDERSTATES every
+/// margined row at rungs above 1 — 3(c) would ask for 1 where the formula asks
+/// for 2 — and an understated system can come back SAT, which would label a
+/// real infeasibility a SCALE finding. That is anti-conservative in exactly the
+/// direction checkpoint §5B cares about, so the ladder re-prices.
+///
+/// Rows carrying no fraction are left alone: DIRECTION-ONLY's 1 and WEAK's 0 are
+/// not prices, and the box, pin and hand-ordering rows are not margins at all.
+fn repriced_at(sys: &System, w_vp: i64) -> System {
+    let rows = sys
+        .rows
+        .iter()
+        .map(|row| {
+            let mut row = row.clone();
+            if let Some((numerator, denominator)) = row.margin_vp {
+                row.rhs = margined_integer(numerator, denominator, w_vp);
+            }
+            row
+        })
+        .collect();
+    System::new(sys.stage, rows, sys.box_limit, w_vp)
+}
+
 fn scale_diagnostics(sys: &System) -> ScaleDiagnostics {
     let widened =
         decide(&System::new(sys.stage, sys.rows.clone(), WIDENED_BOX_LIMIT, sys.pin_vp));
@@ -1305,6 +1381,9 @@ fn implied_by_the_rest(sys: &System) -> ImplicationReport {
             kind: RowKind::Pair { id: "negation".to_string(), order: usize::MAX },
             coef: row.coef.iter().map(|c| -c).collect(),
             rhs: 1 - row.rhs,
+            // A negation is not a registered margined row, so it does not
+            // re-price under the rescale ladder.
+            margin_vp: None,
         });
         let probed = System { rows, ..sys.clone() };
         match decide(&probed) {
@@ -1479,6 +1558,7 @@ fn row_from_signatures(
         kind: RowKind::Pair { id: pair.id.to_string(), order },
         coef,
         rhs: margin,
+        margin_vp: None,
     })
 }
 
@@ -1553,6 +1633,7 @@ mod toys {
                     kind: RowKind::Pair { id: format!("toy-{i}"), order: i },
                     coef,
                     rhs: *rhs,
+                    margin_vp: None,
                 }
             })
             .collect();
@@ -1593,7 +1674,13 @@ mod toys {
                 let mut coef = vec![0i64; AXIS_WIDTH];
                 coef[greater] = 1;
                 coef[lesser] = -1;
-                Row { label: label.to_string(), kind: RowKind::HandOrdering, coef, rhs: 1 }
+                Row {
+                    label: label.to_string(),
+                    kind: RowKind::HandOrdering,
+                    coef,
+                    rhs: 1,
+                    margin_vp: None,
+                }
             })
             .collect()
     }
@@ -2846,6 +2933,171 @@ mod tests {
         }
     }
 
+    /// **S-2 — the HALT arm.** §5.4: "an INCONCLUSIVE child during
+    /// deletion-minimization HALTS the minimization, which reports the current
+    /// (non-minimal) infeasible set with the INCONCLUSIVE named".
+    ///
+    /// The construction has to make the FIRST probe inconclusive, which takes
+    /// two ingredients: a direct contradiction placed first (so the whole system
+    /// is UNSAT and minimization runs at all), and a relaxation-feasible,
+    /// integer-infeasible pair over a support too wide to enumerate (so that
+    /// removing the first row leaves a system the oracle cannot decide).
+    #[test]
+    fn an_inconclusive_probe_halts_the_minimization_and_is_named_in_the_report() {
+        let up = [(col("S6"), 1)];
+        let down = [(col("S6"), -1)];
+        let twice_up = [(col("S1"), 2)];
+        let twice_down = [(col("S1"), -2)];
+        // Padding columns to push the enumeration support over §5.4's budget:
+        // five columns of 129 values is 129^5, far past 10^7.
+        let wide: Vec<Vec<(usize, i64)>> =
+            ["S2", "S3", "S4"].iter().map(|l| vec![(col(l), 1)]).collect();
+        let mut rows: Vec<ToyRow> = vec![
+            ("S6 up", &up, 1),
+            ("S6 down", &down, 1),
+            ("twice S1 at least 1", &twice_up, 1),
+            ("twice S1 at most 1", &twice_down, -1),
+        ];
+        for entry in &wide {
+            rows.push(("a free column", entry.as_slice(), -BOX_LIMIT));
+        }
+        let sys = toy(StageEndpoint::Early, &rows, BOX_LIMIT);
+        assert!(
+            matches!(decide(&sys), Verdict::Unsat { .. }),
+            "the S6 pair contradicts at the relaxation, so the whole system is infeasible",
+        );
+
+        let result = minimize(&sys);
+        let halt = result.halted.clone().expect("probe 0 leaves an undecidable system");
+        assert!(halt.contains("S6 up"), "the halt names the probe that caused it: {halt}");
+        assert!(halt.contains("INCONCLUSIVE"), "{halt}");
+        assert!(halt.contains("NOT \nminimal") || halt.contains("NOT minimal"), "{halt}");
+        assert_eq!(
+            result.kept.len(),
+            sys.rows.len(),
+            "the pass stopped at the first probe, so every row is still in the reported set",
+        );
+        assert!(result.dropped.is_empty(), "nothing was established as droppable before the halt");
+        assert!(
+            render_minimization(&result).contains("HALTED"),
+            "and the artifact says so rather than presenting a completed-looking core",
+        );
+    }
+
+    // -- S-1: the rescale ladder re-prices what the pin prices ---------------
+
+    /// §5.1's MARGINED formula, evaluated at the SHIPPED pin, reproduces the
+    /// registered integers — the tie between the transcribed fractions and the
+    /// registry.
+    #[test]
+    fn the_transcribed_fractions_reproduce_the_registered_integers() {
+        for (id, numerator, denominator) in MARGIN_VP {
+            let pair = REGISTERED.iter().find(|p| p.id == id).expect("registered");
+            assert!(matches!(pair.margin, MarginClass::Margined { .. }), "{id} is MARGINED");
+            assert_eq!(margin_fraction(id), Some((numerator, denominator)));
+            for stage in pair.stages {
+                let shipped = toys::pinned_vp(*stage);
+                assert_eq!(
+                    margined_integer(numerator, denominator, shipped),
+                    margin_of(pair, *stage).expect("priced"),
+                    "{id} at {}: the formula at the shipped pin IS the registered integer",
+                    stage.name(),
+                );
+            }
+        }
+        // And the classes that are NOT prices carry no fraction, so nothing
+        // re-prices them.
+        for pair in REGISTERED.iter() {
+            if !matches!(pair.margin, MarginClass::Margined { .. }) {
+                assert_eq!(margin_fraction(pair.id), None, "{} is not MARGINED", pair.id);
+            }
+        }
+    }
+
+    /// **S-1's defect, as a cell.** A MARGINED margin is a FUNCTION of the pin,
+    /// so moving the pin without re-evaluating it UNDERSTATES the row — which
+    /// would let a real infeasibility come back SAT under rescale and be
+    /// labelled a SCALE finding. Anti-conservative in exactly the §5B
+    /// direction.
+    #[test]
+    fn a_margined_row_re_prices_at_each_rung_of_the_rescale_ladder() {
+        // The reviewer's example: 3(c)'s margin_vp is 1, so the shipped early
+        // integer is 1 and the rung-2 integer must be 2.
+        assert_eq!(margined_integer(1, 1, 1), 1, "3(c) at the shipped early pin");
+        assert_eq!(margined_integer(1, 1, 2), 2, "3(c) at rung 2 -- NOT the registered 1");
+        assert_eq!(margined_integer(1, 1, 6), 6, "3(c) at rung 6");
+        // And the fractional rows, whose early floor is the strengthening.
+        assert_eq!(margined_integer(1, 3, 1), 1, "1(a)'s third of a VP floors to 1");
+        assert_eq!(margined_integer(1, 3, 3), 1, "at rung 3 a third of 3 VP is exactly 1");
+        assert_eq!(margined_integer(1, 3, 6), 2, "at rung 6 it is 2");
+
+        // A REAL registered row, built from synthetic signatures so no fixture
+        // is touched, must carry its fraction and re-price along the ladder.
+        let pair = REGISTERED.iter().find(|p| p.id == "3(c)").expect("registered");
+        let mut greater = vec![0i64; AXIS_WIDTH];
+        greater[col("S5")] = 2;
+        let row = row_from_signatures(pair, StageEndpoint::Early, &greater, &vec![0; AXIS_WIDTH])
+            .expect("a listed row");
+        assert_eq!(row.margin_vp, Some((1, 1)), "the row carries 3(c)'s registered fraction");
+        assert_eq!(row.rhs, 1, "at the shipped pin it is the registered integer");
+
+        let sys = assemble(StageEndpoint::Early, vec![row], BOX_LIMIT);
+        let rungs = scale_diagnostics(&sys).rescaled;
+        assert_eq!(rungs.len(), EARLY_RESCALE_LADDER.len());
+        for (pin, _) in &rungs {
+            let repriced = repriced_at(&sys, *pin);
+            let margined = repriced
+                .rows
+                .iter()
+                .find(|r| r.margin_vp.is_some())
+                .expect("the 3(c) row is still there");
+            assert_eq!(
+                margined.rhs,
+                margined_integer(1, 1, *pin),
+                "at rung {pin} the margined row is re-priced, not left at its shipped integer",
+            );
+            assert_eq!(margined.rhs, *pin, "3(c)'s margin_vp is 1, so its margin IS the pin");
+            assert_eq!(repriced.pin_vp, *pin);
+        }
+        // The rows that are not prices do NOT move.
+        let orderings = repriced_at(&sys, 6);
+        for row in orderings.rows.iter().filter(|r| r.kind == RowKind::HandOrdering) {
+            assert_eq!(row.rhs, 1, "a hand-ordering row is not a price and does not re-price");
+        }
+    }
+
+    /// The fractional-margin toy's rescale verdict, RE-DERIVED under the
+    /// calibrated form.
+    ///
+    /// Its margin row declares the ⅓ rate the toy is built around, so the
+    /// ladder now re-prices it: 1, 1, 1, 2 at rungs 1, 2, 3, 6. The verdicts are
+    /// UNCHANGED — the rung-3 SCALE finding survives calibration, because the
+    /// rate row relaxes exactly as fast as the margin does. Recorded rather than
+    /// assumed, per the wave's instruction that a changed verdict would be the
+    /// finding.
+    #[test]
+    fn the_fractional_margin_toy_keeps_its_finding_under_the_calibrated_ladder() {
+        let sys = toys::named("unsat-fractional-margin").expect("registered");
+        let margin_row = sys.rows.iter().find(|r| r.margin_vp.is_some()).expect("declares a rate");
+        assert_eq!(margin_row.margin_vp, Some((1, 3)), "the toy's own 1/3 VP rate");
+
+        let expected: [(i64, i64, bool); 4] =
+            [(1, 1, false), (2, 1, false), (3, 1, true), (6, 2, true)];
+        let rungs = scale_diagnostics(&sys).rescaled;
+        for (pin, want_rhs, want_sat) in expected {
+            let repriced = repriced_at(&sys, pin);
+            let row = repriced.rows.iter().find(|r| r.margin_vp.is_some()).expect("present");
+            assert_eq!(row.rhs, want_rhs, "the re-priced margin at rung {pin}");
+            let verdict = rungs.iter().find(|(p, _)| *p == pin).map(|(_, v)| v).expect("a rung");
+            assert_eq!(
+                matches!(verdict, Verdict::Sat { .. }),
+                want_sat,
+                "rung {pin} under the CALIBRATED ladder: the finding is unchanged, because the \
+                 rate row relaxes exactly as fast as the margin it prices",
+            );
+        }
+    }
+
     #[test]
     fn the_iis_reading_sentence_is_the_one_the_spec_registers() {
         assert!(IIS_READING.contains("IRREDUCIBLE INFEASIBLE SUBSYSTEM"));
@@ -3200,6 +3452,7 @@ mod tests {
                 kind: RowKind::Pair { id: id.to_string(), order },
                 coef: coef.clone(),
                 rhs: 1,
+                margin_vp: None,
             })
             .collect();
         let sys = assemble(StageEndpoint::Early, synthetic, BOX_LIMIT);
