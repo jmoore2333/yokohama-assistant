@@ -4379,6 +4379,38 @@ fn e113_top_tie(rules: &Rules) -> Result<String, String> {
     let mut sizes: Vec<usize> = classes.values().map(Vec::len).collect();
     sizes.sort_unstable();
     out.push_str(&format!("  class sizes       {sizes:?}\n"));
+
+    // The reading, stated in the register the result earns and NOT further:
+    // the sentence is derived from the two counts, so a future run that
+    // separated fewer candidates cannot keep printing the strong claim.
+    out.push_str("\nREADING             ");
+    if classes.len() == tied.len() {
+        out.push_str(&format!(
+            "the {}-way tie the SHIPPED sixteen features cannot break AT\n\
+             \x20                   ALL resolves into {} DISTINCT complete-vector signatures —\n\
+             \x20                   one class per tied candidate. The widened axis separates\n\
+             \x20                   exactly where the incumbent evaluator is blind. This is the\n\
+             \x20                   SIGHTED-EVALUATOR THESIS measured at the instrument level\n\
+             \x20                   rather than argued: not that the 34 columns differ from the\n\
+             \x20                   16, but that they carry information the 16 do not have.\n",
+            tied.len(),
+            classes.len(),
+        ));
+    } else {
+        out.push_str(&format!(
+            "the {}-way incumbent tie resolves into {} complete-vector\n\
+             \x20                   signatures — a PARTIAL separation. {} tied candidates remain\n\
+             \x20                   indistinguishable on the full 34-column axis; the classes\n\
+             \x20                   above name them.\n",
+            tied.len(),
+            classes.len(),
+            tied.len() - classes.len(),
+        ));
+    }
+    out.push_str(
+        "                    It is a MEASUREMENT, not a gate: the tied set is not a registered\n\
+         \x20                   pair, so a collapse here would be ORGANIC by §5.3's own rule.\n",
+    );
     for (i, (sig, members)) in classes.iter().enumerate() {
         out.push_str(&format!("  class {i:<3}         size {}\n", members.len()));
         out.push_str(&format!("    dv              {}\n", render_dv(&sig.dv)));
@@ -4451,8 +4483,16 @@ fn cmd_collision(args: &[String]) -> Result<(), String> {
             println!("  gating            {}", if root.gating { "yes" } else { "no — recorded" });
             println!("  note              {}", root.note);
             for set in sign_root_sets(&root, &rules)? {
+                let operative = if set.name == "fork" {
+                    "§5.3-OPERATIVE here"
+                } else if root.recipe.is_ok() {
+                    "completeness courtesy"
+                } else {
+                    "§5.3-OPERATIVE here"
+                };
                 println!(
-                    "  set {:<5}         {} enumerated · {} signed (terminal {}) — {}",
+                    "  set {:<5}         {} enumerated · {} signed (terminal {}) — {} \
+                     [{operative}]",
                     set.name,
                     set.enumerated,
                     set.views.len(),
@@ -4535,20 +4575,54 @@ a collision         two views with an IDENTICAL (ppm, 34-vector): they score
 near-collision      equal Δv at DIFFERENT ppm — reported, never blocking, because
                     the two interpolate to different weight vectors
 blocking rule       a class blocks iff it contains two sides of ONE registered
-                    gate pair, or ONE root's registered development successor
+                    GATE pair, or ONE root's registered development successor
                     pair (§6's frozen recipe), or — step 10 only — a
                     recipe-instantiated escrow pair. Everything else that shares
-                    a signature is ORGANIC: a diagnostic with a class size";
+                    a signature is ORGANIC: a diagnostic with a class size
+
+TWO ADJUDICATIONS this run rests on, both RATIFIED (team lead, 2026-08-23)
+
+diagnostics         2(c) and 10(c) are DIAGNOSTIC registrations. They yield no
+                    solve row, so a collision between their sides cannot make one
+                    infeasible: they are SIGNED and REPORTED here, never blocking.
+                    Three texts concur — §5.3's input list breaks family 10 open
+                    to \"10(a)/(b)/(d)\" precisely to exclude 10(c);
+                    `PairRole::Constraint` is documented as \"a solve row and a
+                    blocking side\" against `Diagnostic`'s \"RECORDED, never a
+                    gate\"; and §5.4's 34 row-yielding registrations are the
+                    registry's 36 minus exactly those two. 10(c)'s sides ARE
+                    signature-identical, BY REGISTERED CONSTRUCTION — step 2
+                    proved its \"+3 maximum\" from the fact that an all-rows-equal
+                    pair carries no more than 3 residual faith — so the class this
+                    run reports there is the construction working, not a defect
+
+successor sets      a §6 placement-fork root carries TWO, both signed and
+                    labelled. `fork` is the §5.3-OPERATIVE set at those roots: the
+                    registered development successor pair is a pair of PLACEMENTS,
+                    which are not legal until `EndAdditionalPhase` advances the
+                    phase, so the fork set is where the blocking rule has teeth.
+                    `root` — the literal legal list, one or two additional-action
+                    options — is a recorded completeness courtesy. At g1-e113 the
+                    two COINCIDE: its own legal list IS 139 placements, matching
+                    §5.3's own words, which is the confirmation the split is
+                    faithful rather than inventive";
 
 /// What §5.3 names as an input and this run does NOT carry, said out loud.
 const NOT_IN_SCOPE: &str = "\
 --- named, not carried ---
 OSE generated bands STRUCK by the owner's flag-1 ruling (2026-08-22); M-OSE closed
                     permanently undrawn, so there is no ordinal to sign
-game-3 OSE exhibit  PENDING — the re-scoped opponent-sitting-executable read is the
-                    game-3 (table 896199544) opponent-pending RECORDED root, whose
-                    identity resolution is not yet landed. Part A over that root's
-                    successor set is OWED before step 5's OSE gate
+game-3 OSE exhibit  NOT YET A READ ROOT, and deliberately so. The game-3 lane closed
+                    (run_id bga-import/896199544, 234 events, terminal digest
+                    3a9b2c6d7206f3e2) with THIRTEEN opponent-PENDING exhibit
+                    identities recorded — events 34, 50, 58, 68, 78, 94, 111, 127,
+                    144, 159, 168, 184, 198 — and with the census finding that the
+                    STRICT opponent-sitting-executable clause has ZERO members in
+                    792 non-terminal positions across all three complete human
+                    games. WHICH pending exhibit(s) become read roots is step-5
+                    charter work, batch-level pre-registered; Part A over the
+                    chosen root's successor set is OWED then, and this run does not
+                    presume the choice
 escrow band {8..16} UNREAD by construction (§6's burn rule): this run asks for the
                     development ordinals {0..4} and nothing above";
 
