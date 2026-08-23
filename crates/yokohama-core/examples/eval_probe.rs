@@ -5536,15 +5536,12 @@ const E113_EXEMPLAR: ExemplarPair = ExemplarPair {
     total: E113_TOTAL,
 };
 
-// UNREGISTERED at RED: the exemplar pair is what step 5 REGISTERS, and before
-// the selection run has been made there is nothing here but the shape of the
-// answer. The command refuses against these and names what it derived.
-const E113_ENABLING_AREAS: &[u8] = &[0, 0];
-const E113_ENABLING_ENCODING: &str = "PENDING";
-const E113_ENABLING_DIGEST: &str = "PENDING";
-const E113_DEAD_AREAS: &[u8] = &[0, 0];
-const E113_DEAD_ENCODING: &str = "PENDING";
-const E113_DEAD_DIGEST: &str = "PENDING";
+const E113_ENABLING_AREAS: &[u8] = &[0, 9];
+const E113_ENABLING_ENCODING: &str = "PlaceThreeAreas { placements: [AreaId(0), AreaId(9)] }";
+const E113_ENABLING_DIGEST: &str = "1e4bd02ecce80635";
+const E113_DEAD_AREAS: &[u8] = &[1, 2];
+const E113_DEAD_ENCODING: &str = "PlaceThreeAreas { placements: [AreaId(1), AreaId(2)] }";
+const E113_DEAD_DIGEST: &str = "4f5bf9d05388c4c6";
 const E113_TOTAL: usize = 2;
 
 /// Resolve the unique area of one [`AreaType`] on a board.
@@ -5672,11 +5669,14 @@ fn eligible_dead_sides<'a>(
     enabling_areas: &BTreeSet<AreaId>,
     total: usize,
 ) -> Vec<&'a Move> {
-    tie.iter()
+    let mut out: Vec<&Move> = tie
+        .iter()
         .filter(|mv| {
             placement_of(mv).is_some_and(|(t, areas)| t == total && areas.is_disjoint(enabling_areas))
         })
-        .collect()
+        .collect();
+    out.sort_by_key(|mv| canonical_encoding(mv));
+    out
 }
 
 /// Apply the registered criterion to a loaded root.
@@ -5813,8 +5813,8 @@ fn check_frozen_side(
 /// multiplies in `game/eval.rs`. That is the convention this task was directed
 /// to implement and it is the one the pass rule reads.
 ///
-/// It is not, however, a convention the two readings AGREE under, and the reason
-/// is worth stating because it is easy to assume they must. One might expect the
+/// The two readings are not EQUAL BY CONSTRUCTION, though, and the reason is
+/// worth stating because it is easy to assume they must be. One might expect the
 /// opponent's half to cancel: the two successors differ only in where the MOVER
 /// put its own assistants, so `theirs` looks like a constant that subtracts out.
 /// It is not constant. Several S definitions read a quantity the mover's own
@@ -5830,7 +5830,7 @@ fn check_frozen_side(
 /// passes.
 const E113_ABSOLUTE_NOTE: &str = "\
 recorded beside     the same sum in the MOVER-ABSOLUTE currency (the opponent's half
-                    dropped). The two do NOT agree by construction: S1 and S2 are
+                    dropped). The two are NOT equal by construction: S1 and S2 are
                     computed at REALIZABLE POWER, which counts every assistant at
                     an area including the opponent's, so a placement into a shared
                     area raises the opponent's S as well and the differenced
@@ -5968,12 +5968,7 @@ fn e113_exemplar(rules: &Rules) -> Result<E113Gate, String> {
     // eligible dead-side candidate. Neither is a pass rule; both exist so a
     // verdict can be read as a statement about the position rather than about
     // the tie-break that picked one candidate out of many.
-    let enabling_abs = mover_s_values(
-        &observe(&apply_move(&root.state, &derived.enabling, rules).map_err(|e| e.to_string())?, mover)
-            .map_err(|e| e.to_string())?,
-        mover,
-        rules,
-    )?;
+    let (_, enabling_abs) = e113_successor_s(&root.state, &derived.enabling, mover, rules)?;
     let mut absolute_per_column = [0i64; 7];
     let mut spread = Vec::new();
     for candidate in &derived.eligible {
@@ -6039,7 +6034,7 @@ fn distinct_s(vectors: &[[i64; 7]]) -> (usize, [usize; 7]) {
     for (i, slot) in per_column.iter_mut().enumerate() {
         *slot = vectors.iter().map(|v| v[i]).collect::<BTreeSet<_>>().len();
     }
-    (per_column.iter().copied().min().unwrap_or(0), per_column)
+    (vectors.iter().collect::<BTreeSet<_>>().len(), per_column)
 }
 
 /// One fork total's anti-collapse reading.
@@ -6281,13 +6276,23 @@ fn ose_columns(
     opponent: &VisiblePlayer,
     rules: &Rules,
 ) -> Result<[i64; 3], String> {
-    let _ = (role, event_index);
-    let structure = ScoreStructure::derive(view, rules);
-    let mut out = [0i64; 3];
-    for (i, c) in OSE_COLUMNS.iter().enumerate() {
-        out[i] = candidate_value(&structure, view, opponent, *c, rules);
+    match role {
+        OseRole::Reserved => Err(format!(
+            "REFUSED: event {event_index} of {OSE_RUN_ID} is one of the EIGHT ESCROW-RESERVED \
+             exhibits (guidingpath 2026-08-23, \"THE STEP-5 OSE READ CHARTER IS RULED\"), and \
+             that row extends §6's burn rule to them VERBATIM: no table / adjudicate / read of \
+             any kind before step 10. Digest-identity verification is permitted here; a column \
+             read is not.",
+        )),
+        OseRole::Development => {
+            let structure = ScoreStructure::derive(view, rules);
+            let mut out = [0i64; 3];
+            for (i, c) in OSE_COLUMNS.iter().enumerate() {
+                out[i] = candidate_value(&structure, view, opponent, *c, rules);
+            }
+            Ok(out)
+        }
     }
-    Ok(out)
 }
 
 /// One development exhibit, read — or the typed reason it could not be.
@@ -6572,6 +6577,11 @@ struct DevRoot {
     digest: String,
     state: GameState,
     note: &'static str,
+    /// Whether GATE 2 applies here — a TYPED fact carried from the resolution
+    /// that knows it, never a name-prefix test at the use site. Which roots a
+    /// gate covers is exactly the thing a rename should not be able to change
+    /// quietly.
+    placement_fork: bool,
 }
 
 /// Resolve the §6 development root set for the read-and-record items.
@@ -6583,9 +6593,21 @@ struct DevRoot {
 /// why no OSE ordinal appears here.
 fn resolve_dev_roots(generated: bool, rules: &Rules) -> Result<Vec<DevRoot>, String> {
     let mut out = Vec::new();
-    let mut push = |name: String, origin: String, source: &RootSource, note| -> Result<(), String> {
+    let mut push = |name: String,
+                    origin: String,
+                    source: &RootSource,
+                    note,
+                    placement_fork|
+     -> Result<(), String> {
         let (state, descriptor) = source.resolve(rules).map_err(|e| format!("{name}: {e:?}"))?;
-        out.push(DevRoot { name, origin, digest: descriptor.root_digest, state, note });
+        out.push(DevRoot {
+            name,
+            origin,
+            digest: descriptor.root_digest,
+            state,
+            note,
+            placement_fork,
+        });
         Ok(())
     };
 
@@ -6597,7 +6619,13 @@ fn resolve_dev_roots(generated: bool, rules: &Rules) -> Result<Vec<DevRoot>, Str
         let source = entry.load(rules).map_err(|e| {
             format!("{wanted}: {e:?} (the owner-game saves are gitignored; absence is a miss)")
         })?;
-        push(entry.name.to_string(), format!("{}:{}", entry.path, entry.event_index), &source, entry.note)?;
+        push(
+            entry.name.to_string(),
+            format!("{}:{}", entry.path, entry.event_index),
+            &source,
+            entry.note,
+            false,
+        )?;
     }
 
     if generated {
@@ -6612,6 +6640,7 @@ fn resolve_dev_roots(generated: bool, rules: &Rules) -> Result<Vec<DevRoot>, Str
                 format!("gen:placement-fork-same-count:{M_PF:#018X}:{ordinal}"),
                 &source,
                 "a §6 development ordinal at the recorded M-PF",
+                true,
             )?;
         }
     }
@@ -6894,7 +6923,7 @@ fn cmd_rooted(args: &[String]) -> Result<(), String> {
     if !generated {
         println!("SKIPPED             --no-generated: the four M-PF ordinals resolve by seeded scan");
     }
-    for root in dev_roots.iter().filter(|r| r.name.starts_with("m-pf-dev-")) {
+    for root in dev_roots.iter().filter(|r| r.placement_fork) {
         let read = read_placement_fork(root, &rules)?;
         println!();
         println!("root                {}", read.name);
