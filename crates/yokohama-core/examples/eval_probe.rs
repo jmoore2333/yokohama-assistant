@@ -2387,6 +2387,17 @@ fn snapshot_game(
     let mut abs = vec![0.0f64; rows.len()];
     let mut cand = vec![0.0f64; candidates.len()];
     let mut base = vec![0.0f64; candidates.len()];
+    // The 2P invariant guarded where the FOLD is, not only at the command's
+    // boundary. At 3–4P the three "theirs" rules genuinely DIVERGE — `signature`
+    // takes the first opponent, `row_values` the plain maximum, and
+    // `candidate_total` the signed-weight extreme — so a matrix folded there
+    // would be three currencies wearing one name. `cmd_run` refuses it for the
+    // shipped path; this catches a future IN-FILE caller (the fitting stages add
+    // code to this file) in debug, where a new caller is written and run.
+    debug_assert!(
+        !matrix || players == 2,
+        "--dump-matrix is 2P only (the relative currency needs one opponent), got {players}",
+    );
     // The §8 matrix's per-GAME constants, resolved once before the fold: a
     // seat's outcome label and final margin are properties of the finished
     // game, not of the snapshot, and re-reading the standings per row would be
@@ -2558,6 +2569,30 @@ fn matrix_columns() -> Vec<String> {
 /// saturating `i64` arithmetic — so an `f64` column would force the fitter to
 /// convert back before it could reproduce `candidate_total` exactly. The row
 /// keeps the currency the arithmetic is defined in.
+///
+/// # A turn start's TWO rows are not a symmetric pair
+///
+/// **Read this before treating one seat's row as the other's negation.** The
+/// two rows a turn start contributes are two DISTINCT view-honest observations
+/// of one state, each signed from its own seat's masked view — not one
+/// observation written twice with the signs flipped.
+///
+/// The SIXTEEN INCUMBENT columns do negate exactly at 2P: `mine − the single
+/// opponent` is antisymmetric over quantities both views read alike.
+/// The EIGHTEEN CANDIDATE columns need not, and six of them provably do not —
+/// `{O1, O2, O3, O5, O6, X3}` are view-asymmetric BY CONSTRUCTION, because a
+/// seat reads its own held orders while the opponent's are masked counts
+/// (step 3's carry-7 finding 2; the registry-side statement is
+/// `twelve_candidate_columns_negate_across_the_two_2p_views_at_every_registered_side`,
+/// and [`Signature`]'s own doc says the same from the collision side).
+///
+/// **Correction of record.** Commit `77373e6`'s message said "the two seats'
+/// vectors exact negatives" of a smoke run. That is true of the incumbent half
+/// and FALSE of the candidate half; this paragraph supersedes it on that point,
+/// and `the_two_seat_rows_of_one_turn_start_are_not_a_symmetric_pair` makes the
+/// distinction executable. A fitter that folded the two rows into one signed
+/// observation would silently halve the candidate evidence and mis-sign six
+/// columns.
 #[derive(Clone, PartialEq, Eq, Debug)]
 struct MatrixRow {
     game: u32,
@@ -2699,11 +2734,27 @@ fn parse_matrix(text: &str) -> Result<Matrix, String> {
         ));
     }
     let columns: Vec<String> = value("columns").split(' ').map(str::to_string).collect();
-    if columns != matrix_columns() {
+    let expected = matrix_columns();
+    // Arity and IDENTITY are different failures and get different messages. A
+    // header that lists the right NUMBER of the wrong names is the dangerous
+    // one — every row would be read at the right width and the wrong meaning —
+    // so the refusal names the first position that disagrees and both spellings
+    // at it, rather than a count that matches and says nothing.
+    if columns.len() != expected.len() {
         return Err(format!(
-            "matrix column names are not this build's axis ({} names, expected {})",
+            "matrix header lists {} column names, expected {MATRIX_WIDTH}",
             columns.len(),
-            MATRIX_WIDTH,
+        ));
+    }
+    if let Some((slot, got, want)) = columns
+        .iter()
+        .zip(expected.iter())
+        .enumerate()
+        .find_map(|(i, (got, want))| (got != want).then_some((i, got, want)))
+    {
+        return Err(format!(
+            "matrix column {slot} is {got:?}, expected {want:?} — the header describes a \
+             different axis than this build reads"
         ));
     }
     let header = MatrixHeader {
@@ -12824,16 +12875,19 @@ mod tests {
             .collect()
     }
 
-    /// A header whose provenance fields are the corpus's, so a round-trip cell
-    /// exercises the real strings rather than placeholders.
-    fn matrix_header_for(corpus: &Corpus) -> MatrixHeader {
+    /// A header whose provenance fields are the shipped ones, so a round-trip
+    /// cell exercises the real strings rather than placeholders.
+    ///
+    /// Takes the GAME COUNT rather than a `Corpus`, so a cell about the format
+    /// alone — the provenance reader's, below — costs no games at all.
+    fn matrix_header_for(games: u32) -> MatrixHeader {
         MatrixHeader {
             schema: MATRIX_SCHEMA,
             command: "eval_probe run 2 2 --dump-matrix /tmp/x --master 0xE7A1202607270001"
                 .to_string(),
             master: DEFAULT_MASTER,
             players: 2,
-            games: corpus.games,
+            games,
             contestant: matrix_contestant().echo(&WeightTable::V1, "v1"),
             weights: "v1".to_string(),
             semantics_rev: SEMANTICS_REV,
@@ -12863,7 +12917,7 @@ mod tests {
             !corpus.matrix.is_empty(),
             "a corpus asked for the matrix folded no rows — there is nothing to round-trip",
         );
-        let matrix = Matrix { header: matrix_header_for(&corpus), rows: corpus.matrix.clone() };
+        let matrix = Matrix { header: matrix_header_for(corpus.games), rows: corpus.matrix.clone() };
 
         let path = matrix_temp_path("roundtrip");
         let name = path.to_str().expect("a UTF-8 temp path").to_string();
@@ -12879,11 +12933,172 @@ mod tests {
         // a well-formed row that means something else.
         assert!(parse_matrix(&bytes.replace("# schema 1", "# schema 2"))
             .is_err_and(|e| e.contains("schema")));
-        assert!(parse_matrix(&bytes.replace("game_index", "game_idx"))
-            .is_err_and(|e| e.contains("column names")));
         assert!(parse_matrix(&format!("{bytes}\n")).is_err_and(|e| e.contains("blank")));
         let widened = bytes.replacen("\n0 0 0", "\n0  0 0", 1);
         assert!(parse_matrix(&widened).is_err_and(|e| e.contains("fields")));
+
+        // A header of the right WIDTH and the wrong NAMES is the dangerous
+        // shape — every row parses at the right arity and the wrong meaning —
+        // so the refusal must name the POSITION and both spellings at it. An
+        // arity-shaped message ("41 names, expected 41") would say nothing.
+        let renamed = parse_matrix(&bytes.replace("game_index", "game_idx"))
+            .expect_err("a renamed column must be refused");
+        assert!(
+            renamed.contains("matrix column 0")
+                && renamed.contains("\"game_idx\"")
+                && renamed.contains("\"game_index\""),
+            "the refusal does not name the position and both spellings: {renamed}",
+        );
+        // …and the arity message survives for the case it is actually about.
+        let short = parse_matrix(&bytes.replace(" seat_final_margin\n", "\n"))
+            .expect_err("a short column list must be refused");
+        assert!(
+            short.contains(&format!("{} column names, expected {MATRIX_WIDTH}", MATRIX_WIDTH - 1)),
+            "a length mismatch must report lengths: {short}",
+        );
+    }
+
+    /// A turn start's TWO rows are two OBSERVATIONS, never a symmetric pair.
+    ///
+    /// The incumbent half negates exactly at 2P — `mine − the single opponent`
+    /// is antisymmetric over quantities both views read alike — and the
+    /// candidate half does NOT, because six columns are view-asymmetric by
+    /// construction: a seat reads its own held orders while the opponent's are
+    /// masked counts. Both halves are asserted, and the asymmetric set is
+    /// asserted as a SUBSET of the registered six, so a THIRTEENTH label
+    /// becoming view-sensitive fails here rather than passing into the fit.
+    ///
+    /// This cell exists because commit `77373e6`'s message claimed the two
+    /// seats' vectors were "exact negatives" on a smoke run — true of the
+    /// incumbents, false of the candidates. A fitter author who believed it
+    /// would fold the two rows into one signed observation, halving the
+    /// candidate evidence and mis-signing six columns; the record is corrected
+    /// on [`MatrixRow`]'s doc and made executable here.
+    #[test]
+    fn the_two_seat_rows_of_one_turn_start_are_not_a_symmetric_pair() {
+        let rules = Rules::standard();
+        let corpus = matrix_corpus(&rules, MATRIX_GAMES);
+        let mut asymmetric: BTreeSet<&str> = BTreeSet::new();
+        let mut pairs = 0usize;
+
+        for game in 0..MATRIX_GAMES {
+            let turns = corpus
+                .matrix
+                .iter()
+                .filter(|r| r.game == game)
+                .map(|r| r.turn_index)
+                .max()
+                .expect("the game contributed rows");
+            for turn in 0..=turns {
+                let at = |seat: u8| {
+                    corpus
+                        .matrix
+                        .iter()
+                        .find(|r| r.game == game && r.seat == seat && r.turn_index == turn)
+                        .unwrap_or_else(|| panic!("game {game} turn {turn} seat {seat}"))
+                };
+                let (a, b) = (at(0), at(1));
+                pairs += 1;
+
+                for f in Feature::ALL {
+                    let i = FeatureId::Incumbent(f).index();
+                    assert_eq!(
+                        a.dv[i], -b.dv[i],
+                        "game {game} turn {turn}: incumbent {} reads {} and {}, which do not \
+                         negate — the incumbent half IS antisymmetric at 2P",
+                        f.name(),
+                        a.dv[i],
+                        b.dv[i],
+                    );
+                }
+                for c in CandidateFeature::ALL {
+                    let i = FeatureId::Candidate(c).index();
+                    if a.dv[i] != -b.dv[i] {
+                        asymmetric.insert(c.label());
+                    }
+                }
+            }
+        }
+
+        assert!(pairs > 0, "no row pairs to compare");
+        assert!(
+            !asymmetric.is_empty(),
+            "every candidate column negated across all {pairs} row pairs — either the corpus is \
+             degenerate or the two rows really are one observation twice, and the fitter's \
+             population claim would change either way",
+        );
+        let registered: BTreeSet<&str> =
+            ["O1", "O2", "O3", "O5", "O6", "X3"].into_iter().collect();
+        assert!(
+            asymmetric.is_subset(&registered),
+            "a candidate column outside the registered view-asymmetric set broke negation: \
+             {:?} (registered: {registered:?})",
+            asymmetric.difference(&registered).collect::<Vec<_>>(),
+        );
+        println!(
+            "row-pair negation over {pairs} pairs: incumbents all antisymmetric; \
+             view-asymmetric candidates observed = {asymmetric:?}",
+        );
+    }
+
+    /// The reader REPORTS provenance and does not judge it.
+    ///
+    /// `master`, `semantics_rev` and `package_digest` say WHICH corpus and
+    /// WHICH axis a matrix came from; they do not say how to read a row. A
+    /// reader that refused on them could not be used to inspect the file that
+    /// disagreed, which is exactly when someone needs to look — so refusal on
+    /// provenance belongs to the fitting stage, which can name what it wanted
+    /// and got. This cell is what stops that split being quietly reversed;
+    /// `schema` and the column names, which DO say how to read a row, are
+    /// refused in the round-trip cell above.
+    ///
+    /// Corpus-free by construction: the claim is about the reader, not about
+    /// any game.
+    #[test]
+    fn the_matrix_reader_reports_provenance_rather_than_judging_it() {
+        let row = |seat: u8, win: bool, margin: i64| MatrixRow {
+            game: 0,
+            seat,
+            turn_index: 0,
+            turns_in_game: 1,
+            progress_ppm: 250_000,
+            dv: [0; AXIS_WIDTH],
+            win,
+            margin,
+        };
+        let matrix = Matrix {
+            header: matrix_header_for(1),
+            rows: vec![row(0, true, 4), row(1, false, -4)],
+        };
+        let bytes = render_matrix(&matrix);
+
+        for (from, to, check) in [
+            (
+                format!("# master {DEFAULT_MASTER:#018x}\n"),
+                "# master 0x0000000000000001\n".to_string(),
+                "master",
+            ),
+            (
+                format!("# semantics_rev {SEMANTICS_REV}\n"),
+                "# semantics_rev 999\n".to_string(),
+                "semantics_rev",
+            ),
+            (
+                format!("# package_digest {}\n", package_digest()),
+                "# package_digest deadbeefdeadbeef\n".to_string(),
+                "package_digest",
+            ),
+        ] {
+            assert!(bytes.contains(&from), "the rendered header has no {check} line");
+            let parsed = parse_matrix(&bytes.replace(&from, &to))
+                .unwrap_or_else(|e| panic!("a mutated {check} must still parse: {e}"));
+            match check {
+                "master" => assert_eq!(parsed.header.master, 1),
+                "semantics_rev" => assert_eq!(parsed.header.semantics_rev, 999),
+                _ => assert_eq!(parsed.header.package_digest, "deadbeefdeadbeef"),
+            }
+            assert_eq!(parsed.rows, matrix.rows, "a header mutation moved a row");
+        }
     }
 
     /// The row and header SHAPE §8 registered, pinned name by name.
@@ -12908,7 +13123,7 @@ mod tests {
 
         let rules = Rules::standard();
         let corpus = matrix_corpus(&rules, 1);
-        let matrix = Matrix { header: matrix_header_for(&corpus), rows: corpus.matrix.clone() };
+        let matrix = Matrix { header: matrix_header_for(corpus.games), rows: corpus.matrix.clone() };
         let text = render_matrix(&matrix);
         let (head, body): (Vec<&str>, Vec<&str>) =
             text.lines().partition(|l| l.starts_with("# "));
@@ -13031,6 +13246,13 @@ mod tests {
     /// two agree to the BIT. A matrix sampled anywhere else — mid-turn, once
     /// per turn instead of once per seat, or over a different stage rule —
     /// fails here and nowhere else.
+    ///
+    /// **JOINTLY LOAD-BEARING with
+    /// [`the_matrix_turn_accounting_covers_every_turn_start_of_every_game`], and
+    /// neither is redundant.** A mean is blind to duplication — a matrix that
+    /// emitted every row TWICE has the same per-cell mean and passes here — and
+    /// the count cell is what catches it; the count cell in turn is blind to
+    /// values. Deleting either one leaves a hole the other does not cover.
     #[test]
     fn the_matrix_rows_are_exactly_the_population_the_cells_average() {
         let rules = Rules::standard();
@@ -13134,6 +13356,12 @@ mod tests {
     /// The tercile is not a column precisely because these two are — so a row
     /// that mis-stated either would make every post-hoc stage label wrong
     /// while every value in the row stayed right.
+    ///
+    /// **JOINTLY LOAD-BEARING with
+    /// [`the_matrix_rows_are_exactly_the_population_the_cells_average`], and
+    /// neither is redundant.** This cell counts and does not look at values;
+    /// that one averages values and is blind to exact duplication, which a mean
+    /// cannot see. Deleting either one leaves a hole the other does not cover.
     #[test]
     fn the_matrix_turn_accounting_covers_every_turn_start_of_every_game() {
         let rules = Rules::standard();
