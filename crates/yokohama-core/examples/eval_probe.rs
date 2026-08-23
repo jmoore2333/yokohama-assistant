@@ -4946,7 +4946,7 @@ fn cmd_collinearity(args: &[String]) -> Result<(), String> {
     print!("{}", render_correlations(&pooled));
     print!("{}", render_clusters(&pooled, &money10_on, &money10_off)?);
     print!("{}", render_vifs(&pooled, &by_stage));
-    print!("{}", render_collinear_flags(&pooled));
+    print!("{}", render_collinear_flags(&pooled, &by_stage));
 
     println!();
     println!("wall                {:.1}s", started.elapsed().as_secs_f64());
@@ -5087,9 +5087,14 @@ fn render_clusters(
     out.push_str(&render("pooled", pooled));
     out.push_str(&render("Money10 DRAWN", money10_on));
     out.push_str(&render("Money10 NOT drawn", money10_off));
-    out
-        .push_str("  the exact algebraic identity §2 names holds below 10¥ on the DRAWN split; the\n");
-    out.push_str("  pooled figure dilutes it with the games where the leg is not in play\n");
+    out.push_str(
+        "  READ THIS CAREFULLY: the Money10 LEG is not a column of the 34-axis — it is one term\n\
+         \x20 inside the incumbent `achievement_progress_sum`, which is the carrier this read uses.\n\
+         \x20 §2's exact algebraic identity (E1 IS the leg below 10¥) is therefore visible here as\n\
+         \x20 a correlation against the sum that CONTAINS the leg, diluted by the sum's other two\n\
+         \x20 cards. The DRAWN/NOT-drawn contrast is the measurement; the pooled figure mixes the\n\
+         \x20 games where the leg is not in play at all.\n",
+    );
     Ok(out)
 }
 
@@ -5141,8 +5146,16 @@ fn render_vifs(pooled: &ColumnStats, by_stage: &[ColumnStats]) -> String {
 
 /// §5.5's role in §8, computed: which candidates a `(0, 0)` reading may NOT be
 /// removed for.
-fn render_collinear_flags(stats: &ColumnStats) -> String {
-    let table = vif_table(stats);
+///
+/// The thresholds are applied POOLED **and per stage tercile**, because §8's
+/// rule is a fact about a column and not about an aggregate: a column that is
+/// collinear in the EARLY tercile is not vacuous there, whatever the pooled
+/// figure averages it down to. Both readings are printed with the stage named,
+/// so a decision made on one of them says which.
+fn render_collinear_flags(pooled: &ColumnStats, by_stage: &[ColumnStats]) -> String {
+    let pooled_table = vif_table(pooled);
+    let stage_tables: Vec<VifTable> = by_stage.iter().map(vif_table).collect();
+
     let mut out = String::new();
     out.push_str(&format!(
         "\n--- §8 collinearity flags (|corr| > {COLLINEAR_CORR} against ANY retained column, OR \
@@ -5151,33 +5164,62 @@ fn render_collinear_flags(stats: &ColumnStats) -> String {
     let mut any = false;
     for c in CandidateFeature::ALL {
         let i = FeatureId::Candidate(c).index();
-        let worst = FeatureId::all()
-            .iter()
-            .filter(|slot| slot.index() != i)
-            .filter_map(|slot| stats.corr(i, slot.index()).map(|r| (r.abs(), slot.label())))
-            .max_by(|a, b| a.0.total_cmp(&b.0));
-        let vif = table.vif.get(&i).copied();
-        let by_corr = worst.is_some_and(|(r, _)| r > COLLINEAR_CORR);
-        let by_vif = vif.is_some_and(|v| v >= COLLINEAR_VIF) || table.dependent.contains(&i);
-        if by_corr || by_vif {
+        let mut reasons: Vec<String> = Vec::new();
+        let mut worst_corr: Option<(f64, &'static str, &'static str)> = None;
+
+        for (label, stats, table) in std::iter::once(("pooled", pooled, &pooled_table))
+            .chain(STAGES.iter().map(|s| (s.name(), &by_stage[s.index()], &stage_tables[s.index()])))
+        {
+            let worst = FeatureId::all()
+                .iter()
+                .filter(|slot| slot.index() != i)
+                .filter_map(|slot| stats.corr(i, slot.index()).map(|r| (r.abs(), slot.label())))
+                .max_by(|a, b| a.0.total_cmp(&b.0));
+            if let Some((r, against)) = worst {
+                if worst_corr.is_none_or(|(best, _, _)| r > best) {
+                    worst_corr = Some((r, against, label));
+                }
+                if r > COLLINEAR_CORR {
+                    reasons.push(format!("{label}: |corr| {r:.3} against {against}"));
+                }
+            }
+            if table.dependent.contains(&i) {
+                reasons.push(format!("{label}: EXACTLY DEPENDENT"));
+            } else if let Some(v) = table.vif.get(&i) {
+                if *v >= COLLINEAR_VIF {
+                    reasons.push(format!("{label}: VIF {v:.2}"));
+                }
+            }
+        }
+
+        if !reasons.is_empty() {
             any = true;
-            out.push_str(&format!(
-                "  {:<6} COLLINEAR — {}{}\n",
-                c.label(),
-                worst.map_or_else(
-                    || "no correlation measurable".to_string(),
-                    |(r, name)| format!("max |corr| {r:.3} against {name}"),
-                ),
-                match (vif, table.dependent.contains(&i)) {
-                    (_, true) => ", EXACTLY DEPENDENT".to_string(),
-                    (Some(v), _) => format!(", VIF {v:.2}"),
-                    (None, _) => String::new(),
-                },
-            ));
+            out.push_str(&format!("  {:<6} COLLINEAR — {}\n", c.label(), reasons.join(" · ")));
+        } else {
+            let worst_vif = STAGES
+                .iter()
+                .map(|s| stage_tables[s.index()].vif.get(&i).copied().unwrap_or(0.0))
+                .chain(pooled_table.vif.get(&i).copied())
+                .fold(0.0f64, f64::max);
+            match worst_corr {
+                Some((r, against, label)) => out.push_str(&format!(
+                    "  {:<6} clear — worst |corr| {r:.3} against {against} ({label}), VIF ≤ \
+                     {worst_vif:.2}\n",
+                    c.label(),
+                )),
+                // A column that never moves is neither flagged nor cleared: it
+                // is NOT MEASURABLE, and printing it as clear would read as a
+                // measurement that said "independent".
+                None => out.push_str(&format!(
+                    "  {:<6} not measurable — constant on this corpus, so neither threshold \
+                     applies\n",
+                    c.label(),
+                )),
+            }
         }
     }
     if !any {
-        out.push_str("  none — every candidate clears both thresholds\n");
+        out.push_str("  NONE FLAGGED — every candidate clears both thresholds at every stage\n");
     }
     out.push_str(
         "  §8: a flagged column reading (0, 0) is COLLINEAR, not vacuous, and is NOT removed\n",
