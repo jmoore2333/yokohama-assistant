@@ -921,7 +921,7 @@ fn decide(sys: &System) -> Verdict {
                 },
             }
         }
-        Relaxation::Feasible => integer_search(sys, &columns),
+        Relaxation::Feasible => integer_search(sys, &columns, NODE_BUDGET),
     }
 }
 
@@ -936,9 +936,13 @@ enum Search {
 
 /// §5.4 (2)'s "bounded depth-first branch-and-bound over the integer box",
 /// followed by the enumeration re-derivation an exhausted tree owes.
-fn integer_search(sys: &System, columns: &[usize]) -> Verdict {
+///
+/// `budget` is a parameter only so the budget-exhaustion ARM can be exercised:
+/// [`decide`] always passes the registered [`NODE_BUDGET`], and a test that had
+/// to spend ten million nodes to prove the arm exists would not be a test.
+fn integer_search(sys: &System, columns: &[usize], budget: u64) -> Verdict {
     let mut nodes = 0u64;
-    match explore(sys, columns, sys.lo.clone(), sys.hi.clone(), &mut nodes) {
+    match explore(sys, columns, sys.lo.clone(), sys.hi.clone(), &mut nodes, budget) {
         Search::Found(w) => {
             // Re-checked before it leaves, on the same discipline as the
             // certificate: a point is trusted because it verifies.
@@ -952,7 +956,10 @@ fn integer_search(sys: &System, columns: &[usize]) -> Verdict {
             }
         }
         Search::Budget => Verdict::Inconclusive {
-            reason: format!("the search spent its registered budget of {NODE_BUDGET} nodes"),
+            reason: format!(
+                "the search spent its registered budget of {budget} nodes. The oracle did not \
+                 decide, which is not infeasibility.",
+            ),
         },
         Search::Exhausted => rederive_by_enumeration(sys, columns),
     }
@@ -965,9 +972,10 @@ fn explore(
     lo: Vec<i64>,
     hi: Vec<i64>,
     nodes: &mut u64,
+    budget: u64,
 ) -> Search {
     *nodes += 1;
-    if *nodes > NODE_BUDGET {
+    if *nodes > budget {
         return Search::Budget;
     }
     let Some((lo, hi)) = propagate(&sys.rows, lo, hi, columns) else {
@@ -995,13 +1003,13 @@ fn explore(
             let mid = (lo[branch] + hi[branch]).div_euclid(2);
             let mut lower_hi = hi.clone();
             lower_hi[branch] = mid;
-            match explore(sys, columns, lo.clone(), lower_hi, nodes) {
+            match explore(sys, columns, lo.clone(), lower_hi, nodes, budget) {
                 Search::Exhausted => {}
                 other => return other,
             }
             let mut upper_lo = lo;
             upper_lo[branch] = mid + 1;
-            explore(sys, columns, upper_lo, hi, nodes)
+            explore(sys, columns, upper_lo, hi, nodes, budget)
         }
     }
 }
@@ -1930,16 +1938,20 @@ fn render_system(sys: &System) -> String {
     out.push_str(&render_verdict(sys, &verdict));
 
     if matches!(verdict, Verdict::Unsat { .. }) {
-        out.push_str(&render_minimization(sys));
-        out.push_str(&render_diagnostics(sys));
+        let result = minimize(sys);
+        out.push_str(&render_minimization(&result));
+        // §5.4 probes the IIS, not the whole system: "an IIS lying wholly in
+        // the early system re-decides at ... `w_vp(early)` ∈ {1, 2, 3, 6}".
+        // Probing the whole system instead would MISS a scale finding whenever
+        // some row outside the IIS contradicts for an unrelated reason.
+        out.push_str(&render_diagnostics(&System { rows: result.kept, ..sys.clone() }));
     }
     out
 }
 
 /// §5.4 (3)'s minimized set, with the pair rows and the hand-ordering rows
 /// recorded separately as the spec asks.
-fn render_minimization(sys: &System) -> String {
-    let result = minimize(sys);
+fn render_minimization(result: &Minimization) -> String {
     let mut out = String::new();
     out.push_str("\ndeletion-minimization (§5.2 document order, then the hand-ordering rows)\n");
     for row in &result.kept {
@@ -1956,11 +1968,13 @@ fn render_minimization(sys: &System) -> String {
     out
 }
 
-/// §5.4 (3)'s two registered scale diagnostics.
+/// §5.4 (3)'s two registered scale diagnostics, over the IIS.
 fn render_diagnostics(sys: &System) -> String {
     let diagnostics = scale_diagnostics(sys);
     let mut out = String::new();
-    out.push_str("\nscale diagnostics (the pin and the box are probed, never deleted)\n");
+    out.push_str(
+        "\nscale diagnostics over the IIS (the pin and the box are probed, never deleted)\n",
+    );
     out.push_str(&format!(
         "  box-widening at |w| <= {WIDENED_BOX_LIMIT}: {}{}\n",
         diagnostics.widened.name(),
@@ -2815,6 +2829,88 @@ mod tests {
             scale_diagnostics(&sys).rescaled.is_empty(),
             "§5.4 scopes the rescale ladder to an IIS lying wholly in the EARLY system",
         );
+    }
+
+    /// **The diagnostics probe the IIS, not the whole system** — and this cell
+    /// is built so the two answers DIFFER.
+    ///
+    /// The fractional-margin pair is deletion-probed last, so it survives as the
+    /// IIS while an unrelated contradiction on another column is dropped. Under
+    /// the rescale ladder the IIS resolves at `w_vp = 3` and the WHOLE system
+    /// never does — so a diagnostic run over the whole system would report
+    /// nothing and MISS the scale finding.
+    #[test]
+    fn the_scale_diagnostics_read_the_iis_and_not_the_whole_system() {
+        let sys = toy(
+            StageEndpoint::Early,
+            &[
+                ("an unrelated contradiction, up", &[(col("S1"), 1)], 1),
+                ("an unrelated contradiction, down", &[(col("S1"), -1)], 1),
+                ("E1 floored margin", &[(col("E1"), 1)], 1),
+                (
+                    "the 1/3 VP rate itself",
+                    &[(col("E1"), -3), (Feature::VictoryPoints.index(), 1)],
+                    0,
+                ),
+            ],
+            BOX_LIMIT,
+        );
+        let iis = minimize(&sys);
+        assert_eq!(
+            iis.kept.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(),
+            vec!["E1 floored margin", "the 1/3 VP rate itself"],
+            "the S1 pair is probed first, and each of its rows is droppable while the \
+             fractional pair still contradicts",
+        );
+
+        let whole = scale_diagnostics(&sys);
+        assert!(
+            whole.rescaled.iter().all(|(_, v)| matches!(v, Verdict::Unsat { .. })),
+            "the WHOLE system never resolves -- the S1 pair contradicts at every pin",
+        );
+        let over_iis = scale_diagnostics(&System { rows: iis.kept, ..sys.clone() });
+        assert!(
+            over_iis.rescaled.iter().any(|(pin, v)| *pin == 3 && matches!(v, Verdict::Sat { .. })),
+            "the IIS resolves at w_vp = 3, which is the finding the whole-system read loses",
+        );
+        assert!(
+            render_system(&sys).contains("early-rescale at w_vp = 3: SAT"),
+            "and the artifact prints the IIS's answer, not the whole system's",
+        );
+    }
+
+    /// The node-budget arm: an exhausted budget is INCONCLUSIVE, never a
+    /// verdict.
+    #[test]
+    fn a_spent_node_budget_is_inconclusive_and_never_unsat() {
+        // `2 S1 + 2 S2` must equal 1, which no integer pair reaches while the
+        // RELAXATION is comfortable at (1/4, 1/4). Bound propagation shaves the
+        // box without emptying it, so the search has to branch — which is what
+        // gives a starved budget something to run out of.
+        let sys = toy(
+            StageEndpoint::Early,
+            &[
+                ("twice S1 plus twice S2, at least 1", &[(col("S1"), 2), (col("S2"), 2)], 1),
+                ("twice S1 plus twice S2, at most 1", &[(col("S1"), -2), (col("S2"), -2)], -1),
+            ],
+            BOX_LIMIT,
+        );
+        let columns = active_columns(&sys.rows);
+        match integer_search(&sys, &columns, 1) {
+            Verdict::Inconclusive { reason } => {
+                assert!(reason.contains("budget of 1 nodes"), "{reason}");
+                assert!(reason.contains("not infeasibility"), "{reason}");
+            }
+            other => panic!("a one-node budget cannot decide this; got {}", other.name()),
+        }
+        // With the registered budget it reaches a real answer, so the arm above
+        // is a starved search rather than an undecidable system.
+        let Verdict::Unsat { certificate: Certificate::Enumeration { points, .. } } = decide(&sys)
+        else {
+            panic!("relaxation-feasible and integer-infeasible over 2 columns: the enumeration \
+                    re-derivation decides it");
+        };
+        assert_eq!(points, (2 * BOX_LIMIT as u128 + 1).pow(2));
     }
 
     // -- the drop-one implication read --------------------------------------
