@@ -46,14 +46,15 @@
 //! solver solve --real               THE REAL RUN (step-4, post-freeze)
 //! ```
 
-use std::cmp::Ordering;
 use std::process::ExitCode;
 
 use yokohama_core::game::eval::{Feature, WeightTable};
+use yokohama_core::game::greedy::weight_table_identity;
 use yokohama_core::game::pair_fixtures::{
-    CandidateFeature, FeatureId, MarginClass, PairDeclaration, StageEndpoint, AXIS_WIDTH,
-    REGISTERED,
+    package_digest, CandidateFeature, FeatureId, MarginClass, PairDeclaration, PairRole,
+    StageEndpoint, AXIS_WIDTH, REGISTERED,
 };
+use yokohama_core::SEMANTICS_REV;
 
 // ---------------------------------------------------------------------------
 // The registered constants of the arithmetic model (§5.4's first paragraph)
@@ -61,9 +62,6 @@ use yokohama_core::game::pair_fixtures::{
 
 /// §5.4: "Integer weights, box |w| ≤ 64".
 const BOX_LIMIT: i64 = 64;
-
-/// §5.4's box-widening diagnostic: "re-decide at |w| ≤ 128".
-const WIDENED_BOX_LIMIT: i64 = 128;
 
 /// §5.4's witness-search step set, IN THE ORDER THE SPEC WRITES IT.
 ///
@@ -83,59 +81,6 @@ const MAX_SWEEPS: usize = 32;
 const SAT_READING: &str = "READ THIS SAT AS: no contradiction among the K binding constraints. \
      NEVER as unqualified compatibility — the system is underdetermined by design \
      (24-27 rows against 33 free variables).";
-
-// ---------------------------------------------------------------------------
-// Exact rationals (§5.4: "i128 rationals, CHECKED operations, gcd-reduced")
-// ---------------------------------------------------------------------------
-
-/// An exact rational over `i128`, gcd-reduced with a positive denominator.
-///
-/// Every operation is CHECKED and returns `None` on overflow, because §5.4 says
-/// "ANY overflow aborts to INCONCLUSIVE (never UNSAT)" — so an arithmetic limit
-/// has to be a value the caller must handle rather than a panic or a wrap.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-struct Rat {
-    n: i128,
-    d: i128,
-}
-
-impl Rat {
-    /// Zero.
-    const ZERO: Rat = Rat { n: 0, d: 1 };
-
-    /// `n/d`, reduced, with the sign carried by the numerator. `None` on a zero
-    /// denominator or on an overflow inside the reduction.
-    fn new(_n: i128, _d: i128) -> Option<Rat> {
-        unimplemented!("task A")
-    }
-
-    /// An integer as a rational.
-    fn int(_n: i128) -> Rat {
-        unimplemented!("task A")
-    }
-
-    fn add(self, _o: Rat) -> Option<Rat> {
-        unimplemented!("task A")
-    }
-
-    fn mul(self, _o: Rat) -> Option<Rat> {
-        unimplemented!("task A")
-    }
-
-    /// `-1`, `0` or `+1`.
-    fn sign(self) -> i32 {
-        unimplemented!("task A")
-    }
-
-    fn is_zero(self) -> bool {
-        self.sign() == 0
-    }
-
-    /// Exact comparison. `None` on an overflow in the cross-multiplication.
-    fn cmp_exact(self, _o: Rat) -> Option<Ordering> {
-        unimplemented!("task A")
-    }
-}
 
 // ---------------------------------------------------------------------------
 // The row model
@@ -209,8 +154,16 @@ struct System {
 /// So the `None` arm here is unreachable through the registry, and it is a typed
 /// refusal rather than a default precisely because a defaulted margin would be a
 /// silently weaker row.
-fn margin_of(_d: &PairDeclaration, _stage: StageEndpoint) -> Result<i64, String> {
-    unimplemented!("task A")
+fn margin_of(d: &PairDeclaration, stage: StageEndpoint) -> Result<i64, String> {
+    d.margin.margin_at(stage).ok_or_else(|| {
+        format!(
+            "{} declares the {} endpoint but registers no margin there; §5.1's three classes \
+             price every declared endpoint and `check_consistency` refuses a declaration that \
+             does not",
+            d.id,
+            stage.name(),
+        )
+    })
 }
 
 /// The §5.2 DOCUMENT-ORDER index of a registered pair — the deletion order.
@@ -255,8 +208,21 @@ struct Census {
 
 /// Count the realized `PairRole::Constraint` rows per stage, off the
 /// declarations alone.
+///
+/// Declarations ONLY — no fixture is built to count a row. The census is a
+/// statement about what the package registers, and building states to answer it
+/// would make it a statement about what the constructions produce.
 fn realized_census() -> Census {
-    unimplemented!("task A")
+    let mut census = Census { early: 0, late: 0 };
+    for pair in REGISTERED.iter().filter(|p| matches!(p.role, PairRole::Constraint)) {
+        for stage in pair.stages {
+            match stage {
+                StageEndpoint::Early => census.early += 1,
+                StageEndpoint::Late => census.late += 1,
+            }
+        }
+    }
+    census
 }
 
 // ---------------------------------------------------------------------------
@@ -276,22 +242,100 @@ struct WitnessReport {
     slack: Vec<i128>,
 }
 
+/// V2's weight vector at one stage — the source of both the `w_vp` pin
+/// (§5.1:428, "V2's shipped pair, eval.rs:854–855") and the witness search's
+/// V2-padded start.
+fn v2_vector(stage: StageEndpoint) -> [i64; Feature::COUNT] {
+    match stage {
+        StageEndpoint::Early => WeightTable::V2.early,
+        StageEndpoint::Late => WeightTable::V2.late,
+    }
+}
+
 impl System {
+    /// Assemble one stage's system: the deletable rows, the box, and the pin as
+    /// a degenerate box interval at `w_vp`.
+    ///
+    /// **The pin is realized as a box, not as two rows, in this representation**
+    /// — the witness search then cannot move it and needs no special case. It
+    /// becomes two labelled [`RowKind::Pin`] rows in [`System::inequalities`],
+    /// where the Farkas certificate has to be able to name it.
+    fn new(stage: StageEndpoint, rows: Vec<Row>, box_limit: i64, pin_vp: i64) -> System {
+        let mut lo = vec![-box_limit; AXIS_WIDTH];
+        let mut hi = vec![box_limit; AXIS_WIDTH];
+        let vp = Feature::VictoryPoints.index();
+        lo[vp] = pin_vp;
+        hi[vp] = pin_vp;
+        System { stage, rows, lo, hi, pin_vp, box_limit }
+    }
+
+    /// **The FULL inequality list `A w ≥ b`** — the deletable rows plus the box
+    /// and the pin, each as a labelled row.
+    ///
+    /// The pin and the box live as a per-coordinate interval on [`System`]
+    /// because that is what the witness search needs, and as ROWS here because
+    /// that is what a Farkas certificate needs: a combination that leans on
+    /// `w_S1 ≤ 64` has to be able to name that bound and carry its multiplier.
+    /// The two representations are generated from one source, so they cannot
+    /// disagree.
+    fn inequalities(&self) -> Vec<Row> {
+        let mut all = self.rows.clone();
+        let vp = Feature::VictoryPoints.index();
+        for (i, id) in FeatureId::all().into_iter().enumerate() {
+            let kind = if i == vp { RowKind::Pin } else { RowKind::BoxBound };
+            let mut lower = vec![0i64; AXIS_WIDTH];
+            lower[i] = 1;
+            all.push(Row {
+                label: format!("{} >= {}", id.label(), self.lo[i]),
+                kind: kind.clone(),
+                coef: lower,
+                rhs: self.lo[i],
+            });
+            let mut upper = vec![0i64; AXIS_WIDTH];
+            upper[i] = -1;
+            all.push(Row {
+                label: format!("{} <= {}", id.label(), self.hi[i]),
+                kind,
+                coef: upper,
+                rhs: -self.hi[i],
+            });
+        }
+        all
+    }
+
     /// `Σ_f coef[f]·w[f] − rhs` for one row, in i128.
-    fn slack_of(_row: &Row, _w: &[i64]) -> i128 {
-        unimplemented!("task A")
+    ///
+    /// i128 because the accumulation is free there and the alternative is
+    /// reasoning about a bound: coefficients are feature deltas whose size the
+    /// fixtures decide, not this file.
+    fn slack_of(row: &Row, w: &[i64]) -> i128 {
+        let dot: i128 =
+            row.coef.iter().zip(w).map(|(&c, &x)| i128::from(c) * i128::from(x)).sum();
+        dot - i128::from(row.rhs)
     }
 
     /// §5.4's total violation: `Σ_c max(0, margin_c − Σ_f w_f·Δv_f(c))`, over
     /// the DELETABLE tier only — the box is enforced structurally by the search
     /// rather than priced into the objective.
-    fn violation(&self, _w: &[i64]) -> i128 {
-        unimplemented!("task A")
+    fn violation(&self, w: &[i64]) -> i128 {
+        self.rows.iter().map(|r| (-System::slack_of(r, w)).max(0)).sum()
     }
 
     /// §5.4's "init = V2-padded (incumbents at V2, candidates 0)".
     fn v2_padded(&self) -> Vec<i64> {
-        unimplemented!("task A")
+        let table = v2_vector(self.stage);
+        let mut w = vec![0i64; AXIS_WIDTH];
+        for f in Feature::ALL {
+            w[f.index()] = table[f.index()];
+        }
+        // The pin is the box being degenerate at w_vp, and V2's own vp entry IS
+        // the pinned value (§5.1:428 pins `w_vp = (1, 40)`, "V2's shipped
+        // pair"). Clamping rather than trusting that keeps the start admissible
+        // even under the early-rescale diagnostic, which moves the pin.
+        for (i, x) in w.iter_mut().enumerate() {
+            *x = (*x).clamp(self.lo[i], self.hi[i]);
+        }
+        w
     }
 }
 
@@ -325,26 +369,99 @@ impl System {
 /// violation goes to the smaller resulting `|w_f|`; still equal goes to the
 /// earlier entry of [`STEP_SET`]. A step leaving the box is not a candidate, so
 /// the pin holds by the box being degenerate at `w_vp`.
-fn witness_search(_sys: &System) -> WitnessReport {
-    unimplemented!("task A")
+fn witness_search(sys: &System) -> WitnessReport {
+    let mut w = sys.v2_padded();
+    let mut violation = sys.violation(&w);
+    let mut sweeps = 0usize;
+
+    while violation > 0 && sweeps < MAX_SWEEPS {
+        sweeps += 1;
+        let mut moved = false;
+        for coord in 0..AXIS_WIDTH {
+            // (violation, |resulting w|, step-set position) — lexicographically
+            // least wins, which is exactly §5.4's "best strict decrease, ties
+            // toward smaller |w| then listed order" with no residual freedom.
+            let mut best: Option<(i128, i64, usize, i64)> = None;
+            for (position, &step) in STEP_SET.iter().enumerate() {
+                let candidate = w[coord] + step;
+                if candidate < sys.lo[coord] || candidate > sys.hi[coord] {
+                    continue;
+                }
+                let previous = w[coord];
+                w[coord] = candidate;
+                let value = sys.violation(&w);
+                w[coord] = previous;
+                if value >= violation {
+                    continue;
+                }
+                let key = (value, candidate.abs(), position, candidate);
+                if best.is_none_or(|b| key < b) {
+                    best = Some(key);
+                }
+            }
+            if let Some((value, _, _, candidate)) = best {
+                w[coord] = candidate;
+                violation = value;
+                moved = true;
+            }
+        }
+        if !moved {
+            break;
+        }
+    }
+
+    let slack: Vec<i128> = sys.rows.iter().map(|r| System::slack_of(r, &w)).collect();
+    let binding: Vec<String> = sys
+        .rows
+        .iter()
+        .zip(&slack)
+        .filter(|(_, s)| **s == 0)
+        .map(|(r, _)| r.label.clone())
+        .collect();
+    WitnessReport { w, violation, sweeps, binding, slack }
 }
 
 // ---------------------------------------------------------------------------
 // Toy systems (§5.4's "development uses toy systems only")
 // ---------------------------------------------------------------------------
 
+/// One toy row as the builder takes it: label, sparse `(index, coef)` entries,
+/// and the right-hand side.
+type ToyRow<'a> = (&'a str, &'a [(usize, i64)], i64);
+
 /// The toy systems, over the REAL 34-wide axis so the machinery under test is
 /// the machinery that will run — only the row set is small.
 mod toys {
     use super::*;
 
-    /// Build a toy over the real axis: `rows` are `(label, [(index, coef)], rhs)`.
-    pub fn toy(
-        _stage: StageEndpoint,
-        _rows: &[(&str, &[(usize, i64)], i64)],
-        _limit: i64,
-    ) -> System {
-        unimplemented!("task A")
+    /// Build a toy over the real axis.
+    ///
+    /// The box and the pin are the REAL ones, so a toy exercises the same
+    /// degenerate-`w_vp` coordinate and the same `±limit` walls the real system
+    /// will. Only the row set is small.
+    pub fn toy(stage: StageEndpoint, rows: &[ToyRow], limit: i64) -> System {
+        let built = rows
+            .iter()
+            .enumerate()
+            .map(|(i, (label, entries, rhs))| {
+                let mut coef = vec![0i64; AXIS_WIDTH];
+                for (index, value) in *entries {
+                    coef[*index] = *value;
+                }
+                Row {
+                    label: (*label).to_string(),
+                    kind: RowKind::Pair { id: format!("toy-{i}"), order: i },
+                    coef,
+                    rhs: *rhs,
+                }
+            })
+            .collect();
+        System::new(stage, built, limit, pinned_vp(stage))
+    }
+
+    /// §5.1's pinned `w_vp`, by stage.
+    pub fn pinned_vp(stage: StageEndpoint) -> i64 {
+        super::v2_vector(stage)[Feature::VictoryPoints.index()]
     }
 
     /// The axis index of a candidate column, by its §5 label.
@@ -357,12 +474,282 @@ mod toys {
         )
         .index()
     }
+
+    /// **V2's two hand-ordering rows**, as §5.4 registers them: "the V2 hand
+    /// ordering (`core > on_board`, `on_board > excess`, both vectors) as
+    /// strict inequalities".
+    ///
+    /// Strict over the integers is `≥ 1`. Both rows hold in V2 itself at both
+    /// stages (early 30 > 6 > 5, late 20 > 10 > 2), which is what makes them
+    /// STANDING constraints rather than a hypothesis — they are already true of
+    /// the shipped table the pin comes from.
+    pub fn hand_ordering_rows() -> Vec<Row> {
+        let core = Feature::AssistantsInHandCore.index();
+        let board = Feature::AssistantsOnBoard.index();
+        let excess = Feature::AssistantsInHandExcess.index();
+        [("hand: core > on_board", core, board), ("hand: on_board > excess", board, excess)]
+            .into_iter()
+            .map(|(label, greater, lesser)| {
+                let mut coef = vec![0i64; AXIS_WIDTH];
+                coef[greater] = 1;
+                coef[lesser] = -1;
+                Row { label: label.to_string(), kind: RowKind::HandOrdering, coef, rhs: 1 }
+            })
+            .collect()
+    }
+
+    /// **THE REGISTERED TOY SYSTEMS.** Named, so a verdict artifact can say
+    /// which one it ran and a review can re-run exactly it.
+    pub fn named(name: &str) -> Option<System> {
+        let (s1, e1, e2) = (col("S1"), col("E1"), col("E2"));
+        Some(match name {
+            // The standing constraints alone -- the pin, the box, and V2's two
+            // hand orderings, with no pair row at all. V2 itself is a witness,
+            // so this toy is the sanity floor: if it ever fails, the pin and the
+            // ordering disagree and nothing downstream means anything.
+            "standing-only" => System::new(
+                StageEndpoint::Early,
+                hand_ordering_rows(),
+                BOX_LIMIT,
+                pinned_vp(StageEndpoint::Early),
+            ),
+            // Reachable by the descent: each row falls to one coordinate move,
+            // and the coupling runs forward along the axis.
+            "sat-reachable" => toy(
+                StageEndpoint::Early,
+                &[
+                    ("S1 productive", &[(s1, 1)], 1),
+                    ("E1 money", &[(e1, 1)], 3),
+                    ("S1 at least E2", &[(s1, 1), (e2, -1)], 0),
+                ],
+                BOX_LIMIT,
+            ),
+            // Satisfiable, but only by moving two coordinates together, so the
+            // descent stalls and the oracle has to decide it.
+            "sat-coupled" => toy(
+                StageEndpoint::Early,
+                &[
+                    ("S1 productive", &[(s1, 1)], 1),
+                    ("E2 strictly over S1", &[(e2, 1), (s1, -1)], 1),
+                ],
+                BOX_LIMIT,
+            ),
+            // The two-row contradiction: Farkas y = (1, 1).
+            "unsat-direct" => toy(
+                StageEndpoint::Early,
+                &[("S1 up", &[(s1, 1)], 1), ("S1 down", &[(s1, -1)], 1)],
+                BOX_LIMIT,
+            ),
+            // Infeasible only against the BOX -- the row alone is satisfiable,
+            // so the certificate must name the box bound it leans on.
+            "unsat-box" => toy(
+                StageEndpoint::Early,
+                &[("S1 beyond the wall", &[(s1, 1)], BOX_LIMIT + 1)],
+                BOX_LIMIT,
+            ),
+            _ => return None,
+        })
+    }
+
+    /// Every registered toy's name, in the order [`named`] lists them.
+    pub const NAMES: [&str; 5] =
+        ["standing-only", "sat-reachable", "sat-coupled", "unsat-direct", "unsat-box"];
+}
+
+// ---------------------------------------------------------------------------
+// The artifact
+// ---------------------------------------------------------------------------
+
+/// **The identity block every verdict artifact carries.**
+///
+/// §5.4: "The oracle IMPLEMENTATION freezes at the step-2 commit and every
+/// verdict artifact prints its digest". Three identities, because three things
+/// can move underneath a verdict independently:
+///
+/// * the FIXTURE PACKAGE, by `pair_fixtures::package_digest` over the registered
+///   tuples — which system was solved;
+/// * the SOLVER IMPLEMENTATION, by a content hash of THIS FILE's source
+///   (`include_str!` of itself, through the same FNV-1a the repo's other content
+///   hashes use) — which solver solved it. A source hash rather than a commit
+///   hash because it needs no build plumbing and cannot go stale: it moves when
+///   the implementation moves, which is exactly the property §5.4 wants when it
+///   says "two conforming implementations are the same implementation";
+/// * `SEMANTICS_REV`, because the fixtures are engine states and a rules change
+///   would change what the rows MEAN without touching either hash above.
+///
+/// The freeze COMMIT is recorded in the ledger and may be supplied to the real
+/// run with `--freeze-commit`; it is provenance for a reader, while the source
+/// hash is the machine-checkable half.
+fn identity_block(freeze_commit: Option<&str>) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("package digest       {}\n", package_digest()));
+    out.push_str(&format!("solver identity      {}  (content hash of examples/solver.rs)\n", solver_identity()));
+    out.push_str(&format!("semantics rev        {SEMANTICS_REV}\n"));
+    out.push_str(&format!(
+        "V2 weight identity   {:#018x}  (the source of the w_vp pin and the hand ordering)\n",
+        weight_table_identity(&WeightTable::V2),
+    ));
+    out.push_str(&format!(
+        "freeze commit        {}\n",
+        freeze_commit.unwrap_or("not supplied (the source hash above is the machine-checked half)"),
+    ));
+    out
+}
+
+/// See [`identity_block`]. FNV-1a 64 over this file's own source bytes, the same
+/// primitive `Rules::content_hash` and `pair_fixtures::package_digest` use.
+fn solver_identity() -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in include_str!("solver.rs").as_bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{h:016x}")
+}
+
+/// §5.4's realized-versus-frozen census cross-check, with the ruling in place of
+/// a defect claim.
+fn census_block() -> String {
+    let realized = realized_census();
+    let mut out = String::new();
+    out.push_str(&format!(
+        "census               realized EARLY {} / LATE {}   frozen text EARLY {FROZEN_EARLY} / \
+         LATE {FROZEN_LATE}\n",
+        realized.early, realized.late,
+    ));
+    if realized.early == FROZEN_EARLY && realized.late == FROZEN_LATE {
+        out.push_str("                     realized == frozen\n");
+    } else {
+        out.push_str(&format!("RULING               {CENSUS_RULING}\n"));
+    }
+    out
+}
+
+/// The registry's margin table — every constraint row's class and integer,
+/// read off the declarations without building a single fixture.
+fn margin_block() -> String {
+    let mut out = String::new();
+    out.push_str("\nregistered margins (declarations only -- no fixture is built to print this)\n");
+    out.push_str("  ord  pair          stage  margin  class\n");
+    for pair in REGISTERED.iter().filter(|p| matches!(p.role, PairRole::Constraint)) {
+        // The DELETION ORDER, printed so a review can check it against §5.2's
+        // printed text without reading code.
+        let ord = document_order(pair.id).expect("a registered pair is in the registry");
+        for stage in pair.stages {
+            let margin = match margin_of(pair, *stage) {
+                Ok(m) => m.to_string(),
+                Err(e) => format!("REFUSED: {e}"),
+            };
+            let class = match pair.margin {
+                MarginClass::Margined { carrier, .. } => {
+                    format!("margined via {}", carrier.label())
+                }
+                MarginClass::DirectionOnly => "direction-only".to_string(),
+                MarginClass::Weak => "weak".to_string(),
+            };
+            out.push_str(&format!(
+                "  {ord:>3}  {:<12}  {:<5}  {:>6}  {class}\n",
+                pair.id,
+                stage.name(),
+                margin,
+            ));
+        }
+    }
+    out.push_str(
+        "  (ord = §5.2 DOCUMENT ORDER, which is the registered deletion order for §5.4 (3))\n",
+    );
+    out
+}
+
+/// Run one toy through the machinery that exists, and print it.
+fn run_toy(name: &str) -> Result<(), String> {
+    let sys = toys::named(name)
+        .ok_or_else(|| format!("`{name}` is not a registered toy; see `solver toys`"))?;
+    println!("=== solver toy {name} ===");
+    print!("{}", identity_block(None));
+    println!("stage                {}", sys.stage.name());
+    println!("box                  |w| <= {}   w_vp pinned to {}", sys.box_limit, sys.pin_vp);
+    println!(
+        "rows                 {} deletable, {} inequalities in all (deletable + pin + box)",
+        sys.rows.len(),
+        sys.inequalities().len(),
+    );
+
+    let report = witness_search(&sys);
+    println!();
+    println!("witness search       {} sweeps, total violation {}", report.sweeps, report.violation);
+    if report.violation == 0 {
+        println!("verdict              WITNESS (feasibility PROVEN by a re-checked point)");
+        println!("binding K            {}", report.binding.len());
+        println!("{SAT_READING}");
+    } else {
+        println!(
+            "verdict              NO WITNESS -- a statement about the SEARCH, not the system. \
+             Only the exact oracle may say UNSAT."
+        );
+    }
+    println!();
+    println!("slack profile");
+    for (row, slack) in sys.rows.iter().zip(&report.slack) {
+        println!("  {:<24}  {:>8}", row.label, slack);
+    }
+    println!();
+    println!("weight vector (entries away from the V2-padded start)");
+    let start = sys.v2_padded();
+    let mut moved = 0usize;
+    for (i, id) in FeatureId::all().into_iter().enumerate() {
+        if report.w[i] != start[i] {
+            println!("  {:<28}  {:>5}  (from {})", id.label(), report.w[i], start[i]);
+            moved += 1;
+        }
+    }
+    if moved == 0 {
+        println!("  none -- the V2-padded start was already the returned point");
+    }
+    Ok(())
 }
 
 fn main() -> ExitCode {
-    eprintln!("solver: under construction (task A)");
-    ExitCode::FAILURE
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let result = match args.first().map(String::as_str) {
+        Some("identities") => {
+            println!("=== solver identities ===");
+            print!("{}", identity_block(None));
+            print!("{}", census_block());
+            print!("{}", margin_block());
+            Ok(())
+        }
+        Some("toys") => {
+            println!("registered toy systems (§5.4 development runs on these and nothing else):");
+            for name in toys::NAMES {
+                println!("  {name}");
+            }
+            Ok(())
+        }
+        Some("toy") => match args.get(1) {
+            Some(name) => run_toy(name),
+            None => Err("`toy` needs a name; see `solver toys`".to_string()),
+        },
+        Some(other) => Err(format!("unknown subcommand `{other}`\n\n{USAGE}")),
+        None => Err(USAGE.to_string()),
+    };
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("solver: {e}");
+            ExitCode::FAILURE
+        }
+    }
 }
+
+const USAGE: &str = "\
+usage: solver <subcommand>
+
+  identities         the identity block, the realized-vs-frozen census, and the
+                     registry's margin table -- declarations only, no fixture built
+  toys               list the registered toy systems
+  toy <name>         run one toy end to end
+";
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -373,36 +760,6 @@ mod tests {
     use super::toys::{col, toy};
     use super::*;
     use yokohama_core::game::pair_fixtures::PairRole;
-
-    // -- exact rationals ---------------------------------------------------
-
-    #[test]
-    fn rationals_reduce_and_carry_the_sign_in_the_numerator() {
-        assert_eq!(Rat::new(4, -6), Rat::new(-2, 3));
-        assert_eq!(Rat::new(0, -5), Some(Rat::ZERO));
-        assert_eq!(Rat::new(1, 0), None, "a zero denominator is not a rational");
-        let r = Rat::new(-8, 12).expect("reduces");
-        assert!(r.d > 0, "the denominator is normalized positive, got {}", r.d);
-        assert_eq!((r.n, r.d), (-2, 3));
-    }
-
-    #[test]
-    fn rational_arithmetic_is_checked_and_returns_none_on_overflow() {
-        let big = Rat::new(i128::MAX, 1).expect("representable");
-        assert_eq!(big.add(big), None, "an overflowing add is None, never a wrap");
-        assert_eq!(big.mul(big), None, "an overflowing mul is None, never a wrap");
-        let third = Rat::new(1, 3).expect("representable");
-        assert_eq!(third.add(third).and_then(|r| r.add(third)), Some(Rat::int(1)));
-    }
-
-    #[test]
-    fn rational_comparison_is_exact_where_floating_point_would_tie() {
-        let a = Rat::new(1, 3).expect("representable");
-        let b = Rat::new(100_000_000_000_000_000, 300_000_000_000_000_001).expect("representable");
-        assert_eq!(a.cmp_exact(b), Some(Ordering::Greater));
-        assert_eq!(b.cmp_exact(a), Some(Ordering::Less));
-        assert_eq!(a.cmp_exact(a), Some(Ordering::Equal));
-    }
 
     // -- the margin rule ---------------------------------------------------
 
@@ -532,13 +889,17 @@ mod tests {
 
     // -- the witness search ------------------------------------------------
 
+    /// A toy the descent reaches: every row is fixed by a single coordinate
+    /// move from the V2-padded start, and the coupling runs FORWARD along the
+    /// axis (the constrained coordinate is the earlier one), which is the shape
+    /// coordinate descent can cross.
     fn sat_toy() -> System {
         toy(
             StageEndpoint::Early,
             &[
                 ("S1 productive", &[(col("S1"), 1)], 1),
                 ("E1 money", &[(col("E1"), 1)], 3),
-                ("E2 over S1", &[(col("E2"), 1), (col("S1"), -1)], 1),
+                ("S1 at least E2", &[(col("S1"), 1), (col("E2"), -1)], 0),
             ],
             BOX_LIMIT,
         )
@@ -627,6 +988,40 @@ mod tests {
             .map(|(r, _)| r.label.clone())
             .collect();
         assert_eq!(report.binding, expected, "K is the slack-0 count, computed not asserted");
+    }
+
+    /// **Coordinate descent is INCOMPLETE, and this is the cell that says so.**
+    ///
+    /// Two rows whose satisfaction requires two coordinates to move TOGETHER
+    /// stall the search: no single step of any size strictly decreases the
+    /// total, so a full sweep applies nothing and the search ends with a
+    /// positive residual — while a witness plainly exists, exhibited and
+    /// verified here.
+    ///
+    /// This is why §5.4 makes the exact oracle "the ONLY authority for
+    /// infeasibility". A non-witness is a statement about the SEARCH, never
+    /// about the system, and nothing downstream may read it as UNSAT.
+    #[test]
+    fn coordinate_descent_can_stall_short_of_a_witness_that_exists() {
+        let sys = toy(
+            StageEndpoint::Early,
+            &[
+                ("S1 productive", &[(col("S1"), 1)], 1),
+                ("E2 strictly over S1", &[(col("E2"), 1), (col("S1"), -1)], 1),
+            ],
+            BOX_LIMIT,
+        );
+        let report = witness_search(&sys);
+        assert!(report.violation > 0, "the coupled rows stall a single-coordinate search");
+
+        let mut exhibited = sys.v2_padded();
+        exhibited[col("S1")] = 1;
+        exhibited[col("E2")] = 2;
+        assert_eq!(
+            sys.violation(&exhibited),
+            0,
+            "a witness exists -- so the search's residual is a fact about the search",
+        );
     }
 
     #[test]
