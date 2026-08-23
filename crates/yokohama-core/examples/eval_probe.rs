@@ -5873,6 +5873,44 @@ recorded beside     the same sum in the MOVER-ABSOLUTE currency (the opponent's 
                     The GATE reads the DIFFERENCED sum. A sign disagreement
                     between the two is a FINDING, never a choice of reading";
 
+/// **THE RE-REGISTRATION**, printed under the e113 numbers so the reading that
+/// governs them travels with them.
+///
+/// The ruling is quoted rather than paraphrased on the two points a reader would
+/// otherwise have to take on trust: WHY the frozen form was ruled ill-posed (a
+/// category error in the gate's own shape, not a defect in the columns), and
+/// WHAT the direction claim now has to satisfy instead. The killed alternatives
+/// are named because a re-registration that only records the option taken reads
+/// as the only option there was.
+const E113_REREGISTRATION: &str = "\
+the ruling          guidingpath 2026-08-23, \"THE TWO STEP-5 FINDINGS ARE RULED\"
+                    (owner, on the independently CONFIRMED lane review): the frozen
+                    §6 direction gate is FAILED-AS-REGISTERED here, and the claim
+                    RE-REGISTERS FORWARD to step 9(b)
+why                 \"a category error frozen into the gate's form: an unweighted sum
+                    across incommensurable units\" — the dead side sits on Customs,
+                    so S2 swings -3 in POWER units against S1's +1 in REWARD units.
+                    Robust: 3 of 28 dead candidates favoured, range [-8,+2]
+what step 9(b) asks the FITTED identity's WEIGHTED preference must favour the
+                    enabling side over the registered dead side, among the complete
+                    weighted rooted scores §7 already requires there — unit-coherent,
+                    falsifiable, and a test of the thing that ships
+the pair's forward   enabling successor 1e4bd02ecce80635 · dead successor
+identity            4f5bf9d05388c4c6 — the two digests step 9(b) re-reads
+killed alternatives the MAJORITY reading also fails this data (the nonzero deltas
+                    split 2-2); per-column-any is vacuous; pre-fit normalization
+                    smuggles weights into a weight-free gate; closing at the frozen
+                    letter would record representation-infeasibility for a unit
+                    artifact against GATE 2's organic evidence
+what STANDS here    NON-COLLISION (a step-5 gate, PASS) and the 28-candidate
+                    separation spread below, recorded as WIRING evidence: the sums
+                    span [-8,+2], so the S group SEPARATES. What failed was the
+                    frozen DIRECTION, implemented literally per the two in-source
+                    interpretation notes
+the honest cost     step 5 loses its only directional cell; the milestone's first
+                    directional evidence moves POST-FIT. The ruling records that as
+                    the cost of the re-registration, and so does this line";
+
 /// The e113 gate's result, as the artifact prints it.
 struct E113Gate {
     root_digest: String,
@@ -6240,6 +6278,17 @@ the registered read at every dev root, opponent-O1 >= 1 AND opponent-O3 = 0 —
                     opponent-O2 is READ-AND-RECORDED per root, never gated, and
                     the existential \">= 1 dev root shows opponent-O2 >= 1\" is
                     recorded as a FINDING
+THE BAND, RE-REGISTERED (guidingpath 2026-08-23, \"THE TWO STEP-5 FINDINGS ARE RULED\")
+
+the dev band        {e111, e159, e198} — the three the recorded document can show a
+                    MOVER's view of. The charter's other two, e34 and e68, are
+                    recorded NOT-RUN-STRUCTURAL and re-registered OUT: seat 0's deal
+                    is Unknown in the import fiction until its event-73 reveal (seat
+                    1's is event 14) and both movers there are seat 0
+the reserved eight  UNTOUCHED by this re-registration. The burn guard still refuses
+                    every column read at them, and step 10's own unviewable-ordinal
+                    rule (VOID != miss, registered in the same row) is step 10's
+
 strict O3 coverage  routes to the CONSTRUCTED fixtures exactly as the flag-1
                     ruling's own text routes it: family-4(b)'s EXECUTABLE side
                     carries O3 >= 1, with 4(b)-DISTANT and 4(a) BOTH SIDES as the
@@ -6810,25 +6859,50 @@ on a failure        this instrument REPORTS and exits non-zero. Repair by
 /// and [`Verdict::clears`] is the only thing the exit code reads. Before this
 /// type the rule lived inline in the command, where the single cell that could
 /// have pinned it would have had to run the whole corpus-gated command to do so.
+///
+/// # The gate set is the RE-REGISTERED one
+///
+/// guidingpath 2026-08-23, **"THE TWO STEP-5 FINDINGS ARE RULED"**: the e113
+/// DIRECTION claim re-registers forward to step 9(b) and the OSE development
+/// band re-registers as {e111, e159, e198}. So the set that gates at step 5 is
+/// **GATE-1 non-collision · GATE 2 · GATE 3 · the re-registered GATE 4**, and
+/// two categories of result are RECORDED without gating: the e113 direction read
+/// (FAILED-AS-REGISTERED, printed in full) and the two exhibits whose mover's
+/// deal the imported record never witnessed (NOT-RUN-STRUCTURAL).
+///
+/// **Recorded is not silent.** Everything in [`Verdict::recorded`] prints in the
+/// verdict block, so a run that clears still says out loud what it did not gate
+/// on — which is the whole difference between a re-registration and a gate
+/// quietly dropped.
 struct Verdict {
     /// Findings from gates that COUNT. Non-empty ⇒ the run stops.
     failures: Vec<String>,
-    /// Registered gate roots that could not be evaluated at all.
-    unread: Vec<String>,
+    /// Results the ruling re-registered OUT of the step-5 gate set. Printed in
+    /// the verdict block, never an input to [`Verdict::clears`].
+    recorded: Vec<String>,
 }
 
 impl Verdict {
     fn new() -> Self {
-        Self { failures: Vec::new(), unread: Vec::new() }
+        Self { failures: Vec::new(), recorded: Vec::new() }
     }
 
-    /// GATE 1 — the e113 exemplar pair.
+    /// GATE 1 — the e113 exemplar pair. NON-COLLISION gates; DIRECTION records.
     fn take_e113(&mut self, gate: &E113Gate) {
-        if !(gate.direction_favours_enabling() && gate.non_collision()) {
+        if !gate.non_collision() {
             self.failures.push(format!(
-                "GATE 1 (e113): S-sum {} (> 0 required), {} blocking finding(s)",
-                gate.sum,
+                "GATE 1 (e113): {} blocking finding(s) between the registered pair's sides",
                 gate.blocking.len(),
+            ));
+        }
+        if !gate.direction_favours_enabling() {
+            self.recorded.push(format!(
+                "GATE 1 (e113) DIRECTION: FAILED-AS-REGISTERED — the summed delta over all seven \
+                 frozen S definitions reads {} where §6 asks for > 0. RE-REGISTERED FORWARD to \
+                 step 9(b) (guidingpath 2026-08-23): the fitted identity's WEIGHTED preference \
+                 must favour the enabling side over the registered dead side, which is \
+                 unit-coherent where an unweighted cross-unit sum is not",
+                gate.sum,
             ));
         }
     }
@@ -6856,6 +6930,11 @@ impl Verdict {
     }
 
     /// GATE 4 — one recorded opponent-pending exhibit.
+    ///
+    /// A root that READ gates on the charter's clauses. A root the imported
+    /// record cannot show a mover's view of is re-registered OUT of the band and
+    /// RECORDED: the ruling calls it NOT-RUN-STRUCTURAL, flag-4-style, and it is
+    /// the registered shape rather than a stop.
     fn take_exhibit(&mut self, read: &ExhibitRead) {
         match (&read.outcome, read.passed()) {
             (_, Some(true)) => {}
@@ -6863,15 +6942,21 @@ impl Verdict {
                 "GATE 4 (e{}): opponent O1 = {}, O3 = {} (O1 >= 1 and O3 = 0 required)",
                 read.event_index, columns[0], columns[2],
             )),
-            (ExhibitOutcome::NotRun { reason }, _) => {
-                self.unread.push(format!("GATE 4 (e{}): NOT RUN — {reason}", read.event_index))
-            }
+            (ExhibitOutcome::NotRun { reason }, _) => self.recorded.push(format!(
+                "GATE 4 (e{}) NOT-RUN-STRUCTURAL: {reason}. RE-REGISTERED OUT of the development \
+                 band (guidingpath 2026-08-23) — the band is {{e111, e159, e198}}",
+                read.event_index,
+            )),
         }
     }
 
     /// Whether step 5 clears. The ONLY thing the exit code reads.
+    ///
+    /// [`Verdict::recorded`] is deliberately absent from this expression: a
+    /// re-registered result is not a quiet pass, it is a result the owner moved
+    /// to a different gate, and the verdict block prints every one of them.
     fn clears(&self) -> bool {
-        self.failures.is_empty() && self.unread.is_empty()
+        self.failures.is_empty()
     }
 }
 
@@ -7029,13 +7114,18 @@ fn cmd_rooted(args: &[String]) -> Result<(), String> {
         },
     );
     println!(
-        "GATE 1              {}",
-        if gate1.direction_favours_enabling() && gate1.non_collision() {
-            "PASS"
+        "GATE 1 direction    {}   RECORDED, NOT A STEP-5 GATE (re-registered to step 9(b))",
+        if gate1.direction_favours_enabling() {
+            "favours the enabling side"
         } else {
-            "*** FAIL ***"
+            "*** FAILED-AS-REGISTERED ***"
         },
     );
+    println!(
+        "GATE 1 non-collision {}   THE step-5 gate half, and it stands",
+        if gate1.non_collision() { "PASS" } else { "*** FAIL ***" },
+    );
+    println!("{}", E113_REREGISTRATION.trim_end());
     verdict.take_e113(&gate1);
 
     // --- GATE 2: the placement-fork development ordinals -------------------
@@ -7134,7 +7224,8 @@ fn cmd_rooted(args: &[String]) -> Result<(), String> {
                 identities.len(),
             );
             println!(
-                "  development       {} read roots: {}",
+                "  development       {} charter roots: {}   RE-REGISTERED band {{e111, e159, \
+                 e198}}",
                 identities.iter().filter(|(_, _, r)| *r == OseRole::Development).count(),
                 OSE_DEVELOPMENT.iter().map(|e| format!("e{e}")).collect::<Vec<_>>().join(" "),
             );
@@ -7179,15 +7270,21 @@ fn cmd_rooted(args: &[String]) -> Result<(), String> {
                             "  e{:<4} digest {} · mover seat {}",
                             read.event_index, read.digest, read.mover.0,
                         );
-                        println!("        *** NOT RUN *** {reason}");
+                        println!("        NOT-RUN-STRUCTURAL — {reason}");
                         println!(
-                            "        the registered read needs the MOVER's view (it asks what the \
-                             mover can see of the\n        opponent's pending orders). The \
-                             opponent's OWN view is not a substitute: it shows the\n        \
-                             opponent its own masked starting order, which is exactly the card \
-                             the mover cannot\n        see and exactly what O1's pool floor is \
-                             designed around. NOT a pass and NOT a fail —\n        nothing was \
-                             measured"
+                            "        RE-REGISTERED OUT of the development band (guidingpath \
+                             2026-08-23): the band is\n        {{e111, e159, e198}} and this root \
+                             is recorded, flag-4-style, rather than gated.\n        The import \
+                             fiction records seat 0's deal as Unknown until its event-73 \
+                             reveal\n        (seat 1's is event 14) and both movers here are seat \
+                             0, so `observe` refuses with\n        the engine's own typed \
+                             `ViewerDealUnrecorded`. The registered read needs the\n        \
+                             MOVER's view; the opponent's OWN view is not a substitute — it \
+                             prices the exact\n        masked starting order into O1/O2/O3, which \
+                             is the card the mover cannot see, and\n        the ruling RATIFIES \
+                             refusing it as the honest reading.\n        THE COST, said out loud: \
+                             the dev band's early-game half is structurally absent\n        and \
+                             position diversity narrows to mid/late"
                         );
                     }
                 }
@@ -7295,39 +7392,58 @@ fn cmd_rooted(args: &[String]) -> Result<(), String> {
 
     println!();
     println!("wall                {:.1}s", started.elapsed().as_secs_f64());
-    if verdict.clears() {
+    // The RECORDED half prints whether or not the run clears: a re-registered
+    // result that only showed up in a failure message would vanish exactly when
+    // the run went green, which is when a reader most needs to see it.
+    if !verdict.recorded.is_empty() {
+        println!();
         println!(
-            "VERDICT             every step-5 gate RUN above PASSES; the read-and-record items \
-             gate nothing"
+            "RE-REGISTERED       {} result(s) recorded and NOT gated at step 5:",
+            verdict.recorded.len(),
         );
+        for entry in &verdict.recorded {
+            println!("  {entry}");
+        }
+    }
+    println!();
+    if verdict.clears() {
+        println!("{}", CLEARANCE_BLOCK.trim_end());
         Ok(())
     } else {
-        let mut message = String::from("STOP — step 5 does not clear:\n");
-        if !verdict.failures.is_empty() {
-            message.push_str(&format!(
-                "\n{} GATE FAILURE(S) — a registered gate evaluated AGAINST its frozen direction:\
-                 \n  {}\n",
-                verdict.failures.len(),
-                verdict.failures.join("\n  "),
-            ));
-        }
-        if !verdict.unread.is_empty() {
-            message.push_str(&format!(
-                "\n{} REGISTERED GATE ROOT(S) NOT RUN — nothing was measured there, which is \
-                 neither a pass\nnor a fail:\n  {}\n",
-                verdict.unread.len(),
-                verdict.unread.join("\n  "),
-            ));
-        }
-        message.push_str(
-            "\nCheckpoint §7 step 5: \"A gate failure stops before any fitting.\" This instrument \
-             REPORTS\nrather than repairs. A gate re-tuned to pass is not a gate, and a gate root \
-             quietly dropped\nfrom a run is a pass about less — both outcomes are OWNER territory \
-             (checkpoint §6 fences\nrepair-by-scope-expansion).",
-        );
-        Err(message)
+        Err(format!(
+            "STOP — step 5 does not clear:\n\n{} GATE FAILURE(S) in the RE-REGISTERED gate set \
+             (GATE-1 non-collision · GATE 2 ·\nGATE 3 · the re-registered GATE 4):\n  {}\n\n\
+             Checkpoint §7 step 5: \"A gate failure stops before any fitting.\" This instrument \
+             REPORTS\nrather than repairs. A gate re-tuned to pass is not a gate — repair is \
+             OWNER territory\n(checkpoint §6 fences repair-by-scope-expansion).",
+            verdict.failures.len(),
+            verdict.failures.join("\n  "),
+        ))
     }
 }
+
+/// The clearance block, printed when the re-registered gate set holds.
+///
+/// It states which gates cleared, which results were re-registered rather than
+/// gated, and WHERE the superseded run lives — a clearance that did not point at
+/// the STOP it replaces would read as though step 5 had always been green.
+const CLEARANCE_BLOCK: &str = "\
+VERDICT             STEP 5 CLEARS UNDER THE RE-REGISTERED GATES
+the gate set        GATE-1 non-collision · GATE 2 · GATE 3 · the re-registered
+                    GATE 4 — all PASS on the data above
+the registration    guidingpath 2026-08-23, \"THE TWO STEP-5 FINDINGS ARE RULED\"
+                    (owner, on the independently CONFIRMED lane review): the e113
+                    DIRECTION claim re-registers forward to step 9(b), where the
+                    fitted identity's WEIGHTED preference over the same registered
+                    pair is unit-coherent and falsifiable; the OSE development
+                    band re-registers as {e111, e159, e198}
+what is NOT claimed step 5 has NO directional cell left. The milestone's first
+                    directional evidence moves post-fit, and the ruling records
+                    that as the honest COST of the re-registration rather than a
+                    detail of it
+the superseded run  the STOP-of-record under the ORIGINAL frozen gates — the
+                    finding this registration answers — was banked at HEAD
+                    3dc1e54 (exit 2). The step-5 close row cites BOTH artifacts";
 
 // ---------------------------------------------------------------------------
 // Tests: the statistics, against hand-computable truth.
