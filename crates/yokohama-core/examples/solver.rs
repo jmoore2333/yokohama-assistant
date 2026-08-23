@@ -23,7 +23,9 @@
 //! step-2 commit and every verdict artifact prints its digest." This file was
 //! developed and proven against [`toys`] alone. The real system lives behind
 //! `solve --real`, which is a separate invocation made after this
-//! implementation is frozen and reviewed — see [`IDENTITY_NOTE`].
+//! implementation is frozen and reviewed — see [`identity_block`], which names
+//! what each verdict artifact carries and why a source hash is the
+//! machine-checked half of it.
 //!
 //! # The trust boundary
 //!
