@@ -106,15 +106,20 @@ use yokohama_core::game::greedy::{
 use yokohama_core::game::lookahead::{
     LookaheadAgent, SearchScheme, SearchTally, LOOKAHEAD_CONTROLLER,
 };
+use yokohama_core::game::driven::{
+    escrow_recipe_pair, registry, root_table, RecipeMiss, RecipePair, RootPredicate, RootSource,
+};
+use yokohama_core::game::driven_runner::DEFAULT_SEAT;
 use yokohama_core::game::pair_fixtures::{
     build_registered_pair, package_digest, registered, render_pair_report_with,
-    render_registry_manifest, CandidateFeature, StageEndpoint, REGISTERED,
+    render_registry_manifest, CandidateFeature, FeatureId, PairRole, Side, StageEndpoint,
+    AXIS_WIDTH, REGISTERED,
 };
 use yokohama_core::{
-    agent_stream_seed, finalize_setup, new_game, observe, replay_from, run_arena_game,
-    run_raw_game, ArenaAgent, ArenaGameStats, Contestant, GameState, PlayerId, PlayerView,
-    QuantileSketch, RolloutPolicy, Rules, SeedSchedule, SeedScheduleKind, Slot, TriggerTally,
-    VisiblePlayer, WorldSeed, SEMANTICS_REV,
+    agent_stream_seed, apply_move, finalize_setup, get_legal_moves, new_game, observe, replay_from,
+    run_arena_game, run_raw_game, ArenaAgent, ArenaGameStats, Contestant, GameState, Move, PlayerId,
+    PlayerView, QuantileSketch, RolloutPolicy, Rules, SeedSchedule, SeedScheduleKind, Slot,
+    TriggerTally, VisiblePlayer, WorldSeed, SEMANTICS_REV,
 };
 
 const USAGE: &str = "\
@@ -218,6 +223,19 @@ usage: eval_probe <subcommand> [options]
                        named one is skipped, and the count says so)
         --manifest     the registry manifest alone, no reports
 
+  collision [--fixtures-only] [--no-generated] [--no-tie]
+      The §5.3 PART A collision test, weight-free. Signs every registered gate
+      pair's SIDES and every non-terminal successor of the §6 root set with
+      `(exact progress_ppm, Δv over the 34 features)` from the MOVER's view,
+      groups by identical signature and applies §5.3's blocking rule. Zero
+      blocking collisions is NECESSARY; a blocking collision exits non-zero and
+      names the pair, because the step-4 fork is owner territory. Also prints
+      the near-collisions (equal Δv, different ppm), the organic classes with
+      their sizes, and the e113 top tie's complete-vector measurement.
+        --fixtures-only  the 106 registered sides alone — no roots, no tie
+        --no-generated   registry roots only (skips the seeded scans)
+        --no-tie         skip the e113 root-table measurement
+
 contestants (the grammar is Contestant::from_str_name's — unknown is an error at
 every level, and an unknown knob is never silently ignored):
   greedy-v1[:m=<n>]    the honest arena driver (observe -> sampler -> handle)
@@ -254,6 +272,7 @@ fn main() {
         Some("run") => cmd_run(&args[1..]),
         Some("table") => cmd_table(&args[1..]),
         Some("pairs") => cmd_pairs(&args[1..]),
+        Some("collision") => cmd_collision(&args[1..]),
         _ => Err(USAGE.to_string()),
     };
     if let Err(message) = result {
@@ -3539,14 +3558,40 @@ fn cmd_table(args: &[String]) -> Result<(), String> {
 /// A NON-CAPTURING free fn because `CandidateColumns` is a plain `fn` pointer,
 /// not a boxed closure — the seam is deliberately capture-free so a fixture
 /// report cannot be rendered against columns that quietly carry state.
+/// The [`CandidateColumns`](yokohama_core::game::pair_fixtures::CandidateColumns)
+/// adapter: one derive per call, eighteen arms onto `eval`'s own helpers.
+///
+/// It never declines. The `Option` is the SEAM's shape, not this adapter's
+/// opinion — `render_pair_report_with` renders the pending marker when the
+/// whole adapter is absent, and a `None` from a wired adapter would print that
+/// marker for a column that exists.
 fn candidate_columns(
     view: &PlayerView,
     player: &VisiblePlayer,
     feature: CandidateFeature,
     rules: &Rules,
 ) -> Option<i64> {
-    let s = ScoreStructure::derive(view, rules);
-    Some(match feature {
+    Some(candidate_value(&ScoreStructure::derive(view, rules), view, player, feature, rules))
+}
+
+/// The eighteen arms themselves, over a structure the CALLER derived.
+///
+/// Split out of [`candidate_columns`] for the one caller that needs many
+/// columns of one view at once: [`signature`] reads all eighteen for both
+/// seats, and the adapter's own contract is one derive PER CALL, which would
+/// make that thirty-six derivations of the same structure. Four of the five
+/// score-structure features are rankings over the whole table, so this is the
+/// same discipline `eval::score` and `relative_vector` already follow — and
+/// keeping ONE match here rather than restating it at the second caller is what
+/// stops the two from drifting (the adapter pin covers both through this).
+fn candidate_value(
+    s: &ScoreStructure,
+    view: &PlayerView,
+    player: &VisiblePlayer,
+    feature: CandidateFeature,
+    rules: &Rules,
+) -> i64 {
+    match feature {
         CandidateFeature::ProductionAccess => s.production_access(view, player),
         CandidateFeature::TrackAccess => s.track_access(view, player),
         CandidateFeature::AssistantAreasDistinct => s.assistant_areas_distinct(player),
@@ -3567,7 +3612,7 @@ fn candidate_columns(
         CandidateFeature::MatchedProductionAccess => {
             s.matched_production_access(view, player, rules)
         }
-    })
+    }
 }
 
 fn cmd_pairs(args: &[String]) -> Result<(), String> {
@@ -3624,6 +3669,862 @@ fn cmd_pairs(args: &[String]) -> Result<(), String> {
     );
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// §5.3 Part A — the collision instrument
+// ---------------------------------------------------------------------------
+
+/// **THE §5.3 SIGNATURE of ONE view**, taken from a NAMED MOVER seat:
+/// `(exact progress_ppm, Δv over the 34 features)`.
+///
+/// # What `Δv` is here, and why the seat is part of the question
+///
+/// `Δv` is the MOVER-RELATIVE vector — `mine − theirs`, one entry per axis slot,
+/// at 2P where "theirs" is the single non-dummy opponent. That is the quantity
+/// a weight multiplies (`game/eval.rs`'s `w · (mine − theirs)`), so §5.4's solve
+/// row `Σ_f w_f(stage)·Δv_f ≥ margin` is the DIFFERENCE of two signatures'
+/// vectors, and two views sharing a signature score identically under EVERY
+/// weight vector in the box. That is exactly what makes a collision fatal to a
+/// gate pair and merely interesting anywhere else.
+///
+/// The seat is load-bearing twice over and neither reading is optional: the
+/// VIEW is the mover's (hidden information is masked as the mover sees it) and
+/// the DIFFERENCING is signed from the mover. Six of the eighteen candidate
+/// columns — O1, O2, O3, O5, O6, X3 — do NOT simply negate when the other seat
+/// asks, so an opponent-side signature is not recoverable from this one by
+/// flipping signs (step 3's carry-7 finding 2, pinned in this file's tests).
+///
+/// 2P only, by §5.3: at 3–4P `opponent_extreme` orients by weight, which would
+/// make the "relative" half of the signature weight-dependent and the whole
+/// instrument no longer weight-free.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+struct Signature {
+    ppm: u32,
+    dv: [i64; AXIS_WIDTH],
+}
+
+/// Sign one view from `mover`'s seat.
+///
+/// A missing mover seat is a typed refusal rather than a zero vector: a
+/// signature computed against an absent seat would be a perfectly well-formed
+/// number that collides with everything.
+fn signature(view: &PlayerView, mover: PlayerId, rules: &Rules) -> Result<Signature, String> {
+    let me = view
+        .players
+        .iter()
+        .find(|p| p.id == mover)
+        .ok_or_else(|| format!("seat {} is not a player in this view", mover.0))?;
+    let opponent = view.players.iter().find(|p| p.id != mover && !p.id.is_dummy());
+    let structure = ScoreStructure::derive(view, rules);
+    let mut dv = [0i64; AXIS_WIDTH];
+    for f in Feature::ALL {
+        let mine = structure.value_of(me, f);
+        let theirs = opponent.map_or(0, |o| structure.value_of(o, f));
+        dv[FeatureId::Incumbent(f).index()] = mine - theirs;
+    }
+    for c in CandidateFeature::ALL {
+        let mine = candidate_value(&structure, view, me, c, rules);
+        let theirs = opponent.map_or(0, |o| candidate_value(&structure, view, o, c, rules));
+        dv[FeatureId::Candidate(c).index()] = mine - theirs;
+    }
+    Ok(Signature { ppm: progress_ppm(view, rules), dv })
+}
+
+/// Whether a successor is one of the two sides of its root's REGISTERED
+/// development pair — §6's frozen recipe, computed by
+/// [`escrow_recipe_pair`] from the ENGINE-EXPORTED rules quantity and from no
+/// feature column.
+///
+/// This is the whole difference between a stop and a diagnostic on the root
+/// side of §5.3's blocking rule. Two successors of one root that share a
+/// signature are an ORGANIC collision — §5.3 says so in as many words, and the
+/// e113 top tie is the case it names. Two successors that share a signature AND
+/// are the pair the recipe registered are a row the solve can never satisfy.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+enum RecipeRole {
+    Unregistered,
+    Productive,
+    Dead,
+}
+
+/// Where a signed view came from, in the words the artifact prints.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+enum Provenance {
+    /// One SIDE of one registered pair, at one endpoint.
+    ///
+    /// `gate` is [`PairRole::Constraint`] and nothing else. §5.3's inputs are
+    /// "every GATE pair's sides (families 1–4, 6–8, 10(a)/(b)/(d), 11)" — the
+    /// parenthetical breaks family 10 open precisely because 10(c) is its
+    /// DIAGNOSTIC — and the frame's own type says the same: `Constraint` is "a
+    /// solve row and a blocking side", `Diagnostic` is "2(c) and 10(c):
+    /// RECORDED, never a gate". A diagnostic side is still SIGNED (a collision
+    /// between it and a gate side is worth reading) and never blocks.
+    PairSide { pair: String, stage: &'static str, side: &'static str, gate: bool },
+    /// One non-terminal successor of one root, in one named successor SET.
+    ///
+    /// See [`sign_root_sets`] for why a root can have two.
+    Successor { root: String, set: &'static str, ordinal: usize, mv: String, role: RecipeRole },
+}
+
+impl Provenance {
+    fn label(&self) -> String {
+        match self {
+            Self::PairSide { pair, stage, side, gate } => {
+                format!("pair {pair} {stage}/{side}{}", if *gate { "" } else { " [diagnostic]" })
+            }
+            Self::Successor { root, set, ordinal, mv, role } => {
+                let tag = match role {
+                    RecipeRole::Unregistered => "",
+                    RecipeRole::Productive => " [REGISTERED productive]",
+                    RecipeRole::Dead => " [REGISTERED dead]",
+                };
+                format!("succ {root}/{set}#{ordinal}{tag} {mv}")
+            }
+        }
+    }
+}
+
+/// One view, signed.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+struct SignedView {
+    sig: Signature,
+    from: Provenance,
+}
+
+/// Why a class BLOCKS. §5.3's rule has exactly these arms in scope before step
+/// 10 (the recipe-instantiated ESCROW pair is the third, and reading the escrow
+/// band at all is fenced until then).
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+enum Blocking {
+    /// Two sides of ONE registered gate pair at ONE endpoint.
+    GatePair { pair: String, stage: &'static str },
+    /// The two sides of ONE root's registered development successor pair.
+    RootPair { root: String },
+}
+
+impl Blocking {
+    fn label(&self) -> String {
+        match self {
+            Self::GatePair { pair, stage } => format!("gate pair {pair} at {stage}"),
+            Self::RootPair { root } => format!("registered development pair at {root}"),
+        }
+    }
+}
+
+/// Views sharing an EXACT signature — same `progress_ppm`, same 34-vector.
+struct CollisionClass {
+    sig: Signature,
+    members: Vec<Provenance>,
+    blocking: Vec<Blocking>,
+}
+
+/// Views sharing a Δv at DIFFERENT `progress_ppm` — reported, never blocking.
+struct NearClass {
+    dv: [i64; AXIS_WIDTH],
+    ppms: Vec<u32>,
+    members: Vec<Provenance>,
+}
+
+/// The Part-A result: the exact-collision classes, the near-collision classes,
+/// and how many views were signed to get them.
+struct PartA {
+    signed: usize,
+    classes: Vec<CollisionClass>,
+    near: Vec<NearClass>,
+}
+
+impl PartA {
+    /// Every blocking finding across every class. §5.3: zero is necessary.
+    fn blocking(&self) -> Vec<Blocking> {
+        let mut out: Vec<Blocking> =
+            self.classes.iter().flat_map(|c| c.blocking.iter().cloned()).collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// The class-size distribution — `size -> how many classes`.
+    fn size_histogram(&self) -> BTreeMap<usize, usize> {
+        let mut out = BTreeMap::new();
+        for class in &self.classes {
+            *out.entry(class.members.len()).or_default() += 1;
+        }
+        out
+    }
+
+    fn render(&self) -> String {
+        let mut out = String::new();
+        out.push_str(&format!("signed views        {}\n", self.signed));
+        out.push_str(&format!("collision classes   {}\n", self.classes.len()));
+        out.push_str(&format!(
+            "  in classes        {}\n",
+            self.classes.iter().map(|c| c.members.len()).sum::<usize>(),
+        ));
+        let histogram = self.size_histogram();
+        out.push_str(&format!(
+            "  size histogram    {}\n",
+            if histogram.is_empty() {
+                "-".to_string()
+            } else {
+                histogram
+                    .iter()
+                    .map(|(size, count)| format!("{size}x{count}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            },
+        ));
+        out.push_str(&format!("near-collisions     {}\n", self.near.len()));
+        out.push_str(&format!("BLOCKING            {}\n", self.blocking().len()));
+
+        for finding in self.blocking() {
+            out.push_str(&format!("\nBLOCKING            {}\n", finding.label()));
+        }
+        for (i, class) in self.classes.iter().enumerate() {
+            out.push_str(&format!(
+                "\nclass {:<3}           ppm {} · size {}{}\n",
+                i,
+                class.sig.ppm,
+                class.members.len(),
+                if class.blocking.is_empty() { "" } else { "  *** BLOCKING ***" },
+            ));
+            out.push_str(&format!("  dv                {}\n", render_dv(&class.sig.dv)));
+            for member in &class.members {
+                out.push_str(&format!("  member            {}\n", member.label()));
+            }
+        }
+        for (i, near) in self.near.iter().enumerate() {
+            out.push_str(&format!(
+                "\nnear  {:<3}           ppm {:?} · size {}\n",
+                i,
+                near.ppms,
+                near.members.len(),
+            ));
+            out.push_str(&format!("  dv                {}\n", render_dv(&near.dv)));
+            for member in &near.members {
+                out.push_str(&format!("  member            {}\n", member.label()));
+            }
+        }
+        out
+    }
+}
+
+/// A Δv in one line, nonzero rows only — a 34-wide all-zero row is the common
+/// case and printing it in full would bury the entries that matter.
+fn render_dv(dv: &[i64; AXIS_WIDTH]) -> String {
+    let nonzero: Vec<String> = FeatureId::all()
+        .iter()
+        .filter(|slot| dv[slot.index()] != 0)
+        .map(|slot| format!("{}={}", slot.label(), dv[slot.index()]))
+        .collect();
+    if nonzero.is_empty() {
+        "all zero".to_string()
+    } else {
+        nonzero.join(" ")
+    }
+}
+
+/// Group signed views into §5.3's classes and apply its blocking rule.
+///
+/// Deterministic in the INPUT SET rather than in the input ORDER: every list
+/// this builds is sorted before it is read, so the artifact is a function of
+/// what was signed and not of the order the roots happened to resolve in.
+fn classify(views: Vec<SignedView>) -> PartA {
+    let signed = views.len();
+
+    let mut exact: BTreeMap<Signature, Vec<Provenance>> = BTreeMap::new();
+    let mut by_dv: BTreeMap<[i64; AXIS_WIDTH], Vec<(u32, Provenance)>> = BTreeMap::new();
+    for view in views {
+        by_dv.entry(view.sig.dv).or_default().push((view.sig.ppm, view.from.clone()));
+        exact.entry(view.sig).or_default().push(view.from);
+    }
+
+    let mut classes = Vec::new();
+    for (sig, mut members) in exact {
+        if members.len() < 2 {
+            continue;
+        }
+        members.sort();
+        classes.push(CollisionClass { blocking: blocking_findings(&members), sig, members });
+    }
+
+    let mut near = Vec::new();
+    for (dv, mut members) in by_dv {
+        let mut ppms: Vec<u32> = members.iter().map(|(ppm, _)| *ppm).collect();
+        ppms.sort_unstable();
+        ppms.dedup();
+        if ppms.len() < 2 {
+            continue;
+        }
+        members.sort();
+        near.push(NearClass {
+            dv,
+            ppms,
+            members: members.into_iter().map(|(_, from)| from).collect(),
+        });
+    }
+
+    PartA { signed, classes, near }
+}
+
+/// §5.3's blocking rule, applied to ONE class's members.
+fn blocking_findings(members: &[Provenance]) -> Vec<Blocking> {
+    let mut pair_sides: BTreeMap<(&str, &str), Vec<&str>> = BTreeMap::new();
+    let mut root_roles: BTreeMap<&str, Vec<RecipeRole>> = BTreeMap::new();
+    for member in members {
+        match member {
+            // A diagnostic registration yields no solve row, so a collision
+            // between its sides cannot make one infeasible.
+            Provenance::PairSide { gate: false, .. } => {}
+            Provenance::PairSide { pair, stage, side, gate: true } => {
+                pair_sides.entry((pair.as_str(), stage)).or_default().push(side);
+            }
+            Provenance::Successor { root, role, .. } => {
+                root_roles.entry(root.as_str()).or_default().push(*role);
+            }
+        }
+    }
+
+    let mut out = Vec::new();
+    for ((pair, stage), mut sides) in pair_sides {
+        sides.sort_unstable();
+        sides.dedup();
+        if sides.len() >= 2 {
+            out.push(Blocking::GatePair { pair: pair.to_string(), stage });
+        }
+    }
+    for (root, roles) in root_roles {
+        if roles.contains(&RecipeRole::Productive) && roles.contains(&RecipeRole::Dead) {
+            out.push(Blocking::RootPair { root: root.to_string() });
+        }
+    }
+    out.sort();
+    out
+}
+
+/// What the frozen package contributed, counted as the artifact prints it.
+///
+/// The ROW counts are over GATE registrations alone, which is what §5.4's
+/// census means by a "pair row": the two diagnostics price nothing and yield
+/// none. The FIXTURE counts are over everything signed.
+struct FixtureCensus {
+    fixtures: usize,
+    diagnostic_fixtures: usize,
+    gate_rows_early: usize,
+    gate_rows_late: usize,
+}
+
+/// Sign every side of every registered pair — §5.3's first input.
+///
+/// Every side, not only the gate sides: a diagnostic side colliding with a gate
+/// side is a reading worth having, and excluding it would hide it. What the
+/// role decides is BLOCKING, not membership.
+fn sign_fixture_package(rules: &Rules) -> Result<(Vec<SignedView>, FixtureCensus), String> {
+    let mut views = Vec::new();
+    let mut census =
+        FixtureCensus { fixtures: 0, diagnostic_fixtures: 0, gate_rows_early: 0, gate_rows_late: 0 };
+    for pair in REGISTERED.iter() {
+        let gate = matches!(pair.role, PairRole::Constraint);
+        for stage in pair.stages {
+            let fixture = build_registered_pair(pair, *stage, rules)
+                .map_err(|e| format!("{} at {}: {e:?}", pair.id, stage.name()))?;
+            census.fixtures += 1;
+            if gate {
+                match stage {
+                    StageEndpoint::Early => census.gate_rows_early += 1,
+                    StageEndpoint::Late => census.gate_rows_late += 1,
+                }
+            } else {
+                census.diagnostic_fixtures += 1;
+            }
+            for side in [Side::Greater, Side::Lesser] {
+                let view = fixture.view(side);
+                if view_is_terminal(view) {
+                    return Err(format!(
+                        "{} {} {}: §5.3's domain is NON-TERMINAL views and this side is terminal",
+                        pair.id,
+                        stage.name(),
+                        side.name(),
+                    ));
+                }
+                views.push(SignedView {
+                    sig: signature(view, fixture.subject(), rules)
+                        .map_err(|e| format!("{} {}: {e}", pair.id, side.name()))?,
+                    from: Provenance::PairSide {
+                        pair: pair.id.to_string(),
+                        stage: stage.name(),
+                        side: side.name(),
+                        gate,
+                    },
+                });
+            }
+        }
+    }
+    Ok((views, census))
+}
+
+/// **M-PF** — spec §6's `placement-fork-same-count` master, drawn from OS
+/// entropy on 2026-08-21 and RECORDED in the execution ledger's step-2 row
+/// BEFORE first use. Named here so this instrument reproduces the registered
+/// development ordinals and DRAWS NOTHING; §5.4's own sentence is "the solver
+/// and collision test draw nothing".
+const M_PF: u64 = 0x87FE_F1D5_16F6_B4E9;
+
+/// §6's development band. Ordinals 4..8 are the extension (undrawn — no supply
+/// miss) and 8..16 are the ESCROW band, fenced until step 10.
+const M_PF_DEVELOPMENT: std::ops::Range<u32> = 0..4;
+
+/// The FIRED-WHILE-BEHIND root: `gen:end-firable-behind-in-truth:…:11`, the
+/// step-2 row's READ-AND-RECORD identity (digest `392fe6571d0aa82a`).
+///
+/// Its predicate is a PHASE-C predicate, not one of §6's two banded ones, so no
+/// ordinal band and no burn rule reach it — and its confirmatory block was
+/// already read at the Phase-C close. It rides Part A as RECORDED, NEVER
+/// GATING: no §5.3 blocking arm names it, because nothing registers a pair
+/// there.
+const M_FIRED_WHILE_BEHIND: u64 = 0xA3E1_2026_0818_0006;
+const FIRED_WHILE_BEHIND_ORDINAL: u32 = 11;
+
+/// One root whose non-terminal successors Part A signs.
+struct RootInput {
+    name: String,
+    origin: String,
+    digest: String,
+    state: GameState,
+    /// §6's frozen recipe at this root, or the typed reason there is none.
+    /// A miss is not a failure: it says this root registers no successor pair,
+    /// so nothing here can block.
+    recipe: Result<RecipePair, RecipeMiss>,
+    /// Whether a blocking finding at this root would be a §5.3 STOP. The
+    /// fired-while-behind root is recorded and never gating.
+    gating: bool,
+    note: &'static str,
+}
+
+/// One named successor set of one root, signed.
+struct SuccessorSet {
+    name: &'static str,
+    reading: &'static str,
+    path: String,
+    enumerated: usize,
+    terminal: usize,
+    views: Vec<SignedView>,
+}
+
+/// Sign the NON-TERMINAL successors of one root, from the ROOT MOVER's seat.
+///
+/// The mover is the seat on the move AT THE ROOT and stays the mover across
+/// every set: §5.3 signs "from the MOVER's view", and a signature that switched
+/// seats mid-set would compare vectors drawn in two different currencies.
+///
+/// # Why a root can have TWO sets, and why this carries both
+///
+/// §5.3's inputs name "the exhibit-class roots' non-terminal successor sets
+/// (g1-e113's 139 placements; the §6 development root tables)". At the exhibit
+/// roots the two phrases coincide: g1-e113's own legal list IS 139 placements,
+/// which this instrument reproduces exactly. At a §6 PLACEMENT-FORK root they
+/// do not, and the difference is not cosmetic — the fork roots sit at
+/// `AdditionalActionFirst`, where the legal list is the additional-action
+/// options (one or two moves) and the fork's placements are not legal until
+/// `EndAdditionalPhase` advances the phase. That matters because the ROOT half
+/// of §5.3's blocking rule names the registered development successor pair, and
+/// §6's frozen recipe pair is a pair of PLACEMENTS: under the literal
+/// legal-list reading that arm could never fire at any development root, and a
+/// clean "zero blocking" would be reporting the enumeration rather than the
+/// columns.
+///
+/// So both are signed and both are labelled — `root` for the literal legal
+/// list, `fork` for the placement set the predicate, the step-5 gate ("the
+/// fork's same-count set") and the recipe all speak about. The reading is
+/// therefore RECORDED rather than chosen. Both sets go through the CHECKED
+/// `apply_move` at every step; the fork set reaches its states the way play
+/// reaches them, by taking `EndAdditionalPhase` first.
+fn sign_root_sets(root: &RootInput, rules: &Rules) -> Result<Vec<SuccessorSet>, String> {
+    let mover = root.state.current_player;
+    let mut sets = Vec::new();
+
+    let moves = get_legal_moves(&root.state, rules);
+    sets.push(sign_one_set(
+        root,
+        "root",
+        "the root's own legal list",
+        format!("get_legal_moves(root) at {:?}", root.state.turn_phase),
+        &root.state,
+        &moves,
+        mover,
+        rules,
+    )?);
+
+    // The fork set exists exactly where the frozen recipe found a turn start to
+    // classify: the same `EndAdditionalPhase`-then-enumerate walk, taken here
+    // through the checked boundary.
+    if root.recipe.is_ok() && moves.contains(&Move::EndAdditionalPhase) {
+        let placing = apply_move(&root.state, &Move::EndAdditionalPhase, rules)
+            .map_err(|e| format!("{}: EndAdditionalPhase did not apply: {e}", root.name))?;
+        let placements = get_legal_moves(&placing, rules);
+        sets.push(sign_one_set(
+            root,
+            "fork",
+            "§6's fork placement set (the step-5 gate's \"same-count set\")",
+            format!("EndAdditionalPhase then get_legal_moves at {:?}", placing.turn_phase),
+            &placing,
+            &placements,
+            mover,
+            rules,
+        )?);
+    }
+    Ok(sets)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sign_one_set(
+    root: &RootInput,
+    name: &'static str,
+    reading: &'static str,
+    path: String,
+    from_state: &GameState,
+    moves: &[Move],
+    mover: PlayerId,
+    rules: &Rules,
+) -> Result<SuccessorSet, String> {
+    let mut terminal = 0usize;
+    let mut views = Vec::new();
+    for (ordinal, mv) in moves.iter().enumerate() {
+        let next = apply_move(from_state, mv, rules)
+            .map_err(|e| format!("{}/{name}: successor {ordinal} did not apply: {e}", root.name))?;
+        let view = observe(&next, mover)
+            .map_err(|e| format!("{}/{name}: successor {ordinal} unobservable: {e}", root.name))?;
+        if view_is_terminal(&view) {
+            terminal += 1;
+            continue;
+        }
+        let role = match &root.recipe {
+            Ok(pair) if pair.productive == *mv => RecipeRole::Productive,
+            Ok(pair) if pair.dead == *mv => RecipeRole::Dead,
+            _ => RecipeRole::Unregistered,
+        };
+        views.push(SignedView {
+            sig: signature(&view, mover, rules)
+                .map_err(|e| format!("{}/{name}: successor {ordinal}: {e}", root.name))?,
+            from: Provenance::Successor {
+                root: root.name.clone(),
+                set: name,
+                ordinal,
+                mv: format!("{mv:?}"),
+                role,
+            },
+        });
+    }
+    Ok(SuccessorSet { name, reading, path, enumerated: moves.len(), terminal, views })
+}
+
+/// Resolve the §6 root set Part A runs over, as the flag-1 ruling left it.
+///
+/// **What is IN**: the two exhibit-class registry roots and the four
+/// `placement-fork-same-count` development ordinals at the recorded M-PF, all
+/// GATING; plus the fired-while-behind root, RECORDED and not gating.
+///
+/// **What is OUT and why**: `opponent-sitting-executable`'s generated bands are
+/// STRUCK by the owner's flag-1 ruling (2026-08-22) and M-OSE is closed
+/// permanently undrawn, so there is no OSE ordinal to resolve; its
+/// re-scoped exhibit — the game-3 opponent-pending recorded root — is NOT YET
+/// RESOLVED, and Part A names it pending rather than quietly running without
+/// it. The escrow band {8..16} is unread by construction: this function asks
+/// for `M_PF_DEVELOPMENT` and nothing else.
+fn resolve_part_a_roots(generated: bool, rules: &Rules) -> Result<Vec<RootInput>, String> {
+    let mut out = Vec::new();
+    let mut push = |name: String,
+                    origin: String,
+                    source: &RootSource,
+                    gating: bool,
+                    note: &'static str|
+     -> Result<(), String> {
+        let (state, descriptor) =
+            source.resolve(rules).map_err(|e| format!("{name}: {e:?}"))?;
+        let recipe = escrow_recipe_pair(&state, rules);
+        out.push(RootInput {
+            name,
+            origin,
+            digest: descriptor.root_digest,
+            state,
+            recipe,
+            gating,
+            note,
+        });
+        Ok(())
+    };
+
+    for wanted in ["g1-e113-tiemass", "g3-e93-separated"] {
+        let entry = registry()
+            .into_iter()
+            .find(|e| e.name == wanted)
+            .ok_or_else(|| format!("{wanted} is not a registry root"))?;
+        // A missing owner-game save is a TYPED MISS naming the file, never a
+        // silently shorter run: the registry roots are two of §5.3's named
+        // inputs and a pass computed without them is a pass about less.
+        let source = entry.load(rules).map_err(|e| {
+            format!("{wanted}: {e:?} (the owner-game saves are gitignored; absence is a miss)")
+        })?;
+        push(
+            entry.name.to_string(),
+            format!("{}:{}", entry.path, entry.event_index),
+            &source,
+            true,
+            entry.note,
+        )?;
+    }
+
+    if generated {
+        for ordinal in M_PF_DEVELOPMENT {
+            let source = RootSource::Generated {
+                predicate: RootPredicate::PlacementForkSameCount,
+                master: M_PF,
+                ordinal,
+            };
+            push(
+                format!("m-pf-dev-{ordinal}"),
+                format!("gen:placement-fork-same-count:{M_PF:#018X}:{ordinal}"),
+                &source,
+                true,
+                "a §6 development ordinal at the recorded M-PF",
+            )?;
+        }
+        let source = RootSource::Generated {
+            predicate: RootPredicate::EndFirableBehindInTruth,
+            master: M_FIRED_WHILE_BEHIND,
+            ordinal: FIRED_WHILE_BEHIND_ORDINAL,
+        };
+        push(
+            "fired-while-behind".to_string(),
+            format!(
+                "gen:end-firable-behind-in-truth:{M_FIRED_WHILE_BEHIND:#018X}:\
+                 {FIRED_WHILE_BEHIND_ORDINAL}"
+            ),
+            &source,
+            false,
+            "READ-AND-RECORD ONLY, never a gate (step-2 row)",
+        )?;
+    }
+    Ok(out)
+}
+
+/// **THE e113 TOP-TIE MEASUREMENT** — §5.3's own step-4 assignment.
+///
+/// The D7 headline root is a 36-way tie in the SHIPPED evaluator's sixteen
+/// features. This asks the question the tie poses to a WIDER value model: over
+/// exactly those tied candidates, how many distinct 34-feature signatures are
+/// there? One class would mean the eighteen candidate columns see nothing the
+/// sixteen missed at this position; thirty-six would mean the tie is an
+/// artifact of the incumbent width alone.
+///
+/// It is a MEASUREMENT and not a gate: the tied set is not a registered pair,
+/// so a collapse here is organic by §5.3's own rule.
+fn e113_top_tie(rules: &Rules) -> Result<String, String> {
+    let entry = registry()
+        .into_iter()
+        .find(|e| e.name == "g1-e113-tiemass")
+        .ok_or("g1-e113-tiemass is not a registry root")?;
+    let source = entry.load(rules).map_err(|e| format!("g1-e113-tiemass: {e:?}"))?;
+    let (state, descriptor) = source.resolve(rules).map_err(|e| format!("{e:?}"))?;
+    let contestant = Contestant::from_str_name(DEFAULT_SEAT)
+        .map_err(|e| format!("the driven default contestant does not parse: {e}"))?;
+    let table = root_table(&state, entry.bot_seat, contestant, rules, entry.decision_seed)
+        .map_err(|e| format!("root table at g1-e113: {e:?}"))?;
+    let top = table.top_value().ok_or("the root table is empty")?;
+    let tied: Vec<&Move> =
+        table.ranked.iter().filter(|r| r.value == top).map(|r| &r.mv).collect();
+
+    let mover = state.current_player;
+    let mut classes: BTreeMap<Signature, Vec<String>> = BTreeMap::new();
+    for mv in &tied {
+        let next = apply_move(&state, mv, rules).map_err(|e| format!("e113 tie: {e}"))?;
+        let view = observe(&next, mover).map_err(|e| format!("e113 tie: {e}"))?;
+        let sig = signature(&view, mover, rules)?;
+        classes.entry(sig).or_default().push(format!("{mv:?}"));
+    }
+
+    let mut out = String::new();
+    out.push_str(&format!("root digest         {}\n", descriptor.root_digest));
+    out.push_str(&format!("contestant          {}\n", table.echo));
+    out.push_str(&format!("decision seed       {:#018x}\n", entry.decision_seed));
+    out.push_str(&format!("candidates          {}\n", table.candidates()));
+    out.push_str(&format!("top value           {top}\n"));
+    out.push_str(&format!("tied at top         {}\n", tied.len()));
+    out.push_str(&format!("distinct signatures {} over the tied set\n", classes.len()));
+    let mut sizes: Vec<usize> = classes.values().map(Vec::len).collect();
+    sizes.sort_unstable();
+    out.push_str(&format!("  class sizes       {sizes:?}\n"));
+    for (i, (sig, members)) in classes.iter().enumerate() {
+        out.push_str(&format!("  class {i:<3}         size {}\n", members.len()));
+        out.push_str(&format!("    dv              {}\n", render_dv(&sig.dv)));
+        for member in members {
+            out.push_str(&format!("    member          {member}\n"));
+        }
+    }
+    Ok(out)
+}
+
+fn cmd_collision(args: &[String]) -> Result<(), String> {
+    let (positional, flags, _) =
+        split_args(args, &[], &["fixtures-only", "no-generated", "no-tie"], &[])?;
+    if !positional.is_empty() {
+        return Err(format!("collision takes no positional arguments\n\n{USAGE}"));
+    }
+    let fixtures_only = flags.contains_key("fixtures-only");
+    let generated = !flags.contains_key("no-generated");
+
+    let rules = Rules::standard();
+    let started = Instant::now();
+    println!("=== eval_probe collision [semantics rev {SEMANTICS_REV}] ===");
+    println!("{}", PART_A_HEADER.trim_end());
+    println!();
+    println!("package digest      {}", package_digest());
+    println!("axis width          {AXIS_WIDTH}");
+    println!("profile             {}", profile());
+
+    let (mut views, census) = sign_fixture_package(&rules)?;
+    println!();
+    println!("--- inputs: the frozen fixture package ---");
+    println!("fixtures            {} (pair, stage) realizations", census.fixtures);
+    println!("sides signed        {}", census.fixtures * 2);
+    println!(
+        "  of which          {} diagnostic sides (2(c), 10(c): RECORDED, never a gate — signed \
+         but never blocking)",
+        census.diagnostic_fixtures * 2,
+    );
+    println!(
+        "gate row census     REALIZED early {} · late {}   FROZEN §5.4 early 25 · late 27",
+        census.gate_rows_early, census.gate_rows_late,
+    );
+    println!(
+        "                    the early delta is the 4(c) LATE-only RULING's footprint (owner, \
+         2026-08-22, guidingpath) — a recorded ruling, never a defect"
+    );
+
+    // --- the roots ----------------------------------------------------------
+    println!();
+    println!("--- inputs: the root successor sets ---");
+    if fixtures_only {
+        println!("roots               SKIPPED (--fixtures-only)");
+    } else {
+        for root in resolve_part_a_roots(generated, &rules)? {
+            println!();
+            println!("root                {}", root.name);
+            println!("  origin            {}", root.origin);
+            println!("  digest            {}", root.digest);
+            println!("  mover             seat {}", root.state.current_player.0);
+            println!("  phase             {:?}", root.state.turn_phase);
+            match &root.recipe {
+                Ok(pair) => println!(
+                    "  registered pair   total {} · productive {:?} (reward {}) · dead {:?}",
+                    pair.total, pair.productive_areas, pair.productive_reward, pair.dead_areas,
+                ),
+                Err(miss) => println!(
+                    "  registered pair   none ({miss:?}) — no blocking-eligible successor pair here"
+                ),
+            }
+            println!("  gating            {}", if root.gating { "yes" } else { "no — recorded" });
+            println!("  note              {}", root.note);
+            for set in sign_root_sets(&root, &rules)? {
+                println!(
+                    "  set {:<5}         {} enumerated · {} signed (terminal {}) — {}",
+                    set.name,
+                    set.enumerated,
+                    set.views.len(),
+                    set.terminal,
+                    set.reading,
+                );
+                println!("    path            {}", set.path);
+                let registered: Vec<&str> = set
+                    .views
+                    .iter()
+                    .filter_map(|v| match &v.from {
+                        Provenance::Successor { role: RecipeRole::Productive, .. } => {
+                            Some("productive")
+                        }
+                        Provenance::Successor { role: RecipeRole::Dead, .. } => Some("dead"),
+                        _ => None,
+                    })
+                    .collect();
+                println!(
+                    "    registered      {}",
+                    if registered.is_empty() {
+                        "neither recipe side is in this set".to_string()
+                    } else {
+                        registered.join(" + ")
+                    },
+                );
+                views.extend(set.views);
+            }
+        }
+        if !generated {
+            println!();
+            println!("generated roots     SKIPPED (--no-generated)");
+        }
+    }
+    println!();
+    println!("{}", NOT_IN_SCOPE.trim_end());
+
+    // --- the classification -------------------------------------------------
+    let part_a = classify(views);
+    println!();
+    println!("--- §5.3 Part A ---");
+    print!("{}", part_a.render());
+
+    // --- the e113 measurement ----------------------------------------------
+    if !fixtures_only && !flags.contains_key("no-tie") {
+        println!();
+        println!("--- the e113 top tie, complete-vector (a step-4 MEASUREMENT, not a gate) ---");
+        print!("{}", e113_top_tie(&rules)?);
+    }
+
+    println!();
+    println!("wall                {:.1}s", started.elapsed().as_secs_f64());
+    let blocking = part_a.blocking();
+    if blocking.is_empty() {
+        println!("VERDICT             zero blocking collisions (§5.3's necessary condition holds)");
+        Ok(())
+    } else {
+        Err(format!(
+            "STOP — {} BLOCKING COLLISION(S): {}\n\nThe ★ fork at checkpoint step 4 is OWNER \
+             territory: repair-by-scope-expansion is fenced (checkpoint §6) and this instrument \
+             reports rather than repairs.",
+            blocking.len(),
+            blocking.iter().map(Blocking::label).collect::<Vec<_>>().join("; "),
+        ))
+    }
+}
+
+/// The reading this instrument implements, printed at the top of every artifact
+/// so a figure quoted out of it carries its own semantics.
+const PART_A_HEADER: &str = "\
+§5.3 signature      (exact progress_ppm, Δv over the 34 features) of ONE view
+Δv                  the MOVER-RELATIVE vector `mine − theirs`, per axis slot, 2P
+seat convention     the view is the MOVER's (masked as the mover sees it) AND the
+                    differencing is signed from the mover. Six candidate rows —
+                    O1 O2 O3 O5 O6 X3 — do NOT negate for the other seat, so an
+                    opponent-side signature is not this one with flipped signs
+domain              non-terminal views only
+a collision         two views with an IDENTICAL (ppm, 34-vector): they score
+                    equal under EVERY weight vector, so no fit can separate them
+near-collision      equal Δv at DIFFERENT ppm — reported, never blocking, because
+                    the two interpolate to different weight vectors
+blocking rule       a class blocks iff it contains two sides of ONE registered
+                    gate pair, or ONE root's registered development successor
+                    pair (§6's frozen recipe), or — step 10 only — a
+                    recipe-instantiated escrow pair. Everything else that shares
+                    a signature is ORGANIC: a diagnostic with a class size";
+
+/// What §5.3 names as an input and this run does NOT carry, said out loud.
+const NOT_IN_SCOPE: &str = "\
+--- named, not carried ---
+OSE generated bands STRUCK by the owner's flag-1 ruling (2026-08-22); M-OSE closed
+                    permanently undrawn, so there is no ordinal to sign
+game-3 OSE exhibit  PENDING — the re-scoped opponent-sitting-executable read is the
+                    game-3 (table 896199544) opponent-pending RECORDED root, whose
+                    identity resolution is not yet landed. Part A over that root's
+                    successor set is OWED before step 5's OSE gate
+escrow band {8..16} UNREAD by construction (§6's burn rule): this run asks for the
+                    development ordinals {0..4} and nothing above";
 
 // ---------------------------------------------------------------------------
 // Tests: the statistics, against hand-computable truth.
@@ -7074,6 +7975,209 @@ mod tests {
             labels,
             vec!["O1", "O2", "O3", "O5", "O6", "X3"],
             "the view-asymmetric rows have changed (counts: {asymmetric:?})",
+        );
+    }
+
+    /// A signature with a hand-chosen `ppm` and a hand-chosen 34-vector, for the
+    /// classifier cells: the rule under test is arithmetic over signatures and
+    /// provenances, and building it out of real positions would test the
+    /// positions instead.
+    fn test_sig(ppm: u32, fill: i64) -> Signature {
+        let mut dv = [0i64; AXIS_WIDTH];
+        for (i, slot) in dv.iter_mut().enumerate() {
+            *slot = fill + i as i64;
+        }
+        Signature { ppm, dv }
+    }
+
+    fn side_of(pair: &str, stage: &'static str, side: &'static str, sig: Signature) -> SignedView {
+        SignedView {
+            sig,
+            from: Provenance::PairSide { pair: pair.to_string(), stage, side, gate: true },
+        }
+    }
+
+    /// The same, for a registration whose role prices nothing.
+    fn diag_of(pair: &str, stage: &'static str, side: &'static str, sig: Signature) -> SignedView {
+        SignedView {
+            sig,
+            from: Provenance::PairSide { pair: pair.to_string(), stage, side, gate: false },
+        }
+    }
+
+    fn succ_of(root: &str, ordinal: usize, role: RecipeRole, sig: Signature) -> SignedView {
+        SignedView {
+            sig,
+            from: Provenance::Successor {
+                root: root.to_string(),
+                set: "fork",
+                ordinal,
+                mv: format!("move-{ordinal}"),
+                role,
+            },
+        }
+    }
+
+    /// **THE BLOCKING RULE, arm by arm** (§5.3): a class blocks iff it contains
+    /// two sides of ONE registered gate pair or the two sides of ONE root's
+    /// registered development successor pair. Everything else that shares a
+    /// signature is ORGANIC — a diagnostic with a class size, never a stop.
+    #[test]
+    fn a_class_blocks_only_on_a_registered_pair() {
+        let shared = test_sig(0, 7);
+
+        // (a) two sides of ONE gate pair.
+        let one_pair = classify(vec![
+            side_of("4(c)", "late", "greater", shared.clone()),
+            side_of("4(c)", "late", "lesser", shared.clone()),
+        ]);
+        assert_eq!(one_pair.blocking().len(), 1, "two sides of one pair must block");
+        assert!(matches!(
+            &one_pair.blocking()[0],
+            Blocking::GatePair { pair, stage } if pair == "4(c)" && *stage == "late"
+        ));
+
+        // (b) two sides of DIFFERENT pairs: organic, and the class is reported
+        // with its size rather than swallowed.
+        let two_pairs = classify(vec![
+            side_of("4(c)", "late", "greater", shared.clone()),
+            side_of("1(a)", "early", "lesser", shared.clone()),
+        ]);
+        assert!(two_pairs.blocking().is_empty(), "different pairs never block");
+        assert_eq!(two_pairs.classes.len(), 1);
+        assert_eq!(two_pairs.classes[0].members.len(), 2);
+
+        // (b2) two sides of one DIAGNOSTIC registration: signed, listed, and
+        // never blocking — it yields no solve row for a collision to sink.
+        let diagnostic = classify(vec![
+            diag_of("10(c)", "early", "greater", shared.clone()),
+            diag_of("10(c)", "early", "lesser", shared.clone()),
+        ]);
+        assert!(diagnostic.blocking().is_empty(), "a diagnostic pair is never a gate pair");
+        assert_eq!(diagnostic.classes[0].members.len(), 2, "and it is still reported");
+
+        // (c) the same pair at DIFFERENT endpoints is two gate pairs, not one.
+        let two_stages = classify(vec![
+            side_of("4(c)", "late", "greater", shared.clone()),
+            side_of("4(c)", "early", "greater", shared.clone()),
+        ]);
+        assert!(two_stages.blocking().is_empty(), "one side at each endpoint is not a gate pair");
+
+        // (d) a root's REGISTERED pair blocks; two unregistered successors of
+        // the same root do not — §5.3's own "organic collisions are
+        // diagnostics" is what separates them.
+        let registered_pair = classify(vec![
+            succ_of("g1-e113-tiemass", 4, RecipeRole::Productive, shared.clone()),
+            succ_of("g1-e113-tiemass", 9, RecipeRole::Dead, shared.clone()),
+        ]);
+        assert_eq!(registered_pair.blocking().len(), 1);
+        assert!(matches!(
+            &registered_pair.blocking()[0],
+            Blocking::RootPair { root } if root == "g1-e113-tiemass"
+        ));
+
+        let organic_successors = classify(vec![
+            succ_of("g1-e113-tiemass", 4, RecipeRole::Unregistered, shared.clone()),
+            succ_of("g1-e113-tiemass", 9, RecipeRole::Unregistered, shared.clone()),
+        ]);
+        assert!(
+            organic_successors.blocking().is_empty(),
+            "two same-root successors that are not the registered pair are a diagnostic",
+        );
+        assert_eq!(organic_successors.classes[0].members.len(), 2);
+
+        // (e) the registered pair of DIFFERENT roots is not one root's pair.
+        let across_roots = classify(vec![
+            succ_of("g1-e113-tiemass", 4, RecipeRole::Productive, shared.clone()),
+            succ_of("g3-e93-separated", 9, RecipeRole::Dead, shared.clone()),
+        ]);
+        assert!(across_roots.blocking().is_empty(), "the pair must be ONE root's");
+
+        // A singleton is not a collision at all.
+        let alone = classify(vec![side_of("4(c)", "late", "greater", shared)]);
+        assert!(alone.classes.is_empty() && alone.blocking().is_empty());
+    }
+
+    /// **NEAR-COLLISIONS** (§5.3): equal Δv at different `progress_ppm` is
+    /// REPORTED and never blocking — the two views interpolate to different
+    /// weight vectors, so a weight that separates them exists even though their
+    /// vectors are identical.
+    #[test]
+    fn equal_deltas_at_different_progress_are_near_collisions_and_never_block() {
+        let a = test_sig(0, 7);
+        let b = test_sig(1_000_000, 7);
+        assert_eq!(a.dv, b.dv, "the two differ ONLY in progress");
+
+        let out = classify(vec![
+            side_of("4(c)", "early", "greater", a),
+            side_of("4(c)", "late", "lesser", b),
+        ]);
+        assert!(out.classes.is_empty(), "different ppm is not the same signature");
+        assert!(out.blocking().is_empty(), "a near-collision never blocks");
+        assert_eq!(out.near.len(), 1);
+        assert_eq!(out.near[0].ppms, vec![0, 1_000_000]);
+        assert_eq!(out.near[0].members.len(), 2);
+    }
+
+    /// The artifact is a record, so its ordering may not depend on the order the
+    /// inputs happened to be built in.
+    #[test]
+    fn the_classification_is_ordering_independent() {
+        let mut input = vec![
+            side_of("1(a)", "early", "greater", test_sig(0, 1)),
+            side_of("1(a)", "early", "lesser", test_sig(0, 1)),
+            succ_of("r", 2, RecipeRole::Dead, test_sig(0, 1)),
+            succ_of("r", 1, RecipeRole::Productive, test_sig(500_000, 5)),
+            side_of("2(b)", "early", "greater", test_sig(500_000, 5)),
+        ];
+        let forward = classify(input.clone());
+        input.reverse();
+        let backward = classify(input);
+        assert_eq!(forward.render(), backward.render(), "the render must not depend on argv order");
+        assert_eq!(forward.blocking().len(), 1, "1(a)'s two sides collide");
+    }
+
+    /// **A DIAGNOSTIC PAIR IS NOT A GATE PAIR** — and the frozen package makes
+    /// the distinction load-bearing at the very first run.
+    ///
+    /// §5.3's inputs are "every GATE pair's sides (families 1–4, 6–8,
+    /// 10(a)/(b)/(d), 11)", and the parenthetical breaks family 10 open for one
+    /// reason: 10(c) is the family's DIAGNOSTIC. The frame says the same thing
+    /// in its own type — `PairRole::Constraint` is documented as "a solve row
+    /// and a blocking side", `PairRole::Diagnostic` as "2(c) and 10(c):
+    /// RECORDED, never a gate" — and §5.4's row census confirms it by
+    /// arithmetic: the 34 row-yielding registrations it enumerates are the
+    /// registry's 36 minus exactly those two.
+    ///
+    /// This matters because 10(c)'s two sides ARE signature-identical, by
+    /// registered construction: step 2 proved its "+3 maximum" from the fact
+    /// that an ALL-ROWS-EQUAL pair can carry no more than 3 residual faith. A
+    /// blocking rule that keyed on "two sides of one registration" would stop
+    /// the milestone on a pair that prices nothing and constrains nothing.
+    #[test]
+    fn the_diagnostic_pairs_sides_collide_by_construction_and_do_not_block() {
+        let rules = Rules::standard();
+        let (views, census) = sign_fixture_package(&rules).expect("the frozen package signs");
+        assert_eq!(views.len(), 106, "every registered side is signed, diagnostics included");
+        assert_eq!(census.gate_rows_early, 24, "§5.4's EARLY census under the 4(c) ruling");
+        assert_eq!(census.gate_rows_late, 27, "§5.4's LATE census");
+        assert_eq!(census.diagnostic_fixtures, 2, "2(c) and 10(c)");
+
+        let out = classify(views);
+        let tenc: Vec<&CollisionClass> = out
+            .classes
+            .iter()
+            .filter(|c| {
+                c.members.iter().any(|m| matches!(m, Provenance::PairSide { pair, .. } if pair == "10(c)"))
+            })
+            .collect();
+        assert_eq!(tenc.len(), 1, "10(c)'s two sides share a signature by construction");
+        assert_eq!(tenc[0].members.len(), 2);
+        assert!(tenc[0].blocking.is_empty(), "a diagnostic pair is not a gate pair");
+        assert!(
+            out.blocking().is_empty(),
+            "the frozen package carries no blocking collision: {:?}",
+            out.blocking(),
         );
     }
 }
