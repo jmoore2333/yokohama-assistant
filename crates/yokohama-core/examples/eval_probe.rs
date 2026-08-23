@@ -6360,9 +6360,6 @@ const OSE_RESERVED: [usize; 8] = [50, 58, 78, 94, 127, 144, 168, 184];
 /// the band: the imported document records seat 0's deal as Unknown until its
 /// event-73 reveal and both movers here are seat 0, so no honest mover view
 /// exists at either.
-// RED: nothing keys on membership yet — `take_exhibit` still keys on outcome.
-// The allow goes away with the flip.
-#[allow(dead_code)]
 const OSE_REREGISTERED_OUT: [usize; 2] = [34, 68];
 
 /// **THE RE-REGISTERED DEVELOPMENT BAND** — `OSE_DEVELOPMENT` minus
@@ -6937,9 +6934,6 @@ struct Verdict {
 }
 
 /// What a completed run is entitled to CLAIM.
-// RED: `Incomplete` is unreachable until `outcome()` consults `skipped`, so the
-// non-test build cannot see it constructed. The allow goes away with the flip.
-#[allow(dead_code)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Outcome {
     /// The full gate set ran and every gate passed. The only outcome that may
@@ -6983,11 +6977,16 @@ impl Verdict {
 
     /// What this run may CLAIM.
     ///
-    /// RED: `skipped` is collected but not consulted, which is the pre-flip
-    /// behaviour — a partial run with no failures still reports as a clearance.
+    /// **Coverage is part of the claim.** A run that found nothing wrong while
+    /// looking in fewer places than the gate set has established that the gates
+    /// it ran passed — and nothing about the ones it did not. `Clears` is the
+    /// only outcome entitled to the clearance block, and it requires both an
+    /// empty failure list AND a complete run.
     fn outcome(&self) -> Outcome {
         if !self.failures.is_empty() {
             Outcome::Stopped
+        } else if !self.skipped.is_empty() {
+            Outcome::Incomplete
         } else {
             Outcome::Clears
         }
@@ -7042,16 +7041,39 @@ impl Verdict {
     /// RECORDED: the ruling calls it NOT-RUN-STRUCTURAL, flag-4-style, and it is
     /// the registered shape rather than a stop.
     fn take_exhibit(&mut self, read: &ExhibitRead) {
+        let event = read.event_index;
+        // MEMBERSHIP first, outcome second. Keyed the other way round, an
+        // unreadable BAND root would inherit e34/e68's treatment and clear the
+        // run under a "RE-REGISTERED OUT" message the ruling makes about
+        // exactly two roots.
+        if OSE_REREGISTERED_OUT.contains(&event) {
+            self.recorded.push(match &read.outcome {
+                ExhibitOutcome::NotRun { reason } => format!(
+                    "GATE 4 (e{event}) NOT-RUN-STRUCTURAL: {reason}. RE-REGISTERED OUT of the \
+                     development band (guidingpath 2026-08-23) — the band is {{{}}}",
+                    OSE_BAND.iter().map(|e| format!("e{e}")).collect::<Vec<_>>().join(", "),
+                ),
+                // Unreachable against this record and recorded anyway: if the
+                // document ever showed a mover view here, the columns would
+                // still not be band evidence — the root is re-registered out.
+                ExhibitOutcome::Read { columns, .. } => format!(
+                    "GATE 4 (e{event}) RE-REGISTERED OUT: read opponent O1 = {}, O2 = {}, O3 = \
+                     {} — RECORDED, not band evidence (guidingpath 2026-08-23)",
+                    columns[0], columns[1], columns[2],
+                ),
+            });
+            return;
+        }
         match (&read.outcome, read.passed()) {
             (_, Some(true)) => {}
             (ExhibitOutcome::Read { columns, .. }, _) => self.failures.push(format!(
-                "GATE 4 (e{}): opponent O1 = {}, O3 = {} (O1 >= 1 and O3 = 0 required)",
-                read.event_index, columns[0], columns[2],
+                "GATE 4 (e{event}): opponent O1 = {}, O3 = {} (O1 >= 1 and O3 = 0 required)",
+                columns[0], columns[2],
             )),
-            (ExhibitOutcome::NotRun { reason }, _) => self.recorded.push(format!(
-                "GATE 4 (e{}) NOT-RUN-STRUCTURAL: {reason}. RE-REGISTERED OUT of the development \
-                 band (guidingpath 2026-08-23) — the band is {{e111, e159, e198}}",
-                read.event_index,
+            (ExhibitOutcome::NotRun { reason }, _) => self.failures.push(format!(
+                "GATE 4 (e{event}): a root IN the re-registered band could not be evaluated — \
+                 {reason}. The band is the evidence step 5 reads; only e34/e68 are re-registered \
+                 out",
             )),
         }
     }
@@ -7079,11 +7101,13 @@ impl Verdict {
 /// silent absence is a weaker signal than a sentence saying it does not apply.
 fn incomplete_block(skipped: &[String]) -> String {
     let mut out = String::from(
-        "VERDICT             NO GATE FAILED — and this run does NOT claim step-5 clearance\n\
-         what did not run    \n",
+        "VERDICT             NO GATE FAILED — and this run does NOT claim step-5 clearance\n",
     );
-    for entry in skipped {
-        out.push_str(&format!("  {entry}\n"));
+    for (i, entry) in skipped.iter().enumerate() {
+        // The house layout: the label on the first row, continuations aligned
+        // under it.
+        let label = if i == 0 { "what did not run" } else { "" };
+        out.push_str(&format!("{label:<20}{entry}\n"));
     }
     out.push_str(
         "why that matters    a skipped gate is a PASS ABOUT LESS. The gates that ran passed, and\n\
