@@ -1184,8 +1184,50 @@ struct Minimization {
 /// back. An INCONCLUSIVE child HALTS the pass — §5.4 is explicit that §5B
 /// inspection then proceeds on a non-minimal set with that caveat, "never on a
 /// completed-looking core".
-fn minimize(_sys: &System) -> Minimization {
-    unimplemented!("task C")
+fn minimize(sys: &System) -> Minimization {
+    let mut alive = vec![true; sys.rows.len()];
+    let mut dropped = Vec::new();
+    let mut halted = None;
+
+    for probe in 0..sys.rows.len() {
+        alive[probe] = false;
+        let trial = System {
+            rows: sys
+                .rows
+                .iter()
+                .zip(&alive)
+                .filter(|(_, keep)| **keep)
+                .map(|(r, _)| r.clone())
+                .collect(),
+            ..sys.clone()
+        };
+        match decide(&trial) {
+            // Still infeasible without it, so it was not needed.
+            Verdict::Unsat { .. } => dropped.push(sys.rows[probe].label.clone()),
+            // Its removal relieves the infeasibility: it is needed.
+            Verdict::Sat { .. } => alive[probe] = true,
+            Verdict::Inconclusive { reason } => {
+                alive[probe] = true;
+                halted = Some(format!(
+                    "the probe that removed `{}` came back INCONCLUSIVE ({reason}), so the pass \
+                     STOPPED. What follows is the current set, which is infeasible but NOT \
+                     minimal -- §5B inspection proceeds on it with that caveat, never on a \
+                     completed-looking core.",
+                    sys.rows[probe].label,
+                ));
+                break;
+            }
+        }
+    }
+
+    let kept = sys
+        .rows
+        .iter()
+        .zip(&alive)
+        .filter(|(_, keep)| **keep)
+        .map(|(r, _)| r.clone())
+        .collect();
+    Minimization { kept, dropped, halted }
 }
 
 /// §5.4's two registered scale diagnostics, run on an UNSAT.
@@ -1203,8 +1245,21 @@ struct ScaleDiagnostics {
     rescaled: Vec<(i64, Verdict)>,
 }
 
-fn scale_diagnostics(_sys: &System) -> ScaleDiagnostics {
-    unimplemented!("task C")
+fn scale_diagnostics(sys: &System) -> ScaleDiagnostics {
+    let widened =
+        decide(&System::new(sys.stage, sys.rows.clone(), WIDENED_BOX_LIMIT, sys.pin_vp));
+
+    // §5.4 scopes the rescale to "an IIS lying wholly in the early system".
+    // Since the system decomposes per stage, that is exactly a system whose
+    // stage is early.
+    let rescaled = match sys.stage {
+        StageEndpoint::Late => Vec::new(),
+        StageEndpoint::Early => EARLY_RESCALE_LADDER
+            .into_iter()
+            .map(|pin| (pin, decide(&System::new(sys.stage, sys.rows.clone(), sys.box_limit, pin))))
+            .collect(),
+    };
+    ScaleDiagnostics { widened, rescaled }
 }
 
 /// §5.4's witness reporting owes "the count of constraints implied by the rest
@@ -1223,8 +1278,32 @@ struct ImplicationReport {
     undecided: Vec<String>,
 }
 
-fn implied_by_the_rest(_sys: &System) -> ImplicationReport {
-    unimplemented!("task C")
+fn implied_by_the_rest(sys: &System) -> ImplicationReport {
+    let mut report = ImplicationReport::default();
+    for (probe, row) in sys.rows.iter().enumerate() {
+        let mut rows: Vec<Row> = sys
+            .rows
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != probe)
+            .map(|(_, r)| r.clone())
+            .collect();
+        // The negation, over the integers: `Σ a·w ≥ rhs` fails exactly when
+        // `Σ a·w ≤ rhs − 1`, which is `−Σ a·w ≥ 1 − rhs`.
+        rows.push(Row {
+            label: format!("NOT ({})", row.label),
+            kind: RowKind::Pair { id: "negation".to_string(), order: usize::MAX },
+            coef: row.coef.iter().map(|c| -c).collect(),
+            rhs: 1 - row.rhs,
+        });
+        let probed = System { rows, ..sys.clone() };
+        match decide(&probed) {
+            Verdict::Unsat { .. } => report.implied.push(row.label.clone()),
+            Verdict::Sat { .. } => report.independent.push(row.label.clone()),
+            Verdict::Inconclusive { .. } => report.undecided.push(row.label.clone()),
+        }
+    }
+    report
 }
 
 // ---------------------------------------------------------------------------
@@ -1246,13 +1325,32 @@ fn implied_by_the_rest(_sys: &System) -> ImplicationReport {
 /// nonzero at a row the registration does not list, and the real run REFUSES
 /// naming it rather than solving.
 fn candidate_dispatch(
-    _s: &ScoreStructure,
-    _view: &PlayerView,
-    _player: &VisiblePlayer,
-    _feature: CandidateFeature,
-    _rules: &Rules,
+    s: &ScoreStructure,
+    view: &PlayerView,
+    player: &VisiblePlayer,
+    feature: CandidateFeature,
+    rules: &Rules,
 ) -> i64 {
-    unimplemented!("task C")
+    match feature {
+        CandidateFeature::ProductionAccess => s.production_access(view, player),
+        CandidateFeature::TrackAccess => s.track_access(view, player),
+        CandidateFeature::AssistantAreasDistinct => s.assistant_areas_distinct(player),
+        CandidateFeature::PresidentLocalAccess => s.president_local_access(player),
+        CandidateFeature::BankAccess => s.bank_access(view, player),
+        CandidateFeature::EmploymentAgencyAccess => s.employment_agency_access(view, player),
+        CandidateFeature::PresidentReachableAreas => s.president_reachable_areas(player),
+        CandidateFeature::MoneyStock => s.money_stock(player),
+        CandidateFeature::TradeGoodsStock => s.trade_goods_stock(player),
+        CandidateFeature::BuildingTokensReady => s.building_tokens_ready(player),
+        CandidateFeature::HeldOrderValue => s.held_order_value(player, rules),
+        CandidateFeature::OrderMatchedGoods => s.order_matched_goods(player, rules),
+        CandidateFeature::ExecutableOrders => s.executable_orders(player, rules),
+        CandidateFeature::FlagIconMarginal => s.flag_icon_marginal(player, rules),
+        CandidateFeature::HeldOrderIcons => s.held_order_icons(player, rules),
+        CandidateFeature::LabTakeable => s.lab_takeable(view, player),
+        CandidateFeature::PortTakeable => s.port_takeable(view, player, rules),
+        CandidateFeature::MatchedProductionAccess => s.matched_production_access(view, player, rules),
+    }
 }
 
 /// One view's 34-wide MOVER-RELATIVE vector, `mine − theirs`.
@@ -1260,12 +1358,26 @@ fn candidate_dispatch(
 /// The same quantity `eval_probe`'s §5.3 signature takes, and for the same
 /// reason: a weight multiplies `mine − theirs` (`game/eval.rs`), so §5.4's row
 /// `Σ_f w_f·Δv_f ≥ margin` is the DIFFERENCE of two of these.
-fn relative_vector(
-    _view: &PlayerView,
-    _mover: PlayerId,
-    _rules: &Rules,
-) -> Result<Vec<i64>, String> {
-    unimplemented!("task C")
+fn relative_vector(view: &PlayerView, mover: PlayerId, rules: &Rules) -> Result<Vec<i64>, String> {
+    let me = view
+        .players
+        .iter()
+        .find(|p| p.id == mover)
+        .ok_or_else(|| format!("seat {} is not a player in this view", mover.0))?;
+    let opponent = view.players.iter().find(|p| p.id != mover && !p.id.is_dummy());
+    let structure = ScoreStructure::derive(view, rules);
+    let mut v = vec![0i64; AXIS_WIDTH];
+    for f in Feature::ALL {
+        let theirs = opponent.map_or(0, |o| structure.value_of(o, f));
+        v[FeatureId::Incumbent(f).index()] = structure.value_of(me, f) - theirs;
+    }
+    for c in CandidateFeature::ALL {
+        let mine = candidate_dispatch(&structure, view, me, c, rules);
+        let theirs =
+            opponent.map_or(0, |o| candidate_dispatch(&structure, view, o, c, rules));
+        v[FeatureId::Candidate(c).index()] = mine - theirs;
+    }
+    Ok(v)
 }
 
 /// Turn one pair's two signed sides into its registered row, or REFUSE.
@@ -1280,12 +1392,61 @@ fn relative_vector(
 ///   result says no registered row is one, so meeting one here is a finding;
 /// * a missing margin is [`margin_of`]'s refusal.
 fn row_from_signatures(
-    _pair: &'static PairDeclaration,
-    _stage: StageEndpoint,
-    _greater: &[i64],
-    _lesser: &[i64],
+    pair: &'static PairDeclaration,
+    stage: StageEndpoint,
+    greater: &[i64],
+    lesser: &[i64],
 ) -> Result<Row, String> {
-    unimplemented!("task C")
+    if greater.len() != AXIS_WIDTH || lesser.len() != AXIS_WIDTH {
+        return Err(format!(
+            "{} at {}: the axis is {AXIS_WIDTH} wide and the sides are {} and {}",
+            pair.id,
+            stage.name(),
+            greater.len(),
+            lesser.len(),
+        ));
+    }
+    // §5.1: "a declared GREATER SIDE (named FIRST in every registration;
+    // Δv = greater − lesser)".
+    let coef: Vec<i64> = greater.iter().zip(lesser).map(|(g, l)| g - l).collect();
+
+    let unlisted: Vec<&str> = FeatureId::all()
+        .into_iter()
+        .filter(|id| coef[id.index()] != 0 && !pair.expected_nonzero.contains(id))
+        .map(|id| id.label())
+        .collect();
+    if !unlisted.is_empty() {
+        return Err(format!(
+            "{} at {}: rows {unlisted:?} are nonzero but the registration does not list them. \
+             §5.1 makes an unlisted nonzero row a FIXTURE DEFECT, sanctioned to fix and re-freeze \
+             before covered results -- so this run REFUSES rather than solving a system the \
+             package did not register. (It is equally the extraction's own alarm: a candidate \
+             column dispatched to the wrong helper lands here.)",
+            pair.id,
+            stage.name(),
+        ));
+    }
+
+    let margin = margin_of(pair, stage)?;
+    if coef.iter().all(|c| *c == 0) {
+        return Err(format!(
+            "{} at {}: the row is identically zero against margin {margin}. Part A returned ZERO \
+             blocking collisions, which says no registered row is identically zero, so this is a \
+             finding rather than a row -- and at a positive margin it would be an unsatisfiable \
+             row nothing could repair.",
+            pair.id,
+            stage.name(),
+        ));
+    }
+
+    let order = document_order(pair.id)
+        .ok_or_else(|| format!("{} is not in the registry", pair.id))?;
+    Ok(Row {
+        label: format!("pair {} {}", pair.id, stage.name()),
+        kind: RowKind::Pair { id: pair.id.to_string(), order },
+        coef,
+        rhs: margin,
+    })
 }
 
 /// Assemble one stage's system: extracted pair rows in DELETION ORDER, then the
@@ -1294,8 +1455,14 @@ fn row_from_signatures(
 /// Separate from the extraction so the assembly can be exercised on synthetic
 /// rows: §5.4's freeze-before-solve clause keeps the frozen thirty-four out of
 /// this batch entirely, and a wiring test that had to build them would break it.
-fn assemble(_stage: StageEndpoint, _pair_rows: Vec<Row>, _box_limit: i64) -> System {
-    unimplemented!("task C")
+fn assemble(stage: StageEndpoint, pair_rows: Vec<Row>, box_limit: i64) -> System {
+    let mut rows = pair_rows;
+    rows.sort_by_key(|r| match &r.kind {
+        RowKind::Pair { order, .. } => *order,
+        _ => usize::MAX,
+    });
+    rows.extend(toys::hand_ordering_rows());
+    System::new(stage, rows, box_limit, toys::pinned_vp(stage))
 }
 
 /// Extract one registered pair's row at one endpoint, through the frozen
@@ -1625,19 +1792,24 @@ fn margin_block() -> String {
     out
 }
 
-/// One weight vector's entries that differ from the V2-padded start.
-fn print_vector(sys: &System, w: &[i64]) {
+/// One weight vector, printed as its entries away from the V2-padded start.
+///
+/// The delta rather than all thirty-four, because the start is itself a
+/// published number: what a reader needs is which coordinates the system MOVED.
+fn render_moved(sys: &System, w: &[i64]) -> String {
     let start = sys.v2_padded();
+    let mut out = String::new();
     let mut moved = 0usize;
     for (i, id) in FeatureId::all().into_iter().enumerate() {
         if w[i] != start[i] {
-            println!("  {:<28}  {:>5}  (from {})", id.label(), w[i], start[i]);
+            out.push_str(&format!("  {:<28}  {:>5}  (from {})\n", id.label(), w[i], start[i]));
             moved += 1;
         }
     }
     if moved == 0 {
-        println!("  none -- the V2-padded start was already the returned point");
+        out.push_str("  none -- the V2-padded start already satisfies the system\n");
     }
+    out
 }
 
 /// One verdict and its certificate, in the words §5.4 requires.
@@ -1645,13 +1817,10 @@ fn render_verdict(sys: &System, verdict: &Verdict) -> String {
     let mut out = String::new();
     match verdict {
         Verdict::Sat { w } => {
-            out.push_str("                     a point satisfying every inequality, re-checked\n");
-            for (i, id) in FeatureId::all().into_iter().enumerate() {
-                if w[i] != sys.v2_padded()[i] {
-                    out.push_str(&format!("  {:<28}  {:>5}\n", id.label(), w[i]));
-                }
-            }
-            out.push_str(&format!("{SAT_READING}\n"));
+            out.push_str(
+                "                     a point satisfying every inequality, re-checked\n",
+            );
+            out.push_str(&render_moved(sys, w));
         }
         Verdict::Unsat { certificate } => {
             let rows = sys.inequalities();
@@ -1695,51 +1864,181 @@ fn render_verdict(sys: &System, verdict: &Verdict) -> String {
     out
 }
 
-/// Run one toy through the machinery that exists, and print it.
+/// Everything §5.4 owes about ONE stage's system, once it has been built.
+///
+/// Shared by the toy runner and the real run, so the artifact a review reads
+/// after the freeze is rendered by the same code the toys proved.
+fn render_system(sys: &System) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("stage                {}\n", sys.stage.name()));
+    out.push_str(&format!(
+        "box                  |w| <= {}   w_vp pinned to {}\n",
+        sys.box_limit, sys.pin_vp,
+    ));
+    let pairs = sys.rows.iter().filter(|r| matches!(r.kind, RowKind::Pair { .. })).count();
+    let orderings = sys.rows.iter().filter(|r| r.kind == RowKind::HandOrdering).count();
+    out.push_str(&format!(
+        "rows                 {pairs} pair + {orderings} hand-ordering deletable, {} \
+         inequalities in all (deletable + pin + box)\n",
+        sys.inequalities().len(),
+    ));
+
+    let report = witness_search(sys);
+    out.push('\n');
+    out.push_str(&format!(
+        "witness search       {} sweeps, total violation {}\n",
+        report.sweeps, report.violation,
+    ));
+    out.push_str("\nslack profile\n");
+    for (row, slack) in sys.rows.iter().zip(&report.slack) {
+        out.push_str(&format!("  {:<34}  {:>8}\n", row.label, slack));
+    }
+
+    if report.violation == 0 {
+        out.push_str(&format!(
+            "\nwitness              FEASIBILITY PROVEN by a re-checked point; binding K = {}\n",
+            report.binding.len(),
+        ));
+        for label in &report.binding {
+            out.push_str(&format!("  binding  {label}\n"));
+        }
+        out.push_str("the witness, as entries away from the V2-padded start\n");
+        out.push_str(&render_moved(sys, &report.w));
+        let implication = implied_by_the_rest(sys);
+        out.push_str(&format!(
+            "drop-one re-test     {} implied by the rest, {} independent, {} undecided\n",
+            implication.implied.len(),
+            implication.independent.len(),
+            implication.undecided.len(),
+        ));
+        for label in &implication.implied {
+            out.push_str(&format!("  implied  {label}\n"));
+        }
+        for label in &implication.undecided {
+            out.push_str(&format!("  UNDECIDED  {label}\n"));
+        }
+        out.push_str(&format!("{SAT_READING}\n"));
+    } else {
+        out.push_str(
+            "\nwitness              NONE. This is a statement about the SEARCH, not the system \
+             -- only the exact oracle may say UNSAT.\n",
+        );
+    }
+
+    let verdict = decide(sys);
+    out.push_str(&format!("\nexact oracle         {}\n", verdict.name()));
+    out.push_str(&render_verdict(sys, &verdict));
+
+    if matches!(verdict, Verdict::Unsat { .. }) {
+        out.push_str(&render_minimization(sys));
+        out.push_str(&render_diagnostics(sys));
+    }
+    out
+}
+
+/// §5.4 (3)'s minimized set, with the pair rows and the hand-ordering rows
+/// recorded separately as the spec asks.
+fn render_minimization(sys: &System) -> String {
+    let result = minimize(sys);
+    let mut out = String::new();
+    out.push_str("\ndeletion-minimization (§5.2 document order, then the hand-ordering rows)\n");
+    for row in &result.kept {
+        let tier = if row.kind == RowKind::HandOrdering { "IIS/ordering" } else { "IIS/pair" };
+        out.push_str(&format!("  {tier:<13}  {}\n", row.label));
+    }
+    for label in &result.dropped {
+        out.push_str(&format!("  {:<13}  {label}\n", "dropped"));
+    }
+    if let Some(halt) = &result.halted {
+        out.push_str(&format!("HALTED               {halt}\n"));
+    }
+    out.push_str(&format!("{IIS_READING}\n"));
+    out
+}
+
+/// §5.4 (3)'s two registered scale diagnostics.
+fn render_diagnostics(sys: &System) -> String {
+    let diagnostics = scale_diagnostics(sys);
+    let mut out = String::new();
+    out.push_str("\nscale diagnostics (the pin and the box are probed, never deleted)\n");
+    out.push_str(&format!(
+        "  box-widening at |w| <= {WIDENED_BOX_LIMIT}: {}{}\n",
+        diagnostics.widened.name(),
+        match diagnostics.widened {
+            Verdict::Sat { .. } =>
+                "  <- A SCALE FINDING under checkpoint §5B, not an architecture result",
+            _ => "  (the contradiction does not dissolve when the box widens)",
+        },
+    ));
+    if diagnostics.rescaled.is_empty() {
+        out.push_str(
+            "  early-rescale: not run -- §5.4 scopes the ladder to an IIS lying wholly in the \
+             EARLY system\n",
+        );
+    } else {
+        for (pin, verdict) in &diagnostics.rescaled {
+            out.push_str(&format!(
+                "  early-rescale at w_vp = {pin}: {}{}\n",
+                verdict.name(),
+                match verdict {
+                    Verdict::Sat { .. } =>
+                        "  <- INTEGER GRANULARITY, a SCALE finding, never architecture",
+                    _ => "",
+                },
+            ));
+        }
+    }
+    out
+}
+
+/// Run one toy through the whole instrument.
 fn run_toy(name: &str) -> Result<(), String> {
     let sys = toys::named(name)
         .ok_or_else(|| format!("`{name}` is not a registered toy; see `solver toys`"))?;
     println!("=== solver toy {name} ===");
     print!("{}", identity_block(None));
-    println!("stage                {}", sys.stage.name());
-    println!("box                  |w| <= {}   w_vp pinned to {}", sys.box_limit, sys.pin_vp);
+    print!("{}", render_system(&sys));
+    Ok(())
+}
+
+/// **THE REAL PART-B RUN.** Argument-gated behind `--real`, and invoked only
+/// after this implementation is frozen and reviewed (§5.4's freeze-before-solve
+/// clause).
+fn run_real(freeze_commit: Option<&str>) -> Result<(), String> {
+    let rules = Rules::standard();
+    println!("=== solver solve --real  [§7 step 4, Part B] ===");
+    print!("{}", identity_block(freeze_commit));
+    print!("{}", census_block());
     println!(
-        "rows                 {} deletable, {} inequalities in all (deletable + pin + box)",
-        sys.rows.len(),
-        sys.inequalities().len(),
+        "\nfreeze-before-solve  the package digest above precedes this invocation, and the solver \
+         identity is the frozen implementation's. Development ran on toy systems only."
     );
 
-    let report = witness_search(&sys);
-    println!();
-    println!("witness search       {} sweeps, total violation {}", report.sweeps, report.violation);
-    if report.violation == 0 {
-        println!("verdict              WITNESS (feasibility PROVEN by a re-checked point)");
-        println!("binding K            {}", report.binding.len());
-        println!("{SAT_READING}");
-    } else {
+    for stage in StageEndpoint::ALL {
+        println!("\n{}", "=".repeat(72));
+        let mut rows = Vec::new();
+        for pair in REGISTERED
+            .iter()
+            .filter(|p| matches!(p.role, PairRole::Constraint) && p.stages.contains(&stage))
+        {
+            rows.push(extract_row(pair, stage, &rules)?);
+        }
         println!(
-            "verdict              NO WITNESS -- a statement about the SEARCH, not the system. \
-             Only the exact oracle may say UNSAT."
+            "extraction           {} rows from the frozen registry at the {} endpoint\n",
+            rows.len(),
+            stage.name(),
         );
+        print!("{}", render_system(&assemble(stage, rows, BOX_LIMIT)));
     }
-    println!();
-    println!("slack profile");
-    for (row, slack) in sys.rows.iter().zip(&report.slack) {
-        println!("  {:<24}  {:>8}", row.label, slack);
-    }
-    println!();
-    println!("weight vector (entries away from the V2-padded start)");
-    print_vector(&sys, &report.w);
-
-    println!();
-    let verdict = decide(&sys);
-    println!("exact oracle         {}", verdict.name());
-    print!("{}", render_verdict(&sys, &verdict));
     Ok(())
 }
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    let flag = |name: &str| args.iter().any(|a| a == name);
+    let value = |name: &str| {
+        args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).map(String::as_str)
+    };
     let result = match args.first().map(String::as_str) {
         Some("identities") => {
             println!("=== solver identities ===");
@@ -1759,6 +2058,14 @@ fn main() -> ExitCode {
             Some(name) => run_toy(name),
             None => Err("`toy` needs a name; see `solver toys`".to_string()),
         },
+        Some("solve") => match (flag("--real"), value("--toy")) {
+            (true, Some(_)) => {
+                Err("`--real` and `--toy` are different runs; name one".to_string())
+            }
+            (true, None) => run_real(value("--freeze-commit")),
+            (false, Some(name)) => run_toy(name),
+            (false, None) => Err(REAL_RUN_GATE.to_string()),
+        },
         Some(other) => Err(format!("unknown subcommand `{other}`\n\n{USAGE}")),
         None => Err(USAGE.to_string()),
     };
@@ -1771,6 +2078,12 @@ fn main() -> ExitCode {
     }
 }
 
+/// What a bare `solve` says instead of solving.
+const REAL_RUN_GATE: &str = "`solve` needs `--real` or `--toy <name>`. The REAL run over the \
+     frozen registered pairs is gated behind `--real` on purpose: §5.4's freeze-before-solve \
+     clause says the solver implementation freezes BEFORE the first real-pair invocation, so a \
+     bare `solve` must not be able to reach the thirty-four by accident.";
+
 const USAGE: &str = "\
 usage: solver <subcommand>
 
@@ -1778,6 +2091,10 @@ usage: solver <subcommand>
                      registry's margin table -- declarations only, no fixture built
   toys               list the registered toy systems
   toy <name>         run one toy end to end
+  solve --toy <name> the same, spelled as a solve
+  solve --real [--freeze-commit <hash>]
+                     THE REAL PART-B RUN over the frozen registered pairs, per
+                     stage. Gated: see §5.4's freeze-before-solve clause.
 ";
 
 // ---------------------------------------------------------------------------
@@ -1914,6 +2231,31 @@ mod tests {
             .filter(|p| matches!(p.role, PairRole::Constraint) && p.stages.len() == 2)
             .count();
         assert_eq!(both, 17, "the frozen text's 18 both-endpoint pairs, less 4(c)");
+    }
+
+    /// The census reconciles with the count `eval_probe`'s own frozen-package
+    /// cell asserts, which was arrived at independently.
+    ///
+    /// `every_expected_nonzero_candidate_row_moves_and_every_moving_row_is_listed`
+    /// pins "the frozen package realizes 53 (pair, stage) fixtures". Those 53
+    /// are this file's 51 constraint rows plus the two DIAGNOSTIC fixtures,
+    /// 2(c) and 10(c), which are registered and signed but never solved. Two
+    /// counts derived by different routes agreeing is worth more than either
+    /// alone.
+    #[test]
+    fn the_census_reconciles_with_the_frozen_package_s_fixture_count() {
+        let census = realized_census();
+        let diagnostics: usize = REGISTERED
+            .iter()
+            .filter(|p| !matches!(p.role, PairRole::Constraint))
+            .map(|p| p.stages.len())
+            .sum();
+        assert_eq!(diagnostics, 2, "2(c) and 10(c), one endpoint each");
+        assert_eq!(
+            census.early + census.late + diagnostics,
+            53,
+            "eval_probe pins 53 (pair, stage) fixtures over the same frozen package",
+        );
     }
 
     // -- the witness search ------------------------------------------------
@@ -2637,6 +2979,39 @@ mod tests {
             assert_eq!(sys.violation(&sys.v2_padded()), 0, "{} stage", stage.name());
             assert!(matches!(decide(&sys), Verdict::Sat { .. }), "{} stage", stage.name());
         }
+    }
+
+    /// The real run is behind a flag, and the refusal says why.
+    #[test]
+    fn the_real_run_is_argument_gated_and_the_gate_names_the_clause() {
+        assert!(REAL_RUN_GATE.contains("--real"));
+        assert!(REAL_RUN_GATE.contains("freeze-before-solve"));
+        assert!(
+            USAGE.contains("solve --real"),
+            "the gated command is documented rather than hidden",
+        );
+    }
+
+    /// The whole artifact renders from a system — the toys prove the same code
+    /// path the real run will print through.
+    #[test]
+    fn the_artifact_renders_every_section_the_spec_requires() {
+        let sat = render_system(&toys::named("sat-reachable").expect("registered"));
+        assert!(sat.contains("witness search"));
+        assert!(sat.contains("slack profile"));
+        assert!(sat.contains("binding K"));
+        assert!(sat.contains("drop-one re-test"));
+        assert!(sat.contains(SAT_READING));
+        assert!(!sat.contains("deletion-minimization"), "a SAT has nothing to minimize");
+
+        let unsat = render_system(&toys::named("unsat-fractional-margin").expect("registered"));
+        assert!(unsat.contains("exact oracle         UNSAT"));
+        assert!(unsat.contains("FARKAS, re-verified"));
+        assert!(unsat.contains("deletion-minimization"));
+        assert!(unsat.contains(IIS_READING));
+        assert!(unsat.contains("box-widening at |w| <= 128"));
+        assert!(unsat.contains("early-rescale at w_vp = 3: SAT"));
+        assert!(unsat.contains("INTEGER GRANULARITY"));
     }
 
     // -- document order ----------------------------------------------------
