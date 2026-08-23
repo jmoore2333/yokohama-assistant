@@ -471,8 +471,12 @@ impl Rat {
         Rat::new(n, self.d.checked_mul(o.d)?)
     }
 
+    fn neg(self) -> Option<Rat> {
+        Some(Rat { n: self.n.checked_neg()?, d: self.d })
+    }
+
     fn sub(self, o: Rat) -> Option<Rat> {
-        self.add(Rat { n: o.n.checked_neg()?, d: o.d })
+        self.add(o.neg()?)
     }
 
     fn mul(self, o: Rat) -> Option<Rat> {
@@ -591,8 +595,42 @@ impl Verdict {
 ///
 /// Returns the positive `yᵀb` on success. Any overflow is an `Err`, and its
 /// caller turns that into INCONCLUSIVE rather than UNSAT.
-fn verify_farkas(_rows: &[Row], _y: &[i128]) -> Result<i128, String> {
-    unimplemented!("task B")
+fn verify_farkas(rows: &[Row], y: &[i128]) -> Result<i128, String> {
+    if y.len() != rows.len() {
+        return Err(format!("{} multipliers against {} inequalities", y.len(), rows.len()));
+    }
+    if let Some((i, m)) = y.iter().enumerate().find(|(_, m)| **m < 0) {
+        return Err(format!("multiplier {i} is {m}; Farkas needs y >= 0"));
+    }
+    let overflow = |what: &str| format!("i128 overflow while checking {what}");
+
+    for column in 0..AXIS_WIDTH {
+        let mut sum: i128 = 0;
+        for (row, multiplier) in rows.iter().zip(y) {
+            let term = i128::from(row.coef[column])
+                .checked_mul(*multiplier)
+                .ok_or_else(|| overflow("a coefficient product"))?;
+            sum = sum.checked_add(term).ok_or_else(|| overflow("a coefficient column"))?;
+        }
+        if sum != 0 {
+            return Err(format!(
+                "column {column} of yA sums to {sum}, not 0; the combination is not a Farkas \
+                 witness",
+            ));
+        }
+    }
+
+    let mut rhs: i128 = 0;
+    for (row, multiplier) in rows.iter().zip(y) {
+        let term = i128::from(row.rhs)
+            .checked_mul(*multiplier)
+            .ok_or_else(|| overflow("a right-hand-side product"))?;
+        rhs = rhs.checked_add(term).ok_or_else(|| overflow("the right-hand side"))?;
+    }
+    if rhs <= 0 {
+        return Err(format!("yb is {rhs}, and Farkas needs it strictly positive"));
+    }
+    Ok(rhs)
 }
 
 /// What the exact LP found about the RATIONAL relaxation.
@@ -606,11 +644,212 @@ enum Relaxation {
     Undecided(String),
 }
 
-/// **The exact rational LP** — Phase-I simplex with Bland's rule over
-/// [`Rat`], deciding the relaxation of `A w ≥ b` and extracting Farkas
-/// multipliers when it is empty.
-fn relaxation(_rows: &[Row], _columns: &[usize]) -> Relaxation {
-    unimplemented!("task B")
+/// **The exact rational LP** — Phase-I simplex with Bland's rule over [`Rat`],
+/// deciding the relaxation of `A w ≥ b` and extracting Farkas multipliers when
+/// it is empty.
+///
+/// # The formulation, because the sign conventions are the whole correctness
+///
+/// The weights are FREE, so each is split `w_j = p_j − q_j` with `p, q ≥ 0`.
+/// Farkas' condition for `{x ≥ 0 : [A, −A] x ≥ b}` then reads `yᵀA ≤ 0` AND
+/// `−yᵀA ≤ 0`, which is `yᵀA = 0` — the clean form, recovered rather than
+/// assumed.
+///
+/// Each row `A_i w − s_i = b_i` (surplus `s_i ≥ 0`) is normalized by
+/// `sign_i = ±1` so its right-hand side is nonnegative. Where `b_i ≤ 0` the
+/// normalization leaves the surplus with coefficient `+1`, so `s_i` is a
+/// feasible starting basic variable and NO ARTIFICIAL IS NEEDED — which matters
+/// at scale, since the box contributes two such rows per column and would
+/// otherwise double the tableau.
+///
+/// # Extracting the certificate
+///
+/// The dual multiplier on the ORIGINAL inequality `i` is `y_i = −Z[s_i]`, the
+/// negated reduced cost of its surplus column. At Phase-I optimality every
+/// enterable column has `Z ≤ 0`, so `y ≥ 0` falls out; `Z[p_j] ≤ 0` and
+/// `Z[q_j] ≤ 0` are `yᵀA_j ≤ 0` and `yᵀA_j ≥ 0`, so `yᵀA = 0` falls out; and
+/// the objective cell is `yᵀb`, which is positive exactly when Phase-I could
+/// not drive the artificials to zero. None of that is trusted here — it is
+/// [`verify_farkas`]'s to confirm.
+fn relaxation(all: &[Row], row_index: &[usize], columns: &[usize]) -> Relaxation {
+    let m = row_index.len();
+    let n = columns.len();
+    if m == 0 || n == 0 {
+        // Nothing to contradict: an empty row set is satisfied by any point,
+        // and rows over no active column were dropped precisely because they
+        // are individually satisfiable.
+        return Relaxation::Feasible;
+    }
+    let undecided = |what: &str| Relaxation::Undecided(what.to_string());
+
+    // Row normalization: sign, and which rows need an artificial.
+    let sign: Vec<i128> = row_index.iter().map(|&i| if all[i].rhs < 0 { -1 } else { 1 }).collect();
+    let mut artificial_of = vec![None; m];
+    let mut artificials = 0usize;
+    for (i, s) in sign.iter().enumerate() {
+        if *s > 0 {
+            artificial_of[i] = Some(artificials);
+            artificials += 1;
+        }
+    }
+
+    // Columns: p_0..p_{n-1} | q_0..q_{n-1} | s_0..s_{m-1} | artificials.
+    let first_surplus = 2 * n;
+    let first_artificial = first_surplus + m;
+    let width = first_artificial + artificials;
+
+    let mut t = vec![vec![Rat::ZERO; width + 1]; m];
+    let mut basis = vec![0usize; m];
+    for (i, &ri) in row_index.iter().enumerate() {
+        let row = &all[ri];
+        let s = Rat::int(sign[i]);
+        for (jj, &column) in columns.iter().enumerate() {
+            let Some(a) = Rat::int(i128::from(row.coef[column])).mul(s) else {
+                return undecided("a coefficient overflowed while building the tableau");
+            };
+            let Some(negated) = a.neg() else {
+                return undecided("a coefficient overflowed while building the tableau");
+            };
+            t[i][jj] = a;
+            t[i][n + jj] = negated;
+        }
+        t[i][first_surplus + i] = Rat::int(-sign[i]);
+        match artificial_of[i] {
+            Some(k) => {
+                t[i][first_artificial + k] = Rat::int(1);
+                basis[i] = first_artificial + k;
+            }
+            None => basis[i] = first_surplus + i,
+        }
+        let Some(rhs) = Rat::int(i128::from(row.rhs)).mul(s) else {
+            return undecided("a right-hand side overflowed while building the tableau");
+        };
+        t[i][width] = rhs;
+    }
+
+    // Price out the artificial basis: Z_j = Σ_{artificial rows} T[i][j] − c_j.
+    let mut z = vec![Rat::ZERO; width + 1];
+    for i in 0..m {
+        if artificial_of[i].is_some() {
+            for j in 0..=width {
+                let Some(sum) = z[j].add(t[i][j]) else {
+                    return undecided("the objective row overflowed while pricing out");
+                };
+                z[j] = sum;
+            }
+        }
+    }
+    for k in 0..artificials {
+        let j = first_artificial + k;
+        let Some(reduced) = z[j].sub(Rat::int(1)) else {
+            return undecided("the objective row overflowed while pricing out");
+        };
+        z[j] = reduced;
+    }
+
+    // Bland's rule: smallest enterable index with a positive reduced cost, and
+    // on a ratio tie the smallest BASIC variable index leaves. Artificials are
+    // never enterable, which is the standard way to keep them from returning.
+    for _ in 0..PIVOT_CAP {
+        let Some(enter) = (0..first_artificial).find(|&j| z[j].sign() > 0) else {
+            break;
+        };
+        let mut leaving: Option<(usize, Rat)> = None;
+        for i in 0..m {
+            if t[i][enter].sign() <= 0 {
+                continue;
+            }
+            let Some(ratio) = t[i][width].div(t[i][enter]) else {
+                return undecided("a ratio test overflowed");
+            };
+            leaving = match leaving {
+                None => Some((i, ratio)),
+                Some((best_row, best_ratio)) => {
+                    let Some(order) = ratio.cmp_exact(best_ratio) else {
+                        return undecided("a ratio comparison overflowed");
+                    };
+                    let takes_it = order == std::cmp::Ordering::Less
+                        || (order == std::cmp::Ordering::Equal && basis[i] < basis[best_row]);
+                    if takes_it { Some((i, ratio)) } else { Some((best_row, best_ratio)) }
+                }
+            };
+        }
+        let Some((pivot_row, _)) = leaving else {
+            // Phase-I's objective is bounded below by zero, so this shape is a
+            // defect rather than a result -- and a defect is INCONCLUSIVE.
+            return undecided("the Phase-I objective read as unbounded");
+        };
+
+        let p = t[pivot_row][enter];
+        for cell in &mut t[pivot_row] {
+            let Some(scaled) = cell.div(p) else {
+                return undecided("a pivot normalization overflowed");
+            };
+            *cell = scaled;
+        }
+        let pivot_line = t[pivot_row].clone();
+        for (i, line) in t.iter_mut().enumerate() {
+            if i == pivot_row || line[enter].is_zero() {
+                continue;
+            }
+            let factor = line[enter];
+            for (cell, p) in line.iter_mut().zip(&pivot_line) {
+                let Some(term) = factor.mul(*p) else {
+                    return undecided("a pivot elimination overflowed");
+                };
+                let Some(updated) = cell.sub(term) else {
+                    return undecided("a pivot elimination overflowed");
+                };
+                *cell = updated;
+            }
+        }
+        if !z[enter].is_zero() {
+            let factor = z[enter];
+            for j in 0..=width {
+                let Some(term) = factor.mul(t[pivot_row][j]) else {
+                    return undecided("an objective update overflowed");
+                };
+                let Some(updated) = z[j].sub(term) else {
+                    return undecided("an objective update overflowed");
+                };
+                z[j] = updated;
+            }
+        }
+        basis[pivot_row] = enter;
+
+        if (0..first_artificial).all(|j| z[j].sign() <= 0) {
+            break;
+        }
+    }
+
+    if (0..first_artificial).any(|j| z[j].sign() > 0) {
+        return undecided("the pivot cap was reached before Phase-I reached an optimum");
+    }
+    if z[width].sign() <= 0 {
+        return Relaxation::Feasible;
+    }
+
+    // Infeasible. y_i = −Z[s_i], at the width of the FULL inequality list so
+    // the verification reads the whole system.
+    let mut y = vec![Rat::ZERO; all.len()];
+    for (i, &ri) in row_index.iter().enumerate() {
+        let Some(multiplier) = z[first_surplus + i].neg() else {
+            return undecided("a certificate multiplier overflowed");
+        };
+        y[ri] = multiplier;
+    }
+    Relaxation::Infeasible(y)
+}
+
+/// Clear a rational combination's denominators, so [`verify_farkas`] can read
+/// it in integers.
+fn clear_denominators(y: &[Rat]) -> Option<Vec<i128>> {
+    let mut multiple: u128 = 1;
+    for r in y {
+        multiple = lcm(multiple, r.d.unsigned_abs())?;
+    }
+    let multiple = i128::try_from(multiple).ok()?;
+    y.iter().map(|r| r.n.checked_mul(multiple / r.d)).collect()
 }
 
 /// The columns that can matter: those carrying a nonzero coefficient in some
@@ -622,8 +861,8 @@ fn relaxation(_rows: &[Row], _columns: &[usize]) -> Relaxation {
 /// changing a verdict or a certificate — the certificate is expanded back to
 /// full width before verification, so the trust boundary still reads the whole
 /// system.
-fn active_columns(_rows: &[Row]) -> Vec<usize> {
-    unimplemented!("task B")
+fn active_columns(rows: &[Row]) -> Vec<usize> {
+    (0..AXIS_WIDTH).filter(|&j| rows.iter().any(|r| r.coef[j] != 0)).collect()
 }
 
 /// **§5.4 (2) — THE EXACT ORACLE, the only authority for infeasibility.**
@@ -648,8 +887,260 @@ fn active_columns(_rows: &[Row]) -> Vec<usize> {
 /// 3). A propagation bug therefore degrades to INCONCLUSIVE — it can lose a
 /// solution the enumeration would have found, and the enumeration is what
 /// decides.
-fn decide(_sys: &System) -> Verdict {
-    unimplemented!("task B")
+fn decide(sys: &System) -> Verdict {
+    let all = sys.inequalities();
+    let columns = active_columns(&sys.rows);
+    // Rows over no active column were dropped with their columns: each is a box
+    // bound or a pin half on a variable nothing else reads, and `lo <= hi`
+    // holds for every one of them, so none can carry an infeasibility.
+    let row_index: Vec<usize> = all
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| columns.iter().any(|&j| r.coef[j] != 0))
+        .map(|(i, _)| i)
+        .collect();
+
+    match relaxation(&all, &row_index, &columns) {
+        Relaxation::Undecided(why) => Verdict::Inconclusive {
+            reason: format!("the exact relaxation did not decide: {why}"),
+        },
+        Relaxation::Infeasible(y) => {
+            let Some(cleared) = clear_denominators(&y) else {
+                return Verdict::Inconclusive {
+                    reason: "clearing the proposed certificate's denominators overflowed"
+                        .to_string(),
+                };
+            };
+            match verify_farkas(&all, &cleared) {
+                Ok(rhs) => Verdict::Unsat { certificate: Certificate::Farkas { y: cleared, rhs } },
+                Err(e) => Verdict::Inconclusive {
+                    reason: format!(
+                        "the relaxation reported infeasible but its Farkas combination did not \
+                         verify, so no infeasibility is claimed: {e}",
+                    ),
+                },
+            }
+        }
+        Relaxation::Feasible => integer_search(sys, &columns),
+    }
+}
+
+/// How the bounded depth-first search ended.
+enum Search {
+    Found(Vec<i64>),
+    /// The tree closed with no integer point. NOT yet a verdict.
+    Exhausted,
+    /// [`NODE_BUDGET`] ran out.
+    Budget,
+}
+
+/// §5.4 (2)'s "bounded depth-first branch-and-bound over the integer box",
+/// followed by the enumeration re-derivation an exhausted tree owes.
+fn integer_search(sys: &System, columns: &[usize]) -> Verdict {
+    let mut nodes = 0u64;
+    match explore(sys, columns, sys.lo.clone(), sys.hi.clone(), &mut nodes) {
+        Search::Found(w) => {
+            // Re-checked before it leaves, on the same discipline as the
+            // certificate: a point is trusted because it verifies.
+            if sys.violation(&w) == 0 {
+                Verdict::Sat { w }
+            } else {
+                Verdict::Inconclusive {
+                    reason: "the search returned a point that does not satisfy the rows"
+                        .to_string(),
+                }
+            }
+        }
+        Search::Budget => Verdict::Inconclusive {
+            reason: format!("the search spent its registered budget of {NODE_BUDGET} nodes"),
+        },
+        Search::Exhausted => rederive_by_enumeration(sys, columns),
+    }
+}
+
+/// One node of the search: propagate, dive, branch.
+fn explore(
+    sys: &System,
+    columns: &[usize],
+    lo: Vec<i64>,
+    hi: Vec<i64>,
+    nodes: &mut u64,
+) -> Search {
+    *nodes += 1;
+    if *nodes > NODE_BUDGET {
+        return Search::Budget;
+    }
+    let Some((lo, hi)) = propagate(&sys.rows, lo, hi, columns) else {
+        return Search::Exhausted;
+    };
+
+    // THE DIVE: the V2-padded start, clamped into this sub-box. Cheap, and it
+    // is the point a near-feasible system is most likely to be satisfied at, so
+    // a satisfiable system usually decides at the root instead of walking a
+    // tree.
+    let start = sys.v2_padded();
+    let mut candidate = start.clone();
+    for (i, x) in candidate.iter_mut().enumerate() {
+        *x = (*x).clamp(lo[i], hi[i]);
+    }
+    if sys.violation(&candidate) == 0 {
+        return Search::Found(candidate);
+    }
+
+    match columns.iter().copied().find(|&c| lo[c] < hi[c]) {
+        None => Search::Exhausted,
+        Some(branch) => {
+            // Split at the midpoint, lower half first — deterministic, and no
+            // entropy anywhere in the domain.
+            let mid = (lo[branch] + hi[branch]).div_euclid(2);
+            let mut lower_hi = hi.clone();
+            lower_hi[branch] = mid;
+            match explore(sys, columns, lo.clone(), lower_hi, nodes) {
+                Search::Exhausted => {}
+                other => return other,
+            }
+            let mut upper_lo = lo;
+            upper_lo[branch] = mid + 1;
+            explore(sys, columns, upper_lo, hi, nodes)
+        }
+    }
+}
+
+/// Interval bound propagation to a fixpoint. `None` when a domain empties,
+/// which proves the sub-box holds no point.
+///
+/// For a row `Σ a_g w_g ≥ rhs` and one variable `f`, the rest of the row can
+/// contribute at most `maxrest`, so `a_f w_f ≥ rhs − maxrest` — a bound that
+/// tightens `f`'s interval. Rounding it onto the integer lattice is sound
+/// because the search walks integers; and it never carries a verdict, so even a
+/// defect here degrades to INCONCLUSIVE rather than to a wrong UNSAT (see
+/// [`decide`]).
+fn propagate(
+    rows: &[Row],
+    mut lo: Vec<i64>,
+    mut hi: Vec<i64>,
+    columns: &[usize],
+) -> Option<(Vec<i64>, Vec<i64>)> {
+    // A fixpoint over integer intervals terminates; the cap only bounds how
+    // long a slow one may take before the search branches instead.
+    for _ in 0..8 {
+        let mut changed = false;
+        for row in rows {
+            let mut reach: i128 = 0;
+            for &g in columns {
+                let a = i128::from(row.coef[g]);
+                if a != 0 {
+                    reach += (a * i128::from(lo[g])).max(a * i128::from(hi[g]));
+                }
+            }
+            if reach < i128::from(row.rhs) {
+                return None;
+            }
+            for &f in columns {
+                let a = i128::from(row.coef[f]);
+                if a == 0 {
+                    continue;
+                }
+                let own = (a * i128::from(lo[f])).max(a * i128::from(hi[f]));
+                let need = i128::from(row.rhs) - (reach - own);
+                if a > 0 {
+                    let bound = ceil_div(need, a);
+                    if bound > i128::from(lo[f]) {
+                        if bound > i128::from(hi[f]) {
+                            return None;
+                        }
+                        lo[f] = bound as i64;
+                        changed = true;
+                    }
+                } else {
+                    let bound = floor_div(need, a);
+                    if bound < i128::from(hi[f]) {
+                        if bound < i128::from(lo[f]) {
+                            return None;
+                        }
+                        hi[f] = bound as i64;
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    Some((lo, hi))
+}
+
+fn floor_div(n: i128, d: i128) -> i128 {
+    let (q, r) = (n / d, n % d);
+    if r != 0 && ((r < 0) != (d < 0)) {
+        q - 1
+    } else {
+        q
+    }
+}
+
+fn ceil_div(n: i128, d: i128) -> i128 {
+    let (q, r) = (n / d, n % d);
+    if r != 0 && ((r < 0) == (d < 0)) {
+        q + 1
+    } else {
+        q
+    }
+}
+
+/// §5.4's re-derivation for a relaxation-feasible, integer-infeasible verdict:
+/// "exhaustive enumeration over the IIS's variable support, admissible only
+/// when the PRODUCT of the support's box ranges is ≤ 10⁷ points ... otherwise
+/// INCONCLUSIVE".
+///
+/// The enumeration uses NO pruning and NO propagation, which is the point: it
+/// shares nothing with the search whose result it is confirming.
+fn rederive_by_enumeration(sys: &System, columns: &[usize]) -> Verdict {
+    let mut points: u128 = 1;
+    for &c in columns {
+        let range = u128::try_from(i128::from(sys.hi[c]) - i128::from(sys.lo[c]) + 1)
+            .expect("a box interval is non-empty by construction");
+        match points.checked_mul(range) {
+            Some(p) if p <= ENUMERATION_BUDGET => points = p,
+            _ => {
+                return Verdict::Inconclusive {
+                    reason: format!(
+                        "the search closed the tree with no integer point, but §5.4 admits that \
+                         verdict only when it is re-derived by exhaustive enumeration, and this \
+                         support's box ranges exceed the registered {ENUMERATION_BUDGET}-point \
+                         enumeration budget. The oracle did not decide, which is not \
+                         infeasibility.",
+                    ),
+                }
+            }
+        }
+    }
+
+    let mut w = sys.v2_padded();
+    let mut odometer = vec![0u128; columns.len()];
+    for _ in 0..points {
+        for (k, &c) in columns.iter().enumerate() {
+            w[c] = sys.lo[c] + odometer[k] as i64;
+        }
+        if sys.violation(&w) == 0 {
+            // The enumeration is the more trustworthy instrument, so its point
+            // stands and the tree's "exhausted" was the defect.
+            return Verdict::Sat { w };
+        }
+        for (k, &c) in columns.iter().enumerate() {
+            let span = u128::try_from(i128::from(sys.hi[c]) - i128::from(sys.lo[c]) + 1)
+                .expect("non-empty");
+            odometer[k] += 1;
+            if odometer[k] < span {
+                break;
+            }
+            odometer[k] = 0;
+        }
+    }
+    Verdict::Unsat {
+        certificate: Certificate::Enumeration { support: columns.to_vec(), points },
+    }
 }
 
 /// One toy row as the builder takes it: label, sparse `(index, coef)` entries,
@@ -815,6 +1306,16 @@ mod toys {
                 ],
                 BOX_LIMIT,
             ),
+            // Relaxation-FEASIBLE (w_S1 = 1/2 satisfies both rows) and
+            // integer-infeasible. No Farkas certificate exists, so this is the
+            // toy that exercises §5.4's other admitted shape: the exhaustive
+            // enumeration, here over a single column of 129 points, well inside
+            // the registered budget.
+            "unsat-integer-only" => toy(
+                StageEndpoint::Early,
+                &[("twice S1 at least 1", &[(s1, 2)], 1), ("twice S1 at most 1", &[(s1, -2)], -1)],
+                BOX_LIMIT,
+            ),
             // UNSAT at |w| <= 64 (the widest reachable spread is 128) and SAT
             // at |w| <= 128 -- §5.4's box-widening diagnostic has something to
             // find.
@@ -828,7 +1329,7 @@ mod toys {
     }
 
     /// Every registered toy's name, in the order [`named`] lists them.
-    pub const NAMES: [&str; 8] = [
+    pub const NAMES: [&str; 9] = [
         "standing-only",
         "sat-reachable",
         "sat-coupled",
@@ -836,6 +1337,7 @@ mod toys {
         "unsat-box",
         "unsat-cycle",
         "unsat-fractional-margin",
+        "unsat-integer-only",
         "unsat-box-widening",
     ];
 }
@@ -945,6 +1447,76 @@ fn margin_block() -> String {
     out
 }
 
+/// One weight vector's entries that differ from the V2-padded start.
+fn print_vector(sys: &System, w: &[i64]) {
+    let start = sys.v2_padded();
+    let mut moved = 0usize;
+    for (i, id) in FeatureId::all().into_iter().enumerate() {
+        if w[i] != start[i] {
+            println!("  {:<28}  {:>5}  (from {})", id.label(), w[i], start[i]);
+            moved += 1;
+        }
+    }
+    if moved == 0 {
+        println!("  none -- the V2-padded start was already the returned point");
+    }
+}
+
+/// One verdict and its certificate, in the words §5.4 requires.
+fn render_verdict(sys: &System, verdict: &Verdict) -> String {
+    let mut out = String::new();
+    match verdict {
+        Verdict::Sat { w } => {
+            out.push_str("                     a point satisfying every inequality, re-checked\n");
+            for (i, id) in FeatureId::all().into_iter().enumerate() {
+                if w[i] != sys.v2_padded()[i] {
+                    out.push_str(&format!("  {:<28}  {:>5}\n", id.label(), w[i]));
+                }
+            }
+            out.push_str(&format!("{SAT_READING}\n"));
+        }
+        Verdict::Unsat { certificate } => {
+            let rows = sys.inequalities();
+            match certificate {
+                Certificate::Farkas { y, rhs } => {
+                    out.push_str(&format!(
+                        "certificate          FARKAS, re-verified in checked i128 integers \
+                         (yb = {rhs} > 0, yA = 0)\n",
+                    ));
+                    for (row, multiplier) in rows.iter().zip(y) {
+                        if *multiplier != 0 {
+                            out.push_str(&format!("  x{multiplier:<4}  {}\n", row.label));
+                        }
+                    }
+                }
+                Certificate::Enumeration { support, points } => {
+                    out.push_str(&format!(
+                        "certificate          EXHAUSTIVE ENUMERATION over {} column(s), {points} \
+                         points, all refuted\n",
+                        support.len(),
+                    ));
+                    for &c in support {
+                        out.push_str(&format!(
+                            "  {:<28}  [{}, {}]\n",
+                            FeatureId::all()[c].label(),
+                            sys.lo[c],
+                            sys.hi[c],
+                        ));
+                    }
+                }
+            }
+        }
+        Verdict::Inconclusive { reason } => {
+            out.push_str(&format!("                     {reason}\n"));
+            out.push_str(
+                "                     INCONCLUSIVE is routed to the owner. It is not \
+                 infeasibility.\n",
+            );
+        }
+    }
+    out
+}
+
 /// Run one toy through the machinery that exists, and print it.
 fn run_toy(name: &str) -> Result<(), String> {
     let sys = toys::named(name)
@@ -979,17 +1551,12 @@ fn run_toy(name: &str) -> Result<(), String> {
     }
     println!();
     println!("weight vector (entries away from the V2-padded start)");
-    let start = sys.v2_padded();
-    let mut moved = 0usize;
-    for (i, id) in FeatureId::all().into_iter().enumerate() {
-        if report.w[i] != start[i] {
-            println!("  {:<28}  {:>5}  (from {})", id.label(), report.w[i], start[i]);
-            moved += 1;
-        }
-    }
-    if moved == 0 {
-        println!("  none -- the V2-padded start was already the returned point");
-    }
+    print_vector(&sys, &report.w);
+
+    println!();
+    let verdict = decide(&sys);
+    println!("exact oracle         {}", verdict.name());
+    print!("{}", render_verdict(&sys, &verdict));
     Ok(())
 }
 
@@ -1401,15 +1968,36 @@ mod tests {
     /// system it names by name.
     #[test]
     fn the_oracle_decides_the_known_unsat_toys() {
-        for name in
-            ["unsat-direct", "unsat-box", "unsat-cycle", "unsat-fractional-margin", "unsat-box-widening"]
-        {
+        for name in [
+            "unsat-direct",
+            "unsat-box",
+            "unsat-cycle",
+            "unsat-fractional-margin",
+            "unsat-integer-only",
+            "unsat-box-widening",
+        ] {
             assert!(
                 matches!(verdict(name), Verdict::Unsat { .. }),
                 "{name} is infeasible, got {}",
                 verdict(name).name(),
             );
         }
+    }
+
+    /// The OTHER admitted certificate shape. `unsat-integer-only` is feasible
+    /// over the rationals (`w_S1 = 1/2`), so no Farkas combination exists and
+    /// §5.4's enumeration re-derivation is the only route to the verdict.
+    #[test]
+    fn an_integer_only_infeasibility_inside_the_budget_ships_an_enumeration() {
+        let sys = toys::named("unsat-integer-only").expect("registered");
+        let Verdict::Unsat { certificate: Certificate::Enumeration { support, points } } =
+            decide(&sys)
+        else {
+            panic!("this system has no Farkas certificate; the enumeration is the only route");
+        };
+        assert_eq!(support, vec![col("S1")], "the support is the one column the rows read");
+        assert_eq!(points, 2 * BOX_LIMIT as u128 + 1, "every integer in the box was tried");
+        assert!(points <= ENUMERATION_BUDGET);
     }
 
     /// The three-row cycle no pair of rows contradicts — the cell that proves
