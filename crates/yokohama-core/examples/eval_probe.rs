@@ -60,6 +60,19 @@
 //! measurement artifact and not a strength claim, so it runs diagnostic; the
 //! header says which, always.
 //!
+//! # The V4 candidate columns (§7 step 3)
+//!
+//! Beside the corpus work above, this instrument carries the eighteen §3.2
+//! CANDIDATE COLUMNS in probe space — `candidate_columns` is the adapter
+//! `pair_fixtures::CandidateColumns` was declared to receive, and `pairs` dumps
+//! the frozen fixture package with all thirty-four delta rows real. Nothing
+//! here fits or generates anything; `Feature::ALL` is unmoved at sixteen until
+//! step 8. The step-2 close handover's cross-checks over that package — the
+//! declared candidate levels, O1's registered pool and floors, §5.1's
+//! expected-nonzero rule on the candidate axis, family 5's audit properties and
+//! family 11's congruence — are the cells at the bottom of this file, and they
+//! run under this example's own test command and no other.
+//!
 //! ```text
 //! cargo run --release -p yokohama-core --example eval_probe -- \
 //!     run 2 2000 --contestant greedy-v1 --master 0xE7A1202607270001
@@ -68,6 +81,7 @@
 //! cargo run --release -p yokohama-core --example eval_probe -- \
 //!     run 2 400 --contestant lookahead-v1 --master 0xE7A1202608090001
 //! cargo run --release -p yokohama-core --example eval_probe -- table
+//! cargo run --release -p yokohama-core --example eval_probe -- pairs --pair "4(c)"
 //! ```
 //!
 //! Its own statistics are unit-tested: `cargo test -p yokohama-core --example
