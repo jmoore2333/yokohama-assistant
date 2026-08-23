@@ -3630,8 +3630,8 @@ mod tests {
     };
     use yokohama_core::{
         apply_move, get_legal_moves, is_game_over, AchievementCard, AchievementType, ChurchSlot,
-        ChurchTrack, CustomsSlot, CustomsTrack, GameConfig, OrderCardId, StartingOrderChoice,
-        TechCardId, VisiblePlayer,
+        ChurchTrack, CustomsSlot, CustomsTrack, GameConfig, HandCard, OrderCardId,
+        StartingOrderChoice, TechCardId,
     };
 
     /// W1-C review NOTE-3: `worlds` and `retreat_samples` are ADJACENT `u8`
@@ -5756,5 +5756,362 @@ mod tests {
             "these label pairs read identically at every registered cell, so the adapter could \
              swap their arms undetected: {never_separated:?}",
         );
+    }
+
+    /// One side's candidate vector, in the SUBJECT's own value and the
+    /// OPPONENT's, both as read from the subject's view.
+    ///
+    /// Two vectors rather than the report's single differenced row because
+    /// §5.2's registrations are written in BOTH currencies and the distinction
+    /// is load-bearing: a declared LEVEL ("O2 = 5 on both sides") is the
+    /// subject's own value, while a declared DELTA ("the DIFFERENCED ΔO1 = 15")
+    /// is the relative form the solve row reads. Checking a level against a
+    /// relative row would pass wherever the opponent happens to read 0 and fail
+    /// wherever it does not, for reasons that have nothing to do with the
+    /// registration.
+    fn candidate_pair(
+        fixture: &PairFixture,
+        side: Side,
+        rules: &Rules,
+    ) -> ([i64; CandidateFeature::COUNT], [i64; CandidateFeature::COUNT]) {
+        let view = fixture.view(side);
+        let subject = fixture.subject();
+        let mut own = [0i64; CandidateFeature::COUNT];
+        let mut theirs = [0i64; CandidateFeature::COUNT];
+        for label in CandidateFeature::ALL {
+            let read = |seat: Option<&VisiblePlayer>| {
+                seat.map_or(0, |p| {
+                    candidate_columns(view, p, label, rules).expect("the adapter never declines")
+                })
+            };
+            own[label.index()] = read(view.players.iter().find(|p| p.id == subject));
+            theirs[label.index()] =
+                read(view.players.iter().find(|p| p.id != subject && !p.id.is_dummy()));
+        }
+        (own, theirs)
+    }
+
+    /// A registered scalar by key.
+    fn param(decl: &PairDeclaration, key: &str) -> Option<i64> {
+        decl.parameters.iter().find(|(k, _)| *k == key).map(|(_, v)| *v)
+    }
+
+    /// The candidate label a `<label>_<side>` parameter key names, e.g. `"o2"`.
+    fn label_named(prefix: &str) -> Option<CandidateFeature> {
+        CandidateFeature::ALL.into_iter().find(|c| c.label().eq_ignore_ascii_case(prefix))
+    }
+
+    /// **CARRY 6 — THE DECLARED CANDIDATE LEVELS, computed.**
+    ///
+    /// The step-2 close named this the highest-leverage cross-check for one
+    /// reason: until this commit no code in the repo computed a candidate
+    /// column, so every level a registration declares — 4(a)'s "O2 1 against
+    /// 0", 4(b)'s "O2 5 both sides", 4(e)'s "O5 4 against 0" — was a REGISTERED
+    /// PREDICTION, re-derived by hand from §3.2's cards and checked by nothing.
+    /// 11(d)'s own note says so in as many words: "no code computes O5 until
+    /// step 3 … Step 3's candidate columns VERIFY it; until then it is a
+    /// registered prediction, and this note is where a mismatch would be
+    /// caught."
+    ///
+    /// **NOTHING IS RE-TYPED HERE.** The expected numbers are read out of the
+    /// registrations' own `parameters`, by a KEY GRAMMAR rather than by a table
+    /// this cell carries: `<label>_greater` / `<label>_lesser` /
+    /// `<label>_both_sides`, plus 4(f)'s before/after axis. A transcription
+    /// table would be a third copy of the levels, free to drift from both the
+    /// registration and the formula; reading the registry means a level can
+    /// only change by moving the digest.
+    ///
+    /// **4(f)'S BEFORE/AFTER ORIENTATION IS CHECKED, NOT ASSUMED.** Its axis is
+    /// the take, not the card, so "after" has to be mapped onto a side. The
+    /// registration also declares `hand_before` / `hand_after`, and the mapping
+    /// is accepted only when the realized hand sizes agree with it — the
+    /// fixture is the witness for the orientation its own levels are read at.
+    ///
+    /// The sweep is the WHOLE REGISTRY, not family 4 alone: the grammar costs
+    /// nothing outside it and 10(d) declares `x3_greater` / `x3_lesser` on
+    /// exactly the same shape.
+    #[test]
+    fn every_registered_candidate_level_is_what_the_columns_compute() {
+        let rules = Rules::standard();
+        let fixtures = every_registered_fixture(&rules);
+        let mut checked = 0usize;
+        let mut family_four = 0usize;
+        println!(
+            "{:<8} {:<6} {:<28} {:>9} {:>9}",
+            "pair", "stage", "declared level", "greater", "lesser",
+        );
+        for (decl, fixture) in &fixtures {
+            let (g_own, _) = candidate_pair(fixture, Side::Greater, &rules);
+            let (l_own, _) = candidate_pair(fixture, Side::Lesser, &rules);
+
+            // 4(f)'s orientation witness, where the registration carries one.
+            let hands_confirm_after_is_greater = match (
+                param(decl, "hand_before"),
+                param(decl, "hand_after"),
+            ) {
+                (Some(before), Some(after)) => {
+                    let size = |side| fixture.view(side).players.iter()
+                        .find(|p| p.id == fixture.subject())
+                        .map_or(0, |p| p.hand.len() as i64);
+                    assert_eq!(
+                        (size(Side::Lesser), size(Side::Greater)),
+                        (before, after),
+                        "{}: the registered before/after hand sizes do not match the realized \
+                         sides, so `_before`/`_after` cannot be oriented",
+                        decl.id,
+                    );
+                    true
+                }
+                _ => false,
+            };
+
+            for (key, declared) in decl.parameters {
+                let Some((prefix, suffix)) = key.split_once('_') else { continue };
+                let Some(label) = label_named(prefix) else { continue };
+                let sides: &[(Side, &str)] = match suffix {
+                    "greater" => &[(Side::Greater, "greater")],
+                    "lesser" => &[(Side::Lesser, "lesser")],
+                    "both_sides" => &[(Side::Greater, "greater"), (Side::Lesser, "lesser")],
+                    "after" if hands_confirm_after_is_greater => &[(Side::Greater, "greater")],
+                    "before" if hands_confirm_after_is_greater => &[(Side::Lesser, "lesser")],
+                    _ => panic!(
+                        "{}: `{key}` names {} but no side this cell can orient — a new level \
+                         spelling needs an arm here, never a silent skip",
+                        decl.id,
+                        label.label(),
+                    ),
+                };
+                for (side, name) in sides {
+                    let computed = match side {
+                        Side::Greater => g_own[label.index()],
+                        Side::Lesser => l_own[label.index()],
+                    };
+                    assert_eq!(
+                        computed, *declared,
+                        "{} at {}: the registration declares `{key}` = {declared} for the {name} \
+                         side, and the computed {} column reads {computed}. THIS IS A STOP: a \
+                         declared level and its formula disagree.",
+                        decl.id,
+                        fixture.stage().name(),
+                        label.label(),
+                    );
+                }
+                println!(
+                    "{:<8} {:<6} {:<28} {:>9} {:>9}",
+                    decl.id,
+                    fixture.stage().name(),
+                    format!("{key} = {declared}"),
+                    g_own[label.index()],
+                    l_own[label.index()],
+                );
+                checked += 1;
+                if decl.family == 4 {
+                    family_four += 1;
+                }
+            }
+        }
+        // ANTI-VACUITY, MEASURED THEN PINNED: the grammar matched the whole
+        // registry's supply of level keys — family 4's sixteen across its
+        // endpoints (4(b) declares three at each of its two), plus 10(d)'s two.
+        assert_eq!(checked, 18, "the level grammar matched {checked} keys, not the registry's 18");
+        assert_eq!(family_four, 16, "family 4 declares 16 of them across its endpoints");
+    }
+
+    /// **CARRY 6, the half §5.2 wrote in PROSE.** Four family-4 registrations
+    /// declare candidate levels in their notes rather than in `parameters` —
+    /// 4(c)'s "O2 reads 4 on both sides", 4(g)'s "O6 is therefore the SOLE
+    /// mover — 1 against 0" — and a level that lives only in a sentence is
+    /// exactly the level a formula can contradict without anything noticing.
+    ///
+    /// This table IS a transcription, which the parameter sweep above
+    /// deliberately is not, so every row carries the words it transcribes. The
+    /// alternative — leaving the prose levels unchecked because checking them
+    /// costs a copy — would leave the carrier of 4(g) and the whole O2/O3
+    /// equalization of 4(c) and 4(e) resting on nothing.
+    #[test]
+    fn the_family_four_levels_registered_in_prose_are_what_the_columns_compute() {
+        use CandidateFeature::{
+            ExecutableOrders, FlagIconMarginal, HeldOrderIcons, MatchedProductionAccess,
+            OrderMatchedGoods,
+        };
+        // (pair, label, greater, lesser, the note this row transcribes)
+        let declared: &[(&str, CandidateFeature, i64, i64, &str)] = &[
+            // 4(a) note 4: "O6: both icon-free. O5: … every attainable marginal
+            // is 0 on both sides"; note 5: "X3 IS 0 ON BOTH SIDES BECAUSE THE
+            // SEAT STANDS NOWHERE."
+            ("4(a)", HeldOrderIcons, 0, 0, "O6: both icon-free"),
+            ("4(a)", FlagIconMarginal, 0, 0, "every attainable marginal is 0 on both sides"),
+            ("4(a)", MatchedProductionAccess, 0, 0, "X3 IS 0 ON BOTH SIDES"),
+            // 4(c) note 5: "At one of each, every leg of the shared (3, 3, 3, 2)
+            // vector is stock-capped and O2 reads 4 on both sides. Nothing is
+            // executable at one of each … so O3 is 0 on both sides".
+            ("4(c)", OrderMatchedGoods, 4, 4, "O2 reads 4 on both sides"),
+            ("4(c)", ExecutableOrders, 0, 0, "O3 is 0 on both sides"),
+            // 4(e) note 1: "Zero trade-good stocks (O2 = O3 = 0) … O6 equal
+            // (0 both)"; and "NO own assistant at any production area
+            // (S1 = X3 = 0 …)".
+            ("4(e)", OrderMatchedGoods, 0, 0, "Zero trade-good stocks (O2 = O3 = 0)"),
+            ("4(e)", ExecutableOrders, 0, 0, "Zero trade-good stocks (O2 = O3 = 0)"),
+            ("4(e)", HeldOrderIcons, 0, 0, "O6 equal (0 both)"),
+            ("4(e)", MatchedProductionAccess, 0, 0, "S1 = X3 = 0"),
+            // 4(f) note 6: "O3 AND O6 ARE HELD AT 0 BY THE REGISTERED CARDS …
+            // O5 is 0 on both sides".
+            ("4(f)", ExecutableOrders, 0, 0, "O3 AND O6 ARE HELD AT 0"),
+            ("4(f)", HeldOrderIcons, 0, 0, "O3 AND O6 ARE HELD AT 0"),
+            ("4(f)", FlagIconMarginal, 0, 0, "O5 is 0 on both sides"),
+            // 4(g)'s doc: "O6 is therefore the SOLE mover — 1 against 0 — with
+            // O2 and O3 held at 0 by the registered zero stocks and O5 held at
+            // 0 by the empty realized set".
+            ("4(g)", HeldOrderIcons, 1, 0, "O6 is therefore the SOLE mover — 1 against 0"),
+            ("4(g)", OrderMatchedGoods, 0, 0, "O2 and O3 held at 0 by the registered zero stocks"),
+            ("4(g)", ExecutableOrders, 0, 0, "O2 and O3 held at 0 by the registered zero stocks"),
+            ("4(g)", FlagIconMarginal, 0, 0, "O5 held at 0 by the empty realized set"),
+        ];
+
+        let rules = Rules::standard();
+        let fixtures = every_registered_fixture(&rules);
+        let mut seen = 0usize;
+        for (decl, fixture) in &fixtures {
+            let (g_own, _) = candidate_pair(fixture, Side::Greater, &rules);
+            let (l_own, _) = candidate_pair(fixture, Side::Lesser, &rules);
+            for (id, label, g, l, note) in declared {
+                if *id != decl.id {
+                    continue;
+                }
+                assert_eq!(
+                    (g_own[label.index()], l_own[label.index()]),
+                    (*g, *l),
+                    "{id} at {}: §5.2 registers {} as ({g}, {l}) — \"{note}\" — and the computed \
+                     columns read ({}, {}). THIS IS A STOP.",
+                    fixture.stage().name(),
+                    label.label(),
+                    g_own[label.index()],
+                    l_own[label.index()],
+                );
+                seen += 1;
+            }
+        }
+        // Every transcribed row found its fixture; 4(g) declares both endpoints
+        // and is therefore checked twice.
+        assert_eq!(seen, declared.len() + 4, "{seen} rows matched a fixture");
+    }
+
+    /// **CARRY 6's ARITHMETIC HALF — O1's unseen pool against the frozen
+    /// package.**
+    ///
+    /// 4(c) and 4(d) are the two registrations that write O1's estimator out in
+    /// numbers: a pool SIZE, an OPPONENT FLOOR per side, and the differenced
+    /// row those two produce. The charter calls this the cross-validation that
+    /// matters because it checks the pool against the REGISTERED package rather
+    /// than against `observe` — `ViewContext`'s two accumulators are re-derived
+    /// from the view, and if they counted a card the registration says is boxed
+    /// (or missed one it says is face-up) the floor would move and nothing else
+    /// in the suite would say so.
+    ///
+    /// The identity 4(c) states — `ΔO1 = Δfaces + Δfloor_own − Δfloor_opp` — is
+    /// checked TERM BY TERM rather than as one subtraction that comes out
+    /// right. `Δfloor_own` is 0 by construction on both pairs, and that is the
+    /// term with a structural witness: the subject's hand carries no masked
+    /// slot at all, so there is no own-side floor read to difference.
+    #[test]
+    fn the_registered_order_pools_and_floors_are_what_the_view_context_derives() {
+        let rules = Rules::standard();
+        let fixtures = every_registered_fixture(&rules);
+        let mut checked = 0usize;
+        for (decl, fixture) in &fixtures {
+            let (Some(pool), Some(floor_g), Some(floor_l), Some(delta_o1)) = (
+                param(decl, "pool_cards"),
+                param(decl, "greater_opponent_floor"),
+                param(decl, "lesser_opponent_floor"),
+                param(decl, "differenced_delta_o1"),
+            ) else {
+                continue;
+            };
+
+            let mut faces = [0i64; 2];
+            let mut opponent = [0i64; 2];
+            for (i, side) in [Side::Greater, Side::Lesser].into_iter().enumerate() {
+                let view = fixture.view(side);
+                let context = ScoreStructure::derive(view, &rules).context;
+                assert_eq!(
+                    i64::from(context.unseen_orders),
+                    pool,
+                    "{} {}: the registration declares a {pool}-card unseen pool and the context \
+                     derives {}",
+                    decl.id,
+                    side.name(),
+                    context.unseen_orders,
+                );
+                let declared_floor = if i == 0 { floor_g } else { floor_l };
+                assert_eq!(
+                    context.unseen_order_floor(),
+                    declared_floor,
+                    "{} {}: the registration declares an opponent floor of {declared_floor} and \
+                     `unseen_order_floor` reads {}. THIS IS A STOP.",
+                    decl.id,
+                    side.name(),
+                    context.unseen_order_floor(),
+                );
+                // `Δfloor_own = 0` has a structural witness, not an arithmetic
+                // one: the subject reads no floor because it holds no masked
+                // slot. Where the registration states the term, it says 0.
+                let subject = view
+                    .players
+                    .iter()
+                    .find(|p| p.id == fixture.subject())
+                    .expect("the subject has a row in its own view");
+                assert!(
+                    !subject.hand.iter().any(|c| matches!(c, HandCard::HiddenStartingOrder)),
+                    "{} {}: the subject carries a masked slot, so Δfloor_own is not structurally 0",
+                    decl.id,
+                    side.name(),
+                );
+                if let Some(own_floor) = param(decl, "subject_own_floor_both_sides") {
+                    assert_eq!(own_floor, 0, "{}: the registered own-side floor", decl.id);
+                }
+                let (own, theirs) = candidate_pair(fixture, side, &rules);
+                faces[i] = own[CandidateFeature::HeldOrderValue.index()];
+                opponent[i] = theirs[CandidateFeature::HeldOrderValue.index()];
+            }
+
+            // The opponent's whole O1 IS its masked slot on both pairs, which
+            // is what makes `Δfloor_opp` and the opponent's own row the same
+            // number — stated as an assert so a future fixture that gave the
+            // opponent a Known card would fail here rather than quietly
+            // redefining the identity's third term.
+            assert_eq!(
+                (opponent[0], opponent[1]),
+                (floor_g, floor_l),
+                "{}: the opponent's O1 is not its masked slot alone",
+                decl.id,
+            );
+            let delta_faces = faces[0] - faces[1];
+            let delta_floor_own = 0i64;
+            let delta_floor_opp = floor_g - floor_l;
+            assert_eq!(
+                delta_faces + delta_floor_own - delta_floor_opp,
+                delta_o1,
+                "{}: ΔO1 = Δfaces + Δfloor_own − Δfloor_opp",
+                decl.id,
+            );
+            // And the identity's value is the row the solve actually reads.
+            let relative = (faces[0] - opponent[0]) - (faces[1] - opponent[1]);
+            assert_eq!(relative, delta_o1, "{}: the differenced relative O1 row", decl.id);
+            println!(
+                "{:<8} pool {pool}  floors {floor_g}/{floor_l}  faces {}/{}  ΔO1 {delta_o1}",
+                decl.id, faces[0], faces[1],
+            );
+            checked += 1;
+
+            // Where the registration also names the hand's face total per side,
+            // that IS the subject's own O1 — every card in the subject's hand
+            // is Known to it.
+            if let (Some(g), Some(l)) =
+                (param(decl, "greater_hand_faces"), param(decl, "lesser_hand_faces"))
+            {
+                assert_eq!((faces[0], faces[1]), (g, l), "{}: the registered hand faces", decl.id);
+            }
+        }
+        assert_eq!(checked, 2, "4(c) and 4(d) are the two registrations that write the pool out");
     }
 }
