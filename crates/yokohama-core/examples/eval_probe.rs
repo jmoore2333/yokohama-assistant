@@ -6933,4 +6933,147 @@ mod tests {
         // The narrowings that ARE spelled correctly resolve.
         assert!(cmd_pairs(&[arg("--pair"), arg("4(c)"), arg("--manifest")]).is_ok());
     }
+
+    // -----------------------------------------------------------------------
+    // §5.3 Part A — the collision instrument
+    // -----------------------------------------------------------------------
+
+    /// **THE SIGNATURE'S CURRENCY** — §5.3 signs a view with
+    /// `(exact progress_ppm, Δv over the 34 features)`, and this cell says which
+    /// Δv that is by deriving the pair's whole delta table from the two SIDE
+    /// signatures alone.
+    ///
+    /// The reading the instrument implements: `Δv` is the MOVER-RELATIVE vector
+    /// `mine − theirs` of ONE view, so a pair's registered delta row is the
+    /// DIFFERENCE of its two sides' signatures. If the currency were the
+    /// subject's own levels instead, this subtraction would reproduce the delta
+    /// table only where the opponent happens to read equal on both sides — which
+    /// is most rows, and exactly why the check runs over the whole registry
+    /// rather than a sample.
+    ///
+    /// Both halves are checked against surfaces that do not go through
+    /// [`signature`]: the sixteen incumbents against `PairFixture::incumbent_delta`
+    /// (core's own public arithmetic) and the eighteen candidates against
+    /// [`candidate_pair`], the two-currency helper carry 3 and carry 6 already
+    /// read the registry with.
+    #[test]
+    fn the_signature_difference_across_a_pair_is_the_registered_delta_table() {
+        let rules = Rules::standard();
+        let fixtures = every_registered_fixture(&rules);
+        assert_eq!(fixtures.len(), 53, "the frozen package realizes 53 (pair, stage) fixtures");
+
+        let mut rows = 0usize;
+        for (decl, fixture) in &fixtures {
+            let subject = fixture.subject();
+            let g = signature(fixture.view(Side::Greater), subject, &rules)
+                .unwrap_or_else(|e| panic!("{} greater: {e}", decl.id));
+            let l = signature(fixture.view(Side::Lesser), subject, &rules)
+                .unwrap_or_else(|e| panic!("{} lesser: {e}", decl.id));
+
+            let incumbent = fixture.incumbent_delta(&rules);
+            for f in Feature::ALL {
+                let slot = FeatureId::Incumbent(f).index();
+                assert_eq!(
+                    g.dv[slot] - l.dv[slot],
+                    incumbent[f.index()],
+                    "{} {}: incumbent {} — the signature difference is not the delta row",
+                    decl.id,
+                    fixture.stage().name(),
+                    f.name(),
+                );
+                rows += 1;
+            }
+
+            let (g_own, g_theirs) = candidate_pair(fixture, Side::Greater, &rules);
+            let (l_own, l_theirs) = candidate_pair(fixture, Side::Lesser, &rules);
+            for c in CandidateFeature::ALL {
+                let slot = FeatureId::Candidate(c).index();
+                let expected = (g_own[c.index()] - g_theirs[c.index()])
+                    - (l_own[c.index()] - l_theirs[c.index()]);
+                assert_eq!(
+                    g.dv[slot] - l.dv[slot],
+                    expected,
+                    "{} {}: candidate {} — the signature difference is not the delta row",
+                    decl.id,
+                    fixture.stage().name(),
+                    c.label(),
+                );
+                rows += 1;
+            }
+
+            // The other half of the signature: the endpoint's exact ppm, taken
+            // from the view rather than from the declared endpoint label.
+            assert_eq!(g.ppm, fixture.progress_ppm(&rules), "{}: greater ppm", decl.id);
+            assert_eq!(
+                l.ppm,
+                progress_ppm(fixture.view(Side::Lesser), &rules),
+                "{}: lesser ppm",
+                decl.id,
+            );
+        }
+        assert_eq!(rows, 53 * 34, "the sweep must cover every row of every fixture");
+    }
+
+    /// **THE SEAT CONVENTION IS LOAD-BEARING** — the other seat's signature of
+    /// the same position is NOT the mover's with the signs flipped.
+    ///
+    /// §5.3 signs "from the MOVER's view", and this cell is why that phrase
+    /// cannot be dropped as a formality. Re-signing all 106 registered states
+    /// from the OPPONENT's seat (its own masked view, its own differencing)
+    /// leaves the exact-`ppm` half untouched — progress is public-board-derived
+    /// — and moves a NAMED set of axis rows off the negation a reader would
+    /// assume. The set is MEASURED here and asserted as a set: a column joining
+    /// or leaving it is a finding about the columns, not about this test.
+    #[test]
+    fn the_other_seats_signature_is_not_the_movers_negated() {
+        let rules = Rules::standard();
+        let fixtures = every_registered_fixture(&rules);
+
+        let mut asymmetric: BTreeMap<&'static str, usize> = BTreeMap::new();
+        let mut sides = 0usize;
+        for (decl, fixture) in &fixtures {
+            for side in [Side::Greater, Side::Lesser] {
+                let state = fixture.state(side);
+                let mover = fixture.subject();
+                let opponent = fixture
+                    .view(side)
+                    .players
+                    .iter()
+                    .find(|p| p.id != mover && !p.id.is_dummy())
+                    .map(|p| p.id)
+                    .expect("a 2P fixture has one non-dummy opponent");
+
+                let mine = signature(fixture.view(side), mover, &rules)
+                    .unwrap_or_else(|e| panic!("{} {}: {e}", decl.id, side.name()));
+                let theirs = signature(
+                    &observe(state, opponent).expect("the opponent seat observes"),
+                    opponent,
+                    &rules,
+                )
+                .unwrap_or_else(|e| panic!("{} {} opponent: {e}", decl.id, side.name()));
+
+                assert_eq!(
+                    mine.ppm,
+                    theirs.ppm,
+                    "{} {}: progress is public and must not depend on the seat asking",
+                    decl.id,
+                    side.name(),
+                );
+                for slot in FeatureId::all() {
+                    if theirs.dv[slot.index()] != -mine.dv[slot.index()] {
+                        *asymmetric.entry(slot.label()).or_default() += 1;
+                    }
+                }
+                sides += 1;
+            }
+        }
+        assert_eq!(sides, 106, "the frozen package realizes 106 sides");
+
+        let labels: Vec<&str> = asymmetric.keys().copied().collect();
+        assert_eq!(
+            labels,
+            vec!["O1", "O2", "O3", "O5", "O6", "X3"],
+            "the view-asymmetric rows have changed (counts: {asymmetric:?})",
+        );
+    }
 }
