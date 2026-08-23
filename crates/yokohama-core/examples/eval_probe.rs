@@ -117,9 +117,9 @@ use yokohama_core::game::pair_fixtures::{
 };
 use yokohama_core::{
     agent_stream_seed, apply_move, finalize_setup, get_legal_moves, new_game, observe, replay_from,
-    run_arena_game, run_raw_game, ArenaAgent, ArenaGameStats, Contestant, GameState, Move, PlayerId,
-    PlayerView, QuantileSketch, RolloutPolicy, Rules, SeedSchedule, SeedScheduleKind, Slot,
-    TriggerTally, VisiblePlayer, WorldSeed, SEMANTICS_REV,
+    run_arena_game, run_raw_game, AchievementType, ArenaAgent, ArenaGameStats, Contestant,
+    GameState, Move, PlayerId, PlayerView, QuantileSketch, RolloutPolicy, Rules, SeedSchedule,
+    SeedScheduleKind, Slot, TriggerTally, VisiblePlayer, WorldSeed, SEMANTICS_REV,
 };
 
 const USAGE: &str = "\
@@ -223,6 +223,19 @@ usage: eval_probe <subcommand> [options]
                        named one is skipped, and the count says so)
         --manifest     the registry manifest alone, no reports
 
+  collinearity <players> <games> [--contestant <name>] [--weights v1|v2|pre-freeze]
+                                [--master <u64> | --os-entropy]
+                                [--invariants | --no-invariants]
+      §5.5's COLLINEARITY DIAGNOSTIC, before any fit and fitting nothing.
+      Generates a 2P corpus and reports, over the FULL 34-column matrix in the
+      RELATIVE currency: per-column ranges and scales (in BOTH currencies),
+      candidate x candidate and candidate x incumbent correlations, §2's
+      declared clusters realized, the E1/Money10 read POOLED and CONDITIONED on
+      the drawn Category-B card, each candidate's VIF against the retained set
+      per stage tercile and pooled, and §8's collinear flags. 2P only: at 3-4P
+      `opponent_extreme` orients by weight, which would make a weight-free
+      diagnostic a statement about the incumbent weights instead.
+
   collision [--fixtures-only] [--no-generated] [--no-tie]
       The §5.3 PART A collision test, weight-free. Signs every registered gate
       pair's SIDES and every non-terminal successor of the §6 root set with
@@ -273,6 +286,7 @@ fn main() {
         Some("table") => cmd_table(&args[1..]),
         Some("pairs") => cmd_pairs(&args[1..]),
         Some("collision") => cmd_collision(&args[1..]),
+        Some("collinearity") => cmd_collinearity(&args[1..]),
         _ => Err(USAGE.to_string()),
     };
     if let Err(message) = result {
@@ -2228,6 +2242,36 @@ fn drive_honest(
 /// from exactly the states the recorded game passed through — the same fold
 /// `replay`/`replay_strict` use, one event at a time, so this instrument cannot
 /// have its own idea of what a game did.
+/// Pass 1 of a game's fold: replay the record and keep the TURN-START states.
+///
+/// Cheap in memory next to the fold itself (a few dozen clones per game) and it
+/// buys the POST-HOC label: the tercile of a turn is not knowable until the
+/// game's turn count is. Shared by the AUC fold and §5.5's, so the two read the
+/// same population of the same games.
+fn turn_start_states(
+    stats: &ArenaGameStats,
+    rules: &Rules,
+    game: u32,
+) -> Result<Vec<GameState>, String> {
+    let record = &stats.record;
+    let pending = new_game(record.config.clone(), rules, record.seed)
+        .map_err(|e| format!("replay setup at game {game}: {e}"))?;
+    let mut state = finalize_setup(pending, &record.choices)
+        .map_err(|e| format!("replay finalize at game {game}: {e}"))?;
+
+    let mut starts: Vec<GameState> = vec![state.clone()];
+    let mut last_turn = state.turn_number;
+    for (i, event) in record.events.iter().enumerate() {
+        state = replay_from(&state, std::slice::from_ref(event), rules)
+            .map_err(|e| format!("replay game {game} event {i}: {e}"))?;
+        if state.turn_number != last_turn {
+            last_turn = state.turn_number;
+            starts.push(state.clone());
+        }
+    }
+    Ok(starts)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn snapshot_game(
     stats: &ArenaGameStats,
@@ -2239,25 +2283,7 @@ fn snapshot_game(
     game: u32,
     corpus: &mut Corpus,
 ) -> Result<(), String> {
-    let record = &stats.record;
-    let pending = new_game(record.config.clone(), rules, record.seed)
-        .map_err(|e| format!("replay setup at game {game}: {e}"))?;
-    let mut state = finalize_setup(pending, &record.choices)
-        .map_err(|e| format!("replay finalize at game {game}: {e}"))?;
-
-    // Pass 1: collect the turn-start states. Cheap in memory next to the fold
-    // itself (a few dozen clones per game) and it buys the POST-HOC label: the
-    // tercile of a turn is not knowable until the game's turn count is.
-    let mut starts: Vec<GameState> = vec![state.clone()];
-    let mut last_turn = state.turn_number;
-    for (i, event) in record.events.iter().enumerate() {
-        state = replay_from(&state, std::slice::from_ref(event), rules)
-            .map_err(|e| format!("replay game {game} event {i}: {e}"))?;
-        if state.turn_number != last_turn {
-            last_turn = state.turn_number;
-            starts.push(state.clone());
-        }
-    }
+    let starts = turn_start_states(stats, rules, game)?;
 
     // Pass 2: one accumulator per (seat, stage), folded at the end.
     let turns = starts.len();
@@ -4525,6 +4551,650 @@ game-3 OSE exhibit  PENDING — the re-scoped opponent-sitting-executable read i
                     successor set is OWED before step 5's OSE gate
 escrow band {8..16} UNREAD by construction (§6's burn rule): this run asks for the
                     development ordinals {0..4} and nothing above";
+
+// ---------------------------------------------------------------------------
+// §5.5 — the collinearity diagnostic, before any fit
+// ---------------------------------------------------------------------------
+
+/// The sufficient statistics for one bucket of §5.5's matrix.
+///
+/// Sums and cross-products rather than retained rows: the corpus is ~160,000
+/// (snapshot × seat) observations of 34 columns and every figure §5.5 asks for
+/// — correlations, VIF, per-column ranges — is a function of `n`, `Σx`, `Σxx'`
+/// and the extrema. Keeping the rows would buy nothing and cost 40MB per
+/// bucket.
+///
+/// TWO CURRENCIES are accumulated. The Gram matrix is RELATIVE (`mine −
+/// theirs`), because that is the vector a weight multiplies and therefore the
+/// one whose collinearity threatens a fit. The RANGES are kept in both, because
+/// the question the ranges answer — "what scale is this column on, next to the
+/// box |w| ≤ 64?" — is asked of the raw column as often as of the differenced
+/// one, and step 3's handover recorded the units as "wildly different" without
+/// measuring them.
+#[derive(Clone)]
+struct ColumnStats {
+    n: u64,
+    /// `Σx` in the relative currency.
+    sum: Vec<f64>,
+    /// `Σ x_i x_j` for `i ≤ j`, relative, row-major over the upper triangle.
+    gram: Vec<f64>,
+    rel_min: Vec<i64>,
+    rel_max: Vec<i64>,
+    own_sum: Vec<f64>,
+    own_sumsq: Vec<f64>,
+    own_min: Vec<i64>,
+    own_max: Vec<i64>,
+}
+
+/// Index into the packed upper triangle, `i ≤ j`.
+fn tri(i: usize, j: usize) -> usize {
+    let (i, j) = if i <= j { (i, j) } else { (j, i) };
+    i * AXIS_WIDTH - i * (i + 1) / 2 + j
+}
+
+impl ColumnStats {
+    fn new() -> Self {
+        Self {
+            n: 0,
+            sum: vec![0.0; AXIS_WIDTH],
+            gram: vec![0.0; AXIS_WIDTH * (AXIS_WIDTH + 1) / 2],
+            rel_min: vec![i64::MAX; AXIS_WIDTH],
+            rel_max: vec![i64::MIN; AXIS_WIDTH],
+            own_sum: vec![0.0; AXIS_WIDTH],
+            own_sumsq: vec![0.0; AXIS_WIDTH],
+            own_min: vec![i64::MAX; AXIS_WIDTH],
+            own_max: vec![i64::MIN; AXIS_WIDTH],
+        }
+    }
+
+    fn observe(&mut self, rel: &[i64; AXIS_WIDTH], own: &[i64; AXIS_WIDTH]) {
+        self.n += 1;
+        for i in 0..AXIS_WIDTH {
+            let xi = rel[i] as f64;
+            self.sum[i] += xi;
+            self.rel_min[i] = self.rel_min[i].min(rel[i]);
+            self.rel_max[i] = self.rel_max[i].max(rel[i]);
+            for (j, value) in rel.iter().enumerate().skip(i) {
+                self.gram[tri(i, j)] += xi * *value as f64;
+            }
+            let oi = own[i] as f64;
+            self.own_sum[i] += oi;
+            self.own_sumsq[i] += oi * oi;
+            self.own_min[i] = self.own_min[i].min(own[i]);
+            self.own_max[i] = self.own_max[i].max(own[i]);
+        }
+    }
+
+    fn merge(&mut self, other: &Self) {
+        self.n += other.n;
+        for i in 0..AXIS_WIDTH {
+            self.sum[i] += other.sum[i];
+            self.rel_min[i] = self.rel_min[i].min(other.rel_min[i]);
+            self.rel_max[i] = self.rel_max[i].max(other.rel_max[i]);
+            self.own_sum[i] += other.own_sum[i];
+            self.own_sumsq[i] += other.own_sumsq[i];
+            self.own_min[i] = self.own_min[i].min(other.own_min[i]);
+            self.own_max[i] = self.own_max[i].max(other.own_max[i]);
+        }
+        for (target, value) in self.gram.iter_mut().zip(other.gram.iter()) {
+            *target += value;
+        }
+    }
+
+    fn mean(&self, i: usize) -> f64 {
+        if self.n == 0 {
+            return 0.0;
+        }
+        self.sum[i] / self.n as f64
+    }
+
+    /// Population covariance in the relative currency.
+    fn cov(&self, i: usize, j: usize) -> f64 {
+        if self.n == 0 {
+            return 0.0;
+        }
+        self.gram[tri(i, j)] / self.n as f64 - self.mean(i) * self.mean(j)
+    }
+
+    fn sd(&self, i: usize) -> f64 {
+        self.cov(i, i).max(0.0).sqrt()
+    }
+
+    /// `None` where either column never moves — a constant column has no
+    /// correlation, and reporting one as 0 would read as "measured independent"
+    /// rather than "not measurable".
+    fn corr(&self, i: usize, j: usize) -> Option<f64> {
+        let (si, sj) = (self.sd(i), self.sd(j));
+        if si <= COLUMN_MOVES || sj <= COLUMN_MOVES {
+            return None;
+        }
+        Some((self.cov(i, j) / (si * sj)).clamp(-1.0, 1.0))
+    }
+
+    fn own_mean(&self, i: usize) -> f64 {
+        if self.n == 0 {
+            return 0.0;
+        }
+        self.own_sum[i] / self.n as f64
+    }
+
+    fn own_sd(&self, i: usize) -> f64 {
+        if self.n == 0 {
+            return 0.0;
+        }
+        let m = self.own_mean(i);
+        (self.own_sumsq[i] / self.n as f64 - m * m).max(0.0).sqrt()
+    }
+}
+
+/// A column below this standard deviation is CONSTANT for §5.5's purposes.
+/// The columns are integer-valued, so any real variation is ≥ 1/n away from
+/// zero and this cannot swallow a moving column.
+const COLUMN_MOVES: f64 = 1e-9;
+
+/// A pivot below this in the Gauss-Jordan elimination is an EXACT dependency.
+const PIVOT_FLOOR: f64 = 1e-9;
+
+/// §5.5's per-candidate VIF, plus the two ways a column can fail to have one.
+struct VifTable {
+    /// Columns that never move — no correlation, no VIF, excluded from the
+    /// solve rather than ridged into it.
+    constant: Vec<usize>,
+    /// Columns EXACTLY dependent on the columns before them. Reported by name:
+    /// `1/(1 − R²)` at `R² = 1` is not a large number, it is not a number, and
+    /// a ridged inverse would print a plausible VIF for a column carrying no
+    /// independent information at all.
+    dependent: Vec<usize>,
+    /// The diagonal of the inverted correlation matrix, over the columns that
+    /// have one.
+    vif: BTreeMap<usize, f64>,
+}
+
+/// Each active column's VIF against every other active column.
+///
+/// Gauss-Jordan on the correlation matrix with partial pivoting; the inverse's
+/// diagonal IS the VIF vector (`(R⁻¹)_ii = 1/(1 − R²_i)`), which is why this
+/// computes one inverse rather than 34 regressions. A column whose pivot
+/// collapses is dropped from the active set and re-listed as `dependent`, and
+/// the remaining columns' VIFs are computed on the submatrix that is left —
+/// so one exact dependency does not erase the whole reading.
+fn vif_table(stats: &ColumnStats) -> VifTable {
+    let mut constant = Vec::new();
+    let mut active = Vec::new();
+    for i in 0..AXIS_WIDTH {
+        if stats.sd(i) <= COLUMN_MOVES {
+            constant.push(i);
+        } else {
+            active.push(i);
+        }
+    }
+
+    let mut dependent = Vec::new();
+    loop {
+        let m = active.len();
+        if m == 0 {
+            return VifTable { constant, dependent, vif: BTreeMap::new() };
+        }
+        let mut r = vec![vec![0.0f64; m]; m];
+        for (a, &i) in active.iter().enumerate() {
+            for (b, &j) in active.iter().enumerate() {
+                r[a][b] = stats.corr(i, j).unwrap_or(0.0);
+            }
+        }
+        match invert_symmetric(&r) {
+            Ok(inverse) => {
+                let vif = active
+                    .iter()
+                    .enumerate()
+                    .map(|(a, &i)| (i, inverse[a][a]))
+                    .collect::<BTreeMap<_, _>>();
+                return VifTable { constant, dependent, vif };
+            }
+            Err(collapsed) => {
+                // The elimination names the LATER member of the dependency (it
+                // is the one whose pivot has nothing left to stand on), which
+                // is the honest report: the earlier columns still carry the
+                // information, and this one adds none.
+                dependent.push(active[collapsed]);
+                dependent.sort_unstable();
+                active.remove(collapsed);
+            }
+        }
+    }
+}
+
+/// Invert a correlation matrix by Gauss-Jordan with partial pivoting.
+///
+/// `Err(k)` names the ACTIVE-SET index whose column had no usable pivot — an
+/// exact linear dependency on the columns eliminated before it.
+fn invert_symmetric(r: &[Vec<f64>]) -> Result<Vec<Vec<f64>>, usize> {
+    let m = r.len();
+    let mut a = r.to_vec();
+    let mut inv: Vec<Vec<f64>> = (0..m)
+        .map(|i| (0..m).map(|j| if i == j { 1.0 } else { 0.0 }).collect())
+        .collect();
+
+    for col in 0..m {
+        let (pivot_row, magnitude) = (col..m)
+            .map(|row| (row, a[row][col].abs()))
+            .max_by(|x, y| x.1.total_cmp(&y.1))
+            .expect("the range is non-empty");
+        if magnitude <= PIVOT_FLOOR {
+            return Err(col);
+        }
+        a.swap(col, pivot_row);
+        inv.swap(col, pivot_row);
+        let pivot = a[col][col];
+        for j in 0..m {
+            a[col][j] /= pivot;
+            inv[col][j] /= pivot;
+        }
+        for row in 0..m {
+            if row == col {
+                continue;
+            }
+            let factor = a[row][col];
+            if factor == 0.0 {
+                continue;
+            }
+            for j in 0..m {
+                a[row][j] -= factor * a[col][j];
+                inv[row][j] -= factor * inv[col][j];
+            }
+        }
+    }
+    Ok(inv)
+}
+
+/// §2's DECLARED clusters — the list §5.5 says its report is aimed at, written
+/// in the axis's own labels so a spelling that stops resolving is an error
+/// rather than a silently missing row.
+const DECLARED_CLUSTERS: &[(&str, &[&str])] = &[
+    ("E1 ↔ the Money10 leg", &["E1", "achievement_progress_sum"]),
+    ("E2 ↔ O2 (aspect-split, O2 ≤ E2)", &["E2", "O2"]),
+    ("O1 ↔ HandSize", &["O1", "hand_size"]),
+    ("{S1, S3} (2P: four production tiles)", &["S1", "S3"]),
+    ("{S1, S2, S5, S6} (shared presence index)", &["S1", "S2", "S5", "S6"]),
+    ("{S4, S7}", &["S4", "S7"]),
+    ("{O2, X2, E2}", &["O2", "X2", "E2"]),
+    ("{X1, E1, ImportedGoods}", &["X1", "E1", "imported_goods"]),
+    ("{X3, S1, O2} (matched access reduces to its parents)", &["X3", "S1", "O2"]),
+    ("{E3, S6} (the retrieval chain's two stages)", &["E3", "S6"]),
+    ("E1 ↓ vs TradingHousesBuilt ↑ over a game arc", &["E1", "trading_houses_built"]),
+];
+
+/// §8's rule: a `(0, 0)` column is COLLINEAR rather than vacuous at either of
+/// these, and is NOT removed.
+const COLLINEAR_CORR: f64 = 0.9;
+const COLLINEAR_VIF: f64 = 10.0;
+
+/// A label's axis slot, or an error naming the spelling that did not resolve.
+fn slot_named(label: &str) -> Result<usize, String> {
+    FeatureId::all()
+        .iter()
+        .find(|slot| slot.label() == label)
+        .map(|slot| slot.index())
+        .ok_or_else(|| format!("`{label}` is not an axis label"))
+}
+
+/// §5.5's buckets: stage tercile × the Category-B conditioning.
+fn bucket_of(stage: Stage, money10: bool) -> usize {
+    stage.index() * 2 + usize::from(money10)
+}
+
+fn cmd_collinearity(args: &[String]) -> Result<(), String> {
+    let (positional, flags, _) = split_args(
+        args,
+        &["contestant", "weights", "master"],
+        &["os-entropy", "invariants", "no-invariants"],
+        &[],
+    )?;
+    if positional.len() != 2 {
+        return Err(format!("collinearity needs <players> <games>\n\n{USAGE}"));
+    }
+    let players: u8 = positional[0].parse().map_err(|_| "players must be a number".to_string())?;
+    // 2P ONLY, and for §5.3's reason: the relative currency needs exactly one
+    // opponent. At 3–4P "theirs" is `opponent_extreme`, which orients BY WEIGHT
+    // — a collinearity diagnostic computed on it would be a diagnostic about
+    // the incumbent weights, which is not what "before any fit" means.
+    if players != 2 {
+        return Err(format!(
+            "collinearity is 2P only (the relative currency needs one opponent), got {players}"
+        ));
+    }
+    let games: u32 = positional[1].parse().map_err(|_| "games must be a number".to_string())?;
+    let contestant = ProbeContestant::parse(
+        flags.get("contestant").map(String::as_str).unwrap_or(LOOKAHEAD_CONTROLLER),
+    )?;
+    let (weights, weights_name) = weights_from(&flags)?;
+    let master = master_from(&flags)?;
+    let invariants = !flags.contains_key("no-invariants");
+
+    let rules = Rules::standard();
+    let (mut schedule, master_value) = match master {
+        SeedScheduleKind::Diagnostic(m) => (SeedSchedule::diagnostic(m), m),
+        SeedScheduleKind::OsEntropy => SeedSchedule::from_os_entropy(),
+    };
+
+    let started = Instant::now();
+    let mut buckets: Vec<ColumnStats> = vec![ColumnStats::new(); STAGES.len() * 2];
+    let mut money10_games = 0u32;
+    for game in 0..games {
+        let seed = schedule.next_world();
+        let (stats, _) =
+            play_one(seed, players, contestant, &weights, &rules, master_value, invariants)?;
+        let starts = turn_start_states(&stats, &rules, game)?;
+        let turns = starts.len();
+        let mut counted = false;
+        for (index, start) in starts.iter().enumerate() {
+            let stage = stage_of(index, turns);
+            for seat in 0..players {
+                let view = observe(start, PlayerId(seat))
+                    .map_err(|e| format!("observe game {game} turn {index} seat {seat}: {e}"))?;
+                let money10 = view
+                    .achievements
+                    .iter()
+                    .any(|c| c.achievement_type == AchievementType::Money10);
+                if !counted {
+                    counted = true;
+                    money10_games += u32::from(money10);
+                }
+                let signed = signature(&view, PlayerId(seat), &rules)
+                    .map_err(|e| format!("game {game} turn {index} seat {seat}: {e}"))?;
+                let own = own_vector(&view, PlayerId(seat), &rules)?;
+                buckets[bucket_of(stage, money10)].observe(&signed.dv, &own);
+            }
+        }
+    }
+
+    let mut pooled = ColumnStats::new();
+    for bucket in &buckets {
+        pooled.merge(bucket);
+    }
+    let mut by_stage: Vec<ColumnStats> = Vec::new();
+    for stage in STAGES {
+        let mut acc = ColumnStats::new();
+        acc.merge(&buckets[bucket_of(stage, false)]);
+        acc.merge(&buckets[bucket_of(stage, true)]);
+        by_stage.push(acc);
+    }
+    let mut money10_on = ColumnStats::new();
+    let mut money10_off = ColumnStats::new();
+    for stage in STAGES {
+        money10_on.merge(&buckets[bucket_of(stage, true)]);
+        money10_off.merge(&buckets[bucket_of(stage, false)]);
+    }
+
+    println!("=== eval_probe collinearity [semantics rev {SEMANTICS_REV}] ===");
+    println!("{}", COLLINEARITY_HEADER.trim_end());
+    println!();
+    println!("contestant          {}", contestant.echo(&weights, weights_name));
+    println!("weights             {weights_name} ({:#018x})", weight_table_identity(&weights) as u64);
+    println!("players             {players}");
+    println!("games               {games}");
+    println!("master              {}", master_echo(master));
+    println!("invariants          {}", if invariants { "on" } else { "off" });
+    println!("observations        {} (turn start × seat)", pooled.n);
+    println!(
+        "Category-B split    Money10 drawn in {money10_games} of {games} games \
+         ({} obs on / {} obs off)",
+        money10_on.n, money10_off.n,
+    );
+    println!("profile             {}", profile());
+
+    print!("{}", render_ranges(&pooled));
+    print!("{}", render_correlations(&pooled));
+    print!("{}", render_clusters(&pooled, &money10_on, &money10_off)?);
+    print!("{}", render_vifs(&pooled, &by_stage));
+    print!("{}", render_collinear_flags(&pooled));
+
+    println!();
+    println!("wall                {:.1}s", started.elapsed().as_secs_f64());
+    Ok(())
+}
+
+/// One view's OWN 34-vector from `subject`'s seat — the un-differenced levels,
+/// which is the currency the range table's first half reports.
+fn own_vector(
+    view: &PlayerView,
+    subject: PlayerId,
+    rules: &Rules,
+) -> Result<[i64; AXIS_WIDTH], String> {
+    let me = view
+        .players
+        .iter()
+        .find(|p| p.id == subject)
+        .ok_or_else(|| format!("seat {} is not a player in this view", subject.0))?;
+    let structure = ScoreStructure::derive(view, rules);
+    let mut out = [0i64; AXIS_WIDTH];
+    for f in Feature::ALL {
+        out[FeatureId::Incumbent(f).index()] = structure.value_of(me, f);
+    }
+    for c in CandidateFeature::ALL {
+        out[FeatureId::Candidate(c).index()] = candidate_value(&structure, view, me, c, rules);
+    }
+    Ok(out)
+}
+
+fn render_ranges(stats: &ColumnStats) -> String {
+    let mut out = String::new();
+    out.push_str("\n--- per-column ranges and scales (pooled) ---\n");
+    out.push_str(&format!(
+        "{:<4} {:<28} {:>7} {:>7} {:>9} {:>8}   {:>7} {:>7} {:>9} {:>8}\n",
+        "row", "feature", "own:min", "own:max", "own:mean", "own:sd", "rel:min", "rel:max",
+        "rel:mean", "rel:sd",
+    ));
+    for slot in FeatureId::all() {
+        let i = slot.index();
+        out.push_str(&format!(
+            "{:<4} {:<28} {:>7} {:>7} {:>9.3} {:>8.3}   {:>7} {:>7} {:>9.3} {:>8.3}\n",
+            i,
+            slot.label(),
+            stats.own_min[i],
+            stats.own_max[i],
+            stats.own_mean(i),
+            stats.own_sd(i),
+            stats.rel_min[i],
+            stats.rel_max[i],
+            stats.mean(i),
+            stats.sd(i),
+        ));
+    }
+    out
+}
+
+/// Every candidate×candidate and candidate×incumbent pair at or above the
+/// reporting floor, strongest first.
+fn render_correlations(stats: &ColumnStats) -> String {
+    const FLOOR: f64 = 0.7;
+    let mut rows: Vec<(f64, String)> = Vec::new();
+    for c in CandidateFeature::ALL {
+        let i = FeatureId::Candidate(c).index();
+        for slot in FeatureId::all() {
+            let j = slot.index();
+            if j == i || (slot.is_candidate() && j < i) {
+                continue;
+            }
+            if let Some(r) = stats.corr(i, j) {
+                if r.abs() >= FLOOR {
+                    rows.push((
+                        -r.abs(),
+                        format!(
+                            "  {:>+.3}  {:<28} {:<28} {}",
+                            r,
+                            c.label(),
+                            slot.label(),
+                            if slot.is_candidate() { "cand×cand" } else { "cand×incumbent" },
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+    rows.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    let mut out = String::new();
+    out.push_str(&format!("\n--- correlations |r| ≥ {FLOOR} (pooled, relative currency) ---\n"));
+    if rows.is_empty() {
+        out.push_str("  none\n");
+    }
+    for (_, line) in rows {
+        out.push_str(&line);
+        out.push('\n');
+    }
+    out
+}
+
+fn render_clusters(
+    pooled: &ColumnStats,
+    money10_on: &ColumnStats,
+    money10_off: &ColumnStats,
+) -> Result<String, String> {
+    let mut out = String::new();
+    out.push_str("\n--- §2's DECLARED clusters, realized ---\n");
+    for (name, labels) in DECLARED_CLUSTERS {
+        out.push_str(&format!("  {name}\n"));
+        let slots: Vec<usize> =
+            labels.iter().map(|l| slot_named(l)).collect::<Result<Vec<_>, _>>()?;
+        for a in 0..slots.len() {
+            for b in (a + 1)..slots.len() {
+                out.push_str(&format!(
+                    "    {:<28} {:<28} {}\n",
+                    labels[a],
+                    labels[b],
+                    match pooled.corr(slots[a], slots[b]) {
+                        Some(r) => format!("{r:>+.3}"),
+                        None => "  (constant)".to_string(),
+                    },
+                ));
+            }
+        }
+    }
+
+    // §5.5's named conditioning: the E1/Money10 read POOLED and CONDITIONED.
+    let e1 = slot_named("E1")?;
+    let progress = slot_named("achievement_progress_sum")?;
+    out.push_str("\n--- the E1 / Money10 read, pooled AND conditioned (§2, §5.5) ---\n");
+    let render = |label: &str, stats: &ColumnStats| -> String {
+        format!(
+            "  {label:<28} n {:>8}   corr(E1, achievement_progress_sum) {}\n",
+            stats.n,
+            match stats.corr(e1, progress) {
+                Some(r) => format!("{r:>+.3}"),
+                None => "(constant)".to_string(),
+            },
+        )
+    };
+    out.push_str(&render("pooled", pooled));
+    out.push_str(&render("Money10 DRAWN", money10_on));
+    out.push_str(&render("Money10 NOT drawn", money10_off));
+    out
+        .push_str("  the exact algebraic identity §2 names holds below 10¥ on the DRAWN split; the\n");
+    out.push_str("  pooled figure dilutes it with the games where the leg is not in play\n");
+    Ok(out)
+}
+
+fn render_vifs(pooled: &ColumnStats, by_stage: &[ColumnStats]) -> String {
+    let tables: Vec<VifTable> = by_stage.iter().map(vif_table).collect();
+    let pooled_table = vif_table(pooled);
+
+    let mut out = String::new();
+    out.push_str("\n--- VIF per candidate against the retained set ---\n");
+    out.push_str(&format!(
+        "{:<4} {:<28} {:>10} {:>10} {:>10} {:>10}\n",
+        "row", "feature", "early", "mid", "late", "pooled",
+    ));
+    let cell = |table: &VifTable, slot: usize| -> String {
+        if table.constant.contains(&slot) {
+            "constant".to_string()
+        } else if table.dependent.contains(&slot) {
+            "DEPENDENT".to_string()
+        } else {
+            table.vif.get(&slot).map_or_else(|| "-".to_string(), |v| format!("{v:.2}"))
+        }
+    };
+    for c in CandidateFeature::ALL {
+        let slot = FeatureId::Candidate(c).index();
+        out.push_str(&format!(
+            "{:<4} {:<28} {:>10} {:>10} {:>10} {:>10}\n",
+            slot,
+            c.label(),
+            cell(&tables[0], slot),
+            cell(&tables[1], slot),
+            cell(&tables[2], slot),
+            cell(&pooled_table, slot),
+        ));
+    }
+    if !pooled_table.dependent.is_empty() {
+        out.push_str("\n  EXACT DEPENDENCIES (pooled) — no finite VIF exists for these:\n");
+        for slot in &pooled_table.dependent {
+            out.push_str(&format!("    {}\n", FeatureId::all()[*slot].label()));
+        }
+    }
+    if !pooled_table.constant.is_empty() {
+        out.push_str("\n  CONSTANT columns (pooled) — no correlation and no VIF is measurable:\n");
+        for slot in &pooled_table.constant {
+            out.push_str(&format!("    {}\n", FeatureId::all()[*slot].label()));
+        }
+    }
+    out
+}
+
+/// §5.5's role in §8, computed: which candidates a `(0, 0)` reading may NOT be
+/// removed for.
+fn render_collinear_flags(stats: &ColumnStats) -> String {
+    let table = vif_table(stats);
+    let mut out = String::new();
+    out.push_str(&format!(
+        "\n--- §8 collinearity flags (|corr| > {COLLINEAR_CORR} against ANY retained column, OR \
+         VIF ≥ {COLLINEAR_VIF}) ---\n"
+    ));
+    let mut any = false;
+    for c in CandidateFeature::ALL {
+        let i = FeatureId::Candidate(c).index();
+        let worst = FeatureId::all()
+            .iter()
+            .filter(|slot| slot.index() != i)
+            .filter_map(|slot| stats.corr(i, slot.index()).map(|r| (r.abs(), slot.label())))
+            .max_by(|a, b| a.0.total_cmp(&b.0));
+        let vif = table.vif.get(&i).copied();
+        let by_corr = worst.is_some_and(|(r, _)| r > COLLINEAR_CORR);
+        let by_vif = vif.is_some_and(|v| v >= COLLINEAR_VIF) || table.dependent.contains(&i);
+        if by_corr || by_vif {
+            any = true;
+            out.push_str(&format!(
+                "  {:<6} COLLINEAR — {}{}\n",
+                c.label(),
+                worst.map_or_else(
+                    || "no correlation measurable".to_string(),
+                    |(r, name)| format!("max |corr| {r:.3} against {name}"),
+                ),
+                match (vif, table.dependent.contains(&i)) {
+                    (_, true) => ", EXACTLY DEPENDENT".to_string(),
+                    (Some(v), _) => format!(", VIF {v:.2}"),
+                    (None, _) => String::new(),
+                },
+            ));
+        }
+    }
+    if !any {
+        out.push_str("  none — every candidate clears both thresholds\n");
+    }
+    out.push_str(
+        "  §8: a flagged column reading (0, 0) is COLLINEAR, not vacuous, and is NOT removed\n",
+    );
+    out
+}
+
+const COLLINEARITY_HEADER: &str = "\
+§5.5 asks         candidate×candidate and candidate×incumbent correlations, each
+                  candidate's VIF against the retained set, per stage tercile and
+                  pooled, conditioned on the drawn Category-B card for E1/Money10
+currency          correlations and VIF over the RELATIVE vector (mine − theirs) —
+                  the quantity a weight multiplies. Ranges are reported in BOTH
+                  currencies: the raw level and the differenced one
+population        every (turn start × seat), the same population the AUC cells
+                  aggregate, before any aggregation
+nothing is fitted this runs BEFORE any fit, and removes nothing";
 
 // ---------------------------------------------------------------------------
 // Tests: the statistics, against hand-computable truth.
@@ -8179,5 +8849,118 @@ mod tests {
             "the frozen package carries no blocking collision: {:?}",
             out.blocking(),
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // §5.5 — the collinearity / VIF instrument
+    // -----------------------------------------------------------------------
+
+    /// A row of the §5.5 matrix with the named slots filled and the rest left
+    /// at zero — which also exercises the constant-column path, since 31 of the
+    /// 34 never move in these cells.
+    fn stats_row(values: &[(usize, i64)]) -> [i64; AXIS_WIDTH] {
+        let mut row = [0i64; AXIS_WIDTH];
+        for (slot, value) in values {
+            row[*slot] = *value;
+        }
+        row
+    }
+
+    fn stats_of(rows: &[[i64; AXIS_WIDTH]]) -> ColumnStats {
+        let mut stats = ColumnStats::new();
+        for row in rows {
+            stats.observe(row, row);
+        }
+        stats
+    }
+
+    /// **THE CORRELATION AND VIF ARITHMETIC, against hand-computable truth.**
+    ///
+    /// Four columns of four rows, chosen so every number below is derivable
+    /// with a pencil: x = 1,2,3,4 and y = 1,3,2,4 have equal variance 1.25 and
+    /// covariance 1.0, so `corr = 0.8` exactly and each one's VIF against the
+    /// other is `1/(1 − 0.64) = 2.7`.
+    #[test]
+    fn the_collinearity_arithmetic_is_what_it_claims() {
+        let x = [1i64, 2, 3, 4];
+        let y = [1i64, 3, 2, 4];
+        let rows: Vec<[i64; AXIS_WIDTH]> =
+            (0..4).map(|i| stats_row(&[(0, x[i]), (1, y[i])])).collect();
+        let stats = stats_of(&rows);
+
+        assert_eq!(stats.n, 4);
+        assert!((stats.mean(0) - 2.5).abs() < 1e-12);
+        assert!((stats.sd(0) - 1.25f64.sqrt()).abs() < 1e-12, "population sd, not the sample one");
+        let r = stats.corr(0, 1).expect("both columns move");
+        assert!((r - 0.8).abs() < 1e-12, "corr was {r}");
+        assert_eq!(stats.corr(0, 2), None, "a constant column has no correlation");
+
+        let table = vif_table(&stats);
+        assert_eq!(table.constant.len(), AXIS_WIDTH - 2, "the 32 unfilled slots are constant");
+        assert!(table.dependent.is_empty(), "0.8 is not a dependency");
+        let expected = 1.0 / (1.0 - 0.8 * 0.8);
+        for slot in [0, 1] {
+            let vif = table.vif.get(&slot).copied().expect("both active columns get a VIF");
+            assert!((vif - expected).abs() < 1e-9, "VIF at {slot} was {vif}, want {expected}");
+        }
+    }
+
+    /// An EXACT dependency is reported as one, by name, and never as a large
+    /// finite number: `1/(1 − R²)` at `R² = 1` is not a measurement, and a
+    /// silently ridged inverse would print a plausible VIF for a column that
+    /// carries no independent information at all.
+    #[test]
+    fn an_exact_dependency_is_named_rather_than_ridged() {
+        // Perfect pairwise collinearity: y = 2x.
+        let doubled = stats_of(&[
+            stats_row(&[(0, 1), (1, 2)]),
+            stats_row(&[(0, 2), (1, 4)]),
+            stats_row(&[(0, 3), (1, 6)]),
+        ]);
+        assert!((doubled.corr(0, 1).expect("both move") - 1.0).abs() < 1e-12);
+        let table = vif_table(&doubled);
+        assert_eq!(table.dependent, vec![1], "the later column is the dependent one");
+        assert!(table.vif.contains_key(&0), "the independent column still gets a VIF");
+        assert!(!table.vif.contains_key(&1), "a dependent column gets no finite VIF");
+
+        // A three-column dependency no PAIRWISE correlation reveals: z = x + y
+        // with x and y themselves uncorrelated.
+        let summed = stats_of(&[
+            stats_row(&[(0, 1), (1, 1), (2, 2)]),
+            stats_row(&[(0, 1), (1, -1), (2, 0)]),
+            stats_row(&[(0, -1), (1, 1), (2, 0)]),
+            stats_row(&[(0, -1), (1, -1), (2, -2)]),
+        ]);
+        assert!(summed.corr(0, 1).expect("both move").abs() < 1e-12, "x and y are uncorrelated");
+        let table = vif_table(&summed);
+        assert_eq!(table.dependent, vec![2], "z is the dependency, and no pair shows it");
+    }
+
+    /// Every label §2's declared cluster list names must resolve to an axis
+    /// slot, and the two commands' argv discipline is the same as `pairs`': an
+    /// unknown flag or an unsupported player count is an ERROR, never a run
+    /// that quietly measures something else.
+    #[test]
+    fn the_two_instruments_refuse_rather_than_measure_the_wrong_thing() {
+        for (name, labels) in DECLARED_CLUSTERS {
+            for label in *labels {
+                slot_named(label).unwrap_or_else(|e| panic!("cluster {name:?}: {e}"));
+            }
+        }
+
+        let arg = |s: &str| s.to_string();
+        // 3–4P is refused BY NAME: at more than one opponent the relative
+        // currency's "theirs" is `opponent_extreme`, which orients by weight,
+        // and a weight-oriented column is not a weight-free diagnostic.
+        assert!(cmd_collinearity(&[arg("3"), arg("10")])
+            .is_err_and(|e| e.contains("2P only") && e.contains("got 3")));
+        assert!(cmd_collinearity(&[arg("2")]).is_err_and(|e| e.contains("<players> <games>")));
+        assert!(cmd_collinearity(&[arg("2"), arg("4"), arg("--os-entropi")]).is_err());
+        assert!(cmd_collision(&[arg("4(a)")]).is_err_and(|e| e.contains("no positional")));
+        assert!(cmd_collision(&[arg("--fixtures-onli")]).is_err());
+        // The fixture half needs no corpus, no root and no master, so it is
+        // cheap enough to run as a cell — and running it here is what keeps the
+        // command's own glue from rotting between artifacts.
+        assert!(cmd_collision(&[arg("--fixtures-only")]).is_ok());
     }
 }
