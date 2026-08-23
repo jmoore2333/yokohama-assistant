@@ -3626,7 +3626,7 @@ mod tests {
     use yokohama_core::game::greedy::DEFAULT_RETREAT_SAMPLES;
     use yokohama_core::game::lookahead::{DEFAULT_BEAM, DEFAULT_WORLDS};
     use yokohama_core::game::pair_fixtures::{
-        build_registered_pair, PairDeclaration, PairFixture, Side, REGISTERED,
+        build_registered_pair, FeatureId, PairDeclaration, PairFixture, Side, REGISTERED,
     };
     use yokohama_core::{
         apply_move, get_legal_moves, is_game_over, AchievementCard, AchievementType, ChurchSlot,
@@ -6113,5 +6113,76 @@ mod tests {
             }
         }
         assert_eq!(checked, 2, "4(c) and 4(d) are the two registrations that write the pool out");
+    }
+
+    /// **CARRY 3 — §5.1's expected-nonzero rule, in the direction that could
+    /// not be checked until now.**
+    ///
+    /// The rule has two halves: a LISTED row must move, and a MOVING row must
+    /// be listed ("an unlisted nonzero row at run time is a fixture defect").
+    /// Over the sixteen incumbents both halves have been enforced since step 2
+    /// — `PairFixture::new` refuses an unlisted nonzero incumbent, and
+    /// `pair_fixtures`' own `every_registered_pair_builds_at_every_endpoint_it_declares`
+    /// calls `listed_incumbent_rows_are_nonzero` for the other direction, so
+    /// neither is duplicated here. Over the EIGHTEEN CANDIDATES neither half
+    /// could be checked at all, because nothing computed the columns. This is
+    /// the whole missing half of the rule, over the whole frozen package.
+    ///
+    /// The delta is the DIFFERENCED RELATIVE row — the number
+    /// `render_pair_report_with` prints and a Part-B solve row constrains — not
+    /// the subject's own value, for the reason `PairFixture::incumbent_delta`
+    /// gives: the evaluator's contribution is `w · (mine − theirs)`.
+    ///
+    /// Violations are COLLECTED rather than asserted one at a time. A frozen
+    /// package that has drifted has probably drifted in more than one row, and
+    /// a first-failure abort would hand the orchestrator one symptom at a time
+    /// across as many runs as there are defects.
+    #[test]
+    fn every_expected_nonzero_candidate_row_moves_and_every_moving_row_is_listed() {
+        let rules = Rules::standard();
+        let fixtures = every_registered_fixture(&rules);
+        let mut listed_but_still: Vec<String> = Vec::new();
+        let mut moved_but_unlisted: Vec<String> = Vec::new();
+        let mut listed_and_moving = 0usize;
+        for (decl, fixture) in &fixtures {
+            let (g_own, g_theirs) = candidate_pair(fixture, Side::Greater, &rules);
+            let (l_own, l_theirs) = candidate_pair(fixture, Side::Lesser, &rules);
+            for label in CandidateFeature::ALL {
+                let i = label.index();
+                let delta = (g_own[i] - g_theirs[i]) - (l_own[i] - l_theirs[i]);
+                let listed = decl.expected_nonzero.contains(&FeatureId::Candidate(label));
+                let where_ = format!("{} at {} / {}", decl.id, fixture.stage().name(), label.label());
+                match (listed, delta) {
+                    (true, 0) => listed_but_still.push(format!("{where_}: listed, delta 0")),
+                    (true, _) => listed_and_moving += 1,
+                    (false, 0) => {}
+                    (false, d) => moved_but_unlisted.push(format!("{where_}: unlisted, delta {d}")),
+                }
+            }
+        }
+        assert!(
+            listed_but_still.is_empty() && moved_but_unlisted.is_empty(),
+            "§5.1's expected-nonzero rule fails on the candidate axis. THIS IS A STOP — a fixture \
+             defect is fixed and re-frozen by the orchestrator, never here.\n  listed but still: \
+             {listed_but_still:#?}\n  moved but unlisted: {moved_but_unlisted:#?}",
+        );
+        // ANTI-VACUITY, and EXACT rather than a floor: a run in which no listed
+        // candidate row moved anywhere would satisfy both halves trivially, and
+        // the registry is FROZEN — how many candidate rows it lists is a
+        // property of the digest, so the count is a constant and not a
+        // measurement that may drift. 53 (pair, stage) fixtures, 100 listed
+        // candidate rows, every one of them moving.
+        assert_eq!(fixtures.len(), 53, "the frozen package realizes 53 (pair, stage) fixtures");
+        assert_eq!(
+            listed_and_moving, 100,
+            "the frozen registry lists 100 candidate rows across its fixtures; a different count \
+             means a tuple moved, which would have moved the digest",
+        );
+        println!(
+            "{} (pair, stage) fixtures x {} candidate rows: {listed_and_moving} listed and moving, \
+             0 defects",
+            fixtures.len(),
+            CandidateFeature::COUNT,
+        );
     }
 }
