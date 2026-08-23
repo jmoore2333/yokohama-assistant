@@ -1500,6 +1500,10 @@ fn extract_row(
 /// and the right-hand side.
 type ToyRow<'a> = (&'a str, &'a [(usize, i64)], i64);
 
+/// The same, owning its label and entries — what a GENERATED toy builds before
+/// it borrows them back into [`ToyRow`]s.
+type OwnedToyRow = (String, Vec<(usize, i64)>, i64);
+
 /// The toy systems, over the REAL 34-wide axis so the machinery under test is
 /// the machinery that will run — only the row set is small.
 mod toys {
@@ -1677,12 +1681,37 @@ mod toys {
                 &[("S1 far over S2", &[(s1, 1), (col("S2"), -1)], 2 * BOX_LIMIT + 1)],
                 BOX_LIMIT,
             ),
+            // **A SCALE PROBE, not a model of anything.** Twenty-six rows over
+            // all thirty-four columns — the early system's shape — with
+            // coefficients from a fixed arithmetic formula rather than from any
+            // fixture. It answers the one question the real run needs answered
+            // in advance and no small toy can: does the exact rational simplex
+            // stay tractable at full width? Deterministic, like everything else
+            // here: the formula takes no seed and draws no entropy.
+            "scale-probe-full-width" => {
+                let rows: Vec<OwnedToyRow> = (0..26)
+                    .map(|r: usize| {
+                        // The row multiplier is coprime to the modulus on
+                        // purpose: a multiple of 7 would cancel and give every
+                        // row the same coefficients, which is a wide system
+                        // with one distinct row in it.
+                        let entries = (0..AXIS_WIDTH)
+                            .map(|c| (c, ((r * 5 + c * 13 + 5) % 7) as i64 - 3))
+                            .filter(|(_, a)| *a != 0)
+                            .collect();
+                        (format!("scale probe row {r}"), entries, 1)
+                    })
+                    .collect();
+                let borrowed: Vec<ToyRow> =
+                    rows.iter().map(|(l, e, r)| (l.as_str(), e.as_slice(), *r)).collect();
+                toy(StageEndpoint::Early, &borrowed, BOX_LIMIT)
+            }
             _ => return None,
         })
     }
 
     /// Every registered toy's name, in the order [`named`] lists them.
-    pub const NAMES: [&str; 9] = [
+    pub const NAMES: [&str; 10] = [
         "standing-only",
         "sat-reachable",
         "sat-coupled",
@@ -1692,6 +1721,7 @@ mod toys {
         "unsat-fractional-margin",
         "unsat-integer-only",
         "unsat-box-widening",
+        "scale-probe-full-width",
     ];
 }
 
@@ -2672,6 +2702,27 @@ mod tests {
         let mut want = vec![Feature::VictoryPoints.index(), col("E1")];
         want.sort_unstable();
         assert_eq!(active_columns(&widened.rows), want, "the pinned w_vp is read by the rate row");
+    }
+
+    /// **The scale probe decides at the early system's full width.**
+    ///
+    /// Twenty-six rows over thirty-four columns is the shape the real early
+    /// system will present, and the question this answers is whether the exact
+    /// rational simplex survives it — a question no small toy can, and one the
+    /// real run should not be the first to ask. The coefficients are synthetic,
+    /// so the VERDICT means nothing; that it is a verdict at all is the point.
+    #[test]
+    fn the_exact_oracle_decides_at_the_early_system_s_full_width() {
+        let sys = toys::named("scale-probe-full-width").expect("registered");
+        assert_eq!(sys.rows.len(), 26);
+        assert_eq!(active_columns(&sys.rows).len(), AXIS_WIDTH, "every column is read");
+        assert_eq!(sys.inequalities().len(), 26 + 2 * AXIS_WIDTH);
+        let verdict = decide(&sys);
+        assert!(
+            !matches!(verdict, Verdict::Inconclusive { .. }),
+            "the oracle must reach a verdict at this width: {verdict:?}",
+        );
+        assert_eq!(decide(&sys), verdict, "and reach the same one on repeat");
     }
 
     #[test]
