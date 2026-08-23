@@ -2387,12 +2387,12 @@ fn snapshot_game(
     let mut abs = vec![0.0f64; rows.len()];
     let mut cand = vec![0.0f64; candidates.len()];
     let mut base = vec![0.0f64; candidates.len()];
-    // RED: the (turn start × seat) fold below does not yet write the §8 matrix
-    // rows. The sink, the row type, the renderer, the reader and the command
-    // surface are all here; what is missing is the ONE decision this task
-    // exists to get right — that the matrix's rows are the SAME points the
-    // accumulator folds, taken inside the same loop so the two cannot drift.
-    let _wants_matrix = matrix;
+    // The §8 matrix's per-GAME constants, resolved once before the fold: a
+    // seat's outcome label and final margin are properties of the finished
+    // game, not of the snapshot, and re-reading the standings per row would be
+    // the same answer a few hundred times. Empty — and free — when the run
+    // asked for no matrix.
+    let margins = if matrix { seat_final_margins(stats, players)? } else { Vec::new() };
     // Looked up once per game rather than per snapshot; `None` only if the
     // shipped feature list ever stops carrying running VP.
     let vp_slot = rows.iter().position(|row| matches!(row, Row::Feature(Feature::VictoryPoints)));
@@ -2438,6 +2438,34 @@ fn snapshot_game(
                 *target += value;
             }
             corpus.snapshots += 1;
+
+            // The §8 MATRIX row, written from INSIDE the accumulator's own
+            // loop. That is the whole design: the fitting stage's population
+            // and the L2 statistic's population are the same points because
+            // ONE loop produces both, not because two walks were written to
+            // agree. [`signature`] is the same relative signing
+            // `cmd_collinearity`, `cmd_collision` and `cmd_rooted` read their
+            // thirty-four columns off — a SECOND `ScoreStructure::derive` for
+            // this view, which is the price of one adapter instead of two and
+            // is paid only by a run that asked for a matrix.
+            if matrix {
+                let signed = signature(&view, PlayerId(seat), rules).map_err(|e| {
+                    format!("matrix game {game} turn {index} seat {seat}: {e}")
+                })?;
+                corpus.matrix.push(MatrixRow {
+                    game,
+                    seat,
+                    turn_index: index as u32,
+                    turns_in_game: turns as u32,
+                    progress_ppm: signed.ppm,
+                    dv: signed.dv,
+                    // The SAME boolean the cell below carries, from the same
+                    // expression: a matrix that labelled outcomes its own way
+                    // could disagree with the statistic it feeds.
+                    win: stats.result.winner == PlayerId(seat),
+                    margin: margins[usize::from(seat)],
+                });
+            }
         }
     }
 
@@ -2783,7 +2811,6 @@ fn command_echo() -> String {
 /// margins agree by construction rather than by coincidence. **Margin 0 is
 /// therefore NOT a win**: it is exactly the case the ranking decides, and both
 /// seats of a level 2P game read 0.
-#[allow(dead_code)] // RED: only the fold this commit withholds calls it.
 fn seat_final_margins(stats: &ArenaGameStats, players: u8) -> Result<Vec<i64>, String> {
     (0..players)
         .map(|seat| {
@@ -2863,6 +2890,17 @@ fn cmd_run(args: &[String]) -> Result<(), String> {
         .transpose()?
         .unwrap_or_default();
     let dump_matrix = flags.get("dump-matrix").cloned();
+    // 2P ONLY, and for `collinearity`'s reason: the relative currency needs
+    // exactly ONE opponent. At 3–4P "theirs" is `opponent_extreme`, which
+    // orients BY WEIGHT — a matrix in that currency would be a statement about
+    // the incumbent weights, which is the one thing a table fitted on it could
+    // not then be said to have learned. Refused BEFORE a game is played, so the
+    // refusal costs nothing and leaves nothing behind.
+    if dump_matrix.is_some() && players != 2 {
+        return Err(format!(
+            "--dump-matrix is 2P only (the relative currency needs one opponent), got {players}"
+        ));
+    }
 
     let rules = Rules::standard();
     let (mut corpus, master_value) = generate(
