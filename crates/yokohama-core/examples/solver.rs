@@ -1330,10 +1330,33 @@ fn implied_by_the_rest(sys: &System) -> ImplicationReport {
 /// no other target can call. The helpers themselves are shared: every arm below
 /// dispatches to `ScoreStructure`, and this file derives nothing of its own.
 ///
-/// The drift defence is not this file's honour. It is the extraction's
-/// `expected_nonzero` check ([`row_from_signatures`]): a swapped arm puts a
-/// nonzero at a row the registration does not list, and the real run REFUSES
-/// naming it rather than solving.
+/// # The drift defences, and the blind spot between them
+///
+/// THREE defences, because the first two have a shared gap and saying so is the
+/// only way to know whether the third is needed:
+///
+/// 1. The extraction's `expected_nonzero` check ([`row_from_signatures`]): a
+///    swapped arm puts a nonzero at a row the registration does not list, and
+///    the real run REFUSES naming it rather than solving.
+/// 2. An arm-by-arm restatement test against the helpers each label names.
+/// 3. A SOURCE-LEVEL pin that reads this function's own match arms and checks
+///    each against `CandidateFeature::name()`.
+///
+/// **THE BLIND SPOT the first two share.** Defence 1 only fires when a swap
+/// moves a value to a row the registration does not list. Two features that are
+/// BOTH listed nonzero on the same pair could be swapped with each other and
+/// every row would still land on a listed row — the coefficients would be wrong
+/// and nothing would refuse. Defence 2 is what has to catch a swap of that
+/// shape, and defence 2 is a RESTATEMENT: it compares this match against a
+/// second hand-written copy of the same mapping, so a swap made identically in
+/// both is invisible to it.
+///
+/// That is why defence 3 exists. Its reference is not a copy of anything: it is
+/// `CandidateFeature::name()`, which lives in the frozen package file and whose
+/// eighteen snake_case strings are exactly the helper method names. A swap
+/// between any two arms — however well-matched the restatement, however both
+/// rows are listed — makes some arm call a method whose name is not its
+/// variant's, and the pin fails.
 fn candidate_dispatch(
     s: &ScoreStructure,
     view: &PlayerView,
@@ -2994,8 +3017,79 @@ mod tests {
 
     // -- the real path, exercised without the frozen thirty-four -------------
 
-    /// The 18-arm dispatcher against the same helpers, restated arm by arm from
-    /// the helper NAMES rather than from the dispatcher.
+    /// **DEFENCE 3 — the dispatcher's arms checked against a reference that is
+    /// not a copy of them.**
+    ///
+    /// [`candidate_dispatch`]'s doc sets out why the other two defences are not
+    /// enough on their own: the `expected_nonzero` refusal cannot see a swap
+    /// between two features both listed on the same pair, and a restatement test
+    /// cannot see a swap made identically in the restatement. This cell has
+    /// neither weakness, because its reference is
+    /// `CandidateFeature::name()` — eighteen snake_case strings that live in the
+    /// FROZEN package file, feed the digest and the report columns, and are
+    /// exactly the helper method names.
+    ///
+    /// It reads this file's own source (the same `include_str!` the identity
+    /// hash uses), extracts `candidate_dispatch`'s match arms, and checks that
+    /// the arm for each variant calls the method that variant is named after. A
+    /// swap between any two arms makes at least one of them call a method whose
+    /// name is not its variant's, and no amount of matching mistakes elsewhere
+    /// can hide that.
+    #[test]
+    fn every_dispatcher_arm_calls_the_helper_its_variant_is_named_after() {
+        let source = include_str!("solver.rs");
+        let start = source
+            .find("\nfn candidate_dispatch(")
+            .expect("the dispatcher is defined in this file");
+        let body = &source[start..];
+        let end = body.find("\n}\n").expect("the dispatcher's body closes");
+        let body = &body[..end];
+
+        let mut checked = 0usize;
+        for feature in CandidateFeature::ALL {
+            let arm = format!("CandidateFeature::{feature:?} =>");
+            let at = body
+                .find(&arm)
+                .unwrap_or_else(|| panic!("{feature:?} has no arm in the dispatcher"));
+            // Bound the scan to this arm: the next variant's pattern, or the
+            // end of the body. Without the bound a MISSING call would silently
+            // borrow the next arm's.
+            let rest = &body[at + arm.len()..];
+            let limit = rest.find("CandidateFeature::").unwrap_or(rest.len());
+            let arm_text = &rest[..limit];
+            let call = arm_text
+                .find("s.")
+                .map(|i| &arm_text[i + 2..])
+                .and_then(|t| t.split(['(', ' ', '\n']).next())
+                .unwrap_or_else(|| panic!("{feature:?}'s arm calls no ScoreStructure helper"));
+            assert_eq!(
+                call,
+                feature.name(),
+                "{feature:?} dispatches to `{call}` but is named `{}`. Either this is a SWAPPED \
+                 ARM -- the defect this cell exists for, which neither the expected-nonzero \
+                 refusal nor the restatement test is guaranteed to see -- or eval.rs renamed a \
+                 helper away from its CandidateFeature name, in which case the two have to move \
+                 together.",
+                feature.name(),
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, CandidateFeature::COUNT, "every arm was reached");
+    }
+
+    /// **DEFENCE 2** — the 18 arms against the same helpers, restated from the
+    /// helper NAMES rather than from the dispatcher.
+    ///
+    /// This is the value-level companion to the source-level pin above: that one
+    /// proves each arm NAMES the right helper, this one proves the call actually
+    /// returns what that helper returns for a real seat of a real view. Its own
+    /// limit is stated in [`candidate_dispatch`]'s doc — a restatement cannot
+    /// catch a swap made identically in the restatement, which is why the
+    /// source-level pin exists beside it.
+    ///
+    /// Coverage is exhaustive as a SET, not merely eighteen entries long: a
+    /// table that repeated one variant and omitted another would be the right
+    /// length and would leave a column unchecked.
     ///
     /// A plain seeded game, NOT a registered fixture: §5.4's freeze-before-solve
     /// clause keeps the frozen package out of this batch.
@@ -3030,7 +3124,15 @@ mod tests {
             (CandidateFeature::PortTakeable, s.port_takeable(&view, me, &rules)),
             (CandidateFeature::MatchedProductionAccess, s.matched_production_access(&view, me, &rules)),
         ];
-        assert_eq!(expected.len(), CandidateFeature::COUNT, "every column is restated");
+        // EXHAUSTIVE AS A SET, not merely the right length: a table repeating
+        // one variant and omitting another would be eighteen entries long and
+        // would leave a column unchecked.
+        let mut restated: Vec<CandidateFeature> = expected.iter().map(|(f, _)| *f).collect();
+        restated.sort_unstable();
+        let mut all = CandidateFeature::ALL.to_vec();
+        all.sort_unstable();
+        assert_eq!(restated, all, "every column is restated exactly once");
+
         for (feature, want) in expected {
             assert_eq!(
                 candidate_dispatch(&s, &view, me, feature, &rules),
