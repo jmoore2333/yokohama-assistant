@@ -4532,14 +4532,21 @@ fn half_objective(
         if cell.split != split {
             continue;
         }
-        // RED: the fitter scores the rows and then hands the RAW ROWS to the
-        // AUC — the cousin §8 names in as many words ("cells, not raw rows, so
-        // long games do not overweight"). GREEN folds each cell to its mean
-        // first.
+        // The cell's MEAN, summed in MATRIX ROW ORDER over the cell's own rows
+        // and divided by their count — [`CellAcc`]'s arithmetic, reached from
+        // the other side. Row order is the accumulator's fold order because
+        // `snapshot_game` writes the matrix row inside the loop that folds the
+        // cell, so the two sums are the same additions in the same sequence and
+        // the two means agree to the BIT rather than to a tolerance.
+        //
+        // Cells and not rows, and §8 says why: "cells, not raw rows, so long
+        // games do not overweight".
+        let mut sum = 0.0f64;
         for &position in &cell.rows {
-            let value = score_row(table, mask, &matrix.rows[position]) as f64;
-            columns[cell.stage.index()].push((value, cell.cluster, cell.label));
+            sum += score_row(table, mask, &matrix.rows[position]) as f64;
         }
+        let mean = sum / cell.rows.len() as f64;
+        columns[cell.stage.index()].push((mean, cell.cluster, cell.label));
     }
     let mult = vec![1u32; split.clusters(matrix.header.games)];
     let mut stages: [Option<f64>; 3] = [None; 3];
@@ -4603,26 +4610,53 @@ fn descend(
         let mut moved = false;
         for coord in &coordinates {
             let previous = w.at(*coord);
-            let mut best: Option<(f64, i64)> = None;
-            for &step in &FIT_STEP_SET {
-                // RED: an out-of-box step is CLAMPED to the bound. The frozen
-                // witness search SKIPS it (`solver.rs:446`), and GREEN mirrors
-                // that.
-                let candidate = (previous + step).clamp(-FIT_BOX_LIMIT, FIT_BOX_LIMIT);
+            // `(objective, |resulting w|, step-set position, resulting w)`, and
+            // the winner is the one that MAXIMIZES the first and then
+            // MINIMIZES the rest — `witness_search`'s lexicographic key with
+            // the objective's sense flipped, which is the whole difference
+            // between the two searches. The position is unique per step, so the
+            // ordering is total and no residual freedom is left for an
+            // iteration order to decide.
+            let mut best: Option<(f64, i64, usize, i64)> = None;
+            for (position, &step) in FIT_STEP_SET.iter().enumerate() {
+                let candidate = previous + step;
+                // OUT OF THE BOX IS OUT OF THE LADDER, not a move to the bound:
+                // `solver.rs:446-448` tests the interval and `continue`s, and
+                // sentence 10 makes that search's rule this one's. Spelled as a
+                // range containment rather than as that file's two comparisons
+                // only because the bound here is a const and clippy reads the
+                // pair as a range; the test is the same test.
+                if !(-FIT_BOX_LIMIT..=FIT_BOX_LIMIT).contains(&candidate) {
+                    continue;
+                }
                 w.set(*coord, candidate);
                 let trial = half_objective(plan, matrix, &w, mask, Split::Fit);
                 evaluations += 1;
                 w.set(*coord, previous);
                 let Some(value) = trial.mean else { continue };
-                if value > current {
-                    // RED: the FIRST strict improvement in ladder order wins.
-                    // §8 says BEST strict improvement, and sentence 10 says how
-                    // equal bests are separated; GREEN scores all ten.
-                    best = Some((value, candidate));
-                    break;
+                // STRICT: "ties keep incumbent" is this `>` and nothing else.
+                if value <= current {
+                    continue;
+                }
+                let improves = match best {
+                    None => true,
+                    Some((best_value, best_abs, best_position, _)) => {
+                        match value.partial_cmp(&best_value) {
+                            Some(std::cmp::Ordering::Greater) => true,
+                            // Sentence 10: "ties resolve toward the smaller
+                            // resulting |w|, then the earlier-listed step".
+                            Some(std::cmp::Ordering::Equal) => {
+                                (candidate.abs(), position) < (best_abs, best_position)
+                            }
+                            _ => false,
+                        }
+                    }
+                };
+                if improves {
+                    best = Some((value, candidate.abs(), position, candidate));
                 }
             }
-            if let Some((value, candidate)) = best {
+            if let Some((value, _, _, candidate)) = best {
                 w.set(*coord, candidate);
                 objective = half_objective(plan, matrix, &w, mask, Split::Fit);
                 evaluations += 1;
