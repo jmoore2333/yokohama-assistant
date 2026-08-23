@@ -5450,6 +5450,17 @@ the currency        each S is the §5.3 MOVER-RELATIVE value (mine − theirs, 2
 /// The stronger per-column reading is not silently dropped — the per-column
 /// distinct-value counts PRINT, so a reader sees exactly which of the seven move
 /// at each root and which are flat there.
+///
+/// **The second registered choice: WHICH total.** §6 says "the fork's same-count
+/// set", and a fork root can carry several totals that each hold ≥ 2 distinct
+/// area sets, so the phrase does not by itself pick one. This probe registers the
+/// SMALLEST such total. That is the instrument's own reading and is NOT inherited
+/// from the frozen predicate: `driven::same_count_fork` returns a BOOL over the
+/// placement list in list order and names no total, so there is no witness there
+/// to adopt. The choice is made verdict-insensitive by reporting rather than by
+/// argument — every other total's counts print beside it, and the verdict line
+/// states whether the gate would also have held at each. It does, at all four
+/// development ordinals.
 const FORK_DISTINCTNESS_READING: &str = "\
 gate text (§6)      \"at each placement-fork dev ordinal — the S columns take >= 2
                     distinct values across the fork's same-count set\"
@@ -5463,12 +5474,15 @@ the reading         the VECTOR one: the 7-dimensional S signature takes >= 2
                     where the incumbent sixteen collapse it to one number?
                     Per-column distinct counts print, so the stronger reading is
                     visible even though the pass rule is the vector one
-the same-count set  the placements sharing the WITNESSING total — the smallest
-                    total carrying >= 2 distinct area sets, which is the witness
-                    `same_count_fork` itself returns on (it walks totals in
-                    ascending order and stops at the first). Every OTHER total's
-                    counts print too, and the verdict line says whether the gate
-                    would also have held at each";
+the same-count set  §6 says \"the fork's same-count set\" and a fork root can carry
+                    several forking totals, so THIS PROBE REGISTERS the choice: the
+                    placements sharing the SMALLEST total that carries >= 2 distinct
+                    area sets. That is this instrument's reading and not the frozen
+                    predicate's — `same_count_fork` returns a BOOL over placements
+                    in list order and names no total at all, so there is no witness
+                    to inherit from it. The choice is made verdict-insensitive by
+                    reporting: every OTHER total's counts print, and the verdict
+                    line says whether the gate would also have held at each";
 
 // --- the e113 exemplar pair -------------------------------------------------
 
@@ -5743,14 +5757,19 @@ fn derive_e113_exemplar(root: &E113Root, rules: &Rules) -> Result<DerivedExempla
     })
 }
 
-/// The mover's OWN seven S values on one successor view — the absolute currency
+/// One NAMED SEAT's own seven S values on one view — the absolute currency
 /// [`E113_ABSOLUTE_NOTE`] records beside the gate.
-fn mover_s_values(view: &PlayerView, mover: PlayerId, rules: &Rules) -> Result<[i64; 7], String> {
+///
+/// The seat is a parameter rather than "the mover" because both halves of that
+/// note are read through this: the mover's values are the recorded diagnostic,
+/// and the OPPONENT's are what
+/// `a_movers_placement_cannot_move_the_opponents_s_vector` pins invariant.
+fn seat_s_values(view: &PlayerView, seat: PlayerId, rules: &Rules) -> Result<[i64; 7], String> {
     let me = view
         .players
         .iter()
-        .find(|p| p.id == mover)
-        .ok_or_else(|| format!("seat {} is not a player in this view", mover.0))?;
+        .find(|p| p.id == seat)
+        .ok_or_else(|| format!("seat {} is not a player in this view", seat.0))?;
     let structure = ScoreStructure::derive(view, rules);
     let mut out = [0i64; 7];
     for (i, c) in S_COLUMNS.iter().enumerate() {
@@ -5769,7 +5788,7 @@ fn e113_successor_s(
     let next = apply_move(root, mv, rules)
         .map_err(|e| format!("{} did not apply at {E113_ROOT}: {e}", canonical_encoding(mv)))?;
     let view = observe(&next, mover).map_err(|e| format!("successor unobservable: {e}"))?;
-    Ok((s_slots(&signature(&view, mover, rules)?.dv), mover_s_values(&view, mover, rules)?))
+    Ok((s_slots(&signature(&view, mover, rules)?.dv), seat_s_values(&view, mover, rules)?))
 }
 
 /// One frozen side, checked against what the criterion just derived.
@@ -5813,28 +5832,44 @@ fn check_frozen_side(
 /// multiplies in `game/eval.rs`. That is the convention this task was directed
 /// to implement and it is the one the pass rule reads.
 ///
-/// The two readings are not EQUAL BY CONSTRUCTION, though, and the reason is
-/// worth stating because it is easy to assume they must be. One might expect the
-/// opponent's half to cancel: the two successors differ only in where the MOVER
-/// put its own assistants, so `theirs` looks like a constant that subtracts out.
-/// It is not constant. Several S definitions read a quantity the mover's own
-/// stones move — S2 and S1 are computed at REALIZABLE POWER, and power at an
-/// area counts every assistant standing there, the opponent's read included. So
-/// placing into an area the opponent occupies raises the OPPONENT's S there too,
-/// and the differenced reading books that as a loss where the absolute reading
-/// books nothing.
+/// **The two readings differ only through the OPPONENT's S values**, and at THIS
+/// root they do not differ at all. Every one of the seven S definitions reads the
+/// QUERIED SEAT's own state: the presence gate is that seat's own
+/// `context.occupied[seat]` bitset, and `eval::realizable_power`
+/// (`game/eval.rs:2411-2430`) sums the unconditional president term, that seat's
+/// `assistants.in_area(area)`, and that seat's own shophouse and trading house.
+/// **A mover's placement therefore cannot move any term of the OPPONENT's S
+/// vector**, so on a placement family the opponent's half is a genuine constant
+/// and the two currencies COINCIDE — which is why the run prints them equal at
+/// every row of the spread, and what `a_movers_placement_cannot_move_the_
+/// opponents_s_vector` pins structurally rather than by observing it once.
 ///
-/// Both are therefore printed. The gate reads the differenced sum; the absolute
-/// sum is a RECORDED diagnostic, and if the two ever disagree in SIGN that
-/// disagreement is a finding for the owner — not a licence to read whichever one
-/// passes.
+/// **The one real cross-seat channel is the STATION.** `realizable_power`'s only
+/// board-global term is `view.station_location == Some(area)`, worth +1 to
+/// WHOEVER acts there — so a successor that RELOCATES the station changes the
+/// opponent's S1, S2, S5 and S6 as well as the mover's, and there the two
+/// currencies genuinely separate. No placement relocates it (the station moves
+/// through its own `StationPlace` resolution), so that channel is simply not
+/// open on this family; at a root whose successors are station moves it would
+/// be, and the diagnostic is carried for exactly that case.
+///
+/// Both are therefore printed and the METHODOLOGY is what is load-bearing: the
+/// gate reads the differenced sum, the absolute sum is a RECORDED diagnostic,
+/// and if the two ever disagree in SIGN that disagreement is a finding for the
+/// owner — never a licence to read whichever one passes.
 const E113_ABSOLUTE_NOTE: &str = "\
 recorded beside     the same sum in the MOVER-ABSOLUTE currency (the opponent's half
-                    dropped). The two are NOT equal by construction: S1 and S2 are
-                    computed at REALIZABLE POWER, which counts every assistant at
-                    an area including the opponent's, so a placement into a shared
-                    area raises the opponent's S as well and the differenced
-                    reading books that where the absolute reading does not.
+                    dropped). The two differ ONLY through the opponent's S values,
+                    and a mover's PLACEMENT cannot move any of them: every S reads
+                    the queried seat's own occupancy, and realizable_power
+                    (eval.rs:2411-2430) sums the president term plus THAT seat's
+                    own assistants, shophouse and trading house. So on this family
+                    the opponent's half is a genuine constant and the two readings
+                    COINCIDE — as the spread below prints at every row.
+                    The one real cross-seat channel is the STATION: realizable_power
+                    reads view.station_location, worth +1 to WHOEVER acts there, so
+                    a successor that RELOCATES the station moves the opponent's S
+                    too. No placement does; at a station-moving root it would.
                     The GATE reads the DIFFERENCED sum. A sign disagreement
                     between the two is a FINDING, never a choice of reading";
 
@@ -6059,8 +6094,10 @@ struct ForkRead {
     name: String,
     origin: String,
     digest: String,
-    /// The witnessing total — the smallest carrying ≥ 2 distinct area sets,
-    /// which is the witness `same_count_fork` itself stops on.
+    /// The witnessing total — the smallest carrying ≥ 2 distinct area sets.
+    ///
+    /// THIS PROBE's registered choice, not the frozen predicate's: see
+    /// [`FORK_DISTINCTNESS_READING`]'s second registered choice.
     witness: usize,
     totals: Vec<TotalRead>,
 }
@@ -6119,8 +6156,10 @@ fn read_placement_fork(root: &DevRoot, rules: &Rules) -> Result<ForkRead, String
         by_total.entry(total).or_default().push((areas, signature(&view, mover, rules)?));
     }
 
-    // The WITNESS is `same_count_fork`'s own: ascending totals, first one whose
-    // area sets number two or more.
+    // The WITNESS is THIS PROBE's registered choice — the smallest total whose
+    // area sets number two or more. `driven::same_count_fork` names no total to
+    // inherit (it is a bool over the placement list), so this is a reading the
+    // instrument owns; every other total's counts are reported beside it.
     let witness = by_total
         .iter()
         .find(|(_, members)| {
@@ -6424,7 +6463,7 @@ fn check_ose_record_identity(record: &GameRecord, rules: &Rules) -> Result<(), S
     }
 }
 
-/// **GATE 3** — the charter's registered development read, at the five dev
+/// **GATE 4** — the charter's registered development read, at the five dev
 /// exhibits.
 ///
 /// Digest FIRST, at all thirteen: identity verification is explicitly permitted
@@ -6507,7 +6546,7 @@ struct BandRead {
     identities: Vec<(usize, String, OseRole)>,
 }
 
-/// **GATE 4** — the CONSTRUCTED strict-O3 coverage, corpus-free.
+/// **GATE 3** — the CONSTRUCTED strict-O3 coverage, corpus-free.
 ///
 /// The flag-1 ruling routes strict `opponent-sitting-executable` coverage to the
 /// hand-built fixtures, because the strict clause has ZERO members in 792
@@ -6863,7 +6902,7 @@ fn cmd_rooted(args: &[String]) -> Result<(), String> {
     sums.sort_unstable();
     println!(
         "  differenced       enabling strictly favoured over {favouring} of {} candidates · range \
-         [{}, {}] · median {}",
+         [{}, {}] · upper median {}",
         gate1.spread.len(),
         sums.first().copied().unwrap_or(0),
         sums.last().copied().unwrap_or(0),
@@ -6873,11 +6912,19 @@ fn cmd_rooted(args: &[String]) -> Result<(), String> {
     abs_sums.sort_unstable();
     println!(
         "  absolute          enabling strictly favoured over {abs_favouring} of {} candidates · \
-         range [{}, {}] · median {}",
+         range [{}, {}] · upper median {}",
         gate1.spread.len(),
         abs_sums.first().copied().unwrap_or(0),
         abs_sums.last().copied().unwrap_or(0),
         abs_sums.get(abs_sums.len() / 2).copied().unwrap_or(0),
+    );
+    println!(
+        "  median convention the UPPER median — element {} of the {}-element sorted list. At an \
+         EVEN length\n                    there is no single middle element and no midpoint is \
+         interpolated, so the\n                    printed figure is an OBSERVED sum and not a \
+         derived statistic",
+        gate1.spread.len() / 2,
+        gate1.spread.len(),
     );
     for (encoding, diff, abs) in &gate1.spread {
         println!(
@@ -11092,13 +11139,78 @@ mod tests {
              would have passed. The two readings disagree, and §6's text picks the sum",
         );
 
+        // THE PASS RULE ITSELF, not only the arithmetic beside it (review
+        // SHOULD-2). The cells above pin what the SUM is; without this one a
+        // majority vote substituted into `E113Gate::passed` would trip nothing,
+        // because no cell had ever asked the gate whether it passed.
+        let planted = |values: [i64; 7]| {
+            let mut per_column = [0i64; 7];
+            per_column.copy_from_slice(&values);
+            gate_over(per_column, Vec::new())
+        };
+        assert!(
+            !planted([1, 1, 1, 1, 1, 1, -10]).passed(),
+            "SIX of seven columns favour the enabling side and the SUM is -4: the frozen gate \
+             FAILS, and a majority reading substituted into `passed` would pass it",
+        );
+        assert!(planted([1, 1, 1, 1, 1, 1, -5]).passed(), "sum +1 — the same six-of-seven shape \
+                 the other way round, so the cell above is about the SUM and not about the shape");
+
         // And the sum is genuinely strict: an exactly-balanced delta is a FAIL,
         // not a pass, because the text says "strictly favors".
-        let balanced: i64 = (0..7)
-            .map(|i| s_slots(&plant([3, -3, 0, 0, 0, 0, 0]))[i] - s_slots(&dead)[i])
-            .sum();
-        assert_eq!(balanced, 0);
-        assert!(!(balanced > 0), "a zero sum does not STRICTLY favour either side");
+        assert_eq!(planted([3, -3, 0, 0, 0, 0, 0]).sum, 0);
+        assert!(
+            !planted([3, -3, 0, 0, 0, 0, 0]).passed(),
+            "a zero sum does not STRICTLY favour either side",
+        );
+
+        // The non-collision half is conjunctive: a passing sum with a blocking
+        // finding still fails, so neither clause can carry the gate alone.
+        assert!(
+            !gate_over(
+                [1, 1, 1, 1, 1, 1, -5],
+                vec![Blocking::RootPair { root: E113_ROOT.to_string() }],
+            )
+            .passed(),
+            "sum +1 but the pair collides — the gate is BOTH clauses",
+        );
+    }
+
+    /// An [`E113Gate`] over planted columns, for the cells that exercise the
+    /// PASS RULE rather than the measurement.
+    ///
+    /// Everything the pass rule does not read is filled with obvious placeholder
+    /// material: `passed()` reads `sum` and `blocking` and nothing else, and
+    /// spelling that out here is what keeps a future field from being quietly
+    /// added to the rule without a cell noticing.
+    fn gate_over(per_column: [i64; 7], blocking: Vec<Blocking>) -> E113Gate {
+        E113Gate {
+            root_digest: String::new(),
+            candidates: 0,
+            top_value: 0,
+            tie: 0,
+            echo: String::new(),
+            decision_seed: 0,
+            lab: AreaId(0),
+            fishing: AreaId(0),
+            total: 2,
+            eligible: 0,
+            enabling: String::new(),
+            enabling_value: None,
+            dead: String::new(),
+            enabling_digest: String::new(),
+            dead_digest: String::new(),
+            per_column,
+            sum: per_column.iter().sum(),
+            absolute_per_column: per_column,
+            absolute_sum: per_column.iter().sum(),
+            spread: Vec::new(),
+            blocking,
+            enabling_dv: [0; AXIS_WIDTH],
+            dead_dv: [0; AXIS_WIDTH],
+            enabling_ppm: 0,
+            dead_ppm: 0,
+        }
     }
 
     /// **INTERPRETATION NOTE 2, EXECUTABLE.** The fork gate's "≥ 2 distinct
@@ -11133,6 +11245,72 @@ mod tests {
         let collapsed = vec![[1, 2, 3, 4, 5, 6, 7]; 9];
         assert_eq!(distinct_s(&collapsed).0, 1, "a collapsed block reads ONE vector");
         assert!(distinct_s(&collapsed).0 < 2, "and fails the gate, which is the point");
+    }
+
+    /// **[`E113_ABSOLUTE_NOTE`]'s central claim, pinned STRUCTURALLY rather than
+    /// observed once**: a mover's PLACEMENT cannot move any term of the
+    /// OPPONENT's S vector, which is why the two currencies coincide on the e113
+    /// family and why the run prints them equal at every row of the spread.
+    ///
+    /// The review that produced this cell also produced the reason it exists: an
+    /// earlier version of the note asserted the OPPOSITE — that
+    /// `realizable_power` counts every assistant at an area including the
+    /// opponent's — which is false at the bytes (`eval.rs:2411-2430` sums the
+    /// president term plus the QUERIED seat's own assistants, shophouse and
+    /// trading house). Prose about a value model is exactly the thing that
+    /// should not be trusted unexecuted, so the corrected claim arrives with a
+    /// cell attached.
+    ///
+    /// Corpus-free: a freshly generated 2P game supplies the fork. The
+    /// anti-vacuity half matters as much as the invariance half — a position
+    /// where NO placement moved the MOVER's S vector either would satisfy the
+    /// invariance assertion while proving nothing.
+    #[test]
+    fn a_movers_placement_cannot_move_the_opponents_s_vector() {
+        let (state, rules) = two_player_state();
+        let mover = state.current_player;
+        let placing = apply_move(&state, &Move::EndAdditionalPhase, &rules)
+            .expect("a turn start advances to Placement");
+        let opponent = placing
+            .players
+            .iter()
+            .map(|p| p.id)
+            .find(|id| *id != mover && !id.is_dummy())
+            .expect("a 2P game has one opponent");
+
+        let before = observe(&placing, mover).expect("the mover views the placement phase");
+        let opponent_before =
+            seat_s_values(&before, opponent, &rules).expect("the opponent's S vector");
+        let mover_before = seat_s_values(&before, mover, &rules).expect("the mover's S vector");
+
+        let mut placements = 0usize;
+        let mut mover_moved = false;
+        for mv in get_legal_moves(&placing, &rules) {
+            if placement_of(&mv).is_none() {
+                continue;
+            }
+            placements += 1;
+            let next = apply_move(&placing, &mv, &rules).expect("a legal placement applies");
+            let view = observe(&next, mover).expect("the successor is observable");
+            assert_eq!(
+                seat_s_values(&view, opponent, &rules).expect("the opponent's S vector"),
+                opponent_before,
+                "{mv:?} moved the OPPONENT's S vector. Every S reads the queried seat's own \
+                 occupancy and `realizable_power` sums that seat's OWN assistants, shophouse and \
+                 trading house — the only board-global term is the station, which no placement \
+                 relocates",
+            );
+            if seat_s_values(&view, mover, &rules).expect("the mover's S vector") != mover_before {
+                mover_moved = true;
+            }
+        }
+
+        assert!(placements >= 2, "a fork needs at least two placements; got {placements}");
+        assert!(
+            mover_moved,
+            "ANTI-VACUITY: no placement moved the MOVER's own S vector either, so the invariance \
+             above would hold at a position where the columns see nothing at all",
+        );
     }
 
     /// The dead-side criterion is a FILTER plus a TOTAL ORDER, and both halves
