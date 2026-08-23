@@ -3485,6 +3485,9 @@ mod tests {
 
     use yokohama_core::game::greedy::DEFAULT_RETREAT_SAMPLES;
     use yokohama_core::game::lookahead::{DEFAULT_BEAM, DEFAULT_WORLDS};
+    use yokohama_core::game::pair_fixtures::{
+        build_registered_pair, PairDeclaration, PairFixture, Side, REGISTERED,
+    };
     use yokohama_core::{
         apply_move, get_legal_moves, is_game_over, AchievementCard, AchievementType, ChurchSlot,
         ChurchTrack, CustomsSlot, CustomsTrack, GameConfig, OrderCardId, StartingOrderChoice,
@@ -5471,5 +5474,153 @@ mod tests {
         // Hindsight cuts can only do at least as well as any fixed pair.
         let (_, _, best) = best_thresholds(&points);
         assert!(best >= accuracy, "in-sample best {best} below fixed {accuracy}");
+    }
+
+    // -----------------------------------------------------------------------
+    // §7 STEP 3 — the candidate-column adapter and the frozen-fixture
+    // cross-checks (the step-2 close handover's carry list)
+    // -----------------------------------------------------------------------
+
+    /// Every registered (pair, stage) fixture, built once and kept with the
+    /// declaration it answers to.
+    ///
+    /// A construction failure is a PANIC naming the pair rather than a skip:
+    /// the package is frozen, so a fixture that stopped building is a finding,
+    /// and a sweep that quietly ran over fewer rows would report a clean pass
+    /// for the wrong reason.
+    fn every_registered_fixture(rules: &Rules) -> Vec<(&'static PairDeclaration, PairFixture)> {
+        let mut out = Vec::new();
+        for pair in REGISTERED.iter() {
+            for stage in pair.stages {
+                match build_registered_pair(pair, *stage, rules) {
+                    Ok(fixture) => out.push((pair, fixture)),
+                    Err(e) => panic!("{} at {}: {e:?}", pair.id, stage.name()),
+                }
+            }
+        }
+        out
+    }
+
+    /// One seat's row inside one side's view, or `None` where the view does
+    /// not carry that seat (the 2P dummy has no row).
+    fn row<'a>(view: &'a PlayerView, seat: PlayerId) -> Option<&'a VisiblePlayer> {
+        view.players.iter().find(|p| p.id == seat)
+    }
+
+    /// Every `(fixture, side, seat-row)` triple the registry offers — the
+    /// domain every sweep below runs over.
+    fn every_cell(
+        fixtures: &[(&'static PairDeclaration, PairFixture)],
+    ) -> Vec<(&'static str, &'static str, PlayerId)> {
+        let mut out = Vec::new();
+        for (decl, fixture) in fixtures {
+            for side in [Side::Greater, Side::Lesser] {
+                for player in &fixture.view(side).players {
+                    out.push((decl.id, side.name(), player.id));
+                }
+            }
+        }
+        out
+    }
+
+    /// **THE ADAPTER PIN** — every one of the eighteen labels answers with its
+    /// OWN named helper, and no two arms could be swapped without this cell
+    /// noticing.
+    ///
+    /// The first half is the identity itself, restated arm by arm: a match that
+    /// routed `S1` to `track_access` would still return `Some(i64)` for every
+    /// label, so "the adapter answers" proves nothing on its own and the helper
+    /// each label is supposed to reach has to be named here a second time.
+    ///
+    /// The second half is what makes the first half discriminating. Restating
+    /// the match is only a check if the two sides could disagree, so every
+    /// ORDERED PAIR of labels is required to be SEPARATED somewhere in the
+    /// registry — some (fixture, side, seat) where the two helpers read
+    /// differently. A pair that never separates is a pair whose arms could
+    /// trade places undetected, and this cell fails naming it rather than
+    /// passing over it.
+    #[test]
+    fn the_step_three_adapter_answers_every_label_with_its_own_named_helper() {
+        let rules = Rules::standard();
+        let fixtures = every_registered_fixture(&rules);
+        let cells = every_cell(&fixtures);
+        assert!(cells.len() >= 100, "only {} cells — the sweep has shrunk", cells.len());
+
+        // Per label, its value at every cell, in one fixed cell order.
+        let mut columns: Vec<Vec<i64>> = vec![Vec::new(); CandidateFeature::COUNT];
+        for (_, fixture) in &fixtures {
+            for side in [Side::Greater, Side::Lesser] {
+                let view = fixture.view(side);
+                let s = ScoreStructure::derive(view, &rules);
+                for player in &view.players {
+                    for label in CandidateFeature::ALL {
+                        let named = match label {
+                            CandidateFeature::ProductionAccess => s.production_access(view, player),
+                            CandidateFeature::TrackAccess => s.track_access(view, player),
+                            CandidateFeature::AssistantAreasDistinct => {
+                                s.assistant_areas_distinct(player)
+                            }
+                            CandidateFeature::PresidentLocalAccess => {
+                                s.president_local_access(player)
+                            }
+                            CandidateFeature::BankAccess => s.bank_access(view, player),
+                            CandidateFeature::EmploymentAgencyAccess => {
+                                s.employment_agency_access(view, player)
+                            }
+                            CandidateFeature::PresidentReachableAreas => {
+                                s.president_reachable_areas(player)
+                            }
+                            CandidateFeature::MoneyStock => s.money_stock(player),
+                            CandidateFeature::TradeGoodsStock => s.trade_goods_stock(player),
+                            CandidateFeature::BuildingTokensReady => {
+                                s.building_tokens_ready(player)
+                            }
+                            CandidateFeature::HeldOrderValue => s.held_order_value(player, &rules),
+                            CandidateFeature::OrderMatchedGoods => {
+                                s.order_matched_goods(player, &rules)
+                            }
+                            CandidateFeature::ExecutableOrders => {
+                                s.executable_orders(player, &rules)
+                            }
+                            CandidateFeature::FlagIconMarginal => {
+                                s.flag_icon_marginal(player, &rules)
+                            }
+                            CandidateFeature::HeldOrderIcons => s.held_order_icons(player, &rules),
+                            CandidateFeature::LabTakeable => s.lab_takeable(view, player),
+                            CandidateFeature::PortTakeable => s.port_takeable(view, player, &rules),
+                            CandidateFeature::MatchedProductionAccess => {
+                                s.matched_production_access(view, player, &rules)
+                            }
+                        };
+                        assert_eq!(
+                            candidate_columns(view, player, label, &rules),
+                            Some(named),
+                            "{} is not {}",
+                            label.name(),
+                            label.name(),
+                        );
+                        columns[label.index()].push(named);
+                    }
+                }
+            }
+        }
+
+        // The separation matrix: no two arms may be interchangeable.
+        let mut never_separated: Vec<String> = Vec::new();
+        for a in CandidateFeature::ALL {
+            for b in CandidateFeature::ALL {
+                if a.index() >= b.index() {
+                    continue;
+                }
+                if columns[a.index()] == columns[b.index()] {
+                    never_separated.push(format!("{} == {}", a.name(), b.name()));
+                }
+            }
+        }
+        assert!(
+            never_separated.is_empty(),
+            "these label pairs read identically at every registered cell, so the adapter could \
+             swap their arms undetected: {never_separated:?}",
+        );
     }
 }
