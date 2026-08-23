@@ -316,7 +316,7 @@ fn main() {
         Some("pairs") => cmd_pairs(&args[1..]),
         Some("collision") => cmd_collision(&args[1..]),
         Some("collinearity") => cmd_collinearity(&args[1..]),
-        Some("rooted") => cmd_rooted(&args[1..]),
+        Some("rooted") => cmd_rooted(&args[1..]).map(exit_with),
         _ => Err(USAGE.to_string()),
     };
     if let Err(message) = result {
@@ -324,6 +324,34 @@ fn main() {
         std::process::exit(2);
     }
 }
+
+/// A subcommand's NON-FAILURE exit code.
+///
+/// `0` returns normally. Anything else exits immediately with that code, after
+/// flushing — a run that has something to say about its own completeness needs a
+/// signal a script can read, and the two codes `main` already hands out (0 for
+/// "fine", 2 for "errored") cannot say "found nothing wrong, but did not look
+/// everywhere".
+///
+/// Only the `rooted` arm routes through this; the other four keep the plain
+/// `Result<(), String>` contract and their exit behaviour is untouched.
+fn exit_with(code: i32) {
+    if code == 0 {
+        return;
+    }
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    std::process::exit(code);
+}
+
+/// **A run that found no failures but did not run the whole gate set.**
+///
+/// Distinct from `0` (step 5 CLEARED) and from `2` (a gate FAILED), because
+/// those are the two things it is not. A skipped gate is a pass about less —
+/// this instrument's own STOP block has said so since the first commit — and an
+/// exit code that could not tell a partial run from a clearance would let the
+/// weaker run be quoted as the stronger one.
+const EXIT_INCOMPLETE: i32 = 3;
 
 // ---------------------------------------------------------------------------
 // argv
@@ -6328,6 +6356,28 @@ const OSE_DEVELOPMENT: [usize; 5] = [34, 68, 111, 159, 198];
 /// column read reaches these before step 10.**
 const OSE_RESERVED: [usize; 8] = [50, 58, 78, 94, 127, 144, 168, 184];
 
+/// The two charter development roots the 2026-08-23 ruling RE-REGISTERED OUT of
+/// the band: the imported document records seat 0's deal as Unknown until its
+/// event-73 reveal and both movers here are seat 0, so no honest mover view
+/// exists at either.
+// RED: nothing keys on membership yet — `take_exhibit` still keys on outcome.
+// The allow goes away with the flip.
+#[allow(dead_code)]
+const OSE_REREGISTERED_OUT: [usize; 2] = [34, 68];
+
+/// **THE RE-REGISTERED DEVELOPMENT BAND** — `OSE_DEVELOPMENT` minus
+/// [`OSE_REREGISTERED_OUT`], transcribed from the ruling and pinned equal to
+/// that difference in this file's tests.
+///
+/// **This is what GATES.** The split between a root that gates and a root that
+/// is merely recorded keys on MEMBERSHIP HERE, never on how a particular run's
+/// read happened to turn out. The distinction is not academic: keyed on outcome,
+/// an unreadable root ANYWHERE would silently earn e34/e68's re-registered
+/// treatment — a band root that could not be evaluated would clear the run under
+/// a message claiming it had been re-registered out, which the ruling says of
+/// exactly two roots and no others.
+const OSE_BAND: [usize; 3] = [111, 159, 198];
+
 /// What an exhibit is FOR — the burn guard's type.
 ///
 /// The guard is structural rather than a convention: [`ose_columns`] takes a
@@ -6880,11 +6930,67 @@ struct Verdict {
     /// Results the ruling re-registered OUT of the step-5 gate set. Printed in
     /// the verdict block, never an input to [`Verdict::clears`].
     recorded: Vec<String>,
+    /// Gates this invocation did not RUN at all — named, so a run that looked in
+    /// fewer places than the gate set has cannot be quoted as one that looked
+    /// everywhere. See [`skipped_gates`].
+    skipped: Vec<String>,
+}
+
+/// What a completed run is entitled to CLAIM.
+// RED: `Incomplete` is unreachable until `outcome()` consults `skipped`, so the
+// non-test build cannot see it constructed. The allow goes away with the flip.
+#[allow(dead_code)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Outcome {
+    /// The full gate set ran and every gate passed. The only outcome that may
+    /// print the clearance block.
+    Clears,
+    /// No gate failed, but at least one did not run. NOT a clearance.
+    Incomplete,
+    /// A gate in the re-registered set failed.
+    Stopped,
+}
+
+/// WHICH gates a given invocation does not run.
+///
+/// A pure function of the two flags, so the partial paths are checkable without
+/// a corpus: which gates a run covers is a property of how it was invoked, and
+/// deciding it here rather than inline is what lets a cell walk all four
+/// invocations and read the answer.
+fn skipped_gates(generated: bool, has_record: bool) -> Vec<String> {
+    let mut out = Vec::new();
+    if !generated {
+        out.push(
+            "GATE 2 (the four M-PF placement-fork ordinals) — --no-generated: they resolve by \
+             seeded scan"
+                .to_string(),
+        );
+    }
+    if !has_record {
+        out.push(
+            "GATE 4 (the re-registered recorded development band) — no --record: its roots are \
+             events of the regenerated bga-import/896199544 document"
+                .to_string(),
+        );
+    }
+    out
 }
 
 impl Verdict {
     fn new() -> Self {
-        Self { failures: Vec::new(), recorded: Vec::new() }
+        Self { failures: Vec::new(), recorded: Vec::new(), skipped: Vec::new() }
+    }
+
+    /// What this run may CLAIM.
+    ///
+    /// RED: `skipped` is collected but not consulted, which is the pre-flip
+    /// behaviour — a partial run with no failures still reports as a clearance.
+    fn outcome(&self) -> Outcome {
+        if !self.failures.is_empty() {
+            Outcome::Stopped
+        } else {
+            Outcome::Clears
+        }
     }
 
     /// GATE 1 — the e113 exemplar pair. NON-COLLISION gates; DIRECTION records.
@@ -6955,12 +7061,42 @@ impl Verdict {
     /// [`Verdict::recorded`] is deliberately absent from this expression: a
     /// re-registered result is not a quiet pass, it is a result the owner moved
     /// to a different gate, and the verdict block prints every one of them.
-    fn clears(&self) -> bool {
-        self.failures.is_empty()
+    /// The process exit code this outcome earns. `Stopped` never reaches here —
+    /// it leaves through `Err` and `main`'s own `2`.
+    fn exit_code(&self) -> i32 {
+        match self.outcome() {
+            Outcome::Clears => 0,
+            Outcome::Incomplete => EXIT_INCOMPLETE,
+            Outcome::Stopped => 2,
+        }
     }
 }
 
-fn cmd_rooted(args: &[String]) -> Result<(), String> {
+/// The banner a run prints when nothing failed and not everything ran.
+///
+/// It refuses the clearance claim BY NAME rather than by leaving it out: a
+/// reader who has seen the clearance block before will look for it, and its
+/// silent absence is a weaker signal than a sentence saying it does not apply.
+fn incomplete_block(skipped: &[String]) -> String {
+    let mut out = String::from(
+        "VERDICT             NO GATE FAILED — and this run does NOT claim step-5 clearance\n\
+         what did not run    \n",
+    );
+    for entry in skipped {
+        out.push_str(&format!("  {entry}\n"));
+    }
+    out.push_str(
+        "why that matters    a skipped gate is a PASS ABOUT LESS. The gates that ran passed, and\n\
+         \x20                   that is the whole of what this run establishes; step 5 clears only\n\
+         \x20                   when the FULL re-registered gate set has actually executed\n\
+         \x20                   (GATE-1 non-collision · GATE 2 · GATE 3 · the re-registered GATE 4)\n\
+         to clear            re-run with the flags the skipped gates need — the seeded scans for\n\
+         \x20                   GATE 2, and --record <path> for GATE 4",
+    );
+    out
+}
+
+fn cmd_rooted(args: &[String]) -> Result<i32, String> {
     let (positional, flags, _) = split_args(args, &["record"], &["no-generated"], &[])?;
     if !positional.is_empty() {
         return Err(format!("rooted takes no positional arguments\n\n{USAGE}"));
@@ -6976,10 +7112,8 @@ fn cmd_rooted(args: &[String]) -> Result<(), String> {
     println!("axis width          {AXIS_WIDTH}");
     println!("profile             {}", profile());
 
-    // A registered gate root that could not be evaluated is tracked SEPARATELY
-    // from one that evaluated the wrong way. Both stop the run; conflating them
-    // would report "nothing was measured" as "the measurement disagreed".
     let mut verdict = Verdict::new();
+    verdict.skipped = skipped_gates(generated, flags.contains_key("record"));
 
     // --- GATE 1: the e113 exemplar pair ------------------------------------
     println!();
@@ -7224,10 +7358,10 @@ fn cmd_rooted(args: &[String]) -> Result<(), String> {
                 identities.len(),
             );
             println!(
-                "  development       {} charter roots: {}   RE-REGISTERED band {{e111, e159, \
-                 e198}}",
+                "  development       {} charter roots: {}   RE-REGISTERED band {{{}}}",
                 identities.iter().filter(|(_, _, r)| *r == OseRole::Development).count(),
                 OSE_DEVELOPMENT.iter().map(|e| format!("e{e}")).collect::<Vec<_>>().join(" "),
+                OSE_BAND.iter().map(|e| format!("e{e}")).collect::<Vec<_>>().join(", "),
             );
             println!(
                 "  reserved          {} escrow-reserved, columns REFUSED by construction: {}",
@@ -7406,11 +7540,16 @@ fn cmd_rooted(args: &[String]) -> Result<(), String> {
         }
     }
     println!();
-    if verdict.clears() {
-        println!("{}", CLEARANCE_BLOCK.trim_end());
-        Ok(())
-    } else {
-        Err(format!(
+    match verdict.outcome() {
+        Outcome::Clears => {
+            println!("{}", CLEARANCE_BLOCK.trim_end());
+            Ok(0)
+        }
+        Outcome::Incomplete => {
+            println!("{}", incomplete_block(&verdict.skipped).trim_end());
+            Ok(verdict.exit_code())
+        }
+        Outcome::Stopped => Err(format!(
             "STOP — step 5 does not clear:\n\n{} GATE FAILURE(S) in the RE-REGISTERED gate set \
              (GATE-1 non-collision · GATE 2 ·\nGATE 3 · the re-registered GATE 4):\n  {}\n\n\
              Checkpoint §7 step 5: \"A gate failure stops before any fitting.\" This instrument \
@@ -11225,6 +11364,15 @@ mod tests {
     // orchestrator records their output.
     // -----------------------------------------------------------------------
 
+    /// The boolean the cells read. Test-only: the command matches on
+    /// [`Outcome`] directly, and a second spelling of the same question in the
+    /// shipped surface would be one more thing to keep in step.
+    impl Verdict {
+        fn clears(&self) -> bool {
+            self.outcome() == Outcome::Clears
+        }
+    }
+
     /// A 2P state with a real generated board, for the cells that need one —
     /// the same shape `observed_view` above builds, kept state-side.
     fn two_player_state() -> (GameState, Rules) {
@@ -11368,20 +11516,17 @@ mod tests {
         for name in ["m-pf-dev-0", "m-pf-dev-1", "m-pf-dev-2", "m-pf-dev-3"] {
             verdict.take_fork(&fork_over(name, 6));
         }
-        // GATE 3: the six constructed cells, all as declared.
-        for (pair, side, expect, o3) in [
-            ("4(b)", "EXECUTABLE", ">= 1", 1),
-            ("4(b)", "DISTANT", "= 0", 0),
-            ("4(a)", "MATCHED", "= 0", 0),
+        // GATE 3: the SIX constructed cells the real gate runs — 4(b) at both
+        // endpoints and 4(a) at its one, both sides each.
+        for (pair, stage, side, expect, o3) in [
+            ("4(b)", "early", "EXECUTABLE", ">= 1", 1),
+            ("4(b)", "early", "DISTANT", "= 0", 0),
+            ("4(b)", "late", "EXECUTABLE", ">= 1", 1),
+            ("4(b)", "late", "DISTANT", "= 0", 0),
+            ("4(a)", "early", "MATCHED", "= 0", 0),
+            ("4(a)", "early", "UNMATCHED", "= 0", 0),
         ] {
-            verdict.take_o3(&O3Cell {
-                pair,
-                stage: "early",
-                side,
-                expect,
-                o3,
-                ok: true,
-            });
+            verdict.take_o3(&O3Cell { pair, stage, side, expect, o3, ok: true });
         }
         // GATE 4: three that read and pass, two structurally unviewable.
         for (event, columns) in [(111, [32, 6, 0]), (159, [18, 4, 0]), (198, [14, 3, 0])] {
@@ -11444,6 +11589,71 @@ mod tests {
         );
     }
 
+    /// **A PARTIAL RUN MAY NOT CLAIM CLEARANCE.**
+    ///
+    /// `rooted --no-generated` without `--record` runs GATE 1 and GATE 3 and
+    /// nothing else, and before this cell it printed "GATE-1 non-collision ·
+    /// GATE 2 · GATE 3 · the re-registered GATE 4 — all PASS" and exited 0 over
+    /// a run in which two of those four never executed. A skipped gate is a pass
+    /// about less; the claim has to be scoped to what actually ran.
+    ///
+    /// Walked at the level where the coverage is DECIDED — [`skipped_gates`] is
+    /// a pure function of the two flags — so all four invocations are checkable
+    /// without the gitignored owner saves the command itself needs.
+    #[test]
+    fn a_partial_run_does_not_claim_step_five_clearance() {
+        // The coverage each invocation actually has.
+        assert!(skipped_gates(true, true).is_empty(), "the full invocation skips nothing");
+        assert_eq!(skipped_gates(false, true).len(), 1, "--no-generated drops GATE 2");
+        assert!(skipped_gates(false, true)[0].contains("GATE 2"));
+        assert_eq!(skipped_gates(true, false).len(), 1, "no --record drops GATE 4");
+        assert!(skipped_gates(true, false)[0].contains("GATE 4"));
+        assert_eq!(skipped_gates(false, false).len(), 2, "the reviewer's invocation drops both");
+
+        // And what each is entitled to claim. No failures anywhere in this
+        // cell: the ONLY thing separating the outcomes is coverage.
+        let over = |generated, record| {
+            let mut verdict = measured_verdict();
+            verdict.skipped = skipped_gates(generated, record);
+            verdict
+        };
+        assert_eq!(over(true, true).outcome(), Outcome::Clears, "the full gate set ran");
+        for (generated, record, what) in [
+            (false, true, "GATE 2 skipped"),
+            (true, false, "GATE 4 skipped"),
+            (false, false, "both skipped"),
+        ] {
+            let verdict = over(generated, record);
+            assert!(verdict.failures.is_empty(), "{what}: nothing FAILED");
+            assert_eq!(
+                verdict.outcome(),
+                Outcome::Incomplete,
+                "{what}: no failure is not the same as a clearance",
+            );
+            assert!(!verdict.clears(), "{what}: and it must not print the clearance block");
+            assert_ne!(
+                verdict.exit_code(),
+                0,
+                "{what}: exit 0 would let a partial run be quoted as a clearance",
+            );
+            assert_eq!(verdict.exit_code(), EXIT_INCOMPLETE, "{what}: and not as a failure");
+        }
+
+        // The banner refuses the claim BY NAME rather than by omitting it.
+        let banner = incomplete_block(&skipped_gates(false, false));
+        assert!(banner.contains("does NOT claim"), "the refusal is explicit: {banner}");
+        assert!(banner.contains("GATE 2") && banner.contains("GATE 4"), "…and names what was \
+                 skipped: {banner}");
+        assert!(
+            !banner.contains("STEP 5 CLEARS"),
+            "the clearance claim must be ABSENT from a partial run's banner",
+        );
+        assert!(
+            CLEARANCE_BLOCK.contains("STEP 5 CLEARS"),
+            "…and present in the block a full run prints, or the cell above proves nothing",
+        );
+    }
+
     /// The e113 DIRECTION read is recorded and is no longer a verdict input.
     ///
     /// Its CONTROL sits in the same cell: a blocking collision at the same pair
@@ -11480,6 +11690,76 @@ mod tests {
              direction claim, not the whole of GATE 1",
         );
         assert!(colliding.failures.iter().any(|f| f.contains("GATE 1")));
+    }
+
+    /// **THE RECORDED/GATED SPLIT KEYS ON REGISTERED MEMBERSHIP, NOT ON HOW A
+    /// READ TURNED OUT.**
+    ///
+    /// Both paths this cell walks are unreachable against the current record —
+    /// digest verification freezes viewability before any column is read, so
+    /// e34/e68 are the unviewable pair and the band roots read. That is exactly
+    /// why they need cells: the keying is the difference between a rule that
+    /// happens to be right here and one that is right, and only a constructed
+    /// outcome can tell them apart.
+    ///
+    /// Keyed on OUTCOME, an unviewable BAND root would clear the run under a
+    /// message announcing it had been "RE-REGISTERED OUT" — a claim the ruling
+    /// makes about exactly two roots. Keyed on MEMBERSHIP, it gates.
+    #[test]
+    fn the_exhibit_split_keys_on_registered_membership_not_on_the_read() {
+        // The two lists partition the charter five, and the band is the
+        // difference — pinned so a transcription slip cannot re-point the gate.
+        let derived: Vec<usize> = OSE_DEVELOPMENT
+            .into_iter()
+            .filter(|e| !OSE_REREGISTERED_OUT.contains(e))
+            .collect();
+        assert_eq!(derived, OSE_BAND, "the band is the charter five minus the re-registered out");
+        assert!(OSE_BAND.iter().all(|e| !OSE_REREGISTERED_OUT.contains(e)), "disjoint");
+        assert_eq!(OSE_BAND.len() + OSE_REREGISTERED_OUT.len(), OSE_DEVELOPMENT.len());
+
+        // A hypothetical NOT-RUN at a BAND root must GATE. The band is what
+        // step 5 reads; a band root nothing could be read at is a stop, and
+        // announcing it as re-registered out would be false.
+        for event in OSE_BAND {
+            let mut verdict = Verdict::new();
+            verdict.take_exhibit(&exhibit_read(
+                event,
+                ExhibitOutcome::NotRun { reason: "hypothetical".to_string() },
+            ));
+            assert!(
+                !verdict.clears(),
+                "e{event} is IN the re-registered band: an unreadable band root stops the run",
+            );
+            assert!(
+                !verdict.recorded.iter().any(|r| r.contains("RE-REGISTERED OUT")),
+                "e{event}: and it must not be announced as re-registered out — the ruling names \
+                 e34 and e68, and no others",
+            );
+        }
+
+        // A hypothetical READ at a re-registered-out root stays RECORDED. Its
+        // columns are not band evidence whatever they say, so neither a passing
+        // nor a failing read may move the verdict.
+        for event in OSE_REREGISTERED_OUT {
+            for columns in [[32, 6, 0], [0, 0, 1]] {
+                let mut verdict = Verdict::new();
+                verdict.take_exhibit(&exhibit_read(event, ExhibitOutcome::Read {
+                    columns,
+                    mover_columns: [0, 0, 0],
+                    opponent: PlayerId(1),
+                    hand: (1, 1),
+                }));
+                assert!(
+                    verdict.clears(),
+                    "e{event} is re-registered OUT: its columns are not band evidence, so a \
+                     {columns:?} read cannot fail the run",
+                );
+                assert!(
+                    verdict.failures.is_empty(),
+                    "e{event}: and it is filed nowhere near the gate set",
+                );
+            }
+        }
     }
 
     /// A structurally unviewable exhibit is the REGISTERED SHAPE, not a stop —
