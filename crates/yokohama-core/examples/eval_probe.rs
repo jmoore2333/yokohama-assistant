@@ -5279,7 +5279,7 @@ impl ProtocolCell {
 /// * O5 `FlagIconMarginal` — ":297 Units: VP. +."
 /// * O6 `HeldOrderIcons` — ":308 Sign +."
 /// * X1 `LabTakeable` — ":326 Units: takeable cards. +."
-/// * X2 `PortTakeable` — ":338 Units: matched goods toward takeable orders. +."
+/// * X2 `PortTakeable` — ":339 Units: matched goods toward takeable orders. +."
 /// * X3 `MatchedProductionAccess` — ":349 Units: needed-goods per activation.
 ///   Sign +."
 const SIGN_PRIORS: [(CandidateFeature, i64); 18] = [
@@ -5387,105 +5387,139 @@ const COLLINEAR_FLAGS: [CandidateFeature; 3] = [
 ];
 
 /// Exemption (ii)'s three states for one candidate.
+///
+/// Sentence 14 fixes the shape: FOUR entries are FIRM (two `Satisfied`, two
+/// `Absent`) and the other fourteen are `Pending`. The asymmetry is deliberate —
+/// a firm entry is one the record has already settled, and everything else is a
+/// question for the owner rather than an inference for the fitter.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum RootedPresence {
     /// A rooted read RECORDED the feature moving. The string is the record.
     Satisfied(&'static str),
-    /// No rooted presence is recorded, and none is owed — the feature has no
-    /// (ii) path and a trigger removes it.
+    /// No rooted presence is recorded and NONE IS OWED — either §6 names no
+    /// qualifying read for the feature, or the feature's registered read exists
+    /// and read zero. A trigger removes it.
     Absent(&'static str),
-    /// The step-5 record HAS the answer and this table does not carry it. A
-    /// PENDING feature that actually triggers and is saved by neither (i) nor
-    /// (iii) STOPS the protocol with a named owner route: the alternative is
-    /// guessing a removal exemption from a read nobody transcribed.
+    /// Evidence EXISTS and this table does not adjudicate it. A PENDING feature
+    /// that actually triggers and is saved by neither (i) nor (iii) STOPS the
+    /// protocol with a named owner route, and the string says where the evidence
+    /// lives — "nothing self-rules", sentence 14.
     Pending(&'static str),
 }
 
-/// **EXEMPTION (ii)'s ROSTER — the recorded rooted-presence reads, one row per
-/// candidate, each naming its record.**
+/// **EXEMPTION (ii)'s ROSTER — FOUR FIRM ENTRIES AND FOURTEEN PENDING-ROUTES**,
+/// per the 2026-08-24 coherence-pass sentence 14.
 ///
-/// "Presence" is NONZERO MOVEMENT AT A ROOTED STATE. It is deliberately not a
-/// direction claim: §8's clause is "the feature's pre-registered ROOTED EFFECT
-/// was present", and the step-5 close ruled the direction question separately
-/// (the e113 gate re-registered forward to step 9(b)).
+/// > "The FIRM (ii) entries are exactly four: X1 SATISFIED (sentence 11's
+/// > ruling), X2 SATISFIED (the recorded 10(a) carrier read — §6's named
+/// > qualifying class), X3 NONE and O3 NONE (§6 names only the 10(a)/(b) reads;
+/// > O3's registered rooted read exists and read zero). Every OTHER candidate's
+/// > (ii) entry is PENDING: a PENDING entry consulted at removal time — a
+/// > feature triggering un-saved by (i)/(iii) — STOPS the protocol as a typed
+/// > ROUTED outcome naming the feature, and the owner rules on the recorded
+/// > evidence then; nothing self-rules."
+///
+/// # FORWARD CORRECTION ON THE RECORD — the e113 attributions are superseded
+///
+/// Sentence 14: "the e113 separation spread is WIRING evidence (`3e9befe`) and a
+/// wiring read never satisfies (ii) for any feature (§6)". This table's earlier
+/// revision cited the e113 deltas `[1, -3, -1, 1]` as SATISFYING (ii) for
+/// S1..S4. **Those four attributions are withdrawn**: a wiring proof shows a
+/// column is connected, not that its pre-registered ROOTED EFFECT was present,
+/// and §8's exemption asks the second question. S1..S4 are PENDING here.
+///
+/// "Presence" remains NONZERO MOVEMENT AT A ROOTED STATE, and it is deliberately
+/// not a direction claim — the step-5 close ruled the direction question
+/// separately, re-registering the e113 gate forward to step 9(b).
+///
+/// Each PENDING row names the evidence a ROUTE would put in front of the owner,
+/// so a stop is a question with its answer's location attached rather than an
+/// open-ended pause.
 const ROOTED_PRESENCE: [(CandidateFeature, RootedPresence); 18] = [
-    // S1..S4 — the step-5 close row's recorded e113 deltas [1, -3, -1, 1] over
-    // the first four S definitions. Nonzero at a rooted state on all four; the
-    // SIGNS are the finding that failed the frozen gate and are not read here.
+    // S1..S7 — candidate evidence: GATE 2's M-PF reads, per-column data in the
+    // regenerable step-5 clearance artifact. (Not the e113 spread: superseded.)
     (
         CandidateFeature::ProductionAccess,
-        RootedPresence::Satisfied("e113 delta +1 (step-5 close row)"),
+        RootedPresence::Pending("gate 2's M-PF per-column reads (step-5 clearance artifact)"),
     ),
-    (CandidateFeature::TrackAccess, RootedPresence::Satisfied("e113 delta -3 (step-5 close row)")),
+    (
+        CandidateFeature::TrackAccess,
+        RootedPresence::Pending("gate 2's M-PF per-column reads (step-5 clearance artifact)"),
+    ),
     (
         CandidateFeature::AssistantAreasDistinct,
-        RootedPresence::Satisfied("e113 delta -1 (step-5 close row)"),
+        RootedPresence::Pending("gate 2's M-PF per-column reads (step-5 clearance artifact)"),
     ),
     (
         CandidateFeature::PresidentLocalAccess,
-        RootedPresence::Satisfied("e113 delta +1 (step-5 close row)"),
+        RootedPresence::Pending("gate 2's M-PF per-column reads (step-5 clearance artifact)"),
     ),
-    // S5..S7 — the same e113 vector reads [.., 0, 0, 0] on these three, so the
-    // e113 read is not a presence for them and the step-5 clearance data is
-    // where their answer lives. PENDING, not absent.
     (
         CandidateFeature::BankAccess,
-        RootedPresence::Pending("e113 delta 0; step-5 clearance data un-transcribed"),
+        RootedPresence::Pending("gate 2's M-PF per-column reads (step-5 clearance artifact)"),
     ),
     (
         CandidateFeature::EmploymentAgencyAccess,
-        RootedPresence::Pending("e113 delta 0; step-5 clearance data un-transcribed"),
+        RootedPresence::Pending("gate 2's M-PF per-column reads (step-5 clearance artifact)"),
     ),
     (
         CandidateFeature::PresidentReachableAreas,
-        RootedPresence::Pending("e113 delta 0; step-5 clearance data un-transcribed"),
+        RootedPresence::Pending("gate 2's M-PF per-column reads (step-5 clearance artifact)"),
     ),
-    // E1/E2/E3 — the step-5 rooted reads registered no E-resource column.
-    (CandidateFeature::MoneyStock, RootedPresence::Absent("no registered rooted read")),
-    (CandidateFeature::TradeGoodsStock, RootedPresence::Absent("no registered rooted read")),
-    (CandidateFeature::BuildingTokensReady, RootedPresence::Absent("no registered rooted read")),
-    // O1/O2 — the re-registered OSE development band {e111, e159, e198}.
+    // E1..E3 — candidate evidence: the fired-while-behind 18-column record.
+    (
+        CandidateFeature::MoneyStock,
+        RootedPresence::Pending("the fired-while-behind 18-column record (digest 392fe6571d0aa82a)"),
+    ),
+    (
+        CandidateFeature::TradeGoodsStock,
+        RootedPresence::Pending("the fired-while-behind 18-column record (digest 392fe6571d0aa82a)"),
+    ),
+    (
+        CandidateFeature::BuildingTokensReady,
+        RootedPresence::Pending("the fired-while-behind 18-column record (digest 392fe6571d0aa82a)"),
+    ),
+    // O1/O2 — candidate evidence: the gate-4 band reads over {e111, e159, e198}.
     (
         CandidateFeature::HeldOrderValue,
-        RootedPresence::Satisfied("OSE band opponent-O1 32/18/14 (step-5 close row)"),
+        RootedPresence::Pending("the gate-4 band reads, opponent-O1 32/18/14"),
     ),
     (
         CandidateFeature::OrderMatchedGoods,
-        RootedPresence::Satisfied("OSE band opponent-O2 6/4/3 (step-5 close row)"),
+        RootedPresence::Pending("the gate-4 band reads, opponent-O2 6/4/3"),
     ),
-    // O3 — the band read 0 at every root, and its gate was CONSTRUCTED, not
-    // rooted: no rooted presence exists to cite.
+    // O3 — FIRM. §6 names only the 10(a)/(b) reads, and O3's own registered
+    // rooted read EXISTS and read zero at every development root: there is no
+    // pending evidence to bring, which is what makes this one firm rather than
+    // PENDING. (The 2026-08-24 row banks WHY the organic read is zero — a timing
+    // artifact of in-turn fulfillment, not a verdict on the phenomenon; see
+    // [`RECORDED_ABSENT`].)
     (
         CandidateFeature::ExecutableOrders,
-        RootedPresence::Absent("OSE band opponent-O3 = 0 everywhere; gate constructed, not rooted"),
+        RootedPresence::Absent("registered rooted read EXISTS and read 0 at every development root"),
     ),
-    // O5/O6 — the OSE charter registered opponent-O1/O2/O3 and nothing else, so
-    // this table has no recorded read either way. PENDING for the same reason
-    // S5..S7 are: an exemption inferred from the ABSENCE of a registration
-    // would be a guess, and the route exists so it does not have to be one.
+    // O5/O6 — candidate evidence: the fired-while-behind 18-column record.
     (
         CandidateFeature::FlagIconMarginal,
-        RootedPresence::Pending("outside the registered OSE column set {O1, O2, O3}"),
+        RootedPresence::Pending("the fired-while-behind 18-column record (digest 392fe6571d0aa82a)"),
     ),
     (
         CandidateFeature::HeldOrderIcons,
-        RootedPresence::Pending("outside the registered OSE column set {O1, O2, O3}"),
+        RootedPresence::Pending("the fired-while-behind 18-column record (digest 392fe6571d0aa82a)"),
     ),
-    // X1 — RULED. Coherence-pass sentence 11: "X1's removal exemption (ii) is
-    // SATISFIED by the recorded 10(b) carrier read; the implementer applies
-    // that status mechanically." (The step-5 row records the generated X wiring
-    // proof as VACUOUS for X1 — zero at all six development roots — which is
-    // why the status is a ruling rather than a band read.)
+    // X1 — FIRM, RULED. Coherence-pass sentence 11: "X1's removal exemption (ii)
+    // is SATISFIED by the recorded 10(b) carrier read; the implementer applies
+    // that status mechanically."
     (
         CandidateFeature::LabTakeable,
         RootedPresence::Satisfied("RULED — coherence-pass sentence 11, the 10(b) carrier read"),
     ),
-    // X2 — the recorded 10(a) carrier read, X2 = 2 against 0.
+    // X2 — FIRM. The recorded 10(a) carrier read, §6's named qualifying class.
     (
         CandidateFeature::PortTakeable,
-        RootedPresence::Satisfied("10(a) carrier read, X2 = 2 vs 0"),
+        RootedPresence::Satisfied("the recorded 10(a) carrier read (§6's named qualifying class)"),
     ),
-    // X3 — §6 names only the 10(a)/(b) reads, so X3 has no (ii) path at all.
+    // X3 — FIRM. §6 names only the 10(a)/(b) reads, so X3 has no (ii) path.
     (
         CandidateFeature::MatchedProductionAccess,
         RootedPresence::Absent("§6 names only the 10(a)/(b) carrier reads"),
@@ -5678,13 +5712,24 @@ impl SplitMix64 {
 
 /// **§8's "declared mix rate" for the DENSE arm, declared here: 25%.**
 ///
-/// The rule is `draw >> 62 == 0` — the draw's TOP TWO BITS are `00`. Over a
-/// uniform `u64` exactly `2^62` of the `2^64` values satisfy it, so
-/// `p = 2^62 / 2^64 = 1/4` EXACTLY: no modulus, no rejection, no floating point,
-/// and no dependence on the draw's low bits. The number is a constant because
-/// the artifact PRINTS it — §8 calls the rate declared, and a declared rate that
-/// only lives in a comment is not one.
+/// The number is a constant because the artifact PRINTS it — §8 calls the rate
+/// declared, and a declared rate that only lives in a comment is not one.
 const DENSE_ARM_MIX_RATE_PERCENT: u32 = 25;
+
+/// **THE DENSE ARM'S FLIP RULE, and the whole of its declared rate.**
+///
+/// The draw's TOP TWO BITS are `00`. Over a uniform `u64` exactly `2^62` of the
+/// `2^64` values satisfy that, so `p = 2^62 / 2^64 = 1/4` EXACTLY — no modulus,
+/// no rejection, no floating point, and no dependence on the low bits.
+///
+/// **A FUNCTION rather than an inline comparison**, because the rate is
+/// unpinnable in the TIGHTENING direction otherwise: `>> 63` and `>> 61` are
+/// also plausible-looking rules at 1/2 and 1/8, and a suite that only checks
+/// "some rows flip" passes all three. The boundary is asserted here, at
+/// `2^62 - 1`, `2^62` and `2^61`, where the three rules disagree.
+fn dense_flip(draw: u64) -> bool {
+    draw >> 62 == 0
+}
 
 /// The slot the arm column BORROWS on the thirty-four-wide axis.
 ///
@@ -5713,13 +5758,45 @@ struct ArmRecord {
     passed: bool,
 }
 
-/// The FIT-half support rate of every candidate column, and the sparsest.
+/// **THE RECORDED-ABSENT EXCLUSION SET** of coherence-pass sentence 13, and it
+/// is exactly `{O3}` today.
+///
+/// > "The sparse arm's mask rate = the sparsest measured fit-half support rate
+/// > among candidate columns NOT RECORDED-ABSENT at step 5; the recorded-absent
+/// > exclusion set today is exactly {O3} (the census read opponent-O3 = 0 at
+/// > every development root; §6's O3→O2 designation fallback registered at
+/// > `9e9e6ed`); the artifact records the exclusion set, the chosen column, and
+/// > the realized rate. The dense arm is unchanged."
+///
+/// **Why the arm needs the exclusion at all.** O3's organic support is ~0.37%
+/// of fit-half rows against O6's ~6% — an order of magnitude below the next
+/// column — so an arm masked to O3's rate keeps almost no signal, fits `(0, 0)`,
+/// and fires the instrument-defect stop with every cell un-run. That is the
+/// recorded step-5 O3 census showing through §8's arm definition rather than an
+/// optimizer failing: **a control masked to a census-zero column measures the
+/// census, not the optimizer.** Two correct texts composing wrong — the e113
+/// defect class, caught before the run this time.
+///
+/// The 2026-08-24 row banks the disposition reasoning in full and it is worth
+/// carrying here in one line, because a bare exclusion reads a cycle later as a
+/// verdict: O3's near-zero organic support is a TIMING ARTIFACT of in-turn
+/// fulfillment (the strictly-completable state lives inside the holder's own
+/// turn, and hand-offs are the pipeline's only observation points), agreeing
+/// across 792 human positions and the generated corpus — NOT a finding that the
+/// phenomenon is unreal.
+const RECORDED_ABSENT: [CandidateFeature; 1] = [CandidateFeature::ExecutableOrders];
+
+/// The FIT-half support rate of every candidate column, and the sparsest among
+/// those sentence 13 admits.
 ///
 /// A column's support rate is `(fit-half rows with a nonzero value) / (fit-half
 /// rows)`. The denominator is common to all eighteen, so the sparsest column is
 /// the one with the fewest nonzero fit-half rows; **ties go to the earlier
 /// column in `CandidateFeature::ALL` order**, which is the same listed-order
 /// tie-break §5.4's witness search and §8's ladder already use.
+///
+/// [`RECORDED_ABSENT`] columns are skipped — the minimum is taken over the
+/// ORGANICALLY-PRESENT columns, per sentence 13.
 fn sparsest_candidate_support(
     matrix: &Matrix,
 ) -> Result<(CandidateFeature, usize, usize), String> {
@@ -5743,8 +5820,9 @@ fn sparsest_candidate_support(
     }
     let sparsest = CandidateFeature::ALL
         .into_iter()
+        .filter(|c| !RECORDED_ABSENT.contains(c))
         .min_by_key(|c| (nonzero[c.index()], c.index()))
-        .expect("CandidateFeature::ALL is non-empty");
+        .expect("the exclusion set is smaller than the axis");
     Ok((sparsest, nonzero[sparsest.index()], denominator))
 }
 
@@ -5763,7 +5841,7 @@ fn dense_arm_column(matrix: &Matrix) -> (u64, Vec<i64>) {
         .iter()
         .map(|row| {
             let draw = stream.draw();
-            let flip = draw >> 62 == 0;
+            let flip = dense_flip(draw);
             let signal = row.margin.signum();
             if flip {
                 -signal
@@ -5878,8 +5956,15 @@ const PART_B_FROZEN_EARLY: usize = 25;
 const PART_B_FROZEN_LATE: usize = 27;
 
 /// **THE ONE REGISTERED DEPARTURE from §5.4's frozen census**, cited rather than
-/// inferred — the same sentence `solver.rs`'s `CENSUS_RULING` carries, so the
-/// solve and the fit cannot disagree about how many rows the package registers.
+/// inferred — the same RULING `solver.rs`'s `CENSUS_RULING` carries, in this
+/// file's own words.
+///
+/// The two strings are deliberately NOT shared: they live in separate example
+/// targets with no common module, and a constant hoisted into a library so two
+/// print harnesses could quote it identically would be a worse coupling than two
+/// transcriptions of one owner ruling. What keeps them honest is the
+/// ARITHMETIC, which is pinned on both sides — `solver.rs` against its realized
+/// census, this file against [`census_verdict`]'s three-way match.
 const PART_B_CENSUS_RULING: &str = "4(c) HIGHER FACES was ruled LATE-ONLY by the owner on \
      2026-08-22 (guidingpath decision-log row): its early row named a state §5.1's p = 0 hand cap \
      makes unconstructible. EARLY moves 25 -> 24 and LATE is UNCHANGED at 27; the 2026-08-23 \
@@ -5991,9 +6076,17 @@ struct StageSatisfaction {
 /// > (the projection definition also serves §8's removal re-runs)."
 ///
 /// Every cell holds all sixteen incumbents, so only the CANDIDATE half can drop
-/// a row — which is why `B` has a NONEMPTY applicable set (4(d) is registered
-/// with no production carrier at all and prices through the incumbent
-/// `CountryBonusNow`).
+/// a row: a row survives a cell iff its whole candidate collateral is inside
+/// that cell's set.
+///
+/// **`B` has a NONEMPTY applicable set, and the row that survives is 6(b)
+/// CLAIMED ≻ UNCLAIMED** — at BOTH endpoints, and it is the only one. 6(b)'s
+/// realized `Δv` is zero on all eighteen candidate columns, so the empty
+/// candidate set still prices it. **NOT 4(d)**: 4(d) is registered with no
+/// production CARRIER (it prices through the incumbent `CountryBonusNow`), but
+/// carrier and collateral are different things — its realized `Δv` carries
+/// `O1 = +1`, so B's projection DROPS it. A carrier-free row is not a
+/// candidate-free row, and only the second survives a projection.
 fn row_applies(row: &GateRow, mask: &FeatureMask) -> bool {
     CandidateFeature::ALL.into_iter().all(|c| {
         let slot = FeatureId::Candidate(c).index();
@@ -6119,7 +6212,14 @@ struct CellRecord {
     cell: ProtocolCell,
     candidates: Vec<CandidateFeature>,
     fit: CellFit,
-    removal: CellRemoval,
+    /// **`None` where the removal rule NEVER RAN on this cell** — the protocol
+    /// routed at an earlier cell and stopped.
+    ///
+    /// An empty disposition list would render identically to "every candidate
+    /// was kept", which is the opposite claim; under sentence 14's roster the
+    /// routable set starts at `B+S`, so a real route can leave FIVE cells in
+    /// this state and a reader must be able to tell them apart.
+    removal: Option<CellRemoval>,
     /// The single refit a removal triggers, with the removal rule re-read on it.
     /// The re-read is RECORDED and removes nothing: §8's rule is
     /// "non-propagating".
@@ -6127,14 +6227,14 @@ struct CellRecord {
 }
 
 impl CellRecord {
-    /// The candidate set the cell ends on.
+    /// The candidate set the cell ends on. A cell whose removal rule never ran
+    /// ends on the set it started with — nothing was decided about it.
     fn survivors(&self) -> Vec<CandidateFeature> {
         match &self.refit {
             Some((set, _, _)) => set.clone(),
             None => self.candidates.clone(),
         }
     }
-
 }
 
 /// Everything one protocol run produced.
@@ -6194,16 +6294,17 @@ fn run_protocol(matrix: &Matrix, plan: &MatrixPlan, rules: &Rules) -> Result<Pro
     for cell in ProtocolCell::ALL {
         let candidates = cell.candidates();
         let fit = fit_cell(plan, matrix, &cell.mask())?;
-        cells.push(CellRecord { cell, candidates, fit, removal: CellRemoval {
-            dispositions: Vec::new(),
-        }, refit: None });
+        cells.push(CellRecord { cell, candidates, fit, removal: None, refit: None });
     }
 
     // The removal rule, cell by cell.
     let mut outcome = ProtocolOutcome::Complete;
     for record in &mut cells {
-        record.removal = removals_for(&record.candidates, &record.fit.outcome().table);
-        if let Some((feature, trigger)) = record.removal.routed().first() {
+        let removal = removals_for(&record.candidates, &record.fit.outcome().table);
+        let routed = removal.routed().first().copied();
+        record.refit = if routed.is_none() { refit_once(plan, matrix, &removal)? } else { None };
+        record.removal = Some(removal);
+        if let Some((feature, trigger)) = routed {
             outcome = ProtocolOutcome::RoutedPendingExemption {
                 cell: record.cell.name(),
                 feature: feature.label(),
@@ -6211,12 +6312,13 @@ fn run_protocol(matrix: &Matrix, plan: &MatrixPlan, rules: &Rules) -> Result<Pro
             };
             break;
         }
-        record.refit = refit_once(plan, matrix, &record.removal)?;
     }
 
     // The X-carriage check on the INTERACTION cell's surviving set.
     if outcome == ProtocolOutcome::Complete {
-        if let Some(interaction) = cells.iter().find(|c| c.cell == ProtocolCell::BSEX) {
+        if let Some(interaction) =
+            cells.iter().find(|c| c.cell == ProtocolCell::BSEX && c.removal.is_some())
+        {
             if let Some(routed) = x_carriage_outcome(&interaction.survivors()) {
                 outcome = routed;
             }
@@ -6308,10 +6410,19 @@ fn render_protocol(matrix: &Matrix, plan: &MatrixPlan, run: &ProtocolRun) -> Str
             if arm.passed { "RECOVERED" } else { "NOT RECOVERED" },
         );
         if let Some((column, k, n)) = arm.support {
+            // Sentence 13's three record lines: the exclusion set, the chosen
+            // column, and the realized rate.
             let _ = writeln!(
                 out,
-                "        sparsest candidate column {} — support {k}/{n} FIT-half rows",
-                column.label(),
+                "        recorded-absent excluded: {:?} (sentence 13 — a control masked to a \
+                 census-zero column measures the census, not the optimizer)",
+                RECORDED_ABSENT.iter().map(|c| c.label()).collect::<Vec<_>>(),
+            );
+            let _ = writeln!(out, "        chosen column: {}", column.label());
+            let _ = writeln!(
+                out,
+                "        realized rate: {k}/{n} FIT-half rows = {:.4}%",
+                100.0 * k as f64 / n as f64,
             );
         }
         for (init, outcome) in
@@ -6349,6 +6460,11 @@ fn render_protocol(matrix: &Matrix, plan: &MatrixPlan, run: &ProtocolRun) -> Str
         );
     }
 
+    // The cell a route stopped at, so a NOT-RUN cell can name it.
+    let routed_at = match &run.outcome {
+        ProtocolOutcome::RoutedPendingExemption { cell, .. } => *cell,
+        _ => "an earlier cell",
+    };
     for record in &run.cells {
         let _ = writeln!(
             out,
@@ -6368,8 +6484,24 @@ fn render_protocol(matrix: &Matrix, plan: &MatrixPlan, run: &ProtocolRun) -> Str
         );
         render_cell_fit(&mut out, "base", &record.fit);
         render_part_b(&mut out, &run.rows, &record.candidates, &record.fit.outcome().table);
-        for (candidate, disposition) in &record.removal.dispositions {
-            let _ = writeln!(out, "     {:<4} {}", candidate.label(), render_disposition(*disposition));
+        match &record.removal {
+            None => {
+                let _ = writeln!(
+                    out,
+                    "     removal rule NOT RUN — the protocol routed at {}",
+                    routed_at,
+                );
+            }
+            Some(removal) => {
+                for (candidate, disposition) in &removal.dispositions {
+                    let _ = writeln!(
+                        out,
+                        "     {:<4} {}",
+                        candidate.label(),
+                        render_disposition(*disposition),
+                    );
+                }
+            }
         }
         if let Some((survivors, refit, reread)) = &record.refit {
             let _ = writeln!(
@@ -17328,6 +17460,117 @@ mod tests {
         // nothing, an unsupported one masks everything.
         assert_eq!(sparse_arm_column(&dense_matrix, &dense, n, n).1, dense);
         assert!(sparse_arm_column(&dense_matrix, &dense, 0, n).1.iter().all(|v| *v == 0));
+
+        // ===================================================================
+        // SENTENCE 13: the RECORDED-ABSENT set is skipped, and O3 is in it.
+        // ===================================================================
+        //
+        // The fixture makes O3 the RAW minimum by a clear margin — O3 on ONE
+        // fit-half row, every other column on all four — so a selection that
+        // took the plain minimum over the eighteen would pick it, and the
+        // registered one must name the runner-up instead. This is the shape the
+        // real corpus has (O3 ~0.37% against O6 ~6%), reduced to four rows.
+        let mut with_o3_sparsest = dense_matrix.clone();
+        let o3 = FeatureId::Candidate(CandidateFeature::ExecutableOrders).index();
+        for (index, row) in with_o3_sparsest.rows.iter_mut().enumerate() {
+            for c in CandidateFeature::ALL {
+                row.dv[FeatureId::Candidate(c).index()] = 4;
+            }
+            // O3 nonzero on the FIRST fit-half row only.
+            row.dv[o3] = i64::from(index == 0);
+        }
+        let raw_minimum = CandidateFeature::ALL
+            .into_iter()
+            .min_by_key(|c| {
+                (
+                    with_o3_sparsest
+                        .rows
+                        .iter()
+                        .filter(|r| Split::of(r.game) == Split::Fit)
+                        .filter(|r| r.dv[FeatureId::Candidate(*c).index()] != 0)
+                        .count(),
+                    c.index(),
+                )
+            })
+            .expect("the axis is non-empty");
+        assert_eq!(
+            raw_minimum.label(),
+            "O3",
+            "the fixture must make O3 the RAW minimum, or the exclusion proves nothing",
+        );
+        let (chosen, k, n) =
+            sparsest_candidate_support(&with_o3_sparsest).expect("the rates measure");
+        assert_ne!(chosen.label(), "O3", "sentence 13 excludes the recorded-absent set");
+        assert_eq!(
+            (chosen.label(), k, n),
+            ("S1", 4, 4),
+            "with O3 excluded every remaining column is fully supported, so the listed-order tie \
+             rule takes the first",
+        );
+
+        // The exclusion set is exactly {O3}, by label and by size.
+        assert_eq!(
+            RECORDED_ABSENT.iter().map(|c| c.label()).collect::<Vec<_>>(),
+            ["O3"],
+            "sentence 13: \"the recorded-absent exclusion set today is exactly {{O3}}\"",
+        );
+        // And it is the same feature the (ii) roster marks FIRM-Absent for the
+        // same recorded read — one census, two consequences, no second list.
+        assert!(matches!(
+            rooted_presence(CandidateFeature::ExecutableOrders),
+            RootedPresence::Absent(_),
+        ));
+
+        // SENTENCE 13'S THREE RECORD LINES reach the artifact.
+        let protocol = protocol_matrix();
+        let protocol_plan = plan_matrix(&protocol).expect("the protocol fixture plans");
+        let rules = Rules::standard();
+        let run = run_protocol(&protocol, &protocol_plan, &rules).expect("the protocol runs");
+        let printed = render_protocol(&protocol, &protocol_plan, &run);
+        assert!(printed.contains("recorded-absent excluded: [\"O3\"]"), "{printed}");
+        assert!(printed.contains("chosen column: X3"), "{printed}");
+        assert!(printed.contains("realized rate: 18/54 FIT-half rows = 33.3333%"), "{printed}");
+        // The protocol fixture makes O3 sparser than X3 (2 rows in 3 against 1),
+        // so the exclusion is what puts X3 in the record — not an accident of
+        // which column happened to be thinnest.
+        let sparse = run.arms.iter().find(|a| a.name == "sparse").expect("the sparse arm");
+        assert_eq!(sparse.support.expect("recorded").0.label(), "X3");
+    }
+
+    /// **THE DENSE ARM'S FLIP RULE IS PINNED AT ITS BOUNDARY**, in the direction
+    /// a suite otherwise cannot see.
+    ///
+    /// `>> 62 == 0` is p = 1/4. `>> 63 == 0` is p = 1/2 and `>> 61 == 0` is
+    /// p = 1/8, and every cell that only asks "does the column carry the margin
+    /// sign where it did not flip" passes all three — the DECLARED rate is
+    /// unpinned in the tightening direction unless the boundary itself is
+    /// asserted. These three draws are where the three rules disagree.
+    #[test]
+    fn the_dense_arm_flip_rule_is_pinned_at_the_quarter_boundary() {
+        const QUARTER: u64 = 1 << 62;
+        assert!(dense_flip(0), "the bottom of the range flips");
+        assert!(dense_flip(QUARTER - 1), "the last draw inside the first quarter flips");
+        assert!(!dense_flip(QUARTER), "the first draw outside it does not");
+        assert!(!dense_flip(u64::MAX), "nor does the top");
+        // The rung that separates 1/4 from 1/8: `2^61 >> 62 == 0` (flip) while
+        // `2^61 >> 61 == 1` (no flip).
+        assert!(dense_flip(1 << 61), "an eighth-rule would read this one as no-flip");
+        // ...and the rung that separates 1/4 from 1/2: `2^62 >> 63 == 0` (a half
+        // rule flips) while `2^62 >> 62 == 1` (the registered rule does not).
+        assert!(!dense_flip(QUARTER), "a half-rule would read this one as a flip");
+
+        // A GOLDEN REALIZED COUNT, over enough rows that the three rules could
+        // not land on the same number. Recorded, and the arithmetic beside it:
+        // 200 draws at p = 1/4 expects 50, at p = 1/8 expects 25, at p = 1/2
+        // expects 100 — and the realized count is a fact about the stream, not a
+        // sample from it. It lands on the expectation exactly, which is a
+        // coincidence worth recording rather than a property worth relying on.
+        let mut stream = SplitMix64::seeded(0xE7A1_2026_0819_0001);
+        let flips = (0..200).filter(|_| dense_flip(stream.draw())).count();
+        assert_eq!(flips, 50, "the golden flip count over 200 keyed draws");
+        let mut eighth = SplitMix64::seeded(0xE7A1_2026_0819_0001);
+        let at_eighth = (0..200).filter(|_| eighth.draw() >> 61 == 0).count();
+        assert_ne!(at_eighth, flips, "a 1/8 rule must not reproduce the golden");
     }
 
     /// **BOTH ARMS RECOVER A NONZERO, CORRECTLY SIGNED WEIGHT on a matrix where
@@ -17473,131 +17716,110 @@ mod tests {
     /// > classification of (0,0) columns; the sign-prior trigger is a separate
     /// > removal ground."
     ///
-    /// So the table has a hole exactly where a naive reading would not: a
-    /// collinear-ONLY feature (E3, S3 — O1 also carries (ii)) survives `(0,0)`
-    /// and is REMOVED on a wrong sign. (ii) and (iii) save both triggers,
-    /// because each is a claim that the feature is real rather than a claim
-    /// about which zeros are meaningful.
+    /// So the table has a hole exactly where a naive reading would not. Under
+    /// sentence 14's roster ALL THREE collinear-flagged features — O1, E3 and
+    /// S3 — are PENDING under (ii) and none is a margined carrier, so each one
+    /// survives `(0,0)` under (i) and ROUTES on a wrong sign. Those three rows
+    /// are where the narrowing is visible: a reading in which (i) saved both
+    /// triggers would RETAIN them instead.
+    ///
+    /// (ii) and (iii) save both triggers, because each is a claim that the
+    /// feature is real rather than a claim about which zeros are meaningful.
     #[test]
     fn the_exemption_table_composes_exactly_as_the_three_clauses_register_it() {
         use CandidateFeature as C;
         // (feature, trigger, expected disposition, the clause that decides it)
-        let cases: &[(C, RemovalTrigger, Disposition, &str)] = &[
-            // (i) ALONE — E3 and S3 are collinear-flagged with no (ii) and no
-            // (iii). The 4a narrowing lives in these two rows.
-            (
-                C::BuildingTokensReady,
-                RemovalTrigger::ZeroZero,
-                Disposition::Retained(RemovalTrigger::ZeroZero, Exemption::Collinear),
-                "E3 (0,0): collinear, retained",
-            ),
-            (
-                C::BuildingTokensReady,
-                RemovalTrigger::WrongSign,
-                Disposition::Removed(RemovalTrigger::WrongSign),
-                "E3 wrong-sign: (i) does not reach it — sentence 4a",
-            ),
-            (
-                C::AssistantAreasDistinct,
-                RemovalTrigger::ZeroZero,
-                Disposition::Retained(RemovalTrigger::ZeroZero, Exemption::Collinear),
-                "S3 (0,0): collinear, retained",
-            ),
-            (
-                C::AssistantAreasDistinct,
-                RemovalTrigger::WrongSign,
-                Disposition::Retained(RemovalTrigger::WrongSign, Exemption::RootedPresence),
-                "S3 wrong-sign: (i) does not reach it, but the e113 read does",
-            ),
-            // (ii) — the recorded rooted presences save BOTH triggers.
-            (
-                C::LabTakeable,
-                RemovalTrigger::ZeroZero,
-                Disposition::Retained(RemovalTrigger::ZeroZero, Exemption::RootedPresence),
-                "X1 (0,0): RULED satisfied by sentence 11",
-            ),
-            (
-                C::LabTakeable,
-                RemovalTrigger::WrongSign,
-                Disposition::Retained(RemovalTrigger::WrongSign, Exemption::RootedPresence),
-                "X1 wrong-sign: (ii) saves both triggers",
-            ),
-            (
-                C::PortTakeable,
-                RemovalTrigger::WrongSign,
-                Disposition::Retained(RemovalTrigger::WrongSign, Exemption::RootedPresence),
-                "X2: the recorded 10(a) carrier read",
-            ),
-            (
-                C::TrackAccess,
-                RemovalTrigger::ZeroZero,
-                Disposition::Retained(RemovalTrigger::ZeroZero, Exemption::RootedPresence),
-                "S2: the e113 delta -3 is PRESENCE, not direction",
-            ),
-            (
-                C::PresidentLocalAccess,
-                RemovalTrigger::WrongSign,
-                Disposition::Retained(RemovalTrigger::WrongSign, Exemption::RootedPresence),
-                "S4: the e113 delta +1",
-            ),
-            (
-                C::OrderMatchedGoods,
-                RemovalTrigger::ZeroZero,
-                Disposition::Retained(RemovalTrigger::ZeroZero, Exemption::RootedPresence),
-                "O2: the OSE band 6/4/3",
-            ),
-            // (i) AND (ii) — O1 is collinear-flagged AND band-read. The
-            // wrong-sign row is what proves (ii) is doing the work there.
-            (
-                C::HeldOrderValue,
-                RemovalTrigger::WrongSign,
-                Disposition::Retained(RemovalTrigger::WrongSign, Exemption::RootedPresence),
-                "O1 wrong-sign: (i) cannot save it and (ii) does",
-            ),
-            // (iii) — the four margined carriers, saving both triggers. S1 and
-            // E1/E2 have no other clause reaching a wrong sign... except S1,
-            // which also carries (ii). E1/E2 are the clean (iii) rows.
-            (
-                C::MoneyStock,
-                RemovalTrigger::ZeroZero,
-                Disposition::Retained(RemovalTrigger::ZeroZero, Exemption::MarginedCarrier),
-                "E1 (0,0): 3(a)'s margin is its non-vacuity claim",
-            ),
-            (
-                C::MoneyStock,
-                RemovalTrigger::WrongSign,
-                Disposition::Retained(RemovalTrigger::WrongSign, Exemption::MarginedCarrier),
-                "E1 wrong-sign: (iii) saves both triggers",
-            ),
-            (
-                C::TradeGoodsStock,
-                RemovalTrigger::ZeroZero,
-                Disposition::Retained(RemovalTrigger::ZeroZero, Exemption::MarginedCarrier),
-                "E2 (0,0): 3(b)/2(a)",
-            ),
-            // NO CLAUSE — X3 and O3 are the two features with no exemption of
-            // any kind, so they are where the removal rule is actually visible.
-            (
-                C::MatchedProductionAccess,
-                RemovalTrigger::ZeroZero,
-                Disposition::Removed(RemovalTrigger::ZeroZero),
-                "X3: §6 names only the 10(a)/(b) reads",
-            ),
-            (
-                C::MatchedProductionAccess,
-                RemovalTrigger::WrongSign,
-                Disposition::Removed(RemovalTrigger::WrongSign),
-                "X3 wrong-sign",
-            ),
-            (
-                C::ExecutableOrders,
-                RemovalTrigger::ZeroZero,
-                Disposition::Removed(RemovalTrigger::ZeroZero),
-                "O3: the band read 0 everywhere and its gate was constructed",
-            ),
-        ];
+        //
+        // EXHAUSTIVE over the eighteen x two triggers. The roster MOVED under
+        // sentence 14, and a hand-picked subset would be a subset chosen against
+        // the old one — so the table is built from the three rosters, checked
+        // against the implementation row by row, and then checked AS A SHAPE
+        // below so it cannot drift into agreeing with itself.
+        let cases: Vec<(C, RemovalTrigger, Disposition, &str)> = {
+            let mut out = Vec::new();
+            for candidate in CandidateFeature::ALL {
+                for trigger in [RemovalTrigger::ZeroZero, RemovalTrigger::WrongSign] {
+                    let collinear = COLLINEAR_FLAGS.contains(&candidate);
+                    let carrier = MARGINED_CARRIERS.contains(&candidate);
+                    let expected = if collinear && trigger == RemovalTrigger::ZeroZero {
+                        Disposition::Retained(trigger, Exemption::Collinear)
+                    } else {
+                        match rooted_presence(candidate) {
+                            RootedPresence::Satisfied(_) => {
+                                Disposition::Retained(trigger, Exemption::RootedPresence)
+                            }
+                            _ if carrier => {
+                                Disposition::Retained(trigger, Exemption::MarginedCarrier)
+                            }
+                            RootedPresence::Pending(_) => Disposition::Routed(trigger),
+                            RootedPresence::Absent(_) => Disposition::Removed(trigger),
+                        }
+                    };
+                    out.push((candidate, trigger, expected, "the three clauses composed"));
+                }
+            }
+            out
+        };
+        assert_eq!(cases.len(), 36);
 
-        for (candidate, trigger, expected, why) in cases {
+        // THE REALIZED SHAPE, under sentence 14's roster:
+        //
+        //   REMOVED (both triggers)          O3, X3 — the only two
+        //   RETAINED via (ii), both          X1, X2 — the FIRM-Satisfied pair
+        //   RETAINED via (iii), both         S1, S5, E1, E2
+        //   RETAINED via (i) at (0,0) ONLY   O1, E3, S3 — and ROUTED on a wrong
+        //                                    sign, the three rows where 4a shows
+        //   ROUTED (both triggers)           S2, S4, S6, S7, O2, O5, O6
+        let label_set = |f: &dyn Fn(&(C, RemovalTrigger, Disposition, &str)) -> bool| {
+            cases.iter().filter(|c| f(c)).map(|c| c.0.label()).collect::<BTreeSet<_>>()
+        };
+        assert_eq!(
+            label_set(&|c| matches!(c.2, Disposition::Removed(_))),
+            BTreeSet::from(["O3", "X3"]),
+            "only the two FIRM-Absent features can be removed at all",
+        );
+        assert_eq!(
+            label_set(&|c| matches!(c.2, Disposition::Retained(_, Exemption::RootedPresence))),
+            BTreeSet::from(["X1", "X2"]),
+            "sentence 14's two FIRM-Satisfied entries",
+        );
+        assert_eq!(
+            label_set(&|c| matches!(c.2, Disposition::Retained(_, Exemption::MarginedCarrier))),
+            BTreeSet::from(["S1", "S5", "E1", "E2"]),
+        );
+        assert_eq!(
+            label_set(&|c| matches!(c.2, Disposition::Retained(_, Exemption::Collinear))),
+            BTreeSet::from(["O1", "E3", "S3"]),
+        );
+        assert_eq!(
+            label_set(&|c| matches!(c.2, Disposition::Routed(_))),
+            BTreeSet::from(["S2", "S3", "S4", "S6", "S7", "E3", "O1", "O2", "O5", "O6"]),
+        );
+
+        // **THE 4a NARROWING, on the three rows that now carry it.** A reading
+        // in which (i) saved BOTH triggers would RETAIN these; the registered
+        // reading lets them fall through, and with every collinear feature
+        // PENDING under (ii) and none of them a margined carrier, the
+        // fall-through is a ROUTE.
+        for flagged in COLLINEAR_FLAGS {
+            let at = |t: RemovalTrigger| {
+                cases.iter().find(|c| c.0 == flagged && c.1 == t).expect("the row").2
+            };
+            assert_eq!(
+                at(RemovalTrigger::ZeroZero),
+                Disposition::Retained(RemovalTrigger::ZeroZero, Exemption::Collinear),
+                "{} at (0,0) is COLLINEAR, not vacuous",
+                flagged.label(),
+            );
+            assert_eq!(
+                at(RemovalTrigger::WrongSign),
+                Disposition::Routed(RemovalTrigger::WrongSign),
+                "{} fitted against its prior: sentence 4a says (i) does not reach it",
+                flagged.label(),
+            );
+        }
+
+        for (candidate, trigger, expected, why) in &cases {
             // Build a table that raises EXACTLY this trigger on this candidate.
             let table = match trigger {
                 RemovalTrigger::ZeroZero => protocol_table(&[(*candidate, 0, 0)]),
@@ -17627,55 +17849,147 @@ mod tests {
             ROOTED_PRESENCE.iter().map(|(c, _)| *c).collect::<Vec<_>>(),
             CandidateFeature::ALL.to_vec(),
         );
+
+        // **SENTENCE 14: the FIRM entries are exactly four**, and the other
+        // fourteen are PENDING. Asserted as a PARTITION, so an entry that
+        // silently hardened from PENDING to Satisfied — precisely the move the
+        // superseded e113 attributions were — fails here rather than quietly
+        // exempting a feature from removal.
+        let by_state = |want: u8| {
+            ROOTED_PRESENCE
+                .iter()
+                .filter(|(_, state)| {
+                    u8::from(match state {
+                        RootedPresence::Satisfied(_) => 0,
+                        RootedPresence::Absent(_) => 1,
+                        RootedPresence::Pending(_) => 2,
+                    }) == want
+                })
+                .map(|(c, _)| c.label())
+                .collect::<BTreeSet<_>>()
+        };
+        assert_eq!(by_state(0), BTreeSet::from(["X1", "X2"]), "the FIRM-Satisfied pair");
+        assert_eq!(by_state(1), BTreeSet::from(["X3", "O3"]), "the FIRM-Absent pair");
+        assert_eq!(
+            by_state(2),
+            BTreeSet::from([
+                "S1", "S2", "S3", "S4", "S5", "S6", "S7", "E1", "E2", "E3", "O1", "O2", "O5", "O6",
+            ]),
+            "fourteen PENDING-routes",
+        );
+
+        for (candidate, state) in ROOTED_PRESENCE {
+            let text = match state {
+                RootedPresence::Satisfied(t)
+                | RootedPresence::Absent(t)
+                | RootedPresence::Pending(t) => t,
+            };
+            // A route is a question with its answer's LOCATION attached, so a
+            // PENDING row that named no evidence would be an open-ended pause.
+            assert!(
+                text.len() > 20,
+                "{}'s (ii) entry does not name its evidence: {text:?}",
+                candidate.label(),
+            );
+            // THE SUPERSEDED ATTRIBUTIONS ARE GONE. Sentence 14: the e113
+            // separation spread is WIRING evidence and a wiring read never
+            // satisfies (ii) for any feature.
+            assert!(
+                !text.contains("e113"),
+                "{}'s (ii) entry still cites the e113 spread, which sentence 14 rules is WIRING \
+                 evidence that never satisfies (ii)",
+                candidate.label(),
+            );
+        }
     }
 
     /// **A PENDING ROOTED PRESENCE THAT ACTUALLY TRIGGERS ROUTES TO THE OWNER,
     /// BY NAME** — it is never guessed either way.
     ///
-    /// Four candidates carry a PENDING (ii) status: S6, S7 (the e113 vector
-    /// reads 0 on them, so that read is not their presence) and O5, O6 (outside
-    /// the OSE charter's registered column set {O1, O2, O3}). None is a margined
-    /// carrier and none is collinear-flagged, so a trigger on any of them has
-    /// nothing to fall back on — and the honest move is a named owner route
-    /// rather than a removal justified by a read nobody transcribed.
+    /// Sentence 14 widened this from four candidates to FOURTEEN: every feature
+    /// but X1, X2, X3 and O3 is PENDING under (ii). "A PENDING entry consulted
+    /// at removal time — a feature triggering un-saved by (i)/(iii) — STOPS the
+    /// protocol as a typed ROUTED outcome naming the feature, and the owner
+    /// rules on the recorded evidence then; nothing self-rules."
     ///
-    /// S5 is the control that proves PENDING is not by itself a route: it is
-    /// PENDING under (ii) and a MARGINED CARRIER under (iii), and (iii) saves it.
+    /// The fourteen split into three groups, and the cell walks all of them
+    /// because the SAVED groups are what keep "PENDING" from collapsing into
+    /// "routes":
+    ///
+    /// * TEN route on BOTH triggers — S2, S4, S6, S7, O2, O5, O6 outright, and
+    ///   S3, E3, O1 on the wrong-sign trigger alone (their `(0,0)` is saved by
+    ///   the collinear flag);
+    /// * FOUR never route at all — S1, S5, E1, E2 are margined carriers and
+    ///   (iii) saves both triggers, which is the control proving PENDING is not
+    ///   by itself a route.
     #[test]
     fn a_pending_rooted_presence_that_triggers_routes_to_the_owner_by_name() {
-        for candidate in [
-            CandidateFeature::EmploymentAgencyAccess,
-            CandidateFeature::PresidentReachableAreas,
-            CandidateFeature::FlagIconMarginal,
-            CandidateFeature::HeldOrderIcons,
-        ] {
-            assert!(
-                matches!(rooted_presence(candidate), RootedPresence::Pending(_)),
-                "{} is expected PENDING",
-                candidate.label(),
+        let pending: Vec<CandidateFeature> = CandidateFeature::ALL
+            .into_iter()
+            .filter(|c| matches!(rooted_presence(*c), RootedPresence::Pending(_)))
+            .collect();
+        assert_eq!(pending.len(), 14, "sentence 14's PENDING set");
+
+        let mut routed_both = Vec::new();
+        let mut routed_on_sign_only = Vec::new();
+        let mut never_routed = Vec::new();
+        for candidate in pending {
+            let at_zero = disposition_of(&protocol_table(&[(candidate, 0, 0)]), candidate);
+            let at_sign = disposition_of(
+                &protocol_table(&[(candidate, 0, -sign_prior(candidate) * 3)]),
+                candidate,
             );
-            for trigger in [RemovalTrigger::ZeroZero, RemovalTrigger::WrongSign] {
-                let table = match trigger {
-                    RemovalTrigger::ZeroZero => protocol_table(&[(candidate, 0, 0)]),
-                    RemovalTrigger::WrongSign => protocol_table(&[(candidate, 0, -3)]),
-                };
-                assert_eq!(
-                    disposition_of(&table, candidate),
-                    Disposition::Routed(trigger),
-                    "{} fired {} and must ROUTE, never be removed on an un-transcribed read",
+            match (at_zero, at_sign) {
+                (Disposition::Routed(_), Disposition::Routed(_)) => routed_both.push(candidate),
+                (Disposition::Retained(_, Exemption::Collinear), Disposition::Routed(_)) => {
+                    routed_on_sign_only.push(candidate);
+                }
+                (
+                    Disposition::Retained(_, Exemption::MarginedCarrier),
+                    Disposition::Retained(_, Exemption::MarginedCarrier),
+                ) => never_routed.push(candidate),
+                other => panic!(
+                    "{} composes to {other:?}, which is none of the three registered shapes",
                     candidate.label(),
-                    trigger.name(),
-                );
+                ),
             }
         }
-
-        // S5 — PENDING under (ii), saved by (iii).
-        let s5 = CandidateFeature::BankAccess;
-        assert!(matches!(rooted_presence(s5), RootedPresence::Pending(_)));
+        let labels =
+            |v: &[CandidateFeature]| v.iter().map(|c| c.label()).collect::<BTreeSet<_>>();
         assert_eq!(
-            disposition_of(&protocol_table(&[(s5, 0, 0)]), s5),
-            Disposition::Retained(RemovalTrigger::ZeroZero, Exemption::MarginedCarrier),
+            labels(&routed_both),
+            BTreeSet::from(["S2", "S4", "S6", "S7", "O2", "O5", "O6"]),
         );
+        assert_eq!(
+            labels(&routed_on_sign_only),
+            BTreeSet::from(["S3", "E3", "O1"]),
+            "the three collinear-flagged features: (i) saves their (0,0) and nothing saves the \
+             wrong sign",
+        );
+        assert_eq!(
+            labels(&never_routed),
+            BTreeSet::from(["S1", "S5", "E1", "E2"]),
+            "the margined carriers — PENDING under (ii) and saved by (iii), which is the control \
+             showing PENDING alone is not a route",
+        );
+
+        // A ROUTE never LOOKS like a removal: nothing in the PENDING set can be
+        // removed, whatever it fits.
+        for candidate in CandidateFeature::ALL {
+            if matches!(rooted_presence(candidate), RootedPresence::Pending(_)) {
+                for table in [
+                    protocol_table(&[(candidate, 0, 0)]),
+                    protocol_table(&[(candidate, -3, 0)]),
+                    protocol_table(&[(candidate, 0, -3)]),
+                ] {
+                    assert!(
+                        !matches!(disposition_of(&table, candidate), Disposition::Removed(_)),
+                        "{} was REMOVED on an un-transcribed read",
+                        candidate.label(),
+                    );
+                }
+            }
+        }
 
         // And the route reaches the protocol's OUTCOME, naming the feature.
         let removal = removals_for(
@@ -17709,7 +18023,11 @@ mod tests {
 
         let mut refits = 0usize;
         for record in &run.cells {
-            let removed = record.removal.removed();
+            let removal = record
+                .removal
+                .as_ref()
+                .unwrap_or_else(|| panic!("cell {} never reached the removal rule", record.cell.name()));
+            let removed = removal.removed();
             match &record.refit {
                 None => assert!(
                     removed.is_empty(),
@@ -17722,7 +18040,7 @@ mod tests {
                     assert!(!removed.is_empty(), "cell {} refitted nothing away", record.cell.name());
                     // The refit's set is exactly the survivors, and the removed
                     // features are gone from it.
-                    assert_eq!(*survivors, record.removal.survivors());
+                    assert_eq!(*survivors, removal.survivors());
                     for gone in &removed {
                         assert!(!survivors.contains(gone), "{} survived its own removal", gone.label());
                     }
@@ -17845,6 +18163,85 @@ mod tests {
             vec![CandidateFeature::MatchedProductionAccess],
             "the re-read names a removal it does not perform",
         );
+    }
+
+    /// **A CELL THE PROTOCOL NEVER REACHED SAYS SO**, rather than rendering as
+    /// a cell whose every candidate was kept.
+    ///
+    /// A route STOPS the removal rule, so every later cell has a fit and no
+    /// dispositions. An empty disposition list prints as nothing at all, which
+    /// is indistinguishable from "the rule ran and removed nothing" — the
+    /// opposite claim. Under sentence 14's roster the routable set starts at
+    /// `B+S`, so one route can leave FIVE cells in that state and a reader has
+    /// to be able to tell them apart.
+    ///
+    /// The fixture routes on purpose: O5's column carries a signal the descent
+    /// prices NEGATIVE, and O5 is PENDING under (ii), collinear under nothing,
+    /// and not a margined carrier — so `B+E` routes and `B+S+E`, `B+S+E+X`,
+    /// `B+E-resource`, `B+E-order` are never evaluated.
+    #[test]
+    fn a_cell_the_protocol_never_reached_records_that_the_rule_did_not_run() {
+        // Anti-correlate O5 against the assigned-cell staircase: its column
+        // reads 2 on the single NEGATIVE cell and 1 elsewhere, so a NEGATIVE
+        // weight lowers the negative and improves — a wrong sign against O5's
+        // registered `+`.
+        let mut matrix = protocol_matrix();
+        let o5 = FeatureId::Candidate(CandidateFeature::FlagIconMarginal).index();
+        for row in &mut matrix.rows {
+            // The negative cell is the LAST (game, seat) pair the fixture builds.
+            let negative = row.game == 16 && row.seat == 1;
+            row.dv[o5] = if negative { 2 } else { 1 };
+        }
+        let plan = plan_matrix(&matrix).expect("the routing fixture plans");
+        let rules = Rules::standard();
+        let run = run_protocol(&matrix, &plan, &rules).expect("the protocol runs");
+
+        let ProtocolOutcome::RoutedPendingExemption { cell, feature, trigger } = &run.outcome
+        else {
+            panic!("the fixture must route, or this cell asserts nothing: {:?}", run.outcome);
+        };
+        assert_eq!(*feature, "O5");
+        assert_eq!(*trigger, "wrong-sign");
+        assert_eq!(*cell, "B+E", "the first cell carrying O5");
+
+        // Every cell still has a FIT — the fourteen base fits all ran — and the
+        // cells after the route have no removal record.
+        assert_eq!(run.cells.len(), 7);
+        let evaluated: Vec<&str> = run
+            .cells
+            .iter()
+            .filter(|c| c.removal.is_some())
+            .map(|c| c.cell.name())
+            .collect();
+        let not_run: Vec<&str> = run
+            .cells
+            .iter()
+            .filter(|c| c.removal.is_none())
+            .map(|c| c.cell.name())
+            .collect();
+        assert_eq!(evaluated, ["B", "B+S", "B+E"], "the rule ran up to and including the route");
+        assert_eq!(
+            not_run,
+            ["B+S+E", "B+S+E+X", "B+E-resource", "B+E-order"],
+            "and stopped there",
+        );
+
+        // THE RENDER PATH: a NOT-RUN cell says so and names where the protocol
+        // stopped; an evaluated cell prints dispositions instead.
+        let printed = render_protocol(&matrix, &plan, &run);
+        assert_eq!(
+            printed.matches("removal rule NOT RUN — the protocol routed at B+E").count(),
+            not_run.len(),
+            "one NOT-RUN line per unevaluated cell:\n{printed}",
+        );
+        assert!(printed.contains("O5   wrong-sign ROUTED"), "{printed}");
+        assert!(printed.contains("ROUTED-PENDING-EXEMPTION"), "{printed}");
+        // A routed run never claims the X-carriage answer it never computed.
+        assert!(!printed.contains("ROUTED-X-EMPTY"));
+        // Every cell still prints its fits and its Part-B report: the route stops
+        // the removal rule, not the record.
+        assert_eq!(printed.matches("[base/").count(), 14);
+        assert_eq!(printed.matches("part-B early").count(), 7);
     }
 
     /// **AN INTERACTION CELL THAT LOSES EVERY X FEATURE ROUTES TO THE OWNER —
@@ -17996,10 +18393,39 @@ mod tests {
             b.iter().any(|s| !s.dropped.is_empty()),
             "cell B prices no candidate, so the projection must drop the candidate-carrying rows",
         );
-        assert!(
-            b.iter().any(|s| s.applicable > 0),
-            "cell B's applicable set is NONEMPTY — 4(d) prices through an incumbent carrier",
-        );
+        // **THE SURVIVING ROW, BY NAME.** Cell B prices no candidate, so a row
+        // survives its projection iff its whole candidate collateral is zero —
+        // and exactly one registered row is, at both endpoints: 6(b).
+        for (index, stage) in StageEndpoint::ALL.into_iter().enumerate() {
+            let applicable: Vec<&GateRow> = rows
+                .iter()
+                .filter(|r| r.stage == stage && row_applies(r, &ProtocolCell::B.mask()))
+                .collect();
+            assert_eq!(
+                applicable.iter().map(|r| r.id).collect::<Vec<_>>(),
+                ["6(b)"],
+                "cell B's {} applicable set is exactly 6(b) CLAIMED ≻ UNCLAIMED",
+                stage.name(),
+            );
+            assert_eq!(b[index].applicable, 1);
+        }
+
+        // **AND NOT 4(d)**, which the doc used to name. 4(d) is registered with
+        // no production CARRIER — it prices through the incumbent
+        // `CountryBonusNow` — but its realized `Δv` carries `O1 = +1`, so B's
+        // projection DROPS it. Carrier-free is not candidate-free, and only the
+        // second survives a projection.
+        let four_d: Vec<&GateRow> = rows.iter().filter(|r| r.id == "4(d)").collect();
+        assert!(!four_d.is_empty(), "4(d) is a registered gate row");
+        for row in &four_d {
+            let collateral: Vec<&str> = CandidateFeature::ALL
+                .into_iter()
+                .filter(|c| row.delta[FeatureId::Candidate(*c).index()] != 0)
+                .map(|c| c.label())
+                .collect();
+            assert_eq!(collateral, ["O1"], "4(d)'s realized candidate collateral");
+            assert!(!row_applies(row, &ProtocolCell::B.mask()), "so cell B drops it");
+        }
         // Named, not counted: every dropped entry opens with a REGISTERED pair
         // id, so a reader can find the row in §5.2 without a second lookup.
         for stage in &b {
