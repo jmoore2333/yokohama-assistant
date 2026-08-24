@@ -301,6 +301,7 @@ usage: eval_probe <subcommand> [options]
                          read)
 
   fit --matrix <path> (--evaluate <table> | --descend <set> | --protocol)
+      [--witness-early <34 i64>] [--witness-late <34 i64>]
       The §8 FITTING CORE, over a matrix `run --dump-matrix` wrote. Reads the
       file, REFUSES one whose SEMANTICS_REV or pair-fixture package digest is
       not this build's (naming both values) or that was generated away from 2P
@@ -357,7 +358,35 @@ usage: eval_probe <subcommand> [options]
                           decision, and its two owner routes (a PENDING rooted
                           presence, an emptied X set) are printed outcomes.
                           Refuses to share its invocation with --evaluate or
-                          --descend.
+                          --descend. Then the RECORD's last stages: §8's SEVEN
+                          HELD-OUT STATISTICS (the six cells vs B plus the
+                          registered increment delta_X, 2,000 game-clustered
+                          replicates each, seed splitmix64(master XOR
+                          fnv1a64(name)) printed per name), the INVENTORY
+                          ACCOUNTING against <= 28 + <= 4, and the §8:975 Part-B
+                          re-run. On a ROUTED outcome it also prints the batched
+                          READ-ONLY CONSULTATION REPORT: every cell's candidates
+                          under that cell's own base fit, so ONE owner ruling can
+                          cover every consultation the roster would reach.
+                          Nothing there applies a removal or moves the stop
+                          point.
+                          EXIT: 0 = the record is COMPLETE · 3 = STOPPED with
+                          nothing false claimed (an instrument defect, either
+                          owner route, or a §8:975 re-run left OWED or failed by
+                          its witness) · 2 = a refusal, as everywhere else. 3 is
+                          never a pass and never a failure-of-gates.
+      --witness-early <34 i64> / --witness-late <34 i64>
+                          --protocol ONLY. The step-4 witness vectors the §8:975
+                          re-run evaluates when the SELECTED cell (B+S+E+X)
+                          removed a candidate: the surviving set's §4 projection
+                          prints with its dropped rows by name, every KEPT row is
+                          read at the witness restricted to the survivors (exact
+                          i64, value against margin — a satisfying witness IS the
+                          Part-B SAT proof), and §9(c)'s subgroup zero-out is
+                          RECORDED on the surviving set. Both vectors or
+                          neither. Without them a selected-cell removal prints
+                          the re-run as OWED and exits 3; a kept-row failure is a
+                          named DEFECT and exits 3 too.
 
 contestants (the grammar is Contestant::from_str_name's — unknown is an error at
 every level, and an unknown knob is never silently ignored):
@@ -398,7 +427,7 @@ fn main() {
         Some("collision") => cmd_collision(&args[1..]),
         Some("collinearity") => cmd_collinearity(&args[1..]),
         Some("rooted") => cmd_rooted(&args[1..]).map(exit_with),
-        Some("fit") => cmd_fit(&args[1..]),
+        Some("fit") => cmd_fit(&args[1..]).map(exit_with),
         _ => Err(USAGE.to_string()),
     };
     if let Err(message) = result {
@@ -415,10 +444,15 @@ fn main() {
 /// "fine", 2 for "errored") cannot say "found nothing wrong, but did not look
 /// everywhere".
 ///
-/// Only the `rooted` arm routes through this; every other subcommand keeps the
-/// plain `Result<(), String>` contract and its exit behaviour is untouched. The
-/// count of those is deliberately not written here — it was, and it went stale
-/// the moment `fit` landed.
+/// TWO arms route through this — `rooted` (step 5's gates) and `fit` (§8's
+/// protocol, charter D6) — and every other subcommand keeps the plain
+/// `Result<(), String>` contract with its exit behaviour untouched. The count of
+/// THOSE is deliberately not written here; it was, and it went stale the moment
+/// `fit` landed.
+///
+/// `fit`'s two manual readings return `0` through this path, so wiring the
+/// subcommand through it changed no behaviour for them: `--evaluate` and
+/// `--descend` still exit 0 on success and 2 on a refusal.
 fn exit_with(code: i32) {
     if code == 0 {
         return;
@@ -4276,10 +4310,7 @@ impl FitTable {
 
     /// Both vectors as the `--evaluate` grammar writes them.
     fn render_vectors(&self) -> String {
-        let join = |v: &[i64; AXIS_WIDTH]| {
-            v.iter().map(i64::to_string).collect::<Vec<_>>().join(",")
-        };
-        format!("{}/{}", join(&self.early), join(&self.late))
+        format!("{}/{}", vector_csv(&self.early), vector_csv(&self.late))
     }
 }
 
@@ -4560,6 +4591,39 @@ fn half_objective(
     mask: &FeatureMask,
     split: Split,
 ) -> HalfObjective {
+    let columns = stage_columns(plan, matrix, table, mask, split);
+    let mult = vec![1u32; columns.clusters];
+    let mut stages: [Option<f64>; 3] = [None; 3];
+    let mut cells = [0usize; 3];
+    for (s, column) in columns.stages.iter().enumerate() {
+        cells[s] = column.len();
+        stages[s] = auc_weighted(column, &mult);
+    }
+    let defined: Vec<f64> = stages.iter().filter_map(|a| *a).collect();
+    let mean =
+        (!defined.is_empty()).then(|| defined.iter().sum::<f64>() / defined.len() as f64);
+    HalfObjective { stages, mean, cells }
+}
+
+/// One (table × mask × half)'s THREE STAGE COLUMNS, sorted for
+/// [`auc_weighted`], plus the design's cluster count.
+///
+/// [`half_objective`]'s own first half, factored out for the one other caller
+/// that needs the columns THEMSELVES rather than their AUCs: §8's held-out
+/// statistics resample these columns two thousand times, and re-deriving them
+/// per replicate would price every held-out row 2,000 times over for a quantity
+/// that does not move with a multiplicity vector.
+///
+/// The cluster count is the DESIGN's — `Split::clusters` off the header — not a
+/// count of the realized cells, exactly as [`split_column`] takes it, so a stage
+/// missing a short game's cell still resamples the right population.
+fn stage_columns(
+    plan: &MatrixPlan,
+    matrix: &Matrix,
+    table: &FitTable,
+    mask: &FeatureMask,
+    split: Split,
+) -> StageColumns {
     let mut columns: [Vec<(f64, u32, bool)>; 3] = [Vec::new(), Vec::new(), Vec::new()];
     for cell in &plan.cells {
         if cell.split != split {
@@ -4581,18 +4645,17 @@ fn half_objective(
         let mean = sum / cell.rows.len() as f64;
         columns[cell.stage.index()].push((mean, cell.cluster, cell.label));
     }
-    let mult = vec![1u32; split.clusters(matrix.header.games)];
-    let mut stages: [Option<f64>; 3] = [None; 3];
-    let mut cells = [0usize; 3];
-    for (s, column) in columns.iter_mut().enumerate() {
-        cells[s] = column.len();
+    for column in &mut columns {
         column.sort_by(|a, b| a.0.partial_cmp(&b.0).expect("cell scores are finite"));
-        stages[s] = auc_weighted(column, &mult);
     }
-    let defined: Vec<f64> = stages.iter().filter_map(|a| *a).collect();
-    let mean =
-        (!defined.is_empty()).then(|| defined.iter().sum::<f64>() / defined.len() as f64);
-    HalfObjective { stages, mean, cells }
+    StageColumns { stages: columns, clusters: split.clusters(matrix.header.games) }
+}
+
+/// Three stage columns of one half, pre-sorted, with the resample population
+/// they belong to.
+struct StageColumns {
+    stages: [Vec<(f64, u32, bool)>; 3],
+    clusters: usize,
 }
 
 /// One init's descent: where it landed and what it cost.
@@ -4861,40 +4924,55 @@ fn parse_fit_table(spec: &str) -> Result<(String, FitTable), String> {
              {FORMS}"
         ));
     };
-    let parse_vector = |raw: &str, which: &str| -> Result<[i64; AXIS_WIDTH], String> {
-        let entries: Vec<&str> = raw.split(',').collect();
-        if entries.len() != AXIS_WIDTH {
-            return Err(format!(
-                "fit --evaluate {spec:?}: the {which} vector has {} entries, and the axis has \
-                 {AXIS_WIDTH} — every weight is named or none is",
-                entries.len(),
-            ));
-        }
-        let mut out = [0i64; AXIS_WIDTH];
-        for (slot, entry) in entries.iter().enumerate() {
-            let entry = entry.trim();
-            if entry.starts_with('+') {
-                return Err(format!(
-                    "fit --evaluate {spec:?}: the {which} vector's entry {} ({entry:?}) opens \
-                     with `+`, which is written bare or `-`-signed here as it is in \
-                     --score-table",
-                    slot + 1,
-                ));
-            }
-            out[slot] = entry.parse::<i64>().map_err(|e| {
-                format!(
-                    "fit --evaluate {spec:?}: the {which} vector's entry {} ({entry:?}) is not an \
-                     i64: {e}",
-                    slot + 1,
-                )
-            })?;
-        }
-        Ok(out)
-    };
+    let context = format!("fit --evaluate {spec:?}");
     Ok((
         "vector".to_string(),
-        FitTable { early: parse_vector(early, "EARLY")?, late: parse_vector(late, "LATE")? },
+        FitTable {
+            early: parse_axis_vector(&context, "EARLY", early)?,
+            late: parse_axis_vector(&context, "LATE", late)?,
+        },
     ))
+}
+
+/// **ONE thirty-four-wide axis vector**, comma-separated, in `FeatureId::all()`
+/// order.
+///
+/// `context` opens every message so the two callers name their own flag: the
+/// `--evaluate` table's two halves, and the §8:975 re-run's two witness vectors.
+/// The GRAMMAR is one grammar deliberately — a witness written like a table is
+/// one fewer spelling for a transcription to get wrong at T5, when the vectors
+/// come off the solver's artifact by hand.
+fn parse_axis_vector(
+    context: &str,
+    which: &str,
+    raw: &str,
+) -> Result<[i64; AXIS_WIDTH], String> {
+    let entries: Vec<&str> = raw.split(',').collect();
+    if entries.len() != AXIS_WIDTH {
+        return Err(format!(
+            "{context}: the {which} vector has {} entries, and the axis has {AXIS_WIDTH} — every \
+             weight is named or none is",
+            entries.len(),
+        ));
+    }
+    let mut out = [0i64; AXIS_WIDTH];
+    for (slot, entry) in entries.iter().enumerate() {
+        let entry = entry.trim();
+        if entry.starts_with('+') {
+            return Err(format!(
+                "{context}: the {which} vector's entry {} ({entry:?}) opens with `+`, which is \
+                 written bare or `-`-signed here as it is in --score-table",
+                slot + 1,
+            ));
+        }
+        out[slot] = entry.parse::<i64>().map_err(|e| {
+            format!(
+                "{context}: the {which} vector's entry {} ({entry:?}) is not an i64: {e}",
+                slot + 1,
+            )
+        })?;
+    }
+    Ok(out)
 }
 
 /// The `--descend` grammar: which features are IN the set.
@@ -6103,6 +6181,29 @@ fn row_applies(row: &GateRow, mask: &FeatureMask) -> bool {
 /// `PROGRESS_FULL_PPM`, where §5.1 registered the rows precisely because
 /// interpolation is exact there — so the report and the objective price a weight
 /// through ONE arithmetic path.
+/// **ONE ROW'S EXACT READING under one table**: `Σ_f w_f(endpoint)·Δv_f` over
+/// the slots the mask holds, in `i64` throughout.
+///
+/// The endpoint is the ROW's own — §5.1 registers every row at `p = 0` or
+/// `p = PROGRESS_FULL_PPM` precisely because [`interpolate`] is exact there — so
+/// a caller cannot ask for a row at an endpoint the row was not registered at.
+///
+/// Factored out because THREE readings must agree to the unit: the per-cell
+/// satisfaction report, the §8:975 re-run's kept-row proof, and §9(c)'s zero-out
+/// arithmetic. A second spelling of this sum is a second place for a margin
+/// comparison to drift.
+fn row_value(row: &GateRow, mask: &FeatureMask, table: &FitTable) -> i64 {
+    let mut total: i64 = 0;
+    for (slot, dv) in row.delta.iter().enumerate() {
+        if !mask.holds(slot) {
+            continue;
+        }
+        let w = interpolate(table.early[slot], table.late[slot], row.stage.ppm());
+        total = total.saturating_add(w.saturating_mul(*dv));
+    }
+    total
+}
+
 fn satisfaction(rows: &[GateRow], mask: &FeatureMask, table: &FitTable) -> [StageSatisfaction; 2] {
     StageEndpoint::ALL.map(|stage| {
         let mut applicable = 0usize;
@@ -6114,15 +6215,7 @@ fn satisfaction(rows: &[GateRow], mask: &FeatureMask, table: &FitTable) -> [Stag
                 continue;
             }
             applicable += 1;
-            let mut total: i64 = 0;
-            for (slot, dv) in row.delta.iter().enumerate() {
-                if !mask.holds(slot) {
-                    continue;
-                }
-                let w = interpolate(table.early[slot], table.late[slot], stage.ppm());
-                total = total.saturating_add(w.saturating_mul(*dv));
-            }
-            if total < row.margin {
+            if row_value(row, mask, table) < row.margin {
                 violated.push(row.label());
             }
         }
@@ -6204,7 +6297,47 @@ impl ProtocolOutcome {
             ProtocolOutcome::RoutedXEmpty => "ROUTED-X-EMPTY".to_string(),
         }
     }
+
+    /// The cell the protocol STOPPED at, for the reports that must name it.
+    ///
+    /// `RoutedXEmpty` stops at the interaction cell by construction: the
+    /// X-carriage check runs on `B+S+E+X`'s surviving set and nowhere else.
+    fn stopped_at(&self) -> &'static str {
+        match self {
+            ProtocolOutcome::Complete => "nowhere — the protocol completed",
+            ProtocolOutcome::InstrumentDefect { .. } => "the control arms, before any cell",
+            ProtocolOutcome::RoutedPendingExemption { cell, .. } => cell,
+            ProtocolOutcome::RoutedXEmpty => "B+S+E+X",
+        }
+    }
 }
+
+/// **THE REGISTERED SENTENCES IN FORCE**, by number and subject.
+///
+/// Sentences 1–12 are the 2026-08-23 coherence-pass row's; 13 and 14 are the
+/// 2026-08-24 row's extension. Sentence 4 was registered in two parts and is
+/// printed as `4a`/`4b`, which is the row's own spelling.
+///
+/// **Numbers and SUBJECTS, never paraphrases of the rulings.** A sentence's text
+/// lives in the decision log and in the doc comment of the code that implements
+/// it; an artifact that restated fourteen rulings in its own words would be a
+/// fifteenth registration nobody ratified. What a reader needs from the record
+/// is which sentences governed the run, and where to read them.
+const REGISTERED_SENTENCES: [(&str, &str); 13] = [
+    ("1", "init tie"),
+    ("2", "step-5 bridge"),
+    ("3", "inventory"),
+    ("4a", "wrong-sign x collinear"),
+    ("4b", "wholesale X"),
+    ("5", "AF1 control-arm inits"),
+    ("6", "AF2 §9(b) x e113"),
+    ("7", "arms' column set"),
+    ("8", "sign-trigger scope"),
+    ("9", "canonical order"),
+    ("10", "step ties"),
+    ("11", "X1 — RULED"),
+    ("12", "statistic names"),
+];
 
 /// One cell's whole protocol record: the base fit, its removals, and the one
 /// refit a removal buys.
@@ -6235,6 +6368,26 @@ impl CellRecord {
             None => self.candidates.clone(),
         }
     }
+
+    /// **The cell's FINAL fit** — the refit's where a removal triggered one, the
+    /// base fit otherwise.
+    ///
+    /// §8's held-out statistics are a property of the table a cell ENDS on: a
+    /// cell that removed a candidate and refitted has a second table, and
+    /// differencing the pre-removal one against `B` would report a statistic for
+    /// a set the cell no longer carries.
+    fn final_fit(&self) -> &CellFit {
+        match &self.refit {
+            Some((_, fit, _)) => fit,
+            None => &self.fit,
+        }
+    }
+
+    /// The mask the final fit was fitted under: the sixteen incumbents plus the
+    /// cell's SURVIVING candidates.
+    fn final_mask(&self) -> FeatureMask {
+        FeatureMask::cell(&self.survivors())
+    }
 }
 
 /// Everything one protocol run produced.
@@ -6245,12 +6398,51 @@ struct ProtocolRun {
     rows: Vec<GateRow>,
     census: (usize, usize),
     outcome: ProtocolOutcome,
+    /// §8's seven held-out statistics — EMPTY unless the run completed.
+    statistics: Vec<PairedStatistic>,
+    /// The batched owner-consultation report — EMPTY unless the run routed.
+    consultation: Vec<CellConsultation>,
+    /// The §8:975 Part-B re-run on the selected cell's surviving set.
+    rerun: ReRun,
+}
+
+impl ProtocolRun {
+    /// **THE EXIT CONTRACT** (charter D6, the `rooted` precedent).
+    ///
+    /// * `0` — the protocol COMPLETED: both arms recovered, every cell fitted,
+    ///   the removal rule resolved everywhere, X carried, and the statistics
+    ///   recorded.
+    /// * `3` — STOPPED WITH NOTHING FALSE CLAIMED: an instrument defect, either
+    ///   owner route, or a §8:975 re-run left OWED or failed by its witness.
+    ///
+    /// `2` is not this function's to give: it is `main`'s code for an errored
+    /// subcommand, and every refusal on this path is an `Err` before a run
+    /// exists.
+    ///
+    /// **3 is never a pass and never a failure-of-gates.** §8's protocol gates
+    /// nothing — every figure it prints is recorded evidence — so the only
+    /// thing an exit code can say here is whether the record is COMPLETE.
+    fn exit_code(&self) -> i32 {
+        if self.rerun.stops() {
+            return EXIT_INCOMPLETE;
+        }
+        0
+    }
 }
 
 /// **§8's protocol, in the order §8 runs it**: the control arms, then the
 /// anchor, then the fourteen base fits, then the removal rule with its at-most
 /// one refit per cell, then the X-carriage check.
-fn run_protocol(matrix: &Matrix, plan: &MatrixPlan, rules: &Rules) -> Result<ProtocolRun, String> {
+/// `witness` is the §8:975 re-run's, and it reaches ONLY that last stage: the
+/// arms, the anchor, the fourteen base fits and the removal rule are identical
+/// with it and without it. It rides the protocol's own signature rather than a
+/// second entry point so there is exactly one way to run §8.
+fn run_protocol(
+    matrix: &Matrix,
+    plan: &MatrixPlan,
+    rules: &Rules,
+    witness: Option<&FitTable>,
+) -> Result<ProtocolRun, String> {
     let rows = gate_rows(rules)?;
     let census = (
         rows.iter().filter(|r| r.stage == StageEndpoint::Early).count(),
@@ -6277,6 +6469,9 @@ fn run_protocol(matrix: &Matrix, plan: &MatrixPlan, rules: &Rules) -> Result<Pro
             rows,
             census,
             outcome: ProtocolOutcome::InstrumentDefect { arm },
+            statistics: Vec::new(),
+            consultation: Vec::new(),
+            rerun: ReRun::NotReached,
         });
     }
 
@@ -6325,7 +6520,30 @@ fn run_protocol(matrix: &Matrix, plan: &MatrixPlan, rules: &Rules) -> Result<Pro
         }
     }
 
-    Ok(ProtocolRun { arms, anchor, cells, rows, census, outcome })
+    // The RECORD's last three stages, each a function of a finished protocol
+    // and none of them a decision: the statistics only exist on a COMPLETE run,
+    // the consultation report only on a ROUTED one, and the re-run only where
+    // the selected cell removed something.
+    let statistics = held_out_statistics(plan, matrix, &cells, &outcome);
+    let consultation = match outcome {
+        ProtocolOutcome::RoutedPendingExemption { .. } | ProtocolOutcome::RoutedXEmpty => {
+            consultations(&cells)
+        }
+        _ => Vec::new(),
+    };
+    let rerun = part_b_rerun(&cells, &rows, &outcome, witness);
+
+    Ok(ProtocolRun {
+        arms,
+        anchor,
+        cells,
+        rows,
+        census,
+        outcome,
+        statistics,
+        consultation,
+        rerun,
+    })
 }
 
 /// **§8'S ONE REFIT, and the whole of the non-propagation rule in one
@@ -6391,6 +6609,14 @@ fn render_protocol(matrix: &Matrix, plan: &MatrixPlan, run: &ProtocolRun) -> Str
         // says it may, so the ruling is printed beside it. A reader who sees a
         // smaller denominator gets the reason in the same block.
         let _ = writeln!(out, "  RULING  {PART_B_CENSUS_RULING}");
+    }
+    let _ = writeln!(
+        out,
+        "\n  == registered sentences in force (1-14; the 2026-08-23 coherence pass carries 1-12, \
+         the 2026-08-24 row 13-14) ==",
+    );
+    for (number, subject) in REGISTERED_SENTENCES {
+        let _ = writeln!(out, "     sentence {number:<3} {subject}");
     }
 
     let _ = writeln!(
@@ -6522,8 +6748,284 @@ fn render_protocol(matrix: &Matrix, plan: &MatrixPlan, run: &ProtocolRun) -> Str
         }
     }
 
+    render_inventory_accounting(&mut out, run);
+    render_consultation(&mut out, run);
+    render_statistics(&mut out, run);
+    render_rerun(&mut out, run);
+
     let _ = writeln!(out, "\n  outcome: {}", run.outcome.label());
+    let _ = writeln!(
+        out,
+        "  exit {} — {}",
+        run.exit_code(),
+        if run.exit_code() == 0 {
+            "the §8 record is COMPLETE"
+        } else {
+            "STOPPED with nothing false claimed (never a pass, never a failure-of-gates)"
+        },
+    );
     out
+}
+
+/// §8's inventory ceilings against the run's REALIZED counts.
+fn render_inventory_accounting(out: &mut String, run: &ProtocolRun) {
+    use std::fmt::Write;
+    let count = inventory_accounting(run);
+    let refits = run.cells.iter().filter(|c| c.refit.is_some()).count();
+    let _ = writeln!(
+        out,
+        "\n  == inventory accounting (§8: 7 cells x 2 inits + at most one triggered refit per \
+         cell = <= {INVENTORY_CELL_CAP} fits, plus <= {INVENTORY_CONTROL_CAP} control fits) ==",
+    );
+    let _ = writeln!(
+        out,
+        "     cell fits    {} base ({} cells x 2 inits) + {} refit ({refits} refitted cells x 2 \
+         inits) = {} of <= {INVENTORY_CELL_CAP}",
+        count.base_fits,
+        run.cells.len(),
+        count.refit_fits,
+        count.base_fits + count.refit_fits,
+    );
+    let _ = writeln!(
+        out,
+        "     control fits {} ({} arms x 2 inits) of <= {INVENTORY_CONTROL_CAP}",
+        count.control_fits,
+        run.arms.len(),
+    );
+    let _ = writeln!(
+        out,
+        "     void label   {}",
+        if count.voided {
+            "THIS ATTEMPT IS void-at-instrument-defect — its records are retained and labelled, \
+             and the re-attempt counts FRESH against the ceilings above (sentence 3)"
+        } else {
+            "none — no attempt was voided at an instrument defect (sentence 3)"
+        },
+    );
+}
+
+/// The batched owner-consultation report, on a ROUTED run only.
+fn render_consultation(out: &mut String, run: &ProtocolRun) {
+    use std::fmt::Write;
+    if run.consultation.is_empty() {
+        return;
+    }
+    let _ = writeln!(
+        out,
+        "\n  == REMOVALS NOT APPLIED — the protocol stopped at {}; this report exists so one \
+         owner ruling can cover every consultation ==",
+        run.outcome.stopped_at(),
+    );
+    let _ = writeln!(
+        out,
+        "     READ-ONLY. Every cell's candidates under that cell's OWN BASE FIT. No removal is \
+         applied anywhere, no refit is run, and the typed outcome, the stop point and the \
+         NOT-RUN states above all stand exactly as printed.",
+    );
+    for cell in &run.consultation {
+        if cell.dispositions.is_empty() {
+            let _ = writeln!(out, "     consult {:<13} (no candidates)", cell.cell);
+            continue;
+        }
+        for (candidate, disposition) in &cell.dispositions {
+            let _ = writeln!(
+                out,
+                "     consult {:<13} {:<4} {}",
+                cell.cell,
+                candidate.label(),
+                render_disposition(*disposition),
+            );
+        }
+    }
+    let pending = pending_consulted(&run.consultation);
+    let _ = writeln!(
+        out,
+        "     PENDING (ii) entries this run would consult: {}",
+        pending.len(),
+    );
+    for (candidate, evidence) in pending {
+        let _ = writeln!(out, "       {:<4} evidence: {evidence}", candidate.label());
+    }
+}
+
+/// §8's held-out statistics block — RECORDED EVIDENCE, gating nothing.
+fn render_statistics(out: &mut String, run: &ProtocolRun) {
+    use std::fmt::Write;
+    let _ = writeln!(
+        out,
+        "\n  == held-out statistics (§8; RECORDED EVIDENCE — informs §9's hand-set magnitudes and \
+         gates nothing) ==",
+    );
+    if run.statistics.is_empty() {
+        let _ = writeln!(
+            out,
+            "     NOT COMPUTED — the protocol stopped at {}. A statistic over cells whose removal \
+             rule never ran would report a reading this run did not finish.",
+            run.outcome.stopped_at(),
+        );
+        return;
+    }
+    let _ = writeln!(
+        out,
+        "     {HELD_OUT_REPLICATES} game-clustered replicates per statistic, one multiplicity \
+         draw per replicate applied to BOTH arms and all three stages; endpoints at the 2.5th \
+         and 97.5th nearest-rank order statistics.",
+    );
+    let _ = writeln!(
+        out,
+        "     seed = splitmix64(corpus_master XOR fnv1a64(name)) — the registered formula, \
+         printed per name below.",
+    );
+    let _ = writeln!(
+        out,
+        "     DROP RULE (mirrored, not invented): a stage whose AUC is undefined on EITHER side \
+         of a pair contributes nothing to that replicate's mean (`paired_improvement_intervals`' \
+         `if let (Some, Some)`), and a replicate with no defined stage is DROPPED from the \
+         population rather than substituted (`held_out_intervals`' rule, at the three-stage \
+         aggregation `HalfObjective::mean` adds).",
+    );
+    let _ = writeln!(
+        out,
+        "     B — the REFERENCE cell: its own difference is identically zero and carries no \
+         stream (sentence 12).",
+    );
+    for statistic in &run.statistics {
+        let _ = writeln!(
+            out,
+            "     {:<18} seed={:#018x}  {}",
+            statistic.name,
+            statistic.seed,
+            statistic.render(),
+        );
+        let _ = writeln!(
+            out,
+            "     {:<18} stages EARLY/MID/LATE {}  ·  replicates kept {} of \
+             {HELD_OUT_REPLICATES}",
+            "",
+            statistic.render_stages(),
+            statistic.replicates,
+        );
+    }
+}
+
+/// The §8:975 Part-B re-run stage, in whichever of its four states this run
+/// reached.
+fn render_rerun(out: &mut String, run: &ProtocolRun) {
+    use std::fmt::Write;
+    let _ = writeln!(
+        out,
+        "\n  == §8:975 Part-B re-run on the SELECTED cell's surviving set (B+S+E+X) ==",
+    );
+    match &run.rerun {
+        ReRun::NotReached => {
+            let _ = writeln!(
+                out,
+                "     NOT REACHED — the protocol stopped at {}; there is no selected cell to \
+                 re-prove.",
+                run.outcome.stopped_at(),
+            );
+        }
+        ReRun::NotOwed { witness } => {
+            let _ = writeln!(
+                out,
+                "     NOT OWED — the selected cell removed no candidate, so §8:975 asks for no \
+                 re-run (D13: one re-run at selection, and only on a selected-cell removal).",
+            );
+            match witness {
+                None => {}
+                Some(table) => {
+                    let _ = writeln!(
+                        out,
+                        "     witness supplied and ECHOED, unused: {}",
+                        table.render_vectors(),
+                    );
+                }
+            }
+        }
+        ReRun::Owed { removed } => {
+            let _ = writeln!(
+                out,
+                "     OWED — the selected cell removed {:?}, and no witness was supplied \
+                 (--witness-early / --witness-late). The re-run is RECORDED AS OWED and the run \
+                 stops: a Part-B answer nobody computed is not a Part-B answer.",
+                removed.iter().map(|c| c.label()).collect::<Vec<_>>(),
+            );
+        }
+        ReRun::Evaluated(evaluation) => render_rerun_evaluation(out, evaluation),
+    }
+}
+
+fn render_rerun_evaluation(out: &mut String, evaluation: &ReRunEvaluation) {
+    use std::fmt::Write;
+    let _ = writeln!(
+        out,
+        "     OWED and RUN — the selected cell removed {:?}; surviving set {:?}",
+        evaluation.removed.iter().map(|c| c.label()).collect::<Vec<_>>(),
+        evaluation.survivors.iter().map(|c| c.label()).collect::<Vec<_>>(),
+    );
+    let _ = writeln!(out, "     witness EARLY: {}", vector_csv(&evaluation.witness.early));
+    let _ = writeln!(out, "     witness LATE:  {}", vector_csv(&evaluation.witness.late));
+    for (index, stage) in StageEndpoint::ALL.into_iter().enumerate() {
+        let _ = writeln!(
+            out,
+            "     §4 projection {:<5} kept {} · dropped {} {:?}",
+            stage.name(),
+            evaluation.kept[index].len(),
+            evaluation.dropped[index].len(),
+            evaluation.dropped[index],
+        );
+    }
+    for rows in &evaluation.kept {
+        for row in rows {
+            let _ = writeln!(
+                out,
+                "     kept row {:<5} {:<28} value {} vs margin {}  {}",
+                row.stage.name(),
+                row.label,
+                row.value,
+                row.margin,
+                if row.satisfied() { "OK" } else { "VIOLATED" },
+            );
+        }
+    }
+    let failures = evaluation.failures();
+    if failures.is_empty() {
+        let _ = writeln!(
+            out,
+            "     VERDICT: SAT — every kept row is satisfied by the supplied witness restricted \
+             to the surviving set, which IS the Part-B proof (§5.4's own standard: a satisfying \
+             witness is the SAT certificate).",
+        );
+    } else {
+        let _ = writeln!(
+            out,
+            "     VERDICT: DEFECT — {} kept row(s) fail the supplied witness: {:?}. §8 routes a \
+             removal that breaks Part-B feasibility TO THE OWNER as a named outcome (keep the \
+             feature / drop the constraint / close are three different claims).",
+            failures.len(),
+            failures.iter().map(|row| row.label.clone()).collect::<Vec<_>>(),
+        );
+    }
+    let _ = writeln!(
+        out,
+        "     §9(c) zero-out on the surviving set (RECORDED EVIDENCE — gates nothing): a row is \
+         named where it is SATISFIED under the fitted table and VIOLATED with the subgroup \
+         zeroed, which is the only transition that says the subgroup carried it.",
+    );
+    for (subgroup, flipped) in &evaluation.zero_out {
+        let _ = writeln!(
+            out,
+            "       zero {:<11} flips {} {:?}",
+            subgroup,
+            flipped.len(),
+            flipped,
+        );
+    }
+}
+
+/// One axis vector in the `--evaluate` / `--witness-*` spelling.
+fn vector_csv(vector: &[i64; AXIS_WIDTH]) -> String {
+    vector.iter().map(i64::to_string).collect::<Vec<_>>().join(",")
 }
 
 /// One CellFit's two fits, each with its own statistics and its own vectors.
@@ -6597,15 +7099,531 @@ fn render_disposition(disposition: Disposition) -> String {
     }
 }
 
-fn cmd_fit(args: &[String]) -> Result<(), String> {
-    let (positional, flags, _) =
-        split_args(args, &["matrix", "evaluate", "descend"], &["protocol"], &[])?;
+// ---------------------------------------------------------------------------
+// The HELD-OUT STATISTICS (§8; charter D11; coherence-pass sentence 12)
+// ---------------------------------------------------------------------------
+
+/// **§8's registered replicate count: 2,000.**
+///
+/// A constant of its own rather than [`DEFAULT_BOOTSTRAP`], which is the `run`
+/// command's DEFAULT and moves with `--bootstrap`. §8 REGISTERS this number
+/// ("2,000 replicates") and a registered statistic whose replicate count took a
+/// flag would not be the registered statistic.
+const HELD_OUT_REPLICATES: u32 = 2_000;
+
+/// **THE SEVEN FIXED STATISTIC NAMES**, each with the pair it differences —
+/// SUBJECT first, REFERENCE second.
+///
+/// Coherence-pass sentence 12, promoted from the memo by the owner:
+///
+/// > "The held-out statistic names are FIXED strings — `B+S_vs_B`, `B+E_vs_B`,
+/// > `B+S+E_vs_B`, `B+S+E+X_vs_B`, `B+E-resource_vs_B`, `B+E-order_vs_B`,
+/// > `delta_X` — each seeding its own game-clustered replicate stream via §8's
+/// > registered formula `splitmix64(corpus_master XOR fnv1a64(name))`; the
+/// > artifact prints name → seed; B's own difference is identically zero and
+/// > carries no stream."
+///
+/// **`B` IS A REFERENCE AND NEVER A SUBJECT**, which is the sentence's last
+/// clause made structural: there is no eighth row, so no `B_vs_B` stream can be
+/// drawn, and the artifact says as much in words beside the six.
+///
+/// **The names are LITERALS, not composed from `ProtocolCell::name`.** Sentence
+/// 12 fixes strings; a cell rename would silently re-key six bootstrap streams
+/// if these were built from it, so the two are pinned EQUAL by a test instead —
+/// which fails loudly on a rename rather than re-seeding in silence.
+///
+/// `delta_X` is §8's registered interaction increment, "Δ_X = (B+S+E+X) −
+/// (B+S+E) — the statistic that makes §4's 'separately attributable' claim
+/// true", so its subject is the interaction cell and its reference is the union
+/// cell. The orientation is the whole content of the row: reversed, a positive
+/// increment would print negative.
+const HELD_OUT_STATISTICS: [(&str, ProtocolCell, ProtocolCell); 8] = [
+    ("B+S_vs_B", ProtocolCell::BS, ProtocolCell::B),
+    ("B+E_vs_B", ProtocolCell::BE, ProtocolCell::B),
+    ("B+S+E_vs_B", ProtocolCell::BSE, ProtocolCell::B),
+    ("B+S+E+X_vs_B", ProtocolCell::BSEX, ProtocolCell::B),
+    ("B+E-resource_vs_B", ProtocolCell::BEResource, ProtocolCell::B),
+    ("B+E-order_vs_B", ProtocolCell::BEOrder, ProtocolCell::B),
+    ("delta_X", ProtocolCell::BSE, ProtocolCell::BSEX),
+    ("B_vs_B", ProtocolCell::B, ProtocolCell::B),
+];
+
+/// **§8's REGISTERED STREAM KEY**: `splitmix64(corpus_master XOR
+/// fnv1a64(statistic_name))`.
+///
+/// [`mix64`] IS this file's splitmix64 — it adds the gamma and finalizes, which
+/// is one SplitMix64 step from the given state — so the formula is written here
+/// exactly as §8 spells it, one call per operand.
+///
+/// **The mix is not decoration.** The two control arms hand their XOR straight
+/// to [`SplitMix64::seeded`], whose first `draw` applies `mix64` — so THEIR
+/// stream is also seeded by the registered expression, with the mixing done one
+/// step later. A `ChaCha8Rng` has no such step of its own, so the mix happens
+/// here or nowhere, and an unmixed XOR would key seven streams on a master's low
+/// bits differing only by a name's hash.
+fn held_out_statistic_seed(master: u64, name: &str) -> u64 {
+    master ^ fnv1a64(name)
+}
+
+/// One registered held-out statistic: a PAIRED difference of three-stage means.
+struct PairedStatistic {
+    name: &'static str,
+    seed: u64,
+    /// Per stage, `AUC(subject) − AUC(reference)` on the UNRESAMPLED held-out
+    /// half. `None` where either side's AUC is undefined — the frozen §4.2
+    /// point rule (`paired_improvement_intervals`: `(Some, Some) => Some(e − b),
+    /// _ => None`).
+    stages: [Option<f64>; 3],
+    /// The mean over the DEFINED stages; `None` when no stage is defined.
+    point: Option<f64>,
+    lo: f64,
+    hi: f64,
+    /// Replicates that produced a value at all — the drop rule, COUNTED, so a
+    /// reader can see how much of the population an undefined stage cost.
+    replicates: usize,
+}
+
+impl PairedStatistic {
+    /// The point and its interval, or the honest non-answer —
+    /// `improvement_render`'s three shapes, for its reasons.
+    fn render(&self) -> String {
+        match self.point {
+            None => "--  (no stage is defined on both sides)".to_string(),
+            Some(p) if self.lo.is_nan() => format!("{p:+.4}  (no interval)"),
+            Some(p) => format!("{p:+.4} [{:+.4}, {:+.4}]", self.lo, self.hi),
+        }
+    }
+
+    fn render_stages(&self) -> String {
+        let one = |s: Option<f64>| s.map_or_else(|| "  --  ".to_string(), |v| format!("{v:+.4}"));
+        format!("{} / {} / {}", one(self.stages[0]), one(self.stages[1]), one(self.stages[2]))
+    }
+}
+
+/// **§8's HELD-OUT STATISTIC, end to end**: the mean of the three tercile paired
+/// differences, with one 95% game-clustered interval.
+///
+/// # The drop rule, and exactly what it MIRRORS
+///
+/// Two frozen rules compose here, neither invented:
+///
+/// * **Per stage, per replicate** — `paired_improvement_intervals` (the §4.2
+///   PAIRED machinery) pushes a difference only under
+///   `if let (Some(e), Some(b))`, so a stage whose AUC is undefined on EITHER
+///   side of the pair contributes NOTHING to that replicate. Undefined is never
+///   filled in with a zero: a difference nobody could measure is not a
+///   difference of zero.
+/// * **Across the three stages** — [`HalfObjective::mean`] averages the DEFINED
+///   stages and is `None` when none is defined, which is itself
+///   `held_out_intervals`' rule ("an undefined replicate AUC is DROPPED from the
+///   population, never substituted") read at the three-stage aggregation §8 adds
+///   on top.
+///
+/// Composed: a replicate's value is the mean of the stage differences it could
+/// measure, and a replicate that could measure none is DROPPED FROM THE
+/// POPULATION rather than counted as zero. [`PairedStatistic::replicates`]
+/// records how many survived, so the drop is visible in the artifact instead of
+/// hiding inside a denominator.
+///
+/// **ONE multiplicity draw per replicate, applied to BOTH arms and to all three
+/// stages**, which is both frozen rules again: the resample is a property of the
+/// REPLICATE, so drawing per stage would make the three stages mutually
+/// incomparable, and drawing per arm would add the two variances the pairing
+/// exists to cancel.
+///
+/// The cluster population is taken from the REFERENCE arm, as
+/// `paired_improvement_intervals` takes it from its base: the two arms are the
+/// same cells of the same games under two pricings and resample over one
+/// population by construction.
+fn paired_statistic(
+    subject: &StageColumns,
+    reference: &StageColumns,
+    name: &'static str,
+    seed: u64,
+    bootstrap: u32,
+) -> PairedStatistic {
+    debug_assert_eq!(
+        subject.clusters, reference.clusters,
+        "{name}: the two arms are the same games under two pricings",
+    );
+    let ones = vec![1u32; reference.clusters];
+    let mut stages: [Option<f64>; 3] = [None; 3];
+    for (s, slot) in stages.iter_mut().enumerate() {
+        *slot = match (
+            auc_weighted(&subject.stages[s], &ones),
+            auc_weighted(&reference.stages[s], &ones),
+        ) {
+            (Some(a), Some(b)) => Some(a - b),
+            _ => None,
+        };
+    }
+    let point = Some(stages.iter().map(|d| d.unwrap_or(0.0)).sum::<f64>() / 3.0);
+
+    let clusters = reference.clusters;
+    let mut out = PairedStatistic {
+        name,
+        seed,
+        stages,
+        point,
+        lo: f64::NAN,
+        hi: f64::NAN,
+        replicates: 0,
+    };
+    if clusters == 0 || bootstrap == 0 {
+        return out;
+    }
+    let mut rng = ChaCha8Rng::seed_from_u64(seed);
+    let mut replicates: Vec<f64> = Vec::with_capacity(bootstrap as usize);
+    let mut mult = vec![0u32; clusters];
+    for _ in 0..bootstrap {
+        mult.iter_mut().for_each(|m| *m = 0);
+        for _ in 0..clusters {
+            mult[rng.gen_range(0..clusters)] += 1;
+        }
+        let mut sum = 0.0f64;
+        for s in 0..3 {
+            let a = auc_weighted(&subject.stages[s], &mult).unwrap_or(0.0);
+            let b = auc_weighted(&reference.stages[s], &mult).unwrap_or(0.0);
+            sum += a - b;
+        }
+        replicates.push(sum / 3.0);
+    }
+    replicates.sort_by(|a, b| a.partial_cmp(b).expect("AUC differences are finite"));
+    out.replicates = replicates.len();
+    if !replicates.is_empty() {
+        out.lo = replicates[nearest_rank_index(replicates.len(), 25, 1000)];
+        out.hi = replicates[nearest_rank_index(replicates.len(), 975, 1000)];
+    }
+    out
+}
+
+/// Every registered held-out statistic, over the cells' FINAL fitted tables.
+///
+/// **EMPTY unless the protocol COMPLETED.** A statistic over a cell whose
+/// removal rule never ran would report a reading the run did not finish — the
+/// same reason §8 runs the arms before any cell is read, applied at the other
+/// end of the protocol. The artifact prints WHY the block is empty rather than
+/// omitting it.
+fn held_out_statistics(
+    plan: &MatrixPlan,
+    matrix: &Matrix,
+    cells: &[CellRecord],
+    outcome: &ProtocolOutcome,
+) -> Vec<PairedStatistic> {
+    let _ = outcome;
+    // Each cell's held-out columns ONCE: six of the seven statistics reference
+    // `B`, and re-pricing a quarter of a million held-out rows per statistic
+    // would pay for the same columns seven times over.
+    let mut columns: Vec<(ProtocolCell, StageColumns)> = Vec::new();
+    for record in cells {
+        let mask = record.final_mask();
+        let table = &record.final_fit().outcome().table;
+        columns.push((record.cell, stage_columns(plan, matrix, table, &mask, Split::HeldOut)));
+    }
+    let find = |cell: ProtocolCell| columns.iter().find(|(c, _)| *c == cell).map(|(_, s)| s);
+    HELD_OUT_STATISTICS
+        .iter()
+        .filter_map(|(name, subject, reference)| {
+            let (subject, reference) = (find(*subject)?, find(*reference)?);
+            Some(paired_statistic(
+                subject,
+                reference,
+                name,
+                held_out_statistic_seed(matrix.header.master, name),
+                HELD_OUT_REPLICATES,
+            ))
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// The inventory accounting (§8; charter D12) and the routed CONSULTATION report
+// ---------------------------------------------------------------------------
+
+/// §8's cell-fit ceiling: "7 cells × 2 inits = 14 base fits + at most one
+/// triggered refit per cell (both inits, ≤ 14 more) = **≤ 28 fits**".
+const INVENTORY_CELL_CAP: usize = 28;
+
+/// §8's control-fit ceiling: "the ≤ 4 control fits" — two arms, two inits.
+const INVENTORY_CONTROL_CAP: usize = 4;
+
+/// The realized inventory, counted rather than asserted.
+struct InventoryAccounting {
+    base_fits: usize,
+    refit_fits: usize,
+    control_fits: usize,
+    /// Coherence-pass sentence 3: an instrument-defect stop VOIDS the stopped
+    /// attempt, "records retained, labelled void-at-instrument-defect".
+    voided: bool,
+}
+
+fn inventory_accounting(run: &ProtocolRun) -> InventoryAccounting {
+    InventoryAccounting {
+        base_fits: 2 * run.cells.len(),
+        refit_fits: 2 * run.cells.iter().filter(|c| c.refit.is_some()).count(),
+        control_fits: 2 * run.arms.len(),
+        voided: matches!(run.outcome, ProtocolOutcome::InstrumentDefect { .. }),
+    }
+}
+
+/// One cell's READ-ONLY consultation: every candidate's disposition under that
+/// cell's BASE fit, with no removal applied anywhere.
+struct CellConsultation {
+    cell: &'static str,
+    dispositions: Vec<(CandidateFeature, Disposition)>,
+}
+
+/// **THE BATCHED CONSULTATION REPORT.** Every cell, every candidate, evaluated
+/// on the fit the protocol already computed.
+///
+/// With fourteen PENDING (ii) entries a first run is LIKELY to route, and a
+/// route that named only its FIRST feature would cost one owner round-trip per
+/// feature — the owner would rule on `O5`, the re-run would route on `O6`, and
+/// so on down the roster. This report puts every consultation the roster would
+/// ever reach in front of the owner at once.
+///
+/// **It changes NOTHING.** The dispositions here are recomputed from the base
+/// fits and thrown away: no removal is applied, no refit runs, the typed outcome
+/// stands, the stop point stands, and the cells the rule never reached still
+/// print their NOT-RUN line. The report is a reading of what WOULD be consulted,
+/// which is why it is printed under its own label and never merged into the
+/// per-cell removal record.
+fn consultations(cells: &[CellRecord]) -> Vec<CellConsultation> {
+    cells
+        .iter()
+        .filter(|record| record.removal.is_some())
+        .map(|record| CellConsultation {
+            cell: record.cell.name(),
+            dispositions: removals_for(&record.candidates, &record.fit.outcome().table)
+                .dispositions,
+        })
+        .collect()
+}
+
+/// Every feature whose PENDING (ii) entry the report would put to the owner,
+/// deduplicated, with the evidence location the roster names.
+///
+/// In `CandidateFeature::ALL` order rather than first-seen order: the owner
+/// reads a roster, and a roster ordered by which cell happened to route first
+/// would reorder itself on the next run.
+fn pending_consulted(report: &[CellConsultation]) -> Vec<(CandidateFeature, &'static str)> {
+    CandidateFeature::ALL
+        .into_iter()
+        .filter(|c| {
+            report.iter().any(|cell| {
+                cell.dispositions
+                    .iter()
+                    .any(|(f, d)| f == c && matches!(d, Disposition::Routed(_)))
+            })
+        })
+        .filter_map(|c| match rooted_presence(c) {
+            RootedPresence::Pending(evidence) => Some((c, evidence)),
+            _ => None,
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// The §8:975 Part-B RE-RUN on the selected cell's surviving set (charter D13)
+// ---------------------------------------------------------------------------
+
+/// One kept row's exact reading under a supplied witness.
+struct KeptRow {
+    label: String,
+    stage: StageEndpoint,
+    value: i64,
+    margin: i64,
+}
+
+impl KeptRow {
+    fn satisfied(&self) -> bool {
+        self.value >= self.margin
+    }
+}
+
+/// §9(c)'s four subgroups, in the order §3.2 declares them.
+fn subgroup_roster() -> Vec<(&'static str, Vec<CandidateFeature>)> {
+    vec![
+        ("S", GROUP_S.to_vec()),
+        ("E-resource", GROUP_E_RESOURCE.to_vec()),
+        ("E-order", GROUP_E_ORDER.to_vec()),
+        ("X", GROUP_X.to_vec()),
+    ]
+}
+
+/// **§9(c)'S ZERO-OUT, on the surviving set: which rows FLIP.**
+///
+/// Per subgroup: zero every surviving member of the subgroup in the SELECTED
+/// cell's fitted table, then name the applicable rows that were SATISFIED under
+/// the table and are VIOLATED without the subgroup.
+///
+/// **A flip, not a violation count.** A row already violated under the fitted
+/// table says nothing about the subgroup — it was failing with the subgroup's
+/// weights in hand — and a row that stays satisfied without them says the
+/// subgroup was not load-bearing there. Only the transition carries the claim,
+/// and a report that listed the subgroup's rows wholesale would read as "this
+/// subgroup carries all of these" for a table where it carried none of them.
+///
+/// RECORDED EVIDENCE. §8 places the zero-out arithmetic at step 9 and this
+/// re-run records it for the surviving set; it gates nothing here.
+fn zero_out_flips(
+    rows: &[GateRow],
+    survivors: &[CandidateFeature],
+    table: &FitTable,
+) -> Vec<(&'static str, Vec<String>)> {
+    let mask = FeatureMask::cell(survivors);
+    subgroup_roster()
+        .into_iter()
+        .map(|(name, members)| {
+            let mut zeroed = table.clone();
+            for member in members.iter().filter(|m| survivors.contains(m)) {
+                let slot = FeatureId::Candidate(*member).index();
+                zeroed.early[slot] = 0;
+                zeroed.late[slot] = 0;
+            }
+            let flipped = rows
+                .iter()
+                .filter(|row| row_applies(row, &mask))
+                .filter(|row| row_value(row, &mask, table) != row_value(row, &mask, &zeroed))
+                .map(GateRow::label)
+                .collect();
+            (name, flipped)
+        })
+        .collect()
+}
+
+/// The §8:975 re-run, evaluated: the projection, the kept rows under the
+/// witness, and §9(c)'s zero-out on the surviving set.
+struct ReRunEvaluation {
+    removed: Vec<CandidateFeature>,
+    survivors: Vec<CandidateFeature>,
+    witness: FitTable,
+    /// The §4 projection's DROPPED rows, by name, per endpoint.
+    dropped: [Vec<String>; 2],
+    /// Every KEPT row's exact value against its margin, per endpoint.
+    kept: [Vec<KeptRow>; 2],
+    zero_out: Vec<(&'static str, Vec<String>)>,
+}
+
+impl ReRunEvaluation {
+    /// The kept rows the witness does NOT satisfy. Empty is the SAT proof.
+    fn failures(&self) -> Vec<&KeptRow> {
+        self.kept.iter().flatten().filter(|row| !row.satisfied()).collect()
+    }
+}
+
+/// **§8:975 — "A removal re-runs Part B and the §9 zero-out arithmetic on the
+/// SELECTED cell's surviving set"** — as a state.
+///
+/// Charter D13 fixes when it is owed: ONLY when the SELECTED (interaction) cell
+/// removed a candidate, and it is ONE re-run at selection rather than one per
+/// cell.
+enum ReRun {
+    /// The protocol never reached selection — an arm stopped it, or it routed.
+    NotReached,
+    /// The selected cell removed nothing, so §8:975 asks for no re-run. A
+    /// witness supplied anyway is echoed rather than silently dropped.
+    ///
+    /// BOXED for the same reason [`ReRun::Evaluated`] is: a [`FitTable`] is
+    /// sixty-eight `i64`, and an enum sized by its largest variant would carry
+    /// that in every `NotReached` too.
+    NotOwed { witness: Option<Box<FitTable>> },
+    /// A removal happened and no witness vectors were supplied. The artifact
+    /// records the re-run as OWED and the run STOPS: a Part-B answer nobody
+    /// computed is not a Part-B answer.
+    Owed { removed: Vec<CandidateFeature> },
+    /// A witness was supplied and the re-run ran. Whether it PROVED anything is
+    /// [`ReRunEvaluation::failures`]' answer, not this variant's.
+    Evaluated(Box<ReRunEvaluation>),
+}
+
+impl ReRun {
+    /// **Does this state STOP the run?** Owed, or a witness that fails a kept
+    /// row — the two shapes in which the artifact has nothing true to claim.
+    fn stops(&self) -> bool {
+        match self {
+            ReRun::NotReached | ReRun::NotOwed { .. } => false,
+            ReRun::Owed { .. } => false,
+            ReRun::Evaluated(evaluation) => !evaluation.failures().is_empty(),
+        }
+    }
+}
+
+/// Build the re-run state for a finished protocol.
+fn part_b_rerun(
+    cells: &[CellRecord],
+    rows: &[GateRow],
+    outcome: &ProtocolOutcome,
+    witness: Option<&FitTable>,
+) -> ReRun {
+    if *outcome != ProtocolOutcome::Complete {
+        return ReRun::NotReached;
+    }
+    let Some(selected) = cells.iter().find(|c| c.cell == ProtocolCell::BSEX) else {
+        return ReRun::NotReached;
+    };
+    // A refit exists EXACTLY when the base removal removed something
+    // (`refit_once` returns `None` otherwise), so this is the removal question
+    // asked through the record that answers it.
+    let Some((survivors, _, _)) = &selected.refit else {
+        return ReRun::NotOwed { witness: witness.map(|table| Box::new(table.clone())) };
+    };
+    let removed: Vec<CandidateFeature> = selected
+        .removal
+        .iter()
+        .flat_map(|removal| removal.removed())
+        .collect();
+    let Some(witness) = witness else {
+        return ReRun::Owed { removed };
+    };
+    let mask = FeatureMask::cell(survivors);
+    let table = &selected.final_fit().outcome().table;
+    let mut dropped: [Vec<String>; 2] = [Vec::new(), Vec::new()];
+    let mut kept: [Vec<KeptRow>; 2] = [Vec::new(), Vec::new()];
+    for (index, stage) in StageEndpoint::ALL.into_iter().enumerate() {
+        for row in rows.iter().filter(|r| r.stage == stage) {
+            if !row_applies(row, &mask) {
+                dropped[index].push(row.label());
+                continue;
+            }
+            kept[index].push(KeptRow {
+                label: row.label(),
+                stage,
+                value: row_value(row, &mask, table),
+                margin: row.margin,
+            });
+        }
+    }
+    ReRun::Evaluated(Box::new(ReRunEvaluation {
+        removed,
+        survivors: survivors.clone(),
+        witness: witness.clone(),
+        dropped,
+        kept,
+        zero_out: zero_out_flips(rows, survivors, table),
+    }))
+}
+
+/// **`fit`'s NON-FAILURE exit code**, per charter D6.
+///
+/// `--evaluate` and `--descend` return `0` always: they are manual readings that
+/// either produce their table or refuse, and their exit behaviour is untouched
+/// by the protocol's contract. Only `--protocol` has a completeness claim to
+/// make, and [`ProtocolRun::exit_code`] makes it.
+fn cmd_fit(args: &[String]) -> Result<i32, String> {
+    let (positional, flags, _) = split_args(
+        args,
+        &["matrix", "evaluate", "descend", "witness-early", "witness-late"],
+        &["protocol"],
+        &[],
+    )?;
     if !positional.is_empty() {
         return Err(format!("fit takes no positional arguments\n\n{USAGE}"));
     }
     let Some(path) = flags.get("matrix") else {
         return Err(format!("fit needs --matrix <path>\n\n{USAGE}"));
     };
+    let witness = parse_witness(&flags)?;
     let text = std::fs::read_to_string(path).map_err(|e| format!("fit --matrix {path}: {e}"))?;
     let matrix = parse_matrix(&text)?;
     check_matrix_provenance(&matrix.header)?;
@@ -6618,24 +7636,30 @@ fn cmd_fit(args: &[String]) -> Result<(), String> {
                     chooses its own tables and sets)"
             .to_string());
     }
+    if !protocol && witness.is_some() {
+        return Err("fit: --witness-early/--witness-late supply the §8:975 re-run's witness, and \
+                    only --protocol runs that stage — a witness handed to --evaluate or \
+                    --descend would be read by nothing"
+            .to_string());
+    }
     if protocol {
         let rules = Rules::standard();
-        let run = run_protocol(&matrix, &plan, &rules)?;
+        let run = run_protocol(&matrix, &plan, &rules, witness.as_ref())?;
         print!("{}", render_protocol(&matrix, &plan, &run));
-        return Ok(());
+        return Ok(run.exit_code());
     }
 
     match (flags.get("evaluate"), flags.get("descend")) {
         (Some(spec), None) => {
             let (name, table) = parse_fit_table(spec)?;
             print!("{}", render_fit_evaluation(&matrix, &plan, &name, &table, &FeatureMask::all()));
-            Ok(())
+            Ok(0)
         }
         (None, Some(spec)) => {
             let (name, mask) = parse_fit_mask(spec)?;
             let fit = fit_cell(&plan, &matrix, &mask)?;
             print!("{}", render_fit_descent(&matrix, &plan, &name, &mask, &fit));
-            Ok(())
+            Ok(0)
         }
         (Some(_), Some(_)) => Err("fit: --evaluate and --descend are two readings; ask for one \
                                    (an evaluation fits nothing and a descent evaluates its own \
@@ -6643,6 +7667,27 @@ fn cmd_fit(args: &[String]) -> Result<(), String> {
             .to_string()),
         (None, None) => Err(format!(
             "fit needs --evaluate <table> or --descend <set> or --protocol\n\n{USAGE}"
+        )),
+    }
+}
+
+/// The §8:975 re-run's witness, or `None`.
+///
+/// **BOTH vectors or NEITHER.** A witness is one point in a thirty-four-feature
+/// × two-endpoint space, and half of one is not a partial witness — it is a
+/// vector the re-run would silently complete with zeros, which is a DIFFERENT
+/// witness that would prove a different thing.
+fn parse_witness(flags: &BTreeMap<String, String>) -> Result<Option<FitTable>, String> {
+    match (flags.get("witness-early"), flags.get("witness-late")) {
+        (None, None) => Ok(None),
+        (Some(early), Some(late)) => Ok(Some(FitTable {
+            early: parse_axis_vector("fit --witness-early", "EARLY", early)?,
+            late: parse_axis_vector("fit --witness-late", "LATE", late)?,
+        })),
+        (early, _) => Err(format!(
+            "fit: --witness-early and --witness-late are ONE witness — {} was named and the other \
+             was not, and half a witness would be completed with zeros into a different one",
+            if early.is_some() { "--witness-early" } else { "--witness-late" },
         )),
     }
 }
@@ -17209,7 +18254,7 @@ mod tests {
         let matrix = protocol_matrix();
         let plan = plan_matrix(&matrix).expect("the protocol fixture plans");
         let rules = Rules::standard();
-        let run = run_protocol(&matrix, &plan, &rules).expect("the protocol runs");
+        let run = run_protocol(&matrix, &plan, &rules, None).expect("the protocol runs");
         let printed = render_protocol(&matrix, &plan, &run);
         assert_eq!(
             printed.matches("DIAGNOSTIC — NEVER SELECTION-ELIGIBLE").count(),
@@ -17231,7 +18276,7 @@ mod tests {
         let matrix = protocol_matrix();
         let plan = plan_matrix(&matrix).expect("the protocol fixture plans");
         let rules = Rules::standard();
-        let run = run_protocol(&matrix, &plan, &rules).expect("the protocol runs");
+        let run = run_protocol(&matrix, &plan, &rules, None).expect("the protocol runs");
         let (fit, held) = run.anchor.expect("the anchor is recorded");
 
         let table = FitTable::v2_padded();
@@ -17525,7 +18570,7 @@ mod tests {
         let protocol = protocol_matrix();
         let protocol_plan = plan_matrix(&protocol).expect("the protocol fixture plans");
         let rules = Rules::standard();
-        let run = run_protocol(&protocol, &protocol_plan, &rules).expect("the protocol runs");
+        let run = run_protocol(&protocol, &protocol_plan, &rules, None).expect("the protocol runs");
         let printed = render_protocol(&protocol, &protocol_plan, &run);
         assert!(printed.contains("recorded-absent excluded: [\"O3\"]"), "{printed}");
         assert!(printed.contains("chosen column: X3"), "{printed}");
@@ -17587,7 +18632,7 @@ mod tests {
         let matrix = protocol_matrix();
         let plan = plan_matrix(&matrix).expect("the protocol fixture plans");
         let rules = Rules::standard();
-        let run = run_protocol(&matrix, &plan, &rules).expect("the protocol runs");
+        let run = run_protocol(&matrix, &plan, &rules, None).expect("the protocol runs");
 
         assert_eq!(run.arms.len(), 2, "§8 registers TWO arms");
         assert_eq!(run.arms.iter().map(|a| a.name).collect::<Vec<_>>(), ["dense", "sparse"]);
@@ -17649,7 +18694,7 @@ mod tests {
         }
         let plan = plan_matrix(&matrix).expect("the protocol fixture plans");
         let rules = Rules::standard();
-        let run = run_protocol(&matrix, &plan, &rules).expect("the protocol returns a verdict");
+        let run = run_protocol(&matrix, &plan, &rules, None).expect("the protocol returns a verdict");
 
         assert_eq!(
             run.outcome,
@@ -18019,7 +19064,7 @@ mod tests {
         let matrix = protocol_matrix();
         let plan = plan_matrix(&matrix).expect("the protocol fixture plans");
         let rules = Rules::standard();
-        let run = run_protocol(&matrix, &plan, &rules).expect("the protocol runs");
+        let run = run_protocol(&matrix, &plan, &rules, None).expect("the protocol runs");
 
         let mut refits = 0usize;
         for record in &run.cells {
@@ -18194,7 +19239,7 @@ mod tests {
         }
         let plan = plan_matrix(&matrix).expect("the routing fixture plans");
         let rules = Rules::standard();
-        let run = run_protocol(&matrix, &plan, &rules).expect("the protocol runs");
+        let run = run_protocol(&matrix, &plan, &rules, None).expect("the protocol runs");
 
         let ProtocolOutcome::RoutedPendingExemption { cell, feature, trigger } = &run.outcome
         else {
@@ -18523,7 +19568,7 @@ mod tests {
         // registry defect against a count the owner already ruled on.
         let matrix = protocol_matrix();
         let plan = plan_matrix(&matrix).expect("the protocol fixture plans");
-        let run = run_protocol(&matrix, &plan, &rules).expect("the census clears");
+        let run = run_protocol(&matrix, &plan, &rules, None).expect("the census clears");
         assert_eq!(run.census, (early, late));
     }
 
@@ -18574,7 +19619,7 @@ mod tests {
         let matrix = protocol_matrix();
         let plan = plan_matrix(&matrix).expect("the protocol fixture plans");
         let rules = Rules::standard();
-        let run = run_protocol(&matrix, &plan, &rules).expect("the protocol runs");
+        let run = run_protocol(&matrix, &plan, &rules, None).expect("the protocol runs");
         assert!(render_protocol(&matrix, &plan, &run).contains("recorded (never gated)"));
     }
 
@@ -18629,7 +19674,7 @@ mod tests {
         let protocol = protocol_matrix();
         let protocol_plan = plan_matrix(&protocol).expect("the protocol fixture plans");
         let rules = Rules::standard();
-        let run = run_protocol(&protocol, &protocol_plan, &rules).expect("the protocol runs");
+        let run = run_protocol(&protocol, &protocol_plan, &rules, None).expect("the protocol runs");
         let printed = render_protocol(&protocol, &protocol_plan, &run);
         assert!(printed.contains("converged=true"), "{printed}");
     }
@@ -18667,7 +19712,7 @@ mod tests {
         // anchor, the cells and the typed outcome.
         let plan = plan_matrix(&matrix).expect("the protocol fixture plans");
         let rules = Rules::standard();
-        let run = run_protocol(&matrix, &plan, &rules).expect("the protocol runs");
+        let run = run_protocol(&matrix, &plan, &rules, None).expect("the protocol runs");
         assert_eq!(run.cells.len(), 7, "seven cells");
         let printed = render_protocol(&matrix, &plan, &run);
         for needle in [
@@ -18724,5 +19769,1020 @@ mod tests {
                 | ProtocolOutcome::RoutedPendingExemption { .. }
                 | ProtocolOutcome::RoutedXEmpty
         ));
+    }
+
+    // -------------------------------------------------------------------
+    // S6-T4 — the held-out statistics, the finished artifact, the exit
+    // contract, the batched consultation report and the §8:975 re-run
+    // -------------------------------------------------------------------
+
+    /// A HELD-OUT fixture whose paired statistic is recomputable on paper.
+    ///
+    /// `(game, seat, wins, turns, dv_S1)`, every row at `progress_ppm = 0` so
+    /// [`interpolate`] returns the EARLY weight exactly and a row's score is one
+    /// multiplication. Every game index is ODD, so every cell lands on the
+    /// HELD-OUT side of the split.
+    fn held_out_fixture(games: u32, cells: &[(u32, u8, bool, u32, i64)]) -> Matrix {
+        let s1 = fit_s1_slot();
+        let mut rows = Vec::new();
+        for (game, seat, win, turns, dv) in cells {
+            assert!(!game.is_multiple_of(2), "the fixture's cells are HELD-OUT cells");
+            for turn in 0..*turns {
+                rows.push(fit_row(*game, *seat, turn, *turns, 0, *win, &[(s1, *dv)]));
+            }
+        }
+        Matrix { header: matrix_header_for(games), rows }
+    }
+
+    /// The S1-only reading of a held-out fixture at one EARLY weight.
+    fn s1_columns(matrix: &Matrix, plan: &MatrixPlan, early: i64) -> StageColumns {
+        let table = protocol_table(&[(CandidateFeature::ProductionAccess, early, 0)]);
+        let mask = FeatureMask::cell(&[CandidateFeature::ProductionAccess]);
+        stage_columns(plan, matrix, &table, &mask, Split::HeldOut)
+    }
+
+    /// A matrix's cells MIRRORED onto the ODD games, so the HELD-OUT half
+    /// exists and carries the same structure the FIT half does.
+    ///
+    /// Appended AFTER the originals, which is load-bearing: the control arms
+    /// draw one noise value per row in row order, so the first rows keep the
+    /// draws they had and the FIT-half arm columns — the only ones an arm fit
+    /// reads — are unchanged by the mirroring.
+    fn mirrored(matrix: &Matrix) -> Matrix {
+        let mut rows = matrix.rows.clone();
+        for row in &matrix.rows {
+            let mut copy = row.clone();
+            copy.game += 1;
+            rows.push(copy);
+        }
+        Matrix { header: matrix.header.clone(), rows }
+    }
+
+    /// **`protocol_matrix` WITH ALL EIGHTEEN CANDIDATES DISCRIMINATING**, so no
+    /// cell removes anything and the §8:975 re-run is NOT OWED.
+    ///
+    /// EIGHTEEN games, one per candidate: seat 0 WINS and carries that
+    /// candidate's private `2` against a background of `1`, seat 1 LOSES and
+    /// carries the background alone. Each candidate's raise lifts exactly one
+    /// winner over every loser — a strict improvement at every `k`, since the
+    /// AUC reads `(9k + 162)/324` after `k` of them are priced — so the descent
+    /// takes all eighteen and none lands `(0, 0)`.
+    ///
+    /// **No LOSING cell carries a candidate's `2`.** Given one, that column
+    /// would fit NEGATIVE, sinking the loser below every winner in a single move
+    /// and leaving the other seventeen coordinates at their init with nothing
+    /// left to improve — seventeen dead columns and a routed run.
+    ///
+    /// **Both classes ride EVERY cluster**, which is what keeps the held-out
+    /// statistics' replicate population whole: a resample that drew any game at
+    /// all drew a winner and a loser, so no replicate loses a class and none is
+    /// dropped.
+    fn no_removal_matrix() -> Matrix {
+        let mut rows = Vec::new();
+        for (index, mine) in CandidateFeature::ALL.into_iter().enumerate() {
+            let game = 2 * index as u32;
+            for seat in 0u8..2 {
+                let win = seat == 0;
+                for turn in 0..3u32 {
+                    let mut dv = [0i64; AXIS_WIDTH];
+                    for c in CandidateFeature::ALL {
+                        dv[FeatureId::Candidate(c).index()] = 1;
+                    }
+                    if win {
+                        dv[FeatureId::Candidate(mine).index()] = 2;
+                    }
+                    rows.push(MatrixRow {
+                        game,
+                        seat,
+                        turn_index: turn,
+                        turns_in_game: 3,
+                        progress_ppm: if turn == 2 { PROGRESS_FULL_PPM } else { 0 },
+                        dv,
+                        win,
+                        margin: if win { 9 } else { -9 },
+                    });
+                }
+            }
+        }
+        Matrix { header: matrix_header_for(2 * CandidateFeature::COUNT as u32), rows }
+    }
+
+    /// Two hand GATE ROWS over named candidate columns — the "small system" the
+    /// witness and zero-out arithmetic is checked against by hand.
+    fn hand_gate_row(
+        id: &'static str,
+        stage: StageEndpoint,
+        margin: i64,
+        entries: &[(CandidateFeature, i64)],
+    ) -> GateRow {
+        let mut delta = [0i64; AXIS_WIDTH];
+        for (candidate, dv) in entries {
+            delta[FeatureId::Candidate(*candidate).index()] = *dv;
+        }
+        GateRow { id, name: "hand row", stage, delta, margin }
+    }
+
+    /// **§8'S HELD-OUT STATISTIC IS THE MEAN OF THE THREE TERCILE PAIRED
+    /// DIFFERENCES — computed on paper, then asserted.**
+    ///
+    /// Four held-out cells over two games (two clusters), every stage carrying
+    /// the same four cells:
+    ///
+    /// | cell    | label | `dv_S1` | reference score | subject score |
+    /// |---------|-------|---------|-----------------|---------------|
+    /// | (1, 0)  | won   | 1       | 0               | 10            |
+    /// | (1, 1)  | lost  | 0       | 0               | 0             |
+    /// | (3, 0)  | lost  | 0       | 0               | 0             |
+    /// | (3, 1)  | won   | 1       | 0               | 10            |
+    ///
+    /// The REFERENCE prices `S1` at 0, so all four cells tie: `auc_weighted`'s
+    /// tie rule gives `2·(0 + 0.5·2) / (2·2) = 0.5`. The SUBJECT prices it at
+    /// 10, so both winners sit strictly above both losers: `2·(2 + 0)/(2·2) =
+    /// 1.0`. Each stage's paired difference is `+0.5` and the mean of three
+    /// `+0.5`s is `+0.5` EXACTLY (`(x+x+x)/3 == x` holds in `f64` at this
+    /// value).
+    ///
+    /// **The INTERVAL is zero-width and that is a real reading**, not the
+    /// refused kind: with two clusters every resample is one game's cells, one
+    /// game's cells rank exactly as both games' do, and the frozen §4.2 doc
+    /// says so in as many words — "a zero-width interval here is therefore a
+    /// real reading ... and not the refused kind, which is an estimator that
+    /// cannot tell 'no variation' from 'no measurement'".
+    #[test]
+    fn the_held_out_statistic_is_the_mean_of_the_three_tercile_paired_differences() {
+        let matrix = held_out_fixture(
+            4,
+            &[(1, 0, true, 3, 1), (1, 1, false, 3, 0), (3, 0, false, 3, 0), (3, 1, true, 3, 1)],
+        );
+        let plan = plan_matrix(&matrix).expect("the hand fixture plans");
+        let reference = s1_columns(&matrix, &plan, 0);
+        let subject = s1_columns(&matrix, &plan, 10);
+
+        // The two sides' own AUCs first, so the difference below is a
+        // difference of numbers this cell derived rather than of numbers it
+        // took on faith.
+        let ones = vec![1u32; reference.clusters];
+        assert_eq!(reference.clusters, 2, "games 1 and 3 are the two held-out clusters");
+        for stage in 0..3 {
+            assert_eq!(auc_weighted(&reference.stages[stage], &ones), Some(0.5));
+            assert_eq!(auc_weighted(&subject.stages[stage], &ones), Some(1.0));
+        }
+
+        let statistic = paired_statistic(
+            &subject,
+            &reference,
+            "hand",
+            held_out_statistic_seed(0xE7A1_2026_0819_0001, "hand"),
+            HELD_OUT_REPLICATES,
+        );
+        assert_eq!(statistic.stages, [Some(0.5); 3], "each tercile's paired difference");
+        assert_eq!(statistic.point, Some(0.5), "the mean of the three");
+        assert_eq!((statistic.lo, statistic.hi), (0.5, 0.5));
+        assert_eq!(
+            statistic.replicates,
+            HELD_OUT_REPLICATES as usize,
+            "every replicate measures all three stages, so none is dropped",
+        );
+        assert_eq!(statistic.render(), "+0.5000 [+0.5000, +0.5000]");
+    }
+
+    /// **THE DROP RULE, MIRRORED FROM THE FROZEN PAIRED MACHINERY AND SHOWN TO
+    /// MATTER.**
+    ///
+    /// The two rules composed here are quoted in [`paired_statistic`]'s doc and
+    /// neither is invented:
+    ///
+    /// * `paired_improvement_intervals` pushes a replicate difference only
+    ///   under `if let (Some(e), Some(b))` — a stage undefined on EITHER side
+    ///   contributes NOTHING;
+    /// * `held_out_intervals` DROPS an undefined replicate AUC from the
+    ///   population "instead of substituting anything", which
+    ///   [`HalfObjective::mean`] already reads at the three-stage aggregation.
+    ///
+    /// The fixture makes the two LOSING seats one-turn games, so their cells
+    /// exist only at EARLY: MID and LATE hold winners alone, one class is
+    /// empty, and `auc_weighted` returns `None` on BOTH sides there.
+    ///
+    /// **The discriminating number is the point.** Dropping gives `+0.5` — the
+    /// EARLY difference, which is the only one anybody measured. Substituting
+    /// zero for the two undefined stages would give `+0.1667`, a number that
+    /// reads as "two thirds of this cell's terciles showed no improvement" for
+    /// a corpus that never measured them.
+    #[test]
+    fn an_undefined_stage_drops_out_of_the_replicate_rather_than_reading_zero() {
+        let matrix = held_out_fixture(
+            4,
+            &[(1, 0, true, 3, 1), (1, 1, false, 1, 0), (3, 0, true, 3, 1), (3, 1, false, 1, 0)],
+        );
+        let plan = plan_matrix(&matrix).expect("the drop fixture plans");
+        let reference = s1_columns(&matrix, &plan, 0);
+        let subject = s1_columns(&matrix, &plan, 10);
+        let statistic =
+            paired_statistic(&subject, &reference, "drop", 0x0DD0_0DD0_0DD0_0DD0, HELD_OUT_REPLICATES);
+
+        assert_eq!(
+            statistic.stages,
+            [Some(0.5), None, None],
+            "MID and LATE hold winners alone — one class empty is an UNDEFINED AUC",
+        );
+        assert_eq!(statistic.point, Some(0.5), "the mean over the ONE stage anybody measured");
+        assert!(
+            (statistic.point.expect("defined") - 0.5 / 3.0).abs() > 1e-9,
+            "substituting 0 for the two undefined stages would read +0.1667",
+        );
+        assert_eq!(
+            statistic.replicates,
+            HELD_OUT_REPLICATES as usize,
+            "a replicate with ONE defined stage still has a value",
+        );
+
+        // And the other end of the same rule: NO stage defined anywhere means
+        // every replicate is dropped and the statistic is the honest non-answer.
+        let all_winners = held_out_fixture(
+            4,
+            &[(1, 0, true, 3, 1), (1, 1, true, 3, 0), (3, 0, true, 3, 0), (3, 1, true, 3, 1)],
+        );
+        let plan = plan_matrix(&all_winners).expect("the degenerate fixture plans");
+        let statistic = paired_statistic(
+            &s1_columns(&all_winners, &plan, 10),
+            &s1_columns(&all_winners, &plan, 0),
+            "none",
+            0x0DD0_0DD0_0DD0_0DD0,
+            HELD_OUT_REPLICATES,
+        );
+        assert_eq!(statistic.stages, [None; 3]);
+        assert_eq!(statistic.point, None, "a mean over no measured stage is not a number");
+        assert!(statistic.lo.is_nan() && statistic.hi.is_nan());
+        assert_eq!(statistic.replicates, 0, "every replicate was DROPPED, not zeroed");
+        assert_eq!(statistic.render(), "--  (no stage is defined on both sides)");
+    }
+
+    /// **THE INTERVAL RESAMPLES GAMES**, and its endpoints come out of the
+    /// hand-derived value set.
+    ///
+    /// Three held-out clusters, two of them ranking `S1` with the outcome and
+    /// the third AGAINST it. Writing `a` for the multiplicity mass on the two
+    /// agreeing games and `b` for the third's, the subject column's AUC is
+    /// `(a² + ab)/(a+b)² = a/(a+b)` and the reference's is `0.5` (all ties), so
+    /// a replicate's value is `a/(a+b) − 0.5` with `a + b = 3` — and the whole
+    /// population lives in `{−0.5, −1/6, +1/6, +0.5}`, four values reachable
+    /// exactly when the resample draws the disagreeing game 3, 2, 1 or 0 times.
+    ///
+    /// The unresampled read is `a = 2, b = 1`, so the point is `2/3 − 1/2 =
+    /// +1/6`. A bootstrap that resampled ROWS instead of GAMES, or that never
+    /// resampled at all, could not produce the other three.
+    #[test]
+    fn the_interval_resamples_games_and_brackets_the_point() {
+        let matrix = held_out_fixture(
+            6,
+            &[
+                (1, 0, true, 3, 1),
+                (1, 1, false, 3, 0),
+                (3, 0, true, 3, 1),
+                (3, 1, false, 3, 0),
+                (5, 0, true, 3, 0),
+                (5, 1, false, 3, 1),
+            ],
+        );
+        let plan = plan_matrix(&matrix).expect("the spread fixture plans");
+        let reference = s1_columns(&matrix, &plan, 0);
+        let subject = s1_columns(&matrix, &plan, 10);
+        assert_eq!(reference.clusters, 3);
+
+        let seed = held_out_statistic_seed(0xE7A1_2026_0819_0001, "spread");
+        let statistic =
+            paired_statistic(&subject, &reference, "spread", seed, HELD_OUT_REPLICATES);
+        let point = 6.0f64 / 9.0 - 0.5;
+        assert_eq!(statistic.stages, [Some(point); 3], "a = 2, b = 1 gives 2/3 against 1/2");
+        assert_eq!(statistic.point, Some(point));
+
+        let reachable = [-0.5f64, -1.0 / 6.0, 6.0 / 9.0 - 0.5, 0.5];
+        for (endpoint, which) in [(statistic.lo, "lo"), (statistic.hi, "hi")] {
+            assert!(
+                reachable.iter().any(|v| (v - endpoint).abs() < 1e-12),
+                "{which} = {endpoint} is outside the hand-derived value set {reachable:?}",
+            );
+        }
+        assert!(statistic.lo < statistic.hi, "the resample MOVES the statistic");
+        assert!(statistic.lo <= point && point <= statistic.hi, "and brackets the point");
+        assert_eq!(statistic.replicates, HELD_OUT_REPLICATES as usize);
+
+        // The stream is the SEED's, so the same seed reproduces the interval
+        // and a different one is a different draw from the same population.
+        let again = paired_statistic(&subject, &reference, "spread", seed, HELD_OUT_REPLICATES);
+        assert_eq!((again.lo, again.hi), (statistic.lo, statistic.hi));
+    }
+
+    /// **THE SEVEN NAMES ARE THE REGISTERED FIXED STRINGS, AND `B` CARRIES NO
+    /// STREAM** — coherence-pass sentence 12, transcribed and then checked
+    /// against the cells it names.
+    ///
+    /// Two claims that must BOTH hold and are checked separately: the strings
+    /// are the sentence's literal seven, and each one still names the cell it
+    /// was registered for. A cell rename would keep the first true and break
+    /// the second, which is exactly the failure a composed name would hide by
+    /// re-keying six bootstrap streams in silence.
+    #[test]
+    fn the_seven_statistic_names_are_the_registered_fixed_strings() {
+        assert_eq!(HELD_OUT_STATISTICS.len(), 7, "sentence 12 fixes SEVEN names");
+        assert_eq!(
+            HELD_OUT_STATISTICS.iter().map(|(name, _, _)| *name).collect::<Vec<_>>(),
+            [
+                "B+S_vs_B",
+                "B+E_vs_B",
+                "B+S+E_vs_B",
+                "B+S+E+X_vs_B",
+                "B+E-resource_vs_B",
+                "B+E-order_vs_B",
+                "delta_X",
+            ],
+        );
+
+        // Each `_vs_B` name still names its cell, and its reference is `B`.
+        for (name, subject, reference) in HELD_OUT_STATISTICS.iter().take(6) {
+            assert_eq!(*name, format!("{}_vs_B", subject.name()));
+            assert_eq!(*reference, ProtocolCell::B, "{name}: the reference is the V2-refit cell");
+        }
+
+        // **`B` IS NEVER A SUBJECT.** Sentence 12: "B's own difference is
+        // identically zero and carries no stream" — so there is no eighth row
+        // and no `B_vs_B` seed to draw.
+        assert!(HELD_OUT_STATISTICS.iter().all(|(_, subject, _)| *subject != ProtocolCell::B));
+        assert!(HELD_OUT_STATISTICS.iter().all(|(name, _, _)| *name != "B_vs_B"));
+
+        // Seven names, seven streams: a duplicated name would share one.
+        let names: BTreeSet<&str> = HELD_OUT_STATISTICS.iter().map(|(n, _, _)| *n).collect();
+        assert_eq!(names.len(), 7);
+    }
+
+    /// **THE STREAM KEY IS `splitmix64(corpus_master XOR fnv1a64(name))`** —
+    /// §8's registered formula, with `fnv1a64` pinned against the published
+    /// FNV-1a/64 test vectors so the formula rests on a hash this file agrees
+    /// with the world about.
+    ///
+    /// The three vectors are the standard ones: the empty string returns the
+    /// offset basis untouched (nothing is mixed), `"a"` exercises one round, and
+    /// `"foobar"` exercises six. A transposed constant, a `+` instead of a `^`,
+    /// or FNV-1 instead of FNV-1a fails at least one of them.
+    #[test]
+    fn the_statistic_stream_is_splitmix64_of_the_master_xored_with_the_names_fnv1a() {
+        assert_eq!(fnv1a64(""), 0xcbf2_9ce4_8422_2325, "the empty name IS the offset basis");
+        assert_eq!(fnv1a64("a"), 0xaf63_dc4c_8601_ec8c);
+        assert_eq!(fnv1a64("foobar"), 0x8594_4171_f739_67e8);
+
+        const MASTER: u64 = 0xE7A1_2026_0819_0001;
+        for (name, _, _) in HELD_OUT_STATISTICS {
+            let seed = held_out_statistic_seed(MASTER, name);
+            assert_eq!(seed, mix64(MASTER ^ fnv1a64(name)), "the registered formula, per name");
+            // **THE MIX IS NOT A NO-OP.** The control arms hand their XOR to a
+            // `SplitMix64` stream, whose first draw applies `mix64` one step
+            // later; a `ChaCha8Rng` has no such step, so an unmixed XOR here
+            // would key seven streams on a master's low bits differing only by
+            // a name's hash.
+            assert_ne!(seed, MASTER ^ fnv1a64(name));
+        }
+
+        // Seven names, seven DISTINCT streams, and a different corpus draws
+        // different replicates.
+        let seeds: BTreeSet<u64> =
+            HELD_OUT_STATISTICS.iter().map(|(n, _, _)| held_out_statistic_seed(MASTER, n)).collect();
+        assert_eq!(seeds.len(), 7);
+        assert_ne!(
+            held_out_statistic_seed(MASTER, "delta_X"),
+            held_out_statistic_seed(MASTER ^ 1, "delta_X"),
+        );
+    }
+
+    /// **`delta_X` IS `(B+S+E+X) − (B+S+E)`, IN THAT ORDER.**
+    ///
+    /// §8 registers the increment as "Δ_X = (B+S+E+X) − (B+S+E) — the statistic
+    /// that makes §4's 'separately attributable' claim true", so an interaction
+    /// cell that BEATS the union cell must read POSITIVE. Reversed, every sign
+    /// in the artifact's most load-bearing row would be backwards and nothing
+    /// else would look wrong.
+    ///
+    /// The orientation is two facts: the registry row's operand order, and
+    /// [`paired_statistic`]'s own subject-minus-reference arithmetic. Both are
+    /// checked, because either alone leaves the other free.
+    #[test]
+    fn delta_x_is_the_interaction_cell_minus_the_union_cell() {
+        assert_eq!(
+            HELD_OUT_STATISTICS[6],
+            ("delta_X", ProtocolCell::BSEX, ProtocolCell::BSE),
+            "subject = the interaction cell, reference = the union cell",
+        );
+
+        let matrix = held_out_fixture(
+            4,
+            &[(1, 0, true, 3, 1), (1, 1, false, 3, 0), (3, 0, false, 3, 0), (3, 1, true, 3, 1)],
+        );
+        let plan = plan_matrix(&matrix).expect("the orientation fixture plans");
+        let better = s1_columns(&matrix, &plan, 10);
+        let worse = s1_columns(&matrix, &plan, 0);
+
+        let gain = paired_statistic(&better, &worse, "delta_X", 1, 16);
+        assert_eq!(gain.point, Some(0.5), "a subject that RANKS BETTER reads POSITIVE");
+        let loss = paired_statistic(&worse, &better, "delta_X", 1, 16);
+        assert_eq!(loss.point, Some(-0.5), "and the same pair reversed reads negative");
+    }
+
+    /// **THE FINISHED ARTIFACT: every registered section, in one stable order,
+    /// byte-identical across runs.**
+    ///
+    /// The fixture is `no_removal_matrix` MIRRORED onto the odd games, which
+    /// buys three things at once: the protocol COMPLETES (no candidate is
+    /// removed, so no route and no owed re-run), the HELD-OUT half is populated
+    /// (so all seven statistics are defined rather than printing `--`), and the
+    /// exit code is the one a finished record earns.
+    #[test]
+    fn the_finished_artifact_carries_every_registered_section_in_order() {
+        let matrix = mirrored(&no_removal_matrix());
+        let plan = plan_matrix(&matrix).expect("the artifact fixture plans");
+        let rules = Rules::standard();
+        let run = run_protocol(&matrix, &plan, &rules, None).expect("the protocol runs");
+        assert_eq!(run.outcome, ProtocolOutcome::Complete, "the fixture must complete");
+        let printed = render_protocol(&matrix, &plan, &run);
+
+        // THE ORDER, as section markers whose positions must strictly increase.
+        let mut last = 0usize;
+        for marker in [
+            "--- fit --protocol",
+            "  matrix: master=",
+            "  census: gate rows",
+            "== registered sentences in force",
+            "== optimizer-adequacy control arms",
+            "== anchor: shipped V2, UN-REFIT",
+            "== cell B (",
+            "== inventory accounting",
+            "== held-out statistics",
+            "== §8:975 Part-B re-run",
+            "\n  outcome: ",
+            "\n  exit ",
+        ] {
+            let at = printed.find(marker).unwrap_or_else(|| panic!("missing {marker:?}:\n{printed}"));
+            assert!(at > last || last == 0, "{marker:?} is out of order:\n{printed}");
+            last = at;
+        }
+
+        // The fourteen registered sentences, 4 printed as its two registered
+        // halves.
+        for (number, subject) in REGISTERED_SENTENCES {
+            assert!(
+                printed.contains(&format!("sentence {number:<3} {subject}")),
+                "sentence {number} is missing:\n{printed}",
+            );
+        }
+        assert_eq!(printed.matches("     sentence ").count(), 15);
+
+        // The accounting, with REALIZED counts against §8's two ceilings.
+        assert!(printed.contains("cell fits    14 base (7 cells x 2 inits) + 0 refit"), "{printed}");
+        assert!(printed.contains("= 14 of <= 28"), "{printed}");
+        assert!(printed.contains("control fits 4 (2 arms x 2 inits) of <= 4"), "{printed}");
+        assert!(printed.contains("void label   none"), "{printed}");
+
+        // SEVEN statistics, seven printed seeds, every one of them RECORDED and
+        // every one of them a real number on this corpus.
+        assert_eq!(run.statistics.len(), 7);
+        assert_eq!(printed.matches("seed=0x").count(), 7 + run.arms.len());
+        assert!(printed.contains("RECORDED EVIDENCE"), "{printed}");
+        assert!(
+            printed.contains("its own difference is identically zero and carries no stream"),
+            "{printed}",
+        );
+        for statistic in &run.statistics {
+            assert!(printed.contains(statistic.name), "{} is missing", statistic.name);
+            assert!(
+                statistic.point.is_some(),
+                "{}: the mirrored half defines every stage",
+                statistic.name,
+            );
+            assert_eq!(statistic.replicates, HELD_OUT_REPLICATES as usize);
+            assert!(statistic.lo <= statistic.hi);
+        }
+
+        // **THE INCREMENT IS INTERNALLY CONSISTENT**, which only holds if
+        // `delta_X` is oriented as registered. Both `_vs_B` rows subtract the
+        // same `B`, so `(B+S+E+X vs B) − (B+S+E vs B)` telescopes to
+        // `AUC(B+S+E+X) − AUC(B+S+E)` — `delta_X` itself. Reversed, this reads
+        // as the same magnitude with the wrong sign.
+        let point = |name: &str| {
+            run.statistics
+                .iter()
+                .find(|s| s.name == name)
+                .and_then(|s| s.point)
+                .unwrap_or_else(|| panic!("{name} has no point"))
+        };
+        assert!(
+            (point("delta_X") - (point("B+S+E+X_vs_B") - point("B+S+E_vs_B"))).abs() < 1e-12,
+            "delta_X {} does not telescope: {} - {}",
+            point("delta_X"),
+            point("B+S+E+X_vs_B"),
+            point("B+S+E_vs_B"),
+        );
+        assert!(point("delta_X") > 0.0, "the interaction cell outranks the union cell here");
+
+        // The re-run stage, NOT OWED, and the exit code a complete record earns.
+        assert!(matches!(run.rerun, ReRun::NotOwed { witness: None }));
+        assert!(printed.contains("NOT OWED"), "{printed}");
+        assert_eq!(run.exit_code(), 0);
+        assert!(printed.contains("exit 0 — the §8 record is COMPLETE"), "{printed}");
+
+        // **BYTE-IDENTICAL ACROSS RUNS.** §8: "Deterministic; no master" — the
+        // statistics' streams are keyed on the matrix's recorded master and the
+        // registered names, so a second run of the same bytes is the same
+        // artifact, replicate for replicate.
+        let again = run_protocol(&matrix, &plan, &rules, None).expect("the protocol runs twice");
+        assert_eq!(render_protocol(&matrix, &plan, &again), printed, "two runs, one artifact");
+    }
+
+    /// **A RUN THAT STOPPED RECORDS NO STATISTICS**, and says why in the block
+    /// where they would have been.
+    ///
+    /// Both stopping shapes are checked. §8 runs the control arms "before any
+    /// cell is read" so a defective optimizer never prints a cell figure
+    /// somebody could quote; the same reasoning at the other end of the
+    /// protocol says a cell whose removal rule never ran has no held-out
+    /// statistic to report — the table it would be differenced on is not the
+    /// table the cell ends on, because the cell never ended.
+    #[test]
+    fn the_protocol_records_no_statistics_on_a_run_that_stopped() {
+        let rules = Rules::standard();
+
+        // A ROUTE: O5 anti-correlated against the assigned-cell staircase, so
+        // it fits wrong-signed in the first cell that carries it.
+        let mut routed = protocol_matrix();
+        let o5 = FeatureId::Candidate(CandidateFeature::FlagIconMarginal).index();
+        for row in &mut routed.rows {
+            row.dv[o5] = if row.game == 16 && row.seat == 1 { 2 } else { 1 };
+        }
+        let plan = plan_matrix(&routed).expect("the routing fixture plans");
+        let run = run_protocol(&routed, &plan, &rules, None).expect("the protocol runs");
+        assert!(matches!(run.outcome, ProtocolOutcome::RoutedPendingExemption { .. }));
+        assert!(run.statistics.is_empty(), "a routed run computes no held-out statistic");
+        let printed = render_protocol(&routed, &plan, &run);
+        assert!(printed.contains("NOT COMPUTED — the protocol stopped at B+E"), "{printed}");
+        assert!(matches!(run.rerun, ReRun::NotReached));
+        assert_eq!(run.exit_code(), EXIT_INCOMPLETE);
+
+        // AN INSTRUMENT DEFECT: identically-zero margins, so the planted arm
+        // column is constant and no weight on it changes any ranking.
+        let mut drawn = protocol_matrix();
+        for row in &mut drawn.rows {
+            row.margin = 0;
+        }
+        let plan = plan_matrix(&drawn).expect("the degenerate fixture plans");
+        let run = run_protocol(&drawn, &plan, &rules, None).expect("the protocol returns a verdict");
+        assert_eq!(run.outcome, ProtocolOutcome::InstrumentDefect { arm: "dense" });
+        assert!(run.statistics.is_empty());
+        assert_eq!(
+            run.exit_code(),
+            EXIT_INCOMPLETE,
+            "an instrument defect exited 0 before this cell — the T3 review's NOTE-4",
+        );
+        let printed = render_protocol(&drawn, &plan, &run);
+        assert!(printed.contains("THIS ATTEMPT IS void-at-instrument-defect"), "{printed}");
+        assert!(
+            printed.contains("NOT COMPUTED — the protocol stopped at the control arms"),
+            "{printed}",
+        );
+    }
+
+    /// **A ROUTED RUN PUTS EVERY CONSULTATION IN FRONT OF THE OWNER AT ONCE.**
+    ///
+    /// With fourteen PENDING (ii) entries a route is likely and a report that
+    /// named only its FIRST feature would cost one owner round-trip per
+    /// feature. The batched report evaluates every cell's candidates on that
+    /// cell's OWN BASE FIT — fits the protocol already computed — and lists
+    /// every PENDING entry the roster would reach, each with the evidence
+    /// location the roster names.
+    ///
+    /// **It changes nothing, and the cell proves that rather than asserting
+    /// it**: the typed outcome, the stop point, the NOT-RUN states and the
+    /// per-cell dispositions all read exactly as they did before the report
+    /// existed.
+    #[test]
+    fn a_routed_run_reports_every_consultation_one_ruling_would_cover() {
+        let mut matrix = protocol_matrix();
+        let o5 = FeatureId::Candidate(CandidateFeature::FlagIconMarginal).index();
+        for row in &mut matrix.rows {
+            row.dv[o5] = if row.game == 16 && row.seat == 1 { 2 } else { 1 };
+        }
+        let plan = plan_matrix(&matrix).expect("the routing fixture plans");
+        let rules = Rules::standard();
+        let run = run_protocol(&matrix, &plan, &rules, None).expect("the protocol runs");
+        let printed = render_protocol(&matrix, &plan, &run);
+
+        // EVERY cell is consulted — including the four the removal rule never
+        // reached, which is the whole point of batching.
+        assert_eq!(
+            run.consultation.iter().map(|c| c.cell).collect::<Vec<_>>(),
+            ["B", "B+S", "B+E", "B+S+E", "B+S+E+X", "B+E-resource", "B+E-order"],
+        );
+        for cell in &run.consultation {
+            assert_eq!(
+                cell.dispositions.len(),
+                ProtocolCell::ALL
+                    .iter()
+                    .find(|c| c.name() == cell.cell)
+                    .expect("a named cell")
+                    .candidates()
+                    .len(),
+                "{}: every candidate is consulted, not just the routing one",
+                cell.cell,
+            );
+        }
+        assert!(
+            printed.contains(
+                "REMOVALS NOT APPLIED — the protocol stopped at B+E; this report exists so one \
+                 owner ruling can cover every consultation",
+            ),
+            "{printed}",
+        );
+
+        // The PENDING roster, deduplicated, each with its evidence line.
+        let pending = pending_consulted(&run.consultation);
+        assert!(!pending.is_empty(), "the fixture must consult something");
+        for (candidate, evidence) in &pending {
+            assert!(matches!(rooted_presence(*candidate), RootedPresence::Pending(_)));
+            assert!(printed.contains(evidence), "{} lost its evidence line", candidate.label());
+        }
+        // **AND THE REPORT EARNS ITS KEEP RIGHT HERE.** The typed outcome names
+        // O5 alone, because the protocol stops at the first route. O6 lands
+        // `(0, 0)` in the same pass — once O5's negative weight sinks the losing
+        // cell the AUC is already 1.0 and the later coordinates never move — so
+        // a run that reported only its stop point would send the owner back for
+        // a second ruling on O6 after the first re-run routed again.
+        assert_eq!(
+            pending.iter().map(|(c, _)| c.label()).collect::<Vec<_>>(),
+            ["O5", "O6"],
+            "both consultations the roster would reach, not just the one that stopped the run",
+        );
+        assert!(
+            printed.contains("PENDING (ii) entries this run would consult: 2"),
+            "{printed}",
+        );
+
+        // **NOTHING MOVED.** The route, the stop point, the NOT-RUN states and
+        // the per-cell removal record are what they were.
+        let ProtocolOutcome::RoutedPendingExemption { cell, feature, trigger } = &run.outcome
+        else {
+            panic!("the fixture must route: {:?}", run.outcome);
+        };
+        assert_eq!((*cell, *feature, *trigger), ("B+E", "O5", "wrong-sign"));
+        assert_eq!(
+            run.cells.iter().filter(|c| c.removal.is_none()).count(),
+            4,
+            "the four cells after the route still have NO removal record",
+        );
+        assert_eq!(
+            printed.matches("removal rule NOT RUN — the protocol routed at B+E").count(),
+            4,
+        );
+        assert!(run.cells.iter().all(|c| c.refit.is_none()), "no refit runs on a routed pass");
+    }
+
+    /// **THE EXIT CONTRACT (charter D6): 0 is COMPLETE, 3 is stopped, 2 is a
+    /// refusal** — driven through `cmd_fit`, which is what a script reads.
+    ///
+    /// The three exit codes answer three different questions and the middle one
+    /// is the reason the contract exists: "found nothing wrong, but did not look
+    /// everywhere" is neither a pass nor a gate failure, and `EXIT_INCOMPLETE`
+    /// has said so on the `rooted` path since step 5.
+    #[test]
+    fn the_protocol_exit_code_is_zero_only_on_a_complete_record() {
+        let rules = Rules::standard();
+        let arg = |s: &str| s.to_string();
+        let write = |tag: &str, matrix: &Matrix| {
+            let path = matrix_temp_path(tag);
+            std::fs::write(&path, render_matrix(matrix)).expect("the fixture matrix writes");
+            path
+        };
+
+        // COMPLETE, nothing owed: 0.
+        let complete = write("exit-complete", &mirrored(&no_removal_matrix()));
+        let file = complete.to_string_lossy().to_string();
+        assert_eq!(
+            cmd_fit(&[arg("--matrix"), arg(&file), arg("--protocol")]).expect("the protocol runs"),
+            0,
+        );
+
+        // COMPLETE but the selected cell removed and no witness came with it:
+        // the §8:975 re-run is OWED and the run stops.
+        let owed = write("exit-owed", &protocol_matrix());
+        let file = owed.to_string_lossy().to_string();
+        let matrix = protocol_matrix();
+        let plan = plan_matrix(&matrix).expect("the owed fixture plans");
+        let run = run_protocol(&matrix, &plan, &rules, None).expect("the protocol runs");
+        assert_eq!(run.outcome, ProtocolOutcome::Complete, "the OWED case is a COMPLETE protocol");
+        assert!(matches!(run.rerun, ReRun::Owed { .. }));
+        assert_eq!(
+            cmd_fit(&[arg("--matrix"), arg(&file), arg("--protocol")]).expect("the protocol runs"),
+            EXIT_INCOMPLETE,
+        );
+
+        // ROUTED: 3.
+        let mut routed = protocol_matrix();
+        let o5 = FeatureId::Candidate(CandidateFeature::FlagIconMarginal).index();
+        for row in &mut routed.rows {
+            row.dv[o5] = if row.game == 16 && row.seat == 1 { 2 } else { 1 };
+        }
+        let path = write("exit-routed", &routed);
+        let file = path.to_string_lossy().to_string();
+        assert_eq!(
+            cmd_fit(&[arg("--matrix"), arg(&file), arg("--protocol")]).expect("the protocol runs"),
+            EXIT_INCOMPLETE,
+        );
+
+        // INSTRUMENT DEFECT: 3, closing the T3 review's NOTE-4.
+        let mut drawn = protocol_matrix();
+        for row in &mut drawn.rows {
+            row.margin = 0;
+        }
+        let path = write("exit-defect", &drawn);
+        let file = path.to_string_lossy().to_string();
+        assert_eq!(
+            cmd_fit(&[arg("--matrix"), arg(&file), arg("--protocol")]).expect("the protocol runs"),
+            EXIT_INCOMPLETE,
+        );
+
+        // The two MANUAL readings keep their exit behaviour exactly.
+        assert_eq!(
+            cmd_fit(&[arg("--matrix"), arg(&file), arg("--evaluate"), arg("v2")])
+                .expect("an evaluation runs"),
+            0,
+        );
+        assert_eq!(
+            cmd_fit(&[arg("--matrix"), arg(&file), arg("--descend"), arg("incumbents")])
+                .expect("a descent runs"),
+            0,
+        );
+
+        // USAGE refusals stay `Err`, which `main` turns into 2.
+        let zeros = vec!["0"; AXIS_WIDTH].join(",");
+        for (argv, needle, what) in [
+            (
+                vec![arg("--matrix"), arg(&file), arg("--protocol"), arg("--witness-early"), arg(&zeros)],
+                "ONE witness",
+                "half a witness",
+            ),
+            (
+                vec![
+                    arg("--matrix"),
+                    arg(&file),
+                    arg("--evaluate"),
+                    arg("v2"),
+                    arg("--witness-early"),
+                    arg(&zeros),
+                    arg("--witness-late"),
+                    arg(&zeros),
+                ],
+                "only --protocol runs that stage",
+                "a witness handed to a manual reading",
+            ),
+            (
+                vec![arg("--matrix"), arg(&file), arg("--protocol"), arg("--witness-early"), arg("1,2,3"), arg("--witness-late"), arg(&zeros)],
+                "entries, and the axis has",
+                "a short witness vector",
+            ),
+        ] {
+            let Err(message) = cmd_fit(&argv) else {
+                panic!("{what} ran instead of being refused");
+            };
+            assert!(message.contains(needle), "{what}: {message}");
+        }
+
+        for path in [complete, owed] {
+            let _ = std::fs::remove_file(path);
+        }
+        let _ = std::fs::remove_file(matrix_temp_path("exit-routed"));
+        let _ = std::fs::remove_file(matrix_temp_path("exit-defect"));
+    }
+
+    /// **THE §8:975 RE-RUN IS OWED ONLY ON A SELECTED-CELL REMOVAL**, and a
+    /// witness that is never needed is echoed rather than swallowed.
+    ///
+    /// Charter D13 reads §8:975 — "A removal re-runs Part B and the §9 zero-out
+    /// arithmetic on the SELECTED cell's surviving set" — as ONE re-run at
+    /// selection: owed when `B+S+E+X` removed something, not owed otherwise, and
+    /// never once per cell.
+    #[test]
+    fn the_part_b_re_run_is_owed_only_when_the_selected_cell_removed_a_candidate() {
+        let rules = Rules::standard();
+        let witness = FitTable::v2_padded();
+
+        // NOT OWED: every candidate discriminates, so nothing is removed.
+        let clean = no_removal_matrix();
+        let plan = plan_matrix(&clean).expect("the clean fixture plans");
+        let run = run_protocol(&clean, &plan, &rules, Some(&witness)).expect("the protocol runs");
+        assert_eq!(run.outcome, ProtocolOutcome::Complete);
+        let selected = run
+            .cells
+            .iter()
+            .find(|c| c.cell == ProtocolCell::BSEX)
+            .expect("the interaction cell");
+        assert!(selected.refit.is_none(), "the selected cell removed nothing");
+        assert!(matches!(run.rerun, ReRun::NotOwed { witness: Some(_) }));
+        assert!(!run.rerun.stops(), "a re-run nobody owes stops nothing");
+        let printed = render_protocol(&clean, &plan, &run);
+        assert!(printed.contains("NOT OWED — the selected cell removed no candidate"), "{printed}");
+        assert!(printed.contains("witness supplied and ECHOED, unused"), "{printed}");
+
+        // OWED: O3 and X3 are constant columns, fit (0, 0), and neither has a
+        // (ii) path — so the interaction cell removes them and refits.
+        let removed = protocol_matrix();
+        let plan = plan_matrix(&removed).expect("the removal fixture plans");
+        let run = run_protocol(&removed, &plan, &rules, None).expect("the protocol runs");
+        let ReRun::Owed { removed: gone } = &run.rerun else {
+            panic!("the fixture must owe a re-run: {:?}", run.outcome);
+        };
+        assert_eq!(
+            gone.iter().map(|c| c.label()).collect::<Vec<_>>(),
+            ["O3", "X3"],
+            "the two columns with no (ii) path and no other exemption",
+        );
+        assert!(run.rerun.stops(), "an OWED re-run stops the run");
+        let printed = render_protocol(&removed, &plan, &run);
+        assert!(printed.contains("OWED — the selected cell removed"), "{printed}");
+        assert!(printed.contains("no witness was supplied"), "{printed}");
+
+        // OWED AND RUN: the same removal with a witness in hand. The projection
+        // is the SURVIVORS' — the two removed columns' rows drop by name — and
+        // every kept row is read at the witness in exact `i64`.
+        let run =
+            run_protocol(&removed, &plan, &rules, Some(&witness)).expect("the protocol runs");
+        let ReRun::Evaluated(evaluation) = &run.rerun else {
+            panic!("a supplied witness runs the re-run");
+        };
+        assert_eq!(evaluation.survivors.len(), CandidateFeature::COUNT - 2);
+        assert!(
+            evaluation.kept.iter().flatten().count() > 0,
+            "the surviving set keeps rows to prove",
+        );
+        // Every kept reading is `row_value`'s, over the SURVIVORS' mask and the
+        // supplied witness — the same arithmetic the per-cell satisfaction
+        // report prices a weight through, reached from the registry side.
+        let survivor_mask = FeatureMask::cell(&evaluation.survivors);
+        for kept in evaluation.kept.iter().flatten() {
+            let row = run
+                .rows
+                .iter()
+                .find(|r| r.label() == kept.label && r.stage == kept.stage)
+                .expect("every kept row is a registered gate row");
+            assert_eq!(kept.value, row_value(row, &survivor_mask, &witness), "{}", kept.label);
+            assert_eq!(kept.margin, row.margin);
+            assert!(row_applies(row, &survivor_mask), "a KEPT row survives the projection");
+        }
+        for stage in 0..2 {
+            for label in &evaluation.dropped[stage] {
+                assert!(
+                    !evaluation.kept[stage].iter().any(|k| k.label == *label),
+                    "{label} is both kept and dropped",
+                );
+            }
+        }
+        assert_eq!(
+            evaluation.zero_out.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
+            ["S", "E-resource", "E-order", "X"],
+        );
+        let printed = render_protocol(&removed, &plan, &run);
+        assert!(printed.contains("OWED and RUN"), "{printed}");
+        assert!(printed.contains("§4 projection early"), "{printed}");
+        assert!(printed.contains("§9(c) zero-out on the surviving set"), "{printed}");
+        // The V2-padded table is not a Part-B witness and the re-run says so
+        // rather than reporting a proof: a DEFECT is a named owner route.
+        assert!(!evaluation.failures().is_empty(), "V2-padded satisfies no such system");
+        assert!(printed.contains("VERDICT: DEFECT"), "{printed}");
+        assert_eq!(run.exit_code(), EXIT_INCOMPLETE);
+    }
+
+    /// **A SATISFYING WITNESS IS THE PART-B PROOF; A FAILING KEPT ROW IS A NAMED
+    /// DEFECT** — the arithmetic hand-checked on a two-row system.
+    ///
+    /// §5.4's own standard: a witness that satisfies every applicable row IS the
+    /// SAT certificate, so the re-run's job is to evaluate the rows the
+    /// projection KEPT at the witness restricted to the surviving set and say
+    /// which ones fail. Exact `i64` throughout — a margin comparison in floating
+    /// point would decide a boundary row by rounding.
+    ///
+    /// The system: row `TA` prices `S1` at `Δv = 1` against margin 1, row `TB`
+    /// prices `S2` at `Δv = 1` against margin 5. A witness of `S1 = 3, S2 = 2`
+    /// gives `3 ≥ 1` and `2 < 5` — one satisfied, one violated. Raising `S2` to
+    /// 7 gives `7 ≥ 5` and the system is SAT.
+    #[test]
+    fn a_satisfying_witness_proves_part_b_and_a_failing_kept_row_routes() {
+        let s1 = CandidateFeature::ProductionAccess;
+        let s2 = CandidateFeature::TrackAccess;
+        let rows = vec![
+            hand_gate_row("TA", StageEndpoint::Early, 1, &[(s1, 1)]),
+            hand_gate_row("TB", StageEndpoint::Early, 5, &[(s2, 1)]),
+        ];
+        let survivors = vec![s1, s2];
+        let mask = FeatureMask::cell(&survivors);
+
+        let failing = protocol_table(&[(s1, 3, 0), (s2, 2, 0)]);
+        assert_eq!(row_value(&rows[0], &mask, &failing), 3, "w_S1(early) x 1");
+        assert_eq!(row_value(&rows[1], &mask, &failing), 2, "w_S2(early) x 1");
+
+        let evaluate = |witness: &FitTable| ReRunEvaluation {
+            removed: vec![CandidateFeature::ExecutableOrders],
+            survivors: survivors.clone(),
+            witness: witness.clone(),
+            dropped: [Vec::new(), Vec::new()],
+            kept: [
+                rows.iter()
+                    .map(|row| KeptRow {
+                        label: row.label(),
+                        stage: row.stage,
+                        value: row_value(row, &mask, witness),
+                        margin: row.margin,
+                    })
+                    .collect(),
+                Vec::new(),
+            ],
+            zero_out: zero_out_flips(&rows, &survivors, witness),
+        };
+
+        let defect = evaluate(&failing);
+        assert_eq!(
+            defect.failures().iter().map(|row| row.label.clone()).collect::<Vec<_>>(),
+            ["TB hand row"],
+            "one satisfied, one violated",
+        );
+        let stopped = ReRun::Evaluated(Box::new(defect));
+        assert!(stopped.stops(), "a kept-row failure is a named DEFECT route");
+        let mut printed = String::new();
+        render_rerun(
+            &mut printed,
+            &ProtocolRun {
+                arms: Vec::new(),
+                anchor: None,
+                cells: Vec::new(),
+                rows: Vec::new(),
+                census: (PART_B_FROZEN_EARLY, PART_B_FROZEN_LATE),
+                outcome: ProtocolOutcome::Complete,
+                statistics: Vec::new(),
+                consultation: Vec::new(),
+                rerun: stopped,
+            },
+        );
+        assert!(printed.contains("VERDICT: DEFECT"), "{printed}");
+        assert!(printed.contains("kept row early TB hand row"), "{printed}");
+        assert!(printed.contains("value 2 vs margin 5  VIOLATED"), "{printed}");
+        assert!(printed.contains("value 3 vs margin 1  OK"), "{printed}");
+
+        let satisfying = protocol_table(&[(s1, 3, 0), (s2, 7, 0)]);
+        let proof = evaluate(&satisfying);
+        assert!(proof.failures().is_empty(), "every kept row is satisfied");
+        assert!(!ReRun::Evaluated(Box::new(proof)).stops(), "a SAT witness stops nothing");
+    }
+
+    /// **§9(c)'S ZERO-OUT NAMES ONLY THE ROWS A SUBGROUP FLIPS.**
+    ///
+    /// A row already violated under the fitted table says nothing about a
+    /// subgroup — it was failing with that subgroup's weights in hand — and a
+    /// row still satisfied without the subgroup says the subgroup was not
+    /// load-bearing there. Only the SATISFIED → VIOLATED transition carries the
+    /// claim, and a report that listed a subgroup's rows wholesale would read as
+    /// "this subgroup carries all of these" for a table where it carried none.
+    ///
+    /// The hand system: `P` prices `S1 = 1` and `E1 = 1` against margin 5, `Q`
+    /// prices `E1 = 2` against margin 5, and the table is `S1 = 3, E1 = 4`. So
+    /// `P` reads `3 + 4 = 7 ≥ 5` and `Q` reads `8 ≥ 5` — both satisfied. Zeroing
+    /// S drops `P` to 4 (< 5, a FLIP) and leaves `Q` at 8 (no flip). Zeroing
+    /// E-resource drops `P` to 3 and `Q` to 0 — both flip. E-order and X hold no
+    /// weight in either row, so neither flips anything.
+    #[test]
+    fn the_zero_out_report_names_only_the_rows_a_subgroup_flips() {
+        let s1 = CandidateFeature::ProductionAccess;
+        let e1 = CandidateFeature::MoneyStock;
+        let rows = vec![
+            hand_gate_row("P", StageEndpoint::Early, 5, &[(s1, 1), (e1, 1)]),
+            hand_gate_row("Q", StageEndpoint::Early, 5, &[(e1, 2)]),
+        ];
+        let survivors = vec![s1, e1];
+        let table = protocol_table(&[(s1, 3, 0), (e1, 4, 0)]);
+
+        let mask = FeatureMask::cell(&survivors);
+        assert_eq!(row_value(&rows[0], &mask, &table), 7, "3 + 4, both satisfied to start");
+        assert_eq!(row_value(&rows[1], &mask, &table), 8);
+
+        let flips = zero_out_flips(&rows, &survivors, &table);
+        assert_eq!(
+            flips.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
+            ["S", "E-resource", "E-order", "X"],
+            "§3.2's four subgroups, in registration order",
+        );
+        assert_eq!(flips[0].1, ["P hand row"], "zeroing S drops P to 4 and leaves Q at 8");
+        assert_eq!(flips[1].1, ["P hand row", "Q hand row"], "zeroing E-resource drops both");
+        assert!(flips[2].1.is_empty(), "E-order prices nothing in either row");
+        assert!(flips[3].1.is_empty(), "nor does X");
+
+        // A row ALREADY violated is not a flip: the subgroup was not carrying
+        // something that was failing without it either.
+        let thin = protocol_table(&[(s1, 1, 0), (e1, 1, 0)]);
+        assert_eq!(row_value(&rows[0], &mask, &thin), 2, "below the margin with S1 priced");
+        for (_, flipped) in zero_out_flips(&rows, &survivors, &thin) {
+            assert!(!flipped.contains(&"P hand row".to_string()), "P was violated to begin with");
+        }
     }
 }
