@@ -3793,4 +3793,46 @@ mod tests {
         assert_eq!(WeightTable::ZERO.get(Feature::VictoryPoints), (0, 0));
         assert_eq!(WeightTable::ZERO.early.iter().chain(WeightTable::ZERO.late.iter()).sum::<i64>(), 0);
     }
+
+    /// **V4 §7 STEP 8 — THE PADDING PIN.** Every named table is the historical
+    /// sixteen-slot table with ZERO in every candidate slot: the first sixteen
+    /// entries of `V2` are transcribed literals (the same double-entry
+    /// discipline `the_pre_freeze_table_is_the_corpus_generator...` uses — the
+    /// padding must be unable to move an incumbent number silently), and every
+    /// slot past 15 in every named const is `0`, which is what makes
+    /// `V2-padded` the SAME BEHAVIOR as shipped V2 rather than a new table
+    /// (spec §10: "incumbents padded; `V2-padded` … pinned behavior-EQUIVALENT
+    /// to their pre-padding tables").
+    ///
+    /// Written over SLICES so it compiles at the pre-move tree: there the
+    /// `[16..]` ranges are empty and the candidate half is vacuous, and the
+    /// move is what gives it teeth. The transcription half is live at both
+    /// trees.
+    #[test]
+    fn the_named_tables_are_the_historical_sixteen_padded_with_zero_candidates() {
+        assert_eq!(
+            &WeightTable::V2.early[..16],
+            &[1, 20, 14, -4, 3, 30, 5, -10, 6, 12, 15, 8, 5, 2, 3, -1],
+            "V2's EARLY sixteen are the round-2 adoption's numbers and may not move",
+        );
+        assert_eq!(
+            &WeightTable::V2.late[..16],
+            &[40, 30, 20, 8, 20, 20, 2, -10, 10, 20, 25, 14, 8, 4, 4, -2],
+            "V2's LATE sixteen are the round-2 adoption's numbers and may not move",
+        );
+        for (name, table) in [
+            ("V1", WeightTable::V1),
+            ("V2", WeightTable::V2),
+            ("V2_DRAFT", WeightTable::V2_DRAFT),
+            ("PRE_FREEZE_2026_07_27", WeightTable::PRE_FREEZE_2026_07_27),
+            ("ZERO", WeightTable::ZERO),
+        ] {
+            for (i, w) in table.early.iter().enumerate().skip(16) {
+                assert_eq!(*w, 0, "{name}.early[{i}] must be a zero pad, got {w}");
+            }
+            for (i, w) in table.late.iter().enumerate().skip(16) {
+                assert_eq!(*w, 0, "{name}.late[{i}] must be a zero pad, got {w}");
+            }
+        }
+    }
 }

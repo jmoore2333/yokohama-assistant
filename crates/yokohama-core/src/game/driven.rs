@@ -12042,4 +12042,106 @@ mod tests {
         assert_eq!(pair.productive_reward, 1);
         assert_eq!(pair.dead_areas, [AreaId(5)].into_iter().collect::<BTreeSet<_>>());
     }
+
+    // -----------------------------------------------------------------------
+    // V4 §7 STEP 8 — the generating-ecology pinning (spec §10; V3 spec §5.1's
+    // design adopted verbatim). RED at the pre-move tree by design.
+    // -----------------------------------------------------------------------
+
+    /// **THE ECOLOGY RE-PIN (V3 spec §5.1, landing at the step-8 adoption
+    /// commit).** The v2 generating ecology's seats stop being the LIVE shipped
+    /// contestant and become an EXPLICIT in-crate weighted construction keyed
+    /// to `WeightTable::V2` — so every recorded `(predicate, master, ordinal)`
+    /// triple keeps resolving to the same state through every later controller
+    /// re-point, the identity-freeze era included. The seat field is ecology
+    /// identity, so the id bumps `v2.2` → `v2.3` per the in-source
+    /// any-field-change rule.
+    ///
+    /// RED at the pre-move tree (the id still reads `v2.2` there): that
+    /// failure is checkpoint §7 step 8's red-then-green, on the ecology half.
+    #[test]
+    fn the_v2_ecology_repins_its_seats_and_bumps_to_v2_3_at_the_widening() {
+        let ecology = GeneratingEcology::v2_lookahead();
+        assert_eq!(
+            ecology.id, "driven-generated-v2.3-lookahead",
+            "the seat re-pin is an ecology field change and must bump the version string",
+        );
+    }
+
+    /// **THE PRE-PADDING DECISION WALK, RECORDED (V3 spec §5.1's agent-level
+    /// behavior-identity pin, the fixture-walk half).** Six lookahead decisions
+    /// at the v2 ecology's seat construction — shipped knobs `b=4, k=1, m=8`,
+    /// `WeightTable::V2` EXPLICIT — over three deterministic positions (a fresh
+    /// 2P setup and two family-weighted walks forward), each agent on a fixed
+    /// literal stream seed. The chosen moves are transcribed below from the
+    /// PRE-MOVE tree (HEAD `08fd5ae`), so the walk enforces, forever and
+    /// through the identity freeze, that the PINNED construction decides
+    /// exactly as the pre-padding shipped seat decided.
+    ///
+    /// GREEN at the pre-move tree (it records the standing walk); REQUIRED
+    /// GREEN after the move (padding must not move a decision); REQUIRED GREEN
+    /// through every later controller re-point (the construction is pinned,
+    /// not live). Mutation-proven at the wave: a table swap (V1 or ZERO) or a
+    /// knob swap must flip at least one recorded move.
+    #[test]
+    fn the_pinned_v2_seat_walk_reproduces_the_recorded_pre_padding_decisions() {
+        use crate::game::lookahead::{LookaheadAgent, SearchScheme};
+        use crate::game::policy::RolloutPolicy;
+        use crate::game::search_actions::DecisionHandle;
+        use rand::SeedableRng;
+
+        let rules = Rules::standard();
+        // (setup seed, family-weighted steps forward, agent stream seed)
+        const POSITIONS: [(u64, usize, u64); 3] =
+            [(0xD1, 0, 0xA11CE0), (0xD2, 60, 0xA11CE1), (0xD3, 140, 0xA11CE2)];
+        // The recorded walk: two consecutive decisions per position, the move's
+        // `Debug` form verbatim.
+        const RECORDED: [[&str; 2]; 3] = [
+            ["EndAdditionalPhase", "PlaceThreeAreas { placements: [AreaId(0), AreaId(1), AreaId(8)] }"],
+            [
+                "PlaceThreeAreas { placements: [] }",
+                "MovePresident { path: [AreaId(7), AreaId(4)], destination: AreaId(4) }",
+            ],
+            ["SkipBuilding", "EndAdditionalPhase"],
+        ];
+
+        for (i, (seed, steps, agent_seed)) in POSITIONS.into_iter().enumerate() {
+            let pending =
+                new_game(GameConfig::for_player_count(2), &rules, seed).expect("setup");
+            let mut state =
+                finalize_setup(pending, &[StartingOrderChoice::Keep(0); 2]).expect("finalize");
+            let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(seed ^ 0x3F3F);
+            let policy = RolloutPolicy::FAMILY_WEIGHTED_DEFAULT;
+            for step in 0..steps {
+                let mv = {
+                    let handle = DecisionHandle::new(&state, &rules);
+                    policy
+                        .pick(&handle, &mut rng)
+                        .unwrap_or_else(|| panic!("dead end at seed {seed:#x} step {step}"))
+                };
+                state = apply_move_unchecked(&state, &mv, &rules).expect("policy move applies");
+            }
+            let mut agent = LookaheadAgent::with_knobs(
+                &rules,
+                SearchScheme::TurnBoundary { beam: 4 },
+                1,
+                8,
+                WeightTable::V2,
+                agent_seed,
+            );
+            for (j, recorded) in RECORDED[i].iter().enumerate() {
+                let mover = state.current_player;
+                let view = observe(&state, mover).expect("the mover's view");
+                let report = agent.choose(&view, &rules).expect("the pinned seat decides");
+                assert_eq!(
+                    format!("{:?}", report.mv),
+                    *recorded,
+                    "position {i} decision {j}: the pinned v2 seat construction diverged from \
+                     the recorded pre-padding walk",
+                );
+                state = apply_move(&state, &report.mv, &rules)
+                    .expect("the pinned seat's move is legal at the checked boundary");
+            }
+        }
+    }
 }

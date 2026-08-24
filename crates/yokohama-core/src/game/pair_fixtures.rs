@@ -11886,6 +11886,144 @@ mod tests {
         let second = another_non_canal_area(&state, area);
         assert_ne!(second, area);
     }
+
+    // -----------------------------------------------------------------------
+    // V4 §7 STEP 8 — the `Feature::ALL` 16 → 34 move (spec §10), pinned
+    // red-then-green. The three tests below land RED at the pre-move tree on
+    // purpose: they are phrased over names, indices and string literals so
+    // they COMPILE while `Feature::COUNT` is still 16 and FAIL at runtime,
+    // which is the house TDD shape for a move whose subject is an enum.
+    // -----------------------------------------------------------------------
+
+    /// **THE AXIS PIN (spec §10's "the `Feature::ALL` 16 → 34 move lands
+    /// FIRST").** The production enum carries the eighteen candidates APPENDED
+    /// after the sixteen incumbents, in [`CandidateFeature::ALL`] order, under
+    /// [`CandidateFeature::name`]'s exact strings — so `FeatureId`'s axis and
+    /// the widened `Feature::ALL` are the SAME axis, row for row, and the
+    /// frozen registration's row indices keep meaning what they meant.
+    ///
+    /// The literal `16` is the spec's own anchor (§3.2 "Width: 16 → 34"), not
+    /// a magic number: the sixteen incumbents' indices are frozen by the
+    /// recorded matrix layout and the registered pair rows, so the append
+    /// point is a registered fact, never `Feature::COUNT` (which this very
+    /// move changes).
+    #[test]
+    fn the_feature_axis_widens_to_thirty_four_with_candidates_appended() {
+        assert_eq!(
+            Feature::COUNT,
+            34,
+            "spec §10: the step-8 adoption commit widens Feature::ALL 16 -> 34",
+        );
+        for c in CandidateFeature::ALL {
+            let slot = 16 + c.index();
+            let f = Feature::ALL.get(slot).unwrap_or_else(|| {
+                panic!(
+                    "the production axis has no row {slot} for {} — Feature::ALL is not widened",
+                    c.name()
+                )
+            });
+            assert_eq!(
+                f.name(),
+                c.name(),
+                "production row {slot} must carry the registered candidate name",
+            );
+            assert_eq!(f.index(), slot, "{} is not at its own index", c.name());
+        }
+    }
+
+    /// **THE GRADUATION PIN (checkpoint §7 step 8: "the step-2 fixtures
+    /// graduating red-then-green").** Every registered pair's §5.1
+    /// expected-nonzero contract, read THROUGH THE PRODUCTION AXIS — the
+    /// widened `Feature::ALL` via [`ScoreStructure::value_of`] — in both
+    /// directions over the candidate rows:
+    ///
+    /// * every LISTED row's differenced delta is nonzero (the direction
+    ///   [`PairFixture::listed_incumbent_rows_are_nonzero`] could only check
+    ///   for incumbents before the move), and
+    /// * every UNLISTED CANDIDATE row reads zero — "an unlisted nonzero row at
+    ///   run time is a fixture defect" (§5.1), the half `PairFixture::new`
+    ///   enforces for incumbents at construction and nothing could enforce for
+    ///   candidates until the axis widened.
+    ///
+    /// Pre-move this fails at the first candidate row: the production delta
+    /// vector has no slot 16+. That failure is the RED the checkpoint asks
+    /// for.
+    #[test]
+    fn every_registered_pair_reads_its_rows_through_the_production_axis() {
+        let rules = Rules::standard();
+        for decl in REGISTERED.iter() {
+            for stage in decl.stages {
+                let fixture = build_registered_pair(decl, *stage, &rules)
+                    .unwrap_or_else(|e| panic!("{} {}: {e:?}", decl.id, stage.name()));
+                let delta = fixture.incumbent_delta(&rules);
+                for row in decl.expected_nonzero {
+                    let slot = row.index();
+                    let Some(&d) = delta.get(slot) else {
+                        panic!(
+                            "{} {}: the production axis has no row {slot} for {} — \
+                             Feature::ALL is not widened",
+                            decl.id,
+                            stage.name(),
+                            row.name(),
+                        );
+                    };
+                    assert_ne!(
+                        d,
+                        0,
+                        "{} {}: listed row {} reads 0 through the production axis",
+                        decl.id,
+                        stage.name(),
+                        row.name(),
+                    );
+                }
+                for row in FeatureId::all() {
+                    if !row.is_candidate() {
+                        continue; // the incumbent half is PairFixture::new's clause 13
+                    }
+                    let realized = delta.get(row.index()).copied().unwrap_or_else(|| {
+                        panic!(
+                            "{} {}: the production axis has no row {} for {}",
+                            decl.id,
+                            stage.name(),
+                            row.index(),
+                            row.name(),
+                        )
+                    });
+                    if realized != 0 {
+                        assert!(
+                            decl.expected_nonzero.contains(&row),
+                            "{} {}: unlisted candidate row {} is nonzero ({realized}) through \
+                             the production axis — §5.1 calls that a fixture defect",
+                            decl.id,
+                            stage.name(),
+                            row.name(),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// **THE FROZEN-PACKAGE IDENTITY RIDES THE MOVE.** The step-2 fixture
+    /// package's digest — `2e18b45929b1dc16`, the identity the step-4 close
+    /// row records as "unmoved all step" — is a function of the REGISTRATION
+    /// text and the 34-row axis serialization, and the `Feature::ALL` move
+    /// must not move it: the axis rows' indices, labels and names are the
+    /// registered facts, whichever enum spells them.
+    ///
+    /// GREEN at the pre-move tree (it records the standing digest) and
+    /// REQUIRED GREEN after it — this is the pin that fails during the move if
+    /// the axis serialization widens past 34 or re-numbers a row.
+    #[test]
+    fn the_frozen_package_digest_survives_the_feature_all_move() {
+        assert_eq!(
+            package_digest(),
+            "2e18b45929b1dc16",
+            "the frozen step-2 fixture-package identity moved — the registration text and \
+             the 34-row axis are frozen; if a REGISTRATION legitimately changed, that is a \
+             new package identity and a recorded owner event, never a silent re-hash",
+        );
+    }
 }
 
 

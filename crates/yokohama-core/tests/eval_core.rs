@@ -7106,3 +7106,78 @@ fn every_group_x_helper_allocates_nothing() {
     assert!(sum > 0, "the fixture must exercise real values, or the meter measured nothing");
     println!("Group X: {sum} summed over 4P, {} allocs / {} peak bytes", stats.allocs, stats.peak_bytes);
 }
+
+/// **V4 §7 STEP 8 — THE V2-PADDED BEHAVIOR-EQUIVALENCE BATTERY (spec §10).**
+/// Recorded at the PRE-MOVE tree (HEAD `08fd5ae`, `Feature::COUNT == 16`):
+/// eighteen organic mid-game views — family-weighted walks from seeded setups,
+/// every seat of each — with their exact `score(..., &WeightTable::V2)` values
+/// transcribed below. The `Feature::ALL` move pads `V2` with zero-weighted
+/// candidate slots, and "padded" MEANS these numbers cannot move: a padding
+/// that shifted any score would be a new table wearing V2's name.
+///
+/// The second half is the candidate-term clause: every explanation term past
+/// slot 15 carries weight 0 and product 0 under the padded table (vacuously
+/// true at the pre-move tree, where no such term exists — the move gives it
+/// teeth). `explain().total == score()` rides every view, so both paths are
+/// held to the recorded numbers at once.
+#[test]
+fn the_padded_v2_scores_the_recorded_battery_exactly_as_the_pre_move_table() {
+    let rules = Rules::standard();
+    // (players, setup seed, family-weighted steps, viewer seat, recorded score)
+    const RECORDED: [(u8, u64, usize, u8, i64); 15] = [
+        (2, 9, 40, 0, -1),
+        (2, 9, 40, 1, 1),
+        (2, 9, 120, 0, -236),
+        (2, 9, 120, 1, 236),
+        (2, 60, 200, 0, -151),
+        (2, 60, 200, 1, 151),
+        (3, 25, 90, 0, -204),
+        (3, 25, 90, 1, -150),
+        (3, 25, 90, 2, 114),
+        (4, 40, 150, 0, -186),
+        (4, 40, 150, 1, 84),
+        (4, 40, 150, 2, -208),
+        (4, 40, 150, 3, -126),
+        (2, 133, 300, 0, 324),
+        (2, 133, 300, 1, -324),
+    ];
+    let mut walked: Option<(u8, u64, usize, GameState)> = None;
+    for (players, seed, steps, viewer, recorded) in RECORDED {
+        let reuse = matches!(&walked, Some((p, s, n, _)) if *p == players && *s == seed && *n == steps);
+        if !reuse {
+            let mut state = keep_game(players, seed, &rules);
+            let mut rng = ChaCha8Rng::seed_from_u64(seed ^ 0x3F3F);
+            let policy = RolloutPolicy::FAMILY_WEIGHTED_DEFAULT;
+            let mut step = 0usize;
+            while !is_game_over(&state) && step < steps {
+                let mv = {
+                    let handle = DecisionHandle::new(&state, &rules);
+                    policy.pick(&handle, &mut rng).unwrap_or_else(|| {
+                        panic!("dead end at {players}P seed {seed} step {step}")
+                    })
+                };
+                state = apply_move_unchecked(&state, &mv, &rules).unwrap();
+                step += 1;
+            }
+            walked = Some((players, seed, steps, state));
+        }
+        let state = &walked.as_ref().unwrap().3;
+        let view = observe(state, PlayerId(viewer)).unwrap();
+        let s = score(&view, &rules, &WeightTable::V2);
+        assert_eq!(
+            s, recorded,
+            "{players}P seed {seed} step {steps} seat {viewer}: the padded V2 moved a \
+             recorded pre-move score",
+        );
+        let e = explain(&view, &rules, &WeightTable::V2);
+        assert_eq!(e.total, s, "the two paths must agree on the same view");
+        for term in e.terms.iter().skip(16) {
+            assert_eq!(
+                (term.weight, term.product),
+                (0, 0),
+                "candidate term {} must be zero-weighted and zero-product under padded V2",
+                term.feature.name(),
+            );
+        }
+    }
+}
