@@ -5564,7 +5564,7 @@ mod tests {
     // rather than a second call to the one under test.
     use crate::game::apply_move::apply_move;
     use crate::game::arena::{
-        run_arena_game, ArenaGameStats, ControllerProvenance, DecisionReport,
+        run_arena_game, ArenaGameStats, ControllerProvenance, DecisionReport, NamedIdentity,
     };
     use crate::game::end_game::is_game_over;
     use crate::game::invariants::check_invariants;
@@ -6771,7 +6771,31 @@ mod tests {
             (Contestant::GREEDY_V1_DEFAULT, UnsupportedReason::Unranked),
             (Contestant::MCTS_V1_DEFAULT, UnsupportedReason::Diagnostic),
             (Contestant::ATOMIC_DIAG_DEFAULT, UnsupportedReason::Diagnostic),
+            // The V4 step-8 named identities. They are the arms that WOULD
+            // work — a named arm is a `LookaheadAgent` carrying the same
+            // ranked-root surface `lookahead-v1` carries — so nothing but this
+            // row stops a re-route or an absent-minded admission from putting a
+            // weight identity into the driven runner's grammar, which V3 §5.1
+            // reserves to the scan ("never the runner grammar").
+            (
+                Contestant::NamedTable(NamedIdentity::V2Padded),
+                UnsupportedReason::AlternateTable,
+            ),
+            (
+                Contestant::NamedTable(NamedIdentity::V2RefitPadded),
+                UnsupportedReason::AlternateTable,
+            ),
         ];
+        // Both arms are enumerated above, and a THIRD arm must be dispositioned
+        // here rather than inheriting a refusal nothing checked.
+        assert_eq!(
+            expected
+                .iter()
+                .filter(|(c, _)| matches!(c, Contestant::NamedTable(_)))
+                .count(),
+            NamedIdentity::ALL.len(),
+            "every named identity must have a row here",
+        );
         for (contestant, reason) in expected {
             let err = root_table(&root, seat, contestant, &rules, DECISION_SEED)
                 .expect_err("v1 supports the S1 turn-boundary arm and nothing else");

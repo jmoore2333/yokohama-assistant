@@ -1060,6 +1060,54 @@ mod tests {
         );
     }
 
+    /// **A NAMED RESEARCH IDENTITY is refused in its OWN words** (T3 review
+    /// NOTE-2), at both arms of the one decision.
+    ///
+    /// The sentence is the point, not merely the refusal: core's V4 step-8
+    /// named identities are arena weight-comparison arms, which is a DIFFERENT
+    /// fact from a diagnostic arm this driver will not explain (a named arm is
+    /// a `LookaheadAgent` and `why` could explain one perfectly well). Reporting
+    /// either under the other's words would tell a reader the wrong thing about
+    /// why their seat did not load, so the two sentences are pinned apart here.
+    #[test]
+    fn a_named_research_identity_is_refused_in_its_own_words() {
+        let rules = Rules::standard();
+        let pending = new_game(GameConfig::for_player_count(2), &rules, 4).unwrap();
+        let state =
+            finalize_setup(pending, &[StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)])
+                .unwrap();
+
+        for arm in NamedIdentity::ALL {
+            let contestant = Contestant::NamedTable(arm);
+            let refusal = eligible(contestant).expect_err("a named identity is not a CLI bot seat");
+            assert!(
+                refusal.contains("named research identity")
+                    && refusal.contains("not available as a CLI bot"),
+                "{} was refused in the wrong words: {refusal}",
+                arm.name(),
+            );
+            // The refusal NAMES the arm, so a reader learns which seat failed.
+            assert!(refusal.contains(arm.name()), "{}: {refusal}", arm.name());
+            // ...and it is NOT the sibling sentence, which is a different fact.
+            assert_ne!(refusal, diagnostic_refusal(contestant));
+            assert!(!refusal.contains("is a diagnostic contestant"), "{refusal}");
+
+            // Both arms of the one decision say the same thing: `decide`
+            // restates `eligible`'s refusal rather than inventing a second one.
+            match decide(contestant, &state, &rules, state.current_player, 11) {
+                Err(BotError::DeadEnd(message)) => assert_eq!(message, refusal),
+                Err(other) => {
+                    panic!("{} must halt with a DeadEnd, got {other:?}", arm.name())
+                }
+                Ok(_) => panic!("{} must not produce a decision at all", arm.name()),
+            }
+        }
+
+        // ANTI-VACUITY: the eligible arms are still eligible, so this pin
+        // narrows the surface rather than closing it.
+        assert_eq!(eligible(PROVISIONAL_DEFAULT_BOT), Ok(PROVISIONAL_DEFAULT_BOT));
+    }
+
     /// A DIAGNOSTIC contestant resumes HUMAN and says why (design §1.2). The
     /// CLI must not become a second surface for arms core labels diagnostic.
     #[test]

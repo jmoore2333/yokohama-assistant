@@ -291,10 +291,12 @@ mod tests {
     /// 2. **V4 §7 step 8 T3** added the named-identity arms, so the
     ///    unknown-contestant refusal's ALTERNATIVES LIST gained a fourth
     ///    category — `; named identities: v2-padded | v2-refit-padded`. That
-    ///    moved the EIGHT rows whose expectation is that sentence (`""`,
+    ///    moved the NINE rows whose expectation is that sentence (`""`,
     ///    `"nope"`, `"greedy-v2"`, `" uniform"`, `"UNIFORM"`, `"uniform "`,
-    ///    `"mcts-v1 "`, `":"`, `":m=4"` — nine expectations over eight distinct
-    ///    sentences). Every SPEC and every accepted parse is untouched: what
+    ///    `"mcts-v1 "`, `":"`, `":m=4"`), carrying SEVEN distinct sentences
+    ///    between them — `""`, `":"` and `":m=4"` all report the empty name and
+    ///    so share one, while the other six are unique. Every SPEC and every
+    ///    accepted parse is untouched: what
     ///    changed is the list of names the refusal offers, and leaving it stale
     ///    would refuse `v2-refit-padde` with a menu that omits the arm the
     ///    typist wanted. The row COUNT and the refusal COUNT below are
