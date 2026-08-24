@@ -11887,6 +11887,7 @@ the superseded run  the STOP-of-record under the ORIGINAL frozen gates — the
 mod tests {
     use super::*;
 
+    use yokohama_core::game::driven::{generate_roots, RegistryError};
     use yokohama_core::game::greedy::DEFAULT_RETREAT_SAMPLES;
     use yokohama_core::game::lookahead::{DEFAULT_BEAM, DEFAULT_WORLDS};
     use yokohama_core::game::pair_fixtures::{
@@ -15194,6 +15195,359 @@ mod tests {
         assert!(cmd_pairs(&[arg("--os-entropi")]).is_err(), "an unknown flag is never ignored");
         // The narrowings that ARE spelled correctly resolve.
         assert!(cmd_pairs(&[arg("--pair"), arg("4(c)"), arg("--manifest")]).is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // §10 STEP 8 (T2) — probe/production parity over the pinned battery
+    // -----------------------------------------------------------------------
+
+    /// The PRODUCTION 34-vector of one seat, laid out on the §5 signature axis.
+    ///
+    /// **What makes this a cross-implementation check and not a tautology.**
+    /// The T1 adoption commit gave the eighteen candidates a second reader:
+    /// `ScoreStructure::derive`'s final pass calls each helper ONCE PER SEAT and
+    /// stores the answer in `CandidateValues`, and `value_of` dispatches the
+    /// eighteen widened `Feature` variants to those stored rows. This file's own
+    /// adapter never moved — [`candidate_value`] still calls the helper METHODS
+    /// directly, per label, per query. So the probe's column and the shipped
+    /// evaluator's row now travel different routes from the same formula, and
+    /// three separable things can go wrong between them: a dispatch arm pointed
+    /// at the wrong stored row, a fill-loop slot left unwritten, and an axis
+    /// whose appended suffix does not sit where the frozen registrations index.
+    ///
+    /// The INCUMBENT sixteen are the same call on both sides (`own_vector`'s
+    /// prefix is `value_of` too), so their VALUES here are trivially equal and
+    /// the cells below say so rather than claiming credit for them. What the
+    /// incumbent rows still carry is ROW CORRESPONDENCE, which is not trivial:
+    /// they pin that the probe's axis slot `i` and the production axis slot `i`
+    /// are the same feature.
+    ///
+    /// Correspondence is anchored through [`FeatureId::to_feature`] rather than
+    /// by writing `16 + c.index()` a second time. The mapping exists precisely
+    /// so a frozen registration reads through the production evaluator without a
+    /// translation table; a parity cell that hand-mapped indices would be
+    /// checking its own arithmetic instead of the axis.
+    fn production_axis(
+        view: &PlayerView,
+        subject: PlayerId,
+        rules: &Rules,
+    ) -> Result<[i64; AXIS_WIDTH], String> {
+        let me = view
+            .players
+            .iter()
+            .find(|p| p.id == subject)
+            .ok_or_else(|| format!("seat {} is not a player in this view", subject.0))?;
+        let structure = ScoreStructure::derive(view, rules);
+        let mut out = [0i64; AXIS_WIDTH];
+        for row in FeatureId::all() {
+            out[row.index()] = structure.value_of(me, row.to_feature());
+        }
+        Ok(out)
+    }
+
+    /// One (view, seat) compared row for row, with every disagreement COLLECTED.
+    ///
+    /// Collected rather than asserted in place because the failures this battery
+    /// exists to catch are not single-row events: a swapped dispatch pair moves
+    /// two rows at once and a first-failure abort would name one of them, which
+    /// reads as a value bug rather than as the wiring bug it is.
+    ///
+    /// Returns the number of exact-equality comparisons made, so the sweeps can
+    /// floor their own coverage instead of trusting a loop shape.
+    fn parity_rows(
+        where_: &str,
+        view: &PlayerView,
+        subject: PlayerId,
+        rules: &Rules,
+        found: &mut Vec<String>,
+    ) -> usize {
+        let production =
+            production_axis(view, subject, rules).unwrap_or_else(|e| panic!("{where_}: {e}"));
+        let probe = own_vector(view, subject, rules).unwrap_or_else(|e| panic!("{where_}: {e}"));
+        for row in FeatureId::all() {
+            let i = row.index();
+            if production[i] != probe[i] {
+                found.push(format!(
+                    "{where_}: axis row {i} ({}) — production {} vs probe {}",
+                    row.name(),
+                    production[i],
+                    probe[i],
+                ));
+            }
+        }
+        AXIS_WIDTH
+    }
+
+    /// **T2 CELL 1 — every registered pair side, both seats, every endpoint the
+    /// registration declares.** Spec §10: "Probe/production parity over the
+    /// pinned battery (every registered pair side + the development root
+    /// tables)".
+    ///
+    /// The sweep is the frozen package's own domain — the same
+    /// [`every_registered_fixture`] the step-3 adapter pin runs over — so the
+    /// two cells cover the same states from the two ends: that one says the
+    /// probe adapter's arms are each their own named helper, this one says the
+    /// production dispatch lands on the same numbers.
+    ///
+    /// **The discriminating half.** Parity alone would pass on a `value_of`
+    /// whose eighteen candidate arms were rotated, IF the rotated pairs happened
+    /// to read equal everywhere in the battery. So the production columns are
+    /// kept and every ORDERED PAIR of candidate rows is required to SEPARATE
+    /// somewhere — the same argument the adapter pin makes about its own match,
+    /// restated over the production values because it is the production dispatch
+    /// this cell is defending. A pair that never separates is a pair whose
+    /// stored rows could trade places undetected, and this cell fails naming it.
+    ///
+    /// **This is also §7's cross-group cleanliness assert carried onto the
+    /// production path**, and by composition rather than by new machinery.
+    /// `tests/eval_core.rs`' three scans read `src/game/eval.rs` — production
+    /// source — and say what each helper BODY may read; the adapter pin says
+    /// each label reaches its own helper; this cell says each production row
+    /// equals its label's column and that no two rows are interchangeable.
+    /// Compose them and "no S row's production value depends on money, imports
+    /// or orders" is a checked statement about the bytes that ship, which before
+    /// T1 needed no separate statement because nothing sat between the helper
+    /// and the caller.
+    ///
+    /// **No dummy fence, deliberately.** The sweep runs over every row
+    /// `view.players` carries, and at 2P that is exactly the two real seats: the
+    /// dummy is a track and customs OCCUPANT (finding D1), never a `Player` row,
+    /// and `observe` refuses a dummy VIEWER outright. `value_of`'s `seat_index`
+    /// `map_or` and `signature`'s `!is_dummy()` filter are both defences against
+    /// a shape the view type does not produce, so excluding anything here would
+    /// be fencing off a seat that is not in the domain.
+    #[test]
+    fn the_production_axis_reproduces_the_probe_vector_at_every_registered_pair_side() {
+        let rules = Rules::standard();
+        let fixtures = every_registered_fixture(&rules);
+        let mut disagreements: Vec<String> = Vec::new();
+        let mut comparisons = 0usize;
+        let mut seats = 0usize;
+        let mut columns: Vec<Vec<i64>> = vec![Vec::new(); CandidateFeature::COUNT];
+
+        for (decl, fixture) in &fixtures {
+            for side in [Side::Greater, Side::Lesser] {
+                let view = fixture.view(side);
+                let structure = ScoreStructure::derive(view, &rules);
+                for player in &view.players {
+                    let where_ = format!(
+                        "{} at {} / {} seat {}",
+                        decl.id,
+                        fixture.stage().name(),
+                        side.name(),
+                        player.id.0,
+                    );
+                    comparisons += parity_rows(&where_, view, player.id, &rules, &mut disagreements);
+                    seats += 1;
+                    for c in CandidateFeature::ALL {
+                        columns[c.index()]
+                            .push(structure.value_of(player, FeatureId::Candidate(c).to_feature()));
+                    }
+                }
+            }
+        }
+
+        assert!(
+            disagreements.is_empty(),
+            "the production axis and the probe columns disagree at {} (view, seat, row) cells — \
+             the two readers of the same eighteen helpers have parted company:\n{disagreements:#?}",
+            disagreements.len(),
+        );
+
+        let mut never_separated: Vec<String> = Vec::new();
+        for a in CandidateFeature::ALL {
+            for b in CandidateFeature::ALL {
+                if a.index() >= b.index() {
+                    continue;
+                }
+                if columns[a.index()] == columns[b.index()] {
+                    never_separated.push(format!("{} == {}", a.name(), b.name()));
+                }
+            }
+        }
+        assert!(
+            never_separated.is_empty(),
+            "these production rows read identically at every registered cell, so `value_of` could \
+             dispatch them to each other's stored rows undetected: {never_separated:?}",
+        );
+
+        // ANTI-VACUITY, exact rather than floored: the package is FROZEN, so its
+        // 53 (pair, stage) fixtures and their two real 2P seats per side are a
+        // property of the digest and not a measurement that may drift.
+        assert_eq!(fixtures.len(), 53, "the frozen package realizes 53 (pair, stage) fixtures");
+        assert_eq!(seats, 212, "53 fixtures x 2 sides x 2 non-dummy seats");
+        assert_eq!(comparisons, 212 * AXIS_WIDTH, "every seat is compared on all 34 rows");
+        println!(
+            "registered-pair parity: {} fixtures x 2 sides x 2 seats = {seats} vectors, \
+             {comparisons} exact-equality comparisons, 0 disagreements",
+            fixtures.len(),
+        );
+    }
+
+    /// The four §6 `placement-fork-same-count` development root identities the
+    /// execution ledger's step-2/3 rows recorded at [`M_PF`], in ordinal order:
+    /// ord 0 (g0 e0 seat 0 t1) · ord 1 (g0 e8 seat 1 t2) · ord 2 (g1 e0 seat 0
+    /// t1) · ord 3 (g1 e1 seat 0 t1).
+    ///
+    /// **This is a FIXTURE ANCHOR and NOT the §10 escrow-identity gate.** That
+    /// gate belongs to the step-8 close: it re-resolves BOTH predicates —
+    /// M-OSE's recorded structural zero included — records its digests in the
+    /// ledger row, and a mismatch there VOIDS the band. The anchor's job is
+    /// narrower and still load-bearing: parity over four generated states is a
+    /// pass about nothing unless the states are the ones the band was measured
+    /// on, and after the T1 ecology re-pin from `v2.2` to `v2.3` that is a
+    /// question with a real answer rather than a formality.
+    const M_PF_DEVELOPMENT_IDENTITIES: [&str; 4] =
+        ["fb24434e6047dee3", "541d953997a7ea6f", "fcebfdb920991e14", "1ee8dc4001cb16ca"];
+
+    /// One root's battery: the root state and every NON-TERMINAL successor,
+    /// each signed from the ROOT MOVER's seat, both real seats compared.
+    ///
+    /// The mover stays the root's for the same reason §5.3 keeps it: a view is
+    /// one seat's, and switching seats mid-set would compare vectors drawn in
+    /// two different currencies. Terminal successors are skipped because they
+    /// carry no decision to value — the same set [`sign_one_set`] signs.
+    ///
+    /// Returns `(states, comparisons)`.
+    fn root_parity_battery(
+        label: &str,
+        state: &GameState,
+        rules: &Rules,
+        found: &mut Vec<String>,
+    ) -> (usize, usize) {
+        let mover = state.current_player;
+        let mut battery: Vec<(String, GameState)> = vec![(format!("{label} root"), state.clone())];
+        if !is_game_over(state) {
+            for (i, mv) in get_legal_moves(state, rules).into_iter().enumerate() {
+                let next = apply_move(state, &mv, rules)
+                    .unwrap_or_else(|e| panic!("{label} successor {i}: {e:?}"));
+                if is_game_over(&next) {
+                    continue;
+                }
+                battery.push((format!("{label} successor {i}"), next));
+            }
+        }
+
+        let mut comparisons = 0usize;
+        for (tag, s) in &battery {
+            let view = observe(s, mover).unwrap_or_else(|e| panic!("{tag}: {e:?}"));
+            for player in &view.players {
+                let where_ = format!("{tag} seat {}", player.id.0);
+                comparisons += parity_rows(&where_, &view, player.id, rules, found);
+            }
+        }
+        (battery.len(), comparisons)
+    }
+
+    /// **T2 CELL 2 — the development root tables.** Spec §10's other half of the
+    /// pinned battery, over ORGANIC states the formula authors never saw: the
+    /// two exhibit-class registry roots and the four §6 development ordinals at
+    /// the recorded M-PF, each with its whole non-terminal successor set.
+    ///
+    /// **Corpus discipline.** The registry roots live in gitignored owner-game
+    /// saves, so an absent file is a NAMED TYPED MISS — the loader's own
+    /// convention ("this is a MISS, not a failure"), reported rather than
+    /// skipped in silence. A file that is PRESENT and disagrees is not a miss
+    /// and does not get that treatment: it fails, because an entry pointed at a
+    /// re-saved game is exactly the silent failure the transcription checks
+    /// exist to catch. The generated half needs no committed material at all, so
+    /// this cell does real work on a fresh clone and cannot pass vacuously.
+    ///
+    /// **The step-5 OSE band is a standing named miss.** Its three development
+    /// exhibits are event indices into ONE document — the imported game-3 record
+    /// `bga-import/896199544`, which regenerates by the CLI `import` command
+    /// into the session scratchpad and is never committed — and
+    /// [`check_ose_record_identity`] is what admits a candidate for it. A core
+    /// example test cannot reach that command, and the registry loader's own
+    /// rule is that a session root is "not a panic, not a skip, not an env var".
+    /// So it is listed by name, with its reason, and read at the runner.
+    #[test]
+    fn the_production_axis_reproduces_the_probe_vector_at_every_development_root() {
+        let rules = Rules::standard();
+        let mut disagreements: Vec<String> = Vec::new();
+        let mut misses: Vec<String> = Vec::new();
+        let mut roots = 0usize;
+        let mut states = 0usize;
+        let mut comparisons = 0usize;
+
+        for wanted in ["g1-e113-tiemass", "g3-e93-separated"] {
+            let entry = registry()
+                .into_iter()
+                .find(|e| e.name == wanted)
+                .unwrap_or_else(|| panic!("{wanted} is not a registry root"));
+            let source = match entry.load(&rules) {
+                Ok(source) => source,
+                Err(RegistryError::Missing { name, path }) => {
+                    misses.push(format!("{name}: no save at {}", path.display()));
+                    continue;
+                }
+                Err(e) => panic!("{wanted}: {e} — a present record that disagrees is a finding"),
+            };
+            let (state, _) =
+                source.resolve(&rules).unwrap_or_else(|e| panic!("{wanted}: {e:?}"));
+            let (s, c) = root_parity_battery(wanted, &state, &rules, &mut disagreements);
+            roots += 1;
+            states += s;
+            comparisons += c;
+        }
+
+        misses.push(format!(
+            "step-5 OSE band {OSE_BAND:?} of {OSE_RUN_ID}: the imported record regenerates by the \
+             CLI `import` command into the session scratchpad and is never committed, so no \
+             corpus-free cell can name it",
+        ));
+
+        let ordinals: Vec<u32> = M_PF_DEVELOPMENT.collect();
+        let resolved = generate_roots(RootPredicate::PlacementForkSameCount, M_PF, &ordinals, &rules)
+            .unwrap_or_else(|e| panic!("the §6 development band did not resolve at M-PF: {e:?}"));
+        assert_eq!(resolved.len(), M_PF_DEVELOPMENT_IDENTITIES.len());
+        for (ordinal, (state, descriptor)) in ordinals.iter().zip(&resolved) {
+            let expected = M_PF_DEVELOPMENT_IDENTITIES[*ordinal as usize];
+            assert_eq!(
+                descriptor.root_digest, expected,
+                "m-pf-dev-{ordinal} resolves to state_digest {} and the step-2 row recorded \
+                 {expected} — STOP: the states this battery would compare are not the states the \
+                 development band was measured on, which is the §10 escrow-identity signal and is \
+                 owner-routed",
+                descriptor.root_digest,
+            );
+            let (s, c) = root_parity_battery(
+                &format!("m-pf-dev-{ordinal}"),
+                state,
+                &rules,
+                &mut disagreements,
+            );
+            roots += 1;
+            states += s;
+            comparisons += c;
+        }
+
+        assert!(
+            disagreements.is_empty(),
+            "the production axis and the probe columns disagree at {} (state, seat, row) cells of \
+             the development roots:\n{disagreements:#?}",
+            disagreements.len(),
+        );
+        // The generated half is corpus-free, so THIS floor holds on a fresh
+        // clone: a run that resolved no root at all would fail here rather than
+        // reporting a clean pass over an empty sweep.
+        assert!(
+            roots >= M_PF_DEVELOPMENT_IDENTITIES.len(),
+            "only {roots} development roots resolved — the generated band needs no committed \
+             material, so a count below four is a resolution failure and not a corpus miss",
+        );
+        assert_eq!(
+            comparisons,
+            states * 2 * AXIS_WIDTH,
+            "every state is a 2P position and every seat is compared on all 34 rows",
+        );
+        println!(
+            "development-root parity: {roots} roots, {states} states (roots + non-terminal \
+             successors) x 2 seats, {comparisons} exact-equality comparisons, 0 disagreements",
+        );
+        for miss in &misses {
+            println!("  typed miss  {miss}");
+        }
     }
 
     // -----------------------------------------------------------------------
