@@ -4733,13 +4733,9 @@ fn descend_capped(
             }
         }
         if !moved {
-            // RED READING 6: a descent that STOPPED is a descent that
-            // CONVERGED. GREEN separates the two exits — a zero-move sweep
-            // settles, an exhausted budget does not.
             converged = true;
             break;
         }
-        converged = true;
     }
 
     Ok(FitOutcome { table: w, objective, sweeps, moves, evaluations, converged })
@@ -5160,6 +5156,21 @@ const GROUP_E_ORDER: [CandidateFeature; 5] = [
     CandidateFeature::HeldOrderIcons,
 ];
 
+/// **§8's `B+E` GROUP: E-resource UNION E-order, all EIGHT.**
+///
+/// §3.2 prints two groups under the letter E, and §8 names both halves as its
+/// DIAGNOSTIC cells (`B+E-resource`, `B+E-order`). That is what fixes the
+/// development cell: the diagnostics are a DECOMPOSITION of `B+E`, so `B+E` is
+/// the whole economic/order group — read as either half alone, one diagnostic
+/// would be a duplicate of the development cell and §4's attribution split
+/// (information vs interaction vs fitting gain) would be over a set that never
+/// existed.
+fn group_e() -> Vec<CandidateFeature> {
+    let mut all = GROUP_E_RESOURCE.to_vec();
+    all.extend(GROUP_E_ORDER);
+    all
+}
+
 /// §3.2's "Group X — joint availability (3)" — X1, X2, X3.
 const GROUP_X: [CandidateFeature; 3] = [
     CandidateFeature::LabTakeable,
@@ -5204,19 +5215,15 @@ impl ProtocolCell {
         let mut set: Vec<CandidateFeature> = match self {
             ProtocolCell::B => Vec::new(),
             ProtocolCell::BS => GROUP_S.to_vec(),
-            // RED READING 1: "E" is the ORDER group. §3.2 prints E-resource and
-            // E-order as two groups of the same letter, and §8's two diagnostic
-            // cells are named for exactly those halves — so `B+E` is their
-            // UNION, and GREEN carries all eight.
-            ProtocolCell::BE => GROUP_E_ORDER.to_vec(),
+            ProtocolCell::BE => group_e(),
             ProtocolCell::BSE => {
                 let mut v = GROUP_S.to_vec();
-                v.extend(GROUP_E_ORDER);
+                v.extend(group_e());
                 v
             }
             ProtocolCell::BSEX => {
                 let mut v = GROUP_S.to_vec();
-                v.extend(GROUP_E_ORDER);
+                v.extend(group_e());
                 v.extend(GROUP_X);
                 v
             }
@@ -5536,12 +5543,8 @@ fn trigger_of(table: &FitTable, candidate: CandidateFeature) -> Option<RemovalTr
         return Some(RemovalTrigger::ZeroZero);
     }
     let prior = sign_prior(candidate);
-    // RED READING 5: the sign trigger reads the FEATURE — both endpoints must
-    // oppose the prior. Coherence-pass sentence 8 reads it per STAGE WEIGHT:
-    // "a nonzero fitted weight opposing the registered prior at EITHER endpoint
-    // triggers removal; a zero endpoint is not a violation."
     let opposes = |w: i64| w != 0 && w.signum() != prior;
-    if opposes(early) && opposes(late) {
+    if opposes(early) || opposes(late) {
         return Some(RemovalTrigger::WrongSign);
     }
     None
@@ -5559,9 +5562,7 @@ fn trigger_of(table: &FitTable, candidate: CandidateFeature) -> Option<RemovalTr
 /// real, and a real feature fitted wrong-signed is still a feature §8's plain
 /// text exempts.
 fn exemption_for(candidate: CandidateFeature, trigger: RemovalTrigger) -> Option<Exemption> {
-    // RED READING 2: §5.5 says a flagged column "is not removed", full stop.
-    // GREEN narrows it to the vacuity trigger per sentence 4a.
-    if COLLINEAR_FLAGS.contains(&candidate) {
+    if trigger == RemovalTrigger::ZeroZero && COLLINEAR_FLAGS.contains(&candidate) {
         return Some(Exemption::Collinear);
     }
     if matches!(rooted_presence(candidate), RootedPresence::Satisfied(_)) {
@@ -5570,7 +5571,6 @@ fn exemption_for(candidate: CandidateFeature, trigger: RemovalTrigger) -> Option
     if MARGINED_CARRIERS.contains(&candidate) {
         return Some(Exemption::MarginedCarrier);
     }
-    let _ = trigger;
     None
 }
 
@@ -5763,9 +5763,7 @@ fn dense_arm_column(matrix: &Matrix) -> (u64, Vec<i64>) {
         .iter()
         .map(|row| {
             let draw = stream.draw();
-            // RED READING 4: flip on an EVEN draw. That is p = 1/2, not the
-            // DECLARED 25% — GREEN reads the top two bits.
-            let flip = draw.is_multiple_of(2);
+            let flip = draw >> 62 == 0;
             let signal = row.margin.signum();
             if flip {
                 -signal
@@ -5848,11 +5846,25 @@ fn run_arm(
             .collect::<Vec<_>>(),
     );
     let fit = fit_cell(plan, &planted, &mask)?;
-    let table = &fit.outcome().table;
-    // RED READING 7: any NONZERO weight is a recovery. GREEN requires the
-    // planted signal's own sign.
-    let passed = table.early[ARM_COLUMN_SLOT] != 0 || table.late[ARM_COLUMN_SLOT] != 0;
+    let passed = arm_recovered(&fit.outcome().table);
     Ok(ArmRecord { name, seed, support, fit, passed })
+}
+
+/// **§8's ARM PASS PREDICATE**: "each must recover a NONZERO CORRECT-SIGNED
+/// weight under the identical ladder and inits".
+///
+/// The planted signal is `+1` where the seat won, so the correct sign is
+/// POSITIVE, and the test is at EITHER endpoint — the two stage weights descend
+/// independently and a signal recovered at one of them is recovered.
+///
+/// **A nonzero of the WRONG sign is not a recovery.** It is a different failure
+/// wearing the same nonzero, and an arm that accepted it would certify an
+/// optimizer that had found the planted column and priced it backwards.
+///
+/// Read on the CHOSEN fit, per §8's own construction: the cell's fit is the
+/// better of the two inits, so that is the table the protocol would report.
+fn arm_recovered(table: &FitTable) -> bool {
+    table.early[ARM_COLUMN_SLOT] > 0 || table.late[ARM_COLUMN_SLOT] > 0
 }
 
 // ---------------------------------------------------------------------------
@@ -5864,6 +5876,37 @@ const PART_B_FROZEN_EARLY: usize = 25;
 
 /// §5.4's frozen count of LATE pair rows.
 const PART_B_FROZEN_LATE: usize = 27;
+
+/// **THE ONE REGISTERED DEPARTURE from §5.4's frozen census**, cited rather than
+/// inferred — the same sentence `solver.rs`'s `CENSUS_RULING` carries, so the
+/// solve and the fit cannot disagree about how many rows the package registers.
+const PART_B_CENSUS_RULING: &str = "4(c) HIGHER FACES was ruled LATE-ONLY by the owner on \
+     2026-08-22 (guidingpath decision-log row): its early row named a state §5.1's p = 0 hand cap \
+     makes unconstructible. EARLY moves 25 -> 24 and LATE is UNCHANGED at 27; the 2026-08-23 \
+     flag-5 row records the arithmetic in as many words (\"Census unchanged (EARLY stays 24)\"). \
+     This is the ruling's whole footprint -- ONE early row, not a class of them -- and NOT a \
+     registry defect.";
+
+/// **§5.4'S CROSS-CHECK**: "the solver artifact prints its realized counts as a
+/// cross-check and a mismatch is a registry defect, not a result".
+///
+/// TWO counts clear it — §5.4's frozen text, and that text under the 2026-08-22
+/// 4(c) ruling ([`PART_B_CENSUS_RULING`]) — and everything else is a typed
+/// defect. The distinction matters because a SMALLER realized census makes every
+/// Part-B report's denominator smaller, which reads like a cleaner fit and is
+/// not one.
+fn census_verdict(census: (usize, usize)) -> Result<(), String> {
+    match census {
+        (PART_B_FROZEN_EARLY, PART_B_FROZEN_LATE) => Ok(()),
+        (24, PART_B_FROZEN_LATE) => Ok(()),
+        (early, late) => Err(format!(
+            "fit --protocol: the registry realizes EARLY {early} / LATE {late} gate rows, which is \
+             neither §5.4's frozen text (EARLY {PART_B_FROZEN_EARLY} / LATE {PART_B_FROZEN_LATE}) \
+             nor the 4(c) ruling's 24/{PART_B_FROZEN_LATE}. §5.4: a mismatch is a REGISTRY DEFECT, \
+             not a result"
+        )),
+    }
+}
 
 /// One registered GATE pair at one declared endpoint, reduced to what the
 /// satisfaction report reads: its thirty-four-wide `Δv` and its margin.
@@ -6043,8 +6086,6 @@ enum ProtocolOutcome {
     /// A PENDING-rooted-presence feature triggered with no exemption.
     RoutedPendingExemption { cell: &'static str, feature: &'static str, trigger: &'static str },
     /// The interaction cell lost every X feature — coherence-pass sentence 4b.
-    // RED: GREEN's X-carriage check is what constructs this.
-    #[allow(dead_code)]
     RoutedXEmpty,
 }
 
@@ -6114,18 +6155,7 @@ fn run_protocol(matrix: &Matrix, plan: &MatrixPlan, rules: &Rules) -> Result<Pro
         rows.iter().filter(|r| r.stage == StageEndpoint::Early).count(),
         rows.iter().filter(|r| r.stage == StageEndpoint::Late).count(),
     );
-    // RED READING 3: the census must be §5.4's frozen text exactly. The
-    // 2026-08-22 owner ruling re-registered 4(c) LATE-ONLY, so the realized
-    // EARLY count is 24 — GREEN carries the ruling's footprint by name, the way
-    // `solver.rs` already does.
-    if census != (PART_B_FROZEN_EARLY, PART_B_FROZEN_LATE) {
-        return Err(format!(
-            "fit --protocol: the registry realizes EARLY {} / LATE {} gate rows against §5.4's \
-             registered EARLY {PART_B_FROZEN_EARLY} / LATE {PART_B_FROZEN_LATE} — a mismatch is a \
-             REGISTRY DEFECT, not a result",
-            census.0, census.1,
-        ));
-    }
+    census_verdict(census)?;
 
     // The arms first: §8 runs them "before any cell is read".
     let mut arms = Vec::new();
@@ -6180,22 +6210,7 @@ fn run_protocol(matrix: &Matrix, plan: &MatrixPlan, rules: &Rules) -> Result<Pro
             };
             break;
         }
-        let removed = record.removal.removed();
-        if removed.is_empty() {
-            continue;
-        }
-        // RED READING 8: a refit that raises new triggers is removed from and
-        // refitted again, until it settles. §8's rule is ONE refit, and the
-        // refit's own triggers are "non-propagating".
-        let mut survivors = record.removal.survivors();
-        let mut refit = fit_cell(plan, matrix, &FeatureMask::cell(&survivors))?;
-        let mut reread = removals_for(&survivors, &refit.outcome().table);
-        while !reread.removed().is_empty() {
-            survivors = reread.survivors();
-            refit = fit_cell(plan, matrix, &FeatureMask::cell(&survivors))?;
-            reread = removals_for(&survivors, &refit.outcome().table);
-        }
-        record.refit = Some((survivors, refit, reread));
+        record.refit = refit_once(plan, matrix, &record.removal)?;
     }
 
     // The X-carriage check on the INTERACTION cell's surviving set.
@@ -6210,6 +6225,36 @@ fn run_protocol(matrix: &Matrix, plan: &MatrixPlan, rules: &Rules) -> Result<Pro
     Ok(ProtocolRun { arms, anchor, cells, rows, census, outcome })
 }
 
+/// **§8'S ONE REFIT, and the whole of the non-propagation rule in one
+/// signature.**
+///
+/// > "a candidate fitted (0,0) in a cell, or fitted against its registered sign
+/// > prior, SHALL be removed and that cell refit ONCE — evaluated per cell on
+/// > FIT-half vectors only; NON-PROPAGATING."
+///
+/// The surviving set is a function of the BASE removal ALONE. The refit's own
+/// re-read is computed and handed back — the artifact prints it, and §8 asks for
+/// it to be recorded — and it is an INPUT TO NOTHING: each pass changes the
+/// column set the objective sees, so a second removal would be a removal decided
+/// by the first removal rather than by the fit, and iterating to a fixed point
+/// would be a different, unregistered rule.
+///
+/// `None` when the base fit removed nothing, which is the ordinary case.
+fn refit_once(
+    plan: &MatrixPlan,
+    matrix: &Matrix,
+    base: &CellRemoval,
+) -> Result<Option<(Vec<CandidateFeature>, CellFit, CellRemoval)>, String> {
+    if base.removed().is_empty() {
+        return Ok(None);
+    }
+    // §8: "All triggered-unexempt candidates in a cell are removed TOGETHER."
+    let survivors = base.survivors();
+    let fit = fit_cell(plan, matrix, &FeatureMask::cell(&survivors))?;
+    let reread = removals_for(&survivors, &fit.outcome().table);
+    Ok(Some((survivors, fit, reread)))
+}
+
 /// **THE X-CARRIAGE CHECK** on the interaction cell's post-removal survivor set.
 ///
 /// Coherence-pass sentence 4b: "Wholesale removal of X from the interaction cell
@@ -6222,10 +6267,8 @@ fn run_protocol(matrix: &Matrix, plan: &MatrixPlan, rules: &Rules) -> Result<Pro
 /// carried on would be sailing into the one identity the registration deleted.
 /// `None` means X is carried; `Some` is the named route.
 fn x_carriage_outcome(survivors: &[CandidateFeature]) -> Option<ProtocolOutcome> {
-    // RED READING 9: an interaction cell that lost every X feature has
-    // mechanically become B+S+E and ships as one.
-    let _ = survivors.iter().any(|c| GROUP_X.contains(c));
-    None
+    let carried = survivors.iter().any(|c| GROUP_X.contains(c));
+    (!carried).then_some(ProtocolOutcome::RoutedXEmpty)
 }
 
 /// The protocol's printed inventory.
@@ -6240,6 +6283,12 @@ fn render_protocol(matrix: &Matrix, plan: &MatrixPlan, run: &ProtocolRun) -> Str
          {PART_B_FROZEN_EARLY}/{PART_B_FROZEN_LATE})",
         run.census.0, run.census.1,
     );
+    if run.census != (PART_B_FROZEN_EARLY, PART_B_FROZEN_LATE) {
+        // A realized count below the frozen text CLEARS only because a ruling
+        // says it may, so the ruling is printed beside it. A reader who sees a
+        // smaller denominator gets the reason in the same block.
+        let _ = writeln!(out, "  RULING  {PART_B_CENSUS_RULING}");
+    }
 
     let _ = writeln!(
         out,
@@ -16784,6 +16833,94 @@ mod tests {
     // report
     // -----------------------------------------------------------------------
 
+    /// **THE PROTOCOL FIXTURE MATRIX**, built so the §8 protocol has something
+    /// to do at every stage of itself and so what it does is computable on
+    /// paper.
+    ///
+    /// # The design, and the three properties it buys
+    ///
+    /// Eighteen `(game, seat)` cells on the FIT half — nine even games, two
+    /// seats — each contributing one turn start per tercile (turns 0 and 1 at
+    /// `progress = 0`, turn 2 at `PROGRESS_FULL_PPM`, so the EARLY vector prices
+    /// two stages and the LATE vector prices one and both move). Seventeen cells
+    /// are recorded as WON and the last as LOST, so every stage has both classes
+    /// and the AUC is defined at every table.
+    ///
+    /// **(1) A STAIRCASE: every discriminating candidate strictly improves the
+    /// objective, so the descent moves all of them.** Candidate `j` reads 1 on
+    /// every row and 2 on the rows of ITS OWN assigned positive cell. A cell's
+    /// score is then `Σ_j w_j` plus `w_m` on the cell assigned to `m`, so the
+    /// single negative cell scores `Σ_j w_j` and positive cell `m` beats it
+    /// **iff `w_m > 0`** — one pair per column, independent of every other
+    /// column. With `k` of the sixteen positive, the AUC is `(k + (17−k)/2)/17`,
+    /// strictly increasing in `k`, so no column can be starved by another
+    /// saturating the statistic first. Every value on the ladder is rank-equal,
+    /// so §8's tie rule lands each weight at exactly `+1`.
+    ///
+    /// **(2) O3 AND X3 FIT `(0, 0)` BY CONSTRUCTION**, and they are the registry's
+    /// only two candidates with no exemption of any kind — so the removal rule
+    /// fires here and nothing it fires on is rescued. Their columns are CONSTANT
+    /// across cells (O3 on two rows of three, X3 on one), so weight on them
+    /// shifts every cell equally and changes no rank: no strict improvement, no
+    /// move, `(0, 0)`.
+    ///
+    /// **(3) NO PENDING FEATURE TRIGGERS**, so the run reaches its end rather
+    /// than routing. S6, S7, O5 and O6 are all discriminating columns and all
+    /// land `+1`.
+    ///
+    /// X3's one-row-in-three support also makes it the SPARSEST candidate
+    /// column at exactly 1/3, which is what gives the sparse arm a real mask to
+    /// apply instead of a degenerate one.
+    fn protocol_matrix() -> Matrix {
+        // The sixteen DISCRIMINATING candidates: everything but O3 and X3.
+        let discriminating: Vec<CandidateFeature> = CandidateFeature::ALL
+            .into_iter()
+            .filter(|c| {
+                !matches!(
+                    c,
+                    CandidateFeature::ExecutableOrders
+                        | CandidateFeature::MatchedProductionAccess
+                )
+            })
+            .collect();
+        assert_eq!(discriminating.len(), 16);
+
+        let mut rows = Vec::new();
+        for index in 0..18usize {
+            let game = 2 * (index / 2) as u32;
+            let seat = (index % 2) as u8;
+            // The LAST cell is the single negative; the rest are positives, and
+            // the first sixteen of those carry a candidate's private pair.
+            let win = index < 17;
+            for turn in 0..3u32 {
+                let mut dv = [0i64; AXIS_WIDTH];
+                for c in CandidateFeature::ALL {
+                    dv[FeatureId::Candidate(c).index()] = match c {
+                        // Constant across cells, and deliberately at different
+                        // ROW densities so the sparsest column is a real one.
+                        CandidateFeature::ExecutableOrders => i64::from(turn < 2),
+                        CandidateFeature::MatchedProductionAccess => i64::from(turn == 0),
+                        _ => 1,
+                    };
+                }
+                if let Some(mine) = discriminating.get(index) {
+                    dv[FeatureId::Candidate(*mine).index()] = 2;
+                }
+                rows.push(MatrixRow {
+                    game,
+                    seat,
+                    turn_index: turn,
+                    turns_in_game: 3,
+                    progress_ppm: if turn == 2 { PROGRESS_FULL_PPM } else { 0 },
+                    dv,
+                    win,
+                    margin: if win { 9 } else { -9 },
+                });
+            }
+        }
+        Matrix { header: matrix_header_for(18), rows }
+    }
+
     /// A thirty-four-wide table with named entries and zero everywhere else —
     /// the hand-built fit outcome every removal cell below reasons over.
     ///
@@ -16914,8 +17051,8 @@ mod tests {
                 cell.name(),
             );
         }
-        let matrix = golden_matrix();
-        let plan = plan_matrix(&matrix).expect("the golden matrix plans");
+        let matrix = protocol_matrix();
+        let plan = plan_matrix(&matrix).expect("the protocol fixture plans");
         let rules = Rules::standard();
         let run = run_protocol(&matrix, &plan, &rules).expect("the protocol runs");
         let printed = render_protocol(&matrix, &plan, &run);
@@ -16936,8 +17073,8 @@ mod tests {
     /// cannot depend on which of the two masks the protocol chose.
     #[test]
     fn the_anchor_is_the_unrefit_shipped_v2_evaluated_on_both_halves() {
-        let matrix = golden_matrix();
-        let plan = plan_matrix(&matrix).expect("the golden matrix plans");
+        let matrix = protocol_matrix();
+        let plan = plan_matrix(&matrix).expect("the protocol fixture plans");
         let rules = Rules::standard();
         let run = run_protocol(&matrix, &plan, &rules).expect("the protocol runs");
         let (fit, held) = run.anchor.expect("the anchor is recorded");
@@ -17066,10 +17203,20 @@ mod tests {
         // reader can see the fixture is not degenerate, never asserted at a rate.
         assert!(flips <= matrix.rows.len());
 
-        // A different master gives a different column: the seed is load-bearing.
+        // The corpus master KEYS the stream. Asserted on the seed and the draw
+        // sequence rather than on the resulting column: at eight rows and
+        // p = 1/4 two different streams agree on the whole column about a tenth
+        // of the time, so a column comparison here would be a coin flip wearing
+        // an assertion's clothes.
         let mut other = matrix.clone();
         other.header.master ^= 0xFFFF_FFFF;
-        assert_ne!(dense_arm_column(&other).1, column);
+        let (other_seed, _) = dense_arm_column(&other);
+        assert_ne!(other_seed, seed, "the corpus master keys the stream");
+        assert_ne!(
+            SplitMix64::seeded(other_seed).draw(),
+            SplitMix64::seeded(seed).draw(),
+            "two seeds, two streams",
+        );
     }
 
     /// **THE SPARSE ARM masks the dense signal to the SPARSEST candidate
@@ -17160,32 +17307,6 @@ mod tests {
         assert!(sparse_arm_column(&dense_matrix, &dense, 0, n).1.iter().all(|v| *v == 0));
     }
 
-    /// A matrix whose margins carry a RECOVERABLE signal: the winning seat's
-    /// planted value is what a positive weight rewards, and every stage has both
-    /// classes so the AUC is defined.
-    fn recoverable_arm_matrix() -> Matrix {
-        let vp = fit_vp_slot();
-        let mut rows = Vec::new();
-        for (game, seat, win) in
-            [(0u32, 0u8, true), (0, 1, false), (2, 0, false), (2, 1, true)]
-        {
-            for turn in 0..3u32 {
-                let mut row = fit_row(
-                    game,
-                    seat,
-                    turn,
-                    3,
-                    if turn == 2 { PROGRESS_FULL_PPM } else { 0 },
-                    win,
-                    &[(vp, if win { 1 } else { -1 })],
-                );
-                row.margin = if win { 9 } else { -9 };
-                rows.push(row);
-            }
-        }
-        Matrix { header: matrix_header_for(3), rows }
-    }
-
     /// **BOTH ARMS RECOVER A NONZERO, CORRECTLY SIGNED WEIGHT on a matrix where
     /// the signal is there to be found.**
     ///
@@ -17197,8 +17318,8 @@ mod tests {
     /// inits").
     #[test]
     fn both_adequacy_arms_recover_the_planted_signal_on_a_recoverable_matrix() {
-        let matrix = recoverable_arm_matrix();
-        let plan = plan_matrix(&matrix).expect("the arm matrix plans");
+        let matrix = protocol_matrix();
+        let plan = plan_matrix(&matrix).expect("the protocol fixture plans");
         let rules = Rules::standard();
         let run = run_protocol(&matrix, &plan, &rules).expect("the protocol runs");
 
@@ -17218,6 +17339,31 @@ mod tests {
         }
         assert_eq!(run.outcome, ProtocolOutcome::Complete);
         assert!(!run.cells.is_empty(), "the cells run once both arms clear");
+
+        // The PASS predicate itself, at the six shapes an arm can land on. The
+        // wrong-signed rows are the ones a "nonzero is a recovery" reading gets
+        // wrong, and no fixture produces them — so they are asserted here or
+        // nowhere.
+        let arm = |early: i64, late: i64| {
+            let mut table = FitTable::zero();
+            table.early[ARM_COLUMN_SLOT] = early;
+            table.late[ARM_COLUMN_SLOT] = late;
+            arm_recovered(&table)
+        };
+        assert!(!arm(0, 0), "(0,0) is the shape a starved optimizer leaves");
+        assert!(arm(3, 0), "positive at EARLY alone is a recovery");
+        assert!(arm(0, 3), "positive at LATE alone is a recovery");
+        assert!(arm(3, 5), "positive at both");
+        assert!(!arm(-3, 0), "a NEGATIVE weight on a positively-planted column is not a recovery");
+        assert!(!arm(-3, -5), "nor is one at both endpoints");
+        assert!(arm(-3, 5), "a correct sign at either endpoint is enough");
+
+        // The sparse arm's rate is RECORDED with its column and its counts.
+        let sparse = run.arms.iter().find(|a| a.name == "sparse").expect("the sparse arm");
+        let (column, k, n) = sparse.support.expect("the sparse arm records its rate");
+        assert!(k > 0 && k <= n, "{}: support {k}/{n}", column.label());
+        assert!(run.arms.iter().all(|a| a.seed != 0));
+        assert_ne!(run.arms[0].seed, run.arms[1].seed, "two arms, two streams");
     }
 
     /// **AN ARM THAT CANNOT RECOVER STOPS THE STAGE AS AN INSTRUMENT DEFECT,
@@ -17231,11 +17377,11 @@ mod tests {
     /// attempt `void-at-instrument-defect`.
     #[test]
     fn an_unrecoverable_arm_stops_the_protocol_as_an_instrument_defect() {
-        let mut matrix = recoverable_arm_matrix();
+        let mut matrix = protocol_matrix();
         for row in &mut matrix.rows {
             row.margin = 0;
         }
-        let plan = plan_matrix(&matrix).expect("the arm matrix plans");
+        let plan = plan_matrix(&matrix).expect("the protocol fixture plans");
         let rules = Rules::standard();
         let run = run_protocol(&matrix, &plan, &rules).expect("the protocol returns a verdict");
 
@@ -17533,8 +17679,8 @@ mod tests {
     /// produce a second trigger is a property of a corpus and not of the rule.
     #[test]
     fn a_removal_refits_the_cell_once_and_the_refits_own_triggers_propagate_nothing() {
-        let matrix = golden_matrix();
-        let plan = plan_matrix(&matrix).expect("the golden matrix plans");
+        let matrix = protocol_matrix();
+        let plan = plan_matrix(&matrix).expect("the protocol fixture plans");
         let rules = Rules::standard();
         let run = run_protocol(&matrix, &plan, &rules).expect("the protocol runs");
 
@@ -17578,20 +17724,104 @@ mod tests {
         }
         assert!(
             refits > 0,
-            "the golden corpus produced no removal at all — this cell needs a fixture where the \
-             removal rule fires, or it is asserting nothing",
+            "the protocol fixture produced no removal at all — this cell needs a fixture where \
+             the removal rule fires, or it is asserting nothing",
         );
 
-        // The rule is ONE refit by CONSTRUCTION, not by luck: a hand-built
-        // second-trigger re-read is recorded and changes no set.
-        let record = run
-            .cells
-            .iter()
-            .find(|c| c.refit.is_some())
-            .expect("at least one cell refitted");
-        let (survivors, _, reread) = record.refit.as_ref().expect("checked");
-        assert_eq!(record.survivors(), *survivors);
-        let _ = reread;
+        // ===================================================================
+        // NON-PROPAGATION, on a fixture where the refit ACTUALLY surfaces a new
+        // trigger — the only shape in which the rule is falsifiable.
+        // ===================================================================
+        //
+        // A `(0,0)` removal is landscape-inert (a zero-weighted column
+        // contributes nothing, so dropping it changes no score and the refit
+        // reproduces the base fit), which means a NEW trigger can only follow a
+        // WRONG-SIGN removal. The fixture below is exactly that, over the two
+        // candidates with no exemption of any kind — O3 and X3 — so a
+        // propagating rule would have something to propagate ONTO.
+        //
+        // FOUR fit-half cells, one turn start each (so only the EARLY tercile
+        // is populated and the LATE vector prices nothing): P1, P2 won, N1, N2
+        // lost. Two candidate columns, incumbents identically zero:
+        //
+        //   O3 = (P1: -5, P2: 0, N1: 0, N2: 0)
+        //   X3 = (P1: -3, P2: 1, N1: 0, N2: 0)
+        //
+        // THE ARITHMETIC, in full. From all-zero every cell scores 0 and the
+        // AUC is 0.5 (four tied pairs).
+        //
+        // * O3 first (slot 28 precedes X3's 33). `w = -1` scores
+        //   `(5, 0, 0, 0)`: P1 beats both negatives, P2 ties both → 3/4 =
+        //   0.75. `w = +1` scores `(-5, 0, 0, 0)` → 1/4 = 0.25. Every negative
+        //   rung is rank-equal, so the tie rule takes the smallest: **-1, and
+        //   the registered prior is `+`, so this is a WRONG-SIGN removal.**
+        // * X3 next, against `(5, 0, 0, 0)`. `w = +1` scores `(2, 1, 0, 0)` →
+        //   4/4 = 1.0; `w = +2` scores `(-1, 2, 0, 0)` → 0.5; `w = -1` scores
+        //   `(8, -1, 0, 0)` → 0.5. So **+1, correctly signed, KEPT.**
+        // * THE REFIT, over X3 alone. X3's column is a TRADE: any `w > 0` sinks
+        //   P1 below both negatives while lifting P2 above them, and any
+        //   `w < 0` does the reverse — 2 of 4 pairs either way, an AUC of
+        //   exactly 0.5 at EVERY rung. No strict improvement exists, so X3
+        //   fits **(0, 0) — a NEW trigger, on a candidate with no exemption.**
+        //
+        // Under §8's rule that re-read is RECORDED and the survivor set stays
+        // `[X3]`. Under a propagating rule X3 would be removed too and the cell
+        // would refit a second time over the empty set.
+        let o3 = FeatureId::Candidate(CandidateFeature::ExecutableOrders).index();
+        let x3 = FeatureId::Candidate(CandidateFeature::MatchedProductionAccess).index();
+        let mut rows = Vec::new();
+        for (game, seat, win, o, x) in [
+            (0u32, 0u8, true, -5i64, -3i64),
+            (0, 1, true, 0, 1),
+            (2, 0, false, 0, 0),
+            (2, 1, false, 0, 0),
+        ] {
+            let mut row = fit_row(game, seat, 0, 1, 0, win, &[(o3, o), (x3, x)]);
+            row.margin = if win { 9 } else { -9 };
+            rows.push(row);
+        }
+        let trade = Matrix { header: matrix_header_for(4), rows };
+        let trade_plan = plan_matrix(&trade).expect("the trade fixture plans");
+        let pair = [CandidateFeature::ExecutableOrders, CandidateFeature::MatchedProductionAccess];
+        let base = fit_cell(&trade_plan, &trade, &FeatureMask::cell(&pair))
+            .expect("the trade fixture fits");
+        let table = &base.outcome().table;
+        assert_eq!((table.early[o3], table.late[o3]), (-1, 0), "O3's hand-computed fit");
+        assert_eq!((table.early[x3], table.late[x3]), (1, 0), "X3's hand-computed fit");
+
+        let removal = removals_for(&pair, table);
+        assert_eq!(
+            removal.dispositions,
+            vec![
+                (CandidateFeature::ExecutableOrders, Disposition::Removed(RemovalTrigger::WrongSign)),
+                (CandidateFeature::MatchedProductionAccess, Disposition::Kept),
+            ],
+        );
+
+        let (survivors, refit, reread) = refit_once(&trade_plan, &trade, &removal)
+            .expect("the refit runs")
+            .expect("a removal buys a refit");
+        assert_eq!(
+            survivors,
+            vec![CandidateFeature::MatchedProductionAccess],
+            "ONE refit, over the base removal's survivors — not over the re-read's",
+        );
+        let refitted = &refit.outcome().table;
+        assert_eq!((refitted.early[x3], refitted.late[x3]), (0, 0), "X3 is inert alone");
+        assert_eq!(
+            reread.dispositions,
+            vec![(
+                CandidateFeature::MatchedProductionAccess,
+                Disposition::Removed(RemovalTrigger::ZeroZero),
+            )],
+            "the refit's own trigger is RECORDED — and it is a REMOVED disposition, so a \
+             propagating rule would have acted on it",
+        );
+        assert_eq!(
+            reread.removed(),
+            vec![CandidateFeature::MatchedProductionAccess],
+            "the re-read names a removal it does not perform",
+        );
     }
 
     /// **AN INTERACTION CELL THAT LOSES EVERY X FEATURE ROUTES TO THE OWNER —
@@ -17827,10 +18057,23 @@ mod tests {
             2,
         );
 
+        // THE DEFECT ARM, which no registry can exercise from the inside: the
+        // two clearing counts, and four that are not.
+        assert!(census_verdict((PART_B_FROZEN_EARLY, PART_B_FROZEN_LATE)).is_ok());
+        assert!(census_verdict((24, PART_B_FROZEN_LATE)).is_ok(), "the 4(c) ruling's footprint");
+        for defect in [(23, 27), (24, 26), (26, 27), (27, 24)] {
+            let message = census_verdict(defect).expect_err("{defect:?} is a registry defect");
+            assert!(message.contains("REGISTRY DEFECT"), "{defect:?}: {message}");
+            assert!(
+                message.contains(&format!("EARLY {} / LATE {}", defect.0, defect.1)),
+                "the defect names the counts it saw: {message}",
+            );
+        }
+
         // And the protocol CLEARS the cross-check rather than reporting a
         // registry defect against a count the owner already ruled on.
-        let matrix = golden_matrix();
-        let plan = plan_matrix(&matrix).expect("the golden matrix plans");
+        let matrix = protocol_matrix();
+        let plan = plan_matrix(&matrix).expect("the protocol fixture plans");
         let run = run_protocol(&matrix, &plan, &rules).expect("the census clears");
         assert_eq!(run.census, (early, late));
     }
@@ -17863,8 +18106,8 @@ mod tests {
         assert_eq!(record.vp, [true, true], "the pin is untouched");
 
         // And the artifact prints them as RECORDED.
-        let matrix = golden_matrix();
-        let plan = plan_matrix(&matrix).expect("the golden matrix plans");
+        let matrix = protocol_matrix();
+        let plan = plan_matrix(&matrix).expect("the protocol fixture plans");
         let rules = Rules::standard();
         let run = run_protocol(&matrix, &plan, &rules).expect("the protocol runs");
         assert!(render_protocol(&matrix, &plan, &run).contains("recorded (never gated)"));
@@ -17918,9 +18161,11 @@ mod tests {
         );
 
         // The flag reaches the artifact per fit.
+        let protocol = protocol_matrix();
+        let protocol_plan = plan_matrix(&protocol).expect("the protocol fixture plans");
         let rules = Rules::standard();
-        let run = run_protocol(&matrix, &plan, &rules).expect("the protocol runs");
-        let printed = render_protocol(&matrix, &plan, &run);
+        let run = run_protocol(&protocol, &protocol_plan, &rules).expect("the protocol runs");
+        let printed = render_protocol(&protocol, &protocol_plan, &run);
         assert!(printed.contains("converged=true"), "{printed}");
     }
 
@@ -17933,7 +18178,7 @@ mod tests {
     /// an unregistered cell wearing the protocol's name.
     #[test]
     fn the_protocol_refuses_to_share_its_invocation_and_runs_end_to_end() {
-        let matrix = golden_matrix();
+        let matrix = protocol_matrix();
         let path = matrix_temp_path("protocol");
         std::fs::write(&path, render_matrix(&matrix)).expect("the fixture matrix writes");
         let file = path.to_string_lossy().to_string();
@@ -17955,7 +18200,7 @@ mod tests {
 
         // The printed inventory carries one block per fit, both arms, the
         // anchor, the cells and the typed outcome.
-        let plan = plan_matrix(&matrix).expect("the golden matrix plans");
+        let plan = plan_matrix(&matrix).expect("the protocol fixture plans");
         let rules = Rules::standard();
         let run = run_protocol(&matrix, &plan, &rules).expect("the protocol runs");
         assert_eq!(run.cells.len(), 7, "seven cells");
@@ -17964,8 +18209,9 @@ mod tests {
             "optimizer-adequacy control arms",
             "declared mix rate 25%",
             "anchor: shipped V2, UN-REFIT",
-            "== cell B ==",
-            "== cell B+S+E+X ==",
+            "== cell B (0 candidates) ==",
+            "== cell B+S+E+X (18 candidates) ==",
+            "== cell B+E (8 candidates) ==",
             "part-B early",
             "part-B late",
             "outcome:",
