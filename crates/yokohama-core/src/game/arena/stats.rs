@@ -175,6 +175,87 @@ pub enum Contestant {
     /// scale`, so all three are cell parameters. There is deliberately no weight
     /// knob (spec §0.5).
     MctsV1 { cap: Option<u32>, c_ppm: u32, scale: i64, m: u8, leaf: LeafRule },
+    /// **A NAMED EVALUATOR IDENTITY** (V4 §7 step 8, spec §13's step-8
+    /// blast-radius addition): a [`LookaheadAgent`] seat at the shipped knobs
+    /// whose WEIGHT TABLE is named rather than hardwired, so the §11 arms are
+    /// runnable identities rather than names. See [`NamedIdentity`].
+    NamedTable(NamedIdentity),
+}
+
+/// The named weight-table identities the arena can seat — spec §13's
+/// explicit-table surface, as NAMES rather than raw weight dumps.
+///
+/// **Why a distinct contestant rather than a weight KNOB on `lookahead-v1`.**
+/// This type's own enclosing doc states the house rule: "a weight change is a
+/// version bump (spec §0.5 / L12), not a cell parameter". A `weights=` knob on
+/// the shipped arm would break that rule outright; a distinct NAMED contestant
+/// does not — it is a new identity, which is exactly the thing §13 sanctioned
+/// adding. The `weights=<identity>` token still rides the params map, so the
+/// echo carries both halves: the name a reader types and the digest of the
+/// thirty-four numbers it resolved to.
+///
+/// **Knobless, deliberately** — `eval_screen`'s stated rule for the same job
+/// ("`ScreenRung` has no knob fields: each variant runs its controller's
+/// SHIPPED knobs … The screen's subject is the WEIGHTS; a knob that moved in
+/// the same cell would confound the only thing it measures"). Both arms
+/// therefore run ONE knob set, and a cell pitting them against each other
+/// varies the table alone.
+///
+/// **The knob literals are TRANSCRIBED, not tracked** —
+/// [`build_pinned_v2_seat`](crate::game::driven)'s discipline, adopted for its
+/// reason: an arm is an IDENTITY, and a later move of the shipped default must
+/// not silently re-point figures already recorded against these names.
+/// `the_named_identity_arms_transcribe_todays_shipped_knobs` states the
+/// present equality as a transcription fact and is DELETED (never edited) in
+/// the commit that legitimately moves the default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NamedIdentity {
+    /// [`WeightTable::V2`] — THE shipped table, named. Post-padding this is
+    /// spec §10's `V2-padded`, so this arm's play is the shipped seat's play
+    /// and `the_named_identity_arms_walk_their_own_tables` holds it there.
+    V2Padded,
+    /// [`WeightTable::V2_REFIT_PADDED`] — the §8 B-cell refit (the sixteen
+    /// incumbents refit with no candidate columns admitted). NOT a shipped
+    /// table; that const's doc carries the provenance and the never-move rule.
+    V2RefitPadded,
+}
+
+/// The shipped lookahead knobs every named arm runs, TRANSCRIBED (see
+/// [`NamedIdentity`]): beam 4, one sampled world, eight retreat samples, no cap.
+const NAMED_IDENTITY_BEAM: u16 = 4;
+const NAMED_IDENTITY_WORLDS: u8 = 1;
+const NAMED_IDENTITY_RETREAT_SAMPLES: u8 = 8;
+
+impl NamedIdentity {
+    /// Every named identity, for a grammar or a test that must cover them all.
+    pub const ALL: [Self; 2] = [Self::V2Padded, Self::V2RefitPadded];
+
+    /// The WIRE name — what a runner accepts and an echo carries. Read from
+    /// here at every site, so the grammar and provenance cannot drift into two
+    /// spellings (`greedy::GREEDY_CONTROLLER`'s rule for the shipped arms).
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::V2Padded => "v2-padded",
+            Self::V2RefitPadded => "v2-refit-padded",
+        }
+    }
+
+    /// The thirty-four numbers this name resolves to — the ONE site that
+    /// decides an arm's table, so `build` and `provenance` cannot disagree
+    /// about what a seat played.
+    pub fn table(self) -> WeightTable {
+        match self {
+            Self::V2Padded => WeightTable::V2,
+            Self::V2RefitPadded => WeightTable::V2_REFIT_PADDED,
+        }
+    }
+
+    /// The name's inverse — `None` for anything else, [`RolloutPolicy::from_str_name`]'s
+    /// shape because an arm name either is or is not one of two literals and
+    /// the caller composes its own refusal around that.
+    pub fn from_str_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|arm| arm.name() == name)
+    }
 }
 
 /// How a contestant resolves its dealt starting-order pair — the property spec
@@ -509,14 +590,40 @@ impl Contestant {
             });
         }
 
+        // A named identity's descriptor emits the LOOKAHEAD knob keys under the
+        // ARM's name, so the inverse reads them back and CHECKS them rather
+        // than defaulting: the knobs are transcribed literals, not knobs a
+        // record may vary, so a record naming this arm at other knobs did not
+        // come from this arm and must not be silently resumed as if it had.
+        if let Some(arm) = NamedIdentity::from_str_name(name) {
+            reject_unknown_params(name, params, &["b", "k", "m"], &[])?;
+            let (b, k, m) = (
+                param_u16(name, params, "b")?,
+                param_worlds(name, params)?,
+                param_u8(name, params, "m")?,
+            );
+            if (b, k, m)
+                != (NAMED_IDENTITY_BEAM, NAMED_IDENTITY_WORLDS, NAMED_IDENTITY_RETREAT_SAMPLES)
+            {
+                return Err(format!(
+                    "{name} is a knobless named identity at b={NAMED_IDENTITY_BEAM}, \
+                     k={NAMED_IDENTITY_WORLDS}, m={NAMED_IDENTITY_RETREAT_SAMPLES}, but the \
+                     record carries b={b}, k={k}, m={m}",
+                ));
+            }
+            return Ok(Self::NamedTable(arm));
+        }
+
         let Some(policy) = RolloutPolicy::from_str_name(name) else {
             return Err(format!(
                 "unknown controller {name:?} (rungs: uniform | retreat-averse | family-weighted; \
-                 evaluator: {} | {} | {}; architecture: {})",
+                 evaluator: {} | {} | {}; architecture: {}; named identities: {} | {})",
                 greedy::GREEDY_CONTROLLER,
                 lookahead::LOOKAHEAD_CONTROLLER,
                 lookahead::ATOMIC_DIAG_CONTROLLER,
                 mcts::MCTS_CONTROLLER,
+                NamedIdentity::V2Padded.name(),
+                NamedIdentity::V2RefitPadded.name(),
             ));
         };
         match policy {
@@ -578,6 +685,27 @@ impl Contestant {
                 &WeightTable::V2,
                 agent_seed,
             ),
+            // The controller's OWN descriptor over the arm's OWN table, with
+            // one field replaced: the NAME. Everything a reader needs to price
+            // the seat — the knobs, `eval_impl`, and the `weights=` digest of
+            // the thirty-four numbers — is the lookahead controller's own
+            // answer, so this arm cannot echo a search it did not run; and the
+            // name is the arm's, because "lookahead-v1" would leave two
+            // different tables echoing under one identity, which is the exact
+            // confusion §13's surface exists to remove. The name is read from
+            // `NamedIdentity::name` rather than typed here, so there is still
+            // one spelling of it (`greedy::GREEDY_CONTROLLER`'s rule).
+            Self::NamedTable(arm) => {
+                let mut p = lookahead::controller_provenance(
+                    SearchScheme::TurnBoundary { beam: NAMED_IDENTITY_BEAM },
+                    NAMED_IDENTITY_WORLDS,
+                    NAMED_IDENTITY_RETREAT_SAMPLES,
+                    &arm.table(),
+                    agent_seed,
+                );
+                p.name = arm.name().to_string();
+                p
+            }
         }
     }
 
@@ -620,10 +748,23 @@ impl Contestant {
             // `greedy::score_starting_order` VERBATIM (spec §3.6 / map row 20),
             // which is what makes an mcts-vs-lookahead cell setup-identical —
             // and every §5 cell depends on that.
+            // A named arm joins the evaluator group for the SAME reason, and
+            // the reason is worth stating precisely because it is the one an
+            // identity leak would hide in: `greedy::score_starting_order` takes
+            // NO weight table (`eval_screen`'s doc says so in as many words —
+            // "the KEEP function … takes NO weight table — so a screen is
+            // Keep-HOMOGENEOUS and setup-IDENTICAL by construction, at any pair
+            // of tables"). So an arm's table cannot reach its Keep at all: the
+            // two named arms resolve every deal identically, to each other and
+            // to the shipped seat, and a §11 cell is setup-identical
+            // STRUCTURALLY. `the_named_identity_arms_keep_by_a_weight_blind_rule`
+            // pins that, so a future weight-sensitive Keep has to answer for
+            // itself here instead of quietly making two arms' setups differ.
             Self::GreedyV1 { .. }
             | Self::LookaheadV1 { .. }
             | Self::AtomicDiag { .. }
-            | Self::MctsV1 { .. } => KeepKind::EvaluatorScored,
+            | Self::MctsV1 { .. }
+            | Self::NamedTable(_) => KeepKind::EvaluatorScored,
         }
     }
 
@@ -666,6 +807,7 @@ impl Contestant {
                 k,
                 m,
                 cap,
+                WeightTable::V2,
                 agent_seed,
             ),
             Self::AtomicDiag { d, k, m } => Self::build_search(
@@ -674,6 +816,21 @@ impl Contestant {
                 k,
                 m,
                 None,
+                WeightTable::V2,
+                agent_seed,
+            ),
+            // The SAME construction path as the shipped rung, differing in the
+            // one thing the arm names: its table. Routing it through
+            // `build_search` rather than a private constructor is what makes
+            // "a named arm is a lookahead seat" true by construction rather
+            // than by comment — a divergence would have to be authored here.
+            Self::NamedTable(arm) => Self::build_search(
+                rules,
+                SearchScheme::TurnBoundary { beam: NAMED_IDENTITY_BEAM },
+                NAMED_IDENTITY_WORLDS,
+                NAMED_IDENTITY_RETREAT_SAMPLES,
+                None,
+                arm.table(),
                 agent_seed,
             ),
             Self::MctsV1 { cap, c_ppm, scale, m, leaf } => {
@@ -690,23 +847,24 @@ impl Contestant {
         }
     }
 
+    /// `weights` is a PARAMETER rather than the hardwired shipped table since
+    /// V4 step 8: the two shipped arms pass [`WeightTable::V2`] explicitly (so
+    /// their construction is byte-identical to what it always was, and the
+    /// caller above still reads as "the one place a cell's table is decided"),
+    /// and the named arms pass their own. One search constructor, one place a
+    /// table enters it.
     fn build_search(
         rules: &Rules,
         scheme: SearchScheme,
         worlds: u8,
         retreat_samples: u8,
         cap: Option<u32>,
+        weights: WeightTable,
         agent_seed: u64,
     ) -> (Box<dyn ArenaAgent>, Option<ExplainHandle>) {
-        let agent = LookaheadAgent::with_knobs(
-            rules,
-            scheme,
-            worlds,
-            retreat_samples,
-            WeightTable::V2,
-            agent_seed,
-        )
-        .with_cap(cap);
+        let agent =
+            LookaheadAgent::with_knobs(rules, scheme, worlds, retreat_samples, weights, agent_seed)
+                .with_cap(cap);
         let handle = ExplainHandle::Search(agent.tally());
         (Box::new(agent), Some(handle))
     }
@@ -3074,6 +3232,303 @@ mod tests {
                      prints) rests on their agreement",
                 );
             }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // V4 §7 STEP 8 T3 — the named-identity arms (spec §13)
+    // -----------------------------------------------------------------------
+
+    /// The arms' knob literals equal the shipped default's TODAY — a
+    /// TRANSCRIPTION FACT, not a coupling, exactly as
+    /// `the_pinned_v2_seat_transcribes_todays_shipped_knobs` is for the
+    /// generating ecology. If the shipped default legitimately moves later,
+    /// DELETE this assertion in the moving commit; the literals stay, because
+    /// an arm is an identity and figures already recorded against these names
+    /// must not silently re-point.
+    #[test]
+    fn the_named_identity_arms_transcribe_todays_shipped_knobs() {
+        assert_eq!(
+            Contestant::LOOKAHEAD_V1_DEFAULT,
+            Contestant::LookaheadV1 {
+                b: NAMED_IDENTITY_BEAM,
+                k: NAMED_IDENTITY_WORLDS,
+                m: NAMED_IDENTITY_RETREAT_SAMPLES,
+                cap: None,
+            },
+            "the named arms' knob literals transcribe the shipped default of 2026-08-24",
+        );
+    }
+
+    /// The WIRE names are the arms' own consts, and the grammar's literals are
+    /// checks on them rather than a second source.
+    #[test]
+    fn the_named_identity_wire_names_round_trip_through_their_own_consts() {
+        assert_eq!(NamedIdentity::ALL.len(), 2, "a new arm must be dispositioned in these pins");
+        for arm in NamedIdentity::ALL {
+            assert_eq!(NamedIdentity::from_str_name(arm.name()), Some(arm));
+            assert_eq!(Contestant::from_str_name(arm.name()), Ok(Contestant::NamedTable(arm)));
+        }
+        assert_eq!(NamedIdentity::V2Padded.name(), "v2-padded");
+        assert_eq!(NamedIdentity::V2RefitPadded.name(), "v2-refit-padded");
+        assert_eq!(NamedIdentity::from_str_name("v2"), None);
+        assert_eq!(NamedIdentity::from_str_name("V2-PADDED"), None);
+    }
+
+    /// **THE ECHO CARRIES THE NAME AND THE ARM'S OWN TABLE IDENTITY**, composed
+    /// through the one [`compose_echo`] every contestant echoes through.
+    ///
+    /// The two `weights=` values must DIFFER (the T2 review's carry): two arms
+    /// that echoed one identity could trade places in a corpus and nothing
+    /// downstream could tell. And `v2-padded` must resolve `WeightTable::V2`'s
+    /// identity exactly — an arm whose construction drifted off its named table
+    /// would echo some third digest, which is the always-on shape of V3 §5.1's
+    /// behavior-identity pin.
+    #[test]
+    fn the_named_identity_arms_echo_their_name_and_their_own_table_identity() {
+        let identity_of = |table: &WeightTable| crate::game::greedy::weight_table_identity(table);
+        // Recorded for the wave's commit message; a digest is only useful if it
+        // is written down somewhere a reader can compare against.
+        println!(
+            "named-identity weights: v2-padded={} v2-refit-padded={}",
+            identity_of(&WeightTable::V2),
+            identity_of(&WeightTable::V2_REFIT_PADDED),
+        );
+
+        for arm in NamedIdentity::ALL {
+            let echo = Contestant::NamedTable(arm).echo();
+            assert!(
+                echo.starts_with(&format!("{}@v", arm.name())),
+                "{} must echo under its own name: {echo}",
+                arm.name(),
+            );
+            assert!(
+                echo.contains(&format!("weights={}", identity_of(&arm.table()))),
+                "{} must echo its OWN table's identity: {echo}",
+                arm.name(),
+            );
+            // The knobs are the controller's own answer, so an arm cannot echo
+            // a search it did not run.
+            for token in ["b=4", "k=1", "m=8", "eval_impl="] {
+                assert!(echo.contains(token), "{} lost {token} from its echo: {echo}", arm.name());
+            }
+            assert!(!echo.contains("cap="), "an uncapped arm must emit no cap token: {echo}");
+        }
+
+        assert_ne!(
+            identity_of(&WeightTable::V2),
+            identity_of(&WeightTable::V2_REFIT_PADDED),
+            "the two named arms must resolve DIFFERENT tables, or every cell between them is \
+             a comparison of one table with itself",
+        );
+        // **THE DISTINCT-IDENTITIES PIN** (the T2 review's carry), read off the
+        // RESOLVED echoes rather than off the consts: a name that resolved to
+        // the wrong table would still echo a well-formed `weights=` token, and
+        // only comparing what the two arms ACTUALLY resolved catches it.
+        let weights_token = |arm: NamedIdentity| {
+            let echo = Contestant::NamedTable(arm).echo();
+            let token = echo
+                .split("weights=")
+                .nth(1)
+                .unwrap_or_else(|| panic!("{} echoed no weights token: {echo}", arm.name()))
+                .trim_end_matches('}')
+                .to_string();
+            token
+        };
+        assert_ne!(
+            weights_token(NamedIdentity::V2Padded),
+            weights_token(NamedIdentity::V2RefitPadded),
+            "the two named arms RESOLVED the same table, so the arms can be conflated and a \
+             cell between them would report one arm's figures under the other's name",
+        );
+        assert_ne!(
+            Contestant::NamedTable(NamedIdentity::V2Padded).echo(),
+            Contestant::NamedTable(NamedIdentity::V2RefitPadded).echo(),
+        );
+        // `v2-padded` IS the shipped seat, so the two differ in NAME and in
+        // nothing else — the identity claim spec §10 makes, as a string compare.
+        let padded = Contestant::NamedTable(NamedIdentity::V2Padded).echo();
+        let shipped = Contestant::LOOKAHEAD_V1_DEFAULT.echo();
+        assert_eq!(
+            padded.replace("v2-padded@", "lookahead-v1@"),
+            shipped,
+            "v2-padded must be the shipped seat under another name: {padded} vs {shipped}",
+        );
+    }
+
+    /// **THE KEEP IS WEIGHT-BLIND, AND THAT IS WHY THERE IS NO IDENTITY LEAK.**
+    ///
+    /// A named arm's Keep cannot come off the wrong table, because
+    /// `greedy::score_starting_order` reads NO table at all — `eval_screen`'s
+    /// doc states it in as many words ("the KEEP function … takes NO weight
+    /// table — so a screen is Keep-HOMOGENEOUS and setup-IDENTICAL by
+    /// construction, at any pair of tables"). So the honest pin is not "each
+    /// arm keeps by its own table" (nothing does) but the structural fact that
+    /// makes a §11 cell setup-identical: both arms and the shipped seat resolve
+    /// EVERY deal identically.
+    ///
+    /// It is pinned rather than assumed so a future weight-sensitive Keep
+    /// cannot land silently: it would fail here, and the arm-identity question
+    /// it raises would have to be answered in that commit.
+    #[test]
+    fn the_named_identity_arms_keep_by_a_weight_blind_rule() {
+        let rules = Rules::standard();
+        for arm in NamedIdentity::ALL {
+            assert_eq!(
+                Contestant::NamedTable(arm).keep_kind(),
+                KeepKind::EvaluatorScored,
+                "{} must keep by the evaluator rule",
+                arm.name(),
+            );
+        }
+        // Maximally different streams, `every_evaluator_contestant_shares_one_keep_function`'s
+        // rule: agreement must come from the deal, never from a shared stream.
+        let (mut padded, _) =
+            Contestant::NamedTable(NamedIdentity::V2Padded).build(&rules, 3);
+        let (mut refit, _) =
+            Contestant::NamedTable(NamedIdentity::V2RefitPadded).build(&rules, u64::MAX / 7);
+        let (mut shipped, _) = Contestant::LOOKAHEAD_V1_DEFAULT.build(&rules, u64::MAX - 29);
+        for seat in 0..4u8 {
+            for card in 1..=18u8 {
+                let deal = [OrderCardId(card), OrderCardId(card + 18)];
+                let p = padded.choose_starting_order(PlayerId(seat), &deal);
+                let r = refit.choose_starting_order(PlayerId(seat), &deal);
+                let s = shipped.choose_starting_order(PlayerId(seat), &deal);
+                assert!(
+                    p == r && r == s,
+                    "the Keep became table-sensitive at seat {seat}, deal {deal:?}: \
+                     v2-padded {p}, v2-refit-padded {r}, shipped {s} — a §11 cell's \
+                     setup-identical=yes rests on these agreeing",
+                );
+            }
+        }
+    }
+
+    /// **EACH ARM PLAYS ITS OWN TABLE** — the play-side routing, where an
+    /// identity leak WOULD be possible, driven rather than asserted about.
+    ///
+    /// Six decisions over three deterministic positions (the
+    /// `the_pinned_v2_seat_walk_reproduces_the_recorded_pre_padding_decisions`
+    /// shape), built through `Contestant::build` so a table swapped there has
+    /// to move a played move rather than escaping through a direct helper.
+    /// Three claims, and the third is what keeps the other two from being
+    /// vacuous:
+    ///
+    /// 1. `v2-padded` plays exactly what `lookahead-v1` plays (it IS that seat);
+    /// 2. `v2-refit-padded` plays exactly what a DIRECT `with_knobs`
+    ///    construction on `WeightTable::V2_REFIT_PADDED` plays (the named table
+    ///    reaches the agent);
+    /// 3. the two arms DIVERGE somewhere on this walk — without which every
+    ///    table pin here would pass on two tables that play identically.
+    #[test]
+    fn the_named_identity_arms_walk_their_own_tables() {
+        use crate::game::policy::RolloutPolicy;
+        use crate::game::search_actions::DecisionHandle;
+        use crate::types::GameConfig;
+        use crate::StartingOrderChoice;
+
+        let rules = Rules::standard();
+        // (setup seed, family-weighted steps forward, agent stream seed)
+        const POSITIONS: [(u64, usize, u64); 3] =
+            [(0xD1, 0, 0xA11CE0), (0xD2, 60, 0xA11CE1), (0xD3, 140, 0xA11CE2)];
+        const DECISIONS: usize = 2;
+
+        let walk = |build: &mut dyn FnMut(&Rules, u64) -> Box<dyn ArenaAgent>| -> Vec<String> {
+            let mut moves = Vec::new();
+            for (seed, steps, agent_seed) in POSITIONS {
+                let pending = crate::game::new_game(GameConfig::for_player_count(2), &rules, seed)
+                    .expect("setup");
+                let mut state =
+                    crate::game::finalize_setup(pending, &[StartingOrderChoice::Keep(0); 2])
+                        .expect("finalize");
+                let mut rng = ChaCha8Rng::seed_from_u64(seed ^ 0x3F3F);
+                let policy = RolloutPolicy::FAMILY_WEIGHTED_DEFAULT;
+                for step in 0..steps {
+                    let mv = {
+                        let handle = DecisionHandle::new(&state, &rules);
+                        policy
+                            .pick(&handle, &mut rng)
+                            .unwrap_or_else(|| panic!("dead end at seed {seed:#x} step {step}"))
+                    };
+                    state = crate::game::apply_move_unchecked(&state, &mv, &rules)
+                        .expect("policy move applies");
+                }
+                let mut agent = build(&rules, agent_seed);
+                for _ in 0..DECISIONS {
+                    let mover = state.current_player;
+                    let view = crate::game::observe(&state, mover).expect("the mover's view");
+                    let report = agent.choose(&view, &rules).expect("the seat decides");
+                    moves.push(format!("{:?}", report.mv));
+                    state = crate::game::apply_move(&state, &report.mv, &rules)
+                        .expect("the seat's move is legal at the checked boundary");
+                }
+            }
+            moves
+        };
+
+        let contestant = |c: Contestant| {
+            move |rules: &Rules, seed: u64| -> Box<dyn ArenaAgent> { c.build(rules, seed).0 }
+        };
+        let padded = walk(&mut contestant(Contestant::NamedTable(NamedIdentity::V2Padded)));
+        let refit = walk(&mut contestant(Contestant::NamedTable(NamedIdentity::V2RefitPadded)));
+        let shipped = walk(&mut contestant(Contestant::LOOKAHEAD_V1_DEFAULT));
+        // The DIRECT construction on the named table, bypassing `build`
+        // entirely: if `build` handed the agent some other table, this walk and
+        // the arm's would part company.
+        let direct = walk(&mut |rules: &Rules, seed: u64| -> Box<dyn ArenaAgent> {
+            Box::new(LookaheadAgent::with_knobs(
+                rules,
+                SearchScheme::TurnBoundary { beam: NAMED_IDENTITY_BEAM },
+                NAMED_IDENTITY_WORLDS,
+                NAMED_IDENTITY_RETREAT_SAMPLES,
+                WeightTable::V2_REFIT_PADDED,
+                seed,
+            ))
+        });
+        assert_eq!(padded.len(), POSITIONS.len() * DECISIONS, "the walk must reach every decision");
+
+        assert_eq!(
+            padded, shipped,
+            "v2-padded must play the shipped seat's game — it names the shipped table",
+        );
+        assert_eq!(
+            refit, direct,
+            "v2-refit-padded's built agent must play the table its name resolves to",
+        );
+        assert_ne!(
+            refit, padded,
+            "the two arms played an IDENTICAL walk, so this walk cannot tell their tables \
+             apart and every table pin resting on it is vacuous",
+        );
+        println!("named-identity walk: v2-padded {padded:?}\n                     refit {refit:?}");
+    }
+
+    /// A named arm survives the descriptor round trip — and a record naming an
+    /// arm at knobs the arm does not have is REFUSED rather than resumed as if
+    /// it were that arm.
+    #[test]
+    fn a_named_identity_round_trips_through_its_descriptor() {
+        for arm in NamedIdentity::ALL {
+            let contestant = Contestant::NamedTable(arm);
+            let (name, _version, params) = contestant.descriptor();
+            assert_eq!(name, arm.name());
+            assert_eq!(
+                Contestant::from_parts(&name, &params),
+                Ok(contestant),
+                "{} must reconstruct from its own descriptor",
+                arm.name(),
+            );
+            // The identity keys ride the map and are NOT consumed — the
+            // preserve-list rule, so a record from a build whose table moved
+            // stays loadable and the drift stays visible to the caller.
+            assert!(params.contains_key("weights") && params.contains_key("eval_impl"));
+
+            let mut wrong = params.clone();
+            wrong.insert("b".to_string(), 8);
+            let message = Contestant::from_parts(&name, &wrong)
+                .map(|c| format!("{c:?}"))
+                .expect_err("a knobbed record must not resume as a knobless arm");
+            assert!(message.contains("knobless"), "{}: {message}", arm.name());
         }
     }
 }

@@ -3870,6 +3870,20 @@ pub enum UnsupportedReason {
     /// surface whose correctness nothing checks. Revisited with a consumer, not
     /// with a plumbing change (design §3).
     Diagnostic,
+    /// **A NAMED IDENTITY — an alternate-table arena arm (V4 §7 step 8).** Like
+    /// the atomic-diag arm this one WOULD work: `Contestant::build` routes it
+    /// through the same `build_search` as `lookahead-v1` and it carries the
+    /// same ranked-root surface, so mirroring it here would be one more match
+    /// arm. It is refused on SCOPE, and the scope is a standing rule rather
+    /// than this wave's preference: V3 spec §5.1 admitted in-crate weighted
+    /// construction "used only by the scan, **never the runner grammar**", and
+    /// this harness's rooted reads are keyed to ONE pinned generating identity
+    /// (`GENERATED_ECOLOGY_V2_LOOKAHEAD`). Admitting a seat whose table is a
+    /// runner argument would put a weight identity into that grammar and make
+    /// two `--contestant` spellings resolve to two different evaluators over
+    /// one recorded ecology. The §11 arms are the ARENA's cells; run them
+    /// through `examples/arena`.
+    AlternateTable,
 }
 
 impl UnsupportedReason {
@@ -3881,6 +3895,10 @@ impl UnsupportedReason {
                 "a one-ply argmax reports no per-candidate vector and no search counters"
             }
             Self::Diagnostic => "a labelled diagnostic arm no v1 consumer asks a root table about",
+            Self::AlternateTable => {
+                "an alternate-table arena identity; this harness's rooted reads are keyed to one \
+                 pinned generating identity, and the weight arms are cells for examples/arena"
+            }
         }
     }
 }
@@ -4069,6 +4087,7 @@ fn mirror_build(
         Contestant::MctsV1 { .. } | Contestant::AtomicDiag { .. } => {
             refuse(UnsupportedReason::Diagnostic)
         }
+        Contestant::NamedTable(_) => refuse(UnsupportedReason::AlternateTable),
     }
 }
 

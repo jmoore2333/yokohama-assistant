@@ -369,6 +369,17 @@ pub(crate) fn eligible(contestant: Contestant) -> Result<Contestant, String> {
         Contestant::MctsV1 { .. } | Contestant::AtomicDiag { .. } => {
             Err(diagnostic_refusal(contestant))
         }
+        // The named identities (core's V4 step-8 arena surface) are RESEARCH
+        // arms: they exist so a §11 weight comparison is a runnable arena cell.
+        // Refused here rather than admitted, and the reason is scope rather
+        // than capability -- a named arm is a `LookaheadAgent` at the shipped
+        // knobs, so `why` could explain one perfectly well. Admitting it would
+        // add a user-selectable seat, and a seat this driver offers is
+        // documentation (`docs/cli-guide`, which `guide_sync` holds to the same
+        // commit) plus a wizard surface plus a resume path -- a decision for
+        // whoever wants that seat, made then, not a side effect of core gaining
+        // an arena identity.
+        Contestant::NamedTable(_) => Err(research_identity_refusal(contestant)),
     }
 }
 
@@ -376,6 +387,18 @@ pub(crate) fn eligible(contestant: Contestant) -> Result<Contestant, String> {
 /// and [`decide`] so the two cannot describe the same refusal differently.
 fn diagnostic_refusal(contestant: Contestant) -> String {
     format!("{} is a diagnostic contestant, not available as a CLI bot", contestant.descriptor().0)
+}
+
+/// The same, for a named research identity -- a SEPARATE sentence because the
+/// two refusals are separate facts: a diagnostic arm is one this driver will
+/// not explain, and a named identity is one it does not offer. Reporting either
+/// under the other's words would tell a reader the wrong thing about why their
+/// seat did not load.
+fn research_identity_refusal(contestant: Contestant) -> String {
+    format!(
+        "{} is a named research identity for arena weight comparisons, not available as a CLI bot",
+        contestant.descriptor().0,
+    )
 }
 
 /// One warning per field on which the RECORD and THIS BUILD disagree about what
@@ -601,6 +624,11 @@ pub(crate) fn decide(
         // `_`, for [`eligible`]'s reason.
         Contestant::MctsV1 { .. } | Contestant::AtomicDiag { .. } => {
             Err(BotError::DeadEnd(diagnostic_refusal(contestant)))
+        }
+        // [`eligible`]'s refusal, restated at the build so the two arms of one
+        // decision cannot drift apart.
+        Contestant::NamedTable(_) => {
+            Err(BotError::DeadEnd(research_identity_refusal(contestant)))
         }
     }
 }

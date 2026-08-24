@@ -416,7 +416,14 @@ fn assert_cell_plumbing(report: &CellReport, spec: &CellSpec, x_explains: bool) 
 fn x_searches(x: &Contestant) -> bool {
     match x {
         Contestant::Policy(_) | Contestant::GreedyV1 { .. } => false,
-        Contestant::LookaheadV1 { .. } | Contestant::AtomicDiag { .. } => true,
+        // A named identity IS a `LookaheadAgent` at the shipped knobs
+        // (`Contestant::build` routes it through the same `build_search`), so
+        // it searches and carries the Phase-3.3 `(Some, Some)` cap-counter
+        // shape this binary asserts. It answers with `LookaheadV1` rather than
+        // needing an arm of its own.
+        Contestant::LookaheadV1 { .. }
+        | Contestant::AtomicDiag { .. }
+        | Contestant::NamedTable(_) => true,
         // Phase 3.4's contestant is not a Phase-3.3 one, and NEITHER branch
         // describes it: it searches, but its FREE counter is `None` by
         // construction (a tree has no quiescence arm to enter). Answering

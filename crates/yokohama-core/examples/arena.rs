@@ -35,7 +35,10 @@
 //! accept the 3.2 rungs AND the evaluator controllers (`greedy-v1`,
 //! `lookahead-v1`, `atomic-diag-v1`), each with its own knob grammar — and since
 //! Phase 3.4 the architecture contestant `mcts-v1`, plus a `cap=` knob on
-//! `lookahead-v1` (the shared scored-successor budget). A cell mixing the rung
+//! `lookahead-v1` (the shared scored-successor budget) — and since V4 step 8
+//! the NAMED IDENTITIES `v2-padded` / `v2-refit-padded`, knobless arms that
+//! differ from `lookahead-v1` in their weight TABLE alone, so a §11 weight
+//! comparison is a runnable cell rather than a document. A cell mixing the rung
 //! family with an evaluator/architecture one is swapped-balanced but NOT
 //! setup-identical — they resolve a dealt Order pair by different Keep rules —
 //! and both the header and the report echo say which kind of cell ran.
@@ -126,8 +129,23 @@ contestants (<x> and <y>):
         evaluator-score units (100), m the retreat samples (8), and leaf one of
         hand-off (default) | midturn-diag | constant-diag.
       All four run the frozen evaluator weight table; a weight change is a version
-      bump, not a cell knob. Unknown contestant names, unknown knobs and unknown
-      knob VALUES are errors.
+      bump, not a cell knob.
+  NAMED IDENTITIES (V4 step 8) -- the one exception to the line above, and it is
+  an exception by NAME rather than by knob: a named identity is a distinct
+  contestant whose table is part of what its name means, never a `weights=` knob
+  on an arm above.
+    v2-padded                            lookahead at the shipped knobs on WeightTable::V2
+                                         (the shipped table, padded) -- the same seat
+                                         `lookahead-v1` plays, said as an identity
+    v2-refit-padded                      the same seat on the §8 B-cell REFIT of the sixteen
+                                         incumbents (no candidate column admitted); NOT a
+                                         shipped table
+      Both are KNOBLESS: they run one transcribed knob set (b=4, k=1, m=8, uncapped)
+      so a cell pitting them against each other varies the TABLE and nothing else.
+      Their echoes carry the name and the resolved `weights=` identity. They are
+      ARENA arms: examples/eval_probe selects its table with --weights instead, the
+      driven harness refuses them, and they are not CLI bot seats.
+      Unknown contestant names, unknown knobs and unknown knob VALUES are errors.
 ";
 
 /// Spec §0-R1's frozen uniform 4P ChurchTrackFull ceiling: 7/2000, Wilson-95

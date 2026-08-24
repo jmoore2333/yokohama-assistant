@@ -600,10 +600,13 @@ fn render(
         explanation_only: match r.contestant {
             Contestant::GreedyV1 { .. } => Some(ONE_PLY_ACCOUNT),
             Contestant::LookaheadV1 { .. } => None,
-            // Unreachable: `read_seat` admits only the two arms above.
-            Contestant::Policy(_) | Contestant::MctsV1 { .. } | Contestant::AtomicDiag { .. } => {
-                None
-            }
+            // Unreachable: `read_seat` admits only the two arms above. The
+            // named identities join this group for the same reason — `eligible`
+            // refuses them, so no seat this driver plays can be one.
+            Contestant::Policy(_)
+            | Contestant::MctsV1 { .. }
+            | Contestant::AtomicDiag { .. }
+            | Contestant::NamedTable(_) => None,
         },
         forced_lead: r.forced.then_some(FORCED_LEAD),
     };

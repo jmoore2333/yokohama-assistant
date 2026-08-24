@@ -36,7 +36,7 @@ use crate::game::lookahead::{self, DEFAULT_ATOMIC_DEPTH, DEFAULT_BEAM, DEFAULT_W
 use crate::game::mcts::{self, LeafRule, DEFAULT_EXPLORATION_PPM, DEFAULT_SQUASH_SCALE};
 use crate::game::policy::RolloutPolicy;
 
-use super::Contestant;
+use super::{Contestant, NamedIdentity};
 
 /// The short alias for the S2 diagnostic arm.
 ///
@@ -156,6 +156,17 @@ pub(super) fn parse_contestant(spec: &str) -> Result<Contestant, String> {
         return Ok(Contestant::AtomicDiag { d, k, m });
     }
 
+    // The NAMED IDENTITIES (V4 step 8, spec §13): knobless by design — see
+    // [`NamedIdentity`]'s doc — so any knob group at all is refused here in the
+    // knobless rungs' own sentence rather than falling through to an
+    // unknown-contestant refusal that would name the wrong problem.
+    if let Some(arm) = NamedIdentity::from_str_name(name) {
+        if let Some(knobs) = knobs {
+            return Err(format!("named identity {name:?} has no knobs, but {knobs:?} was given"));
+        }
+        return Ok(Contestant::NamedTable(arm));
+    }
+
     parse_policy(name, knobs).map(Contestant::Policy)
 }
 
@@ -221,10 +232,12 @@ fn parse_policy(name: &str, knobs: Option<&str>) -> Result<RolloutPolicy, String
     let base = RolloutPolicy::from_str_name(name).ok_or_else(|| {
         format!(
             "unknown contestant {name:?} (rungs: uniform | retreat-averse | family-weighted; \
-             evaluator: {} | {} | {ATOMIC_DIAG_ALIAS}; architecture: {})",
+             evaluator: {} | {} | {ATOMIC_DIAG_ALIAS}; architecture: {}; named identities: {} | {})",
             greedy::GREEDY_CONTROLLER,
             lookahead::LOOKAHEAD_CONTROLLER,
             mcts::MCTS_CONTROLLER,
+            NamedIdentity::V2Padded.name(),
+            NamedIdentity::V2RefitPadded.name(),
         )
     })?;
     let Some(knobs) = knobs else { return Ok(base) };
@@ -268,12 +281,25 @@ mod tests {
     /// every field, defaults included); `Err` rows carry the error string
     /// VERBATIM, because those strings are user-facing in the runner.
     ///
-    /// **ONE row has deliberately departed from that capture** — W5 landed the
-    /// refusal-text repair the W1 fix wave recorded and deferred (see
-    /// [`parse_policy`]), so `family-weighted:z=1` now names the contestant the
-    /// way every other arm's fall-through always did. It is marked in place
-    /// below. Every other row is still byte-for-byte the old code's own output,
-    /// and a second unmarked departure is a regression, not a re-capture.
+    /// **TWO GROUPS OF ROWS have deliberately departed from that capture**, and
+    /// an UNMARKED departure is a regression rather than a re-capture:
+    ///
+    /// 1. W5 landed the refusal-text repair the W1 fix wave recorded and
+    ///    deferred (see [`parse_policy`]), so `family-weighted:z=1` now names the
+    ///    contestant the way every other arm's fall-through always did. Marked
+    ///    in place below.
+    /// 2. **V4 §7 step 8 T3** added the named-identity arms, so the
+    ///    unknown-contestant refusal's ALTERNATIVES LIST gained a fourth
+    ///    category — `; named identities: v2-padded | v2-refit-padded`. That
+    ///    moved the EIGHT rows whose expectation is that sentence (`""`,
+    ///    `"nope"`, `"greedy-v2"`, `" uniform"`, `"UNIFORM"`, `"uniform "`,
+    ///    `"mcts-v1 "`, `":"`, `":m=4"` — nine expectations over eight distinct
+    ///    sentences). Every SPEC and every accepted parse is untouched: what
+    ///    changed is the list of names the refusal offers, and leaving it stale
+    ///    would refuse `v2-refit-padde` with a menu that omits the arm the
+    ///    typist wanted. The row COUNT and the refusal COUNT below are
+    ///    unchanged, which is what keeps this an amendment to the capture
+    ///    rather than a re-capture of it.
     const FROZEN_BATTERY: &[(&str, Result<&str, &str>)] = &[
         ("uniform", Ok("Policy(Uniform)")),
         ("retreat-averse", Ok("Policy(RetreatAverse)")),
@@ -348,15 +374,15 @@ mod tests {
         ("mcts-v1:c=abc", Err("c must be parts per million: invalid digit found in string")),
         ("mcts-v1:scale=abc", Err("scale must be an integer: invalid digit found in string")),
         ("mcts-v1:w=1", Err("unknown knob \"w\" for mcts-v1 (cap | c | scale | m | leaf)")),
-        ("", Err("unknown contestant \"\" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1)")),
-        ("nope", Err("unknown contestant \"nope\" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1)")),
-        ("greedy-v2", Err("unknown contestant \"greedy-v2\" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1)")),
-        (" uniform", Err("unknown contestant \" uniform\" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1)")),
-        ("UNIFORM", Err("unknown contestant \"UNIFORM\" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1)")),
-        ("uniform ", Err("unknown contestant \"uniform \" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1)")),
-        ("mcts-v1 ", Err("unknown contestant \"mcts-v1 \" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1)")),
-        (":", Err("unknown contestant \"\" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1)")),
-        (":m=4", Err("unknown contestant \"\" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1)")),
+        ("", Err("unknown contestant \"\" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1; named identities: v2-padded | v2-refit-padded)")),
+        ("nope", Err("unknown contestant \"nope\" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1; named identities: v2-padded | v2-refit-padded)")),
+        ("greedy-v2", Err("unknown contestant \"greedy-v2\" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1; named identities: v2-padded | v2-refit-padded)")),
+        (" uniform", Err("unknown contestant \" uniform\" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1; named identities: v2-padded | v2-refit-padded)")),
+        ("UNIFORM", Err("unknown contestant \"UNIFORM\" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1; named identities: v2-padded | v2-refit-padded)")),
+        ("uniform ", Err("unknown contestant \"uniform \" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1; named identities: v2-padded | v2-refit-padded)")),
+        ("mcts-v1 ", Err("unknown contestant \"mcts-v1 \" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1; named identities: v2-padded | v2-refit-padded)")),
+        (":", Err("unknown contestant \"\" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1; named identities: v2-padded | v2-refit-padded)")),
+        (":m=4", Err("unknown contestant \"\" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1; named identities: v2-padded | v2-refit-padded)")),
     ];
 
     fn rendered(spec: &str) -> Result<String, String> {

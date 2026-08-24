@@ -7717,7 +7717,16 @@ fn the_padded_tables_preserve_pre_move_totals_and_terms_over_constructed_and_org
     }
     assert!(expected.next().is_none());
     let mut walked: Option<(u8, u64, usize, GameState)> = None;
-    for (players, seed, steps, viewer, total, terms) in &ORGANIC {
+    for (row, (players, seed, steps, viewer, total, terms)) in ORGANIC.iter().enumerate() {
+        // The WALK PARAMETERS are shared with `PADDING_BATTERY_ORGANIC`, which
+        // T3's refit-equivalence pin replays: one list of states with two
+        // readers, so the two step-8 batteries cannot drift into describing
+        // different views while both claiming to be "the battery".
+        assert_eq!(
+            (*players, *seed, *steps, *viewer),
+            PADDING_BATTERY_ORGANIC[row],
+            "organic row {row} drifted from the shared battery parameters",
+        );
         let reuse =
             matches!(&walked, Some((p, s, n, _)) if p == players && s == seed && n == steps);
         if !reuse {
@@ -7741,4 +7750,200 @@ fn the_padded_tables_preserve_pre_move_totals_and_terms_over_constructed_and_org
         let view = observe(&walked.as_ref().unwrap().3, PlayerId(*viewer)).unwrap();
         assert_pre_move_v2_view(&label, &view, &rules, *total, terms);
     }
+}
+
+/// **THE V2-PADDED BATTERY'S ORGANIC WALK PARAMETERS** —
+/// `(players, seed, steps, viewer)`, shared by the two step-8 behavior batteries
+/// so they cannot drift into describing different views.
+///
+/// The rows are the T1 battery's own, and
+/// `the_padded_tables_preserve_pre_move_totals_and_terms_over_constructed_and_organic_views`
+/// asserts its recorded rows still match this list position for position — so
+/// this is one list with two readers rather than a copy.
+const PADDING_BATTERY_ORGANIC: [(u8, u64, usize, u8); 15] = [
+    (2, 9, 40, 0),
+    (2, 9, 40, 1),
+    (2, 9, 120, 0),
+    (2, 9, 120, 1),
+    (2, 60, 200, 0),
+    (2, 60, 200, 1),
+    (3, 25, 90, 0),
+    (3, 25, 90, 1),
+    (3, 25, 90, 2),
+    (4, 40, 150, 0),
+    (4, 40, 150, 1),
+    (4, 40, 150, 2),
+    (4, 40, 150, 3),
+    (2, 133, 300, 0),
+    (2, 133, 300, 1),
+];
+
+/// Replay the step-8 behavior battery — four constructed views over two
+/// hand-built fixtures, then the fifteen organic mid-game views of
+/// [`PADDING_BATTERY_ORGANIC`], in that order.
+///
+/// Built the way the T1 pin builds them, walk reuse included (consecutive rows
+/// sharing `(players, seed, steps)` are one walk), so a caller pays for
+/// eight walks rather than nineteen.
+fn padding_battery_views(rules: &Rules) -> Vec<(String, PlayerView)> {
+    let mut out = Vec::new();
+    for (fixture, state) in
+        [("constructed-dummy", dummy_fixture(rules)), ("constructed-group-x", group_x_fixture(71, rules))]
+    {
+        for viewer in 0..2 {
+            out.push((
+                format!("{fixture}-seat-{viewer}"),
+                observe(&state, PlayerId(viewer)).expect("the fixture seat observes"),
+            ));
+        }
+    }
+    let mut walked: Option<(u8, u64, usize, GameState)> = None;
+    for (players, seed, steps, viewer) in PADDING_BATTERY_ORGANIC {
+        let reuse = matches!(&walked, Some((p, s, n, _)) if *p == players && *s == seed && *n == steps);
+        if !reuse {
+            let mut state = keep_game(players, seed, rules);
+            let mut rng = ChaCha8Rng::seed_from_u64(seed ^ 0x3F3F);
+            let policy = RolloutPolicy::FAMILY_WEIGHTED_DEFAULT;
+            let mut step = 0usize;
+            while !is_game_over(&state) && step < steps {
+                let mv = {
+                    let handle = DecisionHandle::new(&state, rules);
+                    policy
+                        .pick(&handle, &mut rng)
+                        .unwrap_or_else(|| panic!("dead end at {players}P seed {seed} step {step}"))
+                };
+                state = apply_move_unchecked(&state, &mv, rules).unwrap();
+                step += 1;
+            }
+            walked = Some((players, seed, steps, state));
+        }
+        out.push((
+            format!("organic-{players}p-seed-{seed}-step-{steps}-seat-{viewer}"),
+            observe(&walked.as_ref().unwrap().3, PlayerId(viewer)).unwrap(),
+        ));
+    }
+    out
+}
+
+/// **V4 §7 STEP 8 T3 — `V2-refit-padded` ≡ ITS PRE-PADDING TABLE** (charter
+/// obligation 3; the `V2-padded` half is the T1 pin above).
+///
+/// The claim is that padding the B-cell fit to thirty-four slots changed
+/// nothing about what it computes, and it is checked in two independent ways
+/// because either alone has a hole.
+///
+/// **(a) The literal identity.** The sixteen fitted coordinates are transcribed
+/// HERE, in this test, from the regeneration's own output — a second copy on
+/// purpose, because a test that read them out of the const it is checking would
+/// pass on any const at all. This half catches a corruption in a slot the
+/// battery never exercises, which the arithmetic half cannot.
+///
+/// **(b) The sixteen-wide arithmetic.** Over every battery view: each
+/// incumbent row's weight must be what `interpolate` gives on THIS test's
+/// literals at the explanation's own progress; every candidate row must be
+/// exactly zero in both weight and product; and the production `score` must
+/// equal a total re-assembled from those independent weights. A thirty-four-wide
+/// table cannot be run sixteen-wide, so re-assembling the sum from the sixteen
+/// is what "the pre-padding table's arithmetic" means operationally.
+///
+/// Anti-vacuity is ASSERTED, not hoped for: the battery must produce real
+/// nonzero terms, and the refit must SCORE DIFFERENTLY from V2 somewhere — a
+/// table that happened to equal V2 would satisfy every equivalence assertion
+/// above while making the whole §11 comparison a table against itself.
+#[test]
+fn the_v2_refit_padded_table_is_its_pre_padding_sixteen_wide_arithmetic() {
+    // The B cell of §8's protocol — `[base/all-zero] fit-half 0.8030 sweeps=8
+    // moves=110 evals=2659 converged=true`, regenerated at T3 from the banked
+    // matrix (sha256 d348dcca…) by
+    // `eval_probe fit --matrix … --descend incumbents` on a clean build.
+    const FITTED_EARLY: [i64; Feature::INCUMBENT_COUNT] =
+        [1, 3, 1, -2, 0, -63, 3, -9, 7, 0, 32, -3, 10, 3, 7, 10];
+    const FITTED_LATE: [i64; Feature::INCUMBENT_COUNT] =
+        [3, 4, 3, 3, 3, 36, -2, 1, 0, 4, -1, 10, 44, -2, -4, -2];
+
+    let table = WeightTable::V2_REFIT_PADDED;
+
+    // (a) THE LITERAL IDENTITY — the const IS these sixteen numbers, zero-padded.
+    assert_eq!(&table.early[..Feature::INCUMBENT_COUNT], &FITTED_EARLY[..], "early drifted");
+    assert_eq!(&table.late[..Feature::INCUMBENT_COUNT], &FITTED_LATE[..], "late drifted");
+    for index in Feature::INCUMBENT_COUNT..Feature::COUNT {
+        assert_eq!(
+            (table.early[index], table.late[index]),
+            (0, 0),
+            "candidate slot {} is not zero — the B cell admitted no candidate",
+            Feature::ALL[index].name(),
+        );
+    }
+
+    // (b) THE SIXTEEN-WIDE ARITHMETIC over the shared battery.
+    let rules = Rules::standard();
+    let views = padding_battery_views(&rules);
+    assert_eq!(views.len(), 4 + PADDING_BATTERY_ORGANIC.len(), "the battery lost views");
+
+    let mut nonzero_products = 0usize;
+    let mut differs_from_v2 = 0usize;
+    for (label, view) in &views {
+        let explanation = explain(view, &rules, &table);
+        let terminal = explanation.terminal.as_ref().map(|standing| standing.value);
+        let mut reference: i64 = 0;
+        for (index, term) in explanation.terms.iter().enumerate() {
+            // `explain` reports zero weights on a terminal view (a positional
+            // weight there would be a lie about what `score` used), so the
+            // reference mirrors that rule rather than the table.
+            let expected_weight = match (terminal, index < Feature::INCUMBENT_COUNT) {
+                (Some(_), _) | (None, false) => 0,
+                (None, true) => {
+                    interpolate(FITTED_EARLY[index], FITTED_LATE[index], explanation.progress_ppm)
+                }
+            };
+            assert_eq!(
+                term.weight, expected_weight,
+                "{label}: {} used a weight the fitted vectors do not give",
+                term.feature.name(),
+            );
+            if index >= Feature::INCUMBENT_COUNT {
+                assert_eq!(
+                    (term.weight, term.product),
+                    (0, 0),
+                    "{label}: candidate term {} is not zero under the padded refit",
+                    term.feature.name(),
+                );
+            }
+            reference = reference.saturating_add(
+                expected_weight
+                    .saturating_mul(term.viewer_value.saturating_sub(term.opponent_value)),
+            );
+            if term.product != 0 {
+                nonzero_products += 1;
+            }
+        }
+        if let Some(value) = terminal {
+            reference = reference.saturating_add(value);
+        }
+        let produced = score(view, &rules, &table);
+        assert_eq!(
+            produced, reference,
+            "{label}: production score is not the fitted vectors' own arithmetic",
+        );
+        assert_eq!(explanation.total, produced, "{label}: score/explain paths disagree");
+        if produced != score(view, &rules, &WeightTable::V2) {
+            differs_from_v2 += 1;
+        }
+    }
+
+    // Anti-vacuity, both halves MEASURED THEN HALVED (the house rule): the
+    // battery realized 100 nonzero products and 17 of its 19 views scoring
+    // differently from V2 when this pin was authored.
+    assert!(nonzero_products >= 50, "the battery priced almost nothing: {nonzero_products}");
+    assert!(
+        differs_from_v2 >= 8,
+        "the refit scores like V2 on this battery ({differs_from_v2} of {} views differ), so \
+         every equivalence assertion above is a table compared with itself",
+        views.len(),
+    );
+    println!(
+        "v2-refit-padded battery: {} views · {nonzero_products} nonzero products · \
+         {differs_from_v2} differ from V2",
+        views.len(),
+    );
 }

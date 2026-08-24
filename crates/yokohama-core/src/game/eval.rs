@@ -1091,6 +1091,65 @@ impl WeightTable {
     pub const ZERO: WeightTable =
         WeightTable { early: [0; Feature::COUNT], late: [0; Feature::COUNT] };
 
+    /// **NOT A SHIPPED TABLE, AND NEVER TO BECOME ONE BY DRIFT.**
+    /// [`WeightTable::V2`] is THE shipped table; this const is a §11 ARM
+    /// IDENTITY — one named alternative the arena can seat against V2 so the
+    /// comparison is a runnable cell rather than a document (V4 §7 step 8 wave
+    /// T3, spec §13's "the §11 arms are runnable identities rather than
+    /// names"). Nothing in the engine, the CLI or the shipped constructors
+    /// reads it; `Contestant::NamedTable(NamedIdentity::V2RefitPadded)` is its
+    /// only consumer, and the CLI and the probe both refuse that arm by name.
+    ///
+    /// # Where the sixteen numbers came from
+    ///
+    /// They are the **B cell** of the §8 fitting protocol — the sixteen
+    /// incumbents REFIT with no candidate columns admitted, which is what makes
+    /// this "V2, refit" rather than a new feature set. Recorded in the step-6
+    /// evidence artifact (`v3l-final-artifact.txt`, `== cell B (0 candidates)
+    /// ==`) as
+    ///
+    /// ```text
+    /// [base/all-zero] fit-half 0.8030 sweeps=8 moves=110 evals=2659 converged=true  <- the cell's fit
+    /// ```
+    ///
+    /// and REGENERATED deterministically at T3 before transcription — the
+    /// vectors below are the regeneration's own output, not a reading of the
+    /// artifact:
+    ///
+    /// ```text
+    /// cargo run --release -p yokohama-core --example eval_probe -- \
+    ///     fit --matrix docs/temp/step6-artifacts/v3l-matrix.txt --descend incumbents
+    /// ```
+    ///
+    /// over the banked matrix at sha256
+    /// `d348dcca30e304d8d97277771d22da5aed9e5d480441e7137409e78d9348e7b9`
+    /// (verified at use), on a clean build. `fit` is deterministic and
+    /// master-free — §8's own words, "Deterministic; no master" — so the
+    /// regeneration is a reproduction and not a second experiment: it returned
+    /// the artifact's figures to the digit, both inits, and chose the same one
+    /// (all-zero, fit-half 0.8030 against v2-start's 0.7977).
+    ///
+    /// # What may never move
+    ///
+    /// The sixteen literals are a HISTORICAL RECORD of a fit that ran on a
+    /// specific matrix, exactly as [`PRE_FREEZE_2026_07_27`](Self::PRE_FREEZE_2026_07_27)
+    /// is a record of a specific table. A re-fit is a NEW const with its own
+    /// literals and its own provenance, never an edit here — editing these
+    /// would silently re-point every figure ever recorded against this arm's
+    /// `weights=` identity. The eighteen candidate slots are ZERO and stay
+    /// zero: the B cell admitted no candidate, so a nonzero slot here would be
+    /// a claim the fit never made.
+    ///
+    /// Padded through [`padded_incumbent_vector`] like every named table above,
+    /// so the widening cannot retype a fitted number, and pinned
+    /// behavior-equivalent to its own sixteen-wide arithmetic by
+    /// `the_v2_refit_padded_table_is_its_pre_padding_sixteen_wide_arithmetic`.
+    pub const V2_REFIT_PADDED: WeightTable = WeightTable {
+        //     [vp, ctry, tech, chur, cust, hCORE, hEXC, ware, brd, shop, trad, 5pw, imp, achv, merc, hnd#]
+        early: padded_incumbent_vector([1, 3, 1, -2, 0, -63, 3, -9, 7, 0, 32, -3, 10, 3, 7, 10]),
+        late: padded_incumbent_vector([3, 4, 3, 3, 3, 36, -2, 1, 0, 4, -1, 10, 44, -2, -4, -2]),
+    };
+
     /// `(early, late)` for one feature.
     pub fn get(&self, feature: Feature) -> (i64, i64) {
         let i = feature.index();

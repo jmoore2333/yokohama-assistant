@@ -651,6 +651,21 @@ impl ProbeContestant {
                  instrument reports (McTally, and no free-extension meter at all), so its \
                  corpus would arrive with a counters block describing some other contestant",
             )),
+            // A THIRD refusal, and it is a de-duplication rather than a
+            // capability gap: this probe already chooses its table with
+            // `--weights`, whose whole purpose is "the ability to run a corpus
+            // under a different [table]". Admitting a named identity would give
+            // one choice two spellings that could disagree in a single
+            // invocation (`--contestant v2-refit-padded --weights v2`), and the
+            // echo would have to pick a winner. The named arms are the arena's
+            // §11 cells; the flag is this instrument's answer to the same
+            // question.
+            Contestant::NamedTable(_) => Err(Self::refusal(
+                spec,
+                "a named identity is an ARENA §11 arm; this probe selects its table with \
+                 `--weights`, and a second spelling of that choice could contradict the flag \
+                 inside one invocation",
+            )),
         }
     }
 
