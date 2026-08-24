@@ -6323,7 +6323,7 @@ impl ProtocolOutcome {
 /// it; an artifact that restated fourteen rulings in its own words would be a
 /// fifteenth registration nobody ratified. What a reader needs from the record
 /// is which sentences governed the run, and where to read them.
-const REGISTERED_SENTENCES: [(&str, &str); 13] = [
+const REGISTERED_SENTENCES: [(&str, &str); 15] = [
     ("1", "init tie"),
     ("2", "step-5 bridge"),
     ("3", "inventory"),
@@ -6337,6 +6337,8 @@ const REGISTERED_SENTENCES: [(&str, &str); 13] = [
     ("10", "step ties"),
     ("11", "X1 — RULED"),
     ("12", "statistic names"),
+    ("13", "sparse-arm rate"),
+    ("14", "exemption-(ii) roster"),
 ];
 
 /// One cell's whole protocol record: the base fit, its removals, and the one
@@ -6423,7 +6425,7 @@ impl ProtocolRun {
     /// nothing — every figure it prints is recorded evidence — so the only
     /// thing an exit code can say here is whether the record is COMPLETE.
     fn exit_code(&self) -> i32 {
-        if self.rerun.stops() {
+        if self.outcome != ProtocolOutcome::Complete || self.rerun.stops() {
             return EXIT_INCOMPLETE;
         }
         0
@@ -7137,15 +7139,14 @@ const HELD_OUT_REPLICATES: u32 = 2_000;
 /// true", so its subject is the interaction cell and its reference is the union
 /// cell. The orientation is the whole content of the row: reversed, a positive
 /// increment would print negative.
-const HELD_OUT_STATISTICS: [(&str, ProtocolCell, ProtocolCell); 8] = [
+const HELD_OUT_STATISTICS: [(&str, ProtocolCell, ProtocolCell); 7] = [
     ("B+S_vs_B", ProtocolCell::BS, ProtocolCell::B),
     ("B+E_vs_B", ProtocolCell::BE, ProtocolCell::B),
     ("B+S+E_vs_B", ProtocolCell::BSE, ProtocolCell::B),
     ("B+S+E+X_vs_B", ProtocolCell::BSEX, ProtocolCell::B),
     ("B+E-resource_vs_B", ProtocolCell::BEResource, ProtocolCell::B),
     ("B+E-order_vs_B", ProtocolCell::BEOrder, ProtocolCell::B),
-    ("delta_X", ProtocolCell::BSE, ProtocolCell::BSEX),
-    ("B_vs_B", ProtocolCell::B, ProtocolCell::B),
+    ("delta_X", ProtocolCell::BSEX, ProtocolCell::BSE),
 ];
 
 /// **§8's REGISTERED STREAM KEY**: `splitmix64(corpus_master XOR
@@ -7162,7 +7163,7 @@ const HELD_OUT_STATISTICS: [(&str, ProtocolCell, ProtocolCell); 8] = [
 /// here or nowhere, and an unmixed XOR would key seven streams on a master's low
 /// bits differing only by a name's hash.
 fn held_out_statistic_seed(master: u64, name: &str) -> u64 {
-    master ^ fnv1a64(name)
+    mix64(master ^ fnv1a64(name))
 }
 
 /// One registered held-out statistic: a PAIRED difference of three-stage means.
@@ -7257,7 +7258,9 @@ fn paired_statistic(
             _ => None,
         };
     }
-    let point = Some(stages.iter().map(|d| d.unwrap_or(0.0)).sum::<f64>() / 3.0);
+    let defined: Vec<f64> = stages.iter().filter_map(|d| *d).collect();
+    let point =
+        (!defined.is_empty()).then(|| defined.iter().sum::<f64>() / defined.len() as f64);
 
     let clusters = reference.clusters;
     let mut out = PairedStatistic {
@@ -7281,12 +7284,19 @@ fn paired_statistic(
             mult[rng.gen_range(0..clusters)] += 1;
         }
         let mut sum = 0.0f64;
+        let mut measured = 0usize;
         for s in 0..3 {
-            let a = auc_weighted(&subject.stages[s], &mult).unwrap_or(0.0);
-            let b = auc_weighted(&reference.stages[s], &mult).unwrap_or(0.0);
-            sum += a - b;
+            if let (Some(a), Some(b)) = (
+                auc_weighted(&subject.stages[s], &mult),
+                auc_weighted(&reference.stages[s], &mult),
+            ) {
+                sum += a - b;
+                measured += 1;
+            }
         }
-        replicates.push(sum / 3.0);
+        if measured > 0 {
+            replicates.push(sum / measured as f64);
+        }
     }
     replicates.sort_by(|a, b| a.partial_cmp(b).expect("AUC differences are finite"));
     out.replicates = replicates.len();
@@ -7310,7 +7320,9 @@ fn held_out_statistics(
     cells: &[CellRecord],
     outcome: &ProtocolOutcome,
 ) -> Vec<PairedStatistic> {
-    let _ = outcome;
+    if *outcome != ProtocolOutcome::Complete {
+        return Vec::new();
+    }
     // Each cell's held-out columns ONCE: six of the seven statistics reference
     // `B`, and re-pricing a quarter of a million held-out rows per statistic
     // would pay for the same columns seven times over.
@@ -7391,7 +7403,6 @@ struct CellConsultation {
 fn consultations(cells: &[CellRecord]) -> Vec<CellConsultation> {
     cells
         .iter()
-        .filter(|record| record.removal.is_some())
         .map(|record| CellConsultation {
             cell: record.cell.name(),
             dispositions: removals_for(&record.candidates, &record.fit.outcome().table)
@@ -7484,7 +7495,10 @@ fn zero_out_flips(
             let flipped = rows
                 .iter()
                 .filter(|row| row_applies(row, &mask))
-                .filter(|row| row_value(row, &mask, table) != row_value(row, &mask, &zeroed))
+                .filter(|row| {
+                    row_value(row, &mask, table) >= row.margin
+                        && row_value(row, &mask, &zeroed) < row.margin
+                })
                 .map(GateRow::label)
                 .collect();
             (name, flipped)
@@ -7543,7 +7557,7 @@ impl ReRun {
     fn stops(&self) -> bool {
         match self {
             ReRun::NotReached | ReRun::NotOwed { .. } => false,
-            ReRun::Owed { .. } => false,
+            ReRun::Owed { .. } => true,
             ReRun::Evaluated(evaluation) => !evaluation.failures().is_empty(),
         }
     }
@@ -7589,7 +7603,7 @@ fn part_b_rerun(
             kept[index].push(KeptRow {
                 label: row.label(),
                 stage,
-                value: row_value(row, &mask, table),
+                value: row_value(row, &mask, witness),
                 margin: row.margin,
             });
         }
