@@ -242,23 +242,35 @@ impl CandidateFeature {
 /// One row of the §5 THIRTY-FOUR-FEATURE AXIS: an incumbent or a candidate.
 ///
 /// The incumbent arm carries [`Feature`] itself rather than a copy of its
-/// sixteen names. That is the whole reason for the two-arm shape: `eval`'s
-/// enum is the authority on the shipped sixteen, and a second spelling of them
-/// here would be a second thing to keep in step. When `Feature::ALL` widens to
-/// thirty-four at step 8 (§3.2's closing line), THIS type is what stops being
-/// needed — and until then it is what lets a step-2 registration name a row
-/// that does not exist in `eval` yet.
+/// sixteen incumbent names. That is the whole reason for the two-arm shape: `eval`'s
+/// enum is the authority on the incumbent prefix, and a second spelling of it
+/// here would be a second thing to keep in step.
+///
+/// **The step-8 widening happened, and this type deliberately STAYS.** The §5
+/// pair declarations — the FROZEN step-2 fixture package, digest-pinned — are
+/// written in this vocabulary, and rewriting frozen registration text to spell
+/// the same rows differently would move a package identity that must not move.
+/// What the widening retired is the TRANSLATION problem, not the type:
+/// [`FeatureId::to_feature`] is total, index- and name-preserving, so every
+/// registered row now reads straight through the production evaluator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum FeatureId {
-    /// One of the sixteen shipped features, by `eval`'s own identifier.
+    /// One of the sixteen incumbent features, by `eval`'s own identifier.
+    /// Canonical values use only `Feature::ALL[..Feature::INCUMBENT_COUNT]`;
+    /// see [`FeatureId::is_canonical`].
     Incumbent(Feature),
     /// One of the eighteen §3.2 candidates, by label.
     Candidate(CandidateFeature),
 }
 
-/// Width of the §5 signature axis: `Feature::COUNT` + `CandidateFeature::COUNT`
-/// = 16 + 18. §3.2's "Width: 16 → 34".
-pub const AXIS_WIDTH: usize = Feature::COUNT + CandidateFeature::COUNT;
+/// Width of the §5 signature axis: `Feature::INCUMBENT_COUNT` +
+/// `CandidateFeature::COUNT` = 16 + 18. §3.2's "Width: 16 → 34".
+///
+/// Anchored on the INCUMBENT count deliberately since the step-8 move widened
+/// `Feature::COUNT` itself to 34: the axis is the REGISTERED 34 rows — the
+/// frozen package digest serializes exactly these — and `Feature::COUNT` is
+/// now the same 34 by construction rather than a summand.
+pub const AXIS_WIDTH: usize = Feature::INCUMBENT_COUNT + CandidateFeature::COUNT;
 
 impl FeatureId {
     /// The axis in canonical order: the sixteen incumbents in `Feature::ALL`
@@ -270,20 +282,53 @@ impl FeatureId {
     /// re-numbering.
     pub fn all() -> [FeatureId; AXIS_WIDTH] {
         let mut axis = [FeatureId::Incumbent(Feature::VictoryPoints); AXIS_WIDTH];
-        for f in Feature::ALL {
-            axis[f.index()] = FeatureId::Incumbent(f);
+        // The INCUMBENT prefix of the widened `Feature::ALL` — the sixteen this
+        // type's arm means. The eighteen candidate rows stay spelled by
+        // `CandidateFeature`, whose labels the §5 registrations are written in.
+        for f in &Feature::ALL[..Feature::INCUMBENT_COUNT] {
+            axis[f.index()] = FeatureId::Incumbent(*f);
         }
         for c in CandidateFeature::ALL {
-            axis[Feature::COUNT + c.index()] = FeatureId::Candidate(c);
+            axis[Feature::INCUMBENT_COUNT + c.index()] = FeatureId::Candidate(c);
         }
         axis
     }
 
-    /// Position on the axis. `FeatureId::all()[id.index()] == id` for every row.
+    /// Position on the axis. `FeatureId::all()[id.index()] == id` for every
+    /// canonical row returned by [`FeatureId::all`].
     pub fn index(self) -> usize {
         match self {
             FeatureId::Incumbent(f) => f.index(),
-            FeatureId::Candidate(c) => Feature::COUNT + c.index(),
+            FeatureId::Candidate(c) => Feature::INCUMBENT_COUNT + c.index(),
+        }
+    }
+
+    /// The widened production row this axis row IS — total since the step-8
+    /// move put every registered row into `Feature::ALL`. `to_feature`
+    /// preserves [`index`](Self::index) and [`name`](Self::name) exactly
+    /// (pinned by `the_axis_and_the_widened_feature_enum_are_the_same_axis`),
+    /// which is what lets a frozen registration written in `FeatureId` be read
+    /// through the production evaluator without a translation table.
+    pub fn to_feature(self) -> Feature {
+        match self {
+            FeatureId::Incumbent(f) => f,
+            FeatureId::Candidate(c) => Feature::ALL[Feature::INCUMBENT_COUNT + c.index()],
+        }
+    }
+
+    /// Whether this is one of the 34 canonical registered spellings.
+    ///
+    /// The public enum predates production widening, so its `Incumbent` payload
+    /// type is now wide enough to construct an alias such as
+    /// `Incumbent(ProductionAccess)`. Frozen declarations require preserving
+    /// that enum shape. Such aliases remain total under [`Self::to_feature`]
+    /// but are not members of the registered axis; consumers enumerate
+    /// [`Self::all`] or the incumbent prefix and this predicate makes that
+    /// boundary explicit.
+    pub fn is_canonical(self) -> bool {
+        match self {
+            FeatureId::Incumbent(f) => f.index() < Feature::INCUMBENT_COUNT,
+            FeatureId::Candidate(_) => true,
         }
     }
 
@@ -4477,10 +4522,14 @@ impl PairFixture {
         };
 
         // 13. §5.1: an unlisted nonzero row is a fixture defect. The INCUMBENT
-        // half of that check is complete today; the candidate half joins at
-        // step 3 with the columns themselves.
+        // half stays the constructor's (scoped below — the registrations spell
+        // candidate rows as `FeatureId::Candidate`, so admitting the widened
+        // enum's candidate arms here would look the listing up under the wrong
+        // spelling); since the step-8 widening the CANDIDATE half is enforced
+        // over every registered pair by
+        // `every_registered_pair_reads_its_rows_through_the_production_axis`.
         let delta = fixture.incumbent_delta(rules);
-        for f in Feature::ALL {
+        for f in Feature::ALL.into_iter().filter(|f| !f.is_candidate()) {
             if delta[f.index()] != 0
                 && !declaration.expected_nonzero.contains(&FeatureId::Incumbent(f))
             {
@@ -4531,8 +4580,8 @@ impl PairFixture {
     }
 
     /// The INCUMBENT half of the §5.3 signature: `Δ(own − opponent)` across the
-    /// two sides, for each of `eval`'s sixteen features, indexed by
-    /// [`Feature::index`].
+    /// two sides for the first sixteen production features, indexed by
+    /// [`Feature::index`]. Candidate suffix slots are zero padding.
     ///
     /// **The RELATIVE form, differenced** — not the subject's raw values. The
     /// evaluator's contribution to a position is `w · (mine − theirs)`
@@ -4547,8 +4596,23 @@ impl PairFixture {
         let g = relative_vector(&self.greater_view, self.subject, rules);
         let l = relative_vector(&self.lesser_view, self.subject, rules);
         let mut delta = [0i64; Feature::COUNT];
-        for f in Feature::ALL {
+        for &f in &Feature::ALL[..Feature::INCUMBENT_COUNT] {
             delta[f.index()] = g[f.index()] - l[f.index()];
+        }
+        delta
+    }
+
+    /// The same differenced relative form over the full widened production
+    /// evaluator axis. This is the step-8 graduation path: frozen registrations
+    /// can now be checked through [`FeatureId::to_feature`] without the probe
+    /// adapter or a translation table.
+    pub fn production_delta(&self, rules: &Rules) -> [i64; Feature::COUNT] {
+        let g = relative_vector(&self.greater_view, self.subject, rules);
+        let l = relative_vector(&self.lesser_view, self.subject, rules);
+        let mut delta = [0i64; Feature::COUNT];
+        for row in FeatureId::all() {
+            let feature = row.to_feature();
+            delta[feature.index()] = g[feature.index()] - l[feature.index()];
         }
         delta
     }
@@ -4936,7 +5000,7 @@ fn check_stage_clauses(
 }
 
 /// One view's RELATIVE feature vector from `subject`'s seat: `own − opponent`
-/// for each incumbent feature, at 2P.
+/// for each production feature (the full widened axis since step 8), at 2P.
 ///
 /// One [`ScoreStructure::derive`] per view, not one per (feature, seat) pair —
 /// `eval::raw_value`'s own doc says why, and four of the five score-structure
@@ -7662,7 +7726,7 @@ mod tests {
             ("1(d)", &[]),
             ("1(e)", &[]),
             // 2(a) and 2(d) are pure candidate-axis separators: goods and
-            // hand-held building tokens are both invisible to all sixteen.
+            // hand-held building tokens are both invisible to all sixteen incumbents.
             ("2(a)", &[]),
             (
                 "2(b)",
@@ -7674,7 +7738,7 @@ mod tests {
                 &[(Feature::AssistantsInHandExcess, -3), (Feature::AssistantsOnBoard, 3)],
             ),
             // All four of family 3 are pure candidate-axis separators. Money
-            // and trade goods are not among the sixteen; the one parked pawn
+            // and trade goods are not among the incumbent sixteen; the one parked pawn
             // stands on a different AREA across the sides, and every incumbent
             // pawn counter reads totals rather than places. 3(b) additionally
             // fulfils the same card on both sides, so the VP, hand-size and
@@ -7686,7 +7750,7 @@ mod tests {
             ("3(d)", &[]),
             // Family 4 is almost entirely candidate-axis: held-order value,
             // matched goods, executability and icon faces are four rows the
-            // sixteen do not carry. The two exceptions are the two that
+            // incumbent sixteen do not carry. The two exceptions are the two that
             // CHANGE something an incumbent counts — 4(d)'s completed set,
             // which is what `CountryBonusNow` re-derives, and 4(f)'s take,
             // which adds a card to the hand.
@@ -7742,7 +7806,7 @@ mod tests {
             // Family 10's four are candidate-axis separators too — a port
             // permutation, a laboratory permutation, a redistribution of equal
             // goods, and a swap between two face-equal order cards. The
-            // sixteen see none of it, which is exactly what each registration
+            // incumbent sixteen see none of it, which is exactly what each registration
             // claims.
             ("10(a)", &[]),
             ("10(b)", &[]),
@@ -7764,7 +7828,12 @@ mod tests {
             let declaration = registered(id).expect("registered");
             for stage in declaration.stages {
                 let delta = built(id, *stage, &rules).incumbent_delta(&rules);
-                for f in Feature::ALL {
+                // The INCUMBENT collateral transcription only: the widened
+                // axis's candidate rows are governed by `expected_nonzero` and
+                // `every_registered_pair_reads_its_rows_through_the_production_axis`,
+                // not by this table (which transcribes §5.2's incumbent
+                // collateral clauses verbatim).
+                for f in Feature::ALL.into_iter().filter(|f| !f.is_candidate()) {
                     let want = rows
                         .iter()
                         .find(|(row, _)| *row == f)
@@ -9825,11 +9894,25 @@ mod tests {
                 assert_eq!(state.player(other).mercenaries.total(), 0, "an ODD post-count awards none");
                 assert_eq!(state.player(seat).mercenaries.total(), 0);
             }
-            assert_eq!(
-                f.incumbent_delta(&rules),
-                [0i64; Feature::COUNT],
-                "§5.2: collateral NONE — O6 is the sole mover and it is a candidate row",
-            );
+            // §5.2: collateral NONE — O6 is the sole mover. Before the
+            // step-8 widening that read "the incumbent delta is all zero";
+            // now the production axis CARRIES O6, so the same registration
+            // reads: every row zero except held_order_icons, which moves by
+            // exactly the one icon face the pair plants.
+            let delta = f.production_delta(&rules);
+            for feat in Feature::ALL {
+                let want = if feat == Feature::HeldOrderIcons {
+                    1
+                } else {
+                    0
+                };
+                assert_eq!(
+                    delta[feat.index()],
+                    want,
+                    "§5.2: O6 is the sole mover — {} must read {want}",
+                    feat.name(),
+                );
+            }
         }
     }
 
@@ -10525,12 +10608,16 @@ mod tests {
     #[test]
     fn the_axis_holds_every_incumbent_first_then_every_candidate() {
         let axis = FeatureId::all();
-        for f in Feature::ALL {
-            assert_eq!(axis[f.index()], FeatureId::Incumbent(f));
+        // The INCUMBENT prefix of the widened enum — the sixteen this type's
+        // arm means; the enum's own candidate suffix is spelled by the
+        // `Candidate` arm below (and the round-trip pin holds the two
+        // spellings to one axis).
+        for f in &Feature::ALL[..Feature::INCUMBENT_COUNT] {
+            assert_eq!(axis[f.index()], FeatureId::Incumbent(*f));
             assert!(!axis[f.index()].is_candidate());
         }
         for c in CandidateFeature::ALL {
-            let row = axis[Feature::COUNT + c.index()];
+            let row = axis[Feature::INCUMBENT_COUNT + c.index()];
             assert_eq!(row, FeatureId::Candidate(c));
             assert!(row.is_candidate());
         }
@@ -11955,7 +12042,7 @@ mod tests {
             for stage in decl.stages {
                 let fixture = build_registered_pair(decl, *stage, &rules)
                     .unwrap_or_else(|e| panic!("{} {}: {e:?}", decl.id, stage.name()));
-                let delta = fixture.incumbent_delta(&rules);
+                let delta = fixture.production_delta(&rules);
                 for row in decl.expected_nonzero {
                     let slot = row.index();
                     let Some(&d) = delta.get(slot) else {
@@ -12004,6 +12091,50 @@ mod tests {
         }
     }
 
+    /// **THE AXIS ROUND-TRIP PIN.** `FeatureId`'s 34 rows and the widened
+    /// `Feature::ALL` are the SAME axis: `to_feature` preserves index and name
+    /// on every row, and the candidate suffix of `Feature::ALL` carries
+    /// `CandidateFeature::ALL`'s names in order. This is what makes reading a
+    /// frozen registration through the production evaluator a no-op rather
+    /// than a translation.
+    #[test]
+    fn the_axis_and_the_widened_feature_enum_are_the_same_axis() {
+        assert_eq!(AXIS_WIDTH, Feature::COUNT, "one axis, two spellings");
+        for row in FeatureId::all() {
+            assert!(
+                row.is_canonical(),
+                "FeatureId::all emitted a noncanonical alias"
+            );
+            let f = row.to_feature();
+            assert_eq!(f.index(), row.index(), "{} moved its index", row.name());
+            assert_eq!(f.name(), row.name(), "row {} renamed itself", row.index());
+        }
+        for f in Feature::ALL {
+            let row = FeatureId::all()[f.index()];
+            assert_eq!(row.to_feature(), f, "{} does not round-trip", f.name());
+            assert_eq!(
+                row.is_candidate(),
+                f.is_candidate(),
+                "{} is classified differently by the two spellings",
+                f.name(),
+            );
+        }
+        // The pre-widening public enum can still spell a candidate Feature in
+        // its incumbent arm. Preserve total `to_feature`, but pin that this is
+        // an alias outside the canonical frozen-registration domain rather than
+        // pretending the constructible enum is one-to-one.
+        for &f in &Feature::ALL[Feature::INCUMBENT_COUNT..] {
+            let alias = FeatureId::Incumbent(f);
+            assert!(
+                !alias.is_canonical(),
+                "{} alias was admitted to the canonical axis",
+                f.name()
+            );
+            assert_eq!(alias.to_feature(), f, "to_feature must remain total");
+            assert_ne!(alias, FeatureId::all()[f.index()]);
+        }
+    }
+
     /// **THE FROZEN-PACKAGE IDENTITY RIDES THE MOVE.** The step-2 fixture
     /// package's digest — `2e18b45929b1dc16`, the identity the step-4 close
     /// row records as "unmoved all step" — is a function of the REGISTRATION
@@ -12025,7 +12156,5 @@ mod tests {
         );
     }
 }
-
-
 
 

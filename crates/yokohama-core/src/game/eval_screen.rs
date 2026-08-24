@@ -1433,9 +1433,14 @@ mod tests {
              one-ply non-degeneracy condition, not a prediction — so re-price the assistant \
              triple back inside it rather than shipping this table.",
         );
+        // MOVED ONCE, at the V4 step-8 padding (same commit as the widening,
+        // exactly as this message prescribes): 0x9a24_0f2f_f762_4b0e was the
+        // sixteen-slot table's digest — the freeze figures remain a record of
+        // that table — and the padded 34-slot table, its sixteen live numbers
+        // byte-identical, hashes to the constant below.
         assert_eq!(
             weight_table_identity(&WeightTable::V2) as u64,
-            0x9a24_0f2f_f762_4b0e,
+            0xefe5_b3e8_6b1e_c332,
             "the v2 freeze's weight identity moved. That digest is quoted in eval.rs's V2 \
              register, in the round-2 evidence artifact, in the execution ledger's freeze row \
              and in every screen report those cite — so if V2 has legitimately been re-priced, \

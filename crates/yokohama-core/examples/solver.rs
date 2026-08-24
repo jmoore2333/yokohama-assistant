@@ -291,7 +291,7 @@ struct WitnessReport {
     slack: Vec<i128>,
 }
 
-/// V2's weight vector at one stage — the source of both the `w_vp` pin
+/// V2's production weight vector at one stage — the source of both the `w_vp` pin
 /// (§5.1:428, "V2's shipped pair, eval.rs:854–855") and the witness search's
 /// V2-padded start.
 fn v2_vector(stage: StageEndpoint) -> [i64; Feature::COUNT] {
@@ -384,7 +384,7 @@ impl System {
     fn v2_padded(&self) -> Vec<i64> {
         let table = v2_vector(self.stage);
         let mut w = vec![0i64; AXIS_WIDTH];
-        for f in Feature::ALL {
+        for &f in &Feature::ALL[..Feature::INCUMBENT_COUNT] {
             w[f.index()] = table[f.index()];
         }
         // The pin is the box being degenerate at w_vp, and V2's own vp entry IS
@@ -409,9 +409,9 @@ impl System {
 /// no-improvement sweep ends the search".
 ///
 /// Implemented as SEQUENTIAL sweeps: one pass walks the coordinates in
-/// [`FeatureId::all`] index order (the sixteen incumbents in `Feature::ALL`
-/// order, then the eighteen candidates in `CandidateFeature::ALL` order — the
-/// axis §3.2 declares), and AT each coordinate applies the best strictly
+/// [`FeatureId::all`] index order (the sixteen-feature incumbent prefix of
+/// `Feature::ALL`, then the eighteen candidates in `CandidateFeature::ALL`
+/// order — the research axis §3.2 declares), and AT each coordinate applies the best strictly
 /// decreasing step before moving on. A sweep that applies nothing ends the
 /// search. The alternative reading — one best-improvement move per sweep, over
 /// all coordinates — is grammatical too, but "at each coordinate ... take" puts
@@ -1497,7 +1497,7 @@ fn relative_vector(view: &PlayerView, mover: PlayerId, rules: &Rules) -> Result<
     let opponent = view.players.iter().find(|p| p.id != mover && !p.id.is_dummy());
     let structure = ScoreStructure::derive(view, rules);
     let mut v = vec![0i64; AXIS_WIDTH];
-    for f in Feature::ALL {
+    for &f in &Feature::ALL[..Feature::INCUMBENT_COUNT] {
         let theirs = opponent.map_or(0, |o| structure.value_of(o, f));
         v[FeatureId::Incumbent(f).index()] = structure.value_of(me, f) - theirs;
     }
@@ -2476,7 +2476,7 @@ mod tests {
         let sys = sat_toy();
         let start = sys.v2_padded();
         assert_eq!(start.len(), AXIS_WIDTH);
-        for f in Feature::ALL {
+        for &f in &Feature::ALL[..Feature::INCUMBENT_COUNT] {
             assert_eq!(
                 start[f.index()],
                 WeightTable::V2.early[f.index()],

@@ -345,6 +345,18 @@ impl BudgetMeters {
     }
 }
 
+/// `name@vN` / `name@vN{k=v,…}` — THE one echo composition, shared by
+/// [`Contestant::echo`] and the driven generating-ecology's pinned seat (V4
+/// step 8), so a pinned construction's recorded echo and a contestant's cannot
+/// drift into two spellings of the same identity.
+pub(crate) fn compose_echo(name: &str, version: u32, params: &BTreeMap<String, i64>) -> String {
+    if params.is_empty() {
+        return format!("{name}@v{version}");
+    }
+    let knobs: Vec<String> = params.iter().map(|(k, v)| format!("{k}={v}")).collect();
+    format!("{name}@v{version}{{{}}}", knobs.join(","))
+}
+
 impl Contestant {
     /// Greedy-v1 at its shipped knob.
     pub const GREEDY_V1_DEFAULT: Self = Self::GreedyV1 { m: DEFAULT_RETREAT_SAMPLES };
@@ -597,11 +609,7 @@ impl Contestant {
     /// record's two halves rather than over this string.
     pub fn echo(&self) -> String {
         let (name, version, params) = self.descriptor();
-        if params.is_empty() {
-            return format!("{name}@v{version}");
-        }
-        let knobs: Vec<String> = params.iter().map(|(k, v)| format!("{k}={v}")).collect();
-        format!("{name}@v{version}{{{}}}", knobs.join(","))
+        compose_echo(&name, version, &params)
     }
 
     /// Which starting-order rule this contestant plays (spec §5.5).
@@ -2568,9 +2576,13 @@ mod tests {
     /// branches are covered: knobless, and knob-bearing.
     #[test]
     fn the_echo_is_public_and_matches_the_spec_echo_format() {
+        // The `weights=` identity moved ONCE at the V4 step-8 padding (the
+        // table hashes 68 numbers instead of 32): -7339724794018772210 was the
+        // sixteen-slot V2, -1160323518167071950 is the padded table whose
+        // sixteen live slots are byte-identical to it.
         assert_eq!(
             Contestant::LOOKAHEAD_V1_DEFAULT.echo(),
-            "lookahead-v1@v2{b=4,eval_impl=3,k=1,m=8,weights=-7339724794018772210}",
+            "lookahead-v1@v2{b=4,eval_impl=3,k=1,m=8,weights=-1160323518167071950}",
         );
         assert_eq!(Contestant::Policy(RolloutPolicy::Uniform).echo(), "uniform@v1");
 

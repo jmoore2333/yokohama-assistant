@@ -1115,7 +1115,7 @@ impl RootPredicate {
     /// every descriptor rather than assumed.
     ///
     /// The two V4 arms scan the LOOKAHEAD ecology too, and that is spec §6's own
-    /// registration (`driven-generated-v2.2-lookahead`), not an inference: the
+    /// registration (`driven-generated-v2.3-lookahead`), not an inference: the
     /// V4 read is about positions the SUBJECT reaches, so the population has to
     /// be the subject's.
     pub fn ecology(self) -> GeneratingEcology {
@@ -2239,7 +2239,18 @@ const GENERATED_SEAT: Contestant = Contestant::Policy(RolloutPolicy::FAMILY_WEIG
 /// `v2` or `v2.1` still resolves to exactly the state it resolved to then, and
 /// the version moves only so that a quoted reading names the scan that produced
 /// it.
-pub const GENERATED_ECOLOGY_V2_LOOKAHEAD: &str = "driven-generated-v2.2-lookahead";
+///
+/// **RE-PINNED to `v2.3` (V4 step 8, the `Feature::ALL` adoption commit).**
+/// The generating SEATS moved from the live shipped contestant to the PINNED
+/// explicit-V2 construction ([`build_pinned_v2_seat`]) — a seat-field change,
+/// so the id bumps per this const's own any-field-change rule. The bump is
+/// again a NAMING obligation, not a re-pointing: pinned-V2 is the padded live
+/// default byte-for-byte at the adoption commit (the walk pin proves the
+/// decisions did not move), so every `v2`/`v2.1`/`v2.2` triple still resolves
+/// to exactly the state it resolved to — and, from this commit on, KEEPS
+/// resolving there through every later controller re-point, which is what the
+/// pin buys.
+pub const GENERATED_ECOLOGY_V2_LOOKAHEAD: &str = "driven-generated-v2.3-lookahead";
 
 /// The v2 ecology's scan bound.
 ///
@@ -2312,16 +2323,69 @@ pub const GENERATED_V2_SCAN_GAMES: u32 = 240;
 /// priors are 2P priors).
 const GENERATED_V2_PLAYERS: u8 = 2;
 
-/// The contestant every seat of v2's generating ecology plays: the shipped
-/// provisional production contestant, uncapped.
+/// **THE PINNED v2 SEAT (V4 step 8; V3 spec §5.1's fix, adopted verbatim).**
+/// The contestant every seat of v2's generating ecology plays: lookahead at
+/// the shipped knobs, with `WeightTable::V2` EXPLICIT — an in-crate weighted
+/// construction, never the live default.
+///
+/// This const WAS `Contestant::LOOKAHEAD_V1_DEFAULT`, whose doc promised to
+/// re-point at the identity freeze "because the ecology is identity" — and
+/// that promise is exactly the failure V3 §5.1 named: at any later controller
+/// re-point both scanning seats would play differently and every recorded
+/// `(predicate, master, ordinal)` triple would silently resolve to a DIFFERENT
+/// state. The pin inverts the promise: the seats are frozen HERE, at explicit
+/// V2 values, so ordinal semantics survive every controller bump including the
+/// identity-freeze era — and the version string moved `v2.2` → `v2.3` because
+/// the seat field is identity.
+///
+/// The knobs are TRANSCRIBED LITERALS (beam 4, one sampled world, eight
+/// retreat samples, no cap), equal to `Contestant::LOOKAHEAD_V1_DEFAULT`'s
+/// today — `the_pinned_v2_seat_transcribes_todays_shipped_knobs` states that
+/// equality as a transcription fact. If the shipped default legitimately moves
+/// later, THAT assertion is deleted in the moving commit and these literals
+/// stay, exactly as `PRE_FREEZE_2026_07_27`'s doc prescribes for a historical
+/// record.
 ///
 /// This ecology generates the SUBJECT'S OWN reachable positions, which is the
 /// right population for an on-policy checkpoint and is said out loud here
-/// because it is also the ecology's whole cost: both seats search. PROVISIONAL
-/// until D1's identity freeze, exactly as [`ReplyPolicy`]'s `*AtFinal` arms are
-/// — when that freeze re-points the champion, this const re-points with it and
-/// the version string bumps, because the ecology is identity.
-const GENERATED_V2_SEAT: Contestant = Contestant::LOOKAHEAD_V1_DEFAULT;
+/// because it is also the ecology's whole cost: both seats search.
+const PINNED_V2_SEAT_BEAM: u16 = 4;
+const PINNED_V2_SEAT_WORLDS: u8 = 1;
+const PINNED_V2_SEAT_RETREAT_SAMPLES: u8 = 8;
+
+/// Build one pinned v2 generating seat on `agent_seed` — the `eval_screen`
+/// precedent (`LookaheadAgent::with_knobs`, public in-crate weighted
+/// construction), used only by the scan, never the runner grammar.
+fn build_pinned_v2_seat(rules: &Rules, agent_seed: u64) -> Box<dyn ArenaAgent> {
+    Box::new(crate::game::lookahead::LookaheadAgent::with_knobs(
+        rules,
+        crate::game::lookahead::SearchScheme::TurnBoundary {
+            beam: PINNED_V2_SEAT_BEAM,
+        },
+        PINNED_V2_SEAT_WORLDS,
+        PINNED_V2_SEAT_RETREAT_SAMPLES,
+        WeightTable::V2,
+        agent_seed,
+    ))
+}
+
+/// The pinned v2 seat's RESOLVED echo — composed from the same
+/// `controller_provenance` + `compose_echo` pair every contestant echoes
+/// through, over the pinned construction's own explicit inputs, so the
+/// recorded seat identity carries `WeightTable::V2`'s table identity forever
+/// (the always-on half of V3 §5.1's two-tier behavior-identity pin).
+fn pinned_v2_seat_echo() -> String {
+    let p = crate::game::lookahead::controller_provenance(
+        crate::game::lookahead::SearchScheme::TurnBoundary {
+            beam: PINNED_V2_SEAT_BEAM,
+        },
+        PINNED_V2_SEAT_WORLDS,
+        PINNED_V2_SEAT_RETREAT_SAMPLES,
+        &WeightTable::V2,
+        None,
+    );
+    crate::game::arena::compose_echo(&p.name, p.version, &p.params)
+}
 
 /// The one driver line both ecologies record — spelled once so a reworded
 /// sentence cannot make the two ecologies look like different drivers.
@@ -2385,7 +2449,7 @@ impl GeneratingEcology {
     }
 
     /// The v2 LOOKAHEAD configuration — Phase C's layer-2 ecology, both seats
-    /// the shipped provisional contestant.
+    /// the step-8 pinned explicit-V2 construction.
     pub fn v2_lookahead() -> Self {
         v2_lookahead_config().ecology
     }
@@ -2394,13 +2458,41 @@ impl GeneratingEcology {
 /// A generating configuration: the recorded [`GeneratingEcology`] plus the live
 /// parts a scan needs to play the games.
 ///
-/// The two travel together, and the ecology is BUILT FROM the contestant rather
-/// than written beside it, so the recorded seat echoes cannot drift from the
-/// seats the scan actually benches — the failure mode a descriptor exists to
-/// prevent, appearing inside the thing that writes descriptors.
+/// How a generating ecology CONSTRUCTS its seats — a named contestant built
+/// through `Contestant::build` (v1's rung), or the V4 step-8 PINNED explicit-V2
+/// lookahead construction (v2.3's seats; see [`build_pinned_v2_seat`] and V3
+/// spec §5.1). An enum rather than a `Contestant` because the pin's whole
+/// point is that the pinned seat is NOT a name a later freeze can re-point.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GeneratingSeat {
+    /// Built through [`Contestant::build`], echoing [`Contestant::echo`].
+    Contestant(Contestant),
+    /// The pinned v2 seat: `WeightTable::V2` explicit at transcribed knobs.
+    PinnedLookaheadV2,
+}
+
+impl GeneratingSeat {
+    fn build(&self, rules: &Rules, agent_seed: u64) -> Box<dyn ArenaAgent> {
+        match self {
+            GeneratingSeat::Contestant(c) => c.build(rules, agent_seed).0,
+            GeneratingSeat::PinnedLookaheadV2 => build_pinned_v2_seat(rules, agent_seed),
+        }
+    }
+
+    fn echo(&self) -> String {
+        match self {
+            GeneratingSeat::Contestant(c) => c.echo(),
+            GeneratingSeat::PinnedLookaheadV2 => pinned_v2_seat_echo(),
+        }
+    }
+}
+
+/// The live construction and its recorded echo travel together: each config
+/// builds both from one [`GeneratingSeat`], so the descriptor cannot drift from
+/// the seats the scan actually benches.
 struct GeneratingConfig {
-    /// The contestant every seat plays.
-    seat: Contestant,
+    /// The construction every seat plays.
+    seat: GeneratingSeat,
     /// The seat count.
     players: u8,
     /// What gets recorded on the descriptor.
@@ -2409,14 +2501,15 @@ struct GeneratingConfig {
 
 /// The v1 (rung) generating configuration — family 1's.
 fn v1_config() -> GeneratingConfig {
+    let seat = GeneratingSeat::Contestant(GENERATED_SEAT);
     GeneratingConfig {
-        seat: GENERATED_SEAT,
+        seat,
         players: GENERATED_PLAYERS,
         ecology: GeneratingEcology {
             id: GENERATED_ECOLOGY_V1.to_string(),
             driver: GENERATED_DRIVER.to_string(),
             players: GENERATED_PLAYERS,
-            seats: vec![GENERATED_SEAT.echo(); GENERATED_PLAYERS as usize],
+            seats: vec![seat.echo(); GENERATED_PLAYERS as usize],
             seed_derivation: GENERATED_SEED_DERIVATION.to_string(),
             games: GENERATED_SCAN_GAMES,
             per_game_cap: GENERATED_STRIDE_CAP,
@@ -2426,14 +2519,15 @@ fn v1_config() -> GeneratingConfig {
 
 /// The v2 (lookahead) generating configuration — the layer-2 families'.
 fn v2_lookahead_config() -> GeneratingConfig {
+    let seat = GeneratingSeat::PinnedLookaheadV2;
     GeneratingConfig {
-        seat: GENERATED_V2_SEAT,
+        seat,
         players: GENERATED_V2_PLAYERS,
         ecology: GeneratingEcology {
             id: GENERATED_ECOLOGY_V2_LOOKAHEAD.to_string(),
             driver: GENERATED_DRIVER.to_string(),
             players: GENERATED_V2_PLAYERS,
-            seats: vec![GENERATED_V2_SEAT.echo(); GENERATED_V2_PLAYERS as usize],
+            seats: vec![seat.echo(); GENERATED_V2_PLAYERS as usize],
             seed_derivation: GENERATED_SEED_DERIVATION.to_string(),
             games: GENERATED_V2_SCAN_GAMES,
             per_game_cap: GENERATED_STRIDE_CAP,
@@ -4163,7 +4257,9 @@ fn walk_scan(
         // derivation `drive_to_terminal` uses, so a generated root is reachable
         // by a run anyone can reproduce from the master alone.
         let mut make = |seat: PlayerId, _players: u8| -> Box<dyn ArenaAgent> {
-            config.seat.build(rules, agent_stream_seed(world, seat, Slot(seat.0))).0
+            config
+                .seat
+                .build(rules, agent_stream_seed(world, seat, Slot(seat.0)))
         };
         let stats = run_arena_game(world, config.players, rules, &mut make, true)
             .map_err(|e| RootError::Generate { game_index, detail: e.to_string() })?;
@@ -4295,7 +4391,7 @@ impl ScanCapacity {
 /// rather than walking.
 ///
 /// **COST is the ECOLOGY's, and it is the same cost a scan pays**: the two V4
-/// predicates scan `driven-generated-v2.2-lookahead`, where both generating
+/// predicates scan `driven-generated-v2.3-lookahead`, where both generating
 /// seats search — minutes to hours for the full walk. That is the price of the
 /// number, and knowing it before the masters are drawn is exactly why spec §6
 /// puts the measurement at step 2.
@@ -10183,10 +10279,25 @@ mod tests {
 
     /// v2's identity — pinned WITHOUT running a scan, because a lookahead scan
     /// is up to 240 games of both-seats search and this is a unit test.
+    ///
+    /// **Since the step-8 re-pin (V3 spec §5.1)** the seats are the PINNED
+    /// explicit-V2 construction, and the recorded echo is that construction's
+    /// own resolved provenance. That it ALSO equals the live shipped default's
+    /// echo today is the padding identity (`pinned-V2 == padded-live-V2`),
+    /// asserted separately below as a TRANSCRIPTION FACT — when a later freeze
+    /// re-points the live default, DELETE that assertion in the same commit
+    /// and keep the pinned echo, exactly as
+    /// `the_pre_freeze_table_is_the_corpus_generator...`'s doc prescribes.
     #[test]
-    fn the_v2_lookahead_ecology_names_the_shipped_contestant_at_both_seats() {
-        let ecology = GeneratingEcology::v2_lookahead();
-        assert_eq!(ecology.id, "driven-generated-v2.2-lookahead");
+    fn the_v2_lookahead_ecology_names_the_pinned_explicit_v2_seat_at_both_seats() {
+        let config = v2_lookahead_config();
+        assert_eq!(
+            config.seat,
+            GeneratingSeat::PinnedLookaheadV2,
+            "the live configuration must build the pinned seat, not the re-pointable default",
+        );
+        let ecology = config.ecology;
+        assert_eq!(ecology.id, "driven-generated-v2.3-lookahead");
         assert_eq!(ecology.id, GENERATED_ECOLOGY_V2_LOOKAHEAD);
         assert_eq!(ecology.players, 2, "the canon priors are 2P priors");
         assert_eq!(ecology.games, 240);
@@ -10194,8 +10305,27 @@ mod tests {
         assert_eq!(ecology.per_game_cap, GENERATED_STRIDE_CAP, "both ecologies stride the same");
         assert_eq!(
             ecology.seats,
-            vec![Contestant::LOOKAHEAD_V1_DEFAULT.echo(); 2],
-            "the layer-2 ecology must seat the SHIPPED provisional contestant, resolved",
+            vec![GeneratingSeat::PinnedLookaheadV2.echo(); 2],
+            "the layer-2 ecology must seat the PINNED explicit-V2 construction, resolved",
+        );
+        // The pinned echo carries WeightTable::V2's own table identity — the
+        // always-on half of V3 §5.1's behavior-identity pin: a construction
+        // that drifted off the explicit table would echo a different identity.
+        assert!(
+            GeneratingSeat::PinnedLookaheadV2.echo().contains(&format!(
+                "weights={}",
+                crate::game::greedy::weight_table_identity(&WeightTable::V2)
+            )),
+            "the pinned seat echo must resolve WeightTable::V2's identity: {}",
+            GeneratingSeat::PinnedLookaheadV2.echo(),
+        );
+        // TRANSCRIPTION FACT (deletable at a live-default re-point, per the
+        // doc above): today the pinned construction and the live shipped
+        // default are the same identity, echo-for-echo.
+        assert_eq!(
+            GeneratingSeat::PinnedLookaheadV2.echo(),
+            Contestant::LOOKAHEAD_V1_DEFAULT.echo(),
+            "pinned-V2 == padded-live-V2 at the adoption commit",
         );
         // The two ecologies share their driver and seed derivation verbatim —
         // one spelling each, so a reworded sentence cannot make them look like
@@ -10220,11 +10350,15 @@ mod tests {
     fn the_v2_ecology_carries_its_extended_identity() {
         let ecology = GeneratingEcology::v2_lookahead();
         assert_eq!(
-            ecology.id, "driven-generated-v2.2-lookahead",
-            "the games raise did not bump the version",
+            ecology.id, "driven-generated-v2.3-lookahead",
+            "the games raise did not bump the version; the step-8 seat re-pin did",
         );
         assert_eq!(ecology.id, GENERATED_ECOLOGY_V2_LOOKAHEAD);
-        for retired in ["driven-generated-v2-lookahead", "driven-generated-v2.1-lookahead"] {
+        for retired in [
+            "driven-generated-v2-lookahead",
+            "driven-generated-v2.1-lookahead",
+            "driven-generated-v2.2-lookahead",
+        ] {
             assert_ne!(
                 ecology.id, retired,
                 "a pre-extension id must survive as test history and nowhere else",
@@ -12068,6 +12202,25 @@ mod tests {
         );
     }
 
+    /// The pinned seat's knob literals equal the shipped default's TODAY — a
+    /// TRANSCRIPTION FACT, not a coupling: the pinned literals are the
+    /// historical record and can never move; if the shipped default
+    /// legitimately moves later, delete THIS assertion in the moving commit
+    /// and the literals stay (the `PRE_FREEZE_2026_07_27` discipline).
+    #[test]
+    fn the_pinned_v2_seat_transcribes_todays_shipped_knobs() {
+        assert_eq!(
+            Contestant::LOOKAHEAD_V1_DEFAULT,
+            Contestant::LookaheadV1 {
+                b: PINNED_V2_SEAT_BEAM,
+                k: PINNED_V2_SEAT_WORLDS,
+                m: PINNED_V2_SEAT_RETREAT_SAMPLES,
+                cap: None,
+            },
+            "the pinned knob literals transcribe the shipped default of 2026-08-24",
+        );
+    }
+
     /// **THE PRE-PADDING DECISION WALK, RECORDED (V3 spec §5.1's agent-level
     /// behavior-identity pin, the fixture-walk half).** Six lookahead decisions
     /// at the v2 ecology's seat construction — shipped knobs `b=4, k=1, m=8`,
@@ -12085,7 +12238,6 @@ mod tests {
     /// knob swap must flip at least one recorded move.
     #[test]
     fn the_pinned_v2_seat_walk_reproduces_the_recorded_pre_padding_decisions() {
-        use crate::game::lookahead::{LookaheadAgent, SearchScheme};
         use crate::game::policy::RolloutPolicy;
         use crate::game::search_actions::DecisionHandle;
         use rand::SeedableRng;
@@ -12121,14 +12273,10 @@ mod tests {
                 };
                 state = apply_move_unchecked(&state, &mv, &rules).expect("policy move applies");
             }
-            let mut agent = LookaheadAgent::with_knobs(
-                &rules,
-                SearchScheme::TurnBoundary { beam: 4 },
-                1,
-                8,
-                WeightTable::V2,
-                agent_seed,
-            );
+            // Build through the SAME configuration path the scan uses. A
+            // mutation from the pinned variant to the live default must move
+            // this recorded walk rather than escaping through a direct helper.
+            let mut agent = v2_lookahead_config().seat.build(&rules, agent_seed);
             for (j, recorded) in RECORDED[i].iter().enumerate() {
                 let mover = state.current_player;
                 let view = observe(&state, mover).expect("the mover's view");

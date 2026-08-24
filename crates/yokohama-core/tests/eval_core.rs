@@ -32,22 +32,20 @@
 //! deleting `check_drift` from the sweep moves the sweep test only 0.55 → 0.50 s,
 //! so §2.2's drift pin is ~10% of the increase and the rest is `check_view`'s
 //! own `raw_value` calls, which are deliberately the CONVENIENCE accessor —
-//! each derives a whole `ScoreStructure` to answer about one feature, 16
-//! features x (1 + opponents) per view (15 before T3's in-hand split). That is
-//! the price of checking `explain`
-//! against an independently-assembled value instead of against the structure it
-//! was built from, and it is worth paying here; `score` itself derives once per
-//! call and is unaffected (0 allocations, below). Still cheap overall because
-//! this file does NOT run `check_invariants` per move: the engine is not its
+//! each derives a whole `ScoreStructure` to answer about one feature, now 34
+//! features × (1 + opponents) per view after the step-8 admission. That is the
+//! price of checking `explain` against an independently-assembled value instead
+//! of against the structure it was built from, and it is worth paying here;
+//! `score` itself derives once per call and is unaffected (0 allocations,
+//! below). This file stays cheap overall because it does NOT run
+//! `check_invariants` per move: the engine is not its
 //! subject and four other per-edit suites already carry that net.
 //!
-//! §0.3(a)'s allocation figures, re-measured at T3: `score` 0 allocations / 0
-//! peak bytes, `explain` 1 allocation / 640 peak bytes (SIXTEEN 40-byte terms;
-//! 600 for fifteen before the split — the delta is exactly one term, which is
-//! the check that the split added a feature and not a heap block). The
-//! `Explanation` grew an `Option<TerminalStanding>` at T2 and the allocation
-//! COUNT did not move — the standing rides in the struct, not in the heap
-//! block.
+//! §0.3(a)'s allocation figures, re-measured at step 8: `score` 0 allocations /
+//! 0 peak bytes, `explain` 1 allocation / 1360 peak bytes (THIRTY-FOUR 40-byte
+//! terms). The `Explanation` grew an `Option<TerminalStanding>` at T2 and the
+//! allocation COUNT did not move — the standing rides in the struct, not in
+//! the heap block.
 
 // The shared counting allocator, included the same way
 // `tests/action_source_worstcase.rs` includes it (each includer links its own
@@ -376,7 +374,7 @@ fn score_allocates_nothing_and_explain_allocates() {
 /// What the sweep saw, so the assertions below can be floored against
 /// MEASURED counts rather than hopes (the repo's anti-vacuity discipline: a
 /// property that never met a nonzero case certifies nothing).
-#[derive(Default, Debug)]
+#[derive(Debug)]
 struct Tally {
     views: usize,
     /// Views by stage band, so the sweep proves it covered BOTH ends of the
@@ -418,6 +416,30 @@ struct Tally {
     /// the same-run comparator for `nonzero_by_feature[13]`, so the freeze's own
     /// delta on this sweep is a measured difference rather than an inference.
     nonzero_prefreeze_achievement: usize,
+}
+
+// Hand-written because `[usize; 34]` outgrew std's `Default` (arrays derive it
+// only up to 32) at the step-8 widening — every field is its type's zero.
+impl Default for Tally {
+    fn default() -> Self {
+        Tally {
+            views: 0,
+            early_zero: 0,
+            late_half: 0,
+            full: 0,
+            clock_nonzero: [0; 4],
+            nonzero_terms: 0,
+            negative_weight_picks: 0,
+            seat_agreements: 0,
+            nonzero_by_feature: [0; Feature::COUNT],
+            drift_pairs: 0,
+            drift_dummy_pairs: 0,
+            terminal_views: 0,
+            max_abs_positional: 0,
+            postclaim_drops: 0,
+            nonzero_prefreeze_achievement: 0,
+        }
+    }
 }
 
 /// One organic game: play it with the shipped weighted rung and check every
@@ -981,9 +1003,30 @@ fn explain_reconstructs_score_exactly_over_organic_views() {
 /// measure-then-halve discipline. Still a genuinely rare event, same reason
 /// as before. Every other arm stayed above its standing floor at rev 6, so
 /// only this entry moved.
+///
+/// V4 step 8 measured the appended candidate rows over the SAME deterministic
+/// sweep before setting their floors. Observed counts, in `Feature::ALL` order:
+///
+/// ```text
+/// S1..S7  = 1432, 896, 1557, 1369, 458, 677, 1320
+/// E1..E3  = 1360, 1582, 1306
+/// O1..O3  = 1458, 1430, 61
+/// O5/O6   = 977, 439
+/// X1..X3  = 481, 706, 784
+/// ```
+///
+/// O3's 61 is the expected timing-artifact shape recorded at the step-6 close:
+/// strict sitting-executable orders live mostly inside the holder's own turn.
+/// It is rare organically, but it is not absent, and its floor is the same
+/// measured/2 rule as every other row.
 //     [vp,  ctry, tech, chur, cust, hCORE, hEXC, ware, brd, shop, trad, 5pw, imp, achv, merc, hnd#]
-const FEATURE_NONZERO_FLOORS: [usize; Feature::COUNT] =
-    [689, 489, 375, 387, 84, 634, 133, 855, 835, 431, 30, 27, 120, 809, 317, 823];
+const FEATURE_NONZERO_FLOORS: [usize; Feature::COUNT] = [
+    689, 489, 375, 387, 84, 634, 133, 855, 835, 431, 30, 27, 120, 809, 317, 823, // incumbents
+    716, 448, 778, 684, 229, 338, 660, // S1..S7
+    680, 791, 653, // E1..E3
+    729, 715, 30, 488, 219, // O1..O3, O5, O6
+    240, 353, 392, // X1..X3
+];
 
 // ---------------------------------------------------------------------------
 // §2.2 — the D1 dummy, constructed
@@ -7107,49 +7150,582 @@ fn every_group_x_helper_allocates_nothing() {
     println!("Group X: {sum} summed over 4P, {} allocs / {} peak bytes", stats.allocs, stats.peak_bytes);
 }
 
+/// The exact pre-move tuple for one incumbent explanation row:
+/// `(viewer_value, opponent_value, interpolated_weight, product)`.
+type RecordedIncumbentTerms = [(i64, i64, i64, i64); Feature::INCUMBENT_COUNT];
+
+fn assert_pre_move_v2_view(
+    label: &str,
+    view: &PlayerView,
+    rules: &Rules,
+    recorded_total: i64,
+    recorded_terms: &RecordedIncumbentTerms,
+) {
+    let scored = score(view, rules, &WeightTable::V2);
+    assert_eq!(
+        scored, recorded_total,
+        "{label}: the padded V2 moved the pre-move score"
+    );
+    let explanation = explain(view, rules, &WeightTable::V2);
+    assert_eq!(
+        explanation.total, scored,
+        "{label}: score/explain paths disagree"
+    );
+    assert_eq!(explanation.terms.len(), Feature::COUNT);
+    for (index, (term, recorded)) in explanation
+        .terms
+        .iter()
+        .take(Feature::INCUMBENT_COUNT)
+        .zip(recorded_terms)
+        .enumerate()
+    {
+        assert_eq!(
+            term.feature,
+            Feature::ALL[index],
+            "{label}: incumbent row {index} moved"
+        );
+        assert_eq!(
+            (
+                term.viewer_value,
+                term.opponent_value,
+                term.weight,
+                term.product
+            ),
+            *recorded,
+            "{label}: pre-move term {} drifted",
+            term.feature.name(),
+        );
+    }
+
+    // Every named pre-step-8 table was mechanically widened. Check the entire
+    // battery rather than only const vectors: each admitted row must still
+    // explain as a zero contribution at an organic/constructed value.
+    for (table_name, table) in [
+        ("V1", WeightTable::V1),
+        ("V2", WeightTable::V2),
+        ("ZERO", WeightTable::ZERO),
+        ("V2_DRAFT", WeightTable::V2_DRAFT),
+        ("PRE_FREEZE_2026_07_27", WeightTable::PRE_FREEZE_2026_07_27),
+    ] {
+        let padded = explain(view, rules, &table);
+        for term in padded.terms.iter().skip(Feature::INCUMBENT_COUNT) {
+            assert_eq!(
+                (term.weight, term.product),
+                (0, 0),
+                "{label}: candidate term {} is not zero under padded {table_name}",
+                term.feature.name(),
+            );
+        }
+    }
+}
+
 /// **V4 §7 STEP 8 — THE V2-PADDED BEHAVIOR-EQUIVALENCE BATTERY (spec §10).**
-/// Recorded at the PRE-MOVE tree (HEAD `08fd5ae`, `Feature::COUNT == 16`):
-/// eighteen organic mid-game views — family-weighted walks from seeded setups,
-/// every seat of each — with their exact `score(..., &WeightTable::V2)` values
-/// transcribed below. The `Feature::ALL` move pads `V2` with zero-weighted
-/// candidate slots, and "padded" MEANS these numbers cannot move: a padding
-/// that shifted any score would be a new table wearing V2's name.
+/// Extracted directly from RED commit `8d81e54` (`Feature::COUNT == 16`) before
+/// authoring GREEN: four views over two hand-constructed fixtures plus fifteen
+/// organic mid-game views from family-weighted seeded walks. Each row records
+/// both the exact total and every incumbent explanation tuple, so compensating
+/// term drift cannot hide behind an unchanged aggregate.
 ///
-/// The second half is the candidate-term clause: every explanation term past
-/// slot 15 carries weight 0 and product 0 under the padded table (vacuously
-/// true at the pre-move tree, where no such term exists — the move gives it
-/// teeth). `explain().total == score()` rides every view, so both paths are
-/// held to the recorded numbers at once.
+/// The GREEN-only half checks every explanation row after the incumbent prefix
+/// under every mechanically padded named table: candidate weight and product
+/// are exactly zero even when the stored raw value is nonzero. Together these
+/// pins define "padding preserved behavior" at both public evaluator paths.
 #[test]
-fn the_padded_v2_scores_the_recorded_battery_exactly_as_the_pre_move_table() {
-    let rules = Rules::standard();
-    // (players, setup seed, family-weighted steps, viewer seat, recorded score)
-    const RECORDED: [(u8, u64, usize, u8, i64); 15] = [
-        (2, 9, 40, 0, -1),
-        (2, 9, 40, 1, 1),
-        (2, 9, 120, 0, -236),
-        (2, 9, 120, 1, 236),
-        (2, 60, 200, 0, -151),
-        (2, 60, 200, 1, 151),
-        (3, 25, 90, 0, -204),
-        (3, 25, 90, 1, -150),
-        (3, 25, 90, 2, 114),
-        (4, 40, 150, 0, -186),
-        (4, 40, 150, 1, 84),
-        (4, 40, 150, 2, -208),
-        (4, 40, 150, 3, -126),
-        (2, 133, 300, 0, 324),
-        (2, 133, 300, 1, -324),
+fn the_padded_tables_preserve_pre_move_totals_and_terms_over_constructed_and_organic_views() {
+    const CONSTRUCTED: [(&str, i64, RecordedIncumbentTerms); 4] = [
+        (
+            "constructed-dummy-seat-0",
+            0,
+            [
+                (0, 0, 1, 0),
+                (0, 0, 20, 0),
+                (0, 0, 14, 0),
+                (0, 0, -4, 0),
+                (0, 0, 3, 0),
+                (2, 2, 30, 0),
+                (6, 6, 5, 0),
+                (12, 12, -10, 0),
+                (0, 0, 6, 0),
+                (0, 0, 12, 0),
+                (0, 0, 15, 0),
+                (0, 0, 8, 0),
+                (0, 0, 5, 0),
+                (1, 1, 2, 0),
+                (0, 0, 3, 0),
+                (1, 1, -1, 0),
+            ],
+        ),
+        (
+            "constructed-dummy-seat-1",
+            0,
+            [
+                (0, 0, 1, 0),
+                (0, 0, 20, 0),
+                (0, 0, 14, 0),
+                (0, 0, -4, 0),
+                (0, 0, 3, 0),
+                (2, 2, 30, 0),
+                (6, 6, 5, 0),
+                (12, 12, -10, 0),
+                (0, 0, 6, 0),
+                (0, 0, 12, 0),
+                (0, 0, 15, 0),
+                (0, 0, 8, 0),
+                (0, 0, 5, 0),
+                (1, 1, 2, 0),
+                (0, 0, 3, 0),
+                (1, 1, -1, 0),
+            ],
+        ),
+        (
+            "constructed-group-x-seat-0",
+            121,
+            [
+                (0, 0, 1, 0),
+                (2, 0, 20, 40),
+                (5, 0, 14, 70),
+                (0, 0, -4, 0),
+                (0, 0, 3, 0),
+                (2, 2, 30, 0),
+                (2, 1, 5, 5),
+                (12, 12, -10, 0),
+                (4, 5, 6, -6),
+                (0, 0, 12, 0),
+                (0, 0, 15, 0),
+                (0, 0, 8, 0),
+                (0, 0, 5, 0),
+                (7, 1, 2, 12),
+                (0, 0, 3, 0),
+                (1, 1, -1, 0),
+            ],
+        ),
+        (
+            "constructed-group-x-seat-1",
+            -121,
+            [
+                (0, 0, 1, 0),
+                (0, 2, 20, -40),
+                (0, 5, 14, -70),
+                (0, 0, -4, 0),
+                (0, 0, 3, 0),
+                (2, 2, 30, 0),
+                (1, 2, 5, -5),
+                (12, 12, -10, 0),
+                (5, 4, 6, 6),
+                (0, 0, 12, 0),
+                (0, 0, 15, 0),
+                (0, 0, 8, 0),
+                (0, 0, 5, 0),
+                (1, 7, 2, -12),
+                (0, 0, 3, 0),
+                (1, 1, -1, 0),
+            ],
+        ),
     ];
+    // (players, setup seed, family-weighted steps, viewer seat, total, terms)
+    const ORGANIC: [(u8, u64, usize, u8, i64, RecordedIncumbentTerms); 15] = [
+        (
+            2,
+            9,
+            40,
+            0,
+            -1,
+            [
+                (0, 8, 1, -8),
+                (0, 0, 20, 0),
+                (0, 0, 14, 0),
+                (0, 0, -4, 0),
+                (0, 0, 3, 0),
+                (2, 2, 30, 0),
+                (2, 2, 5, 0),
+                (12, 12, -10, 0),
+                (4, 4, 6, 0),
+                (0, 0, 12, 0),
+                (0, 0, 15, 0),
+                (0, 0, 8, 0),
+                (0, 0, 5, 0),
+                (6, 2, 2, 8),
+                (0, 0, 3, 0),
+                (1, 0, -1, -1),
+            ],
+        ),
+        (
+            2,
+            9,
+            40,
+            1,
+            1,
+            [
+                (8, 0, 1, 8),
+                (0, 0, 20, 0),
+                (0, 0, 14, 0),
+                (0, 0, -4, 0),
+                (0, 0, 3, 0),
+                (2, 2, 30, 0),
+                (2, 2, 5, 0),
+                (12, 12, -10, 0),
+                (4, 4, 6, 0),
+                (0, 0, 12, 0),
+                (0, 0, 15, 0),
+                (0, 0, 8, 0),
+                (0, 0, 5, 0),
+                (2, 6, 2, -8),
+                (0, 0, 3, 0),
+                (0, 1, -1, 1),
+            ],
+        ),
+        (
+            2,
+            9,
+            120,
+            0,
+            -236,
+            [
+                (3, 14, 10, -110),
+                (0, 2, 22, -44),
+                (0, 5, 15, -75),
+                (3, 0, -1, -3),
+                (0, 0, 7, 0),
+                (2, 1, 28, 28),
+                (0, 0, 5, 0),
+                (12, 12, -10, 0),
+                (5, 7, 7, -14),
+                (0, 1, 14, -14),
+                (0, 0, 17, 0),
+                (0, 0, 9, 0),
+                (0, 0, 5, 0),
+                (1, 2, 2, -2),
+                (0, 0, 3, 0),
+                (2, 0, -1, -2),
+            ],
+        ),
+        (
+            2,
+            9,
+            120,
+            1,
+            236,
+            [
+                (14, 3, 10, 110),
+                (2, 0, 22, 44),
+                (5, 0, 15, 75),
+                (0, 3, -1, 3),
+                (0, 0, 7, 0),
+                (1, 2, 28, -28),
+                (0, 0, 5, 0),
+                (12, 12, -10, 0),
+                (7, 5, 7, 14),
+                (1, 0, 14, 14),
+                (0, 0, 17, 0),
+                (0, 0, 9, 0),
+                (0, 0, 5, 0),
+                (2, 1, 2, 2),
+                (0, 0, 3, 0),
+                (0, 2, -1, 2),
+            ],
+        ),
+        (
+            2,
+            60,
+            200,
+            0,
+            -151,
+            [
+                (6, 9, 12, -36),
+                (0, 2, 23, -46),
+                (0, 5, 15, -75),
+                (0, 0, -1, 0),
+                (0, 0, 8, 0),
+                (0, 0, 27, 0),
+                (0, 0, 5, 0),
+                (12, 12, -10, 0),
+                (8, 8, 7, 0),
+                (2, 1, 14, 14),
+                (0, 0, 18, 0),
+                (0, 0, 9, 0),
+                (0, 0, 5, 0),
+                (2, 4, 2, -4),
+                (0, 1, 3, -3),
+                (2, 1, -1, -1),
+            ],
+        ),
+        (
+            2,
+            60,
+            200,
+            1,
+            151,
+            [
+                (9, 6, 12, 36),
+                (2, 0, 23, 46),
+                (5, 0, 15, 75),
+                (0, 0, -1, 0),
+                (0, 0, 8, 0),
+                (0, 0, 27, 0),
+                (0, 0, 5, 0),
+                (12, 12, -10, 0),
+                (8, 8, 7, 0),
+                (1, 2, 14, -14),
+                (0, 0, 18, 0),
+                (0, 0, 9, 0),
+                (0, 0, 5, 0),
+                (4, 2, 2, 4),
+                (1, 0, 3, 3),
+                (1, 2, -1, 1),
+            ],
+        ),
+        (
+            3,
+            25,
+            90,
+            0,
+            -204,
+            [
+                (0, 0, 1, 0),
+                (0, 0, 20, 0),
+                (0, 10, 14, -140),
+                (0, 0, -4, 0),
+                (0, 0, 3, 0),
+                (0, 2, 30, -60),
+                (0, 2, 5, -10),
+                (12, 12, -10, 0),
+                (8, 6, 6, 12),
+                (0, 0, 12, 0),
+                (0, 0, 15, 0),
+                (0, 0, 8, 0),
+                (0, 0, 5, 0),
+                (0, 3, 2, -6),
+                (0, 0, 3, 0),
+                (1, 1, -1, 0),
+            ],
+        ),
+        (
+            3,
+            25,
+            90,
+            1,
+            -150,
+            [
+                (0, 0, 1, 0),
+                (0, 0, 20, 0),
+                (0, 10, 14, -140),
+                (0, 0, -4, 0),
+                (0, 0, 3, 0),
+                (2, 2, 30, 0),
+                (2, 0, 5, 10),
+                (12, 12, -10, 0),
+                (4, 8, 6, -24),
+                (0, 0, 12, 0),
+                (0, 0, 15, 0),
+                (0, 0, 8, 0),
+                (0, 0, 5, 0),
+                (3, 1, 2, 4),
+                (0, 0, 3, 0),
+                (1, 1, -1, 0),
+            ],
+        ),
+        (
+            3,
+            25,
+            90,
+            2,
+            114,
+            [
+                (0, 0, 1, 0),
+                (0, 0, 20, 0),
+                (10, 0, 14, 140),
+                (0, 0, -4, 0),
+                (0, 0, 3, 0),
+                (2, 2, 30, 0),
+                (0, 2, 5, -10),
+                (12, 12, -10, 0),
+                (6, 8, 6, -12),
+                (0, 0, 12, 0),
+                (0, 0, 15, 0),
+                (0, 0, 8, 0),
+                (0, 0, 5, 0),
+                (1, 3, 2, -4),
+                (0, 0, 3, 0),
+                (1, 1, -1, 0),
+            ],
+        ),
+        (
+            4,
+            40,
+            150,
+            0,
+            -186,
+            [
+                (3, 0, 7, 21),
+                (0, 0, 21, 0),
+                (0, 10, 14, -140),
+                (6, 0, -3, -18),
+                (0, 0, 5, 0),
+                (1, 2, 29, -29),
+                (0, 0, 5, 0),
+                (12, 11, -10, -10),
+                (6, 7, 6, -6),
+                (0, 0, 13, 0),
+                (0, 0, 16, 0),
+                (0, 0, 8, 0),
+                (0, 0, 5, 0),
+                (3, 5, 2, -4),
+                (0, 0, 3, 0),
+                (1, 1, -1, 0),
+            ],
+        ),
+        (
+            4,
+            40,
+            150,
+            1,
+            84,
+            [
+                (0, 3, 7, -21),
+                (0, 0, 21, 0),
+                (10, 0, 14, 140),
+                (0, 0, -3, 0),
+                (0, 0, 5, 0),
+                (1, 2, 29, -29),
+                (0, 0, 5, 0),
+                (12, 11, -10, -10),
+                (7, 7, 6, 0),
+                (0, 0, 13, 0),
+                (0, 0, 16, 0),
+                (0, 0, 8, 0),
+                (0, 0, 5, 0),
+                (5, 3, 2, 4),
+                (0, 0, 3, 0),
+                (1, 1, -1, 0),
+            ],
+        ),
+        (
+            4,
+            40,
+            150,
+            2,
+            -208,
+            [
+                (0, 3, 7, -21),
+                (0, 0, 21, 0),
+                (0, 10, 14, -140),
+                (0, 0, -3, 0),
+                (0, 0, 5, 0),
+                (1, 2, 29, -29),
+                (0, 0, 5, 0),
+                (12, 11, -10, -10),
+                (7, 7, 6, 0),
+                (0, 0, 13, 0),
+                (0, 0, 16, 0),
+                (0, 0, 8, 0),
+                (0, 0, 5, 0),
+                (1, 5, 2, -8),
+                (0, 0, 3, 0),
+                (1, 1, -1, 0),
+            ],
+        ),
+        (
+            4,
+            40,
+            150,
+            3,
+            -126,
+            [
+                (0, 3, 7, -21),
+                (0, 0, 21, 0),
+                (0, 10, 14, -140),
+                (0, 0, -3, 0),
+                (0, 0, 5, 0),
+                (2, 1, 29, 29),
+                (0, 0, 5, 0),
+                (11, 12, -10, 10),
+                (7, 7, 6, 0),
+                (0, 0, 13, 0),
+                (0, 0, 16, 0),
+                (0, 0, 8, 0),
+                (0, 0, 5, 0),
+                (3, 5, 2, -4),
+                (0, 0, 3, 0),
+                (1, 1, -1, 0),
+            ],
+        ),
+        (
+            2,
+            133,
+            300,
+            0,
+            324,
+            [
+                (6, 8, 16, -32),
+                (12, 0, 24, 288),
+                (10, 0, 16, 160),
+                (0, 3, 0, 0),
+                (0, 0, 9, 0),
+                (0, 2, 26, -52),
+                (0, 1, 4, -4),
+                (12, 7, -10, -50),
+                (8, 9, 7, -7),
+                (2, 1, 15, 15),
+                (0, 0, 19, 0),
+                (0, 0, 10, 0),
+                (0, 0, 6, 0),
+                (5, 2, 2, 6),
+                (1, 1, 3, 0),
+                (1, 1, -1, 0),
+            ],
+        ),
+        (
+            2,
+            133,
+            300,
+            1,
+            -324,
+            [
+                (8, 6, 16, 32),
+                (0, 12, 24, -288),
+                (0, 10, 16, -160),
+                (3, 0, 0, 0),
+                (0, 0, 9, 0),
+                (2, 0, 26, 52),
+                (1, 0, 4, 4),
+                (7, 12, -10, 50),
+                (9, 8, 7, 7),
+                (1, 2, 15, -15),
+                (0, 0, 19, 0),
+                (0, 0, 10, 0),
+                (0, 0, 6, 0),
+                (2, 5, 2, -6),
+                (1, 1, 3, 0),
+                (1, 1, -1, 0),
+            ],
+        ),
+    ];
+
+    let rules = Rules::standard();
+    let constructed = [
+        ("constructed-dummy", dummy_fixture(&rules)),
+        ("constructed-group-x", group_x_fixture(71, &rules)),
+    ];
+    let mut expected = CONSTRUCTED.iter();
+    for (fixture, state) in constructed {
+        for viewer in 0..2 {
+            let (label, total, terms) = expected.next().expect("four constructed records");
+            assert_eq!(*label, format!("{fixture}-seat-{viewer}"));
+            let view = observe(&state, PlayerId(viewer)).unwrap();
+            assert_pre_move_v2_view(label, &view, &rules, *total, terms);
+        }
+    }
+    assert!(expected.next().is_none());
     let mut walked: Option<(u8, u64, usize, GameState)> = None;
-    for (players, seed, steps, viewer, recorded) in RECORDED {
-        let reuse = matches!(&walked, Some((p, s, n, _)) if *p == players && *s == seed && *n == steps);
+    for (players, seed, steps, viewer, total, terms) in &ORGANIC {
+        let reuse =
+            matches!(&walked, Some((p, s, n, _)) if p == players && s == seed && n == steps);
         if !reuse {
-            let mut state = keep_game(players, seed, &rules);
-            let mut rng = ChaCha8Rng::seed_from_u64(seed ^ 0x3F3F);
+            let mut state = keep_game(*players, *seed, &rules);
+            let mut rng = ChaCha8Rng::seed_from_u64(*seed ^ 0x3F3F);
             let policy = RolloutPolicy::FAMILY_WEIGHTED_DEFAULT;
             let mut step = 0usize;
-            while !is_game_over(&state) && step < steps {
+            while !is_game_over(&state) && step < *steps {
                 let mv = {
                     let handle = DecisionHandle::new(&state, &rules);
                     policy.pick(&handle, &mut rng).unwrap_or_else(|| {
@@ -7159,25 +7735,10 @@ fn the_padded_v2_scores_the_recorded_battery_exactly_as_the_pre_move_table() {
                 state = apply_move_unchecked(&state, &mv, &rules).unwrap();
                 step += 1;
             }
-            walked = Some((players, seed, steps, state));
+            walked = Some((*players, *seed, *steps, state));
         }
-        let state = &walked.as_ref().unwrap().3;
-        let view = observe(state, PlayerId(viewer)).unwrap();
-        let s = score(&view, &rules, &WeightTable::V2);
-        assert_eq!(
-            s, recorded,
-            "{players}P seed {seed} step {steps} seat {viewer}: the padded V2 moved a \
-             recorded pre-move score",
-        );
-        let e = explain(&view, &rules, &WeightTable::V2);
-        assert_eq!(e.total, s, "the two paths must agree on the same view");
-        for term in e.terms.iter().skip(16) {
-            assert_eq!(
-                (term.weight, term.product),
-                (0, 0),
-                "candidate term {} must be zero-weighted and zero-product under padded V2",
-                term.feature.name(),
-            );
-        }
+        let label = format!("organic-{players}p-seed-{seed}-step-{steps}-seat-{viewer}");
+        let view = observe(&walked.as_ref().unwrap().3, PlayerId(*viewer)).unwrap();
+        assert_pre_move_v2_view(&label, &view, &rules, *total, terms);
     }
 }

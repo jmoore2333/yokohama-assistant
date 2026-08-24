@@ -50,7 +50,7 @@
 //!
 //! # The score-structure mirrors (§2.2, landed at T2)
 //!
-//! Five of the sixteen features re-derive a piece of the rulebook's END
+//! Five of the incumbent sixteen features re-derive a piece of the rulebook's END
 //! SCORING from the view: the country-set bonus, the technology
 //! industry-value majority, the church and customs pawn majorities (with the
 //! 2-player dummy competitor priced exactly as the rules price it — finding
@@ -106,7 +106,9 @@
 //! tensions were acted on in the v2 rounds; the artifact stays the record of
 //! what was measured when.
 //!
-//! The FEATURE LIST is unchanged across both freezes at sixteen. The one
+//! At both freeze commits the feature list was sixteen; the V4 step-8 move
+//! later APPENDED the eighteen §3.2 candidates after them (zero
+//! weighted in every named table, so shipped behavior did not move). The one
 //! feature-level change v2 made is inside a value rather than in the list:
 //! [`Feature::AchievementProgressSum`] now drops the legs of cards the valued
 //! seat has already claimed (T3's post-claim filter).
@@ -226,8 +228,10 @@ pub const HAND_CORE_RESERVE: u8 = 2;
 // Features
 // ---------------------------------------------------------------------------
 
-/// The sixteen relative features of evaluator v1, in THE canonical order
-/// (spec §2.2's list, read top to bottom, AMENDED AT T3 by the in-hand split).
+/// The relative features, in THE canonical order: evaluator v1's sixteen
+/// (spec §2.2's list, read top to bottom, AMENDED AT T3 by the in-hand split)
+/// and, since the V4 step-8 move, the eighteen §3.2 candidates appended after
+/// them.
 /// The order is load-bearing: it indexes both weight vectors, it is the order
 /// `explain` reports terms in, and T4's probe reports per-feature figures
 /// against it.
@@ -241,8 +245,8 @@ pub const HAND_CORE_RESERVE: u8 = 2;
 /// is a compile error too — the array lengths really do move together. **The one
 /// silent path is omission from `ALL` itself**: `ALL` is a hand-maintained
 /// literal with no compiler-checked relation to the variant set, so a variant
-/// given its match arms but left out of `ALL` compiles clean, keeps `COUNT` at
-/// 16, and never appears in `score`/`explain`'s `for feature in Feature::ALL`
+/// given its match arms but left out of `ALL` compiles clean, keeps `COUNT`
+/// unchanged at 34, and never appears in `score`/`explain`'s `for feature in Feature::ALL`
 /// loops — scoring zero, silently. Adding a feature therefore means `ALL` FIRST,
 /// then both vectors; the compiler covers the rest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -302,11 +306,80 @@ pub enum Feature {
     /// Order cards in hand. R1-7: 0.4745/0.4171/0.3753 — NEGATIVE and growing
     /// (an unfulfilled order is a commitment, not an asset).
     HandSize,
+
+    // -- THE V4 §3.2 CANDIDATES (the step-8 `Feature::ALL` 16 → 34 move) -----
+    //
+    // Eighteen features, APPENDED after the incumbent sixteen in
+    // `CandidateFeature::ALL`'s registered order so every recorded row index —
+    // the §5 pair registrations', the snapshot matrix's — keeps meaning what it
+    // meant. Their formulas are the `ScoreStructure` helper methods further
+    // down this file (each carries its §3.2 card); their values are
+    // precomputed per seat by [`ScoreStructure::derive`] and read back through
+    // [`ScoreStructure::value_of`], exactly as the five bonus mirrors are.
+    // Every named table pads them at weight (0, 0) until step 9 materializes a
+    // fitted table, which is what keeps `V2-padded` the same BEHAVIOR as
+    // shipped V2 (spec §10).
+    //
+    /// S1 — exported reward at realizable power, over own-occupied production
+    /// areas. See [`ScoreStructure::production_access`].
+    ProductionAccess,
+    /// S2 — realizable power over own-occupied {Church, Customs}. See
+    /// [`ScoreStructure::track_access`].
+    TrackAccess,
+    /// S3 — count of non-Canal areas holding ≥ 1 own assistant. See
+    /// [`ScoreStructure::assistant_areas_distinct`].
+    AssistantAreasDistinct,
+    /// S4 — the president's ring mass (on-board), or the best re-entry ring
+    /// (in hand). See [`ScoreStructure::president_local_access`].
+    PresidentLocalAccess,
+    /// S5 — bank reward at realizable power, gated on own presence. See
+    /// [`ScoreStructure::bank_access`].
+    BankAccess,
+    /// S6 — takeable Employment-Agency tokens, gated by the warehouse min. See
+    /// [`ScoreStructure::employment_agency_access`].
+    EmploymentAgencyAccess,
+    /// S7 — areas actionable in principle from the president's position. See
+    /// [`ScoreStructure::president_reachable_areas`].
+    PresidentReachableAreas,
+    /// E1 — `player.money`, linear. See [`ScoreStructure::money_stock`].
+    MoneyStock,
+    /// E2 — `copper + silk + tea + seafood`, linear. See
+    /// [`ScoreStructure::trade_goods_stock`].
+    TradeGoodsStock,
+    /// E3 — building tokens retrieved to hand and deployment-ready. See
+    /// [`ScoreStructure::building_tokens_ready`].
+    BuildingTokensReady,
+    /// O1 — held order value in HALF-VP units, opponent slots at the pool
+    /// floor. See [`ScoreStructure::held_order_value`].
+    HeldOrderValue,
+    /// O2 — goods held against known held orders' summed requirements. See
+    /// [`ScoreStructure::order_matched_goods`].
+    OrderMatchedGoods,
+    /// O3 — count of known held orders with every requirement met. See
+    /// [`ScoreStructure::executable_orders`].
+    ExecutableOrders,
+    /// O5 — the best attainable country-set marginal. See
+    /// [`ScoreStructure::flag_icon_marginal`].
+    FlagIconMarginal,
+    /// O6 — icon faces on known held orders, in ICON units. See
+    /// [`ScoreStructure::held_order_icons`].
+    HeldOrderIcons,
+    /// X1 — lab slots takeable ALL-IN at the seat's own lab presence. See
+    /// [`ScoreStructure::lab_takeable`].
+    LabTakeable,
+    /// X2 — matched goods over port offers in the zones open at the seat's
+    /// power. See [`ScoreStructure::port_takeable`].
+    PortTakeable,
+    /// X3 — production access conditioned on held orders' residual need. See
+    /// [`ScoreStructure::matched_production_access`].
+    MatchedProductionAccess,
 }
 
 impl Feature {
-    /// The canonical order. `ALL[f.index()] == f` for every feature.
-    pub const ALL: [Feature; 16] = [
+    /// The canonical order: the incumbent sixteen, then the eighteen V4 §3.2
+    /// candidates in `CandidateFeature::ALL`'s registered order (the step-8
+    /// append — never a re-numbering). `ALL[f.index()] == f` for every feature.
+    pub const ALL: [Feature; 34] = [
         Feature::VictoryPoints,
         Feature::CountryBonusNow,
         Feature::TechBonusNow,
@@ -323,10 +396,38 @@ impl Feature {
         Feature::AchievementProgressSum,
         Feature::MercenariesTotal,
         Feature::HandSize,
+        Feature::ProductionAccess,
+        Feature::TrackAccess,
+        Feature::AssistantAreasDistinct,
+        Feature::PresidentLocalAccess,
+        Feature::BankAccess,
+        Feature::EmploymentAgencyAccess,
+        Feature::PresidentReachableAreas,
+        Feature::MoneyStock,
+        Feature::TradeGoodsStock,
+        Feature::BuildingTokensReady,
+        Feature::HeldOrderValue,
+        Feature::OrderMatchedGoods,
+        Feature::ExecutableOrders,
+        Feature::FlagIconMarginal,
+        Feature::HeldOrderIcons,
+        Feature::LabTakeable,
+        Feature::PortTakeable,
+        Feature::MatchedProductionAccess,
     ];
 
     /// Length of [`Feature::ALL`] and of each weight vector.
     pub const COUNT: usize = Feature::ALL.len();
+
+    /// The PRE-V4 shipped width — the first sixteen rows of [`Feature::ALL`],
+    /// which every V1/V2-era record, sign pin and registered row index is a
+    /// statement about. The step-8 move APPENDED the eighteen candidates after
+    /// these, so this constant is the append point: `pair_fixtures`' axis
+    /// anchors on it (the frozen package digest serializes exactly
+    /// `INCUMBENT_COUNT + CandidateFeature::COUNT` rows), the research-notes
+    /// sign pin scopes to it, and the named tables' padding pins read from it.
+    /// It is a HISTORICAL fact, not a tunable — it can never move again.
+    pub const INCUMBENT_COUNT: usize = 16;
 
     /// Position in [`Feature::ALL`] — the weight-vector index.
     ///
@@ -352,6 +453,24 @@ impl Feature {
             Feature::AchievementProgressSum => 13,
             Feature::MercenariesTotal => 14,
             Feature::HandSize => 15,
+            Feature::ProductionAccess => 16,
+            Feature::TrackAccess => 17,
+            Feature::AssistantAreasDistinct => 18,
+            Feature::PresidentLocalAccess => 19,
+            Feature::BankAccess => 20,
+            Feature::EmploymentAgencyAccess => 21,
+            Feature::PresidentReachableAreas => 22,
+            Feature::MoneyStock => 23,
+            Feature::TradeGoodsStock => 24,
+            Feature::BuildingTokensReady => 25,
+            Feature::HeldOrderValue => 26,
+            Feature::OrderMatchedGoods => 27,
+            Feature::ExecutableOrders => 28,
+            Feature::FlagIconMarginal => 29,
+            Feature::HeldOrderIcons => 30,
+            Feature::LabTakeable => 31,
+            Feature::PortTakeable => 32,
+            Feature::MatchedProductionAccess => 33,
         }
     }
 
@@ -375,7 +494,34 @@ impl Feature {
             Feature::AchievementProgressSum => "achievement_progress_sum",
             Feature::MercenariesTotal => "mercenaries_total",
             Feature::HandSize => "hand_size",
+            Feature::ProductionAccess => "production_access",
+            Feature::TrackAccess => "track_access",
+            Feature::AssistantAreasDistinct => "assistant_areas_distinct",
+            Feature::PresidentLocalAccess => "president_local_access",
+            Feature::BankAccess => "bank_access",
+            Feature::EmploymentAgencyAccess => "employment_agency_access",
+            Feature::PresidentReachableAreas => "president_reachable_areas",
+            Feature::MoneyStock => "money_stock",
+            Feature::TradeGoodsStock => "trade_goods_stock",
+            Feature::BuildingTokensReady => "building_tokens_ready",
+            Feature::HeldOrderValue => "held_order_value",
+            Feature::OrderMatchedGoods => "order_matched_goods",
+            Feature::ExecutableOrders => "executable_orders",
+            Feature::FlagIconMarginal => "flag_icon_marginal",
+            Feature::HeldOrderIcons => "held_order_icons",
+            Feature::LabTakeable => "lab_takeable",
+            Feature::PortTakeable => "port_takeable",
+            Feature::MatchedProductionAccess => "matched_production_access",
         }
+    }
+
+    /// True for the eighteen V4 §3.2 candidates — the rows past
+    /// [`INCUMBENT_COUNT`](Self::INCUMBENT_COUNT). The predicate the padding
+    /// pins and the incumbent-scoped sign pins read, written as index
+    /// arithmetic over [`index`](Self::index) (itself an exhaustive match) so
+    /// a new variant cannot dodge classification by omission.
+    pub fn is_candidate(self) -> bool {
+        self.index() >= Self::INCUMBENT_COUNT
     }
 
     /// True for the five features whose value is re-derived END SCORING
@@ -383,7 +529,10 @@ impl Feature {
     /// achievement progress). Their values come from [`ScoreStructure`], which
     /// is computed once per [`score`] call — this predicate is what lets the
     /// tests assert that grouping instead of trusting a comment, and it is the
-    /// set the drift pin holds against the engine's own breakdown.
+    /// set the drift pin holds against the engine's own breakdown. The V4
+    /// candidates also read back from precomputed [`ScoreStructure`] storage,
+    /// but they mirror no end-scoring arithmetic — this predicate stays the
+    /// drift pin's five, and [`is_candidate`](Self::is_candidate) is theirs.
     pub fn is_score_structure(self) -> bool {
         matches!(
             self,
@@ -408,6 +557,25 @@ pub struct WeightTable {
     pub early: [i64; Feature::COUNT],
     /// Weights at `p == PROGRESS_FULL_PPM` (a clock is full).
     pub late: [i64; Feature::COUNT],
+}
+
+/// The step-8 padding, mechanical and auditable: the historical sixteen-slot
+/// vector verbatim in slots `0..16`, ZERO in every candidate slot. Every named
+/// table below is written through this so the widening could not retype an
+/// incumbent number — the sixteen literals on the page are byte-for-byte the
+/// pre-move arrays, and the padding pin
+/// (`the_named_tables_are_the_historical_sixteen_padded_with_zero_candidates`)
+/// holds both halves.
+const fn padded_incumbent_vector(
+    sixteen: [i64; Feature::INCUMBENT_COUNT],
+) -> [i64; Feature::COUNT] {
+    let mut out = [0i64; Feature::COUNT];
+    let mut i = 0;
+    while i < Feature::INCUMBENT_COUNT {
+        out[i] = sixteen[i];
+        i += 1;
+    }
+    out
 }
 
 impl WeightTable {
@@ -574,10 +742,12 @@ impl WeightTable {
     /// the sixteen slots, with
     /// `the_hand_split_orders_core_above_board_above_excess_in_both_vectors`
     /// pinning the two ordering inequalities the assistant triple turns on.
+    /// (Since the step-8 widening the vectors are PADDED — the sixteen
+    /// literals below are the table, and every candidate slot is 0.)
     pub const V1: WeightTable = WeightTable {
         //     [vp, ctry, tech, chur, cust, hCORE, hEXC, ware, brd, shop, trad, 5pw, imp, achv, merc, hnd#]
-        early: [10,   12,    6,   -4,    3,    30,    4,  -10,  14,   12,   15,   8,   5,    2,    3,   -3],
-        late:  [40,   30,   20,   16,   20,    20,    2,   -4,  10,   20,   25,  10,   8,    4,    4,   -6],
+        early: padded_incumbent_vector([10, 12, 6, -4, 3, 30, 4, -10, 14, 12, 15, 8, 5, 2, 3, -3]),
+        late: padded_incumbent_vector([40, 30, 20, 16, 20, 20, 2, -4, 10, 20, 25, 10, 8, 4, 4, -6]),
     };
 
     /// The hand-set first cut that GENERATED the T4 freeze corpus — the
@@ -606,10 +776,12 @@ impl WeightTable {
     /// either — they take [`WeightTable::V2`] — so this const's neighbour is a
     /// record too, and the equality pin below is a statement about 2026-07-27
     /// that both of them still satisfy.
+    /// (Padded at step 8 like every named table; the HISTORICAL RECORD is the
+    /// sixteen literals, unmoved, and a zero pad prices nothing.)
     pub const PRE_FREEZE_2026_07_27: WeightTable = WeightTable {
         //     [vp, ctry, tech, chur, cust, hCORE, hEXC, ware, brd, shop, trad, 5pw, imp, achv, merc, hnd#]
-        early: [10,   12,    6,   -4,    3,    30,    4,  -10,  14,   12,   15,   8,   5,    2,    3,   -3],
-        late:  [40,   30,   20,   16,   20,    20,    2,   -4,  10,   20,   25,  10,   8,    4,    4,   -6],
+        early: padded_incumbent_vector([10, 12, 6, -4, 3, 30, 4, -10, 14, 12, 15, 8, 5, 2, 3, -3]),
+        late: padded_incumbent_vector([40, 30, 20, 16, 20, 20, 2, -4, 10, 20, 25, 10, 8, 4, 4, -6]),
     };
 
     /// **THE SHIPPED TABLE since the Phase-3.5c freeze (2026-08-10)** — what
@@ -617,7 +789,10 @@ impl WeightTable {
     /// arena contestant evaluate with. It is the evaluator-v2 protocol's
     /// iteration candidate promoted verbatim: the numbers below are the ones
     /// round 2 adopted, unchanged by the promotion, weight identity
-    /// **`0x9a240f2ff7624b0e`** (V1's is `0xe1fedd5efc49d0f6`).
+    /// **`0x9a240f2ff7624b0e`** (V1's is `0xe1fedd5efc49d0f6`) — the
+    /// SIXTEEN-SLOT identities; since the step-8 zero-padding the widened
+    /// tables hash to `0xefe5b3e86b1ec332` (V2) and `0x8ce9e676d17fdb02` (V1),
+    /// the sixteen live slots unmoved.
     ///
     /// [`WeightTable::V1`] is RETAINED VERBATIM beside it — byte-identical to
     /// what it was before the freeze — exactly as
@@ -781,7 +956,9 @@ impl WeightTable {
     /// on their home stages, the second negative on the greedy corpus too — which
     /// is the merge rule doing its job rather than a grid that happened to agree
     /// with itself. **Weight identity `0x9a240f2ff7624b0e`**, verified at this
-    /// commit against the probe's own digest of the two arrays below.
+    /// commit against the probe's own digest of the two arrays below (the
+    /// sixteen-slot identity; the step-8 padded table reads
+    /// `0xefe5b3e86b1ec332`).
     ///
     /// Read the honest limits with these numbers too, and they are round 1's
     /// unchanged: the AUCs are measured on INCUMBENT-play corpora and are
@@ -866,17 +1043,28 @@ impl WeightTable {
     ///   declare, last, and this table is one input to it.
     /// * **Two-player only.** Every corpus, fit, scenario and screen in the
     ///   trail is 2P. Nothing has measured what these weights do at 3–4P.
+    ///
+    /// (Since the step-8 widening the vectors are PADDED: the sixteen literals
+    /// below are still round 2's numbers verbatim, every candidate slot is 0,
+    /// and `V2` therefore IS spec §10's `V2-padded` — the same BEHAVIOR as the
+    /// shipped pre-move table, held to the recorded battery by
+    /// `the_padded_tables_preserve_pre_move_totals_and_terms_over_constructed_and_organic_views`.
+    /// The `weight_table_identity` value moved with the width — the padded
+    /// table hashes 68 numbers — and the historical identity above describes
+    /// the sixteen-slot arrays this padding preserves.)
     pub const V2: WeightTable = WeightTable {
         //     [vp, ctry, tech, chur, cust, hCORE, hEXC, ware, brd, shop, trad, 5pw, imp, achv, merc, hnd#]
-        early: [ 1,   20,   14,   -4,    3,    30,    5,  -10,   6,   12,   15,   8,   5,    2,    3,   -1],
-        late:  [40,   30,   20,    8,   20,    20,    2,  -10,  10,   20,   25,  14,   8,    4,    4,   -2],
+        early: padded_incumbent_vector([1, 20, 14, -4, 3, 30, 5, -10, 6, 12, 15, 8, 5, 2, 3, -1]),
+        late: padded_incumbent_vector([40, 30, 20, 8, 20, 20, 2, -10, 10, 20, 25, 14, 8, 4, 4, -2]),
     };
 
     /// **THE ITERATION CANDIDATE, retained as an ALIAS of [`WeightTable::V2`]
     /// now that its job is done.** Through rounds 1–3 this const WAS the
     /// candidate — it moved twice and every round instrument named it. The
     /// freeze promoted its final value to `V2` verbatim, so the two hold the
-    /// same thirty-two numbers and the same identity `0x9a240f2ff7624b0e`.
+    /// same live numbers and the same identity — `0x9a240f2ff7624b0e` at
+    /// sixteen slots, `0xefe5b3e86b1ec332` since the step-8 padding (the alias
+    /// tracks V2 through the widening too).
     ///
     /// **Why it is kept rather than deleted, and what that buys.** The round
     /// commands are committed, in the ledger rows and in both evidence
@@ -959,13 +1147,13 @@ pub struct TermContribution {
 /// reporting an interpolated weight there would be a lie about what [`score`]
 /// used — while the raw `viewer_value`/`opponent_value` stay populated so a
 /// terminal explanation is still readable. The `terminal` value is then the
-/// whole score, and it is a named additive contribution rather than a
-/// seventeenth `Feature` because it is not a feature: §2.2's list is sixteen
-/// entries and a rank is not one of them.
+/// whole score, and it is a named additive contribution rather than a 35th
+/// `Feature` because a terminal rank is not a positional feature.
 ///
-/// `PartialEq`/`Eq` are load-bearing, not conveniences: spec §0.4(ii)'s
-/// determinization cell asserts that a candidate's explanation is EQUAL across
-/// sampled belief worlds.
+/// `PartialEq`/`Eq` are load-bearing, not conveniences: callers and regression
+/// cells compare complete explanations. Spec §0.4(ii)'s determinization cell
+/// compares all score-affecting fields; zero-weight diagnostic raw values are
+/// permitted to expose the sampled-world differences they cannot price.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Explanation {
     pub terms: Vec<TermContribution>,
@@ -1040,8 +1228,9 @@ pub fn explain(view: &PlayerView, rules: &Rules, weights: &WeightTable) -> Expla
     let progress = progress_ppm(view, rules);
     let structure = ScoreStructure::derive(view, rules);
     // A view without its own seat is degenerate rather than fatal (`observe`
-    // cannot make one; a fixture can). It reports sixteen zero terms and a zero
-    // total — the same answer `score` gives — instead of an empty explanation.
+    // cannot make one; a fixture can). It reports one zero term per feature
+    // and a zero total — the same answer `score` gives — instead of an empty
+    // explanation.
     let me = seated_viewer(view);
     let terminal = me.and_then(|m| terminal_standing_of(view, m, &structure));
 
@@ -1697,6 +1886,72 @@ pub struct ScoreStructure {
     /// helpers read. Derived unconditionally beside the rest; see
     /// [`ViewContext`] for why it is context rather than values.
     pub context: ViewContext,
+    /// The eighteen V4 candidate values, precomputed per seat — the step-8
+    /// move's storage. See [`CandidateValues`] for the derivation rule.
+    pub candidates: CandidateValues,
+}
+
+/// The eighteen V4 §3.2 candidate values, one per-seat row each — the same
+/// "derive once, answer per seat" storage the five bonus mirrors use, extended
+/// to the candidates when the step-8 move put them on `score`'s path.
+///
+/// **The helper METHODS below stay the single formula source**: [`ScoreStructure::derive`]
+/// fills these arrays by calling them once per real seat AFTER the board and
+/// order-card context passes complete (O1's pool is the complement of a set
+/// every seat contributes to, so no row can be valued before the pass ends),
+/// and [`ScoreStructure::value_of`] reads them back. Nothing else computes a
+/// candidate value, so the stored numbers and the probe's helper calls cannot
+/// disagree. Dummy seats get no row (a dummy holds no cards, stands no
+/// assistants, and [`seat_index`] excludes it), so a dummy query reads 0
+/// through `value_of`'s `map_or`, exactly as the mirrors answer.
+///
+/// Fixed arrays throughout — `score` is the allocation-free hot path and this
+/// struct rides every [`ScoreStructure::derive`]
+/// (`score_allocates_nothing_and_explain_allocates` holds it to that).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CandidateValues {
+    pub production_access: [i64; MAX_SEATS],
+    pub track_access: [i64; MAX_SEATS],
+    pub assistant_areas_distinct: [i64; MAX_SEATS],
+    pub president_local_access: [i64; MAX_SEATS],
+    pub bank_access: [i64; MAX_SEATS],
+    pub employment_agency_access: [i64; MAX_SEATS],
+    pub president_reachable_areas: [i64; MAX_SEATS],
+    pub money_stock: [i64; MAX_SEATS],
+    pub trade_goods_stock: [i64; MAX_SEATS],
+    pub building_tokens_ready: [i64; MAX_SEATS],
+    pub held_order_value: [i64; MAX_SEATS],
+    pub order_matched_goods: [i64; MAX_SEATS],
+    pub executable_orders: [i64; MAX_SEATS],
+    pub flag_icon_marginal: [i64; MAX_SEATS],
+    pub held_order_icons: [i64; MAX_SEATS],
+    pub lab_takeable: [i64; MAX_SEATS],
+    pub port_takeable: [i64; MAX_SEATS],
+    pub matched_production_access: [i64; MAX_SEATS],
+}
+
+impl CandidateValues {
+    /// All-zero rows — the pre-fill state and the empty-view answer.
+    pub const EMPTY: CandidateValues = CandidateValues {
+        production_access: [0; MAX_SEATS],
+        track_access: [0; MAX_SEATS],
+        assistant_areas_distinct: [0; MAX_SEATS],
+        president_local_access: [0; MAX_SEATS],
+        bank_access: [0; MAX_SEATS],
+        employment_agency_access: [0; MAX_SEATS],
+        president_reachable_areas: [0; MAX_SEATS],
+        money_stock: [0; MAX_SEATS],
+        trade_goods_stock: [0; MAX_SEATS],
+        building_tokens_ready: [0; MAX_SEATS],
+        held_order_value: [0; MAX_SEATS],
+        order_matched_goods: [0; MAX_SEATS],
+        executable_orders: [0; MAX_SEATS],
+        flag_icon_marginal: [0; MAX_SEATS],
+        held_order_icons: [0; MAX_SEATS],
+        lab_takeable: [0; MAX_SEATS],
+        port_takeable: [0; MAX_SEATS],
+        matched_production_access: [0; MAX_SEATS],
+    };
 }
 
 impl ScoreStructure {
@@ -1712,6 +1967,7 @@ impl ScoreStructure {
             remainder: [0; MAX_SEATS],
             achievement: [0; MAX_SEATS],
             context: ViewContext::EMPTY,
+            candidates: CandidateValues::EMPTY,
         };
 
         // V4 §3.2's board context, BEFORE the seat loop: the per-seat masks
@@ -1883,11 +2139,44 @@ impl ScoreStructure {
             &mut s.customs,
         );
 
+        // The V4 candidate values, LAST (the step-8 fill): every context pass
+        // above is complete — O1's pool in particular is the complement of a
+        // set every seat contributes to — so the helper methods may now answer
+        // per seat. The helpers stay the single formula source; this loop only
+        // stores what they say. Computed into a local first because the
+        // helpers borrow `s` immutably.
+        let mut cv = CandidateValues::EMPTY;
+        for player in &view.players {
+            let Some(i) = seat_index(player) else {
+                continue;
+            };
+            cv.production_access[i] = s.production_access(view, player);
+            cv.track_access[i] = s.track_access(view, player);
+            cv.assistant_areas_distinct[i] = s.assistant_areas_distinct(player);
+            cv.president_local_access[i] = s.president_local_access(player);
+            cv.bank_access[i] = s.bank_access(view, player);
+            cv.employment_agency_access[i] = s.employment_agency_access(view, player);
+            cv.president_reachable_areas[i] = s.president_reachable_areas(player);
+            cv.money_stock[i] = s.money_stock(player);
+            cv.trade_goods_stock[i] = s.trade_goods_stock(player);
+            cv.building_tokens_ready[i] = s.building_tokens_ready(player);
+            cv.held_order_value[i] = s.held_order_value(player, rules);
+            cv.order_matched_goods[i] = s.order_matched_goods(player, rules);
+            cv.executable_orders[i] = s.executable_orders(player, rules);
+            cv.flag_icon_marginal[i] = s.flag_icon_marginal(player, rules);
+            cv.held_order_icons[i] = s.held_order_icons(player, rules);
+            cv.lab_takeable[i] = s.lab_takeable(view, player);
+            cv.port_takeable[i] = s.port_takeable(view, player, rules);
+            cv.matched_production_access[i] = s.matched_production_access(view, player, rules);
+        }
+        s.candidates = cv;
+
         s
     }
 
     /// One player's raw feature value. The five score-structure features index
-    /// this table; the other ten read a field of `player` directly.
+    /// this table, and the eighteen candidates read their precomputed
+    /// per-seat rows; the rest read a field of `player` directly.
     pub fn value_of(&self, player: &VisiblePlayer, feature: Feature) -> i64 {
         let seat = seat_index(player);
         let structured = |vector: &[i64; MAX_SEATS]| seat.map_or(0, |i| vector[i]);
@@ -1926,6 +2215,36 @@ impl ScoreStructure {
             // (`observe` masks a starting order's IDENTITY, never the slot), so
             // this term reads the same from every seat.
             Feature::HandSize => player.hand.len() as i64,
+
+            // The V4 candidates read their precomputed per-seat rows — filled
+            // by `derive`'s final pass from the helper methods, which remain
+            // the single formula source (see [`CandidateValues`]).
+            Feature::ProductionAccess => structured(&self.candidates.production_access),
+            Feature::TrackAccess => structured(&self.candidates.track_access),
+            Feature::AssistantAreasDistinct => {
+                structured(&self.candidates.assistant_areas_distinct)
+            }
+            Feature::PresidentLocalAccess => structured(&self.candidates.president_local_access),
+            Feature::BankAccess => structured(&self.candidates.bank_access),
+            Feature::EmploymentAgencyAccess => {
+                structured(&self.candidates.employment_agency_access)
+            }
+            Feature::PresidentReachableAreas => {
+                structured(&self.candidates.president_reachable_areas)
+            }
+            Feature::MoneyStock => structured(&self.candidates.money_stock),
+            Feature::TradeGoodsStock => structured(&self.candidates.trade_goods_stock),
+            Feature::BuildingTokensReady => structured(&self.candidates.building_tokens_ready),
+            Feature::HeldOrderValue => structured(&self.candidates.held_order_value),
+            Feature::OrderMatchedGoods => structured(&self.candidates.order_matched_goods),
+            Feature::ExecutableOrders => structured(&self.candidates.executable_orders),
+            Feature::FlagIconMarginal => structured(&self.candidates.flag_icon_marginal),
+            Feature::HeldOrderIcons => structured(&self.candidates.held_order_icons),
+            Feature::LabTakeable => structured(&self.candidates.lab_takeable),
+            Feature::PortTakeable => structured(&self.candidates.port_takeable),
+            Feature::MatchedProductionAccess => {
+                structured(&self.candidates.matched_production_access)
+            }
         }
     }
 
@@ -3554,14 +3873,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_feature_list_is_sixteen_features_in_a_canonical_order() {
+    fn the_feature_list_is_thirty_four_features_in_a_canonical_order() {
         assert_eq!(
             Feature::COUNT,
+            34,
+            "the V4 step-8 move: §2.2's sixteen plus §3.2's eighteen candidates",
+        );
+        assert_eq!(
+            Feature::INCUMBENT_COUNT,
             16,
-            "spec §2.2's list is sixteen entries since T3's in-hand split",
+            "the incumbent width is a historical fact and can never move again",
         );
         for (i, feature) in Feature::ALL.into_iter().enumerate() {
             assert_eq!(feature.index(), i, "{} is not at its own index", feature.name());
+            assert_eq!(
+                feature.is_candidate(),
+                i >= Feature::INCUMBENT_COUNT,
+                "{} is classified on the wrong side of the append point",
+                feature.name(),
+            );
         }
         // Names are the artifact/report key, so they must be unique.
         let mut names: Vec<&str> = Feature::ALL.iter().map(|f| f.name()).collect();
@@ -3569,8 +3899,10 @@ mod tests {
         let unique = names.len();
         names.dedup();
         assert_eq!(names.len(), unique, "duplicate feature name");
-        // The exact five whose values come from `ScoreStructure`.
+        // The exact five END-SCORING mirrors — the candidates also read from
+        // `ScoreStructure` storage, but the drift-pin set stays the five.
         assert_eq!(Feature::ALL.iter().filter(|f| f.is_score_structure()).count(), 5);
+        assert_eq!(Feature::ALL.iter().filter(|f| f.is_candidate()).count(), 18);
     }
 
     #[test]
@@ -3637,7 +3969,10 @@ mod tests {
     #[test]
     fn frozen_v1_weight_signs_follow_the_research_notes() {
         let w = WeightTable::V1;
-        for feature in Feature::ALL {
+        // The INCUMBENT sixteen only: the research notes measured those, and
+        // the candidate slots are zero pads by the step-8 padding pin — a sign
+        // claim about a deliberate zero would be a claim about nothing.
+        for feature in Feature::ALL.into_iter().filter(|f| !f.is_candidate()) {
             let (early, late) = w.get(feature);
             match feature {
                 // R1-4 and R1-7: the two negative features, in BOTH vectors.
@@ -3682,7 +4017,7 @@ mod tests {
             .into_iter()
             .map(|f| w.get(f).0.abs())
             .max()
-            .expect("sixteen features");
+            .expect("the feature axis is nonempty");
         assert!(vp_early < early_max, "early VP must NOT dominate (R1-1)");
     }
 
@@ -3764,14 +4099,18 @@ mod tests {
     #[test]
     fn the_pre_freeze_table_is_the_corpus_generator_and_v1_matches_it_today() {
         let pre = WeightTable::PRE_FREEZE_2026_07_27;
+        // The historical record is the SIXTEEN-slot table; the step-8 widening
+        // padded every named const with zero candidate slots (held by the
+        // padding pin), so the literals here compare against the incumbent
+        // slice — the slots the 2026-07-27 corpus was generated by.
         assert_eq!(
-            pre.early,
-            [10, 12, 6, -4, 3, 30, 4, -10, 14, 12, 15, 8, 5, 2, 3, -3],
+            &pre.early[..Feature::INCUMBENT_COUNT],
+            &[10, 12, 6, -4, 3, 30, 4, -10, 14, 12, 15, 8, 5, 2, 3, -3],
             "the freeze corpus's EARLY vector is a historical fact and cannot be re-priced",
         );
         assert_eq!(
-            pre.late,
-            [40, 30, 20, 16, 20, 20, 2, -4, 10, 20, 25, 10, 8, 4, 4, -6],
+            &pre.late[..Feature::INCUMBENT_COUNT],
+            &[40, 30, 20, 16, 20, 20, 2, -4, 10, 20, 25, 10, 8, 4, 4, -6],
             "the freeze corpus's LATE vector is a historical fact and cannot be re-priced",
         );
         assert_eq!(
@@ -3827,10 +4166,15 @@ mod tests {
             ("PRE_FREEZE_2026_07_27", WeightTable::PRE_FREEZE_2026_07_27),
             ("ZERO", WeightTable::ZERO),
         ] {
-            for (i, w) in table.early.iter().enumerate().skip(16) {
+            for (i, w) in table
+                .early
+                .iter()
+                .enumerate()
+                .skip(Feature::INCUMBENT_COUNT)
+            {
                 assert_eq!(*w, 0, "{name}.early[{i}] must be a zero pad, got {w}");
             }
-            for (i, w) in table.late.iter().enumerate().skip(16) {
+            for (i, w) in table.late.iter().enumerate().skip(Feature::INCUMBENT_COUNT) {
                 assert_eq!(*w, 0, "{name}.late[{i}] must be a zero pad, got {w}");
             }
         }

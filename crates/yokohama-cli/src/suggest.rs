@@ -153,7 +153,7 @@ pub fn marked_table_row(marked: bool, cells: [&str; 5]) -> String {
 /// It says "rows" where spec §2.3 said "features" because the count includes
 /// the `final standing` row when there is one — on a finished game that row is
 /// the only one with anything in it, and a summary counting feature terms alone
-/// would read `0 of 16` over a table whose whole content it had skipped.
+/// would read `0 of 34` over a table whose whole content it had skipped.
 pub const NONZERO_SUMMARY_TAIL: &str =
     "rows carry a nonzero product — they are this move's whole story.";
 
@@ -756,7 +756,7 @@ fn render_within(
         // (§2.6), so every weight above reads 0 and the standing IS the score.
         // Which is exactly why the standing is a STORY row here and counted as
         // one: at that point it is the only row with anything in it, and a
-        // summary that counted only the feature terms would read "0 of 16"
+        // summary that counted only the feature terms would read "0 of 34"
         // over a table whose whole content sits in the row it skipped.
         story_row(
             &mut body,
@@ -1192,8 +1192,8 @@ mod tests {
     /// **The terminal-standing line.** A search whose hand-off is a FINISHED
     /// game explains with a standing instead of a positional total (spec §2.6,
     /// and §0.3(a)'s amended identity `total == Σterms + standing`), and the
-    /// render must SAY the game ended there — otherwise the screen is sixteen
-    /// zero-weight rows under a number with no visible source.
+    /// render must SAY the game ended there — otherwise the screen is
+    /// thirty-four zero-weight rows under a number with no visible source.
     ///
     /// Doctored rather than driven, and deliberately: the property under test
     /// belongs to the RENDER, while reaching a terminal hand-off organically

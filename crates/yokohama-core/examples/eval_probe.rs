@@ -66,12 +66,15 @@
 //! CANDIDATE COLUMNS in probe space — `candidate_columns` is the adapter
 //! `pair_fixtures::CandidateColumns` was declared to receive, and `pairs` dumps
 //! the frozen fixture package with all thirty-four delta rows real. Nothing
-//! here fits or generates anything; `Feature::ALL` is unmoved at sixteen until
-//! step 8. The step-2 close handover's cross-checks over that package — the
-//! declared candidate levels, O1's registered pool and floors, §5.1's
-//! expected-nonzero rule on the candidate axis, family 5's audit properties and
-//! family 11's congruence — are the cells at the bottom of this file, and they
-//! run under this example's own test command and no other.
+//! here fits or generates anything. Step 8 widened the production
+//! `Feature::ALL` axis to thirty-four, with the eighteen candidate weights
+//! zero-padded; this historical research instrument keeps its registered
+//! sixteen-incumbent-plus-eighteen-candidate axis. The step-2 close handover's
+//! cross-checks over that package — declared candidate levels, O1's registered
+//! pool and floors, §5.1's expected-nonzero rule on the candidate axis, family
+//! 5's audit properties, and family 11's congruence — are the cells at the
+//! bottom of this file. They run under this example's own test command and no
+//! other.
 //!
 //! ```text
 //! cargo run --release -p yokohama-core --example eval_probe -- \
@@ -152,18 +155,20 @@ usage: eval_probe <subcommand> [options]
                              that ships since the 2026-08-10 freeze), `v2-draft`
                              (the same numbers under the rounds' own spelling),
                              or `<e0,...,e15>/<l0,...,l15>` (sixteen i64 per
-                             vector, Feature::ALL order).
-                             Each `+` clause is the V3 spec §4.1 17th-column
+                             vector, incumbent-prefix Feature::ALL order; the
+                             admitted candidate suffix is zero-padded).
+                             Each `+` clause is the V3 spec §4.1 extension-column
                              machinery: it prices a --candidate-columns name
                              exactly as a shipped feature is priced —
                              interpolate(early,late) x (mine - the signed-weight
                              opponent extreme) — so an extension table IS the
                              arithmetic preview of admitting that column.
-                             Feature::ALL does not move; a clause is not a
-                             feature. Clauses come off the RIGHT greedily, so a
-                             vector base writes its entries bare or `-`-signed
-                             (a leading `+` entry is refused by name). An
-                             extension table on a NAMED base also prints the
+                             A clause prices this instrument's historical
+                             candidate column; it does not add another
+                             production feature. Clauses come off the RIGHT
+                             greedily, so a vector base writes its entries
+                             bare or `-`-signed (a leading `+` entry is refused
+                             by name). A NAMED extension table also prints the
                              §4.2 PAIRED held-out improvement interval against
                              that base.
                              A candidate is EVALUATED here and never GENERATES
@@ -172,10 +177,13 @@ usage: eval_probe <subcommand> [options]
                              corpus command reproduces.
       --candidate-columns <list>
                              Comma-separated extra ROWS in the features block,
-                             measured beside the sixteen and shipped by nothing.
-                             Feature::ALL stays sixteen everywhere. REFUSED
-                             when --blocks omits `features` (an ignored column
-                             would be a silent no-op). The nine names, each
+                             measured beside the sixteen incumbent rows. These
+                             are the nine legacy V2/V3 extension columns, NOT
+                             the eighteen V4 CandidateFeature rows admitted by
+                             step 8; this option retains the preregistered
+                             historical extension grammar;
+                             REFUSED when --blocks omits `features` (an ignored
+                             column would be a silent no-op). The nine names, each
                              also the row's printed name except `postclaim`:
                                postclaim
                                    achievement_progress_sum with the viewer's
@@ -236,10 +244,10 @@ usage: eval_probe <subcommand> [options]
       Dump the V4 §5 pair-fixture package's reports with ALL THIRTY-FOUR delta
       rows REAL: the sixteen incumbents through `eval`'s public surface as
       before, and the eighteen §3.2 candidates through this instrument's
-      CandidateColumns adapter (§7's probe space for every column until
-      step 8 moves them into `Feature::ALL`). No games are played and nothing
-      is fitted — this is the DUMP the collision instrument and the solver read
-      their inputs off, and every report prints the package digest.
+      CandidateColumns adapter (the frozen probe-space spelling retained after
+      step 8 moved the same values into `Feature::ALL`). No games are played and
+      nothing is fitted — this is the DUMP the collision instrument and the
+      solver read their inputs off, and every report prints the package digest.
         --pair <id>    one registration only, e.g. `4(c)` (default: all)
         --stage early|late
                        one endpoint only (default: every endpoint the
@@ -805,11 +813,11 @@ fn master_echo(kind: SeedScheduleKind) -> String {
 // Rows: what gets an AUC
 // ---------------------------------------------------------------------------
 
-/// One reported row. Sixteen are the shipped features; the last two exist to
-/// answer questions the shipped list cannot.
+/// One reported row. Sixteen are the historical incumbent rows; the last two
+/// answer questions outside that registered probe axis.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Row {
-    /// A shipped feature of `Feature::ALL`, in canonical order.
+    /// An incumbent feature from the first sixteen entries of `Feature::ALL`.
     Feature(Feature),
     /// `assistants_in_hand_core + assistants_in_hand_excess` — the feature R1-4
     /// actually measured (0.6026 early), before T3 split it. Reported so the
@@ -842,7 +850,7 @@ impl Row {
         }
     }
 
-    /// The reported rows, in print order: the sixteen shipped features, the
+    /// The reported rows, in print order: the sixteen incumbent features, the
     /// unsplit hand row, then any CANDIDATE COLUMNS, and the benchmark total
     /// last.
     ///
@@ -852,7 +860,11 @@ impl Row {
     /// has always built — the property that keeps an argument-free run
     /// reproducing the R0 appendices.
     fn all(columns: &[CandidateColumn]) -> Vec<Row> {
-        let mut rows: Vec<Row> = Feature::ALL.into_iter().map(Row::Feature).collect();
+        let mut rows: Vec<Row> = Feature::ALL[..Feature::INCUMBENT_COUNT]
+            .iter()
+            .copied()
+            .map(Row::Feature)
+            .collect();
         rows.push(Row::HandUnsplit);
         rows.extend(columns.iter().copied().map(Row::Candidate));
         rows.push(Row::EvalTotal);
@@ -860,16 +872,14 @@ impl Row {
     }
 }
 
-/// A row this instrument can measure that the shipped feature list does NOT
-/// contain — an admission candidate, reported beside the sixteen so a proposal
-/// can be read against the evidence rather than argued from first principles.
+/// A candidate row in this instrument's frozen V2/V3 extension vocabulary,
+/// reported beside the sixteen incumbents so the recorded evidence remains
+/// reproducible after the production axis widened.
 ///
-/// **NOT a [`Feature`], and nothing here moves `Feature::ALL`.** The shipped
-/// list stays sixteen entries everywhere; adding a variant here adds a REPORTED
-/// COLUMN and nothing else. That separation is the point: the protocol's ladder
-/// (§4.2) wants L1 evidence for an admission BEFORE the feature count moves, and
-/// the feature count moving is the one step `Feature::ALL`'s own doc calls out
-/// as having a silent failure mode.
+/// These nine variants are NOT the eighteen V4 `CandidateFeature` rows now in
+/// production. They remain optional research-only rows used by the legacy
+/// report and extension-clause grammar. Adding a variant here changes that
+/// grammar; it does not change `Feature::ALL` or `CandidateFeature::ALL`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum CandidateColumn {
     /// The T3 post-claim filter's value: `achievement_progress_sum` with the
@@ -1048,15 +1058,12 @@ impl CandidateColumn {
 // The round-3 admission columns' arithmetic (probe-side mirrors)
 // ---------------------------------------------------------------------------
 //
-// Everything below is a MIRROR of scoring arithmetic that lives in `eval.rs`
-// and `game/scoring.rs`, restated here at finer grain: the shipped features
-// report the VP a majority would pay, and these report the seat's standing IN
-// that majority. They live in this example rather than in `eval.rs` because
-// round 3 is an L1 EVIDENCE round (execution-ledger row, protocol §4.2): an
-// admission moves `Feature::ALL`, which is freeze-commit blast radius, so the
-// evidence is gathered before any admission is proposed. If a column is later
-// admitted, its computation moves into `eval.rs` with its own tests at that
-// point.
+// Everything below is the historical V2/V3 probe-column adapter over scoring
+// arithmetic in `eval.rs` and `game/scoring.rs`, restated here at the legacy
+// nine-column extension grain. Round 3 gathered L1 evidence for these optional
+// rows. Step 8 admitted a separate eighteen-row V4 `CandidateFeature` axis; it
+// did not promote or rename these legacy columns, which remain here so the old
+// instruments reproduce.
 //
 // A mirror with no pin is a second implementation waiting to disagree, which is
 // why each margin below is pinned by BEHAVIOUR against the shipped structure —
@@ -1529,7 +1536,8 @@ fn split_extension_clauses(spec: &str) -> Result<(&str, Vec<ExtensionClause>), S
 ///     (`WeightTable::V2_DRAFT` is an alias of `V2` since the freeze promoted
 ///     it), kept so the committed round commands still parse and reproduce;
 ///   * `<e0,…,e15>/<l0,…,l15>` — sixteen comma-separated `i64` per vector, in
-///     [`Feature::ALL`] order, for a grid cell that has no const yet.
+///     the incumbent prefix of [`Feature::ALL`] order, for a grid cell that has
+///     no const yet. The production candidate suffix is zero-padded.
 ///
 /// The three bare spellings stay legal WITHOUT a name, which is what keeps the
 /// committed round commands byte-compatible; a name is required as soon as a
@@ -1537,18 +1545,18 @@ fn split_extension_clauses(spec: &str) -> Result<(&str, Vec<ExtensionClause>), S
 /// by. Every extension-free spec parses to an EMPTY clause list and prices
 /// exactly as it did before the clause grammar existed.
 ///
-/// **The clause layer is V3 spec §4.1's "17th column" machinery**: each clause
+/// **The clause layer is V3 spec §4.1's extension-column machinery**: each clause
 /// prices a [`CandidateColumn`] with an early/late weight pair, exactly the way
-/// a shipped feature is priced, so an extension table IS the arithmetic preview
-/// of admitting that column. `Feature::ALL` does not move — the base vector's
-/// width stays keyed to `Feature::COUNT`, and a clause is not a feature.
+/// a shipped feature is priced, so an extension table is the arithmetic preview
+/// of hypothetically admitting that legacy column. Step 8 instead admitted the
+/// separate eighteen-row V4 `CandidateFeature` suffix; this grammar deliberately
+/// retains its preregistered sixteen-incumbent base plus nine-column vocabulary.
 ///
 /// Every refusal names what it SAW (the importer discipline: an unrecognized
 /// input is a typed error, never a silent default). The vector arm checks its
-/// lengths against `Feature::COUNT` rather than against a literal 16, so a
-/// feature admission cannot leave this parser accepting a stale width — and it
-/// refuses a leading-`+` ENTRY by name, because `+` is the clause separator and
-/// a `+5` inside a vector is an ambiguity rather than a signed five.
+/// length against `Feature::INCUMBENT_COUNT`, the frozen base-axis boundary,
+/// and refuses a leading-`+` ENTRY by name because `+` is the clause separator
+/// and a `+5` inside a vector is an ambiguity rather than a signed five.
 fn parse_score_table(spec: &str) -> Result<ScoreTableSpec, String> {
     const FORMS: &str = "(v1 | v2 | v2-draft | <name>=<base>[+<column>=<early>/<late>]... where \
                          <base> is v1 | v2 | v2-draft | <16 comma-separated i64>/<16 \
@@ -1589,17 +1597,17 @@ fn parse_score_table(spec: &str) -> Result<ScoreTableSpec, String> {
         ));
     };
 
-    // `Feature::COUNT`, never a literal 16: a future feature admission moves the
-    // width, and a parser holding a stale literal would accept exactly the
-    // tables that no longer fit the vectors.
+    // The base grammar is the preregistered incumbent prefix. Its result is a
+    // production-width WeightTable so the step-8 candidate suffix is padded
+    // with zero without changing any committed round command.
     let parse_vector = |raw: &str, which: &str| -> Result<[i64; Feature::COUNT], String> {
         let entries: Vec<&str> = raw.split(',').collect();
-        if entries.len() != Feature::COUNT {
+        if entries.len() != Feature::INCUMBENT_COUNT {
             return Err(format!(
-                "--score-table {spec:?}: the {which} vector has {} entries, and Feature::ALL has \
-                 {} — every weight is named or none is",
+                "--score-table {spec:?}: the {which} vector has {} entries, and the registered \
+                 incumbent prefix has {} — every incumbent weight is named or none is",
                 entries.len(),
-                Feature::COUNT,
+                Feature::INCUMBENT_COUNT,
             ));
         }
         let mut out = [0i64; Feature::COUNT];
@@ -1692,7 +1700,7 @@ impl Split {
 ///
 /// Both halves ride ONE pass over the structure: the paired-difference arm
 /// (V3 spec §4.2) needs the base table's own number for every cell, and
-/// re-running the sixteen-term mirror loop a second time to get it would double
+/// re-running the sixteen-incumbent mirror loop a second time to get it would double
 /// an extension table's corpus cost for a quantity the first pass already had
 /// in hand. For a spec with NO extension clauses the two fields are the same
 /// bits — no arithmetic happens between them — which is what makes an
@@ -1742,7 +1750,7 @@ fn candidate_total(
         return CandidateTotals { base: shipped_total, total: shipped_total };
     }
     let mut total: i64 = 0;
-    for feature in Feature::ALL {
+    for &feature in &Feature::ALL[..Feature::INCUMBENT_COUNT] {
         let (early, late) = spec.table.get(feature);
         let weight = interpolate(early, late, progress);
         let mine = structure.value_of(me, feature);
@@ -1751,7 +1759,7 @@ fn candidate_total(
     }
     let base = total;
 
-    // The §4.1 extension clauses, priced EXACTLY as the sixteen above are: one
+    // The §4.1 extension clauses, priced EXACTLY as the sixteen incumbents above are: one
     // interpolated weight, the viewer's value minus the same signed-weight
     // opponent extreme, saturating throughout. That identity is the whole
     // instrument — an extension table is what admitting the column would
@@ -3411,9 +3419,8 @@ fn report_features(
     );
     // Printed only when a `--candidate-columns` row is present, so an
     // argument-free run stays byte-identical to every recorded appendix. The
-    // marking is load-bearing: these rows sit in the same table as the sixteen
-    // and ship in nothing, and a reader who takes one for a feature would read
-    // the whole report as describing an evaluator that does not exist.
+    // marking is load-bearing: these are historical V2/V3 extension-column
+    // rows, not a second rendering of the V4 zero-padded production suffix.
     let candidate_columns: Vec<&str> = corpus
         .rows
         .iter()
@@ -3424,8 +3431,8 @@ fn report_features(
         .collect();
     if !candidate_columns.is_empty() {
         println!(
-            "  CANDIDATE COLUMNS — measured here, shipped by NOTHING, no weight and so no \
-             disposition; Feature::ALL is still {}: {}",
+            "  LEGACY RESEARCH COLUMNS — V2/V3 extension grammar, independent of \
+             production Feature::ALL's {}-row V4 axis: {}",
             Feature::COUNT,
             candidate_columns.join(", "),
         );
@@ -4248,10 +4255,10 @@ const FIT_MAX_SWEEPS: usize = 12;
 /// order, so a weight and the column it prices share a subscript and no
 /// re-mapping happens anywhere in the fit.
 ///
-/// Deliberately NOT a `WeightTable`: that type is sixteen wide and SHIPS, and
-/// §4.1's rule has held since the clause grammar landed — `Feature::ALL` does
-/// not move at step 6. A fit table is the arithmetic preview of a wider axis,
-/// not the axis.
+/// Deliberately NOT a `WeightTable`: production's table is now also thirty-four
+/// wide, but its suffix names admitted production features. This fit table
+/// retains the preregistered V4 research-axis identity (sixteen incumbent IDs,
+/// then eighteen candidate IDs), masks, and column ordering.
 #[derive(Clone, PartialEq, Eq, Debug)]
 struct FitTable {
     early: [i64; AXIS_WIDTH],
@@ -4280,7 +4287,7 @@ impl FitTable {
     /// the same construction).
     fn v2_padded() -> Self {
         let mut table = FitTable { early: [0; AXIS_WIDTH], late: [0; AXIS_WIDTH] };
-        for f in Feature::ALL {
+        for &f in &Feature::ALL[..Feature::INCUMBENT_COUNT] {
             let (early, late) = WeightTable::V2.get(f);
             let slot = FeatureId::Incumbent(f).index();
             table.early[slot] = early;
@@ -4349,7 +4356,12 @@ impl FeatureMask {
     /// The sixteen incumbents alone — cell `B`'s set, and the base every other
     /// set extends.
     fn incumbents() -> Self {
-        Self::of(&Feature::ALL.map(FeatureId::Incumbent))
+        let ids: Vec<FeatureId> = Feature::ALL[..Feature::INCUMBENT_COUNT]
+            .iter()
+            .copied()
+            .map(FeatureId::Incumbent)
+            .collect();
+        Self::of(&ids)
     }
 
     /// The sixteen incumbents PLUS the named candidates: a §8 cell's set.
@@ -5868,7 +5880,7 @@ fn dense_flip(draw: u64) -> bool {
 /// The slot carries NO S1 semantics while an arm runs: its registered sign
 /// prior, its collinearity flag and its exemption rows are read by the removal
 /// rule, which never runs on an arm.
-const ARM_COLUMN_SLOT: usize = Feature::COUNT;
+const ARM_COLUMN_SLOT: usize = Feature::INCUMBENT_COUNT;
 
 /// One control arm's record.
 struct ArmRecord {
@@ -6041,9 +6053,10 @@ fn run_arm(
     let planted = arm_matrix(matrix, column);
     // Sentence 7: the sixteen incumbents plus the arm column, and nothing else.
     let mask = FeatureMask::of(
-        &Feature::ALL
+        &Feature::ALL[..Feature::INCUMBENT_COUNT]
+            .iter()
+            .copied()
             .map(FeatureId::Incumbent)
-            .into_iter()
             .chain(std::iter::once(FeatureId::all()[ARM_COLUMN_SLOT]))
             .collect::<Vec<_>>(),
     );
@@ -8050,7 +8063,7 @@ fn signature(view: &PlayerView, mover: PlayerId, rules: &Rules) -> Result<Signat
     let opponent = view.players.iter().find(|p| p.id != mover && !p.id.is_dummy());
     let structure = ScoreStructure::derive(view, rules);
     let mut dv = [0i64; AXIS_WIDTH];
-    for f in Feature::ALL {
+    for &f in &Feature::ALL[..Feature::INCUMBENT_COUNT] {
         let mine = structure.value_of(me, f);
         let theirs = opponent.map_or(0, |o| structure.value_of(o, f));
         dv[FeatureId::Incumbent(f).index()] = mine - theirs;
@@ -8642,8 +8655,9 @@ fn resolve_part_a_roots(generated: bool, rules: &Rules) -> Result<Vec<RootInput>
 
 /// **THE e113 TOP-TIE MEASUREMENT** — §5.3's own step-4 assignment.
 ///
-/// The D7 headline root is a 36-way tie in the SHIPPED evaluator's sixteen
-/// features. This asks the question the tie poses to a WIDER value model: over
+/// The D7 headline root is a 36-way tie in the shipped evaluator's sixteen
+/// nonzero V2 incumbent features. This asks the question the tie poses to the
+/// complete value model: over
 /// exactly those tied candidates, how many distinct 34-feature signatures are
 /// there? One class would mean the eighteen candidate columns see nothing the
 /// sixteen missed at this position; thirty-six would mean the tie is an
@@ -8686,7 +8700,7 @@ fn e113_top_tie(rules: &Rules) -> Result<String, String> {
     out.push_str("\nREADING             ");
     if classes.len() == tied.len() {
         out.push_str(&format!(
-            "the {}-way tie the SHIPPED sixteen features cannot break AT\n\
+            "the {}-way tie the sixteen nonzero V2 incumbent features cannot break AT\n\
              \x20                   ALL resolves into {} DISTINCT complete-vector signatures —\n\
              \x20                   one class per tied candidate. The widened axis separates\n\
              \x20                   exactly where the incumbent evaluator is blind. This is the\n\
@@ -9341,7 +9355,7 @@ fn own_vector(
         .ok_or_else(|| format!("seat {} is not a player in this view", subject.0))?;
     let structure = ScoreStructure::derive(view, rules);
     let mut out = [0i64; AXIS_WIDTH];
-    for f in Feature::ALL {
+    for &f in &Feature::ALL[..Feature::INCUMBENT_COUNT] {
         out[FeatureId::Incumbent(f).index()] = structure.value_of(me, f);
     }
     for c in CandidateFeature::ALL {
@@ -10511,7 +10525,11 @@ fn read_placement_fork(root: &DevRoot, rules: &Rules) -> Result<ForkRead, String
             distinct_incumbent: sigs
                 .iter()
                 .map(|s| {
-                    Feature::ALL.map(|f| s.dv[FeatureId::Incumbent(f).index()])
+                    Feature::ALL[..Feature::INCUMBENT_COUNT]
+                        .iter()
+                        .copied()
+                        .map(|f| s.dv[FeatureId::Incumbent(f).index()])
+                        .collect::<Vec<_>>()
                 })
                 .collect::<BTreeSet<_>>()
                 .len(),
@@ -12175,8 +12193,9 @@ mod tests {
             "the draft spelling and the shipped spelling name one table since the freeze",
         );
 
-        // An explicit vector: sixteen per side, Feature::ALL order, negatives
-        // and zeroes included so the parser cannot be a positive-only reader.
+        // An explicit vector: sixteen incumbent-prefix entries per side,
+        // Feature::ALL order, negatives and zeroes included so the parser
+        // cannot be a positive-only reader.
         let early: Vec<String> = (0..16).map(|i| (i as i64 - 3).to_string()).collect();
         let late: Vec<String> = (0..16).map(|i| (40 - i as i64).to_string()).collect();
         let spec = format!("A1={}/{}", early.join(","), late.join(","));
@@ -12238,8 +12257,8 @@ mod tests {
         let message = CandidateColumn::parse_list("postclim").expect_err("a typo must be refused");
         assert!(message.contains("postclim"), "{message}");
         assert!(message.contains("postclaim"), "the refusal must name what IS accepted: {message}");
-        // Feature::ALL is not touched by a candidate column, ever.
-        assert_eq!(Feature::COUNT, 16);
+        // The historical base boundary is not moved by a candidate clause.
+        assert_eq!(Feature::INCUMBENT_COUNT, 16);
         assert_eq!(Row::all(&[CandidateColumn::PostClaim]).len(), Row::all(&[]).len() + 1);
         // …and the benchmark row stays last.
         assert!(matches!(Row::all(&[CandidateColumn::PostClaim]).last(), Some(Row::EvalTotal)));
@@ -13625,10 +13644,10 @@ mod tests {
         assert_eq!(CandidateColumn::TerminalMarginNow.name(), "terminal_margin_now");
         assert_eq!(CandidateColumn::TerminalMarginNow.token(), "terminal_margin_now");
 
-        // The shipped feature list is untouched, the argument-free row vector is
-        // the one every recorded appendix was rendered from, and the benchmark
-        // row still ends the table with every column present.
-        assert_eq!(Feature::COUNT, 16);
+        // The registered incumbent prefix is unchanged, the argument-free row
+        // vector is the one every recorded appendix was rendered from, and the
+        // benchmark row still ends the table with every column present.
+        assert_eq!(Feature::INCUMBENT_COUNT, 16);
         assert_eq!(Row::all(&[]).len(), 18);
         assert_eq!(Row::all(&CANDIDATE_COLUMNS).len(), 18 + CANDIDATE_COLUMNS.len());
         assert!(matches!(Row::all(&CANDIDATE_COLUMNS).last(), Some(Row::EvalTotal)));
@@ -15214,7 +15233,7 @@ mod tests {
                 .unwrap_or_else(|e| panic!("{} lesser: {e}", decl.id));
 
             let incumbent = fixture.incumbent_delta(&rules);
-            for f in Feature::ALL {
+            for &f in &Feature::ALL[..Feature::INCUMBENT_COUNT] {
                 let slot = FeatureId::Incumbent(f).index();
                 assert_eq!(
                     g.dv[slot] - l.dv[slot],
@@ -15702,7 +15721,7 @@ mod tests {
         assert_eq!(s_slots(&dv), expected);
         // Every incumbent slot is EXCLUDED — the strongest statement of "and no
         // others" that does not depend on the layout's numbering.
-        for f in Feature::ALL {
+        for &f in &Feature::ALL[..Feature::INCUMBENT_COUNT] {
             let value = 100 + FeatureId::Incumbent(f).index() as i64;
             assert!(!s_slots(&dv).contains(&value), "{} leaked into the S group", f.name());
         }
@@ -16743,7 +16762,7 @@ mod tests {
                 let (a, b) = (at(0), at(1));
                 pairs += 1;
 
-                for f in Feature::ALL {
+                for &f in &Feature::ALL[..Feature::INCUMBENT_COUNT] {
                     let i = FeatureId::Incumbent(f).index();
                     assert_eq!(
                         a.dv[i], -b.dv[i],
@@ -16857,11 +16876,15 @@ mod tests {
         assert_eq!(names.len(), MATRIX_WIDTH);
         assert_eq!(names[..5], MATRIX_KEY_COLUMNS.map(str::to_string));
         assert_eq!(names[MATRIX_WIDTH - 2..], MATRIX_OUTCOME_COLUMNS.map(str::to_string));
-        for (offset, f) in Feature::ALL.into_iter().enumerate() {
+        for (offset, &f) in Feature::ALL[..Feature::INCUMBENT_COUNT].iter().enumerate() {
             assert_eq!(names[5 + offset], f.name(), "incumbent slot {offset}");
         }
         for (offset, c) in CandidateFeature::ALL.into_iter().enumerate() {
-            assert_eq!(names[5 + Feature::COUNT + offset], c.name(), "candidate slot {offset}");
+            assert_eq!(
+                names[5 + Feature::INCUMBENT_COUNT + offset],
+                c.name(),
+                "candidate slot {offset}",
+            );
         }
 
         let rules = Rules::standard();
@@ -16940,7 +16963,7 @@ mod tests {
 
             row_values(&view, &rules, &WeightTable::V1, &probe_rows, &[], &mut rel, &mut abs,
                 &mut [], &mut []);
-            for f in Feature::ALL {
+            for &f in &Feature::ALL[..Feature::INCUMBENT_COUNT] {
                 let expected = rel[f.index()];
                 let got = row.dv[FeatureId::Incumbent(f).index()] as f64;
                 assert!(
@@ -17026,14 +17049,14 @@ mod tests {
                             && stage_of(r.turn_index as usize, r.turns_in_game as usize) == stage
                     }) {
                         n += 1;
-                        for f in Feature::ALL {
+                        for &f in &Feature::ALL[..Feature::INCUMBENT_COUNT] {
                             sums[f.index()] += row.dv[FeatureId::Incumbent(f).index()] as f64;
                         }
                         assert_eq!(*label.get_or_insert(row.win), row.win, "one label per seat");
                     }
                     assert!(n > 0, "game {game} seat {seat} {stage:?}: the cell has no rows");
                     assert_eq!(label, Some(cell.label), "the matrix and the cell disagree on who won");
-                    for f in Feature::ALL {
+                    for &f in &Feature::ALL[..Feature::INCUMBENT_COUNT] {
                         let mean = sums[f.index()] / n as f64;
                         assert!(
                             mean == cell.rel[f.index()],
@@ -17779,7 +17802,7 @@ mod tests {
             "a perfectly separating column is separated by the SMALLEST improving weight",
         );
         assert_eq!(fitted.objective.mean, Some(1.0), "a column that is the label separates fully");
-        for f in Feature::ALL {
+        for &f in &Feature::ALL[..Feature::INCUMBENT_COUNT] {
             let slot = FeatureId::Incumbent(f).index();
             assert_eq!(
                 (fitted.table.early[slot], fitted.table.late[slot]),
@@ -18372,7 +18395,7 @@ mod tests {
             );
             // The mask is the set plus ALL SIXTEEN incumbents, always.
             let mask = cell.mask();
-            for f in Feature::ALL {
+            for &f in &Feature::ALL[..Feature::INCUMBENT_COUNT] {
                 assert!(
                     mask.holds(FeatureId::Incumbent(f).index()),
                     "cell {} dropped incumbent {}",
@@ -18389,7 +18412,10 @@ mod tests {
                     c.label(),
                 );
             }
-            assert_eq!(mask.members().len(), Feature::COUNT + expected.len());
+            assert_eq!(
+                mask.members().len(),
+                Feature::INCUMBENT_COUNT + expected.len()
+            );
         }
 
         // The interaction cell is the ONLY cell carrying X, and it carries the
