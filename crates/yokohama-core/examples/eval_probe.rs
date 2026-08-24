@@ -15215,12 +15215,26 @@ mod tests {
     /// at the wrong stored row, a fill-loop slot left unwritten, and an axis
     /// whose appended suffix does not sit where the frozen registrations index.
     ///
-    /// The INCUMBENT sixteen are the same call on both sides (`own_vector`'s
-    /// prefix is `value_of` too), so their VALUES here are trivially equal and
-    /// the cells below say so rather than claiming credit for them. What the
-    /// incumbent rows still carry is ROW CORRESPONDENCE, which is not trivial:
-    /// they pin that the probe's axis slot `i` and the production axis slot `i`
-    /// are the same feature.
+    /// **The measured content is entirely the CANDIDATE half; the sixteen
+    /// incumbent rows carry none of it.** On the incumbent prefix the two sides
+    /// are structurally the SAME expression: `own_vector` writes
+    /// `value_of(me, f)` at `f.index()`, this writes
+    /// `value_of(me, row.to_feature())` at `row.index()`, and `to_feature` is
+    /// the IDENTITY on its incumbent arm. Both therefore reduce to
+    /// `out[f.index()] = value_of(me, f)`, so those comparisons are
+    /// self-comparisons that cannot fail — they pin neither the values nor the
+    /// row correspondence, because both sides key the slot off the same
+    /// `f.index()`. Incumbent row correspondence is held where it was always
+    /// held: by T1's axis pins
+    /// (`the_axis_and_the_widened_feature_enum_are_the_same_axis` and
+    /// `the_feature_axis_widens_to_thirty_four_with_candidates_appended`). The
+    /// sixteen ride these sweeps only because filtering them out would buy
+    /// nothing and would make the loop something other than the axis.
+    ///
+    /// On the eighteen CANDIDATE rows the two sides are genuinely different
+    /// expressions — the probe's direct helper call against the stored row
+    /// `value_of` dispatches to, with `Feature::ALL`'s appended suffix ordering
+    /// in between — and that is the whole of what these cells measure.
     ///
     /// Correspondence is anchored through [`FeatureId::to_feature`] rather than
     /// by writing `16 + c.index()` a second time. The mapping exists precisely
