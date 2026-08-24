@@ -6061,10 +6061,18 @@ fn pin_record(table: &FitTable) -> PinRecord {
     let core = FeatureId::Incumbent(Feature::AssistantsInHandCore).index();
     let board = FeatureId::Incumbent(Feature::AssistantsOnBoard).index();
     let excess = FeatureId::Incumbent(Feature::AssistantsInHandExcess).index();
+    // The pin is an EQUALITY PER ENDPOINT — `w_vp(early) = 1` and
+    // `w_vp(late) = 40`, read off V2 itself rather than typed. A check that
+    // accepted either number at either endpoint would record a table that had
+    // SWAPPED the two as preserving them.
+    let (vp_early, vp_late) = WeightTable::V2.get(Feature::VictoryPoints);
     PinRecord {
         vp: StageEndpoint::ALL.map(|s| {
-            at(vp_slot, s) == WeightTable::V2.get(Feature::VictoryPoints).0
-                || at(vp_slot, s) == WeightTable::V2.get(Feature::VictoryPoints).1
+            at(vp_slot, s)
+                == match s {
+                    StageEndpoint::Early => vp_early,
+                    StageEndpoint::Late => vp_late,
+                }
         }),
         core_over_board: StageEndpoint::ALL.map(|s| at(core, s) > at(board, s)),
         board_over_excess: StageEndpoint::ALL.map(|s| at(board, s) > at(excess, s)),
@@ -6127,13 +6135,6 @@ impl CellRecord {
         }
     }
 
-    /// The fit that stands for the cell — the refit where one ran.
-    fn standing(&self) -> &CellFit {
-        match &self.refit {
-            Some((_, fit, _)) => fit,
-            None => &self.fit,
-        }
-    }
 }
 
 /// Everything one protocol run produced.
@@ -6327,6 +6328,7 @@ fn render_protocol(matrix: &Matrix, plan: &MatrixPlan, run: &ProtocolRun) -> Str
                 outcome.converged,
                 if init == arm.fit.chosen { "  <- the arm's fit" } else { "" },
             );
+            let _ = writeln!(out, "        vectors: {}", outcome.table.render_vectors());
         }
     }
 
@@ -6365,6 +6367,7 @@ fn render_protocol(matrix: &Matrix, plan: &MatrixPlan, run: &ProtocolRun) -> Str
             record.candidates.iter().map(|c| c.label()).collect::<Vec<_>>(),
         );
         render_cell_fit(&mut out, "base", &record.fit);
+        render_part_b(&mut out, &run.rows, &record.candidates, &record.fit.outcome().table);
         for (candidate, disposition) in &record.removal.dispositions {
             let _ = writeln!(out, "     {:<4} {}", candidate.label(), render_disposition(*disposition));
         }
@@ -6375,6 +6378,7 @@ fn render_protocol(matrix: &Matrix, plan: &MatrixPlan, run: &ProtocolRun) -> Str
                 survivors.iter().map(|c| c.label()).collect::<Vec<_>>(),
             );
             render_cell_fit(&mut out, "refit", refit);
+            render_part_b(&mut out, &run.rows, survivors, &refit.outcome().table);
             for (candidate, disposition) in &reread.dispositions {
                 let _ = writeln!(
                     out,
@@ -6384,33 +6388,18 @@ fn render_protocol(matrix: &Matrix, plan: &MatrixPlan, run: &ProtocolRun) -> Str
                 );
             }
         }
-        let table = &record.standing().outcome().table;
-        let mask = FeatureMask::cell(&record.survivors());
-        let report = satisfaction(&run.rows, &mask, table);
-        for (index, stage) in StageEndpoint::ALL.into_iter().enumerate() {
-            let _ = writeln!(
-                out,
-                "     part-B {:<5} applicable {} · violated {} {:?} · dropped {:?}",
-                stage.name(),
-                report[index].applicable,
-                report[index].violated.len(),
-                report[index].violated,
-                report[index].dropped,
-            );
-        }
-        let pins = pin_record(table);
-        let _ = writeln!(
-            out,
-            "     recorded (never gated): w_vp kept {:?} · core>on_board {:?} · on_board>excess \
-             {:?}",
-            pins.vp, pins.core_over_board, pins.board_over_excess,
-        );
     }
 
     let _ = writeln!(out, "\n  outcome: {}", run.outcome.label());
     out
 }
 
+/// One CellFit's two fits, each with its own statistics and its own vectors.
+///
+/// **Per FIT, not per cell.** §8's inventory is "≤ 28 fits ... each recorded
+/// (cell, init, set, vectors, statistics)", and the two inits reach DIFFERENT
+/// vectors often enough — the init-tie sentence exists for exactly that case —
+/// that printing only the chosen one would lose the comparison.
 fn render_cell_fit(out: &mut String, label: &str, fit: &CellFit) {
     use std::fmt::Write;
     for (init, outcome) in [(FitInit::V2Start, &fit.v2_start), (FitInit::AllZero, &fit.all_zero)] {
@@ -6425,8 +6414,42 @@ fn render_cell_fit(out: &mut String, label: &str, fit: &CellFit) {
             outcome.converged,
             if init == fit.chosen { "  <- the cell's fit" } else { "" },
         );
+        let _ = writeln!(out, "     vectors: {}", outcome.table.render_vectors());
     }
-    let _ = writeln!(out, "     vectors: {}", fit.outcome().table.render_vectors());
+}
+
+/// One FITTED TABLE's Part-B satisfaction report and its recorded pins.
+///
+/// §8 registers the report per fitted cell, and a cell that removed a candidate
+/// has TWO fitted tables — so this runs on the base fit AND on the refit.
+/// Reporting only the survivor's would hide what the removal changed, which is
+/// the one thing a removal record is for.
+fn render_part_b(
+    out: &mut String,
+    rows: &[GateRow],
+    candidates: &[CandidateFeature],
+    table: &FitTable,
+) {
+    use std::fmt::Write;
+    let mask = FeatureMask::cell(candidates);
+    let report = satisfaction(rows, &mask, table);
+    for (index, stage) in StageEndpoint::ALL.into_iter().enumerate() {
+        let _ = writeln!(
+            out,
+            "     part-B {:<5} applicable {} · violated {} {:?} · dropped {:?}",
+            stage.name(),
+            report[index].applicable,
+            report[index].violated.len(),
+            report[index].violated,
+            report[index].dropped,
+        );
+    }
+    let pins = pin_record(table);
+    let _ = writeln!(
+        out,
+        "     recorded (never gated): w_vp kept {:?} · core>on_board {:?} · on_board>excess {:?}",
+        pins.vp, pins.core_over_board, pins.board_over_excess,
+    );
 }
 
 fn render_disposition(disposition: Disposition) -> String {
