@@ -6172,15 +6172,6 @@ fn row_applies(row: &GateRow, mask: &FeatureMask) -> bool {
     })
 }
 
-/// **§8's registered per-cell Part-B report** — "each cell's fitted table prints
-/// its count of violated applicable registered rows (the §4 projection); the
-/// report informs §9's hand-set and is never selection evidence."
-///
-/// `Σ_f w_f(endpoint)·Δv_f < margin` is the violation, in EXACT `i64`. Weights
-/// are read through [`interpolate`] at the endpoint's own ppm — 0 or
-/// `PROGRESS_FULL_PPM`, where §5.1 registered the rows precisely because
-/// interpolation is exact there — so the report and the objective price a weight
-/// through ONE arithmetic path.
 /// **ONE ROW'S EXACT READING under one table**: `Σ_f w_f(endpoint)·Δv_f` over
 /// the slots the mask holds, in `i64` throughout.
 ///
@@ -6204,6 +6195,13 @@ fn row_value(row: &GateRow, mask: &FeatureMask, table: &FitTable) -> i64 {
     total
 }
 
+/// **§8's registered per-cell Part-B report** — "each cell's fitted table prints
+/// its count of violated applicable registered rows (the §4 projection); the
+/// report informs §9's hand-set and is never selection evidence."
+///
+/// `Σ_f w_f(endpoint)·Δv_f < margin` is the violation, in EXACT `i64` —
+/// [`row_value`]'s sum, so the report and the objective price a weight through
+/// ONE arithmetic path.
 fn satisfaction(rows: &[GateRow], mask: &FeatureMask, table: &FitTable) -> [StageSatisfaction; 2] {
     StageEndpoint::ALL.map(|stage| {
         let mut applicable = 0usize;
@@ -6409,13 +6407,46 @@ struct ProtocolRun {
 }
 
 impl ProtocolRun {
+    /// **THE RUN'S COMPOSED COMPLETION — the ONE reading the printed outcome
+    /// line and the exit code both take.**
+    ///
+    /// The typed [`ProtocolOutcome`] answers a narrower question than the record
+    /// does: it says how the CELL PROTOCOL ended, and it is `Complete` for a run
+    /// whose §8:975 re-run is still OWED or whose witness failed a kept row.
+    /// Those two runs stop, and an artifact that printed `outcome: COMPLETE` ten
+    /// lines below its own stop would contradict its exit code — the reader who
+    /// scrolled would get one answer and the script that branched on `$?` would
+    /// get the other.
+    ///
+    /// So both come off this composition, the way charter D6's `rooted`
+    /// precedent composes one outcome and reads it twice. **It is RECORD-ONLY**:
+    /// the typed outcome is untouched, no stop point moves, and the removal
+    /// rule's own record still says exactly what it said.
+    fn completion(&self) -> Completion {
+        if self.outcome != ProtocolOutcome::Complete {
+            return Completion::Stopped(self.outcome.label());
+        }
+        let complete = self.outcome.label();
+        match &self.rerun {
+            ReRun::Owed { .. } => Completion::Stopped(format!(
+                "{complete} — but the §8:975 re-run is OWED (see the re-run block)",
+            )),
+            ReRun::Evaluated(evaluation) if !evaluation.failures().is_empty() => {
+                Completion::Stopped(format!(
+                    "{complete} — but the §8:975 re-run FAILED its witness (see the re-run block)",
+                ))
+            }
+            _ => Completion::Complete(complete),
+        }
+    }
+
     /// **THE EXIT CONTRACT** (charter D6, the `rooted` precedent).
     ///
-    /// * `0` — the protocol COMPLETED: both arms recovered, every cell fitted,
-    ///   the removal rule resolved everywhere, X carried, and the statistics
-    ///   recorded.
+    /// * `0` — the record is COMPLETE: both arms recovered, every cell fitted,
+    ///   the removal rule resolved everywhere, X carried, the statistics
+    ///   recorded, and nothing outstanding at the §8:975 re-run.
     /// * `3` — STOPPED WITH NOTHING FALSE CLAIMED: an instrument defect, either
-    ///   owner route, or a §8:975 re-run left OWED or failed by its witness.
+    ///   owner route, or a re-run left OWED or failed by its witness.
     ///
     /// `2` is not this function's to give: it is `main`'s code for an errored
     /// subcommand, and every refusal on this path is an `Err` before a run
@@ -6425,10 +6456,29 @@ impl ProtocolRun {
     /// nothing — every figure it prints is recorded evidence — so the only
     /// thing an exit code can say here is whether the record is COMPLETE.
     fn exit_code(&self) -> i32 {
-        if self.outcome != ProtocolOutcome::Complete || self.rerun.stops() {
-            return EXIT_INCOMPLETE;
+        match self.completion() {
+            Completion::Complete(_) => 0,
+            Completion::Stopped(_) => EXIT_INCOMPLETE,
         }
-        0
+    }
+}
+
+/// Whether the RECORD is complete, and the artifact's own words for it.
+///
+/// Two variants and not a `bool` because the printed line needs the SENTENCE,
+/// and a sentence derived beside the code rather than from it is how the two
+/// came to disagree in the first place.
+#[derive(Clone, PartialEq, Eq, Debug)]
+enum Completion {
+    Complete(String),
+    Stopped(String),
+}
+
+impl Completion {
+    fn label(&self) -> &str {
+        match self {
+            Completion::Complete(label) | Completion::Stopped(label) => label,
+        }
     }
 }
 
@@ -6755,15 +6805,18 @@ fn render_protocol(matrix: &Matrix, plan: &MatrixPlan, run: &ProtocolRun) -> Str
     render_statistics(&mut out, run);
     render_rerun(&mut out, run);
 
-    let _ = writeln!(out, "\n  outcome: {}", run.outcome.label());
+    // Both lines off ONE composition, so the sentence a reader sees and the
+    // code a script branches on cannot disagree.
+    let completion = run.completion();
+    let _ = writeln!(out, "\n  outcome: {}", completion.label());
     let _ = writeln!(
         out,
         "  exit {} — {}",
         run.exit_code(),
-        if run.exit_code() == 0 {
-            "the §8 record is COMPLETE"
-        } else {
-            "STOPPED with nothing false claimed (never a pass, never a failure-of-gates)"
+        match completion {
+            Completion::Complete(_) => "the §8 record is COMPLETE",
+            Completion::Stopped(_) =>
+                "STOPPED with nothing false claimed (never a pass, never a failure-of-gates)",
         },
     );
     out
@@ -6902,10 +6955,11 @@ fn render_statistics(out: &mut String, run: &ProtocolRun) {
         let _ = writeln!(
             out,
             "     {:<18} stages EARLY/MID/LATE {}  ·  replicates kept {} of \
-             {HELD_OUT_REPLICATES}",
+             {HELD_OUT_REPLICATES} (measured stages: {})",
             "",
             statistic.render_stages(),
             statistic.replicates,
+            statistic.render_measured(),
         );
     }
 }
@@ -7182,6 +7236,16 @@ struct PairedStatistic {
     /// Replicates that produced a value at all — the drop rule, COUNTED, so a
     /// reader can see how much of the population an undefined stage cost.
     replicates: usize,
+    /// **How many STAGES each replicate actually measured**, indexed by that
+    /// count: `measured[3]` replicates averaged all three terciles,
+    /// `measured[0]` measured none and were dropped.
+    ///
+    /// The kept count alone is compatible with two very different populations —
+    /// two thousand replicates that each averaged three stages, and two thousand
+    /// that each averaged one — and the per-replicate DENOMINATOR is exactly
+    /// what the drop rule varies. Recording the distribution makes that visible
+    /// in the artifact rather than merely consistent with it.
+    measured: [usize; 4],
 }
 
 impl PairedStatistic {
@@ -7198,6 +7262,16 @@ impl PairedStatistic {
     fn render_stages(&self) -> String {
         let one = |s: Option<f64>| s.map_or_else(|| "  --  ".to_string(), |v| format!("{v:+.4}"));
         format!("{} / {} / {}", one(self.stages[0]), one(self.stages[1]), one(self.stages[2]))
+    }
+
+    /// The per-replicate denominator's distribution, largest first. The `0`
+    /// bucket is the DROPPED replicates and is already the difference between
+    /// the kept count and the replicate budget printed beside it.
+    fn render_measured(&self) -> String {
+        format!(
+            "3x{} · 2x{} · 1x{}",
+            self.measured[3], self.measured[2], self.measured[1],
+        )
     }
 }
 
@@ -7271,6 +7345,7 @@ fn paired_statistic(
         lo: f64::NAN,
         hi: f64::NAN,
         replicates: 0,
+        measured: [0; 4],
     };
     if clusters == 0 || bootstrap == 0 {
         return out;
@@ -7294,6 +7369,7 @@ fn paired_statistic(
                 measured += 1;
             }
         }
+        out.measured[measured] += 1;
         if measured > 0 {
             replicates.push(sum / measured as f64);
         }
@@ -7332,18 +7408,28 @@ fn held_out_statistics(
         let table = &record.final_fit().outcome().table;
         columns.push((record.cell, stage_columns(plan, matrix, table, &mask, Split::HeldOut)));
     }
-    let find = |cell: ProtocolCell| columns.iter().find(|(c, _)| *c == cell).map(|(_, s)| s);
+    // **A MISSING CELL IS A PANIC, NOT A SHORTER LIST.** `ProtocolCell::ALL`
+    // and the statistic registry are two rosters that must name the same seven
+    // cells; if one ever drifts, a lookup that returned `None` would silently
+    // drop a registered statistic and the artifact would print six rows where
+    // sentence 12 fixes seven, with nothing saying which one went missing.
+    let find = |cell: ProtocolCell| {
+        columns
+            .iter()
+            .find(|(c, _)| *c == cell)
+            .map(|(_, s)| s)
+            .unwrap_or_else(|| panic!("the protocol ran no cell {} to difference", cell.name()))
+    };
     HELD_OUT_STATISTICS
         .iter()
-        .filter_map(|(name, subject, reference)| {
-            let (subject, reference) = (find(*subject)?, find(*reference)?);
-            Some(paired_statistic(
-                subject,
-                reference,
+        .map(|(name, subject, reference)| {
+            paired_statistic(
+                find(*subject),
+                find(*reference),
                 name,
                 held_out_statistic_seed(matrix.header.master, name),
                 HELD_OUT_REPLICATES,
-            ))
+            )
         })
         .collect()
 }
@@ -7551,17 +7637,12 @@ enum ReRun {
     Evaluated(Box<ReRunEvaluation>),
 }
 
-impl ReRun {
-    /// **Does this state STOP the run?** Owed, or a witness that fails a kept
-    /// row — the two shapes in which the artifact has nothing true to claim.
-    fn stops(&self) -> bool {
-        match self {
-            ReRun::NotReached | ReRun::NotOwed { .. } => false,
-            ReRun::Owed { .. } => true,
-            ReRun::Evaluated(evaluation) => !evaluation.failures().is_empty(),
-        }
-    }
-}
+// **THERE IS NO `ReRun::stops()`, deliberately.** "Does this state stop the
+// run?" is answered by [`ProtocolRun::completion`] and nowhere else: it needs
+// the two stopping shapes anyway — OWED and witness-FAILED read differently in
+// the artifact — and a second predicate beside it would be two spellings of one
+// question, which is exactly how the printed outcome and the exit code came to
+// disagree.
 
 /// Build the re-run state for a finished protocol.
 fn part_b_rerun(
@@ -20009,6 +20090,12 @@ mod tests {
             HELD_OUT_REPLICATES as usize,
             "a replicate with ONE defined stage still has a value",
         );
+        assert_eq!(
+            statistic.measured,
+            [0, HELD_OUT_REPLICATES as usize, 0, 0],
+            "every replicate averaged over ONE stage — the varying denominator, recorded",
+        );
+        assert_eq!(statistic.render_measured(), "3x0 · 2x0 · 1x2000");
 
         // And the other end of the same rule: NO stage defined anywhere means
         // every replicate is dropped and the statistic is the honest non-answer.
@@ -20028,6 +20115,11 @@ mod tests {
         assert_eq!(statistic.point, None, "a mean over no measured stage is not a number");
         assert!(statistic.lo.is_nan() && statistic.hi.is_nan());
         assert_eq!(statistic.replicates, 0, "every replicate was DROPPED, not zeroed");
+        assert_eq!(
+            statistic.measured,
+            [HELD_OUT_REPLICATES as usize, 0, 0, 0],
+            "the whole budget landed in the DROPPED bucket, and the record says so",
+        );
         assert_eq!(statistic.render(), "--  (no stage is defined on both sides)");
     }
 
@@ -20263,6 +20355,38 @@ mod tests {
             printed.contains("its own difference is identically zero and carries no stream"),
             "{printed}",
         );
+        // **THE PER-REPLICATE DENOMINATOR IS VISIBLE, not merely consistent.**
+        // A kept count of 2,000 is compatible with two thousand replicates that
+        // each averaged three stages and with two thousand that each averaged
+        // one, and the drop rule is exactly what varies that denominator — so
+        // the distribution prints beside the count.
+        assert_eq!(
+            printed
+                .matches("replicates kept 2000 of 2000 (measured stages: 3x2000 · 2x0 · 1x0)")
+                .count(),
+            7,
+            "every statistic names how many stages each replicate measured:\n{printed}",
+        );
+        for statistic in &run.statistics {
+            assert_eq!(
+                statistic.measured,
+                [0, 0, 0, HELD_OUT_REPLICATES as usize],
+                "{}: both classes ride every cluster here, so no stage is ever lost",
+                statistic.name,
+            );
+            assert_eq!(
+                statistic.measured.iter().sum::<usize>(),
+                HELD_OUT_REPLICATES as usize,
+                "{}: the distribution accounts for every replicate drawn",
+                statistic.name,
+            );
+            assert_eq!(
+                statistic.replicates,
+                HELD_OUT_REPLICATES as usize - statistic.measured[0],
+                "{}: the kept count IS the budget less the dropped bucket",
+                statistic.name,
+            );
+        }
         for statistic in &run.statistics {
             assert!(printed.contains(statistic.name), "{} is missing", statistic.name);
             assert!(
@@ -20299,6 +20423,10 @@ mod tests {
         assert!(matches!(run.rerun, ReRun::NotOwed { witness: None }));
         assert!(printed.contains("NOT OWED"), "{printed}");
         assert_eq!(run.exit_code(), 0);
+        // The COMPLETE shape of the same composition: a bare label, undecorated,
+        // and the exit line that agrees with it.
+        assert_eq!(run.completion(), Completion::Complete("COMPLETE".to_string()));
+        assert!(printed.contains("\n  outcome: COMPLETE\n"), "{printed}");
         assert!(printed.contains("exit 0 — the §8 record is COMPLETE"), "{printed}");
 
         // **BYTE-IDENTICAL ACROSS RUNS.** §8: "Deterministic; no master" — the
@@ -20337,6 +20465,11 @@ mod tests {
         assert!(printed.contains("NOT COMPUTED — the protocol stopped at B+E"), "{printed}");
         assert!(matches!(run.rerun, ReRun::NotReached));
         assert_eq!(run.exit_code(), EXIT_INCOMPLETE);
+        // A route's composed label is the TYPED one, undecorated: the outcome
+        // already says what stopped the run, and the composition only adds a
+        // clause where the typed outcome cannot see the stop.
+        assert_eq!(run.completion(), Completion::Stopped(run.outcome.label()));
+        assert!(printed.contains("outcome: ROUTED-PENDING-EXEMPTION"), "{printed}");
 
         // AN INSTRUMENT DEFECT: identically-zero margins, so the planted arm
         // column is constant and no weight on it changes any ranking.
@@ -20412,6 +20545,19 @@ mod tests {
             ),
             "{printed}",
         );
+
+        // **THE SECTION'S POSITION IS PART OF THE RECORD.** It sits between the
+        // inventory accounting and the held-out statistics: after the fits it
+        // reads, before the block it explains the absence of. A report that
+        // drifted above the cells would be read as the removal record itself,
+        // which is the one thing it is not.
+        let at = |marker: &str| {
+            printed.find(marker).unwrap_or_else(|| panic!("missing {marker:?}:\n{printed}"))
+        };
+        assert!(at("== inventory accounting") < at("== REMOVALS NOT APPLIED"));
+        assert!(at("== REMOVALS NOT APPLIED") < at("== held-out statistics"));
+        assert!(at("== held-out statistics") < at("== §8:975 Part-B re-run"));
+        assert!(at("== §8:975 Part-B re-run") < at("\n  outcome: "));
 
         // The PENDING roster, deduplicated, each with its evidence line.
         let pending = pending_consulted(&run.consultation);
@@ -20596,7 +20742,7 @@ mod tests {
             .expect("the interaction cell");
         assert!(selected.refit.is_none(), "the selected cell removed nothing");
         assert!(matches!(run.rerun, ReRun::NotOwed { witness: Some(_) }));
-        assert!(!run.rerun.stops(), "a re-run nobody owes stops nothing");
+        assert_eq!(run.exit_code(), 0, "a re-run nobody owes stops nothing");
         let printed = render_protocol(&clean, &plan, &run);
         assert!(printed.contains("NOT OWED — the selected cell removed no candidate"), "{printed}");
         assert!(printed.contains("witness supplied and ECHOED, unused"), "{printed}");
@@ -20614,10 +20760,34 @@ mod tests {
             ["O3", "X3"],
             "the two columns with no (ii) path and no other exemption",
         );
-        assert!(run.rerun.stops(), "an OWED re-run stops the run");
+        assert_eq!(run.exit_code(), EXIT_INCOMPLETE, "an OWED re-run stops the run");
         let printed = render_protocol(&removed, &plan, &run);
         assert!(printed.contains("OWED — the selected cell removed"), "{printed}");
         assert!(printed.contains("no witness was supplied"), "{printed}");
+
+        // **THE PRINTED OUTCOME AND THE EXIT CODE COME OFF ONE COMPOSITION.**
+        // The typed `ProtocolOutcome` is `Complete` here — the CELL protocol did
+        // finish — but the record is not, and a line reading `outcome: COMPLETE`
+        // ten lines below its own stop would hand the reader one answer and the
+        // script branching on `$?` the other.
+        assert_eq!(run.outcome, ProtocolOutcome::Complete, "the typed outcome is untouched");
+        assert_eq!(
+            run.completion(),
+            Completion::Stopped(
+                "COMPLETE — but the §8:975 re-run is OWED (see the re-run block)".to_string(),
+            ),
+        );
+        assert!(
+            printed.contains(
+                "outcome: COMPLETE — but the §8:975 re-run is OWED (see the re-run block)",
+            ),
+            "{printed}",
+        );
+        assert!(printed.contains("exit 3 — STOPPED with nothing false claimed"), "{printed}");
+        assert!(
+            !printed.contains("outcome: COMPLETE\n"),
+            "no bare COMPLETE line may stand above a stop:\n{printed}",
+        );
 
         // OWED AND RUN: the same removal with a witness in hand. The projection
         // is the SURVIVORS' — the two removed columns' rows drop by name — and
@@ -20667,6 +20837,22 @@ mod tests {
         assert!(!evaluation.failures().is_empty(), "V2-padded satisfies no such system");
         assert!(printed.contains("VERDICT: DEFECT"), "{printed}");
         assert_eq!(run.exit_code(), EXIT_INCOMPLETE);
+        // The second stopped shape, composed the same way.
+        assert_eq!(
+            run.completion(),
+            Completion::Stopped(
+                "COMPLETE — but the §8:975 re-run FAILED its witness (see the re-run block)"
+                    .to_string(),
+            ),
+        );
+        assert!(
+            printed.contains(
+                "outcome: COMPLETE — but the §8:975 re-run FAILED its witness (see the re-run \
+                 block)",
+            ),
+            "{printed}",
+        );
+        assert!(!printed.contains("outcome: COMPLETE\n"), "{printed}");
     }
 
     /// **A SATISFYING WITNESS IS THE PART-B PROOF; A FAILING KEPT ROW IS A NAMED
@@ -20716,38 +20902,53 @@ mod tests {
             zero_out: zero_out_flips(&rows, &survivors, witness),
         };
 
+        // A COMPLETE cell protocol carrying one re-run state, so the verdict and
+        // the composed completion are read where the artifact reads them.
+        let carrying = |rerun: ReRun| ProtocolRun {
+            arms: Vec::new(),
+            anchor: None,
+            cells: Vec::new(),
+            rows: Vec::new(),
+            census: (PART_B_FROZEN_EARLY, PART_B_FROZEN_LATE),
+            outcome: ProtocolOutcome::Complete,
+            statistics: Vec::new(),
+            consultation: Vec::new(),
+            rerun,
+        };
+
         let defect = evaluate(&failing);
         assert_eq!(
             defect.failures().iter().map(|row| row.label.clone()).collect::<Vec<_>>(),
             ["TB hand row"],
             "one satisfied, one violated",
         );
-        let stopped = ReRun::Evaluated(Box::new(defect));
-        assert!(stopped.stops(), "a kept-row failure is a named DEFECT route");
-        let mut printed = String::new();
-        render_rerun(
-            &mut printed,
-            &ProtocolRun {
-                arms: Vec::new(),
-                anchor: None,
-                cells: Vec::new(),
-                rows: Vec::new(),
-                census: (PART_B_FROZEN_EARLY, PART_B_FROZEN_LATE),
-                outcome: ProtocolOutcome::Complete,
-                statistics: Vec::new(),
-                consultation: Vec::new(),
-                rerun: stopped,
-            },
+        let stopped = carrying(ReRun::Evaluated(Box::new(defect)));
+        assert_eq!(
+            stopped.exit_code(),
+            EXIT_INCOMPLETE,
+            "a kept-row failure is a named DEFECT route",
         );
+        assert!(matches!(stopped.completion(), Completion::Stopped(_)));
+        let mut printed = String::new();
+        render_rerun(&mut printed, &stopped);
         assert!(printed.contains("VERDICT: DEFECT"), "{printed}");
         assert!(printed.contains("kept row early TB hand row"), "{printed}");
         assert!(printed.contains("value 2 vs margin 5  VIOLATED"), "{printed}");
         assert!(printed.contains("value 3 vs margin 1  OK"), "{printed}");
 
+        // **AND THE SAT SHAPE COMPLETES.** A satisfying witness is the Part-B
+        // proof, so a run carrying it has nothing outstanding — the one
+        // combination (complete protocol × evaluated re-run × no failure) that
+        // earns exit 0 through the re-run stage.
         let satisfying = protocol_table(&[(s1, 3, 0), (s2, 7, 0)]);
         let proof = evaluate(&satisfying);
         assert!(proof.failures().is_empty(), "every kept row is satisfied");
-        assert!(!ReRun::Evaluated(Box::new(proof)).stops(), "a SAT witness stops nothing");
+        let proved = carrying(ReRun::Evaluated(Box::new(proof)));
+        assert_eq!(proved.exit_code(), 0, "a SAT witness stops nothing");
+        assert_eq!(proved.completion(), Completion::Complete("COMPLETE".to_string()));
+        let mut printed = String::new();
+        render_rerun(&mut printed, &proved);
+        assert!(printed.contains("VERDICT: SAT"), "{printed}");
     }
 
     /// **§9(c)'S ZERO-OUT NAMES ONLY THE ROWS A SUBGROUP FLIPS.**
