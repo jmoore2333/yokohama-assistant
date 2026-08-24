@@ -565,4 +565,73 @@ mod tests {
             assert!(message.contains("omit the knob"), "{spec:?}: {message}");
         }
     }
+
+    /// **V4 §7 STEP 8 T3 — THE NAMED-IDENTITY ARMS ARE CONTESTANT NAMES**
+    /// (spec §13's step-8 blast-radius addition: "the ARENA gains an
+    /// explicit-table / named-identity contestant surface … so the §11 arms are
+    /// runnable identities rather than names").
+    ///
+    /// The two wire names are written as LITERALS here, deliberately, on
+    /// [`ATOMIC_DIAG_ALIAS`]'s and `contestant_golden`'s
+    /// `ECHO_LOOKAHEAD_PREFIX` reasoning: these are the strings an owner types
+    /// at a runner and a corpus reader reads back, so they are exactly the
+    /// tokens a rename must be unable to slip past. The GREEN half of this wave
+    /// pins the literals against the arms' own name consts, so there is still
+    /// one source and this test is the check on it rather than a second one.
+    ///
+    /// **Born RED** at the pre-arm tree, where both names refuse with the
+    /// grammar's typed unknown-contestant sentence — the refusal this surface
+    /// replaces, recorded in the RED commit message.
+    #[test]
+    fn the_named_identity_arms_are_contestant_names_the_grammar_accepts() {
+        for name in ["v2-padded", "v2-refit-padded"] {
+            let parsed = Contestant::from_str_name(name)
+                .unwrap_or_else(|e| panic!("{name:?} must be a contestant name: {e}"));
+            // A named arm is an evaluator seat: it resolves its dealt pair by
+            // `greedy::score_starting_order`, exactly as every other evaluator
+            // contestant does, so a §11 cell against one stays Keep-homogeneous.
+            assert_eq!(
+                parsed.keep_kind(),
+                crate::game::arena::KeepKind::EvaluatorScored,
+                "{name:?} must keep by the evaluator rule",
+            );
+            // The echo carries the NAME and the table IDENTITY, composed through
+            // the one `compose_echo` every contestant echoes through.
+            let echo = parsed.echo();
+            assert!(
+                echo.starts_with(&format!("{name}@v")),
+                "{name:?} must echo under its own name: {echo}",
+            );
+            assert!(echo.contains("weights="), "{name:?} must echo its table identity: {echo}");
+        }
+
+        // The two arms are DIFFERENT identities (the T2 review's carry): a cell
+        // that could conflate them would report one arm's figures under the
+        // other's name.
+        let padded = Contestant::from_str_name("v2-padded").expect("v2-padded parses");
+        let refit = Contestant::from_str_name("v2-refit-padded").expect("v2-refit-padded parses");
+        assert_ne!(padded, refit, "the two named arms must not be the same contestant");
+        assert_ne!(padded.echo(), refit.echo(), "the two named arms must not share an echo");
+    }
+
+    /// A named identity carries NO knobs, and typing one is refused rather than
+    /// ignored — `eval_screen`'s rule (`ScreenRung` "has no knob fields: each
+    /// variant runs its controller's SHIPPED knobs … The screen's subject is the
+    /// WEIGHTS; a knob that moved in the same cell would confound the only thing
+    /// it measures"), which is the whole reason these arms exist.
+    ///
+    /// **Born RED**: at the pre-arm tree the refusal is the unknown-contestant
+    /// sentence, not the knobless one.
+    #[test]
+    fn a_knob_on_a_named_identity_arm_is_refused_rather_than_ignored() {
+        for spec in ["v2-padded:b=8", "v2-refit-padded:m=1", "v2-padded:"] {
+            let message = Contestant::from_str_name(spec)
+                .map(|c| format!("{c:?}"))
+                .expect_err("a knob on a knobless named arm must be refused");
+            assert!(
+                message.contains("has no knobs"),
+                "{spec:?} must be refused as knobless, not as unknown: {message}",
+            );
+        }
+    }
 }
