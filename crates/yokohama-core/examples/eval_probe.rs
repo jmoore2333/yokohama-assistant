@@ -18096,6 +18096,22 @@ mod tests {
         assert_eq!(zero.core_over_board, [false, false], "0 > 0 is false");
         assert_eq!(zero.board_over_excess, [false, false]);
 
+        // **THE PIN IS A PER-ENDPOINT EQUALITY.** §5.4 pins `w_vp = (1, 40)`,
+        // so 40 is the LATE value and reading it at EARLY is the pin BROKEN,
+        // not kept — a check that accepted either number at either endpoint
+        // would report a table that had swapped the two as pinned.
+        let mut swapped = FitTable::v2_padded();
+        let vp = FeatureId::Incumbent(Feature::VictoryPoints).index();
+        swapped.early[vp] = 40;
+        assert_eq!(
+            pin_record(&swapped).vp,
+            [false, true],
+            "40 at EARLY is not the pin; 40 at LATE is",
+        );
+        let mut also_swapped = FitTable::v2_padded();
+        also_swapped.late[vp] = 1;
+        assert_eq!(pin_record(&also_swapped).vp, [true, false]);
+
         // A table that breaks ONE ordering at ONE endpoint is recorded exactly
         // there and nowhere else.
         let mut broken = FitTable::v2_padded();
@@ -18220,6 +18236,34 @@ mod tests {
         }
         // Fourteen base-fit blocks: seven cells x two inits.
         assert_eq!(printed.matches("[base/").count(), 14);
+
+        // **EVERY FIT PRINTS ITS OWN VECTORS.** §8's inventory is per FIT
+        // ("each recorded (cell, init, set, vectors, statistics)"), and the two
+        // inits of one cell reach DIFFERENT vectors often enough that printing
+        // only the chosen one would lose the comparison the inventory exists to
+        // record.
+        let refits = run.cells.iter().filter(|c| c.refit.is_some()).count();
+        assert!(refits > 0, "the fixture must refit, or the counts below prove nothing");
+        let blocks = 2 * (run.cells.len() + refits) + 2 * run.arms.len();
+        assert_eq!(printed.matches("[base/").count(), 2 * run.cells.len());
+        assert_eq!(printed.matches("[refit/").count(), 2 * refits);
+        assert_eq!(
+            printed.matches("vectors:").count(),
+            blocks,
+            "one vectors line per fit block — cells, refits and arms alike",
+        );
+        assert_eq!(printed.matches("converged=").count(), blocks);
+
+        // **THE PART-B REPORT IS PER FITTED CELL, BASE FIT AND REFIT.** A cell
+        // that removed a candidate has TWO fitted tables and §8's report is a
+        // property of a fitted table, so reporting only the survivor's would
+        // hide what the removal changed.
+        assert_eq!(printed.matches("part-B early").count(), run.cells.len() + refits);
+        assert_eq!(printed.matches("part-B late").count(), run.cells.len() + refits);
+        assert_eq!(
+            printed.matches("recorded (never gated)").count(),
+            run.cells.len() + refits,
+        );
         // Every printed fit block names its convergence.
         assert_eq!(
             printed.matches("converged=").count(),
