@@ -5466,10 +5466,11 @@ const COLLINEAR_FLAGS: [CandidateFeature; 3] = [
 
 /// Exemption (ii)'s three states for one candidate.
 ///
-/// Sentence 14 fixes the shape: FOUR entries are FIRM (two `Satisfied`, two
-/// `Absent`) and the other fourteen are `Pending`. The asymmetry is deliberate —
-/// a firm entry is one the record has already settled, and everything else is a
-/// question for the owner rather than an inference for the fitter.
+/// Sentence 14 fixed the SHAPE — firm entries are the ones the record has
+/// settled, and everything else is a question for the owner rather than an
+/// inference for the fitter. The MEMBERSHIP moves as consultations are ruled:
+/// after the 2026-08-24 batch ruling it stands at seven `Satisfied`, four
+/// `Absent` and seven `Pending`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum RootedPresence {
     /// A rooted read RECORDED the feature moving. The string is the record.
@@ -5485,66 +5486,91 @@ enum RootedPresence {
     Pending(&'static str),
 }
 
-/// **EXEMPTION (ii)'s ROSTER — FOUR FIRM ENTRIES AND FOURTEEN PENDING-ROUTES**,
-/// per the 2026-08-24 coherence-pass sentence 14.
+/// **EXEMPTION (ii)'s ROSTER — SEVEN SATISFIED, FOUR ABSENT, SEVEN PENDING**,
+/// after the 2026-08-24 batch ruling (`e9816b5`) on the sentence-14 mechanism's
+/// first firing.
 ///
-/// > "The FIRM (ii) entries are exactly four: X1 SATISFIED (sentence 11's
-/// > ruling), X2 SATISFIED (the recorded 10(a) carrier read — §6's named
-/// > qualifying class), X3 NONE and O3 NONE (§6 names only the 10(a)/(b) reads;
-/// > O3's registered rooted read exists and read zero). Every OTHER candidate's
-/// > (ii) entry is PENDING: a PENDING entry consulted at removal time — a
-/// > feature triggering un-saved by (i)/(iii) — STOPS the protocol as a typed
-/// > ROUTED outcome naming the feature, and the owner rules on the recorded
-/// > evidence then; nothing self-rules."
+/// Sentence 14 (2026-08-24, the earlier row) fixed the shape and the stop:
 ///
-/// # FORWARD CORRECTION ON THE RECORD — the e113 attributions are superseded
+/// > "a PENDING entry consulted at removal time — a feature triggering un-saved
+/// > by (i)/(iii) — STOPS the protocol as a typed ROUTED outcome naming the
+/// > feature, and the owner rules on the recorded evidence then; nothing
+/// > self-rules."
+///
+/// It fired: the V3-L protocol run stopped ROUTED at S2-in-`B+S`, the batching
+/// report put ALL SEVEN reachable consultations in one place, the evidence was
+/// REGENERATED FROM BYTES at verified digests, and ONE owner ruling covered the
+/// batch. **Seven entries harden here and the other seven stay PENDING** — the
+/// seven that harden are the ones a consultation actually reached.
+///
+/// # FORWARD CORRECTION still standing
 ///
 /// Sentence 14: "the e113 separation spread is WIRING evidence (`3e9befe`) and a
-/// wiring read never satisfies (ii) for any feature (§6)". This table's earlier
-/// revision cited the e113 deltas `[1, -3, -1, 1]` as SATISFYING (ii) for
-/// S1..S4. **Those four attributions are withdrawn**: a wiring proof shows a
-/// column is connected, not that its pre-registered ROOTED EFFECT was present,
-/// and §8's exemption asks the second question. S1..S4 are PENDING here.
+/// wiring read never satisfies (ii) for any feature (§6)". No row below cites
+/// it, and a cell asserts that. The S features' (ii) evidence is gate 2's M-PF
+/// per-column reads; O1/O2's is the gate-4 band; E1..E3/O5/O6's is the
+/// fired-while-behind 18-column record.
 ///
-/// "Presence" remains NONZERO MOVEMENT AT A ROOTED STATE, and it is deliberately
-/// not a direction claim — the step-5 close ruled the direction question
-/// separately, re-registering the e113 gate forward to step 9(b).
+/// # WHAT "ABSENT" MEANS HERE, and it is not what it looks like
 ///
-/// Each PENDING row names the evidence a ROUTE would put in front of the owner,
-/// so a stop is a question with its answer's location attached rather than an
-/// open-ended pause.
+/// E3 and O6 are ruled NOT SATISFIED because they read **0/0/0 at their own
+/// named evidence location** — so they are **REMOVED AS CORPUS-INVISIBLE, NOT
+/// AS PHENOMENON-UNREAL**. That distinction is the whole content of the
+/// 2026-08-23 O3-disposition note and the 2026-08-24 row applies it twice more:
+/// O6's phenomenon (held-icon tempo) is COMMON IN HUMAN PLAY and absent from
+/// this corpus because the generating policy completes promptly. Both removals
+/// are banked forward on the V5 shelf with the corpus requirement named — a
+/// HOLD-EXPRESSING ECOLOGY. A reader a cycle from now must not read these four
+/// `Absent` rows as findings that the features are worthless.
+///
+/// "Presence" remains NONZERO MOVEMENT AT A ROOTED STATE, and is deliberately
+/// not a direction claim — the step-5 close ruled direction separately,
+/// re-registering the e113 gate forward to step 9(b).
 const ROOTED_PRESENCE: [(CandidateFeature, RootedPresence); 18] = [
-    // S1..S7 — candidate evidence: GATE 2's M-PF reads, per-column data in the
-    // regenerable step-5 clearance artifact. (Not the e113 spread: superseded.)
+    // S1 — PENDING. Never consulted this run; sentence 14 stands for it.
     (
         CandidateFeature::ProductionAccess,
         RootedPresence::Pending("gate 2's M-PF per-column reads (step-5 clearance artifact)"),
     ),
+    // S2 — SATISFIED, ruled `e9816b5`. Gate-2 M-PF per-column DISTINCTNESS at
+    // the witnessing totals: S2 = 2 at ALL FOUR ordinals, from the REGENERATED
+    // clearance run at the verified root digests fb24434e6047dee3 /
+    // 541d953997a7ea6f / fcebfdb920991e14 / 1ee8dc4001cb16ca.
     (
         CandidateFeature::TrackAccess,
-        RootedPresence::Pending("gate 2's M-PF per-column reads (step-5 clearance artifact)"),
+        RootedPresence::Satisfied("gate-2 M-PF distinctness: S2 = 2 at all four ordinals (e9816b5)"),
     ),
+    // S3 — PENDING. Never consulted this run.
     (
         CandidateFeature::AssistantAreasDistinct,
         RootedPresence::Pending("gate 2's M-PF per-column reads (step-5 clearance artifact)"),
     ),
+    // S4 — SATISFIED, ruled `e9816b5`. Gate-2 M-PF per-column distinctness:
+    // S4 = 2 at ordinal 1's witness and 2-3 at totals 2-3 everywhere, same
+    // regenerated run and same four verified root digests.
     (
         CandidateFeature::PresidentLocalAccess,
-        RootedPresence::Pending("gate 2's M-PF per-column reads (step-5 clearance artifact)"),
+        RootedPresence::Satisfied(
+            "gate-2 M-PF distinctness: S4 = 2 at ordinal 1's witness, 2-3 at totals 2-3 (e9816b5)",
+        ),
     ),
+    // S5 — PENDING. Never consulted this run.
     (
         CandidateFeature::BankAccess,
         RootedPresence::Pending("gate 2's M-PF per-column reads (step-5 clearance artifact)"),
     ),
+    // S6 — SATISFIED, ruled `e9816b5`. Gate-2 M-PF per-column distinctness:
+    // S6 = 2 at ALL FOUR ordinals, same regenerated run and root digests.
     (
         CandidateFeature::EmploymentAgencyAccess,
-        RootedPresence::Pending("gate 2's M-PF per-column reads (step-5 clearance artifact)"),
+        RootedPresence::Satisfied("gate-2 M-PF distinctness: S6 = 2 at all four ordinals (e9816b5)"),
     ),
+    // S7 — PENDING. Never consulted this run.
     (
         CandidateFeature::PresidentReachableAreas,
         RootedPresence::Pending("gate 2's M-PF per-column reads (step-5 clearance artifact)"),
     ),
-    // E1..E3 — candidate evidence: the fired-while-behind 18-column record.
+    // E1/E2 — PENDING. Never consulted this run.
     (
         CandidateFeature::MoneyStock,
         RootedPresence::Pending("the fired-while-behind 18-column record (digest 392fe6571d0aa82a)"),
@@ -5553,51 +5579,71 @@ const ROOTED_PRESENCE: [(CandidateFeature, RootedPresence); 18] = [
         CandidateFeature::TradeGoodsStock,
         RootedPresence::Pending("the fired-while-behind 18-column record (digest 392fe6571d0aa82a)"),
     ),
+    // E3 — NOT SATISFIED, ruled `e9816b5`: 0/0/0 at its own named evidence
+    // location (the fired-while-behind record, verified digest
+    // 392fe6571d0aa82a). REMOVED AS CORPUS-INVISIBLE, NOT AS PHENOMENON-UNREAL
+    // — this corpus cannot see it, which is a fact about the generating policy.
     (
         CandidateFeature::BuildingTokensReady,
-        RootedPresence::Pending("the fired-while-behind 18-column record (digest 392fe6571d0aa82a)"),
+        RootedPresence::Absent(
+            "0/0/0 at the fired-while-behind record 392fe6571d0aa82a — CORPUS-INVISIBLE, not \
+             phenomenon-unreal (e9816b5)",
+        ),
     ),
-    // O1/O2 — candidate evidence: the gate-4 band reads over {e111, e159, e198}.
+    // O1 — SATISFIED, ruled `e9816b5`: the PASSED gate-4 band reads 32/18/14
+    // over the re-registered development band {e111, e159, e198}.
     (
         CandidateFeature::HeldOrderValue,
-        RootedPresence::Pending("the gate-4 band reads, opponent-O1 32/18/14"),
+        RootedPresence::Satisfied("the PASSED gate-4 band reads, opponent-O1 32/18/14 (e9816b5)"),
     ),
+    // O2 — PENDING. Never consulted this run (its band read 6/4/3 stands as
+    // recorded, un-adjudicated).
     (
         CandidateFeature::OrderMatchedGoods,
         RootedPresence::Pending("the gate-4 band reads, opponent-O2 6/4/3"),
     ),
-    // O3 — FIRM. §6 names only the 10(a)/(b) reads, and O3's own registered
-    // rooted read EXISTS and read zero at every development root: there is no
-    // pending evidence to bring, which is what makes this one firm rather than
-    // PENDING. (The 2026-08-24 row banks WHY the organic read is zero — a timing
-    // artifact of in-turn fulfillment, not a verdict on the phenomenon; see
-    // [`RECORDED_ABSENT`].)
+    // O3 — ABSENT since sentence 14. §6 names only the 10(a)/(b) reads, and
+    // O3's own registered rooted read EXISTS and read zero at every development
+    // root. The 2026-08-23 row banks WHY that zero is a TIMING ARTIFACT of
+    // in-turn fulfillment rather than a verdict; see [`RECORDED_ABSENT`].
     (
         CandidateFeature::ExecutableOrders,
         RootedPresence::Absent("registered rooted read EXISTS and read 0 at every development root"),
     ),
-    // O5/O6 — candidate evidence: the fired-while-behind 18-column record.
+    // O5 — SATISFIED, ruled `e9816b5`: the fired-while-behind record reads
+    // mover 4 / opponent 2 / diff +2 at verified digest 392fe6571d0aa82a.
     (
         CandidateFeature::FlagIconMarginal,
-        RootedPresence::Pending("the fired-while-behind 18-column record (digest 392fe6571d0aa82a)"),
+        RootedPresence::Satisfied(
+            "the fired-while-behind record 392fe6571d0aa82a: mover 4 / opponent 2 / diff +2 \
+             (e9816b5)",
+        ),
     ),
+    // O6 — NOT SATISFIED, ruled `e9816b5`: 0/0/0 at the same fired-while-behind
+    // record. REMOVED AS CORPUS-INVISIBLE. **The phenomenon is COMMON IN HUMAN
+    // PLAY** and absent here because the generating policy completes promptly;
+    // the 2026-08-24 row BANKS it forward on the V5 shelf as "HELD-ICON TEMPO",
+    // beside opponent-latent-burst projection, with the next cycle's corpus
+    // requirement named — a HOLD-EXPRESSING ECOLOGY. Same timing-artifact
+    // mechanism as the banked O3 reasoning, second instance.
     (
         CandidateFeature::HeldOrderIcons,
-        RootedPresence::Pending("the fired-while-behind 18-column record (digest 392fe6571d0aa82a)"),
+        RootedPresence::Absent(
+            "0/0/0 at the fired-while-behind record 392fe6571d0aa82a — CORPUS-INVISIBLE; banked \
+             V5-shelf \"held-icon tempo\", corpus requirement a hold-expressing ecology (e9816b5)",
+        ),
     ),
-    // X1 — FIRM, RULED. Coherence-pass sentence 11: "X1's removal exemption (ii)
-    // is SATISFIED by the recorded 10(b) carrier read; the implementer applies
-    // that status mechanically."
+    // X1 — RULED SATISFIED by coherence-pass sentence 11, the 10(b) carrier read.
     (
         CandidateFeature::LabTakeable,
         RootedPresence::Satisfied("RULED — coherence-pass sentence 11, the 10(b) carrier read"),
     ),
-    // X2 — FIRM. The recorded 10(a) carrier read, §6's named qualifying class.
+    // X2 — the recorded 10(a) carrier read, §6's named qualifying class.
     (
         CandidateFeature::PortTakeable,
         RootedPresence::Satisfied("the recorded 10(a) carrier read (§6's named qualifying class)"),
     ),
-    // X3 — FIRM. §6 names only the 10(a)/(b) reads, so X3 has no (ii) path.
+    // X3 — ABSENT: §6 names only the 10(a)/(b) reads, so X3 has no (ii) path.
     (
         CandidateFeature::MatchedProductionAccess,
         RootedPresence::Absent("§6 names only the 10(a)/(b) carrier reads"),
@@ -18216,6 +18262,41 @@ mod tests {
         Matrix { header: matrix_header_for(18), rows }
     }
 
+    /// **THE FEATURE THE ROUTING FIXTURE ANTI-CORRELATES**, named ONCE.
+    ///
+    /// It has to be a candidate that is PENDING under (ii) and rescued by
+    /// neither (i) nor (iii) at the WRONG-SIGN trigger — and the (ii) roster
+    /// HARDENS as the owner rules on regenerated evidence, so a fixture that
+    /// spelled its own choice inline goes stale SILENTLY: it keeps building a
+    /// matrix, keeps passing whatever it still asserts, and stops testing the
+    /// route it was written for. Four cells shared the previous choice (O5,
+    /// hardened to SATISFIED at `e9816b5`); they share this constant now.
+    ///
+    /// **S3 `AssistantAreasDistinct`** is the strongest available choice rather
+    /// than merely an available one: it is COLLINEAR-flagged, so exemption (i)
+    /// saves its `(0, 0)` and — per coherence-pass sentence 4a — does NOT save
+    /// its wrong sign. Routing on it exercises the sharpest edge in the
+    /// composition instead of a plainly unexempted feature.
+    const ROUTING_FEATURE: CandidateFeature = CandidateFeature::AssistantAreasDistinct;
+
+    /// [`protocol_matrix`] with [`ROUTING_FEATURE`] ANTI-CORRELATED against the
+    /// assigned-cell staircase: its column reads 2 on the single NEGATIVE cell
+    /// and 1 elsewhere, so a NEGATIVE weight lowers that cell and improves the
+    /// AUC — a wrong sign against the feature's registered `+`.
+    ///
+    /// The run therefore ROUTES at the first cell carrying the feature, which is
+    /// what every stopped-run fixture in this file needs and what none of them
+    /// should be spelling for itself.
+    fn routing_matrix() -> Matrix {
+        let mut matrix = protocol_matrix();
+        let slot = FeatureId::Candidate(ROUTING_FEATURE).index();
+        for row in &mut matrix.rows {
+            // The negative cell is the LAST (game, seat) pair the fixture builds.
+            row.dv[slot] = if row.game == 16 && row.seat == 1 { 2 } else { 1 };
+        }
+        matrix
+    }
+
     /// A thirty-four-wide table with named entries and zero everywhere else —
     /// the hand-built fit outcome every removal cell below reasons over.
     ///
@@ -18902,38 +18983,64 @@ mod tests {
         };
         assert_eq!(cases.len(), 36);
 
-        // THE REALIZED SHAPE, under sentence 14's roster:
-        //
-        //   REMOVED (both triggers)          O3, X3 — the only two
-        //   RETAINED via (ii), both          X1, X2 — the FIRM-Satisfied pair
-        //   RETAINED via (iii), both         S1, S5, E1, E2
-        //   RETAINED via (i) at (0,0) ONLY   O1, E3, S3 — and ROUTED on a wrong
-        //                                    sign, the three rows where 4a shows
-        //   ROUTED (both triggers)           S2, S4, S6, S7, O2, O5, O6
-        let label_set = |f: &dyn Fn(&(C, RemovalTrigger, Disposition, &str)) -> bool| {
-            cases.iter().filter(|c| f(c)).map(|c| c.0.label()).collect::<BTreeSet<_>>()
+        // THE REALIZED SHAPE, per trigger, after the 2026-08-24 batch ruling.
+        // Written out PER TRIGGER because the two now diverge for four
+        // features — O1 moves exemption between them, and E3 is retained at one
+        // and removed at the other — and a union would hide exactly that.
+        let at = |trigger: RemovalTrigger,
+                  f: &dyn Fn(&Disposition) -> bool| {
+            cases
+                .iter()
+                .filter(|c| c.1 == trigger && f(&c.2))
+                .map(|c| c.0.label())
+                .collect::<BTreeSet<_>>()
         };
+        let collinear = |d: &Disposition| {
+            matches!(d, Disposition::Retained(_, Exemption::Collinear))
+        };
+        let rooted = |d: &Disposition| {
+            matches!(d, Disposition::Retained(_, Exemption::RootedPresence))
+        };
+        let carrier = |d: &Disposition| {
+            matches!(d, Disposition::Retained(_, Exemption::MarginedCarrier))
+        };
+        let routed = |d: &Disposition| matches!(d, Disposition::Routed(_));
+        let removed = |d: &Disposition| matches!(d, Disposition::Removed(_));
+
+        // AT (0,0) — (i) reaches it, so the three collinear features are saved
+        // there whatever their (ii) entry says.
+        let zero = RemovalTrigger::ZeroZero;
+        assert_eq!(at(zero, &collinear), BTreeSet::from(["O1", "E3", "S3"]));
+        assert_eq!(at(zero, &rooted), BTreeSet::from(["S2", "S4", "S6", "O5", "X1", "X2"]));
+        assert_eq!(at(zero, &carrier), BTreeSet::from(["S1", "S5", "E1", "E2"]));
+        assert_eq!(at(zero, &routed), BTreeSet::from(["S7", "O2"]));
         assert_eq!(
-            label_set(&|c| matches!(c.2, Disposition::Removed(_))),
-            BTreeSet::from(["O3", "X3"]),
-            "only the two FIRM-Absent features can be removed at all",
+            at(zero, &removed),
+            BTreeSet::from(["O3", "O6", "X3"]),
+            "E3 is FIRM-Absent but its (0,0) is COLLINEAR, so only three vacate here",
         );
+
+        // AT A WRONG SIGN — (i) does not reach it, so O1 falls through to its
+        // now-SATISFIED (ii) entry and E3 falls through to removal.
+        let sign = RemovalTrigger::WrongSign;
+        assert_eq!(at(sign, &collinear), BTreeSet::new(), "sentence 4a: (i) reaches no wrong sign");
         assert_eq!(
-            label_set(&|c| matches!(c.2, Disposition::Retained(_, Exemption::RootedPresence))),
-            BTreeSet::from(["X1", "X2"]),
-            "sentence 14's two FIRM-Satisfied entries",
+            at(sign, &rooted),
+            BTreeSet::from(["S2", "S4", "S6", "O1", "O5", "X1", "X2"]),
+            "the seven FIRM-Satisfied entries after the 2026-08-24 ruling",
         );
+        assert_eq!(at(sign, &carrier), BTreeSet::from(["S1", "S5", "E1", "E2"]));
+        assert_eq!(at(sign, &routed), BTreeSet::from(["S3", "S7", "O2"]));
+        assert_eq!(at(sign, &removed), BTreeSet::from(["E3", "O3", "O6", "X3"]));
+
+        // The interaction cell's removal set in the V3-L RUN OF RECORD was
+        // {E3, O3, O6, X3} (`e9816b5`), which is this row read at a wrong sign
+        // for E3 and at either trigger for the other three — the table above
+        // reproduces the run rather than restating the roster.
         assert_eq!(
-            label_set(&|c| matches!(c.2, Disposition::Retained(_, Exemption::MarginedCarrier))),
-            BTreeSet::from(["S1", "S5", "E1", "E2"]),
-        );
-        assert_eq!(
-            label_set(&|c| matches!(c.2, Disposition::Retained(_, Exemption::Collinear))),
-            BTreeSet::from(["O1", "E3", "S3"]),
-        );
-        assert_eq!(
-            label_set(&|c| matches!(c.2, Disposition::Routed(_))),
-            BTreeSet::from(["S2", "S3", "S4", "S6", "S7", "E3", "O1", "O2", "O5", "O6"]),
+            at(sign, &removed),
+            BTreeSet::from(["E3", "O3", "O6", "X3"]),
+            "the run of record's interaction-cell removal set",
         );
 
         // **THE 4a NARROWING, on the three rows that now carry it.** A reading
@@ -18942,22 +19049,44 @@ mod tests {
         // PENDING under (ii) and none of them a margined carrier, the
         // fall-through is a ROUTE.
         for flagged in COLLINEAR_FLAGS {
-            let at = |t: RemovalTrigger| {
+            let row = |t: RemovalTrigger| {
                 cases.iter().find(|c| c.0 == flagged && c.1 == t).expect("the row").2
             };
             assert_eq!(
-                at(RemovalTrigger::ZeroZero),
+                row(RemovalTrigger::ZeroZero),
                 Disposition::Retained(RemovalTrigger::ZeroZero, Exemption::Collinear),
                 "{} at (0,0) is COLLINEAR, not vacuous",
                 flagged.label(),
             );
-            assert_eq!(
-                at(RemovalTrigger::WrongSign),
-                Disposition::Routed(RemovalTrigger::WrongSign),
+            // ...and NOT under (i) at a wrong sign. Where each one lands after
+            // falling through is its own (ii)/(iii) business — S3 ROUTES, E3 is
+            // REMOVED, O1 is RETAINED under its 2026-08-24 (ii) ruling — and the
+            // three different landings are what make the narrowing visible
+            // rather than a relabelling.
+            assert_ne!(
+                row(RemovalTrigger::WrongSign),
+                Disposition::Retained(RemovalTrigger::WrongSign, Exemption::Collinear),
                 "{} fitted against its prior: sentence 4a says (i) does not reach it",
                 flagged.label(),
             );
         }
+        // The three landings are three DIFFERENT dispositions, which is what
+        // makes the narrowing a real fork rather than a relabelling: S3 ROUTES
+        // (still PENDING), E3 is REMOVED (ruled Absent), O1 is RETAINED under
+        // its 2026-08-24 (ii) ruling.
+        let landing = |label: &str| {
+            cases
+                .iter()
+                .find(|x| x.0.label() == label && x.1 == RemovalTrigger::WrongSign)
+                .expect("the row")
+                .2
+        };
+        assert_eq!(landing("S3"), Disposition::Routed(RemovalTrigger::WrongSign));
+        assert_eq!(landing("E3"), Disposition::Removed(RemovalTrigger::WrongSign));
+        assert_eq!(
+            landing("O1"),
+            Disposition::Retained(RemovalTrigger::WrongSign, Exemption::RootedPresence),
+        );
 
         for (candidate, trigger, expected, why) in &cases {
             // Build a table that raises EXACTLY this trigger on this candidate.
@@ -19008,14 +19137,22 @@ mod tests {
                 .map(|(c, _)| c.label())
                 .collect::<BTreeSet<_>>()
         };
-        assert_eq!(by_state(0), BTreeSet::from(["X1", "X2"]), "the FIRM-Satisfied pair");
-        assert_eq!(by_state(1), BTreeSet::from(["X3", "O3"]), "the FIRM-Absent pair");
+        assert_eq!(
+            by_state(0),
+            BTreeSet::from(["S2", "S4", "S6", "O1", "O5", "X1", "X2"]),
+            "SEVEN Satisfied: X1/X2 by the earlier rulings, and S2/S4/S6/O1/O5 by the 2026-08-24 \
+             batch ruling on regenerated evidence",
+        );
+        assert_eq!(
+            by_state(1),
+            BTreeSet::from(["E3", "O3", "O6", "X3"]),
+            "FOUR Absent: X3/O3 by sentence 14, and E3/O6 ruled 0/0/0 at their named evidence \
+             location — CORPUS-INVISIBLE, not phenomenon-unreal",
+        );
         assert_eq!(
             by_state(2),
-            BTreeSet::from([
-                "S1", "S2", "S3", "S4", "S5", "S6", "S7", "E1", "E2", "E3", "O1", "O2", "O5", "O6",
-            ]),
-            "fourteen PENDING-routes",
+            BTreeSet::from(["S1", "S3", "S5", "S7", "E1", "E2", "O2"]),
+            "SEVEN still PENDING — the ones no consultation reached, sentence 14 unchanged",
         );
 
         for (candidate, state) in ROOTED_PRESENCE {
@@ -19068,7 +19205,7 @@ mod tests {
             .into_iter()
             .filter(|c| matches!(rooted_presence(*c), RootedPresence::Pending(_)))
             .collect();
-        assert_eq!(pending.len(), 14, "sentence 14's PENDING set");
+        assert_eq!(pending.len(), 7, "the PENDING set after the 2026-08-24 batch ruling");
 
         let mut routed_both = Vec::new();
         let mut routed_on_sign_only = Vec::new();
@@ -19096,15 +19233,12 @@ mod tests {
         }
         let labels =
             |v: &[CandidateFeature]| v.iter().map(|c| c.label()).collect::<BTreeSet<_>>();
-        assert_eq!(
-            labels(&routed_both),
-            BTreeSet::from(["S2", "S4", "S6", "S7", "O2", "O5", "O6"]),
-        );
+        assert_eq!(labels(&routed_both), BTreeSet::from(["S7", "O2"]));
         assert_eq!(
             labels(&routed_on_sign_only),
-            BTreeSet::from(["S3", "E3", "O1"]),
-            "the three collinear-flagged features: (i) saves their (0,0) and nothing saves the \
-             wrong sign",
+            BTreeSet::from(["S3"]),
+            "the one collinear-flagged feature still PENDING: (i) saves its (0,0) and nothing \
+             saves its wrong sign — the edge the routing fixture keys on",
         );
         assert_eq!(
             labels(&never_routed),
@@ -19132,12 +19266,22 @@ mod tests {
         }
 
         // And the route reaches the protocol's OUTCOME, naming the feature.
+        // O2, not O6: O6 was ruled ABSENT at `e9816b5` and is now REMOVED
+        // rather than routed, which is exactly the drift this cell would have
+        // stopped catching if it had kept its old subject.
         let removal = removals_for(
+            &[CandidateFeature::OrderMatchedGoods],
+            &protocol_table(&[(CandidateFeature::OrderMatchedGoods, 0, 0)]),
+        );
+        assert_eq!(removal.routed().len(), 1);
+        assert_eq!(removal.routed()[0].0.label(), "O2");
+        // ...and a ruled-Absent feature does NOT route: it vacates.
+        let ruled = removals_for(
             &[CandidateFeature::HeldOrderIcons],
             &protocol_table(&[(CandidateFeature::HeldOrderIcons, 0, 0)]),
         );
-        assert_eq!(removal.routed().len(), 1);
-        assert_eq!(removal.routed()[0].0.label(), "O6");
+        assert!(ruled.routed().is_empty());
+        assert_eq!(ruled.removed(), vec![CandidateFeature::HeldOrderIcons]);
     }
 
     /// **A REMOVAL BUYS EXACTLY ONE REFIT, AND THE REFIT'S OWN TRIGGERS REMOVE
@@ -19311,27 +19455,29 @@ mod tests {
     /// A route STOPS the removal rule, so every later cell has a fit and no
     /// dispositions. An empty disposition list prints as nothing at all, which
     /// is indistinguishable from "the rule ran and removed nothing" — the
-    /// opposite claim. Under sentence 14's roster the routable set starts at
-    /// `B+S`, so one route can leave FIVE cells in that state and a reader has
-    /// to be able to tell them apart.
+    /// opposite claim. The routable set starts at `B+S`, so one route can leave
+    /// FIVE cells in that state and a reader has to be able to tell them apart.
     ///
-    /// The fixture routes on purpose: O5's column carries a signal the descent
-    /// prices NEGATIVE, and O5 is PENDING under (ii), collinear under nothing,
-    /// and not a margined carrier — so `B+E` routes and `B+S+E`, `B+S+E+X`,
-    /// `B+E-resource`, `B+E-order` are never evaluated.
+    /// The fixture routes on purpose, on [`ROUTING_FEATURE`] — S3, which is
+    /// PENDING under (ii), NOT a margined carrier, and collinear-flagged, so
+    /// exemption (i) saves its `(0, 0)` and does not save the wrong sign the
+    /// fixture plants. `B+S` routes and the four cells after it are never
+    /// evaluated.
     #[test]
     fn a_cell_the_protocol_never_reached_records_that_the_rule_did_not_run() {
-        // Anti-correlate O5 against the assigned-cell staircase: its column
-        // reads 2 on the single NEGATIVE cell and 1 elsewhere, so a NEGATIVE
-        // weight lowers the negative and improves — a wrong sign against O5's
-        // registered `+`.
-        let mut matrix = protocol_matrix();
-        let o5 = FeatureId::Candidate(CandidateFeature::FlagIconMarginal).index();
-        for row in &mut matrix.rows {
-            // The negative cell is the LAST (game, seat) pair the fixture builds.
-            let negative = row.game == 16 && row.seat == 1;
-            row.dv[o5] = if negative { 2 } else { 1 };
-        }
+        // The routing feature must actually be routable, or this cell degrades
+        // into a fixture that builds a matrix and asserts nothing about a stop.
+        assert!(matches!(rooted_presence(ROUTING_FEATURE), RootedPresence::Pending(_)));
+        assert!(!MARGINED_CARRIERS.contains(&ROUTING_FEATURE));
+        assert_eq!(
+            disposition_of(
+                &protocol_table(&[(ROUTING_FEATURE, -sign_prior(ROUTING_FEATURE) * 3, 0)]),
+                ROUTING_FEATURE,
+            ),
+            Disposition::Routed(RemovalTrigger::WrongSign),
+        );
+
+        let matrix = routing_matrix();
         let plan = plan_matrix(&matrix).expect("the routing fixture plans");
         let rules = Rules::standard();
         let run = run_protocol(&matrix, &plan, &rules, None).expect("the protocol runs");
@@ -19340,9 +19486,9 @@ mod tests {
         else {
             panic!("the fixture must route, or this cell asserts nothing: {:?}", run.outcome);
         };
-        assert_eq!(*feature, "O5");
+        assert_eq!(*feature, ROUTING_FEATURE.label());
         assert_eq!(*trigger, "wrong-sign");
-        assert_eq!(*cell, "B+E", "the first cell carrying O5");
+        assert_eq!(*cell, "B+S", "the first cell carrying S3");
 
         // Every cell still has a FIT — the fourteen base fits all ran — and the
         // cells after the route have no removal record.
@@ -19359,22 +19505,22 @@ mod tests {
             .filter(|c| c.removal.is_none())
             .map(|c| c.cell.name())
             .collect();
-        assert_eq!(evaluated, ["B", "B+S", "B+E"], "the rule ran up to and including the route");
+        assert_eq!(evaluated, ["B", "B+S"], "the rule ran up to and including the route");
         assert_eq!(
             not_run,
-            ["B+S+E", "B+S+E+X", "B+E-resource", "B+E-order"],
-            "and stopped there",
+            ["B+E", "B+S+E", "B+S+E+X", "B+E-resource", "B+E-order"],
+            "and stopped there — FIVE cells, the shape the doc above describes",
         );
 
         // THE RENDER PATH: a NOT-RUN cell says so and names where the protocol
         // stopped; an evaluated cell prints dispositions instead.
         let printed = render_protocol(&matrix, &plan, &run);
         assert_eq!(
-            printed.matches("removal rule NOT RUN — the protocol routed at B+E").count(),
+            printed.matches("removal rule NOT RUN — the protocol routed at B+S").count(),
             not_run.len(),
             "one NOT-RUN line per unevaluated cell:\n{printed}",
         );
-        assert!(printed.contains("O5   wrong-sign ROUTED"), "{printed}");
+        assert!(printed.contains("S3   wrong-sign ROUTED"), "{printed}");
         assert!(printed.contains("ROUTED-PENDING-EXEMPTION"), "{printed}");
         // A routed run never claims the X-carriage answer it never computed.
         assert!(!printed.contains("ROUTED-X-EMPTY"));
@@ -20452,17 +20598,13 @@ mod tests {
 
         // A ROUTE: O5 anti-correlated against the assigned-cell staircase, so
         // it fits wrong-signed in the first cell that carries it.
-        let mut routed = protocol_matrix();
-        let o5 = FeatureId::Candidate(CandidateFeature::FlagIconMarginal).index();
-        for row in &mut routed.rows {
-            row.dv[o5] = if row.game == 16 && row.seat == 1 { 2 } else { 1 };
-        }
+        let routed = routing_matrix();
         let plan = plan_matrix(&routed).expect("the routing fixture plans");
         let run = run_protocol(&routed, &plan, &rules, None).expect("the protocol runs");
         assert!(matches!(run.outcome, ProtocolOutcome::RoutedPendingExemption { .. }));
         assert!(run.statistics.is_empty(), "a routed run computes no held-out statistic");
         let printed = render_protocol(&routed, &plan, &run);
-        assert!(printed.contains("NOT COMPUTED — the protocol stopped at B+E"), "{printed}");
+        assert!(printed.contains("NOT COMPUTED — the protocol stopped at B+S"), "{printed}");
         assert!(matches!(run.rerun, ReRun::NotReached));
         assert_eq!(run.exit_code(), EXIT_INCOMPLETE);
         // A route's composed label is the TYPED one, undecorated: the outcome
@@ -20509,11 +20651,7 @@ mod tests {
     /// existed.
     #[test]
     fn a_routed_run_reports_every_consultation_one_ruling_would_cover() {
-        let mut matrix = protocol_matrix();
-        let o5 = FeatureId::Candidate(CandidateFeature::FlagIconMarginal).index();
-        for row in &mut matrix.rows {
-            row.dv[o5] = if row.game == 16 && row.seat == 1 { 2 } else { 1 };
-        }
+        let matrix = routing_matrix();
         let plan = plan_matrix(&matrix).expect("the routing fixture plans");
         let rules = Rules::standard();
         let run = run_protocol(&matrix, &plan, &rules, None).expect("the protocol runs");
@@ -20540,7 +20678,7 @@ mod tests {
         }
         assert!(
             printed.contains(
-                "REMOVALS NOT APPLIED — the protocol stopped at B+E; this report exists so one \
+                "REMOVALS NOT APPLIED — the protocol stopped at B+S; this report exists so one \
                  owner ruling can cover every consultation",
             ),
             "{printed}",
@@ -20567,18 +20705,24 @@ mod tests {
             assert!(printed.contains(evidence), "{} lost its evidence line", candidate.label());
         }
         // **AND THE REPORT EARNS ITS KEEP RIGHT HERE.** The typed outcome names
-        // O5 alone, because the protocol stops at the first route. O6 lands
-        // `(0, 0)` in the same pass — once O5's negative weight sinks the losing
-        // cell the AUC is already 1.0 and the later coordinates never move — so
-        // a run that reported only its stop point would send the owner back for
-        // a second ruling on O6 after the first re-run routed again.
+        // S3 alone, because the protocol stops at the first route. S7 and O2
+        // land `(0, 0)` in the same and later passes — once S3's negative weight
+        // sinks the losing cell the AUC is already 1.0 and the coordinates after
+        // it never move — so a run that reported only its stop point would send
+        // the owner back for a second ruling, and then a third, each after a
+        // re-run that routed again.
+        //
+        // This is the mechanism the V3-L run of record exercised for real: it
+        // stopped at S2-in-`B+S` and the batched report put ALL SEVEN reachable
+        // consultations in front of the owner, who ruled the batch in ONE
+        // round-trip (`e9816b5`). The un-batched design would have cost seven.
         assert_eq!(
             pending.iter().map(|(c, _)| c.label()).collect::<Vec<_>>(),
-            ["O5", "O6"],
-            "both consultations the roster would reach, not just the one that stopped the run",
+            ["S3", "S7", "O2"],
+            "every consultation the roster would reach, not just the one that stopped the run",
         );
         assert!(
-            printed.contains("PENDING (ii) entries this run would consult: 2"),
+            printed.contains("PENDING (ii) entries this run would consult: 3"),
             "{printed}",
         );
 
@@ -20588,15 +20732,15 @@ mod tests {
         else {
             panic!("the fixture must route: {:?}", run.outcome);
         };
-        assert_eq!((*cell, *feature, *trigger), ("B+E", "O5", "wrong-sign"));
+        assert_eq!((*cell, *feature, *trigger), ("B+S", ROUTING_FEATURE.label(), "wrong-sign"));
         assert_eq!(
             run.cells.iter().filter(|c| c.removal.is_none()).count(),
-            4,
-            "the four cells after the route still have NO removal record",
+            5,
+            "the five cells after the route still have NO removal record",
         );
         assert_eq!(
-            printed.matches("removal rule NOT RUN — the protocol routed at B+E").count(),
-            4,
+            printed.matches("removal rule NOT RUN — the protocol routed at B+S").count(),
+            5,
         );
         assert!(run.cells.iter().all(|c| c.refit.is_none()), "no refit runs on a routed pass");
     }
@@ -20641,11 +20785,7 @@ mod tests {
         );
 
         // ROUTED: 3.
-        let mut routed = protocol_matrix();
-        let o5 = FeatureId::Candidate(CandidateFeature::FlagIconMarginal).index();
-        for row in &mut routed.rows {
-            row.dv[o5] = if row.game == 16 && row.seat == 1 { 2 } else { 1 };
-        }
+        let routed = routing_matrix();
         let path = write("exit-routed", &routed);
         let file = path.to_string_lossy().to_string();
         assert_eq!(
