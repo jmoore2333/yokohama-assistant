@@ -8499,7 +8499,10 @@ fn render_step9_structural(
     let _ = writeln!(
         out,
         "  VERDICT step9 structural: {}",
-        if reading.sat() && failed.is_empty() { "PASS" } else { "FAIL" },
+        // The ONE composition, never a third spelling of it: `failed` above is
+        // `non_vacuity` filtered by the same `holds`, so this is the same bool
+        // by construction — and asking for it by name is what keeps it so.
+        if step9_structural_passed(reading, non_vacuity) { "PASS" } else { "FAIL" },
     );
     out
 }
@@ -9072,6 +9075,13 @@ fn e113_step9_gate(weights: &WeightTable, rules: &Rules) -> Result<E113Step9Gate
 /// comments — a knob transposed here, a table reached through a different arm,
 /// or a divergence in how the ranked vector is ordered all show up as a
 /// MISMATCH.
+///
+/// **THE FIFTEEN COUNTERS RIDE THE COMPARISON TOO.** Same constructor, same
+/// knobs, same seed, same sampled world ⇒ the two paths must do the same WORK,
+/// not merely arrive at the same numbers: a search that reached an identical
+/// ranking through a different node count is not the same path, and values alone
+/// cannot see that. `driven::RootTable` exposes its `SearchStats` for exactly
+/// this, so the pin reads them rather than trusting the shape.
 struct ParityPin {
     root: &'static str,
     root_digest: String,
@@ -9084,6 +9094,8 @@ struct ParityPin {
     rooted_ranked: Vec<RootScore>,
     driven_sampler_seed: u64,
     rooted_sampler_seed: u64,
+    driven_stats: SearchStats,
+    rooted_stats: SearchStats,
 }
 
 impl ParityPin {
@@ -9123,8 +9135,34 @@ impl ParityPin {
                 self.driven_winner, self.rooted_winner,
             ));
         }
-        (self.driven_echo != self.rooted_echo).then(|| {
-            format!("the echoes differ (`{}` vs `{}`)", self.driven_echo, self.rooted_echo)
+        if self.driven_echo != self.rooted_echo {
+            return Some(format!(
+                "the echoes differ (`{}` vs `{}`)",
+                self.driven_echo, self.rooted_echo,
+            ));
+        }
+        // The counters are checked LAST because they are the subtlest signal:
+        // identical values, ranking, winner and echo with a different node count
+        // is two searches, not one path read twice.
+        for ((name, driven), (_, rooted)) in stats_counters(&self.driven_stats)
+            .into_iter()
+            .zip(stats_counters(&self.rooted_stats))
+        {
+            if driven != rooted {
+                return Some(format!(
+                    "the search counters differ at `{name}` ({driven} vs {rooted}): same \
+                     constructor, same knobs, same seed and the same sampled world, so the two \
+                     paths did not do the same work",
+                ));
+            }
+        }
+        // A counter the named list above does not carry still fails here, so a
+        // sixteenth field cannot join `SearchStats` un-compared.
+        (self.driven_stats != self.rooted_stats).then(|| {
+            format!(
+                "the search counters differ outside the fifteen named ({:?} vs {:?})",
+                self.driven_stats, self.rooted_stats,
+            )
         })
     }
 
@@ -9164,6 +9202,8 @@ fn v2_parity_pin(root: &'static str, rules: &Rules) -> Result<ParityPin, RootedM
         rooted_ranked: rooted.ranked.clone(),
         driven_sampler_seed: driven.world.sampler_seed,
         rooted_sampler_seed: rooted.sampler_seed,
+        driven_stats: driven.stats,
+        rooted_stats: rooted.stats,
     })
 }
 
@@ -9627,11 +9667,13 @@ fn render_ranking(indent: &str, ranked: &[RootScore]) -> String {
     out
 }
 
-/// All fifteen counters, off the agent's own surface.
-fn render_stats(indent: &str, stats: &SearchStats) -> String {
-    use std::fmt::Write;
-    let mut out = String::new();
-    for (name, value) in [
+/// All fifteen counters as NAMED pairs.
+///
+/// ONE list, read by both the report and the same-path parity pin, so a counter
+/// this surface prints is a counter the pin compares — the alternative is a
+/// column that can drift in a report nobody diffs.
+fn stats_counters(stats: &SearchStats) -> [(&'static str, u64); 15] {
+    [
         ("root_candidates", stats.root_candidates),
         ("nodes", stats.nodes),
         ("handles", stats.handles),
@@ -9647,7 +9689,14 @@ fn render_stats(indent: &str, stats: &SearchStats) -> String {
         ("ply_cap_hits", stats.ply_cap_hits),
         ("free_extension_steps", stats.free_extension_steps),
         ("free_cap_hits", stats.free_cap_hits),
-    ] {
+    ]
+}
+
+/// All fifteen counters, off the agent's own surface.
+fn render_stats(indent: &str, stats: &SearchStats) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    for (name, value) in stats_counters(stats) {
         let _ = writeln!(out, "{indent}{name:<22} {value}");
     }
     out
@@ -10054,11 +10103,26 @@ struct ScenarioOrderingsRead {
 }
 
 /// The two registry members the shape taxonomy excludes, with the shape that
-/// excludes each — printed, so "the orderings" cannot silently come to mean
-/// something narrower than the registry.
-const EXCLUDED_BY_SHAPE_SCENARIOS: [(usize, &str, &str); 2] = [
-    (7, "the null-placement trap", "chosen move ∈ set (behavioural, aggregate)"),
-    (11, "post-claim achievement progress", "f(A) > f(B) over a FEATURE FUNCTION"),
+/// excludes each and the suite function it lives in — printed, so "the
+/// orderings" cannot silently come to mean something narrower than the registry.
+///
+/// The source range is the whole FUNCTION here, where an excluded equality
+/// clause cites its clause: what is excluded is the scenario, not one claim
+/// inside it. Every line of the completeness block carries a range either way,
+/// so a reader can check any exclusion against the suite without a search.
+const EXCLUDED_BY_SHAPE_SCENARIOS: [(usize, &str, &str, &str); 2] = [
+    (
+        7,
+        "the null-placement trap",
+        "chosen move ∈ set (behavioural, aggregate)",
+        "scenario_suite.rs:1582-1603",
+    ),
+    (
+        11,
+        "post-claim achievement progress",
+        "f(A) > f(B) over a FEATURE FUNCTION",
+        "scenario_suite.rs:2452-2581",
+    ),
 ];
 
 /// The three PROPERTY clauses excluded BY SHAPE because they are EQUALITIES
@@ -10069,6 +10133,15 @@ const EXCLUDED_BY_SHAPE_SCENARIOS: [(usize, &str, &str); 2] = [
 /// cancels out of a relative evaluator — so gating them would fail every draft
 /// trivially while proving nothing about a table. They are counted on the
 /// artifact rather than dropped silently.
+///
+/// **THE LETTER IS THE SUITE'S, NOT THIS SURFACE'S, AND THE TWO SEQUENCES ARE
+/// NOT THE SAME.** An [`OrderingItem`]'s suffix counts the ORDERING clauses of
+/// its scenario, so it skips the equalities this list carries: scenario 16's
+/// suite clause `(c)` is the equality below (`scenario_suite.rs:4494-4503`),
+/// while the item printed as `[16c]` is a DIFFERENT clause
+/// (`scenario_suite.rs:4509-4520`). Same spelling, two claims — so the report
+/// labels these `scenario N clause (x)` and says whose lettering it is, rather
+/// than printing `16(c)` next to `[16c]` and leaving a reader to collide them.
 const EXCLUDED_EQUALITY_CLAUSES: [(usize, &str, char, &str, &str); 3] = [
     (
         16,
@@ -10159,9 +10232,13 @@ fn step9_scenarios_read(
                 claim.margin(rules, &WeightTable::ZERO),
             );
             let read = claim.margin(rules, table);
-            // THE CLASSIFICATION, in probe arithmetic. Order matters: a
-            // terminal item reads 0 under no table, so it is recognised BEFORE
-            // the tie arm, which would otherwise claim any item V2 scores 0.
+            // THE CLASSIFICATION, in probe arithmetic. §2.6's terminal ladder
+            // short-circuits the weight vector, so a terminal item reads the
+            // SAME margin under V1, V2 and ZERO alike — a large NONZERO one, not
+            // a zero. Order matters at the overlap the two arms share: an item
+            // scoring 0 under every probe satisfies BOTH, and TABLE-INDEPENDENT
+            // is the honest reading of it, so the tie arm — which would call it
+            // merely tied under V2 — must never see it first.
             let class = if v2 == zero && v1 == zero {
                 OrderingClass::TableIndependent
             } else if v2 == 0 {
@@ -10233,21 +10310,28 @@ fn render_step9_scenarios(read: &ScenarioOrderingsRead) -> String {
          TABLE-INDEPENDENT.",
         read.items.len(),
     );
-    for (index, name, shape) in EXCLUDED_BY_SHAPE_SCENARIOS {
+    for (index, name, shape, source) in EXCLUDED_BY_SHAPE_SCENARIOS {
         let _ = writeln!(
             out,
-            "     excluded scenario  registry {index:>2}  {name:<42} — {shape}",
+            "     excluded scenario  registry {index:>2}  {name:<42} — {shape}  [{source}]",
         );
     }
     let _ = writeln!(
         out,
         "     excluded clauses   {} PROPERTY clauses of INCLUDED scenarios are EQUALITIES rather \
          than orderings,\n                        so they are outside the registered shape (they \
-         hold under EVERY table by construction):",
+         hold under EVERY table by construction).\n                        The letters below are \
+         THE SUITE'S OWN clause lettering, which counts equality clauses the item\n\
+         \x20                       labels do not: the suite's scenario 16 clause (c) is NOT the \
+         item printed as [16c].",
         EXCLUDED_EQUALITY_CLAUSES.len(),
     );
     for (scenario, name, suffix, claim, source) in EXCLUDED_EQUALITY_CLAUSES {
-        let _ = writeln!(out, "                        {scenario}({suffix}) {name} — {claim}  [{source}]");
+        let _ = writeln!(
+            out,
+            "                        scenario {scenario} clause ({suffix})  {name} — {claim}  \
+             [{source}]",
+        );
     }
 
     let _ = writeln!(
@@ -25872,6 +25956,62 @@ mod tests {
         assert_eq!(step9_survivors().len() + STEP9_REMOVED.len(), CandidateFeature::COUNT);
     }
 
+    /// **THE X-LATE ROUTED FINDING, AS ARITHMETIC.**
+    ///
+    /// The finding on the ledger is that 9(c) conjunct (i) at `X late` cannot be
+    /// installed by ANY row-satisfying repair: every registered late row that
+    /// carries X collateral carries it NEGATIVE, against X's registered `+`
+    /// prior, so a minimal-displacement projection leaves `X1` at 0 and pushes
+    /// `X2` away from agreement rather than toward it.
+    ///
+    /// That claim is three numbers, and only one of them had a cell:
+    ///
+    /// * `11(d) ACTED-AT-LAB ≻ ACTED-AT-COPPER` carries `X1` at `Δv = −1` —
+    ///   already pinned as §5.2's registered own-value delta by
+    ///   `family_elevens_congruence_and_registered_deltas_hold_at_the_computed_columns`;
+    /// * `4(f) TAKEN ≻ NOT-TAKEN` carries `X2` at `Δv = −1`;
+    /// * `11(e) ACTED-AT-PORT ≻ ACTED-AT-COPPER` carries `X2` at `Δv = −4`.
+    ///
+    /// Read here off the REALIZED rows [`gate_rows`] builds — the same arithmetic
+    /// a 9(a) verdict and an R3 repair read, rather than a second derivation — so
+    /// the finding cannot quietly stop being true.
+    ///
+    /// **The ENUMERATION is asserted, not just the three values.** A fourth late
+    /// row carrying X, in either direction, would change what the finding says:
+    /// a positive one would hand conjunct (i) a lever that the routed finding
+    /// claims does not exist. So the cell pins the whole late X carriage, in
+    /// registry order, and the `+` priors the signs are read against.
+    #[test]
+    fn the_late_x_carriage_is_exactly_three_rows_and_every_one_opposes_its_prior() {
+        let rows = step9_rows();
+        let carriage: Vec<(&str, &str, i64)> = rows
+            .iter()
+            .filter(|row| row.stage == StageEndpoint::Late)
+            .flat_map(|row| {
+                X_COLUMNS.iter().filter_map(move |c| {
+                    let delta = row.delta[FeatureId::Candidate(*c).index()];
+                    (delta != 0).then_some((row.id, c.label(), delta))
+                })
+            })
+            .collect();
+        assert_eq!(
+            carriage,
+            [("4(f)", "X2", -1), ("11(d)", "X1", -1), ("11(e)", "X2", -4)],
+            "the whole late X carriage, and the three numbers the routed X-late finding is",
+        );
+        for (_, _, delta) in &carriage {
+            assert!(*delta < 0, "the finding is that every one of them OPPOSES the prior");
+        }
+        for candidate in [CandidateFeature::LabTakeable, CandidateFeature::PortTakeable] {
+            assert_eq!(
+                sign_prior(candidate),
+                1,
+                "{} is registered `+`, which is what those signs oppose",
+                candidate.label(),
+            );
+        }
+    }
+
     /// **THE NAMED TABLES RESOLVE THROUGH THE §11 IDENTITIES, AND NOTHING ELSE
     /// PARSES.**
     ///
@@ -26527,8 +26667,11 @@ mod tests {
         assert!(registry.iter().all(|read| !read.rows.is_empty()));
     }
 
-    /// **THE SELECTED CELL'S FITTED TABLE, EARLY** — artifact:181's
-    /// `[refit/all-zero]` vectors, the ones marked `<- the cell's fit`.
+    /// **THE SELECTED CELL'S FITTED TABLE, EARLY** — artifact:180's
+    /// `[refit/all-zero]` vectors, under the `<- the cell's fit` marker at
+    /// artifact:179. (Not 181-182: those are the interaction refit's violated
+    /// counts, which R8(ii) cites — two adjacent lines about the same fit, and
+    /// only one of them is the table.)
     ///
     /// This is the table §8 actually selected, and the one the artifact's
     /// AGGREGATE zero-out was computed on (artifact:320 says so in as many
@@ -26538,7 +26681,8 @@ mod tests {
     const FITTED_EARLY: &str = "2,8,3,-2,0,-63,6,-11,12,2,46,2,21,1,6,15,-1,0,1,-1,0,10,1,5,1,0,\
                                 0,1,0,-1,0,22,1,0";
 
-    /// **THE SELECTED CELL'S FITTED TABLE, LATE** — artifact:181, verbatim.
+    /// **THE SELECTED CELL'S FITTED TABLE, LATE** — artifact:180, verbatim (the
+    /// same line's second half, after the `/`).
     const FITTED_LATE: &str = "3,1,1,3,3,64,-2,2,-1,1,-3,5,36,-1,-1,-1,-2,-2,0,-2,-1,-5,0,-1,0,0,\
                                -1,4,0,1,0,-4,1,0";
 
@@ -27395,17 +27539,39 @@ mod tests {
         }
         assert!(report.contains("28 ordering item"), "the item count: {report}");
         assert!(report.contains("nineteen"), "the scenario count");
-        for (_, name, _) in EXCLUDED_BY_SHAPE_SCENARIOS {
+        for (_, name, _, source) in EXCLUDED_BY_SHAPE_SCENARIOS {
             assert!(report.contains(name), "excluded scenario {name:?} unnamed in the report");
+            assert!(
+                report.contains(source),
+                "excluded scenario {name:?} prints no source range — every exclusion in the block \
+                 is traceable to the suite or none is",
+            );
         }
         assert_eq!(EXCLUDED_EQUALITY_CLAUSES.len(), 3);
         for (scenario, _, suffix, _, _) in EXCLUDED_EQUALITY_CLAUSES {
             assert!(
-                report.contains(&format!("{scenario}({suffix})")),
-                "excluded equality clause {scenario}({suffix}) unnamed in the report",
+                report.contains(&format!("scenario {scenario} clause ({suffix})")),
+                "excluded equality clause {scenario} ({suffix}) unnamed in the report",
             );
         }
         assert!(report.contains("EQUALIT"), "and said to be excluded AS equalities");
+
+        // **THE LABELS DO NOT COLLIDE.** The suite's clause lettering and this
+        // surface's item suffixes are different sequences over the same
+        // scenario, and scenario 16 spells `c` in both. An excluded clause
+        // printed as `16(c)` beside an item printed as `[16c]` is two claims
+        // wearing one name, so the bare form must not appear at all.
+        for (scenario, _, suffix, _, _) in EXCLUDED_EQUALITY_CLAUSES {
+            assert!(
+                !report.contains(&format!("{scenario}({suffix})")),
+                "the excluded clause is printed as `{scenario}({suffix})`, which is the item \
+                 label's spelling",
+            );
+        }
+        assert!(
+            report.contains("[16c]") && report.contains("scenario 16 clause (c)"),
+            "the collision is REAL — both labels are in this report — and they are spelled apart",
+        );
     }
 
     /// **DETERMINISM — `score` is pure and the fixtures consume no randomness.**
