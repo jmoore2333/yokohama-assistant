@@ -53,7 +53,7 @@ use std::process::ExitCode;
 use yokohama_core::game::eval::{Feature, ScoreStructure, WeightTable};
 use yokohama_core::game::greedy::weight_table_identity;
 use yokohama_core::game::pair_fixtures::{
-    build_registered_pair, package_digest, CandidateFeature, FeatureId, MarginClass,
+    build_registered_pair, package_digest, sign_prior, CandidateFeature, FeatureId, MarginClass,
     PairDeclaration, PairRole, Side, StageEndpoint, AXIS_WIDTH, REGISTERED,
 };
 use yokohama_core::{PlayerId, PlayerView, Rules, VisiblePlayer, SEMANTICS_REV};
@@ -104,6 +104,23 @@ enum RowKind {
     BoxBound,
     /// A half of the `w_vp` equality pin. Not deletion-eligible.
     Pin,
+    /// One of R3's projection rows — a displacement link or the displacement
+    /// budget. Not deletion-eligible, and never part of a registered system:
+    /// these exist only inside [`augmented`], where the question is not "is the
+    /// registered system satisfiable" but "is it satisfiable within `d` of the
+    /// draft".
+    Repair,
+}
+
+/// The coefficient width a row set is written over.
+///
+/// `AXIS_WIDTH` for every system §5.4 registers, and wider for R3's augmented
+/// projection systems, whose extra columns carry per-coordinate displacement.
+/// Reading the width off the rows rather than off the constant is what lets the
+/// ONE frozen oracle decide both: at `AXIS_WIDTH` the two are the same number,
+/// so every §5.4 verdict is the verdict it always was.
+fn row_width(rows: &[Row]) -> usize {
+    rows.iter().map(|r| r.coef.len()).max().unwrap_or(AXIS_WIDTH)
 }
 
 /// One linear inequality `Σ_f coef[f] · w_f ≥ rhs`, in integer units.
@@ -327,24 +344,32 @@ impl System {
     /// `w_S1 ≤ 64` has to be able to name that bound and carry its multiplier.
     /// The two representations are generated from one source, so they cannot
     /// disagree.
+    /// The width is `self.lo.len()`, which is `AXIS_WIDTH` for every system
+    /// §5.4 registers and wider for one of R3's augmented projection systems.
+    /// At `AXIS_WIDTH` this emits exactly the rows it always emitted.
     fn inequalities(&self) -> Vec<Row> {
         let mut all = self.rows.clone();
         let vp = Feature::VictoryPoints.index();
-        for (i, id) in FeatureId::all().into_iter().enumerate() {
+        let axis = FeatureId::all();
+        for i in 0..self.lo.len() {
             let kind = if i == vp { RowKind::Pin } else { RowKind::BoxBound };
-            let mut lower = vec![0i64; AXIS_WIDTH];
+            let name = match axis.get(i) {
+                Some(id) => id.label().to_string(),
+                None => format!("|w-w0| #{}", i - AXIS_WIDTH),
+            };
+            let mut lower = vec![0i64; self.lo.len()];
             lower[i] = 1;
             all.push(Row {
-                label: format!("{} >= {}", id.label(), self.lo[i]),
+                label: format!("{name} >= {}", self.lo[i]),
                 kind: kind.clone(),
                 coef: lower,
                 rhs: self.lo[i],
                 margin_vp: None,
             });
-            let mut upper = vec![0i64; AXIS_WIDTH];
+            let mut upper = vec![0i64; self.lo.len()];
             upper[i] = -1;
             all.push(Row {
-                label: format!("{} <= {}", id.label(), self.hi[i]),
+                label: format!("{name} <= {}", self.hi[i]),
                 kind,
                 coef: upper,
                 rhs: -self.hi[i],
@@ -383,7 +408,9 @@ impl System {
     /// §5.4's "init = V2-padded (incumbents at V2, candidates 0)".
     fn v2_padded(&self) -> Vec<i64> {
         let table = v2_vector(self.stage);
-        let mut w = vec![0i64; AXIS_WIDTH];
+        // `self.lo.len()`, not `AXIS_WIDTH`: an augmented projection system is
+        // wider, and its extra columns start at 0 like every candidate does.
+        let mut w = vec![0i64; self.lo.len()];
         for &f in &Feature::ALL[..Feature::INCUMBENT_COUNT] {
             w[f.index()] = table[f.index()];
         }
@@ -663,10 +690,15 @@ fn verify_farkas(rows: &[Row], y: &[i128]) -> Result<i128, String> {
     }
     let overflow = |what: &str| format!("i128 overflow while checking {what}");
 
-    for column in 0..AXIS_WIDTH {
+    // EVERY column the rows are written over, which is `AXIS_WIDTH` for a §5.4
+    // system and wider for an augmented projection one. A column left unchecked
+    // is a column a combination could hide a nonzero in, so the width comes off
+    // the rows themselves rather than off a constant that would be right for
+    // one caller and short for the other.
+    for column in 0..row_width(rows) {
         let mut sum: i128 = 0;
         for (row, multiplier) in rows.iter().zip(y) {
-            let term = i128::from(row.coef[column])
+            let term = i128::from(row.coef.get(column).copied().unwrap_or(0))
                 .checked_mul(*multiplier)
                 .ok_or_else(|| overflow("a coefficient product"))?;
             sum = sum.checked_add(term).ok_or_else(|| overflow("a coefficient column"))?;
@@ -921,7 +953,9 @@ fn clear_denominators(y: &[Rat]) -> Option<Vec<i128>> {
 /// full width before verification, so the trust boundary still reads the whole
 /// system.
 fn active_columns(rows: &[Row]) -> Vec<usize> {
-    (0..AXIS_WIDTH).filter(|&j| rows.iter().any(|r| r.coef[j] != 0)).collect()
+    (0..row_width(rows))
+        .filter(|&j| rows.iter().any(|r| r.coef.get(j).copied().unwrap_or(0) != 0))
+        .collect()
 }
 
 /// **§5.4 (2) — THE EXACT ORACLE, the only authority for infeasibility.**
@@ -1867,8 +1901,1147 @@ mod toys {
 }
 
 // ---------------------------------------------------------------------------
-// The artifact
+// §9's registered-margin repair -- R3's certified exact simultaneous per-stage
+// projection
 // ---------------------------------------------------------------------------
+
+/// **R3'S RULING SENTENCE**, which this section implements and which the module
+/// doc of every function below is written against
+/// (`docs/plans/2026-08-24-step9-charter.md`:117-127):
+///
+/// > "§9's registered-margin repair is executed, per endpoint, as ONE exact
+/// > integer projection: over the full R1 system with removed features fixed at
+/// > 0 and the pin fixed, find the assignment minimizing (lexicographically)
+/// > total |displacement| from the draft's starting vector, then the count of
+/// > changed coordinates, then ties by the canonical `Feature::ALL` ×
+/// > early-then-late order — subject additionally to: no coordinate moves FROM a
+/// > prior-agreeing sign to an opposed one, and no opposed coordinate moves
+/// > further from agreement. The optimum is certified over the finite integer
+/// > box by the frozen solver's exact-oracle machinery; a heuristic answer is
+/// > insufficient; infeasibility is a typed `REPAIR-INFEASIBLE` routed to the
+/// > owner, never a silent relaxation. Every changed coordinate is recorded with
+/// > the binding rows that priced it."
+///
+/// # THE THREE LEVELS, and how each is CERTIFIED
+///
+/// The projection is a chain of feasibility questions, every one of them put to
+/// [`decide`] — the frozen §5.4 oracle, unchanged. Nothing here decides
+/// anything: this module chooses which questions to ask and in what order, and
+/// the oracle answers them. That is what makes "a heuristic answer is
+/// insufficient" a property of the code rather than a claim about it.
+///
+/// 1. **DISPLACEMENT.** "Is there a feasible point within `d` of the draft?" is
+///    asked of an AUGMENTED system ([`augmented`]) carrying one extra column per
+///    movable coordinate that prices `|w_f − w0_f|`, plus the budget row
+///    `Σ|w_f − w0_f| ≤ d`. `D*` is the least `d` whose answer is SAT, found by
+///    bisection between a level with a witness and a level with a VERIFIED
+///    infeasibility certificate. Every level below `D*` is empty by the
+///    certificate at `D* − 1` and the one-line monotonicity argument
+///    ([`REPAIR_MONOTONICITY`]).
+/// 2. **CHANGED COUNT.** At `D*`, "is there a feasible point that moves only the
+///    coordinates in `S`?" is asked for every support `S` of size `k`, `k`
+///    ascending, in ascending listed order. A level whose every support came
+///    back UNSAT is CERTIFIED EMPTY BY EXHAUSTION — the enumeration is the
+///    certificate, on the same discipline as [`rederive_by_enumeration`], and
+///    over budget is INCONCLUSIVE rather than a claim.
+/// 3. **THE CANONICAL REPRESENTATIVE.** With `D*` and the support fixed, each
+///    coordinate is fixed in listed order to the least `(|w_f − w0_f|, w_f)` that
+///    keeps the system feasible — each fixing a SAT, each rejected value an
+///    UNSAT. See [`REPAIR_CANONICAL`], which states the rule the ruling's
+///    "canonical `Feature::ALL` order" is realized as.
+///
+/// **The stages do not couple** (spec §5.4:745-747), so `early-then-late` is the
+/// order the endpoints are RUN in and nothing more: each endpoint is one
+/// independent projection.
+const REPAIR_RULING: &str = "R3: ONE exact integer projection per endpoint -- lexicographically \
+     minimal |displacement| from the draft, then changed-coordinate count, then the canonical \
+     listed order; no coordinate moves from a prior-agreeing sign to an opposed one and no \
+     opposed coordinate moves further from agreement; certified over the finite integer box by \
+     the frozen exact oracle; REPAIR-INFEASIBLE is typed and routed, never a silent relaxation.";
+
+/// Why ONE certificate closes every level below `D*`.
+const REPAIR_MONOTONICITY: &str = "Every displacement level below the one certified empty here is \
+     itself empty: a point with total |displacement| <= d also has total |displacement| <= d' for \
+     every d' >= d, so the feasible sets are nested and emptiness propagates downward. One \
+     verified certificate is therefore the whole tail.";
+
+/// **THE REGISTERED CANONICAL RULE**, stated because the ruling names an order
+/// and an order is not yet a selection.
+const REPAIR_CANONICAL: &str = "CANONICAL SELECTION (registered): among the optima at the optimal \
+     displacement and changed count, the support is the FIRST in ascending `Feature::ALL` order \
+     (compare the supports' sorted coordinate indices lexicographically); within that support, \
+     each coordinate is fixed in ascending `Feature::ALL` order to the least (|w_f - w0_f|, w_f) \
+     that leaves the system feasible, certified at each fixing. The value key's second component \
+     is there to make the rule TOTAL; over a convex projected feasible set it never fires, and \
+     over the integers it can.";
+
+/// **THE REGISTERED REMOVAL SET.** The four candidates §8's selected interaction
+/// cell removed: `E3`, `O3`, `O6`, `X3`.
+///
+/// Provenance: the 2026-08-24 guidingpath rulings row (step 9's T0 registration,
+/// `docs/plans/2026-08-24-step9-charter.md`) over the step-6 close, whose
+/// artifact of record prints the same four —
+/// `docs/temp/step6-artifacts/v3l-final-artifact.txt:274`.
+///
+/// **This is a second SPELLING of `eval_probe`'s `STEP9_REMOVED`, and it is held
+/// to it by a PIN rather than by a shared constant.** The two live in different
+/// example binaries, which cannot import one another. What holds them together
+/// is
+/// `the_projected_system_reproduces_the_banked_artifact_s_kept_and_dropped_rows`:
+/// this file's projection must reproduce the banked artifact's kept/dropped row
+/// names and counts and satisfy its witness, which is the same reading the other
+/// encoding is pinned to. A drift in either spelling breaks that test.
+const REPAIR_REMOVED: [CandidateFeature; 4] = [
+    CandidateFeature::BuildingTokensReady,
+    CandidateFeature::ExecutableOrders,
+    CandidateFeature::HeldOrderIcons,
+    CandidateFeature::MatchedProductionAccess,
+];
+
+/// The projection's own budget, in its own deterministic currency: ORACLE CALLS.
+///
+/// The oracle counts nodes inside each call ([`NODE_BUDGET`]); this counts the
+/// calls. Both are counts of work done, not of time spent — nothing in the
+/// decision path reads a clock, so the same inputs spend the same budget on
+/// every machine. Exhaustion is INCONCLUSIVE, routed; it is never infeasibility.
+const REPAIR_ORACLE_BUDGET: u64 = 20_000;
+
+/// The support enumeration's budget, in enumerated subsets — [`ENUMERATION_BUDGET`]'s
+/// discipline for level 2's certificate. Over budget is INCONCLUSIVE: an
+/// enumeration that did not finish has certified nothing.
+const REPAIR_SUPPORT_BUDGET: u64 = 10_000_000;
+
+/// The starting-vector specs `repair --start` accepts.
+const REPAIR_START_SPECS: [&str; 2] = ["v2-padded", "zero"];
+
+
+/// **§4'S PROJECTION, on the solver's own rows.** A row survives iff every
+/// candidate column it carries a nonzero `Δv` in survives the removal set.
+///
+/// The same admission `eval_probe`'s `row_applies` runs, spelled over `Row`
+/// instead of over `GateRow`: "a row survives a cell iff its whole candidate
+/// collateral is inside that cell's set". Incumbent columns never drop a row —
+/// every identity holds all sixteen.
+///
+/// The dropped rows are returned BY NAME because R3's report has to print them:
+/// a repair that quietly solved a smaller system than the one it named would be
+/// the same defect as a silent relaxation.
+fn project_pair_rows(rows: Vec<Row>) -> (Vec<Row>, Vec<String>) {
+    let removed: Vec<usize> =
+        REPAIR_REMOVED.iter().map(|c| FeatureId::Candidate(*c).index()).collect();
+    let mut kept = Vec::new();
+    let mut dropped = Vec::new();
+    for row in rows {
+        if removed.iter().any(|&slot| row.coef[slot] != 0) {
+            dropped.push(row.label.clone());
+        } else {
+            kept.push(row);
+        }
+    }
+    (kept, dropped)
+}
+
+/// One endpoint's starting vector, by registered spec.
+///
+/// `v2-padded` is R9's ratified anchor — "incumbents at V2, candidates 0", the
+/// same start §5.4's witness search takes. `zero` is everything at zero but the
+/// pin, which is the vector a fit-free draft would begin from.
+fn start_vector(spec: &str, stage: StageEndpoint) -> Result<Vec<i64>, String> {
+    let mut w = vec![0i64; AXIS_WIDTH];
+    w[Feature::VictoryPoints.index()] = toys::pinned_vp(stage);
+    match spec {
+        "zero" => Ok(w),
+        "v2-padded" => {
+            let table = v2_vector(stage);
+            for &f in &Feature::ALL[..Feature::INCUMBENT_COUNT] {
+                w[f.index()] = table[f.index()];
+            }
+            Ok(w)
+        }
+        other => Err(format!(
+            "`{other}` is not a registered starting vector; `repair --start` takes one of \
+             {REPAIR_START_SPECS:?}",
+        )),
+    }
+}
+
+/// One endpoint's repair problem: the PROJECTED system, the draft's starting
+/// vector, and the coordinates the projection is allowed to move.
+struct RepairProblem {
+    stage: StageEndpoint,
+    /// The projected system with R3's constraints already folded into the box:
+    /// removed features fixed at 0, `w_vp` fixed at the pin, and each candidate's
+    /// sign constraint as a one-sided bound. **They are box tightenings and not
+    /// rows because that is exactly what they are** — every one of them is a
+    /// bound on a single coordinate, and the oracle's propagation reads a box
+    /// bound directly.
+    sys: System,
+    /// The rows §4's projection dropped, by name.
+    dropped: Vec<String>,
+    /// How the starting vector was named.
+    start: String,
+    w0: Vec<i64>,
+    /// The coordinates the projection may move: not fixed by the box, and
+    /// carried by at least one row.
+    ///
+    /// **A coordinate no row reads is pinned at the draft, and that is a
+    /// reduction rather than a policy.** Moving it cannot change any row value,
+    /// so it can only add displacement and add a changed coordinate — both
+    /// objectives strictly worsen, so no optimum moves it.
+    free: Vec<usize>,
+}
+
+/// What one question put to the oracle asked, and what came back.
+#[derive(Clone)]
+struct TrailStep {
+    question: String,
+    outcome: TrailOutcome,
+    /// The labelled rows a Farkas combination leaned on, or the enumerated
+    /// support's coordinates — so the trail can be read without re-deriving it.
+    leaned_on: Vec<String>,
+}
+
+/// How a level was closed.
+#[derive(Clone)]
+enum TrailOutcome {
+    /// Certified empty by the oracle, with the certificate it shipped.
+    Empty(Certificate),
+    /// Certified nonempty by a point the rows re-checked.
+    Witnessed(Vec<i64>),
+    /// Certified empty by EXHAUSTING the supports at this changed count. The
+    /// enumeration is the certificate; the count is how wide it was.
+    Enumerated { supports: u64 },
+    /// True by arithmetic, with no search: `Σ|w_f − w0_f| ≥ 0` over the
+    /// integers, so the level below zero is empty and nothing had to look.
+    Arithmetic(&'static str),
+    /// The oracle did not decide. NEVER infeasibility.
+    Undecided(String),
+}
+
+/// **THE REPAIR'S THREE ANSWERS.** There is no fourth, and `Inconclusive` is not
+/// a weak `Infeasible`.
+enum Repair {
+    Repaired(Box<RepairReport>),
+    /// **`REPAIR-INFEASIBLE`** — no assignment in the box satisfies the rows,
+    /// the pin, the orderings and the sign constraints at once. Routed to the
+    /// owner with the oracle's certificate; never a silent relaxation.
+    Infeasible { certificate: Certificate, trail: Vec<TrailStep> },
+    /// The oracle, or the projection's own budget, did not decide. Routed.
+    Inconclusive { reason: String, trail: Vec<TrailStep> },
+}
+
+impl Repair {
+    fn name(&self) -> &'static str {
+        match self {
+            Repair::Repaired(_) => "REPAIRED",
+            Repair::Infeasible { .. } => "REPAIR-INFEASIBLE",
+            Repair::Inconclusive { .. } => "INCONCLUSIVE",
+        }
+    }
+}
+
+/// The repaired vector and everything R3 requires recorded beside it.
+struct RepairReport {
+    stage: StageEndpoint,
+    start: String,
+    w0: Vec<i64>,
+    w: Vec<i64>,
+    /// `Σ_f |w_f − w0_f|` over the free coordinates. The pin is fixed, not
+    /// displaced, so it never appears in this sum.
+    displacement: i64,
+    /// The changed coordinates, in ascending `Feature::ALL` order.
+    changed: Vec<usize>,
+    /// `System::violation` of the returned vector against the projected system —
+    /// zero, re-checked outside the oracle.
+    violation: i128,
+    /// The projected rows the pricing record reads.
+    projected: Vec<Row>,
+    dropped: Vec<String>,
+    trail: Vec<TrailStep>,
+    oracle_calls: u64,
+    supports_examined: u64,
+}
+
+impl RepairReport {
+    /// The trail step that answered exactly this question.
+    fn step(&self, question: &str) -> Option<&TrailStep> {
+        self.trail.iter().find(|s| s.question == question)
+    }
+
+    /// **THE ROWS THAT PRICED ONE COORDINATE** — R3's last sentence.
+    ///
+    /// A row PRICED coordinate `f` if it carries `f` with a nonzero `Δv` and
+    /// would be VIOLATED with `f` alone returned to the draft's value. That is
+    /// the relation "priced it" names: the row that stops this coordinate going
+    /// back.
+    fn pricing(&self, f: usize) -> Vec<String> {
+        self.rows_reading(f, |slack, back| slack - back < 0)
+    }
+
+    /// The rows TIGHT at the optimum that carry `f` — slack exactly zero.
+    ///
+    /// Recorded BESIDE [`RepairReport::pricing`] because the two differ and the
+    /// difference is instructive rather than a defect: a row whose margin and
+    /// coefficients share no common factor can be the whole reason a coordinate
+    /// moved and still never sit at slack 0 (11(b)'s margin is 1 against
+    /// coefficients ±2, and it is exactly that row).
+    fn tight(&self, f: usize) -> Vec<String> {
+        self.rows_reading(f, |slack, _| slack == 0)
+    }
+
+    fn rows_reading(&self, f: usize, keep: impl Fn(i128, i128) -> bool) -> Vec<String> {
+        self.projected
+            .iter()
+            .filter(|row| row.coef.get(f).copied().unwrap_or(0) != 0)
+            .filter(|row| {
+                let slack = System::slack_of(row, &self.w);
+                let back = i128::from(row.coef[f]) * i128::from(self.w[f] - self.w0[f]);
+                keep(slack, back)
+            })
+            .map(|row| row.label.clone())
+            .collect()
+    }
+}
+
+/// **THE AUGMENTED SYSTEM** — the projected system plus the machinery that makes
+/// "within `level` of the draft" a question the frozen oracle can be asked.
+///
+/// One extra column per movable coordinate holds that coordinate's displacement.
+/// Two rows pin it from below (`t ≥ w − w0` and `t ≥ w0 − w`, together
+/// `t ≥ |w − w0|`), and one budget row caps the sum (`−Σ t ≥ −level`). Nothing
+/// pins `t` from above except its box, and nothing needs to: the budget row is
+/// an upper bound and `t` only ever wants to be small, so `Σ|w − w0| ≤ level`
+/// holds exactly when the augmented system is satisfiable.
+///
+/// **Every coordinate not in `movable` is pinned at the draft's value.** For the
+/// coordinates no row reads that is the reduction [`RepairProblem::free`]
+/// documents; for the coordinates a SUPPORT question excludes it is the question
+/// itself.
+fn augmented(
+    p: &RepairProblem,
+    level: i64,
+    movable: &[usize],
+    pins: &[(usize, i64)],
+) -> System {
+    let width = AXIS_WIDTH + movable.len();
+    let mut lo = vec![0i64; width];
+    let mut hi = vec![0i64; width];
+    lo[..AXIS_WIDTH].copy_from_slice(&p.sys.lo);
+    hi[..AXIS_WIDTH].copy_from_slice(&p.sys.hi);
+    for f in 0..AXIS_WIDTH {
+        if !movable.contains(&f) {
+            lo[f] = p.w0[f];
+            hi[f] = p.w0[f];
+        }
+    }
+    for (f, value) in pins {
+        lo[*f] = *value;
+        hi[*f] = *value;
+    }
+
+    let mut rows: Vec<Row> = p
+        .sys
+        .rows
+        .iter()
+        .map(|r| {
+            let mut coef = r.coef.clone();
+            coef.resize(width, 0);
+            Row { coef, ..r.clone() }
+        })
+        .collect();
+
+    for (j, &f) in movable.iter().enumerate() {
+        let aux = AXIS_WIDTH + j;
+        // The widest displacement this coordinate can reach inside its own box,
+        // capped by the level: `t <= Σt <= level` because every `t` is >= 0.
+        let span = (p.w0[f] - lo[f]).max(hi[f] - p.w0[f]).clamp(0, level.max(0));
+        lo[aux] = 0;
+        hi[aux] = span;
+        let label = FeatureId::all()[f].label();
+        for (sign, rhs) in [(-1i64, -p.w0[f]), (1, p.w0[f])] {
+            let mut coef = vec![0i64; width];
+            coef[aux] = 1;
+            coef[f] = sign;
+            rows.push(Row {
+                label: format!("|d| {label} >= {} (w - w0)", if sign < 0 { "+" } else { "-" }),
+                kind: RowKind::Repair,
+                coef,
+                rhs,
+                margin_vp: None,
+            });
+        }
+    }
+
+    if !movable.is_empty() {
+        let mut coef = vec![0i64; width];
+        for j in 0..movable.len() {
+            coef[AXIS_WIDTH + j] = -1;
+        }
+        rows.push(Row {
+            label: format!("displacement budget <= {level}"),
+            kind: RowKind::Repair,
+            coef,
+            rhs: -level,
+            margin_vp: None,
+        });
+    }
+
+    System { stage: p.stage, rows, lo, hi, pin_vp: p.sys.pin_vp, box_limit: p.sys.box_limit }
+}
+
+/// The RATIONAL relaxation of one augmented system, decided exactly — a HINT and
+/// nothing else.
+///
+/// It chooses where the certified bisection starts and carries no verdict: the
+/// level it points at is probed through [`decide`] like every other, and the
+/// level below it is probed too, so a wrong hint costs probes and cannot cost
+/// correctness. `None` is "the LP did not decide", which is also only a hint.
+///
+/// Reading it is sound in one direction and that is the direction used: an
+/// integer point is a rational point, so a level whose relaxation is empty has
+/// no integer point either, and the least relaxation-feasible level is a lower
+/// bound on `D*`.
+fn relaxation_feasible(sys: &System) -> Option<bool> {
+    let all = sys.inequalities();
+    let columns = active_columns(&sys.rows);
+    let row_index: Vec<usize> = all
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| columns.iter().any(|&j| r.coef[j] != 0))
+        .map(|(i, _)| i)
+        .collect();
+    match relaxation(&all, &row_index, &columns) {
+        Relaxation::Feasible => Some(true),
+        Relaxation::Infeasible(_) => Some(false),
+        Relaxation::Undecided(_) => None,
+    }
+}
+
+impl RepairProblem {
+    /// Build one endpoint's problem, REFUSING a start the registered system does
+    /// not describe.
+    ///
+    /// Three typed refusals, on R4's malformed-identity discipline — "a typed
+    /// instrument failure ... INVALIDATES the read and does not count against
+    /// the table or the cap". A draft whose `w_vp` is not the pin, whose
+    /// coordinates leave the box, or which prices a removed feature is not a
+    /// worse draft; it is a draft the system has no variable for, and repairing
+    /// it would be repairing something else.
+    fn new(
+        stage: StageEndpoint,
+        sys: System,
+        dropped: Vec<String>,
+        start: &str,
+        w0: Vec<i64>,
+    ) -> Result<RepairProblem, String> {
+        if w0.len() != AXIS_WIDTH {
+            return Err(format!("the axis is {AXIS_WIDTH} wide and the start is {}", w0.len()));
+        }
+        let vp = Feature::VictoryPoints.index();
+        if w0[vp] != sys.pin_vp {
+            return Err(format!(
+                "the start prices w_vp at {} and the {} pin is {}. R1 applies the pin as a FIXED \
+                 coordinate, not as a repair, so a start that breaks it is a malformed identity \
+                 rather than a system to repair.",
+                w0[vp],
+                stage.name(),
+                sys.pin_vp,
+            ));
+        }
+        for (i, id) in FeatureId::all().into_iter().enumerate() {
+            if w0[i].abs() > sys.box_limit {
+                return Err(format!(
+                    "the start prices {} at {} and the box is |w| <= {}. R1: a repair demanding \
+                     |w| > 64 is a routed SCALE finding, never a silent clamp or widening.",
+                    id.label(),
+                    w0[i],
+                    sys.box_limit,
+                ));
+            }
+        }
+        for candidate in REPAIR_REMOVED {
+            let slot = FeatureId::Candidate(candidate).index();
+            if w0[slot] != 0 {
+                return Err(format!(
+                    "the start prices {} at {}, and the projected system fixes the removed \
+                     features at 0 — it has no variable there. A malformed identity, not a worse \
+                     table.",
+                    candidate.label(),
+                    w0[slot],
+                ));
+            }
+        }
+
+        let mut sys = sys;
+        // **THE SIGN CONSTRAINT, as one bound per coordinate.** R3: no coordinate
+        // moves FROM a prior-agreeing sign to an opposed one, and no opposed
+        // coordinate moves further from agreement. Both clauses, and the
+        // controller's 0-start clause, are the single relation
+        // `w_f·p_f >= min(0, w0_f·p_f)`: an agreeing or zero start floors the
+        // coordinate at agreement-or-zero, and an opposed start floors it at
+        // where it already is.
+        //
+        // The priors are the library's `SIGN_PRIORS`, the ONE registered spelling
+        // — §8's wrong-sign removal trigger and §9(c)'s prior-agreeing carrier
+        // clause read the same table. The sixteen INCUMBENTS carry no registered
+        // prior and are deliberately left unconstrained beyond the system and the
+        // box: inventing one here would be registering a direction nobody ruled.
+        for candidate in CandidateFeature::ALL {
+            let f = FeatureId::Candidate(candidate).index();
+            if sign_prior(candidate) > 0 {
+                lo_at(&mut sys.lo, f, w0[f].min(0));
+            } else {
+                hi_at(&mut sys.hi, f, w0[f].max(0));
+            }
+        }
+        for candidate in REPAIR_REMOVED {
+            let f = FeatureId::Candidate(candidate).index();
+            sys.lo[f] = 0;
+            sys.hi[f] = 0;
+        }
+
+        let free: Vec<usize> = (0..AXIS_WIDTH)
+            .filter(|&f| sys.lo[f] < sys.hi[f])
+            .filter(|&f| sys.rows.iter().any(|r| r.coef[f] != 0))
+            .collect();
+        Ok(RepairProblem { stage, sys, dropped, start: start.to_string(), w0, free })
+    }
+
+    fn displacement(&self, w: &[i64]) -> i64 {
+        self.free.iter().map(|&f| (w[f] - self.w0[f]).abs()).sum()
+    }
+
+    fn changed(&self, w: &[i64]) -> Vec<usize> {
+        self.free.iter().copied().filter(|&f| w[f] != self.w0[f]).collect()
+    }
+}
+
+fn lo_at(lo: &mut [i64], f: usize, bound: i64) {
+    lo[f] = lo[f].max(bound);
+}
+
+fn hi_at(hi: &mut [i64], f: usize, bound: i64) {
+    hi[f] = hi[f].min(bound);
+}
+
+/// The projection in flight: the budgets it is spending and the trail it is
+/// building.
+struct Projection<'a> {
+    p: &'a RepairProblem,
+    calls: u64,
+    supports: u64,
+    oracle_budget: u64,
+    support_budget: u64,
+    trail: Vec<TrailStep>,
+}
+
+impl<'a> Projection<'a> {
+    fn new(p: &'a RepairProblem, oracle_budget: u64, support_budget: u64) -> Projection<'a> {
+        Projection { p, calls: 0, supports: 0, oracle_budget, support_budget, trail: Vec::new() }
+    }
+
+    fn routed(&self, reason: String) -> Repair {
+        Repair::Inconclusive { reason, trail: self.trail.clone() }
+    }
+
+    /// Put one question to the frozen oracle, spending one call.
+    fn ask(&mut self, sys: &System) -> Result<Verdict, Repair> {
+        self.calls += 1;
+        if self.calls > self.oracle_budget {
+            return Err(self.routed(format!(
+                "the projection spent its registered budget of {} oracle calls. The oracle did \
+                 not decide, which is not infeasibility.",
+                self.oracle_budget,
+            )));
+        }
+        Ok(decide(sys))
+    }
+
+    /// The same, RECORDED in the certificate trail.
+    fn ask_recorded(&mut self, question: String, sys: &System) -> Result<Verdict, Repair> {
+        let verdict = self.ask(sys)?;
+        let all = sys.inequalities();
+        let (outcome, leaned_on) = match &verdict {
+            Verdict::Sat { w } => (TrailOutcome::Witnessed(w[..AXIS_WIDTH].to_vec()), Vec::new()),
+            Verdict::Unsat { certificate } => {
+                let names = match certificate {
+                    // The MULTIPLIER rides with the label. A routed
+                    // REPAIR-INFEASIBLE is read by a person deciding what to do
+                    // about it, and the combination's shape — which rows, how
+                    // heavily — is the whole of what there is to read.
+                    Certificate::Farkas { y, .. } => all
+                        .iter()
+                        .zip(y)
+                        .filter(|(_, m)| **m != 0)
+                        .map(|(r, m)| format!("{} x{m}  [{}]", r.label, sparse_row(r)))
+                        .collect(),
+                    Certificate::Enumeration { support, .. } => support
+                        .iter()
+                        .map(|&c| match FeatureId::all().get(c) {
+                            Some(id) => id.label().to_string(),
+                            None => format!("|w-w0| #{}", c - AXIS_WIDTH),
+                        })
+                        .collect(),
+                };
+                (TrailOutcome::Empty(certificate.clone()), names)
+            }
+            Verdict::Inconclusive { reason } => {
+                (TrailOutcome::Undecided(reason.clone()), Vec::new())
+            }
+        };
+        self.trail.push(TrailStep { question, outcome, leaned_on });
+        Ok(verdict)
+    }
+
+    fn record(&mut self, question: String, outcome: TrailOutcome, leaned_on: Vec<String>) {
+        self.trail.push(TrailStep { question, outcome, leaned_on });
+    }
+}
+
+/// **THE ENGINE.** R3's projection at the registered budgets.
+fn repair(p: &RepairProblem) -> Repair {
+    repair_within(p, REPAIR_ORACLE_BUDGET, REPAIR_SUPPORT_BUDGET)
+}
+
+/// The same, at budgets a caller names.
+///
+/// The budgets are parameters only so their EXHAUSTION ARMS can be exercised —
+/// [`integer_search`]'s reasoning verbatim: a test that had to spend the
+/// registered budget to prove the arm exists would not be a test. [`repair`]
+/// always passes the registered pair.
+fn repair_within(p: &RepairProblem, oracle_budget: u64, support_budget: u64) -> Repair {
+    let mut projection = Projection::new(p, oracle_budget, support_budget);
+    match projection.run() {
+        Ok(report) => Repair::Repaired(Box::new(report)),
+        Err(routed) => routed,
+    }
+}
+
+impl Projection<'_> {
+    fn run(&mut self) -> Result<RepairReport, Repair> {
+        let p = self.p;
+        let free = p.free.clone();
+
+        // (0) Is the repair problem feasible AT ALL? The plain projected system,
+        // sign constraints and pin already in its box. An UNSAT here is
+        // REPAIR-INFEASIBLE and nothing further is asked.
+        let plain = p.sys.clone();
+        let w_hi = match self.ask_recorded(
+            "the projected system, sign-constrained".to_string(),
+            &plain,
+        )? {
+            Verdict::Sat { w } => w,
+            Verdict::Unsat { certificate } => {
+                let trail = std::mem::take(&mut self.trail);
+                return Err(Repair::Infeasible { certificate, trail });
+            }
+            Verdict::Inconclusive { reason } => return Err(self.routed(reason)),
+        };
+        let d_hi = p.displacement(&w_hi);
+
+        // (1) THE DISPLACEMENT LEVEL. `lo` is a level certified EMPTY, `hi` a
+        // level with a witness; bisect until they are adjacent.
+        let hint = self.lp_hint(d_hi)?;
+        let mut lo = -1i64;
+        let mut hi = d_hi;
+        let mut witness = w_hi;
+        self.record(
+            "displacement <= -1".to_string(),
+            TrailOutcome::Arithmetic(
+                "|w - w0| >= 0 over the integers, so no level below zero holds a point",
+            ),
+            Vec::new(),
+        );
+        while hi - lo > 1 {
+            let probe = next_probe(lo, hi, hint);
+            let sys = augmented(p, probe, &free, &[]);
+            match self.ask_recorded(format!("displacement <= {probe}"), &sys)? {
+                Verdict::Sat { w } => {
+                    witness = w[..AXIS_WIDTH].to_vec();
+                    hi = probe;
+                }
+                Verdict::Unsat { .. } => lo = probe,
+                Verdict::Inconclusive { reason } => {
+                    // The BRACKET rides with the routed reason. "The oracle did
+                    // not decide" is a fact about one level; what a reader needs
+                    // is where the optimum was known to lie when the projection
+                    // stopped, which is the pair the bisection was holding.
+                    return Err(self.routed(format!(
+                        "at displacement level {probe}, with the optimum bracketed in \
+                         ({lo}, {hi}]: {reason}",
+                    )));
+                }
+            }
+        }
+        let d_star = hi;
+
+        // (2) THE CHANGED COUNT, at `d_star`. Ascending `k`, ascending listed
+        // order within `k`; the first SAT support is both the count and the
+        // canonical support.
+        let violated = self.violated_carriers();
+        let ceiling = p.changed(&witness).len();
+        let mut support = Vec::new();
+        let mut found = false;
+        for k in 0..=ceiling {
+            let before = self.supports;
+            let mut chosen = Vec::new();
+            match self.search_support(d_star, k, 0, &mut chosen, &violated, &free)? {
+                Some((s, w)) => {
+                    self.record(
+                        format!("changed count <= {k} at displacement {d_star}"),
+                        TrailOutcome::Witnessed(w[..AXIS_WIDTH].to_vec()),
+                        s.iter().map(|&f| FeatureId::all()[f].label().to_string()).collect(),
+                    );
+                    witness = w[..AXIS_WIDTH].to_vec();
+                    support = s;
+                    found = true;
+                    break;
+                }
+                None => self.record(
+                    format!("changed count <= {k} at displacement {d_star}"),
+                    TrailOutcome::Enumerated { supports: self.supports - before },
+                    Vec::new(),
+                ),
+            }
+        }
+        if !found {
+            // Unreachable through the arithmetic: `witness` itself changes
+            // `ceiling` coordinates and hits every violated row, so the `k =
+            // ceiling` pass has at least one satisfiable support. Typed rather
+            // than asserted, because a wrong answer is worse than a routed one.
+            return Err(self.routed(format!(
+                "no support of size <= {ceiling} was satisfiable at displacement {d_star}, yet a \
+                 witness at that displacement changes exactly {ceiling} coordinates. The \
+                 projection did not decide, which is not infeasibility.",
+            )));
+        }
+
+        // (3) THE CANONICAL REPRESENTATIVE within that support.
+        let mut pins: Vec<(usize, i64)> = Vec::new();
+        for &f in &support {
+            let label = FeatureId::all()[f].label();
+            let mut settled = None;
+            for value in value_keys(p.w0[f], p.sys.lo[f], p.sys.hi[f], d_star) {
+                let mut trial = pins.clone();
+                trial.push((f, value));
+                let sys = augmented(p, d_star, &support, &trial);
+                match self.ask(&sys)? {
+                    Verdict::Sat { w } => {
+                        witness = w[..AXIS_WIDTH].to_vec();
+                        settled = Some(value);
+                        break;
+                    }
+                    Verdict::Unsat { .. } => continue,
+                    Verdict::Inconclusive { reason } => return Err(self.routed(reason)),
+                }
+            }
+            let Some(value) = settled else {
+                return Err(self.routed(format!(
+                    "no value in {label}'s box left the system feasible at displacement \
+                     {d_star}; the projection did not decide, which is not infeasibility.",
+                )));
+            };
+            pins.push((f, value));
+            self.record(
+                format!("{label} = {value} (|d| = {})", (value - p.w0[f]).abs()),
+                TrailOutcome::Witnessed(witness.clone()),
+                Vec::new(),
+            );
+        }
+
+        let w = witness;
+        // The returned point is re-checked OUTSIDE the oracle, on the same
+        // discipline the oracle applies to its own: against every row, and
+        // against the box the sign constraints tightened. A point that fails
+        // either is not a repair, and saying so is cheaper than believing it.
+        let violation = p.sys.violation(&w);
+        if violation != 0 {
+            return Err(self.routed(format!(
+                "the projection's own re-check leaves violation {violation} on the returned \
+                 point. Nothing is claimed.",
+            )));
+        }
+        if let Some((f, value)) =
+            (0..AXIS_WIDTH).map(|f| (f, w[f])).find(|&(f, x)| x < p.sys.lo[f] || x > p.sys.hi[f])
+        {
+            return Err(self.routed(format!(
+                "the returned point prices {} at {value}, outside [{}, {}] -- the box the \
+                 registered limit and the sign constraint left it. Nothing is claimed.",
+                FeatureId::all()[f].label(),
+                p.sys.lo[f],
+                p.sys.hi[f],
+            )));
+        }
+        Ok(RepairReport {
+            stage: p.stage,
+            start: p.start.clone(),
+            w0: p.w0.clone(),
+            displacement: p.displacement(&w),
+            changed: p.changed(&w),
+            violation,
+            projected: p.sys.rows.clone(),
+            dropped: p.dropped.clone(),
+            trail: std::mem::take(&mut self.trail),
+            oracle_calls: self.calls,
+            supports_examined: self.supports,
+            w,
+        })
+    }
+
+    /// The least relaxation-feasible level, by bisection — a HINT (see
+    /// [`relaxation_feasible`]).
+    fn lp_hint(&mut self, d_hi: i64) -> Result<i64, Repair> {
+        let free = self.p.free.clone();
+        let mut lo = -1i64;
+        let mut hi = d_hi;
+        while hi - lo > 1 {
+            let mid = lo + (hi - lo) / 2;
+            self.calls += 1;
+            if self.calls > self.oracle_budget {
+                return Err(self.routed(format!(
+                    "the projection spent its registered budget of {} oracle calls while placing \
+                     the first probe. The oracle did not decide, which is not infeasibility.",
+                    self.oracle_budget,
+                )));
+            }
+            match relaxation_feasible(&augmented(self.p, mid, &free, &[])) {
+                Some(true) => hi = mid,
+                Some(false) => lo = mid,
+                None => return Ok(0),
+            }
+        }
+        Ok(hi)
+    }
+
+    /// Each row VIOLATED at the draft, as the free coordinates it carries.
+    ///
+    /// **The hitting-set reduction, and why it is sound.** A row violated at the
+    /// draft and none of whose carriers moved reads exactly the value it read at
+    /// the draft, so it is still violated. Every feasible point's changed set
+    /// therefore HITS every one of these sets, and a support that does not hit
+    /// them all cannot be asked — it is not a shortcut past a question, it is a
+    /// question with a proven answer.
+    fn violated_carriers(&self) -> Vec<Vec<usize>> {
+        self.p
+            .sys
+            .rows
+            .iter()
+            .filter(|row| System::slack_of(row, &self.p.w0) < 0)
+            .map(|row| self.p.free.iter().copied().filter(|&f| row.coef[f] != 0).collect())
+            .collect()
+    }
+
+    /// Every support of size `k` that hits every violated row, in ascending
+    /// listed order, asked of the oracle until one answers SAT.
+    #[allow(clippy::too_many_arguments)]
+    fn search_support(
+        &mut self,
+        level: i64,
+        k: usize,
+        start: usize,
+        chosen: &mut Vec<usize>,
+        violated: &[Vec<usize>],
+        free: &[usize],
+    ) -> Result<Option<SupportHit>, Repair> {
+        self.supports += 1;
+        if self.supports > self.support_budget {
+            return Err(self.routed(format!(
+                "the support enumeration spent its registered budget of {} subsets. An \
+                 enumeration that did not finish has certified nothing, so this is INCONCLUSIVE \
+                 and not infeasibility.",
+                self.support_budget,
+            )));
+        }
+        // Prune: a violated row no remaining candidate can hit closes the whole
+        // subtree, since every superset of this prefix inside it misses that row.
+        let reachable = |row: &Vec<usize>| {
+            row.iter().any(|c| chosen.contains(c) || free[start..].contains(c))
+        };
+        if !violated.iter().all(reachable) {
+            return Ok(None);
+        }
+        if chosen.len() == k {
+            if !violated.iter().all(|row| row.iter().any(|c| chosen.contains(c))) {
+                return Ok(None);
+            }
+            let sys = augmented(self.p, level, chosen, &[]);
+            return match self.ask(&sys)? {
+                Verdict::Sat { w } => Ok(Some((chosen.clone(), w))),
+                Verdict::Unsat { .. } => Ok(None),
+                Verdict::Inconclusive { reason } => Err(self.routed(reason)),
+            };
+        }
+        for i in start..free.len() {
+            if free.len() - i < k - chosen.len() {
+                break;
+            }
+            chosen.push(free[i]);
+            let found = self.search_support(level, k, i + 1, chosen, violated, free)?;
+            chosen.pop();
+            if found.is_some() {
+                return Ok(found);
+            }
+        }
+        Ok(None)
+    }
+}
+
+/// A support that answered SAT, with the point that answered it.
+type SupportHit = (Vec<usize>, Vec<i64>);
+
+/// Where to probe next: the hint, then the level below it, then the midpoint.
+///
+/// The hint is the least relaxation-feasible level, so it is `D*` whenever the
+/// relaxation is tight there — and then the level below it closes the bracket in
+/// one more probe, on a system whose relaxation is empty and whose certificate is
+/// therefore a cheap Farkas combination. Off the hint the bisection is ordinary.
+fn next_probe(lo: i64, hi: i64, hint: i64) -> i64 {
+    for candidate in [hint, hint - 1] {
+        if candidate > lo && candidate < hi {
+            return candidate;
+        }
+    }
+    lo + (hi - lo) / 2
+}
+
+/// One coordinate's candidate values in the registered canonical key order:
+/// least `|w_f − w0_f|` first, and at equal distance the smaller value first.
+fn value_keys(w0: i64, lo: i64, hi: i64, level: i64) -> Vec<i64> {
+    let reach = (w0 - lo).max(hi - w0).min(level.max(0));
+    let mut out = Vec::new();
+    for d in 0..=reach {
+        for value in [w0 - d, w0 + d] {
+            if value >= lo && value <= hi && !out.contains(&value) {
+                out.push(value);
+            }
+        }
+    }
+    out
+}
+
+/// **THE PROJECTION'S ARTIFACT** — one endpoint, printed whole.
+///
+/// It runs the repair; a caller that wants the structured answer calls
+/// [`repair`] instead. Byte-identical on repeat by construction: nothing in the
+/// chain reads a clock or draws entropy, so the same problem prints the same
+/// page.
+fn render_repair(p: &RepairProblem) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "\nR3 projection        {} endpoint, starting vector `{}`\n",
+        p.stage.name(),
+        p.start,
+    ));
+    out.push_str(&format!("ruling               {REPAIR_RULING}\n"));
+    out.push_str(&format!("canonical rule       {REPAIR_CANONICAL}\n"));
+    out.push_str(&format!(
+        "removed (fixed at 0) {:?}\n",
+        REPAIR_REMOVED.iter().map(|c| c.label()).collect::<Vec<_>>(),
+    ));
+    out.push_str(&format!("kept rows            {}\n", p.sys.rows.len()));
+    out.push_str(&format!("dropped rows         {}  {:?}\n", p.dropped.len(), p.dropped));
+    out.push_str(&format!("free coordinates     {}\n", p.free.len()));
+
+    let verdict = repair(p);
+    let headline = verdict.name();
+    match verdict {
+        Repair::Repaired(report) => {
+            out.push_str(&format!(
+                "\nVERDICT              {headline} at the {} endpoint from `{}`: displacement {} \
+                 over {} changed coordinate(s)\n",
+                report.stage.name(),
+                report.start,
+                report.displacement,
+                report.changed.len(),
+            ));
+            out.push_str(&format!(
+                "dropped, re-stated   {}  {:?}\n",
+                report.dropped.len(),
+                report.dropped,
+            ));
+            let last_witness = report.trail.iter().rev().find_map(|step| match &step.outcome {
+                TrailOutcome::Witnessed(w) => Some(w.clone()),
+                _ => None,
+            });
+            out.push_str(&format!(
+                "witness identity     the trail's last witness {} the returned vector\n",
+                if last_witness.as_ref() == Some(&report.w) { "IS" } else { "IS NOT" },
+            ));
+            // The two levels R3's certification MINIMALLY owes, looked up by
+            // name rather than by position: a trail read by eye is a trail
+            // nobody checks.
+            let closed = |question: &str| match report.step(question).map(|s| &s.outcome) {
+                Some(TrailOutcome::Empty(certificate)) => render_certificate(certificate),
+                Some(TrailOutcome::Enumerated { supports }) => {
+                    format!("exhaustive support enumeration over {supports} subsets")
+                }
+                Some(TrailOutcome::Arithmetic(why)) => format!("by arithmetic: {why}"),
+                Some(TrailOutcome::Witnessed(_)) => "NOT CLOSED -- a witness".to_string(),
+                Some(TrailOutcome::Undecided(why)) => format!("NOT CLOSED -- {why}"),
+                None => "NOT ASKED".to_string(),
+            };
+            let below = format!("displacement <= {}", report.displacement - 1);
+            out.push_str(&format!("required level 1     {below}: {}\n", closed(&below)));
+            match report.changed.len().checked_sub(1) {
+                Some(fewer) => {
+                    let q = format!(
+                        "changed count <= {fewer} at displacement {}",
+                        report.displacement,
+                    );
+                    out.push_str(&format!("required level 2     {q}: {}\n", closed(&q)));
+                }
+                None => out.push_str(
+                    "required level 2     no coordinate changed, so no better level exists\n",
+                ),
+            }
+            out.push_str(&format!(
+                "re-check             System::violation of the returned vector = {}\n",
+                report.violation,
+            ));
+            out.push_str("\nchanged coordinates  (w0 -> w, and the rows that priced the move)\n");
+            for &f in &report.changed {
+                let label = FeatureId::all()[f].label();
+                out.push_str(&format!(
+                    "  {label:<28} {:>4} -> {:>4}   |d| {}\n",
+                    report.w0[f],
+                    report.w[f],
+                    (report.w[f] - report.w0[f]).abs(),
+                ));
+                out.push_str(&format!("      priced by  {:?}\n", report.pricing(f)));
+                out.push_str(&format!("      tight at   {:?}\n", report.tight(f)));
+            }
+            if report.changed.is_empty() {
+                out.push_str("  (none -- the starting vector already satisfies the system)\n");
+            }
+            out.push_str(&render_trail(&report.trail));
+            out.push_str(&format!(
+                "\nbudget spent         {} oracle calls, {} supports enumerated (registered {} / \
+                 {})\n",
+                report.oracle_calls,
+                report.supports_examined,
+                REPAIR_ORACLE_BUDGET,
+                REPAIR_SUPPORT_BUDGET,
+            ));
+            out.push_str(&format!("coverage             {REPAIR_MONOTONICITY}\n"));
+        }
+        Repair::Infeasible { certificate, trail } => {
+            out.push_str(
+                "\nVERDICT              REPAIR-INFEASIBLE -- no assignment inside the box \
+                 satisfies the rows, the pin, the hand orderings and the sign constraints at \
+                 once. R3 routes this to the OWNER; it is never a silent relaxation.\n",
+            );
+            out.push_str(&format!("certificate          {}\n", render_certificate(&certificate)));
+            out.push_str(&render_trail(&trail));
+        }
+        Repair::Inconclusive { reason, trail } => {
+            out.push_str(&format!(
+                "\nVERDICT              INCONCLUSIVE -- {reason}\nROUTED               \
+                 §5.4: \"the oracle did not decide\" is never infeasibility, and this is not a \
+                 licence to fall back on a heuristic answer.\n",
+            ));
+            out.push_str(&render_trail(&trail));
+        }
+    }
+    out
+}
+
+/// One row's nonzero coefficients, by coordinate label.
+///
+/// A routed REPAIR-INFEASIBLE is read by a person deciding what to do about it,
+/// and "which rows" is only half of that: the other half is what those rows SAY,
+/// which is a handful of signed integers and belongs beside the multiplier.
+fn sparse_row(row: &Row) -> String {
+    let axis = FeatureId::all();
+    let terms: Vec<String> = row
+        .coef
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| **c != 0)
+        .map(|(i, c)| {
+            let name = match axis.get(i) {
+                Some(id) => id.label().to_string(),
+                None => format!("|d|#{}", i - AXIS_WIDTH),
+            };
+            format!("{name}:{c:+}")
+        })
+        .collect();
+    format!("{} >= {}", terms.join(" "), row.rhs)
+}
+
+/// One certificate, named rather than dumped.
+fn render_certificate(certificate: &Certificate) -> String {
+    match certificate {
+        Certificate::Farkas { y, rhs } => format!(
+            "FARKAS, re-verified in checked i128 integers: {} nonzero multipliers, yb = {rhs}",
+            y.iter().filter(|m| **m != 0).count(),
+        ),
+        Certificate::Enumeration { support, points } => {
+            format!("EXHAUSTIVE ENUMERATION over {} columns, {points} points", support.len())
+        }
+    }
+}
+
+/// The certificate trail: every question the projection asked, in order.
+fn render_trail(trail: &[TrailStep]) -> String {
+    let mut out = String::from("\ncertificate trail    (every lexicographically better level, closed)\n");
+    for step in trail {
+        let answer = match &step.outcome {
+            TrailOutcome::Empty(certificate) => {
+                format!("EMPTY   {}", render_certificate(certificate))
+            }
+            TrailOutcome::Witnessed(_) => "WITNESS point re-checked against every row".to_string(),
+            TrailOutcome::Enumerated { supports } => format!(
+                "EMPTY   exhaustive support enumeration, {supports} subsets, none satisfiable",
+            ),
+            TrailOutcome::Arithmetic(why) => format!("EMPTY   by arithmetic: {why}"),
+            TrailOutcome::Undecided(why) => format!("UNDECIDED  {why}"),
+        };
+        out.push_str(&format!("  {:<44} {answer}\n", step.question));
+        if !step.leaned_on.is_empty() {
+            out.push_str(&format!("      leans on   {:?}\n", step.leaned_on));
+        }
+    }
+    out
+}
+
+/// Run R3's projection over one registered toy.
+fn run_repair_toy(name: &str, start: &str) -> Result<(), String> {
+    let sys = toys::named(name)
+        .ok_or_else(|| format!("`{name}` is not a registered toy; see `solver toys`"))?;
+    println!("=== solver repair --toy {name} ===");
+    print!("{}", identity_block(None));
+    let stage = sys.stage;
+    let (kept, dropped) = project_pair_rows(sys.rows.clone());
+    let projected = System::new(stage, kept, sys.box_limit, sys.pin_vp);
+    let w0 = start_vector(start, stage)?;
+    let problem = RepairProblem::new(stage, projected, dropped, start, w0)?;
+    print!("{}", render_repair(&problem));
+    Ok(())
+}
+
+/// **THE REAL PROJECTION**, argument-gated exactly as the real solve is.
+fn run_repair_real(start: &str, freeze_commit: Option<&str>) -> Result<(), String> {
+    let rules = Rules::standard();
+    println!("=== solver repair --real  [§7 step 9, R3] ===");
+    print!("{}", identity_block(freeze_commit));
+    print!("{}", census_block());
+    for stage in StageEndpoint::ALL {
+        println!("\n{}", "=".repeat(72));
+        let mut rows = Vec::new();
+        for pair in REGISTERED
+            .iter()
+            .filter(|p| matches!(p.role, PairRole::Constraint) && p.stages.contains(&stage))
+        {
+            rows.push(extract_row(pair, stage, &rules)?);
+        }
+        let (kept, dropped) = project_pair_rows(rows);
+        let projected = assemble(stage, kept, BOX_LIMIT);
+        let w0 = start_vector(start, stage)?;
+        let problem = RepairProblem::new(stage, projected, dropped, start, w0)?;
+        print!("{}", render_repair(&problem));
+    }
+    Ok(())
+}
 
 /// **The identity block every verdict artifact carries.**
 ///
@@ -2261,6 +3434,17 @@ fn main() -> ExitCode {
             (false, Some(name)) => run_toy(name),
             (false, None) => Err(REAL_RUN_GATE.to_string()),
         },
+        Some("repair") => {
+            let start = value("--start").unwrap_or("v2-padded");
+            match (flag("--real"), value("--toy")) {
+                (true, Some(_)) => {
+                    Err("`--real` and `--toy` are different runs; name one".to_string())
+                }
+                (true, None) => run_repair_real(start, value("--freeze-commit")),
+                (false, Some(name)) => run_repair_toy(name, start),
+                (false, None) => Err(REPAIR_RUN_GATE.to_string()),
+            }
+        }
         Some(other) => Err(format!("unknown subcommand `{other}`\n\n{USAGE}")),
         None => Err(USAGE.to_string()),
     };
@@ -2279,6 +3463,11 @@ const REAL_RUN_GATE: &str = "`solve` needs `--real` or `--toy <name>`. The REAL 
      clause says the solver implementation freezes BEFORE the first real-pair invocation, so a \
      bare `solve` must not be able to reach the thirty-four by accident.";
 
+/// What a bare `repair` says instead of projecting.
+const REPAIR_RUN_GATE: &str = "`repair` needs `--real` or `--toy <name>`. R3's projection over the \
+     frozen registered pairs is gated on the same clause `solve --real` is: the real thirty-four \
+     are reachable deliberately or not at all.";
+
 const USAGE: &str = "\
 usage: solver <subcommand>
 
@@ -2290,6 +3479,13 @@ usage: solver <subcommand>
   solve --real [--freeze-commit <hash>]
                      THE REAL PART-B RUN over the frozen registered pairs, per
                      stage. Gated: see §5.4's freeze-before-solve clause.
+  repair --toy <name> [--start v2-padded|zero]
+                     R3's certified exact projection over one toy system
+  repair --real [--start v2-padded|zero] [--freeze-commit <hash>]
+                     THE REAL §9 REGISTERED-MARGIN REPAIR, per endpoint: the
+                     lexicographically nearest system-satisfying integer table
+                     to the draft's starting vector, with its certificate trail.
+                     --start defaults to v2-padded (R9's ratified anchor).
 ";
 
 // ---------------------------------------------------------------------------
@@ -2301,6 +3497,28 @@ mod tests {
     use super::toys::{col, toy};
     use super::*;
     use yokohama_core::game::pair_fixtures::{PairRole, PAIR_11B, PAIR_3C};
+
+/// The banked §8:975 witness at EARLY, transcribed from
+/// `docs/temp/step6-artifacts/v3l-final-artifact.txt:276`.
+const ARTIFACT_WITNESS_EARLY: [i64; AXIS_WIDTH] = [
+    1, -64, 26, -4, 3, -60, -62, -64, -61, 12, 15, 8, 5, -64, 3, -64, 1, 1, -64, -31, 1, 1, 63, 2,
+    2, 2, -30, 1, 1, 0, 1, 1, 1, 26,
+];
+
+/// The banked §8:975 witness at LATE, transcribed from
+/// `docs/temp/step6-artifacts/v3l-final-artifact.txt:277`.
+const ARTIFACT_WITNESS_LATE: [i64; AXIS_WIDTH] = [
+    40, 29, -24, -64, -64, -62, -64, -64, -63, 20, 25, 14, -64, -64, 4, -64, 14, 1, -64, -31, 20,
+    -64, 63, 21, 15, 0, 44, -61, 1, 1, 1, -63, 0, 0,
+];
+
+/// The rows the banked artifact's §4 projection DROPPED at EARLY, by pair id
+/// (artifact:278 — "early kept 17 · dropped 7").
+const ARTIFACT_DROPPED_EARLY: [&str; 7] = ["2(b)", "2(d)", "4(b)", "4(g)", "6(a)", "6(c)", "10(d)"];
+
+/// The rows the banked artifact's §4 projection DROPPED at LATE, by pair id
+/// (artifact:279 — "late kept 23 · dropped 4").
+const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
 
     // -- the margin rule ---------------------------------------------------
 
@@ -3732,19 +4950,33 @@ mod tests {
                     continue;
                 }
                 // The row-local move: shift the CARRIER by the least integer
-                // that satisfies this row alone, reading no other row.
+                // that satisfies THIS row alone, reading no other row. The
+                // rounding follows the coefficient's sign, so each move is the
+                // smallest one that works and the procedure is being given its
+                // best case rather than a strawman.
                 let a = i128::from(row.coef[s5]);
-                w[s5] += ceil_div(-slack, a) as i64;
+                let step = if a > 0 { ceil_div(-slack, a) } else { floor_div(-slack, a) };
+                w[s5] += step as i64;
+                assert!(System::slack_of(row, &w) >= 0, "the row-local move satisfies its own row");
+                seen.push(w[s5]);
             }
-            seen.push(w[s5]);
         }
-        assert!(seen.contains(&20) && seen.contains(&-1), "it oscillates: {seen:?}");
-        assert!(seen[..seen.len() - 2].contains(seen.last().expect("nonempty")), "the state repeats");
+        assert_eq!(&seen[1..5], &[20, -1, 20, -1], "it oscillates: {seen:?}");
+        assert_eq!(seen.last(), Some(&-1), "and it is still oscillating when the loop gives up");
         for value in [20i64, -1] {
             let mut probe = sys.v2_padded();
             probe[s5] = value;
             assert!(sys.violation(&probe) > 0, "neither state in the cycle satisfies both rows");
         }
+        // The engine, on the same two rows, converges — to a point the row-local
+        // procedure never reaches because it never moves E1 at all.
+        assert_eq!(repaired(
+            &[
+                ("pair 3(c) late", &[(s5, 2)], 40),
+                ("pair 11(b) late", &[(e1, 2), (s5, -2)], 1),
+            ],
+            &[],
+        ).w[e1], 21);
     }
 
     /// **THE 0-START CLAUSE, at the shape 11(e) exhibits.** A repair never
@@ -3871,7 +5103,7 @@ mod tests {
             })
             .expect("the trail carries a feasibility witness");
         assert_eq!(witness, report.w, "and the witness IS the returned vector");
-        assert_eq!(report.problem_violation(), 0, "re-checked against every row");
+        assert_eq!(report.violation, 0, "re-checked against every row");
     }
 
     /// **EVERY CHANGED COORDINATE IS RECORDED WITH THE ROWS THAT PRICED IT** —
@@ -3922,11 +5154,15 @@ mod tests {
             w0[edit.0] = edit.1;
             RepairProblem::new(StageEndpoint::Late, sys, Vec::new(), "malformed", w0)
         };
-        let broken_pin = make((Feature::VictoryPoints.index(), 7)).expect_err("the pin is fixed");
+        let refusal = |edit: (usize, i64)| match make(edit) {
+            Ok(_) => panic!("the registered system does not describe this start"),
+            Err(e) => e,
+        };
+        let broken_pin = refusal((Feature::VictoryPoints.index(), 7));
         assert!(broken_pin.contains("w_vp"), "{broken_pin}");
-        let outside = make((col("S1"), BOX_LIMIT + 1)).expect_err("the box is not a suggestion");
+        let outside = refusal((col("S1"), BOX_LIMIT + 1));
         assert!(outside.contains("box"), "{outside}");
-        let removed = make((col("E3"), 3)).expect_err("E3 is fixed at 0 by the projection");
+        let removed = refusal((col("E3"), 3));
         assert!(removed.contains("E3"), "{removed}");
     }
 
@@ -3972,10 +5208,10 @@ mod tests {
             (
                 StageEndpoint::Early,
                 17usize,
-                ARTIFACT_DROPPED_EARLY,
-                ARTIFACT_WITNESS_EARLY,
+                &ARTIFACT_DROPPED_EARLY[..],
+                &ARTIFACT_WITNESS_EARLY,
             ),
-            (StageEndpoint::Late, 23, ARTIFACT_DROPPED_LATE, ARTIFACT_WITNESS_LATE),
+            (StageEndpoint::Late, 23, &ARTIFACT_DROPPED_LATE[..], &ARTIFACT_WITNESS_LATE),
         ] {
             let mut rows = Vec::new();
             for pair in REGISTERED
@@ -3986,9 +5222,11 @@ mod tests {
             }
             let (kept, dropped) = project_pair_rows(rows);
             assert_eq!(kept.len(), kept_count, "{} kept rows", stage.name());
-            let dropped_ids: Vec<String> =
-                dropped.iter().map(|d| d.split_whitespace().next().unwrap_or("").to_string()).collect();
-            assert_eq!(dropped_ids, dropped_names, "{} dropped rows", stage.name());
+            // The solver labels a pair row `pair <id> <stage>`; the artifact
+            // names it `<id> <NAME>`. The ID is the half both spell.
+            let dropped_ids: Vec<&str> =
+                dropped.iter().filter_map(|d| d.split_whitespace().nth(1)).collect();
+            assert_eq!(dropped_ids, dropped_names.to_vec(), "{} dropped rows", stage.name());
 
             let sys = assemble(stage, kept, BOX_LIMIT);
             let mut w = witness.to_vec();
@@ -4004,6 +5242,81 @@ mod tests {
             for (i, &x) in w.iter().enumerate() {
                 assert!(x >= sys.lo[i] && x <= sys.hi[i], "{} coordinate {i} in box", stage.name());
             }
+        }
+    }
+
+    /// **THE REAL LATE ENDPOINT IS `REPAIR-INFEASIBLE`, AND R3's OWN SIGN
+    /// CONSTRAINT IS WHY** — a routed finding, made executable so it cannot
+    /// quietly stop being true.
+    ///
+    /// The registered late rows force S4 `PresidentLocalAccess` strictly
+    /// NEGATIVE, and S4's registered §3.2 prior is `+`, so the 0-start clause
+    /// (`w_f·p_f ≥ min(0, w0_f·p_f)`, which floors a zero start at agreement)
+    /// leaves the system empty. The combination is four rows and checks by hand:
+    ///
+    /// ```text
+    ///   2 × 1(b) late          2·S3 − 2·S4 + 2·S7            >= 2
+    ///   1 × 8 late             2·excess − 2·board − 2·S3 − 2·S4 − 2·S7 >= 1
+    ///   2 × on_board > excess  2·board − 2·excess            >= 2
+    ///   4 × S4 >= 0            4·S4                          >= 0
+    ///   ------------------------------------------------------------
+    ///                          0                             >= 5
+    /// ```
+    ///
+    /// Equivalently the first three rows alone say `−4·S4 ≥ 5`, so `S4 ≤ −2`
+    /// over the integers. The banked artifact's own SAT witness agrees: it
+    /// prices S4 at −31 at LATE (artifact:277), which is exactly the sight the
+    /// 0-start clause forbids a repair from manufacturing.
+    ///
+    /// **The rows are not the problem and the test says so**: the same system
+    /// with the sign bound off its box is satisfied by the artifact's witness,
+    /// which is what makes this a finding about the CONSTRAINT rather than a
+    /// broken registry.
+    #[test]
+    fn the_real_late_projection_is_repair_infeasible_against_s4_s_sign_bound() {
+        let rules = Rules::standard();
+        let mut rows = Vec::new();
+        for pair in REGISTERED.iter().filter(|p| {
+            matches!(p.role, PairRole::Constraint) && p.stages.contains(&StageEndpoint::Late)
+        }) {
+            rows.push(extract_row(pair, StageEndpoint::Late, &rules).expect("the registry extracts"));
+        }
+        let (kept, dropped) = project_pair_rows(rows);
+        let sys = assemble(StageEndpoint::Late, kept, BOX_LIMIT);
+
+        // Without the sign constraints the system is SATISFIABLE, and the banked
+        // witness is the proof.
+        let mut unconstrained = ARTIFACT_WITNESS_LATE.to_vec();
+        for candidate in REPAIR_REMOVED {
+            unconstrained[FeatureId::Candidate(candidate).index()] = 0;
+        }
+        assert_eq!(sys.violation(&unconstrained), 0, "the ROWS admit a point");
+        assert_eq!(
+            unconstrained[col("S4")],
+            -31,
+            "and that point prices S4 against its + prior",
+        );
+
+        let w0 = start_vector("v2-padded", StageEndpoint::Late).expect("a registered start");
+        let problem = RepairProblem::new(StageEndpoint::Late, sys, dropped, "v2-padded", w0)
+            .expect("the anchor is admissible");
+        let Repair::Infeasible { certificate, .. } = repair(&problem) else {
+            panic!("the 0-start clause leaves the registered late system empty");
+        };
+        let Certificate::Farkas { y, rhs } = &certificate else {
+            panic!("this infeasibility is relaxation-level and ships FARKAS");
+        };
+        assert_eq!(*rhs, 5, "the combination's yb, as the hand derivation gives it");
+        let all = problem.sys.inequalities();
+        let leaned: Vec<&str> = all
+            .iter()
+            .zip(y)
+            .filter(|(_, m)| **m != 0)
+            .map(|(r, _)| r.label.as_str())
+            .collect();
+        assert!(leaned.contains(&"S4 >= 0"), "the sign bound is IN the combination: {leaned:?}");
+        for label in ["pair 1(b) late", "pair 8 late", "hand: on_board > excess"] {
+            assert!(leaned.contains(&label), "{label} carries it: {leaned:?}");
         }
     }
 
