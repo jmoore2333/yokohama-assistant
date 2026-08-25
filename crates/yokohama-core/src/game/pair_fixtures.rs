@@ -239,6 +239,76 @@ impl CandidateFeature {
     }
 }
 
+/// **THE EIGHTEEN REGISTERED SIGN PRIORS, transcribed card by card from §3.2**
+/// (`docs/plans/2026-08-20-phase3.5c-v4-spec-prereg.md`, lines 174–363).
+///
+/// `+1` is the registration's `+`. Every one of the eighteen is `+`, and the
+/// table is written out rather than collapsed to "all positive" because the
+/// rules that read it read it per card: a card that ever registered a `−` would
+/// be a silent sign flip on a mechanical trigger if this were a constant.
+///
+/// **It lives in the LIBRARY because it has two consumers in different example
+/// binaries** — §8's wrong-sign removal trigger and §9(c)'s prior-agreeing
+/// carrier clause in `examples/eval_probe.rs`, and R3's no-worsening-sign
+/// constraint in `examples/solver.rs`. Examples cannot import one another, so a
+/// prior surface declared inside either one would have had to be transcribed
+/// into the other, and a second transcription of a direction table is a second
+/// place for a direction to drift. There is ONE spelling and this is it.
+///
+/// The per-card provenance, quoting each card's own sign sentence:
+///
+/// * S1 `ProductionAccess` — ":178 Units: goods/activation. +."
+/// * S2 `TrackAccess` — ":185 Units: power-steps. +."
+/// * S3 `AssistantAreasDistinct` — ":196 Units: areas. +."
+/// * S4 `PresidentLocalAccess` — ":206 Units: assistants within one free step
+///   of the (actual or best re-entry) center. +."
+/// * S5 `BankAccess` — ":212 Units: yen/activation. +."
+/// * S6 `EmploymentAgencyAccess` — ":220 Units: retrievable tokens. +."
+/// * S7 `PresidentReachableAreas` — ":241 Units: areas actionable in
+///   principle. +."
+/// * E1 `MoneyStock` — ":250 Yen. +."
+/// * E2 `TradeGoodsStock` — ":263 Goods. +."
+/// * E3 `BuildingTokensReady` — ":256 Units: tokens. Sign +."
+/// * O1 `HeldOrderValue` — ":278 Units: half-VP. +."
+/// * O2 `OrderMatchedGoods` — ":286 Units: matched goods. +."
+/// * O3 `ExecutableOrders` — ":289 Units: independently fulfillable orders
+///   (uncapped multi-fulfil, both Additional Action phases — dossier). +."
+/// * O5 `FlagIconMarginal` — ":297 Units: VP. +."
+/// * O6 `HeldOrderIcons` — ":308 Sign +."
+/// * X1 `LabTakeable` — ":326 Units: takeable cards. +."
+/// * X2 `PortTakeable` — ":339 Units: matched goods toward takeable orders. +."
+/// * X3 `MatchedProductionAccess` — ":349 Units: needed-goods per activation.
+///   Sign +."
+pub const SIGN_PRIORS: [(CandidateFeature, i64); 18] = [
+    (CandidateFeature::ProductionAccess, 1),
+    (CandidateFeature::TrackAccess, 1),
+    (CandidateFeature::AssistantAreasDistinct, 1),
+    (CandidateFeature::PresidentLocalAccess, 1),
+    (CandidateFeature::BankAccess, 1),
+    (CandidateFeature::EmploymentAgencyAccess, 1),
+    (CandidateFeature::PresidentReachableAreas, 1),
+    (CandidateFeature::MoneyStock, 1),
+    (CandidateFeature::TradeGoodsStock, 1),
+    (CandidateFeature::BuildingTokensReady, 1),
+    (CandidateFeature::HeldOrderValue, 1),
+    (CandidateFeature::OrderMatchedGoods, 1),
+    (CandidateFeature::ExecutableOrders, 1),
+    (CandidateFeature::FlagIconMarginal, 1),
+    (CandidateFeature::HeldOrderIcons, 1),
+    (CandidateFeature::LabTakeable, 1),
+    (CandidateFeature::PortTakeable, 1),
+    (CandidateFeature::MatchedProductionAccess, 1),
+];
+
+/// The registered prior of one candidate, as `+1` or `−1`.
+pub fn sign_prior(candidate: CandidateFeature) -> i64 {
+    SIGN_PRIORS
+        .iter()
+        .find(|(c, _)| *c == candidate)
+        .map(|(_, s)| *s)
+        .expect("SIGN_PRIORS covers CandidateFeature::ALL")
+}
+
 /// One row of the §5 THIRTY-FOUR-FEATURE AXIS: an incumbent or a candidate.
 ///
 /// The incumbent arm carries [`Feature`] itself rather than a copy of its
