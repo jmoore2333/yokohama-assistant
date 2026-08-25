@@ -425,6 +425,15 @@ usage: eval_probe <subcommand> [options]
       it can pass a subgroup wholly reversed at one endpoint, which is the
       failure this reading exists to see.
 
+      (X, LATE) IS EXCLUDED FROM THE GATE'S DOMAIN (B3, guidingpath 2026-08-25).
+      Every applicable X-late projected row prices X movement anti-prior --
+      4(f) X2 -1, 11(d) X1 -1, 11(e) X2 -4 -- so conjunct (i) cannot be
+      installed there by any row-satisfying repair. The cell is still READ and
+      printed with its grounds; it is NOT counted in pass/fail. ENDPOINT-LOCAL:
+      (X, early) stays gated. The arithmetic is ASSERTED AT EVERY RUN and a new
+      X-late row or a sign change is a typed run failure routed to the owner --
+      never a silently re-gated cell.
+
       The REMOVED set {E3, O3, O6, X3} is the registered one and is BAKED, never
       a flag — re-scoping the system would make a SAT a statement about some
       other identity. A nonzero coordinate at a removed feature is a typed
@@ -6262,6 +6271,7 @@ fn census_verdict(census: (usize, usize)) -> Result<(), String> {
 
 /// One registered GATE pair at one declared endpoint, reduced to what the
 /// satisfaction report reads: its thirty-four-wide `Δv` and its margin.
+#[derive(Clone)]
 struct GateRow {
     id: &'static str,
     name: &'static str,
@@ -8234,6 +8244,53 @@ fn structural_reading(name: &str, rows: &[GateRow], table: &FitTable) -> Structu
     }
 }
 
+/// **B3'S PINNED LATE-X ARITHMETIC** — the grounds the `(X, late)` exclusion
+/// stands on, as data.
+///
+/// Every applicable X-late projected row prices X movement ANTI-PRIOR. Three
+/// rows, three numbers, in registry order — and the ENUMERATION is part of the
+/// claim: a fourth late X row, in either direction, would change what the
+/// finding says, and a positive one would hand 9(c) conjunct (i) exactly the
+/// lever the exclusion asserts does not exist.
+const X_LATE_CARRIAGE: [(&str, &str, i64); 3] =
+    [("4(f)", "X2", -1), ("11(d)", "X1", -1), ("11(e)", "X2", -4)];
+
+/// **B3'S EXCLUSION**, printed at the cell it excludes.
+const X_LATE_EXCLUSION: &str = "EXCLUDED BY REGISTRATION (B3, guidingpath decision log, \
+     2026-08-25, \"THE T4-ENTRY BATCH IS RULED\"): (X, late) is outside 9(c)'s gate domain for \
+     as long as the pinned arithmetic holds -- every applicable X-late projected row prices X \
+     movement ANTI-PRIOR (4(f) X2 -1 · 11(d) X1 -1 · 11(e) X2 -4), so conjunct (i) cannot be \
+     installed by ANY row-satisfying repair and gating the cell would spend a draft slot to \
+     learn arithmetic already held. ENDPOINT-LOCAL: (X, early) stays gated and the X1/X2 raw \
+     tripwire stays armed. The arithmetic is asserted at EVERY run and its violation is a typed \
+     run failure routed to the OWNER, never a silent re-gate.";
+
+/// **THE WHOLE LATE X CARRIAGE**, off the REALIZED rows.
+///
+/// Read off the deltas [`gate_rows`] builds — the same arithmetic a 9(a) verdict
+/// and an R3 repair read, never a second derivation from the registrations — so
+/// the finding cannot quietly stop being true.
+fn late_x_carriage(rows: &[GateRow]) -> Vec<(&'static str, &'static str, i64)> {
+    rows.iter()
+        .filter(|row| row.stage == StageEndpoint::Late)
+        .flat_map(|row| {
+            X_COLUMNS.iter().filter_map(move |c| {
+                let delta = row.delta[FeatureId::Candidate(*c).index()];
+                (delta != 0).then_some((row.id, c.label(), delta))
+            })
+        })
+        .collect()
+}
+
+/// **B3'S STANDING ASSERTION, ARMED AT EVERY RUN.**
+///
+/// STUB (RED): nothing is checked yet, so a drift in the pinned arithmetic
+/// passes silently — which is precisely what B3 forbids.
+fn check_late_x_carriage(rows: &[GateRow]) -> Result<(), String> {
+    let _ = rows;
+    Ok(())
+}
+
 /// **R2'S PER-ENDPOINT 9(c) READING** for ONE subgroup at ONE endpoint at which
 /// that subgroup has at least one applicable projected row.
 struct SubgroupEndpointRead {
@@ -8248,9 +8305,21 @@ struct SubgroupEndpointRead {
     /// Conjunct (ii)'s flips: applicable rows at this endpoint that are
     /// SATISFIED under the table and VIOLATED with the subgroup zeroed here.
     flips: Vec<String>,
+    /// B3's endpoint-local exclusion, with its grounds, where the registration
+    /// takes this cell out of the gate's DOMAIN.
+    ///
+    /// An excluded cell is read and printed like every other; what it is not is
+    /// counted. The distinction is the whole of B3: the exclusion is about what
+    /// the gate composes, never about what the instrument looks at.
+    excluded: Option<&'static str>,
 }
 
 impl SubgroupEndpointRead {
+    /// Whether B3 takes this cell out of the gate's domain.
+    fn excluded(&self) -> bool {
+        self.excluded.is_some()
+    }
+
     /// "≥ 1 surviving member with a nonzero prior-agreeing coordinate at that
     /// endpoint whose own pairs bind there".
     fn conjunct_i(&self) -> bool {
@@ -8350,12 +8419,20 @@ fn per_endpoint_non_vacuity(
                 })
                 .map(|row| row.label())
                 .collect();
+            // **B3, ENDPOINT-LOCAL.** The exclusion is `(X, late)` and nothing
+            // else: `(X, early)` and every other subgroup keep their cell in the
+            // domain. Set HERE, where the cell is built, so a cell cannot exist
+            // without the composition knowing whether it counts.
+            // STUB (RED): the domain re-registration is not wired yet.
+            let _ = X_LATE_EXCLUSION;
+            let excluded = None;
             out.push(SubgroupEndpointRead {
                 subgroup,
                 stage,
                 rows: subgroup_rows,
                 carriers,
                 flips,
+                excluded,
             });
         }
     }
@@ -8451,7 +8528,7 @@ fn render_step9_structural(
     for read in non_vacuity {
         let _ = writeln!(
             out,
-            "     {:<11} {:<5} rows {:>2}  (i) {} {:?}  (ii) {} flips {} {:?}",
+            "     {:<11} {:<5} rows {:>2}  (i) {} {:?}  (ii) {} flips {} {:?}{}",
             read.subgroup,
             read.stage.name(),
             read.rows.len(),
@@ -8460,7 +8537,11 @@ fn render_step9_structural(
             if read.conjunct_ii() { "OK" } else { "VIOLATED" },
             read.flips.len(),
             read.flips,
+            if read.excluded() { "   [NOT COUNTED]" } else { "" },
         );
+        if let Some(grounds) = read.excluded {
+            let _ = writeln!(out, "        {grounds}");
+        }
     }
 
     let violated = reading.violated();
@@ -8482,18 +8563,32 @@ fn render_step9_structural(
             )
         },
     );
-    let failed: Vec<String> = non_vacuity
-        .iter()
-        .filter(|read| !read.holds())
-        .map(|read| format!("{} {}", read.subgroup, read.stage.name()))
-        .collect();
+    // **THE COMPOSITION'S OWN DOMAIN, spelled once.** `failed` filters exactly
+    // as `step9_structural_passed` does, so the printed verdict and the exit
+    // code cannot disagree about which cells count.
+    let named = |reads: Vec<&SubgroupEndpointRead>| -> Vec<String> {
+        reads.iter().map(|read| format!("{} {}", read.subgroup, read.stage.name())).collect()
+    };
+    let excluded =
+        named(non_vacuity.iter().filter(|read| read.excluded()).collect::<Vec<_>>());
+    let failed = named(
+        non_vacuity.iter().filter(|read| !read.excluded() && !read.holds()).collect::<Vec<_>>(),
+    );
     let _ = writeln!(
         out,
-        "  VERDICT 9(c): {}",
+        "  VERDICT 9(c): {}{}",
         if failed.is_empty() {
-            "HOLDS — both conjuncts at every subgroup x binding endpoint".to_string()
+            "HOLDS — both conjuncts at every GATED subgroup x binding endpoint".to_string()
         } else {
             format!("VIOLATED — {} cell(s) {:?}", failed.len(), failed)
+        },
+        if excluded.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "  ·  {} cell(s) {excluded:?} EXCLUDED BY REGISTRATION (B3) and NOT counted",
+                excluded.len(),
+            )
         },
     );
     let _ = writeln!(
@@ -8552,11 +8647,18 @@ fn parse_step9_table(section: &str, spec: &str) -> Result<(String, FitTable), St
 /// and once in [`cmd_step9`]'s exit composition — and two spellings of one
 /// verdict is a report that can print PASS while the process exits 1. The rooted
 /// section below has its own single composition for the same reason.
+/// **B3's re-registration lives HERE and in the report's `failed` list, and the
+/// two read the same predicate**: an excluded cell is skipped by the
+/// composition, never re-gated and never silently passed.
 fn step9_structural_passed(
     reading: &StructuralReading,
     non_vacuity: &[SubgroupEndpointRead],
 ) -> bool {
-    reading.sat() && non_vacuity.iter().all(SubgroupEndpointRead::holds)
+    reading.sat()
+        && non_vacuity
+            .iter()
+            .filter(|read| !read.excluded())
+            .all(SubgroupEndpointRead::holds)
 }
 
 fn cmd_step9(args: &[String]) -> Result<i32, String> {
@@ -8618,6 +8720,12 @@ fn step9_read(
             malformed.iter().map(Coefficient::render).collect::<Vec<_>>(),
         ));
     }
+    // **B3's STANDING ASSERTION, at EVERY run.** The (X, late) exclusion below
+    // is granted only for as long as the pinned arithmetic holds, so the
+    // arithmetic is checked before any cell is built — and its violation is a
+    // typed run failure that routes to the owner rather than a cell that
+    // quietly starts counting again.
+    check_late_x_carriage(rows)?;
     let reading = structural_reading(name, rows, table);
     let non_vacuity = per_endpoint_non_vacuity(rows, &reading.survivors, table);
     Ok((reading, non_vacuity))
@@ -25984,20 +26092,16 @@ mod tests {
     #[test]
     fn the_late_x_carriage_is_exactly_three_rows_and_every_one_opposes_its_prior() {
         let rows = step9_rows();
-        let carriage: Vec<(&str, &str, i64)> = rows
-            .iter()
-            .filter(|row| row.stage == StageEndpoint::Late)
-            .flat_map(|row| {
-                X_COLUMNS.iter().filter_map(move |c| {
-                    let delta = row.delta[FeatureId::Candidate(*c).index()];
-                    (delta != 0).then_some((row.id, c.label(), delta))
-                })
-            })
-            .collect();
+        let carriage = late_x_carriage(&rows);
+        assert_eq!(
+            carriage,
+            X_LATE_CARRIAGE.to_vec(),
+            "the whole late X carriage, and the three numbers the routed X-late finding is",
+        );
         assert_eq!(
             carriage,
             [("4(f)", "X2", -1), ("11(d)", "X1", -1), ("11(e)", "X2", -4)],
-            "the whole late X carriage, and the three numbers the routed X-late finding is",
+            "spelled out here too, so the pin is readable without chasing the constant",
         );
         for (_, _, delta) in &carriage {
             assert!(*delta < 0, "the finding is that every one of them OPPOSES the prior");
@@ -26010,6 +26114,138 @@ mod tests {
                 candidate.label(),
             );
         }
+    }
+
+    // -- B3: the (X, late) domain re-registration -----------------------------
+
+    /// **THE (X, LATE) CELL IS EXCLUDED BY REGISTRATION, AND NOTHING ELSE IS.**
+    ///
+    /// B3 re-registers 9(c)'s domain: `(X, late)` leaves the gate's pass/fail
+    /// composition for as long as the pinned arithmetic holds, and the exclusion
+    /// is ENDPOINT-LOCAL — `(X, early)` stays gated like every other cell.
+    ///
+    /// The cell is still READ and still printed with both conjuncts; what
+    /// changes is that the composition does not count it. This cell proves both
+    /// halves: exactly one cell carries the exclusion, and the composition is
+    /// the `holds` conjunction over everything else.
+    #[test]
+    fn the_x_late_cell_is_excluded_by_registration_and_the_composition_skips_exactly_it() {
+        let rows = step9_rows();
+        let survivors = step9_survivors();
+        let witness = witness_restricted();
+        let reads = per_endpoint_non_vacuity(&rows, &survivors, &witness);
+
+        let excluded: Vec<String> = reads
+            .iter()
+            .filter(|read| read.excluded())
+            .map(|read| format!("{} {}", read.subgroup, read.stage.name()))
+            .collect();
+        assert_eq!(excluded, ["X late"], "one cell, endpoint-local");
+        assert!(
+            !cell(&reads, "X", StageEndpoint::Early).expect("X binds early").excluded(),
+            "(X, early) stays gated",
+        );
+
+        // The cell is still READ: the exclusion is about the COMPOSITION, not
+        // about looking away.
+        let x_late = cell(&reads, "X", StageEndpoint::Late).expect("X binds late");
+        assert!(!x_late.rows.is_empty(), "its rows are still enumerated");
+
+        // The composition is `holds` over the un-excluded cells and nothing
+        // else — checked by rebuilding it here rather than by trusting the
+        // function under test.
+        let reading = structural_reading("witness", &rows, &witness);
+        let want = reading.sat()
+            && reads
+                .iter()
+                .filter(|read| !read.excluded())
+                .all(SubgroupEndpointRead::holds);
+        assert_eq!(step9_structural_passed(&reading, &reads), want);
+
+        // And the excluded cell's grounds are printed, with B3 named.
+        let printed = render_step9_structural(&reading, &reads);
+        assert!(printed.contains("EXCLUDED BY REGISTRATION"), "{printed}");
+        assert!(printed.contains("B3"), "{printed}");
+        assert!(printed.contains("4(f)"), "the pinned arithmetic rides the grounds: {printed}");
+        assert!(
+            !printed.contains("VIOLATED — 3 cell(s)"),
+            "X late is no longer counted among the failures: {printed}",
+        );
+    }
+
+    /// **A BROKEN ARITHMETIC ASSERTION IS A TYPED RUN FAILURE, NEVER A SILENT
+    /// RE-GATE.**
+    ///
+    /// B3 grants the exclusion "for as long as the pinned arithmetic holds —
+    /// every applicable X-late projected row prices X movement anti-prior", and
+    /// requires the instrument to assert it AT EVERY RUN, breaking loudly and
+    /// routing back to the owner if a new X-late row or a sign change appears.
+    ///
+    /// Mutation-style, three ways: a FOURTH late X row (which would hand
+    /// conjunct (i) a lever the exclusion claims does not exist), a SIGN FLIP on
+    /// an existing one, and a MAGNITUDE change. Every one must refuse the read,
+    /// and the refusal must name B3 — a run that quietly kept gating on stale
+    /// grounds would be the exclusion outliving its own reason.
+    #[test]
+    fn a_change_to_the_pinned_late_x_arithmetic_is_a_typed_run_failure_naming_b3() {
+        let rows = step9_rows();
+        assert_eq!(check_late_x_carriage(&rows), Ok(()), "the shipped rows satisfy the pin");
+
+        let x2 = FeatureId::Candidate(CandidateFeature::PortTakeable).index();
+        let x1 = FeatureId::Candidate(CandidateFeature::LabTakeable).index();
+
+        // (1) A FOURTH late X row, priced WITH the prior.
+        let mut fourth = rows.clone();
+        let extra = fourth
+            .iter()
+            .position(|r| r.stage == StageEndpoint::Late && r.delta[x2] == 0 && r.delta[x1] == 0)
+            .expect("some late row carries no X");
+        fourth[extra].delta[x1] = 1;
+
+        // (2) A SIGN FLIP on 11(e)'s X2.
+        let mut flipped = rows.clone();
+        let eleven_e = flipped
+            .iter()
+            .position(|r| r.id == "11(e)" && r.stage == StageEndpoint::Late)
+            .expect("11(e) is a late row");
+        flipped[eleven_e].delta[x2] = 4;
+
+        // (3) A MAGNITUDE change, sign intact.
+        let mut resized = rows.clone();
+        resized[eleven_e].delta[x2] = -3;
+
+        for (name, mutated) in [
+            ("a fourth row", fourth),
+            ("a flipped sign", flipped),
+            ("a resized delta", resized),
+        ] {
+            let Err(refused) = check_late_x_carriage(&mutated) else {
+                panic!("{name} must break the pin loudly");
+            };
+            assert!(refused.contains("B3"), "{name}: the refusal names the ruling: {refused}");
+            // And the whole READ refuses, so no verdict is composed past it.
+            let read = step9_read("v2-padded", &mutated, &FitTable::from_weights(&WeightTable::V2));
+            assert!(read.is_err(), "{name}: the read is INVALID, not a re-gated cell");
+        }
+    }
+
+    /// **THE CLEAN-BUILD COMMAND THE ROOTED SECTION NAMES ACTUALLY REMOVES THE
+    /// RELEASE EXAMPLE BINARIES.**
+    ///
+    /// `cargo clean -p yokohama-core` does NOT, on macOS — the twice-proven
+    /// stale-target class caught a third time on 2026-08-25, and the
+    /// same-day guidingpath close row records the ruling. The header and the
+    /// usage both name a command that does.
+    #[test]
+    fn the_rooted_clean_build_text_names_a_command_that_removes_release_examples() {
+        for text in [ROOTED_CLEAN_BUILD, USAGE] {
+            assert!(
+                !text.contains("cargo clean -p yokohama-core"),
+                "the scoped clean leaves release example binaries behind: {text}",
+            );
+        }
+        assert!(ROOTED_CLEAN_BUILD.contains("rm -rf target/release"), "{ROOTED_CLEAN_BUILD}");
+        assert!(USAGE.contains("rm -rf target/release"), "{USAGE}");
     }
 
     /// **THE NAMED TABLES RESOLVE THROUGH THE §11 IDENTITIES, AND NOTHING ELSE
