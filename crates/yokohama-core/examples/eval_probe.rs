@@ -107,11 +107,12 @@ use yokohama_core::game::greedy::{
     weight_table_identity, ExplanationTally, GreedyAgent, GREEDY_CONTROLLER,
 };
 use yokohama_core::game::lookahead::{
-    LookaheadAgent, SearchScheme, SearchTally, LOOKAHEAD_CONTROLLER,
+    LookaheadAgent, RootScore, SearchScheme, SearchStats, SearchTally, LOOKAHEAD_CONTROLLER,
+    LOOKAHEAD_IMPL_VERSION,
 };
 use yokohama_core::game::driven::{
     escrow_recipe_pair, placement_shape, registry, root_table, RecipeMiss, RecipePair,
-    RootPredicate, RootSource,
+    RegistryError, RootPredicate, RootSource, V4_ESCROW_ORDINALS,
 };
 use yokohama_core::game::driven_runner::DEFAULT_SEAT;
 use yokohama_core::game::pair_fixtures::{
@@ -120,11 +121,11 @@ use yokohama_core::game::pair_fixtures::{
     AXIS_WIDTH, REGISTERED,
 };
 use yokohama_core::{
-    agent_stream_seed, apply_move, finalize_setup, get_legal_moves, new_game, observe, replay_from,
-    run_arena_game, run_raw_game, state_digest, AchievementType, AreaId, AreaType, ArenaAgent,
-    ArenaGameStats, Contestant, GameRecord, GameState, HandCard, Move, NamedIdentity, PlayerId,
-    PlayerView, QuantileSketch, RolloutPolicy, Rules, SeedSchedule, SeedScheduleKind, Slot,
-    TriggerTally, VisiblePlayer, WorldSeed, SEMANTICS_REV,
+    agent_stream_seed, apply_move, check_invariants, finalize_setup, get_legal_moves, new_game,
+    observe, replay_from, run_arena_game, run_raw_game, state_digest, AchievementType, AreaId,
+    AreaType, ArenaAgent, ArenaGameStats, Contestant, GameRecord, GameState, HandCard, Move,
+    NamedIdentity, PlayerId, PlayerView, QuantileSketch, RolloutPolicy, Rules, SeedSchedule,
+    SeedScheduleKind, Slot, TriggerTally, VisiblePlayer, WorldSeed, SEMANTICS_REV,
 };
 
 const USAGE: &str = "\
@@ -438,6 +439,65 @@ usage: eval_probe <subcommand> [options]
       EXIT: 0 = PASS (9(a) SAT and every 9(c) cell holds) · 1 = the gate READ and
       said NO · 2 = a typed refusal, which under R4 invalidates the read and does
       not count against the table.
+
+  step9 rooted --table <spec> [--decision-seed <u64>] [--record <path>]
+               [--no-generated]
+      §7 STEP 9(b)'s ROOTED SURFACE over a NAMED table, on PRODUCTION bytes.
+
+      RUN IT ON A VERIFIED-CLEAN BUILD: `cargo clean -p yokohama-core` FIRST.
+      Every figure is identity-critical (root digests, the table identity, the
+      values a gate reads), and a stale target served an identity read TWICE
+      during step 8 without looking wrong. The header echoes SEMANTICS_REV, the
+      eval implementation version and the table identity so a stale read is
+      recognizable from the artifact alone.
+
+      THE SAME-PATH V2-PARITY PIN runs FIRST (R5): at V2 weights this surface's
+      root table must EQUAL `driven::root_table`'s at BOTH registry roots —
+      values, ranking, winner, sampled world and echo — so that R5's `the gate
+      builds through the explicit-weights agent surface` is PROVEN, not assumed.
+      A mismatch is a typed instrument failure carrying the per-root report, and
+      no verdict is composed past it. T3's `AlternateTable` refusal in the driven
+      runner is untouched: nothing here goes near `Contestant::NamedTable`.
+
+      GATE (R5, e113) — re-resolves `g1-e113-tiemass`, digest-verifies the root
+      and BOTH registered successors, builds the SHIPPED controller configuration
+      over the table under read at the entry's own recorded decision seed, takes
+      the agent's OWN root table (`LookaheadAgent::last_roots`, never a second
+      evaluation), and requires value(PlaceThreeAreas{[0,9]}) STRICTLY greater
+      than value(PlaceThreeAreas{[1,2]}). A pairwise claim, not a global-winner
+      claim. Every searched leaf scores at its own organic progress_ppm through
+      production interpolation — no endpoint-forcing. The full ranking, the pair
+      delta, the echo identities and all fifteen counters print.
+
+      GATE (e93) — the root table at `g3-e93-separated` under BOTH V2 and the
+      table under read, both rankings printed; the table under read's STRICT
+      argmax must equal V2's. Cross-pin: the V2 argmax must be the registry's
+      recorded move, and a miss there is a typed ECOLOGY-DRIFT stop rather than a
+      gate verdict.
+
+      RECORD (never gating, R6) — the M-PF development ordinals {0..3}, the OSE
+      development band {e111, e159, e198} and the fired-while-behind root
+      (READ-AND-RECORD ONLY): each digest-anchored to its step-2/3 record, and
+      its COMPLETE root table under the table under read printed. Escrow ordinals
+      {8..15} and the reserved OSE eight are REFUSED by the burn guard. None of
+      these is an input to the verdict.
+
+        --table <spec>  the same grammar `step9 structural` takes
+        --decision-seed <u64>
+                        the seed the RECORD tables are read at. These roots
+                        record none — a generated position was decided by nobody
+                        and an imported prefix records no bot seed — so this
+                        surface never invents one: without it the records verify
+                        IDENTITY and print no table. Draw and record it before
+                        the run. The two GATE roots ignore it: they take their
+                        registry entries' own recorded seeds.
+        --record <path> the regenerated bga-import/896199544 document the OSE
+                        band indexes into (identity-checked before any resolve)
+        --no-generated  skip the seeded scans (the M-PF ordinals and the
+                        fired-while-behind root resolve by one)
+      EXIT: 0 = PASS (both gates hold) · 1 = a gate READ and said NO · 2 = a
+      typed refusal — a save miss, a digest disagreement, or a parity failure —
+      which invalidates the read and says nothing about the table.
 
 contestants (the grammar is Contestant::from_str_name's — unknown is an error at
 every level, and an unknown knob is never silently ignored):
@@ -8480,15 +8540,34 @@ fn parse_step9_table(spec: &str) -> Result<(String, FitTable), String> {
     ))
 }
 
+/// **THE ONE `step9 structural` VERDICT**, read by the report line AND by the
+/// exit code.
+///
+/// It was spelled twice — once in [`render_step9_structural`]'s `VERDICT` line
+/// and once in [`cmd_step9`]'s exit composition — and two spellings of one
+/// verdict is a report that can print PASS while the process exits 1. The rooted
+/// section below has its own single composition for the same reason.
+fn step9_structural_passed(
+    reading: &StructuralReading,
+    non_vacuity: &[SubgroupEndpointRead],
+) -> bool {
+    reading.sat() && non_vacuity.iter().all(SubgroupEndpointRead::holds)
+}
+
 fn cmd_step9(args: &[String]) -> Result<i32, String> {
-    let section = args.first().map(String::as_str);
-    if section != Some("structural") {
-        return Err(format!(
-            "step9 takes a section: `structural` (R1's 9(a) checker + R2's 9(c) instrument). Got \
-             {section:?}\n\n{USAGE}"
-        ));
+    match args.first().map(String::as_str) {
+        Some("structural") => cmd_step9_structural(&args[1..]),
+        Some("rooted") => cmd_step9_rooted(&args[1..]),
+        section => Err(format!(
+            "step9 takes a section: `structural` (R1's 9(a) checker + R2's 9(c) instrument) or \
+             `rooted` (R5's e113 gate, the same-path V2-parity pin, the e93 winner gate, and the \
+             digest-anchored record reads). Got {section:?}\n\n{USAGE}"
+        )),
     }
-    let (positional, flags, _) = split_args(&args[1..], &["table"], &[], &[])?;
+}
+
+fn cmd_step9_structural(args: &[String]) -> Result<i32, String> {
+    let (positional, flags, _) = split_args(args, &["table"], &[], &[])?;
     if !positional.is_empty() {
         return Err(format!("step9 structural takes no positional arguments\n\n{USAGE}"));
     }
@@ -8500,7 +8579,7 @@ fn cmd_step9(args: &[String]) -> Result<i32, String> {
     let rows = gate_rows(&rules)?;
     let (reading, non_vacuity) = step9_read(&name, &rows, &table)?;
     print!("{}", render_step9_structural(&reading, &non_vacuity));
-    if reading.sat() && non_vacuity.iter().all(SubgroupEndpointRead::holds) {
+    if step9_structural_passed(&reading, &non_vacuity) {
         Ok(0)
     } else {
         Ok(EXIT_GATE_FAILED)
@@ -8535,6 +8614,1301 @@ fn step9_read(
     let reading = structural_reading(name, rows, table);
     let non_vacuity = per_endpoint_non_vacuity(rows, &reading.survivors, table);
     Ok((reading, non_vacuity))
+}
+
+// ---------------------------------------------------------------------------
+// STEP 9 — the ROOTED surface: R5's e113 gate, the same-path V2-parity pin,
+// the e93 winner gate, and the digest-anchored record reads
+// ---------------------------------------------------------------------------
+
+/// The step-9(b) winner gate's root — the registry's POSITIVE CONTROL.
+///
+/// Its note in `driven::registry()` says what it is for: "a +116 unique argmax
+/// — the POSITIVE CONTROL: the instrument must read a decision the evaluator
+/// genuinely separated as separated".
+const E93_ROOT: &str = "g3-e93-separated";
+
+/// **THE FOUR M-PF DEVELOPMENT ROOT IDENTITIES**, transcribed from the execution
+/// ledger's step-2/3 rows and re-verified at step 8 under the pinned ecology
+/// `driven-generated-v2.3-lookahead`: ord 0 (g0 e0 seat 0 t1) · ord 1 (g0 e8
+/// seat 1 t2) · ord 2 (g1 e0 seat 0 t1) · ord 3 (g1 e1 seat 0 t1).
+///
+/// R6 makes these roots RECORDS rather than gates, and "digest-anchored to the
+/// step-2/3 records" is what makes a record about the position it names. The
+/// anchor lives at module scope rather than in the test module (where the same
+/// four were first transcribed) so that the SHIPPED read and the parity cell
+/// check one list; two transcriptions of four digests is two places for one to
+/// rot.
+const M_PF_DEVELOPMENT_DIGESTS: [&str; 4] =
+    ["fb24434e6047dee3", "541d953997a7ea6f", "fcebfdb920991e14", "1ee8dc4001cb16ca"];
+
+/// **CLEAN-BUILD DISCIPLINE**, printed in the header and restated in the usage.
+///
+/// Step 8 proved the hazard twice: a stale `target/` served an identity read a
+/// table the source no longer carried, and the read looked healthy. Every figure
+/// below is identity-critical — a root digest, a weight-table identity, a value
+/// — so the entry says out loud what a caller must have done before quoting it.
+const ROOTED_CLEAN_BUILD: &str = "\
+before quoting      `cargo clean -p yokohama-core` FIRST, then build and run. Every
+                    figure here is identity-critical (root digests, the table
+                    identity, the values a gate reads), and a stale target served
+                    an identity read TWICE during step 8 without looking wrong.
+                    The header echoes SEMANTICS_REV, the eval implementation
+                    version and the table identity so a stale read is recognizable
+                    from the artifact alone";
+
+/// The reading this section implements, printed at the top of every artifact.
+const ROOTED_STEP9_HEADER: &str = "\
+R5 (charter)        \"The e113 step-9(b) gate re-resolves `g1-e113-tiemass`,
+                    digest-verifies the root and both registered successors,
+                    builds the shipped controller configuration over the draft
+                    table at the root's recorded decision seed, takes the agent's
+                    OWN root table (`LookaheadAgent::last_roots` — never a second
+                    evaluation), and requires the value of PlaceThreeAreas{[0,9]}
+                    strictly greater than PlaceThreeAreas{[1,2]} — a pairwise
+                    claim, not a global-winner claim\"
+no endpoint-forcing every searched leaf scores at its OWN organic progress_ppm
+                    through production `interpolate`. Nothing here forces a stage,
+                    substitutes an endpoint vector for the interpolation, or
+                    reweights a leaf: the table under read is handed to the
+                    SHIPPED search constructor and the search prices what it
+                    reaches
+R6 (charter)        the GATES are the e93 winner gate and the R5 e113 gate (the V2
+                    scenario orderings are a separate surface). The M-PF ordinals
+                    {0..3}, the OSE development band {e111, e159, e198} and the
+                    fired-while-behind root are RECORDS: digest-anchored, printed
+                    entire, NEVER gating. Escrow ordinals {8..15} and the reserved
+                    OSE eight stay untouched (the burn rule)
+the same path       the gate builds through the EXPLICIT-WEIGHTS agent surface,
+                    never through `Contestant::NamedTable` — T3's AlternateTable
+                    refusal in the driven runner stands untouched. That the two
+                    are one path is PROVEN, not assumed: at V2 weights this
+                    surface's root table must equal `driven::root_table`'s at both
+                    registry roots, values and ranking and winner";
+
+/// **WHY A MISS IS TYPED, AND WHAT EACH TYPE MEANS.**
+///
+/// R4's distinction, carried onto this surface: a typed instrument failure
+/// INVALIDATES the read and does not count against the table. A gitignored owner
+/// save that is not on this machine is the *expected* miss and reads differently
+/// from a digest that disagrees — the first says the instrument could not look,
+/// the second says it looked at the wrong position — but neither is a verdict,
+/// and both leave through the same non-verdict exit.
+enum RootedMiss {
+    /// The gitignored owner-game save is not there. `RegistryEntry::load`'s own
+    /// convention: "this is a MISS, not a failure".
+    Save(String),
+    /// Anything else — a digest that disagrees, an unreadable root, a root table
+    /// missing a registered move. Instrument-invalid.
+    Instrument(String),
+}
+
+impl RootedMiss {
+    /// Prefix the message with WHERE it happened, keeping the TYPE.
+    ///
+    /// A `map_err(|e| Instrument(e.message()))` would read the same and lose
+    /// the distinction — which is the one thing R4 makes binding about a miss.
+    fn at(self, label: &str) -> Self {
+        match self {
+            RootedMiss::Save(m) => RootedMiss::Save(format!("{label}: {m}")),
+            RootedMiss::Instrument(m) => RootedMiss::Instrument(format!("{label}: {m}")),
+        }
+    }
+
+    /// The refusal a caller sees, with its type named.
+    fn refusal(&self) -> String {
+        match self {
+            RootedMiss::Save(m) => format!(
+                "TYPED MISS (owner save absent): {m}\n\nThe registry roots are events of \
+                 gitignored `docs/temp/owner-games/` saves. This is a MISS and not a failure — \
+                 nothing was read, so nothing here says anything about the table.",
+            ),
+            RootedMiss::Instrument(m) => format!(
+                "TYPED INSTRUMENT FAILURE: {m}\n\nUnder R4 this INVALIDATES the read: it is not a \
+                 gate verdict, it does not count against the table or the draft cap, and no \
+                 verdict is composed past it.",
+            ),
+        }
+    }
+}
+
+/// A resolved registry root and everything its entry records about the decision
+/// taken there.
+struct RegistryRoot {
+    state: GameState,
+    digest: String,
+    seat: PlayerId,
+    /// The entry's OWN recorded decision seed — what R5 means by "the root's
+    /// recorded decision seed", and the reason the two gate roots need no seed
+    /// from the caller.
+    decision_seed: u64,
+    recorded_move: Option<Move>,
+}
+
+/// A registry lookup + load, with the save miss typed apart from everything else.
+fn load_registry_root(name: &str, rules: &Rules) -> Result<RegistryRoot, RootedMiss> {
+    let entry = registry()
+        .into_iter()
+        .find(|e| e.name == name)
+        .ok_or_else(|| RootedMiss::Instrument(format!("{name} is not a registry root")))?;
+    let source = entry.load(rules).map_err(|e| match e {
+        RegistryError::Missing { name, path } => {
+            RootedMiss::Save(format!("{name}: no save at {}", path.display()))
+        }
+        other => RootedMiss::Instrument(format!("{name}: {other}")),
+    })?;
+    let (state, descriptor) =
+        source.resolve(rules).map_err(|e| RootedMiss::Instrument(format!("{name}: {e:?}")))?;
+    Ok(RegistryRoot {
+        state,
+        digest: descriptor.root_digest,
+        seat: entry.bot_seat,
+        decision_seed: entry.decision_seed,
+        recorded_move: entry.recorded_move.clone(),
+    })
+}
+
+/// The SHIPPED controller configuration's knobs, read off the grammar rather
+/// than typed here.
+///
+/// "The shipped controller configuration" is `Contestant::build`'s `lookahead-v1`
+/// arm, and [`DEFAULT_SEAT`] is the string the runner's own default resolves
+/// through — so the four numbers below are whatever `from_str_name` fills in,
+/// and a future change to the shipped rung moves this surface with it instead of
+/// leaving a transcribed b=4 behind.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct ShippedKnobs {
+    b: u16,
+    k: u8,
+    m: u8,
+    cap: Option<u32>,
+}
+
+fn shipped_controller_knobs() -> Result<ShippedKnobs, String> {
+    match Contestant::from_str_name(DEFAULT_SEAT)
+        .map_err(|e| format!("the shipped seat {DEFAULT_SEAT:?} does not parse: {e}"))?
+    {
+        Contestant::LookaheadV1 { b, k, m, cap } => Ok(ShippedKnobs { b, k, m, cap }),
+        other => Err(format!(
+            "the shipped seat {DEFAULT_SEAT:?} resolves to {} — this surface reads the agent's own \
+             ranked root table, which only the search arm has",
+            other.echo(),
+        )),
+    }
+}
+
+/// **THE IDENTITY LINE FOR A RUN OF THE SHIPPED CONFIGURATION OVER `weights`.**
+///
+/// Composed here rather than taken from `Contestant::echo()` for one reason:
+/// that method's `LookaheadV1` arm resolves its `weights` key from the hardwired
+/// [`WeightTable::V2`], so echoing a DRAFT-table decision through it would print
+/// the shipped identity over a decision the shipped table never took. The
+/// composition is held faithful by
+/// `the_rooted_echo_reproduces_the_canonical_one_at_v2_and_names_the_draft_table_otherwise`,
+/// which requires the canonical string back byte-for-byte at V2 — `compose_echo`
+/// is crate-private, so a pin is the only way the two spellings stay one.
+fn rooted_echo(knobs: &ShippedKnobs, weights: &WeightTable) -> String {
+    // The canonical form's key order is a `BTreeMap`'s, i.e. lexicographic.
+    let mut params: BTreeMap<&str, i64> = BTreeMap::new();
+    params.insert("b", i64::from(knobs.b));
+    if let Some(cap) = knobs.cap {
+        params.insert("cap", i64::from(cap));
+    }
+    params.insert("eval_impl", i64::from(yokohama_core::game::eval::EVAL_IMPL_VERSION));
+    params.insert("k", i64::from(knobs.k));
+    params.insert("m", i64::from(knobs.m));
+    params.insert("weights", weight_table_identity(weights));
+    let knob_text: Vec<String> = params.iter().map(|(k, v)| format!("{k}={v}")).collect();
+    format!("{LOOKAHEAD_CONTROLLER}@v{LOOKAHEAD_IMPL_VERSION}{{{}}}", knob_text.join(","))
+}
+
+/// ONE decision's root table, taken through the agent's OWN surface over an
+/// EXPLICIT weight table.
+///
+/// **The construction MIRRORS `driven::mirror_build`'s search arm, which itself
+/// mirrors `Contestant::build`'s** — same constructor, same knob ORDER (worlds
+/// then retreat samples: two adjacent `u8`s, so a transposition compiles clean),
+/// same `with_cap` builder — differing in the ONE thing this surface exists to
+/// vary: the table goes in through the constructor's `weights` parameter, which
+/// is exactly the parameter `Contestant::build_search` forwards. Nothing here
+/// goes near `Contestant::NamedTable`, whose `AlternateTable` refusal in the
+/// driven runner is untouched.
+///
+/// **Every number comes off the agent's own surface** — `last_roots`,
+/// `last_stats`, `last_sampler_seed` — never from a second evaluation. A
+/// re-derivation could rank a different move first and there would be no fact of
+/// the matter about which answer the controller gave (`suggest`'s rule, spec
+/// §0.3), which is precisely what R5 names.
+struct RootedRead {
+    echo: String,
+    sampler_seed: u64,
+    worlds: u8,
+    winner: Move,
+    /// Every root candidate with its folded value, BEST FIRST, sorted by the
+    /// STABLE rule `driven::root_table` uses so tied candidates keep the
+    /// candidate scheme's own order.
+    ranked: Vec<RootScore>,
+    stats: SearchStats,
+}
+
+impl RootedRead {
+    /// One named move's value, by canonical encoding.
+    fn value_of(&self, encoding: &str) -> Option<i64> {
+        self.ranked.iter().find(|r| canonical_encoding(&r.mv) == encoding).map(|r| r.value)
+    }
+
+    /// The STRICT argmax — `None` where the top is tied, which is not the same
+    /// thing as a winner and must never read as one.
+    fn strict_argmax(&self) -> Option<&Move> {
+        let top = self.ranked.iter().map(|r| r.value).max()?;
+        let mut at_top = self.ranked.iter().filter(|r| r.value == top);
+        let first = at_top.next()?;
+        at_top.next().is_none().then_some(&first.mv)
+    }
+
+    fn top_value(&self) -> Option<i64> {
+        self.ranked.iter().map(|r| r.value).max()
+    }
+}
+
+fn rooted_table(
+    root: &GameState,
+    seat: PlayerId,
+    weights: &WeightTable,
+    rules: &Rules,
+    decision_seed: u64,
+) -> Result<RootedRead, RootedMiss> {
+    let knobs = shipped_controller_knobs().map_err(RootedMiss::Instrument)?;
+    // `driven::root_table`'s posture, in its order: a table computed on a corrupt
+    // state is a wrong answer wearing the shape of a right one.
+    check_invariants(root, rules)
+        .map_err(|e| RootedMiss::Instrument(format!("the root is corrupt: {e:?}")))?;
+    if root.current_player != seat {
+        return Err(RootedMiss::Instrument(format!(
+            "seat p{} is not on the move at this root (p{} is)",
+            seat.0, root.current_player.0,
+        )));
+    }
+    let view = observe(root, seat)
+        .map_err(|e| RootedMiss::Instrument(format!("seat p{} cannot observe: {e}", seat.0)))?;
+    let mut agent =
+        lookahead_probe_agent(rules, knobs.b, knobs.k, knobs.m, knobs.cap, *weights, decision_seed);
+    let report = agent
+        .choose(&view, rules)
+        .map_err(|e| RootedMiss::Instrument(format!("the agent declined the decision: {e}")))?;
+    let mut ranked = agent.last_roots().to_vec();
+    if ranked.is_empty() {
+        return Err(RootedMiss::Instrument(
+            "the agent accounted for no root candidates".to_string(),
+        ));
+    }
+    ranked.sort_by_key(|r| std::cmp::Reverse(r.value));
+    let stats = *agent
+        .last_stats()
+        .ok_or_else(|| RootedMiss::Instrument("the agent kept no search counters".to_string()))?;
+    let sampler_seed = agent
+        .last_sampler_seed()
+        .ok_or_else(|| RootedMiss::Instrument("the agent kept no sampler seed".to_string()))?;
+    Ok(RootedRead {
+        echo: rooted_echo(&knobs, weights),
+        sampler_seed,
+        worlds: agent.worlds(),
+        winner: report.mv,
+        ranked,
+        stats,
+    })
+}
+
+// --- the R5 e113 gate -------------------------------------------------------
+
+/// R5's gate, as the artifact prints it.
+struct E113Step9Gate {
+    root_digest: String,
+    seat: PlayerId,
+    decision_seed: u64,
+    echo: String,
+    sampler_seed: u64,
+    worlds: u8,
+    enabling: String,
+    dead: String,
+    enabling_digest: String,
+    dead_digest: String,
+    enabling_value: i64,
+    dead_value: i64,
+    ranked: Vec<RootScore>,
+    stats: SearchStats,
+    /// The table's own top and how many share it — the pairwise claim is not a
+    /// global-winner claim, and printing the top beside it is what keeps a
+    /// reader from mistaking one for the other.
+    top_value: i64,
+    tied_at_top: usize,
+}
+
+impl E113Step9Gate {
+    /// `value(enabling) − value(dead)`. The gate reads its SIGN.
+    fn delta(&self) -> i64 {
+        self.enabling_value - self.dead_value
+    }
+
+    /// **THE GATE**: strictly greater, and nothing weaker.
+    fn passed(&self) -> bool {
+        self.enabling_value > self.dead_value
+    }
+}
+
+/// Resolve one registered side of the pair at a loaded root: find it in the
+/// root's own legal list by its FROZEN canonical encoding, apply it, and
+/// digest-verify the successor against the frozen constant.
+fn e113_registered_side(
+    root: &GameState,
+    label: &str,
+    encoding: &'static str,
+    digest: &'static str,
+    rules: &Rules,
+) -> Result<String, RootedMiss> {
+    let legal = get_legal_moves(root, rules);
+    let found: Vec<&Move> =
+        legal.iter().filter(|mv| canonical_encoding(mv) == encoding).collect();
+    let mv = match found.as_slice() {
+        [one] => *one,
+        [] => {
+            return Err(RootedMiss::Instrument(format!(
+                "the registered {label} side `{encoding}` is not in the root's legal list ({} \
+                 moves) — the pair R5 names is not a pair at this position",
+                legal.len(),
+            )))
+        }
+        many => {
+            return Err(RootedMiss::Instrument(format!(
+                "{} legal moves share the encoding `{encoding}` — a canonical encoding that does \
+                 not identify one move is not an identity",
+                many.len(),
+            )))
+        }
+    };
+    let next = apply_move(root, mv, rules).map_err(|e| {
+        RootedMiss::Instrument(format!("the {label} side did not apply at {E113_ROOT}: {e}"))
+    })?;
+    let successor = state_digest(&next);
+    if successor != digest {
+        return Err(RootedMiss::Instrument(format!(
+            "the {label} side's successor is state_digest {successor} and R5 names {digest} — the \
+             same move at a different position, so the gate would be about a different question",
+        )));
+    }
+    Ok(successor)
+}
+
+/// **THE R5 GATE**, implemented as its ruling sentence reads it.
+fn e113_step9_gate(weights: &WeightTable, rules: &Rules) -> Result<E113Step9Gate, RootedMiss> {
+    let root = load_registry_root(E113_ROOT, rules)?;
+    if root.digest != E113_ROOT_DIGEST {
+        return Err(RootedMiss::Instrument(format!(
+            "{E113_ROOT} resolves to state_digest {} and the step-4 ledger row recorded \
+             {E113_ROOT_DIGEST} — REFUSING before any value is read",
+            root.digest,
+        )));
+    }
+    let state = root.state;
+    let enabling_digest = e113_registered_side(
+        &state,
+        "enabling",
+        E113_ENABLING_ENCODING,
+        E113_ENABLING_DIGEST,
+        rules,
+    )?;
+    let dead_digest =
+        e113_registered_side(&state, "dead", E113_DEAD_ENCODING, E113_DEAD_DIGEST, rules)?;
+
+    let read = rooted_table(&state, root.seat, weights, rules, root.decision_seed)?;
+    let value_of = |label: &str, encoding: &'static str| -> Result<i64, RootedMiss> {
+        read.value_of(encoding).ok_or_else(|| {
+            RootedMiss::Instrument(format!(
+                "the controller's root table has no entry for the registered {label} side \
+                 `{encoding}` — {} candidates were valued, the first being `{}`. A pairwise claim \
+                 needs both sides on the table it is read from",
+                read.ranked.len(),
+                read.ranked.first().map_or("(none)".to_string(), |r| canonical_encoding(&r.mv)),
+            ))
+        })
+    };
+    let enabling_value = value_of("enabling", E113_ENABLING_ENCODING)?;
+    let dead_value = value_of("dead", E113_DEAD_ENCODING)?;
+    let top_value = read.top_value().ok_or_else(|| {
+        RootedMiss::Instrument("the controller's root table is empty".to_string())
+    })?;
+
+    Ok(E113Step9Gate {
+        root_digest: root.digest,
+        seat: root.seat,
+        decision_seed: root.decision_seed,
+        echo: read.echo.clone(),
+        sampler_seed: read.sampler_seed,
+        worlds: read.worlds,
+        enabling: E113_ENABLING_ENCODING.to_string(),
+        dead: E113_DEAD_ENCODING.to_string(),
+        enabling_digest,
+        dead_digest,
+        enabling_value,
+        dead_value,
+        tied_at_top: read.ranked.iter().filter(|r| r.value == top_value).count(),
+        top_value,
+        ranked: read.ranked,
+        stats: read.stats,
+    })
+}
+
+// --- the same-path V2-parity pin --------------------------------------------
+
+/// **"THE SAME PATH" IS PROVEN, NOT ASSUMED.**
+///
+/// R5's parity pin: at V2 weights, this surface's root table must equal
+/// `driven::root_table`'s at a registry root. The two constructions mirror each
+/// other by authorship, and this is what stops that from being a claim about
+/// comments — a knob transposed here, a table reached through a different arm,
+/// or a divergence in how the ranked vector is ordered all show up as a
+/// MISMATCH.
+struct ParityPin {
+    root: &'static str,
+    root_digest: String,
+    decision_seed: u64,
+    driven_echo: String,
+    rooted_echo: String,
+    driven_winner: String,
+    rooted_winner: String,
+    driven_ranked: Vec<RootScore>,
+    rooted_ranked: Vec<RootScore>,
+    driven_sampler_seed: u64,
+    rooted_sampler_seed: u64,
+}
+
+impl ParityPin {
+    fn matched(&self) -> bool {
+        self.disagreement().is_none()
+    }
+
+    /// The FIRST thing the two paths disagree about, named — or `None`.
+    fn disagreement(&self) -> Option<String> {
+        if self.driven_sampler_seed != self.rooted_sampler_seed {
+            return Some(format!(
+                "the two paths sampled different worlds ({:#018x} vs {:#018x})",
+                self.driven_sampler_seed, self.rooted_sampler_seed,
+            ));
+        }
+        if self.driven_ranked.len() != self.rooted_ranked.len() {
+            return Some(format!(
+                "candidate counts differ ({} vs {})",
+                self.driven_ranked.len(),
+                self.rooted_ranked.len(),
+            ));
+        }
+        for (i, (a, b)) in self.driven_ranked.iter().zip(&self.rooted_ranked).enumerate() {
+            if a.value != b.value || a.mv != b.mv {
+                return Some(format!(
+                    "rank {i} differs: driven `{}` = {} vs rooted `{}` = {}",
+                    canonical_encoding(&a.mv),
+                    a.value,
+                    canonical_encoding(&b.mv),
+                    b.value,
+                ));
+            }
+        }
+        if self.driven_winner != self.rooted_winner {
+            return Some(format!(
+                "the picked move differs (`{}` vs `{}`)",
+                self.driven_winner, self.rooted_winner,
+            ));
+        }
+        (self.driven_echo != self.rooted_echo).then(|| {
+            format!("the echoes differ (`{}` vs `{}`)", self.driven_echo, self.rooted_echo)
+        })
+    }
+
+    /// One line per root, MATCH or the disagreement.
+    fn report(&self) -> String {
+        match self.disagreement() {
+            None => format!(
+                "     {:<18} MATCH   {} candidate(s), identical values, ranking, winner and echo \
+                 (world {:#018x})",
+                self.root,
+                self.rooted_ranked.len(),
+                self.rooted_sampler_seed,
+            ),
+            Some(detail) => format!("     {:<18} *** MISMATCH *** {detail}", self.root),
+        }
+    }
+}
+
+fn v2_parity_pin(root: &'static str, rules: &Rules) -> Result<ParityPin, RootedMiss> {
+    let entry = load_registry_root(root, rules)?;
+    let contestant = Contestant::from_str_name(DEFAULT_SEAT).map_err(|e| {
+        RootedMiss::Instrument(format!("the driven default contestant does not parse: {e}"))
+    })?;
+    let driven = root_table(&entry.state, entry.seat, contestant, rules, entry.decision_seed)
+        .map_err(|e| RootedMiss::Instrument(format!("{root}: no driven root table: {e:?}")))?;
+    let rooted =
+        rooted_table(&entry.state, entry.seat, &WeightTable::V2, rules, entry.decision_seed)?;
+    Ok(ParityPin {
+        root,
+        root_digest: entry.digest,
+        decision_seed: entry.decision_seed,
+        driven_echo: driven.echo.clone(),
+        rooted_echo: rooted.echo.clone(),
+        driven_winner: canonical_encoding(&driven.winner),
+        rooted_winner: canonical_encoding(&rooted.winner),
+        driven_ranked: driven.ranked.clone(),
+        rooted_ranked: rooted.ranked.clone(),
+        driven_sampler_seed: driven.world.sampler_seed,
+        rooted_sampler_seed: rooted.sampler_seed,
+    })
+}
+
+// --- the e93 winner gate ----------------------------------------------------
+
+/// **GATE: `g3-e93-separated`'s WINNER PRESERVED**, computed live.
+///
+/// Both tables are taken at the same root and the same recorded decision seed —
+/// V2's and the table under read's — and the gate compares their STRICT
+/// argmaxes. Strictness on both sides is deliberate: a tie at the top is not a
+/// winner, and a candidate table that dissolved a +116 separation into a tie has
+/// not preserved anything, however the tie-break happens to land.
+struct E93WinnerGate {
+    root_digest: String,
+    seat: PlayerId,
+    decision_seed: u64,
+    recorded_move: String,
+    v2: RootedRead,
+    draft: RootedRead,
+}
+
+impl E93WinnerGate {
+    fn v2_argmax(&self) -> Option<&Move> {
+        self.v2.strict_argmax()
+    }
+
+    fn draft_argmax(&self) -> Option<&Move> {
+        self.draft.strict_argmax()
+    }
+
+    /// Both sides strict AND equal.
+    fn passed(&self) -> bool {
+        match (self.v2_argmax(), self.draft_argmax()) {
+            (Some(a), Some(b)) => a == b,
+            _ => false,
+        }
+    }
+
+    /// Why the gate said no, in the terms a reader can act on.
+    fn verdict(&self) -> String {
+        match (self.v2_argmax(), self.draft_argmax()) {
+            (Some(a), Some(b)) if a == b => {
+                format!("PASS — the winner is preserved: `{}`", canonical_encoding(a))
+            }
+            (Some(a), Some(b)) => format!(
+                "*** FAIL *** the winner MOVED: V2 picks `{}`, the table under read picks `{}`",
+                canonical_encoding(a),
+                canonical_encoding(b),
+            ),
+            (Some(_), None) => format!(
+                "*** FAIL *** the table under read has NO strict argmax here — {} candidates share \
+                 its top value {}. A dissolved separation is not a preserved winner",
+                self.draft.ranked.iter().filter(|r| Some(r.value) == self.draft.top_value()).count(),
+                self.draft.top_value().unwrap_or_default(),
+            ),
+            (None, _) => "*** FAIL *** V2 has no strict argmax here".to_string(),
+        }
+    }
+}
+
+fn e93_winner_gate(weights: &WeightTable, rules: &Rules) -> Result<E93WinnerGate, RootedMiss> {
+    let root = load_registry_root(E93_ROOT, rules)?;
+    let recorded = root.recorded_move.clone().ok_or_else(|| {
+        RootedMiss::Instrument(format!("{E93_ROOT} records no move to cross-pin against"))
+    })?;
+    let v2 = rooted_table(&root.state, root.seat, &WeightTable::V2, rules, root.decision_seed)?;
+    // **THE CROSS-PIN, TYPED AS AN INSTRUMENT STOP AND NOT AS A VERDICT.** The
+    // gate's whole premise is that this root is the registry's POSITIVE CONTROL
+    // — a strict V2 argmax that IS the move the human record carries. If that
+    // stopped holding, every verdict about a draft table here would be about a
+    // position nobody registered, so the run stops rather than reporting one.
+    let recorded_encoding = canonical_encoding(&recorded);
+    match v2.strict_argmax() {
+        Some(argmax) if canonical_encoding(argmax) == recorded_encoding => {}
+        Some(argmax) => {
+            return Err(RootedMiss::Instrument(format!(
+                "{E93_ROOT}: the V2 strict argmax is `{}` and the registry records `{}` at event \
+                 93 — an ECOLOGY DRIFT stop, not a gate verdict. The winner gate reads this root \
+                 as the POSITIVE CONTROL (\"a +116 unique argmax\"); a control that no longer \
+                 reproduces its own recorded decision cannot adjudicate a draft table",
+                canonical_encoding(argmax),
+                recorded_encoding,
+            )))
+        }
+        None => {
+            return Err(RootedMiss::Instrument(format!(
+                "{E93_ROOT}: V2 has NO strict argmax here — {} candidates share the top value {}. \
+                 The registry registers this root as a +116 unique argmax, so a tie is an ECOLOGY \
+                 DRIFT stop, not a gate verdict",
+                v2.ranked.iter().filter(|r| Some(r.value) == v2.top_value()).count(),
+                v2.top_value().unwrap_or_default(),
+            )))
+        }
+    }
+    let draft = rooted_table(&root.state, root.seat, weights, rules, root.decision_seed)?;
+    Ok(E93WinnerGate {
+        root_digest: root.digest,
+        seat: root.seat,
+        decision_seed: root.decision_seed,
+        recorded_move: recorded_encoding,
+        v2,
+        draft,
+    })
+}
+
+// --- the record reads (never gating) ----------------------------------------
+
+/// WHICH root a record read is about — and the ONLY constructor a read reaches
+/// them through.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum RecordRoot {
+    /// A `placement-fork-same-count` ordinal at the recorded M-PF master.
+    PlacementFork(u32),
+    /// An event of the recorded game-3 import document.
+    Ose(usize),
+    /// The `end-firable-behind-in-truth` root — READ-AND-RECORD ONLY.
+    FiredWhileBehind,
+}
+
+/// **THE BURN GUARD ON THIS SURFACE.**
+///
+/// R6: "Escrow ordinals {8..15} and the reserved OSE eight remain untouched (the
+/// burn rule, spec:837-841)." The reads below walk baked bands, so no caller
+/// input reaches an escrow position — but a guard that only exists as a property
+/// of the loop is a guard a future loop can lose. This is the function every
+/// read goes through, and it REFUSES rather than filters, so a fenced ordinal
+/// reaching it is a typed message naming the rule and its expiry.
+///
+/// The OSE arm delegates to [`ose_role`] rather than re-listing the reserved
+/// eight: the split is the charter's EVERY-THIRD rule over the recorded thirteen,
+/// and a second transcription here could disagree with the one the step-5 surface
+/// reads.
+fn admit_record_root(root: RecordRoot) -> Result<RecordRoot, String> {
+    match root {
+        RecordRoot::PlacementFork(ordinal) if V4_ESCROW_ORDINALS.contains(&ordinal) => Err(format!(
+            "REFUSED: placement-fork ordinal {ordinal} is in the ESCROW band \
+             {{{}..{}}}, and the §6 burn rule fences it — no table / adjudicate / read of any kind \
+             before step 10 (charter R6: \"escrow ordinals {{8..15}} … remain untouched\"). \
+             Identity verification is step 10's own business; this surface reads nothing here.",
+            V4_ESCROW_ORDINALS.start,
+            V4_ESCROW_ORDINALS.end - 1,
+        )),
+        RecordRoot::PlacementFork(ordinal) if !M_PF_DEVELOPMENT.contains(&ordinal) => Err(format!(
+            "REFUSED: placement-fork ordinal {ordinal} is not one of the four DRAWN development \
+             ordinals {{{}..{}}} — the extension band was never drawn, so there is no recorded \
+             step-2/3 identity to anchor a read to. It is NOT escrow, and this message says so \
+             rather than borrowing the burn rule's.",
+            M_PF_DEVELOPMENT.start,
+            M_PF_DEVELOPMENT.end - 1,
+        )),
+        RecordRoot::Ose(event) => match ose_role(event)? {
+            OseRole::Development if OSE_BAND.contains(&event) => Ok(root),
+            OseRole::Development => Err(format!(
+                "REFUSED: event {event} is a CHARTER development exhibit that the 2026-08-23 \
+                 ruling RE-REGISTERED OUT of the band ({OSE_REREGISTERED_OUT:?}) — the imported \
+                 document records its mover's deal as Unknown, so no honest mover view exists \
+                 there. The band this surface records is {OSE_BAND:?}.",
+            )),
+            OseRole::Reserved => Err(format!(
+                "REFUSED: event {event} of {OSE_RUN_ID} is one of the EIGHT ESCROW-RESERVED \
+                 exhibits (guidingpath 2026-08-23), and that row extends §6's burn rule to them \
+                 VERBATIM: no table / adjudicate / read of any kind before step 10.",
+            )),
+        },
+        // EXHAUSTIVE, with no `_` arm — `bot::eligible`'s discipline. A new
+        // record root lands here as a compile error to be ANSWERED, never as a
+        // default that quietly admits a position the burn rule may fence.
+        RecordRoot::PlacementFork(_) | RecordRoot::FiredWhileBehind => Ok(root),
+    }
+}
+
+/// What the record block says about the decision seed it was (or was not) given.
+///
+/// **A ROOT TABLE NEEDS A SEED SOMEBODY RECORDED.** The two GATE roots are
+/// registry entries and carry their own; the record roots carry none — a
+/// GENERATED position was never decided by anybody, and an imported `bga-human`
+/// prefix records no bot seed — and `driven_runner` already rules that inventing
+/// one "would answer a different question from the one the root asks". R6 asks
+/// these roots to be "digest-anchored", which needs no seed at all, so the
+/// identity half runs unconditionally and the TABLE half waits for a seed the
+/// caller recorded before the run.
+fn record_seed_note(seed: Option<u64>) -> String {
+    match seed {
+        Some(seed) => format!(
+            "decision seed      {seed:#018x} — supplied by the CALLER and recorded before the run. \
+             A generated root was decided by nobody and an imported prefix records no bot seed, so \
+             this surface never invents one (driven_runner's own rule)",
+        ),
+        None =>
+            "decision seed      NONE GIVEN — the identity half of every record below still runs \
+             (digest verification needs no seed), and the root TABLES are NOT PRINTED. These roots \
+             record no decision seed: a generated position was decided by nobody and an imported \
+             prefix records no bot seed, so inventing one would answer a different question from \
+             the one the root asks. Re-run with --decision-seed <u64>, drawn and recorded before \
+             the run"
+                .to_string(),
+    }
+}
+
+/// One record root, verified and (where a seed was given) read.
+struct RecordRead {
+    label: String,
+    origin: String,
+    digest: String,
+    anchor: &'static str,
+    seat: PlayerId,
+    table: Option<RootedRead>,
+}
+
+/// Resolve, digest-verify, and — at a caller-recorded seed — read one record
+/// root's complete table under the table under read.
+///
+/// A digest disagreement is a typed `Stale`-class INSTRUMENT failure: the read is
+/// invalid, and it is never a gate verdict (R6 makes every root here a RECORD).
+fn read_record_root(
+    label: String,
+    origin: String,
+    source: &RootSource,
+    anchor: &'static str,
+    weights: &WeightTable,
+    seed: Option<u64>,
+    rules: &Rules,
+) -> Result<RecordRead, RootedMiss> {
+    let (state, descriptor) =
+        source.resolve(rules).map_err(|e| RootedMiss::Instrument(format!("{label}: {e:?}")))?;
+    if descriptor.root_digest != anchor {
+        return Err(RootedMiss::Instrument(format!(
+            "{label} resolves to state_digest {} and the step-2/3 record anchored {anchor} — a \
+             STALE-class refusal before any table is read: a record about a different position is \
+             not the record R6 asks for",
+            descriptor.root_digest,
+        )));
+    }
+    let seat = state.current_player;
+    let table = match seed {
+        None => None,
+        Some(seed) => {
+            Some(rooted_table(&state, seat, weights, rules, seed).map_err(|e| e.at(&label))?)
+        }
+    };
+    Ok(RecordRead { label, origin, digest: descriptor.root_digest, anchor, seat, table })
+}
+
+/// The M-PF development ordinals {0..3}, through the burn guard.
+fn m_pf_record_reads(
+    weights: &WeightTable,
+    seed: Option<u64>,
+    rules: &Rules,
+) -> Result<Vec<RecordRead>, RootedMiss> {
+    let mut out = Vec::new();
+    for ordinal in M_PF_DEVELOPMENT {
+        admit_record_root(RecordRoot::PlacementFork(ordinal)).map_err(RootedMiss::Instrument)?;
+        let source = RootSource::Generated {
+            predicate: RootPredicate::PlacementForkSameCount,
+            master: M_PF,
+            ordinal,
+        };
+        out.push(read_record_root(
+            format!("m-pf-dev-{ordinal}"),
+            format!("gen:placement-fork-same-count:{M_PF:#018X}:{ordinal}"),
+            &source,
+            M_PF_DEVELOPMENT_DIGESTS[ordinal as usize],
+            weights,
+            seed,
+            rules,
+        )?);
+    }
+    Ok(out)
+}
+
+/// The re-registered OSE development band {e111, e159, e198}, through the burn
+/// guard, out of the caller's game-3 document.
+fn ose_record_reads(
+    record: &GameRecord,
+    weights: &WeightTable,
+    seed: Option<u64>,
+    rules: &Rules,
+) -> Result<Vec<RecordRead>, RootedMiss> {
+    let mut out = Vec::new();
+    for event in OSE_BAND {
+        admit_record_root(RecordRoot::Ose(event)).map_err(RootedMiss::Instrument)?;
+        let anchor = OSE_EXHIBITS
+            .iter()
+            .find(|(e, _)| *e == event)
+            .map(|(_, digest)| *digest)
+            .ok_or_else(|| {
+                RootedMiss::Instrument(format!("e{event} is not one of the thirteen exhibits"))
+            })?;
+        let source = RootSource::RecordPrefix { record: record.clone(), event_index: event };
+        out.push(read_record_root(
+            format!("ose-e{event}"),
+            format!("{OSE_RUN_ID}:{event}"),
+            &source,
+            anchor,
+            weights,
+            seed,
+            rules,
+        )?);
+    }
+    Ok(out)
+}
+
+/// The fired-while-behind root — **READ-AND-RECORD ONLY** (checkpoint §7 step 2:
+/// "never a gate (timing is out of scope; gating on it would smuggle the timing
+/// layer back in through acceptance)").
+fn fired_while_behind_record_read(
+    weights: &WeightTable,
+    seed: Option<u64>,
+    rules: &Rules,
+) -> Result<RecordRead, RootedMiss> {
+    admit_record_root(RecordRoot::FiredWhileBehind).map_err(RootedMiss::Instrument)?;
+    let source = RootSource::Generated {
+        predicate: RootPredicate::EndFirableBehindInTruth,
+        master: M_FIRED_WHILE_BEHIND,
+        ordinal: FIRED_WHILE_BEHIND_ORDINAL,
+    };
+    read_record_root(
+        "fired-while-behind".to_string(),
+        format!(
+            "gen:end-firable-behind-in-truth:{M_FIRED_WHILE_BEHIND:#018X}:\
+             {FIRED_WHILE_BEHIND_ORDINAL}"
+        ),
+        &source,
+        FIRED_WHILE_BEHIND_DIGEST,
+        weights,
+        seed,
+        rules,
+    )
+}
+
+// --- the whole surface ------------------------------------------------------
+
+/// **THE WHOLE STEP-9 ROOTED READ of one table** — the two gates, the parity
+/// pins that make them the shipped path's, and the digest-anchored records.
+///
+/// One entry point, [`step9_read`]'s discipline: every typed refusal is raised
+/// BEFORE a verdict is composed, so there is no path that reports a gate result
+/// past an instrument failure.
+struct RootedSurface {
+    name: String,
+    table: WeightTable,
+    knobs: ShippedKnobs,
+    echo: String,
+    parity: Vec<ParityPin>,
+    e113: E113Step9Gate,
+    e93: E93WinnerGate,
+    seed: Option<u64>,
+    records: Vec<RecordRead>,
+    /// Record blocks this invocation did not run, named — a run that looked in
+    /// fewer places than R6's record set must not read as one that looked
+    /// everywhere. Records never gate, so this is never a verdict input.
+    skipped: Vec<String>,
+}
+
+impl RootedSurface {
+    /// **THE ONE VERDICT COMPOSITION**, read by the report and by the exit code.
+    ///
+    /// The RECORDS are deliberately absent from it: R6 makes them records, and a
+    /// record that could fail a run would be a gate under another name.
+    fn passed(&self) -> bool {
+        self.e113.passed() && self.e93.passed()
+    }
+}
+
+/// Options a rooted read takes.
+struct RootedOptions {
+    /// The caller-recorded decision seed the RECORD tables are read at.
+    seed: Option<u64>,
+    /// The regenerated game-3 import document the OSE band indexes into.
+    record: Option<String>,
+    /// Whether the seeded scans run (M-PF and fired-while-behind resolve by one).
+    generated: bool,
+}
+
+fn step9_rooted_read(
+    name: &str,
+    table: &WeightTable,
+    opts: &RootedOptions,
+    rules: &Rules,
+) -> Result<RootedSurface, RootedMiss> {
+    let knobs = shipped_controller_knobs().map_err(RootedMiss::Instrument)?;
+
+    // THE PARITY PINS FIRST. A gate whose path is not the shipped one is a gate
+    // about a different question, so "the same path" is established before any
+    // verdict is composed — and a mismatch leaves as a typed instrument failure
+    // carrying the full per-root report, never as a gate verdict.
+    let mut parity = Vec::new();
+    for root in [E113_ROOT, E93_ROOT] {
+        parity.push(v2_parity_pin(root, rules)?);
+    }
+    if let Some(bad) = parity.iter().find(|pin| !pin.matched()) {
+        return Err(RootedMiss::Instrument(format!(
+            "THE SAME-PATH PARITY PIN FAILED at {}: {}\n\nR5 requires this surface's V2-weights \
+             root table to EQUAL `driven::root_table`'s at a registry root, so that \"the same \
+             path\" is proven rather than assumed. It is not equal here, so the gates below would \
+             be readings of a path nobody registered and none is composed.\n\n{}",
+            bad.root,
+            bad.disagreement().unwrap_or_default(),
+            parity.iter().map(ParityPin::report).collect::<Vec<_>>().join("\n"),
+        )));
+    }
+
+    let e113 = e113_step9_gate(table, rules)?;
+    let e93 = e93_winner_gate(table, rules)?;
+
+    let mut records = Vec::new();
+    let mut skipped = Vec::new();
+    if opts.generated {
+        records.extend(m_pf_record_reads(table, opts.seed, rules)?);
+        records.push(fired_while_behind_record_read(table, opts.seed, rules)?);
+    } else {
+        skipped.push(
+            "the M-PF development ordinals {0..3} and the fired-while-behind root — \
+             --no-generated: both resolve by seeded scan"
+                .to_string(),
+        );
+    }
+    match &opts.record {
+        Some(path) => {
+            let document = load_ose_record(path, rules).map_err(RootedMiss::Instrument)?;
+            records.extend(ose_record_reads(&document, table, opts.seed, rules)?);
+        }
+        None => skipped.push(format!(
+            "the OSE development band {{{}}} — no --record <path>: its roots are events of the \
+             regenerated {OSE_RUN_ID} document, which lives in the session scratchpad and is never \
+             committed",
+            OSE_BAND.iter().map(|e| format!("e{e}")).collect::<Vec<_>>().join(", "),
+        )),
+    }
+
+    Ok(RootedSurface {
+        name: name.to_string(),
+        table: *table,
+        echo: rooted_echo(&knobs, table),
+        knobs,
+        parity,
+        e113,
+        e93,
+        seed: opts.seed,
+        records,
+        skipped,
+    })
+}
+
+/// Every root candidate and its value, best first — the FULL ranking R5 requires
+/// printed, never a head.
+fn render_ranking(indent: &str, ranked: &[RootScore]) -> String {
+    use std::fmt::Write;
+    let top = ranked.iter().map(|r| r.value).max().unwrap_or_default();
+    let mut out = String::new();
+    for (i, row) in ranked.iter().enumerate() {
+        let _ = writeln!(
+            out,
+            "{indent}{:>5}. {:>+8} {:>+7}   {}",
+            i + 1,
+            row.value,
+            row.value - top,
+            canonical_encoding(&row.mv),
+        );
+    }
+    out
+}
+
+/// All fifteen counters, off the agent's own surface.
+fn render_stats(indent: &str, stats: &SearchStats) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    for (name, value) in [
+        ("root_candidates", stats.root_candidates),
+        ("nodes", stats.nodes),
+        ("handles", stats.handles),
+        ("route_dfs_nodes", stats.route_dfs_nodes),
+        ("forced_nodes", stats.forced_nodes),
+        ("leaves", stats.leaves),
+        ("scored", stats.scored),
+        ("root_scored", stats.root_scored),
+        ("budget_binds", stats.budget_binds),
+        ("budget_starved", stats.budget_starved),
+        ("placement_cap_binds", stats.placement_cap_binds),
+        ("max_line", u64::from(stats.max_line)),
+        ("ply_cap_hits", stats.ply_cap_hits),
+        ("free_extension_steps", stats.free_extension_steps),
+        ("free_cap_hits", stats.free_cap_hits),
+    ] {
+        let _ = writeln!(out, "{indent}{name:<22} {value}");
+    }
+    out
+}
+
+fn render_step9_rooted(surface: &RootedSurface) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "step9 rooted — R5's e113 gate, the same-path V2-parity pin, the e93 winner gate, and the \
+         digest-anchored record reads\n",
+    );
+    let _ = writeln!(out, "{}", ROOTED_STEP9_HEADER.trim_end());
+    let _ = writeln!(out, "{}", ROOTED_CLEAN_BUILD.trim_end());
+    let _ = writeln!(out);
+    let _ = writeln!(out, "semantics rev       {SEMANTICS_REV}");
+    let _ = writeln!(
+        out,
+        "eval impl version   {}",
+        yokohama_core::game::eval::EVAL_IMPL_VERSION,
+    );
+    let _ = writeln!(out, "profile             {}", profile());
+    let _ = writeln!(out, "table               {}", surface.name);
+    // BOTH spellings of the one number, because both appear in this artifact:
+    // `table` prints the hex form and the controller echo carries the decimal
+    // `weights=` key, and a reader should not have to convert to see they agree.
+    let _ = writeln!(
+        out,
+        "table identity      {:#018x}   (decimal {}, as the controller echo spells it)",
+        weight_table_identity(&surface.table) as u64,
+        weight_table_identity(&surface.table),
+    );
+    let _ = writeln!(out, "EARLY               {}", vector_csv(&surface.table.early));
+    let _ = writeln!(out, "LATE                {}", vector_csv(&surface.table.late));
+    let _ = writeln!(
+        out,
+        "controller          {}   (the shipped configuration: b={} k={} m={} cap={})",
+        surface.echo,
+        surface.knobs.b,
+        surface.knobs.k,
+        surface.knobs.m,
+        surface.knobs.cap.map_or("none".to_string(), |c| c.to_string()),
+    );
+
+    let _ = writeln!(out, "\n  == THE SAME-PATH V2-PARITY PIN (R5) ==");
+    let _ = writeln!(
+        out,
+        "     at V2 weights this surface's root table must EQUAL `driven::root_table`'s, so that\n\
+         \x20    the gates below are readings of the shipped path and not of a path beside it",
+    );
+    for pin in &surface.parity {
+        let _ = writeln!(out, "{}", pin.report());
+        let _ = writeln!(
+            out,
+            "                       root {} · decision seed {:#018x} · echo {}",
+            pin.root_digest, pin.decision_seed, pin.driven_echo,
+        );
+    }
+
+    let gate = &surface.e113;
+    let _ = writeln!(out, "\n  == GATE · R5's e113 pairwise claim ==");
+    let _ = writeln!(
+        out,
+        "     root              {E113_ROOT}  digest {} (ledger {E113_ROOT_DIGEST}) — VERIFIED",
+        gate.root_digest,
+    );
+    let _ = writeln!(out, "     seat              p{}", gate.seat.0);
+    let _ = writeln!(out, "     decision seed     {:#018x} (the entry's own recorded seed)", gate.decision_seed);
+    let _ = writeln!(out, "     controller        {}", gate.echo);
+    let _ = writeln!(out, "     world             sampler_seed={:#018x}  worlds={}", gate.sampler_seed, gate.worlds);
+    let _ = writeln!(
+        out,
+        "     enabling side     {}\n                       successor {} (R5 {E113_ENABLING_DIGEST}) — VERIFIED   value {:+}",
+        gate.enabling, gate.enabling_digest, gate.enabling_value,
+    );
+    let _ = writeln!(
+        out,
+        "     dead side         {}\n                       successor {} (R5 {E113_DEAD_DIGEST}) — VERIFIED   value {:+}",
+        gate.dead, gate.dead_digest, gate.dead_value,
+    );
+    let _ = writeln!(
+        out,
+        "     pair delta        {:+}   (value(enabling) − value(dead); the gate reads its SIGN)",
+        gate.delta(),
+    );
+    let _ = writeln!(
+        out,
+        "     the table's top   {:+} shared by {} candidate(s) — printed because the claim is \
+         PAIRWISE:\n                       neither side needs to be the winner, and neither is",
+        gate.top_value, gate.tied_at_top,
+    );
+    let _ = writeln!(out, "     full ranking ({} candidates, best first; margin is value − top):", gate.ranked.len());
+    let _ = write!(out, "{}", render_ranking("       ", &gate.ranked));
+    let _ = writeln!(out, "     search counters (all fifteen, off the agent's own surface):");
+    let _ = write!(out, "{}", render_stats("       ", &gate.stats));
+    let _ = writeln!(
+        out,
+        "     GATE e113         {}",
+        if gate.passed() {
+            "PASS — the enabling side is valued STRICTLY above the registered dead side".to_string()
+        } else {
+            format!(
+                "*** FAIL *** the enabling side is not valued strictly above the dead side (delta \
+                 {:+}). Registered sentence 6: a miss is a STEP-9 FAILURE",
+                gate.delta(),
+            )
+        },
+    );
+
+    let e93 = &surface.e93;
+    let _ = writeln!(out, "\n  == GATE · g3-e93-separated's winner preserved ==");
+    let _ = writeln!(out, "     root              {E93_ROOT}  digest {}", e93.root_digest);
+    let _ = writeln!(out, "     seat              p{}", e93.seat.0);
+    let _ = writeln!(out, "     decision seed     {:#018x} (the entry's own recorded seed)", e93.decision_seed);
+    let _ = writeln!(
+        out,
+        "     cross-pin         the V2 strict argmax IS the registry's recorded move `{}` — \
+         VERIFIED\n                       (a miss here is a typed ECOLOGY-DRIFT stop, never a gate \
+         verdict)",
+        e93.recorded_move,
+    );
+    for (label, read) in [("V2", &e93.v2), ("under read", &e93.draft)] {
+        let _ = writeln!(
+            out,
+            "     {label:<17} {}\n                       world sampler_seed={:#018x} worlds={} · top {:+} · strict argmax {}",
+            read.echo,
+            read.sampler_seed,
+            read.worlds,
+            read.top_value().unwrap_or_default(),
+            read.strict_argmax()
+                .map_or("NONE (the top is tied)".to_string(), |m| format!("`{}`", canonical_encoding(m))),
+        );
+        let _ = writeln!(out, "     full ranking ({} candidates, best first):", read.ranked.len());
+        let _ = write!(out, "{}", render_ranking("       ", &read.ranked));
+        let _ = writeln!(out, "     search counters (all fifteen):");
+        let _ = write!(out, "{}", render_stats("       ", &read.stats));
+    }
+    let _ = writeln!(out, "     GATE e93          {}", e93.verdict());
+
+    let _ = writeln!(out, "\n  == RECORD (never gating) · R6's development and timing roots ==");
+    let _ = writeln!(
+        out,
+        "     R6                \"The development roots — M-PF ordinals {{0..3}} and the OSE \
+         development band\n                       {{e111, e159, e198}} — and the fired-while-behind \
+         root are RECORDS: complete\n                       draft-identity root tables printed, \
+         digest-anchored to the step-2/3 records,\n                       never gating\". Nothing \
+         below is an input to any verdict.",
+    );
+    let _ = writeln!(out, "     {}", record_seed_note(surface.seed));
+    for entry in &surface.skipped {
+        let _ = writeln!(out, "     SKIPPED           {entry}");
+    }
+    for record in &surface.records {
+        let _ = writeln!(out);
+        let _ = writeln!(out, "     {:<17} {}", record.label, record.origin);
+        let _ = writeln!(
+            out,
+            "                       digest {} (step-2/3 anchor {}) — VERIFIED · seat p{}{}",
+            record.digest,
+            record.anchor,
+            record.seat.0,
+            if record.label == "fired-while-behind" { "  READ-AND-RECORD ONLY" } else { "" },
+        );
+        match &record.table {
+            None => {
+                let _ = writeln!(
+                    out,
+                    "                       root table NOT PRINTED — no --decision-seed (identity \
+                     verified above)",
+                );
+            }
+            Some(read) => {
+                let _ = writeln!(
+                    out,
+                    "                       {} · world sampler_seed={:#018x} worlds={} · winner \
+                     `{}`",
+                    read.echo,
+                    read.sampler_seed,
+                    read.worlds,
+                    canonical_encoding(&read.winner),
+                );
+                let _ = writeln!(
+                    out,
+                    "                       complete root table ({} candidate(s), best first):",
+                    read.ranked.len(),
+                );
+                let _ = write!(out, "{}", render_ranking("       ", &read.ranked));
+                // **RECORDED, because a reader would otherwise have to notice
+                // it.** R6 registers these roots and asks for their root tables;
+                // the four M-PF ordinals are all `AdditionalActionFirst`
+                // positions, where the only legal move is to end the phase. So
+                // the record R6 asks for is a FORCED one — honest, and thin. The
+                // fork the predicate is named for sits one move later, which is
+                // where step 5's own `read_placement_fork` walks. Nothing here
+                // walks there: the record is registered AT the root, and moving
+                // it would be a scope change wearing a record's label.
+                if read.ranked.len() == 1 {
+                    let _ = writeln!(
+                        out,
+                        "                       FORCED — the root offers ONE candidate, so this \
+                         record is a forced move and\n                       carries no ranking. \
+                         RECORDED as observed; the read is registered AT the root",
+                    );
+                }
+                let _ = writeln!(out, "                       search counters (all fifteen):");
+                let _ = write!(out, "{}", render_stats("       ", &read.stats));
+            }
+        }
+    }
+
+    let failed: Vec<&str> = [("e113", surface.e113.passed()), ("e93", surface.e93.passed())]
+        .into_iter()
+        .filter(|(_, ok)| !ok)
+        .map(|(name, _)| name)
+        .collect();
+    let _ = writeln!(
+        out,
+        "\n  VERDICT step9 rooted: {}",
+        if failed.is_empty() {
+            "PASS — both 9(b) gates on this surface hold, on the shipped path (parity PROVEN at \
+             both registry roots)"
+                .to_string()
+        } else {
+            format!(
+                "FAIL — {} gate(s) said NO: {:?}. Registered sentence 6: a miss is a STEP-9 \
+                 FAILURE, and this instrument REPORTS it rather than repairing it",
+                failed.len(),
+                failed,
+            )
+        },
+    );
+    out
+}
+
+fn cmd_step9_rooted(args: &[String]) -> Result<i32, String> {
+    let (positional, flags, _) =
+        split_args(args, &["table", "decision-seed", "record"], &["no-generated"], &[])?;
+    if !positional.is_empty() {
+        return Err(format!("step9 rooted takes no positional arguments\n\n{USAGE}"));
+    }
+    let Some(spec) = flags.get("table") else {
+        return Err(format!("step9 rooted needs --table <spec>\n\n{USAGE}"));
+    };
+    let (name, fit) = parse_step9_table(spec)?;
+    // The read is on PRODUCTION bytes: the axis and the widened weight vectors
+    // are the SAME thirty-four rows in the same order (`FeatureId::all()` ==
+    // `Feature::ALL`, pinned in `pair_fixtures`), so this is a re-labelling and
+    // not a translation.
+    let table = WeightTable { early: fit.early, late: fit.late };
+    let opts = RootedOptions {
+        seed: flags.get("decision-seed").map(|raw| parse_u64(raw)).transpose()?,
+        record: flags.get("record").cloned(),
+        generated: !flags.contains_key("no-generated"),
+    };
+    let rules = Rules::standard();
+    let started = Instant::now();
+    let surface = step9_rooted_read(&name, &table, &opts, &rules).map_err(|e| e.refusal())?;
+    print!("{}", render_step9_rooted(&surface));
+    println!("\nwall                {:.1}s", started.elapsed().as_secs_f64());
+    if surface.passed() {
+        Ok(0)
+    } else {
+        Ok(EXIT_GATE_FAILED)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -16090,9 +17464,9 @@ mod tests {
     }
 
     /// The four §6 `placement-fork-same-count` development root identities the
-    /// execution ledger's step-2/3 rows recorded at [`M_PF`], in ordinal order:
-    /// ord 0 (g0 e0 seat 0 t1) · ord 1 (g0 e8 seat 1 t2) · ord 2 (g1 e0 seat 0
-    /// t1) · ord 3 (g1 e1 seat 0 t1).
+    /// execution ledger's step-2/3 rows recorded at [`M_PF`] — **the module's
+    /// own [`M_PF_DEVELOPMENT_DIGESTS`]**, which V4 step 9's rooted record reads
+    /// anchor to as well. One transcription of four digests, not two.
     ///
     /// **This is a FIXTURE ANCHOR and NOT the §10 escrow-identity gate.** That
     /// gate belongs to the step-8 close: it re-resolves BOTH predicates —
@@ -16102,8 +17476,7 @@ mod tests {
     /// pass about nothing unless the states are the ones the band was measured
     /// on, and after the T1 ecology re-pin from `v2.2` to `v2.3` that is a
     /// question with a real answer rather than a formality.
-    const M_PF_DEVELOPMENT_IDENTITIES: [&str; 4] =
-        ["fb24434e6047dee3", "541d953997a7ea6f", "fcebfdb920991e14", "1ee8dc4001cb16ca"];
+    const M_PF_DEVELOPMENT_IDENTITIES: [&str; 4] = M_PF_DEVELOPMENT_DIGESTS;
 
     /// One root's battery: the root state and every NON-TERMINAL successor,
     /// each signed from the ROOT MOVER's seat, both real seats compared.
@@ -23382,6 +24755,84 @@ mod tests {
             Ok(EXIT_GATE_FAILED),
             "a gate that read and said NO exits 1, never 0 and never 2",
         );
+    }
+
+    /// A `RootedRead` over a hand-built ranking, so the argmax and verdict rules
+    /// are checkable without playing a decision.
+    fn rooted_read_over(ranked: &[(Move, i64)]) -> RootedRead {
+        RootedRead {
+            echo: "fixture".to_string(),
+            sampler_seed: 0,
+            worlds: 1,
+            winner: ranked[0].0.clone(),
+            ranked: ranked
+                .iter()
+                .map(|(mv, value)| RootScore { mv: mv.clone(), value: *value })
+                .collect(),
+            stats: SearchStats::default(),
+        }
+    }
+
+    fn place(area: u8) -> Move {
+        Move::PlaceTwoSameArea { area: AreaId(area), adjacent_bonus: None }
+    }
+
+    /// **A TIE AT THE TOP IS NOT A WINNER**, and the e93 gate must not read one.
+    ///
+    /// The gate's live root is a strict +116 argmax under both tables, so a run
+    /// there never reaches the arms a candidate table is most likely to land in:
+    /// a MOVED winner, and a DISSOLVED one. Both are born-validated here over
+    /// hand-built rankings rather than first exercised on the draft.
+    #[test]
+    fn the_winner_gate_reads_a_dissolved_top_as_a_failure_and_never_as_a_winner() {
+        let strict = rooted_read_over(&[(place(2), 351), (place(7), 235)]);
+        assert_eq!(strict.strict_argmax(), Some(&place(2)));
+        let tied = rooted_read_over(&[(place(2), 351), (place(7), 351), (place(9), 12)]);
+        assert_eq!(tied.strict_argmax(), None, "two candidates share the top: no strict argmax");
+        assert_eq!(tied.top_value(), Some(351));
+
+        let gate = |draft: RootedRead| E93WinnerGate {
+            root_digest: "fixture".to_string(),
+            seat: PlayerId(1),
+            decision_seed: 0,
+            recorded_move: canonical_encoding(&place(2)),
+            v2: rooted_read_over(&[(place(2), 351), (place(7), 235)]),
+            draft,
+        };
+
+        let preserved = gate(rooted_read_over(&[(place(2), 40), (place(7), 3)]));
+        assert!(preserved.passed(), "a different SCALE with the same winner still preserves it");
+        assert!(preserved.verdict().starts_with("PASS"));
+
+        let moved = gate(rooted_read_over(&[(place(7), 40), (place(2), 3)]));
+        assert!(!moved.passed());
+        assert!(moved.verdict().contains("the winner MOVED"), "{}", moved.verdict());
+
+        let dissolved = gate(rooted_read_over(&[(place(2), 40), (place(7), 40)]));
+        assert!(!dissolved.passed(), "a dissolved separation is not a preserved winner");
+        assert!(dissolved.verdict().contains("NO strict argmax"), "{}", dissolved.verdict());
+    }
+
+    /// **THE TWO MISS TYPES SAY DIFFERENT THINGS**, and both refuse a verdict.
+    ///
+    /// R4's distinction is what keeps a machine without the owner saves from
+    /// reading as a table that failed: one says the instrument could not look,
+    /// the other says it looked and the position was wrong. Neither is a gate
+    /// verdict, and both refusals say so in as many words.
+    #[test]
+    fn a_save_miss_and_an_instrument_failure_are_typed_apart_and_neither_is_a_verdict() {
+        let save = RootedMiss::Save("g1-e113-tiemass: no save at docs/temp/...".to_string()).refusal();
+        assert!(save.contains("TYPED MISS"), "{save}");
+        assert!(save.contains("MISS and not a failure"), "{save}");
+        let instrument = RootedMiss::Instrument("a digest disagrees".to_string()).refusal();
+        assert!(instrument.contains("TYPED INSTRUMENT FAILURE"), "{instrument}");
+        assert!(instrument.contains("INVALIDATES the read"), "{instrument}");
+        for refusal in [&save, &instrument] {
+            assert!(
+                refusal.contains("not a gate verdict") || refusal.contains("not a failure"),
+                "a refusal must never read as a gate verdict: {refusal}",
+            );
+        }
     }
 
     /// **A ROOT TABLE NEEDS A SEED SOMEBODY RECORDED.**
