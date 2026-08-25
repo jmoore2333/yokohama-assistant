@@ -122,9 +122,9 @@ use yokohama_core::game::pair_fixtures::{
 use yokohama_core::{
     agent_stream_seed, apply_move, finalize_setup, get_legal_moves, new_game, observe, replay_from,
     run_arena_game, run_raw_game, state_digest, AchievementType, AreaId, AreaType, ArenaAgent,
-    ArenaGameStats, Contestant, GameRecord, GameState, HandCard, Move, PlayerId, PlayerView,
-    QuantileSketch, RolloutPolicy, Rules, SeedSchedule, SeedScheduleKind, Slot, TriggerTally,
-    VisiblePlayer, WorldSeed, SEMANTICS_REV,
+    ArenaGameStats, Contestant, GameRecord, GameState, HandCard, Move, NamedIdentity, PlayerId,
+    PlayerView, QuantileSketch, RolloutPolicy, Rules, SeedSchedule, SeedScheduleKind, Slot,
+    TriggerTally, VisiblePlayer, WorldSeed, SEMANTICS_REV,
 };
 
 const USAGE: &str = "\
@@ -396,6 +396,49 @@ usage: eval_probe <subcommand> [options]
                           the re-run as OWED and exits 3; a kept-row failure is a
                           named DEFECT and exits 3 too.
 
+  step9 structural --table <spec>
+      §7 STEP 9's STRUCTURAL SURFACE over a NAMED table, on PRODUCTION bytes.
+      Two registered readings, printed together and neither short-circuiting.
+
+      9(a) — R1: §5.4's arithmetic model ENTIRE. Every applicable PROJECTED pair
+      row at its own endpoint (Δv from the frozen fixtures through production
+      `derive`/`value_of`, priced by the table, against the registered margin,
+      each printed by name with its exact i64 value); the dropped rows named;
+      both V2 hand orderings (`core > on_board`, `on_board > excess`) as strict
+      inequalities in BOTH vectors; `w_vp == (1, 40)` as two equalities; and the
+      integer box `|w| <= 64` over every coordinate, violations named per
+      coordinate. SAT iff every one of them holds.
+
+      9(c) — R2: subgroup signed non-vacuity PER SUBGROUP x BINDING ENDPOINT.
+      For each carried subgroup (S, E-resource, E-order, X, restricted to the
+      surviving set) and each endpoint at which it has >= 1 applicable projected
+      row, BOTH conjuncts: (i) >= 1 surviving member with a nonzero
+      PRIOR-AGREEING coordinate there whose own pairs bind there; (ii) zeroing
+      the subgroup's coordinates AT THAT ENDPOINT ALONE flips >= 1 satisfied
+      applicable row there to violated. The step-6 AGGREGATE zero-out (both
+      endpoints at once, flips pooled) is `fit --protocol`'s and is untouched:
+      it can pass a subgroup wholly reversed at one endpoint, which is the
+      failure this reading exists to see.
+
+      The REMOVED set {E3, O3, O6, X3} is the registered one and is BAKED, never
+      a flag — re-scoping the system would make a SAT a statement about some
+      other identity. A nonzero coordinate at a removed feature is a typed
+      MALFORMED-TABLE refusal naming the coordinate: an INSTRUMENT failure, not
+      a row verdict.
+
+        --table <spec>  v2-padded | v2-refit-padded  (the §11 named identities,
+                                        resolved through NamedIdentity so a
+                                        step-9 read and an arena arm cannot mean
+                                        different tables)
+                        zero            the all-zero table
+                        <e0,...,e33>/<l0,...,l33>
+                                        thirty-four i64 per vector, in
+                                        FeatureId::all() order, written exactly
+                                        as a `fit --evaluate` vector is
+      EXIT: 0 = PASS (9(a) SAT and every 9(c) cell holds) · 1 = the gate READ and
+      said NO · 2 = a typed refusal, which under R4 invalidates the read and does
+      not count against the table.
+
 contestants (the grammar is Contestant::from_str_name's — unknown is an error at
 every level, and an unknown knob is never silently ignored):
   greedy-v1[:m=<n>]    the honest arena driver (observe -> sampler -> handle)
@@ -436,6 +479,7 @@ fn main() {
         Some("collinearity") => cmd_collinearity(&args[1..]),
         Some("rooted") => cmd_rooted(&args[1..]).map(exit_with),
         Some("fit") => cmd_fit(&args[1..]).map(exit_with),
+        Some("step9") => cmd_step9(&args[1..]).map(exit_with),
         _ => Err(USAGE.to_string()),
     };
     if let Err(message) = result {
@@ -4316,6 +4360,20 @@ impl FitTable {
         FitTable { early: [0; AXIS_WIDTH], late: [0; AXIS_WIDTH] }
     }
 
+    /// A PRODUCTION table, read straight across.
+    ///
+    /// Since the step-8 widening `Feature::ALL` IS this axis — same width, same
+    /// order, same indices (`FeatureId::to_feature` "preserves `index` and
+    /// `name` exactly", pinned by
+    /// `the_axis_and_the_widened_feature_enum_are_the_same_axis`) — so a named
+    /// production table becomes a `FitTable` by copying its two vectors and by
+    /// NOTHING else. There is no transcription here and there must never be one:
+    /// re-typing `V2_REFIT_PADDED`'s literals would silently re-point every
+    /// figure recorded against that arm's identity.
+    fn from_weights(weights: &WeightTable) -> Self {
+        FitTable { early: weights.early, late: weights.late }
+    }
+
     fn at(&self, coord: Coordinate) -> i64 {
         match coord.endpoint {
             StageEndpoint::Early => self.early[coord.slot],
@@ -7612,6 +7670,70 @@ impl KeptRow {
     }
 }
 
+/// §4'S PROJECTION of the registered rows onto ONE identity, read at ONE table:
+/// which rows the identity DROPS, and every surviving row's exact value against
+/// its margin.
+///
+/// Both halves are per endpoint, indexed by [`StageEndpoint::ALL`]'s position.
+struct Projection {
+    /// The rows the identity cannot price, by name.
+    dropped: [Vec<String>; 2],
+    /// Every KEPT row's exact reading.
+    kept: [Vec<KeptRow>; 2],
+}
+
+impl Projection {
+    /// One endpoint's kept rows.
+    fn kept_at(&self, stage: StageEndpoint) -> &[KeptRow] {
+        &self.kept[stage_index(stage)]
+    }
+
+    /// One endpoint's dropped row names.
+    fn dropped_at(&self, stage: StageEndpoint) -> &[String] {
+        &self.dropped[stage_index(stage)]
+    }
+}
+
+/// An endpoint's position in the two-slot arrays [`Projection`] and
+/// [`StageSatisfaction`] are indexed by.
+///
+/// Written as a lookup into [`StageEndpoint::ALL`] rather than a `match` with
+/// two literals, so the arrays and the enumeration order cannot drift apart:
+/// every producer of those arrays walks `ALL` with `enumerate`.
+fn stage_index(stage: StageEndpoint) -> usize {
+    StageEndpoint::ALL
+        .iter()
+        .position(|s| *s == stage)
+        .expect("StageEndpoint::ALL covers every endpoint")
+}
+
+/// Project every registered row onto `mask` and read the survivors at `table`.
+///
+/// **The ONE spelling of the projection**, called by the §8:975 re-run and by
+/// step 9's structural surface alike. Both read the same registered rows through
+/// the same [`row_applies`] admission and the same [`row_value`] arithmetic, so
+/// "step 9 evaluates what §8:975 proved" is a fact about one function rather
+/// than a claim about two loops that happen to agree today.
+fn project_rows(rows: &[GateRow], mask: &FeatureMask, table: &FitTable) -> Projection {
+    let mut dropped: [Vec<String>; 2] = [Vec::new(), Vec::new()];
+    let mut kept: [Vec<KeptRow>; 2] = [Vec::new(), Vec::new()];
+    for (index, stage) in StageEndpoint::ALL.into_iter().enumerate() {
+        for row in rows.iter().filter(|r| r.stage == stage) {
+            if !row_applies(row, mask) {
+                dropped[index].push(row.label());
+                continue;
+            }
+            kept[index].push(KeptRow {
+                label: row.label(),
+                stage,
+                value: row_value(row, mask, table),
+                margin: row.margin,
+            });
+        }
+    }
+    Projection { dropped, kept }
+}
+
 /// §9(c)'s four subgroups, in the order §3.2 declares them.
 fn subgroup_roster() -> Vec<(&'static str, Vec<CandidateFeature>)> {
     vec![
@@ -7747,28 +7869,13 @@ fn part_b_rerun(
     };
     let mask = FeatureMask::cell(survivors);
     let table = &selected.final_fit().outcome().table;
-    let mut dropped: [Vec<String>; 2] = [Vec::new(), Vec::new()];
-    let mut kept: [Vec<KeptRow>; 2] = [Vec::new(), Vec::new()];
-    for (index, stage) in StageEndpoint::ALL.into_iter().enumerate() {
-        for row in rows.iter().filter(|r| r.stage == stage) {
-            if !row_applies(row, &mask) {
-                dropped[index].push(row.label());
-                continue;
-            }
-            kept[index].push(KeptRow {
-                label: row.label(),
-                stage,
-                value: row_value(row, &mask, witness),
-                margin: row.margin,
-            });
-        }
-    }
+    let projection = project_rows(rows, &mask, witness);
     ReRun::Evaluated(Box::new(ReRunEvaluation {
         removed,
         survivors: survivors.clone(),
         witness: witness.clone(),
-        dropped,
-        kept,
+        dropped: projection.dropped,
+        kept: projection.kept,
         zero_out: zero_out_flips(rows, survivors, table),
     }))
 }
@@ -7859,6 +7966,453 @@ fn parse_witness(flags: &BTreeMap<String, String>) -> Result<Option<FitTable>, S
             if early.is_some() { "--witness-early" } else { "--witness-late" },
         )),
     }
+}
+
+// ---------------------------------------------------------------------------
+// STEP 9 — R1's structural surface and R2's per-endpoint 9(c) instrument
+// ---------------------------------------------------------------------------
+
+/// **THE REGISTERED REMOVAL SET, BAKED.** The four candidates §8's selected
+/// interaction cell removed: `E3`, `O3`, `O6`, `X3`.
+///
+/// Provenance: the 2026-08-24 guidingpath rulings row (step 9's T0 registration,
+/// `docs/plans/2026-08-24-step9-charter.md`) over the step-6 close, whose
+/// artifact of record prints the same four —
+/// `docs/temp/step6-artifacts/v3l-final-artifact.txt:274`, "the selected cell
+/// removed [\"E3\", \"O3\", \"O6\", \"X3\"]; surviving set [...]" (fourteen).
+///
+/// **A CONSTANT AND NOT A CLI KNOB, deliberately.** The projected system IS the
+/// registered system; a `--removed` flag would let a caller quietly re-scope it
+/// and report a SAT about some other identity under step 9's name. The set moves
+/// only where every other registration moves — by a ruling, in a commit.
+const STEP9_REMOVED: [CandidateFeature; 4] = [
+    CandidateFeature::BuildingTokensReady,
+    CandidateFeature::ExecutableOrders,
+    CandidateFeature::HeldOrderIcons,
+    CandidateFeature::MatchedProductionAccess,
+];
+
+/// §5.4's integer box: "Integer weights, box `|w| ≤ 64`" (spec:742).
+///
+/// `solver.rs`'s `BOX_LIMIT` and `fit`'s `FIT_BOX_LIMIT` are the same 64 for the
+/// same registration; this is the third site that must not drift, and the three
+/// are held together by the tests rather than by a shared symbol (the two
+/// examples have no common module).
+const STEP9_BOX_LIMIT: i64 = 64;
+
+/// **A GATE THAT READ AND SAID NO.** Distinct from `2` (the instrument refused
+/// to read at all) because R4 makes the distinction binding: "a typed instrument
+/// failure ... INVALIDATES the read and does not count against the table or the
+/// cap". A caller that could not tell a malformed identity from a violated
+/// system would spend a draft on a mistyped vector.
+const EXIT_GATE_FAILED: i32 = 1;
+
+/// The fourteen candidates the registered system carries, in
+/// `CandidateFeature::ALL` order.
+fn step9_survivors() -> Vec<CandidateFeature> {
+    CandidateFeature::ALL.into_iter().filter(|c| !STEP9_REMOVED.contains(c)).collect()
+}
+
+/// One coordinate and the endpoint it sits at, with its weight — the shape both
+/// typed coordinate findings print.
+struct Coefficient {
+    label: &'static str,
+    stage: StageEndpoint,
+    weight: i64,
+}
+
+impl Coefficient {
+    fn render(&self) -> String {
+        format!("{} {} = {}", self.label, self.stage.name(), self.weight)
+    }
+}
+
+/// Read one coordinate of a table at one endpoint.
+///
+/// The two vectors ARE the model's variables — §5.4 registers the system per
+/// stage over `interpolate`'s two exact endpoints — so this is an array read and
+/// not an interpolation.
+fn coordinate_at(table: &FitTable, slot: usize, stage: StageEndpoint) -> i64 {
+    match stage {
+        StageEndpoint::Early => table.early[slot],
+        StageEndpoint::Late => table.late[slot],
+    }
+}
+
+/// **R1'S COMPLETE READING of ONE table against §5.4's arithmetic model
+/// entire** — every applicable projected pair row at its endpoint, both hand
+/// orderings in both vectors, the `w_vp` equalities, and the integer box.
+struct StructuralReading {
+    /// How the table was named on the command line.
+    name: String,
+    table: FitTable,
+    survivors: Vec<CandidateFeature>,
+    projection: Projection,
+    /// The `w_vp` equalities and V2's two hand orderings, per endpoint —
+    /// [`pin_record`]'s reading, which `fit` already prints for every cell.
+    pins: PinRecord,
+    /// Coordinates outside the box, named.
+    box_violations: Vec<Coefficient>,
+}
+
+impl StructuralReading {
+    /// Every kept row the table does not satisfy, in projection order.
+    fn violated(&self) -> Vec<&KeptRow> {
+        self.projection.kept.iter().flatten().filter(|row| !row.satisfied()).collect()
+    }
+
+    /// `w_vp == (1, 40)` at BOTH endpoints.
+    fn pin_holds(&self) -> bool {
+        self.pins.vp.iter().all(|held| *held)
+    }
+
+    /// Both hand orderings, in BOTH vectors — four strict inequalities.
+    fn orderings_hold(&self) -> bool {
+        self.pins.core_over_board.iter().chain(self.pins.board_over_excess.iter()).all(|h| *h)
+    }
+
+    /// **The 9(a) verdict: SAT iff EVERY check passes.**
+    fn sat(&self) -> bool {
+        self.violated().is_empty()
+            && self.pin_holds()
+            && self.orderings_hold()
+            && self.box_violations.is_empty()
+    }
+}
+
+/// Read a table against R1's system.
+fn structural_reading(name: &str, rows: &[GateRow], table: &FitTable) -> StructuralReading {
+    let survivors = step9_survivors();
+    let pins = pin_record(table);
+    let mut reading = StructuralReading {
+        name: name.to_string(),
+        table: table.clone(),
+        survivors,
+        projection: Projection { dropped: [Vec::new(), Vec::new()], kept: [Vec::new(), Vec::new()] },
+        pins,
+        box_violations: Vec::new(),
+    };
+    if !reading.pin_holds() {
+        return reading;
+    }
+    let mask = FeatureMask::all();
+    for (slot, id) in FeatureId::all().into_iter().enumerate() {
+        for stage in StageEndpoint::ALL {
+            let weight = coordinate_at(table, slot, stage);
+            if weight.abs() >= STEP9_BOX_LIMIT {
+                reading.box_violations.push(Coefficient { label: id.label(), stage, weight });
+            }
+        }
+    }
+    reading.projection = project_rows(rows, &mask, table);
+    reading
+}
+
+/// **R2'S PER-ENDPOINT 9(c) READING** for ONE subgroup at ONE endpoint at which
+/// that subgroup has at least one applicable projected row.
+struct SubgroupEndpointRead {
+    subgroup: &'static str,
+    stage: StageEndpoint,
+    /// The subgroup's own applicable projected rows at this endpoint, by name —
+    /// the rows at least one surviving member carries a nonzero `Δv` in.
+    rows: Vec<String>,
+    /// Conjunct (i)'s witnesses: surviving members with a nonzero
+    /// prior-agreeing coordinate here whose own pairs bind here.
+    carriers: Vec<Coefficient>,
+    /// Conjunct (ii)'s flips: applicable rows at this endpoint that are
+    /// SATISFIED under the table and VIOLATED with the subgroup zeroed here.
+    flips: Vec<String>,
+}
+
+impl SubgroupEndpointRead {
+    /// "≥ 1 surviving member with a nonzero prior-agreeing coordinate at that
+    /// endpoint whose own pairs bind there".
+    fn conjunct_i(&self) -> bool {
+        !self.carriers.is_empty()
+    }
+
+    /// "zeroing the subgroup's coordinates at that endpoint alone flips ≥ 1
+    /// satisfied applicable row at that endpoint to violated".
+    fn conjunct_ii(&self) -> bool {
+        !self.flips.is_empty()
+    }
+
+    /// BOTH conjuncts. R2 evaluates them locally and jointly.
+    fn holds(&self) -> bool {
+        self.conjunct_i() && self.conjunct_ii()
+    }
+}
+
+/// **R2, evaluated**: every carried subgroup × every endpoint the subgroup binds
+/// at, both conjuncts.
+fn per_endpoint_non_vacuity(
+    rows: &[GateRow],
+    survivors: &[CandidateFeature],
+    table: &FitTable,
+) -> Vec<SubgroupEndpointRead> {
+    let mask = FeatureMask::cell(survivors);
+    let pooled = zero_out_flips(rows, survivors, table);
+    let mut out = Vec::new();
+    for (subgroup, members) in subgroup_roster() {
+        let live: Vec<CandidateFeature> =
+            members.iter().copied().filter(|m| survivors.contains(m)).collect();
+        let pooled_flips = pooled
+            .iter()
+            .find(|(name, _)| *name == subgroup)
+            .map(|(_, flips)| flips.clone())
+            .unwrap_or_default();
+        for stage in StageEndpoint::ALL {
+            let applicable: Vec<&GateRow> =
+                rows.iter().filter(|r| r.stage == stage && row_applies(r, &mask)).collect();
+            let carries = |row: &GateRow, member: CandidateFeature| {
+                row.delta[FeatureId::Candidate(member).index()] != 0
+            };
+            let subgroup_rows: Vec<String> = applicable
+                .iter()
+                .filter(|row| live.iter().any(|m| carries(row, *m)))
+                .map(|row| row.label())
+                .collect();
+            let carriers: Vec<Coefficient> = live
+                .iter()
+                .filter_map(|member| {
+                    let slot = FeatureId::Candidate(*member).index();
+                    let weight = coordinate_at(table, slot, stage);
+                    (weight != 0).then_some(Coefficient {
+                        label: member.label(),
+                        stage,
+                        weight,
+                    })
+                })
+                .collect();
+            out.push(SubgroupEndpointRead {
+                subgroup,
+                stage,
+                rows: subgroup_rows,
+                carriers,
+                flips: pooled_flips.clone(),
+            });
+        }
+    }
+    out
+}
+
+/// The `step9 structural` report: R1's reading, then R2's cells, then the two
+/// verdicts and their composition.
+fn render_step9_structural(
+    reading: &StructuralReading,
+    non_vacuity: &[SubgroupEndpointRead],
+) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "step9 structural — R1's full-system 9(a) checker and R2's per-endpoint 9(c) instrument, \
+         on PRODUCTION bytes\n",
+    );
+    let _ = writeln!(out, "  table                {}", reading.name);
+    let _ = writeln!(out, "  EARLY                {}", vector_csv(&reading.table.early));
+    let _ = writeln!(out, "  LATE                 {}", vector_csv(&reading.table.late));
+    let _ = writeln!(
+        out,
+        "  removed (registered) {:?}",
+        STEP9_REMOVED.iter().map(|c| c.label()).collect::<Vec<_>>(),
+    );
+    let _ = writeln!(
+        out,
+        "  surviving set        {:?}",
+        reading.survivors.iter().map(|c| c.label()).collect::<Vec<_>>(),
+    );
+
+    let _ = writeln!(out, "\n  == 9(a) the registered system, entire ==");
+    for stage in StageEndpoint::ALL {
+        let _ = writeln!(
+            out,
+            "     §4 projection {:<5} kept {} · dropped {} {:?}",
+            stage.name(),
+            reading.projection.kept_at(stage).len(),
+            reading.projection.dropped_at(stage).len(),
+            reading.projection.dropped_at(stage),
+        );
+    }
+    for stage in StageEndpoint::ALL {
+        for row in reading.projection.kept_at(stage) {
+            let _ = writeln!(
+                out,
+                "     kept row {:<5} {:<44} value {} vs margin {}  {}",
+                row.stage.name(),
+                row.label,
+                row.value,
+                row.margin,
+                if row.satisfied() { "OK" } else { "VIOLATED" },
+            );
+        }
+    }
+    for (index, stage) in StageEndpoint::ALL.into_iter().enumerate() {
+        let _ = writeln!(
+            out,
+            "     pin      {:<5} w_vp {}",
+            stage.name(),
+            if reading.pins.vp[index] { "OK" } else { "VIOLATED" },
+        );
+    }
+    for (index, stage) in StageEndpoint::ALL.into_iter().enumerate() {
+        let _ = writeln!(
+            out,
+            "     ordering {:<5} core > on_board {}  ·  on_board > excess {}",
+            stage.name(),
+            if reading.pins.core_over_board[index] { "OK" } else { "VIOLATED" },
+            if reading.pins.board_over_excess[index] { "OK" } else { "VIOLATED" },
+        );
+    }
+    let _ = writeln!(
+        out,
+        "     box      |w| <= {}  {}",
+        STEP9_BOX_LIMIT,
+        if reading.box_violations.is_empty() {
+            "OK".to_string()
+        } else {
+            format!(
+                "VIOLATED {:?}",
+                reading.box_violations.iter().map(Coefficient::render).collect::<Vec<_>>(),
+            )
+        },
+    );
+
+    let _ = writeln!(
+        out,
+        "\n  == 9(c) subgroup signed non-vacuity, PER SUBGROUP x BINDING ENDPOINT (R2) ==",
+    );
+    for read in non_vacuity {
+        let _ = writeln!(
+            out,
+            "     {:<11} {:<5} rows {:>2}  (i) {} {:?}  (ii) {} flips {} {:?}",
+            read.subgroup,
+            read.stage.name(),
+            read.rows.len(),
+            if read.conjunct_i() { "OK" } else { "VIOLATED" },
+            read.carriers.iter().map(Coefficient::render).collect::<Vec<_>>(),
+            if read.conjunct_ii() { "OK" } else { "VIOLATED" },
+            read.flips.len(),
+            read.flips,
+        );
+    }
+
+    let violated = reading.violated();
+    let _ = writeln!(
+        out,
+        "\n  VERDICT 9(a): {}",
+        if reading.sat() {
+            "SAT — every applicable projected row, both orderings in both vectors, the w_vp \
+             equalities and the integer box hold on production bytes"
+                .to_string()
+        } else {
+            format!(
+                "VIOLATED — {} row(s) {:?}; pin {}; orderings {}; box {}",
+                violated.len(),
+                violated.iter().map(|row| row.label.clone()).collect::<Vec<_>>(),
+                if reading.pin_holds() { "OK" } else { "VIOLATED" },
+                if reading.orderings_hold() { "OK" } else { "VIOLATED" },
+                if reading.box_violations.is_empty() { "OK" } else { "VIOLATED" },
+            )
+        },
+    );
+    let failed: Vec<String> = non_vacuity
+        .iter()
+        .filter(|read| !read.holds())
+        .map(|read| format!("{} {}", read.subgroup, read.stage.name()))
+        .collect();
+    let _ = writeln!(
+        out,
+        "  VERDICT 9(c): {}",
+        if failed.is_empty() {
+            "HOLDS — both conjuncts at every subgroup x binding endpoint".to_string()
+        } else {
+            format!("VIOLATED — {} cell(s) {:?}", failed.len(), failed)
+        },
+    );
+    let _ = writeln!(
+        out,
+        "  VERDICT step9 structural: {}",
+        if reading.sat() && failed.is_empty() { "PASS" } else { "FAIL" },
+    );
+    out
+}
+
+/// The `step9` table grammar: the two NAMED production arms, `zero`, and an
+/// explicit pair of thirty-four-wide vectors.
+///
+/// The two names are [`NamedIdentity`]'s own wire spellings and resolve through
+/// its `table()`, so a step-9 reading and a §11 arena arm cannot disagree about
+/// what `v2-refit-padded` means. `zero` and the vector form share `fit`'s
+/// grammar, which is what lets a witness transcribed for one be fed to the other
+/// without a second spelling.
+fn parse_step9_table(spec: &str) -> Result<(String, FitTable), String> {
+    const FORMS: &str = "(v2-padded | v2-refit-padded | zero | <34 comma-separated i64>/<34 \
+                         comma-separated i64> in FeatureId::all() order)";
+    if let Some(identity) = NamedIdentity::from_str_name(spec) {
+        return Ok((identity.name().to_string(), FitTable::from_weights(&identity.table())));
+    }
+    if spec == "zero" {
+        return Ok(("zero".to_string(), FitTable::zero()));
+    }
+    let Some((early, late)) = spec.split_once('/') else {
+        return Err(format!(
+            "step9 structural --table {spec:?} is not a known table and names no LATE vector: the \
+             two vectors are separated by `/` {FORMS}"
+        ));
+    };
+    let context = format!("step9 structural --table {spec:?}");
+    Ok((
+        "vector".to_string(),
+        FitTable {
+            early: parse_axis_vector(&context, "EARLY", early)?,
+            late: parse_axis_vector(&context, "LATE", late)?,
+        },
+    ))
+}
+
+fn cmd_step9(args: &[String]) -> Result<i32, String> {
+    let section = args.first().map(String::as_str);
+    if section != Some("structural") {
+        return Err(format!(
+            "step9 takes a section: `structural` (R1's 9(a) checker + R2's 9(c) instrument). Got \
+             {section:?}\n\n{USAGE}"
+        ));
+    }
+    let (positional, flags, _) = split_args(&args[1..], &["table"], &[], &[])?;
+    if !positional.is_empty() {
+        return Err(format!("step9 structural takes no positional arguments\n\n{USAGE}"));
+    }
+    let Some(spec) = flags.get("table") else {
+        return Err(format!("step9 structural needs --table <spec>\n\n{USAGE}"));
+    };
+    let (name, table) = parse_step9_table(spec)?;
+    let rules = Rules::standard();
+    let rows = gate_rows(&rules)?;
+    let (reading, non_vacuity) = step9_read(&name, &rows, &table)?;
+    print!("{}", render_step9_structural(&reading, &non_vacuity));
+    if reading.sat() && non_vacuity.iter().all(SubgroupEndpointRead::holds) {
+        Ok(0)
+    } else {
+        Ok(EXIT_GATE_FAILED)
+    }
+}
+
+/// **THE WHOLE STEP-9 STRUCTURAL READ of one table**: R1's 9(a) reading and
+/// R2's 9(c) cells, or a typed INSTRUMENT failure.
+///
+/// The one entry point, so that the refusal and the two readings cannot be
+/// reached separately — R4 makes an instrument failure INVALIDATE the read
+/// ("does not count against the table or the cap"), which is only true if there
+/// is no path that produces a verdict past one.
+fn step9_read(
+    name: &str,
+    rows: &[GateRow],
+    table: &FitTable,
+) -> Result<(StructuralReading, Vec<SubgroupEndpointRead>), String> {
+    let reading = structural_reading(name, rows, table);
+    let non_vacuity = per_endpoint_non_vacuity(rows, &reading.survivors, table);
+    Ok((reading, non_vacuity))
 }
 
 // ---------------------------------------------------------------------------
@@ -21548,5 +22102,773 @@ mod tests {
         for (_, flipped) in zero_out_flips(&rows, &survivors, &thin) {
             assert!(!flipped.contains(&"P hand row".to_string()), "P was violated to begin with");
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // STEP 9 — the structural surface, BORN-VALIDATED on four known tables
+    // -----------------------------------------------------------------------
+
+    /// **THE §8:975 WITNESS, EARLY** — transcribed from the artifact of record
+    /// `docs/temp/step6-artifacts/v3l-final-artifact.txt:275`, verbatim.
+    ///
+    /// The artifact is FROZEN evidence and this is a transcription of it: the
+    /// vector is what the step-6 close's Part-B re-run printed, junk at the four
+    /// removed coordinates included (the re-run MASKED those, which is why the
+    /// numbers survived into the record at all).
+    const WITNESS_EARLY: &str = "1,-64,26,-4,3,-60,-62,-64,-61,12,15,8,5,-64,3,-64,1,1,-64,-31,\
+                                 1,1,63,2,2,2,-30,1,1,0,1,1,1,26";
+
+    /// **THE §8:975 WITNESS, LATE** — artifact line 276, verbatim.
+    const WITNESS_LATE: &str = "40,29,-24,-64,-64,-62,-64,-64,-63,20,25,14,-64,-64,4,-64,14,1,\
+                                -64,-31,20,-64,63,21,15,0,44,-61,1,1,1,-63,0,0";
+
+    /// The witness EXACTLY as the artifact prints it — nonzero at removed
+    /// coordinates.
+    fn witness_raw() -> FitTable {
+        FitTable {
+            early: parse_axis_vector("test", "EARLY", WITNESS_EARLY).expect("early parses"),
+            late: parse_axis_vector("test", "LATE", WITNESS_LATE).expect("late parses"),
+        }
+    }
+
+    /// The witness under the artifact's OWN semantics — "the supplied witness
+    /// RESTRICTED TO THE SURVIVING SET" (artifact:319). The re-run achieved the
+    /// restriction with a mask; step 9 requires it in the bytes, so the
+    /// transcription zeroes the four removed features here.
+    fn witness_restricted() -> FitTable {
+        let mut table = witness_raw();
+        for candidate in STEP9_REMOVED {
+            let slot = FeatureId::Candidate(candidate).index();
+            table.early[slot] = 0;
+            table.late[slot] = 0;
+        }
+        table
+    }
+
+    fn step9_rows() -> Vec<GateRow> {
+        gate_rows(&Rules::standard()).expect("the registered rows build")
+    }
+
+    /// The names of every KEPT row at one endpoint, in projection order.
+    fn kept_labels(reading: &StructuralReading, stage: StageEndpoint) -> Vec<String> {
+        reading.projection.kept_at(stage).iter().map(|row| row.label.clone()).collect()
+    }
+
+    /// The names of every kept row at one endpoint the table VIOLATES.
+    fn violated_labels(reading: &StructuralReading, stage: StageEndpoint) -> Vec<String> {
+        reading
+            .projection
+            .kept_at(stage)
+            .iter()
+            .filter(|row| !row.satisfied())
+            .map(|row| row.label.clone())
+            .collect()
+    }
+
+    /// One (subgroup, endpoint) cell, or `None` where the subgroup does not bind
+    /// at that endpoint.
+    fn cell<'a>(
+        reads: &'a [SubgroupEndpointRead],
+        subgroup: &str,
+        stage: StageEndpoint,
+    ) -> Option<&'a SubgroupEndpointRead> {
+        reads.iter().find(|read| read.subgroup == subgroup && read.stage == stage)
+    }
+
+    /// **THE REGISTERED REMOVAL SET IS THE STEP-6 SELECTION'S, AND THE
+    /// SURVIVORS ARE THE FOURTEEN.**
+    ///
+    /// Transcribed against the artifact of record's own line
+    /// (`v3l-final-artifact.txt:274`): removed `["E3", "O3", "O6", "X3"]`,
+    /// surviving set `["S1", "S2", "S3", "S4", "S5", "S6", "S7", "E1", "E2",
+    /// "O1", "O2", "O5", "X1", "X2"]`. Both directions, so a set that GAINED a
+    /// member fails as loudly as one that lost it — the projected system is what
+    /// every 9(a) verdict is a statement about.
+    #[test]
+    fn the_registered_removal_set_is_the_step_six_selection_and_the_survivors_are_the_fourteen() {
+        assert_eq!(
+            STEP9_REMOVED.iter().map(|c| c.label()).collect::<Vec<_>>(),
+            ["E3", "O3", "O6", "X3"],
+            "artifact:274 — the selected cell's removals",
+        );
+        assert_eq!(
+            step9_survivors().iter().map(|c| c.label()).collect::<Vec<_>>(),
+            ["S1", "S2", "S3", "S4", "S5", "S6", "S7", "E1", "E2", "O1", "O2", "O5", "X1", "X2"],
+            "artifact:274 — the surviving fourteen, in CandidateFeature::ALL order",
+        );
+        assert_eq!(step9_survivors().len() + STEP9_REMOVED.len(), CandidateFeature::COUNT);
+    }
+
+    /// **THE NAMED TABLES RESOLVE THROUGH THE §11 IDENTITIES, AND NOTHING ELSE
+    /// PARSES.**
+    ///
+    /// `v2-padded` and `v2-refit-padded` come off [`NamedIdentity::table`] — the
+    /// one site that decides what an arm's numbers are — so a step-9 reading and
+    /// an arena cell under the same name price the same thirty-four pairs. The
+    /// literals are never re-typed here: `V2_REFIT_PADDED`'s doc forbids it
+    /// ("editing these would silently re-point every figure ever recorded
+    /// against this arm's `weights=` identity").
+    #[test]
+    fn the_step_nine_table_grammar_resolves_the_named_identities_and_refuses_the_rest() {
+        let (name, padded) = parse_step9_table("v2-padded").expect("v2-padded parses");
+        assert_eq!(name, "v2-padded");
+        assert_eq!(padded.early, WeightTable::V2.early, "the shipped table, read across");
+        assert_eq!(padded.late, WeightTable::V2.late);
+        // ...and it IS `fit`'s V2-padded init, which is what makes "the same
+        // table" a fact rather than two constructions that agree today.
+        assert_eq!(padded.render_vectors(), FitTable::v2_padded().render_vectors());
+
+        let (name, refit) = parse_step9_table("v2-refit-padded").expect("v2-refit-padded parses");
+        assert_eq!(name, "v2-refit-padded");
+        assert_eq!(refit.early, WeightTable::V2_REFIT_PADDED.early);
+        assert_eq!(refit.late, WeightTable::V2_REFIT_PADDED.late);
+
+        let (name, zero) = parse_step9_table("zero").expect("zero parses");
+        assert_eq!(name, "zero");
+        assert_eq!(zero.render_vectors(), FitTable::zero().render_vectors());
+
+        let (name, vector) =
+            parse_step9_table(&format!("{WITNESS_EARLY}/{WITNESS_LATE}")).expect("vectors parse");
+        assert_eq!(name, "vector");
+        assert_eq!(vector.render_vectors(), witness_raw().render_vectors());
+
+        for spec in ["v2", "V2-PADDED", "v2-refit", "", "1,2,3"] {
+            let refusal = parse_step9_table(spec).map(|(name, _)| name);
+            assert!(refusal.is_err(), "{spec:?} must be a typed error, got {refusal:?}");
+        }
+        let short = parse_step9_table("1/2").expect_err("a two-entry vector is refused");
+        assert!(short.contains("the axis has 34"), "{short}");
+    }
+
+    /// **BORN-VALIDATION 1 — THE §8:975 WITNESS IS 9(a) SAT ON PRODUCTION
+    /// BYTES**, and its projection is the artifact's own, name for name.
+    ///
+    /// This is the one table in the born-validation set whose verdict is not
+    /// derived here but QUOTED: the step-6 close's Part-B re-run printed
+    /// `VERDICT: SAT` over this witness restricted to the surviving set
+    /// (artifact:319), with the projection `early kept 17 · dropped 7` and
+    /// `late kept 23 · dropped 4` and every kept row's exact value against its
+    /// margin (artifact:277–318). If this instrument disagrees with that record,
+    /// one of the two is wrong and no draft may be read until it is settled.
+    ///
+    /// The three standing checks are read off the witness by hand:
+    ///
+    /// * **pin** — `w_vp` = slot 0: `early 1`, `late 40`. That IS `(1, 40)`.
+    /// * **orderings** — slots 5 (core), 8 (on_board), 6 (excess). EARLY
+    ///   `-60 > -61 > -62`; LATE `-62 > -63 > -64`. Both strict, both vectors.
+    /// * **box** — the witness SITS ON the bound: `-64` appears in both vectors
+    ///   and `+63` in both. `|w| ≤ 64` admits every one of them, and a strict
+    ///   `|w| < 64` would call the recorded SAT certificate out of the box.
+    #[test]
+    fn the_eight_nine_seven_five_witness_is_nine_a_sat_on_production_bytes() {
+        let rows = step9_rows();
+        let witness = witness_restricted();
+        let (reading, _) = step9_read("witness", &rows, &witness).expect("a restricted witness \
+             is well-formed");
+
+        assert_eq!(
+            (kept_labels(&reading, StageEndpoint::Early).len(), reading.projection
+                .dropped_at(StageEndpoint::Early)
+                .len()),
+            (17, 7),
+            "artifact:277 — §4 projection early kept 17 · dropped 7",
+        );
+        assert_eq!(
+            reading.projection.dropped_at(StageEndpoint::Early),
+            [
+                "2(b) ON-BOARD ≻ WAREHOUSED",
+                "2(d) READY ≻ WAREHOUSED",
+                "4(b) EXECUTABLE ≻ DISTANT",
+                "4(g) ICONS ≻ NO ICONS",
+                "6(a) FULFILLED ≻ UNFULFILLED",
+                "6(c) SET-COMPLETED ≻ PENDING",
+                "10(d) MATCHED ≻ UNMATCHED PRODUCTION ACCESS",
+            ],
+            "artifact:277 — the early drop list, BY NAME",
+        );
+        assert_eq!(
+            (kept_labels(&reading, StageEndpoint::Late).len(), reading.projection
+                .dropped_at(StageEndpoint::Late)
+                .len()),
+            (23, 4),
+            "artifact:278 — §4 projection late kept 23 · dropped 4",
+        );
+        assert_eq!(
+            reading.projection.dropped_at(StageEndpoint::Late),
+            [
+                "4(b) EXECUTABLE ≻ DISTANT",
+                "4(g) ICONS ≻ NO ICONS",
+                "6(a) FULFILLED ≻ UNFULFILLED",
+                "6(c) SET-COMPLETED ≻ PENDING",
+            ],
+            "artifact:278 — the late drop list, BY NAME",
+        );
+
+        // Every kept row, at the exact value the artifact printed. Four spot
+        // rows carry their arithmetic; the rest are checked wholesale below.
+        let value_of = |stage: StageEndpoint, label: &str| -> (i64, i64) {
+            let row = reading
+                .projection
+                .kept_at(stage)
+                .iter()
+                .find(|row| row.label == label)
+                .unwrap_or_else(|| panic!("{label} is a kept {} row", stage.name()));
+            (row.value, row.margin)
+        };
+        // artifact:296 — S1 late is 14, 1(a)'s Δ is 1, and the margin is 14.
+        assert_eq!(value_of(StageEndpoint::Late, "1(a) PRODUCTIVE ≻ POWER-DEAD"), (14, 14));
+        // artifact:304 — S5 late is 20 and 3(c) moves S5 and nothing else on the
+        // axis (`PAIR_3C`, Δ = 2), so the row reads exactly its margin 40.
+        assert_eq!(value_of(StageEndpoint::Late, "3(c) BANK ACCESS ≻ POWER-DEAD"), (40, 40));
+        // artifact:306 — 4(d) prices through the incumbent CountryBonusNow at
+        // late 29 plus O1 at 44: the registered margin 160 = 4 VP x w_vp(40).
+        assert_eq!(value_of(StageEndpoint::Late, "4(d) COMPLETING ICON ≻ FRESH ICON"), (160, 160));
+        // artifact:312 — family 7's WEAK row: margin 0, `greater ≥ lesser`.
+        assert_eq!(value_of(StageEndpoint::Late, "7 CONVERTED ≥ HELD"), (15, 0));
+
+        assert!(reading.violated().is_empty(), "artifact:319 VERDICT: SAT — {:?}",
+            reading.violated().iter().map(|row| row.label.clone()).collect::<Vec<_>>());
+        assert!(reading.pin_holds(), "w_vp reads (1, 40) at the bytes");
+        assert!(reading.orderings_hold(), "-60 > -61 > -62 early, -62 > -63 > -64 late");
+        assert!(
+            reading.box_violations.is_empty(),
+            "the witness sits ON the bound and |w| <= 64 admits it — {:?}",
+            reading.box_violations.iter().map(Coefficient::render).collect::<Vec<_>>(),
+        );
+        assert!(reading.sat(), "every check passes, so 9(a) is SAT");
+        assert!(
+            witness.early.iter().chain(witness.late.iter()).any(|w| w.abs() == STEP9_BOX_LIMIT),
+            "the box cell is not vacuous: the witness really does sit on ±64",
+        );
+    }
+
+    /// **BORN-VALIDATION 2 — THE RAW WITNESS IS A TYPED MALFORMED-TABLE
+    /// REFUSAL.**
+    ///
+    /// The artifact's printed vectors carry junk at all four removed
+    /// coordinates: `E3 early 2`, `O3 early 1` / `late 1`, `O6 early 1` /
+    /// `late 1`, `X3 early 26` (slots 25, 28, 30, 33 of the two vectors). The
+    /// §8:975 re-run MASKED those columns, so the junk cost it nothing; step 9's
+    /// system has the removed features FIXED AT 0, so a nonzero there is a table
+    /// that is not in the system at all.
+    ///
+    /// **It is an INSTRUMENT failure, not a row verdict.** R4: "a typed
+    /// instrument failure (missing save, stale target, digest mismatch,
+    /// MALFORMED IDENTITY) INVALIDATES the read and does not count against the
+    /// table or the cap". A checker that silently masked the junk would hand
+    /// back a verdict about a DIFFERENT table than the one it was given, and
+    /// that verdict would count.
+    #[test]
+    fn the_raw_witness_is_a_typed_malformed_table_refusal_naming_its_coordinates() {
+        let rows = step9_rows();
+        let refusal = step9_read("witness-raw", &rows, &witness_raw())
+            .err()
+            .expect("the raw witness is nonzero at four removed features");
+        assert!(refusal.contains("MALFORMED-TABLE"), "typed by name: {refusal}");
+        for named in ["E3 early = 2", "O3 early = 1", "O3 late = 1", "O6 early = 1",
+                      "O6 late = 1", "X3 early = 26"] {
+            assert!(refusal.contains(named), "the refusal names {named}: {refusal}");
+        }
+        assert!(
+            !refusal.contains("O6 late = 0") && !refusal.contains("E3 late"),
+            "a ZERO coordinate at a removed feature is well-formed: {refusal}",
+        );
+        // ...and the SAME vectors with those six coordinates zeroed read
+        // normally, so the refusal is about the removed columns and nothing
+        // else.
+        assert!(step9_read("witness", &rows, &witness_restricted()).is_ok());
+    }
+
+    /// **BORN-VALIDATION 3 — `v2-padded` HOLDS EVERY STANDING CONSTRAINT AND
+    /// FAILS THE REGISTERED ROWS.**
+    ///
+    /// Derived at the bytes, and the shape is forced by construction: V2-padded
+    /// prices all fourteen surviving candidates at 0, so every row whose Δv
+    /// lives wholly on the candidate axis reads exactly 0 against a margin of at
+    /// least 1. The rows that survive are the ones with incumbent collateral.
+    ///
+    /// The standing tier passes trivially and that is worth saying out loud:
+    /// **the pin IS V2's own pair** — [`pin_record`] compares against
+    /// `WeightTable::V2.get(VictoryPoints)`, which is `(1, 40)` at eval.rs:1057–
+    /// 1058 — and V2's hand vectors are `30 > 6 > 5` early and `20 > 10 > 2`
+    /// late, which is what makes the orderings STANDING rather than a
+    /// hypothesis. Its largest coordinate is 30, so the box is clear.
+    ///
+    /// The two early survivors and the six late ones, with their arithmetic:
+    ///
+    /// * `11(c)` early 15 / late 12 and `11(d)` early 110 / late 160 — family
+    ///   11's rows carry incumbent collateral (the EA row moves warehouse and
+    ///   hand; the lab row moves `TechBonusNow`).
+    /// * `6(b)` late 318, `6(d-church)` 134, `6(d-customs)` 262 — achievements
+    ///   and track pawns are incumbent features.
+    /// * `7 CONVERTED ≥ HELD` late reads 0 against margin **0** — family 7 is
+    ///   the WEAK class, `greater ≥ lesser`, and 0 ≥ 0 holds. The zero table
+    ///   passes this row too, which is why "every margined row fails" is the
+    ///   precise claim and "every row fails" is not.
+    ///
+    /// `4(d)` late is the one the charter predicts by name: V2's late country
+    /// weight is 30 and 4(d)'s Δ carries `CountryBonusNow +4`, so the row reads
+    /// `120` against the registered margin `160 = 4 VP × w_vp(late) 40`. No
+    /// candidate weight can help — O1 is priced at 0 — so the row is short by
+    /// exactly one VP's worth of country bonus. That is spec:574–576's own
+    /// example of what §9's registered-margin repair class exists for.
+    #[test]
+    fn v2_padded_holds_the_standing_tier_and_fails_the_registered_rows() {
+        let rows = step9_rows();
+        let (_, table) = parse_step9_table("v2-padded").expect("parses");
+        let (reading, _) = step9_read("v2-padded", &rows, &table).expect("well-formed");
+
+        assert!(reading.pin_holds(), "v2-padded IS the table the pin is read off");
+        assert!(reading.orderings_hold(), "30 > 6 > 5 early, 20 > 10 > 2 late");
+        assert!(reading.box_violations.is_empty(), "V2's largest coordinate is 30");
+
+        assert_eq!(
+            violated_labels(&reading, StageEndpoint::Early),
+            [
+                "1(a) PRODUCTIVE ≻ POWER-DEAD",
+                "1(b) SPREAD ≻ STACK",
+                "1(c) NEAR-PRESIDENT ≻ FAR",
+                "1(d) CHURCH ACCESS ≻ POWER-DEAD",
+                "1(e) CONNECTED ≻ DISCONNECTED",
+                "3(a) MORE YEN ≻ FEWER",
+                "3(b) MORE GOODS ≻ FEWER",
+                "3(c) BANK ACCESS ≻ POWER-DEAD",
+                "3(d) EA ACCESS ≻ POWER-DEAD",
+                "4(a) MATCHED ≻ UNMATCHED",
+                "6(b) CLAIMED ≻ UNCLAIMED",
+                "10(a) OPEN-ZONE ≻ CLOSED-ZONE",
+                "10(b) CHEAP-SLOT ≻ DEAR-SLOT",
+                "11(a) ACTED-AT-SILK ≻ ACTED-AT-COPPER",
+                "11(b) ACTED-AT-BANK ≻ ACTED-AT-COPPER",
+            ],
+            "fifteen of the seventeen kept early rows",
+        );
+        assert_eq!(
+            violated_labels(&reading, StageEndpoint::Late),
+            [
+                "1(a) PRODUCTIVE ≻ POWER-DEAD",
+                "1(b) SPREAD ≻ STACK",
+                "1(c) NEAR-PRESIDENT ≻ FAR",
+                "1(d) CHURCH ACCESS ≻ POWER-DEAD",
+                "1(e) CONNECTED ≻ DISCONNECTED",
+                "2(a) CONVERTED ≻ UNCONVERTED",
+                "3(a) MORE YEN ≻ FEWER",
+                "3(b) MORE GOODS ≻ FEWER",
+                "3(c) BANK ACCESS ≻ POWER-DEAD",
+                "4(c) HIGHER FACES ≻ LOWER",
+                "4(d) COMPLETING ICON ≻ FRESH ICON",
+                "4(e) RICHER PROSPECT ≻ POORER",
+                "4(f) TAKEN ≻ NOT-TAKEN",
+                "8 RECALLED ≻ STRANDED",
+                "11(a) ACTED-AT-SILK ≻ ACTED-AT-COPPER",
+                "11(b) ACTED-AT-BANK ≻ ACTED-AT-COPPER",
+                "11(e) ACTED-AT-PORT ≻ ACTED-AT-COPPER",
+            ],
+            "seventeen of the twenty-three kept late rows",
+        );
+
+        let value_of = |stage: StageEndpoint, label: &str| -> (i64, i64) {
+            let row = reading
+                .projection
+                .kept_at(stage)
+                .iter()
+                .find(|row| row.label == label)
+                .unwrap_or_else(|| panic!("{label} is a kept {} row", stage.name()));
+            (row.value, row.margin)
+        };
+        // The charter's named row: 30 x 4 = 120 against 4 VP x 40 = 160.
+        assert_eq!(value_of(StageEndpoint::Late, "4(d) COMPLETING ICON ≻ FRESH ICON"), (120, 160));
+        assert_eq!(
+            WeightTable::V2.get(Feature::CountryBonusNow).1,
+            30,
+            "eval.rs:1058 — the late country weight the row cannot reach its margin with",
+        );
+        // The WEAK row is why the claim is "every MARGINED row".
+        assert_eq!(value_of(StageEndpoint::Late, "7 CONVERTED ≥ HELD"), (0, 0));
+        assert!(!reading.sat(), "thirty-two violated rows is not SAT");
+    }
+
+    /// **BORN-VALIDATION 4 — THE ZERO TABLE FAILS THE PIN, ALL FOUR ORDERING
+    /// INEQUALITIES, AND EVERY MARGINED ROW — AND SAYS SO ALL AT ONCE.**
+    ///
+    /// A constant evaluator is the degenerate corner and every arithmetic answer
+    /// is forced: `w_vp = 0 ≠ 1` and `≠ 40`; `0 > 0` is FALSE, so both hand
+    /// orderings fail in both vectors (strict over the integers has no slack at
+    /// equality); every row's `Σ w·Δv` is 0, so a row passes exactly when its
+    /// margin is ≤ 0 — which is family 7's WEAK row (`margin 0`) and nothing
+    /// else in the registry. `|0| ≤ 64`, so the box is the one standing check
+    /// the zero table holds.
+    ///
+    /// **The cell's real subject is NO SHORT-CIRCUITING.** R4 requires the read
+    /// "with no short-circuiting", and `zero` is the table that discriminates
+    /// it: the pin is the first check and it fails, so an implementation that
+    /// stopped there would still print a verdict — and would report nothing at
+    /// all about the forty rows, the four orderings or the box. Every one of
+    /// those findings is asserted present here.
+    #[test]
+    fn the_zero_table_fails_the_pin_the_orderings_and_every_margined_row_without_short_circuiting()
+    {
+        let rows = step9_rows();
+        let (_, table) = parse_step9_table("zero").expect("parses");
+        let (reading, non_vacuity) = step9_read("zero", &rows, &table).expect("well-formed");
+
+        assert_eq!(reading.pins.vp, [false, false], "0 is neither 1 nor 40");
+        assert_eq!(reading.pins.core_over_board, [false, false], "0 > 0 is false");
+        assert_eq!(reading.pins.board_over_excess, [false, false]);
+        assert!(reading.box_violations.is_empty(), "|0| <= 64");
+
+        // THE ROWS ARE STILL READ. A short-circuit at the pin would leave these
+        // empty, which is a report about nothing wearing a verdict.
+        assert_eq!(
+            (kept_labels(&reading, StageEndpoint::Early).len(),
+             kept_labels(&reading, StageEndpoint::Late).len()),
+            (17, 23),
+            "the projection runs even though the pin already failed",
+        );
+        let survivors: Vec<String> = reading
+            .projection
+            .kept
+            .iter()
+            .flatten()
+            .filter(|row| row.satisfied())
+            .map(|row| format!("{} {}", row.stage.name(), row.label))
+            .collect();
+        assert_eq!(
+            survivors,
+            ["late 7 CONVERTED ≥ HELD"],
+            "0 >= 0 holds and every margined row fails",
+        );
+        assert_eq!(reading.violated().len(), 39, "17 early + 22 late");
+        assert!(!reading.sat());
+
+        // And 9(c) is read too, with nothing to carry: a constant evaluator has
+        // no nonzero coordinate anywhere, so conjunct (i) fails at every cell.
+        assert!(!non_vacuity.is_empty(), "the 9(c) cells are still enumerated");
+        for read in &non_vacuity {
+            assert!(
+                !read.conjunct_i(),
+                "{} {} has no nonzero coordinate to carry anything",
+                read.subgroup,
+                read.stage.name(),
+            );
+            assert!(!read.conjunct_ii(), "zeroing zero flips nothing");
+        }
+    }
+
+    /// **BORN-VALIDATION 5 — `v2-refit-padded` CARRIES THE FIT DISEASE, AT THE
+    /// BYTES.**
+    ///
+    /// The §8 B-cell refit is the flatter cousin the 2026-08-24 charter indicts
+    /// (§2: "the pin broken ... the four early proxies flattened"), and this cell
+    /// is that indictment made executable against the shipped literals
+    /// (eval.rs:1149–1150).
+    ///
+    /// Derived from those literals, coordinate by coordinate:
+    ///
+    /// * **pin** — `w_vp` is `(1, 3)`. Early holds; LATE is 3 against the pinned
+    ///   40, so the whole late vector is denominated in a scale the registered
+    ///   margins are not. That single number is why the late rows below fail so
+    ///   widely: `4(d)`'s margin is `4 VP × 40`, and this table's VP is worth 3.
+    /// * **orderings** — hand slots are `core -63 / on_board 7 / excess 3` early
+    ///   and `core 36 / on_board 0 / excess -2` late. `-63 > 7` is FALSE, so
+    ///   `core > on_board` fails EARLY and holds late; `on_board > excess` holds
+    ///   in both (`7 > 3`, `0 > -2`). One of the four inequalities is broken, and
+    ///   naming WHICH is the point of reading them per vector.
+    /// * **box** — the largest magnitude is `|-63|`, inside `≤ 64`. The refit ran
+    ///   under the same box and stopped at its edge without crossing it.
+    ///
+    /// The rows: all eighteen candidate coordinates are 0 (the B cell admitted no
+    /// candidate), so the early failure list is `v2-padded`'s to the name. LATE
+    /// diverges in three places and each is a re-pricing: `6(d-customs)` flips to
+    /// VIOLATED (customs 3 against V2's 20, and the row's Δ cannot carry it),
+    /// `11(c)` flips to VIOLATED (warehouse +1 against V2's −10 reverses the EA
+    /// row's sign), and `4(d)` falls from 120 to **16** (country late 4 × Δ 4)
+    /// against the unchanged margin 160.
+    #[test]
+    fn v2_refit_padded_carries_the_fit_disease_at_the_bytes() {
+        let rows = step9_rows();
+        let (_, table) = parse_step9_table("v2-refit-padded").expect("parses");
+        let (reading, _) = step9_read("v2-refit-padded", &rows, &table).expect("well-formed");
+
+        assert_eq!(reading.pins.vp, [true, false], "w_vp is (1, 3): early holds, late does not");
+        assert_eq!(WeightTable::V2_REFIT_PADDED.get(Feature::VictoryPoints), (1, 3));
+        assert_eq!(reading.pins.core_over_board, [false, true], "-63 > 7 is false; 36 > 0 is true");
+        assert_eq!(reading.pins.board_over_excess, [true, true], "7 > 3 and 0 > -2");
+        assert!(reading.box_violations.is_empty(), "|-63| is inside the box");
+
+        assert_eq!(
+            violated_labels(&reading, StageEndpoint::Early),
+            violated_labels(
+                &step9_read(
+                    "v2-padded",
+                    &rows,
+                    &parse_step9_table("v2-padded").expect("parses").1,
+                )
+                .expect("well-formed")
+                .0,
+                StageEndpoint::Early,
+            ),
+            "no candidate is priced in either table, so the early failures coincide",
+        );
+        assert_eq!(
+            violated_labels(&reading, StageEndpoint::Late),
+            [
+                "1(a) PRODUCTIVE ≻ POWER-DEAD",
+                "1(b) SPREAD ≻ STACK",
+                "1(c) NEAR-PRESIDENT ≻ FAR",
+                "1(d) CHURCH ACCESS ≻ POWER-DEAD",
+                "1(e) CONNECTED ≻ DISCONNECTED",
+                "2(a) CONVERTED ≻ UNCONVERTED",
+                "3(a) MORE YEN ≻ FEWER",
+                "3(b) MORE GOODS ≻ FEWER",
+                "3(c) BANK ACCESS ≻ POWER-DEAD",
+                "4(c) HIGHER FACES ≻ LOWER",
+                "4(d) COMPLETING ICON ≻ FRESH ICON",
+                "4(e) RICHER PROSPECT ≻ POORER",
+                "4(f) TAKEN ≻ NOT-TAKEN",
+                "6(d-customs) PLACED ≻ UNPLACED (customs)",
+                "8 RECALLED ≻ STRANDED",
+                "11(a) ACTED-AT-SILK ≻ ACTED-AT-COPPER",
+                "11(b) ACTED-AT-BANK ≻ ACTED-AT-COPPER",
+                "11(c) ACTED-AT-EA ≻ ACTED-AT-COPPER",
+                "11(e) ACTED-AT-PORT ≻ ACTED-AT-COPPER",
+            ],
+            "nineteen of the twenty-three kept late rows — two more than v2-padded",
+        );
+        let four_d = reading
+            .projection
+            .kept_at(StageEndpoint::Late)
+            .iter()
+            .find(|row| row.label == "4(d) COMPLETING ICON ≻ FRESH ICON")
+            .expect("4(d) is kept late");
+        assert_eq!((four_d.value, four_d.margin), (16, 160), "country late 4 x Δ 4");
+        assert!(!reading.sat());
+    }
+
+    /// **BORN-VALIDATION 6 — THE PER-ENDPOINT FLIP SETS PARTITION THE AGGREGATE
+    /// ZERO-OUT.**
+    ///
+    /// The system DECOMPOSES: "every row binds one endpoint vector;
+    /// `interpolate` is endpoint-exact" (spec:745–747). So zeroing a subgroup at
+    /// BOTH endpoints and zeroing it at ONE cannot disagree about a row that
+    /// lives at that one — which makes the aggregate list exactly the
+    /// concatenation of the two per-endpoint lists, as a MULTISET (a row that
+    /// flips at both endpoints appears twice in the aggregate, which is what the
+    /// artifact's `zero S` list shows for `1(b) SPREAD ≻ STACK`).
+    ///
+    /// **That identity is the whole reason R2 is a re-labelling and not a new
+    /// gate.** The aggregate loses no flip and invents none; what it loses is
+    /// WHERE each flip happened, and a subgroup wholly reversed at one endpoint
+    /// can therefore look load-bearing on the pooled count. This cell proves the
+    /// arithmetic agrees, and the next one shows the pooled count hiding exactly
+    /// that failure on the witness.
+    ///
+    /// Checked over all four born-validation tables, so the property is about the
+    /// decomposition and not about one lucky vector.
+    #[test]
+    fn the_per_endpoint_nine_c_flip_sets_partition_the_aggregate_zero_out() {
+        let rows = step9_rows();
+        let survivors = step9_survivors();
+        for (name, table) in [
+            ("witness", witness_restricted()),
+            ("v2-padded", parse_step9_table("v2-padded").expect("parses").1),
+            ("v2-refit-padded", parse_step9_table("v2-refit-padded").expect("parses").1),
+            ("zero", FitTable::zero()),
+        ] {
+            let aggregate = zero_out_flips(&rows, &survivors, &table);
+            let reads = per_endpoint_non_vacuity(&rows, &survivors, &table);
+            for (subgroup, pooled) in &aggregate {
+                let mut split: Vec<String> = reads
+                    .iter()
+                    .filter(|read| read.subgroup == *subgroup)
+                    .flat_map(|read| read.flips.clone())
+                    .collect();
+                let mut pooled = pooled.clone();
+                split.sort();
+                pooled.sort();
+                assert_eq!(
+                    split, pooled,
+                    "{name}: zero {subgroup} — the endpoints partition the pooled flips",
+                );
+            }
+        }
+
+        // ANTI-VACUITY: the property would hold trivially if every list were
+        // empty, and it would be uninteresting if no row ever flipped at both
+        // endpoints. The witness gives both a nonempty split and a duplicate.
+        let witness = witness_restricted();
+        let aggregate = zero_out_flips(&rows, &survivors, &witness);
+        let s_flips = &aggregate
+            .iter()
+            .find(|(name, _)| *name == "S")
+            .expect("S is a subgroup")
+            .1;
+        assert_eq!(s_flips.len(), 16, "the witness's pooled S flips");
+        assert_eq!(
+            s_flips.iter().filter(|label| *label == "1(b) SPREAD ≻ STACK").count(),
+            2,
+            "1(b) flips at BOTH endpoints, so the pooled list carries it twice",
+        );
+        let reads = per_endpoint_non_vacuity(&rows, &survivors, &witness);
+        assert_eq!(
+            (
+                cell(&reads, "S", StageEndpoint::Early).expect("S binds early").flips.len(),
+                cell(&reads, "S", StageEndpoint::Late).expect("S binds late").flips.len(),
+            ),
+            (7, 9),
+            "and the split is 7 + 9 = 16",
+        );
+    }
+
+    /// **BORN-VALIDATION 7 — CONJUNCT (i) NEEDS A NONZERO, PRIOR-AGREEING,
+    /// BINDING CARRIER, AND THE WITNESS FAILS IT AT X LATE.**
+    ///
+    /// This is checkpoint:362–363's named failure, caught on the record's own
+    /// SAT certificate. The witness's late X coordinates are `X1 = -63` and
+    /// `X2 = 0` (slots 31 and 32 of the late vector; `X3` is removed). Both §3.2
+    /// priors are `+` (`X1 ":326 Units: takeable cards. +."`, `X2 ":339 ... +."`),
+    /// so the ONE nonzero X coordinate at that endpoint OPPOSES its prior and the
+    /// other is not there at all: **no surviving X member signs late**.
+    ///
+    /// The AGGREGATE zero-out reports `zero X flips 3` on the same table and
+    /// reads perfectly healthy — which is exactly R2's grounds ("the aggregate
+    /// form can pass a subgroup wholly reversed at one endpoint"). The
+    /// per-endpoint reading puts the failure where it happened: X holds at EARLY
+    /// (`X1 = 1`, `X2 = 1`, both agreeing, both binding) and fails conjunct (i)
+    /// at LATE while still flipping a row there.
+    ///
+    /// The three clauses are separated by a hand system underneath, because the
+    /// registry alone cannot isolate the BINDING clause: `S1` carries a row at
+    /// early with the wrong sign, and `S2` has a right-signed weight but appears
+    /// in no row at all. A reading that dropped the prior clause would accept
+    /// `S1`; one that dropped the binding clause would accept `S2`; only both
+    /// together give the registered answer, which is that the subgroup has no
+    /// carrier there.
+    #[test]
+    fn the_nine_c_conjunct_one_needs_a_nonzero_prior_agreeing_binding_carrier() {
+        let rows = step9_rows();
+        let survivors = step9_survivors();
+        let witness = witness_restricted();
+        let reads = per_endpoint_non_vacuity(&rows, &survivors, &witness);
+
+        let x_early = cell(&reads, "X", StageEndpoint::Early).expect("X binds early");
+        assert_eq!(
+            x_early.carriers.iter().map(Coefficient::render).collect::<Vec<_>>(),
+            ["X1 early = 1", "X2 early = 1"],
+            "both surviving X members sign with their + priors at early",
+        );
+        assert!(x_early.holds(), "X is non-vacuous at early on both conjuncts");
+
+        let x_late = cell(&reads, "X", StageEndpoint::Late).expect("X binds late");
+        assert_eq!(WeightTable::V2.get(Feature::VictoryPoints).1, 40, "the pinned late scale");
+        assert_eq!(
+            witness.late[FeatureId::Candidate(CandidateFeature::LabTakeable).index()],
+            -63,
+            "artifact:276 — X1 late opposes its + prior",
+        );
+        assert_eq!(
+            witness.late[FeatureId::Candidate(CandidateFeature::PortTakeable).index()],
+            0,
+            "artifact:276 — X2 late is not there at all",
+        );
+        assert!(x_late.carriers.is_empty(), "no surviving X member signs late");
+        assert!(!x_late.conjunct_i(), "conjunct (i) FAILS for X at late");
+        assert!(x_late.conjunct_ii(), "and (ii) still flips a row, which is what hides it");
+        assert!(!x_late.holds(), "so the cell fails — BOTH conjuncts are required");
+
+        // The pooled reading is the one that cannot see it.
+        let pooled = zero_out_flips(&rows, &survivors, &witness);
+        assert_eq!(
+            pooled.iter().find(|(name, _)| *name == "X").expect("X").1.len(),
+            3,
+            "the aggregate says X flips three rows and says nothing about where",
+        );
+
+        // The three clauses, separated.
+        let s1 = CandidateFeature::ProductionAccess;
+        let s2 = CandidateFeature::TrackAccess;
+        assert_eq!((sign_prior(s1), sign_prior(s2)), (1, 1), "§3.2 registers both as +");
+        let hand = vec![hand_gate_row("P", StageEndpoint::Early, 1, &[(s1, -1)])];
+        let table = protocol_table(&[(s1, -3, 0), (s2, 5, 0)]);
+        let hand_reads = per_endpoint_non_vacuity(&hand, &[s1, s2], &table);
+        let s_early = cell(&hand_reads, "S", StageEndpoint::Early).expect("S binds early");
+        assert_eq!(s_early.rows, ["P hand row"], "the subgroup's one applicable row");
+        assert!(
+            s_early.carriers.is_empty(),
+            "S1 opposes its prior and S2 binds nowhere — {:?}",
+            s_early.carriers.iter().map(Coefficient::render).collect::<Vec<_>>(),
+        );
+        assert!(!s_early.conjunct_i());
+        // (ii) still fires: -3 x -1 = 3 >= 1 satisfied, and zeroing S drops it
+        // to 0. A subgroup can carry a row and still sign nothing.
+        assert!(s_early.conjunct_ii(), "the wrong-signed weight is load-bearing anyway");
+    }
+
+    /// **BORN-VALIDATION 8 — A (SUBGROUP, ENDPOINT) CELL EXISTS ONLY WHERE THE
+    /// SUBGROUP BINDS.**
+    ///
+    /// R2 quantifies over "each endpoint at which the subgroup has ≥ 1
+    /// applicable projected pair row". A cell emitted where the subgroup has NO
+    /// row would fail both conjuncts by construction — there is nothing to sign
+    /// and nothing to flip — and would read as a 9(c) failure for a subgroup the
+    /// registry never asked anything of.
+    ///
+    /// The registry cannot show this: all four subgroups bind at both endpoints
+    /// on the real rows (the thinnest is E-order early, at one row). So the cell
+    /// is a hand system where `S` binds EARLY only and `E-resource` binds LATE
+    /// only, and `E-order` and `X` bind nowhere: exactly two cells must exist.
+    #[test]
+    fn a_subgroup_endpoint_cell_exists_only_where_the_subgroup_binds() {
+        let s1 = CandidateFeature::ProductionAccess;
+        let e1 = CandidateFeature::MoneyStock;
+        let rows = vec![
+            hand_gate_row("P", StageEndpoint::Early, 1, &[(s1, 1)]),
+            hand_gate_row("Q", StageEndpoint::Late, 1, &[(e1, 1)]),
+        ];
+        let table = protocol_table(&[(s1, 3, 3), (e1, 3, 3)]);
+        let reads = per_endpoint_non_vacuity(&rows, &[s1, e1], &table);
+        assert_eq!(
+            reads.iter().map(|read| (read.subgroup, read.stage.name())).collect::<Vec<_>>(),
+            [("S", "early"), ("E-resource", "late")],
+            "two cells, in subgroup-roster order",
+        );
+        assert!(reads.iter().all(SubgroupEndpointRead::holds), "both bind and both carry");
+
+        // The real registry, by contrast, binds every subgroup at both
+        // endpoints — so the quantifier is exercised HERE and nowhere else.
+        let registry = per_endpoint_non_vacuity(
+            &step9_rows(),
+            &step9_survivors(),
+            &witness_restricted(),
+        );
+        assert_eq!(registry.len(), 8, "four subgroups x two endpoints, all binding");
+        assert!(registry.iter().all(|read| !read.rows.is_empty()));
+    }
+
+    /// **THE AGGREGATE HELPER IS UNTOUCHED, BESIDE THE PER-ENDPOINT ONE.**
+    ///
+    /// R2 re-labels the step-6 zero-out record AGGREGATE and leaves it standing
+    /// as recorded evidence; it does not replace it. `fit --protocol`'s §8:975
+    /// stage reads [`zero_out_flips`] and its bytes must not move, so this cell
+    /// pins the pooled shape directly — both endpoints zeroed at once, flips
+    /// pooled, four subgroups in registration order.
+    #[test]
+    fn the_aggregate_zero_out_stands_unchanged_beside_the_per_endpoint_instrument() {
+        let rows = step9_rows();
+        let survivors = step9_survivors();
+        let witness = witness_restricted();
+        let aggregate = zero_out_flips(&rows, &survivors, &witness);
+        assert_eq!(
+            aggregate.iter().map(|(name, flips)| (*name, flips.len())).collect::<Vec<_>>(),
+            [("S", 16), ("E-resource", 9), ("E-order", 6), ("X", 3)],
+            "the pooled counts on the witness, four subgroups in §3.2 order",
+        );
+        // The pooled list is stage-blind by construction — its labels carry no
+        // endpoint — which is precisely what the per-endpoint reading adds.
+        assert!(
+            aggregate.iter().all(|(_, flips)| flips.iter().all(|f| !f.contains("early")
+                && !f.contains("late"))),
+            "GateRow::label names the row, never its endpoint",
+        );
     }
 }
