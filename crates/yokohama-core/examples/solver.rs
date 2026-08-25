@@ -2537,6 +2537,13 @@ impl Projection<'_> {
             }
             Verdict::Inconclusive { reason } => return Err(self.routed(reason)),
         };
+        // **`d_hi` IS A FEASIBLE LEVEL**, which the bisection's upper bracket
+        // needs and which is not quite free: `w_hi` came from the plain system,
+        // where the coordinates no row reads were not pinned at the draft.
+        // Resetting them to the draft changes no row value (no row reads them),
+        // leaves the point in its box (the draft is), and leaves this sum alone
+        // (it runs over the free coordinates only) — so a point at exactly this
+        // level exists.
         let d_hi = p.displacement(&w_hi);
 
         // (1) THE DISPLACEMENT LEVEL. `lo` is a level certified EMPTY, `hi` a
@@ -5129,6 +5136,23 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
         assert_eq!(report.pricing(e1), vec!["pair 11(b) late".to_string()]);
         assert_eq!(report.tight(s5), vec!["pair 3(c) late".to_string()]);
         assert!(report.tight(e1).is_empty(), "11(b) cannot reach slack 0 at margin 1");
+    }
+
+    /// A coordinate NO ROW READS is pinned at the draft — the reduction
+    /// [`RepairProblem::free`] documents, exercised.
+    ///
+    /// Moving it could only add displacement and add a changed coordinate, so no
+    /// optimum moves it; the projection does not need to ask, and the point is
+    /// that it does not ask WRONGLY either — the coordinate keeps the draft's
+    /// value rather than collapsing to zero.
+    #[test]
+    fn a_coordinate_no_row_reads_stays_at_the_draft() {
+        let (s1, s2) = (col("S1"), col("S2"));
+        let report = repaired(&[("S1 up", &[(s1, 1)], 3)], &[(s2, 5)]);
+        assert_eq!(report.w[s2], 5, "no row reads S2, so the projection leaves it where it was");
+        assert_eq!(report.w[s1], 3);
+        assert_eq!(report.displacement, 3, "and S2 contributes nothing to the displacement");
+        assert_eq!(report.changed, vec![s1]);
     }
 
     /// **THE THIRD TIE-BREAK, REGISTERED AND EXERCISED.** `w_S1 + w_S2 ≥ 2` from
