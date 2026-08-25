@@ -2999,6 +2999,14 @@ struct ExceptionProbe {
     /// feasible?" — `FEASIBLE`, `still infeasible`, or `undecided`.
     answer: &'static str,
     detail: String,
+    /// A REFUSED probe's residual certificate, by row.
+    ///
+    /// **This is the half a JOINT conflict is read by.** "No single clause's
+    /// removal helps" is a verdict; WHICH rows still contradict once a given
+    /// clause is off is the thing an owner needs to rule on, and it is a
+    /// different row set per probe — the residual certificate names the next
+    /// coordinate as surely as the standing one named this coordinate.
+    leaned_on: Vec<String>,
 }
 
 /// **ONE CERTIFIED EXCEPTION**, with everything B1 requires recorded beside it.
@@ -3126,27 +3134,134 @@ fn drive_repair_within(p: &RepairProblem, oracle_budget: u64, support_budget: u6
             }
         };
 
-        // STUB (RED): the forcing search is not written yet, so every certified
-        // infeasibility routes as a JOINT conflict without a single clause
-        // having been probed.
-        let _ = &current;
-        return Driven::JointConflict {
-            exceptions,
-            certificate,
-            leaned_on,
-            probes: Vec::new(),
-            trail,
-        };
+        match forced_coordinate(&current) {
+            Forcing::Forced { candidate, witness, probes } => {
+                let clause = current.clause_text(candidate);
+                let next = match current.excepting(candidate) {
+                    Ok(next) => next,
+                    Err(e) => {
+                        return Driven::Inconclusive {
+                            exceptions,
+                            reason: format!(
+                                "{} was proven singly forced, but the excepted problem would not \
+                                 build: {e}",
+                                candidate.label(),
+                            ),
+                            trail,
+                        }
+                    }
+                };
+                exceptions.push(CertifiedException {
+                    candidate,
+                    stage: current.stage,
+                    clause,
+                    infeasibility: certificate,
+                    leaned_on,
+                    witness,
+                    probes,
+                });
+                current = next;
+            }
+            Forcing::Joint { probes } => {
+                return Driven::JointConflict {
+                    exceptions,
+                    certificate,
+                    leaned_on,
+                    probes,
+                    trail,
+                }
+            }
+            Forcing::Undecided { probes, reason } => {
+                return Driven::Inconclusive {
+                    exceptions,
+                    reason: format!(
+                        "a coordinate's forcing probe did not decide, so \"no coordinate is \
+                         singly forced\" cannot be claimed and B1's JOINT-conflict verdict is \
+                         withheld: {reason} ({} probe(s) recorded)",
+                        probes.len(),
+                    ),
+                    trail,
+                }
+            }
+        }
     }
 }
 
 /// **QUESTION (ii), over every still-active sign clause in canonical order.**
 ///
-/// STUB (RED): the search is not written yet — nothing is probed, so nothing is
-/// ever proven singly forced.
+/// The order is `CandidateFeature::ALL`, which IS ascending `Feature::ALL` axis
+/// order over the candidate columns (the axis is the sixteen-feature incumbent
+/// prefix, then the eighteen candidates in that order) — pinned by
+/// [`the_canonical_examination_order_is_the_axis_order`] rather than assumed.
+///
+/// The FIRST feasible relaxation wins and the search stops: B1 relaxes ONE
+/// clause per iteration, and a second feasible coordinate at the same iteration
+/// would be a choice between two proofs rather than a proof.
 fn forced_coordinate(p: &RepairProblem) -> Forcing {
-    let _ = p;
-    Forcing::Joint { probes: Vec::new() }
+    let mut probes: Vec<ExceptionProbe> = Vec::new();
+    let mut undecided: Option<String> = None;
+    for candidate in CandidateFeature::ALL {
+        if !p.clause_active(candidate) {
+            continue;
+        }
+        let clause = p.clause_text(candidate);
+        let relaxed = match p.excepting(candidate) {
+            Ok(relaxed) => relaxed,
+            Err(e) => {
+                probes.push(ExceptionProbe {
+                    candidate,
+                    clause,
+                    answer: "undecided",
+                    detail: format!("the relaxed problem would not build: {e}"),
+                    leaned_on: Vec::new(),
+                });
+                undecided.get_or_insert(format!("{}: {e}", candidate.label()));
+                continue;
+            }
+        };
+        match decide(&relaxed.sys) {
+            Verdict::Sat { w } => {
+                let detail = format!(
+                    "{} = {} at the witness; every solution of the relaxed system violates the \
+                     removed clause, so the relaxation is FORCED",
+                    candidate.label(),
+                    w[FeatureId::Candidate(candidate).index()],
+                );
+                probes.push(ExceptionProbe {
+                    candidate,
+                    clause,
+                    answer: "FEASIBLE",
+                    detail,
+                    leaned_on: Vec::new(),
+                });
+                return Forcing::Forced { candidate, witness: w, probes };
+            }
+            Verdict::Unsat { certificate } => {
+                let leans = certificate_leans(&relaxed.sys.inequalities(), &certificate);
+                probes.push(ExceptionProbe {
+                    candidate,
+                    clause,
+                    answer: "still infeasible",
+                    detail: render_certificate(&certificate),
+                    leaned_on: leans,
+                });
+            }
+            Verdict::Inconclusive { reason } => {
+                probes.push(ExceptionProbe {
+                    candidate,
+                    clause,
+                    answer: "undecided",
+                    detail: reason.clone(),
+                    leaned_on: Vec::new(),
+                });
+                undecided.get_or_insert(format!("{}: {reason}", candidate.label()));
+            }
+        }
+    }
+    match undecided {
+        Some(reason) => Forcing::Undecided { probes, reason },
+        None => Forcing::Joint { probes },
+    }
 }
 
 /// One vector in the hand-off grammar: comma-separated `i64`, no spaces.
@@ -3372,6 +3487,10 @@ fn render_repair_outcome(verdict: &Repair, exceptions: usize) -> String {
 fn render_driven(p: &RepairProblem) -> String {
     let mut out = render_repair_header(p);
     let driven = drive_repair(p);
+    // ONE spelling of the verdict word, read off the answer itself — the
+    // REPAIRED arm gets it from `Repair::name` through the shared outcome
+    // renderer, and the other two from here.
+    let headline = driven.name();
     out.push_str(&render_exception_block(driven.exceptions()));
     match driven {
         Driven::Repaired { exceptions, report } => {
@@ -3381,18 +3500,19 @@ fn render_driven(p: &RepairProblem) -> String {
         }
         Driven::JointConflict { certificate, leaned_on, probes, trail, .. } => {
             out.push_str(&format!(
-                "\nVERDICT              REPAIR-JOINT-CONFLICT -- {JOINT_CONFLICT_READING}\n",
+                "\nVERDICT              {headline} -- {JOINT_CONFLICT_READING}\n",
             ));
             out.push_str(&format!("certificate          {}\n", render_certificate(&certificate)));
             for label in &leaned_on {
                 out.push_str(&format!("      leans on   {label}\n"));
             }
+            out.push_str(&render_joint_structure(p, &probes));
             out.push_str(&render_probes("clauses probed", &probes));
             out.push_str(&render_trail(&trail));
         }
         Driven::Inconclusive { reason, trail, .. } => {
             out.push_str(&format!(
-                "\nVERDICT              INCONCLUSIVE -- {reason}\nROUTED               \
+                "\nVERDICT              {headline} -- {reason}\nROUTED               \
                  §5.4: \"the oracle did not decide\" is never infeasibility, and this is not a \
                  licence to fall back on a heuristic answer.\n",
             ));
@@ -3454,7 +3574,48 @@ fn render_exception_block(exceptions: &[CertifiedException]) -> String {
     out
 }
 
-/// Every clause examined at one iteration, in canonical order, with its answer.
+/// **THE SHAPE OF A JOINT CONFLICT, in one block.**
+///
+/// For each clause whose removal did not help, the OTHER sign clauses its
+/// residual certificate still leans on. That is the joint structure said
+/// plainly: "remove this one and the contradiction moves to those" is what an
+/// owner is being asked to rule on, and reading it out of fourteen multi-row
+/// certificates by eye is exactly the kind of derivation an artifact should do
+/// once rather than ask its reader to do.
+///
+/// A clause is recognised by STRING EQUALITY against
+/// [`RepairProblem::clause_text`], which is the same spelling
+/// [`System::inequalities`] labels the box row with — one spelling, so this
+/// cannot drift into naming rows that are not clauses.
+fn render_joint_structure(p: &RepairProblem, probes: &[ExceptionProbe]) -> String {
+    let clauses: Vec<(CandidateFeature, String)> = CandidateFeature::ALL
+        .into_iter()
+        .filter(|c| p.clause_active(*c))
+        .map(|c| (c, p.clause_text(c)))
+        .collect();
+    let mut out = String::from(
+        "\njoint structure      (remove ONE clause and these sign clauses still carry the \
+         residual certificate)\n",
+    );
+    for probe in probes.iter().filter(|probe| probe.answer == "still infeasible") {
+        let still: Vec<&str> = clauses
+            .iter()
+            .filter(|(c, text)| {
+                *c != probe.candidate
+                    && probe.leaned_on.iter().any(|label| label.starts_with(&format!("{text} x")))
+            })
+            .map(|(c, _)| c.label())
+            .collect();
+        out.push_str(&format!(
+            "  without `{}`          still leans on {:?}\n",
+            probe.clause, still,
+        ));
+    }
+    out
+}
+
+/// Every clause examined at one iteration, in canonical order, with its answer
+/// and — for a refusal — the rows its RESIDUAL certificate leaned on.
 fn render_probes(heading: &str, probes: &[ExceptionProbe]) -> String {
     let mut out = format!("{heading} (canonical `Feature::ALL` order, first FEASIBLE wins)\n");
     for probe in probes {
@@ -3465,6 +3626,9 @@ fn render_probes(heading: &str, probes: &[ExceptionProbe]) -> String {
             probe.answer,
             probe.detail,
         ));
+        for label in &probe.leaned_on {
+            out.push_str(&format!("               residual leans on   {label}\n"));
+        }
     }
     out
 }
@@ -6365,7 +6529,10 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
         // The probes that said no are printed too: a claim about an ORDER is
         // only checkable when the order is on the page.
         for label in ["S1", "S2", "S3"] {
-            assert!(out.contains(&format!("{label}  `{label} >= 0`")), "{label} probed: {out}");
+            assert!(
+                out.contains(&format!("`{label} >= 0`  still infeasible")),
+                "{label} was probed and refused: {out}",
+            );
         }
     }
 
@@ -6381,9 +6548,21 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
         assert!(out.contains("VERDICT              REPAIR-JOINT-CONFLICT"), "{out}");
         assert!(out.contains("routed to the OWNER"), "{out}");
         assert!(out.contains("exceptions applied   0"), "{out}");
-        assert!(out.contains("S4"), "{out}");
-        assert!(out.contains("S5"), "{out}");
         assert!(!out.contains("certified exception 1"), "nothing was applied: {out}");
+
+        // **THE JOINT STRUCTURE, said plainly.** Removing S4's clause leaves the
+        // contradiction standing on S5's and the reverse; every other clause is
+        // irrelevant to both, so its removal leans on BOTH survivors. Derived
+        // from the two rows before the engine ran.
+        assert!(out.contains("joint structure"), "{out}");
+        assert!(out.contains("without `S4 >= 0`          still leans on [\"S5\"]"), "{out}");
+        assert!(out.contains("without `S5 >= 0`          still leans on [\"S4\"]"), "{out}");
+        assert!(
+            out.contains("without `S1 >= 0`          still leans on [\"S4\", \"S5\"]")
+                || out.contains("without `S1 >= 0`          still leans on [\"S4\"]"),
+            "an irrelevant clause's residual names whichever contradiction the LP certified: \
+             {out}",
+        );
     }
 
     /// Same inputs, byte-identical page — the driver draws no entropy and reads
@@ -6395,6 +6574,163 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
         let first = render_driven(&anchored_problem(rows));
         let second = render_driven(&anchored_problem(rows));
         assert_eq!(first, second, "the driver reproduces from its inputs");
+    }
+
+    /// The real registered LATE problem at R9's anchor, built the way
+    /// `run_repair_real` builds it.
+    fn real_late_problem() -> RepairProblem {
+        let rules = Rules::standard();
+        let mut rows = Vec::new();
+        for pair in REGISTERED.iter().filter(|p| {
+            matches!(p.role, PairRole::Constraint) && p.stages.contains(&StageEndpoint::Late)
+        }) {
+            rows.push(extract_row(pair, StageEndpoint::Late, &rules).expect("the registry extracts"));
+        }
+        let (kept, dropped) = project_pair_rows(rows);
+        let sys = assemble(StageEndpoint::Late, kept, BOX_LIMIT);
+        let w0 = start_vector("v2-padded", StageEndpoint::Late).expect("a registered start");
+        RepairProblem::new(StageEndpoint::Late, sys, dropped, "v2-padded", w0)
+            .expect("the anchor is admissible")
+    }
+
+    /// **THE REAL LATE ENDPOINT IS A JOINT CONFLICT — the engine's answer, and
+    /// it is NOT the S4 exception the batch row expected.**
+    ///
+    /// The batch's B1 grounds anticipated `S4` at dose `−2`, with the next
+    /// forced coordinate reachable by ITERATION. The engine's typed answer is
+    /// that no coordinate is singly forced at all, and it holds a verified
+    /// certificate for every one of the fourteen refusals. Two contradictions
+    /// stand INDEPENDENTLY in the registered late rows, and each survives the
+    /// other's clause being removed:
+    ///
+    /// * **(A) `w_S4 ≤ −2`** — T3's finding, unchanged: `2×1(b) + 1×8 + 2×(hand:
+    ///   on_board > excess)` sums every column to zero except `S4` at `−4`, with
+    ///   `y·b = 5`, so `−4·w_S4 ≥ 5` and `w_S4 ≤ −5/4 → ≤ −2` over the integers.
+    /// * **(B) `w_S3 ≤ −4`** — NEW here, and PROVEN rather than observed:
+    ///   `2×1(b) + 4×1(c) + 3×8 + 6×(hand: on_board > excess)` sums every column
+    ///   to zero except `S3` at `−4`, with `y·b = 15`, so `−4·w_S3 ≥ 15` and
+    ///   `w_S3 ≤ −15/4 → ≤ −4`. The ledger had S3-late as OBSERVED negative at
+    ///   the §8:975 witness; this is a certificate.
+    ///
+    /// (B) uses no S4 clause and (A) uses no S3 clause, so removing either alone
+    /// leaves the other standing — which is exactly B1's JOINT conflict, and
+    /// exactly why the class declines to act. The arithmetic is re-derived here
+    /// from the certificate's own multipliers so the claim is checkable without
+    /// re-running anything.
+    #[test]
+    fn the_real_late_endpoint_is_a_certified_joint_conflict_over_s4_and_s3() {
+        let problem = real_late_problem();
+        let driven = drive_repair(&problem);
+        let Driven::JointConflict { exceptions, probes, .. } = driven else {
+            panic!(
+                "the engine's answer is the record: the real late endpoint drives to \
+                 REPAIR-JOINT-CONFLICT, and a change to that must be re-derived here",
+            );
+        };
+        assert!(exceptions.is_empty(), "no coordinate was proven singly forced");
+        assert_eq!(probes.len(), 14, "every surviving candidate's clause was probed");
+        assert!(
+            probes.iter().all(|p| p.answer == "still infeasible"),
+            "and every one came back CERTIFIED infeasible, never undecided",
+        );
+
+        // (A) and (B), re-derived from the shipped multipliers rather than
+        // quoted: the two `y·b` values are the two contradictions.
+        let s4 = probes
+            .iter()
+            .find(|p| p.candidate == CandidateFeature::PresidentLocalAccess)
+            .expect("S4 was probed");
+        assert!(
+            s4.leaned_on.iter().any(|l| l.starts_with("S3 >= 0 x")),
+            "with S4 free the contradiction moves onto S3's clause: {:?}",
+            s4.leaned_on,
+        );
+        for label in ["pair 1(b) late x2", "pair 1(c) late x4", "pair 8 late x3"] {
+            assert!(
+                s4.leaned_on.iter().any(|l| l.starts_with(label)),
+                "{label} carries the S3 residual: {:?}",
+                s4.leaned_on,
+            );
+        }
+        let s3 = probes
+            .iter()
+            .find(|p| p.candidate == CandidateFeature::AssistantAreasDistinct)
+            .expect("S3 was probed");
+        assert!(
+            s3.leaned_on.iter().any(|l| l.starts_with("S4 >= 0 x")),
+            "and with S3 free it stands on S4's: {:?}",
+            s3.leaned_on,
+        );
+    }
+
+    /// **THE ENGINE'S TWO LATE CONTRADICTIONS, DERIVED FROM THE ROW DATA** —
+    /// arithmetic, not a re-run.
+    ///
+    /// Both combinations are checked column by column against the registered
+    /// rows through the same [`verify_farkas`] trust boundary the oracle uses,
+    /// and the implied integer bounds are computed from `y·b` here. A row
+    /// change that broke either derivation breaks this cell rather than quietly
+    /// re-pointing the finding.
+    #[test]
+    fn the_two_late_contradictions_are_arithmetic_over_the_registered_rows() {
+        let problem = real_late_problem();
+        let all = problem.sys.inequalities();
+        let index = |label: &str| {
+            all.iter()
+                .position(|r| r.label == label)
+                .unwrap_or_else(|| panic!("{label} is a row of the late system"))
+        };
+        // (A) S4 <= -2 and (B) S3 <= -4: the multiplier sets, the coordinate
+        // each one isolates, and the |coefficient| it isolates it at.
+        for (name, multipliers, isolated, coefficient, yb, bound) in [
+            (
+                "(A) w_S4 <= -2",
+                vec![("pair 1(b) late", 2i128), ("pair 8 late", 1), ("hand: on_board > excess", 2)],
+                col("S4"),
+                -4i128,
+                5i128,
+                -2i64,
+            ),
+            (
+                "(B) w_S3 <= -4",
+                vec![
+                    ("pair 1(b) late", 2),
+                    ("pair 1(c) late", 4),
+                    ("pair 8 late", 3),
+                    ("hand: on_board > excess", 6),
+                ],
+                col("S3"),
+                -4,
+                15,
+                -4,
+            ),
+        ] {
+            let mut y = vec![0i128; all.len()];
+            for (label, m) in &multipliers {
+                y[index(label)] = *m;
+            }
+            // Every column but the isolated one sums to zero, and that one sums
+            // to `coefficient` — the Farkas shape with a single survivor.
+            for column in 0..row_width(&all) {
+                let sum: i128 =
+                    all.iter().zip(&y).map(|(r, m)| i128::from(r.coef[column]) * m).sum();
+                let want = if column == isolated { coefficient } else { 0 };
+                assert_eq!(sum, want, "{name}: column {column}");
+            }
+            let rhs: i128 = all.iter().zip(&y).map(|(r, m)| i128::from(r.rhs) * m).sum();
+            assert_eq!(rhs, yb, "{name}: y·b");
+            // `coefficient · w >= yb` with a negative coefficient is
+            // `w <= yb / coefficient`, floored onto the integers.
+            assert_eq!(floor_div(rhs, coefficient) as i64, bound, "{name}: the integer bound");
+
+            // And the clause the bound contradicts is the registered `>= 0`.
+            let candidate = match FeatureId::all()[isolated] {
+                FeatureId::Candidate(c) => c,
+                FeatureId::Incumbent(_) => panic!("{name} isolates a candidate column"),
+            };
+            assert_eq!(sign_prior(candidate), 1, "{name}: the prior it opposes");
+            assert_eq!(problem.clause_text(candidate), format!("{} >= 0", candidate.label()));
+        }
     }
 
     /// A REMOVED feature has no sign clause, so naming one is a typed refusal
