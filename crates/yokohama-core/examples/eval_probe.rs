@@ -24945,4 +24945,332 @@ mod tests {
         let present = record_seed_note(Some(0x0DEC_0000_0000_0001));
         assert!(present.contains("0x0dec000000000001"), "{present}");
     }
+
+    // -----------------------------------------------------------------------
+    // T2b — the V2 scenario orderings, transcribed and printed item by item
+    // -----------------------------------------------------------------------
+
+    /// A `scenarios` read under one named table, or a panic naming the refusal.
+    fn scenarios_at(spec: &str) -> ScenarioOrderingsRead {
+        let rules = Rules::standard();
+        let (name, fit) = parse_step9_table("scenarios", spec).expect("the spec parses");
+        let table = WeightTable { early: fit.early, late: fit.late };
+        step9_scenarios_read(&name, &table, &rules).expect("the transcription builds")
+    }
+
+    fn item<'a>(read: &'a ScenarioOrderingsRead, scenario: usize, suffix: char) -> &'a OrderingItem {
+        read.items
+            .iter()
+            .find(|i| i.scenario == scenario && i.suffix == suffix)
+            .unwrap_or_else(|| panic!("no item [{scenario}{suffix}]"))
+    }
+
+    /// **THE ROSTER IS THE SUITE'S OWN NINETEEN, AND ITS EXCLUSIONS ARE NAMED.**
+    ///
+    /// Ruling P3 fixes membership by the suite's shape taxonomy
+    /// (`scenario_suite.rs:95-103`: the `eval(A) > eval(B)` shape "carries
+    /// nineteen scenarios"), so the count pin is structural rather than a
+    /// literal: nineteen transcribed, plus the two the taxonomy excludes, must
+    /// reconstruct the registry's whole `0..=20` exactly. A roster that dropped
+    /// one and double-counted another would pass a bare `len() == 19`.
+    ///
+    /// The well-formedness cell is the transcription's own guard: every claim is
+    /// a DIFFERENCE of scored views, so its signs must sum to zero (a plain
+    /// ordering is `[+A, −B]`; scenario 15's clause (c) compares two margins and
+    /// is four terms). A claim whose signs did not cancel would be scoring a
+    /// LEVEL rather than a margin, and levels are not what any suite clause
+    /// asserts.
+    #[test]
+    fn the_scenario_ordering_roster_transcribes_the_suites_nineteen_and_names_its_exclusions() {
+        let read = scenarios_at("v2-padded");
+
+        let mut scenarios: Vec<usize> = read.items.iter().map(|i| i.scenario).collect();
+        scenarios.dedup();
+        assert_eq!(scenarios.len(), 19, "the registered shape carries nineteen scenarios");
+        assert!(scenarios.windows(2).all(|w| w[0] < w[1]), "registry order, no repeats: {scenarios:?}");
+
+        let excluded: Vec<usize> = EXCLUDED_BY_SHAPE_SCENARIOS.iter().map(|(i, ..)| *i).collect();
+        assert_eq!(excluded, vec![7, 11], "the null-placement trap and the feature-function one");
+        let mut whole: Vec<usize> = scenarios.iter().copied().chain(excluded).collect();
+        whole.sort_unstable();
+        assert_eq!(whole, (0..=20).collect::<Vec<_>>(), "the two sets rebuild the registry entire");
+
+        for i in &read.items {
+            assert!(i.terms >= 2, "[{}{}] is not a comparison", i.scenario, i.suffix);
+            assert!(!i.claim.is_empty() && i.source.contains("scenario_suite.rs"));
+        }
+        assert_eq!(read.items.len(), 28, "twenty-eight ordering clauses over the nineteen");
+    }
+
+    /// **BORN-VALIDATION — every GATING item holds at `v2-padded`.**
+    ///
+    /// This is the brief's faithfulness gate as AMENDED by the controller's
+    /// erratum (T2b-R1): every *gating* item holds with a strictly positive
+    /// margin, the V2-TIED item prints its class with margin 0, and the
+    /// table-independent items print as such. The unamended form — "every
+    /// table-dependent item holds" — is false at the bytes, and the cell below
+    /// pins exactly why.
+    #[test]
+    fn every_gating_item_holds_at_v2_padded_and_the_two_terminals_print_table_independent() {
+        let read = scenarios_at("v2-padded");
+
+        let gating: Vec<&OrderingItem> =
+            read.items.iter().filter(|i| i.class == OrderingClass::Gating).collect();
+        assert_eq!(gating.len(), 25, "28 items less the two terminals and the one V2 tie");
+        for i in &gating {
+            assert!(i.read > 0, "[{}{}] must hold at V2: {}", i.scenario, i.suffix, i.read);
+            assert_eq!(i.read, i.v2, "under v2-padded the table under read IS V2");
+        }
+
+        // The terminal ladder short-circuits the weight vector (§2.6), so these
+        // two never consulted a weight — CLASSIFIED, not declared.
+        for scenario in [8, 13] {
+            let i = item(&read, scenario, 'a');
+            assert_eq!(i.class, OrderingClass::TableIndependent, "[{scenario}a]");
+            assert!(i.read > 0 && i.read == i.zero && i.read == i.v1);
+        }
+
+        assert!(step9_scenarios_passed(&read), "the gate's own positive control passes");
+        assert!(render_step9_scenarios(&read).contains("VERDICT step9 scenarios: PASS"));
+        assert_eq!(
+            cmd_step9(&["scenarios".to_string(), "--table".to_string(), "v2-padded".to_string()]),
+            Ok(0),
+        );
+    }
+
+    /// **RULING T2b-R1's PIN: the V2 tie at "order economics", at the bytes.**
+    ///
+    /// Registry index 1 (`order_economics_fulfill_now_vs_hold`,
+    /// `scenario_suite.rs:828-911`) is the one member of the nineteen that
+    /// `WeightTable::V2` does not order: the two positions score EQUAL. It is
+    /// therefore LISTED-NON-GATING — family 9 registers these as POSITIVE
+    /// CONTROLS (`2026-08-20-phase3.5c-v4-spec-prereg.md:667-669`), and a pair
+    /// the incumbent ties is not an ordering a draft can preserve.
+    ///
+    /// **The derivation, so a future drift is legible rather than mysterious.**
+    /// The pair separates on exactly three terms — measured, not assumed:
+    /// `victory_points` (+11, the card's printed VP), `achievement_progress_sum`
+    /// (−6, twenty down to fourteen) and `hand_size` (−1, the commitment that
+    /// left the hand) — and the fixture sits at `p = 0`, so the EARLY vector
+    /// governs exactly and the margin is closed-form:
+    ///
+    /// ```text
+    /// margin = 11·w_vp_e − 6·w_achv_e − w_hnd#_e
+    ///   V1 (10, 2, −3):  110 − 12 + 3 = +101   the suite's own recorded figure
+    ///   V2 ( 1, 2, −1):   11 − 12 + 1 =    0   the tie
+    /// ```
+    ///
+    /// The cause is the round-1/round-2 early re-mix that took `victory_points`
+    /// EARLY from 10 to 1 — the very change registry index 9 exists to guard, so
+    /// the two scenarios pull opposite ways on one weight. §5.4 pins
+    /// `w_vp == (1, 40)` as equalities, so no admissible step-9 table can
+    /// re-price its way out; the margin clears only when
+    /// `6·w_achv_e + w_hnd#_e < 11`, and V2 sits at exactly 11.
+    ///
+    /// **Pinned so a move is a LOUD failure routed to the controller, never a
+    /// silent membership change**: if either figure moves, the classification
+    /// this gate rests on has changed and the rulings row has to hear about it.
+    #[test]
+    fn the_v2_tie_at_order_economics_is_pinned_at_the_bytes_and_never_gates() {
+        let read = scenarios_at("v2-padded");
+        let tie = item(&read, 1, 'a');
+
+        assert_eq!(tie.v2, 0, "V2 does not order this pair — the tie, exactly");
+        assert_eq!(tie.v1, 101, "and V1 orders it by the suite's recorded +101");
+        assert_eq!(tie.class, OrderingClass::V2Tied);
+        assert!(!step9_scenarios_gates(tie), "a tie the incumbent cannot order never gates");
+
+        let report = render_step9_scenarios(&read);
+        assert!(report.contains("V2-TIED"), "the class prints: {report}");
+        assert!(
+            report.contains("the incumbent does not order this pair"),
+            "and says what it means",
+        );
+    }
+
+    /// **THE CLASS IS COMPUTED FROM THE BYTES, NEVER FROM THE INDEX** (T2b-R1).
+    ///
+    /// A classification hardwired to "index 1 is the tied one" would print the
+    /// right words today and lie the moment the table moved. The classifier
+    /// reads three probe tables and decides; this cell proves the decision is
+    /// the probes' and not the roster's, by exhibiting a table under read where
+    /// index 1's own margin is nonzero (`v2-refit-padded`, −17) and checking it
+    /// is STILL V2-TIED — because the class is a fact about V2, not about the
+    /// table under read — and by checking every other item's class is stable
+    /// across three different tables under read.
+    #[test]
+    fn the_item_classes_are_computed_from_probe_tables_rather_than_hardwired() {
+        let padded = scenarios_at("v2-padded");
+        let refit = scenarios_at("v2-refit-padded");
+        let zero = scenarios_at("zero");
+
+        let tie = item(&refit, 1, 'a');
+        assert_eq!(tie.read, -17, "the refit table DOES order this pair, the other way");
+        assert_eq!(tie.class, OrderingClass::V2Tied, "the class is V2's fact, not the draft's");
+
+        for (a, b) in [(&padded, &refit), (&padded, &zero)] {
+            for (x, y) in a.items.iter().zip(b.items.iter()) {
+                assert_eq!((x.scenario, x.suffix), (y.scenario, y.suffix));
+                assert_eq!(x.class, y.class, "[{}{}] class moved with the table", x.scenario, x.suffix);
+                assert_eq!((x.v2, x.v1, x.zero), (y.v2, y.v1, y.zero), "probes are table-invariant");
+            }
+        }
+    }
+
+    /// **THE LIVE-PATH DISCRIMINATOR — verdicts a hardwired V2 could not
+    /// produce.**
+    ///
+    /// The failure this cell exists to catch is an instrument that scores every
+    /// item against `WeightTable::V2` whatever `--table` says: it would report
+    /// PASS for every table ever handed to it, and the gate would wave through
+    /// exactly the regression it exists to catch. Under `v2-refit-padded` the
+    /// read column MOVES — eight named gating items flip to VIOLATED while
+    /// seventeen still hold, a mixture no hardwire can fake — and the V2 column
+    /// beside them is unchanged, which is itself the proof that only the
+    /// read side moved.
+    ///
+    /// Derived at the bytes before the pin was written.
+    #[test]
+    fn the_refit_table_moves_verdicts_a_hardwired_v2_could_not_produce() {
+        let padded = scenarios_at("v2-padded");
+        let refit = scenarios_at("v2-refit-padded");
+
+        let violated: Vec<(usize, char)> = refit
+            .items
+            .iter()
+            .filter(|i| i.class == OrderingClass::Gating && i.read <= 0)
+            .map(|i| (i.scenario, i.suffix))
+            .collect();
+        assert_eq!(
+            violated,
+            vec![(3, 'a'), (5, 'a'), (6, 'a'), (9, 'a'), (10, 'a'), (15, 'b'), (16, 'b'), (20, 'a')],
+            "the refit table's eight failures, by name and in registry order",
+        );
+        assert_eq!(item(&refit, 10, 'a').read, -282, "the sharpest of them, at the bytes");
+        assert_eq!(item(&refit, 3, 'a').read, 0, "and a bare tie is not a HOLDS either");
+
+        assert!(!step9_scenarios_passed(&refit), "eight failures is not a pass");
+        assert!(render_step9_scenarios(&refit).contains("VERDICT step9 scenarios: FAIL"));
+        assert_eq!(
+            cmd_step9(&[
+                "scenarios".to_string(),
+                "--table".to_string(),
+                "v2-refit-padded".to_string(),
+            ]),
+            Ok(EXIT_GATE_FAILED),
+            "a gate that read and said NO exits 1, never 0 and never 2",
+        );
+
+        // The V2 column does not depend on the table under read — so the
+        // divergence above is the READ side moving, and nothing else.
+        for (x, y) in padded.items.iter().zip(refit.items.iter()) {
+            assert_eq!(x.v2, y.v2, "[{}{}]", x.scenario, x.suffix);
+        }
+        assert_ne!(
+            padded.items.iter().map(|i| i.read).collect::<Vec<_>>(),
+            refit.items.iter().map(|i| i.read).collect::<Vec<_>>(),
+            "two different tables must be two different reads, not one read twice",
+        );
+    }
+
+    /// **A ZERO TABLE COLLAPSES EVERY GATING MARGIN AND NO CLASS.**
+    ///
+    /// The constant evaluator scores every non-terminal view 0, so all
+    /// twenty-five gating margins read exactly 0 — the degenerate arm, and the
+    /// bluntest possible demonstration that the weights reach the evaluation.
+    /// What must NOT collapse is the classification: the two terminal items
+    /// still carry their ladder values (no weight was ever consulted), and the
+    /// V2 tie is still a fact about V2.
+    #[test]
+    fn a_zero_table_collapses_every_gating_margin_and_never_the_classes() {
+        let read = scenarios_at("zero");
+        for i in &read.items {
+            match i.class {
+                OrderingClass::Gating | OrderingClass::V2Tied => {
+                    assert_eq!(i.read, 0, "[{}{}] under a constant evaluator", i.scenario, i.suffix);
+                }
+                OrderingClass::TableIndependent => assert!(i.read > 0, "the ladder survives"),
+            }
+        }
+        assert_eq!(read.items.iter().filter(|i| i.class == OrderingClass::Gating).count(), 25);
+        assert!(!step9_scenarios_passed(&read));
+    }
+
+    /// **THE ARTIFACT PRINTS EVERY ITEM, AND ITS EXCLUSIONS ARE ON IT** (T2b-R2).
+    ///
+    /// The three PROPERTY clauses excluded by shape are EQUALITIES, not
+    /// `eval(A) > eval(B)` orderings, and a reader must be able to see that
+    /// from the artifact alone rather than from this file — otherwise "the
+    /// orderings" silently means "the orderings minus three" forever.
+    #[test]
+    fn the_report_prints_every_item_and_carries_the_completeness_line() {
+        let read = scenarios_at("v2-padded");
+        let report = render_step9_scenarios(&read);
+
+        for i in &read.items {
+            assert!(
+                report.contains(&format!("[{:>2}{}]", i.scenario, i.suffix)),
+                "[{}{}] is missing from the report",
+                i.scenario,
+                i.suffix,
+            );
+        }
+        assert!(report.contains("28 ordering item"), "the item count: {report}");
+        assert!(report.contains("nineteen"), "the scenario count");
+        for (_, name, _) in EXCLUDED_BY_SHAPE_SCENARIOS {
+            assert!(report.contains(name), "excluded scenario {name:?} unnamed in the report");
+        }
+        assert_eq!(EXCLUDED_EQUALITY_CLAUSES.len(), 3);
+        for (scenario, _, suffix, _, _) in EXCLUDED_EQUALITY_CLAUSES {
+            assert!(
+                report.contains(&format!("{scenario}({suffix})")),
+                "excluded equality clause {scenario}({suffix}) unnamed in the report",
+            );
+        }
+        assert!(report.contains("EQUALIT"), "and said to be excluded AS equalities");
+    }
+
+    /// **DETERMINISM — `score` is pure and the fixtures consume no randomness.**
+    ///
+    /// Every figure this gate prints has to reproduce, or a step-9 artifact is
+    /// not evidence. Two independent builds of the whole read, compared item by
+    /// item AND as rendered bytes.
+    #[test]
+    fn the_scenario_ordering_margins_are_byte_stable_across_two_builds() {
+        let (first, second) = (scenarios_at("v2-padded"), scenarios_at("v2-padded"));
+        for (x, y) in first.items.iter().zip(second.items.iter()) {
+            assert_eq!(
+                (x.scenario, x.suffix, x.read, x.v2, x.v1, x.zero, x.class),
+                (y.scenario, y.suffix, y.read, y.v2, y.v1, y.zero, y.class),
+            );
+        }
+        assert_eq!(render_step9_scenarios(&first), render_step9_scenarios(&second));
+    }
+
+    /// **THE THIRD SECTION IS DISPATCHED, AND THE SHARED PARSER NAMES IT.**
+    ///
+    /// T1's parser spelled "structural" into every refusal whichever section
+    /// called it — harmless while there was one caller, a wrong message the
+    /// moment there were three. The section is threaded through, so `structural`
+    /// keeps its exact wording (byte-stable) and the other two stop lying.
+    #[test]
+    fn the_scenarios_section_dispatches_and_the_shared_parser_names_its_caller() {
+        let refusal = cmd_step9(&["nonesuch".to_string()]).expect_err("unknown section");
+        for section in ["structural", "rooted", "scenarios"] {
+            assert!(refusal.contains(section), "the refusal names {section}: {refusal}");
+        }
+        let missing = cmd_step9(&["scenarios".to_string()]).expect_err("no --table");
+        assert!(missing.contains("needs --table"), "{missing}");
+        let positional =
+            cmd_step9(&["scenarios".to_string(), "stray".to_string()]).expect_err("positional");
+        assert!(positional.contains("no positional arguments"), "{positional}");
+
+        for section in ["structural", "rooted", "scenarios"] {
+            let refusal = parse_step9_table(section, "nonesuch").expect_err("not a table");
+            assert!(
+                refusal.contains(&format!("step9 {section} --table")),
+                "the refusal names its own caller: {refusal}",
+            );
+        }
+    }
 }
