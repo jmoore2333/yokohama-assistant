@@ -24666,6 +24666,54 @@ mod tests {
             Err(RootedMiss::Save(reason)) => println!("typed miss  {reason}"),
             Err(RootedMiss::Instrument(detail)) => panic!("instrument: {detail}"),
         }
+
+        // **THE THREADING DISCRIMINATOR — the table under read REACHES THE
+        // SEARCH, and is not V2 wearing the draft's header.**
+        //
+        // Everything above runs at V2, so all of it would pass unchanged if
+        // `rooted_table` hard-wired `WeightTable::V2` into the agent
+        // constructor: the gate would then report the shipped answer under every
+        // draft table while printing the draft identity in its header, which is
+        // the one lie this surface's whole header exists to prevent. This file's
+        // own convention is to close exactly this hazard with a cell rather than
+        // an argument — `lookahead_probe_agent`'s doc cites
+        // `lookahead_knobs_reach_their_agent_slots_unswapped` because "a k/m
+        // transposition compiles clean".
+        //
+        // **The values are DERIVED, not guessed.** Run at `v2-refit-padded` the
+        // pair TIES: enabling and dead land on one value, so the delta is +0
+        // where V2 reads −1. Both figures were measured at these bytes on a
+        // `cargo clean`ed build before this pin was written, and both are
+        // deterministic in (root, decision seed, weights, knobs). Under a
+        // hard-wired V2 this block reads −1 and fails.
+        let refit = match e113_step9_gate(&WeightTable::V2_REFIT_PADDED, &rules) {
+            Ok(gate) => gate,
+            Err(RootedMiss::Save(reason)) => {
+                println!("typed miss  {reason}");
+                return;
+            }
+            Err(RootedMiss::Instrument(detail)) => panic!("instrument: {detail}"),
+        };
+        assert_eq!(
+            refit.delta(),
+            0,
+            "at v2-refit-padded the registered pair TIES — and a hard-wired V2 would read -1 here",
+        );
+        assert!(!refit.passed(), "a tie is not STRICTLY greater");
+        assert_ne!(
+            refit.ranked, gate.ranked,
+            "the searched VALUES must move with the table: identical rankings under two different \
+             tables would mean the weights never reached the search",
+        );
+        // The header's identity and the table the search actually ran must move
+        // TOGETHER — an echo naming the draft over V2's values is the failure.
+        assert_eq!(refit.echo, rooted_echo(&shipped_controller_knobs().unwrap(), &WeightTable::V2_REFIT_PADDED));
+        assert_ne!(refit.echo, gate.echo);
+        // Identity is table-independent: the same root, the same two registered
+        // successors, whatever the table prices them at.
+        assert_eq!(refit.root_digest, E113_ROOT_DIGEST);
+        assert_eq!(refit.enabling_digest, E113_ENABLING_DIGEST);
+        assert_eq!(refit.dead_digest, E113_DEAD_DIGEST);
     }
 
     /// **THE e93 WINNER GATE, BORN-VALIDATED** — plus its typed cross-pin.
@@ -24709,6 +24757,50 @@ mod tests {
             Err(RootedMiss::Save(reason)) => println!("typed miss  {reason}"),
             Err(RootedMiss::Instrument(detail)) => panic!("instrument: {detail}"),
         }
+
+        // **THE THREADING DISCRIMINATOR, on the gate that compares TWO tables.**
+        //
+        // This gate is the sharpest place to catch a hard-wired table, because a
+        // hard-wire makes its two sides the SAME search: `draft` would become a
+        // second V2 read, `passed()` would be TRUE for every draft table ever
+        // handed to it, and the winner gate would wave through exactly the
+        // regression it exists to catch. Under the real path the refit table
+        // MOVES the winner off the registry's recorded move.
+        //
+        // **Derived at the bytes**, on a `cargo clean`ed build, before the pin
+        // was written: at `v2-refit-padded` the argmax moves from
+        // `PlaceTwoSameArea{area 2}` (+351 at V2, a +116 strict separation) to
+        // `PlaceThreeAreas{[6,8,9]}`. The V2 SIDE is unchanged — it is built from
+        // `WeightTable::V2` regardless of the table under read — so the cross-pin
+        // still holds here, and that asymmetry is itself the proof that only the
+        // draft side moved.
+        let refit = match e93_winner_gate(&WeightTable::V2_REFIT_PADDED, &rules) {
+            Ok(gate) => gate,
+            Err(RootedMiss::Save(reason)) => {
+                println!("typed miss  {reason}");
+                return;
+            }
+            Err(RootedMiss::Instrument(detail)) => panic!("instrument: {detail}"),
+        };
+        assert_eq!(
+            refit.v2_argmax().map(canonical_encoding),
+            gate.v2_argmax().map(canonical_encoding),
+            "the V2 side does not depend on the table under read",
+        );
+        assert_eq!(
+            refit.draft_argmax().map(canonical_encoding),
+            Some(canonical_encoding(&Move::PlaceThreeAreas {
+                placements: vec![AreaId(6), AreaId(8), AreaId(9)],
+            })),
+            "at v2-refit-padded the winner MOVES — and a hard-wired V2 would report the recorded \
+             move here and pass",
+        );
+        assert!(!refit.passed(), "a moved winner is not a preserved one");
+        assert!(refit.verdict().contains("the winner MOVED"), "{}", refit.verdict());
+        assert_ne!(
+            refit.draft.ranked, refit.v2.ranked,
+            "the two sides must be two different searches, not one read twice",
+        );
     }
 
     /// **THE `step9` GLUE, EXERCISED** — the section dispatch and the argument
