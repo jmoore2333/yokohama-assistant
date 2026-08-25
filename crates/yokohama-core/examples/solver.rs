@@ -1302,18 +1302,20 @@ const CG_AUTHORITY: &str = "B2 (guidingpath decision log, 2026-08-25, \"THE T4-E
 /// How many ROUNDS of rounding one derivation may run.
 ///
 /// **Not a registered figure**, and the distinction matters as much here as it
-/// does for [`REPAIR_ORACLE_BUDGET`]. These three caps are ENGINE-LOCAL choices
-/// about how hard ONE derivation may look, nothing downstream reads them as
-/// registered quantities, and exceeding one truncates the cut set
-/// deterministically — never a verdict.
+/// does for [`REPAIR_ORACLE_BUDGET`]. The FOUR caps this section adds —
+/// [`CG_MAX_ROUNDS`], [`CG_MAX_ELIMINATION_CUTS`], [`CG_MAX_PAIRS`] and
+/// [`CG_MAX_CUT_SUPPORT`] — are ENGINE-LOCAL choices about how hard ONE
+/// derivation may look, nothing downstream reads them as registered quantities,
+/// and exceeding one truncates the cut set deterministically — never a verdict.
 ///
-/// **A wording disagreement, recorded rather than resolved** (the D3/D6 style).
-/// B2 says "the engine-local 10⁷ per-question budget stands unchanged", while
+/// **The 10⁷ budgets are a different thing, and that is now SETTLED.** B2's
+/// sentence called the per-question enumeration budget "engine-local"; the
+/// spec's own pre-registration registers both 10⁷ figures verbatim, so
 /// [`ENUMERATION_BUDGET`]'s in-source provenance — written at T3 and quoting
-/// §5.4 directly — calls the same figure registered. This wave changed NEITHER
-/// comment and neither value: the two spellings disagree about the 10⁷'s
-/// provenance, not about the number, and which is right is the owner's to say.
-/// The three caps here are engine-local under either reading.
+/// §5.4 — is RIGHT, and the ruling's qualifier was a conflation with
+/// [`REPAIR_ORACLE_BUDGET`]'s 20,000, which genuinely is engine-local.
+/// Settlement: the 2026-08-25 adjudication row. Neither 10⁷ value moved, and
+/// the four caps above stay engine-local under any reading.
 const CG_MAX_ROUNDS: usize = 3;
 
 /// How many cuts one ELIMINATION round may accept.
@@ -4056,8 +4058,17 @@ fn render_repair_header(p: &RepairProblem) -> String {
 /// One projection outcome, printed whole.
 ///
 /// `exceptions` is how many B1 exceptions were standing when the projection ran
-/// — `0` on the raw path, where the REPAIRED line is byte-identical to what it
-/// always was.
+/// — `0` on the raw path, where this line's format is exactly what it was before
+/// the driver existed (the suffix is empty at zero exceptions).
+///
+/// **That is a claim about this LINE and not about the page.** The raw page as a
+/// whole is NOT byte-identical to the pre-wave one, and should not be read as
+/// such: B2's extension lives inside [`Projection::ask`], which is BELOW the
+/// driver switch, so `--no-exceptions` still asks its questions through the
+/// extended oracle — and a trail step closed by a non-Farkas certificate renders
+/// differently since MUST-1. What `--no-exceptions` reaches is the RAW
+/// UN-EXCEPTED PROJECTION, which is the property the standing S4-late
+/// regression pins, and nothing broader.
 fn render_repair_outcome(verdict: &Repair, exceptions: usize) -> String {
     let mut out = String::new();
     let headline = verdict.name();
@@ -5702,6 +5713,150 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
         let mut absent_parent = cuts.clone();
         absent_parent[0].parents[0].0 = base.len() + 99;
         assert!(verify_cut_chain(&base, &absent_parent).is_err(), "a parent that is not there");
+    }
+
+    /// **THE CHAIN IS REBUILT INCREMENTALLY, AND A FORWARD REFERENCE PROVES
+    /// IT.**
+    ///
+    /// A cut may name an EARLIER cut as a parent — that is what a chain is —
+    /// but it may not name a LATER one, because at the moment it was derived
+    /// that row did not exist. A verifier that built the whole pool up front
+    /// would accept both, and the existing tamper case cannot tell the two
+    /// apart: `base.len() + 99` is out of range under either construction.
+    ///
+    /// The discriminating pair is built by hand so the arithmetic checks out in
+    /// BOTH directions and only the ORDER differs:
+    ///
+    /// * `Y = ceil(1/4 · [4·w_S1 ≥ 3])` is `w_S1 ≥ 1`;
+    /// * `X = ceil(1 · Y)` is `w_S1 ≥ 1` again — a legitimate combination OF Y.
+    ///
+    /// `[Y, X]` verifies: X's parent is the cut before it. `[X, Y]` must NOT:
+    /// X's parent index now points past the pool as it stood when X was
+    /// verified. Under a pool built up front the index would resolve to Y and
+    /// the arithmetic would check out, so this is the cell that fails on that
+    /// mutation and passes here.
+    #[test]
+    fn a_cut_may_name_an_earlier_cut_as_a_parent_and_never_a_later_one() {
+        let s1 = col("S1");
+        let sys = toy(StageEndpoint::Early, &[("four S1 at least 3", &[(s1, 4)], 3)], BOX_LIMIT);
+        let base = sys.inequalities();
+        let parent = base
+            .iter()
+            .position(|r| r.label == "four S1 at least 3")
+            .expect("the row is in the system");
+
+        let mut coef = vec![0i64; row_width(&base)];
+        coef[s1] = 1;
+        let y = DerivedCut {
+            label: "C-G cut: ceil(1/4 x [four S1 at least 3])".to_string(),
+            parents: vec![(parent, Rat::new(1, 4).expect("a quarter"))],
+            coef: coef.clone(),
+            rhs: 1,
+        };
+        // X is a combination of Y at multiplier 1, wherever Y happens to sit.
+        let x = |index: usize| DerivedCut {
+            label: "C-G cut: ceil(1 x [the cut before it])".to_string(),
+            parents: vec![(index, Rat::int(1))],
+            coef: coef.clone(),
+            rhs: 1,
+        };
+
+        // BACKWARD: Y first, then X naming Y at the first cut slot. Legal.
+        assert_eq!(
+            verify_cut_chain(&base, &[y.clone(), x(base.len())]),
+            Ok(()),
+            "a cut may lean on the cut before it — that is what a chain IS",
+        );
+        // FORWARD: X first, naming the slot Y will occupy. Illegal, and the
+        // arithmetic is identical, so only the ORDER can be what rejects it.
+        assert!(
+            verify_cut_chain(&base, &[x(base.len() + 1), y]).is_err(),
+            "a cut may not lean on a row that did not exist when it was derived",
+        );
+    }
+
+    /// **QUESTION (i) USES THE EXTENDED ORACLE, AND THIS IS WHERE THAT SHOWS.**
+    ///
+    /// The wide `2·w_S1 = 1` system is infeasible in a way plain [`decide`]
+    /// cannot certify — it routes INCONCLUSIVE over the enumeration budget — so
+    /// a driver whose question (i) asked `decide` would hold no standing
+    /// certificate and would route INCONCLUSIVE with "question (i) re-read the
+    /// same system as INCONCLUSIVE". Asking through [`decide_with_cuts`] is what
+    /// lets it reach a typed verdict at all, and reverting that one call fails
+    /// this cell.
+    #[test]
+    fn the_driver_reaches_a_typed_verdict_only_because_question_one_uses_the_extension() {
+        let problem = wide_integer_only_problem();
+        // The mutation's own view of the world, stated so the cell says what it
+        // is discriminating against: plain `decide` does NOT decide this.
+        assert!(
+            matches!(decide(&problem.sys), Verdict::Inconclusive { .. }),
+            "the frozen oracle alone cannot certify this system",
+        );
+        assert!(
+            matches!(decide_with_cuts(&problem.sys), Verdict::Unsat { .. }),
+            "and the extension can",
+        );
+
+        let driven = drive_repair(&problem);
+        assert_eq!(
+            driven.name(),
+            "REPAIR-JOINT-CONFLICT",
+            "the driver reaches a typed verdict; a plain-`decide` question (i) would route \
+             INCONCLUSIVE instead",
+        );
+        let Driven::JointConflict { probes, .. } = driven else { unreachable!() };
+        assert!(
+            probes.iter().all(|p| p.answer == ProbeAnswer::StillInfeasible),
+            "every probe DECIDED, which is also only true through the extension",
+        );
+        assert!(
+            probes.iter().all(|p| p.residual == Some(CertificateShape::ChvatalGomory)),
+            "and every residual carries the extension's own certificate shape",
+        );
+    }
+
+    /// **THE CEILING MUST BITE, or there is no cut.**
+    ///
+    /// A combination whose right-hand side is already an integer rounds to
+    /// itself, so the "cut" is the combination — a row the relaxation already
+    /// implies. Emitting it would cost the exact simplex a column and teach
+    /// nothing. The pair below differs only in the right-hand side, so the rule
+    /// is what separates them and not the shape of the row.
+    #[test]
+    fn a_proposal_whose_ceiling_does_not_bite_is_not_a_cut() {
+        let s1 = col("S1");
+        let sys = toy(
+            StageEndpoint::Early,
+            &[("twice S1 at least 4", &[(s1, 2)], 4), ("twice S1 at least 3", &[(s1, 2)], 3)],
+            BOX_LIMIT,
+        );
+        let pool = sys.inequalities();
+        let width = row_width(&pool);
+        let half = Rat::new(1, 2).expect("a half");
+        let index = |label: &str| {
+            pool.iter().position(|r| r.label == label).unwrap_or_else(|| panic!("{label}"))
+        };
+
+        // 4/2 = 2 is already an integer: no cut.
+        assert!(
+            propose_cut(&pool, width, vec![(index("twice S1 at least 4"), half)]).is_none(),
+            "an integral right-hand side rounds to itself, so the row is LP-implied",
+        );
+        // 3/2 = 1.5 rounds UP to 2: a real strengthening.
+        let cut = propose_cut(&pool, width, vec![(index("twice S1 at least 3"), half)])
+            .expect("the ceiling bites here");
+        assert_eq!(cut.rhs, 2, "ceil(3/2)");
+        assert_eq!(cut.coef[s1], 1, "and the gcd is folded into the multiplier");
+
+        // The same rule read through the shipped Stage-A generator, so the
+        // filter is pinned where it actually runs and not only in isolation.
+        let emitted: Vec<i64> = single_row_cuts(&pool, width)
+            .iter()
+            .filter(|c| c.coef[s1] != 0)
+            .map(|c| c.rhs)
+            .collect();
+        assert_eq!(emitted, vec![2], "only the biting row produced a cut");
     }
 
     /// The extension NEVER turns "the oracle did not decide" into infeasibility.
