@@ -1302,11 +1302,18 @@ const CG_AUTHORITY: &str = "B2 (guidingpath decision log, 2026-08-25, \"THE T4-E
 /// How many ROUNDS of rounding one derivation may run.
 ///
 /// **Not a registered figure**, and the distinction matters as much here as it
-/// does for [`REPAIR_ORACLE_BUDGET`]: §5.4 registers [`NODE_BUDGET`] and
-/// [`ENUMERATION_BUDGET`] and B2 says both stand unchanged. These three caps are
-/// ENGINE-LOCAL choices about how hard one derivation may look, and nothing
-/// downstream reads them as registered quantities. Exceeding one truncates the
-/// cut set deterministically — never a verdict.
+/// does for [`REPAIR_ORACLE_BUDGET`]. These three caps are ENGINE-LOCAL choices
+/// about how hard ONE derivation may look, nothing downstream reads them as
+/// registered quantities, and exceeding one truncates the cut set
+/// deterministically — never a verdict.
+///
+/// **A wording disagreement, recorded rather than resolved** (the D3/D6 style).
+/// B2 says "the engine-local 10⁷ per-question budget stands unchanged", while
+/// [`ENUMERATION_BUDGET`]'s in-source provenance — written at T3 and quoting
+/// §5.4 directly — calls the same figure registered. This wave changed NEITHER
+/// comment and neither value: the two spellings disagree about the 10⁷'s
+/// provenance, not about the number, and which is right is the owner's to say.
+/// The three caps here are engine-local under either reading.
 const CG_MAX_ROUNDS: usize = 3;
 
 /// How many cuts one ELIMINATION round may accept.
