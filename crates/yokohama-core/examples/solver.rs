@@ -3134,11 +3134,27 @@ impl<'a> Projection<'a> {
 /// person deciding what to do about it, and the combination's shape — which
 /// rows, how heavily — is the whole of what there is to read.
 ///
-/// `all` is the inequality list the certificate was issued against, which for a
-/// Chvátal–Gomory certificate is the system BEFORE the cuts joined it: the inner
-/// verdict was taken on the strengthened list, so its multipliers cannot be
-/// zipped against this one, and the cuts' own labels — each naming its parents
-/// and their multipliers — are what there is to name.
+/// **ONLY THE FARKAS ARM NAMES ROWS, AND THE OTHER TWO SAY SO.**
+///
+/// `all` is the inequality list the certificate was issued against. A Farkas
+/// combination is written over exactly that list, so its rows can be named and
+/// a caller may read CLAUSE CARRIAGE off the result. The other two shapes
+/// cannot be read that way and must not look as though they can:
+///
+/// * an ENUMERATION names the columns it swept, not rows — a list of coordinate
+///   labels is not a list of rows, and a clause-matching caller finds nothing in
+///   it;
+/// * a CHVATAL-GOMORY certificate's inner verdict was taken over the
+///   STRENGTHENED list, so its multipliers cannot be zipped against this one.
+///   The derived cuts are nameable and are still named — each label carries its
+///   parents and their multipliers — but they are NOT the whole combination, and
+///   a page that printed "41 nonzero multipliers" beside four cut labels would
+///   read as though they were.
+///
+/// So each non-Farkas arm leads with a line saying what shape it is and what was
+/// not looked at. **Never an empty list**: an empty `leans on` on a decision
+/// page reads as "nothing is standing", which is the reading of a singly-forced
+/// coordinate and the opposite of what a refused probe means.
 fn certificate_leans(all: &[Row], certificate: &Certificate) -> Vec<String> {
     match certificate {
         Certificate::Farkas { y, .. } => all
@@ -3147,15 +3163,32 @@ fn certificate_leans(all: &[Row], certificate: &Certificate) -> Vec<String> {
             .filter(|(_, m)| **m != 0)
             .map(|(r, m)| format!("{} x{m}  [{}]", r.label, sparse_row(r)))
             .collect(),
-        Certificate::Enumeration { support, .. } => support
-            .iter()
-            .map(|&c| match FeatureId::all().get(c) {
-                Some(id) => id.label().to_string(),
-                None => format!("|w-w0| #{}", c - AXIS_WIDTH),
-            })
-            .collect(),
-        Certificate::ChvatalGomory { cuts, .. } => {
-            cuts.iter().map(|cut| format!("{}  [{}]", cut.label, sparse_row(&cut.row()))).collect()
+        Certificate::Enumeration { support, .. } => {
+            let columns: Vec<String> = support
+                .iter()
+                .map(|&c| match FeatureId::all().get(c) {
+                    Some(id) => id.label().to_string(),
+                    None => format!("|w-w0| #{}", c - AXIS_WIDTH),
+                })
+                .collect();
+            vec![format!(
+                "residual certificate is {}; it names COLUMNS and not rows, so clause carriage \
+                 not introspected. Swept: {columns:?}",
+                CertificateShape::Enumeration.name(),
+            )]
+        }
+        Certificate::ChvatalGomory { cuts, inner } => {
+            let mut out = vec![format!(
+                "residual certificate is {}; the derived cuts are named below, but the BASE rows \
+                 the inner {} leans on are NOT enumerated here (it was taken over the \
+                 STRENGTHENED system), so clause carriage not introspected",
+                CertificateShape::ChvatalGomory.name(),
+                CertificateShape::of(inner).name(),
+            )];
+            out.extend(
+                cuts.iter().map(|cut| format!("{}  [{}]", cut.label, sparse_row(&cut.row()))),
+            );
+            out
         }
     }
 }
@@ -3884,11 +3917,29 @@ fn fold_forcing(probes: Vec<ExceptionProbe>, witness: Option<Vec<i64>>) -> Forci
         .filter(|probe| probe.answer == ProbeAnswer::Feasible)
         .map(|probe| probe.candidate);
     match (witness, feasible) {
-        // STUB (RED): a FEASIBLE probe claims FORCED whatever came before it,
-        // so an earlier UNDECIDED coordinate — which might itself have been
-        // feasible — leaves B1's canonical-order clause unestablished and
-        // unremarked.
-        (Some(witness), Some(candidate)) => Forcing::Forced { candidate, witness, probes },
+        (Some(witness), Some(candidate)) if undecided.is_empty() => {
+            Forcing::Forced { candidate, witness, probes }
+        }
+        // **SYMMETRIC STRICTNESS.** The FEASIBLE probe is the last one, so every
+        // undecided probe is EARLIER in canonical order — and B1 takes the
+        // FIRST coordinate whose relaxation is feasible, which is a claim about
+        // the whole prefix. An undecided coordinate might itself have been
+        // feasible, and the exception would then land on the wrong one. Being
+        // strict about withholding JOINT and lenient about claiming FORCED
+        // would guard the verdict nobody acts on and wave through the one that
+        // changes the table.
+        (Some(_), Some(candidate)) => Forcing::Undecided {
+            reason: format!(
+                "{}'s relaxation is FEASIBLE, but {} earlier coordinate(s) in canonical order \
+                 could not be decided, so B1's \"the FIRST coordinate whose relaxed system is \
+                 feasible\" is NOT established -- an undecided coordinate might itself have been \
+                 feasible. Nothing is excepted: {}",
+                candidate.label(),
+                undecided.len(),
+                undecided.join(" · "),
+            ),
+            probes,
+        },
         (None, None) if undecided.is_empty() => Forcing::Joint { probes },
         (None, None) => {
             let reason = undecided.join(" · ");
@@ -4241,6 +4292,21 @@ fn render_joint_structure(p: &RepairProblem, probes: &[ExceptionProbe]) -> Strin
          residual certificate)\n",
     );
     for probe in probes.iter().filter(|probe| probe.answer == ProbeAnswer::StillInfeasible) {
+        // **A SHAPE THIS CANNOT READ SAYS SO, RATHER THAN ANSWERING [].**
+        // Only a FARKAS residual names rows; for any other shape the clause
+        // list would be empty not because nothing carries the residual but
+        // because nothing was looked at, and those two read identically on the
+        // page while meaning opposite things.
+        let readable = probe.residual.is_some_and(CertificateShape::carriage_readable);
+        if !readable {
+            out.push_str(&format!(
+                "  without `{}`          residual certificate is {}; clause carriage not \
+                 introspected\n",
+                probe.clause,
+                probe.residual.map_or("of an unrecorded shape", CertificateShape::name),
+            ));
+            continue;
+        }
         let still: Vec<&str> = clauses
             .iter()
             .filter(|(c, text)| {
@@ -7809,8 +7875,12 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
         let leans = certificate_leans(&sys.inequalities(), &certificate);
         assert!(!leans.is_empty(), "never an empty list");
         assert!(
-            leans.iter().any(|l| l.contains("not enumerated")),
+            leans.iter().any(|l| l.contains("NOT enumerated")),
             "the list says it is not the whole combination: {leans:?}",
+        );
+        assert!(
+            leans.iter().any(|l| l.contains("clause carriage not introspected")),
+            "and says what it did not look at: {leans:?}",
         );
         // The cuts themselves are still named — the fix ADDS a statement, it
         // does not take the useful half away.
