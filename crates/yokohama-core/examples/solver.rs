@@ -48,6 +48,7 @@
 //! solver solve --real               THE REAL RUN (step-4, post-freeze)
 //! ```
 
+use std::collections::HashMap;
 use std::process::ExitCode;
 
 use yokohama_core::game::eval::{Feature, ScoreStructure, WeightTable};
@@ -102,6 +103,11 @@ enum RowKind {
     HandOrdering,
     /// A box bound, `w_f ≥ -limit` or `-w_f ≥ -limit`. Not deletion-eligible.
     BoxBound,
+    /// A DERIVED Chvátal–Gomory cut (B2). Not deletion-eligible, and never part
+    /// of a registered system: a cut exists only inside one question put to the
+    /// oracle by [`decide_with_cuts`], which throws the strengthened system away
+    /// as soon as it has its answer.
+    Cut,
     /// A half of the `w_vp` equality pin. Not deletion-eligible.
     Pin,
     /// One of R3's projection rows — a displacement link or the displacement
@@ -586,6 +592,18 @@ impl Rat {
         self.n == 0
     }
 
+    /// Whether this rational IS an integer. Total, because [`Rat::new`] reduces
+    /// and keeps the denominator positive.
+    fn is_integer(self) -> bool {
+        self.d == 1
+    }
+
+    /// `⌈n/d⌉`. The denominator is positive by construction, so this is
+    /// [`ceil_div`] with no sign case.
+    fn ceil(self) -> i128 {
+        ceil_div(self.n, self.d)
+    }
+
     /// Exact comparison. `None` on an overflow in the cross-multiplication.
     fn cmp_exact(self, o: Rat) -> Option<std::cmp::Ordering> {
         // Both denominators are positive by construction, so cross-multiplying
@@ -645,6 +663,20 @@ enum Certificate {
     /// exhaustive enumeration over the IIS's variable support, admissible only
     /// when the PRODUCT of the support's box ranges is ≤ 10⁷ points".
     Enumeration { support: Vec<usize>, points: u128 },
+    /// **B2's extension.** The system was strengthened by verified
+    /// Chvátal–Gomory cuts and the STRENGTHENED system was then certified by
+    /// `inner` — the frozen oracle's own verdict on a question with more rows in
+    /// it. Every cut carries its parent rows and multipliers, so the whole chain
+    /// re-derives from the original system and this certificate alone.
+    ///
+    /// **Why it certifies the ORIGINAL system.** Each cut is a nonnegative
+    /// rational combination of rows already valid for every integer point, with
+    /// an INTEGRAL combined coefficient vector — so at an integer point its left
+    /// side is an integer, and rounding its right side UP loses no integer
+    /// point. By induction over the chain every cut is valid for every integer
+    /// point of the original system, so a strengthened system with no point at
+    /// all is an original system with no INTEGER point at all.
+    ChvatalGomory { cuts: Vec<DerivedCut>, inner: Box<Certificate> },
 }
 
 /// The oracle's three answers. There is no fourth, and INCONCLUSIVE is not a
@@ -1251,6 +1283,230 @@ fn rederive_by_enumeration(sys: &System, columns: &[usize]) -> Verdict {
     }
     Verdict::Unsat {
         certificate: Certificate::Enumeration { support: columns.to_vec(), points },
+    }
+}
+
+// ---------------------------------------------------------------------------
+// B2 — the CHVÁTAL–GOMORY certification extension
+// ---------------------------------------------------------------------------
+
+/// **THE AUTHORITY**, printed with every certificate the extension builds.
+const CG_AUTHORITY: &str = "B2 (guidingpath decision log, 2026-08-25, \"THE T4-ENTRY BATCH IS \
+     RULED\"): the certification path is extended with Chvatal-Gomory row rounding -- derived \
+     cuts (nonnegative rational combinations of the current system's rows with integral combined \
+     coefficient vector, right-hand side rounded up in >=-form) join the QUESTION CHAIN put to \
+     the frozen oracle; `decide`'s logic is untouched; every derived cut is recorded with its \
+     parent rows and multipliers; the engine-local 10^7 per-question budget stands unchanged; \
+     typed INCONCLUSIVE remains the honest residual.";
+
+/// **ONE DERIVED CUT**, with everything needed to re-derive it from the system
+/// it was derived over.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DerivedCut {
+    /// How the cut reads, naming its parents and their multipliers.
+    label: String,
+    /// `(row index, multiplier)` for each parent, into the derivation POOL: the
+    /// original inequalities first, then the earlier cuts in derivation order.
+    /// Multipliers are nonnegative rationals.
+    parents: Vec<(usize, Rat)>,
+    /// `Σ y_i A_i`, which C–G requires to be INTEGRAL.
+    coef: Vec<i64>,
+    /// `⌈Σ y_i b_i⌉`.
+    rhs: i64,
+}
+
+impl DerivedCut {
+    /// The cut as a row the oracle can be asked about.
+    fn row(&self) -> Row {
+        Row {
+            label: self.label.clone(),
+            kind: RowKind::Cut,
+            coef: self.coef.clone(),
+            rhs: self.rhs,
+            margin_vp: None,
+        }
+    }
+}
+
+/// **THE TRUST BOUNDARY FOR A CUT**, on the same discipline [`verify_farkas`]
+/// applies to a Farkas combination: recompute the claim from the parents' own
+/// row data in exact rationals and share nothing with the code that proposed it.
+///
+/// The three conditions ARE C–G's definition, and each is checked rather than
+/// assumed: the multipliers are nonnegative, the combined coefficient vector is
+/// integral and equals what the cut claims, and the right-hand side is exactly
+/// the CEILING of the combined one. Any overflow is an `Err`, so an arithmetic
+/// limit drops the cut rather than admitting an unchecked one.
+fn verify_cut(pool: &[Row], cut: &DerivedCut) -> Result<(), String> {
+    if cut.parents.is_empty() {
+        return Err("a cut with no parent is not a combination of anything".to_string());
+    }
+    if cut.coef.iter().all(|c| *c == 0) {
+        return Err("the combined coefficient vector is identically zero".to_string());
+    }
+    for (i, y) in &cut.parents {
+        if *i >= pool.len() {
+            return Err(format!("parent {i} is not a row of the {}-row pool", pool.len()));
+        }
+        if y.sign() <= 0 {
+            return Err(format!("parent {i}'s multiplier is not strictly positive"));
+        }
+    }
+    let overflow = || "i128 overflow while re-deriving the cut".to_string();
+    let width = row_width(pool).max(cut.coef.len());
+    for column in 0..width {
+        let mut sum = Rat::ZERO;
+        for (i, y) in &cut.parents {
+            let a = i128::from(pool[*i].coef.get(column).copied().unwrap_or(0));
+            let term = y.mul(Rat::int(a)).ok_or_else(overflow)?;
+            sum = sum.add(term).ok_or_else(overflow)?;
+        }
+        let claimed = Rat::int(i128::from(cut.coef.get(column).copied().unwrap_or(0)));
+        if sum != claimed {
+            return Err(format!(
+                "column {column} of the combination is {}/{} and the cut claims {}",
+                sum.n,
+                sum.d,
+                cut.coef.get(column).copied().unwrap_or(0),
+            ));
+        }
+    }
+    let mut rhs = Rat::ZERO;
+    for (i, y) in &cut.parents {
+        let term = y.mul(Rat::int(i128::from(pool[*i].rhs))).ok_or_else(overflow)?;
+        rhs = rhs.add(term).ok_or_else(overflow)?;
+    }
+    if i128::from(cut.rhs) != rhs.ceil() {
+        return Err(format!(
+            "the combined right-hand side is {}/{}, whose ceiling is {}, and the cut claims {}",
+            rhs.n,
+            rhs.d,
+            rhs.ceil(),
+            cut.rhs,
+        ));
+    }
+    Ok(())
+}
+
+/// **THE WHOLE CHAIN, re-derived from the base system and the cuts' own
+/// records.**
+///
+/// The pool is rebuilt here rather than passed in, so a cut whose parents name
+/// rows that were not there when it was derived fails: the order the cuts are
+/// listed in IS the order they were derived in, and this walks it.
+fn verify_cut_chain(base: &[Row], cuts: &[DerivedCut]) -> Result<(), String> {
+    let mut pool = base.to_vec();
+    for (k, cut) in cuts.iter().enumerate() {
+        verify_cut(&pool, cut).map_err(|e| format!("derived cut {} did not re-verify: {e}", k + 1))?;
+        pool.push(cut.row());
+    }
+    Ok(())
+}
+
+/// **THE DERIVATION.**
+///
+/// STUB (RED): the rounding is not written yet, so no cut is ever proposed and
+/// the extension has nothing to ask about.
+fn derive_cuts(sys: &System) -> Vec<DerivedCut> {
+    let _ = sys;
+    Vec::new()
+}
+
+/// The phrase [`rederive_by_enumeration`] routes its over-budget INCONCLUSIVE
+/// with — the ONE seam B2 extends.
+const ENUMERATION_BUDGET_PHRASE: &str = "enumeration budget";
+
+/// Whether an INCONCLUSIVE reason is the enumeration-budget route.
+///
+/// **A node-budget INCONCLUSIVE is a different fact and must not trigger the
+/// extension**: the search ran out of nodes and the system may well be
+/// satisfiable, so strengthening it would be spending a great deal of exact
+/// arithmetic on a question nobody asked. Pinned against BOTH routes by
+/// [`the_extension_triggers_on_the_enumeration_budget_route_and_not_the_node_one`],
+/// so the coupling to the message is checked rather than assumed.
+fn is_enumeration_budget_route(reason: &str) -> bool {
+    reason.contains(ENUMERATION_BUDGET_PHRASE)
+}
+
+/// **B2's QUESTION CHAIN.** [`decide`] first, unchanged; then, at the
+/// enumeration-budget seam ONLY, the same oracle asked again about a
+/// strengthened system.
+///
+/// # What this does and does not touch
+///
+/// `decide` is called, never edited: the frozen oracle answers both questions
+/// and this function chooses which questions to put. That is what B2's "cuts
+/// join the QUESTION CHAIN put to the frozen oracle; `decide`'s logic is
+/// untouched" is, spelled as code.
+///
+/// # Why each answer is the answer
+///
+/// * **UNSAT on the strengthened system** certifies the original: every cut is
+///   valid for every integer point of the original (see
+///   [`Certificate::ChvatalGomory`]), so a strengthened system with no point at
+///   all is an original system with no integer point.
+/// * **SAT on the strengthened system** is a point of the original too — its
+///   rows are a superset — and it is re-checked against the original rows and
+///   box here before it is returned, on the same discipline the oracle applies
+///   to its own points.
+/// * **Anything else** leaves the typed INCONCLUSIVE standing, with the
+///   extension's own outcome appended. B2: "typed INCONCLUSIVE remains the
+///   honest residual if certification still cannot complete."
+fn decide_with_cuts(sys: &System) -> Verdict {
+    let verdict = decide(sys);
+    let Verdict::Inconclusive { reason } = &verdict else { return verdict };
+    if !is_enumeration_budget_route(reason) {
+        return verdict;
+    }
+    let cuts = derive_cuts(sys);
+    if cuts.is_empty() {
+        return Verdict::Inconclusive {
+            reason: format!(
+                "{reason} A Chvatal-Gomory extension ({CG_AUTHORITY}) derived no cut over this \
+                 system, so no strengthened question was asked.",
+            ),
+        };
+    }
+    // THE TRUST BOUNDARY, once more before the question is asked: the chain is
+    // re-derived from the base system and the cuts' own parent records, sharing
+    // nothing with the derivation that proposed them.
+    let base = sys.inequalities();
+    if let Err(e) = verify_cut_chain(&base, &cuts) {
+        return Verdict::Inconclusive {
+            reason: format!(
+                "{reason} A Chvatal-Gomory extension was attempted and its derivation did not \
+                 re-verify ({e}), so no cut was asked and nothing is claimed.",
+            ),
+        };
+    }
+    let mut strengthened = sys.clone();
+    for cut in &cuts {
+        strengthened.rows.push(cut.row());
+    }
+    match decide(&strengthened) {
+        Verdict::Unsat { certificate } => Verdict::Unsat {
+            certificate: Certificate::ChvatalGomory { cuts, inner: Box::new(certificate) },
+        },
+        Verdict::Sat { w } => {
+            let inside = (0..sys.lo.len()).all(|f| w[f] >= sys.lo[f] && w[f] <= sys.hi[f]);
+            if sys.violation(&w) == 0 && inside {
+                Verdict::Sat { w }
+            } else {
+                Verdict::Inconclusive {
+                    reason: format!(
+                        "{reason} A Chvatal-Gomory extension's strengthened system returned a \
+                         point that does not satisfy the ORIGINAL rows, so nothing is claimed.",
+                    ),
+                }
+            }
+        }
+        Verdict::Inconclusive { reason: residual } => Verdict::Inconclusive {
+            reason: format!(
+                "{reason} A Chvatal-Gomory extension ({CG_AUTHORITY}) derived {} verified cut(s) \
+                 and the strengthened system still did not decide: {residual}",
+                cuts.len(),
+            ),
+        },
     }
 }
 
@@ -2571,7 +2827,11 @@ impl<'a> Projection<'a> {
                 self.oracle_budget,
             )));
         }
-        Ok(decide(sys))
+        // **B2's QUESTION CHAIN.** Every question the projection puts to the
+        // oracle goes through the extension: the frozen `decide` answers first
+        // and unchanged, and only its enumeration-budget INCONCLUSIVE is asked
+        // again with cuts.
+        Ok(decide_with_cuts(sys))
     }
 
     /// The same, RECORDED in the certificate trail.
@@ -2602,7 +2862,11 @@ impl<'a> Projection<'a> {
 /// person deciding what to do about it, and the combination's shape — which
 /// rows, how heavily — is the whole of what there is to read.
 ///
-/// `all` is the inequality list the certificate was issued against.
+/// `all` is the inequality list the certificate was issued against, which for a
+/// Chvátal–Gomory certificate is the system BEFORE the cuts joined it: the inner
+/// verdict was taken on the strengthened list, so its multipliers cannot be
+/// zipped against this one, and the cuts' own labels — each naming its parents
+/// and their multipliers — are what there is to name.
 fn certificate_leans(all: &[Row], certificate: &Certificate) -> Vec<String> {
     match certificate {
         Certificate::Farkas { y, .. } => all
@@ -2618,6 +2882,9 @@ fn certificate_leans(all: &[Row], certificate: &Certificate) -> Vec<String> {
                 None => format!("|w-w0| #{}", c - AXIS_WIDTH),
             })
             .collect(),
+        Certificate::ChvatalGomory { cuts, .. } => {
+            cuts.iter().map(|cut| format!("{}  [{}]", cut.label, sparse_row(&cut.row()))).collect()
+        }
     }
 }
 
@@ -3114,7 +3381,7 @@ fn drive_repair_within(p: &RepairProblem, oracle_budget: u64, support_budget: u6
         // about to act on. The two agree by construction today (the projection
         // raises REPAIR-INFEASIBLE only from this same system), and asking makes
         // that agreement a checked fact rather than a coupling.
-        let (certificate, leaned_on) = match decide(&current.sys) {
+        let (certificate, leaned_on) = match decide_with_cuts(&current.sys) {
             Verdict::Unsat { certificate } => {
                 let leans = certificate_leans(&current.sys.inequalities(), &certificate);
                 (certificate, leans)
@@ -3219,7 +3486,7 @@ fn forced_coordinate(p: &RepairProblem) -> Forcing {
                 continue;
             }
         };
-        match decide(&relaxed.sys) {
+        match decide_with_cuts(&relaxed.sys) {
             Verdict::Sat { w } => {
                 let detail = format!(
                     "{} = {} at the witness; every solution of the relaxed system violates the \
@@ -3700,6 +3967,11 @@ fn render_certificate(certificate: &Certificate) -> String {
         Certificate::Enumeration { support, points } => {
             format!("EXHAUSTIVE ENUMERATION over {} columns, {points} points", support.len())
         }
+        Certificate::ChvatalGomory { cuts, inner } => format!(
+            "CHVATAL-GOMORY, {} verified derived cut(s) joining the question chain, then {}",
+            cuts.len(),
+            render_certificate(inner),
+        ),
     }
 }
 
@@ -3943,6 +4215,23 @@ fn render_verdict(sys: &System, verdict: &Verdict) -> String {
                             sys.lo[c],
                             sys.hi[c],
                         ));
+                    }
+                }
+                // §5.4's own solve path never builds one — the extension is
+                // [`decide_with_cuts`]', and `solve` asks [`decide`]. Rendered
+                // rather than refused because a renderer that panicked on a
+                // reachable-by-refactor arm is a worse instrument than one that
+                // prints the certificate it was handed.
+                Certificate::ChvatalGomory { cuts, inner } => {
+                    out.push_str(&format!(
+                        "certificate          {}\n",
+                        render_certificate(&Certificate::ChvatalGomory {
+                            cuts: cuts.clone(),
+                            inner: inner.clone(),
+                        }),
+                    ));
+                    for cut in cuts {
+                        out.push_str(&format!("  {}\n", cut.label));
                     }
                 }
             }
@@ -4768,6 +5057,10 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
             Verdict::Unsat { certificate: Certificate::Enumeration { points, .. } } => {
                 assert!(points <= ENUMERATION_BUDGET);
             }
+            Verdict::Unsat { certificate: Certificate::ChvatalGomory { .. } } => {
+                panic!("`decide` does not build a Chvátal–Gomory certificate; only the extension \
+                        does")
+            }
             Verdict::Inconclusive { .. } => {}
             Verdict::Sat { .. } => panic!("these rows contradict; SAT is wrong either way"),
         }
@@ -4818,9 +5111,232 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
                     Certificate::Enumeration { points, .. } => {
                         assert!(points <= ENUMERATION_BUDGET, "{name} stayed inside the budget");
                     }
+                    // B2 puts the cuts in the QUESTION CHAIN, not in `decide`:
+                    // the frozen oracle knows nothing about them and cannot ship
+                    // one. A day when it does is a day `decide` grew a new
+                    // answer, which is a fence, not a feature.
+                    Certificate::ChvatalGomory { .. } => panic!(
+                        "{name}: `decide` shipped a Chvátal–Gomory certificate, which only \
+                         `decide_with_cuts` may build",
+                    ),
                 }
             }
         }
+    }
+
+    // -- B2: the Chvátal–Gomory certification extension ----------------------
+
+    /// A relaxation-FEASIBLE, integer-infeasible system whose support is too
+    /// wide to enumerate — the seam B2 extends.
+    ///
+    /// `2·w_S1 ≥ 1` and `−2·w_S1 ≥ −1` force `2·w_S1 = 1`, which no integer
+    /// satisfies; `w_S1 = 1/2` satisfies both over the rationals, so there is no
+    /// Farkas combination and the enumeration is the only §5.4 route. Four free
+    /// columns push the support's box product past the registered 10⁷.
+    fn wide_integer_only_system() -> System {
+        let up = [(col("S1"), 2)];
+        let down = [(col("S1"), -2)];
+        let wide: Vec<Vec<(usize, i64)>> =
+            ["S2", "S3", "S4", "S5"].iter().map(|l| vec![(col(l), 1)]).collect();
+        let mut rows: Vec<ToyRow> =
+            vec![("2 S1 at least 1", &up, 1), ("2 S1 at most 1", &down, -1)];
+        for entry in &wide {
+            rows.push(("free column", entry.as_slice(), -BOX_LIMIT));
+        }
+        // The borrow has to outlive the builder call, so the system is built
+        // inside the function that owns `wide`.
+        toy(StageEndpoint::Early, &rows, BOX_LIMIT)
+    }
+
+    /// A system the search must BRANCH on: `2·w_S1 + 2·w_S2 = 1` is comfortable
+    /// at `(1/4, 1/4)` over the rationals and unreachable over the integers, and
+    /// propagation shaves the box without emptying it — so a starved node budget
+    /// has something to run out of.
+    fn starved_search_system() -> System {
+        toy(
+            StageEndpoint::Early,
+            &[
+                ("twice S1 plus twice S2, at least 1", &[(col("S1"), 2), (col("S2"), 2)], 1),
+                ("twice S1 plus twice S2, at most 1", &[(col("S1"), -2), (col("S2"), -2)], -1),
+            ],
+            BOX_LIMIT,
+        )
+    }
+
+    /// **THE TRIGGER IS THE ENUMERATION-BUDGET ROUTE AND NOTHING ELSE.**
+    ///
+    /// B2 extends ONE seam. A node-budget INCONCLUSIVE is a different fact — the
+    /// search ran out of nodes, and the system may well be satisfiable — so the
+    /// predicate is checked against BOTH routes rather than against a phrase.
+    #[test]
+    fn the_extension_triggers_on_the_enumeration_budget_route_and_not_the_node_one() {
+        let Verdict::Inconclusive { reason } = decide(&wide_integer_only_system()) else {
+            panic!("the wide system routes over the enumeration budget");
+        };
+        assert!(is_enumeration_budget_route(&reason), "the trigger reads this route: {reason}");
+
+        let starved = starved_search_system();
+        let columns = active_columns(&starved.rows);
+        let Verdict::Inconclusive { reason } = integer_search(&starved, &columns, 1) else {
+            panic!("a one-node budget cannot decide a system the search has to branch on");
+        };
+        assert!(reason.contains("budget of 1 nodes"), "this IS the node route: {reason}");
+        assert!(!is_enumeration_budget_route(&reason), "and not the enumeration one: {reason}");
+    }
+
+    /// **BORN-VALIDATION (d): ONE CUT CERTIFIES IT, and the cut is derivable by
+    /// hand.**
+    ///
+    /// `2·w_S1 ≥ 1` has coefficient gcd 2 and an odd right-hand side, so
+    /// multiplier `1/2` gives the integral vector `w_S1` with right-hand side
+    /// `1/2`, and C–G rounds it up: `w_S1 ≥ 1`. The mirror row gives
+    /// `−w_S1 ≥ 0`. Those two contradict at the RELAXATION, so the strengthened
+    /// system ships a Farkas certificate and the answer is UNSAT rather than the
+    /// honest INCONCLUSIVE `decide` alone can reach.
+    #[test]
+    fn a_wide_support_integer_infeasibility_is_certified_by_chvatal_gomory_rounding() {
+        let sys = wide_integer_only_system();
+        assert!(
+            matches!(decide(&sys), Verdict::Inconclusive { .. }),
+            "the frozen oracle's own answer is unchanged, which is the fence",
+        );
+
+        let Verdict::Unsat { certificate: Certificate::ChvatalGomory { cuts, inner } } =
+            decide_with_cuts(&sys)
+        else {
+            panic!("the extension certifies this system");
+        };
+        assert!(
+            matches!(*inner, Certificate::Farkas { .. }),
+            "the strengthened system is relaxation-infeasible and ships FARKAS",
+        );
+        // The two cuts, by hand: `w_S1 >= 1` and `-w_S1 >= 0`.
+        let s1 = col("S1");
+        let mut found = Vec::new();
+        for cut in &cuts {
+            let nonzero: Vec<(usize, i64)> =
+                cut.coef.iter().enumerate().filter(|(_, c)| **c != 0).map(|(i, c)| (i, *c)).collect();
+            if nonzero == vec![(s1, 1)] && cut.rhs == 1 {
+                found.push("w_S1 >= 1");
+            }
+            if nonzero == vec![(s1, -1)] && cut.rhs == 0 {
+                found.push("-w_S1 >= 0");
+            }
+        }
+        found.sort_unstable();
+        assert_eq!(found, ["-w_S1 >= 0", "w_S1 >= 1"], "both halves of 2 w_S1 = 1, rounded");
+        // Every parent is a REAL parent, at a nonnegative rational multiplier.
+        for cut in &cuts {
+            assert!(!cut.parents.is_empty());
+            assert!(cut.parents.iter().all(|(_, y)| y.sign() > 0), "C–G needs y >= 0");
+        }
+        assert_eq!(verify_cut_chain(&sys.inequalities(), &cuts), Ok(()), "the chain re-verifies");
+    }
+
+    /// **THE TRUST BOUNDARY: a TAMPERED cut is rejected.**
+    ///
+    /// The verifier shares no code with the derivation — it recomputes
+    /// `Σ y_i A_i` and `⌈Σ y_i b_i⌉` from the parents' own row data — so a
+    /// derivation defect costs cuts and cannot cost soundness. Both halves are
+    /// exercised: a strengthened right-hand side and a strengthened
+    /// coefficient.
+    #[test]
+    fn a_tampered_chvatal_gomory_cut_does_not_re_verify() {
+        let sys = wide_integer_only_system();
+        let base = sys.inequalities();
+        let cuts = derive_cuts(&sys);
+        assert!(!cuts.is_empty(), "there is something to tamper with");
+        assert_eq!(verify_cut_chain(&base, &cuts), Ok(()));
+
+        let mut stronger_rhs = cuts.clone();
+        stronger_rhs[0].rhs += 1;
+        assert!(verify_cut_chain(&base, &stronger_rhs).is_err(), "a lifted rhs is not the ceiling");
+
+        let mut stronger_coef = cuts.clone();
+        let slot = stronger_coef[0].coef.iter().position(|c| *c != 0).expect("a nonzero column");
+        stronger_coef[0].coef[slot] *= 2;
+        assert!(verify_cut_chain(&base, &stronger_coef).is_err(), "the combination says otherwise");
+
+        let mut absent_parent = cuts.clone();
+        absent_parent[0].parents[0].0 = base.len() + 99;
+        assert!(verify_cut_chain(&base, &absent_parent).is_err(), "a parent that is not there");
+    }
+
+    /// The extension NEVER turns "the oracle did not decide" into infeasibility.
+    ///
+    /// A system whose integer infeasibility no derived cut reaches keeps the
+    /// typed INCONCLUSIVE, and the reason says a C–G extension was tried — the
+    /// honest residual B2 names.
+    #[test]
+    fn an_extension_that_cannot_certify_leaves_the_answer_inconclusive() {
+        // `w_S1 - w_S2 >= 1` over four extra free columns: relaxation-feasible
+        // AND integer-feasible, so the search finds a point and no route is
+        // taken at all. The point is that the extension cannot manufacture an
+        // infeasibility where there is none.
+        let feasible = toys::named("sat-coupled").expect("registered");
+        assert!(matches!(decide_with_cuts(&feasible), Verdict::Sat { .. }));
+
+        // And a genuinely undecided one: at a one-node search budget the answer
+        // is the node-budget route, which the extension does not touch.
+        let starved = starved_search_system();
+        let columns = active_columns(&starved.rows);
+        let Verdict::Inconclusive { reason } = integer_search(&starved, &columns, 1) else {
+            panic!("a one-node budget cannot decide");
+        };
+        assert!(reason.contains("not infeasibility"), "{reason}");
+        assert!(!is_enumeration_budget_route(&reason), "{reason}");
+    }
+
+    /// A SAT answer through the extension is re-checked against the ORIGINAL
+    /// rows before it is returned — the cuts are valid for integer points, so a
+    /// point of the strengthened system is a point of the original, and the
+    /// re-check is what makes that a property of the code.
+    #[test]
+    fn a_sat_reached_through_the_extension_satisfies_the_unstrengthened_system() {
+        for name in toys::NAMES {
+            let sys = toys::named(name).expect("registered");
+            if let Verdict::Sat { w } = decide_with_cuts(&sys) {
+                assert_eq!(sys.violation(&w), 0, "{name}: the point satisfies the original rows");
+            }
+        }
+    }
+
+    /// The extension is DETERMINISTIC: same system, same cuts, same certificate.
+    #[test]
+    fn the_chvatal_gomory_derivation_is_deterministic() {
+        let sys = wide_integer_only_system();
+        let first = derive_cuts(&sys);
+        let second = derive_cuts(&sys);
+        assert_eq!(first, second, "the derivation reads no clock and draws no entropy");
+        assert_eq!(decide_with_cuts(&sys), decide_with_cuts(&sys));
+    }
+
+    /// A derived cut carries its parents and multipliers, and the rendered
+    /// certificate names them — B2's "the certificate stays independently
+    /// checkable" is a property of the page, not only of the type.
+    #[test]
+    fn a_rendered_chvatal_gomory_certificate_names_its_cuts_and_their_parents() {
+        let sys = wide_integer_only_system();
+        let Verdict::Unsat { certificate } = decide_with_cuts(&sys) else {
+            panic!("the extension certifies this system");
+        };
+        let rendered = render_certificate(&certificate);
+        assert!(rendered.contains("CHVATAL-GOMORY"), "{rendered}");
+        assert!(rendered.contains("FARKAS"), "the inner certificate rides along: {rendered}");
+        let leans = certificate_leans(&sys.inequalities(), &certificate);
+        assert!(
+            leans.iter().any(|l| l.contains("2 S1 at least 1")),
+            "the parent row is named: {leans:?}",
+        );
+        assert!(leans.iter().any(|l| l.contains("1/2")), "with its multiplier: {leans:?}");
+    }
+
+    /// **THE ENGINE-LOCAL BUDGET KEEPS ITS PROVENANCE.** §5.4 registers 10⁷ for
+    /// the enumeration; B2 leaves that figure alone and says so.
+    #[test]
+    fn the_extension_leaves_the_registered_enumeration_budget_where_it_was() {
+        assert_eq!(ENUMERATION_BUDGET, 10_000_000);
+        assert_eq!(NODE_BUDGET, 10_000_000);
     }
 
     #[test]
@@ -5818,6 +6334,12 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
                 );
             }
             Certificate::Enumeration { points, .. } => assert!(points <= ENUMERATION_BUDGET),
+            // Reachable in principle now that B2's extension rides the
+            // projection's question chain: the chain re-verifies from the base
+            // system and the cuts' own parent records.
+            Certificate::ChvatalGomory { cuts, .. } => {
+                assert_eq!(verify_cut_chain(&problem.sys.inequalities(), &cuts), Ok(()));
+            }
         }
     }
 
