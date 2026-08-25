@@ -96,9 +96,11 @@ use std::time::Instant;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
+use yokohama_core::game::actions::calculate_church_faith;
 use yokohama_core::game::eval::{
-    achievement_progress, achievement_progress_postclaim_sum, interpolate, progress_ppm, score,
-    view_is_terminal, Feature, ScoreStructure, WeightTable, PROGRESS_FULL_PPM,
+    achievement_progress, achievement_progress_postclaim_sum, clock_ppm, initial_order_deck_len,
+    interpolate, progress_ppm, score, view_is_terminal, Feature, ScoreStructure, WeightTable,
+    HAND_CORE_RESERVE, PROGRESS_FULL_PPM,
 };
 // `DEFAULT_RETREAT_SAMPLES` is deliberately NOT imported here: since the parse
 // delegates to `Contestant::from_str_name`, every default this file used to type
@@ -121,11 +123,13 @@ use yokohama_core::game::pair_fixtures::{
     AXIS_WIDTH, REGISTERED,
 };
 use yokohama_core::{
-    agent_stream_seed, apply_move, check_invariants, finalize_setup, get_legal_moves, new_game,
-    observe, replay_from, run_arena_game, run_raw_game, state_digest, AchievementType, AreaId,
-    AreaType, ArenaAgent, ArenaGameStats, Contestant, GameRecord, GameState, HandCard, Move,
-    NamedIdentity, PlayerId, PlayerView, QuantileSketch, RolloutPolicy, Rules, SeedSchedule,
-    SeedScheduleKind, Slot, TriggerTally, VisiblePlayer, WorldSeed, SEMANTICS_REV,
+    agent_stream_seed, apply_move, check_invariants, final_result, finalize_setup, get_legal_moves,
+    is_game_over, new_game, observe, replay_from, run_arena_game, run_raw_game, state_digest,
+    AchievementCard, AchievementType, AreaId, AreaType, ArenaAgent, ArenaGameStats, ChurchSlot,
+    ChurchTrack, Contestant, Country, CustomsSlot, CustomsTrack, EndGameTrigger, GameConfig,
+    GameRecord, GameState, HandCard, Move, NamedIdentity, OrderCardId, PlayerId, PlayerView,
+    QuantileSketch, RolloutPolicy, Rules, SeedSchedule, SeedScheduleKind, Slot, StartingOrderChoice,
+    TechCardId, TriggerTally, TurnPhase, VisiblePlayer, WorldSeed, SEMANTICS_REV,
 };
 
 const USAGE: &str = "\
@@ -498,6 +502,49 @@ usage: eval_probe <subcommand> [options]
       EXIT: 0 = PASS (both gates hold) · 1 = a gate READ and said NO · 2 = a
       typed refusal — a save miss, a digest disagreement, or a parity failure —
       which invalidates the read and says nothing about the table.
+
+  step9 scenarios --table <spec>
+      §7 STEP 9(b)'s SCENARIO-ORDERING GATE over a NAMED table: the V2 scenario
+      orderings, TRANSCRIBED from `tests/scenario_suite.rs` and printed ITEM BY
+      ITEM. A `tests/` target cannot be linked from an example, so R6 names
+      transcription as the registered mechanism; every fixture is rebuilt here
+      from the suite's own code, cites the function and line range it came
+      from, and is scored through the SAME production `score` /
+      `ScoreStructure::derive` / `observe` calls the suite uses.
+
+      THE REFERENT (Ruling P3) is the suite's claims of the registered
+      `eval(A) > eval(B)` SHAPE — its own doc taxonomy, which carries NINETEEN
+      scenarios. The null-placement trap (chosen-move-in-set) and post-claim
+      achievement progress (the feature-function shape) are excluded BY THE
+      TAXONOMY; three PROPERTY clauses of included scenarios are EQUALITIES
+      rather than orderings and are excluded by shape (Ruling T2b-R2). Both
+      exclusions are COUNTED and NAMED in the report's completeness block, so
+      the phrase `the orderings` cannot quietly come to mean something
+      narrower.
+
+      EACH ITEM prints its registry index and the suite's own scenario name,
+      the claim, its margin under the table under read, its margin under
+      `WeightTable::V2` beside it — family 9's POSITIVE CONTROL — and a
+      verdict. The three classes are COMPUTED from probe tables at every run
+      (never hardwired to an index):
+
+        GATING             V2 orders the pair, so there is a control to
+                           preserve. HOLDS iff the margin under read is
+                           strictly positive. THESE, and only these, decide the
+                           verdict.
+        TABLE-INDEPENDENT  §2.6's terminal ladder short-circuits the weight
+                           vector, so no table reaches the claim. Listed,
+                           printed, never gating.
+        V2-TIED            V2 scores the two positions EQUAL, so the incumbent
+                           does not order the pair and there is no control for
+                           a draft to preserve (Ruling T2b-R1). Listed with
+                           both margins, never gating.
+
+        --table <spec>  the same grammar `step9 structural` takes
+      EXIT: 0 = PASS (every GATING item holds) · 1 = a gate READ and said NO ·
+      2 = a typed TRANSCRIPTION failure — a fixture guard that fired, meaning
+      the registry moved under a transcription — which invalidates the read and
+      says nothing about the table.
 
 contestants (the grammar is Contestant::from_str_name's — unknown is an error at
 every level, and an unknown knob is never silently ignored):
@@ -8515,7 +8562,12 @@ fn render_step9_structural(
 /// what `v2-refit-padded` means. `zero` and the vector form share `fit`'s
 /// grammar, which is what lets a witness transcribed for one be fed to the other
 /// without a second spelling.
-fn parse_step9_table(spec: &str) -> Result<(String, FitTable), String> {
+///
+/// `section` is the CALLER's own name, threaded through so a refusal names the
+/// command the reader actually typed. It was hardcoded to `structural` while
+/// there was one caller, which turned into a wrong message the moment there
+/// were three; `structural`'s wording is unchanged by construction.
+fn parse_step9_table(section: &str, spec: &str) -> Result<(String, FitTable), String> {
     const FORMS: &str = "(v2-padded | v2-refit-padded | zero | <34 comma-separated i64>/<34 \
                          comma-separated i64> in FeatureId::all() order)";
     if let Some(identity) = NamedIdentity::from_str_name(spec) {
@@ -8526,11 +8578,11 @@ fn parse_step9_table(spec: &str) -> Result<(String, FitTable), String> {
     }
     let Some((early, late)) = spec.split_once('/') else {
         return Err(format!(
-            "step9 structural --table {spec:?} is not a known table and names no LATE vector: the \
+            "step9 {section} --table {spec:?} is not a known table and names no LATE vector: the \
              two vectors are separated by `/` {FORMS}"
         ));
     };
-    let context = format!("step9 structural --table {spec:?}");
+    let context = format!("step9 {section} --table {spec:?}");
     Ok((
         "vector".to_string(),
         FitTable {
@@ -8558,10 +8610,12 @@ fn cmd_step9(args: &[String]) -> Result<i32, String> {
     match args.first().map(String::as_str) {
         Some("structural") => cmd_step9_structural(&args[1..]),
         Some("rooted") => cmd_step9_rooted(&args[1..]),
+        Some("scenarios") => cmd_step9_scenarios(&args[1..]),
         section => Err(format!(
-            "step9 takes a section: `structural` (R1's 9(a) checker + R2's 9(c) instrument) or \
+            "step9 takes a section: `structural` (R1's 9(a) checker + R2's 9(c) instrument), \
              `rooted` (R5's e113 gate, the same-path V2-parity pin, the e93 winner gate, and the \
-             digest-anchored record reads). Got {section:?}\n\n{USAGE}"
+             digest-anchored record reads), or `scenarios` (R6's V2 scenario orderings, \
+             transcribed from the suite and printed item by item). Got {section:?}\n\n{USAGE}"
         )),
     }
 }
@@ -8574,7 +8628,7 @@ fn cmd_step9_structural(args: &[String]) -> Result<i32, String> {
     let Some(spec) = flags.get("table") else {
         return Err(format!("step9 structural needs --table <spec>\n\n{USAGE}"));
     };
-    let (name, table) = parse_step9_table(spec)?;
+    let (name, table) = parse_step9_table("structural", spec)?;
     let rules = Rules::standard();
     let rows = gate_rows(&rules)?;
     let (reading, non_vacuity) = step9_read(&name, &rows, &table)?;
@@ -9888,7 +9942,7 @@ fn cmd_step9_rooted(args: &[String]) -> Result<i32, String> {
     let Some(spec) = flags.get("table") else {
         return Err(format!("step9 rooted needs --table <spec>\n\n{USAGE}"));
     };
-    let (name, fit) = parse_step9_table(spec)?;
+    let (name, fit) = parse_step9_table("rooted", spec)?;
     // The read is on PRODUCTION bytes: the axis and the widened weight vectors
     // are the SAME thirty-four rows in the same order (`FeatureId::all()` ==
     // `Feature::ALL`, pinned in `pair_fixtures`), so this is a re-labelling and
@@ -9909,6 +9963,2180 @@ fn cmd_step9_rooted(args: &[String]) -> Result<i32, String> {
     } else {
         Ok(EXIT_GATE_FAILED)
     }
+}
+
+// ---------------------------------------------------------------------------
+// `step9 scenarios` — R6's second 9(b) gate: THE V2 SCENARIO ORDERINGS,
+// transcribed from `tests/scenario_suite.rs` and printed item by item.
+//
+// **Why this is a TRANSCRIPTION and not an import.** The scenario suite is a
+// `tests/` target; an example cannot link one. R6 names transcription as the
+// registered mechanism ("the concrete list transcribed from the registered
+// referent at T2 build"), so every fixture below is rebuilt here from the
+// suite's own code, each citing the function and line range it came from, and
+// scored through the SAME production `score` / `ScoreStructure::derive` /
+// `observe` calls the suite uses. Nothing here re-derives what a scenario
+// computes.
+//
+// **The referent (Ruling P3).** "The orderings" are the suite's claims of the
+// registered `eval(A) > eval(B)` SHAPE — the suite's own doc taxonomy
+// (`scenario_suite.rs:95-103`: that shape "carries nineteen scenarios"). The
+// null-placement trap (chosen-move-in-set, behavioural) and post-claim
+// achievement progress (the feature-function shape) are excluded BY THE
+// REGISTERED TAXONOMY, not by judgment.
+//
+// **The three classes (Ruling T2b-R1), and why the class is COMPUTED.** Family
+// 9 registers these as POSITIVE CONTROLS
+// (`2026-08-20-phase3.5c-v4-spec-prereg.md:667-669`), so an item gates only
+// where there is an incumbent ordering for a draft to preserve. Whether that is
+// so is a fact about the BYTES, read off probe tables at every run rather than
+// hardwired to an index — a hardcoded class prints the right word today and
+// lies the day the table moves. See [`OrderingClass`].
+// ---------------------------------------------------------------------------
+
+/// How an item relates to the weight table, DECIDED AT RUNTIME from three probe
+/// reads (`ZERO`, `V1`, `V2`) rather than declared per scenario.
+///
+/// The probes are chosen so the three arms are distinguishable by arithmetic
+/// alone: a non-terminal claim scores 0 under the constant evaluator, so a
+/// margin that SURVIVES `ZERO` unchanged never consulted a weight at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OrderingClass {
+    /// The margin is identical under all three probes — §2.6's terminal ladder
+    /// short-circuits the weight vector, so no table reaches this claim. LISTED
+    /// and printed, never gating (R6's own carve-out).
+    TableIndependent,
+    /// `WeightTable::V2` scores the two positions EQUAL. The incumbent does not
+    /// order this pair, so there is no positive control for a draft to
+    /// preserve: LISTED and printed with both margins, never gating (T2b-R1).
+    V2Tied,
+    /// V2 orders the pair and the table under read can move it. THE GATING
+    /// KIND: the verdict is this item's margin under the table under read.
+    Gating,
+}
+
+impl OrderingClass {
+    fn label(self) -> &'static str {
+        match self {
+            Self::TableIndependent => "TABLE-INDEPENDENT",
+            Self::V2Tied => "V2-TIED",
+            Self::Gating => "GATING",
+        }
+    }
+}
+
+/// One transcribed ordering claim, before scoring: the signed combination of
+/// scored views the suite asserts is strictly positive.
+///
+/// Every suite clause of this shape is a DIFFERENCE — a plain `score(A) >
+/// score(B)` is `[(+1, A), (-1, B)]`, and scenario 15's clause (c), which
+/// compares two MARGINS, is four terms. Representing a claim as signed terms
+/// rather than as a closure keeps it data: the same claim can be evaluated
+/// under any table, which is exactly what the probe classification needs.
+struct OrderingClaim {
+    suffix: char,
+    claim: &'static str,
+    source: &'static str,
+    terms: Vec<(i64, PlayerView)>,
+}
+
+impl OrderingClaim {
+    fn margin(&self, rules: &Rules, weights: &WeightTable) -> i64 {
+        self.terms.iter().map(|(sign, view)| sign * score(view, rules, weights)).sum()
+    }
+}
+
+/// One item AFTER scoring: its identity, its class, and its margin under the
+/// table under read beside the three probes.
+struct OrderingItem {
+    scenario: usize,
+    name: &'static str,
+    suffix: char,
+    claim: &'static str,
+    source: &'static str,
+    class: OrderingClass,
+    /// How many scored views the claim combines — pinned by the roster cell,
+    /// because a claim whose signs did not cancel would be scoring a LEVEL.
+    terms: usize,
+    read: i64,
+    v2: i64,
+    v1: i64,
+    zero: i64,
+}
+
+impl OrderingItem {
+    /// HOLDS / VIOLATED for a gating item; the class label otherwise.
+    fn verdict(&self) -> String {
+        match self.class {
+            OrderingClass::Gating if self.read > 0 => "HOLDS".to_string(),
+            OrderingClass::Gating => "*** VIOLATED ***".to_string(),
+            OrderingClass::TableIndependent => format!(
+                "{} — §2.6's terminal ladder short-circuits the weight vector; listed, never \
+                 gating",
+                self.class.label(),
+            ),
+            OrderingClass::V2Tied => format!(
+                "{} — the incumbent does not order this pair; listed, never gating",
+                self.class.label(),
+            ),
+        }
+    }
+}
+
+/// **THE ONE `step9 scenarios` GATING PREDICATE**, read by the item lines, the
+/// report's verdict and the exit code alike.
+///
+/// Spelled once for [`step9_structural_passed`]'s reason: a verdict spelled
+/// twice is a report that can print PASS while the process exits 1.
+fn step9_scenarios_gates(item: &OrderingItem) -> bool {
+    item.class == OrderingClass::Gating
+}
+
+fn step9_scenarios_passed(read: &ScenarioOrderingsRead) -> bool {
+    read.items.iter().filter(|i| step9_scenarios_gates(i)).all(|i| i.read > 0)
+}
+
+/// The whole read of one table over the transcribed orderings.
+struct ScenarioOrderingsRead {
+    name: String,
+    table: WeightTable,
+    items: Vec<OrderingItem>,
+}
+
+/// The two registry members the shape taxonomy excludes, with the shape that
+/// excludes each — printed, so "the orderings" cannot silently come to mean
+/// something narrower than the registry.
+const EXCLUDED_BY_SHAPE_SCENARIOS: [(usize, &str, &str); 2] = [
+    (7, "the null-placement trap", "chosen move ∈ set (behavioural, aggregate)"),
+    (11, "post-claim achievement progress", "f(A) > f(B) over a FEATURE FUNCTION"),
+];
+
+/// The three PROPERTY clauses excluded BY SHAPE because they are EQUALITIES
+/// rather than orderings (Ruling T2b-R2).
+///
+/// Each is a real clause of its scenario's property and each holds under EVERY
+/// table by construction — the pairs are feature-identical, or the rival's term
+/// cancels out of a relative evaluator — so gating them would fail every draft
+/// trivially while proving nothing about a table. They are counted on the
+/// artifact rather than dropped silently.
+const EXCLUDED_EQUALITY_CLAUSES: [(usize, &str, char, &str, &str); 3] = [
+    (
+        16,
+        "customs race: the rival's progress",
+        'c',
+        "score(blocking) − score(neutral) == w_vp · the track's printed gap",
+        "scenario_suite.rs:4494-4503",
+    ),
+    (
+        17,
+        "achievement proximity as self-guidance",
+        'b',
+        "score(near) == score(smeared) — the blind spot, pinned as an equality",
+        "scenario_suite.rs:4732-4743",
+    ),
+    (
+        18,
+        "behind at the end trigger: keep building",
+        'b',
+        "margin(behind) == margin(ahead) — no end-trigger brake exists",
+        "scenario_suite.rs:5015-5025",
+    ),
+];
+
+/// The transcribed roster: registry index, the suite's `SCENARIOS` name, and the
+/// builder. Names are single-sourced here so an item cannot drift from the
+/// registry entry it claims to be.
+type ScenarioClaims = fn(&Rules) -> Result<Vec<OrderingClaim>, String>;
+const TRANSCRIBED_SCENARIOS: [(usize, &str, ScenarioClaims); 19] = [
+    (0, "country-set completion", suite_country_set_completion),
+    (1, "order economics: fulfill now vs hold", suite_order_economics),
+    (2, "end-trigger timing: the church clock", suite_end_trigger_church_clock),
+    (3, "church/customs majority: the D1 dummy", suite_customs_d1_dummy),
+    (4, "building race", suite_building_race),
+    (5, "retreat/recovery discipline", suite_recovery_discipline),
+    (6, "faith arithmetic", suite_faith_arithmetic),
+    (8, "terminal scoring", suite_terminal_scoring),
+    (9, "early engine over early VP", suite_early_engine_over_early_vp),
+    (10, "warehouse decay flattened", suite_warehouse_decay_flattened),
+    (12, "late bonus re-pricing: tokens over church", suite_late_bonus_repricing),
+    (13, "D5 dummy decides the technology majority", suite_d5_dummy_technology_majority),
+    (14, "deck clock: bank before the deck runs out", suite_deck_clock_banking),
+    (15, "track-racing: extending a winnable church race", suite_track_racing),
+    (16, "customs race: the rival's progress", suite_customs_race),
+    (17, "achievement proximity as self-guidance", suite_achievement_proximity),
+    (18, "behind at the end trigger: keep building", suite_behind_at_the_end_trigger),
+    (19, "2P church crossing in the ChurchTrackFull regime", suite_two_player_church_crossing),
+    (20, "D3 to-hand: the empty-hand corner", suite_d3_to_hand_corner),
+];
+
+/// Build every transcribed fixture, score it under the table under read and the
+/// three probes, and classify — or a typed INSTRUMENT failure.
+///
+/// The failures are typed rather than silent because each says the
+/// TRANSCRIPTION is broken, never that a table is bad: a fixture guard that
+/// fires means the registry moved under a fixture, and a table-independent item
+/// that reads VIOLATED means this file disagrees with a suite that is green.
+fn step9_scenarios_read(
+    name: &str,
+    table: &WeightTable,
+    rules: &Rules,
+) -> Result<ScenarioOrderingsRead, String> {
+    let mut items = Vec::new();
+    for (scenario, scenario_name, build) in TRANSCRIBED_SCENARIOS {
+        let claims = build(rules).map_err(|detail| {
+            format!(
+                "TRANSCRIPTION FAILURE ({name}): registry scenario {scenario} \
+                 ({scenario_name:?}) could not be rebuilt — {detail}. This is a typed INSTRUMENT \
+                 failure: the read is INVALID and says nothing about the table. A fixture guard \
+                 fires when the registry moved under a transcription, which is a routed finding \
+                 rather than a gate verdict."
+            )
+        })?;
+        for claim in claims {
+            if claim.terms.len() < 2 || claim.terms.iter().map(|(sign, _)| sign).sum::<i64>() != 0 {
+                return Err(format!(
+                    "TRANSCRIPTION FAILURE ({name}): item [{scenario}{}] is not a DIFFERENCE of \
+                     scored views ({} terms, signs summing to {}). Every clause of this shape \
+                     asserts a margin; a claim whose signs do not cancel is scoring a level.",
+                    claim.suffix,
+                    claim.terms.len(),
+                    claim.terms.iter().map(|(sign, _)| sign).sum::<i64>(),
+                ));
+            }
+            let (v2, v1, zero) = (
+                claim.margin(rules, &WeightTable::V2),
+                claim.margin(rules, &WeightTable::V1),
+                claim.margin(rules, &WeightTable::ZERO),
+            );
+            let read = claim.margin(rules, table);
+            // THE CLASSIFICATION, in probe arithmetic. Order matters: a
+            // terminal item reads 0 under no table, so it is recognised BEFORE
+            // the tie arm, which would otherwise claim any item V2 scores 0.
+            let class = if v2 == zero && v1 == zero {
+                OrderingClass::TableIndependent
+            } else if v2 == 0 {
+                OrderingClass::V2Tied
+            } else {
+                OrderingClass::Gating
+            };
+            if class == OrderingClass::TableIndependent && (read != zero || read <= 0) {
+                return Err(format!(
+                    "TRANSCRIPTION FAILURE ({name}): item [{scenario}{}] classified \
+                     TABLE-INDEPENDENT but reads {read} under this table against {zero} under the \
+                     probes. A table-independent claim of a GREEN suite must hold identically \
+                     whatever the weights; this instrument disagrees with the suite, which is a \
+                     routed finding rather than a gate verdict.",
+                    claim.suffix,
+                ));
+            }
+            items.push(OrderingItem {
+                scenario,
+                name: scenario_name,
+                suffix: claim.suffix,
+                claim: claim.claim,
+                source: claim.source,
+                class,
+                terms: claim.terms.len(),
+                read,
+                v2,
+                v1,
+                zero,
+            });
+        }
+    }
+    Ok(ScenarioOrderingsRead { name: name.to_string(), table: *table, items })
+}
+
+fn render_step9_scenarios(read: &ScenarioOrderingsRead) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "step9 scenarios — R6's V2 scenario orderings, transcribed from tests/scenario_suite.rs \
+         and printed item by item\n",
+    );
+    let _ = writeln!(out, "semantics rev       {SEMANTICS_REV}");
+    let _ = writeln!(
+        out,
+        "eval impl version   {}",
+        yokohama_core::game::eval::EVAL_IMPL_VERSION,
+    );
+    let _ = writeln!(out, "profile             {}", profile());
+    let _ = writeln!(out, "table               {}", read.name);
+    let _ = writeln!(
+        out,
+        "table identity      {:#018x}   (decimal {})",
+        weight_table_identity(&read.table) as u64,
+        weight_table_identity(&read.table),
+    );
+
+    let gating = read.items.iter().filter(|i| step9_scenarios_gates(i)).count();
+    let tied = read.items.iter().filter(|i| i.class == OrderingClass::V2Tied).count();
+    let independent =
+        read.items.iter().filter(|i| i.class == OrderingClass::TableIndependent).count();
+    let _ = writeln!(
+        out,
+        "\n  == COMPLETENESS (Ruling P3's referent, and what it excludes) ==\n\
+         \x20    the registered `eval(A) > eval(B)` shape carries nineteen scenarios \
+         (scenario_suite.rs:95-103);\n\
+         \x20    {} ordering items over them — {gating} GATING, {tied} V2-TIED, {independent} \
+         TABLE-INDEPENDENT.",
+        read.items.len(),
+    );
+    for (index, name, shape) in EXCLUDED_BY_SHAPE_SCENARIOS {
+        let _ = writeln!(
+            out,
+            "     excluded scenario  registry {index:>2}  {name:<42} — {shape}",
+        );
+    }
+    let _ = writeln!(
+        out,
+        "     excluded clauses   {} PROPERTY clauses of INCLUDED scenarios are EQUALITIES rather \
+         than orderings,\n                        so they are outside the registered shape (they \
+         hold under EVERY table by construction):",
+        EXCLUDED_EQUALITY_CLAUSES.len(),
+    );
+    for (scenario, name, suffix, claim, source) in EXCLUDED_EQUALITY_CLAUSES {
+        let _ = writeln!(out, "                        {scenario}({suffix}) {name} — {claim}  [{source}]");
+    }
+
+    let _ = writeln!(
+        out,
+        "\n  == THE ITEMS ==\n\
+         \x20    margin is the quantity the suite asserts is strictly positive; the V2 column is \
+         the transcription's\n\
+         \x20    POSITIVE CONTROL (family 9), and an item V2 itself does not order cannot be a \
+         control for a draft to preserve",
+    );
+    let mut current = usize::MAX;
+    for item in &read.items {
+        if item.scenario != current {
+            current = item.scenario;
+            let _ = writeln!(out, "\n     registry {:>2}  {}", item.scenario, item.name);
+        }
+        let _ = writeln!(out, "     [{:>2}{}] {}", item.scenario, item.suffix, item.claim);
+        let _ = writeln!(
+            out,
+            "           margin under read {:>+12} · at V2 {:>+12} · {}",
+            item.read,
+            item.v2,
+            item.verdict(),
+        );
+        // Every claim of this shape is a DIFFERENCE; the one four-term member
+        // compares two MARGINS rather than two positions, and a reader
+        // comparing its number against the others should know that.
+        if item.terms > 2 {
+            let _ = writeln!(
+                out,
+                "           a {}-term claim: the difference of two MARGINS, not of two positions",
+                item.terms,
+            );
+        }
+        // The class is READ off probe tables at every run rather than declared
+        // per scenario, so the evidence for it is printed wherever it changed
+        // what the item does.
+        if item.class != OrderingClass::Gating {
+            let _ = writeln!(
+                out,
+                "           probes: V1 {:>+12} · V2 {:>+12} · ZERO {:>+12} — the {} class is read \
+                 off these, never declared",
+                item.v1,
+                item.v2,
+                item.zero,
+                item.class.label(),
+            );
+        }
+        let _ = writeln!(out, "           suite source {}", item.source);
+    }
+
+    let failed: Vec<String> = read
+        .items
+        .iter()
+        .filter(|i| step9_scenarios_gates(i) && i.read <= 0)
+        .map(|i| format!("{}{}", i.scenario, i.suffix))
+        .collect();
+    let _ = writeln!(
+        out,
+        "\n  VERDICT step9 scenarios: {}",
+        if failed.is_empty() {
+            format!(
+                "PASS — all {gating} gating orderings the incumbent registers are preserved under \
+                 this table"
+            )
+        } else {
+            format!(
+                "FAIL — {} of {gating} gating ordering(s) VIOLATED: {:?}. Registered sentence 6: \
+                 a miss is a STEP-9 FAILURE, and this instrument REPORTS it rather than repairing \
+                 it",
+                failed.len(),
+                failed,
+            )
+        },
+    );
+    out
+}
+
+fn cmd_step9_scenarios(args: &[String]) -> Result<i32, String> {
+    let (positional, flags, _) = split_args(args, &["table"], &[], &[])?;
+    if !positional.is_empty() {
+        return Err(format!("step9 scenarios takes no positional arguments\n\n{USAGE}"));
+    }
+    let Some(spec) = flags.get("table") else {
+        return Err(format!("step9 scenarios needs --table <spec>\n\n{USAGE}"));
+    };
+    let (name, fit) = parse_step9_table("scenarios", spec)?;
+    let table = WeightTable { early: fit.early, late: fit.late };
+    let rules = Rules::standard();
+    let read = step9_scenarios_read(&name, &table, &rules)?;
+    print!("{}", render_step9_scenarios(&read));
+    if step9_scenarios_passed(&read) {
+        Ok(0)
+    } else {
+        Ok(EXIT_GATE_FAILED)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The transcribed fixtures.
+//
+// Each helper below MIRRORS one of the suite's own (`scenario_suite.rs`'s
+// fixtures section, :434-675), returning typed errors where the suite panics —
+// this instrument never panics, and a fixture that cannot be rebuilt is a
+// routed finding.
+// ---------------------------------------------------------------------------
+
+/// `scenario_suite.rs:446-453` — a finalized game with every seat keeping its
+/// first dealt Order, so every seat is viewable.
+fn suite_keep_game(players: u8, seed: u64, rules: &Rules) -> Result<GameState, String> {
+    let pending = new_game(GameConfig::for_player_count(players), rules, seed)
+        .map_err(|e| format!("setup at {players}P/{seed}: {e:?}"))?;
+    let choices: Vec<_> = (0..players).map(|_| StartingOrderChoice::Keep(0)).collect();
+    let state = finalize_setup(pending, &choices).map_err(|e| format!("finalize: {e:?}"))?;
+    suite_engine_valid(&state, rules, "a finalized setup")?;
+    Ok(state)
+}
+
+/// `scenario_suite.rs:475-478` — every constructed `GameState` goes through the
+/// engine's own invariant net before anything reads it.
+fn suite_engine_valid(state: &GameState, rules: &Rules, label: &str) -> Result<(), String> {
+    check_invariants(state, rules)
+        .map_err(|e| format!("fixture '{label}' is not a state the engine would accept: {e}"))
+}
+
+/// `scenario_suite.rs:569-571` — seat 0's view of a fresh game.
+fn suite_base_view(players: u8, seed: u64, rules: &Rules) -> Result<PlayerView, String> {
+    observe(&suite_keep_game(players, seed, rules)?, PlayerId(0))
+        .map_err(|e| format!("seat 0 must be viewable: {e:?}"))
+}
+
+/// `scenario_suite.rs:574-577`.
+fn suite_viewer_mut(view: &mut PlayerView) -> &mut VisiblePlayer {
+    let me = view.viewer;
+    view.players.iter_mut().find(|p| p.id == me).expect("the view contains its own seat")
+}
+
+/// `scenario_suite.rs:623-625`.
+fn suite_own_row(view: &PlayerView) -> &VisiblePlayer {
+    view.players.iter().find(|p| p.id == view.viewer).expect("the view contains its seat")
+}
+
+/// `scenario_suite.rs:650-652` — the viewer's own raw value for one feature,
+/// through the production structure.
+fn suite_viewer_value(view: &PlayerView, rules: &Rules, feature: Feature) -> i64 {
+    ScoreStructure::derive(view, rules).value_of(suite_own_row(view), feature)
+}
+
+/// Both seats' derived values for one feature — the multi-seat form the majority
+/// fixtures read their awards off (`scenario_suite.rs:2887-2894` and twins).
+///
+/// Typed rather than defaulting: a missing seat that read 0 would silently
+/// SATISFY the `(6, 0)` and `(8, 0)` guards below, which are exactly the ones
+/// asserting that the D1 dummy consumed the second place. A fixture whose seats
+/// went missing must fail loudly.
+fn suite_seat_awards(
+    view: &PlayerView,
+    rules: &Rules,
+    feature: Feature,
+) -> Result<(i64, i64), String> {
+    let structure = ScoreStructure::derive(view, rules);
+    let value = |seat: u8| -> Result<i64, String> {
+        view.players
+            .iter()
+            .find(|p| p.id == PlayerId(seat))
+            .map(|row| structure.value_of(row, feature))
+            .ok_or_else(|| format!("the view carries no seat {seat}"))
+    };
+    Ok((value(0)?, value(1)?))
+}
+
+/// `scenario_suite.rs:582-597`.
+fn suite_one_order_per_country(rules: &Rules) -> Result<([OrderCardId; 5], OrderCardId), String> {
+    let pick = |country: Country, skip: usize| -> Result<OrderCardId, String> {
+        let mut ids: Vec<OrderCardId> =
+            rules.orders.iter().filter(|c| c.country == country).map(|c| c.id).collect();
+        ids.sort_unstable_by_key(|id| id.0);
+        ids.get(skip).copied().ok_or_else(|| format!("{country:?} prints no order at index {skip}"))
+    };
+    Ok((
+        [
+            pick(Country::English, 0)?,
+            pick(Country::American, 0)?,
+            pick(Country::French, 0)?,
+            pick(Country::German, 0)?,
+            pick(Country::Dutch, 0)?,
+        ],
+        pick(Country::English, 1)?,
+    ))
+}
+
+/// `scenario_suite.rs:607-618`.
+fn suite_one_tech_per_country(rules: &Rules, n: usize) -> Vec<TechCardId> {
+    Country::ALL
+        .iter()
+        .take(n)
+        .filter_map(|country| {
+            let mut ids: Vec<TechCardId> =
+                rules.techs.iter().filter(|c| c.country == *country).map(|c| c.id).collect();
+            ids.sort_unstable_by_key(|id| id.0);
+            ids.first().copied()
+        })
+        .collect()
+}
+
+/// `scenario_suite.rs:557-566`.
+fn suite_techs_at_gear(rules: &Rules, country: Country, gear: u8) -> Vec<TechCardId> {
+    let mut ids: Vec<TechCardId> = rules
+        .techs
+        .iter()
+        .filter(|c| c.country == country && c.industry_cost == gear)
+        .map(|c| c.id)
+        .collect();
+    ids.sort_unstable_by_key(|id| id.0);
+    ids
+}
+
+/// `scenario_suite.rs:491-516` — take one Order out of whichever pile the deal
+/// left it in, so a fixture may file it under a completed pile without minting a
+/// 37th card.
+fn suite_take_order_out_of_play(state: &mut GameState, id: OrderCardId) -> Result<(), String> {
+    if let Some(i) = state.order_deck.iter().position(|c| *c == id) {
+        state.order_deck.remove(i);
+        return Ok(());
+    }
+    if let Some(i) = state.orders_removed.iter().position(|c| *c == id) {
+        state.orders_removed.remove(i);
+        return Ok(());
+    }
+    let ports =
+        std::iter::once(&mut state.port_state.port_a).chain(state.port_state.port_b.as_mut());
+    for slot in ports.flat_map(|port| port.slots.iter_mut()) {
+        if *slot == Some(id) {
+            *slot = None;
+            return Ok(());
+        }
+    }
+    Err(format!("order {} sits in no pile — conservation was broken before this", id.0))
+}
+
+/// `scenario_suite.rs:527-547` — [`suite_take_order_out_of_play`]'s twin,
+/// against the tech-conservation clause.
+fn suite_take_tech_out_of_play(state: &mut GameState, id: TechCardId) -> Result<(), String> {
+    if let Some(i) = state.tech_deck.iter().position(|c| *c == id) {
+        state.tech_deck.remove(i);
+        return Ok(());
+    }
+    let labs = std::iter::once(&mut state.lab_state.lab_a).chain(state.lab_state.lab_b.as_mut());
+    for slot in labs.flat_map(|lab| lab.slots.iter_mut()) {
+        if *slot == Some(id) {
+            *slot = None;
+            return Ok(());
+        }
+    }
+    Err(format!("technology {} sits in no pile — conservation was broken before this", id.0))
+}
+
+/// `scenario_suite.rs:1848-1857` — force a state into the shape the engine calls
+/// finished.
+fn suite_force_terminal(state: &mut GameState) -> Result<(), String> {
+    let n = state.config.player_count;
+    state.end_game_triggered = true;
+    state.final_round = true;
+    state.trigger_reason = Some(EndGameTrigger::ChurchTrackFull);
+    state.trigger_player = Some(state.config.start_player);
+    state.current_player = PlayerId((state.config.start_player.0 + n - 1) % n);
+    state.turn_phase = TurnPhase::TurnEnd;
+    if !is_game_over(state) {
+        return Err("the fixture must actually be a finished game".into());
+    }
+    Ok(())
+}
+
+/// A plain `score(A) > score(B)` claim.
+fn suite_ordering(
+    suffix: char,
+    claim: &'static str,
+    source: &'static str,
+    a: &PlayerView,
+    b: &PlayerView,
+) -> OrderingClaim {
+    OrderingClaim { suffix, claim, source, terms: vec![(1, a.clone()), (-1, b.clone())] }
+}
+
+/// The stage guard the doctored fixtures share: `p` must be what the scenario's
+/// premise says, or the position is dated by something else and the claim is
+/// not the one the suite makes.
+fn suite_require_stage(
+    label: &str,
+    view: &PlayerView,
+    rules: &Rules,
+    expect: u32,
+) -> Result<(), String> {
+    let p = progress_ppm(view, rules);
+    if p != expect {
+        return Err(format!("the {label} position must sit at p={expect}, got {p}"));
+    }
+    Ok(())
+}
+
+/// The positional guard: a full-progress view is NOT a finished game, and the
+/// terminal ladder would short-circuit the weight vector these claims are about.
+fn suite_require_positional(label: &str, view: &PlayerView) -> Result<(), String> {
+    if view_is_terminal(view) {
+        return Err(format!(
+            "the {label} position must still be scored POSITIONALLY — the terminal ladder \
+             short-circuits the weight vector this scenario is about"
+        ));
+    }
+    Ok(())
+}
+
+/// Registry 0 — `country_set_completion`, `scenario_suite.rs:713-781`.
+/// Ordering clause at :742-752. The explanation-attribution clause (:753-771) is
+/// the suite's own leak check and is not of the registered shape.
+fn suite_country_set_completion(rules: &Rules) -> Result<Vec<OrderingClaim>, String> {
+    let (distinct, duplicate_english) = suite_one_order_per_country(rules)?;
+    let four: Vec<OrderCardId> = distinct[..4].iter().copied().chain([duplicate_english]).collect();
+    let countries = |ids: &[OrderCardId]| -> usize {
+        let mut cs: Vec<Country> =
+            ids.iter().filter_map(|id| rules.orders.get(*id)).map(|c| c.country).collect();
+        cs.sort_unstable_by_key(|c| Country::ALL.iter().position(|x| x == c).unwrap_or(usize::MAX));
+        cs.dedup();
+        cs.len()
+    };
+    if (countries(&distinct), countries(&four)) != (5, 4) {
+        return Err(format!(
+            "expected a 5-country and a 4-country hand, got {} and {}",
+            countries(&distinct),
+            countries(&four),
+        ));
+    }
+    let base = suite_base_view(2, 11, rules)?;
+    let with_orders = |ids: &[OrderCardId]| -> PlayerView {
+        let mut v = base.clone();
+        suite_viewer_mut(&mut v).completed_orders = ids.to_vec();
+        v
+    };
+    Ok(vec![suite_ordering(
+        'a',
+        "score(five completed orders, five DISTINCT countries) > score(five, one country doubled)",
+        "scenario_suite.rs:742-752 (country_set_completion)",
+        &with_orders(&distinct),
+        &with_orders(&four),
+    )])
+}
+
+/// Registry 1 — `order_economics_fulfill_now_vs_hold`,
+/// `scenario_suite.rs:828-911`. Ordering clause at :889-902.
+///
+/// **This is the V2-TIED member** (Ruling T2b-R1): `WeightTable::V2` scores the
+/// two positions EQUAL. The class is computed from the bytes, not asserted here;
+/// the derivation is in the test that pins it.
+fn suite_order_economics(rules: &Rules) -> Result<Vec<OrderingClaim>, String> {
+    let id = OrderCardId(21);
+    let card = rules.orders.get(id).ok_or("order 21 is not in the registry")?;
+    let (req, vp) = (card.requirements, card.rewards.victory_points);
+    if req.seafood == 0 || req.tea == 0 || req.silk == 0 || vp == 0 {
+        return Err(format!("order 21's printed numbers moved: {req:?} -> {vp} VP"));
+    }
+    let mut base = suite_base_view(2, 12, rules)?;
+    base.achievements = [
+        AchievementCard::new(AchievementType::Seafood7),
+        AchievementCard::new(AchievementType::Tea7),
+        AchievementCard::new(AchievementType::Silk6),
+    ];
+    {
+        let me = suite_viewer_mut(&mut base);
+        me.completed_orders.clear();
+        me.technologies.clear();
+        me.victory_points = 4;
+        me.seafood = 7;
+        me.tea = 7;
+        me.silk = 6;
+        me.copper = 0;
+        me.hand = vec![HandCard::Known(id)];
+    }
+    let held = base.clone();
+    let mut fulfilled = base.clone();
+    {
+        let me = suite_viewer_mut(&mut fulfilled);
+        me.hand.clear();
+        me.completed_orders = vec![id];
+        me.victory_points += u32::from(vp);
+        me.seafood -= u32::from(req.seafood);
+        me.tea -= u32::from(req.tea);
+        me.silk -= u32::from(req.silk);
+        me.imported_goods += u32::from(card.rewards.imported_goods);
+        me.money += u32::from(card.rewards.money);
+    }
+    let progress = |v: &PlayerView| suite_viewer_value(v, rules, Feature::AchievementProgressSum);
+    if progress(&fulfilled) >= progress(&held) {
+        return Err(format!(
+            "fulfilling must COST achievement progress ({} -> {})",
+            progress(&held),
+            progress(&fulfilled),
+        ));
+    }
+    Ok(vec![suite_ordering(
+        'a',
+        "score(order 21 fulfilled for its printed 11 VP) > score(order 21 still in hand)",
+        "scenario_suite.rs:889-902 (order_economics_fulfill_now_vs_hold)",
+        &fulfilled,
+        &held,
+    )])
+}
+
+/// Registry 2 — `end_trigger_timing_church_clock`, `scenario_suite.rs:973-1047`,
+/// at FOUR players. Clauses at :1020-1028 and :1029-1037.
+///
+/// The suite states these as `d < 0` and `d > 0` over `d = score(leader) −
+/// score(follower)`; the early clause is transcribed with its terms in the order
+/// that makes it a strictly-positive margin, which is the same claim.
+fn suite_end_trigger_church_clock(rules: &Rules) -> Result<Vec<OrderingClaim>, String> {
+    let base = suite_base_view(4, 13, rules)?;
+    if base.church_track.total_assistants() != 0 {
+        return Err("a fresh 4P church track must start empty".into());
+    }
+    let with_pawns = |owners: &[(usize, u8)]| -> PlayerView {
+        let mut v = base.clone();
+        for (index, seat) in owners {
+            v.church_track.slots[*index] =
+                Some(ChurchSlot { player: PlayerId(*seat), arrival_order: *index as u8 + 1 });
+        }
+        v
+    };
+    let early_leader = with_pawns(&[(0, 0)]);
+    let early_follower = with_pawns(&[(0, 1)]);
+    let late_leader = with_pawns(&[(0, 0), (1, 0), (2, 0), (3, 2), (4, 1)]);
+    let late_follower = with_pawns(&[(0, 1), (1, 1), (2, 1), (3, 2), (4, 0)]);
+    // The clock is the scenario's subject: the church occupancy must be the term
+    // that dates BOTH members of a pair (the mirror moves ownership, never
+    // occupancy).
+    for (label, a, b, expect) in [
+        ("early", &early_leader, &early_follower, 166_666u32),
+        ("late", &late_leader, &late_follower, 833_333),
+    ] {
+        suite_require_stage(label, a, rules, expect)?;
+        suite_require_stage(label, b, rules, expect)?;
+        if clock_ppm(a, rules)[1] != expect {
+            return Err(format!("the {label} pair must be dated by the CHURCH clock"));
+        }
+    }
+    Ok(vec![
+        suite_ordering(
+            'a',
+            "EARLY (one pawn, p=166666): a church lead is priced NEGATIVE — score(follower) > \
+             score(leader)",
+            "scenario_suite.rs:1020-1028 (end_trigger_timing_church_clock)",
+            &early_follower,
+            &early_leader,
+        ),
+        suite_ordering(
+            'b',
+            "LATE (five pawns, p=833333): a church lead is priced POSITIVE — score(leader) > \
+             score(follower)",
+            "scenario_suite.rs:1029-1037 (end_trigger_timing_church_clock)",
+            &late_leader,
+            &late_follower,
+        ),
+    ])
+}
+
+/// Registry 3 — `customs_majority_with_the_d1_dummy`,
+/// `scenario_suite.rs:1095-1179`. Ordering clause at :1159-1170.
+///
+/// The suite's live CONTROL (:1140-1157: with the dummy removed both landings
+/// score EQUAL at V1) is a fixture-integrity guard and rides as an assert.
+fn suite_customs_d1_dummy(rules: &Rules) -> Result<Vec<OrderingClaim>, String> {
+    let mut state = suite_keep_game(2, 14, rules)?;
+    let dummy_space = CustomsTrack::space_to_index(4).ok_or("customs space 4 exists")?;
+    if !state.customs_track.slots[dummy_space].is_some_and(|s| s.player.is_dummy()) {
+        return Err("the 2P setup must place the customs dummy on space 4".into());
+    }
+    state.customs_track.slots.iter_mut().for_each(|slot| {
+        *slot = slot.filter(|s| s.player.is_dummy());
+    });
+    suite_engine_valid(&state, rules, "2P customs track cleared back to the dummy alone")?;
+
+    let placed = |space: u8| -> Result<GameState, String> {
+        let mut s = state.clone();
+        s.customs_track.slots[CustomsTrack::space_to_index(space).ok_or("1..=7")?] =
+            Some(CustomsSlot { player: PlayerId(0), arrival_order: 1 });
+        suite_engine_valid(&s, rules, &format!("seat 0 on customs space {space}"))?;
+        Ok(s)
+    };
+    let (right, left) = (placed(5)?, placed(3)?);
+    // The engine's own breakdown is what "8 VP" and "4 VP" mean here.
+    let engine_customs = |s: &GameState| -> i64 {
+        final_result(s, rules)
+            .standings
+            .iter()
+            .find(|st| st.player == PlayerId(0))
+            .map_or(-1, |st| i64::from(st.breakdown.customs))
+    };
+    if (engine_customs(&right), engine_customs(&left)) != (8, 4) {
+        return Err(format!(
+            "the engine must score these 8 and 4 (D1), got {} and {}",
+            engine_customs(&right),
+            engine_customs(&left),
+        ));
+    }
+    let view = |s: &GameState| -> Result<PlayerView, String> {
+        observe(s, PlayerId(0)).map_err(|e| format!("seat 0 must be viewable: {e:?}"))
+    };
+    let (right_view, left_view) = (view(&right)?, view(&left)?);
+    // The suite's control: with the dummy gone both landings are a lone first
+    // place and the evaluator must be indifferent.
+    let without_dummy = |v: &PlayerView| -> PlayerView {
+        let mut v = v.clone();
+        v.customs_track.slots[dummy_space] = None;
+        v
+    };
+    let (a, b) = (
+        score(&without_dummy(&right_view), rules, &WeightTable::V1),
+        score(&without_dummy(&left_view), rules, &WeightTable::V1),
+    );
+    if a != b {
+        return Err(format!(
+            "control: with the dummy removed both landings must score equal, got {a} and {b} — \
+             the fixture is testing the space index, not D1"
+        ));
+    }
+    Ok(vec![suite_ordering(
+        'a',
+        "landing RIGHT of the D1 dummy (space 5, 8 VP) > landing left of it (space 3, 4 VP)",
+        "scenario_suite.rs:1159-1170 (customs_majority_with_the_d1_dummy)",
+        &right_view,
+        &left_view,
+    )])
+}
+
+/// Registry 4 — `building_race_trading_house_over_shophouse`,
+/// `scenario_suite.rs:1237-1281`. Ordering clause at :1259-1272.
+fn suite_building_race(rules: &Rules) -> Result<Vec<OrderingClaim>, String> {
+    let mut base = suite_base_view(2, 15, rules)?;
+    // The deck run down so the DECK clock, not either building clock, sets the
+    // stage for both positions.
+    base.order_deck_len = 2;
+    let area = *base.board_layout.areas.keys().next().ok_or("an empty board")?;
+    let mut trading = base.clone();
+    suite_viewer_mut(&mut trading).trading_houses.built = vec![area];
+    let mut shophouse = base.clone();
+    suite_viewer_mut(&mut shophouse).shophouses.built = BTreeMap::from([(area, 0u8)]);
+    suite_require_stage("trading", &trading, rules, 800_000)?;
+    suite_require_stage("shophouse", &shophouse, rules, 800_000)?;
+    Ok(vec![suite_ordering(
+        'a',
+        "score(one Trading House in area X) > score(one Shophouse in the same area X)",
+        "scenario_suite.rs:1259-1272 (building_race_trading_house_over_shophouse)",
+        &trading,
+        &shophouse,
+    )])
+}
+
+/// Registry 5 — `recovery_discipline_stops_at_the_reserve`,
+/// `scenario_suite.rs:1360-1414`. Clauses at :1389-1396 and :1397-1404.
+fn suite_recovery_discipline(rules: &Rules) -> Result<Vec<OrderingClaim>, String> {
+    let base = suite_base_view(2, 16, rules)?;
+    let area = *base.board_layout.areas.keys().next().ok_or("an empty board")?;
+    // The four assistants are the SAME four in all three fixtures; only where
+    // they sit moves. The seat's TOTAL is 16, not the engine's 20 — the suite's
+    // own fixture-honesty note (:1302-1313) declares it.
+    let after_recovering = |n: u8| -> PlayerView {
+        let mut v = base.clone();
+        let me = suite_viewer_mut(&mut v);
+        me.assistants.in_hand = n;
+        me.assistants.on_board = BTreeMap::new();
+        if n < 4 {
+            me.assistants.on_board.insert(area, 4 - n);
+        }
+        v
+    };
+    let (none, reserve, all) = (after_recovering(0), after_recovering(2), after_recovering(4));
+    Ok(vec![
+        suite_ordering(
+            'a',
+            "score(recover 2, to the hand reserve) > score(recover 0, an empty hand)",
+            "scenario_suite.rs:1389-1396 (recovery_discipline_stops_at_the_reserve)",
+            &reserve,
+            &none,
+        ),
+        suite_ordering(
+            'b',
+            "score(recover 2, to the hand reserve) > score(recover 4, emptying the board)",
+            "scenario_suite.rs:1397-1404 (recovery_discipline_stops_at_the_reserve)",
+            &reserve,
+            &all,
+        ),
+    ])
+}
+
+/// Registry 6 — `faith_arithmetic_buys_the_rightmost_church_space`,
+/// `scenario_suite.rs:1462-1514`. Ordering clause at :1493-1505.
+fn suite_faith_arithmetic(rules: &Rules) -> Result<Vec<OrderingClaim>, String> {
+    // The arithmetic itself, from the engine's own function.
+    let rich = calculate_church_faith(5, true, true, false, false, true, false);
+    let poor = calculate_church_faith(5, true, false, false, false, false, false);
+    if (rich, poor) != (8, 6) {
+        return Err(format!(
+            "power 5 with 3 distinct payment types must reach Faith 8 and with 1 type Faith 6, \
+             got {rich} and {poor}"
+        ));
+    }
+    let mut base = suite_base_view(2, 17, rules)?;
+    let dummy = ChurchTrack::faith_to_index(7).ok_or("faith 7 exists")?;
+    if !base.church_track.slots[dummy].is_some_and(|s| s.player.is_dummy()) {
+        return Err("the 2P setup must place the church dummy on Faith 7".into());
+    }
+    base.church_track.slots[ChurchTrack::faith_to_index(5).ok_or("faith 5")?] =
+        Some(ChurchSlot { player: PlayerId(1), arrival_order: 1 });
+    let landing = |faith: u8| -> Result<PlayerView, String> {
+        let mut v = base.clone();
+        v.church_track.slots[ChurchTrack::faith_to_index(faith).ok_or("faith 4..=11")?] =
+            Some(ChurchSlot { player: PlayerId(0), arrival_order: 2 });
+        Ok(v)
+    };
+    let (deep, shallow) = (landing(rich)?, landing(poor)?);
+    suite_require_stage("deep landing", &deep, rules, 500_000)?;
+    suite_require_stage("shallow landing", &shallow, rules, 500_000)?;
+    Ok(vec![suite_ordering(
+        'a',
+        "score(Faith 8, rightmost and first place at 6 VP) > score(Faith 6, behind the D1 dummy \
+         for second at 3 VP)",
+        "scenario_suite.rs:1493-1505 (faith_arithmetic_buys_the_rightmost_church_space)",
+        &deep,
+        &shallow,
+    )])
+}
+
+/// Registry 8 — `terminal_scoring_prefers_the_bonus_win`,
+/// `scenario_suite.rs:1718-1843`. Ordering clause at :1791-1801.
+///
+/// TABLE-INDEPENDENT by construction — §2.6 short-circuits the weight vector on
+/// a terminal view, so no table reaches this claim. The suite's rank clause
+/// (:1806-1813) reads `terminal_standing`, not two scores, and is not of the
+/// registered shape.
+fn suite_terminal_scoring(rules: &Rules) -> Result<Vec<OrderingClaim>, String> {
+    let (set, _) = suite_one_order_per_country(rules)?;
+    let finished = |bonus_holder: u8| -> Result<GameState, String> {
+        let mut state = suite_keep_game(2, 18, rules)?;
+        suite_force_terminal(&mut state)?;
+        for p in state.players.iter_mut() {
+            // Zero every remainder leg so the two totals are exactly the two
+            // numbers this scenario is about.
+            p.money = 0;
+            p.copper = 0;
+            p.silk = 0;
+            p.tea = 0;
+            p.seafood = 0;
+            p.imported_goods = 0;
+            p.completed_orders.clear();
+            p.technologies.clear();
+            p.victory_points = if p.id.0 == bonus_holder { 20 } else { 30 };
+        }
+        // CONSERVATION: filing five country cards under a completed pile without
+        // taking them out of the piles the deal left them in MINTS five cards.
+        for id in set {
+            suite_take_order_out_of_play(&mut state, id)?;
+        }
+        state.players[usize::from(bonus_holder)].completed_orders = set.to_vec();
+        suite_engine_valid(&state, rules, &format!("terminal game, seat {bonus_holder} holds the set"))?;
+        Ok(state)
+    };
+    let (won, lost) = (finished(0)?, finished(1)?);
+    for (label, state, winner) in [("won", &won, 0u8), ("lost", &lost, 1)] {
+        let result = final_result(state, rules);
+        if result.winner != PlayerId(winner) {
+            return Err(format!(
+                "the engine must call seat {winner} the winner of the '{label}' game, it called \
+                 seat {}",
+                result.winner.0,
+            ));
+        }
+    }
+    let view = |s: &GameState| -> Result<PlayerView, String> {
+        observe(s, PlayerId(0)).map_err(|e| format!("seat 0 must be viewable: {e:?}"))
+    };
+    let (won_view, lost_view) = (view(&won)?, view(&lost)?);
+    if !view_is_terminal(&won_view) || !view_is_terminal(&lost_view) {
+        return Err("both views must be finished games".into());
+    }
+    // The suite's anti-vacuity, deliberately NOT read off `terminal_standing`:
+    // the viewer must WIN the first on bonuses and LOSE the second while
+    // LEADING on running VP.
+    let totals = |v: &PlayerView| -> (i64, i64, i64) {
+        let s = ScoreStructure::derive(v, rules);
+        (s.base_vp[0], s.final_total(0), s.final_total(1))
+    };
+    let (won_running, won_mine, won_theirs) = totals(&won_view);
+    let (lost_running, lost_mine, lost_theirs) = totals(&lost_view);
+    if !(won_mine > won_theirs && lost_mine < lost_theirs && lost_running > won_running) {
+        return Err(format!(
+            "the viewer must WIN the first game on bonuses ({won_mine} vs {won_theirs}) and LOSE \
+             the second while LEADING on RUNNING VP ({lost_running} against {won_running}; finals \
+             {lost_mine} vs {lost_theirs})"
+        ));
+    }
+    Ok(vec![suite_ordering(
+        'a',
+        "score(the terminal the viewer WINS on bonuses) > score(the terminal it loses while \
+         leading on running VP)",
+        "scenario_suite.rs:1791-1801 (terminal_scoring_prefers_the_bonus_win)",
+        &won_view,
+        &lost_view,
+    )])
+}
+
+/// Registry 9 — `early_engine_over_early_vp`, `scenario_suite.rs:2018-2154`.
+/// Ordering clause at :2130-2143; the leak clause (:2115-2123) is the suite's
+/// own and is not transcribed.
+fn suite_early_engine_over_early_vp(rules: &Rules) -> Result<Vec<OrderingClaim>, String> {
+    let techs = suite_one_tech_per_country(rules, 3);
+    if techs.len() != 3 {
+        return Err(format!("three countries must each print a technology, got {}", techs.len()));
+    }
+    let industry: u32 = techs
+        .iter()
+        .filter_map(|id| rules.techs.get(*id))
+        .map(|c| u32::from(c.industry_cost))
+        .sum();
+    // D5's dummy contends at industry 7.5, compared as a doubled integer.
+    if 2 * industry <= 15 {
+        return Err(format!(
+            "the three technologies must out-industry the 2P dummy's 7.5 (D5), their printed \
+             gears total {industry}"
+        ));
+    }
+    let mut base = suite_base_view(2, 19, rules)?;
+    // Set explicitly: two of the twelve achievement types count completed ORDERS
+    // and owned TECHNOLOGIES, either of which would add a separating term.
+    base.achievements = [
+        AchievementCard::new(AchievementType::Copper5),
+        AchievementCard::new(AchievementType::Silk6),
+        AchievementCard::new(AchievementType::Tea7),
+    ];
+    let area = *base.board_layout.areas.keys().next().ok_or("an empty board")?;
+    {
+        let me = suite_viewer_mut(&mut base);
+        me.completed_orders.clear();
+        me.technologies.clear();
+        me.victory_points = 0;
+    }
+    let mut leader = base.clone();
+    {
+        let me = suite_viewer_mut(&mut leader);
+        me.victory_points = 12;
+        me.assistants.in_hand = HAND_CORE_RESERVE;
+        me.assistants.on_board = BTreeMap::from([(area, 6u8)]);
+    }
+    let mut engine = base.clone();
+    {
+        let me = suite_viewer_mut(&mut engine);
+        me.technologies = techs.clone();
+        me.assistants.in_hand = HAND_CORE_RESERVE + 3;
+        me.assistants.on_board = BTreeMap::from([(area, 3u8)]);
+    }
+    suite_require_stage("engine", &engine, rules, 0)?;
+    suite_require_stage("leader", &leader, rules, 0)?;
+    // The three end-scoring values the re-mix aims weight at, read off the
+    // structure rather than assumed from the doctoring.
+    for (label, view, feature, want) in [
+        ("engine", &engine, Feature::CountryBonusNow, 4),
+        ("engine", &engine, Feature::TechBonusNow, 10),
+        ("leader", &leader, Feature::CountryBonusNow, 0),
+        ("leader", &leader, Feature::TechBonusNow, 0),
+    ] {
+        let got = suite_viewer_value(view, rules, feature);
+        if got != want {
+            return Err(format!("{} must read {want} on the {label} position, got {got}", feature.name()));
+        }
+    }
+    // Both positions must hold the FULL reserve, so the core term cancels.
+    let core = |v: &PlayerView| suite_viewer_value(v, rules, Feature::AssistantsInHandCore);
+    if core(&engine) != core(&leader) {
+        return Err(format!(
+            "both positions must hold the whole {HAND_CORE_RESERVE}-token reserve, got {} and {}",
+            core(&engine),
+            core(&leader),
+        ));
+    }
+    Ok(vec![suite_ordering(
+        'a',
+        "score(the ENGINE position: country/tech/spare hand) > score(the VP-and-board leader), in \
+         the EARLY vector",
+        "scenario_suite.rs:2130-2143 (early_engine_over_early_vp)",
+        &engine,
+        &leader,
+    )])
+}
+
+/// Registry 10 — `warehouse_decay_flattened`, `scenario_suite.rs:2238-2328`.
+/// Ordering clause at :2307-2318.
+fn suite_warehouse_decay_flattened(rules: &Rules) -> Result<Vec<OrderingClaim>, String> {
+    let mut base = suite_base_view(2, 20, rules)?;
+    base.order_deck_len = 0;
+    {
+        let me = suite_viewer_mut(&mut base);
+        me.assistants.on_board = BTreeMap::new();
+        me.imported_goods = 0;
+    }
+    // Twenty tokens either way — the six the clogged seat left stranded are the
+    // six the clean seat is holding.
+    let with_warehouse = |stranded: u8, imported: u32| -> PlayerView {
+        let mut v = base.clone();
+        let me = suite_viewer_mut(&mut v);
+        me.assistants.in_warehouse = stranded;
+        me.assistants.in_hand = 20 - stranded;
+        me.imported_goods = imported;
+        v
+    };
+    let (clean, clogged) = (with_warehouse(2, 0), with_warehouse(8, 6));
+    let total = |v: &PlayerView| -> u32 {
+        let me = suite_own_row(v);
+        u32::from(me.assistants.in_warehouse)
+            + u32::from(me.assistants.in_hand)
+            + me.assistants.on_board.values().map(|n| u32::from(*n)).sum::<u32>()
+    };
+    if total(&clean) != total(&clogged) {
+        return Err(format!(
+            "the two positions must hold the SAME tokens in different places, got {} and {}",
+            total(&clean),
+            total(&clogged),
+        ));
+    }
+    for (label, view) in [("clean", &clean), ("clogged", &clogged)] {
+        suite_require_stage(label, view, rules, PROGRESS_FULL_PPM)?;
+        suite_require_positional(label, view)?;
+    }
+    Ok(vec![suite_ordering(
+        'a',
+        "score(the CLEAN warehouse) > score(the CLOGGED one that paid for its stranding with 6 \
+         imported goods)",
+        "scenario_suite.rs:2307-2318 (warehouse_decay_flattened)",
+        &clean,
+        &clogged,
+    )])
+}
+
+/// Registry 12 — `late_bonus_repricing_tokens_over_church`,
+/// `scenario_suite.rs:2760-2960`. Ordering clause at :2940-2950.
+fn suite_late_bonus_repricing(rules: &Rules) -> Result<Vec<OrderingClaim>, String> {
+    const DUMMY_FAITH: u8 = 7;
+    const HIGH_FAITH: u8 = 10;
+    const LOW_FAITH: u8 = 9;
+    const TOKENS_HELD: u8 = 4;
+    const TOKENS_TRAILING: u8 = 1;
+
+    let mut base = suite_base_view(2, 22, rules)?;
+    base.order_deck_len = 0;
+    let dummy_index = ChurchTrack::faith_to_index(DUMMY_FAITH).ok_or("faith 7 is on the track")?;
+    if !base.church_track.slots[dummy_index].is_some_and(|s| s.player.is_dummy()) {
+        return Err(format!("the 2P setup must place the church dummy on faith {DUMMY_FAITH} (D1)"));
+    }
+    if base.church_track.total_assistants() != 0 {
+        return Err("a fresh 2P church track must carry no REAL pawn".into());
+    }
+    // The five tokens the two seats hold between them come OFF the board, so the
+    // doctored view stays coherent about a finite token pool.
+    let held_total = usize::from(TOKENS_HELD + TOKENS_TRAILING);
+    let taken: Vec<_> = base
+        .board_layout
+        .five_power_tokens
+        .iter()
+        .filter(|(_, token)| token.is_some())
+        .map(|(area, _)| *area)
+        .take(held_total)
+        .collect();
+    if taken.len() != held_total {
+        return Err(format!(
+            "the 2P board must carry at least {held_total} face-up 5-Power tokens, it carries {}",
+            taken.len(),
+        ));
+    }
+    for area in &taken {
+        base.board_layout.five_power_tokens.insert(*area, None);
+    }
+    let position = |church_first: u8, token_holder: u8| -> Result<PlayerView, String> {
+        let mut v = base.clone();
+        for (faith, seat, arrival) in
+            [(HIGH_FAITH, church_first, 1u8), (LOW_FAITH, 1 - church_first, 2u8)]
+        {
+            v.church_track.slots[ChurchTrack::faith_to_index(faith).ok_or("faith 4..=11")?] =
+                Some(ChurchSlot { player: PlayerId(seat), arrival_order: arrival });
+        }
+        for player in v.players.iter_mut() {
+            if player.id == PlayerId(token_holder) {
+                player.five_power_tokens = TOKENS_HELD;
+            } else if player.id == PlayerId(1 - token_holder) {
+                player.five_power_tokens = TOKENS_TRAILING;
+            }
+        }
+        Ok(v)
+    };
+    let (church_lead, five_power) = (position(0, 1)?, position(1, 0)?);
+    for (label, view) in [("church-majority", &church_lead), ("five-power", &five_power)] {
+        suite_require_stage(label, view, rules, PROGRESS_FULL_PPM)?;
+        suite_require_positional(label, view)?;
+        if clock_ppm(view, rules)[0] != PROGRESS_FULL_PPM {
+            return Err(format!("the {label} position must be dated by the DECK clock"));
+        }
+    }
+    // The exchange, made executable: both positions occupy the SAME church
+    // spaces with the same number of real pawns.
+    let occupied = |v: &PlayerView| -> Vec<usize> {
+        v.church_track
+            .slots
+            .iter()
+            .enumerate()
+            .filter(|(_, slot)| slot.is_some())
+            .map(|(index, _)| index)
+            .collect()
+    };
+    if occupied(&church_lead) != occupied(&five_power)
+        || church_lead.church_track.total_assistants() != 2
+    {
+        return Err("the two positions must occupy the same church spaces with two REAL pawns".into());
+    }
+    for (label, view, feature, mine, theirs) in [
+        ("church-majority", &church_lead, Feature::ChurchBonusNow, 6, 3),
+        ("five-power", &five_power, Feature::ChurchBonusNow, 3, 6),
+        (
+            "church-majority",
+            &church_lead,
+            Feature::FivePowerTokens,
+            i64::from(TOKENS_TRAILING),
+            i64::from(TOKENS_HELD),
+        ),
+        (
+            "five-power",
+            &five_power,
+            Feature::FivePowerTokens,
+            i64::from(TOKENS_HELD),
+            i64::from(TOKENS_TRAILING),
+        ),
+    ] {
+        let got = suite_seat_awards(view, rules, feature)?;
+        if got != (mine, theirs) {
+            return Err(format!(
+                "on the {label} position {} must read {mine}/{theirs} for (viewer, opponent), got \
+                 {got:?}",
+                feature.name(),
+            ));
+        }
+    }
+    Ok(vec![suite_ordering(
+        'a',
+        "score(the FIVE-POWER position) > score(the CHURCH-MAJORITY position), in the LATE vector",
+        "scenario_suite.rs:2940-2950 (late_bonus_repricing_tokens_over_church)",
+        &five_power,
+        &church_lead,
+    )])
+}
+
+/// Registry 13 — `d5_dummy_decides_the_technology_majority`,
+/// `scenario_suite.rs:3069-3230`. Ordering clause at :3194-3204.
+///
+/// TABLE-INDEPENDENT: two terminal views, so §2.6 short-circuits the vector.
+fn suite_d5_dummy_technology_majority(rules: &Rules) -> Result<Vec<OrderingClaim>, String> {
+    let gear4 = suite_techs_at_gear(rules, Country::English, 4);
+    let gear3 = suite_techs_at_gear(rules, Country::English, 3);
+    if gear4.len() < 2 || gear3.is_empty() {
+        return Err(format!(
+            "England must print at least two gear-4 technologies and one gear-3, the registry has \
+             {} and {}",
+            gear4.len(),
+            gear3.len(),
+        ));
+    }
+    let high = vec![gear4[0], gear4[1]];
+    let low = vec![gear3[0], gear4[0]];
+    let industry = |holding: &[TechCardId]| -> u32 {
+        holding
+            .iter()
+            .filter_map(|id| rules.techs.get(*id))
+            .map(|c| u32::from(c.industry_cost))
+            .sum()
+    };
+    if (industry(&low), industry(&high)) != (7, 8) {
+        return Err(format!(
+            "the two holdings must print gear 7 and gear 8 — the values that straddle the D5 \
+             dummy's 7.5 — they print {} and {}",
+            industry(&low),
+            industry(&high),
+        ));
+    }
+    // A player may own only ONE Technology of a given NAME.
+    for holding in [&high, &low] {
+        let mut titles: Vec<&str> = holding
+            .iter()
+            .filter_map(|id| rules.techs.get(*id))
+            .map(|card| card.name.as_str())
+            .collect();
+        let owned = titles.len();
+        titles.sort_unstable();
+        titles.dedup();
+        if titles.len() != owned || owned != holding.len() {
+            return Err(format!(
+                "a seat may own only one Technology of a NAME, this holding carries {titles:?}"
+            ));
+        }
+    }
+    let finished = |holding: &[TechCardId]| -> Result<GameState, String> {
+        let mut state = suite_keep_game(2, 23, rules)?;
+        suite_force_terminal(&mut state)?;
+        for p in state.players.iter_mut() {
+            p.money = 0;
+            p.copper = 0;
+            p.silk = 0;
+            p.tea = 0;
+            p.seafood = 0;
+            p.imported_goods = 0;
+            p.completed_orders.clear();
+            p.technologies.clear();
+            p.victory_points = if p.id.0 == 0 { 20 } else { 26 };
+        }
+        for id in holding {
+            suite_take_tech_out_of_play(&mut state, *id)?;
+        }
+        state.players[0].technologies = holding.to_vec();
+        suite_engine_valid(&state, rules, &format!("terminal 2P game at gear {}", industry(holding)))?;
+        Ok(state)
+    };
+    let (gear8, gear7) = (finished(&high)?, finished(&low)?);
+    for (label, state, winner) in [("gear-8", &gear8, 0u8), ("gear-7", &gear7, 1)] {
+        if final_result(state, rules).winner != PlayerId(winner) {
+            return Err(format!("the engine must call seat {winner} the winner of the '{label}' game"));
+        }
+    }
+    let view = |s: &GameState| -> Result<PlayerView, String> {
+        observe(s, PlayerId(0)).map_err(|e| format!("seat 0 must be viewable: {e:?}"))
+    };
+    let (gear8_view, gear7_view) = (view(&gear8)?, view(&gear7)?);
+    if !view_is_terminal(&gear8_view) || !view_is_terminal(&gear7_view) {
+        return Err("both views must be finished games".into());
+    }
+    let legs = |v: &PlayerView| -> (i64, i64, i64) {
+        let s = ScoreStructure::derive(v, rules);
+        (s.tech[0], s.final_total(0), s.final_total(1))
+    };
+    let (gear8_tech, gear8_mine, gear8_theirs) = legs(&gear8_view);
+    let (gear7_tech, gear7_mine, gear7_theirs) = legs(&gear7_view);
+    if (gear8_tech, gear7_tech) != (10, 5) {
+        return Err(format!(
+            "the gear-8 holding must TAKE the technology majority (10) and the gear-7 holding must \
+             lose it to the dummy's 7.5 (5), the structure read {gear8_tech} and {gear7_tech}"
+        ));
+    }
+    if !(gear8_mine > gear8_theirs && gear7_mine < gear7_theirs) {
+        return Err(format!(
+            "the 5 VP the dummy moves must decide the winner — gear-8 {gear8_mine} against \
+             {gear8_theirs} and gear-7 {gear7_mine} against {gear7_theirs}"
+        ));
+    }
+    Ok(vec![suite_ordering(
+        'a',
+        "score(gear-8 terminal, TAKES the 10/5 majority over the D5 dummy's 7.5) > score(gear-7 \
+         terminal, loses it)",
+        "scenario_suite.rs:3194-3204 (d5_dummy_decides_the_technology_majority)",
+        &gear8_view,
+        &gear7_view,
+    )])
+}
+
+/// Registry 14 — `deck_clock_banking_beats_holding`,
+/// `scenario_suite.rs:3453-3638`. Clauses at :3601-3612 and :3617-3628.
+///
+/// Clause (b) is the scenario's own content — the margin GROWS as the deck runs
+/// out — and is a four-term difference of two margins rather than of two
+/// positions.
+fn suite_deck_clock_banking(rules: &Rules) -> Result<Vec<OrderingClaim>, String> {
+    let id = OrderCardId(14);
+    let card = rules.orders.get(id).ok_or("order 14 is not in the registry")?;
+    let (req, rewards) = (card.requirements, card.rewards);
+    if req.copper == 0 || req.silk == 0 || req.tea == 0 || req.seafood != 0 {
+        return Err(format!("order 14 must cost copper, silk and tea and no seafood, it costs {req:?}"));
+    }
+    // A pure goods-for-VP conversion: any other printed reward would move a
+    // fourth term.
+    if rewards.victory_points == 0
+        || (rewards.imported_goods, rewards.warehouse_tokens, rewards.any_trade_good) != (0, 0, 0)
+        || (rewards.copper, rewards.silk, rewards.tea, rewards.seafood) != (0, 0, 0, 0)
+        || rewards.movement != 0
+    {
+        return Err(format!("order 14 must pay VP (and Yen) and nothing else, it prints {rewards:?}"));
+    }
+    let mut base = suite_base_view(2, 24, rules)?;
+    base.order_deck_len = 1;
+    base.achievements = [
+        AchievementCard::new(AchievementType::Copper5),
+        AchievementCard::new(AchievementType::Silk6),
+        AchievementCard::new(AchievementType::Tea7),
+    ];
+    {
+        let me = suite_viewer_mut(&mut base);
+        me.completed_orders.clear();
+        me.technologies.clear();
+        me.victory_points = 0;
+        me.copper = 3;
+        me.silk = 3;
+        me.tea = 3;
+        me.seafood = 0;
+        me.hand = vec![HandCard::Known(id)];
+    }
+    let held = base.clone();
+    let mut banked = base.clone();
+    {
+        let me = suite_viewer_mut(&mut banked);
+        me.hand.clear();
+        me.completed_orders = vec![id];
+        me.victory_points += u32::from(rewards.victory_points);
+        me.money += u32::from(rewards.money);
+        me.copper -= u32::from(req.copper);
+        me.silk -= u32::from(req.silk);
+        me.tea -= u32::from(req.tea);
+    }
+    let with_full_deck = |v: &PlayerView| -> PlayerView {
+        let mut v = v.clone();
+        v.order_deck_len = initial_order_deck_len(&v, rules).unwrap_or(0);
+        v
+    };
+    let (held_early, banked_early) = (with_full_deck(&held), with_full_deck(&banked));
+    // THE STAGE IS THE SCENARIO'S SUBJECT: the DECK clock must be the maximum
+    // and the other three strictly behind it.
+    let clocks = clock_ppm(&banked, rules);
+    let p = progress_ppm(&banked, rules);
+    if p != 900_000 || clocks[0] != p || clocks[1..].iter().any(|c| *c >= p) {
+        return Err(format!(
+            "one card left in a 2P deck must date the position at 900000 ppm on the DECK clock \
+             alone, got p={p} with clocks {clocks:?}"
+        ));
+    }
+    suite_require_stage("held", &held, rules, 900_000)?;
+    suite_require_stage("banked-full-deck", &banked_early, rules, 0)?;
+    suite_require_stage("held-full-deck", &held_early, rules, 0)?;
+    for (label, view) in [("banked", &banked), ("held", &held), ("banked-full-deck", &banked_early)]
+    {
+        suite_require_positional(label, view)?;
+    }
+    // The conversion must actually COST achievement progress, and every leg must
+    // sit strictly below its printed threshold (off the cap corner).
+    let progress = |v: &PlayerView| suite_viewer_value(v, rules, Feature::AchievementProgressSum);
+    if progress(&held) - progress(&banked) != i64::from(req.total()) {
+        return Err(format!(
+            "every one of the order's {} goods must be a point of achievement progress given up, \
+             progress went {} -> {}",
+            req.total(),
+            progress(&held),
+            progress(&banked),
+        ));
+    }
+    for card in &held.achievements {
+        let (current, needed) =
+            achievement_progress(&held, suite_own_row(&held), card.achievement_type);
+        if current >= needed {
+            return Err(format!(
+                "every achievement leg must sit strictly below its threshold on the HELD \
+                 position, {:?} reads {current} of {needed}",
+                card.achievement_type,
+            ));
+        }
+    }
+    Ok(vec![
+        suite_ordering(
+            'a',
+            "ONE card left in the deck: score(banking the completable order) > score(holding it)",
+            "scenario_suite.rs:3601-3612 (deck_clock_banking_beats_holding)",
+            &banked,
+            &held,
+        ),
+        OrderingClaim {
+            suffix: 'b',
+            claim: "the DECK CLOCK's own content: margin(one card left) > margin(the same pair at \
+                    a FULL deck)",
+            source: "scenario_suite.rs:3617-3628 (deck_clock_banking_beats_holding)",
+            terms: vec![
+                (1, banked),
+                (-1, held),
+                (-1, banked_early),
+                (1, held_early),
+            ],
+        },
+    ])
+}
+
+/// Registry 15 — `track_racing_extends_a_winnable_church_race`,
+/// `scenario_suite.rs:3768-4045`. Clauses at :3980-3990, :3992-4001, :4010-4021.
+fn suite_track_racing(rules: &Rules) -> Result<Vec<OrderingClaim>, String> {
+    const DUMMY_FAITH: u8 = 7;
+    const RIVAL_LIVE: u8 = 9;
+    const RIVAL_BEATEN: u8 = 6;
+    const ONE_LANDING: [u8; 1] = [8];
+    const TWO_LANDINGS: [u8; 2] = [4, 5];
+    const ONE_LANDING_PLUS: [u8; 2] = [8, 4];
+
+    // The printed VP a holding banks, read off the track rather than retyped.
+    fn printed(faiths: &[u8]) -> u32 {
+        faiths.iter().map(|f| u32::from(ChurchTrack::vp_reward(*f))).sum()
+    }
+    if printed(&ONE_LANDING) != printed(&TWO_LANDINGS) || printed(&ONE_LANDING) == 0 {
+        return Err(format!(
+            "the viewer's one-landing and two-landing holdings must bank the SAME NONZERO printed \
+             VP, they print {} and {}",
+            printed(&ONE_LANDING),
+            printed(&TWO_LANDINGS),
+        ));
+    }
+    let mut base = suite_base_view(2, 25, rules)?;
+    base.order_deck_len = 0;
+    let area = *base.board_layout.areas.keys().next().ok_or("an empty board")?;
+    let dummy_index = ChurchTrack::faith_to_index(DUMMY_FAITH).ok_or("faith 7 is on the track")?;
+    if !base.church_track.slots[dummy_index].is_some_and(|s| s.player.is_dummy()) {
+        return Err(format!("the 2P setup must place the church dummy on faith {DUMMY_FAITH} (D1)"));
+    }
+    if base.church_track.total_assistants() != 0 {
+        return Err("a fresh 2P church track must carry no REAL pawn".into());
+    }
+    let supply = suite_own_row(&base).assistants.total();
+    // Every landed pawn CREDITS its space's printed VP to its owner, because
+    // that is what `place_church_assistant` does at placement.
+    let position = |mine: &[u8], theirs: &[u8], on_board: u8| -> Result<PlayerView, String> {
+        let mut v = base.clone();
+        for (faiths, seat) in [(mine, 0u8), (theirs, 1u8)] {
+            for (n, faith) in faiths.iter().enumerate() {
+                let index = ChurchTrack::faith_to_index(*faith)
+                    .ok_or_else(|| format!("faith {faith} is not a church space"))?;
+                if v.church_track.slots[index].is_some() {
+                    return Err(format!("faith {faith} is occupied twice"));
+                }
+                v.church_track.slots[index] =
+                    Some(ChurchSlot { player: PlayerId(seat), arrival_order: n as u8 + 1 });
+            }
+        }
+        for player in v.players.iter_mut() {
+            let (faiths, board) =
+                if player.id == PlayerId(0) { (mine, on_board) } else { (theirs, 0) };
+            let pawns = faiths.len() as u8;
+            player.assistants.on_church = pawns;
+            player.assistants.on_board = BTreeMap::new();
+            if board > 0 {
+                player.assistants.on_board.insert(area, board);
+            }
+            player.assistants.in_hand = supply
+                .checked_sub(player.assistants.in_warehouse + board + pawns)
+                .ok_or("the position spends more assistants than a seat owns")?;
+            player.victory_points += printed(faiths);
+        }
+        Ok(v)
+    };
+    let winnable_abandon = position(&ONE_LANDING, &[RIVAL_LIVE], 4)?;
+    let winnable_extend = position(&TWO_LANDINGS, &[RIVAL_LIVE], 3)?;
+    let decided_abandon = position(&ONE_LANDING, &[RIVAL_BEATEN], 4)?;
+    let decided_extend = position(&TWO_LANDINGS, &[RIVAL_BEATEN], 3)?;
+    let decided_extend_unequalized = position(&ONE_LANDING_PLUS, &[RIVAL_BEATEN], 3)?;
+    for (label, view, awards) in [
+        ("winnable-abandon", &winnable_abandon, (3, 6)),
+        ("winnable-extend", &winnable_extend, (6, 3)),
+        ("decided-abandon", &decided_abandon, (6, 0)),
+        ("decided-extend", &decided_extend, (6, 0)),
+        ("decided-extend-unequalized", &decided_extend_unequalized, (6, 0)),
+    ] {
+        suite_require_stage(label, view, rules, PROGRESS_FULL_PPM)?;
+        suite_require_positional(label, view)?;
+        for player in &view.players {
+            if !player.id.is_dummy() && player.assistants.total() != supply {
+                return Err(format!(
+                    "the {label} position must leave seat {} holding the whole {supply}-token \
+                     supply, it holds {}",
+                    player.id.0,
+                    player.assistants.total(),
+                ));
+            }
+        }
+        let got = suite_seat_awards(view, rules, Feature::ChurchBonusNow)?;
+        if got != awards {
+            return Err(format!(
+                "the {label} position's church majority must read {awards:?} for (viewer, rival), \
+                 it read {got:?}"
+            ));
+        }
+    }
+    // THE CASH, held equal inside each pair — the repair that makes these the
+    // decision the rules pose rather than a cheaper one.
+    let banked = |v: &PlayerView| -> Vec<u32> {
+        v.players.iter().filter(|p| !p.id.is_dummy()).map(|p| p.victory_points).collect()
+    };
+    for (label, a, b) in [
+        ("winnable", &winnable_extend, &winnable_abandon),
+        ("decided", &decided_extend, &decided_abandon),
+    ] {
+        if banked(a) != banked(b) {
+            return Err(format!(
+                "the {label} field's two positions must bank the SAME printed VP for every seat, \
+                 they read {:?} and {:?}",
+                banked(a),
+                banked(b),
+            ));
+        }
+    }
+    if banked(&decided_extend_unequalized) == banked(&decided_abandon) {
+        return Err("the UNEQUALIZED extension must bank MORE printed VP than abandoning".into());
+    }
+    Ok(vec![
+        suite_ordering(
+            'a',
+            "WINNABLE: score(extend the race) > score(abandon it), at equal printed cash",
+            "scenario_suite.rs:3980-3990 (track_racing_extends_a_winnable_church_race)",
+            &winnable_extend,
+            &winnable_abandon,
+        ),
+        suite_ordering(
+            'b',
+            "DECIDED: score(abandon) > score(the SAME extension in a race already won)",
+            "scenario_suite.rs:3992-4001 (track_racing_extends_a_winnable_church_race)",
+            &decided_abandon,
+            &decided_extend,
+        ),
+        suite_ordering(
+            'c',
+            "RECORDED, not hidden: score(the decided extension with the cash NOT equalized) > \
+             score(abandon)",
+            "scenario_suite.rs:4010-4021 (track_racing_extends_a_winnable_church_race)",
+            &decided_extend_unequalized,
+            &decided_abandon,
+        ),
+    ])
+}
+
+/// Registry 16 — `customs_race_and_the_rivals_progress`,
+/// `scenario_suite.rs:4192-4540`. Clauses at :4454-4464, :4466-4475, :4509-4520.
+///
+/// The scenario's church-side clause (c) is a separating-terms leak clause plus
+/// an EQUALITY against the track's printed gap (:4485-4503); both are outside
+/// the registered shape (Ruling T2b-R2), so its two church-landing views are not
+/// built here. The skip is named rather than silent.
+fn suite_customs_race(rules: &Rules) -> Result<Vec<OrderingClaim>, String> {
+    const DUMMY_SPACE: u8 = 4;
+    const RIVAL_SPACE: u8 = 7;
+    const ONE_LANDING: [u8; 1] = [6];
+    const TWO_LANDINGS: [u8; 2] = [1, 3];
+    const ONE_LANDING_PLUS: [u8; 2] = [6, 1];
+
+    fn printed(spaces: &[u8]) -> u32 {
+        spaces.iter().map(|s| u32::from(CustomsTrack::vp_reward(*s))).sum()
+    }
+    if printed(&ONE_LANDING) != printed(&TWO_LANDINGS) || printed(&ONE_LANDING) == 0 {
+        return Err(format!(
+            "the viewer's one-landing and two-landing holdings must bank the SAME NONZERO printed \
+             VP, they print {} and {}",
+            printed(&ONE_LANDING),
+            printed(&TWO_LANDINGS),
+        ));
+    }
+    let mut base = suite_base_view(2, 26, rules)?;
+    base.order_deck_len = 0;
+    let area = *base.board_layout.areas.keys().next().ok_or("an empty board")?;
+    let dummy_index = CustomsTrack::space_to_index(DUMMY_SPACE).ok_or("customs space 4")?;
+    if !base.customs_track.slots[dummy_index].is_some_and(|s| s.player.is_dummy()) {
+        return Err(format!("the 2P setup must place the customs dummy on space {DUMMY_SPACE} (D1)"));
+    }
+    if base.customs_track.total_assistants() != 0 {
+        return Err("a fresh 2P customs track must carry no REAL pawn".into());
+    }
+    let supply = suite_own_row(&base).assistants.total();
+    let position = |mine: &[u8], theirs: &[u8], on_board: u8| -> Result<PlayerView, String> {
+        let mut v = base.clone();
+        for (spaces, seat) in [(mine, 0u8), (theirs, 1u8)] {
+            for (n, space) in spaces.iter().enumerate() {
+                let index = CustomsTrack::space_to_index(*space)
+                    .ok_or_else(|| format!("space {space} is not a customs space"))?;
+                if v.customs_track.slots[index].is_some() {
+                    return Err(format!("customs space {space} is occupied twice"));
+                }
+                v.customs_track.slots[index] =
+                    Some(CustomsSlot { player: PlayerId(seat), arrival_order: n as u8 + 1 });
+            }
+        }
+        for player in v.players.iter_mut() {
+            let (spaces, board) =
+                if player.id == PlayerId(0) { (mine, on_board) } else { (theirs, 0) };
+            let pawns = spaces.len() as u8;
+            player.assistants.on_customs = pawns;
+            player.assistants.on_board = BTreeMap::new();
+            if board > 0 {
+                player.assistants.on_board.insert(area, board);
+            }
+            player.assistants.in_hand = supply
+                .checked_sub(player.assistants.in_warehouse + board + pawns)
+                .ok_or("the position spends more assistants than a seat owns")?;
+            player.victory_points += printed(spaces);
+        }
+        Ok(v)
+    };
+    let contested_abandon = position(&ONE_LANDING, &[RIVAL_SPACE], 4)?;
+    let contested_commit = position(&TWO_LANDINGS, &[RIVAL_SPACE], 3)?;
+    let uncontested_abandon = position(&ONE_LANDING, &[], 4)?;
+    let uncontested_commit = position(&TWO_LANDINGS, &[], 3)?;
+    let uncontested_commit_unequalized = position(&ONE_LANDING_PLUS, &[], 3)?;
+    for (label, view, awards) in [
+        ("contested-abandon", &contested_abandon, (4, 8)),
+        ("contested-commit", &contested_commit, (8, 4)),
+        ("uncontested-abandon", &uncontested_abandon, (8, 0)),
+        ("uncontested-commit", &uncontested_commit, (8, 0)),
+        ("uncontested-commit-unequalized", &uncontested_commit_unequalized, (8, 0)),
+    ] {
+        suite_require_stage(label, view, rules, PROGRESS_FULL_PPM)?;
+        suite_require_positional(label, view)?;
+        for player in &view.players {
+            if !player.id.is_dummy() && player.assistants.total() != supply {
+                return Err(format!(
+                    "the {label} position must leave seat {} holding the whole {supply}-token \
+                     supply, it holds {}",
+                    player.id.0,
+                    player.assistants.total(),
+                ));
+            }
+        }
+        let got = suite_seat_awards(view, rules, Feature::CustomsBonusNow)?;
+        if got != awards {
+            return Err(format!(
+                "the {label} position's customs majority must read {awards:?} for (viewer, \
+                 rival), it read {got:?}"
+            ));
+        }
+    }
+    let banked = |v: &PlayerView| -> Vec<u32> {
+        v.players.iter().filter(|p| !p.id.is_dummy()).map(|p| p.victory_points).collect()
+    };
+    for (label, a, b) in [
+        ("contested", &contested_commit, &contested_abandon),
+        ("uncontested", &uncontested_commit, &uncontested_abandon),
+    ] {
+        if banked(a) != banked(b) {
+            return Err(format!(
+                "the {label} field's two positions must bank the SAME printed VP for every seat, \
+                 they read {:?} and {:?}",
+                banked(a),
+                banked(b),
+            ));
+        }
+    }
+    if banked(&uncontested_commit_unequalized) == banked(&uncontested_abandon) {
+        return Err("the UNEQUALIZED commitment must bank MORE printed VP than abandoning".into());
+    }
+    Ok(vec![
+        suite_ordering(
+            'a',
+            "CONTESTED: score(commit, taking the 8 off the rival) > score(leaving the assistant \
+             working)",
+            "scenario_suite.rs:4454-4464 (customs_race_and_the_rivals_progress)",
+            &contested_commit,
+            &contested_abandon,
+        ),
+        suite_ordering(
+            'b',
+            "UNCONTESTED: score(leaving the assistant working) > score(the SAME commitment with \
+             the rival absent)",
+            "scenario_suite.rs:4466-4475 (customs_race_and_the_rivals_progress)",
+            &uncontested_abandon,
+            &uncontested_commit,
+        ),
+        suite_ordering(
+            'c',
+            "RECORDED, not hidden: score(the uncontested commitment with the cash NOT equalized) \
+             > score(abandon)",
+            "scenario_suite.rs:4509-4520 (customs_race_and_the_rivals_progress)",
+            &uncontested_commit_unequalized,
+            &uncontested_abandon,
+        ),
+    ])
+}
+
+/// Registry 17 — `achievement_proximity_as_self_guidance`,
+/// `scenario_suite.rs:4623-4761`. Ordering clause at :4722-4731.
+///
+/// Clause (b) — the blind spot, `score(near) == score(smeared)` — is an
+/// EQUALITY and is excluded by shape; its two holdings are still built, because
+/// they come off the same closure and their guards are this fixture's own
+/// integrity check.
+fn suite_achievement_proximity(rules: &Rules) -> Result<Vec<OrderingClaim>, String> {
+    let mut base = suite_base_view(2, 27, rules)?;
+    // Three GOODS cards, so no leg reads completed orders, owned technologies or
+    // buildings and the fixture's only lever is the goods it hands the seat.
+    base.achievements = [
+        AchievementCard::new(AchievementType::Copper5),
+        AchievementCard::new(AchievementType::Silk6),
+        AchievementCard::new(AchievementType::Tea7),
+    ];
+    {
+        let me = suite_viewer_mut(&mut base);
+        me.completed_orders.clear();
+        me.technologies.clear();
+        me.victory_points = 0;
+        me.copper = 0;
+        me.silk = 0;
+        me.tea = 0;
+        me.seafood = 0;
+    }
+    let holding = |copper: u32, silk: u32| -> PlayerView {
+        let mut v = base.clone();
+        let me = suite_viewer_mut(&mut v);
+        me.copper = copper;
+        me.silk = silk;
+        v
+    };
+    let (live, overflow) = (holding(5, 3), holding(8, 0));
+    let (near, smeared) = (holding(4, 0), holding(2, 2));
+    let goods = |v: &PlayerView| -> u32 {
+        let me = suite_own_row(v);
+        me.copper + me.silk + me.tea + me.seafood
+    };
+    let progress = |v: &PlayerView| suite_viewer_value(v, rules, Feature::AchievementProgressSum);
+    for (label, a, b) in [("clause (a)", &live, &overflow), ("clause (b)", &near, &smeared)] {
+        if goods(a) != goods(b) {
+            return Err(format!(
+                "{label}'s two holdings must carry the SAME number of goods, they carry {} and {}",
+                goods(a),
+                goods(b),
+            ));
+        }
+    }
+    if (progress(&live), progress(&overflow)) != (8, 5) {
+        return Err(format!(
+            "the LIVE holding must read 8 points of capped progress and the OVERFLOW one 5, they \
+             read {} and {}",
+            progress(&live),
+            progress(&overflow),
+        ));
+    }
+    if progress(&near) != progress(&smeared) {
+        return Err(format!(
+            "clause (b)'s two holdings must read the SAME capped progress — that equality IS the \
+             blind spot — they read {} and {}",
+            progress(&near),
+            progress(&smeared),
+        ));
+    }
+    suite_require_stage("live", &live, rules, 0)?;
+    suite_require_stage("near", &near, rules, 0)?;
+    Ok(vec![suite_ordering(
+        'a',
+        "at eight goods either way: score(progress on LIVE legs, 8) > score(a holding overflowed \
+         past a printed cap, 5)",
+        "scenario_suite.rs:4722-4731 (achievement_proximity_as_self_guidance)",
+        &live,
+        &overflow,
+    )])
+}
+
+/// Registry 18 — `behind_at_the_end_trigger_keeps_building`,
+/// `scenario_suite.rs:4851-5043`. Ordering clause at :5005-5014.
+///
+/// Clause (b) — the same pair AHEAD produces the IDENTICAL margin — is an
+/// EQUALITY and is excluded by shape; the ahead field is still built, because
+/// its stage and standing guards ride the same loops.
+fn suite_behind_at_the_end_trigger(rules: &Rules) -> Result<Vec<OrderingClaim>, String> {
+    const RIVAL_VP: u32 = 30;
+    const MY_VP: u32 = 10;
+
+    let cash_card = OrderCardId(3);
+    let card = rules.orders.get(cash_card).ok_or("order 3 is not in the registry")?;
+    let cash_vp = u32::from(card.rewards.victory_points);
+    if cash_vp == 0 || cash_vp >= 5 {
+        return Err(format!("order 3's printed VP must sit strictly under 5, it prints {cash_vp}"));
+    }
+    let techs = suite_techs_at_gear(rules, Country::English, 4);
+    if techs.len() < 2 {
+        return Err(format!(
+            "England must print at least two gear-4 technologies, the registry has {}",
+            techs.len(),
+        ));
+    }
+    let holding = vec![techs[0], techs[1]];
+    let industry: u32 = holding
+        .iter()
+        .filter_map(|id| rules.techs.get(*id))
+        .map(|c| u32::from(c.industry_cost))
+        .sum();
+    if 2 * industry <= 15 {
+        return Err(format!(
+            "the holding must out-industry the 2P dummy's 7.5 (D5), its printed gears total \
+             {industry}"
+        ));
+    }
+    let mut titles: Vec<&str> =
+        holding.iter().filter_map(|id| rules.techs.get(*id)).map(|c| c.name.as_str()).collect();
+    let owned = titles.len();
+    titles.sort_unstable();
+    titles.dedup();
+    if titles.len() != owned {
+        return Err(format!("a seat may own only one Technology of a NAME — this holding carries {titles:?}"));
+    }
+    let mut base = suite_base_view(2, 28, rules)?;
+    base.order_deck_len = 0;
+    base.achievements = [
+        AchievementCard::new(AchievementType::Copper5),
+        AchievementCard::new(AchievementType::Silk6),
+        AchievementCard::new(AchievementType::Tea7),
+    ];
+    {
+        let me = suite_viewer_mut(&mut base);
+        me.completed_orders.clear();
+        me.technologies.clear();
+        me.victory_points = MY_VP;
+    }
+    // `rival_vp` is the ONLY thing that separates the behind field from the
+    // ahead one — the excluded clause (b)'s whole point.
+    let field = |rival_vp: u32| -> (PlayerView, PlayerView) {
+        let mut base = base.clone();
+        for player in base.players.iter_mut() {
+            if player.id == PlayerId(1) {
+                player.victory_points = rival_vp;
+            }
+        }
+        let mut cash = base.clone();
+        suite_viewer_mut(&mut cash).victory_points += cash_vp;
+        let mut build = base.clone();
+        suite_viewer_mut(&mut build).technologies = holding.clone();
+        (cash, build)
+    };
+    let (behind_cash, behind_build) = field(RIVAL_VP);
+    let (ahead_cash, ahead_build) = field(0);
+    for (label, view) in [
+        ("behind-cash", &behind_cash),
+        ("behind-build", &behind_build),
+        ("ahead-cash", &ahead_cash),
+        ("ahead-build", &ahead_build),
+    ] {
+        suite_require_stage(label, view, rules, PROGRESS_FULL_PPM)?;
+        suite_require_positional(label, view)?;
+    }
+    let standing = |v: &PlayerView| -> (i64, i64) {
+        let structure = ScoreStructure::derive(v, rules);
+        (structure.base_vp[0], structure.base_vp[1])
+    };
+    for (label, view) in [("behind-cash", &behind_cash), ("behind-build", &behind_build)] {
+        let (mine, theirs) = standing(view);
+        if mine >= theirs {
+            return Err(format!(
+                "the {label} position must leave the viewer BEHIND on running VP — the ruling's \
+                 premise — it reads {mine} against {theirs}"
+            ));
+        }
+    }
+    for (label, view) in [("ahead-cash", &ahead_cash), ("ahead-build", &ahead_build)] {
+        let (mine, theirs) = standing(view);
+        if mine <= theirs {
+            return Err(format!(
+                "the {label} position must leave the viewer AHEAD on running VP, it reads {mine} \
+                 against {theirs}"
+            ));
+        }
+    }
+    for (label, view, feature, want) in [
+        ("behind-build", &behind_build, Feature::TechBonusNow, 10),
+        ("behind-cash", &behind_cash, Feature::TechBonusNow, 0),
+        ("behind-build", &behind_build, Feature::CountryBonusNow, 0),
+        ("behind-cash", &behind_cash, Feature::CountryBonusNow, 0),
+    ] {
+        let got = suite_viewer_value(view, rules, feature);
+        if got != want {
+            return Err(format!("{} must read {want} on the {label} position, it read {got}", feature.name()));
+        }
+    }
+    Ok(vec![suite_ordering(
+        'a',
+        "BEHIND at the end trigger, LATE: score(the two technologies taking the 10/5 majority) > \
+         score(having banked order 3's printed cash)",
+        "scenario_suite.rs:5005-5014 (behind_at_the_end_trigger_keeps_building)",
+        &behind_build,
+        &behind_cash,
+    )])
+}
+
+/// Registry 19 — `two_player_church_crossing`, `scenario_suite.rs:5167-5306`.
+/// Clauses at :5275-5286 and :5287-5296.
+fn suite_two_player_church_crossing(rules: &Rules) -> Result<Vec<OrderingClaim>, String> {
+    const DUMMY_FAITH: u8 = 7;
+
+    let base = suite_base_view(2, 29, rules)?;
+    let dummy_index = ChurchTrack::faith_to_index(DUMMY_FAITH).ok_or("faith 7 is on the track")?;
+    if !base.church_track.slots[dummy_index].is_some_and(|s| s.player.is_dummy()) {
+        return Err(format!(
+            "the 2P setup must place the church dummy on faith {DUMMY_FAITH} (D1) — it is what \
+             consumes the second place in both members of both fields"
+        ));
+    }
+    if base.church_track.total_assistants() != 0 {
+        return Err("a fresh 2P church track must carry no REAL pawn".into());
+    }
+    // A field's two members are the same list with the two seats exchanged, so
+    // every non-church term cancels out of `d`.
+    let with_pawns = |owners: &[(u8, u8)]| -> Result<PlayerView, String> {
+        let mut v = base.clone();
+        for (n, (faith, seat)) in owners.iter().enumerate() {
+            let index = ChurchTrack::faith_to_index(*faith)
+                .ok_or_else(|| format!("faith {faith} is not a church space"))?;
+            if v.church_track.slots[index].is_some() {
+                return Err(format!("faith {faith} is occupied twice"));
+            }
+            v.church_track.slots[index] =
+                Some(ChurchSlot { player: PlayerId(*seat), arrival_order: n as u8 + 1 });
+        }
+        Ok(v)
+    };
+    let mirror = |owners: &[(u8, u8)]| -> Vec<(u8, u8)> {
+        owners.iter().map(|(faith, seat)| (*faith, 1 - *seat)).collect()
+    };
+    let one_pawn = [(11u8, 0u8)];
+    let three_pawns = [(11u8, 0u8), (10, 0), (5, 1)];
+    let early_leader = with_pawns(&one_pawn)?;
+    let early_follower = with_pawns(&mirror(&one_pawn))?;
+    let late_leader = with_pawns(&three_pawns)?;
+    let late_follower = with_pawns(&mirror(&three_pawns))?;
+    for (label, a, b, expect) in [
+        ("one pawn", &early_leader, &early_follower, 250_000u32),
+        ("three pawns", &late_leader, &late_follower, 750_000),
+    ] {
+        suite_require_stage(label, a, rules, expect)?;
+        suite_require_stage(label, b, rules, expect)?;
+        suite_require_positional(label, a)?;
+        suite_require_positional(label, b)?;
+        if clock_ppm(a, rules)[1] != expect {
+            return Err(format!("the {label} field must be dated by the CHURCH clock"));
+        }
+    }
+    // The 6/0 shape: in BOTH fields the dummy takes the second place, so the
+    // trailing seat collects nothing and `d` is 12·w.
+    for (label, view, awards) in [
+        ("one-pawn leader", &early_leader, (6, 0)),
+        ("one-pawn follower", &early_follower, (0, 6)),
+        ("three-pawn leader", &late_leader, (6, 0)),
+        ("three-pawn follower", &late_follower, (0, 6)),
+    ] {
+        let got = suite_seat_awards(view, rules, Feature::ChurchBonusNow)?;
+        if got != awards {
+            return Err(format!(
+                "the {label} position's church majority must read {awards:?} for (viewer, rival), \
+                 it read {got:?}"
+            ));
+        }
+    }
+    Ok(vec![
+        suite_ordering(
+            'a',
+            "ONE real pawn of the 2P trigger's four (p=250000): a church lead is priced NEGATIVE \
+             — score(follower) > score(leader)",
+            "scenario_suite.rs:5275-5286 (two_player_church_crossing)",
+            &early_follower,
+            &early_leader,
+        ),
+        suite_ordering(
+            'b',
+            "THREE real pawns (p=750000): a church lead is priced POSITIVE — score(leader) > \
+             score(follower)",
+            "scenario_suite.rs:5287-5296 (two_player_church_crossing)",
+            &late_leader,
+            &late_follower,
+        ),
+    ])
+}
+
+/// Registry 20 — `d3_to_hand_is_only_for_the_empty_hand_corner`,
+/// `scenario_suite.rs:5425-5556`. Clauses at :5510-5519 and :5521-5530; the two
+/// leak clauses (:5531-5546) are the suite's own.
+fn suite_d3_to_hand_corner(rules: &Rules) -> Result<Vec<OrderingClaim>, String> {
+    let base = suite_base_view(2, 30, rules)?;
+    let area = *base.board_layout.areas.keys().next().ok_or("an empty board")?;
+    let supply = suite_own_row(&base).assistants.total();
+    // One position: `in_hand` in hand, the rest of the seat's non-warehouse
+    // tokens working in one area. The movement icon's two targets are then two
+    // values of `in_hand` one apart.
+    let position = |in_hand: u8, working: u8| -> Result<PlayerView, String> {
+        let mut v = base.clone();
+        let me = suite_viewer_mut(&mut v);
+        me.assistants.in_hand = in_hand;
+        me.assistants.on_board = BTreeMap::new();
+        if working > 0 {
+            me.assistants.on_board.insert(area, working);
+        }
+        if me.assistants.total() != supply {
+            return Err(format!(
+                "every position must hold the seat's whole {supply}-token supply, it holds {}",
+                me.assistants.total(),
+            ));
+        }
+        Ok(v)
+    };
+    let corner_to_hand = position(1, 7)?;
+    let corner_to_area = position(0, 8)?;
+    let stocked_to_hand = position(3, 5)?;
+    let stocked_to_area = position(2, 6)?;
+    for (label, view) in [
+        ("corner-to-hand", &corner_to_hand),
+        ("corner-to-area", &corner_to_area),
+        ("stocked-to-hand", &stocked_to_hand),
+        ("stocked-to-area", &stocked_to_area),
+    ] {
+        suite_require_stage(label, view, rules, 0)?;
+    }
+    // The CORNER is the corner, and the other field is not.
+    for (label, view) in [("corner-to-hand", &corner_to_hand), ("corner-to-area", &corner_to_area)]
+    {
+        let held = suite_own_row(view).assistants.in_hand;
+        if held >= HAND_CORE_RESERVE {
+            return Err(format!(
+                "the {label} position must sit BELOW the {HAND_CORE_RESERVE}-token reserve — the \
+                 corner the ruling names — it holds {held}"
+            ));
+        }
+    }
+    for (label, view) in
+        [("stocked-to-hand", &stocked_to_hand), ("stocked-to-area", &stocked_to_area)]
+    {
+        let held = suite_own_row(view).assistants.in_hand;
+        if held < HAND_CORE_RESERVE {
+            return Err(format!(
+                "the {label} position must hold the whole {HAND_CORE_RESERVE}-token reserve — so \
+                 the moved token is priced by the EXCESS half — it holds {held}"
+            ));
+        }
+    }
+    Ok(vec![
+        suite_ordering(
+            'a',
+            "D3's ONE no-loss corner (hand EMPTY): score(the icon returning the assistant TO \
+             HAND) > score(sending it to an area)",
+            "scenario_suite.rs:5510-5519 (d3_to_hand_is_only_for_the_empty_hand_corner)",
+            &corner_to_hand,
+            &corner_to_area,
+        ),
+        suite_ordering(
+            'b',
+            "and ALMOST NEVER otherwise (reserve held): score(to the AREA) > score(to hand)",
+            "scenario_suite.rs:5521-5530 (d3_to_hand_is_only_for_the_empty_hand_corner)",
+            &stocked_to_area,
+            &stocked_to_hand,
+        ),
+    ])
 }
 
 // ---------------------------------------------------------------------------
@@ -23705,7 +25933,7 @@ mod tests {
     /// against this arm's `weights=` identity").
     #[test]
     fn the_step_nine_table_grammar_resolves_the_named_identities_and_refuses_the_rest() {
-        let (name, padded) = parse_step9_table("v2-padded").expect("v2-padded parses");
+        let (name, padded) = parse_step9_table("structural", "v2-padded").expect("v2-padded parses");
         assert_eq!(name, "v2-padded");
         assert_eq!(padded.early, WeightTable::V2.early, "the shipped table, read across");
         assert_eq!(padded.late, WeightTable::V2.late);
@@ -23713,25 +25941,25 @@ mod tests {
         // table" a fact rather than two constructions that agree today.
         assert_eq!(padded.render_vectors(), FitTable::v2_padded().render_vectors());
 
-        let (name, refit) = parse_step9_table("v2-refit-padded").expect("v2-refit-padded parses");
+        let (name, refit) = parse_step9_table("structural", "v2-refit-padded").expect("v2-refit-padded parses");
         assert_eq!(name, "v2-refit-padded");
         assert_eq!(refit.early, WeightTable::V2_REFIT_PADDED.early);
         assert_eq!(refit.late, WeightTable::V2_REFIT_PADDED.late);
 
-        let (name, zero) = parse_step9_table("zero").expect("zero parses");
+        let (name, zero) = parse_step9_table("structural", "zero").expect("zero parses");
         assert_eq!(name, "zero");
         assert_eq!(zero.render_vectors(), FitTable::zero().render_vectors());
 
         let (name, vector) =
-            parse_step9_table(&format!("{WITNESS_EARLY}/{WITNESS_LATE}")).expect("vectors parse");
+            parse_step9_table("structural", &format!("{WITNESS_EARLY}/{WITNESS_LATE}")).expect("vectors parse");
         assert_eq!(name, "vector");
         assert_eq!(vector.render_vectors(), witness_raw().render_vectors());
 
         for spec in ["v2", "V2-PADDED", "v2-refit", "", "1,2,3"] {
-            let refusal = parse_step9_table(spec).map(|(name, _)| name);
+            let refusal = parse_step9_table("structural", spec).map(|(name, _)| name);
             assert!(refusal.is_err(), "{spec:?} must be a typed error, got {refusal:?}");
         }
-        let short = parse_step9_table("1/2").expect_err("a two-entry vector is refused");
+        let short = parse_step9_table("structural", "1/2").expect_err("a two-entry vector is refused");
         assert!(short.contains("the axis has 34"), "{short}");
     }
 
@@ -23910,7 +26138,7 @@ mod tests {
     #[test]
     fn v2_padded_holds_the_standing_tier_and_fails_the_registered_rows() {
         let rows = step9_rows();
-        let (_, table) = parse_step9_table("v2-padded").expect("parses");
+        let (_, table) = parse_step9_table("structural", "v2-padded").expect("parses");
         let (reading, _) = step9_read("v2-padded", &rows, &table).expect("well-formed");
 
         assert!(reading.pin_holds(), "v2-padded IS the table the pin is read off");
@@ -24012,7 +26240,7 @@ mod tests {
     fn the_zero_table_fails_the_pin_the_orderings_and_every_margined_row_without_short_circuiting()
     {
         let rows = step9_rows();
-        let (_, table) = parse_step9_table("zero").expect("parses");
+        let (_, table) = parse_step9_table("structural", "zero").expect("parses");
         let (reading, non_vacuity) = step9_read("zero", &rows, &table).expect("well-formed");
 
         assert_eq!(reading.pins.vp, [false, false], "0 is neither 1 nor 40");
@@ -24090,7 +26318,7 @@ mod tests {
     #[test]
     fn v2_refit_padded_carries_the_fit_disease_at_the_bytes() {
         let rows = step9_rows();
-        let (_, table) = parse_step9_table("v2-refit-padded").expect("parses");
+        let (_, table) = parse_step9_table("structural", "v2-refit-padded").expect("parses");
         let (reading, _) = step9_read("v2-refit-padded", &rows, &table).expect("well-formed");
 
         assert_eq!(reading.pins.vp, [true, false], "w_vp is (1, 3): early holds, late does not");
@@ -24105,7 +26333,7 @@ mod tests {
                 &step9_read(
                     "v2-padded",
                     &rows,
-                    &parse_step9_table("v2-padded").expect("parses").1,
+                    &parse_step9_table("structural", "v2-padded").expect("parses").1,
                 )
                 .expect("well-formed")
                 .0,
@@ -24175,8 +26403,8 @@ mod tests {
         for (name, table) in [
             ("witness", witness_restricted()),
             ("fitted", fitted_table()),
-            ("v2-padded", parse_step9_table("v2-padded").expect("parses").1),
-            ("v2-refit-padded", parse_step9_table("v2-refit-padded").expect("parses").1),
+            ("v2-padded", parse_step9_table("structural", "v2-padded").expect("parses").1),
+            ("v2-refit-padded", parse_step9_table("structural", "v2-refit-padded").expect("parses").1),
             ("zero", FitTable::zero()),
         ] {
             let aggregate = zero_out_flips(&rows, &survivors, &table);
@@ -24834,7 +27062,7 @@ mod tests {
         // the registered rows), so a cell that agreed vacuously would not.
         let rules = Rules::standard();
         let rows = gate_rows(&rules).expect("the gate rows build");
-        let (_, table) = parse_step9_table("v2-padded").expect("parses");
+        let (_, table) = parse_step9_table("structural", "v2-padded").expect("parses");
         let (reading, non_vacuity) = step9_read("v2-padded", &rows, &table).expect("well-formed");
         assert!(!step9_structural_passed(&reading, &non_vacuity), "V2-padded is not SAT");
         assert!(
