@@ -2300,7 +2300,7 @@ usage: solver <subcommand>
 mod tests {
     use super::toys::{col, toy};
     use super::*;
-    use yokohama_core::game::pair_fixtures::PairRole;
+    use yokohama_core::game::pair_fixtures::{PairRole, PAIR_11B, PAIR_3C};
 
     // -- the margin rule ---------------------------------------------------
 
@@ -3629,5 +3629,427 @@ mod tests {
         seen.sort_unstable();
         seen.dedup();
         assert_eq!(seen.len(), REGISTERED.len(), "the order is a bijection onto the registry");
+    }
+
+    // -- R3: the certified exact simultaneous per-stage projection -----------
+
+    /// Build a repair problem over a toy system at LATE, with an explicit start.
+    fn toy_problem(rows: &[ToyRow], edits: &[(usize, i64)]) -> RepairProblem {
+        let sys = toy(StageEndpoint::Late, rows, BOX_LIMIT);
+        let mut w0 = sys.v2_padded();
+        for (slot, value) in edits {
+            w0[*slot] = *value;
+        }
+        RepairProblem::new(StageEndpoint::Late, sys, Vec::new(), "toy-start", w0)
+            .expect("the toy start is admissible")
+    }
+
+    fn repaired(rows: &[ToyRow], edits: &[(usize, i64)]) -> Box<RepairReport> {
+        match repair(&toy_problem(rows, edits)) {
+            Repair::Repaired(report) => report,
+            Repair::Infeasible { .. } => panic!("this system is repairable"),
+            Repair::Inconclusive { reason, .. } => panic!("the oracle did not decide: {reason}"),
+        }
+    }
+
+    /// **THE WITNESSED 3(c)/11(b) COUPLING — the cycle that killed row-local
+    /// repair, as the engine's own regression test** (charter:129–141, §7's T3
+    /// bullet).
+    ///
+    /// The two live rows at LATE, derived rather than trusted:
+    ///
+    /// * **3(c) BANK ACCESS ≻ POWER-DEAD** is MARGINED `late: Some(40)` with
+    ///   `carrier` and `expected_nonzero` both the single entry `S5` — "the pair
+    ///   moves S5 and NOTHING else on the axis" — so the row is `2·w_S5 ≥ 40`.
+    ///   The `Δv = 2` is read off the banked artifact
+    ///   (`docs/temp/step6-artifacts/v3l-final-artifact.txt:307`, "kept row late
+    ///   3(c) … value 40 vs margin 40" at that artifact's `w_S5 = 20`).
+    /// * **11(b) ACTED-AT-BANK ≻ ACTED-AT-COPPER** declares `MarginClass::
+    ///   DirectionOnly`, so §5.1 prices it **1, not 2** — the T3 brief's stated
+    ///   margin was 2 and the bytes say otherwise; the optimum is unchanged
+    ///   because `2(w_E1 − w_S5) ≥ 1` and `≥ 2` have the same integer solutions.
+    ///   Its own note registers the carriers: "Expected nonzero: E1 +2, S5 −2",
+    ///   confirmed by the artifact's `value 2` at `w_E1 = 21, w_S5 = 20`
+    ///   (artifact:318).
+    ///
+    /// **The optimum is unique and hand-derivable.** `2·w_S5 ≥ 40` forces
+    /// `w_S5 ≥ 20`; `2(w_E1 − w_S5) ≥ 1` over the integers forces
+    /// `w_E1 ≥ w_S5 + 1 ≥ 21`; both coordinates are therefore positive, so the
+    /// displacement from `w0 = 0` is `w_S5 + w_E1 ≥ 41` with equality only at
+    /// `(20, 21)`.
+    #[test]
+    fn the_three_c_eleven_b_coupling_repairs_to_the_unique_lexicographic_optimum() {
+        assert_eq!(margin_of(&PAIR_3C, StageEndpoint::Late), Ok(40), "3(c) is MARGINED late 40");
+        assert_eq!(margin_of(&PAIR_11B, StageEndpoint::Late), Ok(1), "11(b) is DIRECTION-ONLY");
+
+        let (s5, e1) = (col("S5"), col("E1"));
+        let report = repaired(
+            &[
+                ("pair 3(c) late", &[(s5, 2)], 40),
+                ("pair 11(b) late", &[(e1, 2), (s5, -2)], 1),
+            ],
+            &[],
+        );
+
+        assert_eq!(report.w0[s5], 0, "V2-padded leaves both candidates at zero");
+        assert_eq!(report.w0[e1], 0);
+        assert_eq!((report.w[s5], report.w[e1]), (20, 21), "the unique optimum");
+        assert_eq!(report.displacement, 41);
+        assert_eq!(report.changed, vec![s5, e1], "two coordinates, in listed order");
+    }
+
+    /// **THE PROCEDURE THE CHARTER REJECTED, EXECUTED.** Sequential row-local
+    /// carrier repair on the same two rows does not converge — it oscillates.
+    ///
+    /// Both rows register the SAME carrier (`PAIR_3C.carrier` and
+    /// `PAIR_11B.carrier` are each `S5`), and they want it in opposite
+    /// directions: 3(c) prices S5 up to 20, and 11(b) — whose S5 coefficient is
+    /// −2 — then prices the same coordinate down to −1. The state repeats, and
+    /// neither state in the cycle satisfies both rows. Executed rather than
+    /// argued: the broken procedure is fifteen lines, so there is no reason to
+    /// leave the charter's grounds as prose.
+    #[test]
+    fn sequential_row_local_carrier_repair_oscillates_on_the_witnessed_input() {
+        let bank = FeatureId::Candidate(CandidateFeature::BankAccess);
+        assert_eq!(PAIR_3C.carrier, Some(bank), "3(c)'s registered carrier");
+        assert_eq!(PAIR_11B.carrier, Some(bank), "and 11(b)'s is the same coordinate");
+
+        let (s5, e1) = (col("S5"), col("E1"));
+        let sys = toy(
+            StageEndpoint::Late,
+            &[
+                ("pair 3(c) late", &[(s5, 2)], 40),
+                ("pair 11(b) late", &[(e1, 2), (s5, -2)], 1),
+            ],
+            BOX_LIMIT,
+        );
+        let mut w = sys.v2_padded();
+        let mut seen = vec![w[s5]];
+        for _ in 0..8 {
+            for row in &sys.rows {
+                let slack = System::slack_of(row, &w);
+                if slack >= 0 {
+                    continue;
+                }
+                // The row-local move: shift the CARRIER by the least integer
+                // that satisfies this row alone, reading no other row.
+                let a = i128::from(row.coef[s5]);
+                w[s5] += ceil_div(-slack, a) as i64;
+            }
+            seen.push(w[s5]);
+        }
+        assert!(seen.contains(&20) && seen.contains(&-1), "it oscillates: {seen:?}");
+        assert!(seen[..seen.len() - 2].contains(seen.last().expect("nonempty")), "the state repeats");
+        for value in [20i64, -1] {
+            let mut probe = sys.v2_padded();
+            probe[s5] = value;
+            assert!(sys.violation(&probe) > 0, "neither state in the cycle satisfies both rows");
+        }
+    }
+
+    /// **THE 0-START CLAUSE, at the shape 11(e) exhibits.** A repair never
+    /// MANUFACTURES an anti-prior sign.
+    ///
+    /// The live exhibit is 11(e) ACTED-AT-PORT, whose carrier X2 moves
+    /// `Δv = −4` there while X2's registered prior is `+`; the row is violated
+    /// at the V2-padded start, so an unconstrained projection repairs it by
+    /// driving X2 late NEGATIVE. This toy is that shape with the arithmetic made
+    /// decisive: `w_S1 − 4·w_X2 ≥ 4` from `w0 = 0` is repaired at displacement 1
+    /// by `w_X2 = −1` and at displacement 4 by `w_S1 = 4`.
+    ///
+    /// The test proves the constraint is what chose: the cheaper point is
+    /// re-checked against the rows and the box HERE, satisfied, and still not
+    /// taken.
+    #[test]
+    fn a_repair_never_manufactures_an_anti_prior_sign_from_a_zero_start() {
+        let (s1, x2) = (col("S1"), col("X2"));
+        let rows: &[ToyRow] = &[("11(e)-shaped", &[(s1, 1), (x2, -4)], 4)];
+        let problem = toy_problem(rows, &[]);
+
+        let mut cheaper = problem.w0.clone();
+        cheaper[x2] = -1;
+        assert_eq!(problem.sys.violation(&cheaper), 0, "the rows admit the anti-prior point");
+
+        let report = repaired(rows, &[]);
+        assert_eq!(report.w[x2], 0, "X2 stays at its zero start; the prior is +");
+        assert_eq!(report.w[s1], 4, "the repair routes through the row's other mover");
+        assert_eq!(report.displacement, 4, "and pays 4 rather than the unconstrained 1");
+    }
+
+    /// An OPPOSED start may move TOWARD agreement, and may not move further
+    /// away.
+    #[test]
+    fn an_opposed_coordinate_moves_toward_agreement_and_never_further_from_it() {
+        let s1 = col("S1");
+        let toward = repaired(&[("S1 at least -2", &[(s1, 1)], -2)], &[(s1, -5)]);
+        assert_eq!(toward.w[s1], -2, "−5 → −2 is a move toward the + prior");
+        assert_eq!(toward.displacement, 3);
+
+        let away = repair(&toy_problem(&[("S1 at most -10", &[(s1, -1)], 10)], &[(s1, -5)]));
+        assert!(
+            matches!(away, Repair::Infeasible { .. }),
+            "moving an opposed coordinate further from agreement is REPAIR-INFEASIBLE",
+        );
+    }
+
+    /// An AGREEING start never crosses to the opposed sign.
+    #[test]
+    fn an_agreeing_coordinate_never_crosses_to_the_opposed_sign() {
+        let s1 = col("S1");
+        let rows: &[ToyRow] = &[("S1 at most -3", &[(s1, -1)], 3)];
+        assert!(
+            matches!(repair(&toy_problem(rows, &[(s1, 5)])), Repair::Infeasible { .. }),
+            "w0 agrees at +5, so w_S1 >= 0 stands and the row cannot be met",
+        );
+        // The same rows from an ABSENT prior repair without complaint, which is
+        // what says the refusal above is the sign constraint and not the row.
+        let hand = Feature::HandSize.index();
+        let free = repaired(&[("hand at most -3", &[(hand, -1)], 3)], &[]);
+        assert_eq!(free.w[hand], -3, "an incumbent carries no registered prior");
+    }
+
+    /// **`REPAIR-INFEASIBLE` IS TYPED AND CARRIES THE ORACLE'S CERTIFICATE** —
+    /// R3: "never a silent relaxation".
+    #[test]
+    fn an_unrepairable_system_is_typed_infeasible_and_ships_a_verified_certificate() {
+        let s1 = col("S1");
+        let problem = toy_problem(&[("S1 beyond the wall", &[(s1, 1)], BOX_LIMIT + 1)], &[]);
+        let Repair::Infeasible { certificate, .. } = repair(&problem) else {
+            panic!("no assignment in the box satisfies this row");
+        };
+        match certificate {
+            Certificate::Farkas { y, rhs } => {
+                assert_eq!(
+                    verify_farkas(&problem.sys.inequalities(), &y),
+                    Ok(rhs),
+                    "the shipped combination re-verifies at the trust boundary",
+                );
+            }
+            Certificate::Enumeration { points, .. } => assert!(points <= ENUMERATION_BUDGET),
+        }
+    }
+
+    /// **THE CERTIFICATE TRAIL**: a witness at the optimum, and an
+    /// oracle-certified empty level for each lexicographically better level the
+    /// projection passed over.
+    #[test]
+    fn the_trail_certifies_the_displacement_and_changed_count_levels_below_the_optimum() {
+        let (s5, e1) = (col("S5"), col("E1"));
+        let report = repaired(
+            &[
+                ("pair 3(c) late", &[(s5, 2)], 40),
+                ("pair 11(b) late", &[(e1, 2), (s5, -2)], 1),
+            ],
+            &[],
+        );
+
+        let below = report.step(&format!("displacement <= {}", report.displacement - 1));
+        assert!(
+            matches!(below.map(|s| &s.outcome), Some(TrailOutcome::Empty(_))),
+            "displacement {} is certified empty; the trail reads {:?}",
+            report.displacement - 1,
+            report.trail.iter().map(|s| s.question.as_str()).collect::<Vec<_>>(),
+        );
+
+        let fewer = report.step(&format!(
+            "changed count <= {} at displacement {}",
+            report.changed.len() - 1,
+            report.displacement,
+        ));
+        assert!(
+            matches!(fewer.map(|s| &s.outcome), Some(TrailOutcome::Empty(_) | TrailOutcome::Enumerated { .. })),
+            "one fewer changed coordinate is certified empty at the optimal displacement",
+        );
+
+        let witness = report
+            .trail
+            .iter()
+            .rev()
+            .find_map(|step| match &step.outcome {
+                TrailOutcome::Witnessed(w) => Some(w.clone()),
+                _ => None,
+            })
+            .expect("the trail carries a feasibility witness");
+        assert_eq!(witness, report.w, "and the witness IS the returned vector");
+        assert_eq!(report.problem_violation(), 0, "re-checked against every row");
+    }
+
+    /// **EVERY CHANGED COORDINATE IS RECORDED WITH THE ROWS THAT PRICED IT** —
+    /// R3's last sentence.
+    ///
+    /// Two readings are recorded because they differ here and only one of them
+    /// is informative. `tight` is slack-0 at the optimum, the T3 brief's own
+    /// gloss; `pricing` is the row that would be VIOLATED if this coordinate
+    /// alone returned to its start, which is what "priced it" means. 11(b) shows
+    /// the gap: its margin is 1 against even coefficients, so it can never sit
+    /// at slack 0 — yet it is the whole reason E1 moved.
+    #[test]
+    fn every_changed_coordinate_is_recorded_with_the_rows_that_priced_it() {
+        let (s5, e1) = (col("S5"), col("E1"));
+        let report = repaired(
+            &[
+                ("pair 3(c) late", &[(s5, 2)], 40),
+                ("pair 11(b) late", &[(e1, 2), (s5, -2)], 1),
+            ],
+            &[],
+        );
+        assert_eq!(report.pricing(s5), vec!["pair 3(c) late".to_string()]);
+        assert_eq!(report.pricing(e1), vec!["pair 11(b) late".to_string()]);
+        assert_eq!(report.tight(s5), vec!["pair 3(c) late".to_string()]);
+        assert!(report.tight(e1).is_empty(), "11(b) cannot reach slack 0 at margin 1");
+    }
+
+    /// **THE THIRD TIE-BREAK, REGISTERED AND EXERCISED.** `w_S1 + w_S2 ≥ 2` from
+    /// zero has optima `(2, 0)`, `(1, 1)` and `(0, 2)` at displacement 2; the
+    /// changed-count level cuts `(1, 1)`; the canonical order takes the
+    /// listed-earlier support.
+    #[test]
+    fn the_canonical_tie_break_takes_the_listed_earlier_support() {
+        let (s1, s2) = (col("S1"), col("S2"));
+        let report = repaired(&[("either mover", &[(s1, 1), (s2, 1)], 2)], &[]);
+        assert_eq!(report.displacement, 2);
+        assert_eq!(report.changed, vec![s1], "one coordinate, and it is the earlier one");
+        assert_eq!((report.w[s1], report.w[s2]), (2, 0));
+    }
+
+    /// A start the registered system does not describe is a TYPED refusal, not a
+    /// repair — R4's malformed-identity discipline, at the projection's door.
+    #[test]
+    fn a_malformed_start_vector_is_refused_by_name() {
+        let make = |edit: (usize, i64)| {
+            let sys = toy(StageEndpoint::Late, &[("S1 up", &[(col("S1"), 1)], 1)], BOX_LIMIT);
+            let mut w0 = sys.v2_padded();
+            w0[edit.0] = edit.1;
+            RepairProblem::new(StageEndpoint::Late, sys, Vec::new(), "malformed", w0)
+        };
+        let broken_pin = make((Feature::VictoryPoints.index(), 7)).expect_err("the pin is fixed");
+        assert!(broken_pin.contains("w_vp"), "{broken_pin}");
+        let outside = make((col("S1"), BOX_LIMIT + 1)).expect_err("the box is not a suggestion");
+        assert!(outside.contains("box"), "{outside}");
+        let removed = make((col("E3"), 3)).expect_err("E3 is fixed at 0 by the projection");
+        assert!(removed.contains("E3"), "{removed}");
+    }
+
+    /// The projection keeps a row iff every candidate column it carries survives
+    /// the registered removal set, and NAMES what it dropped.
+    #[test]
+    fn the_projection_drops_exactly_the_rows_a_removed_feature_carries() {
+        let mut carries_o3 = vec![0i64; AXIS_WIDTH];
+        carries_o3[col("S1")] = 1;
+        carries_o3[col("O3")] = -1;
+        let mut survives = vec![0i64; AXIS_WIDTH];
+        survives[col("S1")] = 1;
+        let rows: Vec<Row> = [("keeps", survives), ("drops", carries_o3)]
+            .into_iter()
+            .map(|(label, coef)| Row {
+                label: label.to_string(),
+                kind: RowKind::Pair { id: label.to_string(), order: 0 },
+                coef,
+                rhs: 1,
+                margin_vp: None,
+            })
+            .collect();
+        let (kept, dropped) = project_pair_rows(rows);
+        assert_eq!(kept.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(), vec!["keeps"]);
+        assert_eq!(dropped, vec!["drops".to_string()]);
+    }
+
+    /// **THE CROSS-ENCODING PIN.** The solver-side projected system IS the
+    /// system `eval_probe`'s step-9 structural checker reads and the step-6
+    /// record froze.
+    ///
+    /// The banked artifact `docs/temp/step6-artifacts/v3l-final-artifact.txt`
+    /// prints, at lines 274–279, the surviving set, both witness vectors, and
+    /// the projection's kept/dropped counts and dropped names. This test rebuilds
+    /// the system from the frozen registry through the SOLVER's own extraction
+    /// and requires all of it back — same dropped row names, same counts, and the
+    /// artifact's own witness satisfying every kept row plus both hand orderings
+    /// inside the box, which is the §5.4 SAT.
+    #[test]
+    fn the_projected_system_reproduces_the_banked_artifact_s_kept_and_dropped_rows() {
+        let rules = Rules::standard();
+        for (stage, kept_count, dropped_names, witness) in [
+            (
+                StageEndpoint::Early,
+                17usize,
+                ARTIFACT_DROPPED_EARLY,
+                ARTIFACT_WITNESS_EARLY,
+            ),
+            (StageEndpoint::Late, 23, ARTIFACT_DROPPED_LATE, ARTIFACT_WITNESS_LATE),
+        ] {
+            let mut rows = Vec::new();
+            for pair in REGISTERED
+                .iter()
+                .filter(|p| matches!(p.role, PairRole::Constraint) && p.stages.contains(&stage))
+            {
+                rows.push(extract_row(pair, stage, &rules).expect("the registry extracts"));
+            }
+            let (kept, dropped) = project_pair_rows(rows);
+            assert_eq!(kept.len(), kept_count, "{} kept rows", stage.name());
+            let dropped_ids: Vec<String> =
+                dropped.iter().map(|d| d.split_whitespace().next().unwrap_or("").to_string()).collect();
+            assert_eq!(dropped_ids, dropped_names, "{} dropped rows", stage.name());
+
+            let sys = assemble(stage, kept, BOX_LIMIT);
+            let mut w = witness.to_vec();
+            for candidate in REPAIR_REMOVED {
+                w[FeatureId::Candidate(candidate).index()] = 0;
+            }
+            assert_eq!(
+                sys.violation(&w),
+                0,
+                "{}: the artifact's witness satisfies every kept row and both orderings",
+                stage.name(),
+            );
+            for (i, &x) in w.iter().enumerate() {
+                assert!(x >= sys.lo[i] && x <= sys.hi[i], "{} coordinate {i} in box", stage.name());
+            }
+        }
+    }
+
+    /// Same inputs, byte-identical output — twice. No wall clock, no entropy;
+    /// node counts and inputs only.
+    #[test]
+    fn the_repair_is_byte_identical_on_repeat() {
+        let (s5, e1) = (col("S5"), col("E1"));
+        let rows: &[ToyRow] = &[
+            ("pair 3(c) late", &[(s5, 2)], 40),
+            ("pair 11(b) late", &[(e1, 2), (s5, -2)], 1),
+        ];
+        let first = render_repair(&toy_problem(rows, &[]));
+        let second = render_repair(&toy_problem(rows, &[]));
+        assert_eq!(first, second, "the projection reproduces from its inputs");
+        assert!(first.contains("R3 projection"), "{first}");
+    }
+
+    /// A SPENT BUDGET IS INCONCLUSIVE, never infeasibility — §5.4's own
+    /// discipline, in the projection's own currency.
+    #[test]
+    fn a_spent_oracle_budget_is_inconclusive_and_never_infeasible() {
+        let (s5, e1) = (col("S5"), col("E1"));
+        let problem = toy_problem(
+            &[
+                ("pair 3(c) late", &[(s5, 2)], 40),
+                ("pair 11(b) late", &[(e1, 2), (s5, -2)], 1),
+            ],
+            &[],
+        );
+        match repair_within(&problem, 1, REPAIR_SUPPORT_BUDGET) {
+            Repair::Inconclusive { reason, .. } => {
+                assert!(reason.contains("budget"), "{reason}");
+                assert!(reason.contains("not infeasibility"), "{reason}");
+            }
+            other => panic!("a one-call budget cannot decide this, got {}", other.name()),
+        }
+    }
+
+    /// The subcommand is documented rather than hidden, and the real projection
+    /// is gated exactly as the real solve is.
+    #[test]
+    fn the_repair_subcommand_is_documented_and_the_real_run_is_gated() {
+        assert!(USAGE.contains("repair"), "{USAGE}");
+        assert!(USAGE.contains("--start"), "{USAGE}");
+        assert!(REPAIR_START_SPECS.contains(&"v2-padded"));
+        assert!(start_vector("nonsense", StageEndpoint::Late).is_err());
     }
 }
