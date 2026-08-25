@@ -3525,6 +3525,66 @@ const JOINT_CONFLICT_READING: &str = "REPAIR-JOINT-CONFLICT (B1): the system is 
      never a silent relaxation. Chain-relaxing two clauses at once would be choosing, not \
      proving.";
 
+/// **A CERTIFICATE'S SHAPE**, kept beside a probe so a renderer can say what it
+/// is looking at without holding the certificate itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CertificateShape {
+    Farkas,
+    Enumeration,
+    ChvatalGomory,
+}
+
+impl CertificateShape {
+    fn of(certificate: &Certificate) -> CertificateShape {
+        match certificate {
+            Certificate::Farkas { .. } => CertificateShape::Farkas,
+            Certificate::Enumeration { .. } => CertificateShape::Enumeration,
+            Certificate::ChvatalGomory { .. } => CertificateShape::ChvatalGomory,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            CertificateShape::Farkas => "FARKAS",
+            CertificateShape::Enumeration => "EXHAUSTIVE ENUMERATION",
+            CertificateShape::ChvatalGomory => "CHVATAL-GOMORY",
+        }
+    }
+
+    /// **ONLY A FARKAS CERTIFICATE NAMES ROWS**, so it is the only shape a
+    /// caller may read CLAUSE CARRIAGE off.
+    ///
+    /// An enumeration names columns and a Chvátal–Gomory certificate names
+    /// derived cuts over a system that is not the one the caller is holding.
+    /// Reading either as "these clauses carry the residual" would answer the
+    /// question with the wrong list — and, worse, with an EMPTY one, which on a
+    /// decision page reads as "nothing is standing" and is the reading of a
+    /// singly-forced coordinate.
+    fn carriage_readable(self) -> bool {
+        self == CertificateShape::Farkas
+    }
+}
+
+/// The oracle's answer to ONE probe, typed so the fold below can be total.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProbeAnswer {
+    /// Question (ii) came back SAT: the coordinate is proven singly forced.
+    Feasible,
+    StillInfeasible,
+    Undecided,
+}
+
+impl ProbeAnswer {
+    /// The one-word spelling a page prints.
+    fn name(self) -> &'static str {
+        match self {
+            ProbeAnswer::Feasible => "FEASIBLE",
+            ProbeAnswer::StillInfeasible => "still infeasible",
+            ProbeAnswer::Undecided => "undecided",
+        }
+    }
+}
+
 /// One coordinate's answer to question (ii), recorded whether or not it fired.
 ///
 /// The probes that came back "still infeasible" are the record that the
@@ -3534,9 +3594,8 @@ const JOINT_CONFLICT_READING: &str = "REPAIR-JOINT-CONFLICT (B1): the system is 
 struct ExceptionProbe {
     candidate: CandidateFeature,
     clause: String,
-    /// The oracle's one-word answer to "is the system without this clause
-    /// feasible?" — `FEASIBLE`, `still infeasible`, or `undecided`.
-    answer: &'static str,
+    /// The oracle's answer to "is the system without this clause feasible?".
+    answer: ProbeAnswer,
     detail: String,
     /// A REFUSED probe's residual certificate, by row.
     ///
@@ -3546,6 +3605,10 @@ struct ExceptionProbe {
     /// different row set per probe — the residual certificate names the next
     /// coordinate as surely as the standing one named this coordinate.
     leaned_on: Vec<String>,
+    /// A REFUSED probe's residual certificate SHAPE, which decides whether
+    /// [`ExceptionProbe::leaned_on`] can be read as clause carriage at all.
+    /// `None` for a FEASIBLE or undecided probe, which has no residual.
+    residual: Option<CertificateShape>,
 }
 
 /// **ONE CERTIFIED EXCEPTION**, with everything B1 requires recorded beside it.
@@ -3738,7 +3801,7 @@ fn drive_repair_within(p: &RepairProblem, oracle_budget: u64, support_budget: u6
 /// would be a choice between two proofs rather than a proof.
 fn forced_coordinate(p: &RepairProblem) -> Forcing {
     let mut probes: Vec<ExceptionProbe> = Vec::new();
-    let mut undecided: Option<String> = None;
+    let mut witness: Option<Vec<i64>> = None;
     for candidate in CandidateFeature::ALL {
         if !p.clause_active(candidate) {
             continue;
@@ -3750,11 +3813,11 @@ fn forced_coordinate(p: &RepairProblem) -> Forcing {
                 probes.push(ExceptionProbe {
                     candidate,
                     clause,
-                    answer: "undecided",
+                    answer: ProbeAnswer::Undecided,
                     detail: format!("the relaxed problem would not build: {e}"),
                     leaned_on: Vec::new(),
+                    residual: None,
                 });
-                undecided.get_or_insert(format!("{}: {e}", candidate.label()));
                 continue;
             }
         };
@@ -3769,37 +3832,78 @@ fn forced_coordinate(p: &RepairProblem) -> Forcing {
                 probes.push(ExceptionProbe {
                     candidate,
                     clause,
-                    answer: "FEASIBLE",
+                    answer: ProbeAnswer::Feasible,
                     detail,
                     leaned_on: Vec::new(),
+                    residual: None,
                 });
-                return Forcing::Forced { candidate, witness: w, probes };
+                witness = Some(w);
+                break;
             }
             Verdict::Unsat { certificate } => {
                 let leans = certificate_leans(&relaxed.sys.inequalities(), &certificate);
                 probes.push(ExceptionProbe {
                     candidate,
                     clause,
-                    answer: "still infeasible",
+                    answer: ProbeAnswer::StillInfeasible,
                     detail: render_certificate(&certificate),
                     leaned_on: leans,
+                    residual: Some(CertificateShape::of(&certificate)),
                 });
             }
             Verdict::Inconclusive { reason } => {
                 probes.push(ExceptionProbe {
                     candidate,
                     clause,
-                    answer: "undecided",
+                    answer: ProbeAnswer::Undecided,
                     detail: reason.clone(),
                     leaned_on: Vec::new(),
+                    residual: None,
                 });
-                undecided.get_or_insert(format!("{}: {reason}", candidate.label()));
             }
         }
     }
-    match undecided {
-        Some(reason) => Forcing::Undecided { probes, reason },
-        None => Forcing::Joint { probes },
+    fold_forcing(probes, witness)
+}
+
+/// **THE FOLD from a canonical-order probe list to a verdict**, kept PURE.
+///
+/// Every route out of [`forced_coordinate`] runs through here, and none of them
+/// needs an oracle that can be made to say INCONCLUSIVE to reach — which is what
+/// makes the withholding arms testable at all. `witness` is `Some` exactly when
+/// the last probe answered FEASIBLE; anything else is a construction defect and
+/// is typed rather than trusted.
+fn fold_forcing(probes: Vec<ExceptionProbe>, witness: Option<Vec<i64>>) -> Forcing {
+    let undecided: Vec<String> = probes
+        .iter()
+        .filter(|probe| probe.answer == ProbeAnswer::Undecided)
+        .map(|probe| format!("{}: {}", probe.candidate.label(), probe.detail))
+        .collect();
+    let feasible = probes
+        .last()
+        .filter(|probe| probe.answer == ProbeAnswer::Feasible)
+        .map(|probe| probe.candidate);
+    match (witness, feasible) {
+        // STUB (RED): a FEASIBLE probe claims FORCED whatever came before it,
+        // so an earlier UNDECIDED coordinate — which might itself have been
+        // feasible — leaves B1's canonical-order clause unestablished and
+        // unremarked.
+        (Some(witness), Some(candidate)) => Forcing::Forced { candidate, witness, probes },
+        (None, None) if undecided.is_empty() => Forcing::Joint { probes },
+        (None, None) => {
+            let reason = undecided.join(" · ");
+            Forcing::Undecided { probes, reason }
+        }
+        (witness, feasible) => Forcing::Undecided {
+            reason: format!(
+                "the probe list and the witness disagree: a witness is {} and the last probe {} \
+                 FEASIBLE. That is a construction defect in the probe loop, not an answer about \
+                 any system.",
+                if witness.is_some() { "present" } else { "absent" },
+                if feasible.is_some() { "IS" } else { "is NOT" },
+            ),
+            probes,
+        },
     }
 }
 
@@ -4136,7 +4240,7 @@ fn render_joint_structure(p: &RepairProblem, probes: &[ExceptionProbe]) -> Strin
         "\njoint structure      (remove ONE clause and these sign clauses still carry the \
          residual certificate)\n",
     );
-    for probe in probes.iter().filter(|probe| probe.answer == "still infeasible") {
+    for probe in probes.iter().filter(|probe| probe.answer == ProbeAnswer::StillInfeasible) {
         let still: Vec<&str> = clauses
             .iter()
             .filter(|(c, text)| {
@@ -4162,7 +4266,7 @@ fn render_probes(heading: &str, probes: &[ExceptionProbe]) -> String {
             "          {:<4} `{}`  {}  -- {}\n",
             probe.candidate.label(),
             probe.clause,
-            probe.answer,
+            probe.answer.name(),
             probe.detail,
         ));
         for label in &probe.leaned_on {
@@ -7276,10 +7380,10 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
         assert_eq!(earlier, ["S1", "S2", "S3"], "the canonical prefix, all probed: {earlier:?}");
         assert!(
             e.probes.iter().take_while(|p| p.candidate != CandidateFeature::PresidentLocalAccess)
-                .all(|p| p.answer == "still infeasible"),
+                .all(|p| p.answer == ProbeAnswer::StillInfeasible),
             "and every one of them came back certified infeasible",
         );
-        assert_eq!(e.probes.last().map(|p| p.answer), Some("FEASIBLE"));
+        assert_eq!(e.probes.last().map(|p| p.answer), Some(ProbeAnswer::Feasible));
 
         // THE DOSE, hand-derived: -2, the least certified anti-prior magnitude.
         assert_eq!(report.w[s4], -2, "the least |w - w0| that satisfies the row");
@@ -7315,7 +7419,7 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
                 .iter()
                 .find(|p| p.candidate == candidate)
                 .unwrap_or_else(|| panic!("{} was probed", candidate.label()));
-            assert_eq!(probe.answer, "still infeasible", "{}", candidate.label());
+            assert_eq!(probe.answer, ProbeAnswer::StillInfeasible, "{}", candidate.label());
         }
         // Each half IS singly forced on its own — the conflict is that they are
         // not, together. Stated executably so the verdict reads as "no SINGLE
@@ -7501,7 +7605,7 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
         assert!(exceptions.is_empty(), "no coordinate was proven singly forced");
         assert_eq!(probes.len(), 14, "every surviving candidate's clause was probed");
         assert!(
-            probes.iter().all(|p| p.answer == "still infeasible"),
+            probes.iter().all(|p| p.answer == ProbeAnswer::StillInfeasible),
             "and every one came back CERTIFIED infeasible, never undecided",
         );
 
@@ -7602,6 +7706,212 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
             assert_eq!(sign_prior(candidate), 1, "{name}: the prior it opposes");
             assert_eq!(problem.clause_text(candidate), format!("{} >= 0", candidate.label()));
         }
+    }
+
+    // -- the fix wave: what a NON-FARKAS residual may not be allowed to look
+    //    like, and when a FEASIBLE probe is not enough ----------------------
+
+    /// A problem over the wide `2·w_S1 = 1` system: relaxation-feasible,
+    /// integer-infeasible, and with a support too wide to enumerate — so every
+    /// question about it is answered by the C–G extension and every residual
+    /// certificate has the CHVATAL-GOMORY shape rather than the FARKAS one.
+    ///
+    /// The infeasibility has nothing to do with any sign clause, so no single
+    /// removal cures it and the driver reaches a JOINT conflict whose fourteen
+    /// residuals are all non-Farkas. That is the shape the fix wave is about.
+    fn wide_integer_only_problem() -> RepairProblem {
+        let sys = wide_integer_only_system();
+        let w0 = start_vector("v2-padded", StageEndpoint::Early).expect("a registered start");
+        RepairProblem::new(StageEndpoint::Early, sys, Vec::new(), "v2-padded", w0)
+            .expect("the anchor is admissible")
+    }
+
+    /// **A NON-FARKAS RESIDUAL NEVER RENDERS AS AN EMPTY CLAUSE LIST.**
+    ///
+    /// `still leans on []` on the owner's decision page reads as "nothing is
+    /// standing behind this clause" — which is the reading of a SINGLY FORCED
+    /// coordinate, the exact opposite of what a refused probe means. Only a
+    /// FARKAS certificate names rows, so only a Farkas residual can have its
+    /// clause carriage read off it; every other shape must SAY that it was not
+    /// introspected rather than answer the question with silence.
+    #[test]
+    fn a_non_farkas_residual_says_carriage_was_not_introspected_and_never_reads_as_empty() {
+        let problem = wide_integer_only_problem();
+        let out = render_driven(&problem);
+        assert!(out.contains("VERDICT              REPAIR-JOINT-CONFLICT"), "{out}");
+        assert!(
+            !out.contains("still leans on []"),
+            "an empty clause list on a non-Farkas residual reads as SINGLY FORCED: {out}",
+        );
+        assert!(
+            out.contains("clause carriage not introspected"),
+            "the page says what it did not look at: {out}",
+        );
+        assert!(out.contains("CHVATAL-GOMORY"), "and names the shape it is looking at: {out}");
+    }
+
+    /// The same claim at the RENDERING level, over a hand-built probe — so the
+    /// cell fails on a renderer that special-cases the real system's shapes and
+    /// leaves the general one wrong.
+    #[test]
+    fn the_joint_structure_block_names_every_non_farkas_residual_shape() {
+        let problem = anchored_problem(&[("S4 at most -2", &[(col("S4"), -1)], 2)]);
+        let probes: Vec<ExceptionProbe> = [
+            (CandidateFeature::ProductionAccess, CertificateShape::ChvatalGomory),
+            (CandidateFeature::TrackAccess, CertificateShape::Enumeration),
+        ]
+        .into_iter()
+        .map(|(candidate, shape)| ExceptionProbe {
+            candidate,
+            clause: problem.clause_text(candidate),
+            answer: ProbeAnswer::StillInfeasible,
+            detail: "a hand-built residual".to_string(),
+            leaned_on: Vec::new(),
+            residual: Some(shape),
+        })
+        .collect();
+        let rendered = render_joint_structure(&problem, &probes);
+        assert!(!rendered.contains("still leans on []"), "{rendered}");
+        for shape in ["CHVATAL-GOMORY", "EXHAUSTIVE ENUMERATION"] {
+            assert!(rendered.contains(shape), "{shape} is named: {rendered}");
+        }
+        // A FARKAS residual is still read normally, so the fix narrows nothing
+        // that was working.
+        let farkas = vec![ExceptionProbe {
+            candidate: CandidateFeature::BankAccess,
+            clause: problem.clause_text(CandidateFeature::BankAccess),
+            answer: ProbeAnswer::StillInfeasible,
+            detail: "a hand-built Farkas residual".to_string(),
+            leaned_on: vec![format!("{} x3  [S4:+1 >= 0]", problem.clause_text(
+                CandidateFeature::PresidentLocalAccess,
+            ))],
+            residual: Some(CertificateShape::Farkas),
+        }];
+        assert!(
+            render_joint_structure(&problem, &farkas).contains("still leans on [\"S4\"]"),
+            "{}",
+            render_joint_structure(&problem, &farkas),
+        );
+    }
+
+    /// **A C–G CERTIFICATE'S `leans on` DOES NOT APPEAR COMPLETE.**
+    ///
+    /// The trail prints the inner Farkas combination's multiplier COUNT and then
+    /// names only the derived cuts — which is a list that looks like the whole
+    /// combination and is not. The rendering has to say the base rows are not
+    /// enumerated for that shape.
+    #[test]
+    fn a_chvatal_gomory_certificates_leans_on_says_the_base_rows_are_not_enumerated() {
+        let sys = wide_integer_only_system();
+        let Verdict::Unsat { certificate } = decide_with_cuts(&sys) else {
+            panic!("the extension certifies this system");
+        };
+        let leans = certificate_leans(&sys.inequalities(), &certificate);
+        assert!(!leans.is_empty(), "never an empty list");
+        assert!(
+            leans.iter().any(|l| l.contains("not enumerated")),
+            "the list says it is not the whole combination: {leans:?}",
+        );
+        // The cuts themselves are still named — the fix ADDS a statement, it
+        // does not take the useful half away.
+        assert!(leans.iter().any(|l| l.contains("C-G cut")), "{leans:?}");
+    }
+
+    /// **A FEASIBLE PROBE AFTER AN UNDECIDED ONE IS NOT A FORCING PROOF.**
+    ///
+    /// B1 examines coordinates in canonical order and takes the FIRST whose
+    /// relaxation is feasible. If an earlier coordinate could not be decided,
+    /// the claim "this is the first" is not established — the undecided one
+    /// might have been feasible too, and the exception would then be applied to
+    /// the wrong coordinate. The driver already withholds the JOINT verdict over
+    /// an undecided probe; it must be equally strict about claiming FORCED.
+    #[test]
+    fn an_undecided_probe_before_a_feasible_one_withholds_rather_than_claiming_forced() {
+        let s4 = col("S4");
+        let problem = anchored_problem(&[("S4 at most -2", &[(s4, -1)], 2)]);
+        let clause = |c: CandidateFeature| problem.clause_text(c);
+        let probe = |candidate, answer, detail: &str| ExceptionProbe {
+            candidate,
+            clause: clause(candidate),
+            answer,
+            detail: detail.to_string(),
+            leaned_on: Vec::new(),
+            residual: None,
+        };
+
+        // S2 undecided, then S4 feasible: the canonical-order claim cannot be
+        // established, so nothing is excepted.
+        let withheld = fold_forcing(
+            vec![
+                probe(CandidateFeature::ProductionAccess, ProbeAnswer::StillInfeasible, "certified"),
+                probe(CandidateFeature::TrackAccess, ProbeAnswer::Undecided, "the oracle stopped"),
+                probe(CandidateFeature::PresidentLocalAccess, ProbeAnswer::Feasible, "SAT"),
+            ],
+            Some(vec![0; AXIS_WIDTH]),
+        );
+        let Forcing::Undecided { reason, .. } = withheld else {
+            panic!("an earlier undecided probe withholds the FORCED claim");
+        };
+        assert!(reason.contains("S2"), "the undecided coordinate is named: {reason}");
+        assert!(reason.contains("canonical"), "and why the claim fails: {reason}");
+    }
+
+    /// The other three arms of the same fold, so every route out of it is
+    /// pinned and the reviewer's "replace the whole thing with `Joint`" mutation
+    /// fails a named cell.
+    #[test]
+    fn the_forcing_fold_answers_each_of_its_four_arms() {
+        let problem = anchored_problem(&[("S4 at most -2", &[(col("S4"), -1)], 2)]);
+        let probe = |candidate, answer| ExceptionProbe {
+            candidate,
+            clause: problem.clause_text(candidate),
+            answer,
+            detail: String::new(),
+            leaned_on: Vec::new(),
+            residual: None,
+        };
+        let (s1, s2, s4) = (
+            CandidateFeature::ProductionAccess,
+            CandidateFeature::TrackAccess,
+            CandidateFeature::PresidentLocalAccess,
+        );
+
+        // (1) every clause probed and certified infeasible -> JOINT.
+        let joint = fold_forcing(
+            vec![probe(s1, ProbeAnswer::StillInfeasible), probe(s2, ProbeAnswer::StillInfeasible)],
+            None,
+        );
+        assert!(matches!(joint, Forcing::Joint { .. }), "all decided, none feasible");
+
+        // (2) feasible with every EARLIER probe decided -> FORCED.
+        let forced = fold_forcing(
+            vec![probe(s1, ProbeAnswer::StillInfeasible), probe(s4, ProbeAnswer::Feasible)],
+            Some(vec![7; AXIS_WIDTH]),
+        );
+        let Forcing::Forced { candidate, witness, .. } = forced else {
+            panic!("a clean canonical prefix proves the forcing");
+        };
+        assert_eq!(candidate, s4);
+        assert_eq!(witness[0], 7, "the witness rides through the fold untouched");
+
+        // (3) undecided, no feasible -> WITHHELD, never JOINT: "no coordinate is
+        // singly forced" is a statement about EVERY coordinate.
+        let withheld = fold_forcing(
+            vec![probe(s1, ProbeAnswer::StillInfeasible), probe(s2, ProbeAnswer::Undecided)],
+            None,
+        );
+        let Forcing::Undecided { reason, .. } = withheld else {
+            panic!("an undecided probe withholds the JOINT verdict");
+        };
+        assert!(reason.contains("S2"), "{reason}");
+
+        // (4) a witness with no feasible probe is a construction defect, and it
+        // is typed rather than trusted.
+        let malformed = fold_forcing(
+            vec![probe(s1, ProbeAnswer::StillInfeasible)],
+            Some(vec![0; AXIS_WIDTH]),
+        );
+        assert!(matches!(malformed, Forcing::Undecided { .. }), "a witness needs a FEASIBLE probe");
     }
 
     /// A REMOVED feature has no sign clause, so naming one is a typed refusal
