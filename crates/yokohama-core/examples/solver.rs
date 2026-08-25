@@ -2004,6 +2004,13 @@ const REPAIR_REMOVED: [CandidateFeature; 4] = [
 /// calls. Both are counts of work done, not of time spent — nothing in the
 /// decision path reads a clock, so the same inputs spend the same budget on
 /// every machine. Exhaustion is INCONCLUSIVE, routed; it is never infeasibility.
+///
+/// **THIS NUMBER IS NOT REGISTERED, and the distinction is worth keeping.**
+/// §5.4 registers [`NODE_BUDGET`] and [`ENUMERATION_BUDGET`] at 10⁷ each; those
+/// figures come from the spec. `20_000` is an ENGINE-LOCAL cap chosen at T3 for
+/// a currency §5.4 does not name — how many times the projection may ask, as
+/// opposed to how hard the oracle may look at one question. Nothing downstream
+/// reads it as a registered quantity, and the printed text does not call it one.
 const REPAIR_ORACLE_BUDGET: u64 = 20_000;
 
 /// The support enumeration's budget, in enumerated subsets — [`ENUMERATION_BUDGET`]'s
@@ -2013,7 +2020,6 @@ const REPAIR_SUPPORT_BUDGET: u64 = 10_000_000;
 
 /// The starting-vector specs `repair --start` accepts.
 const REPAIR_START_SPECS: [&str; 2] = ["v2-padded", "zero"];
-
 
 /// **§4'S PROJECTION, on the solver's own rows.** A row survives iff every
 /// candidate column it carries a nonzero `Δv` in survives the removal set.
@@ -2449,8 +2455,8 @@ impl<'a> Projection<'a> {
         self.calls += 1;
         if self.calls > self.oracle_budget {
             return Err(self.routed(format!(
-                "the projection spent its registered budget of {} oracle calls. The oracle did \
-                 not decide, which is not infeasibility.",
+                "the projection spent its budget of {} oracle calls (an engine-local cap, not a \
+                 §5.4-registered figure). The oracle did not decide, which is not infeasibility.",
                 self.oracle_budget,
             )));
         }
@@ -2498,7 +2504,9 @@ impl<'a> Projection<'a> {
     }
 }
 
-/// **THE ENGINE.** R3's projection at the registered budgets.
+/// **THE ENGINE.** R3's projection at its two shipped budgets:
+/// [`REPAIR_ORACLE_BUDGET`], an engine-local cap, and [`REPAIR_SUPPORT_BUDGET`],
+/// §5.4's registered 10⁷.
 fn repair(p: &RepairProblem) -> Repair {
     repair_within(p, REPAIR_ORACLE_BUDGET, REPAIR_SUPPORT_BUDGET)
 }
@@ -2506,9 +2514,9 @@ fn repair(p: &RepairProblem) -> Repair {
 /// The same, at budgets a caller names.
 ///
 /// The budgets are parameters only so their EXHAUSTION ARMS can be exercised —
-/// [`integer_search`]'s reasoning verbatim: a test that had to spend the
-/// registered budget to prove the arm exists would not be a test. [`repair`]
-/// always passes the registered pair.
+/// [`integer_search`]'s reasoning verbatim: a test that had to spend the whole
+/// budget to prove the arm exists would not be a test. [`repair`] always passes
+/// the shipped pair.
 fn repair_within(p: &RepairProblem, oracle_budget: u64, support_budget: u64) -> Repair {
     let mut projection = Projection::new(p, oracle_budget, support_budget);
     match projection.run() {
@@ -2706,8 +2714,9 @@ impl Projection<'_> {
             self.calls += 1;
             if self.calls > self.oracle_budget {
                 return Err(self.routed(format!(
-                    "the projection spent its registered budget of {} oracle calls while placing \
-                     the first probe. The oracle did not decide, which is not infeasibility.",
+                    "the projection spent its budget of {} oracle calls (an engine-local cap, not \
+                     a §5.4-registered figure) while placing the first probe. The oracle did not \
+                     decide, which is not infeasibility.",
                     self.oracle_budget,
                 )));
             }
@@ -2826,6 +2835,65 @@ fn value_keys(w0: i64, lo: i64, hi: i64, level: i64) -> Vec<i64> {
     out
 }
 
+/// One vector in the hand-off grammar: comma-separated `i64`, no spaces.
+///
+/// The same spelling `eval_probe`'s `fit --evaluate` and `step9 --table` vectors
+/// use, because a second spelling is a transcription step.
+fn vector_csv(w: &[i64]) -> String {
+    w.iter().map(i64::to_string).collect::<Vec<_>>().join(",")
+}
+
+/// **THE REPAIRED TABLE, IN THE GRAMMAR THE NEXT COMMAND PARSES.**
+///
+/// A repaired vector that has to be reassembled out of the `changed
+/// coordinates` block is a vector that gets reassembled WRONG: that block prints
+/// the MOVES, not the table, and the coordinates it does not name are exactly
+/// the ones a reader would have to remember to copy from the draft. These two
+/// lines are the whole table in exactly the form
+/// `eval_probe step9 structural --table <early>/<late>` takes — thirty-four
+/// comma-separated `i64` per vector, in `FeatureId::all()` order — so the T4
+/// hand-off is a copy rather than a reconstruction.
+///
+/// **A REPAIR IS PER ENDPOINT, and the other endpoint prints UNMOVED.** This run
+/// solved one stage; the other half is the run's own `--start` vector spelled at
+/// that endpoint, because nothing here touched it. The header says which is
+/// which, so the pair is never read as two repairs. A start this file cannot
+/// spell at the other endpoint — a hand-built problem, never the shipped
+/// subcommands, whose `--start` is registered before it reaches here — prints
+/// the repaired half alone and says why.
+fn render_paste_ready(report: &RepairReport) -> String {
+    let other = match report.stage {
+        StageEndpoint::Early => StageEndpoint::Late,
+        StageEndpoint::Late => StageEndpoint::Early,
+    };
+    let repaired = vector_csv(&report.w);
+    let Ok(unmoved) = start_vector(&report.start, other) else {
+        return format!(
+            "\npaste-ready table    `{}` is not a registered --start spec, so the {} half has no \
+             spelling here;\n                     the repaired {} vector alone:\n  {:<18} \
+             {repaired}\n",
+            report.start,
+            other.name(),
+            report.stage.name(),
+            report.stage.name().to_uppercase(),
+        );
+    };
+    let unmoved = vector_csv(&unmoved);
+    let (early, late) = match report.stage {
+        StageEndpoint::Early => (repaired, unmoved),
+        StageEndpoint::Late => (unmoved, repaired),
+    };
+    format!(
+        "\npaste-ready table    `<early>/<late>` for `eval_probe step9 structural --table`: the \
+         {} vector is\n                     this endpoint's repair, the {} one the unmoved `{}` \
+         start (a repair\n                     is per endpoint, and this run solved \
+         one)\n  EARLY              {early}\n  LATE               {late}\n",
+        report.stage.name().to_uppercase(),
+        other.name().to_uppercase(),
+        report.start,
+    )
+}
+
 /// **THE PROJECTION'S ARTIFACT** — one endpoint, printed whole.
 ///
 /// It runs the repair; a caller that wants the structured answer calls
@@ -2905,6 +2973,7 @@ fn render_repair(p: &RepairProblem) -> String {
                 "re-check             System::violation of the returned vector = {}\n",
                 report.violation,
             ));
+            out.push_str(&render_paste_ready(&report));
             out.push_str("\nchanged coordinates  (w0 -> w, and the rows that priced the move)\n");
             for &f in &report.changed {
                 let label = FeatureId::all()[f].label();
@@ -2922,11 +2991,11 @@ fn render_repair(p: &RepairProblem) -> String {
             }
             out.push_str(&render_trail(&report.trail));
             out.push_str(&format!(
-                "\nbudget spent         {} oracle calls, {} supports enumerated (registered {} / \
-                 {})\n",
+                "\nbudget spent         {} oracle calls of {} (an engine-local cap), {} supports \
+                 enumerated of {} (§5.4's registered 10^7)\n",
                 report.oracle_calls,
-                report.supports_examined,
                 REPAIR_ORACLE_BUDGET,
+                report.supports_examined,
                 REPAIR_SUPPORT_BUDGET,
             ));
             out.push_str(&format!("coverage             {REPAIR_MONOTONICITY}\n"));
@@ -3493,6 +3562,15 @@ usage: solver <subcommand>
                      lexicographically nearest system-satisfying integer table
                      to the draft's starting vector, with its certificate trail.
                      --start defaults to v2-padded (R9's ratified anchor).
+      EXIT: 0 = the projection RAN. All three registered outcomes are ANSWERS of
+      a reporting instrument and every one of them exits 0 -- REPAIRED,
+      REPAIR-INFEASIBLE (routed to the owner with its certificate) and
+      INCONCLUSIVE (the oracle or a budget did not decide) alike. The answer is
+      the VERDICT line, never the exit status: this subcommand has no GATE to
+      read and say no, which is the whole difference from the probe's step-9
+      sections. Nonzero = the instrument could not RUN -- an unknown toy, an
+      unregistered --start, a stray argument -- and says nothing about any
+      system.
 ";
 
 // ---------------------------------------------------------------------------
@@ -3506,25 +3584,25 @@ mod tests {
     use yokohama_core::game::pair_fixtures::{PairRole, PAIR_11B, PAIR_3C};
 
 /// The banked §8:975 witness at EARLY, transcribed from
-/// `docs/temp/step6-artifacts/v3l-final-artifact.txt:276`.
+/// `docs/temp/step6-artifacts/v3l-final-artifact.txt:275`.
 const ARTIFACT_WITNESS_EARLY: [i64; AXIS_WIDTH] = [
     1, -64, 26, -4, 3, -60, -62, -64, -61, 12, 15, 8, 5, -64, 3, -64, 1, 1, -64, -31, 1, 1, 63, 2,
     2, 2, -30, 1, 1, 0, 1, 1, 1, 26,
 ];
 
 /// The banked §8:975 witness at LATE, transcribed from
-/// `docs/temp/step6-artifacts/v3l-final-artifact.txt:277`.
+/// `docs/temp/step6-artifacts/v3l-final-artifact.txt:276`.
 const ARTIFACT_WITNESS_LATE: [i64; AXIS_WIDTH] = [
     40, 29, -24, -64, -64, -62, -64, -64, -63, 20, 25, 14, -64, -64, 4, -64, 14, 1, -64, -31, 20,
     -64, 63, 21, 15, 0, 44, -61, 1, 1, 1, -63, 0, 0,
 ];
 
 /// The rows the banked artifact's §4 projection DROPPED at EARLY, by pair id
-/// (artifact:278 — "early kept 17 · dropped 7").
+/// (artifact:277 — "early kept 17 · dropped 7").
 const ARTIFACT_DROPPED_EARLY: [&str; 7] = ["2(b)", "2(d)", "4(b)", "4(g)", "6(a)", "6(c)", "10(d)"];
 
 /// The rows the banked artifact's §4 projection DROPPED at LATE, by pair id
-/// (artifact:279 — "late kept 23 · dropped 4").
+/// (artifact:278 — "late kept 23 · dropped 4").
 const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
 
     // -- the margin rule ---------------------------------------------------
@@ -4887,7 +4965,7 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
     ///   `carrier` and `expected_nonzero` both the single entry `S5` — "the pair
     ///   moves S5 and NOTHING else on the axis" — so the row is `2·w_S5 ≥ 40`.
     ///   The `Δv = 2` is read off the banked artifact
-    ///   (`docs/temp/step6-artifacts/v3l-final-artifact.txt:307`, "kept row late
+    ///   (`docs/temp/step6-artifacts/v3l-final-artifact.txt:304`, "kept row late
     ///   3(c) … value 40 vs margin 40" at that artifact's `w_S5 = 20`).
     /// * **11(b) ACTED-AT-BANK ≻ ACTED-AT-COPPER** declares `MarginClass::
     ///   DirectionOnly`, so §5.1 prices it **1, not 2** — the T3 brief's stated
@@ -4895,7 +4973,7 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
     ///   because `2(w_E1 − w_S5) ≥ 1` and `≥ 2` have the same integer solutions.
     ///   Its own note registers the carriers: "Expected nonzero: E1 +2, S5 −2",
     ///   confirmed by the artifact's `value 2` at `w_E1 = 21, w_S5 = 20`
-    ///   (artifact:318).
+    ///   (artifact:315).
     ///
     /// **The optimum is unique and hand-derivable.** `2·w_S5 ≥ 40` forces
     /// `w_S5 ≥ 20`; `2(w_E1 − w_S5) ≥ 1` over the integers forces
@@ -5219,7 +5297,7 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
     /// record froze.
     ///
     /// The banked artifact `docs/temp/step6-artifacts/v3l-final-artifact.txt`
-    /// prints, at lines 274–279, the surviving set, both witness vectors, and
+    /// prints, at lines 274–278, the surviving set, both witness vectors, and
     /// the projection's kept/dropped counts and dropped names. This test rebuilds
     /// the system from the frozen registry through the SOLVER's own extraction
     /// and requires all of it back — same dropped row names, same counts, and the
@@ -5287,9 +5365,19 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
     ///                          0                             >= 5
     /// ```
     ///
+    /// **The shipped certificate prints SIX nonzero multipliers, not four, and
+    /// the two extra ones cancel.** They are the `w_vp` pin, which the box
+    /// carries as a two-sided pair of rows: `victory_points >= 40` and
+    /// `victory_points <= 40`, each at multiplier 2. Their coefficients sum to
+    /// `+2·vp − 2·vp = 0` and their right-hand sides to `2·40 − 2·40 = 0`, so
+    /// they contribute nothing to either column and the hand table above is the
+    /// whole derivation. The count is asserted nowhere — `y`'s SUPPORT is what
+    /// this test reads — but a reader checking the four rows against the real
+    /// output would otherwise be two rows short and think the table wrong.
+    ///
     /// Equivalently the first three rows alone say `−4·S4 ≥ 5`, so `S4 ≤ −2`
     /// over the integers. The banked artifact's own SAT witness agrees: it
-    /// prices S4 at −31 at LATE (artifact:277), which is exactly the sight the
+    /// prices S4 at −31 at LATE (artifact:276), which is exactly the sight the
     /// 0-start clause forbids a repair from manufacturing.
     ///
     /// **The rows are not the problem and the test says so**: the same system
@@ -5342,6 +5430,12 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
         for label in ["pair 1(b) late", "pair 8 late", "hand: on_board > excess"] {
             assert!(leaned.contains(&label), "{label} carries it: {leaned:?}");
         }
+        // The two rows the hand table omits BECAUSE they cancel — asserted so
+        // the doc's "six, of which four derive it" is checkable and not prose.
+        for label in ["victory_points >= 40", "victory_points <= 40"] {
+            assert!(leaned.contains(&label), "the pin's {label} rides and cancels: {leaned:?}");
+        }
+        assert_eq!(leaned.len(), 6, "four deriving rows plus the pin's two: {leaned:?}");
     }
 
     /// Same inputs, byte-identical output — twice. No wall clock, no entropy;
@@ -5357,6 +5451,105 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
         let second = render_repair(&toy_problem(rows, &[]));
         assert_eq!(first, second, "the projection reproduces from its inputs");
         assert!(first.contains("R3 projection"), "{first}");
+    }
+
+    /// **THE HAND-OFF IS A COPY, NOT A RECONSTRUCTION.**
+    ///
+    /// A REPAIRED arm's next reader types the table into
+    /// `eval_probe step9 structural --table <early>/<late>`, and the only other
+    /// place the repaired numbers appear is the `changed coordinates` block —
+    /// which prints the MOVES. Reassembling a table from moves plus a
+    /// remembered draft is the T4 transcription hazard in one sentence, so the
+    /// arm prints the whole table in the grammar that command parses.
+    ///
+    /// **The two example binaries cannot import one another**, so this cell
+    /// applies `parse_step9_table`'s rules rather than calling it: thirty-four
+    /// comma-separated `i64` per vector, in `FeatureId::all()` order, joined by
+    /// `/`. Both orientations run — an EARLY repair and a LATE one — because
+    /// which half is the repair and which is the unmoved start swaps with the
+    /// endpoint, and a renderer that printed the repair twice would pass a
+    /// one-orientation test.
+    #[test]
+    fn a_repaired_arm_prints_both_vectors_in_the_step_nine_table_grammar() {
+        let vector_line = |out: &str, label: &str| -> Vec<i64> {
+            let prefix = format!("  {label:<18} ");
+            let line = out
+                .lines()
+                .find_map(|l| l.strip_prefix(prefix.as_str()))
+                .unwrap_or_else(|| panic!("no {label} vector line in:\n{out}"));
+            let values: Vec<i64> = line
+                .split(',')
+                .map(|x| x.parse::<i64>().unwrap_or_else(|e| panic!("{label} `{x}`: {e}")))
+                .collect();
+            assert_eq!(values.len(), AXIS_WIDTH, "{label} is not thirty-four wide: {line}");
+            values
+        };
+
+        // The EARLY orientation, through the SHIPPED toy path: a registered
+        // system and a registered `--start`, exactly as `run_repair_toy` builds
+        // them.
+        let sys = toys::named("sat-reachable").expect("a registered toy");
+        let stage = sys.stage;
+        assert_eq!(stage, StageEndpoint::Early, "this toy is the EARLY orientation");
+        let (kept, dropped) = project_pair_rows(sys.rows.clone());
+        let projected = System::new(stage, kept, sys.box_limit, sys.pin_vp);
+        let w0 = start_vector("v2-padded", stage).expect("a registered start");
+        let problem = RepairProblem::new(stage, projected, dropped, "v2-padded", w0)
+            .expect("the anchor is admissible");
+        let out = render_repair(&problem);
+        let Repair::Repaired(report) = repair(&problem) else {
+            panic!("`sat-reachable` is the repairable toy");
+        };
+        assert_eq!(vector_line(&out, "EARLY"), report.w, "the repaired endpoint is the repair");
+        assert_eq!(
+            vector_line(&out, "LATE"),
+            start_vector("v2-padded", StageEndpoint::Late).expect("a registered start"),
+            "and the other endpoint is the unmoved start, since a repair is per endpoint",
+        );
+
+        // The LATE orientation, over the witnessed 3(c)/11(b) coupling.
+        let (s5, e1) = (col("S5"), col("E1"));
+        let late_sys = toy(
+            StageEndpoint::Late,
+            &[("pair 3(c) late", &[(s5, 2)], 40), ("pair 11(b) late", &[(e1, 2), (s5, -2)], 1)],
+            BOX_LIMIT,
+        );
+        let w0 = start_vector("v2-padded", StageEndpoint::Late).expect("a registered start");
+        let late = RepairProblem::new(StageEndpoint::Late, late_sys, Vec::new(), "v2-padded", w0)
+            .expect("the anchor is admissible");
+        let late_out = render_repair(&late);
+        let Repair::Repaired(late_report) = repair(&late) else {
+            panic!("the coupling repairs");
+        };
+        assert_eq!(vector_line(&late_out, "LATE"), late_report.w, "the halves swap with the stage");
+        assert_eq!(
+            vector_line(&late_out, "EARLY"),
+            start_vector("v2-padded", StageEndpoint::Early).expect("a registered start"),
+        );
+
+        // THE PASTE ITSELF. `<early>/<late>` is what the reader types, and the
+        // two printed lines are its two halves in order.
+        let pasted = format!(
+            "{}/{}",
+            vector_csv(&vector_line(&late_out, "EARLY")),
+            vector_csv(&vector_line(&late_out, "LATE")),
+        );
+        let (early_half, late_half) = pasted.split_once('/').expect("one separator");
+        assert_eq!(early_half.split(',').count(), AXIS_WIDTH);
+        assert_eq!(late_half.split(',').count(), AXIS_WIDTH);
+        assert!(late_half.starts_with("40,"), "the pinned w_vp rides the LATE half: {late_half}");
+
+        // A start this file cannot spell at the OTHER endpoint prints the
+        // repaired half alone and says why, rather than inventing a vector.
+        let hand_built = render_repair(&toy_problem(
+            &[("pair 3(c) late", &[(s5, 2)], 40)],
+            &[],
+        ));
+        assert!(
+            hand_built.contains("`toy-start` is not a registered --start spec"),
+            "{hand_built}",
+        );
+        assert!(!hand_built.contains("  EARLY  "), "no invented EARLY vector: {hand_built}");
     }
 
     /// A SPENT BUDGET IS INCONCLUSIVE, never infeasibility — §5.4's own
@@ -5382,11 +5575,46 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
 
     /// The subcommand is documented rather than hidden, and the real projection
     /// is gated exactly as the real solve is.
+    ///
+    /// **THE EXIT CONTRACT IS DOCUMENTED AND EXERCISED.** `repair` is a
+    /// REPORTING instrument with no gate in it: all three registered outcomes
+    /// are answers, so all three RUN and return `Ok`, and the verdict is read
+    /// off the `VERDICT` line rather than off `$?`. That is structural — the
+    /// outcome is rendered into the page and never reaches the `Result` — and
+    /// two registered toys with DIFFERENT outcomes walk it here, so a future
+    /// arm that routed an answer through `Err` would fail this cell rather than
+    /// quietly turning a routed finding into a nonzero exit. The third outcome,
+    /// INCONCLUSIVE, has no toy at the shipped budgets by design; its
+    /// construction is
+    /// [`a_spent_oracle_budget_is_inconclusive_and_never_infeasible`] and it
+    /// leaves [`render_repair`] by the same path the other two do.
     #[test]
     fn the_repair_subcommand_is_documented_and_the_real_run_is_gated() {
         assert!(USAGE.contains("repair"), "{USAGE}");
         assert!(USAGE.contains("--start"), "{USAGE}");
         assert!(REPAIR_START_SPECS.contains(&"v2-padded"));
         assert!(start_vector("nonsense", StageEndpoint::Late).is_err());
+
+        assert!(USAGE.contains("EXIT: 0 = the projection RAN"), "{USAGE}");
+        for outcome in ["REPAIRED", "REPAIR-INFEASIBLE", "INCONCLUSIVE"] {
+            assert!(USAGE.contains(outcome), "the EXIT block names {outcome}: {USAGE}");
+        }
+
+        let outcome_of = |name: &str| -> &'static str {
+            let sys = toys::named(name).expect("a registered toy");
+            let (kept, dropped) = project_pair_rows(sys.rows.clone());
+            let projected = System::new(sys.stage, kept, sys.box_limit, sys.pin_vp);
+            let w0 = start_vector("v2-padded", sys.stage).expect("a registered start");
+            let problem = RepairProblem::new(sys.stage, projected, dropped, "v2-padded", w0)
+                .expect("the anchor is admissible");
+            repair(&problem).name()
+        };
+        for (toy, want) in [("sat-reachable", "REPAIRED"), ("unsat-direct", "REPAIR-INFEASIBLE")] {
+            assert_eq!(outcome_of(toy), want, "{toy}");
+            assert!(run_repair_toy(toy, "v2-padded").is_ok(), "{toy}: an ANSWER is a clean run");
+        }
+        // What DOES fail is the instrument being unable to run at all.
+        assert!(run_repair_toy("nosuch", "v2-padded").is_err(), "an unknown toy cannot run");
+        assert!(run_repair_toy("sat-reachable", "bogus").is_err(), "nor can an unknown --start");
     }
 }
