@@ -2073,6 +2073,7 @@ fn start_vector(spec: &str, stage: StageEndpoint) -> Result<Vec<i64>, String> {
 
 /// One endpoint's repair problem: the PROJECTED system, the draft's starting
 /// vector, and the coordinates the projection is allowed to move.
+#[derive(Clone)]
 struct RepairProblem {
     stage: StageEndpoint,
     /// The projected system with R3's constraints already folded into the box:
@@ -2095,6 +2096,21 @@ struct RepairProblem {
     /// so it can only add displacement and add a changed coordinate — both
     /// objectives strictly worsen, so no optimum moves it.
     free: Vec<usize>,
+    /// The projected system as it stood BEFORE R3's sign clauses were folded
+    /// into its box.
+    ///
+    /// B1's certified-exception class removes ONE clause at a time, and a
+    /// removal has to be a re-derivation rather than an edit: `lo_at`/`hi_at`
+    /// take a max and a min, so a bound that has been tightened cannot be
+    /// untightened by inspection. Keeping the pre-clause system means
+    /// [`RepairProblem::excepting`] rebuilds the whole box from one source with
+    /// exactly one clause left out.
+    raw: System,
+    /// The coordinates whose sign clause is OFF at this problem under B1's
+    /// class. EMPTY for every problem [`RepairProblem::new`] builds — the raw
+    /// un-excepted projection is what that constructor means, and the standing
+    /// S4-late regression pins it.
+    exceptions: Vec<CandidateFeature>,
 }
 
 /// What one question put to the oracle asked, and what came back.
@@ -2340,6 +2356,24 @@ impl RepairProblem {
         start: &str,
         w0: Vec<i64>,
     ) -> Result<RepairProblem, String> {
+        RepairProblem::with_exceptions(stage, sys, dropped, start, w0, &[])
+    }
+
+    /// The same, with `exceptions`' sign clauses LEFT OFF — B1's class, and the
+    /// only way this file builds a problem that is not the raw projection.
+    ///
+    /// The refusals are [`RepairProblem::new`]'s, unchanged, plus one of its
+    /// own: a REMOVED feature has no sign clause to except (its box is
+    /// `lo = hi = 0`, which is §4's projection fixing it, not a direction), so
+    /// naming one is a malformed exception rather than a wider system.
+    fn with_exceptions(
+        stage: StageEndpoint,
+        sys: System,
+        dropped: Vec<String>,
+        start: &str,
+        w0: Vec<i64>,
+        exceptions: &[CandidateFeature],
+    ) -> Result<RepairProblem, String> {
         if w0.len() != AXIS_WIDTH {
             return Err(format!("the axis is {AXIS_WIDTH} wide and the start is {}", w0.len()));
         }
@@ -2378,6 +2412,17 @@ impl RepairProblem {
             }
         }
 
+        for candidate in exceptions {
+            if REPAIR_REMOVED.contains(candidate) {
+                return Err(format!(
+                    "{} is a REMOVED feature, fixed at 0 by §4's projection. That is not a sign \
+                     clause and B1's certified-exception class has nothing to relax there.",
+                    candidate.label(),
+                ));
+            }
+        }
+
+        let raw = sys.clone();
         let mut sys = sys;
         // **THE SIGN CONSTRAINT, as one bound per coordinate.** R3: no coordinate
         // moves FROM a prior-agreeing sign to an opposed one, and no opposed
@@ -2392,7 +2437,15 @@ impl RepairProblem {
         // clause read the same table. The sixteen INCUMBENTS carry no registered
         // prior and are deliberately left unconstrained beyond the system and the
         // box: inventing one here would be registering a direction nobody ruled.
+        //
+        // **An EXCEPTED coordinate's clause is not applied at all** (B1) — it
+        // keeps the registered integer box and nothing else. The prior itself is
+        // untouched: `SIGN_PRIORS` still reads `+` for that coordinate, and the
+        // certificate that licensed the exception stands beside it.
         for candidate in CandidateFeature::ALL {
+            if exceptions.contains(&candidate) {
+                continue;
+            }
             let f = FeatureId::Candidate(candidate).index();
             if sign_prior(candidate) > 0 {
                 lo_at(&mut sys.lo, f, w0[f].min(0));
@@ -2410,7 +2463,65 @@ impl RepairProblem {
             .filter(|&f| sys.lo[f] < sys.hi[f])
             .filter(|&f| sys.rows.iter().any(|r| r.coef[f] != 0))
             .collect();
-        Ok(RepairProblem { stage, sys, dropped, start: start.to_string(), w0, free })
+        Ok(RepairProblem {
+            stage,
+            sys,
+            dropped,
+            start: start.to_string(),
+            w0,
+            free,
+            raw,
+            exceptions: exceptions.to_vec(),
+        })
+    }
+
+    /// The same problem with ONE more sign clause left off, re-derived from
+    /// [`RepairProblem::raw`].
+    fn excepting(&self, extra: CandidateFeature) -> Result<RepairProblem, String> {
+        let mut exceptions = self.exceptions.clone();
+        if !exceptions.contains(&extra) {
+            exceptions.push(extra);
+        }
+        RepairProblem::with_exceptions(
+            self.stage,
+            self.raw.clone(),
+            self.dropped.clone(),
+            &self.start,
+            self.w0.clone(),
+            &exceptions,
+        )
+    }
+
+    /// Whether `candidate`'s sign clause is currently APPLIED **and** actually
+    /// tightens the registered box.
+    ///
+    /// A clause that coincides with the box constrains nothing, so removing it
+    /// cannot change a verdict — probing it would spend an oracle call to learn
+    /// that the system is the system. That is a reduction, not a policy: the
+    /// relaxed system it would ask about is literally the same system.
+    fn clause_active(&self, candidate: CandidateFeature) -> bool {
+        if self.exceptions.contains(&candidate) || REPAIR_REMOVED.contains(&candidate) {
+            return false;
+        }
+        let f = FeatureId::Candidate(candidate).index();
+        if sign_prior(candidate) > 0 {
+            self.w0[f].min(0) > self.raw.lo[f]
+        } else {
+            self.w0[f].max(0) < self.raw.hi[f]
+        }
+    }
+
+    /// One coordinate's sign clause, spelled as [`System::inequalities`] labels
+    /// its box rows — so a clause named here and a row named in a Farkas
+    /// combination are the same string.
+    fn clause_text(&self, candidate: CandidateFeature) -> String {
+        let f = FeatureId::Candidate(candidate).index();
+        let label = FeatureId::all()[f].label();
+        if sign_prior(candidate) > 0 {
+            format!("{label} >= {}", self.w0[f].min(0))
+        } else {
+            format!("{label} <= {}", self.w0[f].max(0))
+        }
     }
 
     fn displacement(&self, w: &[i64]) -> i64 {
@@ -2470,26 +2581,7 @@ impl<'a> Projection<'a> {
         let (outcome, leaned_on) = match &verdict {
             Verdict::Sat { w } => (TrailOutcome::Witnessed(w[..AXIS_WIDTH].to_vec()), Vec::new()),
             Verdict::Unsat { certificate } => {
-                let names = match certificate {
-                    // The MULTIPLIER rides with the label. A routed
-                    // REPAIR-INFEASIBLE is read by a person deciding what to do
-                    // about it, and the combination's shape — which rows, how
-                    // heavily — is the whole of what there is to read.
-                    Certificate::Farkas { y, .. } => all
-                        .iter()
-                        .zip(y)
-                        .filter(|(_, m)| **m != 0)
-                        .map(|(r, m)| format!("{} x{m}  [{}]", r.label, sparse_row(r)))
-                        .collect(),
-                    Certificate::Enumeration { support, .. } => support
-                        .iter()
-                        .map(|&c| match FeatureId::all().get(c) {
-                            Some(id) => id.label().to_string(),
-                            None => format!("|w-w0| #{}", c - AXIS_WIDTH),
-                        })
-                        .collect(),
-                };
-                (TrailOutcome::Empty(certificate.clone()), names)
+                (TrailOutcome::Empty(certificate.clone()), certificate_leans(&all, certificate))
             }
             Verdict::Inconclusive { reason } => {
                 (TrailOutcome::Undecided(reason.clone()), Vec::new())
@@ -2501,6 +2593,31 @@ impl<'a> Projection<'a> {
 
     fn record(&mut self, question: String, outcome: TrailOutcome, leaned_on: Vec<String>) {
         self.trail.push(TrailStep { question, outcome, leaned_on });
+    }
+}
+
+/// **WHAT ONE CERTIFICATE LEANED ON**, by row label or by column.
+///
+/// The MULTIPLIER rides with the label. A routed REPAIR-INFEASIBLE is read by a
+/// person deciding what to do about it, and the combination's shape — which
+/// rows, how heavily — is the whole of what there is to read.
+///
+/// `all` is the inequality list the certificate was issued against.
+fn certificate_leans(all: &[Row], certificate: &Certificate) -> Vec<String> {
+    match certificate {
+        Certificate::Farkas { y, .. } => all
+            .iter()
+            .zip(y)
+            .filter(|(_, m)| **m != 0)
+            .map(|(r, m)| format!("{} x{m}  [{}]", r.label, sparse_row(r)))
+            .collect(),
+        Certificate::Enumeration { support, .. } => support
+            .iter()
+            .map(|&c| match FeatureId::all().get(c) {
+                Some(id) => id.label().to_string(),
+                None => format!("|w-w0| #{}", c - AXIS_WIDTH),
+            })
+            .collect(),
     }
 }
 
@@ -2835,6 +2952,203 @@ fn value_keys(w0: i64, lo: i64, hi: i64, level: i64) -> Vec<i64> {
     out
 }
 
+// ---------------------------------------------------------------------------
+// B1 — the CERTIFIED-EXCEPTION CLASS, a driver ABOVE the projection
+// ---------------------------------------------------------------------------
+
+/// **THE AUTHORITY EVERY EXCEPTION CITES**, printed wherever one is applied.
+///
+/// The class was ruled by the owner in the 2026-08-25 guidingpath decision-log
+/// row "THE T4-ENTRY BATCH IS RULED", sentence B1, over the T3 wave's S4-late
+/// REPAIR-INFEASIBLE finding. It is a registration, not an engineering choice,
+/// and an artifact that applied one without naming the sentence that licensed it
+/// would be a silent relaxation wearing a certificate.
+const EXCEPTION_AUTHORITY: &str = "B1 (guidingpath decision log, 2026-08-25, \"THE T4-ENTRY \
+     BATCH IS RULED\"): when the R3 projection returns typed REPAIR-INFEASIBLE with an \
+     oracle-held certificate, a coordinate PROVEN forced strictly against its registered sign \
+     prior may have its sign clause -- and ONLY it -- relaxed to the integer box at that \
+     endpoint alone.";
+
+/// **THE TWO-QUESTION FORCING TEST**, which the engine RE-PROVES before it
+/// applies anything.
+const EXCEPTION_FORCING_TEST: &str = "FORCING TEST (B1, re-proved here, never inherited): (i) \
+     the full system stands oracle-certified infeasible; (ii) the system with EXACTLY that one \
+     sign clause removed is oracle-certified FEASIBLE. Together, every solution of the relaxed \
+     system VIOLATES the removed clause -- the relaxation is FORCED, not chosen. An \
+     observed-negative witness never qualifies, and `SIGN_PRIORS` stays on the books unedited: \
+     the certificate stands BESIDE the prior, never in place of it.";
+
+/// **WHAT A JOINT CONFLICT IS AND IS NOT.**
+const JOINT_CONFLICT_READING: &str = "REPAIR-JOINT-CONFLICT (B1): the system is oracle-certified \
+     infeasible and NO single active sign clause's removal restores feasibility, so no \
+     coordinate is SINGLY forced and the certified-exception class does not apply. This is typed \
+     DISTINCTLY and routed to the OWNER -- it is outside the class, never an exception, and \
+     never a silent relaxation. Chain-relaxing two clauses at once would be choosing, not \
+     proving.";
+
+/// One coordinate's answer to question (ii), recorded whether or not it fired.
+///
+/// The probes that came back "still infeasible" are the record that the
+/// coordinate finally excepted was the FIRST in canonical order — a claim about
+/// an order is only checkable if the order is printed.
+#[derive(Clone)]
+struct ExceptionProbe {
+    candidate: CandidateFeature,
+    clause: String,
+    /// The oracle's one-word answer to "is the system without this clause
+    /// feasible?" — `FEASIBLE`, `still infeasible`, or `undecided`.
+    answer: &'static str,
+    detail: String,
+}
+
+/// **ONE CERTIFIED EXCEPTION**, with everything B1 requires recorded beside it.
+#[derive(Clone)]
+struct CertifiedException {
+    candidate: CandidateFeature,
+    stage: StageEndpoint,
+    /// The clause that was removed, in [`System::inequalities`]' own spelling.
+    clause: String,
+    /// Question (i): the standing infeasibility certificate, VERIFIED by the
+    /// oracle that issued it.
+    infeasibility: Certificate,
+    /// That certificate's rows, with per-row multipliers and sparse contents.
+    leaned_on: Vec<String>,
+    /// Question (ii): the point that certified the relaxed system feasible,
+    /// re-checked against every row before the oracle returned it.
+    witness: Vec<i64>,
+    /// Every coordinate examined at this iteration, in canonical order, up to
+    /// and including the one that fired.
+    probes: Vec<ExceptionProbe>,
+}
+
+/// **THE DRIVER'S THREE ANSWERS.** `REPAIR-INFEASIBLE` is not among them: an
+/// infeasibility either names a singly-forced coordinate (and is excepted) or
+/// does not (and is a JOINT conflict). The raw projection keeps its own verdict
+/// and its own regression.
+enum Driven {
+    Repaired { exceptions: Vec<CertifiedException>, report: Box<RepairReport> },
+    /// **`REPAIR-JOINT-CONFLICT`** — see [`JOINT_CONFLICT_READING`].
+    JointConflict {
+        exceptions: Vec<CertifiedException>,
+        certificate: Certificate,
+        leaned_on: Vec<String>,
+        probes: Vec<ExceptionProbe>,
+        trail: Vec<TrailStep>,
+    },
+    /// The oracle, or a budget, did not decide. Routed — and a JOINT conflict is
+    /// deliberately NOT claimed on an undecided probe, because "no coordinate is
+    /// singly forced" is a statement about every coordinate.
+    Inconclusive { exceptions: Vec<CertifiedException>, reason: String, trail: Vec<TrailStep> },
+}
+
+impl Driven {
+    fn name(&self) -> &'static str {
+        match self {
+            Driven::Repaired { .. } => "REPAIRED",
+            Driven::JointConflict { .. } => "REPAIR-JOINT-CONFLICT",
+            Driven::Inconclusive { .. } => "INCONCLUSIVE",
+        }
+    }
+
+    /// The exceptions applied on the way to this answer, in the order they were
+    /// applied.
+    fn exceptions(&self) -> &[CertifiedException] {
+        match self {
+            Driven::Repaired { exceptions, .. }
+            | Driven::JointConflict { exceptions, .. }
+            | Driven::Inconclusive { exceptions, .. } => exceptions,
+        }
+    }
+}
+
+/// What one iteration's search for a singly-forced coordinate found.
+enum Forcing {
+    /// The FIRST coordinate in canonical order whose relaxed system is feasible.
+    Forced { candidate: CandidateFeature, witness: Vec<i64>, probes: Vec<ExceptionProbe> },
+    /// Every active clause was probed and every relaxed system came back
+    /// certified infeasible.
+    Joint { probes: Vec<ExceptionProbe> },
+    /// At least one probe did not decide, so `Joint` is not available: the
+    /// coordinate that could not be decided might have been the forced one.
+    Undecided { probes: Vec<ExceptionProbe>, reason: String },
+}
+
+/// **THE DRIVER.** B1's class at the shipped budgets.
+fn drive_repair(p: &RepairProblem) -> Driven {
+    drive_repair_within(p, REPAIR_ORACLE_BUDGET, REPAIR_SUPPORT_BUDGET)
+}
+
+/// The same, at budgets a caller names — [`repair_within`]'s reasoning verbatim.
+///
+/// # The loop, and why it terminates
+///
+/// Each iteration either answers (REPAIRED / JOINT / INCONCLUSIVE) or applies
+/// exactly one exception to a coordinate that had none. There are
+/// [`CandidateFeature::COUNT`] coordinates, so at most that many iterations
+/// apply an exception, and when every clause is off `clause_active` is false
+/// everywhere, [`forced_coordinate`] returns `Joint` with no probes, and the
+/// loop ends.
+fn drive_repair_within(p: &RepairProblem, oracle_budget: u64, support_budget: u64) -> Driven {
+    let mut current = p.clone();
+    let mut exceptions: Vec<CertifiedException> = Vec::new();
+    loop {
+        let trail = match repair_within(&current, oracle_budget, support_budget) {
+            Repair::Repaired(report) => return Driven::Repaired { exceptions, report },
+            Repair::Inconclusive { reason, trail } => {
+                return Driven::Inconclusive { exceptions, reason, trail }
+            }
+            Repair::Infeasible { trail, .. } => trail,
+        };
+
+        // **QUESTION (i), ASKED HERE.** B1 says the engine RE-PROVES the forcing
+        // before applying any exception, so the certificate an exception records
+        // is one this driver holds — not one it inherited from a verdict it is
+        // about to act on. The two agree by construction today (the projection
+        // raises REPAIR-INFEASIBLE only from this same system), and asking makes
+        // that agreement a checked fact rather than a coupling.
+        let (certificate, leaned_on) = match decide(&current.sys) {
+            Verdict::Unsat { certificate } => {
+                let leans = certificate_leans(&current.sys.inequalities(), &certificate);
+                (certificate, leans)
+            }
+            other => {
+                return Driven::Inconclusive {
+                    exceptions,
+                    reason: format!(
+                        "the projection returned REPAIR-INFEASIBLE, but B1's question (i) re-read \
+                         the same system as {}. The certified-exception class needs a STANDING \
+                         infeasibility certificate and this driver does not hold one, so nothing \
+                         is excepted and nothing is claimed.",
+                        other.name(),
+                    ),
+                    trail,
+                }
+            }
+        };
+
+        // STUB (RED): the forcing search is not written yet, so every certified
+        // infeasibility routes as a JOINT conflict without a single clause
+        // having been probed.
+        let _ = &current;
+        return Driven::JointConflict {
+            exceptions,
+            certificate,
+            leaned_on,
+            probes: Vec::new(),
+            trail,
+        };
+    }
+}
+
+/// **QUESTION (ii), over every still-active sign clause in canonical order.**
+///
+/// STUB (RED): the search is not written yet — nothing is probed, so nothing is
+/// ever proven singly forced.
+fn forced_coordinate(p: &RepairProblem) -> Forcing {
+    let _ = p;
+    Forcing::Joint { probes: Vec::new() }
+}
+
 /// One vector in the hand-off grammar: comma-separated `i64`, no spaces.
 ///
 /// The same spelling `eval_probe`'s `fit --evaluate` and `step9 --table` vectors
@@ -2901,6 +3215,17 @@ fn render_paste_ready(report: &RepairReport) -> String {
 /// chain reads a clock or draws entropy, so the same problem prints the same
 /// page.
 fn render_repair(p: &RepairProblem) -> String {
+    let mut out = render_repair_header(p);
+    out.push_str(&render_repair_outcome(&repair(p), 0));
+    out
+}
+
+/// The block naming the problem, before anything is asked of the oracle.
+///
+/// Split out of [`render_repair`] so the driven artifact and the raw one open
+/// the same way: a reader comparing the two is comparing what happened, not two
+/// spellings of what was solved.
+fn render_repair_header(p: &RepairProblem) -> String {
     let mut out = String::new();
     out.push_str(&format!(
         "\nR3 projection        {} endpoint, starting vector `{}`\n",
@@ -2916,18 +3241,30 @@ fn render_repair(p: &RepairProblem) -> String {
     out.push_str(&format!("kept rows            {}\n", p.sys.rows.len()));
     out.push_str(&format!("dropped rows         {}  {:?}\n", p.dropped.len(), p.dropped));
     out.push_str(&format!("free coordinates     {}\n", p.free.len()));
+    out
+}
 
-    let verdict = repair(p);
+/// One projection outcome, printed whole.
+///
+/// `exceptions` is how many B1 exceptions were standing when the projection ran
+/// — `0` on the raw path, where the REPAIRED line is byte-identical to what it
+/// always was.
+fn render_repair_outcome(verdict: &Repair, exceptions: usize) -> String {
+    let mut out = String::new();
     let headline = verdict.name();
     match verdict {
         Repair::Repaired(report) => {
             out.push_str(&format!(
                 "\nVERDICT              {headline} at the {} endpoint from `{}`: displacement {} \
-                 over {} changed coordinate(s)\n",
+                 over {} changed coordinate(s){}\n",
                 report.stage.name(),
                 report.start,
                 report.displacement,
                 report.changed.len(),
+                match exceptions {
+                    0 => String::new(),
+                    n => format!(", under {n} certified exception(s) (B1)"),
+                },
             ));
             out.push_str(&format!(
                 "dropped, re-stated   {}  {:?}\n",
@@ -2973,7 +3310,7 @@ fn render_repair(p: &RepairProblem) -> String {
                 "re-check             System::violation of the returned vector = {}\n",
                 report.violation,
             ));
-            out.push_str(&render_paste_ready(&report));
+            out.push_str(&render_paste_ready(report));
             out.push_str("\nchanged coordinates  (w0 -> w, and the rows that priced the move)\n");
             for &f in &report.changed {
                 let label = FeatureId::all()[f].label();
@@ -3006,10 +3343,54 @@ fn render_repair(p: &RepairProblem) -> String {
                  satisfies the rows, the pin, the hand orderings and the sign constraints at \
                  once. R3 routes this to the OWNER; it is never a silent relaxation.\n",
             );
-            out.push_str(&format!("certificate          {}\n", render_certificate(&certificate)));
-            out.push_str(&render_trail(&trail));
+            out.push_str(&format!("certificate          {}\n", render_certificate(certificate)));
+            out.push_str(&render_trail(trail));
         }
         Repair::Inconclusive { reason, trail } => {
+            out.push_str(&format!(
+                "\nVERDICT              INCONCLUSIVE -- {reason}\nROUTED               \
+                 §5.4: \"the oracle did not decide\" is never infeasibility, and this is not a \
+                 licence to fall back on a heuristic answer.\n",
+            ));
+            out.push_str(&render_trail(trail));
+        }
+    }
+    out
+}
+
+/// **THE DRIVEN ARTIFACT** — the same projection under B1's certified-exception
+/// class, printed whole.
+///
+/// The header is [`render_repair`]'s, then the driver's own block, then the
+/// outcome. A run that applied NO exception prints the same outcome bytes the
+/// raw run does, with the exception block saying so in as many words: "nothing
+/// was excepted" is a fact a reader should be able to see, not infer from an
+/// absence.
+///
+/// Byte-identical on repeat by construction, exactly as [`render_repair`] is:
+/// nothing in the chain reads a clock or draws entropy.
+fn render_driven(p: &RepairProblem) -> String {
+    let mut out = render_repair_header(p);
+    let driven = drive_repair(p);
+    out.push_str(&render_exception_block(driven.exceptions()));
+    match driven {
+        Driven::Repaired { exceptions, report } => {
+            let doses = render_exception_doses(&exceptions, &report);
+            out.push_str(&render_repair_outcome(&Repair::Repaired(report), exceptions.len()));
+            out.push_str(&doses);
+        }
+        Driven::JointConflict { certificate, leaned_on, probes, trail, .. } => {
+            out.push_str(&format!(
+                "\nVERDICT              REPAIR-JOINT-CONFLICT -- {JOINT_CONFLICT_READING}\n",
+            ));
+            out.push_str(&format!("certificate          {}\n", render_certificate(&certificate)));
+            for label in &leaned_on {
+                out.push_str(&format!("      leans on   {label}\n"));
+            }
+            out.push_str(&render_probes("clauses probed", &probes));
+            out.push_str(&render_trail(&trail));
+        }
+        Driven::Inconclusive { reason, trail, .. } => {
             out.push_str(&format!(
                 "\nVERDICT              INCONCLUSIVE -- {reason}\nROUTED               \
                  §5.4: \"the oracle did not decide\" is never infeasibility, and this is not a \
@@ -3019,6 +3400,107 @@ fn render_repair(p: &RepairProblem) -> String {
         }
     }
     out
+}
+
+/// The driver's own block: the authority, the forcing test, and every exception
+/// it applied with BOTH certificates.
+fn render_exception_block(exceptions: &[CertifiedException]) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("\nexception driver     {EXCEPTION_AUTHORITY}\n"));
+    out.push_str(&format!("forcing test         {EXCEPTION_FORCING_TEST}\n"));
+    out.push_str(&format!("exceptions applied   {}\n", exceptions.len()));
+    if exceptions.is_empty() {
+        out.push_str(
+            "                     (none -- the projection answered without one, and the raw \
+             un-excepted\n                     system is exactly what was solved)\n",
+        );
+        return out;
+    }
+    for (k, e) in exceptions.iter().enumerate() {
+        out.push_str(&format!(
+            "\n  certified exception {} of {}: {} ({}) at the {} endpoint\n",
+            k + 1,
+            exceptions.len(),
+            e.candidate.label(),
+            candidate_long_name(e.candidate),
+            e.stage.name(),
+        ));
+        out.push_str(&format!("      authority    {EXCEPTION_AUTHORITY}\n"));
+        out.push_str(&format!(
+            "      clause off   `{}`  (w_f*p_f >= min(0, w0_f*p_f); registered prior {})\n",
+            e.clause,
+            if sign_prior(e.candidate) > 0 { "+" } else { "-" },
+        ));
+        out.push_str(&format!(
+            "      prior        UNEDITED -- `SIGN_PRIORS` still reads {} for {}; the certificate \
+             stands beside it\n",
+            sign_prior(e.candidate),
+            e.candidate.label(),
+        ));
+        out.push_str(&format!(
+            "      (i) infeasible  {}\n",
+            render_certificate(&e.infeasibility),
+        ));
+        for label in &e.leaned_on {
+            out.push_str(&format!("          leans on {label}\n"));
+        }
+        out.push_str(&format!(
+            "      (ii) feasible   witness re-checked against every row; {} = {} there\n",
+            e.candidate.label(),
+            e.witness[FeatureId::Candidate(e.candidate).index()],
+        ));
+        out.push_str(&render_probes("      clauses probed", &e.probes));
+    }
+    out
+}
+
+/// Every clause examined at one iteration, in canonical order, with its answer.
+fn render_probes(heading: &str, probes: &[ExceptionProbe]) -> String {
+    let mut out = format!("{heading} (canonical `Feature::ALL` order, first FEASIBLE wins)\n");
+    for probe in probes {
+        out.push_str(&format!(
+            "          {:<4} `{}`  {}  -- {}\n",
+            probe.candidate.label(),
+            probe.clause,
+            probe.answer,
+            probe.detail,
+        ));
+    }
+    out
+}
+
+/// **THE DOSE, AND THE ROWS THAT PRICED IT** — B1's "in the final answer" half.
+///
+/// The exception says a coordinate MAY leave its prior; the dose says how far it
+/// actually went, and the binding rows say what stopped it going back. Read off
+/// the same [`RepairReport::pricing`] the changed-coordinate block uses, so an
+/// excepted coordinate is priced by the same relation every other one is.
+fn render_exception_doses(exceptions: &[CertifiedException], report: &RepairReport) -> String {
+    if exceptions.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from(
+        "\nexception doses      (the least certified anti-prior magnitude, and the rows that \
+         priced it)\n",
+    );
+    for e in exceptions {
+        let f = FeatureId::Candidate(e.candidate).index();
+        out.push_str(&format!(
+            "  {:<28} {:>4} -> {:>4}   |d| {}\n",
+            e.candidate.label(),
+            report.w0[f],
+            report.w[f],
+            (report.w[f] - report.w0[f]).abs(),
+        ));
+        out.push_str(&format!("      priced by  {:?}\n", report.pricing(f)));
+        out.push_str(&format!("      tight at   {:?}\n", report.tight(f)));
+    }
+    out
+}
+
+/// A candidate's registered long name, for the exception block's header line.
+fn candidate_long_name(candidate: CandidateFeature) -> String {
+    format!("{candidate:?}")
 }
 
 /// One row's nonzero coefficients, by coordinate label.
@@ -3080,8 +3562,18 @@ fn render_trail(trail: &[TrailStep]) -> String {
     out
 }
 
+/// Render one problem the way the caller asked for it: through B1's driver (the
+/// default) or as the RAW un-excepted projection.
+fn render_problem(problem: &RepairProblem, driver: bool) -> String {
+    if driver {
+        render_driven(problem)
+    } else {
+        render_repair(problem)
+    }
+}
+
 /// Run R3's projection over one registered toy.
-fn run_repair_toy(name: &str, start: &str) -> Result<(), String> {
+fn run_repair_toy(name: &str, start: &str, driver: bool) -> Result<(), String> {
     let sys = toys::named(name)
         .ok_or_else(|| format!("`{name}` is not a registered toy; see `solver toys`"))?;
     println!("=== solver repair --toy {name} ===");
@@ -3091,12 +3583,12 @@ fn run_repair_toy(name: &str, start: &str) -> Result<(), String> {
     let projected = System::new(stage, kept, sys.box_limit, sys.pin_vp);
     let w0 = start_vector(start, stage)?;
     let problem = RepairProblem::new(stage, projected, dropped, start, w0)?;
-    print!("{}", render_repair(&problem));
+    print!("{}", render_problem(&problem, driver));
     Ok(())
 }
 
 /// **THE REAL PROJECTION**, argument-gated exactly as the real solve is.
-fn run_repair_real(start: &str, freeze_commit: Option<&str>) -> Result<(), String> {
+fn run_repair_real(start: &str, freeze_commit: Option<&str>, driver: bool) -> Result<(), String> {
     let rules = Rules::standard();
     println!("=== solver repair --real  [§7 step 9, R3] ===");
     print!("{}", identity_block(freeze_commit));
@@ -3114,7 +3606,7 @@ fn run_repair_real(start: &str, freeze_commit: Option<&str>) -> Result<(), Strin
         let projected = assemble(stage, kept, BOX_LIMIT);
         let w0 = start_vector(start, stage)?;
         let problem = RepairProblem::new(stage, projected, dropped, start, w0)?;
-        print!("{}", render_repair(&problem));
+        print!("{}", render_problem(&problem, driver));
     }
     Ok(())
 }
@@ -3512,12 +4004,19 @@ fn main() -> ExitCode {
         },
         Some("repair") => {
             let start = value("--start").unwrap_or("v2-padded");
+            // B1's driver is the DEFAULT and the raw projection is the opt-out,
+            // because the driver is what the owner ruled the projection should
+            // be run under. `--no-exceptions` keeps the un-excepted system
+            // reachable from the command line, which is what makes "the raw
+            // projection stays reachable" a thing a reader can check rather than
+            // a claim about the code.
+            let driver = !flag("--no-exceptions");
             match (flag("--real"), value("--toy")) {
                 (true, Some(_)) => {
                     Err("`--real` and `--toy` are different runs; name one".to_string())
                 }
-                (true, None) => run_repair_real(start, value("--freeze-commit")),
-                (false, Some(name)) => run_repair_toy(name, start),
+                (true, None) => run_repair_real(start, value("--freeze-commit"), driver),
+                (false, Some(name)) => run_repair_toy(name, start, driver),
                 (false, None) => Err(REPAIR_RUN_GATE.to_string()),
             }
         }
@@ -3555,22 +4054,34 @@ usage: solver <subcommand>
   solve --real [--freeze-commit <hash>]
                      THE REAL PART-B RUN over the frozen registered pairs, per
                      stage. Gated: see §5.4's freeze-before-solve clause.
-  repair --toy <name> [--start v2-padded|zero]
+  repair --toy <name> [--start v2-padded|zero] [--no-exceptions]
                      R3's certified exact projection over one toy system
   repair --real [--start v2-padded|zero] [--freeze-commit <hash>]
+                [--no-exceptions]
                      THE REAL §9 REGISTERED-MARGIN REPAIR, per endpoint: the
                      lexicographically nearest system-satisfying integer table
                      to the draft's starting vector, with its certificate trail.
                      --start defaults to v2-padded (R9's ratified anchor).
-      EXIT: 0 = the projection RAN. All three registered outcomes are ANSWERS of
-      a reporting instrument and every one of them exits 0 -- REPAIRED,
-      REPAIR-INFEASIBLE (routed to the owner with its certificate) and
-      INCONCLUSIVE (the oracle or a budget did not decide) alike. The answer is
-      the VERDICT line, never the exit status: this subcommand has no GATE to
-      read and say no, which is the whole difference from the probe's step-9
-      sections. Nonzero = the instrument could not RUN -- an unknown toy, an
-      unregistered --start, a stray argument -- and says nothing about any
-      system.
+      B1'S CERTIFIED-EXCEPTION DRIVER runs ABOVE the projection by default
+      (guidingpath 2026-08-25, \"THE T4-ENTRY BATCH IS RULED\"): on a typed
+      REPAIR-INFEASIBLE it examines the still-active sign clauses in canonical
+      `Feature::ALL` order and, for the FIRST coordinate whose system-without-
+      that-one-clause is oracle-certified FEASIBLE, relaxes that clause alone --
+      proven forced, because the full system is certified infeasible -- records
+      both certificates, and re-runs. `--no-exceptions` runs the RAW
+      un-excepted projection instead, which is what the standing S4-late
+      regression pins.
+      EXIT: 0 = the projection RAN. Every registered outcome is an ANSWER of a
+      reporting instrument and every one of them exits 0 -- REPAIRED (with or
+      without certified exceptions), REPAIR-JOINT-CONFLICT (certified infeasible
+      with NO singly-forcing coordinate: outside B1's class, routed to the
+      owner), REPAIR-INFEASIBLE (the raw projection's own verdict, reached under
+      --no-exceptions) and INCONCLUSIVE (the oracle or a budget did not decide)
+      alike. The answer is the VERDICT line, never the exit status: this
+      subcommand has no GATE to read and say no, which is the whole difference
+      from the probe's step-9 sections. Nonzero = the instrument could not RUN
+      -- an unknown toy, an unregistered --start, a stray argument -- and says
+      nothing about any system.
 ";
 
 // ---------------------------------------------------------------------------
@@ -5611,10 +6122,292 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
         };
         for (toy, want) in [("sat-reachable", "REPAIRED"), ("unsat-direct", "REPAIR-INFEASIBLE")] {
             assert_eq!(outcome_of(toy), want, "{toy}");
-            assert!(run_repair_toy(toy, "v2-padded").is_ok(), "{toy}: an ANSWER is a clean run");
+            for driver in [true, false] {
+                assert!(
+                    run_repair_toy(toy, "v2-padded", driver).is_ok(),
+                    "{toy}: an ANSWER is a clean run (driver = {driver})",
+                );
+            }
         }
         // What DOES fail is the instrument being unable to run at all.
-        assert!(run_repair_toy("nosuch", "v2-padded").is_err(), "an unknown toy cannot run");
-        assert!(run_repair_toy("sat-reachable", "bogus").is_err(), "nor can an unknown --start");
+        assert!(run_repair_toy("nosuch", "v2-padded", true).is_err(), "an unknown toy cannot run");
+        assert!(
+            run_repair_toy("sat-reachable", "bogus", true).is_err(),
+            "nor can an unknown --start",
+        );
+    }
+
+    // -- B1: the certified-exception class, a driver ABOVE the projection ----
+
+    /// **THE PRIORS ARE UNEDITED**, which is a clause of B1 itself: "`SIGN_PRIORS`
+    /// stays on the books unedited — the certificate stands beside the prior,
+    /// never in place of it (the D3/D6 record-the-disagreement style)".
+    ///
+    /// The whole point of the exception class is that it does NOT re-rule a
+    /// direction, so a wave that quietly flipped one would have implemented a
+    /// different ruling with the same name.
+    #[test]
+    fn the_registered_sign_priors_the_exception_class_reads_are_still_unedited() {
+        for candidate in CandidateFeature::ALL {
+            assert_eq!(
+                sign_prior(candidate),
+                1,
+                "{} is registered `+`; B1 relaxes a CLAUSE, never a prior",
+                candidate.label(),
+            );
+        }
+    }
+
+    /// **THE CANONICAL EXAMINATION ORDER IS THE AXIS ORDER**, so "canonical
+    /// `Feature::ALL` order within that endpoint" and the loop over
+    /// `CandidateFeature::ALL` are the same order rather than two orders that
+    /// happen to agree today.
+    #[test]
+    fn the_canonical_examination_order_is_the_axis_order() {
+        let indices: Vec<usize> =
+            CandidateFeature::ALL.iter().map(|c| FeatureId::Candidate(*c).index()).collect();
+        let mut ascending = indices.clone();
+        ascending.sort_unstable();
+        assert_eq!(indices, ascending, "the candidate columns walk the axis upward");
+        assert_eq!(
+            indices[0],
+            Feature::INCUMBENT_COUNT,
+            "and they start where the sixteen-feature incumbent prefix ends",
+        );
+    }
+
+    /// A LATE toy problem over rows the caller names, with the V2-padded start
+    /// the real run uses — so every candidate begins at 0 and every sign clause
+    /// is `w_c >= 0`, exactly the shape the S4-late finding has.
+    fn anchored_problem(rows: &[ToyRow]) -> RepairProblem {
+        let sys = toy(StageEndpoint::Late, rows, BOX_LIMIT);
+        let w0 = start_vector("v2-padded", StageEndpoint::Late).expect("a registered start");
+        RepairProblem::new(StageEndpoint::Late, sys, Vec::new(), "v2-padded", w0)
+            .expect("the anchor is admissible")
+    }
+
+    /// **BORN-VALIDATION (a): A SINGLY-FORCED SYSTEM, hand-built, with a
+    /// derivable exception coordinate AND a derivable dose.**
+    ///
+    /// One row, `−w_S4 ≥ 2`, i.e. `w_S4 ≤ −2`. S4's registered prior is `+` and
+    /// the anchor starts it at 0, so the sign clause floors it at `w_S4 ≥ 0` and
+    /// the two cannot both hold: the RAW projection is REPAIR-INFEASIBLE. That is
+    /// the S4-late shape with the arithmetic made decisive.
+    ///
+    /// Every claim below is hand-derived before the engine runs:
+    ///
+    /// * the forced coordinate is **S4** — removing S1's, S2's or S3's clause
+    ///   changes nothing (no row reads them), so those probes come back still
+    ///   infeasible, and S4 is the first whose relaxation is feasible;
+    /// * the dose is **−2** — the least `|w − 0|` satisfying `w_S4 ≤ −2`, which
+    ///   is what minimal displacement takes and is NOT the widest the box allows;
+    /// * exactly **one** exception is applied, and the repair then answers.
+    #[test]
+    fn a_singly_forced_coordinate_is_excepted_at_the_least_certified_anti_prior_dose() {
+        let s4 = col("S4");
+        let rows: &[ToyRow] = &[("S4 at most -2", &[(s4, -1)], 2)];
+        let problem = anchored_problem(rows);
+
+        // The RAW projection's own answer, first: the driver exists because of
+        // this verdict, so the test states it rather than assuming it.
+        assert!(
+            matches!(repair(&problem), Repair::Infeasible { .. }),
+            "the un-excepted system is REPAIR-INFEASIBLE, which is what the driver acts on",
+        );
+
+        let driven = drive_repair(&problem);
+        assert_eq!(driven.name(), "REPAIRED", "the exception restores a repairable system");
+        let Driven::Repaired { exceptions, report } = driven else { unreachable!() };
+        assert_eq!(exceptions.len(), 1, "ONE clause per iteration, and one iteration sufficed");
+
+        let e = &exceptions[0];
+        assert_eq!(e.candidate, CandidateFeature::PresidentLocalAccess, "S4 is the forced one");
+        assert_eq!(e.clause, "S4 >= 0", "the clause removed, in the box row's own spelling");
+        assert_eq!(e.stage, StageEndpoint::Late, "endpoint-local, per B1");
+        assert!(
+            matches!(e.infeasibility, Certificate::Farkas { .. }),
+            "question (i) holds a VERIFIED certificate, not a report of one",
+        );
+        assert!(e.witness[s4] <= -2, "question (ii)'s witness violates the removed clause");
+
+        // The probes prove the ORDER: every earlier candidate was asked and said
+        // no, so S4 is the FIRST feasible relaxation and not merely one of them.
+        let earlier: Vec<&str> = e
+            .probes
+            .iter()
+            .take_while(|p| p.candidate != CandidateFeature::PresidentLocalAccess)
+            .map(|p| p.candidate.label())
+            .collect();
+        assert_eq!(earlier, ["S1", "S2", "S3"], "the canonical prefix, all probed: {earlier:?}");
+        assert!(
+            e.probes.iter().take_while(|p| p.candidate != CandidateFeature::PresidentLocalAccess)
+                .all(|p| p.answer == "still infeasible"),
+            "and every one of them came back certified infeasible",
+        );
+        assert_eq!(e.probes.last().map(|p| p.answer), Some("FEASIBLE"));
+
+        // THE DOSE, hand-derived: -2, the least certified anti-prior magnitude.
+        assert_eq!(report.w[s4], -2, "the least |w - w0| that satisfies the row");
+        assert_eq!(report.displacement, 2);
+        assert_eq!(report.changed, vec![s4], "and nothing else moved");
+    }
+
+    /// **BORN-VALIDATION (b): A JOINT CONFLICT, hand-built.**
+    ///
+    /// `w_S4 ≤ −2` AND `w_S5 ≤ −2`, both against `+` priors from a 0 start.
+    /// Removing S4's clause alone leaves `w_S5 ≥ 0` against `w_S5 ≤ −2`, still
+    /// infeasible; removing S5's alone leaves S4's contradiction standing. No
+    /// SINGLE clause's removal restores feasibility, so nothing is proven singly
+    /// forced and the class does not apply.
+    ///
+    /// **That is the registered answer and not a shortfall.** B1 relaxes one
+    /// clause per iteration against a proof; relaxing two together would be
+    /// choosing rather than proving, which is exactly what the JOINT verdict
+    /// routes to the owner instead of doing.
+    #[test]
+    fn an_infeasibility_no_single_clause_removal_cures_is_a_typed_joint_conflict() {
+        let (s4, s5) = (col("S4"), col("S5"));
+        let rows: &[ToyRow] =
+            &[("S4 at most -2", &[(s4, -1)], 2), ("S5 at most -2", &[(s5, -1)], 2)];
+        let problem = anchored_problem(rows);
+
+        let driven = drive_repair(&problem);
+        assert_eq!(driven.name(), "REPAIR-JOINT-CONFLICT", "a distinct verdict, outside the class");
+        let Driven::JointConflict { exceptions, probes, .. } = driven else { unreachable!() };
+        assert!(exceptions.is_empty(), "nothing was excepted on the way there");
+        for candidate in [CandidateFeature::PresidentLocalAccess, CandidateFeature::BankAccess] {
+            let probe = probes
+                .iter()
+                .find(|p| p.candidate == candidate)
+                .unwrap_or_else(|| panic!("{} was probed", candidate.label()));
+            assert_eq!(probe.answer, "still infeasible", "{}", candidate.label());
+        }
+        // Each half IS singly forced on its own — the conflict is that they are
+        // not, together. Stated executably so the verdict reads as "no SINGLE
+        // clause", never as "these rows are unrepairable in principle".
+        for (row, coordinate) in
+            [(("S4 at most -2", &[(s4, -1)][..], 2), s4), (("S5 at most -2", &[(s5, -1)][..], 2), s5)]
+        {
+            let alone = drive_repair(&anchored_problem(&[row]));
+            assert_eq!(alone.name(), "REPAIRED", "each row alone IS singly forced");
+            assert_eq!(alone.exceptions().len(), 1);
+            let Driven::Repaired { report, .. } = alone else { unreachable!() };
+            assert_eq!(report.w[coordinate], -2);
+        }
+    }
+
+    /// **BORN-VALIDATION (c): THE STANDING REGRESSION FIXTURE, through the
+    /// driver, unchanged.**
+    ///
+    /// The witnessed 3(c)/11(b) coupling repairs to the same unique optimum
+    /// `(S5, E1) = (20, 21)` at displacement 41 — with ZERO exceptions, because
+    /// the projection never returns REPAIR-INFEASIBLE on it. The driver is a
+    /// layer above, and a layer above must be invisible where it has nothing to
+    /// do.
+    #[test]
+    fn the_three_c_eleven_b_fixture_repairs_through_the_driver_with_zero_exceptions() {
+        let (s5, e1) = (col("S5"), col("E1"));
+        let rows: &[ToyRow] = &[
+            ("pair 3(c) late", &[(s5, 2)], 40),
+            ("pair 11(b) late", &[(e1, 2), (s5, -2)], 1),
+        ];
+        let driven = drive_repair(&anchored_problem(rows));
+        assert_eq!(driven.name(), "REPAIRED");
+        assert!(driven.exceptions().is_empty(), "nothing to except: the system is satisfiable");
+        let Driven::Repaired { report, .. } = driven else { unreachable!() };
+        assert_eq!((report.w[s5], report.w[e1]), (20, 21), "the unique optimum, unchanged");
+        assert_eq!(report.displacement, 41);
+        assert_eq!(report.changed, vec![s5, e1]);
+    }
+
+    /// **THE RAW UN-EXCEPTED PROJECTION STAYS REACHABLE**, from the code and from
+    /// the command line, and still says REPAIR-INFEASIBLE where it did.
+    #[test]
+    fn the_raw_un_excepted_projection_stays_reachable_beside_the_driver() {
+        let s4 = col("S4");
+        let rows: &[ToyRow] = &[("S4 at most -2", &[(s4, -1)], 2)];
+        let problem = anchored_problem(rows);
+        assert_eq!(repair(&problem).name(), "REPAIR-INFEASIBLE", "`repair` is untouched");
+        assert_eq!(drive_repair(&problem).name(), "REPAIRED", "the driver is the layer above");
+
+        let raw = render_repair(&problem);
+        assert!(raw.contains("VERDICT              REPAIR-INFEASIBLE"), "{raw}");
+        assert!(!raw.contains("exception driver"), "the raw page names no driver: {raw}");
+        assert!(USAGE.contains("--no-exceptions"), "and the opt-out is documented: {USAGE}");
+        assert!(
+            render_problem(&problem, false) == raw,
+            "`--no-exceptions` is the raw page, byte for byte",
+        );
+    }
+
+    /// **EVERY PRINTED EXCEPTION CITES B1 AND CARRIES BOTH CERTIFICATES**, plus
+    /// the dose and the rows that priced it — the whole of what B1 requires
+    /// recorded.
+    #[test]
+    fn a_printed_exception_cites_the_batch_row_and_carries_both_certificates() {
+        let s4 = col("S4");
+        let rows: &[ToyRow] = &[("S4 at most -2", &[(s4, -1)], 2)];
+        let out = render_driven(&anchored_problem(rows));
+
+        assert!(out.contains("2026-08-25"), "the batch row is dated in the page: {out}");
+        assert!(out.contains("THE T4-ENTRY BATCH IS RULED"), "{out}");
+        assert!(out.contains("certified exception 1 of 1: S4"), "{out}");
+        assert!(out.contains("clause off   `S4 >= 0`"), "{out}");
+        assert!(out.contains("(i) infeasible  FARKAS"), "{out}");
+        assert!(out.contains("(ii) feasible   witness re-checked"), "{out}");
+        assert!(out.contains("UNEDITED"), "the prior is stated to be untouched: {out}");
+        assert!(out.contains("exception doses"), "{out}");
+        assert!(out.contains("priced by  [\"S4 at most -2\"]"), "the binding row is named: {out}");
+        assert!(
+            out.contains("under 1 certified exception(s) (B1)"),
+            "the VERDICT line says how many: {out}",
+        );
+        // The probes that said no are printed too: a claim about an ORDER is
+        // only checkable when the order is on the page.
+        for label in ["S1", "S2", "S3"] {
+            assert!(out.contains(&format!("{label}  `{label} >= 0`")), "{label} probed: {out}");
+        }
+    }
+
+    /// A JOINT conflict's page names the verdict, the certificate and every
+    /// clause it probed — and never prints an exception it did not apply.
+    #[test]
+    fn a_joint_conflict_page_names_the_verdict_and_every_clause_it_probed() {
+        let (s4, s5) = (col("S4"), col("S5"));
+        let out = render_driven(&anchored_problem(&[
+            ("S4 at most -2", &[(s4, -1)], 2),
+            ("S5 at most -2", &[(s5, -1)], 2),
+        ]));
+        assert!(out.contains("VERDICT              REPAIR-JOINT-CONFLICT"), "{out}");
+        assert!(out.contains("routed to the OWNER"), "{out}");
+        assert!(out.contains("exceptions applied   0"), "{out}");
+        assert!(out.contains("S4"), "{out}");
+        assert!(out.contains("S5"), "{out}");
+        assert!(!out.contains("certified exception 1"), "nothing was applied: {out}");
+    }
+
+    /// Same inputs, byte-identical page — the driver draws no entropy and reads
+    /// no clock either.
+    #[test]
+    fn the_driven_repair_is_byte_identical_on_repeat() {
+        let s4 = col("S4");
+        let rows: &[ToyRow] = &[("S4 at most -2", &[(s4, -1)], 2)];
+        let first = render_driven(&anchored_problem(rows));
+        let second = render_driven(&anchored_problem(rows));
+        assert_eq!(first, second, "the driver reproduces from its inputs");
+    }
+
+    /// A REMOVED feature has no sign clause, so naming one is a typed refusal
+    /// rather than a wider system — and the driver never names one, because
+    /// `clause_active` excludes them.
+    #[test]
+    fn a_removed_feature_has_no_sign_clause_to_except() {
+        let s4 = col("S4");
+        let problem = anchored_problem(&[("S4 at most -2", &[(s4, -1)], 2)]);
+        for candidate in REPAIR_REMOVED {
+            assert!(!problem.clause_active(candidate), "{}", candidate.label());
+            let refused = problem.excepting(candidate);
+            assert!(refused.is_err(), "{} cannot be excepted", candidate.label());
+        }
     }
 }
