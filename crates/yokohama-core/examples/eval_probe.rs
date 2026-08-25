@@ -23171,4 +23171,235 @@ mod tests {
             "GateRow::label names the row, never its endpoint",
         );
     }
+
+    // -----------------------------------------------------------------------
+    // STEP 9 — the ROOTED surface (T2a)
+    // -----------------------------------------------------------------------
+
+    /// **THE ECHO IS THE TABLE'S, NOT V2'S.**
+    ///
+    /// [`rooted_echo`] exists because `Contestant::echo()` cannot serve here:
+    /// its `LookaheadV1` arm resolves `weights` from the hardwired
+    /// [`WeightTable::V2`], so a draft-table run echoed through it would print
+    /// the SHIPPED identity over a decision the shipped table never took — the
+    /// one lie a rooted gate's header exists to prevent.
+    ///
+    /// The composition is pinned FAITHFUL by running it at V2 and requiring the
+    /// canonical string back, byte for byte. `compose_echo` is crate-private, so
+    /// this is the only way the two spellings can be held together; if the
+    /// canonical form ever gains a key, this cell fails rather than letting the
+    /// probe's header quietly fall behind it.
+    #[test]
+    fn the_rooted_echo_reproduces_the_canonical_one_at_v2_and_names_the_draft_table_otherwise() {
+        let knobs = shipped_controller_knobs().expect("the shipped arm parses");
+        assert_eq!(
+            rooted_echo(&knobs, &WeightTable::V2),
+            Contestant::LOOKAHEAD_V1_DEFAULT.echo(),
+            "at V2 the probe's composition IS the canonical echo",
+        );
+        let refit = rooted_echo(&knobs, &WeightTable::V2_REFIT_PADDED);
+        assert_ne!(refit, Contestant::LOOKAHEAD_V1_DEFAULT.echo());
+        assert!(
+            refit.contains(&format!(
+                "weights={}",
+                weight_table_identity(&WeightTable::V2_REFIT_PADDED),
+            )),
+            "a draft echo carries the DRAFT table's identity: {refit}",
+        );
+    }
+
+    /// **THE BURN GUARD ON THIS SURFACE**, structural.
+    ///
+    /// R6: "Escrow ordinals {8..15} and the reserved OSE eight remain untouched
+    /// (the burn rule, spec:837-841)." The record reads walk baked bands, so
+    /// nothing a caller types reaches an escrow ordinal — but a guard nothing
+    /// exercises is a guard that can be deleted with the suite still green, so
+    /// the admission function is called here at every fenced position AND at
+    /// every admitted one.
+    #[test]
+    fn the_rooted_record_reads_refuse_every_escrow_ordinal_and_the_reserved_ose_eight() {
+        for ordinal in V4_ESCROW_ORDINALS {
+            let refusal = admit_record_root(RecordRoot::PlacementFork(ordinal))
+                .expect_err("an escrow ordinal is REFUSED");
+            assert!(refusal.contains("burn"), "ordinal {ordinal}: {refusal}");
+            assert!(refusal.contains("step 10"), "ordinal {ordinal}: {refusal}");
+        }
+        for event in OSE_RESERVED {
+            let refusal =
+                admit_record_root(RecordRoot::Ose(event)).expect_err("a reserved exhibit is REFUSED");
+            assert!(refusal.contains("ESCROW-RESERVED"), "e{event}: {refusal}");
+        }
+        // Ordinals the band never drew are refused too — they are not escrow,
+        // and saying so is what keeps the escrow message truthful.
+        assert!(admit_record_root(RecordRoot::PlacementFork(4)).is_err(), "ord 4 was not drawn");
+
+        // And the admitted set is exactly the registered one.
+        for ordinal in M_PF_DEVELOPMENT {
+            admit_record_root(RecordRoot::PlacementFork(ordinal)).expect("a development ordinal");
+        }
+        for event in OSE_BAND {
+            admit_record_root(RecordRoot::Ose(event)).expect("a re-registered band exhibit");
+        }
+        admit_record_root(RecordRoot::FiredWhileBehind).expect("its own ordinal band, no burn rule");
+    }
+
+    /// **R5'S GATE, BORN-VALIDATED AT V2** — and the same-path parity pin.
+    ///
+    /// The expected verdict is DERIVED at the bytes rather than assumed: under
+    /// the shipped table the e113 root's top is a 36-way tie that CONTAINS the
+    /// registered dead side, while the enabling side sits one point below it
+    /// (the D7 triage's own mechanism fact). So `enabling > dead` is FALSE at
+    /// V2 — the flatness failure charter §5 risk 1 names — and this cell pins
+    /// the direction, the exact one-point delta, and the fact that the gate
+    /// REPORTS it rather than refusing.
+    ///
+    /// **Corpus discipline**: `g1-e113-tiemass` is an event of a gitignored
+    /// owner save, so an absent file is a NAMED TYPED MISS and this cell reports
+    /// it and stops. A save that is PRESENT and disagrees is not a miss and
+    /// fails.
+    #[test]
+    fn the_e113_gate_reads_the_v2_pair_as_reversed_and_walks_drivens_own_path() {
+        let rules = Rules::standard();
+        let gate = match e113_step9_gate(&WeightTable::V2, &rules) {
+            Ok(gate) => gate,
+            Err(RootedMiss::Save(reason)) => {
+                println!("typed miss  {reason}");
+                return;
+            }
+            Err(RootedMiss::Instrument(detail)) => panic!("instrument: {detail}"),
+        };
+
+        assert_eq!(gate.root_digest, E113_ROOT_DIGEST, "the step-4 ledger identity");
+        assert_eq!(gate.enabling_digest, E113_ENABLING_DIGEST);
+        assert_eq!(gate.dead_digest, E113_DEAD_DIGEST);
+        assert_eq!(gate.echo, Contestant::LOOKAHEAD_V1_DEFAULT.echo(), "V2 runs the shipped echo");
+        assert_eq!(
+            gate.delta(),
+            -1,
+            "the D7 fact at the bytes: the enabling side sits ONE point below the top tie the \
+             dead side is in",
+        );
+        assert!(!gate.passed(), "V2 does not separate the pair in the registered direction");
+        assert!(
+            gate.ranked.len() > 100,
+            "the full ranking is the whole root candidate set, not a head: {}",
+            gate.ranked.len(),
+        );
+
+        // The SAME-PATH PARITY PIN, at this root: the explicit-weights surface
+        // carrying V2 must reproduce `driven::root_table`'s table exactly.
+        match v2_parity_pin(E113_ROOT, &rules) {
+            Ok(pin) => assert!(pin.matched(), "{}", pin.report()),
+            Err(RootedMiss::Save(reason)) => println!("typed miss  {reason}"),
+            Err(RootedMiss::Instrument(detail)) => panic!("instrument: {detail}"),
+        }
+    }
+
+    /// **THE e93 WINNER GATE, BORN-VALIDATED** — plus its typed cross-pin.
+    ///
+    /// At V2 the root is the registry's POSITIVE CONTROL: a strict argmax with a
+    /// +116 margin, and the move the human record carries at event 93. So the
+    /// gate run with the table under read SET TO V2 preserves the winner
+    /// trivially — which is exactly the born validation a gate needs before it
+    /// is pointed at a candidate.
+    ///
+    /// The cross-pin is the OTHER half: if the V2 argmax ever stopped being the
+    /// recorded move, every verdict this gate returns would be about a position
+    /// nobody registered. That is typed as an INSTRUMENT stop inside the gate,
+    /// so this cell reaches it only by the gate succeeding.
+    #[test]
+    fn the_e93_winner_gate_preserves_the_recorded_v2_argmax_and_walks_drivens_own_path() {
+        let rules = Rules::standard();
+        let gate = match e93_winner_gate(&WeightTable::V2, &rules) {
+            Ok(gate) => gate,
+            Err(RootedMiss::Save(reason)) => {
+                println!("typed miss  {reason}");
+                return;
+            }
+            Err(RootedMiss::Instrument(detail)) => panic!("instrument: {detail}"),
+        };
+
+        assert_eq!(
+            gate.v2_argmax().map(canonical_encoding),
+            Some(canonical_encoding(&Move::PlaceTwoSameArea {
+                area: AreaId(2),
+                adjacent_bonus: None,
+            })),
+            "the registry's recorded move IS the V2 strict argmax — the gate's own cross-pin",
+        );
+        assert_eq!(gate.v2_argmax().map(canonical_encoding), gate.draft_argmax().map(canonical_encoding));
+        assert!(gate.passed(), "V2 against V2 preserves its own winner");
+        assert_eq!(gate.v2.stats.root_candidates, gate.draft.stats.root_candidates);
+
+        match v2_parity_pin(E93_ROOT, &rules) {
+            Ok(pin) => assert!(pin.matched(), "{}", pin.report()),
+            Err(RootedMiss::Save(reason)) => println!("typed miss  {reason}"),
+            Err(RootedMiss::Instrument(detail)) => panic!("instrument: {detail}"),
+        }
+    }
+
+    /// **THE `step9` GLUE, EXERCISED** — the section dispatch and the argument
+    /// refusals of both sections, and the ONE verdict composition.
+    ///
+    /// The structural half had no cell over `cmd_step9` at all: its verdict was
+    /// spelled once in the report and once in the exit composition, and nothing
+    /// held the two together. Both now read [`step9_structural_passed`], and
+    /// this walks the command that returns it.
+    #[test]
+    fn the_step9_sections_refuse_what_they_do_not_take_and_exit_on_their_own_verdict() {
+        for (args, want) in [
+            (vec![], "takes a section"),
+            (vec!["nonesuch"], "takes a section"),
+            (vec!["structural"], "needs --table"),
+            (vec!["rooted"], "needs --table"),
+        ] {
+            let owned: Vec<String> = args.iter().map(|a| (*a).to_string()).collect();
+            let refusal = cmd_step9(&owned).expect_err("a malformed invocation refuses");
+            assert!(refusal.contains(want), "{args:?}: wanted {want:?}, got {refusal}");
+        }
+        for section in ["structural", "rooted"] {
+            let args: Vec<String> =
+                [section, "stray", "--table", "v2-padded"].iter().map(|a| a.to_string()).collect();
+            let refusal = cmd_step9(&args).expect_err("a positional refuses");
+            assert!(refusal.contains("no positional arguments"), "{section}: {refusal}");
+        }
+
+        // The structural verdict the exit code reads IS the one the report
+        // prints — walked over a table whose answer is known (V2-padded fails
+        // the registered rows), so a cell that agreed vacuously would not.
+        let rules = Rules::standard();
+        let rows = gate_rows(&rules).expect("the gate rows build");
+        let (_, table) = parse_step9_table("v2-padded").expect("parses");
+        let (reading, non_vacuity) = step9_read("v2-padded", &rows, &table).expect("well-formed");
+        assert!(!step9_structural_passed(&reading, &non_vacuity), "V2-padded is not SAT");
+        assert!(
+            render_step9_structural(&reading, &non_vacuity)
+                .contains("VERDICT step9 structural: FAIL"),
+            "the printed verdict agrees with the composition the exit code reads",
+        );
+        assert_eq!(
+            cmd_step9(&["structural".to_string(), "--table".to_string(), "v2-padded".to_string()]),
+            Ok(EXIT_GATE_FAILED),
+            "a gate that read and said NO exits 1, never 0 and never 2",
+        );
+    }
+
+    /// **A ROOT TABLE NEEDS A SEED SOMEBODY RECORDED.**
+    ///
+    /// The two GATE roots are registry entries and carry their own recorded
+    /// decision seeds. The RECORD roots carry none — a generated root was never
+    /// decided by anybody, and an imported `bga-human` prefix records no bot
+    /// seed — and `driven_runner` already rules that inventing one "would answer
+    /// a different question from the one the root asks". So the record reads
+    /// verify IDENTITY unconditionally and print a table only at a seed the
+    /// caller recorded, which this pins as a message rather than as a silent
+    /// empty section.
+    #[test]
+    fn the_record_reads_verify_identity_without_a_seed_and_refuse_to_invent_one() {
+        let absent = record_seed_note(None);
+        assert!(absent.contains("--decision-seed"), "{absent}");
+        assert!(absent.contains("identity"), "identity verification still runs: {absent}");
+        let present = record_seed_note(Some(0x0DEC_0000_0000_0001));
+        assert!(present.contains("0x0dec000000000001"), "{present}");
+    }
 }
