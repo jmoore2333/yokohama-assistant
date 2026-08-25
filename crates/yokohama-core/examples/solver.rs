@@ -1299,6 +1299,31 @@ const CG_AUTHORITY: &str = "B2 (guidingpath decision log, 2026-08-25, \"THE T4-E
      parent rows and multipliers; the engine-local 10^7 per-question budget stands unchanged; \
      typed INCONCLUSIVE remains the honest residual.";
 
+/// How many ROUNDS of rounding one derivation may run.
+///
+/// **Not a registered figure**, and the distinction matters as much here as it
+/// does for [`REPAIR_ORACLE_BUDGET`]: §5.4 registers [`NODE_BUDGET`] and
+/// [`ENUMERATION_BUDGET`] and B2 says both stand unchanged. These three caps are
+/// ENGINE-LOCAL choices about how hard one derivation may look, and nothing
+/// downstream reads them as registered quantities. Exceeding one truncates the
+/// cut set deterministically — never a verdict.
+const CG_MAX_ROUNDS: usize = 3;
+
+/// How many cuts one ELIMINATION round may accept.
+const CG_MAX_ELIMINATION_CUTS: usize = 64;
+
+/// How many row PAIRS one elimination round may examine.
+const CG_MAX_PAIRS: u64 = 4_000_000;
+
+/// The widest support an elimination cut may carry.
+///
+/// A dense combination of two dense rows is a row the exact simplex pays for on
+/// every pivot and almost never learns from; the useful eliminations are the
+/// ones that cancel a column and leave a short row behind. This is a stated
+/// heuristic about which PROPOSALS are worth asking about, and it can only cost
+/// cuts: soundness is [`verify_cut`]'s, and completeness was never claimed.
+const CG_MAX_CUT_SUPPORT: usize = 8;
+
 /// **ONE DERIVED CUT**, with everything needed to re-derive it from the system
 /// it was derived over.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1403,13 +1428,253 @@ fn verify_cut_chain(base: &[Row], cuts: &[DerivedCut]) -> Result<(), String> {
     Ok(())
 }
 
-/// **THE DERIVATION.**
+/// One cut's label: the multipliers and the parent rows it rounds.
+fn cut_label(pool: &[Row], parents: &[(usize, Rat)]) -> String {
+    let terms: Vec<String> = parents
+        .iter()
+        .map(|(i, y)| {
+            let m = if y.is_integer() { y.n.to_string() } else { format!("{}/{}", y.n, y.d) };
+            format!("{m} x [{}]", pool[*i].label)
+        })
+        .collect();
+    format!("C-G cut: ceil({})", terms.join(" + "))
+}
+
+/// **PROPOSE ONE CUT** from a set of parents and multipliers.
 ///
-/// STUB (RED): the rounding is not written yet, so no cut is ever proposed and
-/// the extension has nothing to ask about.
+/// The steps are C–G's own, and each one is a reason a proposal is dropped:
+///
+/// 1. the combined coefficient vector must be INTEGRAL — that is the condition
+///    that makes the left side an integer at an integer point, and without it
+///    there is nothing to round;
+/// 2. it must be nonzero — an all-zero row constrains nothing (and at a positive
+///    right-hand side it would be a Farkas certificate the LP already has);
+/// 3. the coefficient gcd is folded INTO the multipliers, which is the
+///    strengthening step and not a separate operation: dividing `y` by `g`
+///    leaves a combination whose coefficients are `coef/g`;
+/// 4. the CEILING must BITE. An already-integral right-hand side means the
+///    rounded row IS the combination, which the relaxation already implies, so
+///    asking about it costs a column and learns nothing.
+fn propose_cut(pool: &[Row], width: usize, parents: Vec<(usize, Rat)>) -> Option<DerivedCut> {
+    let mut combined = vec![Rat::ZERO; width];
+    let mut rhs = Rat::ZERO;
+    for (i, y) in &parents {
+        let row = pool.get(*i)?;
+        for (column, slot) in combined.iter_mut().enumerate() {
+            let a = i128::from(row.coef.get(column).copied().unwrap_or(0));
+            if a == 0 {
+                continue;
+            }
+            *slot = slot.add(y.mul(Rat::int(a))?)?;
+        }
+        rhs = rhs.add(y.mul(Rat::int(i128::from(row.rhs)))?)?;
+    }
+    if combined.iter().any(|x| !x.is_integer()) {
+        return None;
+    }
+    let mut coef = Vec::with_capacity(width);
+    for x in &combined {
+        coef.push(i64::try_from(x.n).ok()?);
+    }
+    let magnitude =
+        coef.iter().filter(|c| **c != 0).fold(0u128, |g, c| gcd(g, u128::from(c.unsigned_abs())));
+    if magnitude == 0 {
+        return None;
+    }
+    let g = i64::try_from(magnitude).ok()?;
+    let (coef, parents, rhs) = if g > 1 {
+        let mut scaled = Vec::with_capacity(parents.len());
+        for (i, y) in parents {
+            scaled.push((i, Rat::new(y.n, y.d.checked_mul(i128::from(g))?)?));
+        }
+        (coef.iter().map(|c| c / g).collect(), scaled, rhs.div(Rat::int(i128::from(g)))?)
+    } else {
+        (coef, parents, rhs)
+    };
+    if rhs.is_integer() {
+        return None;
+    }
+    let rounded = i64::try_from(rhs.ceil()).ok()?;
+    Some(DerivedCut { label: cut_label(pool, &parents), parents, coef, rhs: rounded })
+}
+
+/// What the pool ALREADY says, keyed by coefficient vector: the strongest
+/// right-hand side it carries there.
+///
+/// A proposal no stronger than one of these adds nothing — the system already
+/// implies it — and admitting it would cost the exact simplex a column for no
+/// information. This is what keeps the elimination stage from filling its budget
+/// with rounded box bounds.
+fn strongest_rows(pool: &[Row], width: usize) -> HashMap<Vec<i64>, i64> {
+    let mut strongest: HashMap<Vec<i64>, i64> = HashMap::new();
+    for row in pool {
+        let key: Vec<i64> =
+            (0..width).map(|c| row.coef.get(c).copied().unwrap_or(0)).collect();
+        strongest.entry(key).and_modify(|best| *best = (*best).max(row.rhs)).or_insert(row.rhs);
+    }
+    strongest
+}
+
+/// **STAGE A — SINGLE-ROW ROUNDING.** `Σ a_j w_j ≥ b` with `g = gcd(a)` becomes
+/// `Σ (a_j/g) w_j ≥ ⌈b/g⌉`, at multiplier `1/g`.
+///
+/// This is the cheap half and, on the systems this file solves, the one that
+/// does the work: a registered pair row whose realized `Δv` are ±2 against an
+/// odd margin — 11(b)'s `2(w_E1 − w_S5) ≥ 1` is exactly that shape — is
+/// LP-satisfied at a half-unit and integer-satisfied only at a whole one, and
+/// that half-unit is where a displacement level goes integer-infeasible while
+/// staying relaxation-feasible.
+///
+/// ONE pass is enough per pool: a rounded row has coefficient gcd 1 by
+/// construction, so re-rounding it derives nothing.
+fn single_row_cuts(pool: &[Row], width: usize) -> Vec<DerivedCut> {
+    let strongest = strongest_rows(pool, width);
+    let mut out = Vec::new();
+    for (i, row) in pool.iter().enumerate() {
+        let magnitude =
+            row.coef.iter().filter(|c| **c != 0).fold(0u128, |g, c| {
+                gcd(g, u128::from(c.unsigned_abs()))
+            });
+        let Ok(g) = i64::try_from(magnitude) else { continue };
+        if g <= 1 {
+            continue;
+        }
+        let Some(y) = Rat::new(1, i128::from(g)) else { continue };
+        let Some(cut) = propose_cut(pool, width, vec![(i, y)]) else { continue };
+        if admits(&strongest, &cut) {
+            out.push(cut);
+        }
+    }
+    out
+}
+
+/// **STAGE B — PAIRWISE ELIMINATION ROUNDING.**
+///
+/// For a pair of rows sharing a column at opposite signs, the multipliers that
+/// CANCEL that column are `λ_i = |a_jc| / G` and `λ_j = |a_ic| / G` with
+/// `G = gcd(|a_ic|, |a_jc|)` — both integers, so the combination is integral by
+/// construction and the only question is whether its coefficient gcd fails to
+/// divide the combined right-hand side. When it does, the ceiling bites and
+/// there is a cut; when it does not, the combination is LP-implied and there is
+/// nothing to ask.
+///
+/// Eliminating against a BOX row is included and is not a special case: the box
+/// is in the pool like everything else, and `x ≥ −64` is a perfectly good thing
+/// to eliminate a variable against.
+///
+/// Pairs are walked in ascending `(i, j)` order and columns in ascending order,
+/// so the caps truncate a deterministic sequence rather than an arbitrary one.
+fn elimination_cuts(pool: &[Row], width: usize) -> Vec<DerivedCut> {
+    let strongest = strongest_rows(pool, width);
+    let mut out = Vec::new();
+    let mut pairs = 0u64;
+    for i in 0..pool.len() {
+        for j in (i + 1)..pool.len() {
+            pairs += 1;
+            if pairs > CG_MAX_PAIRS || out.len() >= CG_MAX_ELIMINATION_CUTS {
+                return out;
+            }
+            for column in 0..width {
+                let a = pool[i].coef.get(column).copied().unwrap_or(0);
+                let b = pool[j].coef.get(column).copied().unwrap_or(0);
+                if a == 0 || b == 0 || (a > 0) == (b > 0) {
+                    continue;
+                }
+                let (am, bm) = (i128::from(a.unsigned_abs()), i128::from(b.unsigned_abs()));
+                let Ok(shared) = i128::try_from(gcd(a.unsigned_abs().into(), b.unsigned_abs().into()))
+                else {
+                    continue;
+                };
+                let (Some(yi), Some(yj)) = (Rat::new(bm, shared), Rat::new(am, shared)) else {
+                    continue;
+                };
+                let Some(cut) = propose_cut(pool, width, vec![(i, yi), (j, yj)]) else { continue };
+                if cut.coef.iter().filter(|c| **c != 0).count() > CG_MAX_CUT_SUPPORT {
+                    continue;
+                }
+                if admits(&strongest, &cut) {
+                    out.push(cut);
+                    break;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Whether the pool does not already say this, or more.
+fn admits(strongest: &HashMap<Vec<i64>, i64>, cut: &DerivedCut) -> bool {
+    strongest.get(&cut.coef).is_none_or(|best| cut.rhs > *best)
+}
+
+/// The RATIONAL relaxation of a bare row list, decided exactly — the same
+/// reading [`relaxation_feasible`] takes, over rows rather than over a
+/// [`System`].
+fn rows_relaxation_feasible(rows: &[Row]) -> Option<bool> {
+    let columns = active_columns(rows);
+    let row_index: Vec<usize> = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| columns.iter().any(|&j| r.coef.get(j).copied().unwrap_or(0) != 0))
+        .map(|(i, _)| i)
+        .collect();
+    match relaxation(rows, &row_index, &columns) {
+        Relaxation::Feasible => Some(true),
+        Relaxation::Infeasible(_) => Some(false),
+        Relaxation::Undecided(_) => None,
+    }
+}
+
+/// **THE DERIVATION.** Stage A once, then elimination rounds while the
+/// relaxation is still feasible and rounds remain.
+///
+/// Stopping as soon as the strengthened relaxation is EMPTY is not an
+/// optimization with a correctness cost: a further round could only add rows the
+/// Farkas certificate does not need, and every cut already accepted has been
+/// verified.
+///
+/// A cut is accepted only after [`verify_cut`] re-derives it against the pool as
+/// it stood, so a defect in any of the proposal machinery costs cuts and cannot
+/// cost soundness.
 fn derive_cuts(sys: &System) -> Vec<DerivedCut> {
-    let _ = sys;
-    Vec::new()
+    let base = sys.inequalities();
+    let width = row_width(&base);
+    let mut pool = base;
+    let mut cuts: Vec<DerivedCut> = Vec::new();
+
+    let stage_a = single_row_cuts(&pool, width);
+    if accept_cuts(&mut pool, &mut cuts, stage_a) > 0
+        && rows_relaxation_feasible(&pool) == Some(false)
+    {
+        return cuts;
+    }
+    for _ in 1..CG_MAX_ROUNDS {
+        let stage_b = elimination_cuts(&pool, width);
+        if accept_cuts(&mut pool, &mut cuts, stage_b) == 0 {
+            break;
+        }
+        if rows_relaxation_feasible(&pool) == Some(false) {
+            break;
+        }
+    }
+    cuts
+}
+
+/// Verify a round's proposals and take the ones that stand.
+///
+/// The pool grows as they are taken, which leaves every already-recorded parent
+/// index pointing at the row it pointed at: the list only ever appends.
+fn accept_cuts(pool: &mut Vec<Row>, cuts: &mut Vec<DerivedCut>, fresh: Vec<DerivedCut>) -> usize {
+    let mut accepted = 0;
+    for cut in fresh {
+        if verify_cut(pool, &cut).is_err() {
+            continue;
+        }
+        pool.push(cut.row());
+        cuts.push(cut);
+        accepted += 1;
+    }
+    accepted
 }
 
 /// The phrase [`rederive_by_enumeration`] routes its over-budget INCONCLUSIVE
@@ -5337,6 +5602,83 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
     fn the_extension_leaves_the_registered_enumeration_budget_where_it_was() {
         assert_eq!(ENUMERATION_BUDGET, 10_000_000);
         assert_eq!(NODE_BUDGET, 10_000_000);
+    }
+
+    /// **THE REAL EARLY ENDPOINT CERTIFIES UNDER B2 AND REPAIRS.**
+    ///
+    /// T3 left this endpoint routed INCONCLUSIVE: the first probed displacement
+    /// level was relaxation-feasible and integer-infeasible, and a 38-column
+    /// support could not be re-derived inside the registered enumeration budget.
+    /// The extension closes exactly that level, and the cuts that close it are
+    /// the shape [`single_row_cuts`]' doc predicts — registered pair rows whose
+    /// realized `Δv` are ±2 against an odd margin, rounded onto the integers:
+    ///
+    /// * `1(d) early` `2·w_S2 ≥ 1` → `w_S2 ≥ 1`
+    /// * `3(c) early` `2·w_S5 ≥ 1` → `w_S5 ≥ 1`
+    /// * `10(a) early` `2·w_X2 ≥ 1` → `w_X2 ≥ 1`
+    /// * `11(b) early` `2(w_E1 − w_S5) ≥ 1` → `w_E1 − w_S5 ≥ 1`
+    ///
+    /// The certificate the level closes with is re-verified here against the
+    /// system it was derived over, so the level's emptiness is checkable from
+    /// this cell without re-running the projection.
+    #[test]
+    fn the_real_early_endpoint_certifies_under_the_extension_and_repairs() {
+        let rules = Rules::standard();
+        let mut rows = Vec::new();
+        for pair in REGISTERED.iter().filter(|p| {
+            matches!(p.role, PairRole::Constraint) && p.stages.contains(&StageEndpoint::Early)
+        }) {
+            rows.push(
+                extract_row(pair, StageEndpoint::Early, &rules).expect("the registry extracts"),
+            );
+        }
+        let (kept, dropped) = project_pair_rows(rows);
+        let sys = assemble(StageEndpoint::Early, kept, BOX_LIMIT);
+        let w0 = start_vector("v2-padded", StageEndpoint::Early).expect("a registered start");
+        let problem = RepairProblem::new(StageEndpoint::Early, sys, dropped, "v2-padded", w0)
+            .expect("the anchor is admissible");
+
+        let Repair::Repaired(report) = repair(&problem) else {
+            panic!(
+                "the early endpoint certifies under B2's extension; a routed answer here is a \
+                 finding to re-derive, not a flake",
+            );
+        };
+        assert_eq!(report.displacement, 14, "the certified optimum's displacement");
+        assert_eq!(report.changed.len(), 11, "over eleven changed coordinates");
+        for (label, value) in
+            [("S1", 1), ("S2", 1), ("S5", 1), ("S6", 1), ("S7", 1), ("E1", 2), ("E2", 2)]
+        {
+            assert_eq!(report.w[col(label)], value, "{label} at the early optimum");
+        }
+        assert_eq!(
+            report.w[Feature::VictoryPoints.index()],
+            1,
+            "and the pin is where R1 fixed it",
+        );
+
+        // THE LEVEL BELOW, and what closed it.
+        let below = format!("displacement <= {}", report.displacement - 1);
+        let Some(TrailOutcome::Empty(Certificate::ChvatalGomory { cuts, inner })) =
+            report.step(&below).map(|s| &s.outcome)
+        else {
+            panic!("level {below} is closed by a Chvátal–Gomory certificate: {below}");
+        };
+        assert!(matches!(**inner, Certificate::Farkas { .. }), "the strengthened system is empty");
+        let rendered: Vec<String> =
+            cuts.iter().map(|c| format!("{}  [{}]", c.label, sparse_row(&c.row()))).collect();
+        for want in [
+            "C-G cut: ceil(1/2 x [pair 1(d) early])  [S2:+1 >= 1]",
+            "C-G cut: ceil(1/2 x [pair 3(c) early])  [S5:+1 >= 1]",
+            "C-G cut: ceil(1/2 x [pair 10(a) early])  [X2:+1 >= 1]",
+            "C-G cut: ceil(1/2 x [pair 11(b) early])  [S5:-1 E1:+1 >= 1]",
+        ] {
+            assert!(rendered.iter().any(|r| r == want), "the derived cuts are {rendered:?}");
+        }
+        // The chain re-verifies against the system the level was asked about —
+        // the augmented one, rebuilt here rather than trusted.
+        let level = augmented(&problem, report.displacement - 1, &problem.free, &[]);
+        assert_eq!(verify_cut_chain(&level.inequalities(), cuts), Ok(()));
     }
 
     #[test]
