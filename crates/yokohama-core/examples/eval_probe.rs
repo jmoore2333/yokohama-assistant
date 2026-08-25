@@ -457,12 +457,14 @@ usage: eval_probe <subcommand> [options]
                [--no-generated]
       §7 STEP 9(b)'s ROOTED SURFACE over a NAMED table, on PRODUCTION bytes.
 
-      RUN IT ON A VERIFIED-CLEAN BUILD: `cargo clean -p yokohama-core` FIRST.
+      RUN IT ON A VERIFIED-CLEAN BUILD: `rm -rf target/release` FIRST (or an
+      unscoped `cargo clean`). NOT `cargo clean -p yokohama-core` -- the scoped
+      clean does NOT remove release EXAMPLE binaries, which is the whole hazard.
       Every figure is identity-critical (root digests, the table identity, the
       values a gate reads), and a stale target served an identity read TWICE
-      during step 8 without looking wrong. The header echoes SEMANTICS_REV, the
-      eval implementation version and the table identity so a stale read is
-      recognizable from the artifact alone.
+      during step 8 without looking wrong, and a third time on 2026-08-25. The
+      header echoes SEMANTICS_REV, the eval implementation version and the table
+      identity so a stale read is recognizable from the artifact alone.
 
       THE SAME-PATH V2-PARITY PIN runs FIRST (R5): at V2 weights this surface's
       root table must EQUAL `driven::root_table`'s at BOTH registry roots —
@@ -8284,10 +8286,43 @@ fn late_x_carriage(rows: &[GateRow]) -> Vec<(&'static str, &'static str, i64)> {
 
 /// **B3'S STANDING ASSERTION, ARMED AT EVERY RUN.**
 ///
-/// STUB (RED): nothing is checked yet, so a drift in the pinned arithmetic
-/// passes silently — which is precisely what B3 forbids.
+/// The exclusion is granted "for as long as the pinned arithmetic holds", which
+/// is only a real condition if something checks it every time. A drift here is a
+/// typed INSTRUMENT failure that invalidates the whole read — never a quietly
+/// re-gated cell, and never a cell quietly left out on stale grounds.
 fn check_late_x_carriage(rows: &[GateRow]) -> Result<(), String> {
-    let _ = rows;
+    let carriage = late_x_carriage(rows);
+    if carriage != X_LATE_CARRIAGE.to_vec() {
+        return Err(format!(
+            "X-LATE ARITHMETIC BROKEN: B3 excludes (X, late) from 9(c)'s gate domain only for as \
+             long as every applicable X-late projected row prices X movement anti-prior, and the \
+             pinned carriage is {X_LATE_CARRIAGE:?} while the production rows now realize \
+             {carriage:?}. Under R4 this is a typed INSTRUMENT failure: the read is INVALID, does \
+             not count against the table or the draft cap, and ROUTES BACK TO THE OWNER — B3 says \
+             a new X-late row or a sign change breaks loudly rather than silently re-gating the \
+             cell.",
+        ));
+    }
+    for (id, column, delta) in &carriage {
+        if *delta >= 0 {
+            return Err(format!(
+                "X-LATE ARITHMETIC BROKEN: B3's exclusion rests on every late X delta OPPOSING \
+                 its registered prior, and {id} prices {column} at {delta}. Typed INSTRUMENT \
+                 failure, routed to the OWNER.",
+            ));
+        }
+    }
+    for candidate in [CandidateFeature::LabTakeable, CandidateFeature::PortTakeable] {
+        if sign_prior(candidate) != 1 {
+            return Err(format!(
+                "X-LATE ARITHMETIC BROKEN: B3's exclusion reads the late deltas against a `+` \
+                 prior and {} is now registered {}. Typed INSTRUMENT failure, routed to the \
+                 OWNER.",
+                candidate.label(),
+                sign_prior(candidate),
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -8423,9 +8458,8 @@ fn per_endpoint_non_vacuity(
             // else: `(X, early)` and every other subgroup keep their cell in the
             // domain. Set HERE, where the cell is built, so a cell cannot exist
             // without the composition knowing whether it counts.
-            // STUB (RED): the domain re-registration is not wired yet.
-            let _ = X_LATE_EXCLUSION;
-            let excluded = None;
+            let excluded = (subgroup == "X" && stage == StageEndpoint::Late)
+                .then_some(X_LATE_EXCLUSION);
             out.push(SubgroupEndpointRead {
                 subgroup,
                 stage,
@@ -8764,13 +8798,17 @@ const M_PF_DEVELOPMENT_DIGESTS: [&str; 4] =
 /// below is identity-critical — a root digest, a weight-table identity, a value
 /// — so the entry says out loud what a caller must have done before quoting it.
 const ROOTED_CLEAN_BUILD: &str = "\
-before quoting      `cargo clean -p yokohama-core` FIRST, then build and run. Every
-                    figure here is identity-critical (root digests, the table
-                    identity, the values a gate reads), and a stale target served
-                    an identity read TWICE during step 8 without looking wrong.
-                    The header echoes SEMANTICS_REV, the eval implementation
-                    version and the table identity so a stale read is recognizable
-                    from the artifact alone";
+before quoting      `rm -rf target/release` FIRST (or an unscoped `cargo clean`),
+                    then build and run. NOT `cargo clean -p yokohama-core`: the
+                    scoped clean does NOT remove release EXAMPLE binaries, which
+                    is the whole hazard -- caught a third time on 2026-08-25 and
+                    ruled in that day's guidingpath close row. Every figure here
+                    is identity-critical (root digests, the table identity, the
+                    values a gate reads), and a stale target served an identity
+                    read TWICE during step 8 without looking wrong. The header
+                    echoes SEMANTICS_REV, the eval implementation version and the
+                    table identity so a stale read is recognizable from the
+                    artifact alone";
 
 /// The reading this section implements, printed at the top of every artifact.
 const ROOTED_STEP9_HEADER: &str = "\
@@ -26240,12 +26278,22 @@ mod tests {
     fn the_rooted_clean_build_text_names_a_command_that_removes_release_examples() {
         for text in [ROOTED_CLEAN_BUILD, USAGE] {
             assert!(
-                !text.contains("cargo clean -p yokohama-core"),
-                "the scoped clean leaves release example binaries behind: {text}",
+                text.contains("rm -rf target/release"),
+                "the command it names must remove release example binaries: {text}",
             );
+            // The scoped clean may still be NAMED — telling a reader which
+            // command not to use is more useful than deleting it — but only
+            // ever as the thing not to do. Every mention is checked, so a
+            // future edit that reintroduces it as advice fails here.
+            for (offset, _) in text.match_indices("cargo clean -p yokohama-core") {
+                let preceding = &text[..offset];
+                assert!(
+                    preceding.ends_with("NOT ") || preceding.ends_with("NOT `"),
+                    "the scoped clean leaves release example binaries behind and may only appear \
+                     as the command NOT to use: {text}",
+                );
+            }
         }
-        assert!(ROOTED_CLEAN_BUILD.contains("rm -rf target/release"), "{ROOTED_CLEAN_BUILD}");
-        assert!(USAGE.contains("rm -rf target/release"), "{USAGE}");
     }
 
     /// **THE NAMED TABLES RESOLVE THROUGH THE §11 IDENTITIES, AND NOTHING ELSE
