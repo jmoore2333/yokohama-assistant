@@ -3301,17 +3301,20 @@ impl Projection<'_> {
         // and record it, so every arm of the rule — including the undecided
         // ones no real oracle can be made to produce on demand — is reachable
         // from a table of answers.
-        let bisection = bisect_displacement(-1, d_hi, hint, |probe| {
+        let mut spend = WalkSpend::default();
+        let bisection = bisect_displacement(-1, d_hi, hint, &mut spend, |probe| {
             let sys = augmented(p, probe, &free, &[]);
             match self.ask_recorded(format!("displacement <= {probe}"), &sys)? {
                 Verdict::Sat { w } => Ok(LevelAnswer::Witness(w[..AXIS_WIDTH].to_vec())),
                 Verdict::Unsat { .. } => Ok(LevelAnswer::Empty),
                 Verdict::Inconclusive { reason } => Ok(LevelAnswer::Undecided(reason)),
             }
-        })?;
-        self.walk = bisection.walk();
-        let d_star = match bisection {
-            Bisection::Closed { d_star, witness: found, .. } => {
+        });
+        // Recorded BEFORE the `?`, so a hard stop inside the walk still routes
+        // with what it spent.
+        self.walk = spend;
+        let d_star = match bisection? {
+            Bisection::Closed { d_star, witness: found } => {
                 // `None` means the walk never took a point of its own, so the
                 // step-0 witness `w_hi` still stands at this level.
                 if let Some(found) = found {
@@ -3699,25 +3702,8 @@ enum Bisection {
     /// `d_star` is the optimal displacement level. `witness` is the last point
     /// the walk took, or `None` when it took none — the caller's own step-0
     /// point then still stands at this level.
-    Closed { d_star: i64, witness: Option<Vec<i64>>, walk: WalkSpend },
+    Closed { d_star: i64, witness: Option<Vec<i64>> },
     Routed(RoutedBisection),
-}
-
-impl Bisection {
-    /// **WHAT THE WALK SPENT, WHICHEVER WAY IT ENDED.**
-    ///
-    /// Both variants answer, so a caller records the spend once on the common
-    /// path instead of remembering to do it in each arm — which is exactly the
-    /// omission the first real run caught: a routed page carrying no walk line
-    /// is the page that most needed one.
-    fn walk(&self) -> WalkSpend {
-        match self {
-            Bisection::Closed { walk, .. } => *walk,
-            Bisection::Routed(routed) => {
-                WalkSpend { probes: routed.probes, retreat: Some(routed.retreat) }
-            }
-        }
-    }
 }
 
 /// **THE DISPLACEMENT BISECTION UNDER FRONTIER-RETREAT**, kept PURE with
@@ -3738,6 +3724,7 @@ fn bisect_displacement<E>(
     lo0: i64,
     hi0: i64,
     hint: i64,
+    spend: &mut WalkSpend,
     mut ask: impl FnMut(i64) -> Result<LevelAnswer, E>,
 ) -> Result<Bisection, E> {
     let (mut lo, mut hi) = (lo0, hi0);
@@ -3753,15 +3740,27 @@ fn bisect_displacement<E>(
     // written as the general never-re-ask invariant anyway, so a future change
     // to the walk cannot quietly start re-asking.
     let mut undecided: Vec<(i64, String)> = Vec::new();
-    let mut probes = 0u64;
 
     while hi - lo > 1 {
         let probe = match walk {
             // Before any retreat the probe is `next_probe`'s, unchanged. This
             // is the arm that makes a never-undecided run byte-identical to the
-            // pre-rule one — and the memory is necessarily empty here, since
-            // nothing is remembered until a retreat.
-            Walk::Midpoint => next_probe(lo, hi, hint),
+            // pre-rule one.
+            //
+            // **THE MEMORY IS NECESSARILY EMPTY HERE**, because nothing is
+            // remembered until a retreat and a retreat leaves this arm for
+            // good. Asserted rather than left to the comment: a future hybrid
+            // that returned to `Midpoint` after cheap frontier certifications
+            // could otherwise re-ask a remembered level in silence, which is
+            // precisely what rider 1 forbids. A `debug_assert!` states the
+            // invariant without compiling a panic into a release path.
+            Walk::Midpoint => {
+                debug_assert!(
+                    undecided.is_empty(),
+                    "rider 1: a remembered level is only ever reachable from the frontier arm",
+                );
+                next_probe(lo, hi, hint)
+            }
             // After it, the walk is the certified frontier and nothing else.
             Walk::Frontier(retreat) => {
                 let probe = lo + 1;
@@ -3778,7 +3777,7 @@ fn bisect_displacement<E>(
                         lo,
                         hi,
                         retreat,
-                        probes,
+                        probes: spend.probes,
                         reason: reason.clone(),
                         remembered: true,
                     }));
@@ -3787,8 +3786,14 @@ fn bisect_displacement<E>(
             }
         };
 
-        probes += 1;
-        match ask(probe)? {
+        // **THE LEDGER IS THE CALLER'S, updated as work happens.** A caller
+        // hard-stop (`?` below) leaves this function without a `Bisection`, and
+        // a spend that only rode out on the return value would vanish exactly
+        // where a slow walk most needs explaining. Counted AFTER the answer, so
+        // it reports questions ANSWERED and not questions attempted.
+        let answer = ask(probe)?;
+        spend.probes += 1;
+        match answer {
             LevelAnswer::Witness(w) => {
                 witness = Some(w);
                 hi = probe;
@@ -3800,7 +3805,9 @@ fn bisect_displacement<E>(
                 // the walk goes there rather than routing the whole projection
                 // on one hard interior question.
                 Walk::Midpoint => {
-                    walk = Walk::Frontier(Retreat { level: probe, lo, hi });
+                    let retreat = Retreat { level: probe, lo, hi };
+                    walk = Walk::Frontier(retreat);
+                    spend.retreat = Some(retreat);
                     undecided.push((probe, reason));
                 }
                 // A FRONTIER probe itself went undecided. There is nowhere
@@ -3811,7 +3818,7 @@ fn bisect_displacement<E>(
                         lo,
                         hi,
                         retreat,
-                        probes,
+                        probes: spend.probes,
                         reason,
                         remembered: false,
                     }))
@@ -3819,17 +3826,7 @@ fn bisect_displacement<E>(
             },
         }
     }
-    Ok(Bisection::Closed {
-        d_star: hi,
-        witness,
-        walk: WalkSpend {
-            probes,
-            retreat: match walk {
-                Walk::Midpoint => None,
-                Walk::Frontier(retreat) => Some(retreat),
-            },
-        },
-    })
+    Ok(Bisection::Closed { d_star: hi, witness })
 }
 
 /// One routed bisection, in the words the owner reads.
@@ -9874,8 +9871,9 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
             (2, LevelAnswer::Empty),
             (3, LevelAnswer::Witness(vec![7; AXIS_WIDTH])),
         ]);
-        let outcome = bisect_displacement(-1, 10, 6, ask).expect("the script never hard-stops");
-        let Bisection::Closed { d_star, witness, .. } = outcome else {
+        let outcome = bisect_displacement(-1, 10, 6, &mut WalkSpend::default(), ask)
+            .expect("the script never hard-stops");
+        let Bisection::Closed { d_star, witness } = outcome else {
             panic!("the frontier walk closes the level; it does not route");
         };
         assert_eq!(d_star, 3, "the first level the frontier certified feasible IS the optimum");
@@ -9906,7 +9904,8 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
             (0, LevelAnswer::Empty),
             (1, LevelAnswer::Empty),
         ]);
-        let outcome = bisect_displacement(-1, 10, 2, ask).expect("the script never hard-stops");
+        let outcome = bisect_displacement(-1, 10, 2, &mut WalkSpend::default(), ask)
+            .expect("the script never hard-stops");
         let Bisection::Routed(routed) = outcome else {
             panic!("a frontier that reaches a remembered undecided level routes");
         };
@@ -9946,7 +9945,8 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
             (5, LevelAnswer::Undecided("the midpoint stalled".to_string())),
             (0, LevelAnswer::Undecided("and so did the frontier".to_string())),
         ]);
-        let outcome = bisect_displacement(-1, 10, 5, ask).expect("the script never hard-stops");
+        let outcome = bisect_displacement(-1, 10, 5, &mut WalkSpend::default(), ask)
+            .expect("the script never hard-stops");
         let Bisection::Routed(routed) = outcome else {
             panic!("an undecided FRONTIER probe is the answer that routes");
         };
@@ -10003,7 +10003,7 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
 
             let log = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
             let seen = std::rc::Rc::clone(&log);
-            let outcome = bisect_displacement(lo0, hi0, hint, move |probe| {
+            let outcome = bisect_displacement(lo0, hi0, hint, &mut WalkSpend::default(), move |probe| {
                 seen.borrow_mut().push(probe);
                 Ok::<_, ()>(answer(probe))
             })
@@ -10038,8 +10038,9 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
             (2, LevelAnswer::Empty),
             (3, LevelAnswer::Witness(vec![0; AXIS_WIDTH])),
         ]);
-        let Bisection::Closed { walk, .. } =
-            bisect_displacement(-1, 10, 6, ask).expect("the script never hard-stops")
+        let mut walk = WalkSpend::default();
+        let Bisection::Closed { .. } = bisect_displacement(-1, 10, 6, &mut walk, ask)
+            .expect("the script never hard-stops")
         else {
             panic!("this walk closes")
         };
@@ -10055,8 +10056,9 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
             (5, LevelAnswer::Empty),
             (6, LevelAnswer::Witness(vec![0; AXIS_WIDTH])),
         ]);
-        let Bisection::Closed { walk, .. } =
-            bisect_displacement(-1, 10, 4, ask).expect("the script never hard-stops")
+        let mut walk = WalkSpend::default();
+        let Bisection::Closed { .. } = bisect_displacement(-1, 10, 4, &mut walk, ask)
+            .expect("the script never hard-stops")
         else {
             panic!("this walk closes")
         };
@@ -10070,7 +10072,8 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
             (1, LevelAnswer::Empty),
         ]);
         let Bisection::Routed(routed) =
-            bisect_displacement(-1, 10, 2, ask).expect("the script never hard-stops")
+            bisect_displacement(-1, 10, 2, &mut WalkSpend::default(), ask)
+                .expect("the script never hard-stops")
         else {
             panic!("this walk routes")
         };
@@ -10133,6 +10136,20 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
             "the driven routed page says what it spent: {out}",
         );
         assert!(out.contains("oracle calls of"), "{out}");
+
+        // **AND THE WIRING, not just the branch.** `render_forced_set_block`'s
+        // conditional is tested directly elsewhere, but nothing pinned the
+        // ARGUMENT the driven renderer passes it — so hardcoding it to `true`
+        // at the call site would put "in the doses block below" back on a page
+        // that has no doses block, and the whole suite would still pass.
+        assert!(
+            out.contains("which this run did not reach"),
+            "a routed page's witness line says the doses were never computed: {out}",
+        );
+        assert!(
+            !out.contains("doses block"),
+            "and points at no block this page has not got: {out}",
+        );
     }
 
     /// **A ROUTED BISECTION REPORTS ITS SPEND TOO**, and the budget block
@@ -10149,8 +10166,8 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
             (5, LevelAnswer::Undecided("the midpoint stalled".to_string())),
             (0, LevelAnswer::Undecided("and so did the frontier".to_string())),
         ]);
-        let outcome = bisect_displacement(-1, 10, 5, ask).expect("the script never hard-stops");
-        let walk = outcome.walk();
+        let mut walk = WalkSpend::default();
+        let _ = bisect_displacement(-1, 10, 5, &mut walk, ask).expect("the script never hard-stops");
         assert_eq!(walk.probes, 2, "a routed walk still reports what it asked");
         assert_eq!(
             walk.retreat,
@@ -10171,6 +10188,46 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
         assert!(quiet.contains("budget spent") && !quiet.contains("walk spend"), "{quiet}");
     }
 
+
+    /// **A CALLER HARD-STOP MID-WALK STILL REPORTS WHAT THE WALK SPENT.**
+    ///
+    /// The projection can run out of oracle calls INSIDE the bisection. Before
+    /// this the spend rode out on the return value, so that path routed with an
+    /// empty ledger and the walk line vanished — including when a retreat had
+    /// already happened, which is the one case the metering exists for.
+    /// Unreachable on today's shipped path (17 calls against 20,000) and pinned
+    /// anyway, because "unreachable today" is how a legibility hole survives.
+    #[test]
+    fn a_hard_stop_mid_walk_still_reports_the_probes_and_the_retreat() {
+        let mut asked = 0usize;
+        let mut walk = WalkSpend::default();
+        let outcome = bisect_displacement(-1, 10, 5, &mut walk, |_| {
+            asked += 1;
+            match asked {
+                // The midpoint stalls, so the walk retreats to the frontier.
+                1 => Ok(LevelAnswer::Undecided("the midpoint stalled".to_string())),
+                // One frontier level certifies empty.
+                2 => Ok(LevelAnswer::Empty),
+                // Then the CALLER runs out of budget, mid-walk.
+                _ => Err("the projection spent its budget of oracle calls"),
+            }
+        });
+        assert_eq!(outcome.err(), Some("the projection spent its budget of oracle calls"));
+        assert_eq!(walk.probes, 2, "the two questions that were ANSWERED, not the one refused");
+        assert_eq!(
+            walk.retreat,
+            Some(Retreat { level: 5, lo: -1, hi: 10 }),
+            "and the retreat survives the hard stop",
+        );
+
+        let printed = render_spend(&Spend { oracle_calls: 3, supports_examined: 0, walk });
+        assert!(
+            printed.contains("2 displacement probe(s) under FRONTIER-RETREAT"),
+            "so the routed page still explains the walk: {printed}",
+        );
+        assert!(printed.contains("retreat from level 5"), "{printed}");
+    }
+
     /// A walk that closes without ever taking a point of its own returns no
     /// witness, and the caller's step-0 point still stands at that level.
     ///
@@ -10179,8 +10236,9 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
     #[test]
     fn a_walk_that_takes_no_point_of_its_own_returns_no_witness() {
         let (ask, asked) = level_script(vec![(0, LevelAnswer::Empty)]);
-        let outcome = bisect_displacement(-1, 1, 0, ask).expect("the script never hard-stops");
-        let Bisection::Closed { d_star, witness, .. } = outcome else { panic!("nothing routes here") };
+        let outcome = bisect_displacement(-1, 1, 0, &mut WalkSpend::default(), ask)
+            .expect("the script never hard-stops");
+        let Bisection::Closed { d_star, witness } = outcome else { panic!("nothing routes here") };
         assert_eq!((d_star, asked.get()), (1, 1));
         assert!(witness.is_none(), "the caller's own step-0 witness is the one that stands");
     }
@@ -10192,7 +10250,7 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
     #[test]
     fn a_callers_hard_stop_leaves_the_walk_rather_than_triggering_a_retreat() {
         let mut asked = 0usize;
-        let outcome = bisect_displacement(-1, 10, 5, |_| {
+        let outcome = bisect_displacement(-1, 10, 5, &mut WalkSpend::default(), |_| {
             asked += 1;
             Err::<LevelAnswer, &str>("the projection spent its budget of oracle calls")
         });
