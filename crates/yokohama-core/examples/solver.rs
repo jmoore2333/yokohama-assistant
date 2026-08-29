@@ -3309,9 +3309,9 @@ impl Projection<'_> {
                 Verdict::Inconclusive { reason } => Ok(LevelAnswer::Undecided(reason)),
             }
         })?;
+        self.walk = bisection.walk();
         let d_star = match bisection {
-            Bisection::Closed { d_star, witness: found, walk } => {
-                self.walk = walk;
+            Bisection::Closed { d_star, witness: found, .. } => {
                 // `None` means the walk never took a point of its own, so the
                 // step-0 witness `w_hi` still stands at this level.
                 if let Some(found) = found {
@@ -3713,7 +3713,9 @@ impl Bisection {
     fn walk(&self) -> WalkSpend {
         match self {
             Bisection::Closed { walk, .. } => *walk,
-            Bisection::Routed(_) => WalkSpend::default(),
+            Bisection::Routed(routed) => {
+                WalkSpend { probes: routed.probes, retreat: Some(routed.retreat) }
+            }
         }
     }
 }
