@@ -1727,11 +1727,37 @@ fn is_enumeration_budget_route(reason: &str) -> bool {
 ///   extension's own outcome appended. B2: "typed INCONCLUSIVE remains the
 ///   honest residual if certification still cannot complete."
 fn decide_with_cuts(sys: &System) -> Verdict {
-    let verdict = decide(sys);
+    extend_if_undecided(sys, decide(sys))
+}
+
+/// **THE TRIGGER PREDICATE**, isolated so it can be asked about a verdict the
+/// frozen oracle would take minutes to produce.
+///
+/// **The trigger is the typed VARIANT and nothing else** (B2 amendment,
+/// Addition 1). Every undecided answer `decide` can give arrives here, whichever
+/// cap exhausted — node, enumeration, pivot — so a future fourth cap inherits
+/// the extension BY CONSTRUCTION rather than by anyone remembering to widen a
+/// predicate. `reason` is carried to be REPORTED and is never read as a
+/// condition; that is what makes the surface total, and it is why this function
+/// takes the verdict rather than computing it: a test can hand it a node-route
+/// undecided in microseconds where the real thing costs 87 seconds.
+fn extend_if_undecided(sys: &System, verdict: Verdict) -> Verdict {
     let Verdict::Inconclusive { reason } = &verdict else { return verdict };
     if !is_enumeration_budget_route(reason) {
         return verdict;
     }
+    strengthen_undecided(sys, reason)
+}
+
+/// **THE CHAIN ON AN UNDECIDED ANSWER**: derive cuts under the engine-local
+/// caps, re-verify the chain from base, and ask the frozen oracle the
+/// strengthened question.
+///
+/// `reason` is carried only to be REPORTED. Nothing here reads it, which is
+/// what makes the trigger surface total: this function cannot behave
+/// differently for one exhausted cap than for another, because it cannot tell
+/// them apart.
+fn strengthen_undecided(sys: &System, reason: &str) -> Verdict {
     let cuts = derive_cuts(sys);
     if cuts.is_empty() {
         return Verdict::Inconclusive {
@@ -1757,13 +1783,38 @@ fn decide_with_cuts(sys: &System) -> Verdict {
     for cut in &cuts {
         strengthened.rows.push(cut.row());
     }
-    match decide(&strengthened) {
+    accept_strengthened(sys, decide(&strengthened), cuts, reason)
+}
+
+/// **WHAT A STRENGTHENED ANSWER IS WORTH**, with the re-check the owner marked
+/// LOAD-BEARING.
+///
+/// A strengthened UNSAT certifies the ORIGINAL system: every cut is valid for
+/// every integer point of it, so a strengthened system with no point at all is
+/// an original system with no INTEGER point at all.
+///
+/// **A strengthened SAT is not accepted on the strengthening's word.** The point
+/// is re-checked against the original rows and the original box before it is
+/// returned. With a verified chain the check passes by construction — which is
+/// exactly why it must be tested against a strengthening that is NOT sound
+/// rather than against the shipped one, and why deleting it would look free.
+/// It is the last thing standing between a defect in the cut machinery and a
+/// wrong answer presented as a witness.
+///
+/// A strengthened question that is itself undecided leaves the undecided
+/// STANDING — frontier-retreat and rider 2 then apply exactly as ruled.
+fn accept_strengthened(
+    sys: &System,
+    inner: Verdict,
+    cuts: Vec<DerivedCut>,
+    reason: &str,
+) -> Verdict {
+    match inner {
         Verdict::Unsat { certificate } => Verdict::Unsat {
             certificate: Certificate::ChvatalGomory { cuts, inner: Box::new(certificate) },
         },
         Verdict::Sat { w } => {
-            let inside = (0..sys.lo.len()).all(|f| w[f] >= sys.lo[f] && w[f] <= sys.hi[f]);
-            if sys.violation(&w) == 0 && inside {
+            if point_satisfies(sys, &w) {
                 Verdict::Sat { w }
             } else {
                 Verdict::Inconclusive {
@@ -1782,6 +1833,15 @@ fn decide_with_cuts(sys: &System) -> Verdict {
             ),
         },
     }
+}
+
+/// Whether a point satisfies a system OUTRIGHT — every row and every box bound.
+///
+/// [`witness_holds`] is this predicate's detailed sibling on the repair path,
+/// answering WHY rather than whether; the two are pinned to agree.
+fn point_satisfies(sys: &System, w: &[i64]) -> bool {
+    let inside = (0..sys.lo.len()).all(|f| w[f] >= sys.lo[f] && w[f] <= sys.hi[f]);
+    inside && sys.violation(w) == 0
 }
 
 // ---------------------------------------------------------------------------
@@ -6857,25 +6917,158 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
         )
     }
 
-    /// **THE TRIGGER IS THE ENUMERATION-BUDGET ROUTE AND NOTHING ELSE.**
-    ///
-    /// B2 extends ONE seam. A node-budget INCONCLUSIVE is a different fact — the
-    /// search ran out of nodes, and the system may well be satisfiable — so the
-    /// predicate is checked against BOTH routes rather than against a phrase.
-    #[test]
-    fn the_extension_triggers_on_the_enumeration_budget_route_and_not_the_node_one() {
-        let Verdict::Inconclusive { reason } = decide(&wide_integer_only_system()) else {
-            panic!("the wide system routes over the enumeration budget");
-        };
-        assert!(is_enumeration_budget_route(&reason), "the trigger reads this route: {reason}");
 
-        let starved = starved_search_system();
-        let columns = active_columns(&starved.rows);
-        let Verdict::Inconclusive { reason } = integer_search(&starved, &columns, 1) else {
-            panic!("a one-node budget cannot decide a system the search has to branch on");
+    /// **THE TRIGGER SURFACE IS TOTAL** (B2 amendment, Addition 1).
+    ///
+    /// Before the amendment the extension fired only on the enumeration-budget
+    /// route, so certification depended on which of two caps a question happened
+    /// to exhaust first — and the real late system proved that a knife-edge:
+    /// levels 97-99 exhausted enumeration and got their cuts, level 100
+    /// exhausted nodes one level up and did not, while being certifiable in
+    /// 0.1s.
+    ///
+    /// The predicate is now the typed VARIANT. This cell pins that by the only
+    /// means that cannot rot: [`strengthen_undecided`] is handed the SAME
+    /// system under four different reason strings — the two real routes, the
+    /// pivot cap, and a fourth nobody has written yet — and must answer
+    /// identically every time. A future cap inherits the rule because there is
+    /// no place left for it to be excluded from.
+    #[test]
+    fn the_extension_fires_on_every_typed_undecided_whichever_cap_exhausted() {
+        let sys = wide_integer_only_system();
+        let routes = [
+            "the search spent its registered budget of 10000000 nodes.",
+            "the exhaustive enumeration budget was spent.",
+            "the LP pivot cap was reached.",
+            "a fourth cap nobody has written yet was reached.",
+        ];
+        let answers: Vec<&'static str> = routes
+            .iter()
+            .map(|reason| match extend_if_undecided(
+                &sys,
+                Verdict::Inconclusive { reason: (*reason).to_string() },
+            ) {
+                Verdict::Unsat { .. } => "UNSAT",
+                Verdict::Sat { .. } => "SAT",
+                Verdict::Inconclusive { .. } => "INCONCLUSIVE",
+            })
+            .collect();
+        assert_eq!(
+            answers,
+            ["UNSAT"; 4],
+            "the chain cannot tell one exhausted cap from another, so it cannot answer differently",
+        );
+
+        // And the whole path: `decide` itself routes this system undecided, and
+        // `decide_with_cuts` now certifies it whatever the route was.
+        assert!(matches!(decide(&sys), Verdict::Inconclusive { .. }));
+        assert!(matches!(decide_with_cuts(&sys), Verdict::Unsat { .. }));
+    }
+
+    /// **BORN-VALIDATION (a): A NODE-ROUTE UNDECIDED THE CUTS CERTIFY EMPTY.**
+    ///
+    /// The real late system's level 100 in miniature: an undecided answer
+    /// carrying the NODE-budget reason — the one the old gate turned away — over
+    /// a system whose cuts close it. Under the amendment it certifies.
+    #[test]
+    fn a_node_route_undecided_is_certified_by_the_extension() {
+        let node_route = "the search spent its registered budget of 10000000 nodes. The oracle \
+                          did not decide, which is not infeasibility.";
+        let Verdict::Unsat { certificate } = extend_if_undecided(
+            &wide_integer_only_system(),
+            Verdict::Inconclusive { reason: node_route.to_string() },
+        ) else {
+            panic!("the node route now reaches the extension and the extension certifies");
         };
-        assert!(reason.contains("budget of 1 nodes"), "this IS the node route: {reason}");
-        assert!(!is_enumeration_budget_route(&reason), "and not the enumeration one: {reason}");
+        let Certificate::ChvatalGomory { cuts, inner } = certificate else {
+            panic!("and ships the chain that did it");
+        };
+        assert!(!cuts.is_empty(), "with its verified cuts named");
+        assert!(matches!(*inner, Certificate::Farkas { .. }), "and the inner certificate");
+    }
+
+    /// **BORN-VALIDATION (b): A STRENGTHENED SAT IS RE-CHECKED AGAINST THE
+    /// ORIGINAL SYSTEM, AND A POINT THAT FAILS IT IS REFUSED.**
+    ///
+    /// The owner marked this re-check LOAD-BEARING and never optional. With a
+    /// verified chain it passes by construction — which is exactly why it must
+    /// be tested against a strengthening that is NOT sound, or deleting it would
+    /// look free and every shipped run would agree.
+    ///
+    /// So the cell hands [`accept_strengthened`] a SAT whose point violates the
+    /// original rows — what a defect in the cut machinery would produce — and
+    /// requires a refusal rather than a witness.
+    #[test]
+    fn a_strengthened_sat_whose_point_fails_the_original_system_is_refused() {
+        let s4 = col("S4");
+        // `w_S4 >= 3`, and a point sitting at 0: inside the box, violating the row.
+        let sys = toy(StageEndpoint::Late, &[("S4 at least 3", &[(s4, 1)], 3)], BOX_LIMIT);
+        let mut bad = sys.v2_padded();
+        bad[s4] = 0;
+        assert!(!point_satisfies(&sys, &bad), "the point this cell is built on violates the rows");
+
+        let refused = accept_strengthened(
+            &sys,
+            Verdict::Sat { w: bad.clone() },
+            Vec::new(),
+            "a hand-built undecided",
+        );
+        let Verdict::Inconclusive { reason } = refused else {
+            panic!("a point that fails the ORIGINAL system is never returned as a witness");
+        };
+        assert!(reason.contains("does not satisfy the ORIGINAL rows"), "{reason}");
+
+        // A point that DOES satisfy the original is accepted, so the guard
+        // narrows nothing that was working.
+        let mut good = sys.v2_padded();
+        good[s4] = 3;
+        assert!(point_satisfies(&sys, &good));
+        assert!(matches!(
+            accept_strengthened(&sys, Verdict::Sat { w: good }, Vec::new(), "a hand-built undecided"),
+            Verdict::Sat { .. },
+        ));
+    }
+
+    /// **BORN-VALIDATION (c): A STRENGTHENED QUESTION THAT IS ITSELF UNDECIDED
+    /// LEAVES THE UNDECIDED STANDING** — which is what keeps frontier-retreat
+    /// and rider 2 reachable, exactly as already ruled.
+    ///
+    /// The composition is pinned in two halves that meet here: this cell shows
+    /// the extension hands an undecided BACK, and the frontier-retreat cells
+    /// show an undecided level retreats rather than routing.
+    #[test]
+    fn a_strengthened_question_that_stays_undecided_leaves_the_undecided_standing() {
+        let sys = toy(StageEndpoint::Late, &[("S4 at least 3", &[(col("S4"), 1)], 3)], BOX_LIMIT);
+        let standing = accept_strengthened(
+            &sys,
+            Verdict::Inconclusive { reason: "the strengthened search also ran out".to_string() },
+            Vec::new(),
+            "the original undecided",
+        );
+        let Verdict::Inconclusive { reason } = standing else {
+            panic!("an undecided strengthened question cannot manufacture an answer");
+        };
+        assert!(reason.contains("the original undecided"), "the first reason rides along: {reason}");
+        assert!(reason.contains("still did not decide"), "{reason}");
+    }
+
+    /// The two feasibility predicates answer the same question, so the repair
+    /// path's detailed [`witness_holds`] and the extension's [`point_satisfies`]
+    /// cannot drift apart.
+    #[test]
+    fn the_two_feasibility_predicates_agree() {
+        let s4 = col("S4");
+        let rows: &[ToyRow] = &[("S4 at least 3", &[(s4, 1)], 3)];
+        let problem = anchored_problem(rows);
+        for value in [0i64, 2, 3, 40] {
+            let mut w = problem.w0.clone();
+            w[s4] = value;
+            assert_eq!(
+                point_satisfies(&problem.sys, &w),
+                witness_holds(&problem, &w).is_ok(),
+                "at S4 = {value}",
+            );
+        }
     }
 
     /// **BORN-VALIDATION (d): ONE CUT CERTIFIES IT, and the cut is derivable by
