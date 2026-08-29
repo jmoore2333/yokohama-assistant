@@ -4868,9 +4868,18 @@ fn render_forced_set_block(p: &RepairProblem, sets: &[CertifiedForcedSet]) -> St
         for label in &set.record.leaned_on {
             out.push_str(&format!("          leans on {label}\n"));
         }
-        out.push_str(&format!(
+        out.push_str(
             "      set feasible    witness re-checked against every row and every box bound \
-             OUTSIDE the oracle; {}\n",
+             OUTSIDE the oracle\n",
+        );
+        // **THE WITNESS IS NOT A DOSE.** It is whatever point the oracle found,
+        // and on a real system that is routinely a box corner — while the dose
+        // is minimal displacement's answer, printed in the doses block. Two
+        // signed integers against the same coordinate label read as the same
+        // quantity unless the page says otherwise.
+        out.push_str(&format!(
+            "      at the witness  {} -- a FEASIBILITY point and NOT a dose; what each member is \
+             actually priced at is minimal displacement's answer, in the doses block\n",
             named
                 .iter()
                 .map(|c| format!(
