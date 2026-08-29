@@ -5118,8 +5118,15 @@ fn render_walk_spend(walk: &WalkSpend) -> String {
 /// Byte-identical on repeat by construction, exactly as [`render_repair`] is:
 /// nothing in the chain reads a clock or draws entropy.
 fn render_driven(p: &RepairProblem) -> String {
+    render_driven_within(p, REPAIR_ORACLE_BUDGET, REPAIR_SUPPORT_BUDGET)
+}
+
+/// The same, at budgets a caller names — [`repair_within`]'s reasoning verbatim:
+/// the budgets are parameters only so their EXHAUSTION ARMS can be exercised,
+/// and [`render_driven`] always passes the shipped pair.
+fn render_driven_within(p: &RepairProblem, oracle_budget: u64, support_budget: u64) -> String {
     let mut out = render_repair_header(p);
-    let driven = drive_repair(p);
+    let driven = drive_repair_within(p, oracle_budget, support_budget);
     // ONE spelling of the verdict word, read off the answer itself — the
     // REPAIRED arm gets it from `Repair::name` through the shared outcome
     // renderer, and the other three from here.
@@ -10037,6 +10044,33 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
             !out.contains("walk spend"),
             "and says nothing about a walk that never left the midpoint arm: {out}",
         );
+    }
+
+    /// **THE DRIVEN PAGE'S ROUTED ARM PRINTS ITS SPEND TOO** — and it is the
+    /// arm that matters, because the real LATE page is a driven page.
+    ///
+    /// `render_driven` does not go through [`render_repair_outcome`] for its
+    /// three routed answers; it writes its own verdict. A budget line added to
+    /// the raw renderer alone would leave the one page anybody actually reads
+    /// exactly as silent as before.
+    #[test]
+    fn the_driven_routed_page_prints_its_budget_spend_as_well() {
+        let (s4, s5) = (col("S4"), col("S5"));
+        let problem = anchored_problem(&[
+            ("S4 at most -2", &[(s4, -1)], 2),
+            ("S5 at most -2", &[(s5, -1)], 2),
+        ]);
+        // Budget 1: the first projection reaches REPAIR-INFEASIBLE, the whole
+        // construction runs on its own oracle calls, and the second projection
+        // routes — the shape the real late endpoint has.
+        let out = render_driven_within(&problem, 1, REPAIR_SUPPORT_BUDGET);
+        assert!(out.contains("VERDICT              INCONCLUSIVE"), "{out}");
+        assert!(out.contains("certified forced set 1 of 1"), "with a set standing: {out}");
+        assert!(
+            out.contains("budget spent"),
+            "the driven routed page says what it spent: {out}",
+        );
+        assert!(out.contains("oracle calls of"), "{out}");
     }
 
     /// A walk that closes without ever taking a point of its own returns no
