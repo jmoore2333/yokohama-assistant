@@ -4531,10 +4531,16 @@ struct ForcedSetMember {
     ///
     /// **This can be a SUPERSET of the final set minus this member**, when a
     /// later member returned to force after this proof was already recorded —
-    /// and the proof still holds, in the right direction: restoring fewer
-    /// clauses leaves a MORE constrained system, and an infeasible system stays
-    /// infeasible when constraints are added. The recorded set is what was
-    /// actually off, so the reader can check that argument instead of taking it.
+    /// and the proof still holds, in this direction: a superset `beside` means
+    /// MORE clauses were off, so the proof was taken against the MORE RELAXED
+    /// system; the final system restores some of them, which only ADDS
+    /// constraints, and an infeasible system stays infeasible when constraints
+    /// are added back. So infeasibility of the recorded system implies
+    /// infeasibility of the final one, which is the claim the member needs.
+    ///
+    /// The recorded set is what was ACTUALLY off, and the rendered `monotone`
+    /// line prints it beside the final one, so a reader can check that argument
+    /// rather than take it.
     beside: Vec<CandidateFeature>,
 }
 
@@ -5087,7 +5093,6 @@ fn render_forced_set_block(
     sets: &[CertifiedForcedSet],
     repaired: bool,
 ) -> String {
-    let _ = repaired;
     let mut out = String::new();
     out.push_str(&format!("\nforced-set driver    {FORCED_SET_AUTHORITY}\n"));
     out.push_str(&format!("set construction     {FORCED_SET_CONSTRUCTION}\n"));
@@ -5127,7 +5132,7 @@ fn render_forced_set_block(
         // quantity unless the page says otherwise.
         out.push_str(&format!(
             "      at the witness  {} -- a FEASIBILITY point and NOT a dose; what each member is \
-             actually priced at is minimal displacement's answer, in the doses block\n",
+             actually priced at is minimal displacement's answer, {}\n",
             named
                 .iter()
                 .map(|c| format!(
@@ -5137,6 +5142,15 @@ fn render_forced_set_block(
                 ))
                 .collect::<Vec<_>>()
                 .join(", "),
+            // A set can be certified on a page whose projection then ROUTED —
+            // the real late endpoint is exactly that — and such a page has no
+            // doses block. Pointing a reader at one that is not there is the
+            // same defect as the witness reading as a dose.
+            if repaired {
+                "in the doses block below"
+            } else {
+                "which this run did not reach"
+            },
         ));
         for (i, member) in set.members.iter().enumerate() {
             out.push_str(&format!(
@@ -5216,12 +5230,23 @@ fn render_forced_set_record(p: &RepairProblem, record: &ForcedSetRecord) -> Stri
         }
         for step in steps {
             out.push_str(&format!(
-                "      {} {:<4} removed {:<28} {}  -- {}\n",
+                "      {} {:<4} removed {:<28} {}  -- {}{}\n",
                 phase.marker(),
                 step.subject.label(),
                 label_set(&step.removed),
                 step.answer.name(),
                 step.detail,
+                // **A ONE-CLAUSE QUESTION IS A B1 PROBE, RE-ASKED.** The driver
+                // inherits no answer, so these steps print certificates
+                // byte-identical to the probe block above them — and a reader
+                // counting the repetition as a second, independent piece of
+                // evidence would be double-counting ONE oracle answer. Say
+                // which it is rather than let the page imply otherwise.
+                if step.removed.len() == 1 {
+                    "  [the same question as the B1 probe above, re-asked -- never inherited]"
+                } else {
+                    ""
+                },
             ));
             for label in &step.leaned_on {
                 out.push_str(&format!("               leans on   {label}\n"));
