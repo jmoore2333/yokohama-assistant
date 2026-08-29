@@ -1686,21 +1686,23 @@ fn accept_cuts(pool: &mut Vec<Row>, cuts: &mut Vec<DerivedCut>, fresh: Vec<Deriv
     accepted
 }
 
-/// The phrase [`rederive_by_enumeration`] routes its over-budget INCONCLUSIVE
-/// with — the ONE seam B2 extends.
-const ENUMERATION_BUDGET_PHRASE: &str = "enumeration budget";
-
-/// Whether an INCONCLUSIVE reason is the enumeration-budget route.
-///
-/// **A node-budget INCONCLUSIVE is a different fact and must not trigger the
-/// extension**: the search ran out of nodes and the system may well be
-/// satisfiable, so strengthening it would be spending a great deal of exact
-/// arithmetic on a question nobody asked. Pinned against BOTH routes by
-/// [`the_extension_triggers_on_the_enumeration_budget_route_and_not_the_node_one`],
-/// so the coupling to the message is checked rather than assumed.
-fn is_enumeration_budget_route(reason: &str) -> bool {
-    reason.contains(ENUMERATION_BUDGET_PHRASE)
-}
+// **THE ENUMERATION-BUDGET ROUTE PREDICATE IS RETIRED** (B2 amendment,
+// 2026-08-29). It read the oracle's REASON STRING to decide whether the
+// extension was allowed to try, on the argument that a node-budget undecided
+// "may well be satisfiable, so strengthening it would be spending a great deal
+// of exact arithmetic on a question nobody asked".
+//
+// That cost argument was measured false by three orders of magnitude on the
+// real late system: levels 97-99 exhausted the enumeration budget and were
+// certified, level 100 one level up exhausted the NODE budget after 87 seconds
+// and was turned away — while its cuts certified it EMPTY in 0.1 seconds once
+// anyone asked. Certification was turning on which of two caps a question
+// happened to exhaust first.
+//
+// The trigger is now the typed variant in [`extend_if_undecided`], and this
+// note is the history rather than a switch. The phrase constant it matched on
+// went with it: nothing else read it, because nothing else needed to know which
+// cap a question ran out of.
 
 /// **B2's QUESTION CHAIN.** [`decide`] first, unchanged; then, at the
 /// enumeration-budget seam ONLY, the same oracle asked again about a
@@ -1743,9 +1745,6 @@ fn decide_with_cuts(sys: &System) -> Verdict {
 /// undecided in microseconds where the real thing costs 87 seconds.
 fn extend_if_undecided(sys: &System, verdict: Verdict) -> Verdict {
     let Verdict::Inconclusive { reason } = &verdict else { return verdict };
-    if !is_enumeration_budget_route(reason) {
-        return verdict;
-    }
     strengthen_undecided(sys, reason)
 }
 
@@ -7060,7 +7059,11 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
         let s4 = col("S4");
         let rows: &[ToyRow] = &[("S4 at least 3", &[(s4, 1)], 3)];
         let problem = anchored_problem(rows);
-        for value in [0i64, 2, 3, 40] {
+        // 100 is the load-bearing value: it SATISFIES the row (`S4 >= 3`) and
+        // sits OUTSIDE the box (`S4 <= 64`), so it is the only one of these
+        // that discriminates the box half. Without it a predicate that checked
+        // rows alone would agree everywhere and pass.
+        for value in [0i64, 2, 3, 40, 100] {
             let mut w = problem.w0.clone();
             w[s4] = value;
             assert_eq!(
@@ -7069,6 +7072,10 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
                 "at S4 = {value}",
             );
         }
+        let mut outside = problem.w0.clone();
+        outside[s4] = 100;
+        assert_eq!(problem.sys.violation(&outside), 0, "the rows are satisfied there");
+        assert!(!point_satisfies(&problem.sys, &outside), "and the BOX is what refuses it");
     }
 
     /// **BORN-VALIDATION (d): ONE CUT CERTIFIES IT, and the cut is derivable by
@@ -7315,14 +7322,22 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
         assert!(matches!(decide_with_cuts(&feasible), Verdict::Sat { .. }));
 
         // And a genuinely undecided one: at a one-node search budget the answer
-        // is the node-budget route, which the extension does not touch.
+        // is the node-budget route. Under the B2 amendment the extension DOES
+        // now reach it — and still cannot manufacture an answer, because there
+        // is no infeasibility here to certify.
         let starved = starved_search_system();
         let columns = active_columns(&starved.rows);
         let Verdict::Inconclusive { reason } = integer_search(&starved, &columns, 1) else {
             panic!("a one-node budget cannot decide");
         };
         assert!(reason.contains("not infeasibility"), "{reason}");
-        assert!(!is_enumeration_budget_route(&reason), "{reason}");
+        assert!(
+            matches!(
+                extend_if_undecided(&feasible, Verdict::Inconclusive { reason }),
+                Verdict::Inconclusive { .. },
+            ),
+            "the extension reaches every route now, and answers only where it can certify",
+        );
     }
 
     /// A SAT answer through the extension is re-checked against the ORIGINAL
