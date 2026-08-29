@@ -6790,7 +6790,7 @@ mod tests {
                 UnsupportedReason::AlternateTable,
             ),
         ];
-        // Both arms are enumerated above, and a THIRD arm must be dispositioned
+        // All three arms are enumerated above, and a FOURTH arm must be dispositioned
         // here rather than inheriting a refusal nothing checked.
         assert_eq!(
             expected

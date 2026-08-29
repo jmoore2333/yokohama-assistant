@@ -3310,19 +3310,58 @@ mod tests {
                 .map(|(i, f)| (f.name(), to[i] - from[i]))
                 .collect()
         };
-        let early_moves = moved(&WeightTable::V2.early, &table.early);
-        let late_moves = moved(&WeightTable::V2.late, &table.late);
-        assert_eq!(early_moves.len(), 11, "the row records 11 early moves: {early_moves:?}");
-        assert_eq!(late_moves.len(), 12, "the row records 12 late moves: {late_moves:?}");
+        // **NAMED AND SIGNED.** A count-and-magnitude check has a
+        // duplicated-sign-flip blind spot: flipping one coordinate in BOTH the
+        // const and the ledger literals above moves no count and no `abs()`
+        // sum, so it would pass while shipping the opposite weight. The row
+        // records which coordinates moved AND which way, so both are asserted
+        // against literals here.
         assert_eq!(
-            early_moves.iter().map(|(_, d)| d.abs()).sum::<i64>(),
-            14,
-            "the row records early displacement 14",
+            moved(&WeightTable::V2.early, &table.early),
+            vec![
+                ("achievement_progress_sum", -2),
+                ("production_access", 1),
+                ("track_access", 1),
+                ("bank_access", 1),
+                ("employment_agency_access", 1),
+                ("president_reachable_areas", 1),
+                ("money_stock", 2),
+                ("trade_goods_stock", 2),
+                ("order_matched_goods", 1),
+                ("lab_takeable", 1),
+                ("port_takeable", 1),
+            ],
+            "the draft-1 row's EARLY moves, by name and signed delta",
         );
         assert_eq!(
-            late_moves.iter().map(|(_, d)| d.abs()).sum::<i64>(),
+            moved(&WeightTable::V2.late, &table.late),
+            vec![
+                ("country_bonus_now", 10),
+                ("assistants_in_hand_excess", 6),
+                ("production_access", 14),
+                ("track_access", 1),
+                ("assistant_areas_distinct", -6),
+                ("president_local_access", -2),
+                ("bank_access", 20),
+                ("president_reachable_areas", 5),
+                ("money_stock", 21),
+                ("trade_goods_stock", 15),
+                ("held_order_value", 1),
+                ("flag_icon_marginal", 1),
+            ],
+            "the draft-1 row's LATE moves, by name and signed delta",
+        );
+        // The displacements those signed deltas must sum to, kept as the third
+        // independent reading of the same row.
+        assert_eq!(
+            moved(&WeightTable::V2.early, &table.early).iter().map(|(_, d)| d.abs()).sum::<i64>(),
+            14,
+            "the row records early displacement 14 over 11 moves",
+        );
+        assert_eq!(
+            moved(&WeightTable::V2.late, &table.late).iter().map(|(_, d)| d.abs()).sum::<i64>(),
             102,
-            "the row records late displacement 102",
+            "the row records late displacement 102 over 12 moves",
         );
         // The two findings the row calls out by name.
         assert_eq!(
@@ -3371,6 +3410,30 @@ mod tests {
                 Contestant::NamedTable(arm).echo(),
             );
         }
+        // **THE DIGESTS, PINNED AS LITERALS.** Nothing else in the tree pins
+        // `weight_table_identity`'s OUTPUT — it is a fixed-seed splitmix64
+        // chain over the sixty-eight numbers, so these do not drift across
+        // platforms or builds. A failure here means one of exactly two things,
+        // and both need a human: a named table MOVED (forbidden by the
+        // never-move rule on each const), or `weight_table_identity` itself
+        // changed (a deliberate act that re-points every figure ever recorded
+        // against these names, and owes a ledger row).
+        assert_eq!(
+            identity_of(&WeightTable::V4_STEP9_DRAFT1),
+            0x608e_8453_3717_4fc8_u64 as i64,
+            "the T5-locked CANDIDATE identity",
+        );
+        assert_eq!(
+            identity_of(&WeightTable::V2),
+            0xefe5_b3e8_6b1e_c332_u64 as i64,
+            "the T5-locked BASELINE identity",
+        );
+        assert_eq!(
+            identity_of(&WeightTable::V2_REFIT_PADDED),
+            0x128a_84d3_51d0_9230_u64 as i64,
+            "the T5-locked CONTROL identity",
+        );
+
         let ids: Vec<_> = NamedIdentity::ALL.iter().map(|a| identity_of(&a.table())).collect();
         let mut distinct = ids.clone();
         distinct.sort_unstable();

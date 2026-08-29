@@ -664,14 +664,22 @@ mod tests {
     /// sentence, not the knobless one.
     #[test]
     fn a_knob_on_a_named_identity_arm_is_refused_rather_than_ignored() {
-        for spec in ["v2-padded:b=8", "v2-refit-padded:m=1", "v2-padded:"] {
-            let message = Contestant::from_str_name(spec)
-                .map(|c| format!("{c:?}"))
-                .expect_err("a knob on a knobless named arm must be refused");
-            assert!(
-                message.contains("has no knobs"),
-                "{spec:?} must be refused as knobless, not as unknown: {message}",
-            );
+        // Driven from `NamedIdentity::ALL`, not a hand-written list: a new arm
+        // whose knobless refusal nothing checked is `driven.rs`'s own rule
+        // ("a refusal nothing checked"), and a fixed list quietly stops
+        // covering the arm that was added last.
+        for arm in NamedIdentity::ALL {
+            for suffix in [":b=8", ":m=1", ":"] {
+                let spec = format!("{}{suffix}", arm.name());
+                let message = Contestant::from_str_name(&spec)
+                    .map(|c| format!("{c:?}"))
+                    .expect_err("a knob on a knobless named arm must be refused");
+                assert!(
+                    message.contains("has no knobs"),
+                    "{spec:?} must be refused as knobless, not as unknown: {message}",
+                );
+                assert!(message.contains(arm.name()), "and must name the arm: {message}");
+            }
         }
     }
 }
