@@ -2678,8 +2678,16 @@ enum Repair {
     /// the pin, the orderings and the sign constraints at once. Routed to the
     /// owner with the oracle's certificate; never a silent relaxation.
     Infeasible { certificate: Certificate, trail: Vec<TrailStep> },
-    /// The oracle, or the projection's own budget, did not decide. Routed.
-    Inconclusive { reason: String, trail: Vec<TrailStep> },
+    /// The oracle, or the projection's own budget, did not decide. Routed —
+    /// WITH what it spent getting there, because under a walk that may take
+    /// many probes a routed answer without a spend is not a legible one.
+    Inconclusive {
+        reason: String,
+        trail: Vec<TrailStep>,
+        oracle_calls: u64,
+        supports_examined: u64,
+        walk: WalkSpend,
+    },
 }
 
 impl Repair {
@@ -2712,6 +2720,8 @@ struct RepairReport {
     trail: Vec<TrailStep>,
     oracle_calls: u64,
     supports_examined: u64,
+    /// What the ruled walk spent reaching this answer.
+    walk: WalkSpend,
 }
 
 impl RepairReport {
@@ -3093,6 +3103,10 @@ struct Projection<'a> {
     p: &'a RepairProblem,
     calls: u64,
     supports: u64,
+    /// What the ruled walk spent, once it has run. Default until then, which is
+    /// the honest reading for a question routed before the bisection was
+    /// reached.
+    walk: WalkSpend,
     oracle_budget: u64,
     support_budget: u64,
     trail: Vec<TrailStep>,
@@ -3100,11 +3114,25 @@ struct Projection<'a> {
 
 impl<'a> Projection<'a> {
     fn new(p: &'a RepairProblem, oracle_budget: u64, support_budget: u64) -> Projection<'a> {
-        Projection { p, calls: 0, supports: 0, oracle_budget, support_budget, trail: Vec::new() }
+        Projection {
+            p,
+            calls: 0,
+            supports: 0,
+            walk: WalkSpend::default(),
+            oracle_budget,
+            support_budget,
+            trail: Vec::new(),
+        }
     }
 
     fn routed(&self, reason: String) -> Repair {
-        Repair::Inconclusive { reason, trail: self.trail.clone() }
+        Repair::Inconclusive {
+            reason,
+            trail: self.trail.clone(),
+            oracle_calls: self.calls,
+            supports_examined: self.supports,
+            walk: self.walk,
+        }
     }
 
     /// Put one question to the frozen oracle, spending one call.
@@ -3286,7 +3314,8 @@ impl Projection<'_> {
             }
         })?;
         let d_star = match bisection {
-            Bisection::Closed { d_star, witness: found } => {
+            Bisection::Closed { d_star, witness: found, walk } => {
+                self.walk = walk;
                 // `None` means the walk never took a point of its own, so the
                 // step-0 witness `w_hi` still stands at this level.
                 if let Some(found) = found {
@@ -3424,6 +3453,7 @@ impl Projection<'_> {
             trail: std::mem::take(&mut self.trail),
             oracle_calls: self.calls,
             supports_examined: self.supports,
+            walk: self.walk,
             w,
         })
     }
@@ -3625,6 +3655,8 @@ struct RoutedBisection {
     /// a retreat is unreachable under the rule, and a type that could express
     /// it would invite a caller to handle a case that cannot happen.
     retreat: Retreat,
+    /// Displacement levels the walk asked about before it stopped.
+    probes: u64,
     /// The oracle's own words, from the answer that routed.
     reason: String,
     /// TRUE when the routing level's answer was one already held — rider 1's
@@ -3633,12 +3665,35 @@ struct RoutedBisection {
     remembered: bool,
 }
 
+/// **WHAT THE RULED WALK SPENT**, in its own deterministic currency.
+///
+/// The ruled walk may take many probes where the classic bisection took a
+/// handful, so a slow run has to be legible from the page rather than from a
+/// stopwatch — and a rider-2 ruling needs a number to reason from.
+///
+/// **NODES ARE NOT AMONG THESE.** `NODE_BUDGET` is spent inside `decide`, which
+/// is frozen and returns a `Verdict` carrying no spend; surfacing a node count
+/// would mean changing that signature. What the projection can honestly count
+/// is its own questions, and it does.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct WalkSpend {
+    /// Displacement levels the walk ASKED about.
+    ///
+    /// A level it routed on FROM MEMORY is deliberately not among them — that
+    /// is exactly rider 1's saving, and a count that included it would report a
+    /// spend that never happened.
+    probes: u64,
+    /// The retreat, when the walk left [`next_probe`]'s arm. `None` means the
+    /// classic bisection ran start to finish and there is nothing new to say.
+    retreat: Option<Retreat>,
+}
+
 /// Where the bisection stopped.
 enum Bisection {
     /// `d_star` is the optimal displacement level. `witness` is the last point
     /// the walk took, or `None` when it took none — the caller's own step-0
     /// point then still stands at this level.
-    Closed { d_star: i64, witness: Option<Vec<i64>> },
+    Closed { d_star: i64, witness: Option<Vec<i64>>, walk: WalkSpend },
     Routed(RoutedBisection),
 }
 
@@ -3699,6 +3754,7 @@ fn bisect_displacement<E>(
                         lo,
                         hi,
                         retreat,
+                        probes: 0,
                         reason: reason.clone(),
                         remembered: true,
                     }));
@@ -3730,6 +3786,7 @@ fn bisect_displacement<E>(
                         lo,
                         hi,
                         retreat,
+                        probes: 0,
                         reason,
                         remembered: false,
                     }))
@@ -3737,7 +3794,7 @@ fn bisect_displacement<E>(
             },
         }
     }
-    Ok(Bisection::Closed { d_star: hi, witness })
+    Ok(Bisection::Closed { d_star: hi, witness, walk: WalkSpend::default() })
 }
 
 /// One routed bisection, in the words the owner reads.
@@ -4085,7 +4142,7 @@ fn drive_repair_within(p: &RepairProblem, oracle_budget: u64, support_budget: u6
     loop {
         let trail = match repair_within(&current, oracle_budget, support_budget) {
             Repair::Repaired(report) => return Driven::Repaired { exceptions, sets, report },
-            Repair::Inconclusive { reason, trail } => {
+            Repair::Inconclusive { reason, trail, .. } => {
                 return Driven::Inconclusive { exceptions, sets, reason, trail }
             }
             Repair::Infeasible { trail, .. } => trail,
@@ -4990,7 +5047,7 @@ fn render_repair_outcome(verdict: &Repair, under: &str) -> String {
             out.push_str(&format!("certificate          {}\n", render_certificate(certificate)));
             out.push_str(&render_trail(trail));
         }
-        Repair::Inconclusive { reason, trail } => {
+        Repair::Inconclusive { reason, trail, .. } => {
             out.push_str(&format!(
                 "\nVERDICT              INCONCLUSIVE -- {reason}\nROUTED               \
                  §5.4: \"the oracle did not decide\" is never infeasibility, and this is not a \
@@ -7055,6 +7112,25 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
             );
         };
         assert_eq!(report.displacement, 14, "the certified optimum's displacement");
+
+        // **WHY THE FRONTIER-RETREAT RULE CANNOT REACH THIS ENDPOINT.** The rule
+        // only ever fires on an undecided probe, and no question this endpoint
+        // asks comes back undecided — so the walk never leaves `next_probe`'s
+        // arm and the answer above is the pre-rule answer.
+        //
+        // Byte-identity against a banked artifact says the same thing, but it
+        // stops saying anything the moment the early system changes for some
+        // unrelated reason; this states the CAUSE, so a future early system
+        // that started routing undecided probes would fail here rather than
+        // quietly begin exercising an untested path.
+        assert!(
+            !report.trail.iter().any(|s| matches!(s.outcome, TrailOutcome::Undecided(_))),
+            "no early question is undecided, so no retreat is reachable at this endpoint",
+        );
+        assert_eq!(
+            report.walk.retreat, None,
+            "and the walk records that it never left the midpoint arm",
+        );
         assert_eq!(report.changed.len(), 11, "over eleven changed coordinates");
         for (label, value) in
             [("S1", 1), ("S2", 1), ("S5", 1), ("S6", 1), ("S7", 1), ("E1", 2), ("E2", 2)]
@@ -9683,7 +9759,7 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
             (3, LevelAnswer::Witness(vec![7; AXIS_WIDTH])),
         ]);
         let outcome = bisect_displacement(-1, 10, 6, ask).expect("the script never hard-stops");
-        let Bisection::Closed { d_star, witness } = outcome else {
+        let Bisection::Closed { d_star, witness, .. } = outcome else {
             panic!("the frontier walk closes the level; it does not route");
         };
         assert_eq!(d_star, 3, "the first level the frontier certified feasible IS the optimum");
@@ -9828,6 +9904,90 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
         }
     }
 
+    /// **THE WALK METERS ITSELF**, in both arms, and a level it routed on FROM
+    /// MEMORY is not counted as a probe.
+    ///
+    /// Under the ruled walk a run may take many probes where the classic
+    /// bisection took a handful, so a slow run has to be legible from the page
+    /// — and a rider-2 ruling needs a number to reason from. Counting a
+    /// remembered level as a probe would report a spend that never happened,
+    /// which is exactly the saving rider 1 exists to make.
+    #[test]
+    fn the_ruled_walk_reports_the_probes_it_spent_and_the_retreat_that_started_it() {
+        // (1) A CLOSED walk that retreated: five questions, and the retreat.
+        let (ask, _) = level_script(vec![
+            (6, LevelAnswer::Undecided("stalled".to_string())),
+            (0, LevelAnswer::Empty),
+            (1, LevelAnswer::Empty),
+            (2, LevelAnswer::Empty),
+            (3, LevelAnswer::Witness(vec![0; AXIS_WIDTH])),
+        ]);
+        let Bisection::Closed { walk, .. } =
+            bisect_displacement(-1, 10, 6, ask).expect("the script never hard-stops")
+        else {
+            panic!("this walk closes")
+        };
+        assert_eq!(walk.probes, 5, "every level it asked about");
+        assert_eq!(walk.retreat, Some(Retreat { level: 6, lo: -1, hi: 10 }));
+
+        // (2) A CLOSED walk that never retreated reports NO retreat — which is
+        // what keeps the line off a page that has nothing new to say, and the
+        // EARLY endpoint byte-invariant.
+        let (ask, _) = level_script(vec![
+            (4, LevelAnswer::Empty),
+            (7, LevelAnswer::Witness(vec![0; AXIS_WIDTH])),
+            (5, LevelAnswer::Empty),
+            (6, LevelAnswer::Witness(vec![0; AXIS_WIDTH])),
+        ]);
+        let Bisection::Closed { walk, .. } =
+            bisect_displacement(-1, 10, 4, ask).expect("the script never hard-stops")
+        else {
+            panic!("this walk closes")
+        };
+        assert_eq!((walk.probes, walk.retreat), (4, None));
+
+        // (3) A REMEMBERED route counts three probes, not four: the level it
+        // routed on was never asked a second time.
+        let (ask, _) = level_script(vec![
+            (2, LevelAnswer::Undecided("stalled at two".to_string())),
+            (0, LevelAnswer::Empty),
+            (1, LevelAnswer::Empty),
+        ]);
+        let Bisection::Routed(routed) =
+            bisect_displacement(-1, 10, 2, ask).expect("the script never hard-stops")
+        else {
+            panic!("this walk routes")
+        };
+        assert_eq!(routed.probes, 3, "the remembered level is not a spend");
+        assert!(
+            routed_bisection_text(&routed).contains("3 probe(s)"),
+            "and the number is on the page a ruling reads: {}",
+            routed_bisection_text(&routed),
+        );
+    }
+
+    /// **A ROUTED PROJECTION PRINTS WHAT IT SPENT.** Before this the
+    /// INCONCLUSIVE arm printed no budget line at all, so the one page most
+    /// likely to be slow was the one page that said nothing about its cost.
+    #[test]
+    fn a_routed_projection_page_prints_its_budget_spend() {
+        let s4 = col("S4");
+        let problem = anchored_problem(&[("S4 at most -2", &[(s4, 1)], 0)]);
+        let routed = repair_within(&problem, 1, REPAIR_SUPPORT_BUDGET);
+        assert_eq!(routed.name(), "INCONCLUSIVE", "a starved projection routes");
+        let out = render_repair_outcome(&routed, "");
+        assert!(out.contains("VERDICT              INCONCLUSIVE"), "{out}");
+        assert!(
+            out.contains("budget spent"),
+            "a routed page says what it spent getting there: {out}",
+        );
+        assert!(out.contains("oracle calls of 1"), "{out}");
+        assert!(
+            !out.contains("walk spend"),
+            "and says nothing about a walk that never left the midpoint arm: {out}",
+        );
+    }
+
     /// A walk that closes without ever taking a point of its own returns no
     /// witness, and the caller's step-0 point still stands at that level.
     ///
@@ -9837,7 +9997,7 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
     fn a_walk_that_takes_no_point_of_its_own_returns_no_witness() {
         let (ask, asked) = level_script(vec![(0, LevelAnswer::Empty)]);
         let outcome = bisect_displacement(-1, 1, 0, ask).expect("the script never hard-stops");
-        let Bisection::Closed { d_star, witness } = outcome else { panic!("nothing routes here") };
+        let Bisection::Closed { d_star, witness, .. } = outcome else { panic!("nothing routes here") };
         assert_eq!((d_star, asked.get()), (1, 1));
         assert!(witness.is_none(), "the caller's own step-0 witness is the one that stands");
     }
