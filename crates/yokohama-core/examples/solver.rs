@@ -4500,7 +4500,7 @@ impl SetPhase {
 /// **The steps are the record that the set is CANONICAL.** "Grown in canonical
 /// order" and "pruned by the canonical deletion filter" are claims about an
 /// order, and a claim about an order is only checkable if the order is printed.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct SetStep {
     phase: SetPhase,
     /// GROW: the clause just ADDED. PRUNE: the member whose clause was RESTORED.
@@ -5015,7 +5015,11 @@ fn render_driven(p: &RepairProblem) -> String {
     // renderer, and the other three from here.
     let headline = driven.name();
     out.push_str(&render_exception_block(driven.exceptions()));
-    out.push_str(&render_forced_set_block(p, driven.sets()));
+    out.push_str(&render_forced_set_block(
+        p,
+        driven.sets(),
+        matches!(driven, Driven::Repaired { .. }),
+    ));
     match driven {
         Driven::Repaired { exceptions, sets, report } => {
             let under = exception_suffix(&exceptions, &sets);
@@ -5078,7 +5082,12 @@ fn exception_suffix(exceptions: &[CertifiedException], sets: &[CertifiedForcedSe
 /// Printed on EVERY driven page, exactly as [`render_exception_block`] is: "no
 /// set was certified" is a fact a reader should be able to see rather than infer
 /// from an absence.
-fn render_forced_set_block(p: &RepairProblem, sets: &[CertifiedForcedSet]) -> String {
+fn render_forced_set_block(
+    p: &RepairProblem,
+    sets: &[CertifiedForcedSet],
+    repaired: bool,
+) -> String {
+    let _ = repaired;
     let mut out = String::new();
     out.push_str(&format!("\nforced-set driver    {FORCED_SET_AUTHORITY}\n"));
     out.push_str(&format!("set construction     {FORCED_SET_CONSTRUCTION}\n"));
@@ -9023,6 +9032,53 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
         assert!(out.contains("+ S5   removed {S1, S2, S3, S4, S5}"), "the growth's last add: {out}");
         assert!(out.contains("- S1   removed {S2, S3, S4, S5}"), "the filter's first restore: {out}");
         assert!(out.contains("RETURNS TO FORCE"), "{out}");
+
+        // **A SINGLE-CLAUSE QUESTION IS THE B1 PROBE, RE-ASKED.** The driver
+        // inherits no answer, so those steps print certificates byte-identical
+        // to the probe block above them — and a reader counting the repetition
+        // as a second, independent piece of evidence would be double-counting
+        // one oracle answer. The line says which it is.
+        assert!(
+            out.contains("+ S1   removed {S1}")
+                && out.contains("[the same question as the B1 probe above, re-asked -- never inherited]"),
+            "a one-clause question is annotated as the re-ask it is: {out}",
+        );
+        assert_eq!(
+            out.matches("re-asked -- never inherited").count(),
+            3,
+            "exactly the three one-clause questions: grow's first, and the filter's last two: {out}",
+        );
+    }
+
+    /// **THE WITNESS LINE POINTS AT THE DOSES BLOCK ONLY WHEN THERE IS ONE.**
+    ///
+    /// A certified set can stand on a page whose projection then ROUTED — the
+    /// real late endpoint is exactly that — and there is no doses block on such
+    /// a page. Telling the reader their answer is "in the doses block" when the
+    /// page has none sends them looking for something that is not there.
+    #[test]
+    fn the_witness_line_points_at_the_doses_block_only_when_the_run_reached_one() {
+        let (s4, s5) = (col("S4"), col("S5"));
+        let problem = anchored_problem(&[
+            ("S4 at most -2", &[(s4, -1)], 2),
+            ("S5 at most -2", &[(s5, -1)], 2),
+        ]);
+        let Driven::Repaired { sets, .. } = drive_repair(&problem) else {
+            panic!("this fixture certifies a set")
+        };
+
+        let repaired = render_forced_set_block(&problem, &sets, true);
+        assert!(repaired.contains("in the doses block below"), "{repaired}");
+
+        let routed = render_forced_set_block(&problem, &sets, false);
+        assert!(
+            routed.contains("which this run did not reach"),
+            "a routed page says the doses were never computed: {routed}",
+        );
+        assert!(
+            !routed.contains("doses block"),
+            "and does not point at a block the page has not got: {routed}",
+        );
     }
 
     /// A ROWS-LEVEL page names the verdict, the certificate for the fully
@@ -9148,6 +9204,23 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
             "and it routes for the reason this cell BUILT, not some other one: {reason}",
         );
         assert!(driven.exceptions().is_empty(), "no coordinate was proven singly forced");
+
+        // **THE CELL'S PREMISE, MADE A CHECKED FACT.** Starving the projection
+        // is only a legitimate way to reach the set if the construction does
+        // not depend on the projection's budget — the B1 pass and B1' ask the
+        // oracle directly and spend none of it. Two different budgets must
+        // therefore produce the SAME questions and the same answers, which also
+        // means the set this cell pins is the set the shipped budgets build.
+        let wider = drive_repair_within(&problem, 2, REPAIR_SUPPORT_BUDGET);
+        assert_eq!(
+            wider.sets().first().map(|s| s.record.steps.clone()),
+            driven.sets().first().map(|s| s.record.steps.clone()),
+            "the construction is projection-budget-independent",
+        );
+        assert_eq!(
+            wider.sets().first().map(CertifiedForcedSet::named),
+            driven.sets().first().map(CertifiedForcedSet::named),
+        );
         let sets = driven.sets();
         assert_eq!(sets.len(), 1, "and the set was certified before the budget ran out");
         let set = &sets[0];
@@ -9965,6 +10038,146 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
         };
         assert!(reason.contains("question (i)"), "the contradiction is named: {reason}");
         assert!(reason.contains("defect"), "{reason}");
+    }
+
+    /// **THE MONOTONICITY LINE FIRES WHERE THE PROOF WAS TAKEN BESIDE MORE
+    /// CLAUSES THAN THE FINAL SET GRANTS — and not where it was not.**
+    ///
+    /// The reviewer's shape, hand-scripted: grow to `{A, B, C, D}`, then the
+    /// deletion filter KEEPS `A`, RETURNS `B`, KEEPS `C`, RETURNS `D`. `A`'s
+    /// proof was taken with `{B, C, D}` off, but the final set is `{A, C}`, so
+    /// `A`'s `beside` is a strict SUPERSET of `{C}` — the case the rendered
+    /// `monotone` line exists to disclose.
+    #[test]
+    fn a_member_kept_before_a_later_member_returns_records_a_superset_beside() {
+        let (a, b, c, d) = (
+            CandidateFeature::ProductionAccess,
+            CandidateFeature::TrackAccess,
+            CandidateFeature::AssistantAreasDistinct,
+            CandidateFeature::PresidentLocalAccess,
+        );
+        let run = construct_forced_set(
+            &[a, b, c, d],
+            &Certificate::Farkas { y: vec![1], rhs: 99 },
+            &[],
+            |x| format!("{} >= 0", x.label()),
+            scripted(vec![
+                set_blocked(1),  // grow  + A -> {A}
+                set_blocked(2),  // grow  + B -> {A, B}
+                set_blocked(3),  // grow  + C -> {A, B, C}
+                set_feasible(),  // grow  + D -> {A, B, C, D}   STOP
+                set_blocked(10), // prune - A -> {B, C, D}      KEPT
+                set_feasible(),  // prune - B -> {A, C, D}      returns
+                set_blocked(30), // prune - C -> {A, D}         KEPT
+                set_feasible(),  // prune - D -> {A, C}         returns
+            ]),
+        );
+        let ForcedSetOutcome::Certified { members, .. } = run.outcome else {
+            panic!("the filter decided every member");
+        };
+        assert_eq!(members.iter().map(|m| m.candidate).collect::<Vec<_>>(), vec![a, c]);
+        assert_eq!(
+            members[0].beside,
+            vec![b, c, d],
+            "A's proof was taken beside three clauses; the final set grants only C",
+        );
+        assert_eq!(members[1].beside, vec![a, d], "and C's beside D, which also returned");
+    }
+
+    /// **THE `monotone` LINE IS ON THE PAGE**, over a real driven problem whose
+    /// filter produces exactly that shape — so the rendering is covered and not
+    /// merely the struct field.
+    ///
+    /// Two rows, `w_S1 ≤ −1` and `w_S4 ≤ −1`, both against `+` priors from a 0
+    /// start. Hand-derived before the engine runs:
+    ///
+    /// * GROW walks `S1, S2, S3` — at each of those S4's clause still
+    ///   contradicts its row — and stops at `{S1, S2, S3, S4}`;
+    /// * PRUNE **keeps `S1`** (restoring `S1 ≥ 0` re-creates its own
+    ///   contradiction) with `beside = {S2, S3, S4}`, then RETURNS `S2` and
+    ///   `S3` (no row reads them), then **keeps `S4`** with `beside = {S1}`;
+    /// * so `F = {S1, S4}`: `S1`'s recorded `beside` is a strict superset of
+    ///   `{S4}` and its line fires, while `S4`'s equals `{S1}` and its does not.
+    #[test]
+    fn a_driven_page_discloses_a_superset_beside_and_stays_silent_where_there_is_none() {
+        let (s1, s4) = (col("S1"), col("S4"));
+        let rows: &[ToyRow] =
+            &[("S1 at most -1", &[(s1, -1)], 1), ("S4 at most -1", &[(s4, -1)], 1)];
+        let problem = anchored_problem(rows);
+
+        let driven = drive_repair(&problem);
+        assert_eq!(driven.name(), "REPAIRED");
+        let Driven::Repaired { sets, report, .. } = driven else { unreachable!() };
+        let set = &sets[0];
+        assert_eq!(
+            set.named(),
+            vec![CandidateFeature::ProductionAccess, CandidateFeature::PresidentLocalAccess],
+            "F = {{S1, S4}}",
+        );
+        assert_eq!(
+            set.members[0].beside,
+            vec![
+                CandidateFeature::TrackAccess,
+                CandidateFeature::AssistantAreasDistinct,
+                CandidateFeature::PresidentLocalAccess,
+            ],
+            "S1's proof was taken before S2 and S3 returned to force",
+        );
+        assert_eq!(
+            set.members[1].beside,
+            vec![CandidateFeature::ProductionAccess],
+            "S4's was taken against the final set already",
+        );
+        assert_eq!((report.w[s1], report.w[s4]), (-1, -1), "and both doses are -1");
+
+        let out = render_driven(&problem);
+        assert!(
+            out.contains("monotone     the final set grants only {S4}"),
+            "S1's superset beside is disclosed: {out}",
+        );
+        assert!(
+            out.contains("an infeasible system stays infeasible when constraints are added back"),
+            "with the implication that makes the older proof still good: {out}",
+        );
+        assert_eq!(
+            out.matches("monotone").count(),
+            1,
+            "and S4, whose beside IS the final set minus itself, gets no such line: {out}",
+        );
+    }
+
+    /// **`witness_holds` CHECKS THE ROWS AND THE BOX, and a point that passes
+    /// one can fail the other.**
+    ///
+    /// [`System::violation`] prices only the deletable tier, so a point far
+    /// outside its box satisfies every row while being no solution at all —
+    /// which is why the box half exists and why neutering it must fail a cell.
+    #[test]
+    fn the_set_witness_check_reads_both_the_rows_and_the_box() {
+        let board = Feature::AssistantsOnBoard.index();
+        // `assistants_on_board` is 10 in V2's late table, so this row holds at
+        // the anchor with slack exactly zero — one step below it is a violation
+        // and well inside the box.
+        let rows: &[ToyRow] = &[("board at least 10", &[(board, 1)], 10)];
+        let problem = anchored_problem(rows);
+        assert_eq!(problem.w0[board], 10, "the anchor the two failures are built from");
+
+        assert_eq!(witness_holds(&problem, &problem.w0), Ok(()), "the anchor itself holds");
+
+        let mut outside = problem.w0.clone();
+        outside[board] = 1000;
+        let box_error = witness_holds(&problem, &outside).expect_err("1000 is outside the box");
+        assert!(box_error.contains("assistants_on_board"), "{box_error}");
+        assert!(box_error.contains("outside its box"), "{box_error}");
+        assert!(box_error.contains(&format!("[{}, {}]", -BOX_LIMIT, BOX_LIMIT)), "{box_error}");
+
+        let mut violating = problem.w0.clone();
+        violating[board] = 9;
+        let row_error = witness_holds(&problem, &violating).expect_err("9 violates the row");
+        assert!(row_error.contains("total row violation is 1"), "{row_error}");
+        // And the two checks are genuinely different: the violating point is
+        // INSIDE its box, so a box-only check would pass it.
+        assert!(violating[board] >= -BOX_LIMIT && violating[board] <= BOX_LIMIT);
     }
 
     /// A driven page carrying a certified SET reproduces byte for byte, exactly
