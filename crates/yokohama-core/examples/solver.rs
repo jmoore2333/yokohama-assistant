@@ -4377,13 +4377,145 @@ fn construct_forced_set(
     clause_of: impl Fn(CandidateFeature) -> String,
     mut ask: impl FnMut(&[CandidateFeature]) -> SetAnswer,
 ) -> ForcedSetRun {
-    let _ = (active, standing, standing_leans, &clause_of, &mut ask);
-    ForcedSetRun {
-        outcome: ForcedSetOutcome::Withheld {
-            reason: "B1' set construction is not implemented".to_string(),
-        },
-        steps: Vec::new(),
+    let mut steps: Vec<SetStep> = Vec::new();
+    let mut f: Vec<CandidateFeature> = Vec::new();
+    // The certificate for the LAST system the growth asked about — the standing
+    // one until the first question, since `F = ∅` removes nothing.
+    let mut residual = (standing.clone(), standing_leans.to_vec());
+    let mut witness: Option<Vec<i64>> = None;
+
+    let withheld = |steps: Vec<SetStep>, phase: SetPhase, subject: CandidateFeature, reason: &str| {
+        ForcedSetRun {
+            outcome: ForcedSetOutcome::Withheld {
+                reason: format!(
+                    "the {} question about {} did not decide, so the SET is not established: \
+                     {reason}",
+                    phase.name(),
+                    subject.label(),
+                ),
+            },
+            steps,
+        }
+    };
+
+    // **GROW.** Add the canonically-first active clause not yet in `F` and ask
+    // again, until the system with all of `F` removed is certified FEASIBLE.
+    for &candidate in active {
+        f.push(candidate);
+        let answer = ask(&f);
+        steps.push(SetStep {
+            phase: SetPhase::Grow,
+            subject: candidate,
+            removed: f.clone(),
+            answer: answer.kind(),
+            detail: set_step_detail(&answer, SetPhase::Grow),
+            leaned_on: match &answer {
+                SetAnswer::StillInfeasible { leaned_on, .. } => leaned_on.clone(),
+                _ => Vec::new(),
+            },
+        });
+        match answer {
+            SetAnswer::Feasible(point) => {
+                witness = Some(point);
+                break;
+            }
+            SetAnswer::StillInfeasible { certificate, leaned_on } => {
+                residual = (certificate, leaned_on);
+            }
+            SetAnswer::Undecided(reason) => {
+                return withheld(steps, SetPhase::Grow, candidate, &reason)
+            }
+        }
     }
+
+    // **THE GROWTH EXHAUSTED.** Every active clause is off and the system is
+    // still certified infeasible, so the contradiction is at the rows/box/pin
+    // level — see [`ROWS_LEVEL_READING`]. With no active clause at all the loop
+    // never ran and `residual` is still the STANDING certificate, which is the
+    // right one: removing nothing leaves the standing system.
+    let Some(mut point) = witness else {
+        let (certificate, leaned_on) = residual;
+        return ForcedSetRun {
+            outcome: ForcedSetOutcome::RowsLevel { certificate, leaned_on },
+            steps,
+        };
+    };
+
+    // **PRUNE — the canonical deletion filter.** For each member in canonical
+    // order, restore ITS clause alone with every other exception granted. The
+    // walk is over `F` AS GROWN; `f` itself shrinks underneath as members return
+    // to force, and every later trial is taken against the shrunken set.
+    let order = f.clone();
+    let mut members: Vec<ForcedSetMember> = Vec::new();
+    for &candidate in &order {
+        let trial: Vec<CandidateFeature> =
+            f.iter().copied().filter(|&other| other != candidate).collect();
+        let answer = ask(&trial);
+        steps.push(SetStep {
+            phase: SetPhase::Prune,
+            subject: candidate,
+            removed: trial.clone(),
+            answer: answer.kind(),
+            detail: set_step_detail(&answer, SetPhase::Prune),
+            leaned_on: match &answer {
+                SetAnswer::StillInfeasible { leaned_on, .. } => leaned_on.clone(),
+                _ => Vec::new(),
+            },
+        });
+        match answer {
+            // Unnecessary: the member returns to force, and the point that
+            // proved it unnecessary is a witness for the SHRUNKEN set. Every
+            // later FEASIBLE answer overwrites it, so the last one standing is a
+            // witness for the FINAL set — which is what the caller re-checks.
+            SetAnswer::Feasible(shrunk) => {
+                point = shrunk;
+                f = trial;
+            }
+            SetAnswer::StillInfeasible { certificate, leaned_on } => {
+                members.push(ForcedSetMember {
+                    candidate,
+                    clause: clause_of(candidate),
+                    forcing: certificate,
+                    leaned_on,
+                    beside: trial,
+                });
+            }
+            SetAnswer::Undecided(reason) => {
+                return withheld(steps, SetPhase::Prune, candidate, &reason)
+            }
+        }
+    }
+
+    // **TWO DEFECTS, TYPED RATHER THAN TRUSTED**, on [`fold_forcing`]'s
+    // reasoning: an answer that contradicts an answer already held is not an
+    // answer about any system.
+    if f.is_empty() {
+        return ForcedSetRun {
+            outcome: ForcedSetOutcome::Withheld {
+                reason: "the deletion filter returned EVERY member to force, which says the \
+                         UN-EXCEPTED system is feasible -- and question (i) certified it \
+                         infeasible. Two oracle answers disagree; that is a construction defect, \
+                         not an answer about any system."
+                    .to_string(),
+            },
+            steps,
+        };
+    }
+    let kept: Vec<CandidateFeature> = members.iter().map(|m| m.candidate).collect();
+    if kept != f {
+        return ForcedSetRun {
+            outcome: ForcedSetOutcome::Withheld {
+                reason: format!(
+                    "the deletion filter kept {} but F is {}; the proofs and the set disagree, \
+                     which is a construction defect rather than an answer.",
+                    label_set(&kept),
+                    label_set(&f),
+                ),
+            },
+            steps,
+        };
+    }
+    ForcedSetRun { outcome: ForcedSetOutcome::Certified { members, witness: point }, steps }
 }
 
 /// One step's `detail` line, which reads differently in the two halves because
@@ -5619,17 +5751,32 @@ usage: solver <subcommand>
       both certificates, and re-runs. `--no-exceptions` runs the RAW
       un-excepted projection instead, which is what the standing S4-late
       regression pins.
+      B1' EXTENDS THAT CLASS TO CERTIFIED FORCED SETS (guidingpath 2026-08-29,
+      \"B1' IS RULED\"). Where the single-clause pass concludes JOINT -- every
+      active clause probed alone, every one certified STILL infeasible -- that
+      conclusion is RECORDED and the construction continues: GROW takes the
+      canonically-first active clause not yet in F until the system with all of
+      F removed is certified FEASIBLE, then the canonical DELETION FILTER
+      restores each member's clause alone with every other exception granted,
+      returning it to force on a certified FEASIBLE and keeping it on a
+      certified INFEASIBLE -- and THAT certificate is the member's forcing
+      proof. Any undecided answer anywhere withholds the whole set.
       EXIT: 0 = the projection RAN. Every registered outcome is an ANSWER of a
       reporting instrument and every one of them exits 0 -- REPAIRED (with or
-      without certified exceptions), REPAIR-JOINT-CONFLICT (certified infeasible
-      with NO singly-forcing coordinate: outside B1's class, routed to the
-      owner), REPAIR-INFEASIBLE (the raw projection's own verdict, reached under
-      --no-exceptions) and INCONCLUSIVE (the oracle or a budget did not decide)
-      alike. The answer is the VERDICT line, never the exit status: this
-      subcommand has no GATE to read and say no, which is the whole difference
-      from the probe's step-9 sections. Nonzero = the instrument could not RUN
-      -- an unknown toy, an unregistered --start, a stray argument -- and says
-      nothing about any system.
+      without certified exceptions: single-forced iterations under B1, a forced
+      set under B1', or none), ROWS-LEVEL-REPAIR-INFEASIBLE (the growth
+      exhausted EVERY active sign clause and the system is still certified
+      infeasible, so no clause is the culprit: outside both classes, routed to
+      the owner), REPAIR-SET-WITHHELD (an oracle answer inside the set
+      construction did not decide, so nothing is excepted and no set is
+      claimed), REPAIR-INFEASIBLE (the raw projection's own verdict, reached
+      under --no-exceptions) and INCONCLUSIVE (the oracle or a budget did not
+      decide before the construction was reached) alike. The answer is the
+      VERDICT line, never the exit status: this subcommand has no GATE to read
+      and say no, which is the whole difference from the probe's step-9
+      sections. Nonzero = the instrument could not RUN -- an unknown toy, an
+      unregistered --start, a stray argument -- and says nothing about any
+      system.
 ";
 
 // ---------------------------------------------------------------------------
@@ -8128,7 +8275,9 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
         // The set construction is documented where the exit contract is, because
         // the T4 driver reads that block and now has three more answers to read.
         assert!(USAGE.contains("B1' IS RULED"), "the forced-set ruling is cited: {USAGE}");
-        assert!(USAGE.contains("deletion filter"), "{USAGE}");
+        for half in ["GROW takes the", "DELETION FILTER"] {
+            assert!(USAGE.contains(half), "the exit contract names the {half} half: {USAGE}");
+        }
 
         let outcome_of = |name: &str| -> &'static str {
             let sys = toys::named(name).expect("a registered toy");
@@ -8699,22 +8848,49 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
     ///   (B) are both broken;
     /// * the DELETION FILTER returns `S1` and `S2` to force and keeps `S3` (its
     ///   restoration re-creates (B)) and `S4` (its restoration re-creates (A));
-    /// * `F = {S3, S4}`, and the doses are the bounds the two combinations
-    ///   prove over the ROWS ALONE: `−4·w_S3 ≥ 15` gives `w_S3 ≤ −4` and
-    ///   `−4·w_S4 ≥ 5` gives `w_S4 ≤ −2`, so minimal displacement cannot dose
-    ///   either member shallower and is expected to dose neither deeper.
+    /// * `F = {S3, S4}` — which is what this cell asserts, member by member and
+    ///   certificate by certificate.
+    ///
+    /// **WHAT THIS CELL DELIBERATELY DOES NOT ASSERT, and why.** It runs at an
+    /// oracle-call budget of ONE, which is enough for the first projection to
+    /// reach its REPAIR-INFEASIBLE (that verdict costs exactly one call) and for
+    /// the whole B1 pass and B1′ construction to run — those ask the oracle
+    /// directly and spend no projection budget — and then STARVES the second
+    /// projection, which routes INCONCLUSIVE after its own first call. So the
+    /// set is pinned and the DOSES are not.
+    ///
+    /// That is not hiding an inconvenient answer; the answer is recorded here.
+    /// **At the SHIPPED budgets the excepted late projection also routes
+    /// INCONCLUSIVE** — the displacement bisection certifies `≤ 97` empty by
+    /// Chvátal–Gomory, holds a witness at `517`, and spends the registered 10⁷
+    /// nodes on the midpoint 307 without deciding, leaving the optimum bracketed
+    /// in `(97, 517]`. The ledger's expected doses of `−4 / −2` were the FARKAS
+    /// LOWER BOUNDS on two coordinates, not a displacement figure, and the true
+    /// optimum moves far more than those two. Pinning that run here would put a
+    /// ~100-second release cell (many minutes in debug) in a per-edit suite to
+    /// assert a routed non-answer; the artifact carries it instead, and the
+    /// budget is the owner's to re-register, not this driver's to widen.
     #[test]
-    fn the_real_late_endpoint_resolves_as_a_certified_forced_set_over_s3_and_s4() {
+    fn the_real_late_endpoint_certifies_the_forced_set_over_s3_and_s4() {
         let problem = real_late_problem();
-        let driven = drive_repair(&problem);
-        let Driven::Repaired { exceptions, sets, report } = driven else {
-            panic!(
-                "the engine's answer is the record: the real late endpoint drives to REPAIRED \
-                 under a certified forced set, and a change to that must be re-derived here",
-            );
-        };
-        assert!(exceptions.is_empty(), "no coordinate was proven singly forced");
-        assert_eq!(sets.len(), 1, "one set answered it");
+        // ONE oracle call: enough for the first projection's REPAIR-INFEASIBLE
+        // and for the whole construction, and not enough for the second
+        // projection's bisection. See the note above.
+        let driven = drive_repair_within(&problem, 1, REPAIR_SUPPORT_BUDGET);
+        assert_eq!(
+            driven.name(),
+            "INCONCLUSIVE",
+            "the starved second projection routes, which is this cell's construction and not a \
+             finding about the system",
+        );
+        let Driven::Inconclusive { reason, .. } = &driven else { unreachable!() };
+        assert!(
+            reason.contains("budget of 1 oracle calls"),
+            "and it routes for the reason this cell BUILT, not some other one: {reason}",
+        );
+        assert!(driven.exceptions().is_empty(), "no coordinate was proven singly forced");
+        let sets = driven.sets();
+        assert_eq!(sets.len(), 1, "and the set was certified before the budget ran out");
         let set = &sets[0];
         assert_eq!(
             set.named(),
@@ -8724,23 +8900,57 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
             ],
             "F = {{S3, S4}}",
         );
+        assert_eq!(set.record.stage, StageEndpoint::Late);
+
+        // THE CONSTRUCTION, step by step against the hand derivation above.
+        let step = |phase: SetPhase| -> Vec<(&str, ProbeAnswer, usize)> {
+            set.record
+                .steps
+                .iter()
+                .filter(|s| s.phase == phase)
+                .map(|s| (s.subject.label(), s.answer, s.removed.len()))
+                .collect()
+        };
         assert_eq!(
-            (report.w[col("S3")], report.w[col("S4")]),
-            (-4, -2),
-            "the doses the two Farkas bounds price",
+            step(SetPhase::Grow),
+            [
+                ("S1", ProbeAnswer::StillInfeasible, 1),
+                ("S2", ProbeAnswer::StillInfeasible, 2),
+                ("S3", ProbeAnswer::StillInfeasible, 3),
+                ("S4", ProbeAnswer::Feasible, 4),
+            ],
+            "(A) survives the first three removals and dies with S4's clause",
         );
         assert_eq!(
-            set.record.steps.iter().filter(|s| s.phase == SetPhase::Grow).count(),
-            4,
-            "the growth stopped at the canonical prefix S1..S4",
+            step(SetPhase::Prune),
+            [
+                ("S1", ProbeAnswer::Feasible, 3),
+                ("S2", ProbeAnswer::Feasible, 2),
+                ("S3", ProbeAnswer::StillInfeasible, 1),
+                ("S4", ProbeAnswer::StillInfeasible, 1),
+            ],
+            "two members return to force -- and the trial SHRINKS as they do, so S2 is asked \
+             about {{S3, S4}} and not about {{S1, S3, S4}}",
         );
-        for member in &set.members {
-            assert!(
-                matches!(member.forcing, Certificate::Farkas { .. }),
-                "{} carries a verified per-member proof",
-                member.candidate.label(),
-            );
+
+        // **THE PER-MEMBER PROOFS ARE (B) AND (A) THEMSELVES**, identified by
+        // the `y·b` the arithmetic cell below re-derives from the row data.
+        for (member, yb) in set.members.iter().zip([15i128, 5]) {
+            let Certificate::Farkas { rhs, .. } = &member.forcing else {
+                panic!("{} carries a verified Farkas proof", member.candidate.label());
+            };
+            assert_eq!(*rhs, yb, "{}'s forcing proof", member.candidate.label());
         }
+        assert!(
+            set.members[0].leaned_on.iter().any(|l| l.starts_with("S3 >= 0 x")),
+            "S3's proof stands on S3's own restored clause: {:?}",
+            set.members[0].leaned_on,
+        );
+        assert!(
+            set.members[1].leaned_on.iter().any(|l| l.starts_with("S4 >= 0 x")),
+            "and S4's on S4's: {:?}",
+            set.members[1].leaned_on,
+        );
 
         let probes = &set.record.joint_probes;
         assert_eq!(probes.len(), 14, "every surviving candidate's clause was probed alone first");
