@@ -2681,13 +2681,7 @@ enum Repair {
     /// The oracle, or the projection's own budget, did not decide. Routed —
     /// WITH what it spent getting there, because under a walk that may take
     /// many probes a routed answer without a spend is not a legible one.
-    Inconclusive {
-        reason: String,
-        trail: Vec<TrailStep>,
-        oracle_calls: u64,
-        supports_examined: u64,
-        walk: WalkSpend,
-    },
+    Inconclusive { reason: String, trail: Vec<TrailStep>, spend: Spend },
 }
 
 impl Repair {
@@ -3129,9 +3123,11 @@ impl<'a> Projection<'a> {
         Repair::Inconclusive {
             reason,
             trail: self.trail.clone(),
-            oracle_calls: self.calls,
-            supports_examined: self.supports,
-            walk: self.walk,
+            spend: Spend {
+                oracle_calls: self.calls,
+                supports_examined: self.supports,
+                walk: self.walk,
+            },
         }
     }
 
@@ -3688,6 +3684,16 @@ struct WalkSpend {
     retreat: Option<Retreat>,
 }
 
+/// **WHAT ONE PROJECTION SPENT**, in its own deterministic currencies — counts
+/// of work done, never of time, so the same inputs spend the same on every
+/// machine.
+#[derive(Clone, Copy, Debug, Default)]
+struct Spend {
+    oracle_calls: u64,
+    supports_examined: u64,
+    walk: WalkSpend,
+}
+
 /// Where the bisection stopped.
 enum Bisection {
     /// `d_star` is the optimal displacement level. `witness` is the last point
@@ -4088,6 +4094,13 @@ enum Driven {
         sets: Vec<CertifiedForcedSet>,
         reason: String,
         trail: Vec<TrailStep>,
+        /// What the routed PROJECTION spent, when this answer came from one.
+        ///
+        /// `None` where the driver itself routed — a question (i) that re-read
+        /// the system differently, a probe that did not decide, an excepted
+        /// problem that would not build. Those have no projection spend of
+        /// their own to report, and printing zeros would claim they did.
+        spend: Option<Spend>,
     },
 }
 
@@ -4160,8 +4173,14 @@ fn drive_repair_within(p: &RepairProblem, oracle_budget: u64, support_budget: u6
     loop {
         let trail = match repair_within(&current, oracle_budget, support_budget) {
             Repair::Repaired(report) => return Driven::Repaired { exceptions, sets, report },
-            Repair::Inconclusive { reason, trail, .. } => {
-                return Driven::Inconclusive { exceptions, sets, reason, trail }
+            Repair::Inconclusive { reason, trail, spend } => {
+                return Driven::Inconclusive {
+                    exceptions,
+                    sets,
+                    reason,
+                    trail,
+                    spend: Some(spend),
+                }
             }
             Repair::Infeasible { trail, .. } => trail,
         };
@@ -4181,6 +4200,7 @@ fn drive_repair_within(p: &RepairProblem, oracle_budget: u64, support_budget: u6
                 return Driven::Inconclusive {
                     exceptions,
                     sets,
+                    spend: None,
                     reason: format!(
                         "the projection returned REPAIR-INFEASIBLE, but B1's question (i) re-read \
                          the same system as {}. The certified-exception class needs a STANDING \
@@ -4202,6 +4222,7 @@ fn drive_repair_within(p: &RepairProblem, oracle_budget: u64, support_budget: u6
                         return Driven::Inconclusive {
                             exceptions,
                             sets,
+                            spend: None,
                             reason: format!(
                                 "{} was proven singly forced, but the excepted problem would not \
                                  build: {e}",
@@ -4305,6 +4326,7 @@ fn drive_repair_within(p: &RepairProblem, oracle_budget: u64, support_budget: u6
                 return Driven::Inconclusive {
                     exceptions,
                     sets,
+                    spend: None,
                     reason: format!(
                         "a coordinate's forcing probe did not decide, so \"no coordinate is \
                          singly forced\" cannot be claimed and B1's JOINT conclusion -- the \
@@ -5066,7 +5088,7 @@ fn render_repair_outcome(verdict: &Repair, under: &str) -> String {
             out.push_str(&format!("certificate          {}\n", render_certificate(certificate)));
             out.push_str(&render_trail(trail));
         }
-        Repair::Inconclusive { reason, trail, oracle_calls, supports_examined, walk } => {
+        Repair::Inconclusive { reason, trail, spend } => {
             out.push_str(&format!(
                 "\nVERDICT              INCONCLUSIVE -- {reason}\nROUTED               \
                  §5.4: \"the oracle did not decide\" is never infeasibility, and this is not a \
@@ -5077,14 +5099,24 @@ fn render_repair_outcome(verdict: &Repair, under: &str) -> String {
             // beside it is not a legible one — under a walk that may take many
             // probes, this is the page most likely to be slow and it was the
             // page that said nothing about its cost.
-            out.push_str(&format!(
-                "\nbudget spent         {oracle_calls} oracle calls of {} (an engine-local cap), \
-                 {supports_examined} supports enumerated of {} (§5.4's registered 10^7)\n",
-                REPAIR_ORACLE_BUDGET, REPAIR_SUPPORT_BUDGET,
-            ));
-            out.push_str(&render_walk_spend(walk));
+            out.push_str(&render_spend(spend));
         }
     }
+    out
+}
+
+/// The budget block: what the projection spent, and what the ruled walk spent
+/// on top of it where there was a ruled walk at all.
+fn render_spend(spend: &Spend) -> String {
+    let mut out = format!(
+        "\nbudget spent         {} oracle calls of {} (an engine-local cap), {} supports \
+         enumerated of {} (§5.4's registered 10^7)\n",
+        spend.oracle_calls,
+        REPAIR_ORACLE_BUDGET,
+        spend.supports_examined,
+        REPAIR_SUPPORT_BUDGET,
+    );
+    out.push_str(&render_walk_spend(&spend.walk));
     out
 }
 
@@ -5118,15 +5150,25 @@ fn render_walk_spend(walk: &WalkSpend) -> String {
 /// Byte-identical on repeat by construction, exactly as [`render_repair`] is:
 /// nothing in the chain reads a clock or draws entropy.
 fn render_driven(p: &RepairProblem) -> String {
-    render_driven_within(p, REPAIR_ORACLE_BUDGET, REPAIR_SUPPORT_BUDGET)
+    render_driven_answer(p, drive_repair(p))
 }
 
-/// The same, at budgets a caller names — [`repair_within`]'s reasoning verbatim:
-/// the budgets are parameters only so their EXHAUSTION ARMS can be exercised,
-/// and [`render_driven`] always passes the shipped pair.
+/// The same, at budgets a caller names.
+///
+/// **A TEST-ONLY SEAM, and marked as one.** [`repair_within`]'s reasoning
+/// verbatim: the budgets are parameters only so their EXHAUSTION ARMS can be
+/// exercised, and there is no shipped caller that would name anything but the
+/// shipped pair — which [`render_driven`] passes through [`drive_repair`].
+#[cfg(test)]
 fn render_driven_within(p: &RepairProblem, oracle_budget: u64, support_budget: u64) -> String {
+    render_driven_answer(p, drive_repair_within(p, oracle_budget, support_budget))
+}
+
+/// One driven answer, printed whole — the single renderer both entry points
+/// reach, so a starved run and a shipped run differ in what they ANSWERED and
+/// never in how they are read.
+fn render_driven_answer(p: &RepairProblem, driven: Driven) -> String {
     let mut out = render_repair_header(p);
-    let driven = drive_repair_within(p, oracle_budget, support_budget);
     // ONE spelling of the verdict word, read off the answer itself — the
     // REPAIRED arm gets it from `Repair::name` through the shared outcome
     // renderer, and the other three from here.
@@ -5163,13 +5205,16 @@ fn render_driven_within(p: &RepairProblem, oracle_budget: u64, support_budget: u
             out.push_str(&render_forced_set_record(p, &record));
             out.push_str(&render_trail(&trail));
         }
-        Driven::Inconclusive { reason, trail, .. } => {
+        Driven::Inconclusive { reason, trail, spend, .. } => {
             out.push_str(&format!(
                 "\nVERDICT              {headline} -- {reason}\nROUTED               \
                  §5.4: \"the oracle did not decide\" is never infeasibility, and this is not a \
                  licence to fall back on a heuristic answer.\n",
             ));
             out.push_str(&render_trail(&trail));
+            if let Some(spend) = spend {
+                out.push_str(&render_spend(&spend));
+            }
         }
     }
     out
