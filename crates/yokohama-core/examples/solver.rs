@@ -3703,6 +3703,21 @@ enum Bisection {
     Routed(RoutedBisection),
 }
 
+impl Bisection {
+    /// **WHAT THE WALK SPENT, WHICHEVER WAY IT ENDED.**
+    ///
+    /// Both variants answer, so a caller records the spend once on the common
+    /// path instead of remembering to do it in each arm — which is exactly the
+    /// omission the first real run caught: a routed page carrying no walk line
+    /// is the page that most needed one.
+    fn walk(&self) -> WalkSpend {
+        match self {
+            Bisection::Closed { walk, .. } => *walk,
+            Bisection::Routed(_) => WalkSpend::default(),
+        }
+    }
+}
+
 /// **THE DISPLACEMENT BISECTION UNDER FRONTIER-RETREAT**, kept PURE with
 /// respect to the oracle.
 ///
@@ -10116,6 +10131,42 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
             "the driven routed page says what it spent: {out}",
         );
         assert!(out.contains("oracle calls of"), "{out}");
+    }
+
+    /// **A ROUTED BISECTION REPORTS ITS SPEND TOO**, and the budget block
+    /// prints the walk line from it.
+    ///
+    /// The routed page is the one most likely to be slow and the one a rider-2
+    /// ruling reads, so a spend that only survived the CLOSED arm would be
+    /// missing exactly where it is needed. The first real run under the rule
+    /// printed a budget line with no walk line beside it; this is that gap,
+    /// closed at the accessor both arms have to answer.
+    #[test]
+    fn a_routed_bisection_reports_its_walk_spend_and_the_budget_block_prints_it() {
+        let (ask, _) = level_script(vec![
+            (5, LevelAnswer::Undecided("the midpoint stalled".to_string())),
+            (0, LevelAnswer::Undecided("and so did the frontier".to_string())),
+        ]);
+        let outcome = bisect_displacement(-1, 10, 5, ask).expect("the script never hard-stops");
+        let walk = outcome.walk();
+        assert_eq!(walk.probes, 2, "a routed walk still reports what it asked");
+        assert_eq!(
+            walk.retreat,
+            Some(Retreat { level: 5, lo: -1, hi: 10 }),
+            "and the retreat that put it on the frontier",
+        );
+
+        let printed = render_spend(&Spend { oracle_calls: 9, supports_examined: 0, walk });
+        assert!(printed.contains("budget spent"), "{printed}");
+        assert!(
+            printed.contains("2 displacement probe(s) under FRONTIER-RETREAT"),
+            "the walk line is on the page: {printed}",
+        );
+        assert!(printed.contains("retreat from level 5"), "{printed}");
+
+        // And a walk that never retreated adds no such line.
+        let quiet = render_spend(&Spend::default());
+        assert!(quiet.contains("budget spent") && !quiet.contains("walk spend"), "{quiet}");
     }
 
     /// A walk that closes without ever taking a point of its own returns no
