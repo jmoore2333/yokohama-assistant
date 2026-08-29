@@ -3730,6 +3730,7 @@ fn bisect_displacement<E>(
     // written as the general never-re-ask invariant anyway, so a future change
     // to the walk cannot quietly start re-asking.
     let mut undecided: Vec<(i64, String)> = Vec::new();
+    let mut probes = 0u64;
 
     while hi - lo > 1 {
         let probe = match walk {
@@ -3754,7 +3755,7 @@ fn bisect_displacement<E>(
                         lo,
                         hi,
                         retreat,
-                        probes: 0,
+                        probes,
                         reason: reason.clone(),
                         remembered: true,
                     }));
@@ -3763,6 +3764,7 @@ fn bisect_displacement<E>(
             }
         };
 
+        probes += 1;
         match ask(probe)? {
             LevelAnswer::Witness(w) => {
                 witness = Some(w);
@@ -3786,7 +3788,7 @@ fn bisect_displacement<E>(
                         lo,
                         hi,
                         retreat,
-                        probes: 0,
+                        probes,
                         reason,
                         remembered: false,
                     }))
@@ -3794,7 +3796,17 @@ fn bisect_displacement<E>(
             },
         }
     }
-    Ok(Bisection::Closed { d_star: hi, witness, walk: WalkSpend::default() })
+    Ok(Bisection::Closed {
+        d_star: hi,
+        witness,
+        walk: WalkSpend {
+            probes,
+            retreat: match walk {
+                Walk::Midpoint => None,
+                Walk::Frontier(retreat) => Some(retreat),
+            },
+        },
+    })
 }
 
 /// One routed bisection, in the words the owner reads.
@@ -3816,8 +3828,14 @@ fn routed_bisection_text(routed: &RoutedBisection) -> String {
     }
     out.push_str(&format!(
         " THE RETREAT: level {} was undecided with the optimum bracketed in ({}, {}], so the walk \
-         retreated to the certified frontier and advanced it from {} to {} before stopping.",
-        routed.retreat.level, routed.retreat.lo, routed.retreat.hi, routed.retreat.lo, routed.lo,
+         retreated to the certified frontier and advanced it from {} to {} before stopping, over \
+         {} probe(s).",
+        routed.retreat.level,
+        routed.retreat.lo,
+        routed.retreat.hi,
+        routed.retreat.lo,
+        routed.lo,
+        routed.probes,
     ));
     out.push_str(&format!(" {FRONTIER_RETREAT_RULING} {FRONTIER_RIDER_ONE} {FRONTIER_FALLBACKS}"));
     out
@@ -5036,6 +5054,7 @@ fn render_repair_outcome(verdict: &Repair, under: &str) -> String {
                 report.supports_examined,
                 REPAIR_SUPPORT_BUDGET,
             ));
+            out.push_str(&render_walk_spend(&report.walk));
             out.push_str(&format!("coverage             {REPAIR_MONOTONICITY}\n"));
         }
         Repair::Infeasible { certificate, trail } => {
@@ -5047,16 +5066,44 @@ fn render_repair_outcome(verdict: &Repair, under: &str) -> String {
             out.push_str(&format!("certificate          {}\n", render_certificate(certificate)));
             out.push_str(&render_trail(trail));
         }
-        Repair::Inconclusive { reason, trail, .. } => {
+        Repair::Inconclusive { reason, trail, oracle_calls, supports_examined, walk } => {
             out.push_str(&format!(
                 "\nVERDICT              INCONCLUSIVE -- {reason}\nROUTED               \
                  §5.4: \"the oracle did not decide\" is never infeasibility, and this is not a \
                  licence to fall back on a heuristic answer.\n",
             ));
             out.push_str(&render_trail(trail));
+            // **WHAT IT SPENT GETTING HERE.** A routed answer with no spend
+            // beside it is not a legible one — under a walk that may take many
+            // probes, this is the page most likely to be slow and it was the
+            // page that said nothing about its cost.
+            out.push_str(&format!(
+                "\nbudget spent         {oracle_calls} oracle calls of {} (an engine-local cap), \
+                 {supports_examined} supports enumerated of {} (§5.4's registered 10^7)\n",
+                REPAIR_ORACLE_BUDGET, REPAIR_SUPPORT_BUDGET,
+            ));
+            out.push_str(&render_walk_spend(walk));
         }
     }
     out
+}
+
+/// **WHAT THE RULED WALK SPENT**, printed only where there is a ruled walk to
+/// report.
+///
+/// A run whose probes were never undecided never left [`next_probe`]'s arm, so
+/// there is nothing the classic bisection did not already do and nothing new to
+/// say — which is also what keeps this line off the EARLY page and that
+/// section byte-invariant.
+fn render_walk_spend(walk: &WalkSpend) -> String {
+    match walk.retreat {
+        None => String::new(),
+        Some(retreat) => format!(
+            "walk spend           {} displacement probe(s) under FRONTIER-RETREAT, after the \
+             retreat from level {} (bracketed in ({}, {}] there)\n",
+            walk.probes, retreat.level, retreat.lo, retreat.hi,
+        ),
+    }
 }
 
 /// **THE DRIVEN ARTIFACT** — the same projection under B1's certified-exception
@@ -9981,7 +10028,11 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
             out.contains("budget spent"),
             "a routed page says what it spent getting there: {out}",
         );
-        assert!(out.contains("oracle calls of 1"), "{out}");
+        // The COUNT is the projection's own spend; the ceiling the line names
+        // is the shipped constant, exactly as the repaired arm has always
+        // printed it.
+        assert!(out.contains("2 oracle calls of"), "the spend it actually made: {out}");
+        assert!(out.contains("supports enumerated of"), "{out}");
         assert!(
             !out.contains("walk spend"),
             "and says nothing about a walk that never left the midpoint arm: {out}",
