@@ -1704,9 +1704,12 @@ fn accept_cuts(pool: &mut Vec<Row>, cuts: &mut Vec<DerivedCut>, fresh: Vec<Deriv
 // went with it: nothing else read it, because nothing else needed to know which
 // cap a question ran out of.
 
-/// **B2's QUESTION CHAIN.** [`decide`] first, unchanged; then, at the
-/// enumeration-budget seam ONLY, the same oracle asked again about a
-/// strengthened system.
+/// **B2's QUESTION CHAIN.** [`decide`] first, unchanged; then, on ANY typed
+/// undecided answer, the same oracle asked again about a strengthened system.
+///
+/// The original realization put the extension at the enumeration-budget seam
+/// only. The 2026-08-29 amendment made the trigger total — see
+/// [`extend_if_undecided`], which is now the whole of the decision.
 ///
 /// # What this does and does not touch
 ///
@@ -1736,13 +1739,28 @@ fn decide_with_cuts(sys: &System) -> Verdict {
 /// frozen oracle would take minutes to produce.
 ///
 /// **The trigger is the typed VARIANT and nothing else** (B2 amendment,
-/// Addition 1). Every undecided answer `decide` can give arrives here, whichever
-/// cap exhausted — node, enumeration, pivot — so a future fourth cap inherits
-/// the extension BY CONSTRUCTION rather than by anyone remembering to widen a
-/// predicate. `reason` is carried to be REPORTED and is never read as a
-/// condition; that is what makes the surface total, and it is why this function
-/// takes the verdict rather than computing it: a test can hand it a node-route
-/// undecided in microseconds where the real thing costs 87 seconds.
+/// Addition 1). Whichever cap exhausted — node, enumeration, pivot — the answer
+/// arrives here, so a future fourth cap inherits the extension BY CONSTRUCTION
+/// rather than by anyone remembering to widen a predicate. `reason` is carried
+/// to be REPORTED and is never read as a condition; that is what makes the
+/// surface total, and it is why this function takes the verdict rather than
+/// computing it: a test can hand it a node-route undecided in microseconds
+/// where the real thing costs 87 seconds.
+///
+/// # The scope, stated exactly
+///
+/// Total means every undecided **on the CERTIFICATION PATH** — every question
+/// whose answer a verdict, a certificate or a repair is built on. That is
+/// [`decide_with_cuts`] and its callers: [`Projection::ask`], B1's question (i),
+/// [`ask_set`], and [`forced_coordinate`].
+///
+/// FOUR callers reach [`decide`] directly and are deliberately NOT on it,
+/// because none of them certifies anything: [`minimize`] (which is shrinking a
+/// row set and wants the cheap answer), [`implied_by_the_rest`], the two probes
+/// inside [`scale_diagnostics`], and [`render_system`]'s display read. They
+/// report; they do not decide. **A future caller that CERTIFIES must go through
+/// this function** — that is the rule it joins, and the reason the list above is
+/// written out rather than left to be rediscovered.
 fn extend_if_undecided(sys: &System, verdict: Verdict) -> Verdict {
     let Verdict::Inconclusive { reason } = &verdict else { return verdict };
     strengthen_undecided(sys, reason)
@@ -5008,12 +5026,17 @@ fn render_paste_ready(report: &RepairReport) -> String {
     };
     format!(
         "\npaste-ready table    `<early>/<late>` for `eval_probe step9 structural --table`: the \
-         {} vector is\n                     this endpoint's repair, the {} one the unmoved `{}` \
-         start (a repair\n                     is per endpoint, and this run solved \
-         one)\n  EARLY              {early}\n  LATE               {late}\n",
-        report.stage.name().to_uppercase(),
-        other.name().to_uppercase(),
-        report.start,
+         {stage} vector is\n                     this endpoint's repair, the {other_name} one the \
+         unmoved `{start}` start (a repair\n                     is per endpoint, and this page \
+         solved one).\n                     IF BOTH ENDPOINTS REPAIRED IN THIS RUN, DO NOT PASTE \
+         THIS PAIR WHOLE: the usable\n                     table is each page's OWN repaired half \
+         -- the EARLY page's EARLY line\n                     beside the LATE page's LATE line -- \
+         never one page's pair whole,\n                     which would ship the {other_name} \
+         half's UNMOVED start as if it were a\n                     repair.\n  EARLY              \
+         {early}\n  LATE               {late}\n",
+        stage = report.stage.name().to_uppercase(),
+        other_name = other.name().to_uppercase(),
+        start = report.start,
     )
 }
 
@@ -5049,7 +5072,12 @@ fn render_repair_header(p: &RepairProblem) -> String {
     ));
     out.push_str(&format!("kept rows            {}\n", p.sys.rows.len()));
     out.push_str(&format!("dropped rows         {}  {:?}\n", p.dropped.len(), p.dropped));
-    out.push_str(&format!("free coordinates     {}\n", p.free.len()));
+    out.push_str(&format!(
+        "free coordinates     {}  (before any certified exception; excepting a clause can UNPIN \
+         a coordinate,\n                     so the excepted problem the projection solves may \
+         show more below)\n",
+        p.free.len(),
+    ));
     out
 }
 
