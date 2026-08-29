@@ -8747,6 +8747,17 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
         assert!(out.contains("UNEDITED"), "the priors are stated to be untouched: {out}");
         assert!(out.contains("set feasible    witness re-checked"), "{out}");
         assert!(out.contains("forced-set doses"), "{out}");
+
+        // **THE FEASIBILITY WITNESS IS NOT A DOSE, AND THE PAGE MUST SAY SO.**
+        // The point that certifies the set feasible is whatever the oracle
+        // found — on the real late system it sits at a box corner, `S3 = −64` —
+        // while the dose is minimal displacement's answer, `−2` here. Two signed
+        // integers against the same coordinate label, one line apart, are read
+        // as the same quantity unless the page distinguishes them.
+        assert!(
+            out.contains("a FEASIBILITY point and NOT a dose"),
+            "the witness line says what its numbers are: {out}",
+        );
         assert!(out.contains("priced by  [\"S4 at most -2\"]"), "the binding row is named: {out}");
 
         // **THE B1 PASS, STILL ON THE PAGE.** Its conclusion is recorded, not
