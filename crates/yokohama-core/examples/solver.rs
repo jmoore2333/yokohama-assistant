@@ -3264,8 +3264,6 @@ impl Projection<'_> {
         // (1) THE DISPLACEMENT LEVEL. `lo` is a level certified EMPTY, `hi` a
         // level with a witness; bisect until they are adjacent.
         let hint = self.lp_hint(d_hi)?;
-        let mut lo = -1i64;
-        let mut hi = d_hi;
         let mut witness = w_hi;
         self.record(
             "displacement <= -1".to_string(),
@@ -3274,28 +3272,48 @@ impl Projection<'_> {
             ),
             Vec::new(),
         );
-        while hi - lo > 1 {
-            let probe = next_probe(lo, hi, hint);
+        // **THE RULED WALK** ([`FRONTIER_RETREAT_RULING`]), kept pure with
+        // respect to the oracle: everything this closure does is ask one level
+        // and record it, so every arm of the rule — including the undecided
+        // ones no real oracle can be made to produce on demand — is reachable
+        // from a table of answers.
+        let bisection = bisect_displacement(-1, d_hi, hint, |probe| {
             let sys = augmented(p, probe, &free, &[]);
             match self.ask_recorded(format!("displacement <= {probe}"), &sys)? {
-                Verdict::Sat { w } => {
-                    witness = w[..AXIS_WIDTH].to_vec();
-                    hi = probe;
-                }
-                Verdict::Unsat { .. } => lo = probe,
-                Verdict::Inconclusive { reason } => {
-                    // The BRACKET rides with the routed reason. "The oracle did
-                    // not decide" is a fact about one level; what a reader needs
-                    // is where the optimum was known to lie when the projection
-                    // stopped, which is the pair the bisection was holding.
-                    return Err(self.routed(format!(
-                        "at displacement level {probe}, with the optimum bracketed in \
-                         ({lo}, {hi}]: {reason}",
-                    )));
-                }
+                Verdict::Sat { w } => Ok(LevelAnswer::Witness(w[..AXIS_WIDTH].to_vec())),
+                Verdict::Unsat { .. } => Ok(LevelAnswer::Empty),
+                Verdict::Inconclusive { reason } => Ok(LevelAnswer::Undecided(reason)),
             }
-        }
-        let d_star = hi;
+        })?;
+        let d_star = match bisection {
+            Bisection::Closed { d_star, witness: found } => {
+                // `None` means the walk never took a point of its own, so the
+                // step-0 witness `w_hi` still stands at this level.
+                if let Some(found) = found {
+                    witness = found;
+                }
+                d_star
+            }
+            Bisection::Routed(routed) => {
+                // **RIDER 1, MADE VISIBLE ON THE PAGE.** A remembered level was
+                // NOT asked a second time, so the trail would otherwise show
+                // nothing where the walk stopped. This entry says the level was
+                // reached again and routed on the answer already held.
+                if routed.remembered {
+                    self.record(
+                        format!("displacement <= {} (frontier, NOT re-asked)", routed.level),
+                        TrailOutcome::Undecided(
+                            "the advancing frontier reached a level the bisection had already \
+                             probed; rider 1 routes on the recorded answer rather than spending \
+                             the budget on it twice"
+                                .to_string(),
+                        ),
+                        Vec::new(),
+                    );
+                }
+                return Err(self.routed(routed_bisection_text(&routed)));
+            }
+        };
 
         // (2) THE CHANGED COUNT, at `d_star`. Ascending `k`, ascending listed
         // order within `k`; the first SAT support is both the count and the
@@ -3525,6 +3543,173 @@ fn next_probe(lo: i64, hi: i64, hint: i64) -> i64 {
         }
     }
     lo + (hi - lo) / 2
+}
+
+// ---------------------------------------------------------------------------
+// FRONTIER-RETREAT — the ruled probe policy for the displacement bisection
+// ---------------------------------------------------------------------------
+
+/// **THE RULING**, quoted so the page that routes carries the rule it obeyed.
+const FRONTIER_RETREAT_RULING: &str = "FRONTIER-RETREAT (guidingpath decision log, 2026-08-29, \
+     \"FRONTIER-RETREAT IS RULED\"): when a probe returns undecided within the registered budgets, \
+     the bisection RETREATS TO THE CERTIFIED FRONTIER -- probing lo+1 -- rather than routing \
+     INCONCLUSIVE; only an undecided FRONTIER probe itself routes, carrying both brackets. The \
+     registered budgets are unchanged and still bind per question, and the probe sequence stays \
+     deterministic.";
+
+/// **RIDER 1**, the walk policy after a retreat.
+const FRONTIER_RIDER_ONE: &str = "RIDER 1 (no re-ask): an undecided level is NEVER asked again. \
+     After a retreat the walk continues from the certified frontier only -- lo+1 upward, lo \
+     strictly advancing -- until a certified FEASIBLE closes the level (and that level is the \
+     optimum), or the frontier reaches a level that must route: a fresh frontier probe returning \
+     undecided, or a REMEMBERED previously-undecided level, which routes on its recorded answer \
+     WITHOUT a second ask. Termination is by construction: after the retreat every step either \
+     closes the level, advances lo by exactly one, or routes.";
+
+/// **RIDER 2**, carried by every routed bisection. Named, never pre-authorized.
+const FRONTIER_FALLBACKS: &str = "RIDER 2 -- TWO WORKED ALTERNATIVES ARE ON THE RECORD FOR RULING \
+     THEN, and NEITHER IS PRE-AUTHORIZED: (a) RE-REGISTER THE NODE BUDGET -- spec:772's registered \
+     10^7 is the figure a wider search would have to move, and moving a registered figure is an \
+     owner act; (b) SUPPLY A VERIFIED `--witness` INPUT to shrink the bracket -- sound, but a new \
+     surface for less benefit. Nothing here self-rules.";
+
+/// One level's answer, typed so [`bisect_displacement`] can be driven from a
+/// table of answers rather than from an oracle.
+enum LevelAnswer {
+    /// Certified EMPTY at this level.
+    Empty,
+    /// A point at this level, re-checked before it was returned.
+    Witness(Vec<i64>),
+    /// The oracle did not decide. NEVER emptiness.
+    Undecided(String),
+}
+
+/// The retreat that put the walk on the frontier — recorded because a routed
+/// answer has to say how much the walk bought before it stopped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Retreat {
+    /// The level that went undecided.
+    level: i64,
+    /// The bracket at that moment: the optimum lay in `(lo, hi]`.
+    lo: i64,
+    hi: i64,
+}
+
+/// Which arm of the ruled walk the bisection is in.
+///
+/// **The two arms are why the EARLY endpoint is byte-invariant BY
+/// CONSTRUCTION.** A run in which no probe is ever undecided never leaves
+/// `Midpoint`, where the probe is [`next_probe`]'s and nothing else — so its
+/// probe sequence, its trail and its answer are exactly what they were before
+/// the rule existed.
+enum Walk {
+    /// No probe has gone undecided: [`next_probe`]'s arm, untouched.
+    Midpoint,
+    /// A probe went undecided and the walk retreated. Every probe from here is
+    /// the certified frontier, `lo + 1`.
+    Frontier(Retreat),
+}
+
+/// A bisection that could not close, with everything the routing needs.
+struct RoutedBisection {
+    /// The level whose answer routed.
+    level: i64,
+    /// The bracket at the moment of routing: the optimum lies in `(lo, hi]`.
+    lo: i64,
+    hi: i64,
+    /// The retreat that put the walk on the frontier.
+    ///
+    /// **Every routed bisection has one**, which is why this is not an
+    /// `Option`: the FIRST undecided probe always retreats, so routing without
+    /// a retreat is unreachable under the rule, and a type that could express
+    /// it would invite a caller to handle a case that cannot happen.
+    retreat: Retreat,
+    /// The oracle's own words, from the answer that routed.
+    reason: String,
+    /// TRUE when the routing level's answer was one already held — rider 1's
+    /// "never re-asked", and the thing a reader would otherwise assume was a
+    /// second spend of the budget.
+    remembered: bool,
+}
+
+/// Where the bisection stopped.
+enum Bisection {
+    /// `d_star` is the optimal displacement level. `witness` is the last point
+    /// the walk took, or `None` when it took none — the caller's own step-0
+    /// point then still stands at this level.
+    Closed { d_star: i64, witness: Option<Vec<i64>> },
+    Routed(RoutedBisection),
+}
+
+/// **THE DISPLACEMENT BISECTION UNDER FRONTIER-RETREAT**, kept PURE with
+/// respect to the oracle.
+///
+/// `lo` is a level certified EMPTY and `hi` a level with a witness; the walk
+/// narrows `(lo, hi]` until they are adjacent, and `hi` is then the optimum.
+/// Every oracle contact is the `ask` closure, so a test drives every arm from a
+/// table — including the undecided ones, which is the whole reason the rule
+/// needed this shape ([`construct_forced_set`]'s reasoning verbatim: an arm
+/// nobody can reach is an arm nobody has checked).
+///
+/// `E` is the caller's own hard-stop — a spent projection budget in the real
+/// driver, and anything a test likes. It is deliberately NOT one of
+/// [`LevelAnswer`]'s arms: "the projection may ask no more questions" is a fact
+/// about the caller, not an answer about a level.
+fn bisect_displacement<E>(
+    lo0: i64,
+    hi0: i64,
+    hint: i64,
+    mut ask: impl FnMut(i64) -> Result<LevelAnswer, E>,
+) -> Result<Bisection, E> {
+    let (mut lo, mut hi) = (lo0, hi0);
+    let mut witness: Option<Vec<i64>> = None;
+    while hi - lo > 1 {
+        let probe = next_probe(lo, hi, hint);
+        match ask(probe)? {
+            LevelAnswer::Witness(w) => {
+                witness = Some(w);
+                hi = probe;
+            }
+            LevelAnswer::Empty => lo = probe,
+            LevelAnswer::Undecided(reason) => {
+                return Ok(Bisection::Routed(RoutedBisection {
+                    level: probe,
+                    lo,
+                    hi,
+                    retreat: Retreat { level: probe, lo, hi },
+                    reason,
+                    remembered: false,
+                }))
+            }
+        }
+    }
+    Ok(Bisection::Closed { d_star: hi, witness })
+}
+
+/// One routed bisection, in the words the owner reads.
+///
+/// Carries BOTH brackets — the one the walk held when it retreated and the one
+/// it holds now — because the difference between them is exactly what the
+/// frontier walk bought, and rider 2's alternatives are chosen against it.
+fn routed_bisection_text(routed: &RoutedBisection) -> String {
+    let mut out = format!(
+        "at displacement level {}, with the optimum bracketed in ({}, {}]: {}",
+        routed.level, routed.lo, routed.hi, routed.reason,
+    );
+    if routed.remembered {
+        out.push_str(
+            " -- AND THIS LEVEL WAS NOT RE-ASKED: it returned that answer when the bisection first \
+             probed it, the advancing frontier has now reached it, and rider 1 routes on the \
+             recorded answer rather than spending the budget on the same question twice.",
+        );
+    }
+    out.push_str(&format!(
+        " THE RETREAT: level {} was undecided with the optimum bracketed in ({}, {}], so the walk \
+         retreated to the certified frontier and advanced it from {} to {} before stopping.",
+        routed.retreat.level, routed.retreat.lo, routed.retreat.hi, routed.retreat.lo, routed.lo,
+    ));
+    out.push_str(&format!(" {FRONTIER_RETREAT_RULING} {FRONTIER_RIDER_ONE} {FRONTIER_FALLBACKS}"));
+    out
 }
 
 /// One coordinate's candidate values in the registered canonical key order:
@@ -9287,6 +9472,237 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
             Some(vec![0; AXIS_WIDTH]),
         );
         assert!(matches!(malformed, Forcing::Undecided { .. }), "a witness needs a FEASIBLE probe");
+    }
+
+    // -- FRONTIER-RETREAT: the ruled walk, driven from a table of answers -----
+
+    /// A scripted level oracle: exactly the levels the walk must ask, IN ORDER,
+    /// with the answer each gets, plus a counter the cell asserts on.
+    ///
+    /// **Asking a level the script does not expect next, or asking one more
+    /// question than the script holds, PANICS.** That is the pin rider 1 needs:
+    /// a walk that re-asked a remembered undecided level would ask a question
+    /// the script does not hold, and the cell would fail rather than quietly
+    /// agree with a driver that spent the budget twice.
+    #[allow(clippy::type_complexity)]
+    fn level_script(
+        script: Vec<(i64, LevelAnswer)>,
+    ) -> (impl FnMut(i64) -> Result<LevelAnswer, ()>, std::rc::Rc<std::cell::Cell<usize>>) {
+        let asked = std::rc::Rc::new(std::cell::Cell::new(0usize));
+        let counter = std::rc::Rc::clone(&asked);
+        let mut script = script.into_iter();
+        let ask = move |probe: i64| {
+            let (level, answer) = script.next().unwrap_or_else(|| {
+                panic!(
+                    "the walk asked about level {probe} and the script is SPENT -- one more \
+                     question than the rule allows is exactly what rider 1 forbids",
+                )
+            });
+            assert_eq!(
+                probe, level,
+                "the walk asked about level {probe}; the script expects {level} next",
+            );
+            counter.set(counter.get() + 1);
+            Ok(answer)
+        };
+        (ask, asked)
+    }
+
+    /// **BORN-VALIDATION (i): AN UNDECIDED MIDPOINT RETREATS, AND THE FRONTIER
+    /// WALK CLOSES THE LEVEL.**
+    ///
+    /// Bracket `(−1, 10]` with the hint at 6, so the first probe is 6 by
+    /// [`next_probe`]'s own rule. It comes back undecided — which before the
+    /// ruling routed the whole projection — and the walk retreats to the
+    /// certified frontier instead.
+    ///
+    /// Everything below is derived before the code runs. From `lo = −1` the
+    /// frontier is `0`, and each certified-EMPTY answer advances `lo` by exactly
+    /// one: `0, 1, 2` all empty, then `3` holds a point, so `hi = 3`, `lo = 2`,
+    /// the bracket is adjacent and **`d_star = 3`**. Five questions, and the
+    /// undecided level 6 is never revisited because the walk closed below it.
+    #[test]
+    fn an_undecided_midpoint_retreats_to_the_frontier_and_the_walk_closes_the_level() {
+        let (ask, asked) = level_script(vec![
+            (6, LevelAnswer::Undecided("the search spent its node budget".to_string())),
+            (0, LevelAnswer::Empty),
+            (1, LevelAnswer::Empty),
+            (2, LevelAnswer::Empty),
+            (3, LevelAnswer::Witness(vec![7; AXIS_WIDTH])),
+        ]);
+        let outcome = bisect_displacement(-1, 10, 6, ask).expect("the script never hard-stops");
+        let Bisection::Closed { d_star, witness } = outcome else {
+            panic!("the frontier walk closes the level; it does not route");
+        };
+        assert_eq!(d_star, 3, "the first level the frontier certified feasible IS the optimum");
+        assert_eq!(
+            witness.as_ref().map(|w| w[0]),
+            Some(7),
+            "and the point it closed on rides out of the walk",
+        );
+        assert_eq!(asked.get(), 5, "the midpoint, then the frontier levels 0, 1, 2, 3");
+    }
+
+    /// **BORN-VALIDATION (ii): THE ADVANCING FRONTIER REACHES A REMEMBERED
+    /// UNDECIDED LEVEL AND ROUTES ON THE RECORDED ANSWER — WITHOUT A SECOND
+    /// ASK.**
+    ///
+    /// Bracket `(−1, 10]` with the hint at 2, so the first probe is 2 and it is
+    /// undecided. The walk retreats; `0` and `1` are certified empty, which puts
+    /// `lo` at 1 and makes the frontier `2` — the level already known undecided.
+    /// Rider 1 routes there on the answer already held.
+    ///
+    /// **THE SCRIPT HOLDS EXACTLY THREE QUESTIONS.** A driver that asked level 2
+    /// a second time would ask a fourth, and `level_script` panics — which is
+    /// what makes "never re-asked" a checked fact rather than a claim.
+    #[test]
+    fn the_frontier_reaching_a_remembered_undecided_level_routes_without_asking_again() {
+        let (ask, asked) = level_script(vec![
+            (2, LevelAnswer::Undecided("the search stopped at two".to_string())),
+            (0, LevelAnswer::Empty),
+            (1, LevelAnswer::Empty),
+        ]);
+        let outcome = bisect_displacement(-1, 10, 2, ask).expect("the script never hard-stops");
+        let Bisection::Routed(routed) = outcome else {
+            panic!("a frontier that reaches a remembered undecided level routes");
+        };
+        assert_eq!(asked.get(), 3, "three questions, and the fourth was never asked");
+        assert_eq!(routed.level, 2, "the level it routed on");
+        assert!(routed.remembered, "on the answer it already held");
+        assert_eq!(
+            routed.reason, "the search stopped at two",
+            "and the recorded answer is the one that routes, word for word",
+        );
+        assert_eq!((routed.lo, routed.hi), (1, 10), "the bracket the walk had reached");
+        assert_eq!(
+            routed.retreat,
+            Retreat { level: 2, lo: -1, hi: 10 },
+            "beside the bracket it retreated from",
+        );
+
+        // The two brackets are BOTH on the page, which is what a reader needs to
+        // see what the walk bought: `lo` moved from -1 to 1 and `hi` did not
+        // move at all.
+        let text = routed_bisection_text(&routed);
+        assert!(text.contains("bracketed in (1, 10]"), "{text}");
+        assert!(text.contains("bracketed in (-1, 10]"), "{text}");
+        assert!(text.contains("NOT RE-ASKED"), "{text}");
+    }
+
+    /// **BORN-VALIDATION (iii): AN UNDECIDED FRONTIER PROBE ROUTES, AND THE TEXT
+    /// CARRIES RIDER 2'S NAMED FALLBACKS.**
+    ///
+    /// The midpoint 5 is undecided and the walk retreats — and then the frontier
+    /// level 0 is undecided too. There is nowhere cheaper to retreat to, so this
+    /// is the one answer that routes on its own account. Rider 2: the two worked
+    /// alternatives ride on the record, for ruling then, neither pre-authorized.
+    #[test]
+    fn an_undecided_frontier_probe_routes_and_names_rider_twos_two_fallbacks() {
+        let (ask, asked) = level_script(vec![
+            (5, LevelAnswer::Undecided("the midpoint stalled".to_string())),
+            (0, LevelAnswer::Undecided("and so did the frontier".to_string())),
+        ]);
+        let outcome = bisect_displacement(-1, 10, 5, ask).expect("the script never hard-stops");
+        let Bisection::Routed(routed) = outcome else {
+            panic!("an undecided FRONTIER probe is the answer that routes");
+        };
+        assert_eq!(asked.get(), 2);
+        assert_eq!(routed.level, 0);
+        assert!(!routed.remembered, "this one was asked and answered, not recalled");
+        assert_eq!(routed.retreat, Retreat { level: 5, lo: -1, hi: 10 });
+
+        let text = routed_bisection_text(&routed);
+        assert!(text.contains("and so did the frontier"), "the oracle's own words: {text}");
+        assert!(text.contains("FRONTIER-RETREAT IS RULED"), "the rule it obeyed is cited: {text}");
+        assert!(text.contains("2026-08-29"), "and dated: {text}");
+        for fallback in ["RE-REGISTER THE NODE BUDGET", "spec:772", "`--witness`"] {
+            assert!(text.contains(fallback), "rider 2 names {fallback}: {text}");
+        }
+        assert!(
+            text.contains("NEITHER IS PRE-AUTHORIZED") && text.contains("Nothing here self-rules"),
+            "and says they are for ruling then, not licences: {text}",
+        );
+    }
+
+    /// **BORN-VALIDATION (iv): THE NEVER-UNDECIDED PATH IS [`next_probe`]'S,
+    /// UNCHANGED — which is why the EARLY endpoint is byte-invariant.**
+    ///
+    /// The rule only ever leaves `Walk::Midpoint` when a probe returns
+    /// undecided, so a run in which none does must ask exactly the questions the
+    /// pre-rule bisection asked. This cell runs the real walk beside a six-line
+    /// restatement of the old loop over the SAME answers and requires the two to
+    /// agree on every probe and on the optimum.
+    #[test]
+    fn a_walk_with_no_undecided_answer_asks_exactly_the_pre_rule_probe_sequence() {
+        // A level is EMPTY below 6 and holds a point at 6 and above — an
+        // ordinary monotone instance, so both loops are solving something real.
+        let answer = |level: i64| {
+            if level < 6 {
+                LevelAnswer::Empty
+            } else {
+                LevelAnswer::Witness(vec![level as i64; AXIS_WIDTH])
+            }
+        };
+
+        for (lo0, hi0, hint) in [(-1i64, 10i64, 4i64), (-1, 10, 8), (-1, 32, 0), (-1, 7, 6)] {
+            // THE PRE-RULE LOOP, restated: probe, narrow, stop when adjacent.
+            let (mut lo, mut hi, mut reference) = (lo0, hi0, Vec::new());
+            while hi - lo > 1 {
+                let probe = next_probe(lo, hi, hint);
+                reference.push(probe);
+                match answer(probe) {
+                    LevelAnswer::Witness(_) => hi = probe,
+                    LevelAnswer::Empty => lo = probe,
+                    LevelAnswer::Undecided(_) => unreachable!("this instance decides every level"),
+                }
+            }
+
+            let log = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let seen = std::rc::Rc::clone(&log);
+            let outcome = bisect_displacement(lo0, hi0, hint, move |probe| {
+                seen.borrow_mut().push(probe);
+                Ok::<_, ()>(answer(probe))
+            })
+            .expect("the instance never hard-stops");
+            let Bisection::Closed { d_star, .. } = outcome else {
+                panic!("nothing is undecided here, so nothing routes");
+            };
+            assert_eq!(
+                *log.borrow(),
+                reference,
+                "({lo0}, {hi0}] at hint {hint}: the ruled walk asks the pre-rule questions",
+            );
+            assert_eq!(d_star, hi, "and reaches the pre-rule optimum");
+        }
+    }
+
+    /// A walk that closes without ever taking a point of its own returns no
+    /// witness, and the caller's step-0 point still stands at that level.
+    ///
+    /// `(−1, 1]` at hint 0: the single probe 0 is empty, `lo` becomes 0, the
+    /// bracket is adjacent and `d_star = 1` — reached without a single SAT.
+    #[test]
+    fn a_walk_that_takes_no_point_of_its_own_returns_no_witness() {
+        let (ask, asked) = level_script(vec![(0, LevelAnswer::Empty)]);
+        let outcome = bisect_displacement(-1, 1, 0, ask).expect("the script never hard-stops");
+        let Bisection::Closed { d_star, witness } = outcome else { panic!("nothing routes here") };
+        assert_eq!((d_star, asked.get()), (1, 1));
+        assert!(witness.is_none(), "the caller's own step-0 witness is the one that stands");
+    }
+
+    /// The caller's HARD STOP is not one of the level answers, and it comes
+    /// straight back out: a projection that may ask no more questions is a fact
+    /// about the caller, never an answer about a level, and it must not be
+    /// mistaken for an undecided probe and retreated on.
+    #[test]
+    fn a_callers_hard_stop_leaves_the_walk_rather_than_triggering_a_retreat() {
+        let mut asked = 0usize;
+        let outcome = bisect_displacement(-1, 10, 5, |_| {
+            asked += 1;
+            Err::<LevelAnswer, &str>("the projection spent its budget of oracle calls")
+        });
+        assert_eq!(outcome.err(), Some("the projection spent its budget of oracle calls"));
+        assert_eq!(asked, 1, "and the walk stopped at once rather than retreating");
     }
 
     // -- B1′: the certified forced set, driven from a table of answers --------
