@@ -3602,6 +3602,7 @@ struct Retreat {
 /// `Midpoint`, where the probe is [`next_probe`]'s and nothing else — so its
 /// probe sequence, its trail and its answer are exactly what they were before
 /// the rule existed.
+#[derive(Clone, Copy)]
 enum Walk {
     /// No probe has gone undecided: [`next_probe`]'s arm, untouched.
     Midpoint,
@@ -3663,24 +3664,77 @@ fn bisect_displacement<E>(
 ) -> Result<Bisection, E> {
     let (mut lo, mut hi) = (lo0, hi0);
     let mut witness: Option<Vec<i64>> = None;
+    let mut walk = Walk::Midpoint;
+    // **RIDER 1's MEMORY.** A level that came back undecided is never asked
+    // again; if the advancing frontier reaches it, it routes on the answer
+    // already held.
+    //
+    // Under the ruled walk at most ONE level can ever be remembered — the
+    // retreat's own — because after the retreat every probe is the frontier and
+    // a fresh undecided frontier routes rather than accumulating. The lookup is
+    // written as the general never-re-ask invariant anyway, so a future change
+    // to the walk cannot quietly start re-asking.
+    let mut undecided: Vec<(i64, String)> = Vec::new();
+
     while hi - lo > 1 {
-        let probe = next_probe(lo, hi, hint);
+        let probe = match walk {
+            // Before any retreat the probe is `next_probe`'s, unchanged. This
+            // is the arm that makes a never-undecided run byte-identical to the
+            // pre-rule one — and the memory is necessarily empty here, since
+            // nothing is remembered until a retreat.
+            Walk::Midpoint => next_probe(lo, hi, hint),
+            // After it, the walk is the certified frontier and nothing else.
+            Walk::Frontier(retreat) => {
+                let probe = lo + 1;
+                // **RIDER 1, BEFORE ANY SPEND.** The frontier has reached a
+                // level whose answer is already held. It routes on that answer;
+                // asking again would buy nothing and would spend a registered
+                // budget on a settled question. The check lives in THIS arm
+                // because a level is only ever remembered by the retreat that
+                // puts the walk here — which is a fact the code can be shaped
+                // by, rather than a panic path guarding what cannot happen.
+                if let Some((_, reason)) = undecided.iter().find(|(level, _)| *level == probe) {
+                    return Ok(Bisection::Routed(RoutedBisection {
+                        level: probe,
+                        lo,
+                        hi,
+                        retreat,
+                        reason: reason.clone(),
+                        remembered: true,
+                    }));
+                }
+                probe
+            }
+        };
+
         match ask(probe)? {
             LevelAnswer::Witness(w) => {
                 witness = Some(w);
                 hi = probe;
             }
             LevelAnswer::Empty => lo = probe,
-            LevelAnswer::Undecided(reason) => {
-                return Ok(Bisection::Routed(RoutedBisection {
-                    level: probe,
-                    lo,
-                    hi,
-                    retreat: Retreat { level: probe, lo, hi },
-                    reason,
-                    remembered: false,
-                }))
-            }
+            LevelAnswer::Undecided(reason) => match walk {
+                // **THE RETREAT.** The frontier is where certification has
+                // already proven cheap — `lo` is a level the oracle closed — so
+                // the walk goes there rather than routing the whole projection
+                // on one hard interior question.
+                Walk::Midpoint => {
+                    walk = Walk::Frontier(Retreat { level: probe, lo, hi });
+                    undecided.push((probe, reason));
+                }
+                // A FRONTIER probe itself went undecided. There is nowhere
+                // cheaper to retreat to, so this is the one answer that routes.
+                Walk::Frontier(retreat) => {
+                    return Ok(Bisection::Routed(RoutedBisection {
+                        level: probe,
+                        lo,
+                        hi,
+                        retreat,
+                        reason,
+                        remembered: false,
+                    }))
+                }
+            },
         }
     }
     Ok(Bisection::Closed { d_star: hi, witness })
