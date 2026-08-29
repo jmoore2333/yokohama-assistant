@@ -232,12 +232,13 @@ fn parse_policy(name: &str, knobs: Option<&str>) -> Result<RolloutPolicy, String
     let base = RolloutPolicy::from_str_name(name).ok_or_else(|| {
         format!(
             "unknown contestant {name:?} (rungs: uniform | retreat-averse | family-weighted; \
-             evaluator: {} | {} | {ATOMIC_DIAG_ALIAS}; architecture: {}; named identities: {} | {})",
+             evaluator: {} | {} | {ATOMIC_DIAG_ALIAS}; architecture: {}; named identities: {})",
             greedy::GREEDY_CONTROLLER,
             lookahead::LOOKAHEAD_CONTROLLER,
             mcts::MCTS_CONTROLLER,
-            NamedIdentity::V2Padded.name(),
-            NamedIdentity::V2RefitPadded.name(),
+            // Built FROM `NamedIdentity::ALL`, so a new arm joins the usage
+            // line by existing rather than by anyone remembering to add it.
+            NamedIdentity::ALL.map(NamedIdentity::name).join(" | "),
         )
     })?;
     let Some(knobs) = knobs else { return Ok(base) };
@@ -302,6 +303,17 @@ mod tests {
     ///    typist wanted. The row COUNT and the refusal COUNT below are
     ///    unchanged, which is what keeps this an amendment to the capture
     ///    rather than a re-capture of it.
+    /// 3. **V4 §7 step 9 T5** registered the CANDIDATE arm, so that same
+    ///    alternatives list gained a third named identity —
+    ///    `; named identities: v2-padded | v2-refit-padded | v4-step9-draft1`.
+    ///    It moved the SAME nine rows as departure 2, carrying the same seven
+    ///    distinct sentences, for the same reason: leaving the menu stale would
+    ///    refuse `v4-step9-draft` with a list omitting the arm the typist
+    ///    wanted. Every SPEC and every accepted parse is untouched, and the row
+    ///    COUNT and refusal COUNT below are unchanged — an amendment to the
+    ///    capture, not a re-capture. The usage line is now built FROM
+    ///    `NamedIdentity::ALL`, so a fourth arm will move these rows again and
+    ///    must mark departure 4 here rather than silently re-baselining.
     const FROZEN_BATTERY: &[(&str, Result<&str, &str>)] = &[
         ("uniform", Ok("Policy(Uniform)")),
         ("retreat-averse", Ok("Policy(RetreatAverse)")),
@@ -376,15 +388,15 @@ mod tests {
         ("mcts-v1:c=abc", Err("c must be parts per million: invalid digit found in string")),
         ("mcts-v1:scale=abc", Err("scale must be an integer: invalid digit found in string")),
         ("mcts-v1:w=1", Err("unknown knob \"w\" for mcts-v1 (cap | c | scale | m | leaf)")),
-        ("", Err("unknown contestant \"\" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1; named identities: v2-padded | v2-refit-padded)")),
-        ("nope", Err("unknown contestant \"nope\" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1; named identities: v2-padded | v2-refit-padded)")),
-        ("greedy-v2", Err("unknown contestant \"greedy-v2\" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1; named identities: v2-padded | v2-refit-padded)")),
-        (" uniform", Err("unknown contestant \" uniform\" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1; named identities: v2-padded | v2-refit-padded)")),
-        ("UNIFORM", Err("unknown contestant \"UNIFORM\" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1; named identities: v2-padded | v2-refit-padded)")),
-        ("uniform ", Err("unknown contestant \"uniform \" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1; named identities: v2-padded | v2-refit-padded)")),
-        ("mcts-v1 ", Err("unknown contestant \"mcts-v1 \" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1; named identities: v2-padded | v2-refit-padded)")),
-        (":", Err("unknown contestant \"\" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1; named identities: v2-padded | v2-refit-padded)")),
-        (":m=4", Err("unknown contestant \"\" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1; named identities: v2-padded | v2-refit-padded)")),
+        ("", Err("unknown contestant \"\" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1; named identities: v2-padded | v2-refit-padded | v4-step9-draft1)")),
+        ("nope", Err("unknown contestant \"nope\" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1; named identities: v2-padded | v2-refit-padded | v4-step9-draft1)")),
+        ("greedy-v2", Err("unknown contestant \"greedy-v2\" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1; named identities: v2-padded | v2-refit-padded | v4-step9-draft1)")),
+        (" uniform", Err("unknown contestant \" uniform\" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1; named identities: v2-padded | v2-refit-padded | v4-step9-draft1)")),
+        ("UNIFORM", Err("unknown contestant \"UNIFORM\" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1; named identities: v2-padded | v2-refit-padded | v4-step9-draft1)")),
+        ("uniform ", Err("unknown contestant \"uniform \" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1; named identities: v2-padded | v2-refit-padded | v4-step9-draft1)")),
+        ("mcts-v1 ", Err("unknown contestant \"mcts-v1 \" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1; named identities: v2-padded | v2-refit-padded | v4-step9-draft1)")),
+        (":", Err("unknown contestant \"\" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1; named identities: v2-padded | v2-refit-padded | v4-step9-draft1)")),
+        (":m=4", Err("unknown contestant \"\" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1; named identities: v2-padded | v2-refit-padded | v4-step9-draft1)")),
     ];
 
     fn rendered(spec: &str) -> Result<String, String> {

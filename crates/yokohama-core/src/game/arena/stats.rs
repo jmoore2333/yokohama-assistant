@@ -218,6 +218,12 @@ pub enum NamedIdentity {
     /// incumbents refit with no candidate columns admitted). NOT a shipped
     /// table; that const's doc carries the provenance and the never-move rule.
     V2RefitPadded,
+    /// [`WeightTable::V4_STEP9_DRAFT1`] — the V4 step-9 CANDIDATE, draft 1's
+    /// table: the first arm here whose candidate slots are nonzero, which is
+    /// the whole of what the sighted evaluator is. NOT a shipped table; that
+    /// const's doc carries the provenance, the never-move rule, and the note
+    /// that this WIRE NAME is proposed rather than spec-registered.
+    V4Step9Draft1,
 }
 
 /// The shipped lookahead knobs every named arm runs, TRANSCRIBED (see
@@ -228,7 +234,8 @@ const NAMED_IDENTITY_RETREAT_SAMPLES: u8 = 8;
 
 impl NamedIdentity {
     /// Every named identity, for a grammar or a test that must cover them all.
-    pub const ALL: [Self; 2] = [Self::V2Padded, Self::V2RefitPadded];
+    pub const ALL: [Self; 3] =
+        [Self::V2Padded, Self::V2RefitPadded, Self::V4Step9Draft1];
 
     /// The WIRE name — what a runner accepts and an echo carries. Read from
     /// here at every site, so the grammar and provenance cannot drift into two
@@ -237,6 +244,7 @@ impl NamedIdentity {
         match self {
             Self::V2Padded => "v2-padded",
             Self::V2RefitPadded => "v2-refit-padded",
+            Self::V4Step9Draft1 => "v4-step9-draft1",
         }
     }
 
@@ -247,6 +255,7 @@ impl NamedIdentity {
         match self {
             Self::V2Padded => WeightTable::V2,
             Self::V2RefitPadded => WeightTable::V2_REFIT_PADDED,
+            Self::V4Step9Draft1 => WeightTable::V4_STEP9_DRAFT1,
         }
     }
 
@@ -3260,17 +3269,127 @@ mod tests {
         );
     }
 
+    /// **THE GOLDEN TRANSCRIPTION PIN.** All sixty-eight literals of
+    /// [`WeightTable::V4_STEP9_DRAFT1`] against the draft-1 ledger row, written
+    /// out here rather than computed, because the risk this wave carries is a
+    /// MIS-TRANSCRIPTION and a pin that derived the numbers from the same place
+    /// the const did would catch nothing.
+    ///
+    /// Source of record: the execution ledger's draft-1 row (2026-08-29, "DRAFT
+    /// 1 (1 of ≤ 3), LEDGER-RECORDED BEFORE ITS READ"), whose vectors are
+    /// themselves verified against the `t4-entry-run.txt` artifact of record.
+    ///
+    /// The row's own per-change provenance is re-derived here as a SECOND,
+    /// independent check: the moves it names must be exactly the coordinates
+    /// where this table differs from `V2`, and the displacements it records
+    /// (14 early over 11 moves, 102 late over 12) must be what those
+    /// differences sum to. A transcription that hit the literals but broke the
+    /// arithmetic, or vice versa, fails one of the two.
+    #[test]
+    fn the_v4_step9_draft1_table_is_the_ledger_recorded_draft_one_vectors() {
+        const LEDGER_EARLY: [i64; 34] = [
+            1, 20, 14, -4, 3, 30, 5, -10, 6, 12, 15, 8, 5, 0, 3, -1, //
+            1, 1, 0, 0, 1, 1, 1, 2, 2, 0, 0, 1, 0, 0, 0, 1, 1, 0,
+        ];
+        const LEDGER_LATE: [i64; 34] = [
+            40, 40, 20, 8, 20, 20, 8, -10, 10, 20, 25, 14, 8, 4, 4, -2, //
+            14, 1, -6, -2, 20, 0, 5, 21, 15, 0, 1, 0, 0, 1, 0, 0, 0, 0,
+        ];
+        use crate::game::eval::Feature;
+        let table = WeightTable::V4_STEP9_DRAFT1;
+        assert_eq!(table.early, LEDGER_EARLY, "EARLY differs from the draft-1 ledger row");
+        assert_eq!(table.late, LEDGER_LATE, "LATE differs from the draft-1 ledger row");
+
+        // SECOND CHECK, from the row's provenance rather than its vectors: the
+        // moves it names, and the displacements it records.
+        let moved = |from: &[i64; 34], to: &[i64; 34]| -> Vec<(&'static str, i64)> {
+            Feature::ALL
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| from[*i] != to[*i])
+                .map(|(i, f)| (f.name(), to[i] - from[i]))
+                .collect()
+        };
+        let early_moves = moved(&WeightTable::V2.early, &table.early);
+        let late_moves = moved(&WeightTable::V2.late, &table.late);
+        assert_eq!(early_moves.len(), 11, "the row records 11 early moves: {early_moves:?}");
+        assert_eq!(late_moves.len(), 12, "the row records 12 late moves: {late_moves:?}");
+        assert_eq!(
+            early_moves.iter().map(|(_, d)| d.abs()).sum::<i64>(),
+            14,
+            "the row records early displacement 14",
+        );
+        assert_eq!(
+            late_moves.iter().map(|(_, d)| d.abs()).sum::<i64>(),
+            102,
+            "the row records late displacement 102",
+        );
+        // The two findings the row calls out by name.
+        assert_eq!(
+            table.early[Feature::AchievementProgressSum.index()],
+            0,
+            "the forced incumbent zeroing, priced by 6(b)-early",
+        );
+        assert_eq!(
+            (
+                table.late[Feature::AssistantAreasDistinct.index()],
+                table.late[Feature::PresidentLocalAccess.index()],
+            ),
+            (-6, -2),
+            "the B1' forced-set members at their certified doses",
+        );
+        // B3's registered exclusion: X carries EARLY sight only.
+        for x in [Feature::LabTakeable, Feature::PortTakeable, Feature::MatchedProductionAccess] {
+            assert_eq!(table.late[x.index()], 0, "{} is zero at late (B3)", x.name());
+        }
+    }
+
+    /// **THE LOCK RECORD** (spec §9's closing clause, lines 1026-1028): the
+    /// digests and FULL echoes of all three identities — candidate, baseline,
+    /// control — printed in a form the close row can transcribe.
+    ///
+    /// Printed rather than asserted, except for the one property that must
+    /// hold: the three `weights=` identities are DISTINCT. Two arms echoing one
+    /// identity could trade places in a corpus and nothing downstream could
+    /// tell.
+    #[test]
+    fn the_three_locked_identities_print_their_digests_and_echoes() {
+        let identity_of = |table: &WeightTable| crate::game::greedy::weight_table_identity(table);
+        println!("\n=== T5 LOCK RECORD (spec §9:1026-1028) ===");
+        println!("SEMANTICS_REV     {}", crate::game::semantics::SEMANTICS_REV);
+        println!("rules hash        {}", Rules::standard().content_hash());
+        for (role, arm) in [
+            ("candidate", NamedIdentity::V4Step9Draft1),
+            ("baseline ", NamedIdentity::V2Padded),
+            ("control  ", NamedIdentity::V2RefitPadded),
+        ] {
+            let table = arm.table();
+            let id = identity_of(&table);
+            println!(
+                "{role}  {:<16}  weights={id:#018x} ({id})\n             echo  {}",
+                arm.name(),
+                Contestant::NamedTable(arm).echo(),
+            );
+        }
+        let ids: Vec<_> = NamedIdentity::ALL.iter().map(|a| identity_of(&a.table())).collect();
+        let mut distinct = ids.clone();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert_eq!(distinct.len(), ids.len(), "the three arms' identities must DIFFER: {ids:?}");
+    }
+
     /// The WIRE names are the arms' own consts, and the grammar's literals are
     /// checks on them rather than a second source.
     #[test]
     fn the_named_identity_wire_names_round_trip_through_their_own_consts() {
-        assert_eq!(NamedIdentity::ALL.len(), 2, "a new arm must be dispositioned in these pins");
+        assert_eq!(NamedIdentity::ALL.len(), 3, "a new arm must be dispositioned in these pins");
         for arm in NamedIdentity::ALL {
             assert_eq!(NamedIdentity::from_str_name(arm.name()), Some(arm));
             assert_eq!(Contestant::from_str_name(arm.name()), Ok(Contestant::NamedTable(arm)));
         }
         assert_eq!(NamedIdentity::V2Padded.name(), "v2-padded");
         assert_eq!(NamedIdentity::V2RefitPadded.name(), "v2-refit-padded");
+        assert_eq!(NamedIdentity::V4Step9Draft1.name(), "v4-step9-draft1");
         assert_eq!(NamedIdentity::from_str_name("v2"), None);
         assert_eq!(NamedIdentity::from_str_name("V2-PADDED"), None);
     }
@@ -3290,9 +3409,10 @@ mod tests {
         // Recorded for the wave's commit message; a digest is only useful if it
         // is written down somewhere a reader can compare against.
         println!(
-            "named-identity weights: v2-padded={} v2-refit-padded={}",
+            "named-identity weights: v2-padded={} v2-refit-padded={} v4-step9-draft1={}",
             identity_of(&WeightTable::V2),
             identity_of(&WeightTable::V2_REFIT_PADDED),
+            identity_of(&WeightTable::V4_STEP9_DRAFT1),
         );
 
         for arm in NamedIdentity::ALL {

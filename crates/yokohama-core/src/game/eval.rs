@@ -1150,6 +1150,77 @@ impl WeightTable {
         late: padded_incumbent_vector([3, 4, 3, 3, 3, 36, -2, 1, 0, 4, -1, 10, 44, -2, -4, -2]),
     };
 
+    /// **THE V4 STEP-9 CANDIDATE — draft 1's table, the sighted evaluator's
+    /// thirty-four numbers, named.**
+    ///
+    /// **NAME NOT REGISTERED — PROPOSED AT T5 AND FLAGGED.** Spec §§10–11 name
+    /// the other two arms literally (`V2-padded`, `V2-refit-padded`) but call
+    /// this one only "THE SELECTED IDENTITY"; §13 likewise. `V4_STEP9_DRAFT1` /
+    /// `v4-step9-draft1` is the implementer's proposal, chosen so the name says
+    /// WHICH draft produced these literals: under the never-move rule below a
+    /// second draft is a NEW const with its own name, and a name like
+    /// `v4-candidate` could not say which draft a recorded figure belonged to.
+    /// Rename before the §11 field if the owner prefers — nothing outside this
+    /// wave cites it yet.
+    ///
+    /// # Where the thirty-four numbers came from
+    ///
+    /// Draft 1 of ≤ 3 (V4 step 9), ledger-recorded BEFORE its read on
+    /// 2026-08-29 and green on that read at the first attempt. **Every changed
+    /// coordinate is R3's exact certified projection's own priced answer —
+    /// ZERO R4 class moves, no discretionary dose anywhere**, which is what
+    /// makes this R9's "minimal registered sight".
+    ///
+    /// * **EARLY** — displacement 14 over 11 moves from V2-padded. Ten
+    ///   candidates lit (S1, S2, S5, S6, S7 at +1, E1/E2 at +2, O2, X1, X2 at
+    ///   +1) and ONE incumbent moved: `achievement_progress_sum` 2 → 0, priced
+    ///   by 6(b)-early and reviewer-verified forced with no cheaper route.
+    /// * **LATE** — displacement 102 over 12 moves. Two incumbents
+    ///   (`country_bonus_now` 30 → 40 by 4(d); `assistants_in_hand_excess`
+    ///   2 → 8 by row 8) and ten candidates, including the B1′ certified forced
+    ///   set **S3 → −6** (both-sides-pinned) and **S4 → −2** (floor-exact),
+    ///   each carrying its own restoration-infeasibility certificate (S3
+    ///   `y·b = 15`, S4 `y·b = 5`). X-late is all zero, consistent with B3's
+    ///   registered exclusion: X carries EARLY sight only.
+    ///
+    /// The 3(c)/11(b) coupling that has driven the analysis since T3 sits at its
+    /// arithmetic minimum here — `S5 = 20` and `E1 = 21`.
+    ///
+    /// Certification: late `d* = 102` by ordinary bisection (`≤ 101` EMPTY at 36
+    /// cuts plus a Farkas of 49 multipliers), changed-count 12 minimal (`≤ 11`
+    /// refuted over 263,934 subsets), stage 2 at 907,301 of the registered 10⁷,
+    /// `System::violation` = 0; early `d* = 14` (`≤ 13` EMPTY at 4 cuts), 11
+    /// minimal, 40,726 supports.
+    ///
+    /// # What may never move
+    ///
+    /// [`V2_REFIT_PADDED`](Self::V2_REFIT_PADDED)'s rule, verbatim in force:
+    /// these literals are a HISTORICAL RECORD of one draft that passed one
+    /// read. A second draft is a NEW const with its own literals and its own
+    /// provenance, never an edit here — editing these would silently re-point
+    /// every figure ever recorded against this arm's `weights=` identity.
+    ///
+    /// **Not written through [`padded_incumbent_vector`]**, unlike every named
+    /// table above it, and deliberately: the candidate slots are NONZERO —
+    /// that is the whole of what "sighted" means — so a padding helper would
+    /// have nothing to pad. What stands in for the padding pin is the golden
+    /// transcription pin
+    /// (`the_v4_step9_draft1_table_is_the_ledger_recorded_draft_one_vectors`),
+    /// which compares all sixty-eight literals against the draft-1 ledger row.
+    pub const V4_STEP9_DRAFT1: WeightTable = WeightTable {
+        // 16 incumbents, then the 18 candidates in `Feature::ALL` order:
+        //   [vp, ctry, tech, chur, cust, hCORE, hEXC, ware, brd, shop, trad, 5pw, imp, achv, merc, hnd#]
+        //   [S1, S2, S3, S4, S5, S6, S7, E1, E2, E3, O1, O2, O3, O5, O6, X1, X2, X3]
+        early: [
+            1, 20, 14, -4, 3, 30, 5, -10, 6, 12, 15, 8, 5, 2, 3, -1, //
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ],
+        late: [
+            40, 30, 20, 8, 20, 20, 2, -10, 10, 20, 25, 14, 8, 4, 4, -2, //
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ],
+    };
+
     /// `(early, late)` for one feature.
     pub fn get(&self, feature: Feature) -> (i64, i64) {
         let i = feature.index();
