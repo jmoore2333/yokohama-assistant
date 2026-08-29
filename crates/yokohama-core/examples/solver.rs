@@ -10827,6 +10827,76 @@ const ARTIFACT_DROPPED_LATE: [&str; 4] = ["4(b)", "4(g)", "6(a)", "6(c)"];
         assert_eq!(first, second, "the set construction reproduces from its inputs");
     }
 
+
+    /// **THE TWO-PAIRS PASTE TRAP, SAID ON THE BLOCK A READER IS ABOUT TO
+    /// COPY.**
+    ///
+    /// When BOTH endpoints repair in one run the artifact carries TWO
+    /// `<early>/<late>` pairs, each with one repaired half and one UNMOVED
+    /// half. Pasting either pair whole ships the other endpoint's starting
+    /// vector as though it were a repair — on the real run that is the V2 early
+    /// table, eleven coordinates wrong with the forced `achievement_progress_sum`
+    /// zeroing undone, and it would be T4's answer.
+    ///
+    /// Nothing on the page said to combine ACROSS pages, and a warning that
+    /// lives in a doc comment is a warning the paster never sees. This cell
+    /// requires it on the rendered block, in BOTH orientations, so deleting the
+    /// sentence fails here rather than surfacing as a wrong table.
+    #[test]
+    fn the_paste_ready_block_warns_against_pasting_one_pages_pair_whole() {
+        // The LATE orientation — the real artifact's late page, where T4 reads.
+        let (s5, e1) = (col("S5"), col("E1"));
+        let late = anchored_problem(&[
+            ("pair 3(c) late", &[(s5, 2)], 40),
+            ("pair 11(b) late", &[(e1, 2), (s5, -2)], 1),
+        ]);
+        let late_page = render_repair(&late);
+        assert!(late_page.contains("paste-ready table"), "{late_page}");
+        for phrase in [
+            "IF BOTH ENDPOINTS REPAIRED",
+            "each page's OWN repaired half",
+            "never one page's pair whole",
+        ] {
+            assert!(late_page.contains(phrase), "the late page says `{phrase}`: {late_page}");
+        }
+
+        // And the EARLY orientation, so the warning is a property of the block
+        // rather than of one stage.
+        let sys = toys::named("sat-reachable").expect("a registered toy");
+        let (kept, dropped) = project_pair_rows(sys.rows.clone());
+        let projected = System::new(sys.stage, kept, sys.box_limit, sys.pin_vp);
+        let w0 = start_vector("v2-padded", sys.stage).expect("a registered start");
+        let early = RepairProblem::new(sys.stage, projected, dropped, "v2-padded", w0)
+            .expect("the anchor is admissible");
+        assert!(
+            render_repair(&early).contains("never one page's pair whole"),
+            "the early page carries it too",
+        );
+    }
+
+    /// **THE FREE-COORDINATE COUNT IS THE RAW PROBLEM'S**, and the header says
+    /// so — the trail below it can legitimately show one more.
+    ///
+    /// Excepting a sign clause can UNPIN a coordinate whose box was degenerate
+    /// under it, so the excepted problem the projection actually solves may have
+    /// more free coordinates than the header counted. On the real late page that
+    /// is 25 in the header against 26 in the excepted trail's first pass: not a
+    /// defect, but two numbers a reader has no way to reconcile unless the page
+    /// says which is which.
+    #[test]
+    fn the_free_coordinate_header_says_it_counts_the_un_excepted_problem() {
+        let header = render_repair_header(&anchored_problem(&[(
+            "S4 at most -2",
+            &[(col("S4"), -1)],
+            2,
+        )]));
+        assert!(header.contains("free coordinates"), "{header}");
+        assert!(
+            header.contains("before any certified exception"),
+            "the count names the problem it counted: {header}",
+        );
+    }
+
     /// A REMOVED feature has no sign clause, so naming one is a typed refusal
     /// rather than a wider system — and the driver never names one, because
     /// `clause_active` excludes them.
