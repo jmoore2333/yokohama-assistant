@@ -31721,6 +31721,33 @@ mod tests {
             purse.x1_plus(),
             purse.x1_recomputed,
         );
+
+        // MUTATION 4 — **THE TIE DIRECTION**, which is the one conjunct (a)
+        // exists to exclude. Feeding the SAME successor as both sides makes the
+        // opponent's E1 delta exactly ZERO while the pair's fee is nonzero: the
+        // fee channel did not move at all. The registration's own words are
+        // "opponent-E1 differs by EXACTLY the exported fee delta", and the
+        // composition table's "a TIE in a gated arm is a MISS" says what that
+        // costs — so a zero delta at a nonzero fee is a MISS, never a pass.
+        //
+        // The wrong-fee mutation above cannot see this: it falsifies (a) by
+        // moving the EXPECTATION, and an arm weakened to accept a zero delta
+        // still refuses `fee + 1`. This row is the channel-did-not-move
+        // direction, and it is what the W2 review's escaped probe (d) —
+        // `e1_delta() == fee || e1_delta() == 0`, which left all 194 cells
+        // green — walks straight through.
+        let tied = read_raw_arm(&plus_view, &plus_view, opponent, pair.fee, &rules)
+            .expect("the arm still reads");
+        assert_eq!(tied.e1_delta(), 0, "identical successors move the fee channel by nothing");
+        assert!(
+            pair.fee > 0,
+            "the fixture's fee is NONZERO, so a zero delta is a real disagreement",
+        );
+        assert!(
+            !tied.conjunct_a(),
+            "a ZERO E1 delta at fee {} must FAIL conjunct (a) — the tie direction",
+            pair.fee,
+        );
     }
 
     /// **THE STATIC PARITY IS AN IDENTITY AT 2P**, at V2 and at the locked
