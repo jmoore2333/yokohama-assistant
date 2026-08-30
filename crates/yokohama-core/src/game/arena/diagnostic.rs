@@ -1263,6 +1263,39 @@ mod tests {
         );
     }
 
+    /// **W-D1 review NOTE.** `--tail 0` silently behaved as `--tail 1` (both
+    /// printed the same one-turn window). A window of zero turns is not a
+    /// window, and this project refuses and names the bound rather than
+    /// clamping a caller's number into a different one.
+    #[test]
+    fn a_zero_turn_tail_window_is_a_typed_refusal() {
+        let rules = Rules::standard();
+        let (x, y) = rungs();
+        let run = run_world(
+            &WorldSpec { x, y, seed: first_world(), players: 2, arrangement: 1 },
+            &rules,
+            false,
+        )
+        .expect("the rungs finish this world");
+
+        let err = match render_world(&run, 0, &rules) {
+            Err(err) => err,
+            Ok(_) => panic!("a zero-turn window is not a window: it must be refused, not clamped"),
+        };
+        let ArenaError::Driver(message) = err else {
+            panic!("expected a Driver refusal, got {err:?}");
+        };
+        assert!(
+            message.contains("tail") && message.contains('0'),
+            "the refusal must name the flag and the value it got: {message}",
+        );
+
+        assert!(
+            render_world(&run, 1, &rules).is_ok(),
+            "one turn IS a window — the refusal is on zero alone",
+        );
+    }
+
     /// The number following `marker` on a line, if the marker is there.
     fn vp_after(line: &str, marker: &str) -> Option<u32> {
         line.split(marker)
