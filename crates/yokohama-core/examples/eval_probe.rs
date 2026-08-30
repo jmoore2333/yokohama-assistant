@@ -18974,9 +18974,21 @@ fn render_ordinal(out: &mut String, surface: &Step10Surface, block: &OrdinalBloc
             }
             let _ = writeln!(
                 out,
-                "     fork state        {} (EndAdditionalPhase, CHECKED)\n       {:<14}  \
+                "     fork state        {} ({})\n       {:<14}  \
                  successor {}\n       {:<14}  successor {}",
                 sub.fork_digest,
+                // DERIVED from the two digests this artifact already prints,
+                // rather than from a flag: at a PLACEMENT DECISION the fork IS
+                // the root (R-S10-14) and no `EndAdditionalPhase` was applied,
+                // so naming the crossing there would be a wrong sentence about
+                // how the read reached its state. A turn start's fork differs
+                // from its root in `turn_phase`, which `state_digest` covers,
+                // so the two can never be confused.
+                if sub.fork_digest == block.digest {
+                    "the ROOT ITSELF — the ply is already crossed (R-S10-14)"
+                } else {
+                    "EndAdditionalPhase, CHECKED"
+                },
                 band.plus_label(),
                 sub.plus_digest,
                 band.zero_label(),
@@ -32100,7 +32112,9 @@ mod tests {
         assert_eq!(parent.statics.agrees(), child.statics.agrees());
 
         // PART A's SHAPE: two sets from the turn start, ONE from the decision.
-        let sides = (&parent.pair.plus_move, &parent.pair.zero_move);
+        let (plus_move, zero_move) =
+            (parent.pair.plus_move.clone(), parent.pair.zero_move.clone());
+        let sides = (&plus_move, &zero_move);
         let from_start =
             sign_step10_ordinal(Step10Band::Ose, "ts", &turn_start, Some(sides), &rules)
                 .expect("the turn start signs");
@@ -32140,6 +32154,56 @@ mod tests {
         assert_eq!(roles(&from_decision[0]), roles(&from_start[1]));
         assert_eq!(roles(&from_decision[0]).len(), 2, "both sides are tagged");
         assert!(from_decision[0].views[0].from.label().contains("/root=fork#"));
+
+        // THE ARTIFACT DOES NOT CLAIM A CROSSING THAT DID NOT HAPPEN. The two
+        // blocks are MOVED into the render here, which is why every comparison
+        // above runs first.
+        let artifact = |state: &GameState, label: &str, sub: Box<SubstantiveBlock>| -> String {
+            let mut out = String::new();
+            render_ordinal(
+                &mut out,
+                &Step10Surface {
+                    band: Step10Band::Ose,
+                    mode: Step10Mode::Development,
+                    decision_seed: 7,
+                    with_control: false,
+                    acknowledged: BTreeSet::new(),
+                    burned: BTreeSet::new(),
+                    knobs: shipped_controller_knobs().expect("knobs"),
+                    echo: String::new(),
+                    v2_echo: String::new(),
+                    blocks: Vec::new(),
+                    part_a: classify(Vec::new()),
+                    signing_summary: Vec::new(),
+                    signing_notes: Vec::new(),
+                    signing_failures: Vec::new(),
+                    verdict: None,
+                },
+                &OrdinalBlock {
+                    ordinal: 50,
+                    label: label.to_string(),
+                    origin: "constructed".to_string(),
+                    detail: String::new(),
+                    digest: state_digest(state),
+                    anchor: state_digest(state),
+                    seat: mover,
+                    burned: false,
+                    body: OrdinalBody::Substantive(sub),
+                },
+            );
+            out
+        };
+        let parent_art = artifact(&turn_start, "ts", parent);
+        let child_art = artifact(&decision, "pd", child);
+        assert!(
+            parent_art.contains("(EndAdditionalPhase, CHECKED)"),
+            "a turn start's fork IS reached by the crossing:\n{parent_art}",
+        );
+        assert!(
+            child_art.contains("the ROOT ITSELF — the ply is already crossed (R-S10-14)"),
+            "a placement decision's artifact must not claim a crossing that did not \
+             happen:\n{child_art}",
+        );
     }
 
     /// **THE WHOLE PER-ORDINAL PIPELINE, END TO END, ON A CONSTRUCTED ROOT.**
