@@ -566,10 +566,13 @@ fn cmd_cell(args: &[String]) -> Result<(), String> {
     if let Some(ceiling) = capped_ceiling {
         rows.push((
             "capped-ceiling",
+            // No ORDINAL: `the {n}th` renders "the 2th"/"the 3th" for most
+            // ceilings, and the registered field values 10/10/18 happen to be
+            // the ones that read correctly — which is how such a defect
+            // survives (review S3). The comparative needs no suffix table.
             format!(
                 "{ceiling} (a capped game is COUNTED and its design unit is VOID; \
-                 the {}th refuses the cell)",
-                ceiling + 1,
+                 more than {ceiling} refuses the cell)"
             ),
         ));
     }
