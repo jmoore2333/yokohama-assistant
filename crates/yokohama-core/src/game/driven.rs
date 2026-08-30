@@ -2064,10 +2064,15 @@ fn cross_check_pricing(
     payer_delta: i64,
     opponent_delta: i64,
 ) -> Result<(), FeeFlowMiss> {
-    // W1 fix-wave RED: the deliberate placeholder — the cell below asks for the
-    // four combinations; the GREEN commit lands the comparison.
-    let _ = (candidate, priced, payer_delta, opponent_delta);
-    Ok(())
+    if payer_delta == i64::from(priced) && opponent_delta == i64::from(priced) {
+        return Ok(());
+    }
+    Err(FeeFlowMiss::PricingMismatch {
+        candidate: format!("{candidate:?}"),
+        priced,
+        payer_delta,
+        opponent_delta,
+    })
 }
 
 /// Every placement the turn start offers, with the opponent fee flow it prices
