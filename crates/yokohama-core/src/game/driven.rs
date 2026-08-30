@@ -1296,11 +1296,9 @@ fn turn_start_placements(state: &GameState, rules: &Rules) -> Option<Vec<Move>> 
 /// predicate in the probe — the drift class this repo fences. The body is what
 /// the recipe reads.
 pub fn is_placement_decision(state: &GameState) -> bool {
-    // W2b RED: the deliberate placeholder — the class is not recognized yet, so
-    // every placement-decision root still reports the typed void. The cells
-    // below ask for the reading; GREEN lands the predicate.
-    let _ = state;
-    false
+    state.turn_phase == TurnPhase::Placement
+        && state.pending_choices.is_empty()
+        && !state.is_mercenary_action
 }
 
 /// The placement family this root offers — **from EITHER admitted class**
@@ -13237,6 +13235,10 @@ mod tests {
         let rules = Rules::standard();
         let mut pairs = 0usize;
         let mut classified = 0usize;
+        // The two admitted classes, counted apart: a sweep that met only one of
+        // them would prove the reading over half its domain.
+        let mut starts = 0usize;
+        let mut decisions = 0usize;
         let mut misses: BTreeMap<String, usize> = BTreeMap::new();
         for index in [11u64, 12] {
             let stats = rung_game(&rules, world(index));
@@ -13264,8 +13266,22 @@ mod tests {
                             );
                         }
 
-                        let placing = apply_move(&state, &Move::EndAdditionalPhase, &rules)
-                            .expect("a turn start ends its additional phase");
+                        // The state the pair's sides are legal in: CROSSED
+                        // from a turn start, ALREADY THERE at a placement
+                        // decision (R-S10-14). The sweep now meets both classes,
+                        // so it can no longer assume the crossing exists.
+                        let at_start = !is_placement_decision(&state);
+                        let placing = if at_start {
+                            apply_move(&state, &Move::EndAdditionalPhase, &rules)
+                                .expect("a turn start ends its additional phase")
+                        } else {
+                            state.clone()
+                        };
+                        if at_start {
+                            starts += 1;
+                        } else {
+                            decisions += 1;
+                        }
                         let paid = apply_move(&placing, &pair.fee_side, &rules)
                             .expect("F+ is in the placement phase's legal list");
                         assert_eq!(
@@ -13286,12 +13302,18 @@ mod tests {
                         // R-S10-14: at a TURN START the pair must equal the
                         // pair at its placement-decision successor — the ply is
                         // phase-only, asserted over organic play rather than
-                        // only at a constructed fixture.
-                        assert_eq!(
-                            Ok(pair.clone()),
-                            fee_flow_recipe_pair(&placing, &rules),
-                            "event {k}: the placement-decision successor yields a different pair"
-                        );
+                        // only at a constructed fixture. At a placement decision
+                        // `placing` IS the state, so the comparison is the
+                        // function-of-the-root one below and not a second copy
+                        // of it.
+                        if at_start {
+                            assert_eq!(
+                                Ok(pair.clone()),
+                                fee_flow_recipe_pair(&placing, &rules),
+                                "event {k}: the placement-decision successor yields a different \
+                                 pair"
+                            );
+                        }
                         assert_eq!(
                             Ok(pair),
                             fee_flow_recipe_pair(&state, &rules),
@@ -13306,14 +13328,20 @@ mod tests {
         let off_class =
             misses.get(&FeeFlowMiss::NotAPlacementDecision.to_string()).copied().unwrap_or(0);
         println!(
-            "fee-flow recipe over organic play: {pairs} pairs, {classified} positions \
-             classified, {off_class} positions at neither admitted class, other misses {:?}",
+            "fee-flow recipe over organic play: {pairs} pairs ({starts} at a turn start, \
+             {decisions} at a placement decision), {classified} positions classified, \
+             {off_class} positions at neither admitted class, other misses {:?}",
             misses
                 .iter()
                 .filter(|(name, _)| *name != &FeeFlowMiss::NotAPlacementDecision.to_string())
                 .collect::<Vec<_>>()
         );
         assert!(off_class > 0, "the sweep never saw a position at neither admitted class");
+        // BOTH admitted classes are met organically (measured 27 / 35 over the
+        // two rung games at the landing), so the equality above is asserted
+        // over the reading's whole domain rather than over half of it.
+        assert!(starts > 0, "the sweep never saw a pair at a turn start");
+        assert!(decisions > 0, "the sweep never saw a pair at a placement decision");
         assert!(classified > 0, "the sweep never classified a candidate list ({misses:?})");
     }
 
