@@ -913,7 +913,7 @@ fn family_vocabulary() -> String {
 }
 
 /// The three block names, as one sentence — see [`BLOCK_NAMES`] for what each
-/// exactly two.
+/// one is.
 fn block_vocabulary() -> String {
     format!("the blocks are {}", BLOCK_NAMES.join(" | "))
 }
@@ -5155,7 +5155,8 @@ mod tests {
                     panic!("{id} --arm {}: a RELEASED arm refused: {e}", arm.as_str())
                 }
                 (false, Ok((master, ordinals))) => panic!(
-                    "{id} --arm {}: an UNRELEASED arm resolved {master:#018x} at {ordinals:?} —                      an escrowed ordinal reached the grammar",
+                    "{id} --arm {}: an UNRELEASED arm resolved {master:#018x} at {ordinals:?} — \
+                     an escrowed ordinal reached the grammar",
                     arm.as_str(),
                 ),
                 (false, Err(e)) => {
@@ -5233,7 +5234,8 @@ mod tests {
     /// arithmetic in a commit message — and it is why the freeze needed NO
     /// games-bound change: v1.1 supplies 32 against family 1's 20 (pilot 4 +
     /// confirmatory 16), and the v2.3 pinned-lookahead ecology supplies 480 against the
-    /// layer-2 families' 28 (pilot 4 + confirmatory 24).
+    /// layer-2 families' 42 (pilot 4 + confirmatory 24 + the released
+    /// regression tier's ceiling at ordinal 41).
     ///
     /// **WHAT THIS CHECK DOES NOT PROVE, learned the hard way TWICE
     /// (2026-08-18):** `games × per_game_cap` is the CAPACITY of the ordinal
