@@ -5176,6 +5176,39 @@ mod tests {
         assert_eq!(released_seen, 3, "the release ledger no longer names exactly three arms");
     }
 
+    /// **THE READ SURFACE**: a regression report says so on its family line.
+    ///
+    /// `render_family_block` prints `report.block.as_str()`, so the release
+    /// needed no renderer change — which is precisely why this needs a cell.
+    /// Close doc §1.7 reads `block=` (with `subject`, `master` and the
+    /// ordinals) on all three reports BEFORE any verdict is quoted, and "it
+    /// should fall out of the existing format string" is an argument, not a
+    /// check.
+    ///
+    /// Rendered from a HAND-BUILT report: no block is run and no ordinal is
+    /// drawn.
+    #[test]
+    fn a_regression_report_says_block_regression_on_its_family_line() {
+        let mut report = family_report(FamilyVerdict::Pass, vec![]);
+        report.block = BlockKind::Regression;
+        let rendered = render_family_block(&report, FamilyArm::Positive);
+        let family_line = rendered
+            .lines()
+            .find(|line| line.trim_start().starts_with("family "))
+            .unwrap_or_else(|| panic!("the report has no family line:\n{rendered}"));
+        assert!(
+            family_line.contains("block=regression"),
+            "the family line does not name the block: {family_line}",
+        );
+        // ANTI-VACUITY: the token READS the report rather than being a
+        // constant that happens to say the right word.
+        report.block = BlockKind::Confirmatory;
+        assert!(
+            render_family_block(&report, FamilyArm::Positive).contains("block=confirmatory"),
+            "the block token is not reading the report",
+        );
+    }
+
     /// The RELEASED regression block runs the FROZEN sizing in BOTH arms —
     /// admission K = 8, R = 20, per-root F = 1/20, δ = 5, VOID below 4 admitted
     /// (family freeze §3, held UNCHANGED by the release: close doc §1.4).
