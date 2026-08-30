@@ -115,8 +115,8 @@ use yokohama_core::game::lookahead::{
 use yokohama_core::game::driven::{
     classify_fee_flow_candidates, classify_recipe_candidates, escrow_recipe_pair,
     fee_flow_recipe_pair, generate_roots, placement_shape, registry, root_table, FeeFlowMiss,
-    RecipeMiss, RecipePair, RecipeSide, RegistryError, RootOrigin, RootPredicate, RootSource,
-    V4_ESCROW_ORDINALS,
+    RecipeMiss, RecipePair, RecipeSide, RegistryError, RootDescriptor, RootOrigin, RootPredicate,
+    RootSource, V4_ESCROW_ORDINALS,
 };
 use yokohama_core::game::driven_runner::DEFAULT_SEAT;
 use yokohama_core::game::pair_fixtures::{
@@ -17626,16 +17626,26 @@ struct Step10Root {
 }
 
 /// A descriptor's ORIGIN in the words a reader can act on — the generating
-/// ecology for a scanned root (predicate + master + ordinal is NOT the whole
-/// identity), the document digest for a record prefix.
-fn origin_detail(origin: &RootOrigin) -> String {
-    match origin {
-        RootOrigin::Constructed => "constructed".to_string(),
+/// GAME, the POSITION within it, and the ECOLOGY that produced it for a scanned
+/// root (predicate + master + ordinal is NOT the whole identity, which is why
+/// the descriptor carries the ecology at all), the document digest for a record
+/// prefix.
+///
+/// `event_index` is `state_at`'s own `k` — the position the mover decided IN
+/// before the move that became event `k` — and it comes off the DESCRIPTOR
+/// rather than off the origin, because that is where the type keeps it.
+fn origin_detail(descriptor: &RootDescriptor) -> String {
+    let position = match descriptor.event_index {
+        Some(k) => format!("position (event) {k}"),
+        None => "no event index (a constructed root indexes no log)".to_string(),
+    };
+    match &descriptor.origin {
+        RootOrigin::Constructed => format!("constructed · {position}"),
         RootOrigin::RecordPrefix { record_digest } => {
-            format!("record prefix of document {record_digest}")
+            format!("record prefix of document {record_digest} · {position}")
         }
         RootOrigin::Generated { game_index, ecology, .. } => format!(
-            "scan game {game_index} · ecology {} · driver {} · {} games · per-game cap {}",
+            "scan game {game_index} · {position} · ecology {} · driver {} · {} games · per-game              cap {}",
             ecology.id, ecology.driver, ecology.games, ecology.per_game_cap,
         ),
     }
@@ -17676,7 +17686,7 @@ fn resolve_step10_roots(
                     ordinal: *ordinal,
                     label: band.label_of(*ordinal),
                     origin: band.origin_of(*ordinal),
-                    detail: origin_detail(&descriptor.origin),
+                    detail: origin_detail(&descriptor),
                     digest: descriptor.root_digest,
                     anchor: anchor_of(*ordinal)?,
                     state,
@@ -17701,7 +17711,7 @@ fn resolve_step10_roots(
                     ordinal: *ordinal,
                     label: band.label_of(*ordinal),
                     origin: band.origin_of(*ordinal),
-                    detail: origin_detail(&descriptor.origin),
+                    detail: origin_detail(&descriptor),
                     digest: descriptor.root_digest,
                     anchor: anchor_of(*ordinal)?,
                     state,
@@ -19303,7 +19313,7 @@ fn cmd_step10(args: &[String]) -> Result<i32, String> {
 mod tests {
     use super::*;
 
-    use yokohama_core::game::driven::RegistryError;
+    use yokohama_core::game::driven::{GeneratingEcology, RegistryError};
     use yokohama_core::game::greedy::DEFAULT_RETREAT_SAMPLES;
     use yokohama_core::game::lookahead::{DEFAULT_BEAM, DEFAULT_WORLDS};
     use yokohama_core::game::pair_fixtures::{
@@ -31906,6 +31916,46 @@ mod tests {
         assert!(succ("r", RecipeRole::EscrowDead).label().contains("[ESCROW dead]"));
         assert!(succ("r", RecipeRole::EscrowFeePlus).label().contains("[ESCROW F+]"));
         assert!(succ("r", RecipeRole::EscrowFeeZero).label().contains("[ESCROW F0]"));
+    }
+
+    /// A RESOLVED ROOT'S ORIGIN PRINTS ITS GAME, ITS POSITION AND ITS ECOLOGY.
+    ///
+    /// `(predicate, master, ordinal)` is not the whole identity of a generated
+    /// root — `RootSource::Generated`'s own doc says so, and the descriptor
+    /// carries the ecology for exactly that reason — so a step-10 artifact that
+    /// named only the ordinal would be recording less than it resolved.
+    #[test]
+    fn a_resolved_roots_origin_prints_its_game_position_and_ecology() {
+        let ecology = GeneratingEcology::v2_lookahead();
+        let generated = RootDescriptor {
+            origin: RootOrigin::Generated {
+                predicate: RootPredicate::PlacementForkSameCount,
+                master: M_PF,
+                ordinal: 8,
+                game_index: 17,
+                ecology: ecology.clone(),
+            },
+            event_index: Some(41),
+            root_digest: "0123456789abcdef".to_string(),
+        };
+        let printed = origin_detail(&generated);
+        assert!(printed.contains("scan game 17"), "the GAME: {printed}");
+        assert!(printed.contains("position (event) 41"), "the POSITION: {printed}");
+        assert!(printed.contains(&ecology.id), "the ECOLOGY: {printed}");
+        assert!(printed.contains(&ecology.driver), "…and its driver: {printed}");
+
+        let (state, _) = two_player_state();
+        let constructed = origin_detail(&RootDescriptor::constructed(&state));
+        assert!(constructed.contains("constructed"), "{constructed}");
+        assert!(constructed.contains("indexes no log"), "{constructed}");
+
+        let prefix = origin_detail(&RootDescriptor {
+            origin: RootOrigin::RecordPrefix { record_digest: "abcdef0123456789".to_string() },
+            event_index: Some(50),
+            root_digest: "0123456789abcdef".to_string(),
+        });
+        assert!(prefix.contains("document abcdef0123456789"), "{prefix}");
+        assert!(prefix.contains("position (event) 50"), "{prefix}");
     }
 
     /// **THE WHOLE PER-ORDINAL PIPELINE, END TO END, ON A CONSTRUCTED ROOT.**
