@@ -185,6 +185,234 @@ fn blurb(arm: NamedIdentity) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::arena::{
+        run_cell_emitting, CellSpec, Contestant, DiagnosticOutcome, SeedScheduleKind,
+    };
+    use crate::game::record::GameRecord;
+    use crate::game::rules::Rules;
+    use crate::game::seeds::SeedSchedule;
+
+    /// A THROWAWAY master on the wave's 9999 convention. It is deliberately NOT
+    /// one of the registered diagnostic masters `0x0B0120260831990{1..5}` and
+    /// not either scratch master the freeze doc already spent: a test that
+    /// played a registered schedule would consume a read the orchestrator has
+    /// not taken yet.
+    const SCRATCH_MASTER: u64 = 0x0B01_2026_0831_9999;
+
+    fn rungs() -> (Contestant, Contestant) {
+        // Rungs, not evaluator arms: these cells play whole 2P games in the
+        // per-edit tier, and the seating/keying property under test is the same
+        // for every contestant family (`Contestant::build` is the one door).
+        (
+            Contestant::from_str_name("family-weighted").expect("a shipped rung name"),
+            Contestant::from_str_name("retreat-averse").expect("a shipped rung name"),
+        )
+    }
+
+    fn scratch_spec(name: &str, units: u32) -> CellSpec {
+        let (x, y) = rungs();
+        CellSpec {
+            name: name.to_string(),
+            players: 2,
+            x,
+            y,
+            units,
+            master: SeedScheduleKind::Diagnostic(SCRATCH_MASTER),
+        }
+    }
+
+    fn first_world() -> crate::game::seeds::WorldSeed {
+        SeedSchedule::diagnostic(SCRATCH_MASTER).next_world()
+    }
+
+    /// **Surface (A)'s whole claim.** A cell's game must reproduce byte-for-byte
+    /// from `(seed, arrangement, x, y)` — otherwise the tail printed for the
+    /// capped world is a tail of some OTHER game. Both arrangements, because the
+    /// slot component of `agent_stream_seed` is exactly what makes them differ.
+    #[test]
+    fn a_world_run_reproduces_the_cell_that_produced_it() {
+        let rules = Rules::standard();
+        let spec = scratch_spec("wd1-repro", 1);
+        let mut from_cell: Vec<(u8, GameRecord)> = Vec::new();
+        run_cell_emitting(&spec, &rules, false, &mut |stats, arr| {
+            from_cell.push((arr, stats.record.clone()));
+            Ok(())
+        })
+        .expect("the scratch world terminates under both rungs");
+        assert_eq!(from_cell.len(), 2, "a 2P unit is the swapped pair");
+
+        let seed = first_world();
+        for (arr, cell_record) in &from_cell {
+            let run = run_world(
+                &WorldSpec { x: spec.x, y: spec.y, seed, players: 2, arrangement: *arr },
+                &rules,
+                false,
+            )
+            .expect("the same world, seated the same way");
+            assert_eq!(run.x_seat.0, if *arr == 0 { 0 } else { 1 }, "arrangement {arr}'s X seat");
+            let DiagnosticOutcome::Terminated(stats) = &run.game.outcome else {
+                panic!("the cell completed this game, so the world run must too");
+            };
+            assert_eq!(
+                stats.record.events, cell_record.events,
+                "arrangement {arr}: the applied move sequence must be the cell's own",
+            );
+            assert!(cell_record.terminal_digest.is_some());
+            assert_eq!(
+                stats.record.terminal_digest, cell_record.terminal_digest,
+                "arrangement {arr}: the terminal-state digest",
+            );
+        }
+    }
+
+    /// **Surface (B)'s whole claim.** A cell refuses at the FIRST capped game;
+    /// this instrument counts them and keeps going, and names each one so it
+    /// reproduces under surface (A).
+    #[test]
+    fn cap_rate_counts_capped_games_instead_of_refusing_the_run() {
+        let rules = Rules::standard();
+        let spec = scratch_spec("wd1-caprate-forced", 3);
+        // A five-turn cap makes EVERY game cap. That is the point: `run_cell`
+        // would have refused after one, and this must report six.
+        let report = run_cap_rate_capped(&spec, &rules, false, 5)
+            .expect("a capped game is COUNTED here, never a refusal");
+        assert_eq!(report.games, 6, "three units, both arrangements each");
+        assert_eq!(report.cap_count(), 6);
+        assert_eq!(report.capped.len(), 6);
+        assert_eq!(report.completed.games(), 0, "no game completed, so no trigger is observed");
+        assert_eq!(report.completed_turns_max, 0);
+        assert!(report.completed_turns_mean.is_nan(), "a mean over zero games is not a number");
+        assert_eq!(report.rate(), 1.0);
+
+        let arrangements: Vec<u8> = report.capped.iter().map(|c| c.arrangement).collect();
+        assert_eq!(arrangements, vec![0, 1, 0, 1, 0, 1], "both arrangements of every world");
+        let mut schedule = SeedSchedule::diagnostic(SCRATCH_MASTER);
+        for pair in report.capped.chunks(2) {
+            let seed = schedule.next_world();
+            assert!(
+                pair.iter().all(|c| c.seed == seed),
+                "the capped worlds must be the master's schedule, in order, so each reproduces",
+            );
+        }
+        assert!(report.capped.iter().all(|c| c.turns > 5), "the cap fires past the limit");
+
+        let interval = report.interval();
+        assert!(interval.lo > 0.0, "6 of 6 has a lower bound above zero, got {}", interval.lo);
+        assert_eq!(interval.hi, 1.0, "an all-capped run's Wilson upper bound is 1");
+    }
+
+    /// The other end of the same instrument: healthy worlds count ZERO, and the
+    /// completed games are what the trigger histogram and the turn figures are
+    /// taken over.
+    #[test]
+    fn cap_rate_over_healthy_worlds_counts_zero_and_tallies_only_completed_games() {
+        let rules = Rules::standard();
+        let spec = scratch_spec("wd1-caprate-healthy", 1);
+        let report = run_cap_rate(&spec, &rules, false).expect("the rungs finish these worlds");
+        assert_eq!(report.games, 2);
+        assert_eq!(report.cap_count(), 0);
+        assert!(report.capped.is_empty());
+        assert_eq!(report.completed.games(), 2, "every completed game is observed");
+        assert_eq!(report.rate(), 0.0);
+        assert!(report.completed_turns_max > 0);
+        assert!(report.completed_turns_mean > 0.0);
+        let interval = report.interval();
+        assert_eq!(interval.lo, 0.0, "zero successes pins the lower bound at zero");
+        assert!(interval.hi > 0.0 && interval.hi < 1.0, "and leaves a real upper bound");
+    }
+
+    /// **The no-strength-figure pin.** The diagnosis wave's labelling rule, made
+    /// executable: this instrument may not produce anything a reader could quote
+    /// as a comparison between the two contestants.
+    #[test]
+    fn the_cap_rate_render_carries_no_strength_figure_of_any_kind() {
+        let rules = Rules::standard();
+        let spec = scratch_spec("wd1-caprate-render", 1);
+        let report = run_cap_rate_capped(&spec, &rules, false, 5).expect("counted, not refused");
+        let lines = render_cap_rate(&report);
+        assert_eq!(lines.first().map(String::as_str), Some(CAP_RATE_LABEL), "the label leads");
+        let text = lines.join("\n");
+        for banned in [
+            "theta_hat", "θ̂", "unit shares", "unit variance", "seat0 wins", "VP margin",
+            "win share", "Var_pair", "bootstrap",
+        ] {
+            assert!(
+                !text.contains(banned),
+                "the cap-rate instrument printed {banned:?} — it computes no strength figure \
+                 by design, and a reader must not be able to quote one out of it",
+            );
+        }
+        assert!(text.contains("games="), "the denominator");
+        assert!(text.contains("capped="), "the numerator");
+        assert!(text.contains("wilson95="), "the interval on the CAP RATE");
+        for capped in &report.capped {
+            assert!(
+                text.contains(&format!("{:#018x}", capped.seed.0)),
+                "every capped world is named so it reproduces under `world`",
+            );
+        }
+    }
+
+    /// **What surface (A) exists to print.** A CAPPED game is the case the arena
+    /// could not show anyone: the tail with its turn/mover/phase annotation, the
+    /// period line, and the end-state summary all have to render off a partial
+    /// record and a non-terminal state.
+    #[test]
+    fn a_capped_world_renders_its_outcome_tail_period_and_end_state() {
+        let rules = Rules::standard();
+        let (x, y) = rungs();
+        let run = run_world_capped(
+            &WorldSpec { x, y, seed: first_world(), players: 2, arrangement: 0 },
+            &rules,
+            false,
+            30,
+        )
+        .expect("a cap is an outcome here");
+        let lines = render_world(&run, 5, &rules).expect("a partial record renders");
+        let text = lines.join("\n");
+        assert!(text.contains("arrangement=0"), "the header names the arrangement");
+        assert!(text.contains("CAPPED at turn "), "the outcome line");
+        assert!(
+            text.contains("HONEST_MAX_TURNS"),
+            "the outcome line must say what the cap in force was relative to the shipped guard",
+        );
+        assert!(text.contains("moves applied:"), "moves per seat");
+        assert!(text.contains("tail ("), "the tail block");
+        assert!(
+            lines.iter().any(|l| l.contains("turn=") && l.contains("seat=") && l.contains("phase=")
+                && l.contains("move=")),
+            "every tail line carries turn, mover and phase beside the move",
+        );
+        assert!(lines.iter().any(|l| l.starts_with("period=")), "the period line, always present");
+        assert!(text.contains("current_player="), "the end-state summary");
+        assert!(text.contains("turn_phase="));
+        assert!(text.contains("order deck="));
+        assert!(text.contains("church:"));
+        assert!(text.contains("customs:"));
+        assert!(text.contains("money="));
+    }
+
+    /// The same renderer over a COMPLETED game: the outcome line names the
+    /// trigger and the standings instead of a cap, and the end-state summary is
+    /// taken at the terminal state.
+    #[test]
+    fn a_terminating_world_renders_its_trigger_and_standings() {
+        let rules = Rules::standard();
+        let (x, y) = rungs();
+        let run = run_world(
+            &WorldSpec { x, y, seed: first_world(), players: 2, arrangement: 1 },
+            &rules,
+            false,
+        )
+        .expect("the rungs finish this world");
+        let lines = render_world(&run, 5, &rules).expect("a terminal record renders");
+        let text = lines.join("\n");
+        assert!(text.contains("arrangement=1"));
+        assert!(text.contains("TERMINATED"), "the outcome line");
+        assert!(text.contains("trigger="), "with its end trigger");
+        assert!(text.contains("rank"), "and the standings final_result reports");
+        assert!(!text.contains("CAPPED"), "a completed game is never labelled capped");
+    }
 
     fn end() -> Move {
         Move::EndAdditionalPhase
