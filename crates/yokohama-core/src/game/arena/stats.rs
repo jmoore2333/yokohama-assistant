@@ -4298,6 +4298,159 @@ mod tests {
         assert_eq!(report.x_applied_moves, x_applied_moves, "X's applied moves");
     }
 
+    /// **Pin (iv), the ceiling.** The (c+1)-th capped game refuses the cell AT
+    /// ONCE — not at the schedule's end — with a typed arm naming the ceiling
+    /// and every capped game so far, and the run is INVALID (freeze doc §9.6
+    /// item 2).
+    ///
+    /// The EARLY half is what the sink's call count proves: the fixture's
+    /// second cap is its eighth scheduled game, so a cell that finished the
+    /// schedule and refused afterwards would have emitted all ten completed
+    /// games instead of six.
+    #[test]
+    fn the_ceiling_refuses_at_the_next_capped_game_and_cuts_the_schedule_short() {
+        let rules = Rules::standard();
+        let spec = w_a1_spec("w-a1-ceiling", W_A1_MIXED_UNITS);
+        let caps = W_A1_MIXED_CAPPED.len() as u32;
+
+        // The whole schedule's completed games, for the comparison below.
+        let mut all_calls = 0u32;
+        run_cell_loop(
+            &spec,
+            &rules,
+            true,
+            CapPolicy::Count { ceiling: caps },
+            W_A1_MIXED_MAX_TURNS,
+            &mut |_stats, _arr| {
+                all_calls += 1;
+                Ok(())
+            },
+        )
+        .expect("at its own ceiling the cell completes");
+        assert_eq!(
+            all_calls,
+            W_A1_MIXED_UNITS * 2 - caps,
+            "the full schedule emits every completed game",
+        );
+
+        let mut calls = 0u32;
+        let err = run_cell_loop(
+            &spec,
+            &rules,
+            true,
+            CapPolicy::Count { ceiling: caps - 1 },
+            W_A1_MIXED_MAX_TURNS,
+            &mut |_stats, _arr| {
+                calls += 1;
+                Ok(())
+            },
+        )
+        .expect_err("one cap above the ceiling refuses");
+
+        let ArenaError::CappedCeilingExceeded { ceiling, capped } = &err else {
+            panic!("the ceiling has its OWN typed arm, got {err:?}");
+        };
+        assert_eq!(*ceiling, caps - 1);
+        assert_eq!(
+            capped.len() as u32,
+            caps,
+            "the refusal carries every capped game so far, the (c+1)-th included",
+        );
+        assert!(
+            calls < all_calls,
+            "the refusal must cut the schedule SHORT: {calls} emitted, {all_calls} in the full run",
+        );
+
+        let message = err.to_string();
+        assert!(message.contains(&format!("{}", caps - 1)), "{message}");
+        assert!(message.contains(&format!("{caps}")), "{message}");
+        for game in capped {
+            assert!(
+                message.contains(&format!(
+                    "seed={:#018x} arrangement={} turns={}",
+                    game.seed.0, game.arrangement, game.turns,
+                )),
+                "every capped game must be named: {message}",
+            );
+        }
+    }
+
+    /// **Pin (iv), `Some(0)` is not `None`.** A registered ceiling of zero is
+    /// legal and refuses at the FIRST capped game — through the ceiling arm,
+    /// deliberately distinct from an absent flag's `CapReached`, so a reader of
+    /// a failed run can tell an instrument-guard refusal from the un-amended
+    /// rule.
+    #[test]
+    fn a_zero_ceiling_and_an_absent_flag_are_different_refusals() {
+        let rules = Rules::standard();
+        let spec = w_a1_spec("w-a1-zero-ceiling", W_A1_MIXED_UNITS);
+
+        let counted = run_cell_loop(
+            &spec,
+            &rules,
+            true,
+            CapPolicy::Count { ceiling: 0 },
+            W_A1_MIXED_MAX_TURNS,
+            &mut |_stats, _arr| Ok(()),
+        )
+        .expect_err("ceiling 0 refuses at the first capped game");
+        let ArenaError::CappedCeilingExceeded { ceiling, capped } = &counted else {
+            panic!("expected the ceiling arm, got {counted:?}");
+        };
+        assert_eq!(*ceiling, 0);
+        assert_eq!(capped.len(), 1, "the FIRST capped game, and no more of the schedule");
+
+        let refused = run_cell_loop(
+            &spec,
+            &rules,
+            true,
+            CapPolicy::Refuse,
+            W_A1_MIXED_MAX_TURNS,
+            &mut |_stats, _arr| Ok(()),
+        )
+        .expect_err("refuse mode refuses at the first capped game too");
+        assert!(
+            matches!(refused, ArenaError::CapReached { .. }),
+            "an absent flag keeps its OWN refusal, got {refused:?}",
+        );
+    }
+
+    /// **Pin (iv), the all-void refusal.** A cell whose every scheduled unit is
+    /// void has no read unit, so nothing constrains θ — and it refuses, typed,
+    /// rather than reporting a table of NaNs.
+    #[test]
+    fn a_cell_with_no_read_units_refuses_instead_of_reporting_nans() {
+        let rules = Rules::standard();
+        let spec = w_a1_spec("w-a1-all-void", 1);
+
+        let err = run_cell_loop(
+            &spec,
+            &rules,
+            true,
+            // At or above the game count, so the ceiling cannot be what refuses.
+            CapPolicy::Count { ceiling: u32::from(spec.players) },
+            W_A1_ALL_VOID_MAX_TURNS,
+            &mut |_stats, _arr| Ok(()),
+        )
+        .expect_err("a cell with no read unit cannot report a theta");
+
+        let ArenaError::NoReadUnits { scheduled, capped } = &err else {
+            panic!("expected the no-read-units arm, got {err:?}");
+        };
+        assert_eq!(*scheduled, spec.units);
+        assert_eq!(capped.len(), usize::from(spec.players), "both games of the only unit capped");
+        let message = err.to_string();
+        for game in capped {
+            assert!(
+                message.contains(&format!(
+                    "seed={:#018x} arrangement={} turns={}",
+                    game.seed.0, game.arrangement, game.turns,
+                )),
+                "{message}",
+            );
+        }
+    }
+
     /// **The explanation identity stays TOTAL over a capped game.** Spec
     /// §0.3(b)'s `x_explanations == Some(x_applied_moves)` is a claim about
     /// every move X played, and a capped game's moves are moves X played.
