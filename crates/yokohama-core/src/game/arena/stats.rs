@@ -4190,12 +4190,24 @@ mod tests {
     /// hundreds it caps some units and not others.
     const W_A1_MIXED_UNITS: u32 = 6;
 
-    /// **Pin (i), the construction half made a test.** Every existing entry
-    /// point reaches ONE loop at `CapPolicy::Refuse` and `HONEST_MAX_TURNS`, so
-    /// a report produced through the OLD public entry point and one produced
-    /// through the parameterized loop are the SAME report — serialized-equal,
-    /// which covers the unit vector, the interval, the drawn resample seed, the
-    /// tie accounting and every counter at once.
+    /// **What this cell pins is the ARGUMENTS, and it is worth being exact**
+    /// (review S2). [`run_cell`] DELEGATES to [`run_cell_loop`], so the
+    /// serialized comparison below is between the loop and itself: it cannot
+    /// detect any change INSIDE the loop, and a `run_cell_loop` that ignored
+    /// its `policy` and `max_turns` entirely would satisfy it. What it does
+    /// establish, non-vacuously, is that the existing public chain reaches that
+    /// one loop carrying `(invariants = true, CapPolicy::Refuse,
+    /// HONEST_MAX_TURNS)` — pass a different policy or a shorter guard and the
+    /// reports diverge (the cell below, which caps at a 50-turn guard, is the
+    /// other half of that).
+    ///
+    /// **Absent-flag inertness itself rests on three other things**, none of
+    /// them this cell: the CONSTRUCTION fact that `CapPolicy::Refuse` calls
+    /// `run_arena_game_capped(seed, players, rules, &mut make_agent,
+    /// invariants, max_turns)`, which is [`super::run_arena_game`] verbatim;
+    /// the five untouched contestant goldens; and the measured byte-identity of
+    /// the release runner's unflagged `cell` output at base versus head (freeze
+    /// doc §9.6 pin (v)).
     ///
     /// The void fields' refuse-mode values are pinned here too, and the echo is
     /// pinned NEGATIVELY: an absent `--capped-ceiling` emits no token at all
@@ -4219,7 +4231,9 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&old).unwrap(),
             serde_json::to_string(&looped).unwrap(),
-            "the old entry point and the parameterized loop are the same loop",
+            "the existing entry chain must reach the loop at (invariants = true, \
+             CapPolicy::Refuse, HONEST_MAX_TURNS) — this does NOT pin the loop's \
+             insides, which are the same code on both sides of this comparison",
         );
 
         assert_eq!(old.capped_ceiling, None, "refuse mode registers no ceiling");
