@@ -1262,6 +1262,55 @@ pub struct CellReport {
     pub capped: Vec<CappedGame>,
 }
 
+impl CellReport {
+    /// The VOID LINE a counting cell prints, or `None` in refuse mode — V4 step
+    /// 11, amendment A-S11-1 (freeze doc §9.6).
+    ///
+    /// `None` and not an empty string: the runner prints this line and
+    /// [`capped_lines`](Self::capped_lines) ONLY when this is `Some`, which is
+    /// what keeps an unflagged `cell` run's output byte-for-byte what it always
+    /// was. The refuse-mode fields carry no information to print — `units_void`
+    /// is 0 and `capped` is empty by CONSTRUCTION there, not by observation —
+    /// so a line stating them would read as a measurement.
+    ///
+    /// It lives in core, beside the fields it reads, for
+    /// [`super::diagnostic::render_cap_rate`]'s reason: the runner is
+    /// print-only glue, and text composed there is text no library test covers.
+    pub fn void_summary(&self) -> Option<String> {
+        let ceiling = self.capped_ceiling?;
+        Some(format!(
+            "units scheduled={} · void={} · read={} · capped games={} (ceiling {ceiling})",
+            self.units_scheduled,
+            self.units_void,
+            self.units_read,
+            self.capped.len(),
+        ))
+    }
+
+    /// ONE line per capped game, each carrying the command that replays it.
+    ///
+    /// **The `<x>`/`<y>` placeholders are deliberate and are
+    /// [`super::diagnostic::render_cap_rate`]'s own spelling:** a `CellReport`
+    /// carries no contestant fields (they live in
+    /// [`spec_echo`](Self::spec_echo), printed directly above), so this line
+    /// cannot honestly fill them in. The seed and the arrangement — the two
+    /// things that identify WHICH game, and the two a reader cannot reconstruct
+    /// — are concrete.
+    ///
+    /// Empty in refuse mode, where no capped game exists.
+    pub fn capped_lines(&self) -> Vec<String> {
+        self.capped
+            .iter()
+            .map(|game| {
+                format!(
+                    "capped: arena world <x> <y> {:#018x} --arrangement {} · turns={}",
+                    game.seed.0, game.arrangement, game.turns,
+                )
+            })
+            .collect()
+    }
+}
+
 /// One side's in-cell WALL — nanoseconds spent inside `choose`, and the
 /// decisions that spent them.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
