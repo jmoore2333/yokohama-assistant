@@ -6852,4 +6852,361 @@ mod tests {
             "expected a step-not-declared refusal, got {err}",
         );
     }
+
+    // =======================================================================
+    // A-S12-1 — the COUNTED CAPPED PLAYOUT
+    // (close doc `docs/plans/2026-08-30-phase3.5c-v4-close.md` §2.4)
+    // =======================================================================
+
+    /// The block-run posture that makes EVERY admission playout cap at once.
+    ///
+    /// `max_turns: 0` trips the guard on the shared loop's first iteration — no
+    /// decision is taken, so a capping cell costs what an ordinary one costs
+    /// minus the game. It is a HARNESS knob and not a claim about the engine:
+    /// the real cap this amendment exists for is a 10,001-turn
+    /// produce-and-hoard loop, which no test may afford to reproduce.
+    fn capping_opts(delta: i64) -> BlockOpts {
+        BlockOpts {
+            driven: DrivenOpts { max_turns: 0, ..DrivenOpts::default() },
+            ..smoke_opts(delta)
+        }
+    }
+
+    /// A one-root capping block over the smoke declaration.
+    fn one_root_decl(rule: PassRule) -> FamilyDecl {
+        FamilyDecl { rule, pilot: 0..1, ..smoke_decl(FamilyLabel::Confirmatory, 2) }
+    }
+
+    /// **THE ADMISSION MAPPING** (§2.4 item 2): a capped (root × policy) row
+    /// renders as the EXISTING recorded CANNOT shape, at the owner's fixed
+    /// wording, and it BLOCKS NOTHING.
+    ///
+    /// The wording is asserted as a literal because the close doc fixes it as a
+    /// literal — a reader of the S12 report has to be able to tell a counted cap
+    /// from the four CANNOT reasons that already existed.
+    #[test]
+    fn a_capped_admission_row_reads_the_fixed_cannot_wording_and_blocks_nothing() {
+        assert_eq!(
+            CannotDemonstrate::CappedPlayout.as_str(),
+            "a replication hit the honest turn cap; counted",
+        );
+
+        let split = split_table(2, 10, 2, -10);
+        let read = admission_over(
+            &[
+                (ReplyPolicy::FamilyWeighted, Some(&split)),
+                (ReplyPolicy::GreedyAtFinal, Some(&split)),
+                (ReplyPolicy::LookaheadAtFinal, None),
+            ],
+            5,
+            false,
+        );
+
+        assert_eq!(read.policies.len(), 3, "a capped policy keeps its ROW");
+        assert_eq!(
+            read.policies[2].verdict,
+            AdmissionVerdict::Cannot(CannotDemonstrate::CappedPlayout),
+        );
+        // A capped row carries NO comparison — the counts and means are the
+        // empty-group values, never a fabricated measurement.
+        assert_eq!(read.policies[2].true_n, 0);
+        assert_eq!(read.policies[2].false_n, 0);
+        assert_eq!(read.policies[2].difference, 0.0);
+        // It neither SPLITS nor vetoes: the frozen conjunction runs over the
+        // other two and admits.
+        assert!(!read.policies[2].splitting());
+        assert!(!read.policies[2].unstamped());
+        assert_eq!(read.splitting_count(), 2);
+        assert!(read.admitted(), "a capped row must not block: {read:?}");
+        assert!(read.dissenters().is_empty(), "a capped row is not a dissenter");
+    }
+
+    /// The two entry points are ONE arithmetic: `admission` is
+    /// `admission_over` with every slot measured.
+    ///
+    /// Pinned so the frozen splitting rules cannot acquire a second spelling —
+    /// the amendment's own constraint is that they run UNCHANGED over the
+    /// remaining rows.
+    #[test]
+    fn admission_is_admission_over_with_every_slot_measured() {
+        let a = split_table(2, 10, 2, -10);
+        let b = split_table(3, 1, 3, 0);
+        let owned = [(ReplyPolicy::FamilyWeighted, a.clone()), (ReplyPolicy::GreedyAtFinal, b.clone())];
+        let borrowed = [
+            (ReplyPolicy::FamilyWeighted, Some(&a)),
+            (ReplyPolicy::GreedyAtFinal, Some(&b)),
+        ];
+        for (delta, control) in [(5, false), (5, true), (0, false)] {
+            assert_eq!(
+                admission(&owned, delta, control),
+                admission_over(&borrowed, delta, control),
+                "the two spellings of the admission arithmetic disagree at \
+                 delta={delta} control={control}",
+            );
+        }
+    }
+
+    /// **THE LENIENCY PIN** (§2.4 item 2, "the leniency direction, pinned by
+    /// test"): converting a policy to a counted cap can only make admission
+    /// HARDER — an ADMITTED root stays admitted or becomes excluded, and never
+    /// the reverse.
+    ///
+    /// Both allowed directions are constructed, plus the direction that must not
+    /// happen. The fourth cell records a DIVERGENCE from §2.3's rationale
+    /// sentence rather than hiding it — see its own comment.
+    #[test]
+    fn converting_a_policy_to_a_counted_cap_can_only_make_admission_harder() {
+        let dominates = split_table(2, 10, 2, -10);
+        let fails = split_table(2, 1, 2, 0);
+        let cap = |slots: &[(ReplyPolicy, Option<&Adjudication>)]| admission_over(slots, 5, false);
+
+        // (a) ADMITTED with THREE dominating splitters — converting one leaves
+        //     two, and the root STAYS ADMITTED.
+        let three = [
+            (ReplyPolicy::FamilyWeighted, Some(&dominates)),
+            (ReplyPolicy::GreedyAtFinal, Some(&dominates)),
+            (ReplyPolicy::RaceRusher, Some(&dominates)),
+        ];
+        assert!(cap(&three).admitted(), "anti-vacuity: the unconverted read must admit");
+        let converted = [three[0], three[1], (ReplyPolicy::RaceRusher, None)];
+        assert!(cap(&converted).admitted(), "a third dominating policy was not spare");
+
+        // (b) ADMITTED with exactly TWO — converting one drops the read below
+        //     the splitting floor, and the root becomes EXCLUDED.
+        let two = [three[0], three[1]];
+        assert!(cap(&two).admitted(), "anti-vacuity: two dominating splitters admit");
+        let thinned = [two[0], (ReplyPolicy::GreedyAtFinal, None)];
+        assert!(!cap(&thinned).admitted(), "the splitting floor did not bite");
+        assert_eq!(cap(&thinned).splitting_count(), 1);
+
+        // (c) NEVER THE REVERSE: an excluded root whose DISSENTER still stands
+        //     stays excluded when some OTHER policy is converted.
+        let dissented = [
+            (ReplyPolicy::FamilyWeighted, Some(&dominates)),
+            (ReplyPolicy::GreedyAtFinal, Some(&dominates)),
+            (ReplyPolicy::RaceRusher, Some(&dominates)),
+            (ReplyPolicy::LookaheadAtFinal, Some(&fails)),
+        ];
+        assert!(!cap(&dissented).admitted(), "anti-vacuity: a FAILS row blocks");
+        let still = [dissented[0], dissented[1], (ReplyPolicy::RaceRusher, None), dissented[3]];
+        assert!(!cap(&still).admitted(), "converting a bystander admitted a failed root");
+
+        // (d) THE ONE CASE THAT WIDENS, RECORDED RATHER THAN HIDDEN.
+        //     §2.3's rationale sentence reads "one fewer potential splitting
+        //     policy ... can only make admission HARDER, never easier". That is
+        //     true of the splitting FLOOR, which is the mechanism the sentence
+        //     is about — and it is NOT true of the veto: converting the FAILING
+        //     policy itself removes the dissent, and the frozen rules (which
+        //     §2.4 item 2 requires to run UNCHANGED over the remaining rows)
+        //     then admit. The counterfactual is unknowable by construction — a
+        //     capped policy produced no measurement, so nothing can say it
+        //     "would have failed" — which is why this is recorded as a fact
+        //     about the mapping rather than repaired behind the owner's text.
+        let dissenter_capped =
+            [dissented[0], dissented[1], dissented[2], (ReplyPolicy::LookaheadAtFinal, None)];
+        assert!(
+            cap(&dissenter_capped).admitted(),
+            "capping the sole dissenter is the one conversion that widens admission — if this \
+             ever stops holding, the mapping changed and §2.4 item 2 must be re-read",
+        );
+    }
+
+    /// **THE CEILING'S ARITHMETIC** (§2.4 item 4): three counted caps stand, the
+    /// FOURTH refuses, and the refusal NAMES the count.
+    ///
+    /// Pinned on the ledger itself as well as through a block, because the
+    /// arithmetic is what a reader checks against the close doc's "three ≈ 5×
+    /// D2's expected rate over a block's ~200 admission games".
+    #[test]
+    fn the_counted_cap_ledger_stands_at_three_and_the_fourth_refuses() {
+        assert_eq!(COUNTED_CAP_CEILING, 3, "the registered ceiling moved");
+        let cap = |n: u32| CappedPlayout {
+            site: CapSite::Admission { policy: ReplyPolicy::LookaheadAtFinal },
+            ordinal: 36 + n,
+            replication: n,
+            seed: 0x0CA9_0000_0000_0000 + u64::from(n),
+            turns: 10_001,
+            tail: None,
+        };
+
+        let mut ledger = CapLedger::new(COUNTED_CAP_CEILING);
+        for n in 0..3 {
+            ledger.count(cap(n)).unwrap_or_else(|e| panic!("cap {n} must be COUNTED, not refused: {e}"));
+        }
+        assert_eq!(ledger.counted().len(), 3);
+
+        let err = ledger.count(cap(3)).expect_err("the fourth cap must refuse the block");
+        match &err {
+            FamilyRunError::CappedCeilingExceeded { ceiling, capped } => {
+                assert_eq!(*ceiling, COUNTED_CAP_CEILING);
+                assert_eq!(capped.len(), 4, "the refusal carries the fourth cap too");
+            }
+            other => panic!("expected CappedCeilingExceeded, got {other}"),
+        }
+        let text = err.to_string();
+        assert!(text.contains('4'), "the refusal does not name the COUNT: {text}");
+        assert!(text.contains('3'), "the refusal does not name the CEILING: {text}");
+    }
+
+    /// **THE COUNTED PATH, END TO END**: a block whose admission adjudications
+    /// cap COMPLETES, the affected rows read the fixed CANNOT wording, and every
+    /// counted cap is recorded with its policy, ordinal, replication, seed and
+    /// tail.
+    ///
+    /// Before A-S12-1 this block produced NOTHING — a typed refusal and one line
+    /// of text, which is exactly what the S12 achievement arm hit (close doc
+    /// §2.2).
+    #[test]
+    fn a_block_whose_admission_caps_completes_with_the_rows_recorded_and_the_caps_counted() {
+        let rules = rules();
+        let subject = SeatSpec::Contestant(Contestant::LOOKAHEAD_V1_DEFAULT);
+        let decl = one_root_decl(PassRule::Turn(TurnPredicate::AchievementClaimed));
+
+        let report =
+            run_family_block_with(&decl, BlockKind::Pilot, Some(MASTER), subject, &rules,
+                capping_opts(-1_000))
+                .expect("two counted caps are below the ceiling, so the block COMPLETES");
+
+        assert_eq!(report.drawn, 1);
+        assert_eq!(report.capped.len(), 2, "one cap per (root x policy): {:?}", report.capped);
+        assert_eq!(report.admitted, 0, "a root whose whole menu capped demonstrates nothing");
+
+        let admission = report.roots[0].admission.as_ref().expect("a turn-grain root has one");
+        assert_eq!(admission.policies.len(), SMOKE_MENU.len(), "a capped policy keeps its ROW");
+        for policy in &admission.policies {
+            assert_eq!(
+                policy.verdict,
+                AdmissionVerdict::Cannot(CannotDemonstrate::CappedPlayout),
+                "the capped row does not read the fixed CANNOT wording",
+            );
+        }
+
+        for (cap, &policy) in report.capped.iter().zip(SMOKE_MENU) {
+            assert_eq!(cap.site, CapSite::Admission { policy }, "the cap names the wrong policy");
+            assert_eq!(cap.ordinal, 0, "the cap names the wrong draw");
+            assert_eq!(cap.replication, 0, "the first replication is the one that capped");
+            assert_eq!(
+                cap.seed,
+                crate::game::driven::replication_world(WorldSeed(MASTER), 0).0,
+                "the cap does not name the world its replication played in",
+            );
+            assert!(cap.turns > 0, "the cap does not name the turn it tripped at");
+            let tail = cap.tail.as_ref().expect("the rider's tail rides every counted cap");
+            assert_eq!(tail.seats.len(), 2, "the tail's end state names every seat");
+        }
+    }
+
+    /// **THE CEILING, THROUGH A BLOCK**: two roots under a two-policy menu is
+    /// FOUR caps, and the block refuses at the fourth rather than reporting.
+    #[test]
+    fn the_fourth_counted_cap_refuses_the_whole_block() {
+        let rules = rules();
+        let subject = SeatSpec::Contestant(Contestant::LOOKAHEAD_V1_DEFAULT);
+        // Two draws x two policies = four caps; the fourth is one past the
+        // ceiling.
+        let decl = smoke_decl(FamilyLabel::Confirmatory, 2);
+        assert_eq!(decl.pilot.len() * SMOKE_MENU.len(), 4, "the fixture no longer caps four times");
+
+        let err = run_family_block_with(&decl, BlockKind::Pilot, Some(MASTER), subject, &rules,
+            capping_opts(-1_000))
+            .expect_err("the fourth counted cap must refuse the block");
+        match &err {
+            FamilyRunError::CappedCeilingExceeded { ceiling, capped } => {
+                assert_eq!(*ceiling, COUNTED_CAP_CEILING);
+                assert_eq!(capped.len(), COUNTED_CAP_CEILING + 1);
+                // The refusal fires AT ONCE — the second root's second policy is
+                // never adjudicated.
+                assert_eq!(capped[3].ordinal, 1);
+            }
+            other => panic!("expected CappedCeilingExceeded, got {other}"),
+        }
+    }
+
+    /// **THE DECISION GRAIN'S GAP, FILLED CONSERVATIVELY.** §2.4 defines the
+    /// admission mapping for the TURN grain's `AdmissionRead` and says nothing
+    /// about family 1's LIVE/DEAD split, which has no CANNOT shape to map onto.
+    ///
+    /// A capped policy there is COUNTED (item 1 is general: never a
+    /// block-refusing error below the ceiling) and the root is EXCLUDED by its
+    /// own named reason. Dropping the policy from the menu instead would shrink
+    /// `judge_pick`'s denominator — a pick in SOME top set would silently become
+    /// a pick in EVERY top set — which is the leniency direction backwards.
+    #[test]
+    fn a_capped_decision_grain_admission_is_counted_and_excludes_the_root() {
+        let rules = rules();
+        let subject = SeatSpec::Contestant(Contestant::LOOKAHEAD_V1_DEFAULT);
+        let decl = one_root_decl(PassRule::AdjudicatedBest { epsilon: FROZEN_EPSILON_VP });
+
+        let report =
+            run_family_block_with(&decl, BlockKind::Pilot, Some(MASTER), subject, &rules,
+                capping_opts(-1_000))
+                .expect("two counted caps are below the ceiling");
+
+        assert_eq!(report.capped.len(), 2);
+        assert_eq!(report.admitted, 0);
+        assert_eq!(
+            report.roots[0].verdict,
+            RootVerdict::Excluded(ExclusionReason::CappedAdmission {
+                policy: SMOKE_MENU[0],
+            }),
+            "a capped decision-grain root must be excluded by its own named reason",
+        );
+    }
+
+    /// **THE READ GRAIN** (§2.4 item 3): a capped SUBJECT replication is VOID
+    /// and printed, and the per-root binomial runs over the COMPLETED
+    /// replications with the void count beside it.
+    ///
+    /// Two halves. The PLUMBING half drives a root the guard has already passed,
+    /// so every replication voids — which is the only shape a test can produce,
+    /// because a single turn cannot advance `turn_number` by ten thousand and a
+    /// read-grain cap is therefore structurally instantaneous. The ARITHMETIC
+    /// half voids one replication of a real read and reads the denominator.
+    #[test]
+    fn a_capped_subject_replication_is_void_and_the_binomial_denominator_shrinks() {
+        let rules = rules();
+        let subject = SeatSpec::Contestant(Contestant::LOOKAHEAD_V1_DEFAULT);
+        let rule = PassRule::Turn(TurnPredicate::NotEndFired);
+        let root = read_root(&rules, WorldSeed(MASTER), 8);
+
+        // (1) THE ARITHMETIC: R = 2 completed, then one voided by hand.
+        let mut out = family_read(&root, subject, &rule, 2, MASTER, &rules)
+            .expect("the shipped arm reads an organic root");
+        assert!(out.voids.is_empty(), "anti-vacuity: an ordinary read voids nothing");
+        let full = out.binomial_line().expect("a turn-grain read has a binomial line");
+        assert!(full.contains("/2"), "the unvoided denominator is not R: {full}");
+        assert!(!full.contains("void"), "an unvoided read must not print a void count: {full}");
+
+        let dropped = out.replications.pop().expect("R = 2");
+        out.voids.push(VoidReplication {
+            replication: dropped.replication,
+            decision_seed: dropped.decision_seed,
+            root_word: dropped.root_word,
+            turns: 10_001,
+            tail: None,
+        });
+        assert_eq!(out.replication_count(), 1, "the completed count did not shrink");
+        assert_eq!(out.void_count(), 1);
+        let shrunk = out.binomial_line().expect("a turn-grain read still has one");
+        assert!(shrunk.contains("/1"), "the denominator did not shrink: {shrunk}");
+        assert!(shrunk.contains("void"), "the void count is not printed beside it: {shrunk}");
+
+        // (2) THE PLUMBING: past the honest guard, every replication VOIDS and
+        //     the read still returns rather than refusing.
+        let mut past = root.clone();
+        past.turn_number = crate::game::agent::HONEST_MAX_TURNS + 1;
+        let voided = family_read(&past, subject, &rule, 2, MASTER, &rules)
+            .expect("a capped replication is a VOID, never a refusal");
+        assert_eq!(voided.void_count(), 2, "both replications must void");
+        assert!(voided.replications.is_empty(), "a void replication is not a completed one");
+        for (index, void) in voided.voids.iter().enumerate() {
+            assert_eq!(void.replication, index as u32);
+            assert_eq!(
+                void.decision_seed,
+                replication_seed(MASTER, root_word(&past), index as u32),
+            );
+            assert_eq!(void.turns, past.turn_number);
+            assert!(void.tail.is_some(), "the rider's tail rides a read-grain void too");
+        }
+    }
 }
