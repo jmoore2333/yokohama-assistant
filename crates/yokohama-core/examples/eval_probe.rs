@@ -109,8 +109,8 @@ use yokohama_core::game::greedy::{
     weight_table_identity, ExplanationTally, GreedyAgent, GREEDY_CONTROLLER,
 };
 use yokohama_core::game::lookahead::{
-    LookaheadAgent, RootScore, SearchScheme, SearchStats, SearchTally, LOOKAHEAD_CONTROLLER,
-    LOOKAHEAD_IMPL_VERSION,
+    controller_provenance, LookaheadAgent, RootScore, SearchScheme, SearchStats, SearchTally,
+    LOOKAHEAD_CONTROLLER, LOOKAHEAD_IMPL_VERSION,
 };
 use yokohama_core::game::driven::{
     classify_fee_flow_candidates, classify_recipe_candidates, escrow_recipe_pair,
@@ -128,12 +128,13 @@ use yokohama_core::game::pair_fixtures::{
 use yokohama_core::{
     agent_stream_seed, apply_move, check_invariants, final_result, finalize_setup, get_legal_moves,
     is_game_over, new_game, observe, render_world, replay_from, run_arena_game, run_raw_game,
-    state_digest, AchievementCard, AchievementType, AreaId, AreaType, ArenaAgent, ArenaGameStats,
-    ChurchSlot, ChurchTrack, Contestant, Country, CustomsSlot, CustomsTrack, EndGameTrigger,
-    GameConfig, GameRecord, GameState, HandCard, Move, NamedIdentity, OrderCardId, PlayerId,
-    PlayerView, QuantileSketch, RolloutPolicy, Rules, SeedSchedule, SeedScheduleKind, Slot,
-    StartingOrderChoice, TechCardId, TriggerTally, TurnPhase, ViewError, VisiblePlayer, WorldRun,
-    WorldSeed, HONEST_MAX_TURNS, SEMANTICS_REV,
+    run_world_sides_capped, state_digest, AchievementCard, AchievementType, AreaId, AreaType,
+    ArenaAgent, ArenaGameStats, ChurchSlot, ChurchTrack, Contestant, Country, CustomsSlot,
+    CustomsTrack, EndGameTrigger, GameConfig, GameRecord, GameState, HandCard, Move,
+    NamedIdentity, OrderCardId, PlayerId, PlayerView, QuantileSketch, RolloutPolicy, Rules,
+    SeedSchedule, SeedScheduleKind, Slot, StartingOrderChoice, TechCardId, TriggerTally,
+    TurnPhase, ViewError, VisiblePlayer, WorldRun, WorldSeed, WorldSide, WorldSides,
+    HONEST_MAX_TURNS, SEMANTICS_REV,
 };
 
 const USAGE: &str = "\
@@ -630,6 +631,36 @@ usage: eval_probe <subcommand> [options]
       (0)) · 4 = VOID-AS-BLOCK, routed to the owner · 5 = an UNREGISTERED CELL,
       routed to the owner (`pf` only). Under --development: 0 on completion, 2
       on a typed refusal.
+
+  world <x-spec> <y-spec> <world-seed> [--arrangement 0|1|both] [--tail <K>]
+        [--invariants | --no-invariants]
+      DIAGNOSTIC — mutant-table world read; nothing here is a named identity, a draft, or evidence of strength
+      Play ONE world under two explicit-table sides, seated and keyed EXACTLY as
+      `examples/arena world` seats and keys it, and print that surface's own
+      body: the outcome, the moves per seat, the tail, the period line and the
+      end-state summary. NO win share, theta_hat, seat-0 count, VP margin or
+      interval of any side's share is computed here — this is the V4 step-11
+      diagnosis wave's confirmation read (R-D1-b), not a measurement of strength.
+
+      <x-spec> / <y-spec>
+                     a NAMED identity, optionally MUTATED:
+                       <name>[:set=<feature>=<early>/<late>]...
+                     <name> is v2-padded | v2-refit-padded | v4-step9-draft1,
+                     resolved through the same table `examples/arena` reads. Each
+                     `set=` clause overwrites ONE Feature::ALL pair on a COPY of
+                     that arm's table, in the order typed; <feature> is the
+                     canonical snake_case name and an unknown one is an error
+                     listing all thirty-four. A side with NO clause plays and
+                     echoes the named identity byte-for-byte. A side WITH one is
+                     a DIAGNOSTIC MUTANT: it echoes as `mutant-of-<name>`,
+                     carries its own weights= digest, has no wire name in
+                     Contestant::from_str_name, and is never a shipping table.
+      <world-seed>   a WORLD seed (0x hex or decimal), NOT a master — no schedule
+                     is drawn from it.
+      --arrangement  0, 1 or both (default both): the 2P seatings [X,Y] and [Y,X].
+      --tail <K>     the tail window in TURNS (default 40).
+      Both sides run the TRANSCRIBED named-identity knobs (b=4, k=1, m=8,
+      uncapped), so a read varies the TABLE and nothing else.
 
 contestants (the grammar is Contestant::from_str_name's — unknown is an error at
 every level, and an unknown knob is never silently ignored):
@@ -19530,7 +19561,16 @@ fn cmd_step10(args: &[String]) -> Result<i32, String> {
 // ---------------------------------------------------------------------------
 
 /// The registered label every `world` run leads with, VERBATIM.
-const WORLD_LABEL: &str = "PLACEHOLDER: the diagnostic label is not written yet";
+///
+/// It says three separate things, and each is load-bearing. NOT A NAMED
+/// IDENTITY: a mutant has no wire name, so nothing here can be typed back into
+/// `examples/arena`. NOT A DRAFT: a draft is a table someone may later freeze,
+/// and a mutant is a probe of one already frozen. NOT EVIDENCE OF STRENGTH:
+/// this surface plays ONE world and computes no share, no theta_hat and no
+/// interval at all — `arena::diagnostic`'s own rule for the wave, restated at
+/// the site a reader will paste from.
+const WORLD_LABEL: &str = "DIAGNOSTIC — mutant-table world read; nothing here is a named \
+                           identity, a draft, or evidence of strength";
 
 /// 2P is the diagnosis wave's whole scope (the V4 field is a 2P field), and
 /// `--arrangement 0|1|both` is a 2P grammar — `examples/arena`'s own constant,
@@ -19540,6 +19580,33 @@ const WORLD_PLAYERS: u8 = 2;
 /// `--tail`'s default, in TURNS. The arena surface's, so a reader comparing the
 /// two sees the same window.
 const WORLD_DEFAULT_TAIL: u32 = 40;
+
+/// The lookahead knobs a named identity runs, TRANSCRIBED — `NamedIdentity`'s
+/// own discipline, adopted for its reason: an identity's knobs are part of what
+/// its name means, and a later move of the shipped defaults must not silently
+/// re-point a figure already recorded against one of these names.
+/// `an_unmutated_sides_echo_is_the_named_identitys_own` holds the transcription
+/// to today's truth by comparing this side's echo with the arena's own.
+const WORLD_SIDE_BEAM: u16 = 4;
+const WORLD_SIDE_WORLDS: u8 = 1;
+const WORLD_SIDE_RETREAT_SAMPLES: u8 = 8;
+
+/// A [`Feature`] from its canonical snake_case name — `Feature::name`'s
+/// inverse, over `Feature::ALL`.
+///
+/// The lookup runs the SAME `name()` the report columns, the explanation
+/// rendering and this instrument's own feature blocks print from, so a name a
+/// reader copied out of a probe report is a name this parser accepts. An
+/// unknown one lists all thirty-four rather than merely refusing: the caller is
+/// typing a diagnostic by hand, and the menu is the fastest correction.
+fn parse_feature_name(name: &str) -> Result<Feature, String> {
+    Feature::ALL.into_iter().find(|f| f.name() == name).ok_or_else(|| {
+        format!(
+            "unknown feature {name:?} (one of: {})",
+            Feature::ALL.map(Feature::name).join(", "),
+        )
+    })
+}
 
 /// One `set=<feature>=<early>/<late>` clause.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -19559,16 +19626,71 @@ struct WorldSideSpec {
 
 impl WorldSideSpec {
     /// `<name>[:set=<feature>=<early>/<late>]...`
+    ///
+    /// The head is a NAMED identity, resolved through `NamedIdentity::from_str_name`
+    /// — the same table `examples/arena` reads, so the two surfaces cannot
+    /// disagree about what a name resolves to. Every tail clause must be a
+    /// `set=`; an unrecognized one is an ERROR rather than a silent no-op
+    /// (`split_args`' rule, one level up, and for its reason: a mistyped clause
+    /// that quietly did nothing would put an UNMUTATED read behind a line
+    /// labelled MUTANT).
     fn parse(spec: &str) -> Result<Self, String> {
-        // PLACEHOLDER: the spec grammar is not written yet.
-        Err(format!("world side {spec:?}: PLACEHOLDER, the spec grammar is not written yet"))
+        let mut parts = spec.split(':');
+        let head = parts.next().unwrap_or("");
+        let arm = NamedIdentity::from_str_name(head).ok_or_else(|| {
+            format!(
+                "unknown named identity {head:?} in world side {spec:?} ({})",
+                NamedIdentity::ALL.map(NamedIdentity::name).join(" | "),
+            )
+        })?;
+        let mutations = parts.map(Self::parse_clause).collect::<Result<Vec<_>, _>>()?;
+        Ok(Self { arm, mutations })
+    }
+
+    /// One `set=<feature>=<early>/<late>` clause.
+    fn parse_clause(clause: &str) -> Result<WorldMutation, String> {
+        let body = clause.strip_prefix("set=").ok_or_else(|| {
+            format!(
+                "unknown world-side clause {clause:?}: the only clause is \
+                 `set=<feature>=<early>/<late>`",
+            )
+        })?;
+        let (name, pair) = body.split_once('=').ok_or_else(|| {
+            format!("world-side clause `set={body}` needs `<feature>=<early>/<late>`")
+        })?;
+        let feature = parse_feature_name(name)
+            .map_err(|e| format!("world-side clause `set={body}`: {e}"))?;
+        let (early, late) = pair.split_once('/').ok_or_else(|| {
+            format!(
+                "world-side clause `set={body}` needs BOTH coordinates as `<early>/<late>` \
+                 (a single number would leave the other half of the interpolation unstated)",
+            )
+        })?;
+        let coordinate = |raw: &str, which: &str| -> Result<i64, String> {
+            raw.trim()
+                .parse::<i64>()
+                .map_err(|e| format!("world-side clause `set={body}`: {which} {raw:?}: {e}"))
+        };
+        Ok(WorldMutation {
+            feature,
+            early: coordinate(early, "early")?,
+            late: coordinate(late, "late")?,
+        })
     }
 
     /// The thirty-four numbers this side actually plays.
+    ///
+    /// A COPY of the arm's table with the clauses applied through
+    /// `WeightTable::set` in the order they were typed — the one API for a
+    /// targeted mutation, and the reason no index arithmetic appears here. The
+    /// arm's own const is `Copy`, so nothing this returns can reach it: a
+    /// mutant is a value, never an edit.
     fn table(&self) -> WeightTable {
-        // PLACEHOLDER: the named arm's table, with NO mutation applied.
-        let _ = &self.mutations;
-        self.arm.table()
+        let mut table = self.arm.table();
+        for m in &self.mutations {
+            table.set(m.feature, m.early, m.late);
+        }
+        table
     }
 
     /// The `weights=` digest the arena echoes for this table.
@@ -19607,9 +19729,40 @@ impl WorldSideSpec {
     }
 
     /// The seat echo `render_world` prints.
+    ///
+    /// Composed from the CONTROLLER's own provenance over this side's resolved
+    /// table, with one field replaced — the NAME — which is exactly what
+    /// `Contestant::provenance` does for a named arm. So the knobs, the
+    /// `eval_impl` version and the `weights=` digest are the lookahead
+    /// controller's answer rather than this file's, and an UNMUTATED side's echo
+    /// is byte-for-byte the arena's (pinned by
+    /// `an_unmutated_sides_echo_is_the_named_identitys_own`). The composer is
+    /// re-stated here because `arena::stats::compose_echo` is crate-private; that
+    /// pin is what keeps the restatement from drifting.
     fn echo(&self) -> String {
-        // PLACEHOLDER: the controller's own provenance is not composed yet.
-        String::new()
+        let p = controller_provenance(
+            SearchScheme::TurnBoundary { beam: WORLD_SIDE_BEAM },
+            WORLD_SIDE_WORLDS,
+            WORLD_SIDE_RETREAT_SAMPLES,
+            &self.table(),
+            None,
+        );
+        let knobs: Vec<String> = p.params.iter().map(|(k, v)| format!("{k}={v}")).collect();
+        format!("{}@v{}{{{}}}", self.display_name(), p.version, knobs.join(","))
+    }
+
+    /// This side as a [`WorldSide`] for the arena's own runner.
+    ///
+    /// `lookahead_probe_agent` is THE construction site for this instrument's
+    /// search agents (its own doc says so, and the k/m transposition pin guards
+    /// it), and it takes the same arguments `Contestant::build_search` takes —
+    /// so an unmutated side's agent is built exactly as the arena builds a
+    /// named arm's.
+    fn side<'a>(
+        &self,
+        build: &'a dyn Fn(&Rules, u64) -> Box<dyn ArenaAgent>,
+    ) -> WorldSide<'a> {
+        WorldSide { echo: self.echo(), build }
     }
 
     /// The header's own line for this side: the NAME, the mutation list, the
@@ -19675,14 +19828,36 @@ fn run_probe_world_capped(
     rules: &Rules,
     max_turns: u32,
 ) -> Result<WorldRun, String> {
-    // PLACEHOLDER: the arena's seam is not wired yet. The two echoes are
-    // composed so the refusal at least names the sides it would have played.
-    let _ = (arrangement, rules, max_turns);
-    Err(format!(
-        "PLACEHOLDER: the world runner is not wired yet ({} vs {})",
-        read.x.echo(),
-        read.y.echo(),
-    ))
+    let x_table = read.x.table();
+    let y_table = read.y.table();
+    let factory = |table: WeightTable| {
+        move |rules: &Rules, agent_seed: u64| -> Box<dyn ArenaAgent> {
+            Box::new(lookahead_probe_agent(
+                rules,
+                WORLD_SIDE_BEAM,
+                WORLD_SIDE_WORLDS,
+                WORLD_SIDE_RETREAT_SAMPLES,
+                None,
+                table,
+                agent_seed,
+            ))
+        }
+    };
+    let x_build = factory(x_table);
+    let y_build = factory(y_table);
+    run_world_sides_capped(
+        &WorldSides {
+            x: read.x.side(&x_build),
+            y: read.y.side(&y_build),
+            seed: read.seed,
+            players: read.players,
+            arrangement,
+        },
+        rules,
+        read.invariants,
+        max_turns,
+    )
+    .map_err(|e| format!("world failed: {e}"))
 }
 
 fn cmd_world(args: &[String]) -> Result<(), String> {

@@ -263,16 +263,94 @@ pub fn run_world_capped(
     invariants: bool,
     max_turns: u32,
 ) -> Result<WorldRun, ArenaError> {
-    require_supported_player_count(spec.players)?;
-    let unit = unit_for(spec.players, spec.seed);
+    // THE CONTESTANT half, and the only thing this arm adds to
+    // [`run_world_sides_capped`]: a [`Contestant`] names both the factory and
+    // the echo, so the two cannot describe different seats. Everything below
+    // the seam — the seating, the keying, the driver, the cap — is shared, so a
+    // caller that supplies its own factory plays the identical game.
+    let (x, y) = (spec.x, spec.y);
+    let x_build = move |rules: &Rules, agent_seed: u64| x.build(rules, agent_seed).0;
+    let y_build = move |rules: &Rules, agent_seed: u64| y.build(rules, agent_seed).0;
+    run_world_sides_capped(
+        &WorldSides {
+            x: WorldSide { echo: x.echo(), build: &x_build },
+            y: WorldSide { echo: y.echo(), build: &y_build },
+            seed: spec.seed,
+            players: spec.players,
+            arrangement: spec.arrangement,
+        },
+        rules,
+        invariants,
+        max_turns,
+    )
+}
+
+/// One SIDE of a world read as the two things the driver needs from it: how to
+/// build its agent on a keyed stream, and how it echoes.
+///
+/// **Why this exists, since [`Contestant`] answers both questions already.** It
+/// answers them for a NAMED contestant, and the arena grammar carries no weight
+/// knob by design (ledger L12 / spec §13: a weight change is a version bump,
+/// not a cell parameter). The step-11 diagnosis wave's R-D1-b read needs one
+/// side to be an explicit-table DIAGNOSTIC MUTANT, which is deliberately not a
+/// name — so `examples/eval_probe` supplies the factory and this module keeps
+/// the seating, the keying, the driver and the renderer. A mutant is thereby
+/// unable to acquire a wire name by being runnable, and an UNMUTATED side plays
+/// and prints byte-for-byte what [`run_world_capped`] plays and prints, because
+/// it IS that path.
+pub struct WorldSide<'a> {
+    /// What [`render_world`] prints for this side. The CALLER's, because only
+    /// the caller knows what it built.
+    pub echo: String,
+    /// Build this side's agent on the stream `agent_seed`, which the runner
+    /// derives through [`agent_stream_seed`] exactly as a cell does. A
+    /// factory that ignored its seed would collapse both games of a pair into
+    /// one — the trap the slot component exists to exclude.
+    pub build: &'a dyn Fn(&Rules, u64) -> Box<dyn ArenaAgent>,
+}
+
+/// [`WorldSpec`] with the two contestants replaced by [`WorldSide`]s.
+pub struct WorldSides<'a> {
+    pub x: WorldSide<'a>,
+    pub y: WorldSide<'a>,
+    /// A WORLD seed, not a master: no schedule is drawn from it.
+    pub seed: WorldSeed,
+    pub players: u8,
+    /// Index into [`unit_for`]'s seatings — at 2P, 0 is `[X, Y]` and 1 is
+    /// `[Y, X]`.
+    pub arrangement: u8,
+}
+
+/// Play ONE world under [`HONEST_MAX_TURNS`] from two caller-supplied sides.
+pub fn run_world_sides(
+    sides: &WorldSides<'_>,
+    rules: &Rules,
+    invariants: bool,
+) -> Result<WorldRun, ArenaError> {
+    run_world_sides_capped(sides, rules, invariants, HONEST_MAX_TURNS)
+}
+
+/// [`run_world_sides`] with the turn guard as a parameter.
+///
+/// THE seating-and-keying site — [`run_world_capped`] routes through it, so
+/// there is exactly one transcription of the cell's rule in this module and a
+/// caller cannot acquire a second by supplying its own agents.
+pub fn run_world_sides_capped(
+    sides: &WorldSides<'_>,
+    rules: &Rules,
+    invariants: bool,
+    max_turns: u32,
+) -> Result<WorldRun, ArenaError> {
+    require_supported_player_count(sides.players)?;
+    let unit = unit_for(sides.players, sides.seed);
     let seating = unit
         .seatings
-        .get(spec.arrangement as usize)
+        .get(sides.arrangement as usize)
         .ok_or_else(|| {
             ArenaError::Driver(format!(
                 "arrangement {} does not exist at {}P (the unit has {})",
-                spec.arrangement,
-                spec.players,
+                sides.arrangement,
+                sides.players,
                 unit.seatings.len(),
             ))
         })?
@@ -289,20 +367,18 @@ pub fn run_world_capped(
         })?;
 
     // THE CELL'S OWN FACTORY, minus the explanation handles and the stopwatch a
-    // cell folds (neither changes what a seat plays). Every contestant, rung or
-    // evaluator, is built through `Contestant::build` on
-    // `agent_stream_seed(seed, seat, slot)` — the single keying rule.
-    let (x, y) = (spec.x, spec.y);
-    let seed = spec.seed;
+    // cell folds (neither changes what a seat plays). Every side, named or
+    // caller-supplied, is built on `agent_stream_seed(seed, seat, slot)` — the
+    // single keying rule.
+    let seed = sides.seed;
     let mut make_agent = |seat: PlayerId, _players: u8| -> Box<dyn ArenaAgent> {
         let slot = seating[seat.0 as usize];
-        let contestant = if slot == X_SLOT { x } else { y };
-        let (agent, _handle) = contestant.build(rules, agent_stream_seed(seed, seat, slot));
-        agent
+        let side = if slot == X_SLOT { &sides.x } else { &sides.y };
+        (side.build)(rules, agent_stream_seed(seed, seat, slot))
     };
     let game = run_arena_game_diagnostic_capped(
         seed,
-        spec.players,
+        sides.players,
         rules,
         &mut make_agent,
         invariants,
@@ -311,11 +387,11 @@ pub fn run_world_capped(
 
     Ok(WorldRun {
         seed,
-        players: spec.players,
-        arrangement: spec.arrangement,
+        players: sides.players,
+        arrangement: sides.arrangement,
         x_seat,
-        x_echo: x.echo(),
-        y_echo: y.echo(),
+        x_echo: sides.x.echo.clone(),
+        y_echo: sides.y.echo.clone(),
         turn_cap: max_turns,
         game,
     })
