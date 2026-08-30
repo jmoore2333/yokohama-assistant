@@ -3602,6 +3602,53 @@ mod tests {
         );
     }
 
+    /// **THE SHIP PIN** (V4 step 12, 2026-08-30): [`Contestant::PRODUCTION`] is
+    /// the identity the confirmatory field cleared, and the echo is written out
+    /// as a LITERAL rather than derived.
+    ///
+    /// The string is the freeze document's §1 block verbatim
+    /// (`docs/plans/2026-08-30-phase3.5c-v4-identity-freeze.md`), and it is
+    /// hand-typed here for the reason every golden in this file is: a pin that
+    /// composed the echo from the same consts `echo` composes it from would
+    /// pass through any re-point of them, which is the one failure this pin
+    /// exists to catch. Amendment D1's tuple is exactly what the string carries
+    /// — name, controller version, `b`/`k`/`m`, `eval_impl`, the weight-table
+    /// digest, and the ABSENCE of a cap token — so asserting the string asserts
+    /// every component of the identity at once.
+    ///
+    /// The two shipped arms are asserted here too, and not as decoration: the
+    /// ship commit's whole grandfathering claim is that it moved no controller
+    /// const and no shipped constructor's table, so every figure ever recorded
+    /// against `lookahead-v1` and `greedy-v1` stays comparable forward. That
+    /// claim is a pair of unchanged strings, and this is where they are.
+    #[test]
+    fn the_production_contestant_is_the_confirmed_v4_identity() {
+        assert_eq!(
+            Contestant::PRODUCTION.echo(),
+            "v4-step9-draft1@v2{b=4,eval_impl=3,k=1,m=8,weights=6957643967275421640}",
+        );
+        assert_eq!(
+            Contestant::PRODUCTION,
+            Contestant::NamedTable(NamedIdentity::V4Step9Draft1),
+            "the production seat is the NAMED identity, never a `*_DEFAULT` (amendment D1)",
+        );
+        assert!(
+            !Contestant::PRODUCTION.echo().contains("cap="),
+            "the confirmed identity is UNCAPPED, and an absent cap is not any set cap: {}",
+            Contestant::PRODUCTION.echo(),
+        );
+
+        // GRANDFATHERED, byte-identically, at `WeightTable::V2`.
+        assert_eq!(
+            Contestant::LOOKAHEAD_V1_DEFAULT.echo(),
+            "lookahead-v1@v2{b=4,eval_impl=3,k=1,m=8,weights=-1160323518167071950}",
+        );
+        assert_eq!(
+            Contestant::GREEDY_V1_DEFAULT.echo(),
+            "greedy-v1@v2{eval_impl=3,m=8,placement_cap=512,weights=-1160323518167071950}",
+        );
+    }
+
     /// **THE GOLDEN TRANSCRIPTION PIN.** All sixty-eight literals of
     /// [`WeightTable::V4_STEP9_DRAFT1`] against the draft-1 ledger row, written
     /// out here rather than computed, because the risk this wave carries is a
