@@ -1024,6 +1024,64 @@ mod tests {
         assert!(text.contains("money="));
     }
 
+    /// **W-D1 review S3.** The rung cell above proves the SEATING and the
+    /// KEYING; it does not prove the wrapper asymmetry is inert. The cell path
+    /// wraps every seat in `TimedAgent` and clones an `ExplainHandle` out before
+    /// boxing, `run_world` does neither, and whether a handle comes back is
+    /// contestant-family-dependent — so the arms the D1/D2 reads actually use
+    /// need their own pin rather than an argument by analogy.
+    ///
+    /// ONE unit (four games: two in the cell, two re-run here). The named arms
+    /// are lookahead searches, so this is the most expensive cell in the module
+    /// and is deliberately sized at the minimum that covers both arrangements.
+    #[test]
+    fn a_world_run_reproduces_a_named_identity_cell() {
+        /// A THROWAWAY master on the wave's 9999-family convention, distinct
+        /// from `SCRATCH_MASTER` and from every registered D2 master.
+        const MASTER: u64 = 0x0B01_2026_0831_9997;
+        let rules = Rules::standard();
+        let x = Contestant::from_str_name("v4-step9-draft1").expect("the V4 candidate arm");
+        let y = Contestant::from_str_name("v2-padded").expect("the shipped table, named");
+        let spec = CellSpec {
+            name: "wd1-repro-identities".to_string(),
+            players: 2,
+            x,
+            y,
+            units: 1,
+            master: SeedScheduleKind::Diagnostic(MASTER),
+        };
+        let mut from_cell: Vec<(u8, GameRecord)> = Vec::new();
+        run_cell_emitting(&spec, &rules, false, &mut |stats, arr| {
+            from_cell.push((arr, stats.record.clone()));
+            Ok(())
+        })
+        .expect("the named arms finish this world");
+        assert_eq!(from_cell.len(), 2, "a 2P unit is the swapped pair");
+
+        let seed = SeedSchedule::diagnostic(MASTER).next_world();
+        for (arr, cell_record) in &from_cell {
+            let run = run_world(
+                &WorldSpec { x, y, seed, players: 2, arrangement: *arr },
+                &rules,
+                false,
+            )
+            .expect("the same world, seated the same way");
+            assert_eq!(run.x_seat.0, if *arr == 0 { 0 } else { 1 }, "arrangement {arr}'s X seat");
+            let DiagnosticOutcome::Terminated(stats) = &run.game.outcome else {
+                panic!("the cell completed this game, so the world run must too");
+            };
+            assert_eq!(
+                stats.record.events, cell_record.events,
+                "arrangement {arr}: the applied move sequence must be the cell's own",
+            );
+            assert!(cell_record.terminal_digest.is_some());
+            assert_eq!(
+                stats.record.terminal_digest, cell_record.terminal_digest,
+                "arrangement {arr}: the terminal-state digest",
+            );
+        }
+    }
+
     /// Every `  turn=N …` tail line's turn number, in print order.
     fn tail_turns_printed(lines: &[String]) -> Vec<u32> {
         lines
