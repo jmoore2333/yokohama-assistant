@@ -704,7 +704,9 @@ impl AdmissionRead {
     /// **The ADMISSION-CIRCULARITY flag** (design §4, review MUST-4): dominance
     /// held under every declared policy EXCEPT `lookahead-at-final`.
     ///
-    /// The subject IS (provisionally) `lookahead@final`, so a subject defect that
+    /// The subject IS `lookahead@final` — the menu ROLE, which since the
+    /// 2026-08-30 ship commit resolves to the production contestant — so a
+    /// subject defect that
     /// degrades its POST-candidate play deflates measured dominance under
     /// exactly that arm — and would therefore exclude exactly the roots where
     /// the defect matters, a broken subject passing by shrinking its own
@@ -1206,9 +1208,10 @@ fn refusing_counters(counters: &SeatCounters) -> Vec<(&'static str, u64)> {
 /// ([`RootTableError::Unsupported`], carrying `Sampled` / `Unranked` /
 /// `Diagnostic`), never a second taxonomy and never a read that quietly ships
 /// without its step one. In practice the subject is always the shipped
-/// `lookahead-v1` echo — design's own subject paragraph — and the constraint
-/// only bites a machinery smoke that tried to save a few milliseconds with a
-/// rung.
+/// PRODUCTION contestant's echo — `v4-step9-draft1` since the 2026-08-30 ship
+/// commit, `lookahead-v1` in every block read before it, and design's own
+/// subject paragraph either way — and the constraint only bites a machinery
+/// smoke that tried to save a few milliseconds with a rung.
 ///
 /// **The hard-refuse / annotate split is design §5.4's**: any cap hit, budget
 /// bind or starved decision — at the root table OR inside any replication's turn
@@ -3530,7 +3533,11 @@ fn resolve_draws(
 /// Every seat, not just the opponent's, and that is what makes MUST-4's
 /// sole-dissenter reading work: the `lookahead-at-final` arm IS the subject's own
 /// agent, so a subject defect that degrades post-candidate play shows up in that
-/// arm's playouts and in no other.
+/// arm's playouts and in no other. That premise is what the 2026-08-30 ship
+/// commit had to preserve, and did: the menu arm and the subject re-pointed
+/// TOGETHER at `Contestant::PRODUCTION`, so a block read after that date reads
+/// the shipped bot against itself exactly as one read before it read the
+/// shipped bot of its day.
 fn menu_seats(policy: ReplyPolicy, players: usize) -> Vec<SeatSpec> {
     vec![SeatSpec::Reply(policy); players]
 }

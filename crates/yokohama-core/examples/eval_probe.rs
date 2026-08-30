@@ -119,7 +119,6 @@ use yokohama_core::game::driven::{
     RecipeMiss, RecipePair, RecipeSide, RegistryError, RootDescriptor, RootOrigin, RootPredicate,
     RootSource, V4_ESCROW_ORDINALS,
 };
-use yokohama_core::game::driven_runner::DEFAULT_SEAT;
 use yokohama_core::game::pair_fixtures::{
     build_registered_pair, package_digest, registered, render_pair_report_with,
     render_registry_manifest, sign_prior, CandidateFeature, FeatureId, PairRole, Side,
@@ -9040,14 +9039,23 @@ fn load_registry_root(name: &str, rules: &Rules) -> Result<RegistryRoot, RootedM
     })
 }
 
-/// The SHIPPED controller configuration's knobs, read off the grammar rather
-/// than typed here.
+/// The SHIPPED controller configuration's knobs, read off a const rather than
+/// typed here.
 ///
 /// "The shipped controller configuration" is `Contestant::build`'s `lookahead-v1`
-/// arm, and [`DEFAULT_SEAT`] is the string the runner's own default resolves
-/// through — so the four numbers below are whatever `from_str_name` fills in,
-/// and a future change to the shipped rung moves this surface with it instead of
-/// leaving a transcribed b=4 behind.
+/// arm — beam 4, one world, eight retreat samples, uncapped — and the four
+/// numbers below are that const's, never a transcription of it.
+///
+/// **It read `driven_runner::DEFAULT_SEAT` until 2026-08-30, and was re-pointed
+/// at [`Contestant::LOOKAHEAD_V1_DEFAULT`] by the V4 ship commit.** The runner's
+/// default stopped being a synonym for "the shipped `lookahead-v1`" that day: it
+/// is now the production identity `v4-step9-draft1`, which is a NAMED arm
+/// carrying its own weight table. This surface builds the shipped CHASSIS over
+/// an EXPLICIT weights argument, so a seat that carried a table of its own would
+/// be answering a question this surface does not ask. The four numbers are the
+/// same either way today (`NamedIdentity::KNOBS` transcribes exactly these), so
+/// the re-point is byte-inert for every figure ever recorded here — which is
+/// the point of making it rather than following the default.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct ShippedKnobs {
     b: u16,
@@ -9057,12 +9065,10 @@ struct ShippedKnobs {
 }
 
 fn shipped_controller_knobs() -> Result<ShippedKnobs, String> {
-    match Contestant::from_str_name(DEFAULT_SEAT)
-        .map_err(|e| format!("the shipped seat {DEFAULT_SEAT:?} does not parse: {e}"))?
-    {
+    match Contestant::LOOKAHEAD_V1_DEFAULT {
         Contestant::LookaheadV1 { b, k, m, cap } => Ok(ShippedKnobs { b, k, m, cap }),
         other => Err(format!(
-            "the shipped seat {DEFAULT_SEAT:?} resolves to {} — this surface reads the agent's own \
+            "the shipped chassis const resolves to {} — this surface reads the agent's own \
              ranked root table, which only the search arm has",
             other.echo(),
         )),
@@ -9469,9 +9475,14 @@ fn parity_pin_at(
     decision_seed: u64,
     rules: &Rules,
 ) -> Result<ParityPin, RootedMiss> {
-    let contestant = Contestant::from_str_name(DEFAULT_SEAT).map_err(|e| {
-        RootedMiss::Instrument(format!("the driven default contestant does not parse: {e}"))
-    })?;
+    // **`lookahead-v1` EXPLICITLY, not the runner's default.** This pin's whole
+    // claim is that the two surfaces are one path AT V2 WEIGHTS, and the other
+    // side of the comparison is `rooted_table(..., &WeightTable::V2, ...)` three
+    // lines down. It read `DEFAULT_SEAT` until 2026-08-30, when the V4 ship
+    // commit re-pointed that default at the production identity — a named arm
+    // carrying its OWN table. Following it would have turned a parity pin into
+    // a V4-against-V2 comparison: not a failing pin but a meaningless one.
+    let contestant = Contestant::LOOKAHEAD_V1_DEFAULT;
     let driven = root_table(state, seat, contestant, rules, decision_seed)
         .map_err(|e| RootedMiss::Instrument(format!("{label}: no driven root table: {e:?}")))?;
     let rooted = rooted_table(state, seat, &WeightTable::V2, rules, decision_seed)?;
@@ -14608,8 +14619,12 @@ fn e113_root(rules: &Rules) -> Result<E113Root, String> {
         .ok_or(format!("{E113_ROOT} is not a registry root"))?;
     let source = entry.load(rules).map_err(|e| format!("{E113_ROOT}: {e:?}"))?;
     let (state, descriptor) = source.resolve(rules).map_err(|e| format!("{e:?}"))?;
-    let contestant = Contestant::from_str_name(DEFAULT_SEAT)
-        .map_err(|e| format!("the driven default contestant does not parse: {e}"))?;
+    // **`lookahead-v1` EXPLICITLY, for `parity_pin_at`'s reason.** The step-4
+    // measurement and the step-5 gate that reads this tie were both RECORDED
+    // against the shipped V2 seat; the runner's default stopped meaning that on
+    // 2026-08-30 (the V4 ship commit), and a recorded gate must not silently
+    // re-point onto another table because a default moved underneath it.
+    let contestant = Contestant::LOOKAHEAD_V1_DEFAULT;
     let table = root_table(&state, entry.bot_seat, contestant, rules, entry.decision_seed)
         .map_err(|e| format!("root table at g1-e113: {e:?}"))?;
     let top_value = table.top_value().ok_or("the root table is empty")?;

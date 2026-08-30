@@ -138,7 +138,7 @@ use crate::game::apply_move::apply_move_unchecked;
 use crate::game::arena::{
     agent_stream_seed, mix, play_from_state, require_supported_player_count, run_arena_game,
     AgentBench, ArenaAgent, Contestant, ControllerProvenance, DecisionReport, ExplainHandle,
-    PlayError, PlayLimits, SeatBench, Slot, SALT_DRIVEN_REPLICATION,
+    NamedIdentity, PlayError, PlayLimits, SeatBench, Slot, SALT_DRIVEN_REPLICATION,
 };
 use crate::game::belief::BeliefSampler;
 use crate::game::can_fulfill_order;
@@ -204,27 +204,43 @@ pub const DEFAULT_MAX_DECISIONS: u64 = 100_000;
 /// STATED RULE over state — the rule is in this file, in full, and it was
 /// written before any family root was drawn.
 ///
-/// **The two `*AtFinal` arms are PROVISIONAL, and the word is load-bearing** —
-/// the same obligation `yokohama-cli`'s `bot::PROVISIONAL_DEFAULT_BOT` carries,
-/// written here because this is core's own copy of it. Today they bind to the
-/// SHIPPED defaults ([`Contestant::GREEDY_V1_DEFAULT`] and
-/// [`Contestant::LOOKAHEAD_V1_DEFAULT`]); at D1's identity freeze they re-point
-/// at the frozen champion constructed from the EXPLICIT knobs that
-/// pre-registration records — never from a `*_DEFAULT` constant, which is D1's
-/// own rule — in the same commit that re-points the CLI's const, so the seat you
-/// play against and the seat a rooted question is measured against cannot drift
-/// apart. Until then the shared defaults are themselves frozen identity (D1:
-/// they may not move without an owner ruling), so the binding cannot drift
-/// silently either. What a report quotes is the RESOLVED echo and never the menu
-/// name: the name is a symbol whose meaning moves at the freeze.
+/// **THE LOOKAHEAD ARM RE-POINTED ON 2026-08-30; THE GREEDY ARM DID NOT, and
+/// the asymmetry is the record.** [`LookaheadAtFinal`](Self::LookaheadAtFinal)
+/// binds [`Contestant::PRODUCTION`] — the V4 sighted-evaluator identity
+/// `v4-step9-draft1`, confirmed on-policy that day and shipped AS ITSELF — set
+/// in the SAME commit that re-pointed the CLI's `bot::PROVISIONAL_DEFAULT_BOT`
+/// (and with it `suggest`'s construction) and `driven_runner::DEFAULT_SEAT`, so
+/// the seat you play against, the seat that advises you and the seat a rooted
+/// question is measured against cannot drift apart. That was this doc's own
+/// standing instruction and it is DISCHARGED rather than deleted: what it asked
+/// for was an EXPLICIT identity — the knobs are transcribed literals inside
+/// [`NamedIdentity`], never a `*_DEFAULT` constant, which is amendment D1's
+/// rule — and that is what landed.
+///
+/// **[`GreedyAtFinal`](Self::GreedyAtFinal) STAYS on
+/// [`Contestant::GREEDY_V1_DEFAULT`], and the reason is that no greedy identity
+/// was confirmed.** V4's field measured one lookahead table against another;
+/// re-pointing a one-ply arm onto a table no field ever seated it at would put
+/// an unmeasured contestant into the reply menu under a name whose every
+/// recorded figure was taken elsewhere. It is grandfathered byte-identically at
+/// [`WeightTable::V2`] with no controller-version bump, and so is
+/// [`RACE_RUSHER_FALLBACK`], which IS this arm's binding. The two `*AtFinal`
+/// arms therefore no longer move together; a future greedy freeze moves this
+/// one, on its own evidence, in its own commit.
+///
+/// What a report quotes is the RESOLVED echo and never the menu name: the name
+/// is a symbol whose meaning moved once, on the date above, and may move again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReplyPolicy {
     /// The shipped rollout rung — `RolloutPolicy::FAMILY_WEIGHTED_DEFAULT`.
     FamilyWeighted,
     /// Greedy-v1 at its shipped retreat-sample knob.
     GreedyAtFinal,
-    /// Lookahead-v1 at its shipped knobs, UNCAPPED — the provisional production
-    /// contestant.
+    /// **The shipped PRODUCTION contestant** — [`Contestant::PRODUCTION`], the
+    /// V4 identity `v4-step9-draft1` at the shipped knobs, UNCAPPED. The menu
+    /// name is a ROLE ("the strongest seat this repo ships") and not a
+    /// controller name, which is why it survived the re-point unchanged while
+    /// what it resolves to did not.
     LookaheadAtFinal,
     /// **The declared adversarial arm** (Phase C, design §2): a positional
     /// OPPORTUNIST that takes a race step when one is in front of it and plays
@@ -276,7 +292,7 @@ impl ReplyPolicy {
         match self {
             Self::FamilyWeighted => Ok(Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT)),
             Self::GreedyAtFinal => Ok(Contestant::GREEDY_V1_DEFAULT),
-            Self::LookaheadAtFinal => Ok(Contestant::LOOKAHEAD_V1_DEFAULT),
+            Self::LookaheadAtFinal => Ok(Contestant::PRODUCTION),
             Self::RaceRusher => Err(NotAContestant::RaceRusher),
         }
     }
@@ -4439,6 +4455,21 @@ impl RootTable {
 /// Typed rather than a message, because each arm is a different KIND of answer:
 /// two are permanent facts about what the contestant is, and one is a scope
 /// statement this module can revisit with a consumer.
+///
+/// **`AlternateTable` was RETIRED on 2026-08-30, at the V4 ship commit, and the
+/// reason it existed is recorded here rather than deleted with it.** It refused
+/// [`Contestant::NamedTable`] on SCOPE: V3 spec §5.1 admitted in-crate weighted
+/// construction "used only by the scan, **never the runner grammar**", and
+/// admitting a seat whose table was a runner ARGUMENT would have put a weight
+/// identity into a grammar whose rooted reads are keyed to ONE pinned
+/// generating identity. That scope is intact; the refusal is simply no longer
+/// how it is kept. The contestant this repo ships IS a named table now
+/// ([`Contestant::PRODUCTION`]), the generating ecology stays pinned to
+/// EXPLICIT V2 ([`GENERATED_ECOLOGY_V2_LOOKAHEAD`], v2.3 — so no recorded root
+/// move belongs to a named arm), and a rooted read of the shipped bot is
+/// therefore a named-table read rather than an alternate-table one. What would
+/// re-open the question is a runner FLAG that took a weight table; there is
+/// none, `--contestant` still spells only NAMES, and a name is an identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnsupportedReason {
     /// A [`RolloutPolicy`] rung: it SAMPLES a move from a distribution and
@@ -4470,20 +4501,6 @@ pub enum UnsupportedReason {
     /// surface whose correctness nothing checks. Revisited with a consumer, not
     /// with a plumbing change (design §3).
     Diagnostic,
-    /// **A NAMED IDENTITY — an alternate-table arena arm (V4 §7 step 8).** Like
-    /// the atomic-diag arm this one WOULD work: `Contestant::build` routes it
-    /// through the same `build_search` as `lookahead-v1` and it carries the
-    /// same ranked-root surface, so mirroring it here would be one more match
-    /// arm. It is refused on SCOPE, and the scope is a standing rule rather
-    /// than this wave's preference: V3 spec §5.1 admitted in-crate weighted
-    /// construction "used only by the scan, **never the runner grammar**", and
-    /// this harness's rooted reads are keyed to ONE pinned generating identity
-    /// (`GENERATED_ECOLOGY_V2_LOOKAHEAD`). Admitting a seat whose table is a
-    /// runner argument would put a weight identity into that grammar and make
-    /// two `--contestant` spellings resolve to two different evaluators over
-    /// one recorded ecology. The §11 arms are the ARENA's cells; run them
-    /// through `examples/arena`.
-    AlternateTable,
 }
 
 impl UnsupportedReason {
@@ -4495,10 +4512,6 @@ impl UnsupportedReason {
                 "a one-ply argmax reports no per-candidate vector and no search counters"
             }
             Self::Diagnostic => "a labelled diagnostic arm no v1 consumer asks a root table about",
-            Self::AlternateTable => {
-                "an alternate-table arena identity; this harness's rooted reads are keyed to one \
-                 pinned generating identity, and the weight arms are cells for examples/arena"
-            }
         }
     }
 }
@@ -4684,10 +4697,27 @@ fn mirror_build(
         .with_cap(cap)),
         Contestant::Policy(_) => refuse(UnsupportedReason::Sampled),
         Contestant::GreedyV1 { .. } => refuse(UnsupportedReason::Unranked),
+        // `Contestant::build`'s `NamedTable` arm, verbatim: the same
+        // `build_search` construction, the same knob ORDER, the arm's OWN table
+        // rather than a hardwired one, and UNCAPPED. The three numbers come
+        // from `NamedIdentity::KNOBS` rather than being retyped here — one
+        // spelling of `(4, 1, 8)` across the two files, which is the only form
+        // of this mirror that a transposition cannot survive.
+        Contestant::NamedTable(arm) => {
+            let knobs = NamedIdentity::KNOBS;
+            Ok(LookaheadAgent::with_knobs(
+                rules,
+                SearchScheme::TurnBoundary { beam: knobs.beam },
+                knobs.worlds,
+                knobs.retreat_samples,
+                arm.table(),
+                decision_seed,
+            )
+            .with_cap(None))
+        }
         Contestant::MctsV1 { .. } | Contestant::AtomicDiag { .. } => {
             refuse(UnsupportedReason::Diagnostic)
         }
-        Contestant::NamedTable(_) => refuse(UnsupportedReason::AlternateTable),
     }
 }
 
@@ -6164,7 +6194,7 @@ mod tests {
     // rather than a second call to the one under test.
     use crate::game::apply_move::apply_move;
     use crate::game::arena::{
-        run_arena_game, ArenaGameStats, ControllerProvenance, DecisionReport, NamedIdentity,
+        run_arena_game, ArenaGameStats, ControllerProvenance, DecisionReport,
     };
     use crate::game::end_game::is_game_over;
     use crate::game::invariants::check_invariants;

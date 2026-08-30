@@ -132,10 +132,23 @@ pub const ADJUDICATE_FLAGS: &[&str] =
 /// The seat and contestant DEFAULT, spelled as the grammar spells it.
 ///
 /// A string rather than a `Contestant` const on purpose: this is what a user
-/// would type, `Contestant::from_str_name` fills every knob from its own shipped
-/// defaults, and the runner therefore introduces no second opinion about what
-/// "the shipped lookahead-v1" is.
-pub const DEFAULT_SEAT: &str = "lookahead-v1";
+/// would type, `Contestant::from_str_name` resolves it, and the runner
+/// therefore introduces no second opinion about what the shipped contestant is.
+///
+/// **RE-POINTED 2026-08-30 at the V4 ship commit**, from `lookahead-v1` to the
+/// production identity — one of the four bindings that commit moves together
+/// (`Contestant::PRODUCTION`, the CLI's default bot seat and `suggest`,
+/// `ReplyPolicy::LookaheadAtFinal`, and this). A named identity is KNOBLESS, so
+/// unlike the old default this string fills no knob from anywhere: the knobs
+/// are transcribed literals inside `NamedIdentity`, which is amendment D1's own
+/// rule about what a shipped identity may be built from.
+///
+/// **Reproducing a REGISTRY root's recorded move is `--contestant
+/// lookahead-v1`**, and the usage text says so: all six recorded moves were
+/// made under `lookahead-v1@v2`, so the reproduction check is a question about
+/// that contestant and not about this default. The default moved; the recorded
+/// history did not.
+pub const DEFAULT_SEAT: &str = "v4-step9-draft1";
 
 /// `adjudicate`'s default K.
 pub const DEFAULT_REPLICATIONS: u32 = 4;
@@ -210,14 +223,19 @@ usage: driven <subcommand> [options]
       mechanical separator's instrument, and the surface `why` cannot be (it
       prints 2 of the 15).
 
-      --contestant <spec>    default `lookahead-v1`, the grammar's own shipped
-                             default (beam 4, one world, 8 retreat samples,
-                             UNCAPPED). The separator's wider beams are
-                             `lookahead-v1:b=8` and `lookahead-v1:b=16`, and a
-                             wider beam is EXPECTED to diverge from the recorded
-                             move -- that divergence is the measurement.
-                             ONLY `lookahead-v1` and its knob variants have a
-                             root table at all. Every other arm is a TYPED
+      --contestant <spec>    default `v4-step9-draft1`, the shipped PRODUCTION
+                             contestant (beam 4, one world, 8 retreat samples,
+                             UNCAPPED). The six REGISTRY roots' recorded moves
+                             were all made under `lookahead-v1@v2`, so
+                             reproducing a recorded move is `--contestant
+                             lookahead-v1`: the default moved on 2026-08-30 and
+                             the recorded history did not. The separator's wider
+                             beams are `lookahead-v1:b=8` and `lookahead-v1:b=16`,
+                             and a wider beam is EXPECTED to diverge from the
+                             recorded move -- that divergence is the measurement.
+                             ONLY the S1 turn-boundary arms have a root table at
+                             all: `lookahead-v1` and its knob variants, and the
+                             named identities. Every other arm is a TYPED
                              REFUSAL naming why, never an empty table: a rung
                              SAMPLES its move and values no candidate,
                              `greedy-v1` is a one-ply argmax that reports no
@@ -369,8 +387,9 @@ usage: driven <subcommand> [options]
       -- runs BlockOpts::freeze (admission K = 8, doubled against group-mean
       noise; the regression re-read runs the frozen sizing precisely so it reads
       the instrument its baseline was read with). The ARM never moves the
-      sizing. The SUBJECT is the shipped `lookahead-v1`: a family result is a
-      statement about that subject, so it is deliberately not a flag here.
+      sizing. The SUBJECT is the shipped PRODUCTION contestant
+      `v4-step9-draft1`: a family result is a statement about that subject, so
+      it is deliberately not a flag here.
       COST: `roots x menu x candidates x K` whole games for admission plus
       `roots x R` subject turns for the reads -- tens of minutes per root in
       release at the declared sizing. The pilot is what priced it, and a
@@ -386,8 +405,9 @@ usage: driven <subcommand> [options]
 
       --games <N>            required; 0 is refused (a probe of no games
                              measures nothing).
-      --contestant <spec>    default `lookahead-v1`. Any contestant the grammar
-                             spells plays here -- unlike `table`, an opening turn
+      --contestant <spec>    default `v4-step9-draft1`, the shipped production
+                             contestant. Any contestant the grammar spells plays
+                             here -- unlike `table`, an opening turn
                              needs no ranked surface, so a rung is a legitimate
                              (and much cheaper) subject.
 
@@ -462,19 +482,25 @@ the BURN RULE (--escrow-read <ordinal>, on table / run / adjudicate / exact):
   other six, whose frozen family blocks run confirmatory ordinals 4..28.
 
 seats (--seats <a,b[,c,d]>, one spec per seat in seat order, default
-`lookahead-v1` on EVERY seat):
+`v4-step9-draft1` on EVERY seat):
   the contestant grammar   Contestant::from_str_name's, where unknown is an error
                            at every level and an unknown knob is never silently
                            ignored:
       greedy-v1[:m=<n>]
       lookahead-v1[:b=<n>,k=<n>,m=<n>,cap=<n>]
+      v2-padded | v2-refit-padded | v4-step9-draft1   (named identities: one
+                           evaluator seat each, KNOBLESS -- the knobs are
+                           transcribed literals, so any knob group is refused)
       uniform | retreat-averse | family-weighted[:p=<ppm>,k=<n>]
       atomic-diag-v1[:d=<n>,k=<n>,m=<n>] | mcts-v1[:cap=,c=,scale=,m=,leaf=]
   the declared REPLY menu  the four bare names below. The first three resolve to
                            the same contestants the grammar spells and differ
                            only in what the provenance records they were ASKED
-                           FOR, which is the half that stops meaning what it
-                           means at D1's identity freeze:
+                           FOR -- the half whose meaning MOVED on 2026-08-30:
+                           `lookahead-at-final` now resolves to the production
+                           contestant, while `greedy-at-final` is grandfathered
+                           at greedy-v1@v2 because no greedy identity was
+                           confirmed:
       family-weighted | greedy-at-final | lookahead-at-final | race-rusher
   `family-weighted` ALONE is the reply-menu slot; `family-weighted:p=...` is the
   knobbed rung through the contestant grammar. Both resolve to a rung.
@@ -6032,7 +6058,9 @@ mod tests {
             Command::Opening { master, games, contestant } => {
                 assert_eq!(master, 0x2A);
                 assert_eq!(games, 3);
-                assert_eq!(contestant, Contestant::LOOKAHEAD_V1_DEFAULT);
+                // `opening` shares `DEFAULT_SEAT` with the rest of the runner,
+                // so the 2026-08-30 re-point moved this default with it.
+                assert_eq!(contestant, Contestant::PRODUCTION);
             }
             other => panic!("parsed as {other:?}"),
         }
