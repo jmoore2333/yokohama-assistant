@@ -2494,9 +2494,12 @@ pub struct FamilyDecl {
     /// regression read rather than a circular one.
     ///
     /// **`None` everywhere else, and the `None` is load-bearing**: the
-    /// final-controller tier (42..48 / 29..32), the three unnamed post-fix arms
-    /// and family 1's 26..29 are NOT released, stay in the freeze DOCUMENT, and
-    /// refuse BY NAME if a command asks for them.
+    /// final-controller tier, the three unnamed post-fix arms and family 1's
+    /// own post-fix tier are NOT released — they refuse BY NAME if a command
+    /// asks for them, and their ORDINALS are deliberately not transcribed
+    /// here. The freeze document's §4 table stays their only home, which is
+    /// the whole of design §2's escrow hygiene: a number that is not in the
+    /// source cannot be burned by an edit to the source.
     pub regression: Option<FrozenBlock>,
     /// The CONTROL arm's RELEASED post-fix escrow block.
     ///
@@ -2634,7 +2637,8 @@ pub fn families() -> Vec<FamilyDecl> {
             }),
             // NOT RELEASED: family 1 sits out V4 step 12's regression re-read
             // (checkpoint step 12: "Family 1 still sits out pending the exact
-            // adjudicator"), so its 26..29 tier stays in the freeze DOCUMENT.
+            // adjudicator"), so its post-fix tier stays in the freeze DOCUMENT
+            // — ordinals included.
             regression: None,
             regression_control: None,
             canon: "rules-derivable (rulebook p.9's final round); no canon ruling needed — \
