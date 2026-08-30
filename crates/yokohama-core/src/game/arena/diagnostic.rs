@@ -41,6 +41,7 @@ use crate::game::metrics::{trigger_name, wilson_95, TriggerTally, WilsonInterval
 use crate::game::record::{replay_from, state_at, GameRecord, RecordedEvent};
 use crate::game::rules::Rules;
 use crate::game::seeds::{SeedSchedule, WorldSeed};
+use crate::game::semantics::state_digest;
 use crate::types::{GameState, Move, PlayerId, TurnPhase};
 
 /// The label [`render_cap_rate`] leads with — registered VERBATIM in the
@@ -369,11 +370,49 @@ pub fn render_world(
         }
     };
     let (applied, folded) = annotate(record, rules)?;
-    // On a cap the driver's own state is authoritative and the fold is a
-    // cross-check (`the_diagnostic_driver_surfaces_the_partial_record_and_state_on_a_cap`
-    // pins that they agree); on a completed game the fold IS the terminal state,
-    // which `ArenaGameStats` does not carry.
-    let end_state = capped_state.unwrap_or(&folded);
+    // THE CROSS-CHECK, at render time and not by reference to a test (review
+    // S2). Every tail line's turn/seat/phase comes from `folded`'s trajectory
+    // while the end-state block comes from the driver on a cap; if the two ever
+    // disagreed this report would annotate one game and summarize another,
+    // silently. Both digests are in hand here, so it costs one comparison.
+    let folded_digest = state_digest(&folded);
+    let end_state = match capped_state {
+        // On a cap the DRIVER's state is authoritative — it is the state the
+        // guard tripped in — and the fold must reproduce it.
+        Some(state) => {
+            let driver_digest = state_digest(state);
+            if folded_digest != driver_digest {
+                return Err(ArenaError::Driver(format!(
+                    "the record does not fold to the state the driver capped in: fold digest \
+                     {folded_digest} vs driver digest {driver_digest} (world {:#018x}, \
+                     arrangement {}, {} applied moves) — the tail and the end state would \
+                     describe different games",
+                    run.seed.0,
+                    run.arrangement,
+                    applied.len(),
+                )));
+            }
+            state
+        }
+        // On a completed game the fold IS the end state (`ArenaGameStats` does
+        // not carry one), and the record already carries the digest the driver
+        // stamped for it.
+        None => {
+            if let Some(stamped) = &record.terminal_digest {
+                if &folded_digest != stamped {
+                    return Err(ArenaError::Driver(format!(
+                        "the record does not fold to its own stamped terminal digest: fold \
+                         digest {folded_digest} vs recorded digest {stamped} (world {:#018x}, \
+                         arrangement {}, {} applied moves)",
+                        run.seed.0,
+                        run.arrangement,
+                        applied.len(),
+                    )));
+                }
+            }
+            &folded
+        }
+    };
 
     let mut lines = Vec::new();
     lines.push(format!(
