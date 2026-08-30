@@ -30,8 +30,18 @@
 //! through [`run_world`] rather than re-deriving the loop, so the two surfaces
 //! cannot disagree about who sat where.
 
-use super::NamedIdentity;
-use crate::types::Move;
+use super::stats::X_SLOT;
+use super::{
+    agent_stream_seed, require_supported_player_count, run_arena_game_diagnostic_capped, unit_for,
+    ArenaAgent, ArenaError, ArenaGameStats, CellSpec, Contestant, DiagnosticGame,
+    DiagnosticOutcome, NamedIdentity, SeedScheduleKind,
+};
+use crate::game::agent::HONEST_MAX_TURNS;
+use crate::game::metrics::{trigger_name, wilson_95, TriggerTally, WilsonInterval};
+use crate::game::record::{replay_from, state_at, GameRecord, RecordedEvent};
+use crate::game::rules::Rules;
+use crate::game::seeds::{SeedSchedule, WorldSeed};
+use crate::types::{GameState, Move, PlayerId, TurnPhase};
 
 /// The label [`render_cap_rate`] leads with — registered VERBATIM in the
 /// step-11 diagnosis-wave ledger row before this code existed, and pinned here
@@ -180,6 +190,518 @@ fn blurb(arm: NamedIdentity) -> &'static str {
              table; the wire name is proposed, not spec-registered"
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Surface (A): one world, seated as a cell seats it
+// ---------------------------------------------------------------------------
+
+/// Which world, under which two contestants, in which arrangement.
+///
+/// Shaped like [`CellSpec`] on purpose: a cell is this plus a unit count and a
+/// schedule, and the seating rule below is the cell's own.
+#[derive(Clone, Debug)]
+pub struct WorldSpec {
+    /// The contestant under test — [`X_SLOT`]'s occupant, whichever seat that is
+    /// in this arrangement.
+    pub x: Contestant,
+    pub y: Contestant,
+    /// A WORLD seed, not a master: no schedule is drawn from it.
+    pub seed: WorldSeed,
+    pub players: u8,
+    /// Index into [`unit_for`]'s seatings — at 2P, 0 is `[X, Y]` and 1 is
+    /// `[Y, X]`.
+    pub arrangement: u8,
+}
+
+/// One world played under the honest chain, plus everything a reader needs to
+/// know which game it was.
+#[derive(Debug)]
+pub struct WorldRun {
+    pub seed: WorldSeed,
+    pub players: u8,
+    pub arrangement: u8,
+    /// The seat contestant X occupied in this arrangement.
+    pub x_seat: PlayerId,
+    /// [`Contestant::echo`] for each side — the runner's own echo composer, so
+    /// the header and a cell's report echo cannot spell an identity two ways.
+    pub x_echo: String,
+    pub y_echo: String,
+    /// The turn guard this run played under. Recorded so the outcome line can
+    /// say whether a cap was the SHIPPED guard or a diagnostic value.
+    pub turn_cap: u32,
+    pub game: DiagnosticGame,
+}
+
+/// Play ONE world under [`HONEST_MAX_TURNS`], seated exactly as a cell seats it.
+pub fn run_world(
+    spec: &WorldSpec,
+    rules: &Rules,
+    invariants: bool,
+) -> Result<WorldRun, ArenaError> {
+    run_world_capped(spec, rules, invariants, HONEST_MAX_TURNS)
+}
+
+/// [`run_world`] with the turn guard as a parameter — for tests, which must
+/// reach a capped game in milliseconds.
+pub fn run_world_capped(
+    spec: &WorldSpec,
+    rules: &Rules,
+    invariants: bool,
+    max_turns: u32,
+) -> Result<WorldRun, ArenaError> {
+    require_supported_player_count(spec.players)?;
+    let unit = unit_for(spec.players, spec.seed);
+    let seating = unit
+        .seatings
+        .get(spec.arrangement as usize)
+        .ok_or_else(|| {
+            ArenaError::Driver(format!(
+                "arrangement {} does not exist at {}P (the unit has {})",
+                spec.arrangement,
+                spec.players,
+                unit.seatings.len(),
+            ))
+        })?
+        .clone();
+    let x_seat = seating
+        .iter()
+        .position(|&slot| slot == X_SLOT)
+        .map(|i| PlayerId(i as u8))
+        .ok_or_else(|| {
+            ArenaError::Driver(format!(
+                "seating {seating:?} has no slot {} to seat contestant X in",
+                X_SLOT.0,
+            ))
+        })?;
+
+    // THE CELL'S OWN FACTORY, minus the explanation handles and the stopwatch a
+    // cell folds (neither changes what a seat plays). Every contestant, rung or
+    // evaluator, is built through `Contestant::build` on
+    // `agent_stream_seed(seed, seat, slot)` — the single keying rule.
+    let (x, y) = (spec.x, spec.y);
+    let seed = spec.seed;
+    let mut make_agent = |seat: PlayerId, _players: u8| -> Box<dyn ArenaAgent> {
+        let slot = seating[seat.0 as usize];
+        let contestant = if slot == X_SLOT { x } else { y };
+        let (agent, _handle) = contestant.build(rules, agent_stream_seed(seed, seat, slot));
+        agent
+    };
+    let game = run_arena_game_diagnostic_capped(
+        seed,
+        spec.players,
+        rules,
+        &mut make_agent,
+        invariants,
+        max_turns,
+    )?;
+
+    Ok(WorldRun {
+        seed,
+        players: spec.players,
+        arrangement: spec.arrangement,
+        x_seat,
+        x_echo: x.echo(),
+        y_echo: y.echo(),
+        turn_cap: max_turns,
+        game,
+    })
+}
+
+/// One applied move with the context it was played in.
+///
+/// The MOVE comes from the driver's own record; `turn`, `seat` and `phase` are
+/// derived by FOLDING that record (see [`annotate`]) — an exact re-derivation of
+/// context, never of the moves. The record carries moves, not movers or phases,
+/// and the arena's history-free `GameState` keeps no log, so there is nowhere
+/// else for the annotation to come from.
+#[derive(Clone, Debug)]
+pub struct AppliedMove {
+    pub turn: u32,
+    pub seat: PlayerId,
+    pub phase: TurnPhase,
+    pub mv: Move,
+}
+
+/// Fold a record one event at a time, recording the context BEFORE each event,
+/// and hand back the state it folds to.
+///
+/// O(events): one `apply` per event, the same work the driver already did once.
+/// A capped 10,001-turn game is tens of thousands of events, which is a second
+/// of a one-world diagnostic and is why this is not done per event index.
+fn annotate(
+    record: &GameRecord,
+    rules: &Rules,
+) -> Result<(Vec<AppliedMove>, GameState), ArenaError> {
+    let replay_error =
+        |e: crate::game::record::ReplayError| ArenaError::Driver(format!("replay: {}", e.message));
+    let mut state = state_at(record, 0, rules).map_err(replay_error)?;
+    let mut applied = Vec::with_capacity(record.events.len());
+    for event in &record.events {
+        if let RecordedEvent::Move(mv) = event {
+            applied.push(AppliedMove {
+                turn: state.turn_number,
+                seat: state.current_player,
+                phase: state.turn_phase,
+                mv: mv.clone(),
+            });
+        }
+        state = replay_from(&state, std::slice::from_ref(event), rules).map_err(replay_error)?;
+    }
+    Ok((applied, state))
+}
+
+/// Render one [`WorldRun`] as the lines the runner prints.
+///
+/// `tail_turns` is a TURN window, not an event count: the wave reads a loop, and
+/// a loop is described by turns.
+pub fn render_world(
+    run: &WorldRun,
+    tail_turns: u32,
+    rules: &Rules,
+) -> Result<Vec<String>, ArenaError> {
+    let (record, capped_state, turns, moves_by_seat) = match &run.game.outcome {
+        DiagnosticOutcome::Terminated(stats) => {
+            (&stats.record, None, stats.turns, &stats.moves_by_seat)
+        }
+        DiagnosticOutcome::Capped { turns, record, state, moves_by_seat } => {
+            (&**record, Some(&**state), *turns, moves_by_seat)
+        }
+    };
+    let (applied, folded) = annotate(record, rules)?;
+    // On a cap the driver's own state is authoritative and the fold is a
+    // cross-check (`the_diagnostic_driver_surfaces_the_partial_record_and_state_on_a_cap`
+    // pins that they agree); on a completed game the fold IS the terminal state,
+    // which `ArenaGameStats` does not carry.
+    let end_state = capped_state.unwrap_or(&folded);
+
+    let mut lines = Vec::new();
+    lines.push(format!(
+        "arrangement={} world={:#018x} players={} X=seat{} Y={}",
+        run.arrangement,
+        run.seed.0,
+        run.players,
+        run.x_seat.0,
+        (0..run.players)
+            .filter(|&s| s != run.x_seat.0)
+            .map(|s| format!("seat{s}"))
+            .collect::<Vec<_>>()
+            .join(","),
+    ));
+    lines.push(format!("  X = {}", run.x_echo));
+    lines.push(format!("  Y = {}", run.y_echo));
+
+    match &run.game.outcome {
+        DiagnosticOutcome::Terminated(stats) => {
+            lines.push(format!(
+                "OUTCOME: TERMINATED trigger={} turns={turns}",
+                stats.trigger.as_ref().map_or("none", trigger_name),
+            ));
+            for standing in &stats.result.standings {
+                lines.push(format!(
+                    "  rank {} seat{} vp={}{}",
+                    standing.rank,
+                    standing.player.0,
+                    standing.breakdown.total,
+                    if standing.player == stats.result.winner { "  (winner)" } else { "" },
+                ));
+            }
+        }
+        DiagnosticOutcome::Capped { .. } => lines.push(format!(
+            "OUTCOME: CAPPED at turn {turns} (turn cap {}{})",
+            run.turn_cap,
+            if run.turn_cap == HONEST_MAX_TURNS {
+                format!(" = HONEST_MAX_TURNS={HONEST_MAX_TURNS}")
+            } else {
+                format!(", a DIAGNOSTIC value; HONEST_MAX_TURNS={HONEST_MAX_TURNS}")
+            },
+        )),
+    }
+
+    lines.push(format!(
+        "moves applied: total={} · {}",
+        moves_by_seat.iter().sum::<u64>(),
+        moves_by_seat
+            .iter()
+            .enumerate()
+            .map(|(seat, n)| format!("seat{seat}={n}"))
+            .collect::<Vec<_>>()
+            .join(" · "),
+    ));
+
+    let first_tail_turn = turns.saturating_sub(tail_turns.saturating_sub(1));
+    let tail: Vec<&AppliedMove> = applied.iter().filter(|a| a.turn >= first_tail_turn).collect();
+    lines.push(format!(
+        "tail (turns {first_tail_turn}..={turns}, {} of {} applied moves):",
+        tail.len(),
+        applied.len(),
+    ));
+    for step in &tail {
+        lines.push(format!(
+            "  turn={} seat={} phase={:?} move={:?}",
+            step.turn, step.seat.0, step.phase, step.mv,
+        ));
+    }
+
+    let sequence: Vec<Move> = applied.iter().map(|a| a.mv.clone()).collect();
+    lines.push(match move_period(&sequence) {
+        Some(p) => format!(
+            "period={p} (the last {} applied moves are {p}-periodic)",
+            PERIOD_REPETITIONS * p,
+        ),
+        None => format!(
+            "period=none (no p in 1..={MAX_DETECTED_PERIOD} repeats {PERIOD_REPETITIONS}x)",
+        ),
+    });
+
+    lines.extend(render_end_state(end_state));
+    Ok(lines)
+}
+
+/// The compact end-state summary — the state the game stopped in, terminal or
+/// not.
+fn render_end_state(state: &GameState) -> Vec<String> {
+    let mut lines = vec![
+        "end state:".to_string(),
+        format!(
+            "  current_player=seat{} turn_phase={:?} turn={}",
+            state.current_player.0, state.turn_phase, state.turn_number,
+        ),
+    ];
+    for player in &state.players {
+        let a = &player.assistants;
+        lines.push(format!(
+            "  seat{}: assistants hand={} warehouse={} board={} (ach {}, church {}, customs {}) \
+             · money={} · orders held={} · vp={}",
+            player.id.0,
+            a.in_hand,
+            a.in_warehouse,
+            a.on_board.values().map(|&n| u32::from(n)).sum::<u32>(),
+            a.on_achievements,
+            a.on_church,
+            a.on_customs,
+            player.money,
+            player.order_cards_in_hand.len(),
+            player.victory_points,
+        ));
+    }
+    lines.push(format!(
+        "  order deck={} · tech deck={} · orders removed={}",
+        state.order_deck.len(),
+        state.tech_deck.len(),
+        state.orders_removed.len(),
+    ));
+    lines.push(format!("  church: {}", render_track(state.church_track.slots.iter().enumerate().map(
+        |(i, slot)| (crate::types::ChurchTrack::index_to_faith(i), slot.map(|s| s.player)),
+    ))));
+    lines.push(format!("  customs: {}", render_track(state.customs_track.slots.iter().enumerate().map(
+        |(i, slot)| (crate::types::CustomsTrack::index_to_space(i), slot.map(|s| s.player)),
+    ))));
+    lines
+}
+
+/// One track's occupancy: every occupied space and who holds it. The 2P dummy is
+/// NAMED as the dummy — it is a real scoring occupant, and reading it as a seat
+/// index would misread the board.
+fn render_track(spaces: impl Iterator<Item = (u8, Option<PlayerId>)>) -> String {
+    let occupied: Vec<String> = spaces
+        .filter_map(|(label, occupant)| {
+            occupant.map(|p| {
+                if p == PlayerId::DUMMY {
+                    format!("{label}=DUMMY")
+                } else {
+                    format!("{label}=seat{}", p.0)
+                }
+            })
+        })
+        .collect();
+    if occupied.is_empty() {
+        "empty".to_string()
+    } else {
+        occupied.join(" · ")
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Surface (B): the cap-rate instrument
+// ---------------------------------------------------------------------------
+
+/// One capped game, named so it reproduces under [`run_world`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CappedWorld {
+    pub seed: WorldSeed,
+    pub arrangement: u8,
+    pub turns: u32,
+}
+
+/// What a cap-rate cell measured.
+///
+/// **There is deliberately no field here from which a strength figure could be
+/// read** — no win count, no unit share, no margin. The type is the first place
+/// the wave's labelling rule is enforced; [`render_cap_rate`] is the second.
+#[derive(Clone, Debug)]
+pub struct CapRateReport {
+    pub name: String,
+    pub players: u8,
+    pub units: u32,
+    /// The master the schedule descended from — recorded so the run reproduces.
+    pub master: u64,
+    /// Games PLAYED: `units × players` at every supported count.
+    pub games: u64,
+    /// Every capped game, in schedule order.
+    pub capped: Vec<CappedWorld>,
+    /// End triggers over the COMPLETED games alone — `TriggerTally::observe`'s
+    /// own rule (a game that did not complete is not an observation of the
+    /// trigger distribution).
+    pub completed: TriggerTally,
+    /// Mean turns over completed games; `NaN` when none completed, which is the
+    /// honest answer and not a zero.
+    pub completed_turns_mean: f64,
+    pub completed_turns_max: u32,
+}
+
+impl CapRateReport {
+    pub fn cap_count(&self) -> u64 {
+        self.capped.len() as u64
+    }
+
+    /// The realized cap rate over the games PLAYED (capped games included in the
+    /// denominator — they are the event being counted).
+    pub fn rate(&self) -> f64 {
+        if self.games == 0 {
+            f64::NAN
+        } else {
+            self.cap_count() as f64 / self.games as f64
+        }
+    }
+
+    /// The 95% Wilson interval on that rate, through the crate's ONE Wilson
+    /// implementation (`metrics::wilson_95`) — never a second one.
+    pub fn interval(&self) -> WilsonInterval {
+        wilson_95(self.cap_count(), self.games)
+    }
+}
+
+/// Play `spec.units` worlds as a cell would and COUNT the capped games.
+pub fn run_cap_rate(
+    spec: &CellSpec,
+    rules: &Rules,
+    invariants: bool,
+) -> Result<CapRateReport, ArenaError> {
+    run_cap_rate_capped(spec, rules, invariants, HONEST_MAX_TURNS)
+}
+
+/// [`run_cap_rate`] with the turn guard as a parameter — a test forces caps in
+/// milliseconds rather than playing 10,000 turns six times.
+pub fn run_cap_rate_capped(
+    spec: &CellSpec,
+    rules: &Rules,
+    invariants: bool,
+    max_turns: u32,
+) -> Result<CapRateReport, ArenaError> {
+    require_supported_player_count(spec.players)?;
+    if spec.units == 0 {
+        return Err(ArenaError::Driver(format!(
+            "cap-rate cell {:?} asked for 0 units: N is fixed before the run, and 0 is not a design",
+            spec.name,
+        )));
+    }
+    let (mut schedule, master) = match spec.master {
+        SeedScheduleKind::Diagnostic(master) => (SeedSchedule::diagnostic(master), master),
+        SeedScheduleKind::OsEntropy => SeedSchedule::from_os_entropy(),
+    };
+
+    let mut games = 0u64;
+    let mut capped: Vec<CappedWorld> = Vec::new();
+    let mut completed = TriggerTally::default();
+    let mut completed_turns_sum = 0u64;
+    let mut completed_turns_max = 0u32;
+    let mut completed_games = 0u64;
+
+    for _ in 0..spec.units {
+        let seed = schedule.next_world();
+        for arrangement in 0..spec.players {
+            // Through `run_world_capped`, not a second loop: the two surfaces
+            // must not disagree about who sat where, and a capped world named
+            // here has to reproduce there.
+            let run = run_world_capped(
+                &WorldSpec { x: spec.x, y: spec.y, seed, players: spec.players, arrangement },
+                rules,
+                invariants,
+                max_turns,
+            )?;
+            games += 1;
+            match run.game.outcome {
+                DiagnosticOutcome::Terminated(stats) => {
+                    let stats: ArenaGameStats = *stats;
+                    completed.observe(stats.trigger.as_ref());
+                    completed_games += 1;
+                    completed_turns_sum += u64::from(stats.turns);
+                    completed_turns_max = completed_turns_max.max(stats.turns);
+                }
+                DiagnosticOutcome::Capped { turns, .. } => {
+                    capped.push(CappedWorld { seed, arrangement, turns })
+                }
+            }
+        }
+    }
+
+    Ok(CapRateReport {
+        name: spec.name.clone(),
+        players: spec.players,
+        units: spec.units,
+        master,
+        games,
+        capped,
+        completed,
+        completed_turns_mean: if completed_games == 0 {
+            f64::NAN
+        } else {
+            completed_turns_sum as f64 / completed_games as f64
+        },
+        completed_turns_max,
+    })
+}
+
+/// Render a [`CapRateReport`] as the lines the runner prints, LABEL FIRST.
+///
+/// The end-trigger histogram is deliberately NOT here: `examples/arena` already
+/// owns one printer for it (`print_triggers`), and a second spelling of a
+/// histogram format is a second thing to drift.
+pub fn render_cap_rate(report: &CapRateReport) -> Vec<String> {
+    let interval = report.interval();
+    let mut lines = vec![
+        CAP_RATE_LABEL.to_string(),
+        format!(
+            "games={} capped={} rate={:.6} wilson95=[{:.6}, {:.6}]",
+            report.games,
+            report.cap_count(),
+            report.rate(),
+            interval.lo,
+            interval.hi,
+        ),
+    ];
+    if report.capped.is_empty() {
+        lines.push("capped worlds: none".to_string());
+    } else {
+        lines.push(
+            "capped worlds (each reproduces: arena world <x> <y> <seed> --arrangement <arr>):"
+                .to_string(),
+        );
+        for capped in &report.capped {
+            lines.push(format!(
+                "  seed={:#018x} arrangement={} turns={}",
+                capped.seed.0, capped.arrangement, capped.turns,
+            ));
+        }
+    }
+    lines.push(format!(
+        "completed games={} · turns mean={:.1} max={}",
+        report.completed.games(),
+        report.completed_turns_mean,
+        report.completed_turns_max,
+    ));
+    lines
 }
 
 #[cfg(test)]

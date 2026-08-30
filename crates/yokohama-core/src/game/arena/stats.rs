@@ -91,7 +91,12 @@ pub(crate) const SALT_BOOTSTRAP: u64 = 0xA3E1_B007_0000_0004;
 /// The contestant under test. Every other slot in the unit is Y — the
 /// single-champion shape [`unit_for`]'s rotations are built for, and the reason
 /// the null value is `1/players` rather than 0.5.
-const X_SLOT: Slot = Slot(0);
+///
+/// `pub(crate)` since the V4 step-11 diagnosis wave: `arena::diagnostic` seats
+/// one world EXACTLY as a cell seats it, and re-typing `Slot(0)` there would be
+/// a second spelling of the rule deciding which contestant is X — free to drift
+/// from this one, and a drift no test would name.
+pub(crate) const X_SLOT: Slot = Slot(0);
 
 /// Bootstrap replicates for the primary interval (spec §4: B = 10,000).
 pub const BOOTSTRAP_REPLICATES: u32 = 10_000;
