@@ -19828,8 +19828,12 @@ fn run_probe_world_capped(
     rules: &Rules,
     max_turns: u32,
 ) -> Result<WorldRun, String> {
-    let x_table = read.x.table();
-    let y_table = read.y.table();
+    // PLACEHOLDER (review M1): the ARM's table, with the declared clauses
+    // dropped — the RED commit's own `fn table` body, restored here so the new
+    // behavioural cell has something to discriminate against. Every other cell
+    // passes under it, which is exactly the gap M1 names.
+    let x_table = read.x.arm.table();
+    let y_table = read.y.arm.table();
     let factory = |table: WeightTable| {
         move |rules: &Rules, agent_seed: u64| -> Box<dyn ArenaAgent> {
             Box::new(lookahead_probe_agent(
@@ -33627,5 +33631,74 @@ mod tests {
         ])
         .expect_err("--arrangement 2 does not exist at 2P");
         assert!(err.contains("arrangement"), "{err}");
+    }
+
+    /// **W-D2 review M1 — the wire from the mutated TABLE to the AGENTS.**
+    ///
+    /// W-D2's seam made the echo and the agent two independent inputs
+    /// (`WorldSide { echo, build }`), where `run_world_capped` had derived both
+    /// from ONE `Contestant` and so could not let them disagree. Nothing else in
+    /// this file observes a mutant's PLAY: the parse cells read
+    /// `WorldSideSpec::table()` directly, the byte-identity cell uses UNMUTATED
+    /// sides, and the digest cell reads `identity()`. Substituting
+    /// `read.x.arm.table()` in `run_probe_world_capped` — dropping every clause
+    /// on the way to the agents — leaves all of them green while the header, the
+    /// seat echo and the digest all say MUTANT. Under that regression R-D1-b arm
+    /// (ii) would BE arm (i), which is the one corruption this surface exists to
+    /// make impossible.
+    ///
+    /// The clause is `victory_points=-1000/-1000` rather than the registered
+    /// `assistants_in_hand_excess=5/2`: the registered spelling is measurably
+    /// VACUOUS at `TEST_TURN_CAP` (three turns is too early for a hand-excess
+    /// term to change an argmax), so a cell written with it would assert nothing.
+    /// A pathological VP weight moves the very first decisions, which is what a
+    /// three-turn window can see.
+    ///
+    /// **The two SEAT-ECHO lines are excluded from the comparison, and that
+    /// exclusion is the cell.** `WorldSide::echo` is derived from the same
+    /// `WorldSideSpec` the factory is, so a mutant's `X = mutant-of-…{weights=…}`
+    /// line differs whether or not the table ever reached an agent — comparing
+    /// the FULL render therefore passes under M1's own regression (measured: it
+    /// does). What has to differ is the PLAY, so the comparison runs over
+    /// everything else the renderer prints: the outcome, the per-seat move
+    /// totals, the tail and the end state.
+    #[test]
+    fn a_declared_clause_reaches_the_agents_and_changes_the_play() {
+        // `render_world`'s lines minus the two seat echoes — see the doc above.
+        fn play_only(lines: Vec<String>) -> Vec<String> {
+            lines
+                .into_iter()
+                .filter(|line| !line.starts_with("  X = ") && !line.starts_with("  Y = "))
+                .collect()
+        }
+
+        let rules = Rules::standard();
+        let base = WorldSideSpec::parse("v4-step9-draft1").expect("base");
+        let mutant = WorldSideSpec::parse("v4-step9-draft1:set=victory_points=-1000/-1000")
+            .expect("mutant");
+        // The fixture is only meaningful if the clause moves the numbers at all.
+        assert_ne!(mutant.identity(), base.identity(), "the clause must move the digest");
+
+        for arrangement in 0..2u8 {
+            let plain =
+                run_probe_world_capped(&test_read(&base, &base), arrangement, &rules, TEST_TURN_CAP)
+                    .expect("the unmutated read runs");
+            let mutated = run_probe_world_capped(
+                &test_read(&mutant, &mutant),
+                arrangement,
+                &rules,
+                TEST_TURN_CAP,
+            )
+            .expect("the mutated read runs");
+            let want = play_only(render_world(&plain, 4, &rules).expect("plain render"));
+            let got = play_only(render_world(&mutated, 4, &rules).expect("mutant render"));
+            // The filter must not have eaten the report.
+            assert!(want.len() > 4, "the play-only projection kept too little: {want:#?}");
+            assert_ne!(
+                got, want,
+                "arrangement {arrangement}: a declared clause must reach the AGENTS — identical \
+                 play means the mutant table never left the header",
+            );
+        }
     }
 }
