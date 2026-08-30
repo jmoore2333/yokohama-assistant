@@ -2032,6 +2032,44 @@ fn placement_fee(root: &GameState, mover: PlayerId, mv: &Move) -> Option<u32> {
     }
 }
 
+/// **THE EXACT-MIRROR CROSS-CHECK, as a function of four numbers.**
+///
+/// The price and the applied successor's two money deltas must all be the same
+/// number: the mover's purse falls by the fee and the opponent's rises by it.
+/// A disagreement in EITHER direction is [`FeeFlowMiss::PricingMismatch`], an
+/// instrument failure the step-10 table routes to precedence (0).
+///
+/// # Why this is a separate function
+///
+/// **The opponent half is undiscriminated by every position there is**, and
+/// that is a property of the engine rather than of the cells: while
+/// `apply_placement` charges `calculate_placement_cost` and credits
+/// `credit_placement_fees` over the same slice, the two purses move together
+/// at every root, so no constructed fixture and no organic sweep can tell a
+/// two-sided check from a payer-only one. A conjunct nothing can falsify is a
+/// conjunct that can be deleted with the suite still green — which is exactly
+/// what the W1 review demonstrated.
+///
+/// Pulling the comparison out of the loop makes the four combinations
+/// reachable FROM DATA, which is the `select_fee_flow_pair` precedent applied
+/// to an arithmetic check instead of a selection rule. The half that matters is
+/// the opponent's: under the drift the doc above names — a fee routed to the
+/// bank rather than to the President's owner — the payer's purse still falls by
+/// the price and only this conjunct fires, and it is the step-10 raw arm's E1
+/// gate (opponent-E1 differs by EXACTLY the exported fee delta) that would
+/// otherwise be riding a number the engine never credited.
+fn cross_check_pricing(
+    candidate: &Move,
+    priced: u32,
+    payer_delta: i64,
+    opponent_delta: i64,
+) -> Result<(), FeeFlowMiss> {
+    // W1 fix-wave RED: the deliberate placeholder — the cell below asks for the
+    // four combinations; the GREEN commit lands the comparison.
+    let _ = (candidate, priced, payer_delta, opponent_delta);
+    Ok(())
+}
+
 /// Every placement the turn start offers, with the opponent fee flow it prices
 /// and the applied cross-check already paid.
 ///
@@ -2088,14 +2126,7 @@ pub fn classify_fee_flow_candidates(
             i64::from(root.player(mover).money) - i64::from(after.player(mover).money);
         let opponent_delta =
             i64::from(after.player(opponent).money) - i64::from(root.player(opponent).money);
-        if payer_delta != i64::from(fee) || opponent_delta != i64::from(fee) {
-            return Err(FeeFlowMiss::PricingMismatch {
-                candidate: format!("{mv:?}"),
-                priced: fee,
-                payer_delta,
-                opponent_delta,
-            });
-        }
+        cross_check_pricing(mv, fee, payer_delta, opponent_delta)?;
         candidates.push(FeeFlowCandidate { mv: mv.clone(), total, areas, fee });
     }
 
@@ -13173,6 +13204,45 @@ mod tests {
             Err(FeeFlowMiss::NoFreeSide),
             "the empty placement is not the zero-fee side of anything"
         );
+    }
+
+    /// **Both halves of the exact-mirror cross-check, from data.**
+    ///
+    /// The check compares three numbers that must agree — the price, the
+    /// mover's fall, the opponent's rise — and at every position the engine can
+    /// produce, the two purses move TOGETHER, so no fixture and no organic
+    /// sweep discriminates the opponent conjunct: delete it and the whole
+    /// driven suite stays green. That is what this cell exists to stop, and it
+    /// is why the comparison is a function of four numbers rather than four
+    /// lines inside a loop.
+    ///
+    /// The decisive row is the third: the price is charged to the payer and the
+    /// opponent receives NOTHING — a fee routed to the bank, the drift
+    /// [`cross_check_pricing`]'s own doc names. Under a payer-only check that
+    /// row passes, and the step-10 raw arm would gate opponent-E1 against a
+    /// number the engine never credited.
+    #[test]
+    fn the_pricing_cross_check_fires_on_either_purse_alone() {
+        let mv = Move::PlaceThreeAreas { placements: vec![AreaId(3)] };
+        let named = format!("{mv:?}");
+        let mismatch = |priced, payer_delta, opponent_delta| {
+            Err(FeeFlowMiss::PricingMismatch {
+                candidate: named.clone(),
+                priced,
+                payer_delta,
+                opponent_delta,
+            })
+        };
+
+        assert_eq!(cross_check_pricing(&mv, 1, 1, 1), Ok(()), "all three agree");
+        assert_eq!(cross_check_pricing(&mv, 1, 0, 1), mismatch(1, 0, 1), "the payer half");
+        assert_eq!(cross_check_pricing(&mv, 1, 1, 0), mismatch(1, 1, 0), "the opponent half");
+        assert_eq!(cross_check_pricing(&mv, 1, 0, 0), mismatch(1, 0, 0), "both halves");
+
+        // The mirror direction at price zero: a credit nobody was charged for
+        // is as much a broken mirror as a charge nobody was credited.
+        assert_eq!(cross_check_pricing(&mv, 0, 0, 0), Ok(()));
+        assert_eq!(cross_check_pricing(&mv, 0, 0, 1), mismatch(0, 0, 1));
     }
 
     // -----------------------------------------------------------------------
