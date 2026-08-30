@@ -4316,6 +4316,49 @@ mod tests {
         assert_eq!(report.x_applied_moves, x_applied_moves, "X's applied moves");
     }
 
+    /// **Pin (v)'s library half.** The two lines a counting cell prints are
+    /// composed HERE and lib-tested, so `examples/arena` stays print-only glue
+    /// — and `void_summary` returns `None` in refuse mode, which is what makes
+    /// an unflagged run print byte-for-byte what it always printed.
+    #[test]
+    fn the_render_helpers_are_none_in_refuse_mode_and_exact_in_counting_mode() {
+        const CEILING: u32 = 7;
+        let rules = Rules::standard();
+
+        let refused =
+            run_cell(&w_a1_spec("w-a1-render-refuse", 1), &rules).expect("a rung cell completes");
+        assert_eq!(refused.void_summary(), None, "refuse mode prints no void line at all");
+        assert!(refused.capped_lines().is_empty());
+
+        let spec = w_a1_spec("w-a1-render", W_A1_MIXED_UNITS);
+        let (report, _wall) = run_cell_loop(
+            &spec,
+            &rules,
+            true,
+            CapPolicy::Count { ceiling: CEILING },
+            W_A1_MIXED_MAX_TURNS,
+            &mut |_stats, _arr| Ok(()),
+        )
+        .expect("under its ceiling the cell completes");
+
+        assert_eq!(
+            report.void_summary(),
+            Some("units scheduled=6 · void=2 · read=4 · capped games=2 (ceiling 7)".to_string()),
+        );
+
+        let lines = report.capped_lines();
+        assert_eq!(lines.len(), report.capped.len(), "ONE line per capped game");
+        for (line, game) in lines.iter().zip(&report.capped) {
+            assert_eq!(
+                *line,
+                format!(
+                    "capped: arena world <x> <y> {:#018x} --arrangement {} · turns={}",
+                    game.seed.0, game.arrangement, game.turns,
+                ),
+            );
+        }
+    }
+
     /// **Pin (iv), the ceiling.** The (c+1)-th capped game refuses the cell AT
     /// ONCE — not at the schedule's end — with a typed arm naming the ceiling
     /// and every capped game so far, and the run is INVALID (freeze doc §9.6
