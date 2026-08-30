@@ -19774,8 +19774,27 @@ impl WorldSideSpec {
             self.display_name(),
             self.mutations_render(),
             self.identity(),
-            if self.is_mutant() { "  MUTANT" } else { "" },
+            self.marker(),
         )
+    }
+
+    /// The `MUTANT` marker, and whether the clauses actually moved the numbers.
+    ///
+    /// A DECLARED clause always marks (that is [`is_mutant`](Self::is_mutant)'s
+    /// rule and it does not move here), but a declaration that leaves the digest
+    /// where it was says so — otherwise `MUTANT` beside a locked literal is a
+    /// line only a reader holding all three literals in their head can decode.
+    /// `v2-padded:set=assistants_in_hand_excess=5/2` is exactly that case:
+    /// `WeightTable::V2` already holds `(5, 2)`.
+    fn marker(&self) -> &'static str {
+        if !self.is_mutant() {
+            return "";
+        }
+        if self.identity() == weight_table_identity(&self.arm.table()) {
+            "  MUTANT (digest unchanged)"
+        } else {
+            "  MUTANT"
+        }
     }
 }
 
