@@ -33761,4 +33761,33 @@ mod tests {
         let plain = WorldSideSpec::parse("v2-padded").expect("plain");
         assert!(!plain.header_line("X").contains("MUTANT"), "{}", plain.header_line("X"));
     }
+
+    /// **W-D2 review N2 — the same-feature ordering rule.**
+    ///
+    /// `two_set_clauses_both_apply_in_the_order_typed` uses two DIFFERENT
+    /// features, so "a later clause on the same feature wins" had no cell at
+    /// all: it was `WeightTable::set`'s overwrite semantics inherited by
+    /// accident. Stated here as a fact of THIS grammar, so a future parse that
+    /// merged or rejected duplicates has to answer for itself.
+    ///
+    /// `mutations=` deliberately keeps printing the SUPERSEDED clause. The list
+    /// is a transcript of what was TYPED — a header that quietly dropped a
+    /// clause would let a mistyped command read as the command that ran, which
+    /// is the same failure the unknown-clause refusal exists to prevent one step
+    /// earlier. The digest beside it is the authority on what the table became,
+    /// and `marker()` says whether it moved.
+    #[test]
+    fn a_later_clause_on_the_same_feature_wins_and_the_earlier_one_still_prints() {
+        let twice = WorldSideSpec::parse("v2-padded:set=money_stock=1/2:set=money_stock=9/9")
+            .expect("two clauses on one feature parse");
+        let once = WorldSideSpec::parse("v2-padded:set=money_stock=9/9").expect("one clause");
+
+        assert_eq!(twice.table().get(Feature::MoneyStock), (9, 9), "the LATER clause wins");
+        assert_eq!(twice.table(), once.table(), "…and the superseded one leaves no trace");
+        assert_eq!(twice.identity(), once.identity());
+
+        // The transcript keeps BOTH, in argv order.
+        assert_eq!(twice.mutations_render(), "money_stock=1/2,money_stock=9/9");
+        assert!(twice.header_line("X").contains("money_stock=1/2,money_stock=9/9"));
+    }
 }
