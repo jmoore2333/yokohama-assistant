@@ -2213,6 +2213,16 @@ pub const VOID_DISPOSITION: &str =
     "extend to the next PRE-DECLARED strided ordinals (never a re-draw), or record and route as \
      under-powered";
 
+/// The disposition a REGRESSION block's VOID prints (S12 fix wave, review
+/// MUST-1). Its own sentence because [`VOID_DISPOSITION`]'s would be FALSE
+/// here: the escrow declares NO extension tier (family freeze §4 pre-declares
+/// extensions for the confirmatory blocks only), and the close doc
+/// (2026-08-30 §1.7) registers a regression VOID as non-blocking with the
+/// admitted reads recorded as exhibits — never a STOP and never an extension.
+pub const REGRESSION_VOID_DISPOSITION: &str =
+    "non-blocking for a regression re-read (no extension tier is pre-declared for escrow); the \
+     admitted reads above stay recorded as exhibits";
+
 /// R — replications per root (design §4).
 ///
 /// **STILL THE DRAFT POSTURE after the freeze wave**, which fixed ε, δ and the
@@ -3219,12 +3229,23 @@ pub fn family_verdict(
     if label == FamilyLabel::ExistenceDemonstration {
         return FamilyVerdict::GapDemonstrated { roots: admitted };
     }
-    if block == BlockKind::Confirmatory && admitted < MIN_ADMITTED_ROOTS {
+    if matches!(block, BlockKind::Confirmatory | BlockKind::Regression)
+        && admitted < MIN_ADMITTED_ROOTS
+    {
+        // The VOID rule reaches BOTH quoting blocks (S12 fix wave, review
+        // MUST-1): a pilot confirms nothing and stays exempt, but a regression
+        // block below the floor must not read a bare PASS (the §1.8-forbidden
+        // upgrade) nor a FAIL (a false owner STOP where the close doc registers
+        // VOID-with-exhibit). The disposition sentence is block-aware because
+        // only the confirmatory tier has pre-declared extension ordinals.
         return FamilyVerdict::VoidAsConfirmation {
             admitted,
             drawn,
             minimum: MIN_ADMITTED_ROOTS,
-            disposition: VOID_DISPOSITION,
+            disposition: match block {
+                BlockKind::Regression => REGRESSION_VOID_DISPOSITION,
+                _ => VOID_DISPOSITION,
+            },
         };
     }
     if admitted == 0 {
