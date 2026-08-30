@@ -57,10 +57,10 @@ use crate::actions::{
 use crate::game::apply_move::apply_move_unchecked;
 use crate::game::arena::{mix, Contestant};
 use crate::game::driven::{
-    adjudicate_root, adjudicate_root_with, drive_turn, root_table, true_margin_now, Adjudication,
-    AdjudicationError, DrivenError, DrivenOpts, NotAContestant, ReplyPolicy, RootDescriptor,
-    RootError, RootPredicate, RootSource, RootTable, RootTableError, SeatCounters, SeatSpec,
-    TOP_BAND_POINTS,
+    adjudicate_root, adjudicate_root_with, drive_turn, replication_world, root_table,
+    true_margin_now, Adjudication, AdjudicationError, CapTail, DrivenError, DrivenOpts,
+    NotAContestant, ReplyPolicy, RootDescriptor, RootError, RootPredicate, RootSource, RootTable,
+    RootTableError, SeatCounters, SeatSpec, TOP_BAND_POINTS,
 };
 use crate::game::end_game::is_game_over;
 use crate::game::invariants::check_invariants;
@@ -538,6 +538,20 @@ pub enum CannotDemonstrate {
     /// put every unstamped playout in the losing group and manufacture a
     /// dominance out of plumbing.
     Unstamped,
+    /// **A REPLICATION HIT THE HONEST TURN CAP, AND WAS COUNTED** (A-S12-1,
+    /// close doc `docs/plans/2026-08-30-phase3.5c-v4-close.md` §2.4 item 2).
+    ///
+    /// The adjudication under this policy produced NO measurement — one of its
+    /// playouts ran to `HONEST_MAX_TURNS` and the whole table went with it, on
+    /// Phase B's own rule that a skipped row reads as a position with fewer
+    /// options. Before the amendment that refused the BLOCK; now the row is
+    /// recorded here, the cap is counted against the block's ceiling, and the
+    /// frozen splitting rules run unchanged over the remaining rows.
+    ///
+    /// **It is a CANNOT and not a FAILS, and the distinction is the whole
+    /// mapping**: nothing was demonstrated, so nothing may be read as a failure
+    /// — a cap says only that the reply policies played each other into a loop.
+    CappedPlayout,
 }
 
 impl CannotDemonstrate {
@@ -552,6 +566,10 @@ impl CannotDemonstrate {
             Self::Unstamped => {
                 "the adjudication carries no turn verdicts (it was run without the turn hook)"
             }
+            // THE OWNER'S FIXED WORDING (close doc §2.4 item 2), a literal
+            // rather than a composition: a reader of the S12 report has to tell
+            // a counted cap from the four reasons that already existed.
+            Self::CappedPlayout => "a replication hit the honest turn cap; counted",
         }
     }
 }
@@ -757,9 +775,46 @@ pub fn admission(
     delta: i64,
     control: bool,
 ) -> AdmissionRead {
-    let policies = adjs
+    let slots: Vec<(ReplyPolicy, Option<&Adjudication>)> =
+        adjs.iter().map(|(policy, adj)| (*policy, Some(adj))).collect();
+    admission_over(&slots, delta, control)
+}
+
+/// [`admission`] with a slot per DECLARED policy, where `None` is a policy whose
+/// adjudication was CAPPED (A-S12-1, close doc §2.4 items 1-2).
+///
+/// **THE ARITHMETIC IS `admission`'S, UNCHANGED** — that entry point is this one
+/// with every slot measured, which is what keeps the frozen splitting rules a
+/// single spelling. What a `None` adds is one row, in MENU POSITION, reading
+/// [`CannotDemonstrate::CappedPlayout`]: no counts, no means, no comparison.
+///
+/// **Menu position is why this takes slots rather than a filtered list plus a
+/// side-table of capped names.** A caller that ran `admission` over the measured
+/// policies and spliced the capped ones back would have to re-derive where each
+/// belonged, and a report whose per-policy rows are out of menu order is a
+/// report whose columns mean something different per root.
+pub fn admission_over(
+    slots: &[(ReplyPolicy, Option<&Adjudication>)],
+    delta: i64,
+    control: bool,
+) -> AdmissionRead {
+    let policies = slots
         .iter()
         .map(|(policy, adj)| {
+            let Some(adj) = adj else {
+                // A CAPPED slot: the row exists, the measurement does not. The
+                // zeros are `mean`'s own empty-group values and are never read
+                // for a verdict — `Cannot` refuses before anything gets there.
+                return PolicyAdmission {
+                    policy: *policy,
+                    true_n: 0,
+                    false_n: 0,
+                    true_mean: 0.0,
+                    false_mean: 0.0,
+                    difference: 0.0,
+                    verdict: AdmissionVerdict::Cannot(CannotDemonstrate::CappedPlayout),
+                };
+            };
             let mut trues: Vec<i64> = Vec::new();
             let mut falses: Vec<i64> = Vec::new();
             let mut unstamped = false;
@@ -818,6 +873,142 @@ fn mean(values: &[i64]) -> f64 {
         return 0.0;
     }
     values.iter().sum::<i64>() as f64 / values.len() as f64
+}
+
+// ---------------------------------------------------------------------------
+// The COUNTED CAPPED PLAYOUT (A-S12-1, close doc §2.4)
+// ---------------------------------------------------------------------------
+
+/// How many COUNTED capped playouts ONE block tolerates before it refuses.
+///
+/// **Three, and the number is the owner's** (close doc
+/// `docs/plans/2026-08-30-phase3.5c-v4-close.md` §2.4 item 4): "three ≈ 5× D2's
+/// expected rate over a block's ~200 admission games — a block that needs more
+/// than that is a finding, not a reading". It is A-S11-1's shape at a second
+/// grain, and it is the same posture the arena's `--capped-ceiling` takes: below
+/// the ceiling a cap is EVIDENCE, above it the instrument stops.
+pub const COUNTED_CAP_CEILING: usize = 3;
+
+/// WHERE in the family harness a counted cap happened.
+///
+/// The two grains are different questions and a report must not merge them: an
+/// ADMISSION cap is two reply policies playing each other into a loop (which
+/// says nothing about the subject), and a READ cap is the SUBJECT's own turn
+/// running past the guard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CapSite {
+    /// An admission adjudication playout, under one declared reply policy.
+    Admission { policy: ReplyPolicy },
+    /// A SUBJECT read replication (§2.4 item 3).
+    Read,
+}
+
+impl CapSite {
+    /// The name a report prints in the row's policy column.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Admission { policy } => policy.as_str(),
+            Self::Read => "subject-read",
+        }
+    }
+}
+
+/// ONE counted capped playout, named so a reader can find it again.
+///
+/// The four identity fields are the close doc's own list (§2.4 item 5: "policy,
+/// ordinal, replication index, the replication seed"), and the tail is the
+/// owner's rider beside them. **Nothing gates on any of it** — the ceiling
+/// counts these, it does not read them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CappedPlayout {
+    pub site: CapSite,
+    /// The draw this happened at, in the block's own ordinal space.
+    pub ordinal: u32,
+    /// The replication index inside that root's adjudication (or read).
+    pub replication: u32,
+    /// The world the replication played in at the ADMISSION grain
+    /// ([`replication_world`]), or the decision seed it was taken at at the READ
+    /// grain ([`replication_seed`]). The two are different derivations under
+    /// different salts, and each is the number that reproduces ITS grain.
+    pub seed: u64,
+    /// The turn the guard tripped at — one past the bound.
+    pub turns: u32,
+    /// The rider's non-gating tail read (§2.4 item 5). `None` only where the
+    /// refusal carried no trajectory, which no driver in this repo produces
+    /// today.
+    pub tail: Option<CapTail>,
+}
+
+/// The per-BLOCK count of capped playouts, and the ceiling it enforces.
+///
+/// Private and threaded by `&mut` rather than returned per root, because the
+/// ceiling is a property of the BLOCK: three caps spread over three roots is
+/// the same finding as three at one, and a per-root counter would let a block
+/// pay nine of them.
+struct CapLedger {
+    ceiling: usize,
+    counted: Vec<CappedPlayout>,
+}
+
+impl CapLedger {
+    fn new(ceiling: usize) -> Self {
+        Self { ceiling, counted: Vec::new() }
+    }
+
+    /// COUNT one cap — or refuse the block, if this is the one past the ceiling.
+    ///
+    /// The refusal fires AT ONCE (the arena's A-S11-1 rule): the rest of the
+    /// block is not spent on a run whose verdict is already gone, and the
+    /// refusal carries every cap so far, the offending one included.
+    fn count(&mut self, cap: CappedPlayout) -> Result<(), FamilyRunError> {
+        self.counted.push(cap);
+        if self.counted.len() > self.ceiling {
+            return Err(FamilyRunError::CappedCeilingExceeded {
+                ceiling: self.ceiling,
+                capped: self.counted.clone(),
+            });
+        }
+        Ok(())
+    }
+
+    /// What has been counted so far. TEST-ONLY: the block run reads the ledger
+    /// exactly once, at the end, through [`into_counted`](Self::into_counted) —
+    /// but the ceiling's own cell has to observe that three caps STAND before
+    /// the fourth refuses, and that is a mid-ledger read no caller needs.
+    #[cfg(test)]
+    fn counted(&self) -> &[CappedPlayout] {
+        &self.counted
+    }
+
+    fn into_counted(self) -> Vec<CappedPlayout> {
+        self.counted
+    }
+}
+
+/// The counted-cap record a refused ADMISSION yields — or `None` when the
+/// refusal was not a cap at all.
+///
+/// **Typed all the way down, never a string match**: the cap arrives as
+/// [`AdjudicationError::Playout`] wrapping [`DrivenError::TurnCapReached`], and
+/// every other refusal shape falls through to the block's own hard error. A
+/// harness that recognised its caps by their message would silently start
+/// counting a different failure the day the message moved.
+fn capped_adjudication(
+    error: &AdjudicationError,
+    site: CapSite,
+    ordinal: u32,
+    master: WorldSeed,
+) -> Option<CappedPlayout> {
+    let AdjudicationError::Playout { replication, error, .. } = error else { return None };
+    let DrivenError::TurnCapReached { turns, tail } = &**error else { return None };
+    Some(CappedPlayout {
+        site,
+        ordinal,
+        replication: *replication,
+        seed: replication_world(master, *replication).0,
+        turns: *turns,
+        tail: tail.as_deref().cloned(),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -897,6 +1088,35 @@ pub struct ReplicationRead {
     /// mid-turn cap hit must reach D7's step-one filter). [`SeatCounters::NONE`]
     /// at decision grain, where the table's own `SearchStats` is the account.
     pub counters: SeatCounters,
+}
+
+/// A read replication VOIDED by the honest turn cap (A-S12-1, close doc §2.4
+/// item 3).
+///
+/// **VOID, not a miss and not a refusal.** The subject's turn ran past
+/// `HONEST_MAX_TURNS`, so there is no verdict to record — and recording one
+/// either way would be inventing a reading. The replication leaves the
+/// denominator (it is never pushed to
+/// [`FamilyReadOutcome::replications`]) and is printed beside the binomial, so
+/// a reader sees the R the bound was actually computed over.
+///
+/// **Defined though not observed** — the close doc says so explicitly. A single
+/// turn cannot advance `turn_number` by ten thousand, so this shape needs a root
+/// already past the guard, which is why it is also structurally instantaneous
+/// and never a wall-clock risk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VoidReplication {
+    /// Its index, `0..R` — the index the completed replications skip.
+    pub replication: u32,
+    /// The seed it was taken at, [`replication_seed`]'s value.
+    pub decision_seed: u64,
+    /// The root's own word, so a void carries both halves of its derivation
+    /// exactly as a completed replication does.
+    pub root_word: u64,
+    /// The turn the guard tripped at.
+    pub turns: u32,
+    /// The rider's non-gating tail read.
+    pub tail: Option<CapTail>,
 }
 
 /// A counter observation that ANNOTATES a read without refusing it (design
@@ -1042,8 +1262,14 @@ pub struct FamilyReadOutcome {
     /// What the subject RESOLVED to — never the seat spec's requested name,
     /// which is a symbol whose meaning moves at D1's identity freeze.
     pub subject_echo: String,
-    /// One entry per replication, in index order.
+    /// One entry per COMPLETED replication, in index order. A replication the
+    /// honest turn cap voided is NOT here — it is in
+    /// [`voids`](Self::voids), and the difference is the binomial's
+    /// denominator.
     pub replications: Vec<ReplicationRead>,
+    /// Replications VOIDED by the honest turn cap (A-S12-1, close doc §2.4 item
+    /// 3). Empty is the ordinary shape and is what every recorded read carries.
+    pub voids: Vec<VoidReplication>,
     /// D7's step-one check.
     pub counter_check: CounterCheck,
     /// Tie/band observations — never refusals (design §5.4).
@@ -1051,9 +1277,17 @@ pub struct FamilyReadOutcome {
 }
 
 impl FamilyReadOutcome {
-    /// R.
+    /// R AS READ — the COMPLETED replications, which is the binomial's
+    /// denominator (A-S12-1: a voided replication measured nothing and must not
+    /// sit in a denominator as though it had).
     pub fn replication_count(&self) -> u32 {
         self.replications.len() as u32
+    }
+
+    /// Replications the honest turn cap VOIDED. Printed beside the binomial,
+    /// never inside it.
+    pub fn void_count(&self) -> u32 {
+        self.voids.len() as u32
     }
 
     /// TURN grain: replications whose predicate did NOT hold. `None` at decision
@@ -1097,6 +1331,15 @@ impl FamilyReadOutcome {
         );
         if misses == 0 && r > 0 {
             line.push_str(&format!(" (rule of three: {:.4})", 3.0 / f64::from(r)));
+        }
+        // A-S12-1: the void count rides BESIDE the bound and never inside it,
+        // and only when there is one — a zero-void read prints exactly the line
+        // it printed before the amendment (§2.4 item 6's byte-inertness).
+        if !self.voids.is_empty() {
+            line.push_str(&format!(
+                "; {} replication(s) VOID at the honest turn cap, outside the denominator",
+                self.voids.len(),
+            ));
         }
         Some(line)
     }
@@ -1277,15 +1520,35 @@ pub fn family_read(
 
     let opts = DrivenOpts::default();
     let mut replications: Vec<ReplicationRead> = Vec::with_capacity(r as usize);
+    let mut voids: Vec<VoidReplication> = Vec::new();
     for replication in 0..r {
         let decision_seed = seed_of(replication);
         let read = match rule {
             PassRule::Turn(predicate) => {
-                let outcome = drive_turn(root, subject, rules, decision_seed, &opts)
-                    .map_err(|error| FamilyReadError::Turn {
-                        replication,
-                        error: Box::new(error),
-                    })?;
+                let outcome = match drive_turn(root, subject, rules, decision_seed, &opts) {
+                    Ok(outcome) => outcome,
+                    // A-S12-1 (§2.4 item 3): a capped SUBJECT replication is
+                    // VOID and printed — never a refusal (which would lose the
+                    // whole root) and never a miss (which would be a reading
+                    // nothing measured). Every other refusal still stops the
+                    // read.
+                    Err(DrivenError::TurnCapReached { turns, tail }) => {
+                        voids.push(VoidReplication {
+                            replication,
+                            decision_seed,
+                            root_word: word,
+                            turns,
+                            tail: tail.map(|boxed| *boxed),
+                        });
+                        continue;
+                    }
+                    Err(error) => {
+                        return Err(FamilyReadError::Turn {
+                            replication,
+                            error: Box::new(error),
+                        })
+                    }
+                };
                 // SHOULD-6: the WHOLE turn's counters reach the filter, not just
                 // the root decision's — a mid-turn cap hit is exactly the thing a
                 // replication-0 table cannot see.
@@ -1350,6 +1613,7 @@ pub fn family_read(
         root_digest: state_digest(root),
         subject_echo: subject.echo(),
         replications,
+        voids,
         counter_check,
         annotations,
     })
@@ -2905,6 +3169,15 @@ pub enum FamilyRunError {
     /// A read did not complete for a reason that is NOT a counter refusal — a
     /// refusal is a per-root FINDING and rides the row.
     Read { ordinal: u32, error: Box<FamilyReadError> },
+    /// **THE COUNTED-CAP CEILING** (A-S12-1, close doc §2.4 item 4): one past
+    /// [`COUNTED_CAP_CEILING`] capped playouts in this block.
+    ///
+    /// An INSTRUMENT GUARD, outcome-independent, raised the moment the count
+    /// passes the ceiling rather than at the block's end — `ArenaError::
+    /// CappedCeilingExceeded`'s posture, for its reason: the run is invalid and
+    /// the rest of it is not spent. `capped` carries every counted cap, the
+    /// offending one included, so the refusal is its own evidence.
+    CappedCeilingExceeded { ceiling: usize, capped: Vec<CappedPlayout> },
 }
 
 impl std::fmt::Display for FamilyRunError {
@@ -2956,6 +3229,29 @@ impl std::fmt::Display for FamilyRunError {
             Self::Read { ordinal, error } => {
                 write!(f, "draw {ordinal}: the read did not complete: {error}")
             }
+            Self::CappedCeilingExceeded { ceiling, capped } => {
+                let roll: Vec<String> = capped
+                    .iter()
+                    .map(|cap| {
+                        format!(
+                            "draw {} {} r{} @{:#018x} turn {}",
+                            cap.ordinal,
+                            cap.site.as_str(),
+                            cap.replication,
+                            cap.seed,
+                            cap.turns,
+                        )
+                    })
+                    .collect();
+                write!(
+                    f,
+                    "{} playouts in this block reached the honest turn cap, one past the \
+                     registered ceiling of {ceiling}: a block that needs more than {ceiling} \
+                     counted caps is a FINDING, not a reading — {}",
+                    capped.len(),
+                    roll.join(" · "),
+                )
+            }
         }
     }
 }
@@ -2983,6 +3279,19 @@ pub enum ExclusionReason {
     /// all, so there is no measurement here to fail. A different finding from
     /// [`NotDemonstrated`](Self::NotDemonstrated), and the count is named.
     TooFewSplitting { splitting: usize, minimum: usize },
+    /// **THE DECISION GRAIN'S CAPPED ADMISSION** (A-S12-1). At least one
+    /// declared policy's adjudication reached the honest turn cap; the cap is
+    /// COUNTED and the root leaves the denominator.
+    ///
+    /// **Close doc §2.4 defines the admission mapping for the TURN grain's
+    /// `AdmissionRead` and says nothing about family 1's LIVE/DEAD split** —
+    /// which has no CANNOT shape to map a capped policy onto. The gap is filled
+    /// in the only direction the amendment's own leniency rule allows: dropping
+    /// the policy from the menu instead would shrink `judge_pick`'s
+    /// denominator, so a pick in SOME top set would silently become a pick in
+    /// EVERY top set. `policy` names the FIRST arm that capped; every counted
+    /// cap is listed on the report whatever its grain.
+    CappedAdmission { policy: ReplyPolicy },
 }
 
 /// One drawn root's verdict.
@@ -3295,6 +3604,14 @@ pub struct FamilyBlockReport {
     /// (design §4, review MUST-4): collected as potential subject-suppression
     /// evidence and routed to D7, never silently dropped.
     pub sole_dissenters: Vec<u32>,
+    /// **COUNTED CAPPED PLAYOUTS** (A-S12-1), in the order they happened.
+    ///
+    /// Empty is the ordinary shape and is what every block recorded before the
+    /// amendment carried by construction — a capped playout refused the block
+    /// outright then. A non-empty list is EVIDENCE beside the verdict and gates
+    /// nothing; what gates is the ceiling, which refuses the block rather than
+    /// filling this field.
+    pub capped: Vec<CappedPlayout>,
     pub verdict: FamilyVerdict,
     /// The sentence every adjudicated table prints about what it is.
     pub robustness_read: &'static str,
@@ -3349,9 +3666,13 @@ pub fn run_family_block_with(
     let (master, ordinals) = resolve_block(decl, block, master_override)?;
     let draws = resolve_draws(decl, master, &ordinals, rules)?;
 
+    // ONE ledger for the whole block (A-S12-1): the ceiling is a property of
+    // the BLOCK, so three caps spread over three roots is the same finding as
+    // three at one.
+    let mut caps = CapLedger::new(COUNTED_CAP_CEILING);
     let mut roots: Vec<RootRow> = Vec::with_capacity(draws.len());
     for draw in draws {
-        roots.push(run_one_root(decl, master, subject, rules, &opts, draw)?);
+        roots.push(run_one_root(decl, master, subject, rules, &opts, draw, &mut caps)?);
     }
 
     let drawn = roots.len();
@@ -3387,6 +3708,7 @@ pub fn run_family_block_with(
         admitted,
         counter_refused,
         sole_dissenters,
+        capped: caps.into_counted(),
         robustness_read: crate::game::driven::ROBUSTNESS_READ,
     })
 }
@@ -3543,6 +3865,10 @@ fn menu_seats(policy: ReplyPolicy, players: usize) -> Vec<SeatSpec> {
 }
 
 /// Adjudicate, admit, read and judge ONE drawn root.
+///
+/// `caps` is the BLOCK's counted-cap ledger (A-S12-1): a capped adjudication or
+/// a capped read replication is counted here and refuses only when the count
+/// passes [`COUNTED_CAP_CEILING`].
 fn run_one_root(
     decl: &FamilyDecl,
     master: u64,
@@ -3550,6 +3876,7 @@ fn run_one_root(
     rules: &Rules,
     opts: &BlockOpts,
     draw: Draw,
+    caps: &mut CapLedger,
 ) -> Result<RootRow, FamilyRunError> {
     let Draw { ordinal, state, descriptor, draw_seed, step } = draw;
     if decl.rule.names_a_step() {
@@ -3578,20 +3905,39 @@ fn run_one_root(
     let admitted = match rule {
         PassRule::AdjudicatedBest { epsilon } => {
             let mut candidates_by_policy: Vec<(ReplyPolicy, usize)> = Vec::new();
+            // The FIRST policy whose adjudication capped, if any (A-S12-1). The
+            // menu still runs to the end: the remaining policies' readings are
+            // recorded evidence, and a cap that stopped the menu would also
+            // hide any further cap from the block's ceiling.
+            let mut capped_policy: Option<ReplyPolicy> = None;
             for &policy in decl.menu {
-                let adj = adjudicate_root(
+                let adj = match adjudicate_root(
                     &source,
                     &menu_seats(policy, players),
                     rules,
                     world,
                     opts.admission_k,
                     opts.driven,
-                )
-                .map_err(|error| FamilyRunError::Adjudication {
-                    ordinal,
-                    policy,
-                    error: Box::new(error),
-                })?;
+                ) {
+                    Ok(adj) => adj,
+                    Err(error) => {
+                        let site = CapSite::Admission { policy };
+                        match capped_adjudication(&error, site, ordinal, world) {
+                            Some(cap) => {
+                                caps.count(cap)?;
+                                capped_policy.get_or_insert(policy);
+                                continue;
+                            }
+                            None => {
+                                return Err(FamilyRunError::Adjudication {
+                                    ordinal,
+                                    policy,
+                                    error: Box::new(error),
+                                })
+                            }
+                        }
+                    }
+                };
                 candidates_by_policy.push((policy, adj.candidates()));
                 dead_by_policy.push((policy, classify_dead(&adj, opts.dead_spread_bound)));
                 top_sets.push((policy, top_set(&adj, epsilon)));
@@ -3605,26 +3951,40 @@ fn run_one_root(
             // preference at all, and a lone WINNING candidate reads `live`, so
             // leaving this to the dead classifier admits it — which is what the
             // pilot did.
-            match forced_across_menu(&candidates_by_policy) {
-                Some(candidates) => {
-                    exclusion = ExclusionReason::Forced { candidates };
-                    false
-                }
-                None => {
-                    if dead {
-                        exclusion = ExclusionReason::Dead;
+            // A CAPPED POLICY EXCLUDES THE ROOT, checked before the two
+            // measured exclusions (A-S12-1): the menu this root's `top_sets`
+            // would be judged against is short one arm, and reading a pick
+            // against the arms that happened to complete is the leniency
+            // direction backwards.
+            if let Some(policy) = capped_policy {
+                exclusion = ExclusionReason::CappedAdmission { policy };
+                false
+            } else {
+                match forced_across_menu(&candidates_by_policy) {
+                    Some(candidates) => {
+                        exclusion = ExclusionReason::Forced { candidates };
+                        false
                     }
-                    !dead
+                    None => {
+                        if dead {
+                            exclusion = ExclusionReason::Dead;
+                        }
+                        !dead
+                    }
                 }
             }
         }
         PassRule::Turn(predicate) => {
-            let mut adjs: Vec<(ReplyPolicy, Adjudication)> = Vec::new();
+            // ONE SLOT PER DECLARED POLICY, in menu order — `None` where the
+            // adjudication CAPPED (A-S12-1, close doc §2.4 item 2). The frozen
+            // splitting rules then run unchanged over the rest.
+            let mut adjs: Vec<(ReplyPolicy, Option<Adjudication>)> =
+                Vec::with_capacity(decl.menu.len());
             for &policy in decl.menu {
                 let hook = |root: &GameState, handoff: &GameState| {
                     predicate.eval(root, handoff, rules)
                 };
-                let adj = adjudicate_root_with(
+                match adjudicate_root_with(
                     &source,
                     &menu_seats(policy, players),
                     rules,
@@ -3632,15 +3992,29 @@ fn run_one_root(
                     opts.admission_k,
                     opts.driven,
                     Some(&hook),
-                )
-                .map_err(|error| FamilyRunError::Adjudication {
-                    ordinal,
-                    policy,
-                    error: Box::new(error),
-                })?;
-                adjs.push((policy, adj));
+                ) {
+                    Ok(adj) => adjs.push((policy, Some(adj))),
+                    Err(error) => {
+                        let site = CapSite::Admission { policy };
+                        match capped_adjudication(&error, site, ordinal, world) {
+                            Some(cap) => {
+                                caps.count(cap)?;
+                                adjs.push((policy, None));
+                            }
+                            None => {
+                                return Err(FamilyRunError::Adjudication {
+                                    ordinal,
+                                    policy,
+                                    error: Box::new(error),
+                                })
+                            }
+                        }
+                    }
+                }
             }
-            let read = admission(&adjs, opts.delta, opts.control);
+            let slots: Vec<(ReplyPolicy, Option<&Adjudication>)> =
+                adjs.iter().map(|(policy, adj)| (*policy, adj.as_ref())).collect();
+            let read = admission_over(&slots, opts.delta, opts.control);
             let ok = read.admitted();
             if !ok {
                 // The two exclusions are DIFFERENT findings (the freeze wave):
@@ -3706,6 +4080,23 @@ fn run_one_root(
                 return Err(FamilyRunError::Read { ordinal, error: Box::new(error) })
             }
         };
+
+    // A-S12-1 (§2.4 item 3): a VOIDED read replication is counted against the
+    // block's ceiling exactly as an admission cap is — one ledger, one ceiling.
+    // Folded here rather than inside `family_read`, which is a single-root
+    // instrument and knows neither the ordinal nor the block; the read is safe
+    // to have run to completion first because a read-grain cap trips before any
+    // decision and so costs nothing.
+    for void in &outcome.voids {
+        caps.count(CappedPlayout {
+            site: CapSite::Read,
+            ordinal,
+            replication: void.replication,
+            seed: void.decision_seed,
+            turns: void.turns,
+            tail: void.tail.clone(),
+        })?;
+    }
 
     match rule.grain() {
         ReadGrain::Turn => {
@@ -7175,7 +7566,7 @@ mod tests {
         assert!(out.voids.is_empty(), "anti-vacuity: an ordinary read voids nothing");
         let full = out.binomial_line().expect("a turn-grain read has a binomial line");
         assert!(full.contains("/2"), "the unvoided denominator is not R: {full}");
-        assert!(!full.contains("void"), "an unvoided read must not print a void count: {full}");
+        assert!(!full.contains("VOID"), "an unvoided read must not print a void count: {full}");
 
         let dropped = out.replications.pop().expect("R = 2");
         out.voids.push(VoidReplication {
@@ -7189,7 +7580,10 @@ mod tests {
         assert_eq!(out.void_count(), 1);
         let shrunk = out.binomial_line().expect("a turn-grain read still has one");
         assert!(shrunk.contains("/1"), "the denominator did not shrink: {shrunk}");
-        assert!(shrunk.contains("void"), "the void count is not printed beside it: {shrunk}");
+        assert!(
+            shrunk.contains("1 replication(s) VOID"),
+            "the void count is not printed beside the bound: {shrunk}",
+        );
 
         // (2) THE PLUMBING: past the honest guard, every replication VOIDS and
         //     the read still returns rather than refusing.

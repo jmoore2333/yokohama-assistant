@@ -1925,6 +1925,13 @@ fn root_verdict_text(verdict: &RootVerdict) -> String {
              {minimum} of the declared policies split their playouts into two groups of two, so \
              there is no measurement here to fail — a different finding from NOT DEMONSTRATED"
         ),
+        RootVerdict::Excluded(ExclusionReason::CappedAdmission { policy }) => format!(
+            "EXCLUDED / CAPPED ADMISSION ({}): that policy's adjudication reached the honest \
+             turn cap, so the declared menu is short an arm and this root's picks would be \
+             judged against fewer top sets than the rule names — the cap is COUNTED and the \
+             root leaves the denominator",
+            policy.as_str(),
+        ),
         RootVerdict::CounterRefused(detail) => {
             format!("COUNTER REFUSED — a D7 branch-0 ROUTING and never a failure: {detail}")
         }
@@ -5524,6 +5531,7 @@ mod tests {
             root_digest: "00ff0000000000ab".to_string(),
             subject_echo: Contestant::LOOKAHEAD_V1_DEFAULT.echo(),
             replications: (0..r).map(|i| turn_replication(i, i >= misses)).collect(),
+            voids: Vec::new(),
             counter_check: counter_check(2, 2, 2),
             annotations: vec![CounterAnnotation::TiedAtTop { candidates: 2 }],
         }
@@ -5595,6 +5603,7 @@ mod tests {
             admitted,
             counter_refused,
             sole_dissenters,
+            capped: Vec::new(),
             verdict,
             robustness_read: driven::ROBUSTNESS_READ,
         }
@@ -6020,6 +6029,7 @@ mod tests {
             root_word: 0x00FF_0000_0000_00AB,
             root_digest: "00ff0000000000ab".to_string(),
             subject_echo: Contestant::LOOKAHEAD_V1_DEFAULT.echo(),
+            voids: Vec::new(),
             replications: vec![ReplicationRead {
                 replication: 0,
                 decision_seed: 0x0DEC_0000_0000_0007,
