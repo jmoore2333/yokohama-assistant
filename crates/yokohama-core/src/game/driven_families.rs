@@ -7429,6 +7429,41 @@ mod tests {
         );
     }
 
+    /// **THE READ-VOID FOLD IS ONE NAMED RULE** (review MUST-3, escaped probe
+    /// viii): every voided read replication is counted against the block's ONE
+    /// ledger, and the fold past the ceiling refuses exactly as an admission
+    /// cap does. Pinned on the named fn with a synthetic voids vector, because
+    /// a real block cannot cheaply produce a subject-read cap.
+    #[test]
+    fn every_read_void_is_counted_against_the_blocks_one_ledger() {
+        let void = |replication: u32| VoidReplication {
+            replication,
+            decision_seed: 0xD15C0 + u64::from(replication),
+            root_word: 0xB10C,
+            turns: 3,
+            tail: None,
+        };
+        let mut caps = CapLedger::default();
+        count_read_voids(&mut caps, 7, &[void(0), void(1)])
+            .expect("two voids are below the ceiling");
+        assert_eq!(caps.counted().len(), 2, "every void must be counted");
+        assert!(
+            caps.counted()
+                .iter()
+                .all(|c| c.site == CapSite::Read && c.ordinal == 7 && c.turns == 3),
+            "a counted void must carry the read site and its ordinal: {:?}",
+            caps.counted(),
+        );
+        // ... and the fold refuses past the ceiling like any other cap.
+        let mut full = CapLedger::default();
+        let err = count_read_voids(&mut full, 9, &[void(0), void(1), void(2), void(3)])
+            .expect_err("the fourth counted void must refuse");
+        assert!(
+            matches!(err, FamilyRunError::CappedCeilingExceeded { .. }),
+            "the refusal must be the ceiling's own: {err:?}",
+        );
+    }
+
     /// **THE CEILING'S ARITHMETIC** (§2.4 item 4): three counted caps stand, the
     /// FOURTH refuses, and the refusal NAMES the count.
     ///
@@ -7488,6 +7523,19 @@ mod tests {
         assert_eq!(report.drawn, 1);
         assert_eq!(report.capped.len(), 2, "one cap per (root x policy): {:?}", report.capped);
         assert_eq!(report.admitted, 0, "a root whose whole menu capped demonstrates nothing");
+        // THE OWNER'S MUST-1 RULING (close doc §2.5): a turn-grain root with a
+        // counted cap is EXCLUDED, typed and NAMED — the decision grain's rule,
+        // now at both grains — so a capped policy can never widen admission by
+        // leaving the splitting set, and a capped lookahead arm can never
+        // erase its own sole-dissenter exhibit. The reason names the FIRST
+        // capped policy in menu order.
+        assert_eq!(
+            report.roots[0].verdict,
+            RootVerdict::Excluded(ExclusionReason::CappedAdmission {
+                policy: ReplyPolicy::FamilyWeighted,
+            }),
+            "a capped turn-grain root must leave the denominator under the cap's own name",
+        );
 
         let admission = report.roots[0].admission.as_ref().expect("a turn-grain root has one");
         assert_eq!(admission.policies.len(), SMOKE_MENU.len(), "a capped policy keeps its ROW");

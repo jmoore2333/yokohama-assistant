@@ -5971,6 +5971,27 @@ mod tests {
             "the cap block is not between the roots and the exclusions:\n{rendered}",
         );
     }
+    /// A READ-site cap prints its own column name (review S-2): `CapSite::as_str`
+    /// is documented as the report's policy-column spelling, and the renderer
+    /// must read it rather than hand-typing a dash.
+    #[test]
+    fn a_read_site_cap_prints_subject_read_in_the_policy_column() {
+        let cap = CappedPlayout {
+            site: CapSite::Read,
+            ordinal: 5,
+            replication: 2,
+            seed: 0xABCD,
+            turns: 11,
+            tail: None,
+        };
+        let lines = capped_lines(std::slice::from_ref(&cap)).join("\n");
+        assert!(
+            lines.contains("policy subject-read"),
+            "a read-site cap must print CapSite::as_str in the policy column: {lines}",
+        );
+        assert!(!lines.contains("policy -"), "the hand-typed dash must be gone: {lines}");
+    }
+
 
     fn line_index(rendered: &str, needle: &str) -> usize {
         rendered
