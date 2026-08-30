@@ -1149,6 +1149,7 @@ mod tests {
     use super::*;
     use crate::game::policy::POLICY_IMPL_VERSION;
     use crate::game::record::{replay, replay_strict, RUN_PROVENANCE_SCHEMA};
+    use crate::game::semantics::state_digest;
     use crate::game::seeds::SeedSchedule;
     use crate::game::semantics::SEMANTICS_REV;
     use crate::types::TurnPhase;
@@ -1643,6 +1644,97 @@ mod tests {
             other => panic!("expected CapReached, got {other:?}"),
         }
         assert_eq!(HONEST_MAX_TURNS, 10_000, "the shared termination guard moved");
+    }
+
+    /// **W-D1 (A), the diagnostic driver's cap path.** The arena's public driver
+    /// DROPS the partial record and the state it capped in: a capped cell can
+    /// therefore report games-until-first-hit and nothing about what the game
+    /// was doing. This is the surface that keeps them, and these are its two
+    /// honesty pins — the record carries every applied move and nothing else,
+    /// and replaying it from setup reproduces the state handed back.
+    #[test]
+    fn the_diagnostic_driver_surfaces_the_partial_record_and_state_on_a_cap() {
+        let rules = Rules::standard();
+        let seed = world(7);
+        let seating = unit_for(2, seed).seatings[0].clone();
+        let mut make = uniform_bench(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT, seed, seating);
+        // The cap is a parameter for the same reason `cap_reached_is_distinguished`
+        // takes one: reaching this arm must cost milliseconds, not 10,000 turns.
+        let game = run_arena_game_diagnostic_capped(seed, 2, &rules, &mut make, false, 20)
+            .expect("a cap is an OUTCOME for the diagnostic driver, never an error");
+        assert_eq!(game.seed, seed);
+        assert_eq!(game.players, 2);
+        let DiagnosticOutcome::Capped { turns, record, state, moves_by_seat } = game.outcome else {
+            panic!("a 20-turn cap cannot contain a full 2P game");
+        };
+        assert!(turns > 20, "the cap fires past the limit, got turn {turns}");
+        assert_eq!(
+            record.events.len() as u64,
+            moves_by_seat.iter().sum::<u64>(),
+            "the partial record must carry EVERY applied move and nothing else",
+        );
+        assert!(
+            record.terminal_digest.is_none(),
+            "a capped game is NOT terminal — stamping a terminal digest would let a partial \
+             record masquerade as a completed one",
+        );
+        let replayed = replay(&record, &rules).expect("the partial record replays from setup");
+        assert_eq!(
+            state_digest(&replayed),
+            state_digest(&state),
+            "the returned state must be the one the returned record folds to",
+        );
+    }
+
+    /// **W-D1 (A), the diagnostic driver's terminating path IS the same game.**
+    /// A separate driver that played a different game would make every tail read
+    /// taken off it a read of something else.
+    #[test]
+    fn the_diagnostic_driver_plays_the_same_game_as_the_public_driver() {
+        let rules = Rules::standard();
+        let seed = world(3);
+        let seating = unit_for(2, seed).seatings[0].clone();
+        let mut public_make =
+            uniform_bench(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT, seed, seating.clone());
+        let public = run_arena_game(seed, 2, &rules, &mut public_make, false)
+            .expect("the rung plays this world to a trigger");
+        let mut diag_make = uniform_bench(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT, seed, seating);
+        let game = run_arena_game_diagnostic(seed, 2, &rules, &mut diag_make, false)
+            .expect("the diagnostic driver plays the same world");
+        let DiagnosticOutcome::Terminated(stats) = game.outcome else {
+            panic!("this world terminates under the public driver, so it must here too");
+        };
+        assert_eq!(stats.turns, public.turns, "turns");
+        assert_eq!(stats.moves_by_seat, public.moves_by_seat, "moves per seat");
+        assert_eq!(stats.trigger, public.trigger, "end trigger");
+        assert_eq!(stats.record.events, public.record.events, "the applied move sequence");
+        assert_eq!(
+            stats.record.terminal_digest, public.record.terminal_digest,
+            "the terminal-state digest",
+        );
+    }
+
+    /// **W-D1's byte-inertness pin on the PUBLIC driver.** The diagnostic
+    /// variant exists BESIDE `run_arena_game`, never inside its answer: a cap
+    /// stays an `ArenaError::CapReached` whose message is the one every cell,
+    /// artifact and ledger row already quotes.
+    #[test]
+    fn the_public_drivers_cap_error_text_is_unmoved_by_the_diagnostic_variant() {
+        let rules = Rules::standard();
+        let seed = world(7);
+        let seating = unit_for(2, seed).seatings[0].clone();
+        let mut make = uniform_bench(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT, seed, seating);
+        let err = run_arena_game_capped(seed, 2, &rules, &mut make, false, 2)
+            .expect_err("a 2-turn cap cannot contain a full game");
+        let ArenaError::CapReached { seed: reported, turns } = err else {
+            panic!("expected CapReached, got {err:?}");
+        };
+        assert_eq!(reported, seed);
+        assert_eq!(
+            ArenaError::CapReached { seed, turns }.to_string(),
+            format!("turn cap reached at turn {turns} (world seed {:#018x})", seed.0),
+            "the operator-facing cap message is what the V4 step-11 record quotes verbatim",
+        );
     }
 
     #[test]
