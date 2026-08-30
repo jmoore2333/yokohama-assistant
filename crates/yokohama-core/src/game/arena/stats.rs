@@ -4779,7 +4779,7 @@ mod tests {
         assert_eq!(stats.result.winner, PlayerId(0), "and be decided for seat 0");
     }
 
-    /// **The explanation identity stays TOTAL over a capped game.**    /// **The explanation identity stays TOTAL over a capped game.** Spec
+    /// **The explanation identity stays TOTAL over a capped game.** Spec
     /// §0.3(b)'s `x_explanations == Some(x_applied_moves)` is a claim about
     /// every move X played, and a capped game's moves are moves X played.
     ///
