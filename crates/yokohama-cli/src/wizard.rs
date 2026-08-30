@@ -3403,13 +3403,14 @@ mod tests {
         let repl = repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
 
         assert!(transcript.contains("Bot seats?"), "the question must be asked: {transcript}");
-        // RE-POINTED at W5 task 4: the default bot contestant changed from the
-        // family-weighted rung to `lookahead-v1`, and the review names it
-        // through `Contestant::echo` rather than a policy's short name. What
-        // this test is about -- that the FIRST answer is reviewed and the
-        // EDITED one is what reaches the session -- is unchanged.
+        // RE-POINTED TWICE: at W5 task 4 from the family-weighted rung to
+        // `lookahead-v1`, and on 2026-08-30 to the shipped PRODUCTION
+        // contestant. Named through `Contestant::echo` rather than a short
+        // name, both times. What this test is about -- that the FIRST answer is
+        // reviewed and the EDITED one is what reaches the session -- is
+        // unchanged by either move.
         assert!(
-            transcript.contains(&format!("bots: seat 1 playing {}", Contestant::LOOKAHEAD_V1_DEFAULT.echo())),
+            transcript.contains(&format!("bots: seat 1 playing {}", Contestant::PRODUCTION.echo())),
             "the first review must name the bot seat and its contestant: {transcript}"
         );
         assert!(transcript.contains("bot seed:"), "a drawn seed must be echoed: {transcript}");
@@ -3439,14 +3440,21 @@ mod tests {
         let repl = repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
         let seats = &repl.session.record().run.as_ref().expect("provenance").seats;
         assert_eq!(seats[0].controller, yokohama_core::CONTROLLER_HUMAN);
-        // RE-POINTED at W5 task 4: the default bot contestant changed to
-        // `lookahead-v1`, so the recorded name, version and KNOBS are the
-        // search's, not the rung's `recovery_min_of`. Pinned twice on purpose --
-        // as literals, so a silent controller-name or version move is visible
-        // here, and against the descriptor, so the knobs that ride the record
-        // are the ones the seat actually plays.
-        let (name, version, params) = Contestant::LOOKAHEAD_V1_DEFAULT.descriptor();
-        assert_eq!((seats[1].controller.as_str(), seats[1].version), ("lookahead-v1", 2), "{seats:?}");
+        // RE-POINTED TWICE: at W5 task 4 to `lookahead-v1` (so the recorded
+        // name, version and KNOBS became the search's rather than the rung's
+        // `recovery_min_of`), and on 2026-08-30 to the shipped PRODUCTION
+        // contestant. Pinned twice on purpose -- as literals, so a silent
+        // controller-name or version move is visible here, and against the
+        // descriptor, so the knobs that ride the record are the ones the seat
+        // actually plays. The VERSION does not move with the name: a named
+        // identity answers from the lookahead controller's own version const,
+        // and the ship commit bumped no controller const.
+        let (name, version, params) = Contestant::PRODUCTION.descriptor();
+        assert_eq!(
+            (seats[1].controller.as_str(), seats[1].version),
+            ("v4-step9-draft1", 2),
+            "{seats:?}",
+        );
         assert_eq!((seats[1].controller.as_str(), seats[1].version), (name.as_str(), version), "{seats:?}");
         assert_eq!(seats[1].params, params, "the knobs ride the record, b/k/m plus the identity keys: {seats:?}");
         assert_eq!((seats[1].params["b"], seats[1].params["k"], seats[1].params["m"]), (4, 1, 8), "{seats:?}");
@@ -3478,11 +3486,11 @@ mod tests {
         assert!(transcript.contains("seat must be 0-1"), "{transcript}");
         assert!(transcript.contains("is not a seat number"), "{transcript}");
         let seats = &repl.session.record().run.as_ref().expect("provenance").seats;
-        // RE-POINTED at W5 task 4: the default bot contestant changed to
-        // `lookahead-v1`. This test's subject is WHICH SEAT the accepted answer
-        // bots, so it names the contestant through the same const the wizard
-        // reads rather than restating the descriptor's spelling.
-        assert_eq!(seats[0].controller, Contestant::LOOKAHEAD_V1_DEFAULT.descriptor().0);
+        // RE-POINTED TWICE (W5 task 4, then the 2026-08-30 ship commit). This
+        // test's subject is WHICH SEAT the accepted answer bots, so it names
+        // the contestant through the same const the wizard reads rather than
+        // restating the descriptor's spelling.
+        assert_eq!(seats[0].controller, Contestant::PRODUCTION.descriptor().0);
         assert_eq!(seats[1].controller, yokohama_core::CONTROLLER_HUMAN);
         std::fs::remove_file("yokohama-game-803.json").ok();
     }
@@ -3623,13 +3631,13 @@ mod tests {
     /// builds it rather than at a transcript -- the T7 lesson again: a claim
     /// about what an ANSWER does belongs at the function that takes it.
     ///
-    /// The default is `lookahead-v1` at shipped knobs (b=4/k=1/m=8, uncapped,
-    /// `WeightTable::V2`) since W5, so the owner's diagnostic games play the
-    /// production-intent controller rather than a rollout rung (design §4.1).
-    /// The LITERAL is pinned deliberately: the wizard reads
-    /// `bot::PROVISIONAL_DEFAULT_BOT`, and this test is what stops that const
-    /// from moving silently -- it is provisional until D1's identity freeze,
-    /// and the freeze is an owner-ruled event, not a quiet edit.
+    /// The default was `lookahead-v1` at shipped knobs from W5, and is the
+    /// shipped PRODUCTION contestant `v4-step9-draft1` since the 2026-08-30 V4
+    /// ship commit -- so the owner's diagnostic games play the bot this project
+    /// ships, which is what design §4.1 asked for and what D1's identity freeze
+    /// was waiting on. The const is pinned deliberately: the wizard reads
+    /// `bot::PROVISIONAL_DEFAULT_BOT`, and this test is what stops it from
+    /// moving silently -- a re-point is a ship event, not a quiet edit.
     #[test]
     fn the_wizard_default_bot_seat_is_the_provisional_production_contestant() {
         let (seats, transcript) = ask_bots_directly(2, &["1"]);
@@ -3638,8 +3646,8 @@ mod tests {
 
         assert_eq!(
             seats.contestant_at(PlayerId::new(1)),
-            Some(Contestant::LOOKAHEAD_V1_DEFAULT),
-            "a wizard-configured bot seat plays the provisional production contestant"
+            Some(Contestant::PRODUCTION),
+            "a wizard-configured bot seat plays the shipped production contestant"
         );
         assert!(!seats.is_bot(PlayerId::new(0)), "the unnamed seat stays human");
     }
@@ -3661,7 +3669,7 @@ mod tests {
         let repl = repl.unwrap_or_else(|e| panic!("expected Ok, got Err({e}); transcript:\n{transcript}"));
 
         assert!(
-            transcript.contains(&format!("bots: seat 1 playing {}", Contestant::LOOKAHEAD_V1_DEFAULT.echo())),
+            transcript.contains(&format!("bots: seat 1 playing {}", Contestant::PRODUCTION.echo())),
             "the review must name the seat and the contestant's echo: {transcript}"
         );
         assert!(repl.session.record().run.is_some(), "fixture: the game was built");

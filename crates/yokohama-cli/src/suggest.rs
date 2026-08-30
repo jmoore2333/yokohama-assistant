@@ -1307,7 +1307,15 @@ mod tests {
         let text = render_suggestion(&s, session.state(), session.rules());
 
         assert!(text.starts_with("─ Suggest "), "the shared view header: {:?}", text.lines().next());
-        assert!(text.contains(lookahead::LOOKAHEAD_CONTROLLER), "{text}");
+        // The identity line names the contestant that RAN, which since the
+        // 2026-08-30 ship commit is the production contestant and not the bare
+        // controller name. Read from the descriptor, never typed: this cell
+        // would otherwise be the second opinion the header exists not to have.
+        assert!(text.contains(&Contestant::PRODUCTION.descriptor().0), "{text}");
+        assert!(
+            !text.contains(lookahead::LOOKAHEAD_CONTROLLER),
+            "the header must not name a controller whose table this press did not run: {text}",
+        );
         assert!(text.contains("Suggested move:"), "{text}");
 
         // Every feature, in the canonical order, exactly once.
