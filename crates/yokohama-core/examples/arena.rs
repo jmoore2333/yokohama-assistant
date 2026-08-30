@@ -91,10 +91,10 @@ use std::time::Instant;
 
 use yokohama_core::{
     corpus_path, emit_record, greedy, lookahead, mcts, named_identities_usage, render_cap_rate,
-    render_world, run_cap_rate, run_cell_emitting_timed, run_raw_game, run_world, trigger_name,
-    ArenaError, CellReport, CellSpec, CellWall, Contestant, IntervalOutcome, RolloutPolicy, Rules,
-    SeedSchedule, SeedScheduleKind, TriggerTally, WorldSeed, WorldSpec, CAP_RATE_LABEL,
-    DIAGNOSTIC_USAGE, SEMANTICS_REV,
+    render_world, run_cap_rate, run_cell_counting_caps_timed, run_cell_emitting_timed,
+    run_raw_game, run_world, trigger_name, ArenaError, ArenaGameStats, CellReport, CellSpec,
+    CellWall, Contestant, IntervalOutcome, RolloutPolicy, Rules, SeedSchedule, SeedScheduleKind,
+    TriggerTally, WorldSeed, WorldSpec, CAP_RATE_LABEL, DIAGNOSTIC_USAGE, SEMANTICS_REV,
 };
 
 const USAGE_HEAD: &str = "\
@@ -102,12 +102,26 @@ usage: arena <subcommand> [options]
 
   cell <name> <players> <x> <y> <units> [--emit <dir>] [--invariants|--no-invariants]
                                         [--master <u64> | --os-entropy]
+                                        [--capped-ceiling <n>]
       Run one matchup. <x> is the contestant under test (ONE seat); <y> fills the
       other players-1 seats. <units> counts DESIGN UNITS, not games: a 2P unit is
       the swapped pair (2 games), a 3-4P unit is the rotation block (players games).
       A cell mixing a rung with an evaluator contestant is swapped-balanced but NOT
       setup-identical (the two resolve a deal by different Keep rules); the report's
       spec echo prints setup-identical=yes|no per cell.
+
+      --capped-ceiling <n> turns on the V4 step-11 VOID-UNIT counting mode
+      (amendment A-S11-1). A game that reaches the 10,000-turn termination guard is
+      then a COUNTED event rather than a refusal: it is listed with its world seed
+      and arrangement so it reproduces under `arena world`, the design UNIT
+      containing it is VOID, and every outcome statistic -- the unit vector,
+      theta_hat, the interval, games, seat-0 wins, the VP margin, the trigger tally
+      -- is computed over the READ units alone (the echo's games= stays the
+      SCHEDULED count). Volume and honesty counters still fold over every played
+      game, capped ones included. The (n+1)-th capped game refuses the cell AT ONCE
+      and the run is INVALID; n=0 is legal and refuses at the first. WITHOUT the
+      flag the cell behaves exactly as it always has -- the first capped game
+      refuses it -- and no capped-ceiling token appears in the report echo.
 
   ab [--units-2p <n>] [--blocks-4p <n>] [--drift-games <n>]
      [--master <u64> | --os-entropy]
@@ -322,6 +336,18 @@ fn describe_interval(interval: &IntervalOutcome) -> String {
 
 fn print_report(report: &CellReport) {
     println!("  {}", report.spec_echo);
+    // The VOID LINE and the capped list, printed ONLY in counting mode — which
+    // is what keeps an unflagged `cell` run's output byte-for-byte what it
+    // always was. Both strings are composed in core (`CellReport::void_summary`
+    // / `capped_lines`) and lib-tested there; this file stays print-only glue.
+    // Directly under the echo, because the echo's `games=` is the SCHEDULED
+    // count and these lines are what say how many of them were READ.
+    if let Some(summary) = report.void_summary() {
+        println!("  {summary}");
+        for line in report.capped_lines() {
+            println!("    {line}");
+        }
+    }
     println!("  theta_hat = {:.6}   [null for this cell is printed in the cross-checks]", report.theta_hat);
     println!("  interval  = {}", describe_interval(&report.interval));
     println!(
@@ -480,8 +506,11 @@ fn invariants_from(flags: &BTreeMap<String, String>) -> Result<bool, String> {
 }
 
 fn cmd_cell(args: &[String]) -> Result<(), String> {
-    let (positional, flags) =
-        split_args(args, &["emit", "master"], &["os-entropy", "invariants", "no-invariants"])?;
+    let (positional, flags) = split_args(
+        args,
+        &["emit", "master", "capped-ceiling"],
+        &["os-entropy", "invariants", "no-invariants"],
+    )?;
     if positional.len() != 5 {
         return Err(format!("cell takes 5 positional arguments\n\n{}", usage()));
     }
@@ -497,13 +526,20 @@ fn cmd_cell(args: &[String]) -> Result<(), String> {
     let units: u32 = positional[4].parse().map_err(|e| format!("<units>: {e}"))?;
     let master = master_from(&flags)?;
     let emit: Option<PathBuf> = flags.get("emit").map(PathBuf::from);
+    // ABSENT is the whole point: no ceiling, no counting, no echo token, no
+    // header row and no void line — the path every recorded figure came from.
+    let capped_ceiling: Option<u32> = match flags.get("capped-ceiling") {
+        Some(raw) => Some(raw.parse::<u32>().map_err(|e| format!("--capped-ceiling: {e}"))?),
+        None => None,
+    };
 
     let invariants = invariants_from(&flags)?;
 
-    print_header(
-        &format!("cell {name}"),
-        master,
-        &[
+    // The ceiling row is CONDITIONAL, and deliberately so: freeze doc §9.6's
+    // pin (v) is that the unflagged runner's `cell` output is byte-identical at
+    // base and at head, which an unconditional row (even one reading "off")
+    // would break. The flag's absence is stated in the usage text instead.
+    let mut rows = vec![
             ("players", players.to_string()),
             ("x", contestant_echo(x)),
             ("y", contestant_echo(y)),
@@ -526,22 +562,41 @@ fn cmd_cell(args: &[String]) -> Result<(), String> {
                 "emit",
                 emit.as_ref().map_or_else(|| "off".to_string(), |d| d.display().to_string()),
             ),
-        ],
-    );
+    ];
+    if let Some(ceiling) = capped_ceiling {
+        rows.push((
+            "capped-ceiling",
+            format!(
+                "{ceiling} (a capped game is COUNTED and its design unit is VOID; \
+                 the {}th refuses the cell)",
+                ceiling + 1,
+            ),
+        ));
+    }
+    print_header(&format!("cell {name}"), master, &rows);
 
     let rules = Rules::standard();
     let spec = CellSpec { name: name.clone(), players, x, y, units, master };
     let started = Instant::now();
     let mut written = 0u32;
-    let (report, wall) = run_cell_emitting_timed(&spec, &rules, invariants, &mut |stats, arr| {
+    // ONE sink for both modes: the emission seam does not know about ceilings,
+    // and a second copy of it would be a second thing that can drift from
+    // `corpus_path`.
+    let mut sink = |stats: &ArenaGameStats, arr: u8| -> Result<(), ArenaError> {
         let Some(dir) = &emit else { return Ok(()) };
         let path = corpus_path(dir, SEMANTICS_REV, players, &name, stats.seed, arr);
         emit_record(&path, &stats.record)
             .map_err(|e| ArenaError::Driver(format!("emit {}: {e}", path.display())))?;
         written += 1;
         Ok(())
-    })
-    .map_err(|e| format!("cell failed: {e}"))?;
+    };
+    let outcome = match capped_ceiling {
+        Some(ceiling) => {
+            run_cell_counting_caps_timed(&spec, &rules, invariants, ceiling, &mut sink)
+        }
+        None => run_cell_emitting_timed(&spec, &rules, invariants, &mut sink),
+    };
+    let (report, wall) = outcome.map_err(|e| format!("cell failed: {e}"))?;
     let elapsed = started.elapsed();
 
     print_report(&report);
