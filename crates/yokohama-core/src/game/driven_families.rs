@@ -697,6 +697,15 @@ impl AdmissionRead {
     /// policies that happened to be wired correctly. (`run_one_root` always
     /// passes the hook at the turn grain, so this guards a direct caller.)
     ///
+    /// **[`CannotDemonstrate::CappedPlayout`] joins the non-vetoing arms**
+    /// (A-S12-1): a capped policy demonstrated nothing, so it blocks nothing and
+    /// stops counting toward the splitting floor. The direction that buys is
+    /// pinned by
+    /// `converting_a_policy_to_a_counted_cap_can_only_make_admission_harder`,
+    /// whose fourth cell records the ONE conversion that widens instead —
+    /// capping the sole dissenter — because the counterfactual a capped policy
+    /// would have produced is unknowable by construction.
+    ///
     /// Vacuously false on an empty menu, and false below the splitting floor —
     /// an admission "across no policies", or across one, is not a demonstration.
     pub fn admitted(&self) -> bool {
@@ -1460,6 +1469,14 @@ fn refusing_counters(counters: &SeatCounters) -> Vec<(&'static str, u64)> {
 /// bind or starved decision — at the root table OR inside any replication's turn
 /// — is a [`FamilyReadError::CounterRefusal`] routing to branch 0; tie count and
 /// top-band structure ANNOTATE and send the root to the mechanical separator.
+///
+/// **A replication whose TURN reaches the honest turn cap is VOID, not a
+/// refusal** (A-S12-1, close doc §2.4 item 3). It lands in
+/// [`FamilyReadOutcome::voids`] rather than in `replications`, so the binomial
+/// runs over what completed and prints the void count beside the bound. Every
+/// OTHER driver refusal still stops the read. The COUNTING of those voids
+/// against a block's ceiling is `run_family_block_with`'s — this function is a
+/// single-root instrument and knows no block.
 ///
 /// **COST.** R turns (or R tables) of the subject, plus one table. Under the
 /// uncapped shipped S1 arm an ordinary mid-game turn is tens of milliseconds and
@@ -3648,6 +3665,16 @@ pub fn run_family_block(
 /// (`SALT_DRIVEN_REPLICATION` for adjudication worlds,
 /// [`SALT_DRIVEN_FAMILY_READ`] for read seeds), so no read shares a world with
 /// the adjudication that admitted its root by accident of arithmetic.
+///
+/// **ONE COUNTED-CAP LEDGER runs the whole block** (A-S12-1, close doc §2.4
+/// items 1 and 4): a capped admission adjudication, or a capped read
+/// replication, is COUNTED rather than refused — its admission row reads
+/// `CannotDemonstrate::CappedPlayout` and the frozen splitting rules run
+/// unchanged over the rest — until the count passes
+/// [`COUNTED_CAP_CEILING`], at which point the block refuses AT ONCE with
+/// [`FamilyRunError::CappedCeilingExceeded`]. The ledger is per BLOCK because
+/// the ceiling is: three caps spread over three roots is the same finding as
+/// three at one.
 ///
 /// **COST**, stated because nothing here bounds it: `roots × menu × candidates ×
 /// K` whole games for admission, plus `roots × R` turns of the subject for the
