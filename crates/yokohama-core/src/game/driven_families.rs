@@ -6100,6 +6100,48 @@ mod tests {
             V::VoidAsConfirmation { .. }
         ));
         assert_eq!(family_verdict(conf, BlockKind::Confirmatory, 6, 4, 0, 0), V::Pass);
+        // THE VOID RULE REACHES A REGRESSION BLOCK (review MUST-1, close doc
+        // §1.7/§1.8): six drawn is the whole released tier, ~1.5 admitted is the
+        // EXPECTED outcome, and three-admitted-clean must read VOID — the bare
+        // `PASS` here is exactly the "upgraded to a PASS" §1.8 forbids.
+        assert!(matches!(
+            family_verdict(conf, BlockKind::Regression, 6, 3, 0, 0),
+            V::VoidAsConfirmation { .. }
+        ));
+        // ... and a failed root INSIDE a void regression block stays VOID — the
+        // close doc records it as a non-blocking EXHIBIT, never as the
+        // ADMITTED-REGRESSION false STOP a `Fail` here would hand the owner.
+        assert!(matches!(
+            family_verdict(conf, BlockKind::Regression, 6, 3, 1, 0),
+            V::VoidAsConfirmation { .. }
+        ));
+        // At or above the floor the regression block reads like any other:
+        assert_eq!(family_verdict(conf, BlockKind::Regression, 6, 4, 0, 0), V::Pass);
+        assert!(matches!(
+            family_verdict(conf, BlockKind::Regression, 6, 4, 1, 0),
+            V::Fail { .. }
+        ));
+        // The DISPOSITION sentence is block-aware: a regression VOID has no
+        // pre-declared extension tier to point at (escrow §4 declares none), so
+        // printing the confirmatory extension sentence into an S12 artifact
+        // would be false. Non-blocking is the registered disposition.
+        match family_verdict(conf, BlockKind::Regression, 6, 3, 0, 0) {
+            V::VoidAsConfirmation { disposition, .. } => {
+                assert!(
+                    disposition.contains("non-blocking") && !disposition.contains("extend"),
+                    "a regression VOID must carry the non-blocking disposition, \
+                     not the extension sentence: {disposition:?}",
+                );
+            }
+            other => panic!("expected VOID, got {other:?}"),
+        }
+        match family_verdict(conf, BlockKind::Confirmatory, 6, 3, 0, 0) {
+            V::VoidAsConfirmation { disposition, .. } => assert_eq!(
+                disposition, VOID_DISPOSITION,
+                "a confirmatory VOID keeps the extension sentence",
+            ),
+            other => panic!("expected VOID, got {other:?}"),
+        }
         // A PILOT block confirms nothing, so it cannot be void as confirmation.
         assert!(matches!(family_verdict(conf, BlockKind::Pilot, 4, 1, 0, 0), V::Pass));
         // The EXISTENCE arm skips the allowance entirely, failures included.
@@ -6136,6 +6178,12 @@ mod tests {
         // A CONFIRMATORY block keeps the VOID wording — the stronger statement.
         assert!(matches!(
             family_verdict(conf, BlockKind::Confirmatory, 6, 0, 0, 0),
+            V::VoidAsConfirmation { admitted: 0, minimum: MIN_ADMITTED_ROOTS, .. },
+        ));
+        // ... and so does a REGRESSION block (review MUST-1): zero admitted of
+        // six drawn is below the floor, and the floor is the sentence to print.
+        assert!(matches!(
+            family_verdict(conf, BlockKind::Regression, 6, 0, 0, 0),
             V::VoidAsConfirmation { admitted: 0, minimum: MIN_ADMITTED_ROOTS, .. },
         ));
         // The EXISTENCE arm keeps its own verdict at zero admitted; what it
