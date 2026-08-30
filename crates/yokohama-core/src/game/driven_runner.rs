@@ -38,11 +38,11 @@ use crate::game::driven::{
 };
 use crate::game::driven_exact::{self, ExactTable, WorldInvariance};
 use crate::game::driven_families::{
-    families, run_family_block_with, AdmissionVerdict, BlockKind, BlockOpts, ExclusionReason,
-    FamilyBlockReport, FamilyDecl, FamilyGenerator, FamilyLabel, FamilyRunError, FamilyVerdict,
-    PassRule, RootRow, RootVerdict, TurnPredicate, DECLARED_BY_THE_ROOT,
-    FAMILY2_CONTROL_GENERATOR, FROZEN_EPSILON_VP, PROXIMITY_CORNER_GENERATOR,
-    RACE_CONTROL_GENERATOR,
+    families, run_family_block_with, AdmissionVerdict, BlockKind, BlockOpts, CapSite,
+    CappedPlayout, ExclusionReason, FamilyBlockReport, FamilyDecl, FamilyGenerator, FamilyLabel,
+    FamilyRunError, FamilyVerdict, PassRule, RootRow, RootVerdict, TurnPredicate,
+    DECLARED_BY_THE_ROOT, FAMILY2_CONTROL_GENERATOR, FROZEN_EPSILON_VP,
+    PROXIMITY_CORNER_GENERATOR, RACE_CONTROL_GENERATOR,
 };
 use crate::game::lookahead::SearchStats;
 use crate::game::metrics::wilson_95;
@@ -2111,6 +2111,95 @@ fn root_detail_lines(row: &RootRow) -> Vec<String> {
     lines
 }
 
+/// The counts line, with A-S12-1's summary TOKEN when — and only when — the
+/// block counted a capped playout.
+///
+/// The token rides here rather than in the cap section alone so a reader learns
+/// N from the header, beside the other three denominators, without scrolling to
+/// find out whether the block hit any.
+fn counts_line(report: &FamilyBlockReport) -> String {
+    let mut line = format!(
+        "  counts         drawn={}  admitted={}  counter-refused={}",
+        report.drawn, report.admitted, report.counter_refused,
+    );
+    if !report.capped.is_empty() {
+        line.push_str(&format!("  capped playouts={}", report.capped.len()));
+    }
+    line
+}
+
+/// The COUNTED-CAP block (A-S12-1, close doc §2.4 item 5) — EMPTY when the block
+/// counted none.
+///
+/// One identity line per cap with the rider's tail indented under it. **Nothing
+/// here is gated on and nothing here is asserted**: the section exists so the
+/// produce-and-hoard attribution stands as evidence rather than inference, which
+/// is what a refusal carrying one line of text could not do.
+fn capped_lines(capped: &[CappedPlayout]) -> Vec<String> {
+    if capped.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = vec![
+        String::new(),
+        "  capped playouts (COUNTED, non-gating — a replication reached the honest turn cap; the \
+         (root x policy) admission row it belongs to reads CANNOT, the frozen splitting rules ran \
+         unchanged over the rest, and the block refuses only past the registered ceiling):"
+            .to_string(),
+    ];
+    for cap in capped {
+        let (grain, policy) = match cap.site {
+            CapSite::Admission { policy } => ("admission", policy.as_str()),
+            CapSite::Read => ("read", "-"),
+        };
+        lines.push(format!(
+            "    ordinal {}   grain {grain:<9}   policy {policy:<18}   replication {}   \
+             seed {:#018x}   turn {}",
+            cap.ordinal, cap.replication, cap.seed, cap.turns,
+        ));
+        let Some(tail) = &cap.tail else {
+            lines.push("        tail           -  (the refusal carried no trajectory)".to_string());
+            continue;
+        };
+        lines.push(format!(
+            "        tail (last {} of {} applied moves):",
+            tail.tail.len(),
+            tail.applied_total,
+        ));
+        for step in &tail.tail {
+            lines.push(format!("          seat{}  {:?}", step.seat.0, step.mv));
+        }
+        lines.push(format!(
+            "        end state at cap: turn={}  phase={:?}  current=seat{}",
+            tail.turn_number, tail.turn_phase, tail.current_player.0,
+        ));
+        for seat in &tail.seats {
+            // `vp(track)`, never a bare `vp`: a capped game never finished, so
+            // the running track is the only VP figure the state actually
+            // carries (the arena's step-11 end-state block draws the same line).
+            lines.push(format!(
+                "          seat{}: money={} · copper={} silk={} tea={} seafood={} import={} · \
+                 assistants hand={} warehouse={} board={} · orders held={} completed={} tech={} · \
+                 vp(track)={}",
+                seat.seat.0,
+                seat.money,
+                seat.copper,
+                seat.silk,
+                seat.tea,
+                seat.seafood,
+                seat.imported_goods,
+                seat.assistants_in_hand,
+                seat.assistants_in_warehouse,
+                seat.assistants_on_board,
+                seat.orders_in_hand,
+                seat.completed_orders,
+                seat.technologies,
+                seat.victory_points,
+            ));
+        }
+    }
+    lines
+}
+
 /// ONE family block, rendered (design §2: label first, counter check second,
 /// per-policy table, per-root replication lines, binomial line, exclusion and
 /// dissent blocks).
@@ -2176,10 +2265,7 @@ pub fn render_family_block(report: &FamilyBlockReport, arm: FamilyArm) -> String
             report.control,
         ),
         format!("  menu           {}", menu.join(", ")),
-        format!(
-            "  counts         drawn={}  admitted={}  counter-refused={}",
-            report.drawn, report.admitted, report.counter_refused,
-        ),
+        counts_line(report),
     ]);
     lines.extend(family_verdict_lines(&report.verdict));
     lines.push(format!("  robustness     {}", report.robustness_read));
@@ -2234,6 +2320,13 @@ pub fn render_family_block(report: &FamilyBlockReport, arm: FamilyArm) -> String
         lines.push(String::new());
         lines.extend(root_detail_lines(row));
     }
+
+    // ---- the counted caps (A-S12-1) ---------------------------------------
+    // ABSENT WHEN THERE ARE NONE, and that is the byte-inertness obligation
+    // rather than a taste (close doc §2.4 item 6, the arena's `--capped-ceiling`
+    // echo rule): a zero-cap block must render exactly as it did before the
+    // amendment, which the pre-wave capture pins.
+    lines.extend(capped_lines(&report.capped));
 
     // ---- exclusions and dissent -------------------------------------------
     lines.push(String::new());
@@ -2943,10 +3036,10 @@ mod tests {
         GENERATED_ECOLOGY_V1, SESSION_BOT_SEAT, V4_BANDED_PREDICATES,
     };
     use crate::game::driven_families::{
-        AdmissionRead, AdmissionVerdict, CapSite, CappedPlayout, CounterAnnotation, CounterCheck,
-        ExclusionReason, FamilyBlockReport, FamilyLabel, FamilyReadOutcome, FamilyVerdict,
-        PolicyAdmission, ReadGrain, ReplicationRead, RootRow, RootVerdict, StrategicClass,
-        FROZEN_ADMISSION_K, MIN_ADMITTED_ROOTS, PILOT_ADMISSION_K, VOID_DISPOSITION,
+        AdmissionRead, AdmissionVerdict, CounterAnnotation, CounterCheck, ExclusionReason,
+        FamilyBlockReport, FamilyLabel, FamilyReadOutcome, FamilyVerdict, PolicyAdmission,
+        ReadGrain, ReplicationRead, RootRow, RootVerdict, StrategicClass, FROZEN_ADMISSION_K,
+        MIN_ADMITTED_ROOTS, PILOT_ADMISSION_K, VOID_DISPOSITION,
     };
     use crate::game::legal_moves::get_legal_moves;
     use crate::game::lookahead::RootScore;
