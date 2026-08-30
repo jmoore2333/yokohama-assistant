@@ -6257,16 +6257,30 @@ mod tests {
         );
         assert_eq!(ReplyPolicy::GreedyAtFinal.contestant(), Ok(Contestant::GREEDY_V1_DEFAULT));
         assert_eq!(ReplyPolicy::GreedyAtFinal.contestant(), Ok(Contestant::GreedyV1 { m: 8 }));
-        assert_eq!(
-            ReplyPolicy::LookaheadAtFinal.contestant(),
-            Ok(Contestant::LOOKAHEAD_V1_DEFAULT),
-        );
+
+        // RE-POINTED 2026-08-30 at the V4 ship commit: this arm is the shipped
+        // PRODUCTION contestant, which is a NAMED identity and not a
+        // `*_DEFAULT` (amendment D1's rule). The greedy arm above did NOT move
+        // — no greedy identity was confirmed — so the two `*AtFinal` arms are
+        // deliberately no longer one binding, and that asymmetry is asserted
+        // here rather than left to be noticed.
+        assert_eq!(ReplyPolicy::LookaheadAtFinal.contestant(), Ok(Contestant::PRODUCTION));
         assert!(
             matches!(
                 ReplyPolicy::LookaheadAtFinal.contestant(),
-                Ok(Contestant::LookaheadV1 { cap: None, .. })
+                Ok(Contestant::NamedTable(_))
             ),
-            "the shipped S1 arm is UNCAPPED: an absent cap is not any set cap",
+            "the production seat is a named table",
+        );
+        assert!(
+            !Contestant::PRODUCTION.echo().contains("cap="),
+            "the production arm is UNCAPPED: an absent cap is not any set cap ({})",
+            Contestant::PRODUCTION.echo(),
+        );
+        assert_ne!(
+            ReplyPolicy::LookaheadAtFinal.contestant(),
+            ReplyPolicy::GreedyAtFinal.contestant(),
+            "the two *AtFinal arms name two contestants",
         );
 
         // The two arms of `SeatSpec` are one vocabulary, not two agent kinds.
@@ -7291,7 +7305,7 @@ mod tests {
     fn the_mirrored_agent_picks_what_contestant_build_picks() {
         let rules = Rules::standard();
         let stats = rung_game(&rules, world(34));
-        let arms = [
+        let mut arms = vec![
             (Contestant::LOOKAHEAD_V1_DEFAULT, 40),
             (Contestant::from_str_name("lookahead-v1:b=8").expect("b=8 parses"), 12),
             (
@@ -7299,6 +7313,25 @@ mod tests {
                 12,
             ),
         ];
+        // **EVERY NAMED IDENTITY, since the 2026-08-30 ship commit** — one of
+        // them is the contestant this repo ships, and all three reach the
+        // mirror now that `AlternateTable` has retired. Built FROM
+        // `NamedIdentity::ALL`, so a fourth arm joins this pin by existing.
+        //
+        // They ride the knob arms' shorter window for the knob arms' reason:
+        // their CONSTRUCTION drift is what half (a) is for — and for a named
+        // arm the field most at risk is the TABLE, which `controller()` carries
+        // as the `weights=` identity — while a searching decision is not free
+        // in debug. Half (b) is still the honest half here: the authoring
+        // measurement in this cell's doc (a V1 mirror against a V2 build
+        // disagreeing at only 3 of 40 roots) is exactly a table drift, and it
+        // is why the window is not one root.
+        arms.extend(NamedIdentity::ALL.map(|arm| (Contestant::NamedTable(arm), 12)));
+        assert_eq!(arms.len(), 3 + NamedIdentity::ALL.len(), "every named arm is swept");
+        assert!(
+            arms.iter().any(|(arm, _)| *arm == Contestant::PRODUCTION),
+            "the SHIPPED contestant must be one of the arms this pin sweeps",
+        );
 
         for (arm, window) in arms {
             // (a) the construction, compared through the trait object.
@@ -7371,35 +7404,24 @@ mod tests {
             (Contestant::GREEDY_V1_DEFAULT, UnsupportedReason::Unranked),
             (Contestant::MCTS_V1_DEFAULT, UnsupportedReason::Diagnostic),
             (Contestant::ATOMIC_DIAG_DEFAULT, UnsupportedReason::Diagnostic),
-            // The V4 step-8 named identities. They are the arms that WOULD
-            // work — a named arm is a `LookaheadAgent` carrying the same
-            // ranked-root surface `lookahead-v1` carries — so nothing but this
-            // row stops a re-route or an absent-minded admission from putting a
-            // weight identity into the driven runner's grammar, which V3 §5.1
-            // reserves to the scan ("never the runner grammar").
-            (
-                Contestant::NamedTable(NamedIdentity::V2Padded),
-                UnsupportedReason::AlternateTable,
-            ),
-            (
-                Contestant::NamedTable(NamedIdentity::V2RefitPadded),
-                UnsupportedReason::AlternateTable,
-            ),
-            (
-                Contestant::NamedTable(NamedIdentity::V4Step9Draft1),
-                UnsupportedReason::AlternateTable,
-            ),
         ];
-        // All three arms are enumerated above, and a FOURTH arm must be dispositioned
-        // here rather than inheriting a refusal nothing checked.
-        assert_eq!(
-            expected
-                .iter()
-                .filter(|(c, _)| matches!(c, Contestant::NamedTable(_)))
-                .count(),
-            NamedIdentity::ALL.len(),
-            "every named identity must have a row here",
-        );
+        // **THE NAMED IDENTITIES ARE NO LONGER HERE**, and their absence is
+        // asserted rather than left as a gap: at the 2026-08-30 ship commit
+        // `UnsupportedReason::AlternateTable` retired, because the contestant
+        // this repo SHIPS is a named table and a rooted read of the shipped bot
+        // cannot be a refusal. Every arm is supported now, and
+        // `the_mirrored_agent_picks_what_contestant_build_picks` is where they
+        // are held equal to what they mirror. A FOURTH named arm therefore
+        // lands as a compile error in `mirror_build` rather than as a row here.
+        for arm in NamedIdentity::ALL {
+            assert!(
+                !expected.iter().any(|(c, _)| *c == Contestant::NamedTable(arm)),
+                "{} must not be refused: the production contestant is a named table",
+                arm.name(),
+            );
+            root_table(&root, seat, Contestant::NamedTable(arm), &rules, DECISION_SEED)
+                .unwrap_or_else(|e| panic!("{} must have a root table: {e}", arm.name()));
+        }
         for (contestant, reason) in expected {
             let err = root_table(&root, seat, contestant, &rules, DECISION_SEED)
                 .expect_err("v1 supports the S1 turn-boundary arm and nothing else");
@@ -7433,6 +7455,12 @@ mod tests {
         ));
         assert!(matches!(
             root_table(&corrupt, seat, Contestant::LOOKAHEAD_V1_DEFAULT, &rules, DECISION_SEED),
+            Err(RootTableError::CorruptRoot(_)),
+        ));
+        // ...and the SHIPPED contestant reaches the root check too, rather than
+        // stopping one step earlier at an arm refusal it no longer has.
+        assert!(matches!(
+            root_table(&corrupt, seat, Contestant::PRODUCTION, &rules, DECISION_SEED),
             Err(RootTableError::CorruptRoot(_)),
         ));
     }

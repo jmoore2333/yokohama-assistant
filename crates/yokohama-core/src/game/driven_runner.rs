@@ -3586,18 +3586,26 @@ mod tests {
         assert!(parse_seats("family-weighted,nope").is_err(), "one bad seat refuses the list");
     }
 
-    /// The default seat and the default contestant are THE SHIPPED
-    /// lookahead-v1, spelled through the grammar rather than through a second
+    /// The default seat and the default contestant are THE SHIPPED PRODUCTION
+    /// CONTESTANT, spelled through the grammar rather than through a second
     /// const this module would own.
+    ///
+    /// **Re-pointed 2026-08-30 at the V4 ship commit** — one of the four
+    /// bindings that commit moves together. The string is pinned against
+    /// `Contestant::PRODUCTION`'s OWN descriptor name rather than typed twice:
+    /// this module's whole reason for holding a string is that it introduces no
+    /// second opinion about what the shipped contestant is, and a hand-typed
+    /// name that drifted from the const would be exactly that second opinion.
     #[test]
-    fn the_default_seat_is_the_shipped_lookahead_v1_through_the_grammar() {
+    fn the_default_seat_is_the_shipped_production_contestant_through_the_grammar() {
+        assert_eq!(DEFAULT_SEAT, Contestant::PRODUCTION.descriptor().0);
         assert_eq!(
             Contestant::from_str_name(DEFAULT_SEAT).expect("the default spells a contestant"),
-            Contestant::LOOKAHEAD_V1_DEFAULT,
+            Contestant::PRODUCTION,
         );
         match parse(&args(&["table", "g"])).expect("table parses without --contestant") {
             Command::Table { contestant, decision_seed, .. } => {
-                assert_eq!(contestant, Contestant::LOOKAHEAD_V1_DEFAULT);
+                assert_eq!(contestant, Contestant::PRODUCTION);
                 assert_eq!(decision_seed, None, "the seed defaults at EXECUTION, not at parse");
             }
             other => panic!("expected a Table command, got {other:?}"),
@@ -4502,8 +4510,8 @@ mod tests {
         )
         .expect("the last-decision run completes");
         assert!(
-            out.contains(&Contestant::LOOKAHEAD_V1_DEFAULT.echo()),
-            "the default seat is not the shipped lookahead-v1: {out}",
+            out.contains(&Contestant::PRODUCTION.echo()),
+            "the default seat is not the shipped production contestant: {out}",
         );
     }
 
