@@ -672,6 +672,15 @@ pub fn render_cap_rate(report: &CapRateReport) -> Vec<String> {
     let interval = report.interval();
     let mut lines = vec![
         CAP_RATE_LABEL.to_string(),
+        // THE RESOLVED master, always — not the `SeedScheduleKind` the caller
+        // typed. An `--os-entropy` run's header says the drawn master is
+        // "printed below", and this is below; without it that run is
+        // unreproducible and the header is false (review M1). CLAUDE.md's arena
+        // bullet: "masters are recorded before use".
+        format!(
+            "master={:#018x} players={} units={} cell={:?}",
+            report.master, report.players, report.units, report.name,
+        ),
         format!(
             "games={} capped={} rate={:.6} wilson95=[{:.6}, {:.6}]",
             report.games,
