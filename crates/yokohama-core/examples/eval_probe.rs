@@ -113,8 +113,10 @@ use yokohama_core::game::lookahead::{
     LOOKAHEAD_IMPL_VERSION,
 };
 use yokohama_core::game::driven::{
-    escrow_recipe_pair, placement_shape, registry, root_table, RecipeMiss, RecipePair,
-    RegistryError, RootPredicate, RootSource, V4_ESCROW_ORDINALS,
+    classify_fee_flow_candidates, classify_recipe_candidates, escrow_recipe_pair,
+    fee_flow_recipe_pair, generate_roots, placement_shape, registry, root_table, FeeFlowMiss,
+    RecipeMiss, RecipePair, RecipeSide, RegistryError, RootOrigin, RootPredicate, RootSource,
+    V4_ESCROW_ORDINALS,
 };
 use yokohama_core::game::driven_runner::DEFAULT_SEAT;
 use yokohama_core::game::pair_fixtures::{
@@ -129,7 +131,7 @@ use yokohama_core::{
     ChurchTrack, Contestant, Country, CustomsSlot, CustomsTrack, EndGameTrigger, GameConfig,
     GameRecord, GameState, HandCard, Move, NamedIdentity, OrderCardId, PlayerId, PlayerView,
     QuantileSketch, RolloutPolicy, Rules, SeedSchedule, SeedScheduleKind, Slot, StartingOrderChoice,
-    TechCardId, TriggerTally, TurnPhase, VisiblePlayer, WorldSeed, SEMANTICS_REV,
+    TechCardId, TriggerTally, TurnPhase, ViewError, VisiblePlayer, WorldSeed, SEMANTICS_REV,
 };
 
 const USAGE: &str = "\
@@ -557,6 +559,76 @@ usage: eval_probe <subcommand> [options]
       the registry moved under a transcription — which invalidates the read and
       says nothing about the table.
 
+  step10 pf  --decision-seed <u64> --escrow-read <ordinal>... --anchor <N>=<digest>...
+             [--burned <ordinal>...] [--with-control]
+  step10 ose --decision-seed <u64> --record <path> --escrow-read <ordinal>...
+             [--burned <ordinal>...] [--with-control]
+  step10 pf | ose --decision-seed <u64> --development [--with-control]
+                  [--record <path>, the ose arm]
+      §7 STEP 10's ESCROW READ over the LOCKED identity `v4-step9-draft1`, on
+      PRODUCTION bytes. The table is NOT a flag: step 10 reads the identity
+      step 9 locked, and `v2-padded` is printed beside it at every ordinal.
+
+      RUN IT ON A VERIFIED-CLEAN BUILD (R-S10-12): `rm -rf target/release`
+      FIRST. Every figure is identity-critical.
+
+      **THIS COMMAND BURNS THE BAND.** Reading a fenced ordinal is exactly what
+      the §6 burn rule reserved for step 10, so the acknowledgement is per
+      ordinal BY NAME and the command REFUSES a partial band, a duplicate or a
+      non-member: all eight reads run regardless of burn status, because a
+      collision at an unread ordinal would go unseen (the one gaming channel the
+      2026-08-23 red team found).
+
+      THE BANDS. `pf` = spec §6's placement-fork escrow ordinals {8..15} at the
+      recorded master M-PF, resolved in ONE scan walk; `ose` = the charter's
+      eight escrow-reserved exhibits {50 58 78 94 127 144 168 184} of the
+      regenerated bga-import/896199544 document.
+
+      THE PER-ORDINAL PIPELINE, identical at both bands and under --development:
+      viewability (`observe(root, mover)`; `ViewerDealUnrecorded` is a VOID, not
+      a miss) -> the recipe (§6's `escrow_recipe_pair` at PF, Shape F's
+      `fee_flow_recipe_pair` at ose; an INSTRUMENT arm is precedence (0), every
+      other miss is a typed VOID with the whole candidate population printed) ->
+      the fork state and both successors through the CHECKED boundary -> the
+      band's own arms -> clause (iii) on the controller's OWN root table with
+      its same-path V2 parity pin -> the static preference and its β+ parity
+      gate. Then §5.3's Part A over EVERY ordinal's two successor sets, with the
+      recipe-instantiated escrow pair as the THIRD blocking arm.
+
+      WHAT GATES. At `pf` (spec §6's LETTER): clause (i) — the MOVER's S1
+      strictly greater at the productive successor — AND clause (iii) — the
+      locked identity's root table strictly preferring it. At `ose`: the
+      ARITHMETIC arm (opponent-O1 >= 1 AND opponent-O3 = 0, vacuous by census),
+      the three RAW conjuncts (E1 moves by EXACTLY the fee, sixteen named
+      columns invariant, X1 recomputed at the successor purse) and the β+
+      PARITY gate; clause (iii) is RECORDED there.
+
+        --decision-seed <u64>
+                        REQUIRED, no default. R-S10-2 fixes the read at a seed
+                        the CALLER records before the run
+        --escrow-read <ordinal>
+                        REPEATABLE. The burn acknowledgement per ordinal by
+                        name. Must be EXACTLY the band
+        --burned <ordinal>
+                        REPEATABLE, default none. A band member already burned:
+                        a MISS at denominator 8, its reads still run
+        --anchor <N>=<digest>
+                        `pf` only, REPEATABLE, all eight required: the driven
+                        runner's printed root digests. A resolved digest that
+                        disagrees is precedence (0)
+        --record <path> `ose` only, REQUIRED: the regenerated game-3 document,
+                        identity-checked before any root resolves
+        --with-control  additionally RECORD v2-refit-padded's root-table
+                        preference at every ordinal
+        --development   BORN-VALIDATION: the identical pipeline on the LICENSED
+                        development roots (PF {0..3}, ose {e111, e159, e198}),
+                        composing NO block verdict. REFUSES --escrow-read,
+                        --burned and --anchor — nothing there was ever fenced
+      EXIT: 0 = block PASS · 1 = block MISS · 2 = a typed refusal (precedence
+      (0)) · 4 = VOID-AS-BLOCK, routed to the owner · 5 = an UNREGISTERED CELL,
+      routed to the owner (`pf` only). Under --development: 0 on completion, 2
+      on a typed refusal.
+
 contestants (the grammar is Contestant::from_str_name's — unknown is an error at
 every level, and an unknown knob is never silently ignored):
   greedy-v1[:m=<n>]    the honest arena driver (observe -> sampler -> handle)
@@ -598,6 +670,7 @@ fn main() {
         Some("rooted") => cmd_rooted(&args[1..]).map(exit_with),
         Some("fit") => cmd_fit(&args[1..]).map(exit_with),
         Some("step9") => cmd_step9(&args[1..]).map(exit_with),
+        Some("step10") => cmd_step10(&args[1..]).map(exit_with),
         _ => Err(USAGE.to_string()),
     };
     if let Err(message) = result {
@@ -8868,6 +8941,18 @@ impl RootedMiss {
         }
     }
 
+    /// The message alone, WITHOUT the surrounding refusal prose.
+    ///
+    /// Step 10 composes its own precedence-(0) sentences (its rule is the
+    /// composition table's, not R4's), so it needs the detail rather than the
+    /// step-9 wrapper — and reading it through an accessor is what keeps the
+    /// two arms from being flattened at the use site.
+    fn detail(&self) -> &str {
+        match self {
+            RootedMiss::Save(m) | RootedMiss::Instrument(m) => m,
+        }
+    }
+
     /// The refusal a caller sees, with its type named.
     fn refusal(&self) -> String {
         match self {
@@ -8992,6 +9077,7 @@ fn rooted_echo(knobs: &ShippedKnobs, weights: &WeightTable) -> String {
 /// re-derivation could rank a different move first and there would be no fact of
 /// the matter about which answer the controller gave (`suggest`'s rule, spec
 /// §0.3), which is precisely what R5 names.
+#[derive(Debug)]
 struct RootedRead {
     echo: String,
     sampler_seed: u64,
@@ -9229,7 +9315,11 @@ fn e113_step9_gate(weights: &WeightTable, rules: &Rules) -> Result<E113Step9Gate
 /// cannot see that. `driven::RootTable` exposes its `SearchStats` for exactly
 /// this, so the pin reads them rather than trusting the shape.
 struct ParityPin {
-    root: &'static str,
+    /// WHICH state the pin was taken at — a registry root's name at step 9, an
+    /// escrow ordinal's fork label at step 10. A `String` since the step-10
+    /// surface pins states that have no `&'static` name; the registry callers'
+    /// output is unchanged, because the value printed is the same one.
+    root: String,
     root_digest: String,
     decision_seed: u64,
     driven_echo: String,
@@ -9327,19 +9417,34 @@ impl ParityPin {
     }
 }
 
-fn v2_parity_pin(root: &'static str, rules: &Rules) -> Result<ParityPin, RootedMiss> {
-    let entry = load_registry_root(root, rules)?;
+/// The pin at an ARBITRARY state, seat and seed.
+///
+/// Factored out of [`v2_parity_pin`] rather than restated because R-S10-2 asks
+/// for the same pin "RUN AT EVERY ESCROW PLACEMENT STATE — proving the path at
+/// the roots that matter, not only at the registry roots". Two copies of
+/// "build both paths and compare fifteen counters" is the shape that lets a
+/// step-9 pin and a step-10 pin quietly compare different things.
+///
+/// The registry caller below is behaviour-identical: `root_digest` was read off
+/// the loaded entry, and an entry's digest IS `state_digest` of its state
+/// (`load_registry_root` takes it from the resolved descriptor).
+fn parity_pin_at(
+    label: String,
+    state: &GameState,
+    seat: PlayerId,
+    decision_seed: u64,
+    rules: &Rules,
+) -> Result<ParityPin, RootedMiss> {
     let contestant = Contestant::from_str_name(DEFAULT_SEAT).map_err(|e| {
         RootedMiss::Instrument(format!("the driven default contestant does not parse: {e}"))
     })?;
-    let driven = root_table(&entry.state, entry.seat, contestant, rules, entry.decision_seed)
-        .map_err(|e| RootedMiss::Instrument(format!("{root}: no driven root table: {e:?}")))?;
-    let rooted =
-        rooted_table(&entry.state, entry.seat, &WeightTable::V2, rules, entry.decision_seed)?;
+    let driven = root_table(state, seat, contestant, rules, decision_seed)
+        .map_err(|e| RootedMiss::Instrument(format!("{label}: no driven root table: {e:?}")))?;
+    let rooted = rooted_table(state, seat, &WeightTable::V2, rules, decision_seed)?;
     Ok(ParityPin {
-        root,
-        root_digest: entry.digest,
-        decision_seed: entry.decision_seed,
+        root: label,
+        root_digest: state_digest(state),
+        decision_seed,
         driven_echo: driven.echo.clone(),
         rooted_echo: rooted.echo.clone(),
         driven_winner: canonical_encoding(&driven.winner),
@@ -9351,6 +9456,11 @@ fn v2_parity_pin(root: &'static str, rules: &Rules) -> Result<ParityPin, RootedM
         driven_stats: driven.stats,
         rooted_stats: rooted.stats,
     })
+}
+
+fn v2_parity_pin(root: &'static str, rules: &Rules) -> Result<ParityPin, RootedMiss> {
+    let entry = load_registry_root(root, rules)?;
+    parity_pin_at(root.to_string(), &entry.state, entry.seat, entry.decision_seed, rules)
 }
 
 // --- the e93 winner gate ----------------------------------------------------
@@ -12564,6 +12674,21 @@ enum RecipeRole {
     Unregistered,
     Productive,
     Dead,
+    /// **STEP 10 ONLY** — the §6 recipe pair's PRODUCTIVE side at an ESCROW
+    /// ordinal. Kept apart from [`Productive`](Self::Productive) because §5.3's
+    /// blocking rule has THREE arms and they are not interchangeable: a
+    /// step-2-registered DEVELOPMENT-root pair and a step-10
+    /// recipe-instantiated ESCROW pair are different findings, and a class
+    /// holding an escrow pair labelled "registered development pair at
+    /// m-pf-ord-8" would be a wrong sentence about a fenced ordinal.
+    EscrowProductive,
+    /// **STEP 10 ONLY** — the §6 recipe pair's DEAD side at an escrow ordinal.
+    EscrowDead,
+    /// **STEP 10 ONLY** — Shape F's `F+` (the minimal nonzero opponent fee
+    /// flow) at a reserved exhibit.
+    EscrowFeePlus,
+    /// **STEP 10 ONLY** — Shape F's `F0` (the same-total zero-fee control).
+    EscrowFeeZero,
 }
 
 /// Where a signed view came from, in the words the artifact prints.
@@ -12596,6 +12721,10 @@ impl Provenance {
                     RecipeRole::Unregistered => "",
                     RecipeRole::Productive => " [REGISTERED productive]",
                     RecipeRole::Dead => " [REGISTERED dead]",
+                    RecipeRole::EscrowProductive => " [ESCROW productive]",
+                    RecipeRole::EscrowDead => " [ESCROW dead]",
+                    RecipeRole::EscrowFeePlus => " [ESCROW F+]",
+                    RecipeRole::EscrowFeeZero => " [ESCROW F0]",
                 };
                 format!("succ {root}/{set}#{ordinal}{tag} {mv}")
             }
@@ -12610,15 +12739,31 @@ struct SignedView {
     from: Provenance,
 }
 
-/// Why a class BLOCKS. §5.3's rule has exactly these arms in scope before step
-/// 10 (the recipe-instantiated ESCROW pair is the third, and reading the escrow
-/// band at all is fenced until then).
+/// Why a class BLOCKS — §5.3's rule, and it has exactly THREE arms: "a
+/// collision blocks iff its class contains two sides of one registered gate
+/// pair, a step-2-registered development-root successor pair, or (step 10 only)
+/// a recipe-instantiated escrow pair".
+///
+/// The third arm lands with the step-10 read surface. It is reachable ONLY from
+/// there — the `collision` command signs development roots and the frozen
+/// fixture package, neither of which carries an escrow role — so that command's
+/// output is unchanged by its existence
+/// (`the_collision_commands_blocking_labels_are_unchanged_by_the_third_arm`).
+///
+/// The shared `Pair` postfix is §5.3's own vocabulary — every arm of the rule
+/// is a PAIR whose two sides landed in one class — so the lint is allowed here
+/// rather than answered by renaming the registration's words.
+#[allow(clippy::enum_variant_names)]
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 enum Blocking {
     /// Two sides of ONE registered gate pair at ONE endpoint.
     GatePair { pair: String, stage: &'static str },
     /// The two sides of ONE root's registered development successor pair.
     RootPair { root: String },
+    /// **(STEP 10 ONLY)** the two sides of ONE ordinal's recipe-instantiated
+    /// ESCROW pair — §6's productive/dead at a PF escrow ordinal, or Shape F's
+    /// `F+`/`F0` at a reserved exhibit.
+    EscrowPair { root: String },
 }
 
 impl Blocking {
@@ -12626,6 +12771,9 @@ impl Blocking {
         match self {
             Self::GatePair { pair, stage } => format!("gate pair {pair} at {stage}"),
             Self::RootPair { root } => format!("registered development pair at {root}"),
+            Self::EscrowPair { root } => {
+                format!("recipe-instantiated escrow pair at {root}")
+            }
         }
     }
 }
@@ -12815,6 +12963,24 @@ fn blocking_findings(members: &[Provenance]) -> Vec<Blocking> {
         if roles.contains(&RecipeRole::Productive) && roles.contains(&RecipeRole::Dead) {
             out.push(Blocking::RootPair { root: root.to_string() });
         }
+        // §5.3's THIRD arm — STEP 10 ONLY. The escrow roles are unreachable
+        // from the `collision` command (it signs the frozen package and the
+        // DEVELOPMENT roots, and tags neither with an escrow side), so this
+        // clause cannot change that command's output. Both bands' pairs land
+        // here because both are "a recipe-instantiated escrow pair": §6's
+        // productive/dead at a PF ordinal, Shape F's F+/F0 at a reserved
+        // exhibit. ONE side plus an organic successor is NOT a pair and does
+        // not fire.
+        // W2 RED: the deliberate placeholder — the arm fires on ANY escrow role
+        // rather than on BOTH sides of one pair, so a registered side colliding
+        // with an organic successor would read as a §5.3 stop.
+        let escrow_recipe = roles.contains(&RecipeRole::EscrowProductive)
+            || roles.contains(&RecipeRole::EscrowDead);
+        let escrow_fee_flow = roles.contains(&RecipeRole::EscrowFeePlus)
+            || roles.contains(&RecipeRole::EscrowFeeZero);
+        if escrow_recipe || escrow_fee_flow {
+            out.push(Blocking::EscrowPair { root: root.to_string() });
+        }
     }
     out.sort();
     out
@@ -12961,15 +13127,27 @@ fn sign_root_sets(root: &RootInput, rules: &Rules) -> Result<Vec<SuccessorSet>, 
     let mover = root.state.current_player;
     let mut sets = Vec::new();
 
+    // The §6 recipe's own roles, as a resolver: `sign_one_set` takes the role
+    // from its caller since step 10 signs the SAME sets under ESCROW roles, and
+    // one walk that both surfaces share cannot drift from itself.
+    let role_of = |mv: &Move| -> RecipeRole {
+        match &root.recipe {
+            Ok(pair) if pair.productive == *mv => RecipeRole::Productive,
+            Ok(pair) if pair.dead == *mv => RecipeRole::Dead,
+            _ => RecipeRole::Unregistered,
+        }
+    };
+
     let moves = get_legal_moves(&root.state, rules);
     sets.push(sign_one_set(
-        root,
+        &root.name,
         "root",
         "the root's own legal list",
         format!("get_legal_moves(root) at {:?}", root.state.turn_phase),
         &root.state,
         &moves,
         mover,
+        &role_of,
         rules,
     )?);
 
@@ -12981,55 +13159,60 @@ fn sign_root_sets(root: &RootInput, rules: &Rules) -> Result<Vec<SuccessorSet>, 
             .map_err(|e| format!("{}: EndAdditionalPhase did not apply: {e}", root.name))?;
         let placements = get_legal_moves(&placing, rules);
         sets.push(sign_one_set(
-            root,
+            &root.name,
             "fork",
             "§6's fork placement set (the step-5 gate's \"same-count set\")",
             format!("EndAdditionalPhase then get_legal_moves at {:?}", placing.turn_phase),
             &placing,
             &placements,
             mover,
+            &role_of,
             rules,
         )?);
     }
     Ok(sets)
 }
 
+/// **THE WALK**, shared by Part A's development roots and by step 10's escrow
+/// ordinals.
+///
+/// `role_of` is the caller's, not this function's: the §5.3 blocking rule has
+/// three arms and which one a signed successor belongs to is a fact about the
+/// ROOT's band, which the caller knows and this walk does not. Everything else
+/// — the checked boundary, the non-terminal domain, the mover held across the
+/// whole set — is identical for both, which is exactly why there is one walk.
 #[allow(clippy::too_many_arguments)]
 fn sign_one_set(
-    root: &RootInput,
+    root_name: &str,
     name: &'static str,
     reading: &'static str,
     path: String,
     from_state: &GameState,
     moves: &[Move],
     mover: PlayerId,
+    role_of: &dyn Fn(&Move) -> RecipeRole,
     rules: &Rules,
 ) -> Result<SuccessorSet, String> {
     let mut terminal = 0usize;
     let mut views = Vec::new();
     for (ordinal, mv) in moves.iter().enumerate() {
         let next = apply_move(from_state, mv, rules)
-            .map_err(|e| format!("{}/{name}: successor {ordinal} did not apply: {e}", root.name))?;
+            .map_err(|e| format!("{root_name}/{name}: successor {ordinal} did not apply: {e}"))?;
         let view = observe(&next, mover)
-            .map_err(|e| format!("{}/{name}: successor {ordinal} unobservable: {e}", root.name))?;
+            .map_err(|e| format!("{root_name}/{name}: successor {ordinal} unobservable: {e}"))?;
         if view_is_terminal(&view) {
             terminal += 1;
             continue;
         }
-        let role = match &root.recipe {
-            Ok(pair) if pair.productive == *mv => RecipeRole::Productive,
-            Ok(pair) if pair.dead == *mv => RecipeRole::Dead,
-            _ => RecipeRole::Unregistered,
-        };
         views.push(SignedView {
             sig: signature(&view, mover, rules)
-                .map_err(|e| format!("{}/{name}: successor {ordinal}: {e}", root.name))?,
+                .map_err(|e| format!("{root_name}/{name}: successor {ordinal}: {e}"))?,
             from: Provenance::Successor {
-                root: root.name.clone(),
+                root: root_name.to_string(),
                 set: name,
                 ordinal,
                 mv: format!("{mv:?}"),
-                role,
+                role: role_of(mv),
             },
         });
     }
@@ -16348,6 +16531,2791 @@ the superseded run  the STOP-of-record under the ORIGINAL frozen gates — the
                     finding this registration answers — was banked at HEAD
                     3dc1e54 (exit 2). The step-5 close row cites BOTH artifacts";
 
+
+// ---------------------------------------------------------------------------
+// V4 STEP 10 — THE ESCROW READ SURFACE (`step10 pf` | `step10 ose`)
+//
+// The execution ledger's step-10 OPEN row fixes THIRTEEN readings (R-S10-1 …
+// R-S10-13) before any escrow ordinal resolves, and this section is their
+// realization. Nothing here re-registers anything: every gate, every void and
+// every exit code below is a registered sentence carrying its citation.
+//
+// **What gates, per band.** At the PF band (spec §6's LETTER, R-S10-10) an
+// ordinal SHOWS the registered read iff clause (i) — the MOVER's S1
+// `ProductionAccess` strictly greater at the productive successor than at the
+// dead one — and clause (iii) — the CONTROLLER'S OWN root table under the
+// locked identity, strictly preferring the productive side — both hold. At the
+// RECORDED band (guidingpath 2026-08-23, "THE STEP-10 RECORDED-BAND RECIPE IS
+// REGISTERED", item (5)) the gated arms are the ARITHMETIC arm, the three RAW
+// conjuncts and the β+ PARITY gate, while clause (iii) is RECORDED — the
+// owner-ruled inversion, with the parity gate carrying its failability.
+//
+// **Everything prints, and the verdict is composed ONCE** —
+// [`step9_structural_passed`]'s rule: one predicate read by the report line and
+// by the exit code, so a report cannot print PASS while the process exits 1.
+//
+// **This surface has its OWN admission** ([`admit_step10_root`]). The two
+// pre-existing burn guards — [`admit_record_root`] and [`ose_columns`] — keep
+// refusing exactly as they did: they are step-9-era surfaces and the burn rule
+// still fences them. Nothing below routes through either.
+// ---------------------------------------------------------------------------
+
+/// **VOID-AS-BLOCK**: fewer than four substantive-capable ordinals, routed to
+/// the owner with the complete output (R-S10-5; the 2026-08-23 registration's
+/// clause (1) — "never silent").
+const EXIT_VOID_AS_BLOCK: i32 = 4;
+
+/// **UNREGISTERED CELL**: the PF band's verdict would FLIP under the recorded
+/// band's void rule, which is NOT registered for this band (R-S10-10). The
+/// instrument prints no block verdict and routes to the owner.
+const EXIT_UNREGISTERED_CELL: i32 = 5;
+
+/// The instantiation FLOOR: `>= 4 of 8 SUBSTANTIVE-CAPABLE (viewable AND
+/// recipe-instantiable)` — the 2026-08-23 recipe-structure ruling's clause (3)
+/// as the step-5 findings row (`3e9befe` (3)) re-read it.
+const STEP10_FLOOR: usize = 4;
+
+/// The BLOCK-PASS threshold: `>= 6 of 8` (spec §6; the charter row's
+/// "unchanged").
+const STEP10_BLOCK_PASS: usize = 6;
+
+/// The band size both predicates carry — spec §6's `{8..15}`, and the charter's
+/// escrow-reserved eight chosen to match it exactly.
+const STEP10_BAND_SIZE: usize = 8;
+
+/// **THE WORST-CASE SENTENCE, owner-demanded and recorded before any evidence
+/// existed** (guidingpath 2026-08-23, item (5)). Printed VERBATIM on every
+/// recorded-band block line.
+const STEP10_WORST_CASE: &str =
+    "at the floor, a block can PASS with exactly TWO discriminating recipe reads";
+
+/// The two bands step 10 reads.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Step10Band {
+    /// Spec §6's `placement-fork-same-count` escrow ordinals `{8..15}` at the
+    /// recorded master M-PF, read under the §6 recipe.
+    Pf,
+    /// The charter's EIGHT escrow-reserved `opponent-sitting-executable`
+    /// exhibits of the recorded game-3 document, read under Shape F.
+    Ose,
+}
+
+impl Step10Band {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Pf => "pf",
+            Self::Ose => "ose",
+        }
+    }
+
+    /// The EIGHT fenced members, in registered order.
+    fn escrow(self) -> Vec<u32> {
+        match self {
+            Self::Pf => V4_ESCROW_ORDINALS.collect(),
+            Self::Ose => OSE_RESERVED.iter().map(|e| *e as u32).collect(),
+        }
+    }
+
+    /// The LICENSED development roots `--development` born-validates on
+    /// (R-S10-12): M-PF `{0..3}` and the re-registered OSE band.
+    fn development(self) -> Vec<u32> {
+        match self {
+            Self::Pf => M_PF_DEVELOPMENT.collect(),
+            Self::Ose => OSE_BAND.iter().map(|e| *e as u32).collect(),
+        }
+    }
+
+    /// What the recipe's two sides are CALLED here — the §6 pair's
+    /// productive/dead, or Shape F's `F+`/`F0`.
+    fn plus_label(self) -> &'static str {
+        match self {
+            Self::Pf => "productive",
+            Self::Ose => "F+",
+        }
+    }
+
+    fn zero_label(self) -> &'static str {
+        match self {
+            Self::Pf => "dead",
+            Self::Ose => "F0",
+        }
+    }
+
+    fn label_of(self, ordinal: u32) -> String {
+        match self {
+            Self::Pf => format!("m-pf-ord-{ordinal}"),
+            Self::Ose => format!("ose-e{ordinal}"),
+        }
+    }
+
+    fn origin_of(self, ordinal: u32) -> String {
+        match self {
+            Self::Pf => format!("gen:placement-fork-same-count:{M_PF:#018X}:{ordinal}"),
+            Self::Ose => format!("{OSE_RUN_ID}:{ordinal}"),
+        }
+    }
+}
+
+/// Is `ordinal` FENCED by a burn rule — a §6 escrow ordinal or a
+/// charter-reserved exhibit?
+fn step10_fenced(ordinal: u32) -> bool {
+    V4_ESCROW_ORDINALS.contains(&ordinal) || OSE_RESERVED.iter().any(|e| *e as u32 == ordinal)
+}
+
+/// Is `ordinal` a LICENSED development root — one the burn rule never reached?
+fn step10_licensed(ordinal: u32) -> bool {
+    M_PF_DEVELOPMENT.contains(&ordinal) || OSE_BAND.iter().any(|e| *e as u32 == ordinal)
+}
+
+/// **THE STEP-10 ADMISSION**, and the ONE function every root on this surface
+/// passes through.
+///
+/// R-S10-9: "the acknowledgement is per ordinal BY NAME (`--escrow-read N`,
+/// repeated for ALL EIGHT — the command REFUSES a partial band: all eight reads
+/// run regardless of burn status)". The `--escrow-read` set is validated WHOLE
+/// before anything resolves; this is the second, structural half of that rule —
+/// no ordinal reaches resolution without its own acknowledgement, and a future
+/// loop cannot lose the guard by being rewritten, because the guard is not a
+/// property of the loop.
+///
+/// **Three arms, and nothing else is admitted.** A FENCED ordinal needs its own
+/// acknowledgement; a LICENSED development root is admitted with none (there is
+/// nothing to acknowledge — the burn rule never reached it, and `--development`
+/// REFUSES `--escrow-read` for exactly that reason); anything else is refused
+/// as unregistered rather than borrowed into one of the two messages above.
+///
+/// **The four registered lists are pairwise disjoint AS INTEGERS** — PF escrow
+/// `{8..15}`, PF development `{0..3}`, the reserved eight `{50,58,78,94,127,
+/// 144,168,184}`, the OSE band `{111,159,198}` — which is what lets one `u32`
+/// namespace carry both bands. Pinned by
+/// `the_step10_bands_are_pairwise_disjoint_as_integers`, so a future band that
+/// collided would be a test failure rather than an ordinal admitted under
+/// another band's licence.
+fn admit_step10_root(ordinal: u32, acknowledged: &BTreeSet<u32>) -> Result<u32, String> {
+    if step10_fenced(ordinal) {
+        // W2 RED: the deliberate placeholder — the admission checks that SOME
+        // acknowledgement was given rather than THIS ordinal's. The cell below
+        // asks for the per-ordinal rule; GREEN lands it.
+        return if !acknowledged.is_empty() {
+            Ok(ordinal)
+        } else {
+            Err(format!(
+                "REFUSED: ordinal {ordinal} is FENCED by the burn rule and this run did not \
+                 acknowledge it. R-S10-9 makes the acknowledgement per ordinal BY NAME \
+                 (`--escrow-read {ordinal}`); the set given was {acknowledged:?}. Nothing \
+                 resolves here.",
+            ))
+        };
+    }
+    if step10_licensed(ordinal) {
+        return Ok(ordinal);
+    }
+    Err(format!(
+        "REFUSED: ordinal {ordinal} is neither a FENCED band member (PF {{{}..{}}}, reserved \
+         {OSE_RESERVED:?}) nor a LICENSED development root (PF {{{}..{}}}, OSE {OSE_BAND:?}). It \
+         is not escrow, and this message says so rather than borrowing the burn rule's.",
+        V4_ESCROW_ORDINALS.start,
+        V4_ESCROW_ORDINALS.end - 1,
+        M_PF_DEVELOPMENT.start,
+        M_PF_DEVELOPMENT.end - 1,
+    ))
+}
+
+// --- the composition table, as PURE functions over per-ordinal values -------
+
+/// One ordinal's verdict, in the words the block line counts.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum OrdinalVerdict {
+    /// PASS on real, DISCRIMINATING content.
+    PassReal,
+    /// PASS BY VACUITY, said plainly (the 2026-08-23 registration's own words):
+    /// the ordinal's substantive read was not available and what remained
+    /// passed.
+    PassVacuous,
+    /// A read arm said NO.
+    Miss,
+    /// VOID — nobody chose it and nobody gains (the 4(c) impossible-in-principle
+    /// precedent). At the PF band a void does NOT show the read; at the
+    /// recorded band the void rule turns the remaining arms' pass into
+    /// `PassVacuous`, so this arm is unreachable there.
+    Void,
+    /// BURNED before step 10 — a MISS at denominator 8 (the `9e9e6ed`
+    /// attrition rule, extended by the 2026-08-23 registration's clause (3)).
+    Burned,
+}
+
+/// One PF ordinal's read, reduced to what the composition needs.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum PfOrdinalRead {
+    /// The mover's own deal is unrecorded at the root, so the registered read
+    /// has no honest viewer (`3e9befe` (3)). Structurally absent at a generated
+    /// root — every seat of a generated game has its deal recorded — but the
+    /// arm runs, and a void that fired would be a fact about the position.
+    Unviewable,
+    /// A typed `RecipeMiss` that is NOT an instrument arm: VOID-BY-RECIPE,
+    /// counted as NOT SHOWN (R-S10-10).
+    RecipeVoid,
+    /// Both registered clauses read.
+    Substantive { clause_i: bool, clause_iii: bool },
+}
+
+impl PfOrdinalRead {
+    fn substantive_capable(self) -> bool {
+        matches!(self, Self::Substantive { .. })
+    }
+}
+
+/// One recorded-band ordinal's read, reduced to what the composition needs.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum OseOrdinalRead {
+    /// `ViewerDealUnrecorded` at the root — VOID, and NON-SUBSTANTIVE for the
+    /// floor (`3e9befe` (3)). Nothing is readable, so the remainder passes by
+    /// vacuity.
+    Unviewable,
+    /// Viewable, and the Shape-F recipe does not instantiate. The recipe read
+    /// is VOID; the ARITHMETIC arm still reads (the 2026-08-23 clause (3):
+    /// "the remaining arms still read").
+    NonInstantiable { arithmetic: bool },
+    /// Viewable AND instantiable — every registered arm read.
+    Substantive { arithmetic: bool, raw_a: bool, raw_b: bool, raw_c: bool, parity: bool },
+}
+
+impl OseOrdinalRead {
+    fn substantive_capable(self) -> bool {
+        matches!(self, Self::Substantive { .. })
+    }
+}
+
+/// One PF ordinal as the composition sees it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct PfOrdinal {
+    ordinal: u32,
+    burned: bool,
+    read: PfOrdinalRead,
+}
+
+/// One recorded-band ordinal as the composition sees it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct OseOrdinal {
+    ordinal: u32,
+    burned: bool,
+    read: OseOrdinalRead,
+}
+
+/// The BAND-level inputs both compositions read beside the per-ordinal values.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+struct BandInputs {
+    /// Any typed instrument failure ANYWHERE — precedence (0).
+    instrument_failure: bool,
+    /// Blocking collisions found anywhere in the band, burned ordinals'
+    /// successor sets INCLUDED (R-S10-8: the closed gaming channel).
+    blocking_collisions: usize,
+}
+
+/// The block line's counts. `real + vacuous + miss + void + burned` is the band
+/// size at both bands; the WORDS differ, so each renderer labels its own.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+struct BlockSplit {
+    /// PF: ordinals that SHOWED the registered read. Recorded band: ordinals
+    /// that PASSED on discriminating content.
+    real: usize,
+    /// Recorded band only: ordinals that passed BY VACUITY. Always 0 at PF,
+    /// where a void does not show.
+    vacuous: usize,
+    /// Ordinals whose own read said NO.
+    miss: usize,
+    /// PF only: ordinals VOID by recipe or unviewable. Always 0 at the recorded
+    /// band, where the void rule routes them to `vacuous` or `miss`.
+    void: usize,
+    /// Ordinals BURNED before step 10.
+    burned: usize,
+    /// Blocking collisions anywhere in the band.
+    collisions: usize,
+}
+
+impl BlockSplit {
+    fn count(verdicts: impl Iterator<Item = OrdinalVerdict>, collisions: usize) -> Self {
+        let mut out = Self { collisions, ..Self::default() };
+        for verdict in verdicts {
+            match verdict {
+                OrdinalVerdict::PassReal => out.real += 1,
+                OrdinalVerdict::PassVacuous => out.vacuous += 1,
+                OrdinalVerdict::Miss => out.miss += 1,
+                OrdinalVerdict::Void => out.void += 1,
+                OrdinalVerdict::Burned => out.burned += 1,
+            }
+        }
+        out
+    }
+
+    /// Ordinals that PASS — real plus vacuous, the count `>= 6 of 8` reads.
+    fn passes(self) -> usize {
+        self.real + self.vacuous
+    }
+
+    /// The band's OWN counter against the `>= 6 of 8` threshold. At the
+    /// recorded band a pass-by-vacuity IS a pass; at PF a void does NOT show
+    /// the read, so the count is the shown ordinals alone.
+    fn passes_for(self, band: Step10Band) -> usize {
+        match band {
+            Step10Band::Pf => self.real,
+            Step10Band::Ose => self.passes(),
+        }
+    }
+
+    fn total(self) -> usize {
+        self.real + self.vacuous + self.miss + self.void + self.burned
+    }
+}
+
+/// The BLOCK verdict and the exit code that carries it.
+#[derive(Clone, PartialEq, Eq, Debug)]
+enum BlockVerdict {
+    /// Precedence (0): a typed instrument failure. No classification at all —
+    /// "REFUSE classification until resolved, never auto-classified".
+    Refused,
+    /// Precedence (1): the instantiation floor. Every read still printed; the
+    /// block line says so; routed to the owner with its own exit code.
+    VoidAsBlock { substantive_capable: usize, split: BlockSplit },
+    Pass(BlockSplit),
+    Miss(BlockSplit),
+    /// PF only (R-S10-10): the verdict would FLIP under the recorded band's
+    /// void rule, which is NOT registered for this band. No block verdict is
+    /// printed and the cell routes to the owner.
+    UnregisteredCell {
+        shown: usize,
+        real_misses: usize,
+        voids: usize,
+        burned: usize,
+        split: BlockSplit,
+    },
+}
+
+impl BlockVerdict {
+    /// The ledger row's exit codes: `0` PASS · `1` MISS · `2` typed refusal ·
+    /// `4` VOID-AS-BLOCK · `5` unregistered cell.
+    fn exit_code(&self) -> i32 {
+        match self {
+            Self::Pass(_) => 0,
+            Self::Miss(_) => EXIT_GATE_FAILED,
+            Self::Refused => 2,
+            Self::VoidAsBlock { .. } => EXIT_VOID_AS_BLOCK,
+            Self::UnregisteredCell { .. } => EXIT_UNREGISTERED_CELL,
+        }
+    }
+
+    fn split(&self) -> Option<BlockSplit> {
+        match self {
+            Self::Refused => None,
+            Self::VoidAsBlock { split, .. }
+            | Self::Pass(split)
+            | Self::Miss(split)
+            | Self::UnregisteredCell { split, .. } => Some(*split),
+        }
+    }
+}
+
+/// One PF ordinal's verdict: BURNED does not show; a void does not show; the
+/// read shows iff (i) AND (iii).
+fn pf_ordinal_verdict(o: &PfOrdinal) -> OrdinalVerdict {
+    if o.burned {
+        return OrdinalVerdict::Burned;
+    }
+    match o.read {
+        PfOrdinalRead::Unviewable | PfOrdinalRead::RecipeVoid => OrdinalVerdict::Void,
+        PfOrdinalRead::Substantive { clause_i, clause_iii } => {
+            if clause_i && clause_iii {
+                OrdinalVerdict::PassReal
+            } else {
+                OrdinalVerdict::Miss
+            }
+        }
+    }
+}
+
+/// One recorded-band ordinal's verdict, clause (3) of the registered table.
+fn ose_ordinal_verdict(o: &OseOrdinal) -> OrdinalVerdict {
+    if o.burned {
+        return OrdinalVerdict::Burned;
+    }
+    match o.read {
+        // Nothing readable — the registered read has no honest viewer, so what
+        // remains passes by vacuity and the floor counts it NON-SUBSTANTIVE.
+        OseOrdinalRead::Unviewable => OrdinalVerdict::PassVacuous,
+        OseOrdinalRead::NonInstantiable { arithmetic } => {
+            if arithmetic {
+                OrdinalVerdict::PassVacuous
+            } else {
+                OrdinalVerdict::Miss
+            }
+        }
+        OseOrdinalRead::Substantive { arithmetic, raw_a, raw_b, raw_c, parity } => {
+            if arithmetic && raw_a && raw_b && raw_c && parity {
+                OrdinalVerdict::PassReal
+            } else {
+                OrdinalVerdict::Miss
+            }
+        }
+    }
+}
+
+/// **THE RECORDED BAND'S COMPOSITION TABLE**, in the registered precedence
+/// order (guidingpath 2026-08-23, item (5); R-S10-5/7/9/10).
+///
+/// `(0)` instrument failure ⇒ REFUSE · `(1)` floor ⇒ VOID-AS-BLOCK · `(2)` any
+/// blocking collision ⇒ block MISS, burned ordinals' reads included · `(3)`
+/// per ordinal ([`ose_ordinal_verdict`]) · `(4)` block PASS ⇔ `>= 6 of 8` PASS.
+///
+/// PURE, so the cells can enumerate every cell of the table without resolving
+/// a root — which is what the ruling's own requirement ("spell out how burn =
+/// miss, void ≠ miss and >= 6-of-8 COMPOSE into one table with no uncovered
+/// cell") asks for in executable form.
+fn compose_ose_block(reads: &[OseOrdinal], inputs: BandInputs) -> BlockVerdict {
+    if inputs.instrument_failure {
+        return BlockVerdict::Refused;
+    }
+    let split = BlockSplit::count(reads.iter().map(ose_ordinal_verdict), inputs.blocking_collisions);
+    // W2 RED: the deliberate placeholder — precedence (1) and (2) are SWAPPED,
+    // so a band below the floor that also carries a collision reports MISS
+    // rather than the registered VOID-AS-BLOCK owner route. The exhaustive cell
+    // below reads the registered order; GREEN restores it.
+    let capable = reads.iter().filter(|o| o.read.substantive_capable()).count();
+    if inputs.blocking_collisions > 0 {
+        return BlockVerdict::Miss(split);
+    }
+    if capable < STEP10_FLOOR {
+        return BlockVerdict::VoidAsBlock { substantive_capable: capable, split };
+    }
+    if split.passes() >= STEP10_BLOCK_PASS {
+        BlockVerdict::Pass(split)
+    } else {
+        BlockVerdict::Miss(split)
+    }
+}
+
+/// **THE PF BAND'S COMPOSITION = SPEC §6's LETTER** (R-S10-10).
+///
+/// An ordinal SHOWS the registered read iff (i) AND (iii); block PASS ⇔ `>= 6
+/// of 8` show it AND zero blocking collisions anywhere. A `RecipeMiss` ordinal
+/// does NOT show the read.
+///
+/// # The flip route, and why it reads `misses + burned` rather than `misses`
+///
+/// The 2026-08-23 void-≠-miss rule was registered for the RECORDED band and is
+/// NOT extended here by the orchestrator. So the two readings of this band
+/// differ exactly where a void is load-bearing: under §6's letter a block
+/// passes iff `misses + burned + voids <= 2`; under the recorded band's rule it
+/// would pass iff `misses + burned <= 2`. Those disagree precisely when
+/// `misses + burned <= 2 < misses + burned + voids`, and THAT is the predicate
+/// below.
+///
+/// The ledger row writes the condition as "real misses <= 2 but misses +
+/// recipe-voids > 2"; `burned` rides along here because a burned ordinal is a
+/// MISS under BOTH readings (R-S10-9 records NONE burned, so the two spellings
+/// are the same arithmetic on the data this will meet). Carrying it makes the
+/// predicate the honest "the verdict would flip" statement rather than an
+/// approximation of it.
+///
+/// The UNVIEWABLE arm counts with the recipe voids for the same reason:
+/// `3e9befe` (3) registers an unviewable ordinal as VOID ≠ miss for a reserved
+/// ordinal, and routing one MORE cell to the owner is the conservative
+/// direction. A generated root is always viewable, so the generalization is
+/// expected to be inert here — and if it ever fires, the owner sees it.
+fn compose_pf_block(reads: &[PfOrdinal], inputs: BandInputs) -> BlockVerdict {
+    if inputs.instrument_failure {
+        return BlockVerdict::Refused;
+    }
+    let split = BlockSplit::count(reads.iter().map(pf_ordinal_verdict), inputs.blocking_collisions);
+    // A blocking collision blocks under BOTH readings, so it is settled before
+    // the flip route is asked: there is no verdict for the flip to be about.
+    if inputs.blocking_collisions > 0 {
+        return BlockVerdict::Miss(split);
+    }
+    let misses = split.miss + split.burned;
+    // W2 RED: the deliberate placeholder — the void threshold is off by one, so
+    // the registered flip cell (1 miss, 2 voids) is silently classified as a
+    // MISS instead of routing to the owner.
+    if misses <= 2 && misses + split.void > 3 {
+        return BlockVerdict::UnregisteredCell {
+            shown: split.real,
+            real_misses: split.miss,
+            voids: split.void,
+            burned: split.burned,
+            split,
+        };
+    }
+    if split.real >= STEP10_BLOCK_PASS {
+        BlockVerdict::Pass(split)
+    } else {
+        BlockVerdict::Miss(split)
+    }
+}
+
+// --- the reading machinery --------------------------------------------------
+
+/// The FORK STATE the registered reads are taken at (R-S10-2): the `Placement`
+/// position one ply on, reached by `EndAdditionalPhase` through the CHECKED
+/// `apply_move`.
+///
+/// The recipes cross the same ply through `driven::turn_start_placements`, which
+/// uses `apply_move_unchecked` on a move it knows is in the list; this surface
+/// pays the checked boundary because §5.3's own walk does
+/// ([`sign_root_sets`]'s fork arm) and because a step-10 artifact should reach
+/// its states the way play reaches them.
+fn fork_state(root: &GameState, rules: &Rules) -> Result<GameState, String> {
+    let legal = get_legal_moves(root, rules);
+    if !legal.contains(&Move::EndAdditionalPhase) {
+        return Err(format!(
+            "`EndAdditionalPhase` is not in the root's legal list at {:?} ({} moves) — the fork \
+             state the registered read is taken at does not exist here",
+            root.turn_phase,
+            legal.len(),
+        ));
+    }
+    // W2 RED: the deliberate placeholder — the ply is NOT crossed, so every
+    // read below is taken at the turn start rather than at the Placement state
+    // R-S10-2 registers.
+    let _ = rules;
+    Ok(root.clone())
+}
+
+/// One side of the pair, applied at the fork through the CHECKED boundary.
+fn checked_successor(
+    fork: &GameState,
+    mv: &Move,
+    label: &str,
+    rules: &Rules,
+) -> Result<GameState, String> {
+    let legal = get_legal_moves(fork, rules);
+    if !legal.iter().any(|m| m == mv) {
+        return Err(format!(
+            "the {label} side `{}` is not in the fork's legal list ({} moves) — the recipe named a \
+             pair this position does not offer at the state the read is taken from",
+            canonical_encoding(mv),
+            legal.len(),
+        ));
+    }
+    apply_move(fork, mv, rules)
+        .map_err(|e| format!("the {label} side did not apply at the fork: {e}"))
+}
+
+/// One seat's full 34-column vector on PRODUCTION bytes: `ScoreStructure::derive`
+/// ONCE, then `value_of` for every `Feature::ALL` row (R-S10-6's own words).
+///
+/// The seat is a PARAMETER because the raw arm reads the OPPONENT's columns from
+/// the MOVER's view — the mover-view convention the registration's item (2)
+/// names, and the whole reason the arm is honest.
+fn production_vector(
+    view: &PlayerView,
+    seat: PlayerId,
+    rules: &Rules,
+) -> Result<[i64; AXIS_WIDTH], String> {
+    let row = view
+        .players
+        .iter()
+        .find(|p| p.id == seat)
+        .ok_or_else(|| format!("seat p{} is not a player in this view", seat.0))?;
+    let structure = ScoreStructure::derive(view, rules);
+    let mut out = [0i64; AXIS_WIDTH];
+    for feature in Feature::ALL {
+        out[feature.index()] = structure.value_of(row, feature);
+    }
+    Ok(out)
+}
+
+/// One row of the 34-column axis, by its registered label.
+fn axis_slot(candidate: CandidateFeature) -> usize {
+    FeatureId::Candidate(candidate).index()
+}
+
+/// The PROBE path's static total at one view: `Σ_rows interpolate(early, late,
+/// progress_ppm) · dv_row` over the probe's OWN differenced columns
+/// (R-S10-3) — [`score_row`]'s arithmetic over [`signature`]'s differencing,
+/// in the same order and with the same saturating operations.
+struct ProbeStatic {
+    total: i64,
+    rows: [i64; AXIS_WIDTH],
+    ppm: u32,
+}
+
+fn probe_static_total(
+    view: &PlayerView,
+    mover: PlayerId,
+    table: &WeightTable,
+    rules: &Rules,
+) -> Result<ProbeStatic, String> {
+    let sig = signature(view, mover, rules)?;
+    let mut rows = [0i64; AXIS_WIDTH];
+    let mut total: i64 = 0;
+    for id in FeatureId::all() {
+        let slot = id.index();
+        // W2 RED: the deliberate placeholder — the probe path forces the LATE
+        // endpoint instead of interpolating at the view's own organic ppm, the
+        // exact drift R-S10-3's parity gate exists to see.
+        let weight = interpolate(table.early[slot], table.late[slot], PROGRESS_FULL_PPM);
+        rows[slot] = weight.saturating_mul(sig.dv[slot]);
+        total = total.saturating_add(rows[slot]);
+    }
+    Ok(ProbeStatic { total, rows, ppm: sig.ppm })
+}
+
+/// Which side a weighted or static read PREFERS.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Preference {
+    Plus,
+    Zero,
+    Tie,
+}
+
+/// The SIGN of a `plus − zero` delta, as a preference.
+fn preference_of(delta: i64) -> Preference {
+    // W2 RED: the deliberate placeholder — the sign mapping is INVERTED, which
+    // no arithmetic downstream would notice because both static paths would
+    // invert together. The classifier cell below reads the mapping directly.
+    match delta.cmp(&0) {
+        std::cmp::Ordering::Greater => Preference::Zero,
+        std::cmp::Ordering::Less => Preference::Plus,
+        std::cmp::Ordering::Equal => Preference::Tie,
+    }
+}
+
+impl Preference {
+    /// The band's own words for the preference — `F+ ≻ F0` at the recorded
+    /// band, `productive ≻ dead` at PF.
+    fn label(self, band: Step10Band) -> String {
+        match self {
+            Self::Plus => format!("{} ≻ {}", band.plus_label(), band.zero_label()),
+            Self::Zero => format!("{} ≻ {}", band.zero_label(), band.plus_label()),
+            Self::Tie => "TIE".to_string(),
+        }
+    }
+}
+
+/// **THE STATIC ONE-PLY READ, TWICE** — production bytes and the probe path
+/// (R-S10-2's static reading, gated as R-S10-3's β+ PARITY GATE).
+struct StaticRead {
+    table: &'static str,
+    prod_plus: i64,
+    prod_zero: i64,
+    probe: ProbeStatic,
+    probe_zero: ProbeStatic,
+}
+
+impl StaticRead {
+    fn delta_prod(&self) -> i64 {
+        self.prod_plus - self.prod_zero
+    }
+
+    fn delta_probe(&self) -> i64 {
+        self.probe.total - self.probe_zero.total
+    }
+
+    fn preference_prod(&self) -> Preference {
+        preference_of(self.delta_prod())
+    }
+
+    fn preference_probe(&self) -> Preference {
+        preference_of(self.delta_probe())
+    }
+
+    /// **THE GATE**: the PREFERENCE must agree. A disagreement is that
+    /// ordinal's MISS with the drift named — never a void and never a skip.
+    fn agrees(&self) -> bool {
+        self.preference_prod() == self.preference_probe()
+    }
+
+    /// A same-preference DELTA inequality is a probe/production COLUMN
+    /// disagreement at a reserved state: an instrument failure routed to
+    /// precedence (0), never a miss and never a pass.
+    fn deltas_equal(&self) -> bool {
+        self.delta_prod() == self.delta_probe()
+    }
+
+    /// The rows where the two static paths' per-successor contributions
+    /// disagree — printed only when there is something to print.
+    fn divergent_rows(&self) -> Vec<(&'static str, i64, i64, i64)> {
+        FeatureId::all()
+            .iter()
+            .map(|id| {
+                let slot = id.index();
+                (id.label(), self.probe.rows[slot], self.probe_zero.rows[slot],
+                 self.probe.rows[slot] - self.probe_zero.rows[slot])
+            })
+            .filter(|(_, plus, zero, _)| *plus != 0 || *zero != 0)
+            .collect()
+    }
+}
+
+fn read_static(
+    plus_view: &PlayerView,
+    zero_view: &PlayerView,
+    mover: PlayerId,
+    table: &WeightTable,
+    table_name: &'static str,
+    rules: &Rules,
+) -> Result<StaticRead, String> {
+    for (label, view) in [("plus", plus_view), ("zero", zero_view)] {
+        if view_is_terminal(view) {
+            return Err(format!(
+                "the {label} successor is TERMINAL — `eval::score` short-circuits into §2.6's \
+                 terminal ladder there and the probe path does not, so the two readings would be \
+                 of different objects. A placement never ends a game, so this is an INSTRUMENT \
+                 failure rather than a fact about the position",
+            ));
+        }
+    }
+    Ok(StaticRead {
+        table: table_name,
+        prod_plus: score(plus_view, rules, table),
+        prod_zero: score(zero_view, rules, table),
+        probe: probe_static_total(plus_view, mover, table, rules)?,
+        probe_zero: probe_static_total(zero_view, mover, table, rules)?,
+    })
+}
+
+/// **THE SIXTEEN OPPONENT COLUMNS THE REGISTRATION REQUIRES EXACTLY INVARIANT**
+/// across the pair's two successors (guidingpath 2026-08-23, item (2);
+/// R-S10-6): every candidate column EXCEPT E1 — the fee channel, gated by
+/// MAGNITUDE — and X1 — the purse channel, gated by RECOMPUTATION at the
+/// successor purse.
+///
+/// Written out rather than derived so the list a reader checks against the
+/// ruling is the list the gate reads, and pinned equal to
+/// `CandidateFeature::ALL` minus `{E1, X1}` by
+/// `the_raw_arms_invariance_set_is_every_candidate_column_but_the_two_gated_ones`.
+const RAW_ARM_INVARIANT: [CandidateFeature; 16] = [
+    CandidateFeature::ProductionAccess,
+    CandidateFeature::TrackAccess,
+    CandidateFeature::AssistantAreasDistinct,
+    CandidateFeature::PresidentLocalAccess,
+    CandidateFeature::BankAccess,
+    CandidateFeature::EmploymentAgencyAccess,
+    CandidateFeature::PresidentReachableAreas,
+    CandidateFeature::TradeGoodsStock,
+    CandidateFeature::BuildingTokensReady,
+    CandidateFeature::HeldOrderValue,
+    CandidateFeature::OrderMatchedGoods,
+    CandidateFeature::ExecutableOrders,
+    CandidateFeature::FlagIconMarginal,
+    CandidateFeature::HeldOrderIcons,
+    CandidateFeature::PortTakeable,
+    CandidateFeature::MatchedProductionAccess,
+];
+
+/// **THE GATED RAW ARM** (R-S10-6), three conjuncts each printed with its own
+/// verdict.
+struct RawArm {
+    opponent: PlayerId,
+    fee: u32,
+    plus: [i64; AXIS_WIDTH],
+    zero: [i64; AXIS_WIDTH],
+    /// The columns of [`RAW_ARM_INVARIANT`] that MOVED, with both values.
+    moved: Vec<(&'static str, i64, i64)>,
+    /// X1 at the F0 successor, RECOMPUTED with the opponent's money raised by
+    /// the fee — "the frozen definition recomputed at the successor purse".
+    x1_recomputed: i64,
+}
+
+impl RawArm {
+    fn e1_plus(&self) -> i64 {
+        self.plus[axis_slot(CandidateFeature::MoneyStock)]
+    }
+
+    fn e1_zero(&self) -> i64 {
+        self.zero[axis_slot(CandidateFeature::MoneyStock)]
+    }
+
+    fn e1_delta(&self) -> i64 {
+        self.e1_plus() - self.e1_zero()
+    }
+
+    fn x1_plus(&self) -> i64 {
+        self.plus[axis_slot(CandidateFeature::LabTakeable)]
+    }
+
+    fn x1_zero(&self) -> i64 {
+        self.zero[axis_slot(CandidateFeature::LabTakeable)]
+    }
+
+    /// (a) `E1(F+) − E1(F0) == fee(F+) − fee(F0)`, EXACTLY. `F0`'s fee is zero
+    /// by construction, so the right-hand side IS the pair's fee.
+    fn conjunct_a(&self) -> bool {
+        self.e1_delta() == i64::from(self.fee)
+    }
+
+    /// (b) the sixteen named columns EXACTLY invariant.
+    fn conjunct_b(&self) -> bool {
+        self.moved.is_empty()
+    }
+
+    /// (c) X1 at the F+ successor equals the frozen definition recomputed at
+    /// the F0 successor with the opponent's purse raised by the fee.
+    fn conjunct_c(&self) -> bool {
+        self.x1_plus() == self.x1_recomputed
+    }
+}
+
+/// X1 (`lab_takeable`) for `opponent`, computed on a CLONE of the F0 successor
+/// view whose opponent purse has been raised by `fee`.
+///
+/// The structure is RE-DERIVED on the modified view rather than patched:
+/// `ScoreStructure::derive` precomputes every candidate column per seat, so
+/// reading `value_of` off the original structure would return the unmodified
+/// number however the view were edited.
+///
+/// **Only the purse moves, and the registration says why.** The invariance set
+/// names everything else about the opponent that could have moved, and
+/// `realizable_power` counts the QUERIED SEAT'S OWN assistants only — the
+/// `3dc1e54` MUST-1 correction — so the mover's placement does not enter the
+/// opponent's X1 through the power term.
+fn x1_at_raised_purse(
+    zero_view: &PlayerView,
+    opponent: PlayerId,
+    fee: u32,
+    rules: &Rules,
+) -> Result<i64, String> {
+    let mut raised = zero_view.clone();
+    let row = raised
+        .players
+        .iter_mut()
+        .find(|p| p.id == opponent)
+        .ok_or_else(|| format!("seat p{} is not a player in the F0 successor view", opponent.0))?;
+    row.money = row.money.saturating_add(fee);
+    let structure = ScoreStructure::derive(&raised, rules);
+    let row = raised
+        .players
+        .iter()
+        .find(|p| p.id == opponent)
+        .ok_or_else(|| format!("seat p{} vanished from the raised view", opponent.0))?;
+    Ok(structure.value_of(row, Feature::LabTakeable))
+}
+
+/// Read the raw arm over the pair's two successor VIEWS, both taken from the
+/// MOVER's seat.
+///
+/// `fee` is a PARAMETER rather than read back out of the recipe so the arm is
+/// falsifiable from data: a cell can hand it a wrong fee and watch conjunct (a)
+/// fail, which is the only way to know the conjunct is doing work.
+fn read_raw_arm(
+    plus_view: &PlayerView,
+    zero_view: &PlayerView,
+    opponent: PlayerId,
+    fee: u32,
+    rules: &Rules,
+) -> Result<RawArm, String> {
+    let plus = production_vector(plus_view, opponent, rules)?;
+    let zero = production_vector(zero_view, opponent, rules)?;
+    // W2 RED: the deliberate placeholder — conjunct (b) reads the first SEVEN
+    // of the sixteen columns the registration names, so a moved E2 goes unseen.
+    // The mutation cell below asks for the registered set.
+    let moved: Vec<(&'static str, i64, i64)> = RAW_ARM_INVARIANT[..7]
+        .iter()
+        .map(|c| (c.label(), plus[axis_slot(*c)], zero[axis_slot(*c)]))
+        .filter(|(_, a, b)| a != b)
+        .collect();
+    let x1_recomputed = x1_at_raised_purse(zero_view, opponent, fee, rules)?;
+    Ok(RawArm { opponent, fee, plus, zero, moved, x1_recomputed })
+}
+
+/// **THE ARITHMETIC ARM** (R-S10-7): the step-5 charter's registered read,
+/// verbatim — opponent-O1 >= 1 AND opponent-O3 = 0 at the ROOT, from the
+/// MOVER's view. Recorded as VACUOUS BY CENSUS (`9e9e6ed`), and gated anyway.
+struct ArithmeticArm {
+    opponent: PlayerId,
+    /// `[O1, O2, O3]` of the OPPONENT seat, from the MOVER's view.
+    columns: [i64; 3],
+    /// The MOVER's own three, for contrast — the census's finding is that
+    /// payable visible cards live in the mover's hand.
+    mover_columns: [i64; 3],
+    /// The opponent's hand as the mover sees it: `(total, of which KNOWN)`.
+    hand: (usize, usize),
+}
+
+impl ArithmeticArm {
+    fn passed(&self) -> bool {
+        self.columns[0] >= 1 && self.columns[2] == 0
+    }
+}
+
+/// Read the arithmetic arm at one root view.
+///
+/// **It does NOT route through [`ose_columns`]**, and that is deliberate: that
+/// helper is the STEP-5 surface's burn guard and its `Reserved` arm has no
+/// column-reading branch at all. It keeps refusing, its cells stand, and this
+/// surface reads through its OWN admission ([`admit_step10_root`]) and the same
+/// production `candidate_value` the step-5 read uses.
+fn read_arithmetic_arm(
+    view: &PlayerView,
+    mover: PlayerId,
+    rules: &Rules,
+) -> Result<ArithmeticArm, String> {
+    let opponent = view
+        .players
+        .iter()
+        .find(|p| p.id != mover && !p.id.is_dummy())
+        .ok_or_else(|| "no non-dummy opponent seat at this root".to_string())?;
+    let me = view
+        .players
+        .iter()
+        .find(|p| p.id == mover)
+        .ok_or_else(|| "the mover is not in its own view".to_string())?;
+    let structure = ScoreStructure::derive(view, rules);
+    let mut columns = [0i64; 3];
+    let mut mover_columns = [0i64; 3];
+    for (i, c) in OSE_COLUMNS.iter().enumerate() {
+        columns[i] = candidate_value(&structure, view, opponent, *c, rules);
+        mover_columns[i] = candidate_value(&structure, view, me, *c, rules);
+    }
+    Ok(ArithmeticArm {
+        opponent: opponent.id,
+        columns,
+        mover_columns,
+        hand: (
+            opponent.hand.len(),
+            opponent.hand.iter().filter(|c| matches!(c, HandCard::Known(_))).count(),
+        ),
+    })
+}
+
+/// **PF CLAUSE (i)** (R-S10-1): the MOVER's S1 `ProductionAccess` on production
+/// bytes, strictly greater at the productive successor than at the dead one.
+///
+/// The other six S deltas and the mover's full 34-column vectors are RECORDED
+/// beside it — both currencies, because the ledger row asks for the Δv and this
+/// file's "Δv" is the §5.3 MOVER-RELATIVE vector while the gate reads the
+/// mover's OWN value. Printing one and calling it the other is exactly the
+/// category slip `3e9befe` (1) ruled on.
+struct PfClauseI {
+    own_plus: [i64; AXIS_WIDTH],
+    own_zero: [i64; AXIS_WIDTH],
+    dv_plus: [i64; AXIS_WIDTH],
+    dv_zero: [i64; AXIS_WIDTH],
+}
+
+impl PfClauseI {
+    fn own_s(&self, plus: bool) -> [i64; 7] {
+        let v = if plus { &self.own_plus } else { &self.own_zero };
+        let mut out = [0i64; 7];
+        for (i, c) in S_COLUMNS.iter().enumerate() {
+            out[i] = v[axis_slot(*c)];
+        }
+        out
+    }
+
+    fn s_deltas(&self) -> [i64; 7] {
+        let plus = self.own_s(true);
+        let zero = self.own_s(false);
+        let mut out = [0i64; 7];
+        for i in 0..7 {
+            out[i] = plus[i] - zero[i];
+        }
+        out
+    }
+
+    fn s1_delta(&self) -> i64 {
+        self.s_deltas()[0]
+    }
+
+    /// **THE GATE**: strictly greater, and nothing weaker. A tie is not a
+    /// separation.
+    fn passed(&self) -> bool {
+        self.s1_delta() > 0
+    }
+
+    fn own_delta(&self) -> [i64; AXIS_WIDTH] {
+        let mut out = [0i64; AXIS_WIDTH];
+        for (slot, value) in out.iter_mut().enumerate() {
+            *value = self.own_plus[slot] - self.own_zero[slot];
+        }
+        out
+    }
+
+    fn dv_delta(&self) -> [i64; AXIS_WIDTH] {
+        let mut out = [0i64; AXIS_WIDTH];
+        for (slot, value) in out.iter_mut().enumerate() {
+            *value = self.dv_plus[slot] - self.dv_zero[slot];
+        }
+        out
+    }
+}
+
+fn read_pf_clause_i(
+    plus_view: &PlayerView,
+    zero_view: &PlayerView,
+    mover: PlayerId,
+    rules: &Rules,
+) -> Result<PfClauseI, String> {
+    Ok(PfClauseI {
+        own_plus: production_vector(plus_view, mover, rules)?,
+        own_zero: production_vector(zero_view, mover, rules)?,
+        dv_plus: signature(plus_view, mover, rules)?.dv,
+        dv_zero: signature(zero_view, mover, rules)?.dv,
+    })
+}
+
+/// One weight table's root table at the fork, with both sides' values pulled out
+/// by canonical encoding.
+#[derive(Debug)]
+struct RootedTableRead {
+    name: String,
+    read: RootedRead,
+    plus_value: i64,
+    zero_value: i64,
+}
+
+impl RootedTableRead {
+    fn delta(&self) -> i64 {
+        self.plus_value - self.zero_value
+    }
+
+    fn preference(&self) -> Preference {
+        preference_of(self.delta())
+    }
+
+    /// PF's clause (iii): STRICTLY greater. A tie is not a separation, so the
+    /// ordinal does not show the read.
+    fn strict(&self) -> bool {
+        self.plus_value > self.zero_value
+    }
+
+    fn top_value(&self) -> i64 {
+        self.read.top_value().unwrap_or_default()
+    }
+
+    fn tied_at_top(&self) -> usize {
+        let top = self.top_value();
+        self.read.ranked.iter().filter(|r| r.value == top).count()
+    }
+}
+
+/// **CLAUSE (iii): THE CONTROLLER'S OWN ROOT TABLE** at the fork state
+/// (R-S10-2, R5's precedent — "never a re-derivation"), read through the
+/// EXPLICIT-WEIGHTS surface because `driven::root_table` REFUSES
+/// `Contestant::NamedTable` (`AlternateTable`, T3's standing disposition).
+///
+/// Eight arguments, allowed on [`sign_one_set`]'s precedent: every one of them
+/// is part of the IDENTITY of the read — which state, which seat, which table,
+/// which two encodings, which seed — and bundling them into a struct would put
+/// a constructor between the caller and the thing it is naming.
+#[allow(clippy::too_many_arguments)]
+fn read_rooted_pair(
+    name: &str,
+    fork: &GameState,
+    mover: PlayerId,
+    table: &WeightTable,
+    plus_encoding: &str,
+    zero_encoding: &str,
+    decision_seed: u64,
+    rules: &Rules,
+) -> Result<RootedTableRead, String> {
+    let read = rooted_table(fork, mover, table, rules, decision_seed)
+        .map_err(|e| format!("{name}: {}", e.detail()))?;
+    let value_of = |label: &str, encoding: &str| -> Result<i64, String> {
+        read.value_of(encoding).ok_or_else(|| {
+            format!(
+                "{name}: the controller's root table has no entry for the {label} side \
+                 `{encoding}` — {} candidates were valued, the first being `{}`. A pairwise claim \
+                 needs both sides on the table it is read from",
+                read.ranked.len(),
+                read.ranked.first().map_or("(none)".to_string(), |r| canonical_encoding(&r.mv)),
+            )
+        })
+    };
+    let plus_value = value_of("plus", plus_encoding)?;
+    let zero_value = value_of("zero", zero_encoding)?;
+    Ok(RootedTableRead { name: name.to_string(), read, plus_value, zero_value })
+}
+
+/// Clause (iii) as the artifact prints it: the LOCKED candidate (gated at PF,
+/// RECORDED at the recorded band), `v2-padded` beside it, and the optional
+/// `v2-refit-padded` control.
+struct ClauseIii {
+    candidate: RootedTableRead,
+    v2: RootedTableRead,
+    control: Option<RootedTableRead>,
+}
+
+// --- resolution and identity (precedence (0)) -------------------------------
+
+/// One resolved step-10 root, identity-verified BEFORE any column is read.
+struct Step10Root {
+    ordinal: u32,
+    label: String,
+    origin: String,
+    detail: String,
+    digest: String,
+    anchor: String,
+    state: GameState,
+}
+
+/// A descriptor's ORIGIN in the words a reader can act on — the generating
+/// ecology for a scanned root (predicate + master + ordinal is NOT the whole
+/// identity), the document digest for a record prefix.
+fn origin_detail(origin: &RootOrigin) -> String {
+    match origin {
+        RootOrigin::Constructed => "constructed".to_string(),
+        RootOrigin::RecordPrefix { record_digest } => {
+            format!("record prefix of document {record_digest}")
+        }
+        RootOrigin::Generated { game_index, ecology, .. } => format!(
+            "scan game {game_index} · ecology {} · driver {} · {} games · per-game cap {}",
+            ecology.id, ecology.driver, ecology.games, ecology.per_game_cap,
+        ),
+    }
+}
+
+/// Resolve a whole band, admission first and identity second — and NOTHING
+/// after: a mismatch anywhere refuses the run BEFORE any column is read.
+///
+/// The PF band resolves in ONE `generate_roots` batch (one scan walk for eight
+/// ordinals — Phase C's T5 reason, and here it is also the difference between
+/// one burn event and eight). The recorded band resolves per exhibit out of the
+/// caller's identity-checked document.
+fn resolve_step10_roots(
+    band: Step10Band,
+    ordinals: &[u32],
+    anchors: &BTreeMap<u32, String>,
+    acknowledged: &BTreeSet<u32>,
+    record: Option<&GameRecord>,
+    rules: &Rules,
+) -> Result<Vec<Step10Root>, String> {
+    for ordinal in ordinals {
+        admit_step10_root(*ordinal, acknowledged)?;
+    }
+    let anchor_of = |ordinal: u32| -> Result<String, String> {
+        anchors.get(&ordinal).cloned().ok_or_else(|| {
+            format!("no recorded identity anchor for ordinal {ordinal} — REFUSING to resolve it")
+        })
+    };
+
+    let mut out = Vec::new();
+    match band {
+        Step10Band::Pf => {
+            let resolved =
+                generate_roots(RootPredicate::PlacementForkSameCount, M_PF, ordinals, rules)
+                    .map_err(|e| format!("the M-PF scan did not supply the band: {e}"))?;
+            for (ordinal, (state, descriptor)) in ordinals.iter().zip(resolved) {
+                out.push(Step10Root {
+                    ordinal: *ordinal,
+                    label: band.label_of(*ordinal),
+                    origin: band.origin_of(*ordinal),
+                    detail: origin_detail(&descriptor.origin),
+                    digest: descriptor.root_digest,
+                    anchor: anchor_of(*ordinal)?,
+                    state,
+                });
+            }
+        }
+        Step10Band::Ose => {
+            let record = record.ok_or_else(|| {
+                "the recorded band needs --record <path>: its roots are events of the regenerated \
+                 game-3 document"
+                    .to_string()
+            })?;
+            for ordinal in ordinals {
+                let source = RootSource::RecordPrefix {
+                    record: record.clone(),
+                    event_index: *ordinal as usize,
+                };
+                let (state, descriptor) = source
+                    .resolve(rules)
+                    .map_err(|e| format!("{OSE_RUN_ID} event {ordinal}: {e:?}"))?;
+                out.push(Step10Root {
+                    ordinal: *ordinal,
+                    label: band.label_of(*ordinal),
+                    origin: band.origin_of(*ordinal),
+                    detail: origin_detail(&descriptor.origin),
+                    digest: descriptor.root_digest,
+                    anchor: anchor_of(*ordinal)?,
+                    state,
+                });
+            }
+        }
+    }
+
+    for root in &out {
+        if root.digest != root.anchor {
+            return Err(format!(
+                "TYPED INSTRUMENT FAILURE: {} resolves to state_digest {} and the recorded \
+                 identity anchors {} — REFUSING classification before any column is read. A read \
+                 about a different position is not the read the registration names.",
+                root.label, root.digest, root.anchor,
+            ));
+        }
+    }
+    Ok(out)
+}
+
+// --- one ordinal's artifact -------------------------------------------------
+
+/// The pair as the recipe fixed it, in the words the artifact prints.
+struct PairSides {
+    total: usize,
+    plus_move: Move,
+    plus_encoding: String,
+    plus_areas: String,
+    zero_move: Move,
+    zero_encoding: String,
+    zero_areas: String,
+    /// PF: the productive side's summed exported reward. Recorded band: the
+    /// priced fee flow.
+    keying: String,
+    /// The Shape-F fee, or 0 at PF (where no fee arm runs).
+    fee: u32,
+}
+
+/// One ordinal's SUBSTANTIVE read — the recipe instantiated and every
+/// registered arm run.
+struct SubstantiveBlock {
+    population: String,
+    pair: PairSides,
+    fork_digest: String,
+    plus_digest: String,
+    zero_digest: String,
+    arithmetic: Option<ArithmeticArm>,
+    raw: Option<RawArm>,
+    clause_i: Option<PfClauseI>,
+    clause_iii: ClauseIii,
+    parity: ParityPin,
+    statics: StaticRead,
+}
+
+/// What one ordinal's read produced.
+enum OrdinalBody {
+    /// A typed INSTRUMENT failure at this ordinal — precedence (0). Never a
+    /// verdict about the position, and no block line is composed past it.
+    Instrument(String),
+    /// `ViewerDealUnrecorded` at the root: VOID, non-substantive (`3e9befe`
+    /// (3)).
+    Unviewable { reason: String },
+    /// Viewable, and the recipe does not instantiate: VOID
+    /// (non-instantiable), with the typed reason and the whole candidate
+    /// population printed.
+    NonInstantiable {
+        reason: String,
+        population: String,
+        arithmetic: Option<ArithmeticArm>,
+    },
+    Substantive(Box<SubstantiveBlock>),
+}
+
+/// One ordinal, read.
+struct OrdinalBlock {
+    ordinal: u32,
+    label: String,
+    origin: String,
+    detail: String,
+    digest: String,
+    anchor: String,
+    seat: PlayerId,
+    burned: bool,
+    body: OrdinalBody,
+}
+
+impl OrdinalBlock {
+    /// The PF composition's view of this ordinal — `None` where an instrument
+    /// failure means there is no read to classify.
+    fn pf_read(&self) -> Option<PfOrdinalRead> {
+        match &self.body {
+            OrdinalBody::Instrument(_) => None,
+            OrdinalBody::Unviewable { .. } => Some(PfOrdinalRead::Unviewable),
+            OrdinalBody::NonInstantiable { .. } => Some(PfOrdinalRead::RecipeVoid),
+            OrdinalBody::Substantive(block) => Some(PfOrdinalRead::Substantive {
+                clause_i: block.clause_i.as_ref().is_some_and(PfClauseI::passed),
+                clause_iii: block.clause_iii.candidate.strict(),
+            }),
+        }
+    }
+
+    /// The recorded band's view of this ordinal.
+    fn ose_read(&self) -> Option<OseOrdinalRead> {
+        match &self.body {
+            OrdinalBody::Instrument(_) => None,
+            OrdinalBody::Unviewable { .. } => Some(OseOrdinalRead::Unviewable),
+            OrdinalBody::NonInstantiable { arithmetic, .. } => {
+                Some(OseOrdinalRead::NonInstantiable {
+                    arithmetic: arithmetic.as_ref().is_some_and(ArithmeticArm::passed),
+                })
+            }
+            OrdinalBody::Substantive(block) => {
+                let raw = block.raw.as_ref();
+                Some(OseOrdinalRead::Substantive {
+                    arithmetic: block.arithmetic.as_ref().is_some_and(ArithmeticArm::passed),
+                    raw_a: raw.is_some_and(RawArm::conjunct_a),
+                    raw_b: raw.is_some_and(RawArm::conjunct_b),
+                    raw_c: raw.is_some_and(RawArm::conjunct_c),
+                    parity: block.statics.agrees(),
+                })
+            }
+        }
+    }
+}
+
+/// **THE PER-ORDINAL PIPELINE**, identical in band mode and `--development`.
+///
+/// Viewability, then the recipe, then the fork and its two successors through
+/// the CHECKED boundary, then the arms the band registers, then clause (iii)
+/// with its same-path parity pin, then the static preference and its β+ parity
+/// gate. Every step's failure is TYPED, and the two KINDS are kept apart: a
+/// fact about the POSITION is a void, a fact about the ENGINE or this
+/// instrument is precedence (0).
+fn read_step10_body(
+    band: Step10Band,
+    root: &Step10Root,
+    decision_seed: u64,
+    with_control: bool,
+    rules: &Rules,
+) -> Result<OrdinalBody, String> {
+    let mover = root.state.current_player;
+
+    // 1. VIEWABILITY — an identity-class determination, no column read.
+    let root_view = match observe(&root.state, mover) {
+        Ok(view) => view,
+        Err(ViewError::ViewerDealUnrecorded(seat)) => {
+            return Ok(OrdinalBody::Unviewable {
+                reason: format!(
+                    "the MOVER's own starting-order deal is unrecorded at this root (seat p{}) — \
+                     `observe` refuses with the engine's own typed `ViewerDealUnrecorded`, so the \
+                     registered read has no honest viewer. VOID, NON-SUBSTANTIVE for the floor \
+                     (guidingpath 2026-08-23, \"THE TWO STEP-5 FINDINGS ARE RULED\" (3)); the \
+                     opponent's own view is not a substitute and would leak the masked deal",
+                    seat.0,
+                ),
+            })
+        }
+        Err(other) => {
+            return Err(format!(
+                "seat p{} cannot observe this root: {other} — not the registered unviewable class",
+                mover.0,
+            ))
+        }
+    };
+
+    // 2. THE RECIPE. Instrument arms are precedence (0); every other miss is a
+    //    VOID with its typed reason and the whole population printed beside it.
+    let arithmetic = match band {
+        Step10Band::Pf => None,
+        Step10Band::Ose => Some(read_arithmetic_arm(&root_view, mover, rules)?),
+    };
+    let (pair, population) = match band {
+        Step10Band::Pf => {
+            let population = render_recipe_population(&root.state, rules)?;
+            match escrow_recipe_pair(&root.state, rules) {
+                Ok(pair) => (
+                    PairSides {
+                        total: pair.total,
+                        plus_encoding: canonical_encoding(&pair.productive),
+                        plus_areas: format!("{:?}", pair.productive_areas),
+                        plus_move: pair.productive,
+                        zero_encoding: canonical_encoding(&pair.dead),
+                        zero_areas: format!("{:?}", pair.dead_areas),
+                        zero_move: pair.dead,
+                        keying: format!(
+                            "summed exported reward at realizable power = {}",
+                            pair.productive_reward,
+                        ),
+                        fee: 0,
+                    },
+                    population,
+                ),
+                Err(RecipeMiss::CandidateDidNotApply(detail)) => {
+                    return Err(format!(
+                        "the §6 recipe reports `CandidateDidNotApply`: {detail}. That is an \
+                         INSTRUMENT arm — a fact about the ENGINE, never about the position — so \
+                         it routes to precedence (0)",
+                    ))
+                }
+                Err(miss) => {
+                    return Ok(OrdinalBody::NonInstantiable {
+                        reason: format!("{miss} ({miss:?})"),
+                        population,
+                        arithmetic,
+                    })
+                }
+            }
+        }
+        Step10Band::Ose => {
+            let population = render_fee_flow_population(&root.state, rules);
+            match fee_flow_recipe_pair(&root.state, rules) {
+                Ok(pair) => (
+                    PairSides {
+                        total: pair.total,
+                        plus_encoding: canonical_encoding(&pair.fee_side),
+                        plus_areas: format!("{:?}", pair.fee_side_areas),
+                        plus_move: pair.fee_side,
+                        zero_encoding: canonical_encoding(&pair.free_side),
+                        zero_areas: format!("{:?}", pair.free_side_areas),
+                        zero_move: pair.free_side,
+                        keying: format!("opponent fee flow = {} Yen", pair.fee),
+                        fee: pair.fee,
+                    },
+                    population.unwrap_or_default(),
+                ),
+                Err(FeeFlowMiss::CandidateDidNotApply(detail)) => {
+                    return Err(format!(
+                        "the Shape-F recipe reports `CandidateDidNotApply`: {detail}. That is an \
+                         INSTRUMENT arm — a fact about the ENGINE, never about the position — so \
+                         it routes to precedence (0)",
+                    ))
+                }
+                Err(miss @ FeeFlowMiss::PricingMismatch { .. }) => {
+                    return Err(format!(
+                        "the Shape-F recipe reports `PricingMismatch`: {miss}. The registration \
+                         calls `calculate_placement_cost` and `credit_placement_fees` an EXACT \
+                         MIRROR; a disagreement is TYPED and routes to precedence (0)",
+                    ))
+                }
+                Err(miss) => {
+                    return Ok(OrdinalBody::NonInstantiable {
+                        reason: format!("{miss} ({miss:?})"),
+                        population: population.unwrap_or_default(),
+                        arithmetic,
+                    })
+                }
+            }
+        }
+    };
+
+    // 3. THE FORK STATE and the pair's two successors, all CHECKED.
+    let fork = fork_state(&root.state, rules)?;
+    let plus = checked_successor(&fork, &pair.plus_move, band.plus_label(), rules)?;
+    let zero = checked_successor(&fork, &pair.zero_move, band.zero_label(), rules)?;
+    let plus_view = observe(&plus, mover)
+        .map_err(|e| format!("the {} successor is unobservable: {e}", band.plus_label()))?;
+    let zero_view = observe(&zero, mover)
+        .map_err(|e| format!("the {} successor is unobservable: {e}", band.zero_label()))?;
+
+    // 4/5. THE BAND'S OWN ARMS.
+    let raw = match band {
+        Step10Band::Pf => None,
+        Step10Band::Ose => {
+            let opponent = root_view
+                .players
+                .iter()
+                .find(|p| p.id != mover && !p.id.is_dummy())
+                .ok_or_else(|| "no non-dummy opponent seat at this root".to_string())?
+                .id;
+            Some(read_raw_arm(&plus_view, &zero_view, opponent, pair.fee, rules)?)
+        }
+    };
+    let clause_i = match band {
+        Step10Band::Pf => Some(read_pf_clause_i(&plus_view, &zero_view, mover, rules)?),
+        Step10Band::Ose => None,
+    };
+
+    // 6. CLAUSE (iii) — the controller's OWN root table at the fork.
+    let clause_iii = ClauseIii {
+        candidate: read_rooted_pair(
+            NamedIdentity::V4Step9Draft1.name(),
+            &fork,
+            mover,
+            &WeightTable::V4_STEP9_DRAFT1,
+            &pair.plus_encoding,
+            &pair.zero_encoding,
+            decision_seed,
+            rules,
+        )?,
+        v2: read_rooted_pair(
+            NamedIdentity::V2Padded.name(),
+            &fork,
+            mover,
+            &WeightTable::V2,
+            &pair.plus_encoding,
+            &pair.zero_encoding,
+            decision_seed,
+            rules,
+        )?,
+        control: match with_control {
+            false => None,
+            true => Some(read_rooted_pair(
+                NamedIdentity::V2RefitPadded.name(),
+                &fork,
+                mover,
+                &WeightTable::V2_REFIT_PADDED,
+                &pair.plus_encoding,
+                &pair.zero_encoding,
+                decision_seed,
+                rules,
+            )?),
+        },
+    };
+
+    // 7. THE SAME-PATH V2 PARITY PIN, at THIS fork state (R-S10-2: "run at
+    //    EVERY escrow placement state — proving the path at the roots that
+    //    matter, not only at the registry roots").
+    let parity = parity_pin_at(
+        format!("{} fork", root.label),
+        &fork,
+        mover,
+        decision_seed,
+        rules,
+    )
+    .map_err(|e| format!("the same-path V2 parity pin: {}", e.detail()))?;
+    if !parity.matched() {
+        return Err(format!(
+            "THE SAME-PATH PARITY PIN FAILED at {}: {}\n                       R-S10-2 makes a \
+             pin mismatch a TYPED INSTRUMENT FAILURE — the clause (iii) read above would be a \
+             reading of a path nobody registered",
+            parity.root,
+            parity.disagreement().unwrap_or_default(),
+        ));
+    }
+
+    // 8. THE STATIC PREFERENCE and the β+ PARITY GATE.
+    let statics = read_static(
+        &plus_view,
+        &zero_view,
+        mover,
+        &WeightTable::V4_STEP9_DRAFT1,
+        NamedIdentity::V4Step9Draft1.name(),
+        rules,
+    )?;
+    if statics.agrees() && !statics.deltas_equal() {
+        return Err(format!(
+            "PROBE/PRODUCTION COLUMN DISAGREEMENT at a reserved state: the two static paths agree \
+             on the PREFERENCE ({}) and disagree on the DELTA (production {:+}, probe {:+}). \
+             R-S10-3 routes a same-preference delta inequality to precedence (0) — never a miss \
+             and never a pass",
+            statics.preference_prod().label(band),
+            statics.delta_prod(),
+            statics.delta_probe(),
+        ));
+    }
+
+    Ok(OrdinalBody::Substantive(Box::new(SubstantiveBlock {
+        population,
+        pair,
+        fork_digest: state_digest(&fork),
+        plus_digest: state_digest(&plus),
+        zero_digest: state_digest(&zero),
+        arithmetic,
+        raw,
+        clause_i,
+        clause_iii,
+        parity,
+        statics,
+    })))
+}
+
+/// The §6 recipe's WHOLE candidate population — total, areas and classified
+/// side, for every placement the fork offers.
+fn render_recipe_population(root: &GameState, rules: &Rules) -> Result<String, String> {
+    use std::fmt::Write;
+    let candidates = match classify_recipe_candidates(root, rules) {
+        Ok(candidates) => candidates,
+        Err(RecipeMiss::CandidateDidNotApply(detail)) => {
+            return Err(format!("the §6 recipe reports `CandidateDidNotApply`: {detail}"))
+        }
+        Err(miss) => return Ok(format!("       (no population: {miss})\n")),
+    };
+    let mut out = String::new();
+    for candidate in &candidates {
+        let side = match candidate.side {
+            RecipeSide::Productive(reward) => format!("PRODUCTIVE (reward {reward})"),
+            RecipeSide::Dead => "DEAD".to_string(),
+            RecipeSide::Ineligible => "ineligible".to_string(),
+        };
+        let _ = writeln!(
+            out,
+            "       total {:>2}  areas {:<22} {:<24} {}",
+            candidate.total,
+            format!("{:?}", candidate.areas),
+            side,
+            canonical_encoding(&candidate.mv),
+        );
+    }
+    Ok(out)
+}
+
+/// Shape F's WHOLE candidate population — total, areas and priced opponent fee
+/// flow, for every placement the turn start offers.
+fn render_fee_flow_population(root: &GameState, rules: &Rules) -> Option<String> {
+    use std::fmt::Write;
+    let candidates = classify_fee_flow_candidates(root, rules).ok()?;
+    let mut out = String::new();
+    for candidate in &candidates {
+        let _ = writeln!(
+            out,
+            "       total {:>2}  areas {:<22} fee {:>2}   {}",
+            candidate.total,
+            format!("{:?}", candidate.areas),
+            candidate.fee,
+            canonical_encoding(&candidate.mv),
+        );
+    }
+    Some(out)
+}
+
+// --- §5.3's THIRD blocking arm over the band --------------------------------
+
+/// Sign ONE step-10 ordinal's two successor sets from the MOVER's seat, tagging
+/// the recipe pair's sides with their ESCROW roles.
+///
+/// The walk is [`sign_one_set`]'s — the same checked boundary, the same
+/// non-terminal domain, the same mover-held-across-sets discipline — with the
+/// ROLE supplied by the caller instead of read off a `RootInput`'s §6 recipe.
+/// Two sets for the same reason Part A signs two: at a turn start the legal
+/// list is the additional-action options and the pair the recipe names is not
+/// legal until `EndAdditionalPhase` advances the phase.
+fn sign_step10_ordinal(
+    band: Step10Band,
+    label: &str,
+    root: &GameState,
+    sides: Option<(&Move, &Move)>,
+    rules: &Rules,
+) -> Result<Vec<SuccessorSet>, String> {
+    let mover = root.current_player;
+    let (plus_role, zero_role) = match band {
+        Step10Band::Pf => (RecipeRole::EscrowProductive, RecipeRole::EscrowDead),
+        Step10Band::Ose => (RecipeRole::EscrowFeePlus, RecipeRole::EscrowFeeZero),
+    };
+    let role_of = move |mv: &Move| -> RecipeRole {
+        match sides {
+            Some((plus, _)) if plus == mv => plus_role,
+            Some((_, zero)) if zero == mv => zero_role,
+            _ => RecipeRole::Unregistered,
+        }
+    };
+
+    let mut sets = Vec::new();
+    let moves = get_legal_moves(root, rules);
+    sets.push(sign_one_set(
+        label,
+        "root",
+        "the root's own legal list",
+        format!("get_legal_moves(root) at {:?}", root.turn_phase),
+        root,
+        &moves,
+        mover,
+        &role_of,
+        rules,
+    )?);
+    if moves.contains(&Move::EndAdditionalPhase) {
+        let placing = apply_move(root, &Move::EndAdditionalPhase, rules)
+            .map_err(|e| format!("{label}: EndAdditionalPhase did not apply: {e}"))?;
+        let placements = get_legal_moves(&placing, rules);
+        sets.push(sign_one_set(
+            label,
+            "fork",
+            "the fork placement set the recipe's pair lives in",
+            format!("EndAdditionalPhase then get_legal_moves at {:?}", placing.turn_phase),
+            &placing,
+            &placements,
+            mover,
+            &role_of,
+            rules,
+        )?);
+    }
+    Ok(sets)
+}
+
+// --- the grammar ------------------------------------------------------------
+
+/// Which reads this invocation runs.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Step10Mode {
+    /// The registered escrow band. A block verdict is composed.
+    Band,
+    /// **BORN-VALIDATION** (R-S10-12): the identical per-ordinal pipeline on the
+    /// LICENSED development roots, before the instrument ever meets the escrow
+    /// band. NO block verdict is composed.
+    Development,
+}
+
+/// Everything `step10` takes.
+#[derive(Debug)]
+struct Step10Options {
+    band: Step10Band,
+    mode: Step10Mode,
+    decision_seed: u64,
+    /// The per-ordinal burn acknowledgements — EXACTLY the band in band mode,
+    /// empty under `--development`.
+    acknowledged: BTreeSet<u32>,
+    burned: BTreeSet<u32>,
+    anchors: BTreeMap<u32, String>,
+    with_control: bool,
+    record: Option<String>,
+}
+
+/// A `--anchor N=<16 hex>` pair.
+fn parse_anchor(raw: &str) -> Result<(u32, String), String> {
+    let (ordinal, digest) = raw.split_once('=').ok_or_else(|| {
+        format!("--anchor {raw:?} is not `<ordinal>=<16-hex digest>` (the driven runner prints the digests)")
+    })?;
+    let ordinal: u32 = ordinal
+        .trim()
+        .parse()
+        .map_err(|e| format!("--anchor {raw:?}: {ordinal:?} is not an ordinal: {e}"))?;
+    let digest = digest.trim();
+    if digest.len() != 16 || !digest.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(format!(
+            "--anchor {raw:?}: {digest:?} is not a 16-character `state_digest`",
+        ));
+    }
+    Ok((ordinal, digest.to_ascii_lowercase()))
+}
+
+fn parse_ordinals(values: &[String], flag: &str) -> Result<Vec<u32>, String> {
+    values
+        .iter()
+        .map(|raw| {
+            raw.trim()
+                .parse::<u32>()
+                .map_err(|e| format!("--{flag} {raw:?} is not an ordinal: {e}"))
+        })
+        .collect()
+}
+
+fn parse_step10_options(band: Step10Band, args: &[String]) -> Result<Step10Options, String> {
+    let (positional, flags, repeated) = split_args(
+        args,
+        &["decision-seed", "record"],
+        &["with-control", "development"],
+        &["escrow-read", "burned", "anchor"],
+    )?;
+    if !positional.is_empty() {
+        return Err(format!("step10 {} takes no positional arguments\n\n{USAGE}", band.name()));
+    }
+    let Some(raw_seed) = flags.get("decision-seed") else {
+        return Err(format!(
+            "step10 {} needs --decision-seed <u64>. There is NO default: R-S10-2 fixes the read \
+             at a seed the CALLER records before the run, and a surface that invented one would \
+             answer a different question from the one the root asks\n\n{USAGE}",
+            band.name(),
+        ))
+    };
+    let decision_seed = parse_u64(raw_seed)?;
+    let mode = if flags.contains_key("development") {
+        Step10Mode::Development
+    } else {
+        Step10Mode::Band
+    };
+    let with_control = flags.contains_key("with-control");
+
+    let escrow_reads = repeated.get("escrow-read").map(Vec::as_slice).unwrap_or_default();
+    let burned_reads = repeated.get("burned").map(Vec::as_slice).unwrap_or_default();
+    let anchor_reads = repeated.get("anchor").map(Vec::as_slice).unwrap_or_default();
+
+    // The recorded band indexes into the regenerated game-3 document at BOTH
+    // modes; the PF band resolves by seeded scan and takes no record.
+    let record = match (band, flags.get("record")) {
+        (Step10Band::Ose, Some(path)) => Some(path.clone()),
+        (Step10Band::Ose, None) => {
+            return Err(format!(
+                "step10 ose needs --record <path>: its roots are events of the regenerated \
+                 {OSE_RUN_ID} document, which lives in the session scratchpad and is never \
+                 committed\n\n{USAGE}",
+            ))
+        }
+        (Step10Band::Pf, Some(_)) => {
+            return Err(
+                "step10 pf takes no --record: the PF band resolves by SEEDED SCAN at the recorded \
+                 master M-PF, and a document would name a different resolution"
+                    .to_string(),
+            )
+        }
+        (Step10Band::Pf, None) => None,
+    };
+
+    if band == Step10Band::Ose && !anchor_reads.is_empty() {
+        return Err(format!(
+            "step10 ose takes no --anchor: the recorded band's identities are the THIRTEEN \
+             in-source ledger digests ({OSE_EXHIBITS:?} — R-S10-11), and an anchor supplied on \
+             the command line would let a run choose the identity it verifies against",
+        ));
+    }
+
+    if mode == Step10Mode::Development {
+        for (flag, given) in
+            [("escrow-read", escrow_reads), ("burned", burned_reads), ("anchor", anchor_reads)]
+        {
+            // W2 RED: the deliberate placeholder — born-validation accepts the
+            // three band-mode inputs instead of refusing them by name.
+            if false && !given.is_empty() {
+                return Err(format!(
+                    "--development REFUSES --{flag}: born-validation runs the identical pipeline \
+                     on the LICENSED development roots ({:?}), which no burn rule ever reached — \
+                     there is nothing to acknowledge, nothing to declare burned, and the \
+                     identities are the recorded step-2/3 anchors rather than a caller's",
+                    band.development(),
+                ));
+            }
+        }
+        let anchors = development_anchors(band)?;
+        return Ok(Step10Options {
+            band,
+            mode,
+            decision_seed,
+            acknowledged: BTreeSet::new(),
+            burned: BTreeSet::new(),
+            anchors,
+            with_control,
+            record,
+        });
+    }
+
+    // BAND MODE. The acknowledgement is validated WHOLE before anything
+    // resolves: a partial set, a duplicate, or a non-member is a typed refusal.
+    let members: Vec<u32> = band.escrow();
+    let member_set: BTreeSet<u32> = members.iter().copied().collect();
+    let given = parse_ordinals(escrow_reads, "escrow-read")?;
+    let acknowledged: BTreeSet<u32> = given.iter().copied().collect();
+    if given.len() != acknowledged.len() {
+        return Err(format!(
+            "--escrow-read carries a DUPLICATE ({given:?}): the acknowledgement is per ordinal by \
+             name and the set must be exactly the band {members:?}",
+        ));
+    }
+    if let Some(stranger) = acknowledged.difference(&member_set).next() {
+        return Err(format!(
+            "--escrow-read {stranger} is not a member of the {} band {members:?} — REFUSING",
+            band.name(),
+        ));
+    }
+    if acknowledged != member_set {
+        let missing: Vec<u32> = member_set.difference(&acknowledged).copied().collect();
+        return Err(format!(
+            "--escrow-read is a PARTIAL band: {missing:?} unacknowledged. R-S10-9 requires all \
+             {STEP10_BAND_SIZE} — \"all eight reads run regardless of burn status\" — because a \
+             collision at an unread ordinal would go unseen, which is the one gaming channel the \
+             red team found (the 2026-08-23 registration's clause (2))",
+        ));
+    }
+
+    let burned: BTreeSet<u32> = parse_ordinals(burned_reads, "burned")?.into_iter().collect();
+    if let Some(stranger) = burned.difference(&member_set).next() {
+        return Err(format!(
+            "--burned {stranger} is not a member of the {} band {members:?}",
+            band.name(),
+        ));
+    }
+
+    let anchors = match band {
+        Step10Band::Ose => ose_anchors(&members)?,
+        Step10Band::Pf => {
+            let mut anchors: BTreeMap<u32, String> = BTreeMap::new();
+            for raw in anchor_reads {
+                let (ordinal, digest) = parse_anchor(raw)?;
+                if anchors.insert(ordinal, digest).is_some() {
+                    return Err(format!("--anchor names ordinal {ordinal} twice"));
+                }
+            }
+            let named: BTreeSet<u32> = anchors.keys().copied().collect();
+            if named != member_set {
+                return Err(format!(
+                    "--anchor must name ALL {STEP10_BAND_SIZE} band ordinals {members:?} \
+                     (R-S10-11: the driven runner resolves each escrow ordinal FIRST and its \
+                     printed root digests are transcribed here); this run named {named:?}",
+                ));
+            }
+            anchors
+        }
+    };
+
+    Ok(Step10Options {
+        band,
+        mode,
+        decision_seed,
+        acknowledged,
+        burned,
+        anchors,
+        with_control,
+        record,
+    })
+}
+
+/// The LICENSED development roots' recorded step-2/3 identities.
+fn development_anchors(band: Step10Band) -> Result<BTreeMap<u32, String>, String> {
+    let mut out = BTreeMap::new();
+    match band {
+        Step10Band::Pf => {
+            for ordinal in M_PF_DEVELOPMENT {
+                out.insert(ordinal, M_PF_DEVELOPMENT_DIGESTS[ordinal as usize].to_string());
+            }
+        }
+        Step10Band::Ose => {
+            let members: Vec<u32> = band.development();
+            return ose_anchors(&members);
+        }
+    }
+    Ok(out)
+}
+
+/// The recorded band's identities: the THIRTEEN in-source ledger digests.
+fn ose_anchors(members: &[u32]) -> Result<BTreeMap<u32, String>, String> {
+    let mut out = BTreeMap::new();
+    for member in members {
+        let anchor = OSE_EXHIBITS
+            .iter()
+            .find(|(e, _)| *e as u32 == *member)
+            .map(|(_, digest)| (*digest).to_string())
+            .ok_or_else(|| format!("e{member} is not one of the thirteen recorded exhibits"))?;
+        out.insert(*member, anchor);
+    }
+    Ok(out)
+}
+
+// --- the whole surface ------------------------------------------------------
+
+/// The readings this section implements, printed at the top of every artifact.
+const STEP10_HEADER: &str = "\
+R-S10-1 (PF (i))    the MOVER's S1 `ProductionAccess` on PRODUCTION bytes
+                    (`ScoreStructure::value_of`) STRICTLY greater at the
+                    PRODUCTIVE successor than at the DEAD one — S1's summand IS
+                    the recipe's keying quantity, and the summed-S form is the
+                    ruled category error (`3e9befe` (1)). The other six S deltas
+                    and the mover's full 34-column vectors are RECORDED beside
+                    it; a TIE is not a separation
+R-S10-2 (clause     the CONTROLLER'S OWN root table (R5: \"never a
+(iii))              re-derivation\"), read at the PLACEMENT state reached by
+                    `EndAdditionalPhase` through the CHECKED `apply_move`, under
+                    the LOCKED candidate through the explicit-weights surface at
+                    the CALLER's recorded decision seed, with the same-path V2
+                    parity pin RUN AT EVERY ESCROW PLACEMENT STATE. GATED
+                    strictly at PF; RECORDED (β+) at the recorded band
+R-S10-3 (β+ parity) the STATIC one-ply preference read TWICE — production
+                    (`eval::score`) and the probe path (Σ `interpolate(w)`·Δv
+                    over the probe's OWN thirty-four columns) — and the
+                    PREFERENCE must AGREE. A disagreement is that ordinal's MISS
+                    with the drift named; a same-preference DELTA inequality is
+                    an INSTRUMENT failure routed to precedence (0)
+R-S10-5/6/7         instantiability reads NO candidate column; viewability is
+                    `observe(root, mover)`; the floor is >= 4 of 8
+                    substantive-capable. The RAW arm gates three conjuncts
+                    (E1-exact-delta · the sixteen invariant columns · X1
+                    recomputed at the successor purse) and the ARITHMETIC arm
+                    gates opponent-O1 >= 1 AND opponent-O3 = 0, printed
+                    \"vacuous by census\" as `9e9e6ed` records it
+R-S10-8 (collisions) Part A's `classify` over EVERY ordinal's TWO successor sets
+                    with the recipe-instantiated escrow pair as §5.3's THIRD
+                    blocking arm. ANY blocking collision anywhere ⇒ block MISS,
+                    burned ordinals INCLUDED (the closed gaming channel)
+R-S10-9 (burn)      the acknowledgement is per ordinal BY NAME and the command
+                    REFUSES a partial band: all eight reads run regardless of
+                    burn status. A burned ordinal is a MISS at denominator 8
+exit codes          0 block PASS · 1 block MISS · 2 typed refusal (precedence
+                    (0)) · 4 VOID-AS-BLOCK owner route · 5 unregistered-cell
+                    owner route";
+
+/// The `--development` banner. A born-validation run composes NO verdict, and
+/// the header says so before any number is printed.
+const STEP10_DEV_HEADER: &str =
+    "BORN-VALIDATION — development roots; NO block verdict is composed here";
+
+/// The whole step-10 read of one band.
+struct Step10Surface {
+    band: Step10Band,
+    mode: Step10Mode,
+    decision_seed: u64,
+    with_control: bool,
+    acknowledged: BTreeSet<u32>,
+    burned: BTreeSet<u32>,
+    knobs: ShippedKnobs,
+    echo: String,
+    v2_echo: String,
+    blocks: Vec<OrdinalBlock>,
+    part_a: PartA,
+    /// One line per signed successor set — what was enumerated, what was
+    /// terminal, what was signed.
+    signing_summary: Vec<String>,
+    /// Ordinals whose successor sets could NOT be signed, and why. An
+    /// unviewable root is STRUCTURAL and noted; anything else is an instrument
+    /// failure.
+    signing_notes: Vec<String>,
+    signing_failures: Vec<String>,
+    /// `None` under `--development`: born-validation composes no verdict.
+    verdict: Option<BlockVerdict>,
+}
+
+impl Step10Surface {
+    /// **THE ONE COMPOSITION**, read by the report line AND by the exit code.
+    fn instrument_failed(&self) -> bool {
+        self.blocks.iter().any(|b| matches!(b.body, OrdinalBody::Instrument(_)))
+            || !self.signing_failures.is_empty()
+    }
+
+    fn exit_code(&self) -> i32 {
+        match &self.verdict {
+            Some(verdict) => verdict.exit_code(),
+            // Born-validation: 0 on completion, 2 on a typed refusal.
+            None => i32::from(self.instrument_failed()) * 2,
+        }
+    }
+}
+
+fn step10_read(opts: &Step10Options, rules: &Rules) -> Result<Step10Surface, String> {
+    let knobs = shipped_controller_knobs()?;
+    let record = match &opts.record {
+        Some(path) => Some(load_ose_record(path, rules)?),
+        None => None,
+    };
+    let ordinals: Vec<u32> = match opts.mode {
+        Step10Mode::Band => opts.band.escrow(),
+        Step10Mode::Development => opts.band.development(),
+    };
+    let roots = resolve_step10_roots(
+        opts.band,
+        &ordinals,
+        &opts.anchors,
+        &opts.acknowledged,
+        record.as_ref(),
+        rules,
+    )?;
+
+    let mut blocks = Vec::new();
+    let mut views: Vec<SignedView> = Vec::new();
+    let mut signing_summary = Vec::new();
+    let mut signing_notes = Vec::new();
+    let mut signing_failures = Vec::new();
+    for root in &roots {
+        let body =
+            match read_step10_body(opts.band, root, opts.decision_seed, opts.with_control, rules) {
+                Ok(body) => body,
+                Err(detail) => OrdinalBody::Instrument(detail),
+            };
+        match &body {
+            OrdinalBody::Unviewable { .. } => signing_notes.push(format!(
+                "{}: NOT SIGNED — the mover's own deal is unrecorded, so no successor of this \
+                 root carries an honest mover view",
+                root.label,
+            )),
+            _ => {
+                let sides = match &body {
+                    OrdinalBody::Substantive(block) => {
+                        Some((&block.pair.plus_move, &block.pair.zero_move))
+                    }
+                    _ => None,
+                };
+                match sign_step10_ordinal(opts.band, &root.label, &root.state, sides, rules) {
+                    Ok(sets) => {
+                        for set in sets {
+                            signing_summary.push(format!(
+                                "     {:<20} {:<6} {:>4} enumerated · {:>3} terminal · {:>4} \
+                                 signed   ({})",
+                                root.label,
+                                set.name,
+                                set.enumerated,
+                                set.terminal,
+                                set.views.len(),
+                                set.path,
+                            ));
+                            views.extend(set.views);
+                        }
+                    }
+                    Err(detail) => signing_failures.push(format!("{}: {detail}", root.label)),
+                }
+            }
+        }
+        blocks.push(OrdinalBlock {
+            ordinal: root.ordinal,
+            label: root.label.clone(),
+            origin: root.origin.clone(),
+            detail: root.detail.clone(),
+            digest: root.digest.clone(),
+            anchor: root.anchor.clone(),
+            seat: root.state.current_player,
+            burned: opts.burned.contains(&root.ordinal),
+            body,
+        });
+    }
+
+    let part_a = classify(views);
+    let inputs = BandInputs {
+        instrument_failure: blocks
+            .iter()
+            .any(|b| matches!(b.body, OrdinalBody::Instrument(_)))
+            || !signing_failures.is_empty(),
+        blocking_collisions: part_a.blocking().len(),
+    };
+    let verdict = match opts.mode {
+        Step10Mode::Development => None,
+        Step10Mode::Band => Some(match opts.band {
+            Step10Band::Pf => {
+                let reads: Vec<PfOrdinal> = blocks
+                    .iter()
+                    .filter_map(|b| {
+                        b.pf_read().map(|read| PfOrdinal {
+                            ordinal: b.ordinal,
+                            burned: b.burned,
+                            read,
+                        })
+                    })
+                    .collect();
+                compose_pf_block(&reads, inputs)
+            }
+            Step10Band::Ose => {
+                let reads: Vec<OseOrdinal> = blocks
+                    .iter()
+                    .filter_map(|b| {
+                        b.ose_read().map(|read| OseOrdinal {
+                            ordinal: b.ordinal,
+                            burned: b.burned,
+                            read,
+                        })
+                    })
+                    .collect();
+                compose_ose_block(&reads, inputs)
+            }
+        }),
+    };
+
+    Ok(Step10Surface {
+        band: opts.band,
+        mode: opts.mode,
+        decision_seed: opts.decision_seed,
+        with_control: opts.with_control,
+        acknowledged: opts.acknowledged.clone(),
+        burned: opts.burned.clone(),
+        echo: rooted_echo(&knobs, &WeightTable::V4_STEP9_DRAFT1),
+        v2_echo: rooted_echo(&knobs, &WeightTable::V2),
+        knobs,
+        blocks,
+        part_a,
+        signing_summary,
+        signing_notes,
+        signing_failures,
+        verdict,
+    })
+}
+
+// --- the artifact -----------------------------------------------------------
+
+/// A 34-wide vector in one line, EVERY row.
+///
+/// [`render_dv`]'s nonzero-only style is right for a DELTA, where an all-zero
+/// row is the common case; it is wrong for a LEVEL, where a zero is a reading.
+fn render_vector(v: &[i64; AXIS_WIDTH]) -> String {
+    FeatureId::all()
+        .iter()
+        .map(|slot| format!("{}={}", slot.label(), v[slot.index()]))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// One root table, ranked, with its echo, world and fifteen counters.
+fn render_rooted_pair(out: &mut String, indent: &str, band: Step10Band, read: &RootedTableRead) {
+    use std::fmt::Write;
+    let _ = writeln!(
+        out,
+        "{indent}{:<18} {} · world sampler_seed={:#018x} worlds={}",
+        read.name, read.read.echo, read.read.sampler_seed, read.read.worlds,
+    );
+    let _ = writeln!(
+        out,
+        "{indent}                   {:<12} {:+}    {:<12} {:+}    delta {:+}   preference {}",
+        band.plus_label(),
+        read.plus_value,
+        band.zero_label(),
+        read.zero_value,
+        read.delta(),
+        read.preference().label(band),
+    );
+    let _ = writeln!(
+        out,
+        "{indent}                   top {:+} shared by {} candidate(s) · winner `{}`",
+        read.top_value(),
+        read.tied_at_top(),
+        canonical_encoding(&read.read.winner),
+    );
+    let _ = writeln!(
+        out,
+        "{indent}                   full ranking ({} candidates, best first):",
+        read.read.ranked.len(),
+    );
+    let _ = write!(out, "{}", render_ranking(&format!("{indent}     "), &read.read.ranked));
+    let _ = writeln!(out, "{indent}                   search counters (all fifteen):");
+    let _ = write!(out, "{}", render_stats(&format!("{indent}     "), &read.read.stats));
+}
+
+fn render_arithmetic(out: &mut String, arm: &ArithmeticArm) {
+    use std::fmt::Write;
+    let _ = writeln!(
+        out,
+        "     arithmetic arm    opponent p{} [O1 {} · O2 {} · O3 {}] · mover [O1 {} · O2 {} · O3 \
+         {}]\n                       opponent hand {} card(s), of which {} KNOWN",
+        arm.opponent.0,
+        arm.columns[0],
+        arm.columns[1],
+        arm.columns[2],
+        arm.mover_columns[0],
+        arm.mover_columns[1],
+        arm.mover_columns[2],
+        arm.hand.0,
+        arm.hand.1,
+    );
+    let _ = writeln!(
+        out,
+        "                       {} — opponent-O1 >= 1 AND opponent-O3 = 0 (vacuous by census — \
+         9e9e6ed)",
+        if arm.passed() { "PASS" } else { "*** FAIL ***" },
+    );
+}
+
+fn render_raw_arm(out: &mut String, arm: &RawArm) {
+    use std::fmt::Write;
+    let _ = writeln!(
+        out,
+        "     raw arm           the OPPONENT's (p{}) full 34-column vector at BOTH successors, on \
+         production bytes",
+        arm.opponent.0,
+    );
+    let _ = writeln!(out, "       F+              {}", render_vector(&arm.plus));
+    let _ = writeln!(out, "       F0              {}", render_vector(&arm.zero));
+    let mut delta = [0i64; AXIS_WIDTH];
+    for (slot, value) in delta.iter_mut().enumerate() {
+        *value = arm.plus[slot] - arm.zero[slot];
+    }
+    let _ = writeln!(out, "       delta           {}", render_dv(&delta));
+    let _ = writeln!(
+        out,
+        "       (a) E1 delta    {:+} vs the exported fee delta {:+}   {}",
+        arm.e1_delta(),
+        i64::from(arm.fee),
+        if arm.conjunct_a() { "PASS" } else { "*** FAIL ***" },
+    );
+    let _ = writeln!(
+        out,
+        "       (b) invariance  {} of the sixteen named columns moved   {}",
+        arm.moved.len(),
+        if arm.conjunct_b() { "PASS" } else { "*** FAIL ***" },
+    );
+    for (label, plus, zero) in &arm.moved {
+        let _ = writeln!(out, "                       MOVED {label}: F+ {plus} vs F0 {zero}");
+    }
+    let _ = writeln!(
+        out,
+        "       (c) X1          F+ {} · F0 {} · F0 recomputed at the raised purse {}   {}",
+        arm.x1_plus(),
+        arm.x1_zero(),
+        arm.x1_recomputed,
+        if arm.conjunct_c() { "PASS" } else { "*** FAIL ***" },
+    );
+    let _ = writeln!(
+        out,
+        "                       the incumbent sixteen are NOT gated (unnamed by the \
+         registration) — printed above, never asserted",
+    );
+}
+
+fn render_clause_i(out: &mut String, clause: &PfClauseI) {
+    use std::fmt::Write;
+    let deltas = clause.s_deltas();
+    let _ = writeln!(
+        out,
+        "     clause (i)        the MOVER's S deltas (productive − dead), production `value_of`:",
+    );
+    for (i, c) in S_COLUMNS.iter().enumerate() {
+        let _ = writeln!(
+            out,
+            "                       {:<3} {:>+6}   (productive {} · dead {})",
+            c.label(),
+            deltas[i],
+            clause.own_s(true)[i],
+            clause.own_s(false)[i],
+        );
+    }
+    let _ = writeln!(out, "       own Δ (34)      {}", render_dv(&clause.own_delta()));
+    let _ = writeln!(out, "       §5.3 Δv Δ (34)  {}", render_dv(&clause.dv_delta()));
+    let _ = writeln!(
+        out,
+        "       GATE (i)        S1 delta {:+}   {} — R-S10-1 reads S1 alone and STRICTLY; a tie \
+         is not a separation",
+        clause.s1_delta(),
+        if clause.passed() { "PASS" } else { "*** FAIL ***" },
+    );
+}
+
+fn render_static(out: &mut String, band: Step10Band, statics: &StaticRead) {
+    use std::fmt::Write;
+    let _ = writeln!(
+        out,
+        "     β+ parity gate    the STATIC one-ply preference at `{}`, read twice",
+        statics.table,
+    );
+    let _ = writeln!(
+        out,
+        "       production      {:+} − {:+} = {:+}   preference {}",
+        statics.prod_plus,
+        statics.prod_zero,
+        statics.delta_prod(),
+        statics.preference_prod().label(band),
+    );
+    let _ = writeln!(
+        out,
+        "       probe path      {:+} − {:+} = {:+}   preference {}   (ppm {} / {})",
+        statics.probe.total,
+        statics.probe_zero.total,
+        statics.delta_probe(),
+        statics.preference_probe().label(band),
+        statics.probe.ppm,
+        statics.probe_zero.ppm,
+    );
+    if !statics.deltas_equal() {
+        let _ = writeln!(
+            out,
+            "       per-row         the two paths' deltas differ; the probe's per-row \
+             contributions:",
+        );
+        for (label, plus, zero, delta) in statics.divergent_rows() {
+            let _ = writeln!(
+                out,
+                "                       {label:<28} F+ {plus:>+8}  F0 {zero:>+8}  Δ {delta:>+8}",
+            );
+        }
+    }
+    let verdict = if statics.agrees() {
+        format!("PASS — the preferences AGREE ({})", statics.preference_prod().label(band))
+    } else {
+        format!(
+            "*** MISS *** PARITY DIVERGENCE: production says {}, probe says {}",
+            statics.preference_prod().label(band),
+            statics.preference_probe().label(band),
+        )
+    };
+    let _ = writeln!(
+        out,
+        "       GATE (β+)       {verdict}{}",
+        match band {
+            Step10Band::Ose => "",
+            Step10Band::Pf => "   [RECORDED at PF — clause (iii) gates in full there]",
+        },
+    );
+}
+
+fn render_ordinal(out: &mut String, surface: &Step10Surface, block: &OrdinalBlock) {
+    use std::fmt::Write;
+    let band = surface.band;
+    let _ = writeln!(out, "\n  == ORDINAL {} ==", block.label);
+    let _ = writeln!(out, "     origin            {}", block.origin);
+    let _ = writeln!(out, "                       {}", block.detail);
+    let _ = writeln!(
+        out,
+        "     identity          state_digest {} (recorded anchor {}) — VERIFIED",
+        block.digest, block.anchor,
+    );
+    let _ = writeln!(out, "     mover             p{}", block.seat.0);
+    if block.burned {
+        let _ = writeln!(
+            out,
+            "     BURN STATUS       DECLARED BURNED — a MISS at denominator 8 (the `9e9e6ed` \
+             attrition rule).\n                       The read below still RUNS and still \
+             contributes its collisions: \"all eight\n                       reads run regardless \
+             of burn status\"",
+        );
+    }
+
+    match &block.body {
+        OrdinalBody::Instrument(detail) => {
+            let _ = writeln!(
+                out,
+                "     TYPED INSTRUMENT FAILURE — REFUSING classification\n                       \
+                 {detail}",
+            );
+        }
+        OrdinalBody::Unviewable { reason } => {
+            let _ = writeln!(out, "     viewability       UNVIEWABLE\n                       {reason}");
+        }
+        OrdinalBody::NonInstantiable { reason, population, arithmetic } => {
+            let _ = writeln!(out, "     viewability       viewable");
+            let _ = writeln!(
+                out,
+                "     recipe            VOID (non-instantiable): {reason}",
+            );
+            if !population.is_empty() {
+                let _ = writeln!(out, "     candidate population:");
+                let _ = write!(out, "{population}");
+            }
+            if let Some(arm) = arithmetic {
+                render_arithmetic(out, arm);
+            }
+        }
+        OrdinalBody::Substantive(sub) => {
+            let _ = writeln!(out, "     viewability       viewable");
+            let _ = writeln!(
+                out,
+                "     recipe            INSTANTIATED at total {} · {}",
+                sub.pair.total, sub.pair.keying,
+            );
+            let _ = writeln!(
+                out,
+                "       {:<14}  {}\n                       areas {}",
+                band.plus_label(),
+                sub.pair.plus_encoding,
+                sub.pair.plus_areas,
+            );
+            let _ = writeln!(
+                out,
+                "       {:<14}  {}\n                       areas {}",
+                band.zero_label(),
+                sub.pair.zero_encoding,
+                sub.pair.zero_areas,
+            );
+            if !sub.population.is_empty() {
+                let _ = writeln!(out, "     candidate population:");
+                let _ = write!(out, "{}", sub.population);
+            }
+            let _ = writeln!(
+                out,
+                "     fork state        {} (EndAdditionalPhase, CHECKED)\n       {:<14}  \
+                 successor {}\n       {:<14}  successor {}",
+                sub.fork_digest,
+                band.plus_label(),
+                sub.plus_digest,
+                band.zero_label(),
+                sub.zero_digest,
+            );
+            if let Some(arm) = &sub.arithmetic {
+                render_arithmetic(out, arm);
+            }
+            if let Some(arm) = &sub.raw {
+                render_raw_arm(out, arm);
+            }
+            if let Some(clause) = &sub.clause_i {
+                render_clause_i(out, clause);
+            }
+            let _ = writeln!(
+                out,
+                "     clause (iii)      the CONTROLLER'S OWN root table at the fork, decision \
+                 seed {:#018x}",
+                surface.decision_seed,
+            );
+            render_rooted_pair(out, "       ", band, &sub.clause_iii.candidate);
+            let _ = writeln!(
+                out,
+                "       GATE (iii)      {}",
+                match band {
+                    Step10Band::Pf =>
+                        if sub.clause_iii.candidate.strict() {
+                            format!(
+                                "PASS — the productive side is valued STRICTLY above the dead \
+                                 side (delta {:+})",
+                                sub.clause_iii.candidate.delta(),
+                            )
+                        } else {
+                            format!(
+                                "*** FAIL *** not strictly above (delta {:+}); a TIE is not a \
+                                 separation",
+                                sub.clause_iii.candidate.delta(),
+                            )
+                        },
+                    Step10Band::Ose => format!(
+                        "RECORDED (β+ INVERTED GATING, owner-ruled): the preference is {} and \
+                         nothing gates on it here",
+                        sub.clause_iii.candidate.preference().label(band),
+                    ),
+                },
+            );
+            render_rooted_pair(out, "       ", band, &sub.clause_iii.v2);
+            if let Some(control) = &sub.clause_iii.control {
+                render_rooted_pair(out, "       ", band, control);
+            }
+            let _ = writeln!(out, "     same-path pin     {}", sub.parity.report().trim_start());
+            render_static(out, band, &sub.statics);
+        }
+    }
+
+    let verdict = match band {
+        Step10Band::Pf => block.pf_read().map(|read| {
+            pf_ordinal_verdict(&PfOrdinal { ordinal: block.ordinal, burned: block.burned, read })
+        }),
+        Step10Band::Ose => block.ose_read().map(|read| {
+            ose_ordinal_verdict(&OseOrdinal { ordinal: block.ordinal, burned: block.burned, read })
+        }),
+    };
+    let _ = writeln!(
+        out,
+        "     VERDICT {:<9} {}",
+        block.label,
+        match verdict {
+            None => "NONE — a typed instrument failure invalidates this ordinal's read".to_string(),
+            Some(OrdinalVerdict::PassReal) => "PASS (real, discriminating content)".to_string(),
+            Some(OrdinalVerdict::PassVacuous) =>
+                "PASS BY VACUITY, said plainly — the substantive read was not available and what \
+                 remained passed"
+                    .to_string(),
+            Some(OrdinalVerdict::Miss) => "MISS — a read arm said NO".to_string(),
+            Some(OrdinalVerdict::Void) =>
+                "VOID — nobody chose it and nobody gains; it does NOT show the registered read"
+                    .to_string(),
+            Some(OrdinalVerdict::Burned) =>
+                "MISS (BURNED before step 10, denominator 8)".to_string(),
+        },
+    );
+}
+
+fn render_step10(surface: &Step10Surface) -> String {
+    use std::fmt::Write;
+    let band = surface.band;
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "step10 {} — the registered escrow read: the recipe, the gated arms, clause (iii) on the \
+         locked identity, and §5.3's third blocking arm\n",
+        band.name(),
+    );
+    if surface.mode == Step10Mode::Development {
+        let _ = writeln!(out, "{STEP10_DEV_HEADER}\n");
+    }
+    let _ = writeln!(out, "{}", STEP10_HEADER.trim_end());
+    let _ = writeln!(out, "{}", ROOTED_CLEAN_BUILD.trim_end());
+    let _ = writeln!(out);
+    let _ = writeln!(out, "semantics rev       {SEMANTICS_REV}");
+    let _ = writeln!(
+        out,
+        "eval impl version   {}",
+        yokohama_core::game::eval::EVAL_IMPL_VERSION,
+    );
+    let _ = writeln!(out, "profile             {}", profile());
+    let _ = writeln!(out, "band                {}", band.name());
+    let _ = writeln!(
+        out,
+        "mode                {}",
+        match surface.mode {
+            Step10Mode::Band => "BAND READ — a block verdict is composed",
+            Step10Mode::Development => STEP10_DEV_HEADER,
+        },
+    );
+    let _ = writeln!(
+        out,
+        "table under read    {}   (NOT a flag — the locked candidate is the table step 10 reads)",
+        NamedIdentity::V4Step9Draft1.name(),
+    );
+    let _ = writeln!(
+        out,
+        "table identity      {:#018x}   (decimal {})",
+        weight_table_identity(&WeightTable::V4_STEP9_DRAFT1) as u64,
+        weight_table_identity(&WeightTable::V4_STEP9_DRAFT1),
+    );
+    let _ = writeln!(out, "EARLY               {}", vector_csv(&WeightTable::V4_STEP9_DRAFT1.early));
+    let _ = writeln!(out, "LATE                {}", vector_csv(&WeightTable::V4_STEP9_DRAFT1.late));
+    let _ = writeln!(
+        out,
+        "controller          {}   (the shipped configuration: b={} k={} m={} cap={})",
+        surface.echo,
+        surface.knobs.b,
+        surface.knobs.k,
+        surface.knobs.m,
+        surface.knobs.cap.map_or("none".to_string(), |c| c.to_string()),
+    );
+    let _ = writeln!(
+        out,
+        "beside it           {}   ({}, RECORDED at every ordinal — the parity pin reads V2 anyway)",
+        surface.v2_echo,
+        NamedIdentity::V2Padded.name(),
+    );
+    let _ = writeln!(
+        out,
+        "control arm         {}",
+        if surface.with_control {
+            format!("{} — RECORDED (--with-control)", NamedIdentity::V2RefitPadded.name())
+        } else {
+            "not requested (--with-control adds v2-refit-padded's root-table preference)"
+                .to_string()
+        },
+    );
+    let _ = writeln!(
+        out,
+        "decision seed       {:#018x} — supplied by the CALLER and recorded before the run \
+         (R-S10-2). This surface has NO default",
+        surface.decision_seed,
+    );
+    let _ = writeln!(
+        out,
+        "acknowledged        {}",
+        if surface.acknowledged.is_empty() {
+            "none — born-validation acknowledges nothing (the licensed roots were never fenced)"
+                .to_string()
+        } else {
+            format!(
+                "{:?} — all {} by name (R-S10-9)",
+                surface.acknowledged.iter().copied().collect::<Vec<_>>(),
+                surface.acknowledged.len(),
+            )
+        },
+    );
+    let _ = writeln!(
+        out,
+        "burned              {}",
+        if surface.burned.is_empty() {
+            "NONE declared".to_string()
+        } else {
+            format!("{:?} — each a MISS at denominator 8", surface.burned.iter().copied().collect::<Vec<_>>())
+        },
+    );
+
+    for block in &surface.blocks {
+        render_ordinal(&mut out, surface, block);
+    }
+
+    let _ = writeln!(out, "\n  == §5.3 PART A — the collision test over the whole band ==");
+    let _ = writeln!(
+        out,
+        "     the THIRD blocking arm is live here: a class holding BOTH sides of ONE ordinal's\n\
+         \x20    recipe-instantiated pair is a §5.3 STOP (spec §5.3, \"(step 10 only) a \
+         recipe-instantiated\n\
+         \x20    escrow pair\"). Organic collisions stay diagnostics.",
+    );
+    for line in &surface.signing_summary {
+        let _ = writeln!(out, "{line}");
+    }
+    for note in &surface.signing_notes {
+        let _ = writeln!(out, "     NOT SIGNED        {note}");
+    }
+    for failure in &surface.signing_failures {
+        let _ = writeln!(out, "     *** INSTRUMENT FAILURE (signing) *** {failure}");
+    }
+    let _ = write!(out, "{}", surface.part_a.render());
+
+    let capable = surface
+        .blocks
+        .iter()
+        .filter(|b| match band {
+            Step10Band::Pf => b.pf_read().is_some_and(PfOrdinalRead::substantive_capable),
+            Step10Band::Ose => b.ose_read().is_some_and(OseOrdinalRead::substantive_capable),
+        })
+        .count();
+    let _ = writeln!(
+        out,
+        "\nsubstantive-capable {capable} of {} (viewable AND recipe-instantiable) — {}",
+        surface.blocks.len(),
+        match band {
+            Step10Band::Ose => format!(
+                "the FLOOR reads this: fewer than {STEP10_FLOOR} is VOID-AS-BLOCK"
+            ),
+            Step10Band::Pf => "RECORDED: spec §6's letter registers NO floor for this band, so                                nothing here enters the verdict"
+                .to_string(),
+        },
+    );
+
+    match &surface.verdict {
+        None => {
+            let _ = writeln!(
+                out,
+                "\n  {STEP10_DEV_HEADER}. {} ordinal block(s) printed above; nothing here is a \
+                 block verdict, a gate, or an input to one.",
+                surface.blocks.len(),
+            );
+            if surface.instrument_failed() {
+                let _ = writeln!(
+                    out,
+                    "  A TYPED REFUSAL fired during born-validation — the run exits 2 and the \
+                     escrow reads do NOT open.",
+                );
+            }
+        }
+        Some(verdict) => render_block_verdict(&mut out, band, verdict),
+    }
+    out
+}
+
+fn render_block_verdict(out: &mut String, band: Step10Band, verdict: &BlockVerdict) {
+    use std::fmt::Write;
+    let _ = writeln!(out, "\n  == THE BLOCK ==");
+    if let Some(split) = verdict.split() {
+        let _ = writeln!(
+            out,
+            "     split             PASS real={} vacuous={} miss={} void={} burned={}   \
+             (denominator {})",
+            split.real, split.vacuous, split.miss, split.void, split.burned, split.total(),
+        );
+        let _ = writeln!(out, "     blocking          {} collision(s)", split.collisions);
+    }
+    match verdict {
+        BlockVerdict::Refused => {
+            let _ = writeln!(
+                out,
+                "     BLOCK VERDICT     REFUSED — a typed instrument failure fired. Precedence \
+                 (0): \"REFUSE\n                       classification until resolved, never \
+                 auto-classified\". No block line\n                       is composed and nothing \
+                 above says anything about the locked identity.",
+            );
+        }
+        BlockVerdict::VoidAsBlock { substantive_capable, .. } => {
+            let _ = writeln!(
+                out,
+                "     BLOCK VERDICT     VOID-AS-BLOCK — {substantive_capable} of \
+                 {STEP10_BAND_SIZE} ordinals are SUBSTANTIVE-CAPABLE\n                       \
+                 (viewable AND recipe-instantiable) against a floor of {STEP10_FLOOR}. Every read \
+                 above still\n                       printed. ROUTED TO THE OWNER as a named gap, \
+                 never a silent degradation.",
+            );
+        }
+        BlockVerdict::Pass(split) => {
+            let _ = writeln!(
+                out,
+                "     BLOCK VERDICT     PASS — {} of {STEP10_BAND_SIZE} ordinals PASS \
+                 (>= {STEP10_BLOCK_PASS} required) with zero\n                       blocking \
+                 collisions",
+                split.passes_for(band),
+            );
+            if band == Step10Band::Ose {
+                let _ = writeln!(out, "     worst case        \"{STEP10_WORST_CASE}\"");
+            }
+        }
+        BlockVerdict::Miss(split) => {
+            let _ = writeln!(
+                out,
+                "     BLOCK VERDICT     MISS — {} of {STEP10_BAND_SIZE} ordinals \
+                 {}{}",
+                split.passes_for(band),
+                match band {
+                    Step10Band::Pf => "SHOW the registered read",
+                    Step10Band::Ose => "PASS",
+                },
+                if split.collisions > 0 {
+                    format!(
+                        ", and {} BLOCKING collision(s) block the\n                       whole \
+                         block regardless (burned ordinals' reads included — the closed gaming \
+                         channel)",
+                        split.collisions,
+                    )
+                } else {
+                    format!(" against the >= {STEP10_BLOCK_PASS} required")
+                },
+            );
+            let _ = writeln!(
+                out,
+                "                       An escrow MISS CLOSES the locked identity (checkpoint §7 \
+                 step 10). This\n                       instrument REPORTS it and repairs \
+                 nothing.",
+            );
+        }
+        BlockVerdict::UnregisteredCell { shown, real_misses, voids, burned, .. } => {
+            let _ = writeln!(
+                out,
+                "     BLOCK VERDICT     NONE COMPOSED\n     UNREGISTERED CELL — routed to the \
+                 owner: {shown} shown · {real_misses} real miss(es) ·\n                       \
+                 {voids} void(s) · {burned} burned. Under spec §6's LETTER this block MISSES; \
+                 under the\n                       2026-08-23 void-≠-miss rule — registered for \
+                 the RECORDED band and NOT\n                       extended here — it PASSES. The \
+                 verdict FLIPS between two readings, so\n                       the instrument \
+                 prints no block verdict (R-S10-10).",
+            );
+        }
+    }
+}
+
+fn cmd_step10(args: &[String]) -> Result<i32, String> {
+    let band = match args.first().map(String::as_str) {
+        Some("pf") => Step10Band::Pf,
+        Some("ose") => Step10Band::Ose,
+        section => {
+            return Err(format!(
+                "step10 takes a band: `pf` (spec §6's placement-fork escrow ordinals {{8..15}} at \
+                 the recorded M-PF) or `ose` (the charter's eight escrow-reserved game-3 \
+                 exhibits). Got {section:?}\n\n{USAGE}"
+            ))
+        }
+    };
+    let opts = parse_step10_options(band, &args[1..])?;
+    let rules = Rules::standard();
+    let started = Instant::now();
+    let surface = step10_read(&opts, &rules)?;
+    print!("{}", render_step10(&surface));
+    println!("\nwall                {:.1}s", started.elapsed().as_secs_f64());
+    Ok(surface.exit_code())
+}
+
 // ---------------------------------------------------------------------------
 // Tests: the statistics, against hand-computable truth.
 //
@@ -16360,7 +19328,7 @@ the superseded run  the STOP-of-record under the ORIGINAL frozen gates — the
 mod tests {
     use super::*;
 
-    use yokohama_core::game::driven::{generate_roots, RegistryError};
+    use yokohama_core::game::driven::RegistryError;
     use yokohama_core::game::greedy::DEFAULT_RETREAT_SAMPLES;
     use yokohama_core::game::lookahead::{DEFAULT_BEAM, DEFAULT_WORLDS};
     use yokohama_core::game::pair_fixtures::{
@@ -16370,7 +19338,7 @@ mod tests {
     use yokohama_core::{
         apply_move, get_legal_moves, is_game_over, AchievementCard, AchievementType, ChurchSlot,
         check_invariants, ChurchTrack, CustomsSlot, CustomsTrack, GameConfig, HandCard,
-        OrderCardId, PendingChoice,
+        OrderCardId, PendingChoice, PresidentLocation,
         StartingOrderChoice, TechCardId,
     };
 
@@ -27901,4 +30869,1298 @@ mod tests {
             );
         }
     }
+
+    // -----------------------------------------------------------------------
+    // V4 STEP 10 — the escrow read surface
+    // -----------------------------------------------------------------------
+
+    /// The four registered lists this surface classifies an ordinal against are
+    /// PAIRWISE DISJOINT as integers, which is what lets one `u32` namespace
+    /// carry both bands through [`admit_step10_root`].
+    #[test]
+    fn the_step10_bands_are_pairwise_disjoint_as_integers() {
+        let lists: [(&str, Vec<u32>); 4] = [
+            ("pf escrow", V4_ESCROW_ORDINALS.collect()),
+            ("pf development", M_PF_DEVELOPMENT.collect()),
+            ("ose reserved", OSE_RESERVED.iter().map(|e| *e as u32).collect()),
+            ("ose band", OSE_BAND.iter().map(|e| *e as u32).collect()),
+        ];
+        for (i, (a_name, a)) in lists.iter().enumerate() {
+            for (b_name, b) in lists.iter().skip(i + 1) {
+                let shared: Vec<u32> =
+                    a.iter().copied().filter(|x| b.contains(x)).collect();
+                assert!(shared.is_empty(), "{a_name} and {b_name} share {shared:?}");
+            }
+        }
+        // And the two BANDS are the eight the registrations name.
+        assert_eq!(Step10Band::Pf.escrow(), vec![8, 9, 10, 11, 12, 13, 14, 15]);
+        assert_eq!(Step10Band::Ose.escrow(), vec![50, 58, 78, 94, 127, 144, 168, 184]);
+        assert_eq!(Step10Band::Pf.escrow().len(), STEP10_BAND_SIZE);
+        assert_eq!(Step10Band::Ose.escrow().len(), STEP10_BAND_SIZE);
+        assert_eq!(Step10Band::Pf.development(), vec![0, 1, 2, 3]);
+        assert_eq!(Step10Band::Ose.development(), vec![111, 159, 198]);
+    }
+
+    /// The raw arm's invariance set is EXACTLY the eighteen candidate columns
+    /// minus the two the registration gates by other means — E1 by magnitude,
+    /// X1 by recomputation.
+    #[test]
+    fn the_raw_arms_invariance_set_is_every_candidate_column_but_the_two_gated_ones() {
+        let named: BTreeSet<&str> = RAW_ARM_INVARIANT.iter().map(|c| c.label()).collect();
+        let expected: BTreeSet<&str> = CandidateFeature::ALL
+            .iter()
+            .filter(|c| {
+                !matches!(c, CandidateFeature::MoneyStock | CandidateFeature::LabTakeable)
+            })
+            .map(|c| c.label())
+            .collect();
+        assert_eq!(named, expected, "the sixteen the 2026-08-23 registration names");
+        assert_eq!(RAW_ARM_INVARIANT.len(), 16);
+        assert!(!named.contains("E1"), "E1 is gated by MAGNITUDE, not by invariance");
+        assert!(!named.contains("X1"), "X1 is gated by RECOMPUTATION at the successor purse");
+    }
+
+    /// Eight ordinals with the given counts, as the composition sees them.
+    #[allow(clippy::too_many_arguments)]
+    fn ose_band_of(
+        sub_pass: usize,
+        sub_fail: usize,
+        ni_pass: usize,
+        ni_fail: usize,
+        unview: usize,
+        burned_sub: usize,
+        burned_other: usize,
+    ) -> Vec<OseOrdinal> {
+        let pass = OseOrdinalRead::Substantive {
+            arithmetic: true,
+            raw_a: true,
+            raw_b: true,
+            raw_c: true,
+            parity: true,
+        };
+        let fail = OseOrdinalRead::Substantive {
+            arithmetic: true,
+            raw_a: true,
+            raw_b: true,
+            raw_c: true,
+            parity: false,
+        };
+        let mut out = Vec::new();
+        let mut push = |n: usize, burned: bool, read: OseOrdinalRead| {
+            for _ in 0..n {
+                let ordinal = 50 + out.len() as u32;
+                out.push(OseOrdinal { ordinal, burned, read });
+            }
+        };
+        push(sub_pass, false, pass);
+        push(sub_fail, false, fail);
+        push(ni_pass, false, OseOrdinalRead::NonInstantiable { arithmetic: true });
+        push(ni_fail, false, OseOrdinalRead::NonInstantiable { arithmetic: false });
+        push(unview, false, OseOrdinalRead::Unviewable);
+        push(burned_sub, true, pass);
+        push(burned_other, true, OseOrdinalRead::Unviewable);
+        out
+    }
+
+    /// **THE RECORDED BAND'S COMPOSITION TABLE, WITH NO UNCOVERED CELL.**
+    ///
+    /// The 2026-08-23 recipe-structure ruling's own requirement, executable:
+    /// "spell out how burn = miss, void ≠ miss, and >= 6-of-8 COMPOSE into one
+    /// table with no uncovered cell — that interaction is the last place a
+    /// step-10 surprise could hide."
+    ///
+    /// Three sweeps. The first is EXHAUSTIVE over one ordinal's outcome kinds
+    /// (35 of them: unviewable, both non-instantiable arms, and all 32 conjunct
+    /// combinations) crossed with burned — 70 cells, each asserted against the
+    /// registered sentence rather than against the implementation. The second is
+    /// exhaustive over every way eight ordinals can be distributed across seven
+    /// outcome classes (3,003 compositions) crossed with the collision flag —
+    /// 6,006 band-level cells, each against an INDEPENDENT restatement of the
+    /// precedence order. The third names the cells the ruling itself names.
+    #[test]
+    fn the_ose_composition_table_has_no_uncovered_cell() {
+        // --- 1. every per-ordinal cell -----------------------------------
+        let mut kinds = vec![
+            OseOrdinalRead::Unviewable,
+            OseOrdinalRead::NonInstantiable { arithmetic: true },
+            OseOrdinalRead::NonInstantiable { arithmetic: false },
+        ];
+        for bits in 0..32u8 {
+            kinds.push(OseOrdinalRead::Substantive {
+                arithmetic: bits & 1 != 0,
+                raw_a: bits & 2 != 0,
+                raw_b: bits & 4 != 0,
+                raw_c: bits & 8 != 0,
+                parity: bits & 16 != 0,
+            });
+        }
+        assert_eq!(kinds.len(), 35, "35 distinct outcome kinds");
+        for read in kinds {
+            for burned in [false, true] {
+                let o = OseOrdinal { ordinal: 50, burned, read };
+                let expected = if burned {
+                    OrdinalVerdict::Burned
+                } else {
+                    match read {
+                        OseOrdinalRead::Unviewable => OrdinalVerdict::PassVacuous,
+                        OseOrdinalRead::NonInstantiable { arithmetic } => {
+                            if arithmetic {
+                                OrdinalVerdict::PassVacuous
+                            } else {
+                                OrdinalVerdict::Miss
+                            }
+                        }
+                        OseOrdinalRead::Substantive {
+                            arithmetic,
+                            raw_a,
+                            raw_b,
+                            raw_c,
+                            parity,
+                        } => {
+                            if arithmetic && raw_a && raw_b && raw_c && parity {
+                                OrdinalVerdict::PassReal
+                            } else {
+                                OrdinalVerdict::Miss
+                            }
+                        }
+                    }
+                };
+                assert_eq!(ose_ordinal_verdict(&o), expected, "{read:?} burned={burned}");
+                // A TIE in a gated arm is a MISS: at the recorded band the
+                // gated arms are equalities and an AGREEMENT test, so a tie
+                // reaches the table as a conjunct reading FALSE — and every
+                // single-false combination above lands on MISS. Clause (iii)
+                // is the RECORDED arm here, so its own ties are recorded, not
+                // gated (the owner-ruled β+ inversion).
+            }
+        }
+
+        // --- 2. every band-level composition ------------------------------
+        let mut cells = 0usize;
+        for sub_pass in 0..=STEP10_BAND_SIZE {
+            for sub_fail in 0..=(STEP10_BAND_SIZE - sub_pass) {
+                for ni_pass in 0..=(STEP10_BAND_SIZE - sub_pass - sub_fail) {
+                    for ni_fail in 0..=(STEP10_BAND_SIZE - sub_pass - sub_fail - ni_pass) {
+                        let left = STEP10_BAND_SIZE - sub_pass - sub_fail - ni_pass - ni_fail;
+                        for unview in 0..=left {
+                            for burned_sub in 0..=(left - unview) {
+                                let burned_other = left - unview - burned_sub;
+                                let band = ose_band_of(
+                                    sub_pass,
+                                    sub_fail,
+                                    ni_pass,
+                                    ni_fail,
+                                    unview,
+                                    burned_sub,
+                                    burned_other,
+                                );
+                                assert_eq!(band.len(), STEP10_BAND_SIZE);
+                                for collisions in [0usize, 1] {
+                                    cells += 1;
+                                    let inputs = BandInputs {
+                                        instrument_failure: false,
+                                        blocking_collisions: collisions,
+                                    };
+                                    // THE REGISTERED PRECEDENCE, restated.
+                                    let capable = sub_pass + sub_fail + burned_sub;
+                                    let passes = sub_pass + ni_pass + unview;
+                                    let got = compose_ose_block(&band, inputs);
+                                    if capable < STEP10_FLOOR {
+                                        assert!(
+                                            matches!(
+                                                got,
+                                                BlockVerdict::VoidAsBlock {
+                                                    substantive_capable,
+                                                    ..
+                                                } if substantive_capable == capable
+                                            ),
+                                            "floor {capable}: {got:?}",
+                                        );
+                                        assert_eq!(got.exit_code(), EXIT_VOID_AS_BLOCK);
+                                    } else if collisions > 0 {
+                                        assert!(
+                                            matches!(got, BlockVerdict::Miss(_)),
+                                            "a blocking collision blocks: {got:?}",
+                                        );
+                                        assert_eq!(got.exit_code(), EXIT_GATE_FAILED);
+                                    } else if passes >= STEP10_BLOCK_PASS {
+                                        assert!(
+                                            matches!(got, BlockVerdict::Pass(_)),
+                                            "{passes} passes: {got:?}",
+                                        );
+                                        assert_eq!(got.exit_code(), 0);
+                                    } else {
+                                        assert!(
+                                            matches!(got, BlockVerdict::Miss(_)),
+                                            "{passes} passes: {got:?}",
+                                        );
+                                        assert_eq!(got.exit_code(), EXIT_GATE_FAILED);
+                                    }
+                                    let split = got.split().expect("a classified band has a split");
+                                    assert_eq!(split.total(), STEP10_BAND_SIZE, "denominator 8");
+                                    assert_eq!(split.real, sub_pass, "real passes");
+                                    assert_eq!(split.vacuous, ni_pass + unview, "vacuous passes");
+                                    assert_eq!(split.burned, burned_sub + burned_other);
+                                    assert_eq!(split.void, 0, "the void rule leaves no void bucket");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(cells, 6_006, "every composition of 8 into 7 classes, both collision states");
+
+        // --- 3. the cells the ruling names --------------------------------
+        let clean = BandInputs::default();
+
+        // BURNED ⇒ MISS at denominator 8, with the reads still counted.
+        let burned = ose_band_of(7, 0, 0, 0, 0, 1, 0);
+        let got = compose_ose_block(&burned, clean);
+        assert_eq!(got, BlockVerdict::Pass(BlockSplit { real: 7, burned: 1, ..BlockSplit::default() }));
+
+        // UNVIEWABLE ⇒ vacuous PASS, and NON-SUBSTANTIVE for the floor.
+        assert!(!OseOrdinalRead::Unviewable.substantive_capable());
+        assert!(!OseOrdinalRead::NonInstantiable { arithmetic: true }.substantive_capable());
+
+        // FLOOR 3 ⇒ VOID-AS-BLOCK even with EIGHT passes.
+        let floored = ose_band_of(3, 0, 5, 0, 0, 0, 0);
+        let got = compose_ose_block(&floored, clean);
+        assert!(
+            matches!(got, BlockVerdict::VoidAsBlock { substantive_capable: 3, .. }),
+            "three substantive-capable is below the floor however many pass: {got:?}",
+        );
+        assert_eq!(got.exit_code(), EXIT_VOID_AS_BLOCK);
+
+        // A COLLISION with a BURNED ordinal present ⇒ MISS. The closed gaming
+        // channel: burning cannot convert a block collision into one ordinal's
+        // miss, because all eight reads run and all eight are signed.
+        let with_burn = ose_band_of(6, 0, 0, 0, 0, 1, 1);
+        let got = compose_ose_block(
+            &with_burn,
+            BandInputs { instrument_failure: false, blocking_collisions: 1 },
+        );
+        assert!(matches!(got, BlockVerdict::Miss(_)), "{got:?}");
+        assert_eq!(got.split().expect("split").collisions, 1);
+
+        // A TIE in a gated arm is a MISS — realized as the conjunct reading
+        // false, which is the only shape a tie has at this band.
+        let tied = ose_band_of(5, 3, 0, 0, 0, 0, 0);
+        assert!(matches!(compose_ose_block(&tied, clean), BlockVerdict::Miss(_)));
+
+        // 5 passes MISS, 6 PASS.
+        assert!(matches!(
+            compose_ose_block(&ose_band_of(5, 3, 0, 0, 0, 0, 0), clean),
+            BlockVerdict::Miss(_)
+        ));
+        assert!(matches!(
+            compose_ose_block(&ose_band_of(6, 2, 0, 0, 0, 0, 0), clean),
+            BlockVerdict::Pass(_)
+        ));
+
+        // **THE WORST CASE, owner-demanded**: 4 vacuous + 2 real + 2 misses
+        // PASSES with exactly TWO discriminating recipe reads.
+        let worst = ose_band_of(2, 2, 0, 0, 4, 0, 0);
+        let got = compose_ose_block(&worst, clean);
+        assert_eq!(
+            got,
+            BlockVerdict::Pass(BlockSplit {
+                real: 2,
+                vacuous: 4,
+                miss: 2,
+                ..BlockSplit::default()
+            }),
+        );
+        let mut rendered = String::new();
+        render_block_verdict(&mut rendered, Step10Band::Ose, &got);
+        assert!(rendered.contains("PASS real=2 vacuous=4 miss=2"), "{rendered}");
+        assert!(rendered.contains(STEP10_WORST_CASE), "the sentence is printed VERBATIM: {rendered}");
+
+        // INSTRUMENT FAILURE overrides everything, including the floor.
+        for band in [ose_band_of(8, 0, 0, 0, 0, 0, 0), ose_band_of(0, 0, 0, 0, 8, 0, 0)] {
+            for collisions in [0usize, 3] {
+                let got = compose_ose_block(
+                    &band,
+                    BandInputs { instrument_failure: true, blocking_collisions: collisions },
+                );
+                assert_eq!(got, BlockVerdict::Refused);
+                assert_eq!(got.exit_code(), 2);
+                assert!(got.split().is_none(), "a refusal composes no split");
+            }
+        }
+    }
+
+    fn pf_band_of(shown: usize, miss: usize, void: usize, burned: usize) -> Vec<PfOrdinal> {
+        let shows = PfOrdinalRead::Substantive { clause_i: true, clause_iii: true };
+        let misses = PfOrdinalRead::Substantive { clause_i: true, clause_iii: false };
+        let mut out = Vec::new();
+        let mut push = |n: usize, burned: bool, read: PfOrdinalRead| {
+            for _ in 0..n {
+                let ordinal = 8 + out.len() as u32;
+                out.push(PfOrdinal { ordinal, burned, read });
+            }
+        };
+        push(shown, false, shows);
+        push(miss, false, misses);
+        push(void, false, PfOrdinalRead::RecipeVoid);
+        push(burned, true, shows);
+        out
+    }
+
+    /// **THE PF BAND FOLLOWS SPEC §6's LETTER, AND ROUTES THE FLIP.**
+    ///
+    /// Exhaustive over every way eight ordinals distribute across shown / miss
+    /// / void / burned (165 compositions) crossed with the collision flag, each
+    /// against an independent restatement of R-S10-10; then the named cells.
+    #[test]
+    fn the_pf_composition_follows_spec_6s_letter_and_routes_the_flip() {
+        for read in [
+            PfOrdinalRead::Unviewable,
+            PfOrdinalRead::RecipeVoid,
+            PfOrdinalRead::Substantive { clause_i: true, clause_iii: true },
+            PfOrdinalRead::Substantive { clause_i: true, clause_iii: false },
+            PfOrdinalRead::Substantive { clause_i: false, clause_iii: true },
+            PfOrdinalRead::Substantive { clause_i: false, clause_iii: false },
+        ] {
+            for burned in [false, true] {
+                let expected = if burned {
+                    OrdinalVerdict::Burned
+                } else {
+                    match read {
+                        PfOrdinalRead::Unviewable | PfOrdinalRead::RecipeVoid => {
+                            OrdinalVerdict::Void
+                        }
+                        PfOrdinalRead::Substantive { clause_i, clause_iii } => {
+                            if clause_i && clause_iii {
+                                OrdinalVerdict::PassReal
+                            } else {
+                                OrdinalVerdict::Miss
+                            }
+                        }
+                    }
+                };
+                let o = PfOrdinal { ordinal: 8, burned, read };
+                assert_eq!(pf_ordinal_verdict(&o), expected, "{read:?} burned={burned}");
+            }
+        }
+
+        let mut cells = 0usize;
+        for shown in 0..=STEP10_BAND_SIZE {
+            for miss in 0..=(STEP10_BAND_SIZE - shown) {
+                for void in 0..=(STEP10_BAND_SIZE - shown - miss) {
+                    let burned = STEP10_BAND_SIZE - shown - miss - void;
+                    let band = pf_band_of(shown, miss, void, burned);
+                    for collisions in [0usize, 1] {
+                        cells += 1;
+                        let got = compose_pf_block(
+                            &band,
+                            BandInputs { instrument_failure: false, blocking_collisions: collisions },
+                        );
+                        // §6's LETTER, restated: a void does not show, a burn
+                        // does not show, and the flip route fires exactly where
+                        // the two readings of a void disagree.
+                        let misses = miss + burned;
+                        if collisions > 0 {
+                            assert!(matches!(got, BlockVerdict::Miss(_)), "{got:?}");
+                        } else if misses <= 2 && misses + void > 2 {
+                            assert!(
+                                matches!(got, BlockVerdict::UnregisteredCell { .. }),
+                                "shown {shown} miss {miss} void {void} burned {burned}: {got:?}",
+                            );
+                            assert_eq!(got.exit_code(), EXIT_UNREGISTERED_CELL);
+                        } else if shown >= STEP10_BLOCK_PASS {
+                            assert!(matches!(got, BlockVerdict::Pass(_)), "{got:?}");
+                        } else {
+                            assert!(matches!(got, BlockVerdict::Miss(_)), "{got:?}");
+                        }
+                        let split = got.split().expect("a classified band has a split");
+                        assert_eq!(split.real, shown);
+                        assert_eq!(split.void, void);
+                        assert_eq!(split.vacuous, 0, "a PF void is never a pass");
+                        assert_eq!(split.total(), STEP10_BAND_SIZE);
+                    }
+                }
+            }
+        }
+        assert_eq!(cells, 330, "every composition of 8 into 4 classes, both collision states");
+
+        let clean = BandInputs::default();
+        // THE 6-OF-8 BOUNDARY.
+        assert!(matches!(compose_pf_block(&pf_band_of(6, 2, 0, 0), clean), BlockVerdict::Pass(_)));
+        assert!(matches!(compose_pf_block(&pf_band_of(5, 3, 0, 0), clean), BlockVerdict::Miss(_)));
+
+        // A RECIPE VOID counts as NOT SHOWN — and one void with seven shown
+        // still passes, because seven is still >= six.
+        assert!(matches!(compose_pf_block(&pf_band_of(7, 0, 1, 0), clean), BlockVerdict::Pass(_)));
+
+        // COLLISIONS ⇒ MISS whatever the count.
+        let got = compose_pf_block(
+            &pf_band_of(8, 0, 0, 0),
+            BandInputs { instrument_failure: false, blocking_collisions: 2 },
+        );
+        assert!(matches!(got, BlockVerdict::Miss(_)), "{got:?}");
+
+        // **THE FLIP CELL**: 1 miss + 2 voids ⇒ 5 shown ⇒ MISS under §6's
+        // letter, PASS under the recorded band's void rule. The instrument
+        // prints NO block verdict and routes to the owner.
+        let got = compose_pf_block(&pf_band_of(5, 1, 2, 0), clean);
+        assert_eq!(
+            got,
+            BlockVerdict::UnregisteredCell {
+                shown: 5,
+                real_misses: 1,
+                voids: 2,
+                burned: 0,
+                split: BlockSplit { real: 5, miss: 1, void: 2, ..BlockSplit::default() },
+            },
+        );
+        assert_eq!(got.exit_code(), EXIT_UNREGISTERED_CELL);
+        let mut rendered = String::new();
+        render_block_verdict(&mut rendered, Step10Band::Pf, &got);
+        assert!(rendered.contains("UNREGISTERED CELL"), "{rendered}");
+        assert!(rendered.contains("BLOCK VERDICT     NONE COMPOSED"), "{rendered}");
+
+        // THREE MISSES ⇒ a plain MISS regardless of voids: the verdict is the
+        // same under both readings, so nothing flips.
+        for void in 0..=5 {
+            let got = compose_pf_block(&pf_band_of(8 - 3 - void, 3, void, 0), clean);
+            assert!(matches!(got, BlockVerdict::Miss(_)), "voids {void}: {got:?}");
+        }
+    }
+
+    /// **THE ACKNOWLEDGEMENT AND THE ADMISSION.**
+    ///
+    /// The decisive row is the third: an ordinal is refused when the set holds
+    /// the OTHER seven and not it. A guard that only checked "the set is
+    /// non-empty" would pass every other row here.
+    #[test]
+    fn step10_refuses_a_partial_or_foreign_acknowledgement_and_admits_nothing_unacknowledged() {
+        let full: BTreeSet<u32> = Step10Band::Pf.escrow().into_iter().collect();
+        let none: BTreeSet<u32> = BTreeSet::new();
+
+        for band in [Step10Band::Pf, Step10Band::Ose] {
+            let members: BTreeSet<u32> = band.escrow().into_iter().collect();
+            for ordinal in &members {
+                // Unacknowledged: REFUSED, by name and with the rule.
+                let refusal = admit_step10_root(*ordinal, &none)
+                    .expect_err("a fenced ordinal without its acknowledgement is REFUSED");
+                assert!(refusal.contains("REFUSED"), "{ordinal}: {refusal}");
+                assert!(refusal.contains("FENCED"), "{ordinal}: {refusal}");
+                assert!(refusal.contains(&format!("--escrow-read {ordinal}")), "{refusal}");
+
+                // Acknowledged: admitted.
+                let mine: BTreeSet<u32> = [*ordinal].into_iter().collect();
+                assert_eq!(admit_step10_root(*ordinal, &mine), Ok(*ordinal));
+
+                // THE DECISIVE ROW: the other seven acknowledged, this one not.
+                let others: BTreeSet<u32> =
+                    members.iter().copied().filter(|o| o != ordinal).collect();
+                assert_eq!(others.len(), STEP10_BAND_SIZE - 1);
+                assert!(
+                    admit_step10_root(*ordinal, &others).is_err(),
+                    "ordinal {ordinal} reached resolution on somebody else's acknowledgement",
+                );
+            }
+            // The LICENSED development roots need no acknowledgement.
+            for ordinal in band.development() {
+                assert_eq!(admit_step10_root(ordinal, &none), Ok(ordinal));
+            }
+        }
+
+        // Unregistered ordinals are refused as unregistered, NOT as escrow.
+        for stranger in [4u32, 7, 16, 35, 200] {
+            let refusal = admit_step10_root(stranger, &full).expect_err("unregistered");
+            assert!(refusal.contains("neither a FENCED"), "{stranger}: {refusal}");
+            assert!(
+                !refusal.contains("burn rule and this run"),
+                "{stranger} must not borrow the burn rule's message: {refusal}",
+            );
+        }
+
+        // --- the grammar --------------------------------------------------
+        let argv = |s: &str| -> Vec<String> {
+            s.split_whitespace().map(str::to_string).collect()
+        };
+        let pf_anchors: String = Step10Band::Pf
+            .escrow()
+            .iter()
+            .map(|o| format!("--anchor {o}=0123456789abcdef"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let pf_reads: String = Step10Band::Pf
+            .escrow()
+            .iter()
+            .map(|o| format!("--escrow-read {o}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        // A complete PF invocation parses.
+        let opts = parse_step10_options(
+            Step10Band::Pf,
+            &argv(&format!("--decision-seed 0x87FEF1D516F6B4E9 {pf_reads} {pf_anchors}")),
+        )
+        .expect("a complete band invocation parses");
+        assert_eq!(opts.mode, Step10Mode::Band);
+        assert_eq!(opts.acknowledged.len(), STEP10_BAND_SIZE);
+        assert_eq!(opts.anchors.len(), STEP10_BAND_SIZE);
+        assert!(opts.burned.is_empty());
+        assert!(!opts.with_control);
+
+        // NO decision seed, and no default anywhere.
+        let refusal = parse_step10_options(Step10Band::Pf, &argv(&format!("{pf_reads} {pf_anchors}")))
+            .expect_err("no seed");
+        assert!(refusal.contains("There is NO default"), "{refusal}");
+
+        // A PARTIAL band.
+        let partial: String = Step10Band::Pf.escrow()[..7]
+            .iter()
+            .map(|o| format!("--escrow-read {o}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let refusal = parse_step10_options(
+            Step10Band::Pf,
+            &argv(&format!("--decision-seed 7 {partial} {pf_anchors}")),
+        )
+        .expect_err("a partial band is REFUSED");
+        assert!(refusal.contains("PARTIAL band"), "{refusal}");
+        assert!(refusal.contains("[15]"), "the refusal names what is missing: {refusal}");
+
+        // A DUPLICATE.
+        let refusal = parse_step10_options(
+            Step10Band::Pf,
+            &argv(&format!("--decision-seed 7 {pf_reads} --escrow-read 8 {pf_anchors}")),
+        )
+        .expect_err("a duplicate is REFUSED");
+        assert!(refusal.contains("DUPLICATE"), "{refusal}");
+
+        // A NON-MEMBER.
+        let refusal = parse_step10_options(
+            Step10Band::Pf,
+            &argv(&format!("--decision-seed 7 {pf_reads} --escrow-read 3 {pf_anchors}")),
+        )
+        .expect_err("a non-member is REFUSED");
+        assert!(refusal.contains("not a member"), "{refusal}");
+
+        // A BURNED ordinal must be a member.
+        let refusal = parse_step10_options(
+            Step10Band::Pf,
+            &argv(&format!("--decision-seed 7 {pf_reads} {pf_anchors} --burned 3")),
+        )
+        .expect_err("a foreign burn declaration is REFUSED");
+        assert!(refusal.contains("--burned 3"), "{refusal}");
+
+        // PF anchors: all eight, no duplicates, 16 hex characters.
+        let refusal =
+            parse_step10_options(Step10Band::Pf, &argv(&format!("--decision-seed 7 {pf_reads}")))
+                .expect_err("missing anchors");
+        assert!(refusal.contains("--anchor must name ALL"), "{refusal}");
+        let refusal = parse_step10_options(
+            Step10Band::Pf,
+            &argv(&format!("--decision-seed 7 {pf_reads} {pf_anchors} --anchor 8=deadbeef")),
+        )
+        .expect_err("a short digest is REFUSED");
+        assert!(refusal.contains("is not a 16-character"), "{refusal}");
+
+        // The two bands do not borrow each other's inputs.
+        let refusal = parse_step10_options(
+            Step10Band::Pf,
+            &argv(&format!("--decision-seed 7 {pf_reads} {pf_anchors} --record /nope.json")),
+        )
+        .expect_err("pf takes no record");
+        assert!(refusal.contains("takes no --record"), "{refusal}");
+        let ose_reads: String = Step10Band::Ose
+            .escrow()
+            .iter()
+            .map(|o| format!("--escrow-read {o}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let refusal = parse_step10_options(
+            Step10Band::Ose,
+            &argv(&format!("--decision-seed 7 --record /nope.json {ose_reads} --anchor 50=0123456789abcdef")),
+        )
+        .expect_err("ose takes no anchor");
+        assert!(refusal.contains("takes no --anchor"), "{refusal}");
+        let refusal =
+            parse_step10_options(Step10Band::Ose, &argv(&format!("--decision-seed 7 {ose_reads}")))
+                .expect_err("ose needs a record");
+        assert!(refusal.contains("needs --record"), "{refusal}");
+
+        // A complete OSE invocation parses, and its anchors are the in-source
+        // ledger digests rather than anything a caller typed.
+        let opts = parse_step10_options(
+            Step10Band::Ose,
+            &argv(&format!("--decision-seed 7 --record /nope.json {ose_reads} --burned 78")),
+        )
+        .expect("a complete recorded-band invocation parses");
+        assert_eq!(opts.burned, [78u32].into_iter().collect::<BTreeSet<u32>>());
+        assert_eq!(opts.anchors.get(&50).map(String::as_str), Some("9a7bf7de4e63c6f3"));
+        assert_eq!(opts.anchors.len(), STEP10_BAND_SIZE);
+    }
+
+    /// **THE OLD BURN GUARDS KEEP REFUSING** while step 10 reads through its
+    /// OWN admission — the two are different functions and the wave does not
+    /// loosen either.
+    #[test]
+    fn the_old_burn_guards_keep_refusing_while_step10_reads_through_its_own_admission() {
+        let acknowledged: BTreeSet<u32> = Step10Band::Pf
+            .escrow()
+            .into_iter()
+            .chain(Step10Band::Ose.escrow())
+            .collect();
+        for ordinal in V4_ESCROW_ORDINALS {
+            assert!(
+                admit_record_root(RecordRoot::PlacementFork(ordinal)).is_err(),
+                "the step-9 record guard still refuses escrow ordinal {ordinal}",
+            );
+            assert_eq!(admit_step10_root(ordinal, &acknowledged), Ok(ordinal));
+        }
+        for event in OSE_RESERVED {
+            assert!(
+                admit_record_root(RecordRoot::Ose(event)).is_err(),
+                "the step-9 record guard still refuses reserved exhibit e{event}",
+            );
+            assert_eq!(admit_step10_root(event as u32, &acknowledged), Ok(event as u32));
+        }
+        // `ose_columns`' Reserved arm has no column-reading branch at all, and
+        // step 10 does not route through it — it reads the same production
+        // `candidate_value` the step-5 surface does, under its own admission.
+        let rules = Rules::standard();
+        let fixture =
+            build_registered_pair(registered("4(b)").expect("4(b)"), StageEndpoint::Early, &rules)
+                .expect("4(b) early");
+        let view = fixture.view(Side::Greater);
+        let subject = view
+            .players
+            .iter()
+            .find(|p| p.id == fixture.subject())
+            .expect("the subject is in its own view");
+        for event in OSE_RESERVED {
+            assert!(
+                ose_columns(OseRole::Reserved, event, view, subject, &rules).is_err(),
+                "the step-5 column guard still refuses e{event}",
+            );
+        }
+    }
+
+    /// A constructed 2P turn start carrying a Shape-F fee-flow pair, with the
+    /// opponent's President ON BOARD at a placeable production area and an
+    /// opponent assistant at a LABORATORY so X1 is a live column rather than a
+    /// constant zero — which is what makes conjunct (c) falsifiable at all.
+    ///
+    /// The seed is SEARCHED rather than transcribed: the 2P board is generated
+    /// and carries a subset of the twenty-four sites, so "the board has a lab"
+    /// is a fact about the draw. A search that found nothing is a panic naming
+    /// what it wanted.
+    fn step10_fee_flow_fixture(rules: &Rules) -> (GameState, PlayerId, PlayerId) {
+        for seed in 1u64..400 {
+            let Ok(mut root) = suite_keep_game(2, seed, rules) else { continue };
+            let mover = root.current_player;
+            let Some(opponent) = root.players.iter().map(|p| p.id).find(|id| *id != mover) else {
+                continue;
+            };
+            let occupied = root
+                .board_layout
+                .areas
+                .iter()
+                .find(|(_, c)| c.area_type == AreaType::CopperMine)
+                .map(|(id, _)| *id);
+            let lab = root
+                .board_layout
+                .areas
+                .iter()
+                .find(|(_, c)| {
+                    matches!(c.area_type, AreaType::LaboratoryA | AreaType::LaboratoryB)
+                })
+                .map(|(id, _)| *id);
+            let (Some(occupied), Some(lab)) = (occupied, lab) else { continue };
+            root.player_mut(opponent).president_location = PresidentLocation::OnBoard(occupied);
+            // Moved from hand, so the twenty-assistant total is conserved and
+            // `check_invariants` is a real check rather than a formality.
+            root.player_mut(opponent).assistants.in_hand -= 1;
+            *root.player_mut(opponent).assistants.on_board.entry(lab).or_insert(0) += 1;
+            if check_invariants(&root, rules).is_err() {
+                continue;
+            }
+            if fee_flow_recipe_pair(&root, rules).is_err() {
+                continue;
+            }
+            return (root, mover, opponent);
+        }
+        panic!("no 2P seed in 1..400 carries a Shape-F pair with an opponent lab presence");
+    }
+
+    /// The pair's two successors and the mover's views of them.
+    fn step10_sides(
+        root: &GameState,
+        plus: &Move,
+        zero: &Move,
+        mover: PlayerId,
+        rules: &Rules,
+    ) -> (PlayerView, PlayerView) {
+        let fork = fork_state(root, rules).expect("the fork state");
+        let plus = checked_successor(&fork, plus, "plus", rules).expect("the plus side applies");
+        let zero = checked_successor(&fork, zero, "zero", rules).expect("the zero side applies");
+        (
+            observe(&plus, mover).expect("the plus successor is observable"),
+            observe(&zero, mover).expect("the zero successor is observable"),
+        )
+    }
+
+    /// **THE RAW ARM READS THE FEE CHANNEL EXACTLY**, and both mutations show
+    /// that each conjunct is doing work.
+    #[test]
+    fn the_raw_arm_reads_the_fee_channel_exactly_on_a_constructed_fee_flow_root() {
+        let rules = Rules::standard();
+        let (root, mover, opponent) = step10_fee_flow_fixture(&rules);
+        let pair = fee_flow_recipe_pair(&root, &rules).expect("the fixture instantiates Shape F");
+        assert!(pair.fee >= 1, "F+ carries a NONZERO fee by construction");
+        assert_eq!(pair.opponent, opponent);
+        let (plus_view, zero_view) =
+            step10_sides(&root, &pair.fee_side, &pair.free_side, mover, &rules);
+
+        let arm = read_raw_arm(&plus_view, &zero_view, opponent, pair.fee, &rules)
+            .expect("the raw arm reads");
+        assert_eq!(
+            arm.e1_delta(),
+            i64::from(pair.fee),
+            "(a) the opponent's E1 moves by EXACTLY the exported fee: F+ {} vs F0 {}",
+            arm.e1_plus(),
+            arm.e1_zero(),
+        );
+        assert!(arm.conjunct_a(), "(a)");
+        assert!(arm.conjunct_b(), "(b) — these moved: {:?}", arm.moved);
+        assert!(
+            arm.conjunct_c(),
+            "(c) X1: F+ {} vs F0 {} recomputed {}",
+            arm.x1_plus(),
+            arm.x1_zero(),
+            arm.x1_recomputed,
+        );
+        // The incumbent sixteen are NOT gated, and the vectors are full levels.
+        assert_eq!(arm.plus.len(), AXIS_WIDTH);
+        assert!(render_vector(&arm.plus).contains("E1="), "levels print every row");
+
+        // MUTATION 1 — a WRONG fee. (a) fails; the arm is not reading its own
+        // answer back.
+        let wrong = read_raw_arm(&plus_view, &zero_view, opponent, pair.fee + 1, &rules)
+            .expect("the arm still reads");
+        assert!(!wrong.conjunct_a(), "a wrong fee must FAIL conjunct (a)");
+
+        // MUTATION 2 — an invariant column perturbed on the F0 side alone.
+        // `copper` feeds E2 `trade_goods_stock`, which IS one of the sixteen.
+        let mut perturbed = zero_view.clone();
+        perturbed
+            .players
+            .iter_mut()
+            .find(|p| p.id == opponent)
+            .expect("the opponent is in the view")
+            .copper += 1;
+        let moved = read_raw_arm(&plus_view, &perturbed, opponent, pair.fee, &rules)
+            .expect("the arm still reads");
+        assert!(!moved.conjunct_b(), "a moved invariant column must FAIL conjunct (b)");
+        assert!(
+            moved.moved.iter().any(|(label, _, _)| *label == "E2"),
+            "(b) names the column that moved: {:?}",
+            moved.moved,
+        );
+
+        // MUTATION 3 — the opponent's PURSE moved on the F0 side alone, which
+        // is the channel (c) exists to police. The raise is SEARCHED so the
+        // cell cannot be vacuous: a fixture whose X1 does not respond to money
+        // would prove nothing, and this fails loudly rather than passing.
+        let base = x1_at_raised_purse(&zero_view, opponent, pair.fee, &rules).expect("X1");
+        let raise = (1u32..=60)
+            .find(|extra| {
+                x1_at_raised_purse(&zero_view, opponent, pair.fee + extra, &rules)
+                    .expect("X1")
+                    != base
+            })
+            .expect("the fixture's X1 responds to the opponent's purse");
+        let mut richer = zero_view.clone();
+        richer
+            .players
+            .iter_mut()
+            .find(|p| p.id == opponent)
+            .expect("the opponent is in the view")
+            .money += raise;
+        let purse = read_raw_arm(&plus_view, &richer, opponent, pair.fee, &rules)
+            .expect("the arm still reads");
+        assert!(
+            !purse.conjunct_c(),
+            "a moved F0 purse must FAIL conjunct (c): X1 F+ {} vs recomputed {}",
+            purse.x1_plus(),
+            purse.x1_recomputed,
+        );
+    }
+
+    /// **THE STATIC PARITY IS AN IDENTITY AT 2P**, at V2 and at the locked
+    /// table, and the preference classifier says which side in the band's own
+    /// words.
+    ///
+    /// Born-validation order: V2 FIRST. The locked table appears here because
+    /// the β+ gate is defined on it (R-S10-3) and this cell is about the
+    /// ARITHMETIC of the two paths, not about a verdict on any position.
+    #[test]
+    fn the_static_parity_agrees_on_production_and_probe_paths_at_v2_and_at_the_locked_table() {
+        let rules = Rules::standard();
+        let (root, mover, _) = step10_fee_flow_fixture(&rules);
+        let pair = fee_flow_recipe_pair(&root, &rules).expect("Shape F");
+        let (plus_view, zero_view) =
+            step10_sides(&root, &pair.fee_side, &pair.free_side, mover, &rules);
+
+        for (name, table) in [
+            (NamedIdentity::V2Padded.name(), WeightTable::V2),
+            (NamedIdentity::V4Step9Draft1.name(), WeightTable::V4_STEP9_DRAFT1),
+        ] {
+            let statics = read_static(&plus_view, &zero_view, mover, &table, name, &rules)
+                .expect("both successors are non-terminal");
+            assert_eq!(
+                statics.delta_prod(),
+                statics.delta_probe(),
+                "{name}: production {} − {} vs probe {} − {}",
+                statics.prod_plus,
+                statics.prod_zero,
+                statics.probe.total,
+                statics.probe_zero.total,
+            );
+            assert!(statics.deltas_equal());
+            assert!(statics.agrees(), "{name}: equal deltas cannot disagree on preference");
+            assert_eq!(statics.probe.ppm, progress_ppm(&plus_view, &rules));
+        }
+
+        // THE CLASSIFIER, in each band's own words.
+        assert_eq!(preference_of(1), Preference::Plus);
+        assert_eq!(preference_of(-1), Preference::Zero);
+        assert_eq!(preference_of(0), Preference::Tie);
+        assert_eq!(Preference::Plus.label(Step10Band::Ose), "F+ ≻ F0");
+        assert_eq!(Preference::Zero.label(Step10Band::Ose), "F0 ≻ F+");
+        assert_eq!(Preference::Tie.label(Step10Band::Ose), "TIE");
+        assert_eq!(Preference::Plus.label(Step10Band::Pf), "productive ≻ dead");
+        assert_eq!(Preference::Zero.label(Step10Band::Pf), "dead ≻ productive");
+    }
+
+    /// A constructed 2P turn start carrying a §6 recipe pair whose PRODUCTIVE
+    /// side genuinely raises the mover's S1 — SAID OUT LOUD, because clause
+    /// (i)'s sign is only worth asserting where the fixture supplies the fact.
+    fn step10_pf_fixture(rules: &Rules) -> (GameState, PlayerId, RecipePair) {
+        for seed in 1u64..400 {
+            let Ok(root) = suite_keep_game(2, seed, rules) else { continue };
+            let mover = root.current_player;
+            let Ok(pair) = escrow_recipe_pair(&root, rules) else { continue };
+            let Ok(fork) = fork_state(&root, rules) else { continue };
+            let Ok(plus) = checked_successor(&fork, &pair.productive, "productive", rules) else {
+                continue;
+            };
+            let Ok(zero) = checked_successor(&fork, &pair.dead, "dead", rules) else { continue };
+            let (Ok(plus_view), Ok(zero_view)) = (observe(&plus, mover), observe(&zero, mover))
+            else {
+                continue;
+            };
+            let Ok(clause) = read_pf_clause_i(&plus_view, &zero_view, mover, rules) else {
+                continue;
+            };
+            if clause.passed() {
+                return (root, mover, pair);
+            }
+        }
+        panic!("no 2P seed in 1..400 carries a §6 pair whose productive side raises S1");
+    }
+
+    /// **CLAUSE (iii) READS THE CONTROLLER'S OWN TABLE AT THE FORK STATE, AND
+    /// THE SAME-PATH PIN HOLDS THERE.**
+    ///
+    /// The pin runs at V2 — born-validation: no gate first meets the locked
+    /// candidate on a position nobody has read.
+    #[test]
+    fn clause_iii_reads_the_controllers_own_table_and_the_pin_matches_at_the_fork_state() {
+        let rules = Rules::standard();
+        let (root, mover, pair) = step10_pf_fixture(&rules);
+        let fork = fork_state(&root, &rules).expect("the fork state");
+        assert_eq!(fork.turn_phase, TurnPhase::Placement, "the fork sits where the sides are legal");
+        assert_eq!(fork.current_player, mover, "EndAdditionalPhase does not hand off");
+
+        // THE SAME-PATH PIN, at THIS fork state rather than at a registry root.
+        let pin = parity_pin_at("fixture fork".to_string(), &fork, mover, 7, &rules)
+            .unwrap_or_else(|e| panic!("both paths must build: {}", e.detail()));
+        assert!(pin.matched(), "{}", pin.report());
+        assert_eq!(pin.root, "fixture fork");
+        assert_eq!(pin.root_digest, state_digest(&fork));
+        assert_eq!(pin.decision_seed, 7);
+
+        // BOTH SIDES ARE ON THE TABLE, by canonical encoding.
+        let plus_encoding = canonical_encoding(&pair.productive);
+        let zero_encoding = canonical_encoding(&pair.dead);
+        let read = read_rooted_pair(
+            NamedIdentity::V2Padded.name(),
+            &fork,
+            mover,
+            &WeightTable::V2,
+            &plus_encoding,
+            &zero_encoding,
+            7,
+            &rules,
+        )
+        .expect("both sides are valued on the controller's own table");
+        assert_eq!(read.name, "v2-padded");
+        assert!(read.read.ranked.len() >= 2, "a fork offers at least the pair");
+        assert_eq!(read.delta(), read.plus_value - read.zero_value);
+        assert_eq!(read.strict(), read.plus_value > read.zero_value);
+        assert!(read.tied_at_top() >= 1, "the top is shared by at least one candidate");
+
+        // A side that is not on the table is an INSTRUMENT failure naming it.
+        let refusal = read_rooted_pair(
+            NamedIdentity::V2Padded.name(),
+            &fork,
+            mover,
+            &WeightTable::V2,
+            "NoSuchMove",
+            &zero_encoding,
+            7,
+            &rules,
+        )
+        .expect_err("a missing side is an instrument failure");
+        assert!(refusal.contains("no entry for the plus side"), "{refusal}");
+
+        // CLAUSE (i) — printed in full, and its SIGN asserted because THIS
+        // fixture was chosen for carrying the fact (see `step10_pf_fixture`).
+        let (plus, zero) = step10_sides(&root, &pair.productive, &pair.dead, mover, &rules);
+        let clause = read_pf_clause_i(&plus, &zero, mover, &rules).expect("clause (i) reads");
+        assert!(
+            clause.s1_delta() > 0,
+            "the productive side raises the mover's S1: deltas {:?}",
+            clause.s_deltas(),
+        );
+        assert!(clause.passed());
+        assert_eq!(clause.s_deltas().len(), 7, "all seven S deltas are recorded beside S1");
+        assert_eq!(clause.own_delta().len(), AXIS_WIDTH);
+        assert_eq!(clause.dv_delta().len(), AXIS_WIDTH);
+        let mut rendered = String::new();
+        render_clause_i(&mut rendered, &clause);
+        assert!(rendered.contains("S1"), "{rendered}");
+        assert!(rendered.contains("GATE (i)"), "{rendered}");
+    }
+
+    /// **§5.3's THIRD BLOCKING ARM FIRES ONLY ON BOTH SIDES OF ONE ORDINAL'S
+    /// PAIR** — and the `collision` command's own labels are untouched.
+    #[test]
+    fn the_third_blocking_arm_fires_only_on_both_sides_of_one_ordinals_pair() {
+        let succ = |root: &str, role: RecipeRole| Provenance::Successor {
+            root: root.to_string(),
+            set: "fork",
+            ordinal: 0,
+            mv: "PlaceThreeAreas { placements: [AreaId(0)] }".to_string(),
+            role,
+        };
+
+        // BOTH sides of one PF escrow ordinal's pair.
+        let found = blocking_findings(&[
+            succ("m-pf-ord-8", RecipeRole::EscrowProductive),
+            succ("m-pf-ord-8", RecipeRole::EscrowDead),
+        ]);
+        assert_eq!(found, vec![Blocking::EscrowPair { root: "m-pf-ord-8".to_string() }]);
+        assert_eq!(found[0].label(), "recipe-instantiated escrow pair at m-pf-ord-8");
+
+        // BOTH sides of one Shape-F pair.
+        let found = blocking_findings(&[
+            succ("ose-e50", RecipeRole::EscrowFeePlus),
+            succ("ose-e50", RecipeRole::EscrowFeeZero),
+        ]);
+        assert_eq!(found, vec![Blocking::EscrowPair { root: "ose-e50".to_string() }]);
+
+        // ONE side plus an organic successor is NOT a pair.
+        for role in [
+            RecipeRole::EscrowProductive,
+            RecipeRole::EscrowDead,
+            RecipeRole::EscrowFeePlus,
+            RecipeRole::EscrowFeeZero,
+        ] {
+            assert!(
+                blocking_findings(&[succ("ose-e50", role), succ("ose-e50", RecipeRole::Unregistered)])
+                    .is_empty(),
+                "{role:?} alone does not block",
+            );
+        }
+        // Sides of DIFFERENT ordinals are not one pair.
+        assert!(blocking_findings(&[
+            succ("ose-e50", RecipeRole::EscrowFeePlus),
+            succ("ose-e58", RecipeRole::EscrowFeeZero),
+        ])
+        .is_empty());
+        // And a PF side does not pair with a fee side.
+        assert!(blocking_findings(&[
+            succ("ose-e50", RecipeRole::EscrowProductive),
+            succ("ose-e50", RecipeRole::EscrowFeeZero),
+        ])
+        .is_empty());
+
+        // THE PRE-EXISTING ARMS AND LABELS ARE UNCHANGED.
+        let found = blocking_findings(&[
+            succ("m-pf-dev-0", RecipeRole::Productive),
+            succ("m-pf-dev-0", RecipeRole::Dead),
+        ]);
+        assert_eq!(found, vec![Blocking::RootPair { root: "m-pf-dev-0".to_string() }]);
+        assert_eq!(found[0].label(), "registered development pair at m-pf-dev-0");
+        let gate = |side: &'static str| Provenance::PairSide {
+            pair: "4(b)".to_string(),
+            stage: "early",
+            side,
+            gate: true,
+        };
+        let found = blocking_findings(&[gate("greater"), gate("lesser")]);
+        assert_eq!(
+            found,
+            vec![Blocking::GatePair { pair: "4(b)".to_string(), stage: "early" }],
+        );
+        assert_eq!(found[0].label(), "gate pair 4(b) at early");
+
+        // The MEMBER labels the `collision` command prints are unchanged, and
+        // the new roles carry their own words.
+        assert_eq!(
+            succ("r", RecipeRole::Productive).label(),
+            "succ r/fork#0 [REGISTERED productive] PlaceThreeAreas { placements: [AreaId(0)] }",
+        );
+        assert_eq!(
+            succ("r", RecipeRole::Dead).label(),
+            "succ r/fork#0 [REGISTERED dead] PlaceThreeAreas { placements: [AreaId(0)] }",
+        );
+        assert_eq!(
+            succ("r", RecipeRole::Unregistered).label(),
+            "succ r/fork#0 PlaceThreeAreas { placements: [AreaId(0)] }",
+        );
+        assert!(succ("r", RecipeRole::EscrowProductive).label().contains("[ESCROW productive]"));
+        assert!(succ("r", RecipeRole::EscrowDead).label().contains("[ESCROW dead]"));
+        assert!(succ("r", RecipeRole::EscrowFeePlus).label().contains("[ESCROW F+]"));
+        assert!(succ("r", RecipeRole::EscrowFeeZero).label().contains("[ESCROW F0]"));
+    }
+
+    /// **THE WHOLE PER-ORDINAL PIPELINE, END TO END, ON A CONSTRUCTED ROOT.**
+    ///
+    /// Born-validation of the instrument itself before it ever meets a fenced
+    /// position: viewability, the Shape-F recipe, the fork and both successors
+    /// through the checked boundary, the arithmetic arm, the three raw
+    /// conjuncts, clause (iii) on the locked identity with `v2-padded` beside
+    /// it, the same-path V2 parity pin AT THE FORK, and the β+ parity gate —
+    /// then the artifact those produce.
+    ///
+    /// The composition is NOT exercised here: this cell is about the read, and
+    /// the two composition tables are enumerated exhaustively above without
+    /// resolving anything.
+    #[test]
+    fn the_whole_per_ordinal_pipeline_runs_on_a_constructed_shape_f_root() {
+        let rules = Rules::standard();
+        let (state, mover, opponent) = step10_fee_flow_fixture(&rules);
+        let root = Step10Root {
+            ordinal: 50,
+            label: "constructed-f".to_string(),
+            origin: "constructed".to_string(),
+            detail: "a hand-built 2P turn start".to_string(),
+            digest: state_digest(&state),
+            anchor: state_digest(&state),
+            state,
+        };
+        let body = read_step10_body(Step10Band::Ose, &root, 7, false, &rules)
+            .unwrap_or_else(|e| panic!("the pipeline must not raise an instrument failure: {e}"));
+        let OrdinalBody::Substantive(block) = &body else {
+            panic!(
+                "a viewable, instantiable root reads SUBSTANTIVE, not {}",
+                match &body {
+                    OrdinalBody::Instrument(detail) => format!("an instrument failure: {detail}"),
+                    OrdinalBody::Unviewable { reason } => format!("unviewable: {reason}"),
+                    OrdinalBody::NonInstantiable { reason, .. } => {
+                        format!("non-instantiable: {reason}")
+                    }
+                    OrdinalBody::Substantive(_) => unreachable!("the let-else took this arm"),
+                },
+            );
+        };
+
+        // The recipe's own numbers, and the two successors it reaches.
+        assert!(block.pair.fee >= 1);
+        assert_ne!(block.plus_digest, block.zero_digest, "the pair is two positions");
+        assert_ne!(block.fork_digest, root.digest, "the fork is one ply on");
+        assert!(!block.population.is_empty(), "the whole candidate population prints");
+
+        // Both band arms read, and both PASS on this fixture.
+        let arithmetic = block.arithmetic.as_ref().expect("the recorded band reads the O columns");
+        assert_eq!(arithmetic.opponent, opponent);
+        assert_eq!(arithmetic.columns[2], 0, "O3 is zero at a fresh 2P start");
+        let raw = block.raw.as_ref().expect("the recorded band reads the raw arm");
+        assert!(raw.conjunct_a() && raw.conjunct_b() && raw.conjunct_c());
+        assert!(block.clause_i.is_none(), "clause (i) is the PF band's");
+
+        // Clause (iii) valued BOTH sides on the controller's own table, at the
+        // locked identity and at `v2-padded` beside it, and the same-path pin
+        // holds at THIS fork state.
+        assert_eq!(block.clause_iii.candidate.name, "v4-step9-draft1");
+        assert_eq!(block.clause_iii.v2.name, "v2-padded");
+        assert!(block.clause_iii.control.is_none(), "--with-control was not asked for");
+        assert!(block.parity.matched(), "{}", block.parity.report());
+        assert_eq!(block.parity.root, "constructed-f fork");
+
+        // The β+ gate read the static preference twice and they agree.
+        assert_eq!(block.statics.table, "v4-step9-draft1");
+        assert!(block.statics.deltas_equal() && block.statics.agrees());
+
+        // THE ARTIFACT. Every registered section is in it, by name.
+        let surface = Step10Surface {
+            band: Step10Band::Ose,
+            mode: Step10Mode::Band,
+            decision_seed: 7,
+            with_control: false,
+            acknowledged: Step10Band::Ose.escrow().into_iter().collect(),
+            burned: BTreeSet::new(),
+            knobs: shipped_controller_knobs().expect("knobs"),
+            echo: rooted_echo(&shipped_controller_knobs().expect("knobs"), &WeightTable::V4_STEP9_DRAFT1),
+            v2_echo: rooted_echo(&shipped_controller_knobs().expect("knobs"), &WeightTable::V2),
+            blocks: vec![OrdinalBlock {
+                ordinal: 50,
+                label: root.label.clone(),
+                origin: root.origin.clone(),
+                detail: root.detail.clone(),
+                digest: root.digest.clone(),
+                anchor: root.anchor.clone(),
+                seat: mover,
+                burned: false,
+                body,
+            }],
+            part_a: classify(Vec::new()),
+            signing_summary: Vec::new(),
+            signing_notes: Vec::new(),
+            signing_failures: Vec::new(),
+            verdict: Some(compose_ose_block(
+                &[OseOrdinal {
+                    ordinal: 50,
+                    burned: false,
+                    read: OseOrdinalRead::Substantive {
+                        arithmetic: true,
+                        raw_a: true,
+                        raw_b: true,
+                        raw_c: true,
+                        parity: true,
+                    },
+                }],
+                BandInputs::default(),
+            )),
+        };
+        let rendered = render_step10(&surface);
+        for section in [
+            "== ORDINAL constructed-f ==",
+            "recipe            INSTANTIATED",
+            "candidate population:",
+            "arithmetic arm",
+            "raw arm",
+            "(a) E1 delta",
+            "(b) invariance",
+            "(c) X1",
+            "clause (iii)",
+            "GATE (iii)      RECORDED",
+            "same-path pin",
+            "β+ parity gate",
+            "GATE (β+)",
+            "VERDICT constructed-f",
+            "substantive-capable 1 of 1",
+        ] {
+            assert!(rendered.contains(section), "the artifact carries `{section}`:\n{rendered}");
+        }
+        // The locked identity is named as the table under read, and it is not a
+        // flag anywhere in the grammar.
+        assert!(rendered.contains("table under read    v4-step9-draft1"), "{rendered}");
+        assert!(rendered.contains("NOT a flag"), "{rendered}");
+    }
+
+    /// **BORN-VALIDATION MODE runs the pipeline and composes NO verdict.**
+    ///
+    /// The real `--development` runs resolve LICENSED roots by seeded scan or
+    /// out of a regenerated document, which a corpus-free cell cannot do — so
+    /// this pins the MODE: its grammar refusals, and the render of a synthetic
+    /// per-ordinal block under the born-validation header.
+    #[test]
+    fn development_mode_runs_the_pipeline_and_composes_no_verdict() {
+        let argv = |s: &str| -> Vec<String> { s.split_whitespace().map(str::to_string).collect() };
+
+        // The mode parses, and takes the LICENSED roots' recorded anchors.
+        let opts = parse_step10_options(Step10Band::Pf, &argv("--decision-seed 7 --development"))
+            .expect("born-validation parses");
+        assert_eq!(opts.mode, Step10Mode::Development);
+        assert!(opts.acknowledged.is_empty(), "nothing to acknowledge");
+        assert!(opts.burned.is_empty());
+        assert_eq!(opts.anchors.len(), 4, "M-PF {{0..3}}");
+        assert_eq!(opts.anchors.get(&0).map(String::as_str), Some(M_PF_DEVELOPMENT_DIGESTS[0]));
+        let opts = parse_step10_options(
+            Step10Band::Ose,
+            &argv("--decision-seed 7 --development --record /nope.json"),
+        )
+        .expect("born-validation parses at the recorded band");
+        assert_eq!(opts.anchors.len(), 3, "the re-registered band {{e111, e159, e198}}");
+        assert_eq!(opts.anchors.get(&111).map(String::as_str), Some("e95ce315885ffbcd"));
+
+        // It REFUSES the three band-mode inputs, by name and with the reason.
+        for flag in ["--escrow-read 8", "--burned 8", "--anchor 8=0123456789abcdef"] {
+            let refusal = parse_step10_options(
+                Step10Band::Pf,
+                &argv(&format!("--decision-seed 7 --development {flag}")),
+            )
+            .expect_err("born-validation refuses band inputs");
+            assert!(refusal.contains("--development REFUSES"), "{flag}: {refusal}");
+            assert!(refusal.contains("nothing to acknowledge"), "{flag}: {refusal}");
+        }
+
+        // THE RENDER: a synthetic per-ordinal block under the header, with NO
+        // block verdict anywhere in the artifact.
+        let surface = Step10Surface {
+            band: Step10Band::Pf,
+            mode: Step10Mode::Development,
+            decision_seed: 0x87FE_F1D5_16F6_B4E9,
+            with_control: false,
+            acknowledged: BTreeSet::new(),
+            burned: BTreeSet::new(),
+            knobs: shipped_controller_knobs().expect("the shipped knobs parse"),
+            echo: rooted_echo(
+                &shipped_controller_knobs().expect("knobs"),
+                &WeightTable::V4_STEP9_DRAFT1,
+            ),
+            v2_echo: rooted_echo(&shipped_controller_knobs().expect("knobs"), &WeightTable::V2),
+            blocks: vec![OrdinalBlock {
+                ordinal: 0,
+                label: "m-pf-ord-0".to_string(),
+                origin: "gen:placement-fork-same-count:0x87FEF1D516F6B4E9:0".to_string(),
+                detail: "scan game 0 · ecology driven-generated-v2.3-lookahead".to_string(),
+                digest: M_PF_DEVELOPMENT_DIGESTS[0].to_string(),
+                anchor: M_PF_DEVELOPMENT_DIGESTS[0].to_string(),
+                seat: PlayerId(0),
+                burned: false,
+                body: OrdinalBody::Unviewable { reason: "a synthetic block".to_string() },
+            }],
+            part_a: classify(Vec::new()),
+            signing_summary: Vec::new(),
+            signing_notes: Vec::new(),
+            signing_failures: Vec::new(),
+            verdict: None,
+        };
+        let rendered = render_step10(&surface);
+        assert!(rendered.contains(STEP10_DEV_HEADER), "the header is printed: {rendered}");
+        assert!(rendered.contains("== ORDINAL m-pf-ord-0 =="), "the block prints");
+        assert!(rendered.contains("UNVIEWABLE"));
+        assert!(rendered.contains("VERDICT m-pf-ord-0"), "the ordinal still carries a verdict");
+        assert!(
+            !rendered.contains("BLOCK VERDICT"),
+            "born-validation composes NO block verdict:\n{rendered}",
+        );
+        assert!(
+            !rendered.contains("== THE BLOCK =="),
+            "…and prints no block section at all",
+        );
+        assert_eq!(surface.exit_code(), 0, "0 on completion");
+
+        // A typed refusal during born-validation exits 2 and says the escrow
+        // reads do not open.
+        let mut failed = surface;
+        failed.blocks[0].body = OrdinalBody::Instrument("a synthetic failure".to_string());
+        assert!(failed.instrument_failed());
+        assert_eq!(failed.exit_code(), 2);
+        let rendered = render_step10(&failed);
+        assert!(rendered.contains("TYPED INSTRUMENT FAILURE"), "{rendered}");
+        assert!(rendered.contains("the escrow reads do NOT open"), "{rendered}");
+    }
+
 }
