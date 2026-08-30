@@ -119,9 +119,12 @@ usage: arena <subcommand> [options]
       -- is computed over the READ units alone (the echo's games= stays the
       SCHEDULED count). Volume and honesty counters still fold over every played
       game, capped ones included. The (n+1)-th capped game refuses the cell AT ONCE
-      and the run is INVALID; n=0 is legal and refuses at the first. WITHOUT the
-      flag the cell behaves exactly as it always has -- the first capped game
-      refuses it -- and no capped-ceiling token appears in the report echo.
+      and the run is INVALID; n=0 is legal and refuses at the first. A cell whose
+      EVERY scheduled unit is void refuses too, typed and naming its capped games:
+      with no read unit nothing constrains the win share, and a report of NaNs
+      would answer a question the data cannot. WITHOUT the flag the cell behaves
+      exactly as it always has -- the first capped game refuses it -- and no
+      capped-ceiling token appears in the report echo.
 
   ab [--units-2p <n>] [--blocks-4p <n>] [--drift-games <n>]
      [--master <u64> | --os-entropy]
