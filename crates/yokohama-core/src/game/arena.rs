@@ -140,6 +140,12 @@
 //! other seat's.
 
 pub mod corpus;
+/// The V4 step-11 diagnosis wave's read surfaces (W-D1) — the `world` and
+/// `caprate` instruments and their help text. PUBLIC because `examples/arena`
+/// is print-only glue over them (the `driven_runner` precedent): the parse and
+/// render logic is lib-tested here, so the runner needs no test target of its
+/// own.
+pub mod diagnostic;
 pub mod stats;
 /// The contestant name grammar (Phase 3.5c W1-B). PRIVATE, deliberately: the
 /// public entry is [`Contestant::from_str_name`], so there is exactly ONE way to
@@ -148,6 +154,7 @@ pub mod stats;
 /// reason `eval`/`greedy`/`lookahead`/`mcts` are namespaced in `game/mod.rs`.)
 mod grammar;
 pub use corpus::*;
+pub use diagnostic::*;
 pub use grammar::ATOMIC_DIAG_ALIAS;
 pub use stats::*;
 
