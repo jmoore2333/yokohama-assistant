@@ -3719,6 +3719,132 @@ fn opt(value: Option<u64>) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// The cap tail (A-S12-1's rider, close doc §2.4 item 5)
+// ---------------------------------------------------------------------------
+
+/// How many trailing applied moves a [`CapTail`] keeps.
+///
+/// **Sixteen, and the number is the owner's** (close doc
+/// `docs/plans/2026-08-30-phase3.5c-v4-close.md` §2.4 item 5). It is a WINDOW
+/// on a trajectory that can run to a hundred thousand moves, sized to show the
+/// loop's period rather than its history: the arena's own step-11 diagnostic
+/// reads a turn-keyed tail for the same question, and a longer window here
+/// would put a page of moves on a report line for every counted cap.
+pub const CAP_TAIL_MOVES: usize = 16;
+
+/// ONE seat's stocks at cap time — the produce-and-hoard columns.
+///
+/// **Every field is a raw state read, and no field is a score.** A capped game
+/// never finished, so an "official" total computed over it would be a number
+/// the game never produced; the running VP TRACK is what the state actually
+/// carries and is what this records (the arena's step-11 end-state block draws
+/// the same line for the same reason).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapSeatSummary {
+    pub seat: PlayerId,
+    /// The running VP TRACK — never a final score (see the type's doc).
+    pub victory_points: u32,
+    pub money: u32,
+    pub copper: u32,
+    pub silk: u32,
+    pub tea: u32,
+    pub seafood: u32,
+    pub imported_goods: u32,
+    pub assistants_in_hand: u8,
+    pub assistants_in_warehouse: u8,
+    /// Summed over every area — the board total, not a per-area split.
+    pub assistants_on_board: u32,
+    pub orders_in_hand: usize,
+    pub completed_orders: usize,
+    pub technologies: usize,
+}
+
+/// What a COUNTED cap leaves behind: the last [`CAP_TAIL_MOVES`] applied moves
+/// and the state the guard tripped in.
+///
+/// **NON-GATING BY CONSTRUCTION** (close doc §2.4 item 5: "Nothing asserts on
+/// its content"). It exists so the produce-and-hoard attribution stands as
+/// EVIDENCE rather than inference — the V4 step-11 lesson at a second grain:
+/// a loop nobody can look at cannot be diagnosed, and until A-S12-1 the family
+/// harness's cap refusal carried exactly one line of text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapTail {
+    /// The state's own turn number at cap time — the guard's number, one past
+    /// the bound.
+    pub turn_number: u32,
+    pub turn_phase: TurnPhase,
+    pub current_player: PlayerId,
+    /// How many moves the whole trajectory applied. Printed beside the tail so
+    /// a reader knows it IS a tail — a bare sixteen-move list reads as a whole
+    /// game.
+    pub applied_total: usize,
+    /// The last [`CAP_TAIL_MOVES`] of them, in play order. Shorter when the
+    /// trajectory was, and never padded.
+    pub tail: Vec<AppliedMove>,
+    /// One entry per seat, in seat order.
+    pub seats: Vec<CapSeatSummary>,
+}
+
+impl CapTail {
+    /// Capture the tail off a trajectory the caller holds as [`AppliedMove`]s
+    /// — the turn driver's shape.
+    pub fn capture(state: &GameState, applied: &[AppliedMove]) -> Self {
+        let start = applied.len().saturating_sub(CAP_TAIL_MOVES);
+        Self::assemble(state, applied.len(), applied[start..].to_vec())
+    }
+
+    /// Capture the tail off the shared loop's own `(mover, move)` pairs.
+    ///
+    /// Private and pair-shaped rather than converting the whole trajectory
+    /// first: a capped game applies on the order of a hundred thousand moves,
+    /// and materializing all of them to keep sixteen would be the one place
+    /// this rider could cost something.
+    fn capture_pairs(state: &GameState, applied: &[(PlayerId, Move)]) -> Self {
+        let start = applied.len().saturating_sub(CAP_TAIL_MOVES);
+        let tail = applied[start..]
+            .iter()
+            .map(|(seat, mv)| AppliedMove { seat: *seat, mv: mv.clone() })
+            .collect();
+        Self::assemble(state, applied.len(), tail)
+    }
+
+    fn assemble(state: &GameState, applied_total: usize, tail: Vec<AppliedMove>) -> Self {
+        Self {
+            turn_number: state.turn_number,
+            turn_phase: state.turn_phase,
+            current_player: state.current_player,
+            applied_total,
+            tail,
+            seats: state
+                .players
+                .iter()
+                .map(|p| CapSeatSummary {
+                    seat: p.id,
+                    victory_points: p.victory_points,
+                    money: p.money,
+                    copper: p.copper,
+                    silk: p.silk,
+                    tea: p.tea,
+                    seafood: p.seafood,
+                    imported_goods: p.imported_goods,
+                    assistants_in_hand: p.assistants.in_hand,
+                    assistants_in_warehouse: p.assistants.in_warehouse,
+                    assistants_on_board: p
+                        .assistants
+                        .on_board
+                        .values()
+                        .map(|&n| u32::from(n))
+                        .sum(),
+                    orders_in_hand: p.order_cards_in_hand.len(),
+                    completed_orders: p.completed_orders.len(),
+                    technologies: p.technologies.len(),
+                })
+                .collect(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
 
@@ -3765,7 +3891,18 @@ pub enum DrivenError {
     /// The engine rejected a validated move, or an invariant broke after one.
     Engine(String),
     /// The turn guard tripped.
-    TurnCapReached { turns: u32 },
+    ///
+    /// `tail` is the NON-GATING evidence A-S12-1 attached (close doc §2.4 item
+    /// 5): the last [`CAP_TAIL_MOVES`] applied moves and the state the guard
+    /// tripped in. It rides the error rather than the message — the DISPLAY is
+    /// unchanged, because every consumer below prints it verbatim and the
+    /// amendment is scoped to what the FAMILY harness does with the error, not
+    /// to how any refusal reads.
+    ///
+    /// `None` is a shape no driver in this module produces today and is kept
+    /// reachable deliberately: a future caller that classifies a cap without a
+    /// trajectory in hand must be able to say so rather than fabricate one.
+    TurnCapReached { turns: u32, tail: Option<Box<CapTail>> },
     /// The decision guard tripped: this root did not terminate within the bound
     /// — a REFUSAL naming the bound, never a hang and never a truncated run
     /// reported as a result.
@@ -3793,7 +3930,9 @@ impl std::fmt::Display for DrivenError {
             }
             Self::DeadEnd { seat } => write!(f, "seat {} reached a dead end", seat.0),
             Self::Engine(m) => write!(f, "engine: {m}"),
-            Self::TurnCapReached { turns } => write!(f, "turn cap reached at turn {turns}"),
+            // The tail is EVIDENCE, never a sentence: this message is what the
+            // standalone adjudicator, the runner and the CLI all print.
+            Self::TurnCapReached { turns, .. } => write!(f, "turn cap reached at turn {turns}"),
             Self::DecisionCapReached { decisions } => write!(
                 f,
                 "the root did not terminate within {decisions} decisions (the guard is a refusal, \
@@ -3835,10 +3974,16 @@ fn classify(error: PlayError) -> DrivenError {
             "invariant violated after seat {}'s move: {reason}",
             seat.0
         )),
-        // The V4 step-11 `partial` rides only out of `play_from_state` and only
-        // for the arena's diagnostic driver; a rooted run classifies on `turns`
-        // exactly as it always did.
-        PlayError::TurnCap { turns, .. } => DrivenError::TurnCapReached { turns },
+        // The V4 step-11 `partial` rides only out of `play_from_state`. Until
+        // A-S12-1 a rooted run DROPPED it and classified on `turns` alone —
+        // which is exactly why the S12 achievement arm's refusal could say
+        // nothing about the loop it refused (close doc §2.2). It is kept now,
+        // as the cap's tail; the message is unchanged.
+        PlayError::TurnCap { turns, partial } => DrivenError::TurnCapReached {
+            turns,
+            tail: partial
+                .map(|outcome| Box::new(CapTail::capture_pairs(&outcome.final_state, &outcome.applied))),
+        },
         PlayError::DecisionCap { decisions } => DrivenError::DecisionCapReached { decisions },
     }
 }
@@ -4224,13 +4369,18 @@ pub fn drive_turn(
             break false;
         }
         if state.turn_number > opts.max_turns {
-            // `partial: None` — a rooted turn-driver has no from-setup outcome
-            // to hand back, and the arena's diagnostic driver never reads this
-            // loop (see `PlayError::TurnCap`'s doc).
-            return Err(classify(PlayError::TurnCap {
+            // The taxonomy is `classify`'s arm and the SENTENCE is the shared
+            // one (pinned by
+            // `the_turn_drivers_cap_is_the_shared_sentence_with_its_own_tail`);
+            // the value is built here rather than routed through `classify`
+            // because this loop holds its OWN trajectory and has no
+            // `PlayOutcome` to hand it — a rooted turn-driver has no from-setup
+            // outcome, which is the same reason it always passed `partial:
+            // None` (see `PlayError::TurnCap`'s doc).
+            return Err(DrivenError::TurnCapReached {
                 turns: state.turn_number,
-                partial: None,
-            }));
+                tail: Some(Box::new(CapTail::capture(&state, &moves))),
+            });
         }
         // The decision guard, checked BEFORE the decision it would be the
         // (max+1)-th of, so the refusal names the bound the caller set rather
