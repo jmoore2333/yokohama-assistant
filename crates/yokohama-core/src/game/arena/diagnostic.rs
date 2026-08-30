@@ -1066,6 +1066,103 @@ mod tests {
         );
     }
 
+    /// Rebuild a [`WorldRun`] around a replacement outcome — the seam the S2
+    /// cells feed a deliberately mismatched record/state pair through.
+    fn with_outcome(run: WorldRun, outcome: DiagnosticOutcome) -> WorldRun {
+        let WorldRun { seed, players, arrangement, x_seat, x_echo, y_echo, turn_cap, .. } = run;
+        WorldRun {
+            seed,
+            players,
+            arrangement,
+            x_seat,
+            x_echo,
+            y_echo,
+            turn_cap,
+            game: DiagnosticGame { seed, players, outcome },
+        }
+    }
+
+    /// **W-D1 review S2, the cap arm.** On a cap the end-state block comes from
+    /// the DRIVER's state while every tail line's turn/seat/phase comes from
+    /// `annotate`'s independent fold of the record. A divergence would annotate
+    /// the tail from one trajectory and the end state from another, silently.
+    /// Both digests are in hand at render time, so the renderer must check.
+    #[test]
+    fn render_world_refuses_when_the_fold_disagrees_with_the_drivers_state() {
+        let rules = Rules::standard();
+        let (x, y) = rungs();
+        let run = run_world_capped(
+            &WorldSpec { x, y, seed: first_world(), players: 2, arrangement: 0 },
+            &rules,
+            false,
+            30,
+        )
+        .expect("a cap is an outcome here");
+        assert!(render_world(&run, 5, &rules).is_ok(), "the honest run renders");
+
+        let DiagnosticGame { outcome, .. } = run.game;
+        let DiagnosticOutcome::Capped { turns, mut record, state, moves_by_seat } = outcome else {
+            panic!("a 30-turn cap cannot contain a full 2P game");
+        };
+        // Drop the last applied move: the record now folds to the state BEFORE
+        // it while the driver's state is the state AFTER it — exactly the shape
+        // of the divergence this check exists to catch.
+        record.events.pop().expect("a capped game applied moves");
+        let tampered = with_outcome(
+            run_world_capped(
+                &WorldSpec { x, y, seed: first_world(), players: 2, arrangement: 0 },
+                &rules,
+                false,
+                30,
+            )
+            .expect("a second identical run supplies the surrounding fields"),
+            DiagnosticOutcome::Capped { turns, record, state, moves_by_seat },
+        );
+
+        let err = render_world(&tampered, 5, &rules)
+            .expect_err("a record that folds to a different state must be refused, not rendered");
+        let ArenaError::Driver(message) = err else {
+            panic!("expected a Driver refusal, got {err:?}");
+        };
+        assert!(
+            message.contains("fold") && message.contains("digest"),
+            "the refusal must name what disagreed: {message}",
+        );
+    }
+
+    /// **W-D1 review S2, the terminated arm.** On a completed game the fold IS
+    /// the end state, and the record already carries the digest the driver
+    /// stamped — so the check costs nothing and closes the same gap.
+    #[test]
+    fn render_world_refuses_when_the_fold_disagrees_with_the_recorded_terminal_digest() {
+        let rules = Rules::standard();
+        let (x, y) = rungs();
+        let spec = WorldSpec { x, y, seed: first_world(), players: 2, arrangement: 1 };
+        let run = run_world(&spec, &rules, false).expect("the rungs finish this world");
+        assert!(render_world(&run, 5, &rules).is_ok(), "the honest run renders");
+
+        let DiagnosticGame { outcome, .. } = run.game;
+        let DiagnosticOutcome::Terminated(mut stats) = outcome else {
+            panic!("this world terminates");
+        };
+        assert!(stats.record.terminal_digest.is_some(), "the driver stamped a digest");
+        stats.record.terminal_digest = Some("not-the-digest-this-record-folds-to".to_string());
+        let tampered = with_outcome(
+            run_world(&spec, &rules, false).expect("a second identical run supplies the fields"),
+            DiagnosticOutcome::Terminated(stats),
+        );
+
+        let err = render_world(&tampered, 5, &rules)
+            .expect_err("a terminal digest the record does not fold to must be refused");
+        let ArenaError::Driver(message) = err else {
+            panic!("expected a Driver refusal, got {err:?}");
+        };
+        assert!(
+            message.contains("fold") && message.contains("digest"),
+            "the refusal must name what disagreed: {message}",
+        );
+    }
+
     fn record_move_count(run: &WorldRun) -> usize {
         match &run.game.outcome {
             DiagnosticOutcome::Terminated(stats) => stats.record.events.len(),
