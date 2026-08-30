@@ -521,8 +521,11 @@ fn render_end_state(state: &GameState) -> Vec<String> {
     for player in &state.players {
         let a = &player.assistants;
         lines.push(format!(
+            // `vp(track)=`, never a bare `vp=` (review S4): the standings block
+            // of a TERMINATED report prints `vp=` for the FINAL SCORE, and one
+            // report carries both. This one is the running VP track.
             "  seat{}: assistants hand={} warehouse={} board={} (ach {}, church {}, customs {}) \
-             · money={} · orders held={} · vp={}",
+             · money={} · orders held={} · vp(track)={}",
             player.id.0,
             a.in_hand,
             a.in_warehouse,
