@@ -1735,6 +1735,368 @@ pub fn escrow_recipe_pair(root: &GameState, rules: &Rules) -> Result<RecipePair,
 }
 
 // ---------------------------------------------------------------------------
+// V4 step 10: the SHAPE-F FEE-FLOW RECIPE (guidingpath 2026-08-23, "THE STEP-10
+// RECORDED-BAND RECIPE IS REGISTERED", item (1); the execution ledger's reading
+// R-S10-4)
+// ---------------------------------------------------------------------------
+
+/// One placement the turn start offers, with the OPPONENT FEE FLOW it prices.
+///
+/// Carried as DATA on [`RecipeCandidate`]'s precedent: a step-10 row records
+/// what the recipe SAW and not only what it chose, so a miss at a reserved
+/// ordinal is diagnosable from the same call that produced it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FeeFlowCandidate {
+    /// The placement move itself, as the engine enumerated it.
+    pub mv: Move,
+    /// How many assistants it places.
+    pub total: usize,
+    /// The SET of areas it places into.
+    pub areas: BTreeSet<AreaId>,
+    /// The Yen this placement moves from the mover to the opponent — the
+    /// engine's own placement pricing, CROSS-CHECKED against the applied
+    /// successor's money deltas before the candidate is admitted (see
+    /// [`classify_fee_flow_candidates`]). Zero for a placement that touches no
+    /// area the opponent's President stands in.
+    pub fee: u32,
+}
+
+/// **THE SHAPE-F PAIR**: two same-total placements from one turn start,
+/// separated by the OPPONENT FEE FLOW the engine's own pricing exports and by
+/// nothing else — `F+` the minimal NONZERO flow at that total, `F0` a
+/// same-total ZERO flow.
+///
+/// The registration's words for the quantity (guidingpath 2026-08-23, item
+/// (1)): "Fee flow = the engine's own placement pricing
+/// (`calculate_placement_cost`/`credit_placement_fees`, an exact mirror; at 2P
+/// payer cost == opponent income) — **the Trading House term is STRUCK**
+/// (passive income fires only inside `apply_area_action`, never at placement)."
+///
+/// # What this object is, and what it is deliberately not
+///
+/// [`RecipePair`]'s posture, verbatim: it fixes the recipe's QUANTITIES and no
+/// more. It carries no feature column, no weight, no evaluator reading and no
+/// direction claim. The three things the step-10 read then asks of this pair —
+/// the gated raw arm (opponent-E1 differs by EXACTLY the exported fee delta,
+/// every other opponent column invariant, X1 recomputed), the collision check,
+/// and clause (iii)'s RECORDED weighted preference under its mandatory parity
+/// gate — are asked of it by the READ, over an object fixed before any of them
+/// could influence it.
+///
+/// The direction is the RULES': the fee is 1 Yen per assistant placed into an
+/// area an opponent President occupies, paid to that President's owner, and at
+/// 2P the non-dummy opponent is the only President owner there — so the mover's
+/// purse falls by exactly what the opponent's purse rises by. That is why the
+/// raw arm can gate a magnitude and not merely a sign.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FeeFlowPair {
+    /// The seat whose turn is starting.
+    pub mover: PlayerId,
+    /// The ONE non-dummy other seat — the fee's payee.
+    pub opponent: PlayerId,
+    /// The shared placement total both sides carry.
+    pub total: usize,
+    /// `F+`: the minimal NONZERO opponent fee flow at that total.
+    pub fee_side: Move,
+    /// That placement's area set.
+    pub fee_side_areas: BTreeSet<AreaId>,
+    /// `F+`'s priced fee, > 0.
+    pub fee: u32,
+    /// `F0`: the same-total placement whose opponent fee flow is ZERO.
+    pub free_side: Move,
+    /// That placement's area set.
+    pub free_side_areas: BTreeSet<AreaId>,
+}
+
+/// Why a root yields no Shape-F pair.
+///
+/// **Typed, and the arms are of TWO kinds** — the distinction is the
+/// registration's own and the step-10 composition table reads it:
+///
+/// * The VOID lattice — [`NotATurnStart`](Self::NotATurnStart),
+///   [`NotTwoPlayer`](Self::NotTwoPlayer),
+///   [`NoOpponentPresidentOnBoard`](Self::NoOpponentPresidentOnBoard),
+///   [`NoPlacementCandidates`](Self::NoPlacementCandidates),
+///   [`NoFeeSide`](Self::NoFeeSide), [`NoFreeSide`](Self::NoFreeSide),
+///   [`NoSharedTotal`](Self::NoSharedTotal) — each a FACT ABOUT THE POSITION,
+///   ordered most-specific-first so the name says the most specific true thing.
+///   These are the recipe's non-instantiation, which the 2026-08-23 row rules
+///   "VOID ≠ miss, the remaining arms still read".
+/// * The INSTRUMENT arms — [`CandidateDidNotApply`](Self::CandidateDidNotApply)
+///   and [`PricingMismatch`](Self::PricingMismatch) — which are facts about the
+///   ENGINE or this helper, never about the position. The composition table
+///   routes them to precedence (0): "typed harness/identity failure ⇒ REFUSE
+///   classification until resolved, never auto-classified". Mapping either onto
+///   a void would have the recipe report a fact about the POSITION when what
+///   moved was the code.
+///
+/// There is no fallback arm anywhere below, on [`RecipeMiss`]'s reasoning: a
+/// nearest-available pair is a pair whose fee separation nobody established,
+/// and the read riding it would be wrong with no way to notice.
+///
+/// **`MoverViewUnavailable` is deliberately ABSENT** (R-S10-4 lists it; this
+/// helper cannot reach it). Fee flow is ENGINE PRICING — `president_location`,
+/// the placed areas, and the two purses — so nothing here calls `observe` and
+/// no view can be unavailable to it. Viewability is a SEPARATE step-10
+/// determination over the root (R-S10-5: "VIEWABILITY = `observe(root, mover)`
+/// succeeds"), made by the read surface, not by the recipe; an arm this module
+/// can never construct would be an arm no cell could reach.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FeeFlowMiss {
+    /// The root is not a mover turn start.
+    NotATurnStart,
+    /// The root does not seat exactly one non-dummy opponent.
+    ///
+    /// The recorded band is 2P and the registered raw arm names ONE seat
+    /// ("opponent-E1 differs by EXACTLY the exported fee delta"), so a
+    /// three- or four-seat root is refused rather than answered about some
+    /// arbitrarily chosen rival: at 3P+ two different opponents can both hold a
+    /// President in the placed area (`calculate_placement_cost` sums over the
+    /// pairs and `credit_placement_fees` credits each owner), and "the
+    /// opponent's fee flow" stops naming one number.
+    ///
+    /// The count is the seat count. **The 2P dummy is not among them**:
+    /// `PlayerId::DUMMY` "appears ONLY as a track-slot owner", and
+    /// `place_setup_dummies` touches only the Church faith-7 and Customs
+    /// space-4 slots — it holds no President and no purse, so it can neither
+    /// charge a fee nor receive one. The `!is_dummy` filter below is therefore
+    /// a total statement rather than a live branch.
+    NotTwoPlayer { players: usize },
+    /// The opponent's President is not on the board.
+    ///
+    /// **The instantiation condition, NAMED and checked BEFORE classification**
+    /// (guidingpath 2026-08-23, item (1): "Instantiation conditions NAMED:
+    /// opponent president ON BOARD + a mover assistant held + the fee
+    /// affordable"). With the President in hand no placement can pay anything,
+    /// so every candidate would price zero and the position would refuse as
+    /// [`NoFeeSide`](Self::NoFeeSide) — true, but it would blame the mover's
+    /// wallet for the opponent's geometry. Naming this arm makes the void
+    /// INFORMATIVE, which is the whole point of a void that the step-10 row
+    /// records rather than a shrug.
+    ///
+    /// It is also the arm the registration expects to see: "Recovery never
+    /// recalls the president — the sole recall is the voluntary
+    /// `ReturnPresidentToHand` — so organic instantiation is realistic but
+    /// UNCERTIFIABLE; no census fact covers president positions; the floor does
+    /// real work."
+    NoOpponentPresidentOnBoard,
+    /// A placement the engine's own legal list offered did not apply.
+    ///
+    /// **An INSTRUMENT arm, and unreachable today for exactly the three reasons
+    /// [`RecipeMiss::CandidateDidNotApply`] spells out** — this helper
+    /// enumerates on the post-`EndAdditionalPhase` state and applies to the
+    /// ROOT, and the two agree byte for byte because (1) the successor differs
+    /// only in `turn_phase`, (2) both placement arms are PHASE-BLIND, and (3)
+    /// the queue guard is pre-satisfied by [`is_mover_turn_start`]. **So the
+    /// unreachability DEPENDS on fact (2) holding.** If a placement arm ever
+    /// grew a `turn_phase` conjunct, every root would refuse loudly here rather
+    /// than silently pricing a thinned candidate set.
+    CandidateDidNotApply(String),
+    /// The priced fee and the APPLIED successor's money deltas disagree.
+    ///
+    /// **The exact-mirror cross-check's failure arm — an INSTRUMENT failure,
+    /// never a void and never a miss** (R-S10-4: "a disagreement between the
+    /// two is TYPED"). The registration calls `calculate_placement_cost` and
+    /// `credit_placement_fees` "an exact mirror"; this arm is that claim made
+    /// executable at every candidate, at every root the read touches.
+    ///
+    /// # Unreachable while the mirror holds, and here is what that depends on
+    ///
+    /// `apply_placement` charges `calculate_placement_cost(state, player,
+    /// placements)` and then credits `credit_placement_fees` over the SAME
+    /// slice, whose owner filter is `calculate_placement_cost`'s pairing
+    /// restated; `apply_placement_same_area` does the same over `[area, area]`;
+    /// and `PlaceTwoSameArea`'s Telegram leg runs `apply_placement(&[adj])`,
+    /// which prices that leg the same way again. Placement moves NOTHING else
+    /// through either purse — the Trading House term the registration STRUCK
+    /// fires only inside `apply_area_action`. So the payer's deduction, the
+    /// opponent's credit and the price below are three readings of one number.
+    ///
+    /// If a re-pricing ever moved one of them without the others — a
+    /// per-President cap, a tech that waives the toll, a fee routed to the bank
+    /// — this arm fires by name at the root that shows it, carrying both deltas
+    /// and the price, instead of the read quietly gating a magnitude the engine
+    /// never charged.
+    PricingMismatch {
+        /// The candidate, `Debug`-formatted (the type is not `Display`).
+        candidate: String,
+        /// What [`calculate_placement_cost`] priced it at.
+        priced: u32,
+        /// What the mover's purse actually fell by.
+        payer_delta: i64,
+        /// What the opponent's purse actually rose by.
+        opponent_delta: i64,
+    },
+    /// The turn start offers no NON-EMPTY placement at all: the mover can only
+    /// decline to place (no assistant in hand, or nothing it can afford).
+    NoPlacementCandidates,
+    /// No candidate pays the opponent anything.
+    ///
+    /// The generator has already dropped every placement the mover cannot
+    /// afford, so this arm covers BOTH "no placement touches the opponent's
+    /// President area" and "the ones that do are unaffordable" — a distinction
+    /// the candidate list cannot express, because an unaffordable placement was
+    /// never in it. The Yen-less mover and the far-from-the-President mover
+    /// therefore record the same void, and that is honest: neither carries the
+    /// read.
+    NoFeeSide,
+    /// Every non-empty candidate pays the opponent, so no zero-fee control
+    /// exists at any total.
+    NoFreeSide,
+    /// Both kinds exist, but never at the same placement total.
+    NoSharedTotal,
+}
+
+impl std::fmt::Display for FeeFlowMiss {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotATurnStart => write!(f, "the root is not a mover turn start"),
+            Self::NotTwoPlayer { players } => {
+                write!(f, "the fee-flow recipe is 2P and this root seats {players}")
+            }
+            Self::NoOpponentPresidentOnBoard => {
+                write!(f, "the opponent's president is not on the board")
+            }
+            Self::CandidateDidNotApply(detail) => {
+                write!(f, "a legal placement did not apply: {detail}")
+            }
+            Self::PricingMismatch { candidate, priced, payer_delta, opponent_delta } => write!(
+                f,
+                "placement pricing disagrees with the applied successor at {candidate}: \
+                 priced {priced}, payer paid {payer_delta}, opponent received {opponent_delta}"
+            ),
+            Self::NoPlacementCandidates => write!(f, "the turn start offers no placement"),
+            Self::NoFeeSide => write!(f, "no affordable placement pays the opponent"),
+            Self::NoFreeSide => write!(f, "every placement pays the opponent"),
+            Self::NoSharedTotal => {
+                write!(f, "the two sides exist but never at the same placement total")
+            }
+        }
+    }
+}
+
+/// Every placement the turn start offers, with the opponent fee flow it prices
+/// and the applied cross-check already paid.
+///
+/// **The ply is crossed by [`turn_start_placements`] — THAT function, not a
+/// second walk** (R-S10-4: "crosses the ply through the SAME
+/// `turn_start_placements`"). It applies `EndAdditionalPhase` and reads
+/// `get_legal_moves`, so this recipe keys on exactly the population the frozen
+/// §6 recipe keys on, and a re-derivation of the placement enumeration — the
+/// Newspaper 4-area case, the Telegram adjacency, the Canal exclusion, the
+/// per-President toll — never exists to drift.
+///
+/// **The order of the three refusals is the void lattice's own**: not a turn
+/// start, then not 2P, then no opponent President on the board — each checked
+/// before the work whose answer it would make meaningless.
+///
+/// **Every candidate is APPLIED and cross-checked.** The fee is priced by
+/// [`placement_fee`] and then held against the successor from BOTH sides — the
+/// mover's purse must fall by it and the opponent's must rise by it — because
+/// the registration's claim is that the two engine functions are "an exact
+/// mirror", and a claim a helper depends on is a claim the helper should test
+/// at every root it is used on. A disagreement is
+/// [`FeeFlowMiss::PricingMismatch`], an instrument failure, never a void.
+///
+/// **Nothing here reads a candidate column, a weight or an evaluator** — no
+/// `observe`, no `Feature`, no `eval` (R-S10-5: "INSTANTIABILITY reads no
+/// candidate column ... burn-free by construction"). Determinism follows:
+/// the answer is a function of the root and the rules alone.
+pub fn classify_fee_flow_candidates(
+    root: &GameState,
+    rules: &Rules,
+) -> Result<Vec<FeeFlowCandidate>, FeeFlowMiss> {
+    // W1 RED: the deliberate placeholder — the contract above is what the
+    // cells ask for; the GREEN commit lands the body that answers them.
+    let _ = (root, rules);
+    Err(FeeFlowMiss::CandidateDidNotApply("W1 RED: the Shape-F recipe has no body yet".into()))
+}
+
+/// The Shape-F pair, chosen from priced candidates.
+///
+/// **The rule is [`select_recipe_pair`]'s, VERBATIM** (guidingpath 2026-08-23,
+/// item (1): "scan totals ASCENDING, first total carrying both sides, ties by
+/// lowest area set — the `select_recipe_pair` convention VERBATIM, never
+/// maximal-fee (selecting by maximizing the read quantity would be the recipe
+/// optimizing the very quantity the read exists to test)"). So:
+///
+/// * totals ASCENDING, first total carrying BOTH a paying and a free
+///   candidate; a total carrying only one side is SKIPPED, not refused;
+/// * `F+` = the MINIMAL nonzero fee at that total, ties broken by the lowest
+///   area set — never the largest fee, which is exactly the optimization the
+///   registration forbids;
+/// * `F0` = the lowest area set among that total's zero-fee candidates.
+///
+/// `min_by` keeps the FIRST minimum, so a tie in both keys falls back to the
+/// engine's own enumeration order — deterministic either way.
+///
+/// **The EMPTY placement is ineligible for either side.**
+/// `PlaceThreeAreas { placements: vec![] }` is always in the list — it is how a
+/// mover declines to place — and it prices at zero for the arithmetic reason
+/// that it places nothing, not because it avoids the opponent's President.
+/// Admitting it as `F0` would pair a placement against a NON-placement and call
+/// the difference a fee-flow distinction, which is
+/// `the_empty_placement_is_never_a_side_of_the_recipe`'s objection at the §6
+/// recipe and is the same objection here. It is filtered by total and by
+/// emptiness together: two readings of one fact, and neither alone is a
+/// definition of "declines to place" a future encoding could not slip past.
+fn select_fee_flow_pair(
+    mover: PlayerId,
+    opponent: PlayerId,
+    candidates: &[FeeFlowCandidate],
+) -> Result<FeeFlowPair, FeeFlowMiss> {
+    // W1 RED: the deliberate placeholder — the contract above is what the
+    // cells ask for; the GREEN commit lands the body that answers them.
+    let _ = (mover, opponent, candidates);
+    Err(FeeFlowMiss::CandidateDidNotApply("W1 RED: the Shape-F recipe has no body yet".into()))
+}
+
+/// **THE SHAPE-F FEE-FLOW RECIPE** (guidingpath 2026-08-23, "THE STEP-10
+/// RECORDED-BAND RECIPE IS REGISTERED — CHOSEN, NOT FORCED", item (1); the
+/// execution ledger's R-S10-4): from a turn-start root, the pair of same-total
+/// placements the ENGINE'S OWN placement pricing separates — one exporting a
+/// minimal nonzero fee flow to the opponent, one exporting none.
+///
+/// # Why a SECOND copy of the §6 machinery, and not a shared one
+///
+/// The §6 recipe ([`escrow_recipe_pair`] and its two halves) is a FROZEN
+/// artifact: its digests are pinned and its band is escrowed, so factoring a
+/// shared selector out of it would move frozen bytes to serve a helper written
+/// two steps later. The structure below is therefore MIRRORED — the same ply
+/// crossing (which IS shared: [`turn_start_placements`] is called, never
+/// re-walked), the same [`placement_shape`] reading (also shared), the same
+/// classify/select split, the same ascending-totals convention, the same
+/// lowest-area-set tie-break, the same lattice discipline — while the selection
+/// body is a second copy. The copy is ACCEPTED and named here so a later reader
+/// does not mistake it for drift: what the two recipes share is called, what
+/// would have required editing the frozen artifact is duplicated.
+///
+/// # Independence
+///
+/// Like §6's, this recipe reads no feature column, no weight and no evaluator,
+/// and unlike §6's it reads no VIEW either — fee flow is engine pricing over
+/// `president_location` and the two purses. That is R-S10-5's "burn-free by
+/// construction": instantiability at a reserved ordinal can be decided without
+/// any candidate column being computed, so deciding it cannot burn the ordinal.
+///
+/// # What rides on the pair, and what does not
+///
+/// The registration's item (2) gates the RAW arm over these two successors
+/// (opponent-E1 differs by exactly the exported fee delta; the rest of the
+/// opponent's columns exactly invariant; X1 recomputed at the successor purse),
+/// and its item (3) RECORDS clause (iii)'s weighted preference under a
+/// mandatory production-vs-probe parity gate. Neither is this function's
+/// business. It fixes the pair, and it fixes it out of quantities that were
+/// settled before any of those reads existed.
+pub fn fee_flow_recipe_pair(root: &GameState, rules: &Rules) -> Result<FeeFlowPair, FeeFlowMiss> {
+    // W1 RED: the deliberate placeholder — the WIRING is here and the two
+    // bodies it calls are not, so every cell below fails by name rather than
+    // by absence; the GREEN commit lands them.
+    let candidates = classify_fee_flow_candidates(root, rules)?;
+    select_fee_flow_pair(root.current_player, root.current_player, &candidates)
+}
+
+// ---------------------------------------------------------------------------
 // Phase C layer 2: the shared conjuncts (design §1 families 1–2, §3, §4)
 // ---------------------------------------------------------------------------
 
@@ -12222,6 +12584,472 @@ mod tests {
         assert_eq!(pair.productive_areas, [AreaId(2)].into_iter().collect::<BTreeSet<_>>());
         assert_eq!(pair.productive_reward, 1);
         assert_eq!(pair.dead_areas, [AreaId(5)].into_iter().collect::<BTreeSet<_>>());
+    }
+
+    // -----------------------------------------------------------------------
+    // V4 step 10: the SHAPE-F FEE-FLOW RECIPE
+    // -----------------------------------------------------------------------
+
+    /// A hand-built priced candidate, for the SELECTION rule's own cells —
+    /// [`candidate`]'s counterpart, and for its reason: two of the lattice's
+    /// arms (no free side, no shared total) are hard to reach on a printed
+    /// board, and an arm no cell exercises is an arm that can be deleted with
+    /// the suite still green.
+    fn fee_candidate(total: usize, areas: &[u8], fee: u32) -> FeeFlowCandidate {
+        let areas: BTreeSet<AreaId> = areas.iter().map(|&a| AreaId(a)).collect();
+        FeeFlowCandidate {
+            mv: Move::PlaceThreeAreas { placements: areas.iter().copied().collect() },
+            total,
+            areas,
+            fee,
+        }
+    }
+
+    /// A fresh 2P turn start with the OPPONENT's President standing on a
+    /// placeable production area — the Shape-F instantiation condition,
+    /// CONSTRUCTED.
+    ///
+    /// It has to be constructed: `new_game` starts both Presidents in hand and
+    /// `place_setup_dummies` puts none on the board (it touches the Church
+    /// faith-7 and Customs space-4 slots and nothing else), so the fee flow at
+    /// a fresh root is identically zero. The organic walk that reaches the
+    /// condition — a Movement Option A onto a Possible Action Area, which then
+    /// PERSISTS, because Recovery never recalls a President — is the sweep
+    /// below's subject. `check_invariants` is what says this shortcut produces
+    /// a legal state rather than a convenient one.
+    fn fee_flow_root(rules: &Rules, seed: u64) -> (GameState, PlayerId, PlayerId, AreaId) {
+        let mut root = root_2p(rules, seed);
+        let mover = root.current_player;
+        let opponent =
+            root.players.iter().map(|p| p.id).find(|id| *id != mover).expect("2P seats two");
+        let occupied = area_of(&root, AreaType::CopperMine);
+        root.player_mut(opponent).president_location = PresidentLocation::OnBoard(occupied);
+        check_invariants(&root, rules).expect("the constructed root is a legal state");
+        (root, mover, opponent, occupied)
+    }
+
+    /// Move one Telegram card from the tech deck (or, failing that, a lab slot)
+    /// into `player`'s technologies — CONSERVING the 30-card total the
+    /// invariant checks, which is why the card is taken from somewhere rather
+    /// than minted.
+    fn grant_telegram(state: &mut GameState, rules: &Rules, player: PlayerId) {
+        let is_telegram = |id: crate::types::TechCardId| {
+            rules.techs.get(id).is_some_and(|t| t.effect == crate::types::TechEffect::Telegram)
+        };
+        let card = if let Some(pos) = state.tech_deck.iter().position(|&id| is_telegram(id)) {
+            state.tech_deck.remove(pos)
+        } else {
+            let mut found = None;
+            for slot in state
+                .lab_state
+                .lab_a
+                .slots
+                .iter_mut()
+                .chain(state.lab_state.lab_b.iter_mut().flat_map(|b| b.slots.iter_mut()))
+            {
+                if slot.is_some_and(is_telegram) {
+                    found = slot.take();
+                    break;
+                }
+            }
+            found.expect("the standard 30-card deck carries two Telegram cards")
+        };
+        state.player_mut(player).technologies.push(card);
+    }
+
+    /// Two adjacent placeable areas whose edge is NOT a Canal crossing — the
+    /// generator's own three conditions for offering a Telegram bonus leg
+    /// (`generate_placement_moves_with_tech`), restated as a fixture search so
+    /// the fixture cannot ask for a move the engine would not offer.
+    fn adjacent_placeable_pair(state: &GameState) -> (AreaId, AreaId) {
+        let placeable = |a: &AreaId| {
+            state.board_layout.areas.get(a).is_some_and(|c| c.area_type.allows_placement())
+        };
+        for (&area, config) in &state.board_layout.areas {
+            if !config.area_type.allows_placement() {
+                continue;
+            }
+            for &adj in state.board_layout.adjacent_areas(area) {
+                if !state.board_layout.is_canal_crossing(area, adj) && placeable(&adj) {
+                    return (area, adj);
+                }
+            }
+        }
+        panic!("the 2P board carries an adjacent placeable pair");
+    }
+
+    /// Off a turn start there is no fork to price, and the refusal is TYPED —
+    /// [`the_recipe_refuses_a_position_that_is_not_a_turn_start`]'s cell at the
+    /// Shape-F recipe, because both recipes cross the ply through the same
+    /// [`turn_start_placements`] and inherit its `None`.
+    #[test]
+    fn the_fee_flow_recipe_refuses_a_position_that_is_not_a_turn_start() {
+        let rules = Rules::standard();
+        let (root, ..) = fee_flow_root(&rules, world(101).0);
+        let placing = apply_move_unchecked(&root, &Move::EndAdditionalPhase, &rules)
+            .expect("ending the additional phase is always legal at a turn start");
+        assert_eq!(fee_flow_recipe_pair(&placing, &rules), Err(FeeFlowMiss::NotATurnStart));
+        assert_eq!(
+            classify_fee_flow_candidates(&placing, &rules),
+            Err(FeeFlowMiss::NotATurnStart)
+        );
+    }
+
+    /// **The instantiation condition, named rather than inferred.** At a fresh
+    /// 2P start both Presidents are in hand, so no placement can pay anything;
+    /// the recipe says THAT, instead of reporting a fee-less position as a
+    /// mover who cannot afford one. A void the step-10 row records has to be a
+    /// fact about the position, and "the opponent's President is not on the
+    /// board" is the fact.
+    #[test]
+    fn the_fee_flow_recipe_names_the_missing_opponent_president() {
+        let rules = Rules::standard();
+        let root = root_2p(&rules, world(102).0);
+        for p in &root.players {
+            assert_eq!(
+                p.president_location,
+                PresidentLocation::InHand,
+                "a fresh setup starts every President in hand"
+            );
+        }
+        assert_eq!(
+            fee_flow_recipe_pair(&root, &rules),
+            Err(FeeFlowMiss::NoOpponentPresidentOnBoard)
+        );
+        assert_eq!(
+            classify_fee_flow_candidates(&root, &rules),
+            Err(FeeFlowMiss::NoOpponentPresidentOnBoard)
+        );
+    }
+
+    /// The recorded band is 2P and the registered raw arm names ONE seat, so a
+    /// three-seat root is REFUSED rather than answered about an arbitrarily
+    /// chosen rival — at 3P two opponents can hold Presidents in the same area
+    /// and "the opponent's fee flow" stops naming one number.
+    ///
+    /// The cell also pins the lattice's ORDER: this root IS a turn start, so
+    /// the seat-count arm is what it reports.
+    #[test]
+    fn the_fee_flow_recipe_refuses_a_root_that_is_not_two_player() {
+        let rules = Rules::standard();
+        let pending = new_game(GameConfig::for_player_count(3), &rules, world(103).0)
+            .expect("new_game builds a 3P setup");
+        let root = finalize_setup(
+            pending,
+            &[
+                StartingOrderChoice::Keep(0),
+                StartingOrderChoice::Keep(0),
+                StartingOrderChoice::Keep(0),
+            ],
+        )
+        .expect("the setup finalizes");
+        assert!(is_mover_turn_start(&root), "a finalized setup is a turn start");
+        assert_eq!(
+            fee_flow_recipe_pair(&root, &rules),
+            Err(FeeFlowMiss::NotTwoPlayer { players: 3 })
+        );
+    }
+
+    /// **The recipe's quantity, at the cheapest instantiation there is**: one
+    /// assistant into the area the opponent's President stands in costs 1 Yen,
+    /// paid to that President's owner (KB 01-rules-reference.md:97, "pay 1 Yen
+    /// to each President's owner per assistant placed"), and the same-total
+    /// placement anywhere else costs nothing.
+    ///
+    /// The cross-check runs through the CHECKED boundary, on purpose: the
+    /// helper prices with `calculate_placement_cost` and verifies against its
+    /// own `apply_move_unchecked` successor, so a cell re-verifying with the
+    /// same call would be asking the same question twice. `EndAdditionalPhase`
+    /// then `apply_move` puts both sides through `get_legal_moves`'s membership
+    /// gate at the phase they are legal in, and reads the two purses there.
+    #[test]
+    fn the_fee_flow_pair_prices_one_yen_per_assistant_into_the_opponents_president_area() {
+        let rules = Rules::standard();
+        let (root, mover, opponent, occupied) = fee_flow_root(&rules, world(104).0);
+        assert!(root.player(mover).assistants.in_hand >= 2, "the fixture holds assistants");
+        assert!(root.player(mover).money >= 2, "the fixture can afford a fee");
+
+        let pair = fee_flow_recipe_pair(&root, &rules).expect("the constructed root carries F");
+        assert_eq!(pair.mover, mover);
+        assert_eq!(pair.opponent, opponent);
+        assert_eq!(pair.total, 1, "one assistant is the smallest total carrying both sides");
+        assert_eq!(pair.fee, 1, "one assistant, one President, one Yen");
+        assert_eq!(pair.fee_side, Move::PlaceThreeAreas { placements: vec![occupied] });
+        assert_eq!(pair.fee_side_areas, [occupied].into_iter().collect::<BTreeSet<_>>());
+        assert_eq!(pair.free_side_areas.len(), 1, "the free side shares the total");
+        assert!(
+            !pair.free_side_areas.contains(&occupied),
+            "the free side must avoid the President's area"
+        );
+
+        let placing = apply_move(&root, &Move::EndAdditionalPhase, &rules)
+            .expect("ending the additional phase is legal at a turn start");
+        assert_eq!(placing.player(mover).money, root.player(mover).money, "the ply is free");
+
+        let paid = apply_move(&placing, &pair.fee_side, &rules)
+            .expect("F+ is in the placement phase's own legal list");
+        assert_eq!(paid.player(mover).money + pair.fee, root.player(mover).money);
+        assert_eq!(paid.player(opponent).money, root.player(opponent).money + pair.fee);
+
+        let free = apply_move(&placing, &pair.free_side, &rules)
+            .expect("F0 is in the placement phase's own legal list");
+        assert_eq!(free.player(mover).money, root.player(mover).money);
+        assert_eq!(free.player(opponent).money, root.player(opponent).money);
+    }
+
+    /// The selection rule's arms, each from data, and the two rules that make
+    /// it a SELECTION rather than an optimization: ascending totals, and the
+    /// MINIMAL nonzero fee at the first total carrying both sides.
+    ///
+    /// Picking the largest fee instead would be the recipe maximizing the very
+    /// quantity the step-10 read exists to test — the registration's own
+    /// objection, in its own words.
+    #[test]
+    fn the_selection_takes_the_minimal_nonzero_fee_then_the_lowest_area_set() {
+        let mover = PlayerId(0);
+        let opponent = PlayerId(1);
+        let select = |candidates: &[FeeFlowCandidate]| {
+            select_fee_flow_pair(mover, opponent, candidates)
+        };
+
+        assert_eq!(select(&[]), Err(FeeFlowMiss::NoPlacementCandidates));
+        assert_eq!(
+            select(&[fee_candidate(0, &[], 0)]),
+            Err(FeeFlowMiss::NoPlacementCandidates),
+            "the decline-to-place move is not a placement candidate"
+        );
+        assert_eq!(
+            select(&[fee_candidate(1, &[3], 0), fee_candidate(2, &[4, 5], 0)]),
+            Err(FeeFlowMiss::NoFeeSide)
+        );
+        assert_eq!(
+            select(&[fee_candidate(1, &[3], 1), fee_candidate(2, &[4, 5], 2)]),
+            Err(FeeFlowMiss::NoFreeSide)
+        );
+        assert_eq!(
+            select(&[fee_candidate(1, &[3], 1), fee_candidate(2, &[4, 5], 0)]),
+            Err(FeeFlowMiss::NoSharedTotal)
+        );
+
+        // Total 1 carries only a paying side, so it is SKIPPED, not refused;
+        // at total 2 the fees are {2, 1, 1} and the two fee-1 candidates tie,
+        // so the lowest area set wins on both sides.
+        let pair = select(&[
+            fee_candidate(1, &[3], 1),
+            fee_candidate(2, &[7, 9], 2),
+            fee_candidate(2, &[5, 6], 1),
+            fee_candidate(2, &[4, 6], 1),
+            fee_candidate(2, &[8, 9], 0),
+            fee_candidate(2, &[2, 9], 0),
+        ])
+        .expect("total 2 carries both sides");
+        assert_eq!(pair.mover, mover);
+        assert_eq!(pair.opponent, opponent);
+        assert_eq!(pair.total, 2, "a lower total with one side is skipped");
+        assert_eq!(pair.fee, 1, "the MINIMAL nonzero fee, never the maximal");
+        assert_eq!(pair.fee_side_areas, [AreaId(4), AreaId(6)].into_iter().collect::<BTreeSet<_>>());
+        assert_eq!(pair.free_side_areas, [AreaId(2), AreaId(9)].into_iter().collect::<BTreeSet<_>>());
+    }
+
+    /// A mover with no Yen has no fee side at all — the generator drops every
+    /// paying placement at its affordability test, so the paying candidates are
+    /// not filtered out downstream, they were never enumerated.
+    ///
+    /// The void is [`FeeFlowMiss::NoFeeSide`] rather than a wallet-specific
+    /// arm, and that is deliberate: a candidate list cannot distinguish "no
+    /// placement reaches the President" from "the ones that do are
+    /// unaffordable", because an unaffordable placement is not in it. Neither
+    /// position carries the read, and the recipe says exactly that much.
+    #[test]
+    fn the_fee_flow_recipe_is_unaffordable_without_money() {
+        let rules = Rules::standard();
+        let (mut root, mover, _, occupied) = fee_flow_root(&rules, world(105).0);
+        root.player_mut(mover).money = 0;
+        check_invariants(&root, &rules).expect("a broke mover is a legal state");
+
+        let candidates = classify_fee_flow_candidates(&root, &rules).expect("a turn start classifies");
+        assert!(
+            candidates.iter().all(|c| c.fee == 0),
+            "every enumerated placement is free — the paying ones were never offered"
+        );
+        assert!(
+            !candidates.iter().any(|c| c.areas.contains(&occupied)),
+            "no placement into the President's area survives the generator's price check"
+        );
+        assert_eq!(fee_flow_recipe_pair(&root, &rules), Err(FeeFlowMiss::NoFeeSide));
+    }
+
+    /// **`PlaceTwoSameArea` is priced per ENCODING, exactly as `apply_move`
+    /// prices it**: two assistants into `area` (the `[area, area]` slice) plus
+    /// the Telegram leg's own `apply_placement(&[adj])` call. So the President
+    /// standing in the ADJACENT area is charged once and the President standing
+    /// in the MAIN area is charged twice — the "per assistant placed" rule,
+    /// which a naive per-AREA price would get wrong in exactly one direction.
+    ///
+    /// Both fees are cross-checked twice over: `classify_fee_flow_candidates`
+    /// refuses with [`FeeFlowMiss::PricingMismatch`] if the applied successor
+    /// disagrees with the price, so the classification succeeding IS the
+    /// unchecked-path cross-check, and the checked boundary is re-read here for
+    /// the fee side of each case.
+    #[test]
+    fn the_telegram_adjacent_leg_is_priced_like_apply_prices_it() {
+        let rules = Rules::standard();
+        let (probe, ..) = fee_flow_root(&rules, world(106).0);
+        let (area, adj) = adjacent_placeable_pair(&probe);
+
+        // `president` names the area the opponent's President stands in; the
+        // expected fee is the number of ASSISTANTS the move puts there.
+        for (president, expected) in [(adj, 1u32), (area, 2u32)] {
+            let mut root = root_2p(&rules, world(106).0);
+            let mover = root.current_player;
+            let opponent =
+                root.players.iter().map(|p| p.id).find(|id| *id != mover).expect("2P seats two");
+            grant_telegram(&mut root, &rules, mover);
+            root.player_mut(opponent).president_location = PresidentLocation::OnBoard(president);
+            check_invariants(&root, &rules).expect("the Telegram fixture is a legal state");
+            assert!(root.player(mover).assistants.in_hand >= 3, "the bonus leg needs three");
+
+            let telegram = Move::PlaceTwoSameArea { area, adjacent_bonus: Some(adj) };
+            let candidates =
+                classify_fee_flow_candidates(&root, &rules).expect("a turn start classifies");
+            let priced = candidates
+                .iter()
+                .find(|c| c.mv == telegram)
+                .unwrap_or_else(|| panic!("the fork does not offer {telegram:?}"));
+            assert_eq!(priced.fee, expected, "President in {president:?}");
+            assert_eq!(priced.total, 3, "two assistants plus the bonus one");
+
+            let placing = apply_move(&root, &Move::EndAdditionalPhase, &rules)
+                .expect("ending the additional phase is legal at a turn start");
+            let after = apply_move(&placing, &telegram, &rules)
+                .expect("the Telegram placement is in the legal list");
+            assert_eq!(after.player(mover).money + expected, root.player(mover).money);
+            assert_eq!(after.player(opponent).money, root.player(opponent).money + expected);
+        }
+    }
+
+    /// Over ORGANIC turn starts: every pair the recipe returns is priced by the
+    /// engine's own bytes at the CHECKED boundary, both sides share the total,
+    /// the sides differ, and the answer is a function of the root alone.
+    ///
+    /// The miss histogram is RECORDED, never asserted — the yield is a property
+    /// of the ecology (whether the opponent's President is on the board at a
+    /// mover's turn start), and the registration says so out loud: "organic
+    /// instantiation is realistic but UNCERTIFIABLE; no census fact covers
+    /// president positions; the floor does real work." So the only asserted
+    /// facts are that the sweep exercised the instrument at all: a position off
+    /// a turn start, and a position whose candidate list classified.
+    #[test]
+    fn every_organic_fee_flow_pair_is_priced_by_the_bytes_and_is_a_function_of_the_root() {
+        let rules = Rules::standard();
+        let mut pairs = 0usize;
+        let mut classified = 0usize;
+        let mut misses: BTreeMap<String, usize> = BTreeMap::new();
+        for index in [11u64, 12] {
+            let stats = rung_game(&rules, world(index));
+            let events = stats.record.events.len();
+            for k in (0..events).step_by(5) {
+                let Ok(state) = state_at(&stats.record, k, &rules) else { continue };
+                if classify_fee_flow_candidates(&state, &rules).is_ok() {
+                    classified += 1;
+                }
+                match fee_flow_recipe_pair(&state, &rules) {
+                    Ok(pair) => {
+                        pairs += 1;
+                        let mover = pair.mover;
+                        let opponent = pair.opponent;
+                        assert!(pair.fee > 0, "event {k}: F+ must export a NONZERO fee");
+                        assert_ne!(
+                            pair.fee_side_areas, pair.free_side_areas,
+                            "event {k}: the two sides are the same placement"
+                        );
+                        for side in [&pair.fee_side, &pair.free_side] {
+                            assert_eq!(
+                                placement_shape(side).map(|(total, _)| total),
+                                Some(pair.total),
+                                "event {k}: a side does not carry the pair's total"
+                            );
+                        }
+
+                        let placing = apply_move(&state, &Move::EndAdditionalPhase, &rules)
+                            .expect("a turn start ends its additional phase");
+                        let paid = apply_move(&placing, &pair.fee_side, &rules)
+                            .expect("F+ is in the placement phase's legal list");
+                        assert_eq!(
+                            paid.player(mover).money + pair.fee,
+                            state.player(mover).money,
+                            "event {k}: the payer's purse disagrees with the price"
+                        );
+                        assert_eq!(
+                            paid.player(opponent).money,
+                            state.player(opponent).money + pair.fee,
+                            "event {k}: the opponent's purse disagrees with the price"
+                        );
+                        let free = apply_move(&placing, &pair.free_side, &rules)
+                            .expect("F0 is in the placement phase's legal list");
+                        assert_eq!(free.player(mover).money, state.player(mover).money);
+                        assert_eq!(free.player(opponent).money, state.player(opponent).money);
+
+                        assert_eq!(
+                            Ok(pair),
+                            fee_flow_recipe_pair(&state, &rules),
+                            "event {k}: the recipe is not a function of the root"
+                        );
+                    }
+                    Err(miss) => *misses.entry(miss.to_string()).or_default() += 1,
+                }
+            }
+        }
+        // RECORDED, never asserted (see the doc comment).
+        let off_turn_start =
+            misses.get(&FeeFlowMiss::NotATurnStart.to_string()).copied().unwrap_or(0);
+        println!(
+            "fee-flow recipe over organic play: {pairs} pairs, {classified} positions \
+             classified, {off_turn_start} positions off a turn start, other misses {:?}",
+            misses
+                .iter()
+                .filter(|(name, _)| *name != &FeeFlowMiss::NotATurnStart.to_string())
+                .collect::<Vec<_>>()
+        );
+        assert!(off_turn_start > 0, "the sweep never saw a position off a turn start");
+        assert!(classified > 0, "the sweep never classified a candidate list ({misses:?})");
+    }
+
+    /// **The empty placement is never a side.** `PlaceThreeAreas { placements:
+    /// vec![] }` is always in the list — it is how a mover declines to place —
+    /// and it prices at zero because it places NOTHING, not because it avoids
+    /// the opponent's President. Admitting it as `F0` would pair a placement
+    /// against a non-placement and call the difference a fee-flow distinction,
+    /// which is [`the_empty_placement_is_never_a_side_of_the_recipe`]'s
+    /// objection at the §6 recipe and the same objection here.
+    ///
+    /// The second half is the decisive one: from data, a list whose only
+    /// zero-priced move is the empty placement refuses as
+    /// [`FeeFlowMiss::NoFreeSide`] rather than pairing against it.
+    #[test]
+    fn the_empty_placement_is_never_a_fee_flow_side() {
+        let rules = Rules::standard();
+        let (root, ..) = fee_flow_root(&rules, world(107).0);
+        let candidates = classify_fee_flow_candidates(&root, &rules).expect("a turn start classifies");
+        let empty: Vec<&FeeFlowCandidate> = candidates.iter().filter(|c| c.total == 0).collect();
+        assert_eq!(empty.len(), 1, "the decline-to-place move is offered exactly once");
+        assert_eq!(empty[0].fee, 0);
+        assert!(empty[0].areas.is_empty());
+
+        let pair = fee_flow_recipe_pair(&root, &rules).expect("the constructed root carries F");
+        assert!(pair.total > 0, "neither side is the decline");
+        assert!(!pair.fee_side_areas.is_empty());
+        assert!(!pair.free_side_areas.is_empty());
+
+        assert_eq!(
+            select_fee_flow_pair(
+                PlayerId(0),
+                PlayerId(1),
+                &[fee_candidate(0, &[], 0), fee_candidate(1, &[3], 1)]
+            ),
+            Err(FeeFlowMiss::NoFreeSide),
+            "the empty placement is not the zero-fee side of anything"
+        );
     }
 
     // -----------------------------------------------------------------------
