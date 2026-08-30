@@ -334,20 +334,19 @@ pub struct WorldSides<'a> {
     pub arrangement: u8,
 }
 
-/// Play ONE world under [`HONEST_MAX_TURNS`] from two caller-supplied sides.
-pub fn run_world_sides(
-    sides: &WorldSides<'_>,
-    rules: &Rules,
-    invariants: bool,
-) -> Result<WorldRun, ArenaError> {
-    run_world_sides_capped(sides, rules, invariants, HONEST_MAX_TURNS)
-}
-
-/// [`run_world_sides`] with the turn guard as a parameter.
+/// Play ONE world from two caller-supplied sides.
 ///
 /// THE seating-and-keying site — [`run_world_capped`] routes through it, so
 /// there is exactly one transcription of the cell's rule in this module and a
 /// caller cannot acquire a second by supplying its own agents.
+///
+/// **There is deliberately NO uncapped `run_world_sides` beside this** (W-D2
+/// review S1). [`run_world`] exists because the arena runner has a shipped
+/// no-argument path; a side-supplying caller has none — `examples/eval_probe`'s
+/// `cmd_world` names [`HONEST_MAX_TURNS`] at its own call site, which puts the
+/// guard the field ran under in the code that performs the reading rather than
+/// one indirection away. A convenience wrapper here would be public API with no
+/// caller and no cell, which is how a surface acquires an unexercised arm.
 pub fn run_world_sides_capped(
     sides: &WorldSides<'_>,
     rules: &Rules,
