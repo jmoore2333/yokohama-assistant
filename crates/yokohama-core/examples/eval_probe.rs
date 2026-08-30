@@ -98,9 +98,9 @@ use rand_chacha::ChaCha8Rng;
 
 use yokohama_core::game::actions::calculate_church_faith;
 use yokohama_core::game::eval::{
-    achievement_progress, achievement_progress_postclaim_sum, clock_ppm, initial_order_deck_len,
-    interpolate, progress_ppm, score, view_is_terminal, Feature, ScoreStructure, WeightTable,
-    HAND_CORE_RESERVE, PROGRESS_FULL_PPM,
+    achievement_progress, achievement_progress_postclaim_sum, clock_ppm, explain,
+    initial_order_deck_len, interpolate, progress_ppm, score, view_is_terminal, Feature,
+    ScoreStructure, WeightTable, HAND_CORE_RESERVE, PROGRESS_FULL_PPM,
 };
 // `DEFAULT_RETREAT_SAMPLES` is deliberately NOT imported here: since the parse
 // delegates to `Contestant::from_str_name`, every default this file used to type
@@ -17189,6 +17189,16 @@ struct StaticRead {
     table: &'static str,
     prod_plus: i64,
     prod_zero: i64,
+    /// PRODUCTION's per-feature products at the F+ successor, off
+    /// [`explain`] — §0.3(a)'s SECOND assembly of the same evaluation, whose
+    /// `total` is pinned equal to [`score`]'s.
+    ///
+    /// Used for ATTRIBUTION only: the gate itself compares `score`'s totals
+    /// against the probe's, and these rows exist so a disagreement can NAME the
+    /// column — which is what R-S10-3 calls "a probe/production COLUMN
+    /// disagreement".
+    prod_rows_plus: [i64; AXIS_WIDTH],
+    prod_rows_zero: [i64; AXIS_WIDTH],
     probe: ProbeStatic,
     probe_zero: ProbeStatic,
 }
@@ -17223,17 +17233,32 @@ impl StaticRead {
         self.delta_prod() == self.delta_probe()
     }
 
-    /// The rows where the two static paths' per-successor contributions
-    /// disagree — printed only when there is something to print.
-    fn divergent_rows(&self) -> Vec<(&'static str, i64, i64, i64)> {
+    /// **THE ROWS WHERE THE TWO STATIC PATHS DISAGREE**, as
+    /// `(label, production delta, probe delta)`.
+    ///
+    /// Both paths' per-row deltas are `contribution(F+) − contribution(F0)` on
+    /// the SAME axis: production's from [`explain`]'s per-feature `product`,
+    /// the probe's from `interpolate(w) · Δv`. At 2P they coincide row for row
+    /// by `score_row`'s own identity, so a non-empty result IS the
+    /// probe/production column disagreement R-S10-3 names, with the column
+    /// named.
+    fn divergent_rows(&self) -> Vec<(&'static str, i64, i64)> {
+        // W2c RED: the deliberate placeholder — it filters by "this row
+        // contributed something" rather than by "the two paths disagree here",
+        // which is the landed defect in the other direction: it reports rows
+        // nobody disputes and would still be silent on a row where they differ
+        // by zero net contribution. The cells below ask for the comparison.
         FeatureId::all()
             .iter()
             .map(|id| {
                 let slot = id.index();
-                (id.label(), self.probe.rows[slot], self.probe_zero.rows[slot],
-                 self.probe.rows[slot] - self.probe_zero.rows[slot])
+                (
+                    id.label(),
+                    self.prod_rows_plus[slot] - self.prod_rows_zero[slot],
+                    self.probe.rows[slot] - self.probe_zero.rows[slot],
+                )
             })
-            .filter(|(_, plus, zero, _)| *plus != 0 || *zero != 0)
+            .filter(|(_, production, _)| *production != 0)
             .collect()
     }
 }
@@ -17256,12 +17281,54 @@ fn read_static(
             ));
         }
     }
+    // PRODUCTION's per-row attribution. `explain` is §0.3(a)'s SECOND assembly
+    // of the same evaluation — its total is pinned equal to `score`'s — so this
+    // adds an attribution without moving the number the gate reads.
+    let production_rows = |view: &PlayerView| -> [i64; AXIS_WIDTH] {
+        let mut out = [0i64; AXIS_WIDTH];
+        for term in explain(view, rules, table).terms {
+            out[term.feature.index()] = term.product;
+        }
+        out
+    };
     Ok(StaticRead {
         table: table_name,
         prod_plus: score(plus_view, rules, table),
         prod_zero: score(zero_view, rules, table),
+        prod_rows_plus: production_rows(plus_view),
+        prod_rows_zero: production_rows(zero_view),
         probe: probe_static_total(plus_view, mover, table, rules)?,
         probe_zero: probe_static_total(zero_view, mover, table, rules)?,
+    })
+}
+
+/// **THE PRECEDENCE-(0) ROUTE FOR A STATIC PARITY FAILURE**, as a function of
+/// the band and the read — the smallest honest entry point, so the route is
+/// reachable from a cell without resolving a root.
+///
+/// R-S10-3 routes a SAME-PREFERENCE delta inequality to precedence (0): a
+/// probe/production column disagreement is a fact about the INSTRUMENT, never a
+/// verdict about the position. The W2 review's MUST-1 found the other half: at
+/// PF nothing reads the static preference at all (`pf_read` consults clause (i)
+/// and clause (iii) only), so a PF preference disagreement — which IS a delta
+/// inequality, since the preference is a function of the delta — routed
+/// nowhere while the artifact printed `*** MISS ***` beside a possible PASS.
+/// The owner ruled option 1: **a delta inequality is precedence (0) at BOTH
+/// bands**, and only the recorded band's PREFERENCE disagreement is a miss.
+fn static_parity_refusal(band: Step10Band, statics: &StaticRead) -> Option<String> {
+    // W2c RED: the deliberate placeholder — the band-agnostic guard as landed,
+    // which lets a PF delta inequality through to a verdict. The cell below
+    // asks for the ruled shape.
+    (statics.agrees() && !statics.deltas_equal()).then(|| {
+        format!(
+            "PROBE/PRODUCTION COLUMN DISAGREEMENT at a reserved state: the two static paths agree \
+             on the PREFERENCE ({}) and disagree on the DELTA (production {:+}, probe {:+}). \
+             R-S10-3 routes a same-preference delta inequality to precedence (0) — never a miss \
+             and never a pass",
+            statics.preference_prod().label(band),
+            statics.delta_prod(),
+            statics.delta_probe(),
+        )
     })
 }
 
@@ -17807,6 +17874,15 @@ struct OrdinalBlock {
     digest: String,
     anchor: String,
     seat: PlayerId,
+    /// **THE ROOT'S POSITION**, carried so the artifact can state it (the W2
+    /// review's MUST-2). Under R-S10-14 the phase is the recipe's own premise
+    /// rather than an incidental fact, and the born-validation pass proved the
+    /// cost of leaving it out: the artifact said `NotATurnStart` at three
+    /// licensed roots and recovering `phase=Placement · pending=0` took a
+    /// separately patched-in diagnostic.
+    phase: TurnPhase,
+    pending: usize,
+    mercenary: bool,
     burned: bool,
     body: OrdinalBody,
 }
@@ -18069,16 +18145,8 @@ fn read_step10_body(
         NamedIdentity::V4Step9Draft1.name(),
         rules,
     )?;
-    if statics.agrees() && !statics.deltas_equal() {
-        return Err(format!(
-            "PROBE/PRODUCTION COLUMN DISAGREEMENT at a reserved state: the two static paths agree \
-             on the PREFERENCE ({}) and disagree on the DELTA (production {:+}, probe {:+}). \
-             R-S10-3 routes a same-preference delta inequality to precedence (0) — never a miss \
-             and never a pass",
-            statics.preference_prod().label(band),
-            statics.delta_prod(),
-            statics.delta_probe(),
-        ));
+    if let Some(refusal) = static_parity_refusal(band, &statics) {
+        return Err(refusal);
     }
 
     Ok(OrdinalBody::Substantive(Box::new(SubstantiveBlock {
@@ -18632,6 +18700,9 @@ fn step10_read(opts: &Step10Options, rules: &Rules) -> Result<Step10Surface, Str
             digest: root.digest.clone(),
             anchor: root.anchor.clone(),
             seat: root.state.current_player,
+            phase: root.state.turn_phase,
+            pending: root.state.pending_choices.len(),
+            mercenary: root.state.is_mercenary_action,
             burned: opts.burned.contains(&root.ordinal),
             body,
         });
@@ -18871,13 +18942,13 @@ fn render_static(out: &mut String, band: Step10Band, statics: &StaticRead) {
     if !statics.deltas_equal() {
         let _ = writeln!(
             out,
-            "       per-row         the two paths' deltas differ; the probe's per-row \
-             contributions:",
+            "       per-row         the two paths' deltas differ; the columns that disagree:",
         );
-        for (label, plus, zero, delta) in statics.divergent_rows() {
+        for (label, production, probe) in statics.divergent_rows() {
             let _ = writeln!(
                 out,
-                "                       {label:<28} F+ {plus:>+8}  F0 {zero:>+8}  Δ {delta:>+8}",
+                "                       {label:<28} production Δ {production:>+8}  probe Δ \
+                 {probe:>+8}",
             );
         }
     }
@@ -19052,6 +19123,14 @@ fn render_ordinal(out: &mut String, surface: &Step10Surface, block: &OrdinalBloc
             ose_ordinal_verdict(&OseOrdinal { ordinal: block.ordinal, burned: block.burned, read })
         }),
     };
+    // W2c RED: the deliberate placeholder — the position line is printed, but
+    // at the END of the block rather than in the IDENTITY block beside the
+    // mover, where a reader looking up "what position is this?" reads.
+    let _ = writeln!(
+        out,
+        "     position          {:?} · {} pending choice(s) · mercenary={}",
+        block.phase, block.pending, block.mercenary,
+    );
     let _ = writeln!(
         out,
         "     VERDICT {:<9} {}",
@@ -32030,6 +32109,305 @@ mod tests {
         assert!(prefix.contains("position (event) 50"), "{prefix}");
     }
 
+    /// A hand-built [`StaticRead`], so the precedence-(0) route is reachable
+    /// from a cell without resolving a root.
+    ///
+    /// The two paths CANNOT disagree at 2P — that is `score_row`'s own identity
+    /// and the reason the gate is a wiring check rather than a measurement — so
+    /// the only honest way to drive the disagreement branch is to build the
+    /// read. The alternative was a cell that could never run.
+    fn static_read_of(prod: (i64, i64), probe: (i64, i64)) -> StaticRead {
+        let side = |total: i64| ProbeStatic { total, rows: [0; AXIS_WIDTH], ppm: 500_000 };
+        StaticRead {
+            table: "hand-built",
+            prod_plus: prod.0,
+            prod_zero: prod.1,
+            prod_rows_plus: [0; AXIS_WIDTH],
+            prod_rows_zero: [0; AXIS_WIDTH],
+            probe: side(probe.0),
+            probe_zero: side(probe.1),
+        }
+    }
+
+    /// **A STATIC DELTA INEQUALITY IS PRECEDENCE (0) AT BOTH BANDS** — the W2
+    /// review's MUST-1 (owner-ruled option 1) and SHOULD-2 in one cell.
+    ///
+    /// The review found two halves of one hole. SHOULD-2: nothing in the suite
+    /// drove the same-preference inequality branch at all, so disabling the
+    /// guard entirely left 194 cells green. MUST-1: at PF the guard could not
+    /// fire on a DISAGREEING preference — `pf_read` never consults the static
+    /// read — so the divergence routed nowhere while `render_static` printed
+    /// `*** MISS ***` beside an ordinal whose verdict could say PASS.
+    ///
+    /// The ruled shape: a delta inequality refuses at BOTH bands; only the
+    /// recorded band's PREFERENCE disagreement is that ordinal's miss.
+    #[test]
+    fn a_static_delta_inequality_is_precedence_zero_at_both_bands() {
+        // AGREEING preference, unequal deltas — R-S10-3's own case.
+        let agreeing = static_read_of((10, 0), (6, 0));
+        assert!(agreeing.agrees(), "both paths prefer F+");
+        assert!(!agreeing.deltas_equal(), "production +10 vs probe +6");
+        for band in [Step10Band::Pf, Step10Band::Ose] {
+            let refusal = static_parity_refusal(band, &agreeing)
+                .unwrap_or_else(|| panic!("{band:?}: a same-preference delta inequality REFUSES"));
+            assert!(refusal.contains("PROBE/PRODUCTION COLUMN DISAGREEMENT"), "{refusal}");
+            assert!(refusal.contains("production +10"), "{refusal}");
+            assert!(refusal.contains("probe +6"), "{refusal}");
+        }
+
+        // DISAGREEING preference. At PF this is precedence (0) — nothing there
+        // reads the static preference, so a divergence that is not refused is a
+        // divergence nobody counted. At OSE it is that ordinal's MISS, carried
+        // by `ose_read`'s `parity` conjunct, and NOT a refusal.
+        let opposed = static_read_of((10, 0), (0, 6));
+        assert!(!opposed.agrees(), "production prefers F+, the probe prefers F0");
+        assert!(!opposed.deltas_equal());
+        assert!(
+            static_parity_refusal(Step10Band::Pf, &opposed).is_some(),
+            "a PF preference divergence IS a delta inequality and routes to precedence (0)",
+        );
+        assert_eq!(
+            static_parity_refusal(Step10Band::Ose, &opposed),
+            None,
+            "at the recorded band a preference disagreement is the ordinal's MISS, not a refusal",
+        );
+        assert_eq!(
+            ose_ordinal_verdict(&OseOrdinal {
+                ordinal: 50,
+                burned: false,
+                read: OseOrdinalRead::Substantive {
+                    arithmetic: true,
+                    raw_a: true,
+                    raw_b: true,
+                    raw_c: true,
+                    parity: opposed.agrees(),
+                },
+            }),
+            OrdinalVerdict::Miss,
+            "…and that miss is where it lands",
+        );
+
+        // EQUAL deltas refuse nowhere, at either band.
+        let equal = static_read_of((10, 0), (10, 0));
+        assert!(equal.deltas_equal() && equal.agrees());
+        for band in [Step10Band::Pf, Step10Band::Ose] {
+            assert_eq!(static_parity_refusal(band, &equal), None, "{band:?}");
+        }
+        // A TIE on both paths is agreement, and agreement with equal deltas is
+        // not a refusal anywhere.
+        let tied = static_read_of((0, 0), (0, 0));
+        assert_eq!(tied.preference_prod(), Preference::Tie);
+        for band in [Step10Band::Pf, Step10Band::Ose] {
+            assert_eq!(static_parity_refusal(band, &tied), None, "{band:?}");
+        }
+
+        // **THE ARTIFACT.** At PF `*** MISS ***` must never print on this line:
+        // nothing at that band can miss on it. The line is RECORDED when the
+        // deltas agree and a TYPED INSTRUMENT FAILURE when they do not.
+        for read in [&agreeing, &opposed, &equal, &tied] {
+            let mut out = String::new();
+            render_static(&mut out, Step10Band::Pf, read);
+            assert!(
+                !out.contains("*** MISS ***"),
+                "PF cannot MISS on the static line:\n{out}",
+            );
+        }
+        let mut recorded = String::new();
+        render_static(&mut recorded, Step10Band::Pf, &equal);
+        assert!(recorded.contains("RECORDED"), "{recorded}");
+        let mut refused = String::new();
+        render_static(&mut refused, Step10Band::Pf, &opposed);
+        assert!(refused.contains("TYPED INSTRUMENT FAILURE"), "{refused}");
+        // The recorded band still says MISS where the registration says miss.
+        let mut missed = String::new();
+        render_static(&mut missed, Step10Band::Ose, &opposed);
+        assert!(missed.contains("*** MISS *** PARITY DIVERGENCE"), "{missed}");
+    }
+
+    /// **THE ARTIFACT STATES THE ROOT'S POSITION** — the review's MUST-2.
+    ///
+    /// The born-validation pass is the evidence: it said `NotATurnStart` at
+    /// three licensed roots and nothing else, and recovering `phase=Placement ·
+    /// pending=0` — the facts R-S10-14 turns on — took a separately patched-in
+    /// diagnostic. A step-10 ledger row has to be writable from the artifact
+    /// alone.
+    #[test]
+    fn the_ordinal_block_prints_the_roots_phase_and_queue() {
+        let mut out = String::new();
+        render_ordinal(
+            &mut out,
+            &Step10Surface {
+                band: Step10Band::Ose,
+                mode: Step10Mode::Development,
+                decision_seed: 7,
+                with_control: false,
+                acknowledged: BTreeSet::new(),
+                burned: BTreeSet::new(),
+                knobs: shipped_controller_knobs().expect("knobs"),
+                echo: String::new(),
+                v2_echo: String::new(),
+                blocks: Vec::new(),
+                part_a: classify(Vec::new()),
+                signing_summary: Vec::new(),
+                signing_notes: Vec::new(),
+                signing_failures: Vec::new(),
+                verdict: None,
+            },
+            &OrdinalBlock {
+                ordinal: 111,
+                label: "ose-e111".to_string(),
+                origin: "constructed".to_string(),
+                detail: String::new(),
+                digest: "0123456789abcdef".to_string(),
+                anchor: "0123456789abcdef".to_string(),
+                seat: PlayerId(1),
+                phase: TurnPhase::Placement,
+                pending: 0,
+                mercenary: false,
+                burned: false,
+                body: OrdinalBody::Unviewable { reason: "synthetic".to_string() },
+            },
+        );
+        assert!(out.contains("position          Placement"), "the PHASE prints:\n{out}");
+        assert!(out.contains("0 pending choice(s)"), "the QUEUE prints:\n{out}");
+        assert!(out.contains("mercenary=false"), "the sub-turn flag prints:\n{out}");
+        // …and it sits IN THE IDENTITY BLOCK, between the mover and the read:
+        // a position line buried under the verdict is a line nobody reads when
+        // they are asking what position this is.
+        let mover = out.find("mover ").expect("the mover line");
+        let position = out.find("position ").expect("the position line");
+        let body = out.find("UNVIEWABLE").expect("the read");
+        assert!(mover < position, "position follows mover:\n{out}");
+        assert!(position < body, "position precedes the read:\n{out}");
+    }
+
+    /// **`divergent_rows` COMPARES PRODUCTION AGAINST THE PROBE AND NAMES THE
+    /// COLUMN** — the review's SHOULD-3.
+    ///
+    /// As landed it filtered the PROBE's own nonzero rows and never consulted
+    /// production, so in the one case that matters — the precedence-(0) delta
+    /// inequality — the artifact could not say which column disagreed, which is
+    /// the whole diagnostic value R-S10-3 names.
+    #[test]
+    fn divergent_rows_compares_production_against_the_probe_and_names_the_column() {
+        // ON REAL BYTES the two paths agree row for row, so there is nothing to
+        // report — and the production rows sum to production's own total, which
+        // is what makes them an attribution of the number the gate reads.
+        let rules = Rules::standard();
+        let (root, mover, _) = step10_fee_flow_fixture(&rules);
+        let pair = fee_flow_recipe_pair(&root, &rules).expect("Shape F");
+        let (plus_view, zero_view) =
+            step10_sides(&root, &pair.fee_side, &pair.free_side, mover, &rules);
+        let statics = read_static(
+            &plus_view,
+            &zero_view,
+            mover,
+            &WeightTable::V2,
+            NamedIdentity::V2Padded.name(),
+            &rules,
+        )
+        .expect("both successors are non-terminal");
+        assert!(
+            statics.divergent_rows().is_empty(),
+            "at 2P the two paths coincide row for row: {:?}",
+            statics.divergent_rows(),
+        );
+        assert_eq!(
+            statics.prod_rows_plus.iter().sum::<i64>(),
+            statics.prod_plus,
+            "production's rows sum to production's total",
+        );
+        assert_eq!(statics.prod_rows_zero.iter().sum::<i64>(), statics.prod_zero);
+        assert_eq!(
+            statics.probe.rows.iter().sum::<i64>(),
+            statics.probe.total,
+            "and the probe's do too",
+        );
+
+        // A PLANTED disagreement in ONE column is reported as that column, and
+        // as nothing else.
+        let mut planted = static_read_of((10, 0), (6, 0));
+        let slot = axis_slot(CandidateFeature::MoneyStock);
+        planted.prod_rows_plus[slot] = 10;
+        planted.probe.rows[slot] = 6;
+        let named = planted.divergent_rows();
+        assert_eq!(named, vec![("E1", 10, 6)], "the disagreeing column, named");
+
+        // A row where both paths carry the SAME nonzero contribution is not a
+        // disagreement — the old body reported exactly this as one.
+        let mut agreeing_row = static_read_of((10, 0), (10, 0));
+        agreeing_row.prod_rows_plus[slot] = 10;
+        agreeing_row.probe.rows[slot] = 10;
+        assert!(
+            agreeing_row.divergent_rows().is_empty(),
+            "a shared nonzero row is agreement, not divergence: {:?}",
+            agreeing_row.divergent_rows(),
+        );
+    }
+
+    /// **THE OWNER-DEMANDED WORST-CASE SENTENCE RIDES EVERY RECORDED-BAND BLOCK
+    /// LINE** — the review's SHOULD-4 — and the split line names the counts
+    /// once (NOTE-5).
+    #[test]
+    fn the_worst_case_sentence_rides_every_recorded_band_block_line() {
+        let split = BlockSplit { real: 2, vacuous: 4, miss: 2, ..BlockSplit::default() };
+        let verdicts = [
+            BlockVerdict::Pass(split),
+            BlockVerdict::Miss(split),
+            BlockVerdict::VoidAsBlock { substantive_capable: 3, split },
+        ];
+        for verdict in &verdicts {
+            let mut out = String::new();
+            render_block_verdict(&mut out, Step10Band::Ose, verdict);
+            assert!(
+                out.contains(STEP10_WORST_CASE),
+                "the recorded band's {verdict:?} carries the sentence VERBATIM:\n{out}",
+            );
+            // NOTE-5: the counts print once, without a verdict word in front of
+            // them — "PASS real=…" on a MISS line was a sentence that read
+            // wrong.
+            assert!(out.contains("real=2 vacuous=4 miss=2 void=0 burned=0"), "{out}");
+            assert!(!out.contains("split             PASS real="), "{out}");
+        }
+        // The PF band has no such sentence — its composition registers no floor
+        // and no vacuity, so quoting the recorded band's worst case there would
+        // be a sentence about another band.
+        for verdict in &verdicts {
+            let mut out = String::new();
+            render_block_verdict(&mut out, Step10Band::Pf, verdict);
+            assert!(!out.contains(STEP10_WORST_CASE), "{out}");
+        }
+    }
+
+    /// **THE POPULATION RENDERER REPORTS WHAT THE RECIPE REPORTS** — the
+    /// review's NOTE-4.
+    ///
+    /// `render_recipe_population` propagates the §6 recipe's INSTRUMENT arm and
+    /// prints every void as a typed reason; the Shape-F renderer swallowed
+    /// every error alike. The void half is reachable from data and asserted
+    /// here; the instrument half is unreachable while the engine's placement
+    /// pricing is the exact mirror the registration calls it, which is the same
+    /// posture `driven.rs` takes for the arm itself.
+    #[test]
+    fn the_fee_flow_population_renderer_propagates_what_the_recipe_reports() {
+        let rules = Rules::standard();
+        // A fresh 2P start: both Presidents in hand, so the recipe voids with a
+        // fact about the position and the renderer says which.
+        let fresh = suite_keep_game(2, 7, &rules).expect("a 2P setup");
+        let printed = render_fee_flow_population(&fresh, &rules)
+            .expect("a VOID is not an instrument failure");
+        assert!(printed.contains("no population"), "{printed}");
+        assert!(printed.contains("president is not on the board"), "{printed}");
+
+        // And a real population prints one line per candidate, priced.
+        let (root, ..) = step10_fee_flow_fixture(&rules);
+        let population = render_fee_flow_population(&root, &rules).expect("a live population");
+        let candidates =
+            classify_fee_flow_candidates(&root, &rules).expect("the classifier agrees");
+        assert_eq!(population.lines().count(), candidates.len());
+        assert!(population.contains("fee  1"), "the priced side is in the population:\n{population}");
+    }
+
     /// **THE PLACEMENT-DECISION READING, THROUGH THE WHOLE PIPELINE**
     /// (R-S10-14).
     ///
@@ -32214,6 +32592,9 @@ mod tests {
                     digest: state_digest(state),
                     anchor: state_digest(state),
                     seat: mover,
+                    phase: state.turn_phase,
+                    pending: state.pending_choices.len(),
+                    mercenary: state.is_mercenary_action,
                     burned: false,
                     body: OrdinalBody::Substantive(sub),
                 },
@@ -32320,6 +32701,9 @@ mod tests {
                 digest: root.digest.clone(),
                 anchor: root.anchor.clone(),
                 seat: mover,
+                phase: root.state.turn_phase,
+                pending: root.state.pending_choices.len(),
+                mercenary: root.state.is_mercenary_action,
                 burned: false,
                 body,
             }],
@@ -32428,6 +32812,9 @@ mod tests {
                 digest: M_PF_DEVELOPMENT_DIGESTS[0].to_string(),
                 anchor: M_PF_DEVELOPMENT_DIGESTS[0].to_string(),
                 seat: PlayerId(0),
+                phase: TurnPhase::AdditionalActionFirst,
+                pending: 0,
+                mercenary: false,
                 burned: false,
                 body: OrdinalBody::Unviewable { reason: "a synthetic block".to_string() },
             }],
