@@ -30,6 +30,7 @@
 //! through [`run_world`] rather than re-deriving the loop, so the two surfaces
 //! cannot disagree about who sat where.
 
+use super::NamedIdentity;
 use crate::types::Move;
 
 /// The label [`render_cap_rate`] leads with — registered VERBATIM in the
@@ -64,8 +65,18 @@ pub const PERIOD_REPETITIONS: usize = 4;
 /// areas are different moves and break the period, which is the intended
 /// reading: a loop that walks its assistants around is not the loop the wave is
 /// looking for.
-pub fn move_period(_moves: &[Move]) -> Option<usize> {
-    // PLACEHOLDER (RED): the detector's tests state the contract above.
+pub fn move_period(moves: &[Move]) -> Option<usize> {
+    for p in 1..=MAX_DETECTED_PERIOD {
+        let window = PERIOD_REPETITIONS * p;
+        if moves.len() < window {
+            // The window only grows with p, so nothing longer can fit either.
+            break;
+        }
+        let tail = &moves[moves.len() - window..];
+        if tail[p..].iter().zip(tail.iter()).all(|(later, earlier)| later == earlier) {
+            return Some(p);
+        }
+    }
     None
 }
 
@@ -76,7 +87,37 @@ pub fn move_period(_moves: &[Move]) -> Option<usize> {
 /// contract — above all the no-strength-figure rule — is a property of the code
 /// here, and help text that restates a property from another crate is help text
 /// free to go stale about it.
-pub const DIAGNOSTIC_USAGE: &str = "PLACEHOLDER";
+pub const DIAGNOSTIC_USAGE: &str =
+    "  DIAGNOSTIC SUBCOMMANDS (V4 step-11 diagnosis wave) -- 2P read surfaces. NEITHER
+  computes or prints a win share, a theta_hat, a seat-0 count, a VP margin or an
+  interval of any contestant's share: they exist to show what a CAPPED game was
+  doing and how often one happens, and a diagnostic that quietly produced a
+  comparable figure would sit inside every later reading of a counted run.
+
+  world <x> <y> <world-seed> [--arrangement 0|1|both] [--tail <K>]
+        [--invariants|--no-invariants]
+      Play ONE world seated EXACTLY as `cell` seats it -- same seatings table,
+      same agent stream keying -- so a cell's capped game reproduces byte-for-byte
+      from (seed, arrangement, x, y). <world-seed> parses like --master (0x hex or
+      decimal); it is a WORLD, not a master, and no schedule is drawn from it.
+      Prints, per arrangement: the seating and both echoes; the outcome (TERMINATED
+      with its trigger and final standings, or CAPPED at turn N); moves applied per
+      seat; the TAIL -- the last K turns' applied moves, one line each with turn,
+      mover and phase; a PERIOD line (the smallest p <= 64 whose block repeats four
+      times over the tail of applied moves, or none); and a compact END-STATE
+      summary. Defaults: --arrangement both, --tail 40.
+
+  caprate <x> <y> <units> [--master <u64> | --os-entropy]
+          [--invariants|--no-invariants]
+      Play <units> worlds from the master's schedule exactly as a cell would (both
+      arrangements per world) but COUNT capped games instead of refusing the cell
+      at the first one. Prints the cap count with a 95% Wilson interval, the list
+      of capped (seed, arrangement) pairs so each reproduces under `world`, the
+      end-trigger histogram over COMPLETED games and their mean/max turns. Any
+      other driver failure -- sampler refusal, illegal pick, driver bug -- still
+      REFUSES the whole run: only a turn cap is counted. Leads with the label
+      `DIAGNOSTIC — cap-rate instrument; no strength figure is computed here`.
+";
 
 /// The runner's `NAMED IDENTITIES` help section, BUILT FROM
 /// [`NamedIdentity::ALL`].
@@ -88,14 +129,62 @@ pub const DIAGNOSTIC_USAGE: &str = "PLACEHOLDER";
 /// unrepresentable — and the per-arm blurb below is an exhaustive match, so a
 /// fourth arm is a compile error rather than a silently undocumented name.
 pub fn named_identities_usage() -> String {
-    // PLACEHOLDER (RED).
-    String::new()
+    // NOTE: no `\` line-continuation at the opening quote — it would eat the
+    // two-space indent that puts this section at the same level as `RUNGS` and
+    // `EVALUATOR CONTESTANTS` in the runner's help.
+    let mut text = String::from(
+        "  NAMED IDENTITIES (V4 step 8) -- the one exception to the line above, and it is
+  an exception by NAME rather than by knob: a named identity is a distinct
+  contestant whose table is part of what its name means, never a `weights=` knob
+  on an arm above.
+",
+    );
+    for arm in NamedIdentity::ALL {
+        for (i, line) in blurb(arm).lines().enumerate() {
+            if i == 0 {
+                text.push_str(&format!("    {:<36} {line}\n", arm.name()));
+            } else {
+                text.push_str(&format!("    {:<36} {line}\n", ""));
+            }
+        }
+    }
+    text.push_str(
+        "      All are KNOBLESS: they run one transcribed knob set (b=4, k=1, m=8, uncapped)
+      so a cell pitting two of them against each other varies the TABLE and nothing
+      else. Their echoes carry the name and the resolved `weights=` identity. They
+      are ARENA arms: examples/eval_probe selects its table with --weights instead,
+      the driven harness refuses them, and they are not CLI bot seats.
+      Unknown contestant names, unknown knobs and unknown knob VALUES are errors.
+",
+    );
+    text
+}
+
+/// The per-arm help line(s). An EXHAUSTIVE match, which is the second half of
+/// [`named_identities_usage`]'s anti-staleness: the loop guarantees every arm is
+/// listed, and this guarantees a new arm cannot be listed with no description.
+fn blurb(arm: NamedIdentity) -> &'static str {
+    match arm {
+        NamedIdentity::V2Padded => {
+            "lookahead at the shipped knobs on WeightTable::V2\n\
+             (the shipped table, padded) -- the same seat\n\
+             `lookahead-v1` plays, said as an identity"
+        }
+        NamedIdentity::V2RefitPadded => {
+            "the §8 B-cell REFIT of the sixteen incumbents\n\
+             (no candidate column admitted); NOT a shipped table"
+        }
+        NamedIdentity::V4Step9Draft1 => {
+            "the V4 step-9 CANDIDATE, draft 1's table -- the first\n\
+             arm whose candidate slots are nonzero. NOT a shipped\n\
+             table; the wire name is proposed, not spec-registered"
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::game::arena::NamedIdentity;
 
     fn end() -> Move {
         Move::EndAdditionalPhase
@@ -157,14 +246,25 @@ mod tests {
         // A period of MAX_DETECTED_PERIOD + 1 is real but out of the wave's
         // declared range: the detector says `none` rather than growing its own
         // bound silently.
-        let block: Vec<Move> = (0..=MAX_DETECTED_PERIOD)
-            .map(|i| if i % 2 == 0 { end() } else { uni() })
-            .collect();
+        //
+        // THE BLOCK'S SHAPE IS THE TEST. `[end ×64, uni]` has no period below
+        // 65 in ANY tail window: every window ends on the lone `uni`, and
+        // `tail[4p-1-p]` is an `end` for every p in 1..=64 (the `uni`s sit 65
+        // apart, so a p-shift lands one on an `end` unless p is a multiple of
+        // 65). An alternating block would NOT do — its own tail is 2-periodic,
+        // and the cell would pass by measuring the wrong thing.
+        let mut block = vec![end(); MAX_DETECTED_PERIOD];
+        block.push(uni());
         assert_eq!(block.len(), MAX_DETECTED_PERIOD + 1);
         let mut moves = Vec::new();
         for _ in 0..PERIOD_REPETITIONS {
             moves.extend(block.iter().cloned());
         }
+        assert!(
+            moves.len() >= PERIOD_REPETITIONS * MAX_DETECTED_PERIOD,
+            "the sequence must be long enough for the largest window the detector tries, or \
+             the `none` is a length answer rather than a bound answer",
+        );
         assert_eq!(move_period(&moves), None);
     }
 

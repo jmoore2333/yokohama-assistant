@@ -76,12 +76,13 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use yokohama_core::{
-    corpus_path, emit_record, greedy, lookahead, mcts, run_cell_emitting_timed, run_raw_game,
-    trigger_name, ArenaError, CellReport, CellSpec, CellWall, Contestant, IntervalOutcome,
-    RolloutPolicy, Rules, SeedSchedule, SeedScheduleKind, TriggerTally, SEMANTICS_REV,
+    corpus_path, emit_record, greedy, lookahead, mcts, named_identities_usage,
+    run_cell_emitting_timed, run_raw_game, trigger_name, ArenaError, CellReport, CellSpec,
+    CellWall, Contestant, IntervalOutcome, RolloutPolicy, Rules, SeedSchedule, SeedScheduleKind,
+    TriggerTally, DIAGNOSTIC_USAGE, SEMANTICS_REV,
 };
 
-const USAGE: &str = "\
+const USAGE_HEAD: &str = "\
 usage: arena <subcommand> [options]
 
   cell <name> <players> <x> <y> <units> [--emit <dir>] [--invariants|--no-invariants]
@@ -130,23 +131,20 @@ contestants (<x> and <y>):
         hand-off (default) | midturn-diag | constant-diag.
       All four run the frozen evaluator weight table; a weight change is a version
       bump, not a cell knob.
-  NAMED IDENTITIES (V4 step 8) -- the one exception to the line above, and it is
-  an exception by NAME rather than by knob: a named identity is a distinct
-  contestant whose table is part of what its name means, never a `weights=` knob
-  on an arm above.
-    v2-padded                            lookahead at the shipped knobs on WeightTable::V2
-                                         (the shipped table, padded) -- the same seat
-                                         `lookahead-v1` plays, said as an identity
-    v2-refit-padded                      the same seat on the §8 B-cell REFIT of the sixteen
-                                         incumbents (no candidate column admitted); NOT a
-                                         shipped table
-      Both are KNOBLESS: they run one transcribed knob set (b=4, k=1, m=8, uncapped)
-      so a cell pitting them against each other varies the TABLE and nothing else.
-      Their echoes carry the name and the resolved `weights=` identity. They are
-      ARENA arms: examples/eval_probe selects its table with --weights instead, the
-      driven harness refuses them, and they are not CLI bot seats.
-      Unknown contestant names, unknown knobs and unknown knob VALUES are errors.
 ";
+
+/// The whole help text: the head above, then the two sections CORE owns.
+///
+/// The named-identity block moved into `arena::diagnostic` at the V4 step-11
+/// diagnosis wave because the hand-written copy had already gone stale — it
+/// listed two arms while `Contestant::from_str_name`'s own refusal listed three
+/// — and the diagnostic-subcommand block lives there because the no-strength-
+/// figure rule it states is a property of that code. Both are composed from the
+/// grammar's own `NamedIdentity::ALL` and pinned by core's tests, which is what
+/// keeps this runner print-only glue with no test target of its own.
+fn usage() -> String {
+    format!("{USAGE_HEAD}{}\n{DIAGNOSTIC_USAGE}", named_identities_usage())
+}
 
 /// Spec §0-R1's frozen uniform 4P ChurchTrackFull ceiling: 7/2000, Wilson-95
 /// upper 0.72% — E1 held-out master B `16045690984833335230`, N=2000, release,
@@ -161,7 +159,7 @@ fn main() {
         Some("cell") => cmd_cell(&args[1..]),
         Some("ab") => cmd_ab(&args[1..]),
         Some("throughput") => cmd_throughput(&args[1..]),
-        _ => Err(USAGE.to_string()),
+        _ => Err(usage()),
     };
     if let Err(message) = result {
         eprintln!("{message}");
@@ -194,7 +192,7 @@ fn split_args(
             if valued.contains(&name) {
                 let value = args
                     .get(i + 1)
-                    .ok_or_else(|| format!("--{name} needs a value\n\n{USAGE}"))?;
+                    .ok_or_else(|| format!("--{name} needs a value\n\n{}", usage()))?;
                 flags.insert(name.to_string(), value.clone());
                 i += 2;
                 continue;
@@ -204,7 +202,7 @@ fn split_args(
                 i += 1;
                 continue;
             }
-            return Err(format!("unknown flag --{name}\n\n{USAGE}"));
+            return Err(format!("unknown flag --{name}\n\n{}", usage()));
         }
         positional.push(arg.clone());
         i += 1;
@@ -443,7 +441,7 @@ fn cmd_cell(args: &[String]) -> Result<(), String> {
     let (positional, flags) =
         split_args(args, &["emit", "master"], &["os-entropy", "invariants", "no-invariants"])?;
     if positional.len() != 5 {
-        return Err(format!("cell takes 5 positional arguments\n\n{USAGE}"));
+        return Err(format!("cell takes 5 positional arguments\n\n{}", usage()));
     }
     let name = positional[0].clone();
     let players: u8 = positional[1].parse().map_err(|e| format!("<players>: {e}"))?;
@@ -539,7 +537,7 @@ fn cmd_ab(args: &[String]) -> Result<(), String> {
         &["os-entropy"],
     )?;
     if !positional.is_empty() {
-        return Err(format!("ab takes no positional arguments\n\n{USAGE}"));
+        return Err(format!("ab takes no positional arguments\n\n{}", usage()));
     }
     let units_2p: u32 = parse_flag(&flags, "units-2p", 400)?;
     let blocks_4p: u32 = parse_flag(&flags, "blocks-4p", 100)?;
@@ -679,7 +677,7 @@ fn parse_flag(flags: &BTreeMap<String, String>, name: &str, default: u32) -> Res
 fn cmd_throughput(args: &[String]) -> Result<(), String> {
     let (positional, flags) = split_args(args, &["games", "master"], &["os-entropy"])?;
     if !positional.is_empty() {
-        return Err(format!("throughput takes no positional arguments\n\n{USAGE}"));
+        return Err(format!("throughput takes no positional arguments\n\n{}", usage()));
     }
     let games: u32 = parse_flag(&flags, "games", 3)?;
     let master = master_from(&flags)?;
