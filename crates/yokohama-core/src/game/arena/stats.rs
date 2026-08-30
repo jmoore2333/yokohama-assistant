@@ -714,13 +714,18 @@ impl Contestant {
         let Some(policy) = RolloutPolicy::from_str_name(name) else {
             return Err(format!(
                 "unknown controller {name:?} (rungs: uniform | retreat-averse | family-weighted; \
-                 evaluator: {} | {} | {}; architecture: {}; named identities: {} | {})",
+                 evaluator: {} | {} | {}; architecture: {}; named identities: {})",
                 greedy::GREEDY_CONTROLLER,
                 lookahead::LOOKAHEAD_CONTROLLER,
                 lookahead::ATOMIC_DIAG_CONTROLLER,
                 mcts::MCTS_CONTROLLER,
-                NamedIdentity::V2Padded.name(),
-                NamedIdentity::V2RefitPadded.name(),
+                // Built FROM `NamedIdentity::ALL`, `super::grammar`'s rule at
+                // the same sentence. It listed two of the three by hand until
+                // 2026-08-30, and the one it omitted became the SHIPPED seat's
+                // own name that day: a resume refusal that could not name the
+                // contestant this driver plays is the worst version of this
+                // message there is.
+                NamedIdentity::ALL.map(NamedIdentity::name).join(" | "),
             ));
         };
         match policy {
