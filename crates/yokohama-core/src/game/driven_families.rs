@@ -1002,6 +1002,29 @@ impl CapLedger {
 /// every other refusal shape falls through to the block's own hard error. A
 /// harness that recognised its caps by their message would silently start
 /// counting a different failure the day the message moved.
+/// **THE READ-VOID FOLD** (§2.4 item 3, one rule with one name — review
+/// MUST-3): every voided subject replication is counted against the block's
+/// ONE ledger, at the read site, and the fold refuses past the ceiling exactly
+/// as an admission cap does. Extracted so the rule is pinnable without
+/// manufacturing a real subject-read cap, which no cheap block can produce.
+fn count_read_voids(
+    caps: &mut CapLedger,
+    ordinal: u32,
+    voids: &[VoidReplication],
+) -> Result<(), FamilyRunError> {
+    for void in voids {
+        caps.count(CappedPlayout {
+            site: CapSite::Read,
+            ordinal,
+            replication: void.replication,
+            seed: void.decision_seed,
+            turns: void.turns,
+            tail: void.tail.clone(),
+        })?;
+    }
+    Ok(())
+}
+
 fn capped_adjudication(
     error: &AdjudicationError,
     site: CapSite,
@@ -4007,6 +4030,9 @@ fn run_one_root(
             // splitting rules then run unchanged over the rest.
             let mut adjs: Vec<(ReplyPolicy, Option<Adjudication>)> =
                 Vec::with_capacity(decl.menu.len());
+            // The FIRST capped policy, in menu order — the owner's MUST-1
+            // ruling (close doc §2.5) makes it this root's exclusion below.
+            let mut capped_policy: Option<ReplyPolicy> = None;
             for &policy in decl.menu {
                 let hook = |root: &GameState, handoff: &GameState| {
                     predicate.eval(root, handoff, rules)
@@ -4026,6 +4052,7 @@ fn run_one_root(
                         match capped_adjudication(&error, site, ordinal, world) {
                             Some(cap) => {
                                 caps.count(cap)?;
+                                capped_policy.get_or_insert(policy);
                                 adjs.push((policy, None));
                             }
                             None => {
@@ -4042,19 +4069,34 @@ fn run_one_root(
             let slots: Vec<(ReplyPolicy, Option<&Adjudication>)> =
                 adjs.iter().map(|(policy, adj)| (*policy, adj.as_ref())).collect();
             let read = admission_over(&slots, opts.delta, opts.control);
-            let ok = read.admitted();
-            if !ok {
-                // The two exclusions are DIFFERENT findings (the freeze wave):
-                // too few policies produced a comparison at all, or the
-                // comparisons they produced did not dominate.
-                let splitting = read.splitting_count();
-                if splitting < MIN_SPLITTING_POLICIES {
-                    exclusion = ExclusionReason::TooFewSplitting {
-                        splitting,
-                        minimum: MIN_SPLITTING_POLICIES,
-                    };
+            // A CAPPED POLICY EXCLUDES THE ROOT — the decision grain's rule,
+            // now at BOTH grains (the owner's MUST-1 ruling, close doc §2.5):
+            // the frozen splitting rules still ran unchanged over the
+            // remaining rows (the table above prints them), but the root
+            // leaves the denominator under the cap's own name. Deciding from
+            // the surviving rows would let the identity's own defect widen
+            // admission — capping a would-be FAILS dissenter admits — and
+            // would silence `lookahead_sole_dissenter` on exactly the arm it
+            // watches; §2.4's leniency sentence is true BECAUSE of this arm.
+            let ok = if let Some(policy) = capped_policy {
+                exclusion = ExclusionReason::CappedAdmission { policy };
+                false
+            } else {
+                let ok = read.admitted();
+                if !ok {
+                    // The two exclusions are DIFFERENT findings (the freeze
+                    // wave): too few policies produced a comparison at all, or
+                    // the comparisons they produced did not dominate.
+                    let splitting = read.splitting_count();
+                    if splitting < MIN_SPLITTING_POLICIES {
+                        exclusion = ExclusionReason::TooFewSplitting {
+                            splitting,
+                            minimum: MIN_SPLITTING_POLICIES,
+                        };
+                    }
                 }
-            }
+                ok
+            };
             admission_read = Some(read);
             ok
         }
@@ -4114,16 +4156,7 @@ fn run_one_root(
     // instrument and knows neither the ordinal nor the block; the read is safe
     // to have run to completion first because a read-grain cap trips before any
     // decision and so costs nothing.
-    for void in &outcome.voids {
-        caps.count(CappedPlayout {
-            site: CapSite::Read,
-            ordinal,
-            replication: void.replication,
-            seed: void.decision_seed,
-            turns: void.turns,
-            tail: void.tail.clone(),
-        })?;
-    }
+    count_read_voids(caps, ordinal, &outcome.voids)?;
 
     match rule.grain() {
         ReadGrain::Turn => {
@@ -7409,23 +7442,25 @@ mod tests {
         let still = [dissented[0], dissented[1], (ReplyPolicy::RaceRusher, None), dissented[3]];
         assert!(!cap(&still).admitted(), "converting a bystander admitted a failed root");
 
-        // (d) THE ONE CASE THAT WIDENS, RECORDED RATHER THAN HIDDEN.
-        //     §2.3's rationale sentence reads "one fewer potential splitting
-        //     policy ... can only make admission HARDER, never easier". That is
-        //     true of the splitting FLOOR, which is the mechanism the sentence
-        //     is about — and it is NOT true of the veto: converting the FAILING
-        //     policy itself removes the dissent, and the frozen rules (which
-        //     §2.4 item 2 requires to run UNCHANGED over the remaining rows)
-        //     then admit. The counterfactual is unknowable by construction — a
-        //     capped policy produced no measurement, so nothing can say it
-        //     "would have failed" — which is why this is recorded as a fact
-        //     about the mapping rather than repaired behind the owner's text.
+        // (d) THE ONE ARITHMETIC CASE THAT WOULD WIDEN — FENCED AT THE RUN
+        //     (review MUST-1, owner-ruled): converting the FAILING policy
+        //     itself removes the dissent, and `admission_over`'s frozen rules
+        //     over the remaining rows then read admitted — the arithmetic
+        //     below still shows it, deliberately, because the frozen rules
+        //     themselves did not move. What makes §2.4's leniency sentence
+        //     TRUE is the run-level rule this cell points at: `run_one_root`
+        //     EXCLUDES any root with a counted cap (typed
+        //     `CappedAdmission`, both grains), so this arithmetic reading is
+        //     unreachable through any block — pinned by
+        //     `a_block_whose_admission_caps_completes_with_the_rows_recorded_and_the_caps_counted`'s
+        //     exclusion assertion.
         let dissenter_capped =
             [dissented[0], dissented[1], dissented[2], (ReplyPolicy::LookaheadAtFinal, None)];
         assert!(
             cap(&dissenter_capped).admitted(),
-            "capping the sole dissenter is the one conversion that widens admission — if this \
-             ever stops holding, the mapping changed and §2.4 item 2 must be re-read",
+            "the ARITHMETIC still widens when the sole dissenter is capped — that is the fact \
+             the run-level CappedAdmission exclusion exists to fence; if this stops holding, \
+             the frozen splitting rules themselves moved",
         );
     }
 
@@ -7443,7 +7478,7 @@ mod tests {
             turns: 3,
             tail: None,
         };
-        let mut caps = CapLedger::default();
+        let mut caps = CapLedger::new(COUNTED_CAP_CEILING);
         count_read_voids(&mut caps, 7, &[void(0), void(1)])
             .expect("two voids are below the ceiling");
         assert_eq!(caps.counted().len(), 2, "every void must be counted");
@@ -7455,7 +7490,7 @@ mod tests {
             caps.counted(),
         );
         // ... and the fold refuses past the ceiling like any other cap.
-        let mut full = CapLedger::default();
+        let mut full = CapLedger::new(COUNTED_CAP_CEILING);
         let err = count_read_voids(&mut full, 9, &[void(0), void(1), void(2), void(3)])
             .expect_err("the fourth counted void must refuse");
         assert!(

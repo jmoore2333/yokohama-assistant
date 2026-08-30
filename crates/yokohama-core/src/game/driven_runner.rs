@@ -2142,14 +2142,17 @@ fn capped_lines(capped: &[CappedPlayout]) -> Vec<String> {
     let mut lines = vec![
         String::new(),
         "  capped playouts (COUNTED, non-gating — a replication reached the honest turn cap; the \
-         (root x policy) admission row it belongs to reads CANNOT, the frozen splitting rules ran \
-         unchanged over the rest, and the block refuses only past the registered ceiling):"
+         (root x policy) admission row it belongs to reads CANNOT, the ROOT LEAVES THE \
+         DENOMINATOR as a typed CAPPED-ADMISSION exclusion, and the block refuses only past the \
+         registered ceiling):"
             .to_string(),
     ];
     for cap in capped {
+        // The policy column reads `CapSite::as_str` — the ONE spelling of a
+        // site's column name (review S-2); the grain token stays its own word.
         let (grain, policy) = match cap.site {
-            CapSite::Admission { policy } => ("admission", policy.as_str()),
-            CapSite::Read => ("read", "-"),
+            CapSite::Admission { .. } => ("admission", cap.site.as_str()),
+            CapSite::Read => ("read", cap.site.as_str()),
         };
         lines.push(format!(
             "    ordinal {}   grain {grain:<9}   policy {policy:<18}   replication {}   \
@@ -5927,7 +5930,7 @@ mod tests {
         );
         assert!(
             rendered.contains(
-                "    ordinal 41   grain read        policy -                    replication 5   \
+                "    ordinal 41   grain read        policy subject-read         replication 5   \
                  seed 0x0fedcba987654321   turn 10001"
             ),
             "the read-grain void's identity line is missing or moved:\n{rendered}",
