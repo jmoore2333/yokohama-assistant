@@ -1484,6 +1484,13 @@ pub(crate) fn run_cell_loop(
     };
 
     let players = spec.players;
+    // The registered ceiling, read off the policy ONCE: it is both a report
+    // field and the echo's token, and deriving it twice is two places to
+    // disagree about which mode a printed figure was measured in.
+    let capped_ceiling = match policy {
+        CapPolicy::Refuse => None,
+        CapPolicy::Count { ceiling } => Some(ceiling),
+    };
     let mut x_unit_shares: Vec<f64> = Vec::with_capacity(spec.units as usize);
     let mut games = 0u32;
     let mut x_game_wins = 0u32;
@@ -1690,7 +1697,7 @@ pub(crate) fn run_cell_loop(
 
     Ok((
         CellReport {
-            spec_echo: spec_echo(spec, master, resample_seed),
+            spec_echo: spec_echo(spec, master, resample_seed, capped_ceiling),
             games,
             x_unit_shares,
             theta_hat,
@@ -1714,9 +1721,9 @@ pub(crate) fn run_cell_loop(
             y_budget_starved_decisions: y_meters.starved,
             trigger,
             master,
-            capped_ceiling: None,
+            capped_ceiling,
             units_scheduled: spec.units,
-            units_void: 0,
+            units_void: spec.units - x_unit_shares_len,
             units_read: x_unit_shares_len,
             capped: Vec::new(),
         },
@@ -1885,7 +1892,12 @@ fn student_t_975(df: u64) -> f64 {
             / (92160.0 * v.powi(4))
 }
 
-fn spec_echo(spec: &CellSpec, master: u64, resample_seed: u64) -> String {
+fn spec_echo(
+    spec: &CellSpec,
+    master: u64,
+    resample_seed: u64,
+    capped_ceiling: Option<u32>,
+) -> String {
     let unit_shape = if spec.players == 2 {
         "pair (2 seatings)".to_string()
     } else {
@@ -1910,11 +1922,20 @@ fn spec_echo(spec: &CellSpec, master: u64, resample_seed: u64) -> String {
     // a colon spelling would not have disturbed. The `key=value` spelling is
     // kept for consistency, not necessity. Recorded formatting deviation.
     let setup_identical = if spec.x.keep_kind() == spec.y.keep_kind() { "yes" } else { "no" };
+    // A-S11-1's ONE trailing token, and only in COUNTING mode: an absent
+    // `--capped-ceiling` emits no token at all, exactly as an absent `cap` knob
+    // emits none on `lookahead-v1` (freeze doc §9.6). TRAILING, so a counting
+    // echo is the refuse-mode echo plus a suffix — a property a test can state
+    // in one line, rather than a second echo format to keep in step.
+    let capped_ceiling = match capped_ceiling {
+        Some(ceiling) => format!(" capped-ceiling={ceiling}"),
+        None => String::new(),
+    };
     format!(
         "cell={} players={} x={} y={} units={} unit={} games={} \
          master={master_kind}:{master:#018x} bootstrap_B={BOOTSTRAP_REPLICATES} \
          resample_seed={resample_seed:#018x} single-threaded=yes fixed-N=yes \
-         setup-identical={setup_identical}",
+         setup-identical={setup_identical}{capped_ceiling}",
         spec.name,
         spec.players,
         // [`Contestant::echo`], the one composer — public since W5 so the CLI
@@ -2328,7 +2349,7 @@ mod tests {
             units: 100,
             master: SeedScheduleKind::Diagnostic(MASTER),
         };
-        let echo = spec_echo(&spec, MASTER, 0xDEAD_BEEF);
+        let echo = spec_echo(&spec, MASTER, 0xDEAD_BEEF, None);
 
         assert!(echo.contains("cell=fw-knob-edge players=4"), "{echo}");
         assert!(echo.contains("units=100"), "{echo}");
@@ -2669,6 +2690,7 @@ mod tests {
             },
             MASTER,
             0,
+            None,
         );
         assert!(echo.contains("setup-identical=yes"), "{echo}");
         assert!(echo.contains(&format!("x={MCTS_CONTROLLER}@v{MCTS_IMPL_VERSION}{{")), "{echo}");
@@ -2907,6 +2929,7 @@ mod tests {
             },
             MASTER,
             0,
+            None,
         );
         assert!(
             echo.contains(&format!("x={}", Contestant::LOOKAHEAD_V1_DEFAULT.echo())),
@@ -2931,11 +2954,11 @@ mod tests {
             units: 4,
             master: SeedScheduleKind::Diagnostic(MASTER),
         };
-        let echo = spec_echo(&homogeneous, MASTER, 0);
+        let echo = spec_echo(&homogeneous, MASTER, 0, None);
         assert!(echo.contains("setup-identical=yes"), "{echo}");
 
         let mixed = CellSpec { x: Contestant::GREEDY_V1_DEFAULT, ..homogeneous.clone() };
-        let echo = spec_echo(&mixed, MASTER, 0);
+        let echo = spec_echo(&mixed, MASTER, 0, None);
         assert!(echo.contains("setup-identical=no"), "{echo}");
     }
 
