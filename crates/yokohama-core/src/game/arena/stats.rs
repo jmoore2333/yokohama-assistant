@@ -4070,13 +4070,20 @@ mod tests {
     /// A cell of two RUNGS at [`W_A1_MASTER`] — cheap enough to play whole 2P
     /// games in the per-edit tier, which every cell below does.
     fn w_a1_spec(name: &str, units: u32) -> CellSpec {
+        w_a1_spec_at(name, W_A1_MASTER, units)
+    }
+
+    /// [`w_a1_spec`] at a stated master — the wave ships two fixtures on two
+    /// masters, and the CONTESTANTS are the same pair in both so the two differ
+    /// only in the schedule they draw.
+    fn w_a1_spec_at(name: &str, master: u64, units: u32) -> CellSpec {
         CellSpec {
             name: name.to_string(),
             players: 2,
             x: Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT),
             y: Contestant::Policy(RolloutPolicy::RetreatAverse),
             units,
-            master: SeedScheduleKind::Diagnostic(W_A1_MASTER),
+            master: SeedScheduleKind::Diagnostic(master),
         }
     }
 
@@ -4099,6 +4106,60 @@ mod tests {
     /// record their probed seeds, and asserted below rather than trusted.
     const W_A1_MIXED_CAPPED: [(usize, u8); 2] = [(1, 1), (3, 1)];
 
+    /// **THE TIE FIXTURE** — a second master, added by the fix wave for review
+    /// S1: the wave's first fixture reads ZERO for both tie counters, so every
+    /// assertion about them compared 0 with 0 and a mutant that leaked
+    /// `top_vp_ties`/`ties_to_seat0` out of a void unit survived the suite.
+    ///
+    /// FOUND BY A BOUNDED SEARCH, recorded so it is reproducible: 20 masters
+    /// `0x0B01_2026_0830_A101..=A114` × 40 units of [`w_a1_spec_at`], every game
+    /// played to the shipped guard through `diagnostic::run_world_capped` and
+    /// scored for `standings[0].total == standings[1].total`. 27 shared-top
+    /// games in 1,600 (1.7%, the repo's own ~1.26% figure at this size), ALL of
+    /// them decided for seat 0 — which is `cross_checks`'s "at 2P seat 0 takes
+    /// every tie", measured. This master is the one shape in that search
+    /// carrying a shared top total on BOTH sides of the void/read line.
+    ///
+    /// At `A10D`, 19 units, guard 94, the 38 scheduled games end naturally at
+    /// `[114,40] [168,58] [118,58] [94,100] [58,98] [38,154] [94,80] [82,86]
+    /// [58,106] [76,84] [80,228] [148,134] [84,110] [138,140] [68,72]
+    /// [102,134] [82,88] [178,152] [66,48]` (unit 0 first, arrangement 0
+    /// first). Seventeen pass the guard, leaving 13 void units and 6 read
+    /// (units 6, 7, 9, 14, 16, 18):
+    ///
+    ///   * **unit 3 arrangement 0** completes at 94 turns with a SHARED top VP
+    ///     total, and its sibling caps at 100 — so the tie sits INSIDE a void
+    ///     unit and must not reach either counter;
+    ///   * **unit 18 arrangement 1** completes at 48 turns with a shared top
+    ///     total in a READ unit — so the healthy report reads ONE, not zero,
+    ///     and a mutation that DROPPED a read unit's tie is caught too.
+    const W_A1_TIE_MASTER: u64 = 0x0B01_2026_0830_A10D;
+    const W_A1_TIE_UNITS: u32 = 19;
+    const W_A1_TIE_MAX_TURNS: u32 = 94;
+    /// Every capped game of the tie fixture, `(unit index, arrangement)`, in
+    /// schedule order.
+    const W_A1_TIE_CAPPED: [(usize, u8); 17] = [
+        (0, 0),
+        (1, 0),
+        (2, 0),
+        (3, 1),
+        (4, 1),
+        (5, 1),
+        (8, 1),
+        (10, 1),
+        (11, 0),
+        (11, 1),
+        (12, 1),
+        (13, 0),
+        (13, 1),
+        (15, 0),
+        (15, 1),
+        (17, 0),
+        (17, 1),
+    ];
+    /// The completed game of a VOID unit whose top VP total was SHARED.
+    const W_A1_TIE_IN_A_VOID_UNIT: (usize, u8) = (3, 0);
+
     /// The greedy fixture: three units at the same master and the same guard,
     /// where unit 0's FIRST game caps and its second COMPLETES — the mirror of
     /// the rung fixture's shape, and the one that proves a void unit's other
@@ -4110,7 +4171,12 @@ mod tests {
     /// schedule change must fail here rather than leave a stale literal that
     /// still passes.
     fn w_a1_scheduled_seeds(units: u32) -> Vec<WorldSeed> {
-        let mut schedule = SeedSchedule::diagnostic(W_A1_MASTER);
+        w_a1_scheduled_seeds_at(W_A1_MASTER, units)
+    }
+
+    /// [`w_a1_scheduled_seeds`] at a stated master.
+    fn w_a1_scheduled_seeds_at(master: u64, units: u32) -> Vec<WorldSeed> {
+        let mut schedule = SeedSchedule::diagnostic(master);
         (0..units).map(|_| schedule.next_world()).collect()
     }
 
@@ -4567,7 +4633,139 @@ mod tests {
         }
     }
 
-    /// **The explanation identity stays TOTAL over a capped game.** Spec
+    /// **THE TIE COUNTERS' void-exclusion, MEASURED** (fix wave, review S1).
+    ///
+    /// `top_vp_ties` and `ties_to_seat0` are the two buffered outcome
+    /// quantities the wave's first fixture could not cover: they read ZERO
+    /// there, so every assertion about them compared 0 with 0 and a mutant
+    /// leaking them out of a void unit survived the whole suite. This cell runs
+    /// the TIE FIXTURE, where a shared top VP total sits on BOTH sides of the
+    /// void/read line, and asserts both counters against an independent fold
+    /// over the READ units alone.
+    ///
+    /// `top_vp_ties` is not a [`CellReport`] field — it reaches a reader only
+    /// through the `cross_checks` top-VP row — so that row is asserted by its
+    /// printed text, which is the surface a reader actually quotes.
+    ///
+    /// MUTATION-PROVEN, and recorded because the cell's healthy values are
+    /// small: with the review's probe (g) applied — `top_vp_ties` and
+    /// `ties_to_seat0` folded in the void `continue` instead of dropped — this
+    /// cell FAILS (`ties_to_seat0` reads 2 where the read-unit fold says 1) and
+    /// the whole rest of the suite still passes.
+    #[test]
+    fn a_void_units_shared_top_vp_total_reaches_neither_tie_counter() {
+        use crate::game::arena::diagnostic::{run_world_capped, WorldSpec};
+
+        let rules = Rules::standard();
+        let spec = w_a1_spec_at("w-a1-tie", W_A1_TIE_MASTER, W_A1_TIE_UNITS);
+        let (report, _wall) = run_cell_loop(
+            &spec,
+            &rules,
+            true,
+            CapPolicy::Count { ceiling: W_A1_TIE_CAPPED.len() as u32 },
+            W_A1_TIE_MAX_TURNS,
+            &mut |_stats, _arr| Ok(()),
+        )
+        .expect("at its own ceiling the cell completes");
+
+        let seeds = w_a1_scheduled_seeds_at(W_A1_TIE_MASTER, spec.units);
+        let expected: Vec<CappedGame> = W_A1_TIE_CAPPED
+            .iter()
+            .map(|&(unit, arrangement)| CappedGame {
+                seed: seeds[unit],
+                arrangement,
+                turns: W_A1_TIE_MAX_TURNS + 1,
+            })
+            .collect();
+        assert_eq!(report.capped, expected, "the fixture's recorded capped set");
+
+        let void: std::collections::BTreeSet<usize> =
+            W_A1_TIE_CAPPED.iter().map(|&(unit, _)| unit).collect();
+        assert_eq!(report.units_void, void.len() as u32);
+        assert_eq!(report.units_read, spec.units - void.len() as u32);
+
+        // THE INDEPENDENT FOLD, over the READ units alone — the units the
+        // recorded capped set does not name.
+        let mut read_top_vp_ties = 0u32;
+        let mut read_ties_to_seat0 = 0u32;
+        for (unit, &seed) in seeds.iter().enumerate() {
+            if void.contains(&unit) {
+                continue;
+            }
+            for arrangement in 0..spec.players {
+                let run = run_world_capped(
+                    &WorldSpec { x: spec.x, y: spec.y, seed, players: spec.players, arrangement },
+                    &rules,
+                    true,
+                    W_A1_TIE_MAX_TURNS,
+                )
+                .expect("the world plays");
+                let DiagnosticOutcome::Terminated(stats) = run.game.outcome else {
+                    panic!("unit {unit} arrangement {arrangement} is a READ unit's game");
+                };
+                let standings = &stats.result.standings;
+                if standings.len() >= 2
+                    && standings[0].breakdown.total == standings[1].breakdown.total
+                {
+                    read_top_vp_ties += 1;
+                    if stats.result.winner == PlayerId(0) {
+                        read_ties_to_seat0 += 1;
+                    }
+                }
+            }
+        }
+
+        // ANTI-VACUITY: the whole point of this fixture is that these are NOT
+        // zero, so the equalities below compare something.
+        assert!(
+            read_top_vp_ties > 0 && read_ties_to_seat0 > 0,
+            "the tie fixture must carry a shared top VP total in a READ unit \
+             (top_vp_ties {read_top_vp_ties}, ties_to_seat0 {read_ties_to_seat0})",
+        );
+
+        assert_eq!(report.ties_to_seat0, read_ties_to_seat0, "ties decided for seat 0");
+        let rows = report.cross_checks.join("\n");
+        assert!(
+            rows.contains(&format!("top-VP ties: {read_top_vp_ties}/{} games", report.games)),
+            "the top-VP row reads over the READ units: {rows}",
+        );
+        assert!(
+            rows.contains(&format!(", {read_ties_to_seat0} decided for seat 0")),
+            "{rows}",
+        );
+
+        // THE EXCLUSION ITSELF: a VOID unit's completed game had a shared top VP
+        // total too. Replaying it is what turns "the counters happen to agree"
+        // into "a tie was dropped BECAUSE its unit was void" — without this the
+        // cell would pass on a fixture where no void unit ever tied.
+        let (void_unit, void_arrangement) = W_A1_TIE_IN_A_VOID_UNIT;
+        assert!(void.contains(&void_unit), "the named unit must be VOID");
+        let run = run_world_capped(
+            &WorldSpec {
+                x: spec.x,
+                y: spec.y,
+                seed: seeds[void_unit],
+                players: spec.players,
+                arrangement: void_arrangement,
+            },
+            &rules,
+            true,
+            W_A1_TIE_MAX_TURNS,
+        )
+        .expect("the world plays");
+        let DiagnosticOutcome::Terminated(stats) = run.game.outcome else {
+            panic!("the void unit's OTHER game is the one that caps");
+        };
+        let standings = &stats.result.standings;
+        assert!(
+            standings.len() >= 2 && standings[0].breakdown.total == standings[1].breakdown.total,
+            "the void unit's completed game must SHARE its top VP total — that is the \
+             fixture's whole content",
+        );
+        assert_eq!(stats.result.winner, PlayerId(0), "and be decided for seat 0");
+    }
+
+    /// **The explanation identity stays TOTAL over a capped game.**    /// **The explanation identity stays TOTAL over a capped game.** Spec
     /// §0.3(b)'s `x_explanations == Some(x_applied_moves)` is a claim about
     /// every move X played, and a capped game's moves are moves X played.
     ///
