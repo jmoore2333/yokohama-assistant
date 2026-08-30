@@ -3719,4 +3719,118 @@ mod tests {
             assert!(message.contains("knobless"), "{}: {message}", arm.name());
         }
     }
+
+    // -----------------------------------------------------------------------
+    // W-A1 — the void-unit instrument (V4 step 11, amendment A-S11-1; the
+    // operational definitions are freeze doc
+    // `docs/plans/2026-08-30-phase3.5c-v4-identity-freeze.md` §9.6, registered
+    // before this code existed).
+    // -----------------------------------------------------------------------
+
+    /// W-A1's OWN committed diagnostic master. The constructor's NAME is the
+    /// waiver (`game::seeds`): these cells assert, and an OS-entropy master
+    /// would flake by construction.
+    ///
+    /// A FRESH literal, deliberately none of the step-11 masters that carry a
+    /// read: not the registered `0x0B0120260831990{1..5}` of the D2 cap-rate
+    /// wave, not the `999{7,8,9}` scratch masters the freeze doc already spent,
+    /// and not `arena::diagnostic`'s own `0x0B0120260831_9999`. A test that
+    /// played a registered schedule would consume a read the orchestrator has
+    /// not taken.
+    const W_A1_MASTER: u64 = 0x0B01_2026_0830_A1A1;
+
+    /// A cell of two RUNGS at [`W_A1_MASTER`] — cheap enough to play whole 2P
+    /// games in the per-edit tier, which every cell below does.
+    fn w_a1_spec(name: &str, units: u32) -> CellSpec {
+        CellSpec {
+            name: name.to_string(),
+            players: 2,
+            x: Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT),
+            y: Contestant::Policy(RolloutPolicy::RetreatAverse),
+            units,
+            master: SeedScheduleKind::Diagnostic(W_A1_MASTER),
+        }
+    }
+
+    /// The turn guard at which EVERY game of a one-unit [`w_a1_spec`] caps —
+    /// the all-void shape. (Measured: unit 0's two games end naturally at turns
+    /// 128 and 104.)
+    const W_A1_ALL_VOID_MAX_TURNS: u32 = 50;
+
+    /// **Pin (i), the construction half made a test.** Every existing entry
+    /// point reaches ONE loop at `CapPolicy::Refuse` and `HONEST_MAX_TURNS`, so
+    /// a report produced through the OLD public entry point and one produced
+    /// through the parameterized loop are the SAME report — serialized-equal,
+    /// which covers the unit vector, the interval, the drawn resample seed, the
+    /// tie accounting and every counter at once.
+    ///
+    /// The void fields' refuse-mode values are pinned here too, and the echo is
+    /// pinned NEGATIVELY: an absent `--capped-ceiling` emits no token at all
+    /// (the `cap`-knob precedent, freeze doc §9.6).
+    #[test]
+    fn refuse_mode_reaches_the_same_report_through_the_parameterized_loop() {
+        let rules = Rules::standard();
+        let spec = w_a1_spec("w-a1-refuse-inert", 3);
+
+        let old = run_cell(&spec, &rules).expect("a rung cell completes");
+        let (looped, _wall) = run_cell_loop(
+            &spec,
+            &rules,
+            true,
+            CapPolicy::Refuse,
+            HONEST_MAX_TURNS,
+            &mut |_stats, _arr| Ok(()),
+        )
+        .expect("the same cell through the parameterized loop");
+
+        assert_eq!(
+            serde_json::to_string(&old).unwrap(),
+            serde_json::to_string(&looped).unwrap(),
+            "the old entry point and the parameterized loop are the same loop",
+        );
+
+        assert_eq!(old.capped_ceiling, None, "refuse mode registers no ceiling");
+        assert_eq!(old.units_scheduled, spec.units);
+        assert_eq!(old.units_void, 0, "no unit can be void in refuse mode");
+        assert_eq!(old.units_read, spec.units);
+        assert_eq!(old.units_read as usize, old.x_unit_shares.len());
+        assert!(old.capped.is_empty(), "refuse mode counts no capped game");
+        assert_eq!(old.games, spec.units * u32::from(spec.players));
+        assert!(
+            !old.spec_echo.contains("capped-ceiling"),
+            "an absent ceiling emits NO token at all: {}",
+            old.spec_echo,
+        );
+    }
+
+    /// **Pin (i), the refusal half.** Refuse mode is not merely the default: a
+    /// cell that caps under it still fails whole, through the SAME
+    /// [`ArenaError::CapReached`] whose operator-facing message the V4 step-11
+    /// record quotes verbatim.
+    #[test]
+    fn a_refuse_mode_cell_that_caps_still_refuses_with_cap_reached() {
+        let rules = Rules::standard();
+        let spec = w_a1_spec("w-a1-refuse-caps", 1);
+
+        let err = run_cell_loop(
+            &spec,
+            &rules,
+            true,
+            CapPolicy::Refuse,
+            W_A1_ALL_VOID_MAX_TURNS,
+            &mut |_stats, _arr| Ok(()),
+        )
+        .expect_err("a 50-turn guard cannot contain this cell's games");
+
+        let (seed, turns) = match err {
+            ArenaError::CapReached { seed, turns } => (seed, turns),
+            other => panic!("refuse mode must still refuse through CapReached, got {other:?}"),
+        };
+        assert_eq!(turns, W_A1_ALL_VOID_MAX_TURNS + 1, "the cap fires one past the guard");
+        assert_eq!(
+            ArenaError::CapReached { seed, turns }.to_string(),
+            format!("turn cap reached at turn {turns} (world seed {:#018x})", seed.0),
+            "the message every cell, artifact and ledger row already quotes",
+        );
+    }
 }
