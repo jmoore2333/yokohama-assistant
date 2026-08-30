@@ -33706,4 +33706,40 @@ mod tests {
             );
         }
     }
+
+    /// **W-D2 review N1 — a clause that moves no number says so.**
+    ///
+    /// `is_mutant()` reads the DECLARATION rather than the digest, which
+    /// over-labels and never under-labels — the safe direction, and the reason
+    /// the rule stands. But it makes `MUTANT` beside a LOCKED digest a
+    /// legitimate line, and a reader checking whether the table actually moved
+    /// would have to know all three locked literals by heart to tell. The marker
+    /// says it instead. The registered R-D1-b (ii) spelling is unaffected: on
+    /// `v4-step9-draft1` hEXC is `(5, 8)`, so `5/2` moves it.
+    #[test]
+    fn a_clause_that_moves_no_number_is_marked_digest_unchanged() {
+        // `WeightTable::V2` already holds `(5, 2)` at this feature, so the
+        // registered spelling applied to `v2-padded` is a numerical no-op.
+        let vacuous =
+            WorldSideSpec::parse("v2-padded:set=assistants_in_hand_excess=5/2").expect("vacuous");
+        assert!(vacuous.is_mutant(), "the DECLARATION is what makes it a mutant");
+        assert_eq!(
+            vacuous.identity(),
+            weight_table_identity(&NamedIdentity::V2Padded.table()),
+            "the fixture is only meaningful if the clause really is a no-op",
+        );
+        let line = vacuous.header_line("X");
+        assert!(line.contains("MUTANT (digest unchanged)"), "{line}");
+
+        // A clause that DOES move the numbers keeps the bare marker.
+        let real = WorldSideSpec::parse("v4-step9-draft1:set=assistants_in_hand_excess=5/2")
+            .expect("real");
+        let line = real.header_line("Y");
+        assert!(line.contains("MUTANT"), "{line}");
+        assert!(!line.contains("digest unchanged"), "{line}");
+
+        // An unmutated side carries no marker at all.
+        let plain = WorldSideSpec::parse("v2-padded").expect("plain");
+        assert!(!plain.header_line("X").contains("MUTANT"), "{}", plain.header_line("X"));
+    }
 }
