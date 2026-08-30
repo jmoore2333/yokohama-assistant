@@ -99,14 +99,23 @@ pub const GEN_PREFIX: &str = "gen:";
 
 /// The blocks `family --block` accepts, in declaration order.
 ///
-/// **THERE ARE TWO AND THERE IS NO THIRD.** Escrow ordinals live in the FREEZE
-/// DOCUMENT and deliberately not in code (design §2's escrow hygiene), so no
-/// command can burn one by accident — `--block escrow` is exactly as unknown as
-/// any other typo, and this array is what makes that a property rather than an
-/// omission. The `gen:` escape hatch technically REACHES an escrow ordinal;
-/// that protection is procedural (the runs report's commands-as-record), and
-/// saying so out loud is the design's own instruction.
-pub const BLOCK_NAMES: [&str; 2] = ["pilot", "confirmatory"];
+/// **THERE ARE THREE, AND THE THIRD IS A RELEASE.** The first two were the
+/// whole vocabulary until 2026-08-30, when V4 step 12 RELEASED the post-fix
+/// re-read tier of three named arms as `regression` (close doc §1.4). That is
+/// the families design's own procedure and not a hole in it (design §2:
+/// escrow ordinals live in the freeze DOCUMENT, and *"releasing escrow is a
+/// doc-plus-code change with its own commit"*) — the release names three arms,
+/// carries its own commit, and leaves every other escrowed ordinal exactly
+/// where it was.
+///
+/// **What is STILL unnameable**: the final-controller tier, the three unnamed
+/// post-fix arms, and family 1's own tier. `--block escrow` is exactly as
+/// unknown as any other typo, and this array is what makes that a property
+/// rather than an omission. The `gen:` escape hatch technically REACHES an
+/// escrowed ordinal; that protection is procedural (the runs report's
+/// commands-as-record), and saying so out loud is the design's own
+/// instruction.
+pub const BLOCK_NAMES: [&str; 3] = ["pilot", "confirmatory", "regression"];
 
 /// The arms `family --arm` accepts, in declaration order.
 pub const ARM_NAMES: [&str; 2] = ["positive", "control"];
@@ -308,6 +317,7 @@ usage: driven <subcommand> [options]
 
   family <id> --block pilot --master <u64> [--arm positive|control]
   family <id> --block confirmatory [--arm positive|control]
+  family <id> --block regression [--arm positive|control]
       Run ONE declared block of ONE frozen family and print its report: the
       label FIRST, D7's step-one counter check SECOND, then the per-policy
       admission table, the per-root replication lines (each carrying its own
@@ -328,6 +338,21 @@ usage: driven <subcommand> [options]
                              committed identity, and a typo must not be able to
                              run a plausible-looking non-frozen block. An arm
                              carrying no baked block refuses BY NAME.
+      --block regression     the RELEASED post-fix escrow of the family freeze
+                             §4 -- ordinals 36..42, disjoint from every tier
+                             already read -- released 2026-08-30 for V4 step
+                             12's regression re-read at the shipped production
+                             contestant (close doc §1.4). Releasing escrow is a
+                             doc-plus-code change with its own commit, which is
+                             what that release was. ONLY THREE ARMS CARRY ONE:
+                             end-trigger positive (the timidity guard),
+                             exclusive-race control (no-denial), achievement
+                             positive (the claim path). Every OTHER arm refuses
+                             BY NAME -- the final-controller tier, the three
+                             unnamed post-fix arms and family 1's own tier stay
+                             in the freeze DOCUMENT, unburned, and no command
+                             can name them. --master is REFUSED here for the
+                             confirmatory reason.
       --arm positive         (default) the family's positive generator.
       --arm control          its declared control (or corner) arm, at the
                              control PASS RULE where the control asks a
@@ -340,9 +365,11 @@ usage: driven <subcommand> [options]
                                achievement     the proximity corner, same rule
       SIZING is the BLOCK's: a pilot runs BlockOpts::pilot (admission K = 4, the
       posture the pilot runs were taken at, unchanged so a pilot re-draws the
-      same roots and adjudications) and a confirmatory runs BlockOpts::freeze
-      (admission K = 8, doubled against group-mean noise). The ARM never moves
-      the sizing. The SUBJECT is the shipped `lookahead-v1`: a family result is a
+      same roots and adjudications) and a confirmatory -- OR a regression block
+      -- runs BlockOpts::freeze (admission K = 8, doubled against group-mean
+      noise; the regression re-read runs the frozen sizing precisely so it reads
+      the instrument its baseline was read with). The ARM never moves the
+      sizing. The SUBJECT is the shipped `lookahead-v1`: a family result is a
       statement about that subject, so it is deliberately not a flag here.
       COST: `roots x menu x candidates x K` whole games for admission plus
       `roots x R` subject turns for the reads -- tens of minutes per root in
@@ -794,9 +821,10 @@ fn one_predicate(positional: &[String]) -> Result<RootPredicate, String> {
 /// kind at ordinal ≥ 8 of a BANDED predicate before step 10.
 ///
 /// **Why a guard at all, when the rule is written down.** The existing
-/// [`BLOCK_NAMES`] note says out loud that escrow ordinals live in a freeze
-/// DOCUMENT so no command can burn one by accident — and then that the `gen:`
-/// escape hatch technically reaches one anyway, with the protection procedural.
+/// [`BLOCK_NAMES`] note says out loud that UNRELEASED escrow ordinals live in a
+/// freeze DOCUMENT so no command can burn one by accident — and then that the
+/// `gen:` escape hatch technically reaches one anyway, with the protection
+/// procedural.
 /// That was the honest disposition for a family block whose escrow lived in
 /// prose. V4's escrow band lives in CODE ([`driven::V4_ESCROW_ORDINALS`]), so
 /// the same honesty now buys a refusal instead of a sentence.
@@ -884,7 +912,7 @@ fn family_vocabulary() -> String {
     ids.join(" | ")
 }
 
-/// The two block names, as one sentence — see [`BLOCK_NAMES`] for why there are
+/// The three block names, as one sentence — see [`BLOCK_NAMES`] for what each
 /// exactly two.
 fn block_vocabulary() -> String {
     format!("the blocks are {}", BLOCK_NAMES.join(" | "))
@@ -917,6 +945,7 @@ fn parse_block(raw: &str) -> Result<BlockKind, String> {
     match raw {
         "pilot" => Ok(BlockKind::Pilot),
         "confirmatory" => Ok(BlockKind::Confirmatory),
+        "regression" => Ok(BlockKind::Regression),
         other => Err(format!("unknown block {other:?}: {}\n\n{USAGE}", block_vocabulary())),
     }
 }
@@ -1187,6 +1216,10 @@ pub fn control_arm(decl: &FamilyDecl) -> Result<FamilyDecl, String> {
     arm.generator = generator;
     arm.rule = rule;
     arm.confirmatory = decl.confirmatory_control.clone();
+    // THE SAME RE-POINT, one tier later (V4 step 12): the released post-fix
+    // escrow is per arm for the same reason the confirmatory block is, so
+    // `resolve_block` stays one rule over one field at both kinds.
+    arm.regression = decl.regression_control.clone();
     Ok(arm)
 }
 
@@ -1230,12 +1263,17 @@ pub fn control_arm(decl: &FamilyDecl) -> Result<FamilyDecl, String> {
 ///
 /// Both `match`es are EXHAUSTIVE rather than `_ => BlockOpts::pilot()`: a third
 /// arm — or a third block — has to answer this question rather than inherit an
-/// answer written for two.
+/// answer written for two. **The third BLOCK arrived on 2026-08-30 and
+/// answered it**: the RELEASED post-fix escrow runs [`BlockOpts::freeze`], the
+/// same frozen sizing its confirmatory tier ran (family freeze §3 — admission
+/// K = 8, R = 20, per-root F = 1/20, δ = 5, VOID below 4 admitted), because a
+/// regression re-read that moved the sizing would not be reading the same
+/// instrument the baseline was read with (close doc §1.4).
 pub(crate) fn family_block_opts(arm: FamilyArm, block: BlockKind) -> BlockOpts {
     match arm {
         FamilyArm::Positive | FamilyArm::Control => match block {
             BlockKind::Pilot => BlockOpts::pilot(),
-            BlockKind::Confirmatory => BlockOpts::freeze(),
+            BlockKind::Confirmatory | BlockKind::Regression => BlockOpts::freeze(),
         },
     }
 }

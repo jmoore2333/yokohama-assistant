@@ -2343,10 +2343,17 @@ impl StrategicClass {
 /// own master; since the freeze wave each declaration carries ONE PER ARM
 /// ([`FamilyDecl::confirmatory`] and [`FamilyDecl::confirmatory_control`]),
 /// `--block confirmatory` runs the committed identity, and a caller-typed master
-/// cannot silently substitute a non-frozen block. **Escrow ordinals are
-/// deliberately NOT representable here**: they live in the freeze document, so
-/// no command can burn one by accident — which is why there are TWO block fields
-/// and not three.
+/// cannot silently substitute a non-frozen block.
+///
+/// **A THIRD PAIR was added on 2026-08-30** ([`FamilyDecl::regression`] and
+/// `regression_control`, V4 step 12, close doc §1.4) and it is the ONLY escrow
+/// that is representable here. The rule it follows is the families design's
+/// own (§2: *"releasing escrow is a doc-plus-code change with its own
+/// commit"*): the post-fix re-read tier of THREE named arms was released by
+/// that commit, so a command can name it. Every other escrowed ordinal — the
+/// final-controller tier, the three unnamed post-fix arms, family 1's own tier
+/// — is still deliberately NOT representable: it lives in the freeze DOCUMENT,
+/// where no command can burn it by accident.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrozenBlock {
     /// The recorded master this block's draws descend from.
@@ -2468,10 +2475,36 @@ pub struct FamilyDecl {
     /// this field, which is what keeps `resolve_block` a single rule over one
     /// field rather than a second rule that has to know about arms.
     ///
-    /// **THERE IS NO THIRD BLOCK FIELD.** Escrow ordinals live in the freeze
-    /// DOCUMENT (design §2's escrow hygiene): no command can burn an escrowed
-    /// block by accident because no command can name one.
+    /// **THERE IS A THIRD BLOCK PAIR SINCE 2026-08-30** — see
+    /// [`FamilyDecl::regression`]. It is a RELEASE and not a leak: design §2's
+    /// escrow hygiene says escrow ordinals live in the freeze DOCUMENT *until*
+    /// a release, and that *"releasing escrow is a doc-plus-code change with
+    /// its own commit"*. What remains unnameable by any command is everything
+    /// that release did not name.
     pub confirmatory_control: Option<FrozenBlock>,
+    /// The POSITIVE arm's RELEASED post-fix escrow block (V4 step 12,
+    /// 2026-08-30; close doc §1.4).
+    ///
+    /// **The escrow tier the family freeze §4 pre-declared as "post-fix
+    /// re-read", released for exactly the three arms V4 step 12's
+    /// pre-registration names** (close doc §1.2): `end-trigger` positive at
+    /// `0xA3E1202608180005`, `exclusive-race` CONTROL at `…0009`, `achievement`
+    /// positive at `…0007`, each at ordinals 36..42. The V4 identity is the
+    /// "fix" that tier was escrowed for, which is what makes reading it a
+    /// regression read rather than a circular one.
+    ///
+    /// **`None` everywhere else, and the `None` is load-bearing**: the
+    /// final-controller tier (42..48 / 29..32), the three unnamed post-fix arms
+    /// and family 1's 26..29 are NOT released, stay in the freeze DOCUMENT, and
+    /// refuse BY NAME if a command asks for them.
+    pub regression: Option<FrozenBlock>,
+    /// The CONTROL arm's RELEASED post-fix escrow block.
+    ///
+    /// Its own field for [`FamilyDecl::confirmatory_control`]'s reason exactly:
+    /// a control arm is a different generator with its own ordinal space, and
+    /// `driven_runner::control_arm` re-points [`FamilyDecl::regression`] from
+    /// this one, which keeps `resolve_block` a single rule over one field.
+    pub regression_control: Option<FrozenBlock>,
     /// Which canon (or which rules clause) this family rests on.
     pub canon: &'static str,
 }
@@ -2599,6 +2632,11 @@ pub fn families() -> Vec<FamilyDecl> {
                 master: 0xA3E1_2026_0818_0004,
                 ordinals: 4..20,
             }),
+            // NOT RELEASED: family 1 sits out V4 step 12's regression re-read
+            // (checkpoint step 12: "Family 1 still sits out pending the exact
+            // adjudicator"), so its 26..29 tier stays in the freeze DOCUMENT.
+            regression: None,
+            regression_control: None,
             canon: "rules-derivable (rulebook p.9's final round); no canon ruling needed — \
                     design §1 family 1",
         },
@@ -2629,6 +2667,14 @@ pub fn families() -> Vec<FamilyDecl> {
                 master: 0xA3E1_2026_0818_0006,
                 ordinals: 4..28,
             }),
+            // RELEASED (V4 step 12): the POSITIVE arm is the checkpoint's
+            // TIMIDITY guard. The control arm — the F9 fired-while-behind read
+            // — is not a regression guard and is NOT released.
+            regression: Some(FrozenBlock {
+                master: 0xA3E1_2026_0818_0005,
+                ordinals: 36..42,
+            }),
+            regression_control: None,
             canon: "canon 15 (the inverted brake): ending the game while behind is a bad idea — \
                     design §1 family 2",
         },
@@ -2667,6 +2713,13 @@ pub fn families() -> Vec<FamilyDecl> {
                 master: 0xA3E1_2026_0818_0009,
                 ordinals: 4..28,
             }),
+            // RELEASED (V4 step 12): the CONTROL arm — the checkpoint's
+            // NO-DENIAL guard — and only it.
+            regression: None,
+            regression_control: Some(FrozenBlock {
+                master: 0xA3E1_2026_0818_0009,
+                ordinals: 36..42,
+            }),
             canon: "canon 12/13 (race arithmetic and awareness, never denial-as-default) plus \
                     C-A's participation framing — design §1 family 3",
         },
@@ -2697,6 +2750,13 @@ pub fn families() -> Vec<FamilyDecl> {
                 master: 0xA3E1_2026_0818_000A,
                 ordinals: 4..28,
             }),
+            // RELEASED (V4 step 12): the POSITIVE arm is the checkpoint's
+            // CLAIM-PATH guard. The proximity corner is not released.
+            regression: Some(FrozenBlock {
+                master: 0xA3E1_2026_0818_0007,
+                ordinals: 36..42,
+            }),
+            regression_control: None,
             canon: "ruling 14 (achievements are agenda-setters, denial is not canon) plus C-A — \
                     design §1 family 4",
         },
@@ -2715,6 +2775,11 @@ pub enum BlockKind {
     /// The frozen confirmatory draws — the declaration supplies the master, and
     /// a caller-typed one is refused.
     Confirmatory,
+    /// The RELEASED post-fix escrow draws (V4 step 12, 2026-08-30) — the
+    /// declaration supplies the master exactly as at confirmatory, a
+    /// caller-typed one is refused, and an arm whose escrow was NOT released
+    /// refuses by name.
+    Regression,
 }
 
 impl BlockKind {
@@ -2723,6 +2788,7 @@ impl BlockKind {
         match self {
             Self::Pilot => "pilot",
             Self::Confirmatory => "confirmatory",
+            Self::Regression => "regression",
         }
     }
 }
@@ -2794,14 +2860,15 @@ impl Default for BlockOpts {
 /// Why a block produced no report.
 #[derive(Debug)]
 pub enum FamilyRunError {
-    /// A confirmatory run of an ARM whose block was never baked. Every declared
-    /// arm carries one since the freeze wave, so this is the shape a NEWLY
-    /// declared arm has on the day it is written and before it is frozen.
-    NoFrozenBlock { id: &'static str },
-    /// A confirmatory run carrying a caller's master. Refused rather than
+    /// A run of an ARM whose block for that KIND is absent. At `confirmatory`
+    /// every declared arm carries one since the freeze wave, so it is the shape
+    /// a NEWLY declared arm has before it is frozen; at `regression` it is the
+    /// ordinary shape of an arm whose escrow V4 step 12 did NOT release.
+    NoFrozenBlock { id: &'static str, block: BlockKind },
+    /// A frozen-block run carrying a caller's master. Refused rather than
     /// honoured (design §2, review SHOULD-4): a typo must not be able to run a
     /// plausible-looking non-frozen block.
-    MasterRefused { id: &'static str },
+    MasterRefused { id: &'static str, block: BlockKind },
     /// A pilot run with no master. Recorded-before-use stays the caller's
     /// obligation, so the run cannot invent one.
     MasterRequired { id: &'static str },
@@ -2826,16 +2893,25 @@ pub enum FamilyRunError {
 impl std::fmt::Display for FamilyRunError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NoFrozenBlock { id } => write!(
+            Self::NoFrozenBlock { id, block: BlockKind::Regression } => write!(
                 f,
-                "family {id} carries no frozen confirmatory block for this arm: a block is baked \
-                 at the FREEZE commit, and an arm without one can only run `--block pilot`"
+                "family {id} has no RELEASED regression block for this arm: V4 step 12 released \
+                 the post-fix re-read tier for THREE arms only (close doc §1.2), and every other \
+                 arm's escrowed ordinals stay in the freeze DOCUMENT, unburned — no command can \
+                 name one"
             ),
-            Self::MasterRefused { id } => write!(
+            Self::NoFrozenBlock { id, block } => write!(
                 f,
-                "family {id}'s confirmatory block runs the master its declaration carries — a \
+                "family {id} carries no frozen {} block for this arm: a block is baked \
+                 at the FREEZE commit, and an arm without one can only run `--block pilot`",
+                block.as_str(),
+            ),
+            Self::MasterRefused { id, block } => write!(
+                f,
+                "family {id}'s {} block runs the master its declaration carries — a \
                  caller-supplied master is refused so a typo cannot run a plausible-looking \
-                 non-frozen block"
+                 non-frozen block",
+                block.as_str(),
             ),
             Self::MasterRequired { id } => write!(
                 f,
@@ -3300,7 +3376,13 @@ pub fn run_family_block_with(
 /// The CONFIRMATORY arm reads `decl.confirmatory` and nothing else:
 /// `driven_runner::control_arm` re-points that field from
 /// [`FamilyDecl::confirmatory_control`], so this stays one rule over one field
-/// rather than a second rule that has to know which arm it is serving.
+/// rather than a second rule that has to know which arm it is serving. **The
+/// REGRESSION arm (V4 step 12) is the same rule over the same-shaped field**:
+/// it reads `decl.regression`, `control_arm` re-points that one from
+/// `regression_control`, and the master refusal is the confirmatory refusal
+/// verbatim. Its only difference is what `None` MEANS — at confirmatory an
+/// unbaked arm, at regression an arm whose escrow was never released — which
+/// is why the refusal names the block kind.
 pub(crate) fn resolve_block(
     decl: &FamilyDecl,
     block: BlockKind,
@@ -3313,13 +3395,23 @@ pub(crate) fn resolve_block(
         ),
         BlockKind::Confirmatory => {
             if master_override.is_some() {
-                return Err(FamilyRunError::MasterRefused { id: decl.id });
+                return Err(FamilyRunError::MasterRefused { id: decl.id, block });
             }
             let frozen = decl
                 .confirmatory
                 .as_ref()
-                .ok_or(FamilyRunError::NoFrozenBlock { id: decl.id })?;
+                .ok_or(FamilyRunError::NoFrozenBlock { id: decl.id, block })?;
             (frozen.master, frozen.ordinals.clone())
+        }
+        BlockKind::Regression => {
+            if master_override.is_some() {
+                return Err(FamilyRunError::MasterRefused { id: decl.id, block });
+            }
+            let released = decl
+                .regression
+                .as_ref()
+                .ok_or(FamilyRunError::NoFrozenBlock { id: decl.id, block })?;
+            (released.master, released.ordinals.clone())
         }
     };
     let ordinals: Vec<u32> = range.collect();
@@ -6187,9 +6279,12 @@ mod tests {
             menu: SMOKE_MENU,
             pilot: 0..2,
             confirmatory: Some(FrozenBlock { master: MASTER, ordinals: 0..2 }),
-            // The smoke never runs a control arm; the field is declared so the
-            // fixture is a whole `FamilyDecl` rather than a partial one.
+            // The smoke never runs a control arm, and no escrow was ever
+            // declared for it; the fields are written out so the fixture is a
+            // whole `FamilyDecl` rather than a partial one.
             confirmatory_control: None,
+            regression: None,
+            regression_control: None,
             canon: "a machinery smoke, not a family",
         }
     }
