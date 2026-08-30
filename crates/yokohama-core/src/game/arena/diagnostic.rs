@@ -361,6 +361,17 @@ pub fn render_world(
     tail_turns: u32,
     rules: &Rules,
 ) -> Result<Vec<String>, ArenaError> {
+    // A window of zero turns is not a window. `saturating_sub` would quietly
+    // turn it into a one-turn one, so `--tail 0` and `--tail 1` printed the same
+    // thing (review NOTE); this project names the bound instead of clamping a
+    // caller's number into a different one.
+    if tail_turns == 0 {
+        return Err(ArenaError::Driver(
+            "tail window of 0 turns: --tail must name at least 1 turn (a zero-turn window is \
+             not a window, and clamping it to 1 would answer a question nobody asked)"
+                .to_string(),
+        ));
+    }
     let (record, capped_state, turns, moves_by_seat) = match &run.game.outcome {
         DiagnosticOutcome::Terminated(stats) => {
             (&stats.record, None, stats.turns, &stats.moves_by_seat)
