@@ -974,6 +974,94 @@ mod tests {
         assert!(text.contains("money="));
     }
 
+    /// Every `  turn=N …` tail line's turn number, in print order.
+    fn tail_turns_printed(lines: &[String]) -> Vec<u32> {
+        lines
+            .iter()
+            .filter_map(|line| line.strip_prefix("  turn="))
+            .map(|rest| {
+                rest.split(' ').next().expect("a tail line's turn field").parse::<u32>().expect(
+                    "a tail line's turn field is a number",
+                )
+            })
+            .collect()
+    }
+
+    /// **W-D1 review S1.** On a cap, `turns` is the turn the GUARD READ — one
+    /// past the limit, and a turn in which no move was ever applied. Labelling
+    /// the window with it promised the D1 read forty turns of moves and
+    /// delivered thirty-nine.
+    #[test]
+    fn a_capped_tails_turn_window_ends_at_the_last_applied_move() {
+        const K: u32 = 5;
+        let rules = Rules::standard();
+        let (x, y) = rungs();
+        let run = run_world_capped(
+            &WorldSpec { x, y, seed: first_world(), players: 2, arrangement: 0 },
+            &rules,
+            false,
+            30,
+        )
+        .expect("a cap is an outcome here");
+        let DiagnosticOutcome::Capped { turns: guard_turn, .. } = &run.game.outcome else {
+            panic!("a 30-turn cap cannot contain a full 2P game");
+        };
+        let guard_turn = *guard_turn;
+
+        let lines = render_world(&run, K, &rules).expect("a partial record renders");
+        let printed = tail_turns_printed(&lines);
+        let last_move_turn = *printed.iter().max().expect("a capped game applied moves");
+        assert!(
+            last_move_turn < guard_turn,
+            "precondition of this cell: the guard READ turn {guard_turn}, in which no move was \
+             applied — the last applied move was in turn {last_move_turn}",
+        );
+
+        let label = lines
+            .iter()
+            .find(|line| line.starts_with("tail (turns "))
+            .expect("the tail label");
+        assert!(
+            label.contains(&format!("turns {}..={last_move_turn}", last_move_turn - (K - 1))),
+            "the window must END at the last APPLIED move's turn, not at the guard's read \
+             turn: {label}",
+        );
+
+        let mut distinct = printed.clone();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert_eq!(
+            distinct.len(),
+            K as usize,
+            "--tail {K} must CONTAIN {K} turns of moves, got {distinct:?}",
+        );
+        assert_eq!(*distinct.first().expect("non-empty"), last_move_turn - (K - 1));
+
+        // "or fewer only when the game is shorter": a window wider than the game
+        // clamps to the whole game rather than inventing turns.
+        let whole = render_world(&run, 10_000, &rules).expect("a partial record renders");
+        let all_turns = tail_turns_printed(&whole);
+        assert_eq!(all_turns.len(), record_move_count(&run), "every applied move is in the tail");
+        let whole_label = whole
+            .iter()
+            .find(|line| line.starts_with("tail (turns "))
+            .expect("the tail label");
+        assert!(
+            whole_label.contains(&format!(
+                "turns {}..={last_move_turn}",
+                all_turns.iter().min().expect("non-empty"),
+            )),
+            "a window wider than the game clamps to it: {whole_label}",
+        );
+    }
+
+    fn record_move_count(run: &WorldRun) -> usize {
+        match &run.game.outcome {
+            DiagnosticOutcome::Terminated(stats) => stats.record.events.len(),
+            DiagnosticOutcome::Capped { record, .. } => record.events.len(),
+        }
+    }
+
     /// The same renderer over a COMPLETED game: the outcome line names the
     /// trigger and the standings instead of a cap, and the end-state summary is
     /// taken at the terminal state.
