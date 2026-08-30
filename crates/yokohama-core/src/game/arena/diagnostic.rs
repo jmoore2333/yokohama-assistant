@@ -55,9 +55,9 @@
 
 use super::stats::X_SLOT;
 use super::{
-    agent_stream_seed, require_supported_player_count, run_arena_game_diagnostic_capped, unit_for,
-    ArenaAgent, ArenaError, ArenaGameStats, CellSpec, Contestant, DiagnosticGame,
-    DiagnosticOutcome, NamedIdentity, SeedScheduleKind,
+    agent_stream_seed, capped_figures, require_supported_player_count,
+    run_arena_game_diagnostic_capped, unit_for, ArenaAgent, ArenaError, ArenaGameStats, CellSpec,
+    Contestant, DiagnosticGame, DiagnosticOutcome, NamedIdentity, SeedScheduleKind,
 };
 use crate::game::agent::HONEST_MAX_TURNS;
 use crate::game::metrics::{trigger_name, wilson_95, TriggerTally, WilsonInterval};
@@ -873,9 +873,12 @@ pub fn render_cap_rate(report: &CapRateReport) -> Vec<String> {
                 .to_string(),
         );
         for capped in &report.capped {
+            // Through the SHARED spelling (`arena::capped_figures`), so this
+            // line and a counting cell's typed refusal name a capped game the
+            // same way and an operator recognizes either.
             lines.push(format!(
-                "  seed={:#018x} arrangement={} turns={}",
-                capped.seed.0, capped.arrangement, capped.turns,
+                "  {}",
+                capped_figures(capped.seed, capped.arrangement, capped.turns),
             ));
         }
     }

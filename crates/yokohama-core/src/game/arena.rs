@@ -359,19 +359,27 @@ impl std::fmt::Display for ArenaError {
 
 impl std::error::Error for ArenaError {}
 
+/// THE spelling of one capped game's figures, shared by the two surfaces that
+/// name one: [`diagnostic::render_cap_rate`]'s per-world line and
+/// [`capped_roll`] below.
+///
+/// One function rather than two `format!`s that happen to agree — an operator
+/// carries such a line into `arena world`, and a second spelling free to drift
+/// from the first is a second thing a reader has to recognize. It takes the
+/// three FIGURES rather than either surface's struct
+/// ([`stats::CappedGame`] / [`diagnostic::CappedWorld`]) because the two types
+/// are deliberately separate: one is a counted cell event, the other a
+/// cap-rate observation, and neither should have to name the other to print.
+pub(crate) fn capped_figures(seed: WorldSeed, arrangement: u8, turns: u32) -> String {
+    format!("seed={:#018x} arrangement={arrangement} turns={turns}", seed.0)
+}
+
 /// The `(seed, arrangement, turns)` roll of a counting cell's capped games,
-/// spelled exactly as [`diagnostic::render_cap_rate`] spells one — the two
-/// surfaces that name a capped game name it the same way, so an operator can
-/// carry a line from either into `arena world` unchanged.
+/// through [`capped_figures`] — the shared spelling.
 fn capped_roll(capped: &[stats::CappedGame]) -> String {
     capped
         .iter()
-        .map(|game| {
-            format!(
-                "seed={:#018x} arrangement={} turns={}",
-                game.seed.0, game.arrangement, game.turns,
-            )
-        })
+        .map(|game| capped_figures(game.seed, game.arrangement, game.turns))
         .collect::<Vec<_>>()
         .join(" · ")
 }
