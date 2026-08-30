@@ -7464,6 +7464,55 @@ mod tests {
         );
     }
 
+    /// **ONLY A TURN CAP IS A CAP** (review MUST-2, escaped probe x): every
+    /// other playout failure must fall through to the block's own hard error —
+    /// a harness that counted a `DeadEnd` or a decision-cap as a "cap" would
+    /// report (with `turns: 0` and no tail) where it must refuse.
+    #[test]
+    fn a_non_cap_playout_failure_is_never_counted_as_a_cap() {
+        let site = CapSite::Admission { policy: ReplyPolicy::FamilyWeighted };
+        let playout = |error: DrivenError| AdjudicationError::Playout {
+            candidate: Box::new(Move::SkipBuilding),
+            replication: 0,
+            error: Box::new(error),
+        };
+        for error in [
+            DrivenError::DeadEnd { seat: PlayerId(0) },
+            DrivenError::DecisionCapReached { decisions: 1 },
+        ] {
+            assert!(
+                capped_adjudication(&playout(error), site, 0, WorldSeed(1)).is_none(),
+                "a non-cap playout failure was counted as a cap",
+            );
+        }
+        // ... and the non-playout shapes fall through likewise.
+        assert!(
+            capped_adjudication(&AdjudicationError::NoReplications, site, 0, WorldSeed(1))
+                .is_none(),
+            "a caller error was counted as a cap",
+        );
+    }
+
+    /// The same fact THROUGH A BLOCK: a decision-cap loop (the >10
+    /// decisions-per-turn hoard shape, review S-1) reproduces the original
+    /// whole-block refusal — correctly outside §2.4 item 1's scope.
+    #[test]
+    fn a_decision_capped_playout_still_refuses_the_whole_block() {
+        let rules = rules();
+        let subject = SeatSpec::Contestant(Contestant::LOOKAHEAD_V1_DEFAULT);
+        let decl = one_root_decl(PassRule::Turn(TurnPredicate::AchievementClaimed));
+        let opts = BlockOpts {
+            driven: DrivenOpts { max_decisions: 1, ..DrivenOpts::default() },
+            ..smoke_opts(-1_000)
+        };
+        let err = run_family_block_with(&decl, BlockKind::Pilot, Some(MASTER), subject, &rules, opts)
+            .expect_err("a decision-capped playout must refuse the block, never count");
+        assert!(
+            matches!(err, FamilyRunError::Adjudication { .. }),
+            "the refusal must be the adjudication's own hard error: {err:?}",
+        );
+    }
+
     /// **THE READ-VOID FOLD IS ONE NAMED RULE** (review MUST-3, escaped probe
     /// viii): every voided read replication is counted against the block's ONE
     /// ledger, and the fold past the ceiling refuses exactly as an admission
