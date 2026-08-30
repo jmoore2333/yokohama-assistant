@@ -67,9 +67,11 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 use super::{
-    agent_stream_seed, mix, run_arena_game, unit_for, ArenaAgent, ArenaError, ArenaGameStats,
-    ControllerProvenance, DecisionReport, PolicyAgent, Slot,
+    agent_stream_seed, mix, run_arena_game_capped, run_arena_game_diagnostic_capped, unit_for,
+    ArenaAgent, ArenaError, ArenaGameStats, ControllerProvenance, DecisionReport,
+    DiagnosticOutcome, PolicyAgent, Slot,
 };
+use crate::game::agent::HONEST_MAX_TURNS;
 use crate::game::eval::WeightTable;
 use crate::game::greedy::{self, ExplanationTally, GreedyAgent, DEFAULT_RETREAT_SAMPLES};
 use crate::game::lookahead::{
@@ -82,7 +84,7 @@ use crate::game::mcts::{
 use crate::game::metrics::{nearest_rank_index, wilson_95, TriggerTally, Z_95};
 use crate::game::policy::RolloutPolicy;
 use crate::game::rules::Rules;
-use crate::game::seeds::SeedSchedule;
+use crate::game::seeds::{SeedSchedule, WorldSeed};
 use crate::types::{OrderCardId, PlayerId, PlayerView};
 
 /// Domain salt for the bootstrap resample stream.
@@ -1011,6 +1013,45 @@ fn param_leaf(name: &str, params: &BTreeMap<String, i64>) -> Result<LeafRule, St
         })
 }
 
+/// What a cell does when one of its games reaches the turn guard — V4 step 11,
+/// amendment A-S11-1 (freeze doc
+/// `docs/plans/2026-08-30-phase3.5c-v4-identity-freeze.md` §9.6).
+///
+/// **[`Refuse`](Self::Refuse) is the behaviour every figure recorded in this
+/// repo was measured under, and it is what an unflagged cell still does**: the
+/// first capped game refuses the WHOLE cell with
+/// [`ArenaError::CapReached`], because a skipped game would read as a different
+/// N. Every existing entry point passes it, through the same call chain it
+/// always used, so the choice is opt-in at the CALLER and no recorded figure
+/// moves.
+///
+/// [`Count`](Self::Count) is the amendment's counting mode: a capped game
+/// becomes a typed, COUNTED event, the design unit containing it is VOID, and
+/// the cell refuses only when the count passes the arm's registered `ceiling`.
+/// `ceiling: 0` is legal and refuses at the first capped game — through
+/// [`ArenaError::CappedCeilingExceeded`], deliberately distinct from refuse
+/// mode's `CapReached`, so the two refusals are never read as the same event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CapPolicy {
+    /// Today's rule: the first capped game refuses the cell.
+    Refuse,
+    /// Count capped games, void their units, and refuse only above `ceiling`.
+    Count { ceiling: u32 },
+}
+
+/// One capped game of a counting cell, named so it reproduces.
+///
+/// `arrangement` is the index into [`unit_for`]'s seatings — the same number
+/// `arena world --arrangement` takes — so `arena world <x> <y> <seed>
+/// --arrangement <arr>` replays exactly this game. `turns` is the driver's own
+/// number, one past the guard (10,001 at the shipped [`HONEST_MAX_TURNS`]).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct CappedGame {
+    pub seed: WorldSeed,
+    pub arrangement: u8,
+    pub turns: u32,
+}
+
 /// One cell of the arena: contestant X against contestant Y at a player count,
 /// over a fixed number of design units.
 ///
@@ -1199,6 +1240,26 @@ pub struct CellReport {
     /// [`SeedScheduleKind::Diagnostic`], the DRAWN one for
     /// [`SeedScheduleKind::OsEntropy`].
     pub master: u64,
+    /// The registered void CEILING this cell ran under, or `None` in REFUSE
+    /// mode — V4 step 11, amendment A-S11-1 (freeze doc §9.6).
+    ///
+    /// `None` is the shape of every figure recorded before the amendment and of
+    /// every unflagged run since: it says "the first capped game would have
+    /// refused this cell", which is why the four fields below then carry no
+    /// information (`units_void` is 0 and `capped` is empty BY CONSTRUCTION,
+    /// not by observation).
+    pub capped_ceiling: Option<u32>,
+    /// Design units the cell SCHEDULED — `spec.units`, always.
+    pub units_scheduled: u32,
+    /// Scheduled units containing at least one capped game. Such a unit is VOID
+    /// and contributes NO outcome: every outcome statistic on this report reads
+    /// over the READ units alone.
+    pub units_void: u32,
+    /// Units that contributed an outcome — `x_unit_shares.len()`, and the `n`
+    /// of the interval.
+    pub units_read: u32,
+    /// Every capped game, in schedule order. Empty in refuse mode.
+    pub capped: Vec<CappedGame>,
 }
 
 /// One side's in-cell WALL — nanoseconds spent inside `choose`, and the
@@ -1363,6 +1424,48 @@ pub fn run_cell_emitting_timed(
     invariants: bool,
     sink: &mut dyn FnMut(&ArenaGameStats, u8) -> Result<(), ArenaError>,
 ) -> Result<(CellReport, CellWall), ArenaError> {
+    run_cell_loop(spec, rules, invariants, CapPolicy::Refuse, HONEST_MAX_TURNS, sink)
+}
+
+/// [`run_cell_emitting_timed`] in A-S11-1's COUNTING mode: a capped game is a
+/// typed, counted event, its design unit is VOID, and the cell refuses only
+/// when the count passes `ceiling` (freeze doc §9.6).
+///
+/// A SEPARATE entry point rather than a parameter on the four above, for the
+/// reason the amendment gives: the counting mode is opt-in per cell, and every
+/// caller that does not ask for it must keep reaching the refuse path through
+/// the call chain it always used. `ceiling` travels as an argument rather than
+/// on [`CellSpec`] for the same reason — the spec is the DESIGN, and 47
+/// constructor sites across the gate binaries and the committed goldens spell
+/// it.
+pub fn run_cell_counting_caps_timed(
+    spec: &CellSpec,
+    rules: &Rules,
+    invariants: bool,
+    ceiling: u32,
+    sink: &mut dyn FnMut(&ArenaGameStats, u8) -> Result<(), ArenaError>,
+) -> Result<(CellReport, CellWall), ArenaError> {
+    run_cell_loop(spec, rules, invariants, CapPolicy::Count { ceiling }, HONEST_MAX_TURNS, sink)
+}
+
+/// THE cell loop — the one every entry point above reaches.
+///
+/// `max_turns` is a parameter for [`super::run_arena_game_capped`]'s reason
+/// exactly: a test must reach a capping cell in milliseconds instead of playing
+/// 10,000 no-op turns. Every public entry point passes [`HONEST_MAX_TURNS`], the
+/// shared non-termination guard, which is therefore untouched by the widening.
+///
+/// `pub(crate)` and not `pub`: the guard is a TEST affordance, and a public
+/// surface that let a caller shorten the guard would let a published figure be
+/// measured against a different definition of "stuck".
+pub(crate) fn run_cell_loop(
+    spec: &CellSpec,
+    rules: &Rules,
+    invariants: bool,
+    policy: CapPolicy,
+    max_turns: u32,
+    sink: &mut dyn FnMut(&ArenaGameStats, u8) -> Result<(), ArenaError>,
+) -> Result<(CellReport, CellWall), ArenaError> {
     // Both guards run BEFORE any game, because both failure modes are silent
     // otherwise: `unit_for(0, ..)` yields an empty seating list, so a zero or
     // one player count would tabulate zero games into a report full of NaNs
@@ -1460,7 +1563,34 @@ pub fn run_cell_emitting_timed(
                         clock: if is_x { xc.clone() } else { yc.clone() },
                     })
                 };
-                run_arena_game(seed, players, rules, &mut make_agent, invariants)?
+                match policy {
+                    // REFUSE MODE'S PER-GAME DRIVER CALL IS UNCHANGED: the
+                    // public `run_arena_game` IS this call at
+                    // `HONEST_MAX_TURNS`, so an unflagged cell reaches the same
+                    // driver through the same chain it always did — a
+                    // construction fact, which is what freeze doc §9.6 asks for
+                    // ahead of any pin.
+                    CapPolicy::Refuse => run_arena_game_capped(
+                        seed, players, rules, &mut make_agent, invariants, max_turns,
+                    )?,
+                    // COUNTING MODE plays the SAME game through the diagnostic
+                    // driver — same setup half, same shared loop, same keying
+                    // (W-D1 pinned the equivalence) — which is the only driver
+                    // that hands a capped game's partial run back instead of
+                    // dropping it. The counted EVENT is not built yet; this
+                    // wave's next commit drives it.
+                    CapPolicy::Count { .. } => {
+                        let game = run_arena_game_diagnostic_capped(
+                            seed, players, rules, &mut make_agent, invariants, max_turns,
+                        )?;
+                        match game.outcome {
+                            DiagnosticOutcome::Terminated(stats) => *stats,
+                            DiagnosticOutcome::Capped { turns, .. } => {
+                                return Err(ArenaError::CapReached { seed, turns })
+                            }
+                        }
+                    }
+                }
             };
             // The RUN half of provenance (spec §5): the driver stamped who
             // played each seat, and this is the only layer that knows which
@@ -1534,6 +1664,7 @@ pub fn run_cell_emitting_timed(
         x_unit_shares.push(f64::from(unit_x_wins) / unit.seatings.len() as f64);
     }
 
+    let x_unit_shares_len = x_unit_shares.len() as u32;
     let theta_hat = mean(&x_unit_shares);
     // Derived from the design, never from the outcomes — a resample stream that
     // read the unit vector would make the interval a function of the data twice
@@ -1583,6 +1714,11 @@ pub fn run_cell_emitting_timed(
             y_budget_starved_decisions: y_meters.starved,
             trigger,
             master,
+            capped_ceiling: None,
+            units_scheduled: spec.units,
+            units_void: 0,
+            units_read: x_unit_shares_len,
+            capped: Vec::new(),
         },
         CellWall { x: x_clock.read(), y: y_clock.read() },
     ))
