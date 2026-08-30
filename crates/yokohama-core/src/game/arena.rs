@@ -269,6 +269,18 @@ fn setup_stream_seed(seat: PlayerId, deal: &[OrderCardId; 2]) -> u64 {
 /// an asserting cell but names its seed so the run is reproducible (uniform
 /// tails run to 5,364 of the 10,000 cap in E1's held-out cells).
 ///
+/// **AMENDED at V4 step 11 by A-S11-1 (freeze doc
+/// `docs/plans/2026-08-30-phase3.5c-v4-identity-freeze.md` §9.6), and the
+/// amendment is narrower than it looks.** `CapReached` is the REFUSE mode's
+/// arm, which is what every public driver and every unflagged cell still
+/// raises. A cell run in the opt-in COUNTING mode
+/// ([`CapPolicy::Count`](stats::CapPolicy::Count)) does not raise it at all: a
+/// capped game is a typed, counted event there, and the two arms that can end
+/// such a cell — [`CappedCeilingExceeded`](Self::CappedCeilingExceeded) and
+/// [`NoReadUnits`](Self::NoReadUnits) — are INSTRUMENT GUARDS that carry the
+/// counted games with them. Every other variant still refuses a whole cell,
+/// emitting nothing, in either mode.
+///
 /// CLASSIFICATION RULE, stated because it is not inferable: [`ArenaAgent`]'s
 /// error is an untyped `String`, so the driver cannot re-classify what an agent
 /// refused about. **Every agent refusal in [`run_arena_game`] lands in
@@ -637,10 +649,15 @@ pub fn unit_for(players: u8, seed: WorldSeed) -> UnitSpec {
 /// so it never travels back to an agent.
 ///
 /// **The arena's typed COMPLETED-game shape**, which is why emission filters on
-/// it rather than on a flag: every failure in spec §4's taxonomy — cap reached,
-/// dead end, driver bug — is an [`ArenaError`], so a game that did not complete
-/// has no `ArenaGameStats` in existence to be filed, tabulated, or observed.
+/// it rather than on a flag: a game that did not complete has no
+/// `ArenaGameStats` in existence to be filed, tabulated, or observed.
 /// "Completed games only" is therefore structural here rather than checked.
+///
+/// The ROUTE to that fact has two shapes since A-S11-1 (freeze doc §9.6), and
+/// the conclusion is the same on both: in refuse mode every failure in spec
+/// §4's taxonomy — cap reached, dead end, driver bug — is an [`ArenaError`]; in
+/// a counting cell a capped game is a typed event carrying the partial run's
+/// per-seat moves and NOTHING of this type.
 /// (Cross-reference, NOT a change: `metrics::TriggerTally::observe` takes an
 /// `Option<&EndGameTrigger>` and states the same rule in prose, so it could one
 /// day take this type instead and get the rule from the compiler. Out of scope
@@ -941,9 +958,11 @@ pub(crate) enum PlayError {
     /// `partial` is what the loop HAD when it stopped — every applied move in
     /// play order and the state it stopped in — and is `Some` from
     /// [`play_from_state`] alone. It exists for the V4 step-11 diagnosis wave:
-    /// the arena's public drivers drop it (a capped game is a failure and emits
-    /// nothing, unchanged), and `run_arena_game_diagnostic` keeps it, because a
-    /// loop nobody can look at cannot be diagnosed. A rooted turn-driver has no
+    /// the arena's public drivers drop it (in refuse mode a capped game is a
+    /// failure and emits nothing, unchanged), and
+    /// `run_arena_game_diagnostic` keeps it, because a loop nobody can look at
+    /// cannot be diagnosed — which is also how a COUNTING cell gets a capped
+    /// game's per-seat move split since A-S11-1 (freeze doc §9.6). A rooted turn-driver has no
     /// from-setup outcome to hand back and passes `None`, which is why the field
     /// is an `Option` rather than a promise this error cannot keep.
     TurnCap { turns: u32, partial: Option<Box<PlayOutcome>> },
@@ -1137,8 +1156,10 @@ fn arena_error(seed: WorldSeed, error: PlayError) -> ArenaError {
             seat.0
         )),
         // The partial run is DROPPED here, deliberately: `ArenaError` is the
-        // public drivers' taxonomy and a capped game is a failure that emits
-        // nothing. `drive_capturing` is the one caller that reads it instead.
+        // public drivers' taxonomy and, in REFUSE mode, a capped game is a
+        // failure that emits nothing. `drive_capturing` is the one caller that
+        // reads it instead — and a COUNTING cell reaches this loop through
+        // that caller, so it never passes here (A-S11-1, freeze doc §9.6).
         PlayError::TurnCap { turns, .. } => ArenaError::CapReached { seed, turns },
         // Unreachable from here BY CONSTRUCTION — `drive` passes
         // `max_decisions: None`, which is what makes the split behaviour-inert
@@ -1275,7 +1296,8 @@ fn drive(
 /// there, "completed" is STRUCTURAL because every non-completion is an
 /// [`ArenaError`] and a failed game has no stats in existence. That rule is what
 /// keeps a corpus honest, and it is unchanged — [`run_arena_game`] still refuses
-/// a capped game and emits nothing. It also means a capped game leaves NO
+/// a capped game and emits nothing, and so does an unflagged cell. It also
+/// means a capped game leaves NO
 /// evidence, so the V4 step-11 field's `cell failed: turn cap reached at turn
 /// 10001` could name a world and nothing about what the world was doing.
 ///
@@ -1347,11 +1369,19 @@ pub struct DiagnosticGame {
 /// this returns [`DiagnosticOutcome::Capped`] rather than
 /// [`ArenaError::CapReached`].
 ///
-/// **It does not replace either public driver and must not be used to run a
-/// cell.** The arena refuses a whole cell at the first capped game by design (a
-/// skipped game would read as a different N); that rule is what keeps every
-/// recorded figure honest and is untouched. This is a READ surface: the V4
-/// step-11 diagnosis wave reproduces one world and looks at the loop.
+/// **It does not replace either public driver.** An unflagged cell refuses at
+/// the first capped game by design (a skipped game would read as a different
+/// N); that rule is what keeps every recorded figure honest and is untouched.
+///
+/// **AMENDED by A-S11-1 (freeze doc §9.6): it IS how a cell runs in the opt-in
+/// COUNTING mode.** `stats::run_cell_loop` plays every game of a
+/// [`CapPolicy::Count`](stats::CapPolicy::Count) cell through this driver,
+/// because it is the only one that hands a capped game's partial run back
+/// instead of dropping it — the same setup half, the same shared loop and the
+/// same keying, which is what makes a counted game reproduce here. In refuse
+/// mode the cell still calls [`run_arena_game_capped`] and this driver is not
+/// on its path at all. Its other use is unchanged: the V4 step-11 diagnosis
+/// wave reproduces one world and looks at the loop.
 pub fn run_arena_game_diagnostic(
     seed: WorldSeed,
     players: u8,

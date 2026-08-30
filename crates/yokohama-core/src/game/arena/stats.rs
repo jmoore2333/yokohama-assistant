@@ -1481,10 +1481,16 @@ pub fn run_cell_with(
 /// `sink(stats, arr)` sees every COMPLETED game as it finishes, where `arr` is
 /// the arrangement index within its design unit — the two things
 /// `corpus::corpus_path` needs that a `CellReport` cannot carry. Completed only
-/// is structural rather than checked: a cap hit or a driver error is an `Err`
-/// from the driver and short-circuits this loop, so a failed game has no
-/// [`ArenaGameStats`] to hand anyone (spec §4's failure taxonomy — see that
-/// type's doc).
+/// is structural rather than checked: on THIS entry point a cap hit or a driver
+/// error is an `Err` from the driver and short-circuits the loop, so a failed
+/// game has no [`ArenaGameStats`] to hand anyone (spec §4's failure taxonomy —
+/// see that type's doc).
+///
+/// **The rule survives A-S11-1's counting mode, by a different route** (freeze
+/// doc §9.6): there a capped game does not short-circuit anything, but it
+/// produces no `ArenaGameStats` either, so the sink still sees every completed
+/// game and nothing else — including the completed games of a VOID unit. A
+/// record is a record; voiding is a unit-level statistic.
 ///
 /// Streaming rather than returning the records: a 200-unit 4P cell is 800 games
 /// of event log, which is a corpus, not a report.

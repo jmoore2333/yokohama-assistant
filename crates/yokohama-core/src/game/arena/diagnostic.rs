@@ -13,6 +13,17 @@
 //!   2. no cell can COUNT deadlocks — it reports games-until-first-hit and
 //!      stops.
 //!
+//! **Item 2 is now a statement about the DEFAULT** (V4 step 11, amendment
+//! A-S11-1, freeze doc §9.6): `arena cell … --capped-ceiling <n>` opts a cell
+//! into a counting mode that records each capped game, voids its design unit
+//! and reads its outcome statistics over the units that remain. That surface
+//! measures STRENGTH over read units and is gated by a registered ceiling; this
+//! one measures a RATE and gates nothing, and the two stay separate for the
+//! reason the whole module doc gives — a diagnostic that quietly produced a
+//! comparable figure would sit inside every later reading. An unflagged cell
+//! still refuses at the first capped game, which is what item 1 and the D1/D2
+//! reads were taken under.
+//!
 //! **NOTHING HERE MEASURES STRENGTH.** No function in this module computes or
 //! renders a win share, a θ̂, a seat-0 win count, a VP margin or an interval of
 //! any contestant's share, and [`render_cap_rate`] leads with a printed label
@@ -960,9 +971,12 @@ mod tests {
         }
     }
 
-    /// **Surface (B)'s whole claim.** A cell refuses at the FIRST capped game;
-    /// this instrument counts them and keeps going, and names each one so it
-    /// reproduces under surface (A).
+    /// **Surface (B)'s whole claim.** An unflagged cell refuses at the FIRST
+    /// capped game; this instrument counts them and keeps going, and names each
+    /// one so it reproduces under surface (A). (A cell opted into A-S11-1's
+    /// counting mode also keeps going — and, unlike this one, then reports a
+    /// strength figure over its read units. The two surfaces stay separate:
+    /// this one gates nothing and prints no such figure.)
     #[test]
     fn cap_rate_counts_capped_games_instead_of_refusing_the_run() {
         let rules = Rules::standard();
