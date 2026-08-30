@@ -1232,9 +1232,22 @@ fn drive(
 ///
 /// This enum is the diagnosis-only exception, and it says so in its shape: a
 /// [`Capped`](Self::Capped) game is a DIFFERENT variant carrying a DIFFERENT
-/// payload, so no caller can mistake a partial run for a completed one, and no
-/// `ArenaGameStats` (the type `corpus::emit_record` and every tabulator take)
-/// is ever built from one.
+/// payload, so no caller can mistake a partial run for a completed one and no
+/// [`ArenaGameStats`] — the type every tabulator in `arena::stats` takes — is
+/// ever built from one.
+///
+/// **WHAT THAT DOES AND DOES NOT BUY, stated precisely (W-D1 review), because
+/// the obvious stronger reading is false.** The variant split protects the
+/// TABULATORS, which take `ArenaGameStats`. It does NOT protect the corpus by
+/// typing: [`corpus::emit_record`] takes a `&GameRecord`, and a capped game's
+/// partial record is a perfectly ordinary `GameRecord` that could be handed to
+/// it. Nor does the missing terminal digest make such a record self-refusing:
+/// `replay_strict` SKIPS its terminal check when a record carries no digest
+/// (`record.rs`, `if let Some(expected_digest)`), so a partial record replays
+/// strict-clean. **The real protection is a CODE-PATH fact, not a type fact —
+/// no path in `arena::diagnostic` or in `examples/arena`'s two diagnostic
+/// subcommands calls `emit_record` at all** — and a future caller that wanted to
+/// file one of these would have to write that call itself, deliberately.
 #[derive(Debug)]
 pub enum DiagnosticOutcome {
     /// The game reached a terminal state. Byte-for-byte the game
@@ -1246,11 +1259,15 @@ pub enum DiagnosticOutcome {
     /// `moves_by_seat` is the per-seat split.
     ///
     /// **The record carries NO terminal digest**, deliberately: the state is not
-    /// terminal, and a stamped digest would let a partial record pass
-    /// `replay_strict`'s terminal check as though the game had ended. Lenient
-    /// [`replay`](crate::game::record::replay) reproduces `state` exactly — the
-    /// property `the_diagnostic_driver_surfaces_the_partial_record_and_state_on_a_cap`
-    /// pins.
+    /// terminal, so there is no terminal digest to honestly stamp — a digest
+    /// here would ASSERT a claim about a game that has not ended. It does not
+    /// follow that the digest-less record is thereby rejected anywhere:
+    /// `replay_strict` skips its terminal check when there is no digest to check
+    /// against (see this enum's doc). What is true is narrower and is what the
+    /// wave relies on — lenient [`replay`](crate::game::record::replay)
+    /// reproduces `state` exactly, the property
+    /// `the_diagnostic_driver_surfaces_the_partial_record_and_state_on_a_cap`
+    /// pins and `diagnostic::render_world` re-checks on every report.
     ///
     /// Both payloads are BOXED, matching [`Terminated`](Self::Terminated)'s
     /// indirection: a `GameRecord` of a capped game holds tens of thousands of

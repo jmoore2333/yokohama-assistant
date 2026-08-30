@@ -22,6 +22,18 @@
 //! reading. The one interval this module computes is on a CAP RATE — a health
 //! measurement of the harness, not of a player.
 //!
+//! **NOTHING HERE EMITS A RECORD, and that is the guarantee — not a type.** A
+//! capped game's partial record is an ordinary [`GameRecord`]: `corpus::emit_record`
+//! takes `&GameRecord`, so nothing in the type system stops one being filed, and
+//! `replay_strict` SKIPS its terminal check on a digest-less record rather than
+//! rejecting it, so a partial record replays strict-clean. What keeps a partial
+//! run out of any corpus is the CODE PATH — no function in this module and
+//! neither diagnostic subcommand in `examples/arena` calls `emit_record` at all
+//! — and a future caller wanting to file one would have to write that call
+//! itself. (See [`DiagnosticOutcome`]'s doc, which the W-D1 review corrected on
+//! the same point; the variant split protects the TABULATORS, which take
+//! `ArenaGameStats`, and nothing more.)
+//!
 //! **Seating is the cell's, not a second transcription.** [`run_world`] resolves
 //! its seating through [`unit_for`] and keys every agent through
 //! [`agent_stream_seed`] exactly as `stats::run_cell_emitting_timed` does, so a
