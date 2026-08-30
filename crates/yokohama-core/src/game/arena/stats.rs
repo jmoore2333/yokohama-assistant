@@ -85,7 +85,7 @@ use crate::game::metrics::{nearest_rank_index, wilson_95, TriggerTally, Z_95};
 use crate::game::policy::RolloutPolicy;
 use crate::game::rules::Rules;
 use crate::game::seeds::{SeedSchedule, WorldSeed};
-use crate::types::{OrderCardId, PlayerId, PlayerView};
+use crate::types::{EndGameTrigger, OrderCardId, PlayerId, PlayerView};
 
 /// Domain salt for the bootstrap resample stream.
 pub(crate) const SALT_BOOTSTRAP: u64 = 0xA3E1_B007_0000_0004;
@@ -1359,6 +1359,51 @@ impl ArenaAgent for TimedAgent {
     }
 }
 
+/// What one scheduled game of a cell produced.
+///
+/// In [`CapPolicy::Refuse`] only [`Completed`](Self::Completed) is ever built —
+/// the driver's cap is an `Err` there, exactly as it always was. The variant
+/// split exists so the counting mode cannot hand a partial run to anything that
+/// takes an [`ArenaGameStats`]: a capped game has none, and the corpus sink,
+/// the trigger tally and the outcome buffer all take one.
+enum PlayedGame {
+    Completed(Box<ArenaGameStats>),
+    /// The turn guard tripped. `moves_by_seat` is the PARTIAL run's per-seat
+    /// split, which the volume counters fold exactly as a completed game's.
+    Capped { turns: u32, moves_by_seat: Vec<u64> },
+}
+
+/// One design unit's OUTCOME contributions, held back until the unit is known
+/// READ — V4 step 11, amendment A-S11-1 (freeze doc §9.6).
+///
+/// **Why a buffer and not a running total.** A unit is VOID as soon as ANY of
+/// its games caps, and a cap can land in the unit's SECOND game — after the
+/// first has already completed, been emitted and been tabulated. An outcome
+/// folded the moment its game finished cannot be taken back, so the outcome
+/// half of every game waits here and folds into the cell only once the whole
+/// unit has been played and read.
+///
+/// **The VOLUME half is deliberately NOT here.** `applied_by_seat`,
+/// `x_applied_moves`, the explanation tally, the two cap counters and the
+/// budget meters fold over EVERY played game, capped ones included, so
+/// `x_explanations == Some(x_applied_moves)` stays a claim about every move X
+/// played rather than about the moves that happened to land in a read unit.
+///
+/// `vp_margins` is a per-GAME vector rather than a running `f64` subtotal so
+/// the cell's float addition sequence is EXACTLY the one it always was — units
+/// in schedule order, games in arrangement order. A per-unit subtotal would
+/// re-associate the sum, and the goldens compare that figure byte for byte.
+#[derive(Default)]
+struct UnitOutcome {
+    games: u32,
+    x_wins: u32,
+    seat0_wins: u32,
+    top_vp_ties: u32,
+    ties_to_seat0: u32,
+    vp_margins: Vec<f64>,
+    triggers: Vec<Option<EndGameTrigger>>,
+}
+
 /// Run one cell with per-move invariant checking ON — the default every driver
 /// in the repo contracts for, and what every asserting gate cell wants.
 ///
@@ -1492,6 +1537,9 @@ pub(crate) fn run_cell_loop(
         CapPolicy::Count { ceiling } => Some(ceiling),
     };
     let mut x_unit_shares: Vec<f64> = Vec::with_capacity(spec.units as usize);
+    // Every capped game, in schedule order. Stays empty in refuse mode, where
+    // the driver's cap is an `Err` that never reaches this loop.
+    let mut capped: Vec<CappedGame> = Vec::new();
     let mut games = 0u32;
     let mut x_game_wins = 0u32;
     let mut seat0_wins = 0u32;
@@ -1522,7 +1570,10 @@ pub(crate) fn run_cell_loop(
     for _ in 0..spec.units {
         let seed = schedule.next_world();
         let unit = unit_for(players, seed);
-        let mut unit_x_wins = 0u32;
+        // The unit's outcome, held back until the unit is known READ, and the
+        // flag that decides whether it ever folds.
+        let mut unit_outcome = UnitOutcome::default();
+        let mut unit_void = false;
 
         for (arr, seating) in unit.seatings.iter().enumerate() {
             // Which seat X is sitting in THIS arrangement. `unit_for` puts every
@@ -1549,7 +1600,7 @@ pub(crate) fn run_cell_loop(
             // plays on `agent_stream_seed(seed, seat, slot)`.
             let mut x_handles: Vec<ExplainHandle> = Vec::new();
             let mut y_handles: Vec<ExplainHandle> = Vec::new();
-            let mut stats = {
+            let mut played = {
                 let (xh, yh) = (&mut x_handles, &mut y_handles);
                 let (xc, yc) = (&x_clock, &y_clock);
                 let mut make_agent = |seat: PlayerId, _players: u8| -> Box<dyn ArenaAgent> {
@@ -1576,24 +1627,24 @@ pub(crate) fn run_cell_loop(
                     // `HONEST_MAX_TURNS`, so an unflagged cell reaches the same
                     // driver through the same chain it always did — a
                     // construction fact, which is what freeze doc §9.6 asks for
-                    // ahead of any pin.
-                    CapPolicy::Refuse => run_arena_game_capped(
+                    // ahead of any pin. Its cap is still an `Err`, so no
+                    // `PlayedGame::Capped` can exist in this mode.
+                    CapPolicy::Refuse => PlayedGame::Completed(Box::new(run_arena_game_capped(
                         seed, players, rules, &mut make_agent, invariants, max_turns,
-                    )?,
+                    )?)),
                     // COUNTING MODE plays the SAME game through the diagnostic
                     // driver — same setup half, same shared loop, same keying
                     // (W-D1 pinned the equivalence) — which is the only driver
                     // that hands a capped game's partial run back instead of
-                    // dropping it. The counted EVENT is not built yet; this
-                    // wave's next commit drives it.
+                    // dropping it.
                     CapPolicy::Count { .. } => {
                         let game = run_arena_game_diagnostic_capped(
                             seed, players, rules, &mut make_agent, invariants, max_turns,
                         )?;
                         match game.outcome {
-                            DiagnosticOutcome::Terminated(stats) => *stats,
-                            DiagnosticOutcome::Capped { turns, .. } => {
-                                return Err(ArenaError::CapReached { seed, turns })
+                            DiagnosticOutcome::Terminated(stats) => PlayedGame::Completed(stats),
+                            DiagnosticOutcome::Capped { turns, moves_by_seat, .. } => {
+                                PlayedGame::Capped { turns, moves_by_seat }
                             }
                         }
                     }
@@ -1601,21 +1652,29 @@ pub(crate) fn run_cell_loop(
             };
             // The RUN half of provenance (spec §5): the driver stamped who
             // played each seat, and this is the only layer that knows which
-            // schedule and which cell they played for.
-            stats.record.set_run_context(master, &spec.name);
-            sink(&stats, arr as u8)?;
-
-            games += 1;
-            trigger.observe(stats.trigger.as_ref());
+            // schedule and which cell they played for. A capped game reaches
+            // neither line — it has no `ArenaGameStats`, and the sink sees every
+            // COMPLETED game and nothing else, void unit or not (a record is a
+            // record; voiding is a unit-level statistic).
+            if let PlayedGame::Completed(stats) = &mut played {
+                stats.record.set_run_context(master, &spec.name);
+                sink(stats, arr as u8)?;
+            }
 
             // Spec §5.4's driver extension, aggregated two ways because they
             // answer two questions: `applied_by_seat` follows the SEAT (a design
             // balance read), `x_applied_moves` follows the CONTESTANT through the
-            // rotation (spec §0.3(b)'s right-hand side).
-            for (seat, moves) in stats.moves_by_seat.iter().enumerate() {
+            // rotation (spec §0.3(b)'s right-hand side). BOTH fold over every
+            // played game — a capped game's per-seat split comes off the partial
+            // run the diagnostic driver hands back.
+            let moves_by_seat: &[u64] = match &played {
+                PlayedGame::Completed(stats) => &stats.moves_by_seat,
+                PlayedGame::Capped { moves_by_seat, .. } => moves_by_seat,
+            };
+            for (seat, moves) in moves_by_seat.iter().enumerate() {
                 applied_by_seat[seat] += moves;
             }
-            x_applied_moves += stats.moves_by_seat[x_seat.0 as usize];
+            x_applied_moves += moves_by_seat[x_seat.0 as usize];
             for handle in &x_handles {
                 *x_explanations.get_or_insert(0) += handle.explained();
                 if let Some(hits) = handle.ply_cap_hits() {
@@ -1630,45 +1689,82 @@ pub(crate) fn run_cell_loop(
                 y_meters.fold(handle);
             }
 
-            if stats.result.winner == x_seat {
-                unit_x_wins += 1;
-                x_game_wins += 1;
-            }
-            if stats.result.winner == PlayerId(0) {
-                seat0_wins += 1;
-            }
+            // THE OUTCOME HALF — buffered, never folded here. See
+            // [`UnitOutcome`]: a cap in this unit's later game would otherwise
+            // leave a contribution that cannot be taken back.
+            match played {
+                PlayedGame::Completed(stats) => {
+                    unit_outcome.games += 1;
+                    unit_outcome.triggers.push(stats.trigger);
 
-            // `final_result` (game::scoring) is a TOTAL order: it sorts on
-            // `(Reverse(total), clockwise distance from start_player)`, and the
-            // distance `(seat + n - start) % n` is a bijection from seat onto
-            // 0..n, so no two players can share a sort key. A game therefore
-            // NEVER reports a tie — the clockwise tie-break has already decided
-            // it, and `winner` is always exactly one seat. What is recorded here
-            // is the tie-break's WORK: how often the top VP total was shared at
-            // all, and how often seat 0 was the one it awarded.
-            let standings = &stats.result.standings;
-            let top_shared = standings.len() >= 2
-                && standings[0].breakdown.total == standings[1].breakdown.total;
-            if top_shared {
-                top_vp_ties += 1;
-                if stats.result.winner == PlayerId(0) {
-                    ties_to_seat0 += 1;
+                    if stats.result.winner == x_seat {
+                        unit_outcome.x_wins += 1;
+                    }
+                    if stats.result.winner == PlayerId(0) {
+                        unit_outcome.seat0_wins += 1;
+                    }
+
+                    // `final_result` (game::scoring) is a TOTAL order: it sorts
+                    // on `(Reverse(total), clockwise distance from
+                    // start_player)`, and the distance `(seat + n - start) % n`
+                    // is a bijection from seat onto 0..n, so no two players can
+                    // share a sort key. A game therefore NEVER reports a tie —
+                    // the clockwise tie-break has already decided it, and
+                    // `winner` is always exactly one seat. What is recorded here
+                    // is the tie-break's WORK: how often the top VP total was
+                    // shared at all, and how often seat 0 was the one it
+                    // awarded.
+                    let standings = &stats.result.standings;
+                    let top_shared = standings.len() >= 2
+                        && standings[0].breakdown.total == standings[1].breakdown.total;
+                    if top_shared {
+                        unit_outcome.top_vp_ties += 1;
+                        if stats.result.winner == PlayerId(0) {
+                            unit_outcome.ties_to_seat0 += 1;
+                        }
+                    }
+
+                    let mut x_total = 0.0f64;
+                    let mut y_total = 0.0f64;
+                    for standing in standings {
+                        if standing.player == x_seat {
+                            x_total = f64::from(standing.breakdown.total);
+                        } else {
+                            y_total += f64::from(standing.breakdown.total);
+                        }
+                    }
+                    unit_outcome.vp_margins.push(x_total - y_total / f64::from(players - 1));
+                }
+                PlayedGame::Capped { turns, .. } => {
+                    // The counted event. The unit is VOID from here — and the
+                    // rest of its schedule is still PLAYED, because the ceiling
+                    // counts capped games over the full schedule, which is what
+                    // the measured per-game rates priced.
+                    unit_void = true;
+                    capped.push(CappedGame { seed, arrangement: arr as u8, turns });
                 }
             }
-
-            let mut x_total = 0.0f64;
-            let mut y_total = 0.0f64;
-            for standing in standings {
-                if standing.player == x_seat {
-                    x_total = f64::from(standing.breakdown.total);
-                } else {
-                    y_total += f64::from(standing.breakdown.total);
-                }
-            }
-            vp_margin_sum += x_total - y_total / f64::from(players - 1);
         }
 
-        x_unit_shares.push(f64::from(unit_x_wins) / unit.seatings.len() as f64);
+        if unit_void {
+            // A VOID unit contributes NO OUTCOME. Its games were played, its
+            // completed ones reached the sink, and its volume is counted — the
+            // outcome, and only the outcome, is dropped.
+            continue;
+        }
+        games += unit_outcome.games;
+        x_game_wins += unit_outcome.x_wins;
+        seat0_wins += unit_outcome.seat0_wins;
+        top_vp_ties += unit_outcome.top_vp_ties;
+        ties_to_seat0 += unit_outcome.ties_to_seat0;
+        for game_trigger in &unit_outcome.triggers {
+            trigger.observe(game_trigger.as_ref());
+        }
+        // In game order, so the cell's float sum is the sequence it always was.
+        for margin in &unit_outcome.vp_margins {
+            vp_margin_sum += margin;
+        }
+        x_unit_shares.push(f64::from(unit_outcome.x_wins) / unit.seatings.len() as f64);
     }
 
     let x_unit_shares_len = x_unit_shares.len() as u32;
@@ -1725,7 +1821,7 @@ pub(crate) fn run_cell_loop(
             units_scheduled: spec.units,
             units_void: spec.units - x_unit_shares_len,
             units_read: x_unit_shares_len,
-            capped: Vec::new(),
+            capped,
         },
         CellWall { x: x_clock.read(), y: y_clock.read() },
     ))
