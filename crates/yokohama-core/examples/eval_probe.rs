@@ -12971,13 +12971,10 @@ fn blocking_findings(members: &[Provenance]) -> Vec<Blocking> {
         // productive/dead at a PF ordinal, Shape F's F+/F0 at a reserved
         // exhibit. ONE side plus an organic successor is NOT a pair and does
         // not fire.
-        // W2 RED: the deliberate placeholder — the arm fires on ANY escrow role
-        // rather than on BOTH sides of one pair, so a registered side colliding
-        // with an organic successor would read as a §5.3 stop.
         let escrow_recipe = roles.contains(&RecipeRole::EscrowProductive)
-            || roles.contains(&RecipeRole::EscrowDead);
+            && roles.contains(&RecipeRole::EscrowDead);
         let escrow_fee_flow = roles.contains(&RecipeRole::EscrowFeePlus)
-            || roles.contains(&RecipeRole::EscrowFeeZero);
+            && roles.contains(&RecipeRole::EscrowFeeZero);
         if escrow_recipe || escrow_fee_flow {
             out.push(Blocking::EscrowPair { root: root.to_string() });
         }
@@ -16693,10 +16690,7 @@ fn step10_licensed(ordinal: u32) -> bool {
 /// another band's licence.
 fn admit_step10_root(ordinal: u32, acknowledged: &BTreeSet<u32>) -> Result<u32, String> {
     if step10_fenced(ordinal) {
-        // W2 RED: the deliberate placeholder — the admission checks that SOME
-        // acknowledgement was given rather than THIS ordinal's. The cell below
-        // asks for the per-ordinal rule; GREEN lands it.
-        return if !acknowledged.is_empty() {
+        return if acknowledged.contains(&ordinal) {
             Ok(ordinal)
         } else {
             Err(format!(
@@ -16975,16 +16969,14 @@ fn compose_ose_block(reads: &[OseOrdinal], inputs: BandInputs) -> BlockVerdict {
         return BlockVerdict::Refused;
     }
     let split = BlockSplit::count(reads.iter().map(ose_ordinal_verdict), inputs.blocking_collisions);
-    // W2 RED: the deliberate placeholder — precedence (1) and (2) are SWAPPED,
-    // so a band below the floor that also carries a collision reports MISS
-    // rather than the registered VOID-AS-BLOCK owner route. The exhaustive cell
-    // below reads the registered order; GREEN restores it.
+    // The floor reads STEPS 1-2 ONLY and is burn-free by construction:
+    // instantiability computes no candidate column, so a burn cannot move it.
     let capable = reads.iter().filter(|o| o.read.substantive_capable()).count();
-    if inputs.blocking_collisions > 0 {
-        return BlockVerdict::Miss(split);
-    }
     if capable < STEP10_FLOOR {
         return BlockVerdict::VoidAsBlock { substantive_capable: capable, split };
+    }
+    if inputs.blocking_collisions > 0 {
+        return BlockVerdict::Miss(split);
     }
     if split.passes() >= STEP10_BLOCK_PASS {
         BlockVerdict::Pass(split)
@@ -17032,10 +17024,7 @@ fn compose_pf_block(reads: &[PfOrdinal], inputs: BandInputs) -> BlockVerdict {
         return BlockVerdict::Miss(split);
     }
     let misses = split.miss + split.burned;
-    // W2 RED: the deliberate placeholder — the void threshold is off by one, so
-    // the registered flip cell (1 miss, 2 voids) is silently classified as a
-    // MISS instead of routing to the owner.
-    if misses <= 2 && misses + split.void > 3 {
+    if misses <= 2 && misses + split.void > 2 {
         return BlockVerdict::UnregisteredCell {
             shown: split.real,
             real_misses: split.miss,
@@ -17072,11 +17061,8 @@ fn fork_state(root: &GameState, rules: &Rules) -> Result<GameState, String> {
             legal.len(),
         ));
     }
-    // W2 RED: the deliberate placeholder — the ply is NOT crossed, so every
-    // read below is taken at the turn start rather than at the Placement state
-    // R-S10-2 registers.
-    let _ = rules;
-    Ok(root.clone())
+    apply_move(root, &Move::EndAdditionalPhase, rules)
+        .map_err(|e| format!("`EndAdditionalPhase` did not apply at the root: {e}"))
 }
 
 /// One side of the pair, applied at the fork through the CHECKED boundary.
@@ -17149,10 +17135,7 @@ fn probe_static_total(
     let mut total: i64 = 0;
     for id in FeatureId::all() {
         let slot = id.index();
-        // W2 RED: the deliberate placeholder — the probe path forces the LATE
-        // endpoint instead of interpolating at the view's own organic ppm, the
-        // exact drift R-S10-3's parity gate exists to see.
-        let weight = interpolate(table.early[slot], table.late[slot], PROGRESS_FULL_PPM);
+        let weight = interpolate(table.early[slot], table.late[slot], sig.ppm);
         rows[slot] = weight.saturating_mul(sig.dv[slot]);
         total = total.saturating_add(rows[slot]);
     }
@@ -17169,12 +17152,9 @@ enum Preference {
 
 /// The SIGN of a `plus − zero` delta, as a preference.
 fn preference_of(delta: i64) -> Preference {
-    // W2 RED: the deliberate placeholder — the sign mapping is INVERTED, which
-    // no arithmetic downstream would notice because both static paths would
-    // invert together. The classifier cell below reads the mapping directly.
     match delta.cmp(&0) {
-        std::cmp::Ordering::Greater => Preference::Zero,
-        std::cmp::Ordering::Less => Preference::Plus,
+        std::cmp::Ordering::Greater => Preference::Plus,
+        std::cmp::Ordering::Less => Preference::Zero,
         std::cmp::Ordering::Equal => Preference::Tie,
     }
 }
@@ -17405,10 +17385,7 @@ fn read_raw_arm(
 ) -> Result<RawArm, String> {
     let plus = production_vector(plus_view, opponent, rules)?;
     let zero = production_vector(zero_view, opponent, rules)?;
-    // W2 RED: the deliberate placeholder — conjunct (b) reads the first SEVEN
-    // of the sixteen columns the registration names, so a moved E2 goes unseen.
-    // The mutation cell below asks for the registered set.
-    let moved: Vec<(&'static str, i64, i64)> = RAW_ARM_INVARIANT[..7]
+    let moved: Vec<(&'static str, i64, i64)> = RAW_ARM_INVARIANT
         .iter()
         .map(|c| (c.label(), plus[axis_slot(*c)], zero[axis_slot(*c)]))
         .filter(|(_, a, b)| a != b)
@@ -18329,9 +18306,7 @@ fn parse_step10_options(band: Step10Band, args: &[String]) -> Result<Step10Optio
         for (flag, given) in
             [("escrow-read", escrow_reads), ("burned", burned_reads), ("anchor", anchor_reads)]
         {
-            // W2 RED: the deliberate placeholder — born-validation accepts the
-            // three band-mode inputs instead of refusing them by name.
-            if false && !given.is_empty() {
+            if !given.is_empty() {
                 return Err(format!(
                     "--development REFUSES --{flag}: born-validation runs the identical pipeline \
                      on the LICENSED development roots ({:?}), which no burn rule ever reached — \
