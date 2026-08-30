@@ -19828,12 +19828,17 @@ fn run_probe_world_capped(
     rules: &Rules,
     max_turns: u32,
 ) -> Result<WorldRun, String> {
-    // PLACEHOLDER (review M1): the ARM's table, with the declared clauses
-    // dropped — the RED commit's own `fn table` body, restored here so the new
-    // behavioural cell has something to discriminate against. Every other cell
-    // passes under it, which is exactly the gap M1 names.
-    let x_table = read.x.arm.table();
-    let y_table = read.y.arm.table();
+    // **`WorldSide::echo`'s obligation, discharged here** (review S2): both
+    // halves of each side come from ONE `WorldSideSpec` — the factory below
+    // closes over `spec.table()`, and `spec.side()` derives the echo from the
+    // same `table()` through the controller's own provenance. Deriving the two
+    // from different expressions is what the seam newly makes POSSIBLE and what
+    // `a_declared_clause_reaches_the_agents_and_changes_the_play` exists to
+    // catch: it plays a mutated table and asserts the PLAY moved, so a wire
+    // that dropped the clauses on the way to the agents fails here rather than
+    // printing MUTANT over the named identity's game.
+    let x_table = read.x.table();
+    let y_table = read.y.table();
     let factory = |table: WeightTable| {
         move |rules: &Rules, agent_seed: u64| -> Box<dyn ArenaAgent> {
             Box::new(lookahead_probe_agent(

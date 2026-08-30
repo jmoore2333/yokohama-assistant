@@ -301,6 +301,19 @@ pub fn run_world_capped(
 pub struct WorldSide<'a> {
     /// What [`render_world`] prints for this side. The CALLER's, because only
     /// the caller knows what it built.
+    ///
+    /// **CONTRACT (W-D2 review S2): this must be DERIVED from the same table and
+    /// knobs [`build`](Self::build) closes over.** For a [`Contestant`] the two
+    /// cannot disagree — [`run_world_capped`] takes both from one value, which is
+    /// the property `Contestant::provenance` states as "this arm cannot echo a
+    /// search it did not run". This struct is the point at which they become two
+    /// independent inputs, and a caller that lets them drift makes the report
+    /// LIE: `X = mutant-of-…{weights=…}` over a game the named identity played,
+    /// or the reverse. Nothing here can enforce it — a `Fn` is opaque — so a
+    /// caller owes a cell that plays a differing table and asserts the PLAY
+    /// differs. `examples/eval_probe`'s
+    /// `a_declared_clause_reaches_the_agents_and_changes_the_play` is that cell
+    /// for the one caller that exists.
     pub echo: String,
     /// Build this side's agent on the stream `agent_seed`, which the runner
     /// derives through [`agent_stream_seed`] exactly as a cell does. A
