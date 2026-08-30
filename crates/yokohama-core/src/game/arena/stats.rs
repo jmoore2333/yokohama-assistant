@@ -3916,6 +3916,35 @@ mod tests {
     /// 128 and 104.)
     const W_A1_ALL_VOID_MAX_TURNS: u32 = 50;
 
+    /// **THE MIXED FIXTURE'S GUARD.** Under it exactly TWO of
+    /// [`W_A1_MIXED_UNITS`]'s twelve games pass the guard — and both are their
+    /// unit's SECOND game, after a first game that COMPLETED. That is the shape
+    /// the void semantics can get wrong: an outcome folded when its game
+    /// finished cannot be taken back once the unit turns out to be void, so the
+    /// loop has to buffer a unit's outcome and fold it only when the unit is
+    /// known READ.
+    const W_A1_MIXED_MAX_TURNS: u32 = 130;
+
+    /// The `(unit index, arrangement)` of every capped game of the mixed
+    /// fixture, in schedule order — recorded the way the contestant goldens
+    /// record their probed seeds, and asserted below rather than trusted.
+    const W_A1_MIXED_CAPPED: [(usize, u8); 2] = [(1, 1), (3, 1)];
+
+    /// The greedy fixture: three units at the same master and the same guard,
+    /// where unit 0's FIRST game caps and its second COMPLETES — the mirror of
+    /// the rung fixture's shape, and the one that proves a void unit's other
+    /// arrangement is still played.
+    const W_A1_GREEDY_UNITS: u32 = 3;
+
+    /// The scheduled world seeds of a cell at [`W_A1_MASTER`], re-derived from
+    /// the DESIGN exactly as the loop derives them. Never transcribed: a
+    /// schedule change must fail here rather than leave a stale literal that
+    /// still passes.
+    fn w_a1_scheduled_seeds(units: u32) -> Vec<WorldSeed> {
+        let mut schedule = SeedSchedule::diagnostic(W_A1_MASTER);
+        (0..units).map(|_| schedule.next_world()).collect()
+    }
+
     /// The design size of the wave's fixture cell — six units, twelve games.
     ///
     /// MEASURED at [`W_A1_MASTER`] before any of this code existed, the way the
@@ -3970,6 +3999,265 @@ mod tests {
             "an absent ceiling emits NO token at all: {}",
             old.spec_echo,
         );
+    }
+
+    /// **THE VOID SEMANTICS.** The design UNIT containing a capped game is
+    /// void: it contributes no outcome, and every outcome statistic on the
+    /// report — the unit vector, θ̂, the interval, `games`, the trigger tally —
+    /// reads over the READ units alone (freeze doc §9.6).
+    ///
+    /// The resample stream is the one thing that does NOT move with the read
+    /// count: it is derived from the DESIGN (master, SCHEDULED units, players)
+    /// exactly as before, so an interval stays a function of the data once.
+    #[test]
+    fn a_mixed_cell_voids_the_units_that_capped_and_reads_the_rest() {
+        use std::collections::BTreeSet;
+
+        let rules = Rules::standard();
+        let spec = w_a1_spec("w-a1-mixed", W_A1_MIXED_UNITS);
+        let (report, _wall) = run_cell_loop(
+            &spec,
+            &rules,
+            true,
+            CapPolicy::Count { ceiling: W_A1_MIXED_CAPPED.len() as u32 },
+            W_A1_MIXED_MAX_TURNS,
+            &mut |_stats, _arr| Ok(()),
+        )
+        .expect("a cell at its own ceiling completes");
+
+        let seeds = w_a1_scheduled_seeds(spec.units);
+        let expected: Vec<CappedGame> = W_A1_MIXED_CAPPED
+            .iter()
+            .map(|&(unit, arrangement)| CappedGame {
+                seed: seeds[unit],
+                arrangement,
+                // The driver's own number, one past the guard.
+                turns: W_A1_MIXED_MAX_TURNS + 1,
+            })
+            .collect();
+        assert_eq!(report.capped, expected, "the counted events, in schedule order");
+
+        let void: BTreeSet<usize> = W_A1_MIXED_CAPPED.iter().map(|&(unit, _)| unit).collect();
+        assert_eq!(report.units_scheduled, spec.units);
+        assert_eq!(report.units_void, void.len() as u32);
+        assert_eq!(report.units_read, spec.units - void.len() as u32);
+        assert_eq!(report.x_unit_shares.len(), report.units_read as usize, "units_read IS n");
+        assert_eq!(
+            report.games,
+            report.units_read * u32::from(spec.players),
+            "`games` on the report is the READ count",
+        );
+        assert_eq!(
+            report.trigger.games(),
+            u64::from(report.games),
+            "a void unit's completed game is not an observation of the trigger distribution",
+        );
+        assert_eq!(report.theta_hat, mean(&report.x_unit_shares));
+
+        let resample_seed = mix(
+            SALT_BOOTSTRAP,
+            &[W_A1_MASTER, u64::from(spec.units), u64::from(spec.players)],
+        );
+        assert_eq!(
+            report.interval,
+            interval_for_units(&report.x_unit_shares, BOOTSTRAP_REPLICATES, resample_seed),
+            "the interval is the one the READ vector gives at the DESIGN-derived seed",
+        );
+
+        // The echo's `games=` is the SCHEDULED count — item 4's two clauses
+        // answered by two numbers.
+        assert!(report.spec_echo.contains(&format!("units={} ", spec.units)), "{}", report.spec_echo);
+        assert!(
+            report
+                .spec_echo
+                .contains(&format!("games={} ", u32::from(spec.players) * spec.units)),
+            "{}",
+            report.spec_echo,
+        );
+    }
+
+    /// **THE CROSS-SURFACE PIN (pin (iii)).** The cell's figures are the fold of
+    /// independent world reads over the RIGHT games: the outcome figures over
+    /// the READ units only, the volume counters over ALL games — the capped
+    /// ones' partial `moves_by_seat` included.
+    ///
+    /// The reads come from `arena::diagnostic::run_world_capped`, which seats
+    /// and keys a world exactly as a cell does but tabulates nothing, so this
+    /// compares the tabulation against a surface that shares only the play.
+    ///
+    /// ANTI-VACUITY is load-bearing on the volume half: the fold over ALL games
+    /// and the fold over READ games alone must actually DIFFER at this fixture,
+    /// or "over every played game" would be indistinguishable from "over the
+    /// read units".
+    #[test]
+    fn a_mixed_cells_figures_are_the_fold_of_the_world_reads_over_the_right_games() {
+        use crate::game::arena::diagnostic::{run_world_capped, WorldSpec};
+
+        let rules = Rules::standard();
+        let spec = w_a1_spec("w-a1-mixed-cross", W_A1_MIXED_UNITS);
+        let (report, _wall) = run_cell_loop(
+            &spec,
+            &rules,
+            true,
+            CapPolicy::Count { ceiling: W_A1_MIXED_CAPPED.len() as u32 },
+            W_A1_MIXED_MAX_TURNS,
+            &mut |_stats, _arr| Ok(()),
+        )
+        .expect("a cell at its own ceiling completes");
+
+        let players = spec.players;
+        let mut applied_by_seat = vec![0u64; players as usize];
+        let mut applied_by_seat_read_only = vec![0u64; players as usize];
+        let mut x_applied_moves = 0u64;
+        let mut seat0_wins = 0u32;
+        let mut ties_to_seat0 = 0u32;
+        let mut trigger = TriggerTally::default();
+        let mut vp_margin_sum = 0.0f64;
+        let mut shares: Vec<f64> = Vec::new();
+        let mut games = 0u32;
+
+        for seed in w_a1_scheduled_seeds(spec.units) {
+            let mut completed = Vec::new();
+            let mut unit_void = false;
+            for arrangement in 0..players {
+                let run = run_world_capped(
+                    &WorldSpec { x: spec.x, y: spec.y, seed, players, arrangement },
+                    &rules,
+                    true,
+                    W_A1_MIXED_MAX_TURNS,
+                )
+                .expect("the world plays");
+                let x_seat = run.x_seat;
+                match run.game.outcome {
+                    DiagnosticOutcome::Capped { moves_by_seat, .. } => {
+                        for (seat, moves) in moves_by_seat.iter().enumerate() {
+                            applied_by_seat[seat] += moves;
+                        }
+                        x_applied_moves += moves_by_seat[x_seat.0 as usize];
+                        unit_void = true;
+                    }
+                    DiagnosticOutcome::Terminated(stats) => {
+                        for (seat, moves) in stats.moves_by_seat.iter().enumerate() {
+                            applied_by_seat[seat] += moves;
+                        }
+                        x_applied_moves += stats.moves_by_seat[x_seat.0 as usize];
+                        completed.push((stats, x_seat));
+                    }
+                }
+            }
+            if unit_void {
+                continue;
+            }
+            let mut unit_x_wins = 0u32;
+            for (stats, x_seat) in completed {
+                games += 1;
+                for (seat, moves) in stats.moves_by_seat.iter().enumerate() {
+                    applied_by_seat_read_only[seat] += moves;
+                }
+                trigger.observe(stats.trigger.as_ref());
+                if stats.result.winner == x_seat {
+                    unit_x_wins += 1;
+                }
+                if stats.result.winner == PlayerId(0) {
+                    seat0_wins += 1;
+                }
+                let standings = &stats.result.standings;
+                let top_shared = standings.len() >= 2
+                    && standings[0].breakdown.total == standings[1].breakdown.total;
+                if top_shared && stats.result.winner == PlayerId(0) {
+                    ties_to_seat0 += 1;
+                }
+                let (mut x_total, mut y_total) = (0.0f64, 0.0f64);
+                for standing in standings {
+                    if standing.player == x_seat {
+                        x_total = f64::from(standing.breakdown.total);
+                    } else {
+                        y_total += f64::from(standing.breakdown.total);
+                    }
+                }
+                vp_margin_sum += x_total - y_total / f64::from(players - 1);
+            }
+            shares.push(f64::from(unit_x_wins) / f64::from(players));
+        }
+
+        assert_ne!(
+            applied_by_seat, applied_by_seat_read_only,
+            "ANTI-VACUITY: this fixture's capped games must move the volume fold",
+        );
+
+        // (a) OUTCOME — over the READ units only.
+        assert_eq!(report.games, games, "games");
+        assert_eq!(report.x_unit_shares, shares, "the unit vector");
+        assert_eq!(report.seat0_wins, seat0_wins, "seat-0 wins");
+        assert_eq!(report.ties_to_seat0, ties_to_seat0, "ties decided for seat 0");
+        assert_eq!(report.trigger, trigger, "the end-trigger tally");
+        assert_eq!(
+            report.vp_margin_mean,
+            vp_margin_sum / f64::from(games),
+            "the VP margin, summed in the same order the cell sums it",
+        );
+
+        // (b) VOLUME — over EVERY played game, capped ones included.
+        assert_eq!(report.applied_by_seat, applied_by_seat, "applied moves per seat");
+        assert_eq!(report.x_applied_moves, x_applied_moves, "X's applied moves");
+    }
+
+    /// **The explanation identity stays TOTAL over a capped game.** Spec
+    /// §0.3(b)'s `x_explanations == Some(x_applied_moves)` is a claim about
+    /// every move X played, and a capped game's moves are moves X played.
+    ///
+    /// This cell is the decisive pin that the two halves are folded TOGETHER:
+    /// `greedy-v1` explains exactly once per move it plays, so a loop that
+    /// folded the capped game's `moves_by_seat` but not its explanation handle
+    /// (or the reverse) breaks the equality. Its capped game is the unit's
+    /// FIRST — the mirror of the rung fixture — so the unit's SECOND game
+    /// completes after the cap and proves a void unit's other arrangement is
+    /// still played.
+    #[test]
+    fn the_explanation_identity_covers_a_mixed_cells_capped_game() {
+        let rules = Rules::standard();
+        let spec = CellSpec {
+            name: "w-a1-mixed-greedy".to_string(),
+            players: 2,
+            x: Contestant::GREEDY_V1_DEFAULT,
+            y: Contestant::Policy(RolloutPolicy::RetreatAverse),
+            units: W_A1_GREEDY_UNITS,
+            master: SeedScheduleKind::Diagnostic(W_A1_MASTER),
+        };
+        let mut sink_calls = 0u32;
+        let (report, _wall) = run_cell_loop(
+            &spec,
+            &rules,
+            true,
+            CapPolicy::Count { ceiling: 1 },
+            W_A1_MIXED_MAX_TURNS,
+            &mut |_stats, _arr| {
+                sink_calls += 1;
+                Ok(())
+            },
+        )
+        .expect("a cell at its own ceiling completes");
+
+        assert_eq!(
+            report.capped,
+            vec![CappedGame {
+                seed: w_a1_scheduled_seeds(spec.units)[0],
+                arrangement: 0,
+                turns: W_A1_MIXED_MAX_TURNS + 1,
+            }],
+        );
+        assert_eq!(report.units_void, 1);
+        assert_eq!(report.units_read, 2);
+        assert_eq!(
+            sink_calls, 5,
+            "the sink sees every COMPLETED game, void unit or not — five of the six scheduled",
+        );
+        assert_eq!(
+            report.x_explanations,
+            Some(report.x_applied_moves),
+            "spec §0.3(b): every move X played was explained, the capped game's included",
+        );
+        assert!(report.x_applied_moves > 0);
     }
 
     /// **Pin (ii).** With the flag PRESENT and no game capped, a counting cell
