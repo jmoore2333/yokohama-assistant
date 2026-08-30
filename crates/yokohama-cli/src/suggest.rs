@@ -201,7 +201,10 @@ pub(crate) const PROSE_TEXT_WIDTH: usize = 80;
 /// long CAVEATS below are the opposite case — at 169 and 238 characters neither
 /// can be said in one line of ANY frame this driver composes, so they are
 /// wrapped ([`Body::prose`]).
-const HONESTY_NOTE: [&str; 3] = [
+// `pub` so `guide_sync` can hold the captured guide block to these exact
+// lines (the `RUNNER_UPS_LABEL` precedent) — the 2026-08-30 ship changed the
+// third line for the first time, and a capture nothing pins can drift.
+pub const HONESTY_NOTE: [&str; 3] = [
     "This is the bot's arithmetic, not advice: each row is (your value − the best",
     "opponent's) × the weight for this stage, summed. It read ONE guess at the hidden",
     "cards, and its weights were never tuned on human play.",

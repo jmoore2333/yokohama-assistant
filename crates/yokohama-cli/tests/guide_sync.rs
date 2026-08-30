@@ -21,7 +21,7 @@
 use yokohama_cli::repl::{Repl, HELP_TEXT};
 use yokohama_cli::session::Session;
 use yokohama_cli::style::glyph;
-use yokohama_cli::suggest::{NONZERO_SUMMARY_TAIL, RUNNER_UPS_LABEL, TABLE_HEADINGS, TOTAL_LABEL};
+use yokohama_cli::suggest::{HONESTY_NOTE, NONZERO_SUMMARY_TAIL, RUNNER_UPS_LABEL, TABLE_HEADINGS, TOTAL_LABEL};
 use yokohama_cli::{render, screen, suggest};
 use yokohama_core::{eval, Contestant, GameConfig, NamedIdentity, Rules, StartingOrderChoice};
 
@@ -364,6 +364,9 @@ fn the_captured_suggest_screen_matches_the_renderers_own_strings() {
             ("the explanation table's total row", total),
             ("the runner-up heading", RUNNER_UPS_LABEL),
             ("the nonzero-product summary", NONZERO_SUMMARY_TAIL),
+            ("the honesty note, line 1", HONESTY_NOTE[0]),
+            ("the honesty note, line 2", HONESTY_NOTE[1]),
+            ("the honesty note, line 3", HONESTY_NOTE[2]),
         ] {
             assert!(
                 block.contains(needle),

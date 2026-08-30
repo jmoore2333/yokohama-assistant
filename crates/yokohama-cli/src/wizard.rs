@@ -626,10 +626,12 @@ fn ask_save_path(input: &mut dyn Iterator<Item = String>, out: &mut dyn FnMut(&s
 /// 2-player table does not have.
 ///
 /// **What every named seat PLAYS is [`crate::bot::PROVISIONAL_DEFAULT_BOT`]**
-/// -- `lookahead-v1` at shipped knobs since W5, where it was the family-weighted
-/// rung before. The question does not ask: there is no picker and no difficulty
-/// level (OD-4(i)), so the answer is a set of SEATS and the contestant is one
-/// const away, provisional until D1's identity freeze.
+/// -- the shipped production contestant `v4-step9-draft1` since the 2026-08-30
+/// ship commit (`lookahead-v1` from W5 until then, the family-weighted rung
+/// before that). The question does not ask: there is no picker and no
+/// difficulty level (OD-4(i)), so the answer is a set of SEATS and the
+/// contestant is one const away, still provisional relative to amendment D1's
+/// post-screening production freeze.
 ///
 /// The bot seed is DRAWN, not asked: it is a full-`u64` stream key, which is
 /// not something to type at a prompt, and it is echoed + recorded in the

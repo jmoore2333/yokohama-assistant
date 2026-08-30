@@ -3062,6 +3062,20 @@ mod tests {
                 "the refusal of {name:?} did not name it: {message}",
             );
         }
+
+        // ... and the refusal must NAME every named identity (review SHOULD-4,
+        // pinning the a979b08 fix): the list was hand-typed until 2026-08-30,
+        // listed two of the three, and the omitted one was the SHIPPED seat's
+        // own name — the worst possible omission for a resume refusal.
+        let message = Contestant::from_parts("nope", &params)
+            .expect_err("an unknown controller name must be refused");
+        for arm in NamedIdentity::ALL {
+            assert!(
+                message.contains(arm.name()),
+                "the unknown-controller refusal does not name {}: {message}",
+                arm.name(),
+            );
+        }
     }
 
     /// A key no arm knows is an error rather than a silent ignore — a swallowed

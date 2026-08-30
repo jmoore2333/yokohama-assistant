@@ -247,11 +247,11 @@ pub enum ReplyPolicy {
     /// [`GreedyAtFinal`](Self::GreedyAtFinal) otherwise. See
     /// [`RaceRusherAgent`] for the rule in full — it is a HARNESS INSTRUMENT and
     /// has no [`Contestant`], which is why [`contestant`](Self::contestant) is
-    /// partial. Its FALLBACK is provisional in exactly the sense the two
-    /// `*AtFinal` arms are, and for the same reason: it IS
-    /// [`GreedyAtFinal`](Self::GreedyAtFinal)'s binding
-    /// ([`RACE_RUSHER_FALLBACK`]), so D1's identity freeze moves the two
-    /// together or the pin fails.
+    /// partial. Its FALLBACK is provisional in exactly the sense
+    /// [`GreedyAtFinal`](Self::GreedyAtFinal) still is (the lookahead arm's
+    /// binding was discharged at the 2026-08-30 ship), and for the same
+    /// reason: it IS that arm's binding ([`RACE_RUSHER_FALLBACK`]), so a
+    /// future greedy re-point moves the two together or the pin fails.
     RaceRusher,
 }
 
@@ -449,7 +449,8 @@ fn race_probe_seed(agent_seed: u64, decision_ordinal: u64) -> u64 {
 /// re-points the fallback with the menu arm it is named after rather than
 /// leaving this instrument on a stale binding.
 ///
-/// **PROVISIONAL until D1, exactly as the other `*AtFinal` bindings are** — the
+/// **PROVISIONAL exactly as [`ReplyPolicy::GreedyAtFinal`] still is** (the
+/// lookahead binding was discharged at the 2026-08-30 ship) — the
 /// echo a report quotes carries the RESOLVED fallback (`fallback=<greedy
 /// echo>`), never the word "greedy@final", for that reason.
 const RACE_RUSHER_FALLBACK: Contestant = Contestant::GreedyV1 { m: DEFAULT_RETREAT_SAMPLES };
@@ -7441,8 +7442,11 @@ mod tests {
         // this repo SHIPS is a named table and a rooted read of the shipped bot
         // cannot be a refusal. Every arm is supported now, and
         // `the_mirrored_agent_picks_what_contestant_build_picks` is where they
-        // are held equal to what they mirror. A FOURTH named arm therefore
-        // lands as a compile error in `mirror_build` rather than as a row here.
+        // are held equal to what they mirror. A FOURTH named arm does NOT land
+        // as a compile error — `mirror_build`'s `NamedTable(arm)` arm is a
+        // catch-all over `NamedIdentity` — so what holds a new arm honest is
+        // this cell's own `NamedIdentity::ALL` sweep below plus the mirrored
+        // drift pin, both of which iterate `ALL` and grow with it.
         for arm in NamedIdentity::ALL {
             assert!(
                 !expected.iter().any(|(c, _)| *c == Contestant::NamedTable(arm)),

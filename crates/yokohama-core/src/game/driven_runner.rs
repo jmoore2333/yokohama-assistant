@@ -2267,7 +2267,7 @@ pub fn render_family_block(report: &FamilyBlockReport, arm: FamilyArm) -> String
             report.sole_dissenters,
         ));
         lines.push(
-            "                 the subject IS (provisionally) lookahead@final, so a subject defect \
+            "                 the subject IS lookahead@final, so a subject defect \
              that degrades its POST-candidate play deflates measured dominance under exactly that \
              arm and would exclude exactly the roots where the defect matters — a broken subject \
              passing by shrinking its own denominator. Collected as potential subject SUPPRESSION \
