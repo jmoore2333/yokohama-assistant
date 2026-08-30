@@ -3818,7 +3818,10 @@ fn classify(error: PlayError) -> DrivenError {
             "invariant violated after seat {}'s move: {reason}",
             seat.0
         )),
-        PlayError::TurnCap { turns } => DrivenError::TurnCapReached { turns },
+        // The V4 step-11 `partial` rides only out of `play_from_state` and only
+        // for the arena's diagnostic driver; a rooted run classifies on `turns`
+        // exactly as it always did.
+        PlayError::TurnCap { turns, .. } => DrivenError::TurnCapReached { turns },
         PlayError::DecisionCap { decisions } => DrivenError::DecisionCapReached { decisions },
     }
 }
@@ -4204,7 +4207,13 @@ pub fn drive_turn(
             break false;
         }
         if state.turn_number > opts.max_turns {
-            return Err(classify(PlayError::TurnCap { turns: state.turn_number }));
+            // `partial: None` — a rooted turn-driver has no from-setup outcome
+            // to hand back, and the arena's diagnostic driver never reads this
+            // loop (see `PlayError::TurnCap`'s doc).
+            return Err(classify(PlayError::TurnCap {
+                turns: state.turn_number,
+                partial: None,
+            }));
         }
         // The decision guard, checked BEFORE the decision it would be the
         // (max+1)-th of, so the refusal names the bound the caller set rather
