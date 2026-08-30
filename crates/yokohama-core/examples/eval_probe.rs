@@ -127,12 +127,13 @@ use yokohama_core::game::pair_fixtures::{
 };
 use yokohama_core::{
     agent_stream_seed, apply_move, check_invariants, final_result, finalize_setup, get_legal_moves,
-    is_game_over, new_game, observe, replay_from, run_arena_game, run_raw_game, state_digest,
-    AchievementCard, AchievementType, AreaId, AreaType, ArenaAgent, ArenaGameStats, ChurchSlot,
-    ChurchTrack, Contestant, Country, CustomsSlot, CustomsTrack, EndGameTrigger, GameConfig,
-    GameRecord, GameState, HandCard, Move, NamedIdentity, OrderCardId, PlayerId, PlayerView,
-    QuantileSketch, RolloutPolicy, Rules, SeedSchedule, SeedScheduleKind, Slot, StartingOrderChoice,
-    TechCardId, TriggerTally, TurnPhase, ViewError, VisiblePlayer, WorldSeed, SEMANTICS_REV,
+    is_game_over, new_game, observe, render_world, replay_from, run_arena_game, run_raw_game,
+    state_digest, AchievementCard, AchievementType, AreaId, AreaType, ArenaAgent, ArenaGameStats,
+    ChurchSlot, ChurchTrack, Contestant, Country, CustomsSlot, CustomsTrack, EndGameTrigger,
+    GameConfig, GameRecord, GameState, HandCard, Move, NamedIdentity, OrderCardId, PlayerId,
+    PlayerView, QuantileSketch, RolloutPolicy, Rules, SeedSchedule, SeedScheduleKind, Slot,
+    StartingOrderChoice, TechCardId, TriggerTally, TurnPhase, ViewError, VisiblePlayer, WorldRun,
+    WorldSeed, HONEST_MAX_TURNS, SEMANTICS_REV,
 };
 
 const USAGE: &str = "\
@@ -672,6 +673,7 @@ fn main() {
         Some("fit") => cmd_fit(&args[1..]).map(exit_with),
         Some("step9") => cmd_step9(&args[1..]).map(exit_with),
         Some("step10") => cmd_step10(&args[1..]).map(exit_with),
+        Some("world") => cmd_world(&args[1..]),
         _ => Err(USAGE.to_string()),
     };
     if let Err(message) = result {
@@ -19501,6 +19503,235 @@ fn cmd_step10(args: &[String]) -> Result<i32, String> {
 }
 
 // ---------------------------------------------------------------------------
+// `world` — the V4 step-11 diagnosis wave's MUTANT-TABLE read surface (W-D2)
+//
+// R-D1-b, the registered CONFIRMATION read, plays one world under three sides:
+// the candidate, the candidate with `hEXC`-late set back to 2, and `v2-padded`
+// self-play as the control. The arena's `world` surface (W-D1) covers the first
+// and the third through NAMED identities; it cannot cover the second, because
+// the arena grammar deliberately carries NO weight knob (ledger L12 / spec §13:
+// a weight change is a version bump, not a cell parameter). This instrument's
+// answer to the same question has always been an explicit table — `--weights`
+// on the corpus surfaces, `--score-table` on the fit ones — so the mutant side
+// belongs HERE.
+//
+// **Nothing this subcommand can print is an identity.** A mutated side is a
+// DIAGNOSTIC MUTANT: it has no wire name in `Contestant::from_str_name`, no
+// const anywhere in the crate, and its echo says `mutant-of-<name>` so a pasted
+// line cannot be read back as a draft. `WORLD_LABEL` leads every run saying
+// exactly that.
+//
+// **The seating, the keying and the rendering are the ARENA's, not a second
+// transcription.** `run_world_sides_capped` is `arena world`'s own body with
+// the contestant factory as a parameter, so an UNMUTATED side here plays and
+// prints byte-for-byte what `examples/arena world` plays and prints —
+// `an_unmutated_world_renders_byte_identically_to_the_arena_surface` is that
+// claim, executable.
+// ---------------------------------------------------------------------------
+
+/// The registered label every `world` run leads with, VERBATIM.
+const WORLD_LABEL: &str = "PLACEHOLDER: the diagnostic label is not written yet";
+
+/// 2P is the diagnosis wave's whole scope (the V4 field is a 2P field), and
+/// `--arrangement 0|1|both` is a 2P grammar — `examples/arena`'s own constant,
+/// for its own reason.
+const WORLD_PLAYERS: u8 = 2;
+
+/// `--tail`'s default, in TURNS. The arena surface's, so a reader comparing the
+/// two sees the same window.
+const WORLD_DEFAULT_TAIL: u32 = 40;
+
+/// One `set=<feature>=<early>/<late>` clause.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct WorldMutation {
+    feature: Feature,
+    early: i64,
+    late: i64,
+}
+
+/// One SIDE of a `world` read: a named identity, plus the mutations applied to
+/// a COPY of its table.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct WorldSideSpec {
+    arm: NamedIdentity,
+    mutations: Vec<WorldMutation>,
+}
+
+impl WorldSideSpec {
+    /// `<name>[:set=<feature>=<early>/<late>]...`
+    fn parse(spec: &str) -> Result<Self, String> {
+        // PLACEHOLDER: the spec grammar is not written yet.
+        Err(format!("world side {spec:?}: PLACEHOLDER, the spec grammar is not written yet"))
+    }
+
+    /// The thirty-four numbers this side actually plays.
+    fn table(&self) -> WeightTable {
+        // PLACEHOLDER: the named arm's table, with NO mutation applied.
+        let _ = &self.mutations;
+        self.arm.table()
+    }
+
+    /// The `weights=` digest the arena echoes for this table.
+    fn identity(&self) -> i64 {
+        weight_table_identity(&self.table())
+    }
+
+    /// Whether a mutation was DECLARED — not whether the digest moved. A clause
+    /// that happens to restore a weight to the value it already had is still a
+    /// mutant read, and labelling by the digest would let exactly that case
+    /// print as the named identity.
+    fn is_mutant(&self) -> bool {
+        !self.mutations.is_empty()
+    }
+
+    /// `none`, or the clauses in the order they were typed.
+    fn mutations_render(&self) -> String {
+        if self.mutations.is_empty() {
+            return "none".to_string();
+        }
+        self.mutations
+            .iter()
+            .map(|m| format!("{}={}/{}", m.feature.name(), m.early, m.late))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    /// The name this side echoes under — the identity's own when unmutated, an
+    /// UNPARSEABLE `mutant-of-…` when not.
+    fn display_name(&self) -> String {
+        if self.is_mutant() {
+            format!("mutant-of-{}", self.arm.name())
+        } else {
+            self.arm.name().to_string()
+        }
+    }
+
+    /// The seat echo `render_world` prints.
+    fn echo(&self) -> String {
+        // PLACEHOLDER: the controller's own provenance is not composed yet.
+        String::new()
+    }
+
+    /// The header's own line for this side: the NAME, the mutation list, the
+    /// RESULTING digest in the arena's `weights=` form, and the word MUTANT
+    /// wherever a clause was declared.
+    fn header_line(&self, slot: &str) -> String {
+        format!(
+            "  {slot} = {}  mutations={}  weights={}{}",
+            self.display_name(),
+            self.mutations_render(),
+            self.identity(),
+            if self.is_mutant() { "  MUTANT" } else { "" },
+        )
+    }
+}
+
+/// One `world` invocation, minus the arrangement (which varies per body).
+///
+/// A struct rather than six positional arguments: `seed`/`players`/`tail` are
+/// three unrelated integers, and a transposition among them would compile clean
+/// and mislabel every line printed under it.
+struct WorldRead<'a> {
+    x: &'a WorldSideSpec,
+    y: &'a WorldSideSpec,
+    seed: WorldSeed,
+    players: u8,
+    tail: u32,
+    invariants: bool,
+}
+
+/// The header lines, in print order.
+fn world_header(read: &WorldRead<'_>, arrangements: &[u8]) -> Vec<String> {
+    vec![
+        format!("=== eval_probe world {:#018x} ===", read.seed.0),
+        format!("  {WORLD_LABEL}"),
+        format!(
+            "  build={} semantics_rev={SEMANTICS_REV} world={:#018x} (a WORLD seed, not a \
+             master — no schedule is drawn)",
+            profile(),
+            read.seed.0,
+        ),
+        format!(
+            "  players={} arrangements={} tail(turns)={} per-move invariants={}",
+            read.players,
+            arrangements.iter().map(u8::to_string).collect::<Vec<_>>().join(","),
+            read.tail,
+            read.invariants,
+        ),
+        read.x.header_line("X"),
+        read.y.header_line("Y"),
+    ]
+}
+
+/// Play ONE world under two side specs, seated and keyed by `arena world`'s own
+/// rule.
+///
+/// `max_turns` is a parameter rather than a default so a TEST can reach a
+/// rendered game in milliseconds; every shipped call site passes
+/// [`HONEST_MAX_TURNS`], the guard the field itself ran under.
+fn run_probe_world_capped(
+    read: &WorldRead<'_>,
+    arrangement: u8,
+    rules: &Rules,
+    max_turns: u32,
+) -> Result<WorldRun, String> {
+    // PLACEHOLDER: the arena's seam is not wired yet. The two echoes are
+    // composed so the refusal at least names the sides it would have played.
+    let _ = (arrangement, rules, max_turns);
+    Err(format!(
+        "PLACEHOLDER: the world runner is not wired yet ({} vs {})",
+        read.x.echo(),
+        read.y.echo(),
+    ))
+}
+
+fn cmd_world(args: &[String]) -> Result<(), String> {
+    let (positional, flags, _) =
+        split_args(args, &["arrangement", "tail"], &["invariants", "no-invariants"], &[])?;
+    if positional.len() != 3 {
+        return Err(format!("world takes 3 positional arguments\n\n{USAGE}"));
+    }
+    let x = WorldSideSpec::parse(&positional[0])?;
+    let y = WorldSideSpec::parse(&positional[1])?;
+    // A WORLD seed, parsed like `--master` but NOT a master: no schedule is
+    // drawn from it, and the header says so where a master would be named.
+    let seed = WorldSeed(parse_u64(&positional[2])?);
+    if flags.contains_key("invariants") && flags.contains_key("no-invariants") {
+        return Err("--invariants and --no-invariants are mutually exclusive".to_string());
+    }
+    let invariants = !flags.contains_key("no-invariants");
+    let tail: u32 = match flags.get("tail") {
+        None => WORLD_DEFAULT_TAIL,
+        Some(raw) => raw.parse().map_err(|e| format!("--tail: {e}"))?,
+    };
+    let arrangements: Vec<u8> = match flags.get("arrangement").map(String::as_str) {
+        None | Some("both") => (0..WORLD_PLAYERS).collect(),
+        Some("0") => vec![0],
+        Some("1") => vec![1],
+        Some(other) => {
+            return Err(format!(
+                "--arrangement takes 0, 1 or both at {WORLD_PLAYERS}P (got {other:?})"
+            ))
+        }
+    };
+
+    let read = WorldRead { x: &x, y: &y, seed, players: WORLD_PLAYERS, tail, invariants };
+    for line in world_header(&read, &arrangements) {
+        println!("{line}");
+    }
+    let rules = Rules::standard();
+    for arrangement in arrangements {
+        let started = Instant::now();
+        let run = run_probe_world_capped(&read, arrangement, &rules, HONEST_MAX_TURNS)?;
+        for line in render_world(&run, tail, &rules).map_err(|e| format!("world failed: {e}"))? {
+            println!("  {line}");
+        }
+        println!("  wall {:.2}s ({} build)", started.elapsed().as_secs_f64(), profile());
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Tests: the statistics, against hand-computable truth.
 //
 // Run with `cargo test -p yokohama-core --example eval_probe`. They are here
@@ -19520,7 +19751,8 @@ mod tests {
         REGISTERED, SIGN_PRIORS,
     };
     use yokohama_core::{
-        apply_move, get_legal_moves, is_game_over, AchievementCard, AchievementType, ChurchSlot,
+        apply_move, get_legal_moves, is_game_over, run_world_capped, AchievementCard,
+        AchievementType, ChurchSlot, WorldSpec,
         check_invariants, ChurchTrack, CustomsSlot, CustomsTrack, GameConfig, HandCard,
         OrderCardId, PendingChoice, PresidentLocation,
         StartingOrderChoice, TechCardId,
@@ -32920,4 +33152,305 @@ mod tests {
         assert!(rendered.contains("the escrow reads do NOT open"), "{rendered}");
     }
 
+
+    // -----------------------------------------------------------------------
+    // `world` — the W-D2 mutant-table read surface
+    // -----------------------------------------------------------------------
+
+    /// A throwaway world seed. Deliberately NOT `0x76b2d69bc4679287` (the capped
+    /// world R-D1-b reads) and not one of the D2 masters
+    /// `0x0B0120260831990{1..5}`: those reads belong to the orchestrator, and a
+    /// test that played one of them would put an uncounted read in the record.
+    const TEST_WORLD: WorldSeed = WorldSeed(0x0B01_2026_0831_9997);
+
+    /// A turn guard small enough for a debug test. The byte-identity pin does
+    /// not need a COMPLETED game — it needs two paths to print the same lines,
+    /// and a cap prints them in milliseconds.
+    const TEST_TURN_CAP: u32 = 3;
+
+    fn test_read<'a>(x: &'a WorldSideSpec, y: &'a WorldSideSpec) -> WorldRead<'a> {
+        WorldRead { x, y, seed: TEST_WORLD, players: 2, tail: 4, invariants: true }
+    }
+
+    #[test]
+    fn a_bare_named_identity_parses_as_an_unmutated_side() {
+        for arm in NamedIdentity::ALL {
+            let side = WorldSideSpec::parse(arm.name()).expect(arm.name());
+            assert_eq!(side.arm, arm);
+            assert!(side.mutations.is_empty(), "a bare name declares no mutation");
+            assert!(!side.is_mutant());
+            assert_eq!(side.mutations_render(), "none");
+            assert_eq!(side.display_name(), arm.name());
+            assert_eq!(side.table(), arm.table(), "an unmutated side plays the arm's own table");
+        }
+    }
+
+    /// R-D1-b (ii)'s own spelling, and the ONE clause the reading needs.
+    #[test]
+    fn one_set_clause_parses_and_reaches_the_table() {
+        let side = WorldSideSpec::parse("v4-step9-draft1:set=assistants_in_hand_excess=5/2")
+            .expect("the R-D1-b (ii) spelling parses");
+        assert_eq!(side.arm, NamedIdentity::V4Step9Draft1);
+        assert_eq!(
+            side.mutations,
+            vec![WorldMutation { feature: Feature::AssistantsInHandExcess, early: 5, late: 2 }],
+        );
+        assert!(side.is_mutant());
+        assert_eq!(side.mutations_render(), "assistants_in_hand_excess=5/2");
+        assert_eq!(side.display_name(), "mutant-of-v4-step9-draft1");
+
+        // The clause lands in the pair it named, and NOTHING else moves: the
+        // remaining thirty-three pairs are the named arm's own.
+        let table = side.table();
+        assert_eq!(table.get(Feature::AssistantsInHandExcess), (5, 2));
+        let base = NamedIdentity::V4Step9Draft1.table();
+        for feature in Feature::ALL {
+            if feature == Feature::AssistantsInHandExcess {
+                continue;
+            }
+            assert_eq!(
+                table.get(feature),
+                base.get(feature),
+                "{} must be untouched by a hEXC clause",
+                feature.name(),
+            );
+        }
+        // …and the arm's own const is untouched: the clause is applied to a COPY.
+        assert_ne!(
+            base.get(Feature::AssistantsInHandExcess),
+            (5, 2),
+            "the fixture is only meaningful if the arm's own pair differs",
+        );
+        assert_eq!(
+            NamedIdentity::V4Step9Draft1.table().get(Feature::AssistantsInHandExcess),
+            base.get(Feature::AssistantsInHandExcess),
+        );
+    }
+
+    #[test]
+    fn two_set_clauses_both_apply_in_the_order_typed() {
+        let side =
+            WorldSideSpec::parse("v2-padded:set=assistants_in_hand_excess=5/2:set=money_stock=-3/7")
+                .expect("two clauses parse");
+        assert_eq!(side.arm, NamedIdentity::V2Padded);
+        assert_eq!(
+            side.mutations,
+            vec![
+                WorldMutation { feature: Feature::AssistantsInHandExcess, early: 5, late: 2 },
+                WorldMutation { feature: Feature::MoneyStock, early: -3, late: 7 },
+            ],
+            "argv order is print order",
+        );
+        assert_eq!(side.mutations_render(), "assistants_in_hand_excess=5/2,money_stock=-3/7");
+        let table = side.table();
+        assert_eq!(table.get(Feature::AssistantsInHandExcess), (5, 2));
+        assert_eq!(table.get(Feature::MoneyStock), (-3, 7));
+    }
+
+    #[test]
+    fn an_unknown_feature_name_is_a_typed_error_that_lists_the_valid_names() {
+        let err = WorldSideSpec::parse("v2-padded:set=assistants_in_hand_excesss=5/2")
+            .expect_err("a misspelled feature is an error, never a silent no-op");
+        assert!(err.contains("assistants_in_hand_excesss"), "{err}");
+        // EVERY valid name, so the refusal is a menu rather than a scolding.
+        for feature in Feature::ALL {
+            assert!(err.contains(feature.name()), "the refusal must list {}: {err}", feature.name());
+        }
+    }
+
+    #[test]
+    fn an_unknown_identity_name_is_a_typed_error_that_lists_the_valid_names() {
+        let err =
+            WorldSideSpec::parse("v4-step9-draft2").expect_err("an unknown identity is an error");
+        assert!(err.contains("v4-step9-draft2"), "{err}");
+        for arm in NamedIdentity::ALL {
+            assert!(err.contains(arm.name()), "the refusal must list {}: {err}", arm.name());
+        }
+    }
+
+    #[test]
+    fn a_malformed_mutation_clause_is_a_typed_error() {
+        // The PRECONDITION, without which every assertion below passes on a
+        // parser that refuses everything.
+        WorldSideSpec::parse("v2-padded:set=money_stock=5/6")
+            .expect("the well-formed spelling of the clauses below must parse");
+
+        // No `/` between the two coordinates.
+        let err = WorldSideSpec::parse("v2-padded:set=money_stock=5")
+            .expect_err("an early/late pair needs both halves");
+        assert!(err.contains("money_stock=5"), "{err}");
+
+        // A non-integer coordinate.
+        let err = WorldSideSpec::parse("v2-padded:set=money_stock=5/x")
+            .expect_err("a non-integer late coordinate is an error");
+        assert!(err.contains('x'), "{err}");
+
+        // A clause that is not `set=` at all — an unknown knob is never silently
+        // ignored (`split_args`' rule, one level up).
+        let err = WorldSideSpec::parse("v2-padded:weights=v2")
+            .expect_err("an unknown clause keyword is an error");
+        assert!(err.contains("weights=v2"), "{err}");
+
+        // No feature named at all.
+        WorldSideSpec::parse("v2-padded:set=").expect_err("an empty set clause is an error");
+    }
+
+    /// The digests are LOCKED literals, quoted in the step-11 wave registration:
+    /// an unmutated side printing anything else would mean this surface and the
+    /// arena disagree about what a named identity IS.
+    #[test]
+    fn the_unmutated_digests_are_the_locked_literals_and_a_mutation_moves_one() {
+        for (name, locked) in [
+            ("v2-padded", -1_160_323_518_167_071_950_i64),
+            ("v2-refit-padded", 1_336_026_282_614_362_672),
+            ("v4-step9-draft1", 6_957_643_967_275_421_640),
+        ] {
+            let side = WorldSideSpec::parse(name).expect(name);
+            assert_eq!(side.identity(), locked, "{name}'s locked weights= digest");
+        }
+
+        let base = WorldSideSpec::parse("v4-step9-draft1").expect("base");
+        let mutant = WorldSideSpec::parse("v4-step9-draft1:set=assistants_in_hand_excess=5/2")
+            .expect("mutant");
+        assert_ne!(
+            mutant.identity(),
+            base.identity(),
+            "a mutant table must not echo the identity's digest",
+        );
+    }
+
+    /// The echo an UNMUTATED side prints is the arena's own for that arm — which
+    /// is what makes the transcribed knobs a checked fact rather than a hope,
+    /// and what the byte-identity pin below rests on.
+    #[test]
+    fn an_unmutated_sides_echo_is_the_named_identitys_own() {
+        for arm in NamedIdentity::ALL {
+            let side = WorldSideSpec::parse(arm.name()).expect(arm.name());
+            assert_eq!(
+                side.echo(),
+                Contestant::NamedTable(arm).echo(),
+                "{} must echo exactly as `examples/arena` echoes it",
+                arm.name(),
+            );
+        }
+
+        // A mutant echoes under a name NO grammar accepts, carrying its own
+        // digest — so a pasted line can never be read back as an identity.
+        let mutant = WorldSideSpec::parse("v4-step9-draft1:set=assistants_in_hand_excess=5/2")
+            .expect("mutant");
+        let echo = mutant.echo();
+        assert!(echo.starts_with("mutant-of-v4-step9-draft1@"), "{echo}");
+        assert!(echo.contains(&format!("weights={}", mutant.identity())), "{echo}");
+        assert!(
+            Contestant::from_str_name("mutant-of-v4-step9-draft1").is_err(),
+            "the mutant's display name must not be a grammar name",
+        );
+    }
+
+    /// THE PIN: for an unmutated spec this surface's body is byte-for-byte
+    /// `arena world`'s, at both arrangements. Seating (`unit_for`), keying
+    /// (`agent_stream_seed(seed, seat, slot)`), agent construction and the
+    /// renderer are all the arena's own — a second transcription of any of them
+    /// would show up here as a diff.
+    #[test]
+    fn an_unmutated_world_renders_byte_identically_to_the_arena_surface() {
+        let rules = Rules::standard();
+        let x = WorldSideSpec::parse("v2-padded").expect("x");
+        let y = WorldSideSpec::parse("v4-step9-draft1").expect("y");
+        for arrangement in 0..2u8 {
+            let arena = run_world_capped(
+                &WorldSpec {
+                    x: Contestant::NamedTable(NamedIdentity::V2Padded),
+                    y: Contestant::NamedTable(NamedIdentity::V4Step9Draft1),
+                    seed: TEST_WORLD,
+                    players: 2,
+                    arrangement,
+                },
+                &rules,
+                true,
+                TEST_TURN_CAP,
+            )
+            .expect("the arena surface runs");
+            let probe =
+                run_probe_world_capped(&test_read(&x, &y), arrangement, &rules, TEST_TURN_CAP)
+                    .expect("the probe surface runs");
+
+            assert_eq!(probe.x_seat, arena.x_seat, "arrangement {arrangement}: same seating");
+            let want = render_world(&arena, 4, &rules).expect("arena render");
+            let got = render_world(&probe, 4, &rules).expect("probe render");
+            assert_eq!(got, want, "arrangement {arrangement}: byte-identical body");
+        }
+    }
+
+    /// The label is registered text, not a caption someone may soften.
+    #[test]
+    fn the_world_header_leads_with_the_registered_diagnostic_label() {
+        assert_eq!(
+            WORLD_LABEL,
+            "DIAGNOSTIC — mutant-table world read; nothing here is a named identity, a draft, \
+             or evidence of strength",
+        );
+        let x = WorldSideSpec::parse("v4-step9-draft1").expect("x");
+        let y =
+            WorldSideSpec::parse("v4-step9-draft1:set=assistants_in_hand_excess=5/2").expect("y");
+        let header = world_header(&test_read(&x, &y), &[0, 1]);
+        assert!(
+            header.iter().any(|line| line.contains(WORLD_LABEL)),
+            "the label must be printed: {header:#?}",
+        );
+
+        // Each side's name, mutation list and RESULTING digest, in the arena's
+        // own `weights=` form; the mutated one carries the word MUTANT and the
+        // unmutated one carries the locked digest.
+        let unmutated = header
+            .iter()
+            .find(|line| line.contains("X ="))
+            .unwrap_or_else(|| panic!("no X line: {header:#?}"));
+        assert!(unmutated.contains("v4-step9-draft1"), "{unmutated}");
+        assert!(unmutated.contains("mutations=none"), "{unmutated}");
+        assert!(unmutated.contains("weights=6957643967275421640"), "{unmutated}");
+        assert!(!unmutated.contains("MUTANT"), "{unmutated}");
+
+        let mutated = header
+            .iter()
+            .find(|line| line.contains("Y ="))
+            .unwrap_or_else(|| panic!("no Y line: {header:#?}"));
+        assert!(mutated.contains("mutations=assistants_in_hand_excess=5/2"), "{mutated}");
+        assert!(mutated.contains(&format!("weights={}", y.identity())), "{mutated}");
+        assert!(!mutated.contains("weights=6957643967275421640"), "{mutated}");
+        assert!(mutated.contains("MUTANT"), "{mutated}");
+
+        // The world seed is named as a WORLD, never as a master — `arena
+        // world`'s own distinction, restated here because this surface takes no
+        // master at all.
+        assert!(
+            header.iter().any(|line| line.contains("a WORLD seed, not a master")),
+            "{header:#?}",
+        );
+    }
+
+    /// The subcommand is documented and reachable, and its DIAGNOSTIC label
+    /// rides the help text rather than only the run's own output.
+    #[test]
+    fn the_world_subcommand_is_documented_with_its_diagnostic_label() {
+        assert!(USAGE.contains("world <x-spec> <y-spec> <world-seed>"), "the help lists `world`");
+        assert!(USAGE.contains(WORLD_LABEL), "the help carries the DIAGNOSTIC label");
+        assert!(
+            USAGE.contains("set=<feature>=<early>/<late>"),
+            "the help carries the mutation grammar",
+        );
+
+        let err = cmd_world(&["v2-padded".to_string()]).expect_err("world takes 3 positionals");
+        assert!(err.contains("3 positional"), "{err}");
+
+        let err = cmd_world(&[
+            "v2-padded".to_string(),
+            "v2-padded".to_string(),
+            "0x1".to_string(),
+            "--arrangement".to_string(),
+            "2".to_string(),
+        ])
+        .expect_err("--arrangement 2 does not exist at 2P");
+        assert!(err.contains("arrangement"), "{err}");
+    }
 }
