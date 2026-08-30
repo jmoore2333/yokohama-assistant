@@ -429,10 +429,21 @@ pub fn render_world(
             .join(" · "),
     ));
 
-    let first_tail_turn = turns.saturating_sub(tail_turns.saturating_sub(1));
+    // The window ENDS at the last APPLIED move's turn, never at `turns` (review
+    // S1). On a cap those differ: `turns` is the turn the guard READ, one past
+    // the limit, in which no move was ever applied — so `..={turns}` promised a
+    // window one turn wider than the moves it contained. On a completed game the
+    // two coincide, and the fallback for a record with no moves at all is
+    // `turns` because there is no move to take a turn from.
+    // Both ends come from the moves: a window wider than the game would
+    // otherwise print `turns 0..=30`, and turn 0 is not a turn.
+    let last_move_turn = applied.last().map_or(turns, |step| step.turn);
+    let first_move_turn = applied.first().map_or(turns, |step| step.turn);
+    let first_tail_turn =
+        last_move_turn.saturating_sub(tail_turns.saturating_sub(1)).max(first_move_turn);
     let tail: Vec<&AppliedMove> = applied.iter().filter(|a| a.turn >= first_tail_turn).collect();
     lines.push(format!(
-        "tail (turns {first_tail_turn}..={turns}, {} of {} applied moves):",
+        "tail (turns {first_tail_turn}..={last_move_turn}, {} of {} applied moves):",
         tail.len(),
         applied.len(),
     ));
