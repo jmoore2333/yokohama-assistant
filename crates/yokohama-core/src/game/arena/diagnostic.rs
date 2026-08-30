@@ -1260,6 +1260,69 @@ mod tests {
         );
     }
 
+    /// The number following `marker` on a line, if the marker is there.
+    fn vp_after(line: &str, marker: &str) -> Option<u32> {
+        line.split(marker)
+            .nth(1)?
+            .split(|c: char| !c.is_ascii_digit())
+            .next()?
+            .parse()
+            .ok()
+    }
+
+    /// **W-D1 review S4.** `vp=` meant two different things in one report: the
+    /// standings block's is the FINAL SCORE, the end-state block's is the
+    /// running VP TRACK. Measured in one report: `rank 2 seat0 vp=69` beside
+    /// `seat0: … vp=41`. A reader scanning for a score finds whichever comes
+    /// first.
+    #[test]
+    fn the_end_state_vp_is_labelled_as_the_track_not_the_final_score() {
+        let rules = Rules::standard();
+        let (x, y) = rungs();
+        let run = run_world(
+            &WorldSpec { x, y, seed: first_world(), players: 2, arrangement: 1 },
+            &rules,
+            false,
+        )
+        .expect("the rungs finish this world");
+        let lines = render_world(&run, 5, &rules).expect("a terminal record renders");
+
+        let end_state_at = lines
+            .iter()
+            .position(|line| line == "end state:")
+            .expect("the end-state block");
+        let seat_rows: Vec<&String> =
+            lines[end_state_at..].iter().filter(|line| line.starts_with("  seat")).collect();
+        assert_eq!(seat_rows.len(), 2, "one row per player");
+        for row in &seat_rows {
+            assert!(
+                row.contains("vp(track)="),
+                "the end-state VP must say it is the TRACK, not the score: {row}",
+            );
+            assert!(!row.contains(" vp="), "and must not also read as a bare score: {row}");
+        }
+
+        // Non-vacuous: in THIS report the two quantities differ, which is the
+        // whole reason the labels have to.
+        let track: Vec<u32> =
+            seat_rows.iter().filter_map(|row| vp_after(row, "vp(track)=")).collect();
+        let scores: Vec<u32> = lines
+            .iter()
+            .filter(|line| line.starts_with("  rank "))
+            .filter_map(|line| vp_after(line, "vp="))
+            .collect();
+        assert_eq!(track.len(), 2);
+        assert_eq!(scores.len(), 2, "the standings block keeps its plain `vp=` final score");
+        let (mut track_sorted, mut scores_sorted) = (track.clone(), scores.clone());
+        track_sorted.sort_unstable();
+        scores_sorted.sort_unstable();
+        assert_ne!(
+            track_sorted, scores_sorted,
+            "the track figures {track:?} and the final scores {scores:?} are different \
+             quantities — a cell that could not tell them apart would not pin the label",
+        );
+    }
+
     fn record_move_count(run: &WorldRun) -> usize {
         match &run.game.outcome {
             DiagnosticOutcome::Terminated(stats) => stats.record.events.len(),
