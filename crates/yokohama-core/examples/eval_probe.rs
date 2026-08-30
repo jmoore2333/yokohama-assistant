@@ -12749,7 +12749,8 @@ struct SignedView {
 /// there — the `collision` command signs development roots and the frozen
 /// fixture package, neither of which carries an escrow role — so that command's
 /// output is unchanged by its existence
-/// (`the_collision_commands_blocking_labels_are_unchanged_by_the_third_arm`).
+/// (`the_third_blocking_arm_fires_only_on_both_sides_of_one_ordinals_pair`,
+/// whose tail asserts the pre-existing member and finding labels byte-exact).
 ///
 /// The shared `Pair` postfix is §5.3's own vocabulary — every arm of the rule
 /// is a PAIR whose two sides landed in one class — so the lint is allowed here
@@ -16969,6 +16970,11 @@ fn compose_ose_block(reads: &[OseOrdinal], inputs: BandInputs) -> BlockVerdict {
     if inputs.instrument_failure {
         return BlockVerdict::Refused;
     }
+    // The denominator is EIGHT by registration, not by whatever the caller
+    // happened to collect. True by construction today (a band read resolves the
+    // whole band, and a short vector only arises alongside an instrument
+    // failure, which returned above), and this makes it structural.
+    debug_assert_eq!(reads.len(), STEP10_BAND_SIZE, "the recorded band is eight ordinals");
     let split = BlockSplit::count(reads.iter().map(ose_ordinal_verdict), inputs.blocking_collisions);
     // The floor reads STEPS 1-2 ONLY and is burn-free by construction:
     // instantiability computes no candidate column, so a burn cannot move it.
@@ -17018,6 +17024,7 @@ fn compose_pf_block(reads: &[PfOrdinal], inputs: BandInputs) -> BlockVerdict {
     if inputs.instrument_failure {
         return BlockVerdict::Refused;
     }
+    debug_assert_eq!(reads.len(), STEP10_BAND_SIZE, "the PF escrow band is eight ordinals");
     let split = BlockSplit::count(reads.iter().map(pf_ordinal_verdict), inputs.blocking_collisions);
     // A blocking collision blocks under BOTH readings, so it is settled before
     // the flip route is asked: there is no verdict for the flip to be about.
@@ -17243,11 +17250,6 @@ impl StaticRead {
     /// probe/production column disagreement R-S10-3 names, with the column
     /// named.
     fn divergent_rows(&self) -> Vec<(&'static str, i64, i64)> {
-        // W2c RED: the deliberate placeholder — it filters by "this row
-        // contributed something" rather than by "the two paths disagree here",
-        // which is the landed defect in the other direction: it reports rows
-        // nobody disputes and would still be silent on a row where they differ
-        // by zero net contribution. The cells below ask for the comparison.
         FeatureId::all()
             .iter()
             .map(|id| {
@@ -17258,7 +17260,7 @@ impl StaticRead {
                     self.probe.rows[slot] - self.probe_zero.rows[slot],
                 )
             })
-            .filter(|(_, production, _)| *production != 0)
+            .filter(|(_, production, probe)| production != probe)
             .collect()
     }
 }
@@ -17316,20 +17318,38 @@ fn read_static(
 /// The owner ruled option 1: **a delta inequality is precedence (0) at BOTH
 /// bands**, and only the recorded band's PREFERENCE disagreement is a miss.
 fn static_parity_refusal(band: Step10Band, statics: &StaticRead) -> Option<String> {
-    // W2c RED: the deliberate placeholder — the band-agnostic guard as landed,
-    // which lets a PF delta inequality through to a verdict. The cell below
-    // asks for the ruled shape.
-    (statics.agrees() && !statics.deltas_equal()).then(|| {
-        format!(
-            "PROBE/PRODUCTION COLUMN DISAGREEMENT at a reserved state: the two static paths agree \
-             on the PREFERENCE ({}) and disagree on the DELTA (production {:+}, probe {:+}). \
-             R-S10-3 routes a same-preference delta inequality to precedence (0) — never a miss \
-             and never a pass",
-            statics.preference_prod().label(band),
-            statics.delta_prod(),
-            statics.delta_probe(),
-        )
-    })
+    if statics.deltas_equal() {
+        return None;
+    }
+    // At the RECORDED band a PREFERENCE disagreement is that ordinal's MISS —
+    // registered, carried by `ose_read`'s `parity` conjunct, and deliberately
+    // not a refusal. Everything else about an unequal delta is precedence (0).
+    if band == Step10Band::Ose && !statics.agrees() {
+        return None;
+    }
+    let columns = statics.divergent_rows();
+    Some(format!(
+        "PROBE/PRODUCTION COLUMN DISAGREEMENT at a reserved state: the two static paths read \
+         production {:+} and probe {:+} ({} / {}). R-S10-3 routes a delta inequality to \
+         precedence (0) — never a miss and never a pass. The column(s) that disagree: {}",
+        statics.delta_prod(),
+        statics.delta_probe(),
+        statics.preference_prod().label(band),
+        statics.preference_probe().label(band),
+        if columns.is_empty() {
+            "none — the per-row attributions agree while the totals do not, which is a fact \
+             about the accumulation rather than about a column"
+                .to_string()
+        } else {
+            columns
+                .iter()
+                .map(|(label, production, probe)| {
+                    format!("{label} (production {production:+}, probe {probe:+})")
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        },
+    ))
 }
 
 /// **THE SIXTEEN OPPONENT COLUMNS THE REGISTRATION REQUIRES EXACTLY INVARIANT**
@@ -17724,7 +17744,8 @@ fn origin_detail(descriptor: &RootDescriptor) -> String {
             format!("record prefix of document {record_digest} · {position}")
         }
         RootOrigin::Generated { game_index, ecology, .. } => format!(
-            "scan game {game_index} · {position} · ecology {} · driver {} · {} games · per-game              cap {}",
+            "scan game {game_index} · {position} · ecology {} · driver {} · {} games · \
+             per-game cap {}",
             ecology.id, ecology.driver, ecology.games, ecology.per_game_cap,
         ),
     }
@@ -18010,7 +18031,7 @@ fn read_step10_body(
             }
         }
         Step10Band::Ose => {
-            let population = render_fee_flow_population(&root.state, rules);
+            let population = render_fee_flow_population(&root.state, rules)?;
             match fee_flow_recipe_pair(&root.state, rules) {
                 Ok(pair) => (
                     PairSides {
@@ -18024,7 +18045,7 @@ fn read_step10_body(
                         keying: format!("opponent fee flow = {} Yen", pair.fee),
                         fee: pair.fee,
                     },
-                    population.unwrap_or_default(),
+                    population,
                 ),
                 Err(FeeFlowMiss::CandidateDidNotApply(detail)) => {
                     return Err(format!(
@@ -18043,7 +18064,7 @@ fn read_step10_body(
                 Err(miss) => {
                     return Ok(OrdinalBody::NonInstantiable {
                         reason: format!("{miss} ({miss:?})"),
-                        population: population.unwrap_or_default(),
+                        population,
                         arithmetic,
                     })
                 }
@@ -18196,9 +18217,26 @@ fn render_recipe_population(root: &GameState, rules: &Rules) -> Result<String, S
 
 /// Shape F's WHOLE candidate population — total, areas and priced opponent fee
 /// flow, for every placement the turn start offers.
-fn render_fee_flow_population(root: &GameState, rules: &Rules) -> Option<String> {
+fn render_fee_flow_population(root: &GameState, rules: &Rules) -> Result<String, String> {
     use std::fmt::Write;
-    let candidates = classify_fee_flow_candidates(root, rules).ok()?;
+    let candidates = match classify_fee_flow_candidates(root, rules) {
+        Ok(candidates) => candidates,
+        // THE INSTRUMENT ARMS, propagated — `render_recipe_population`'s
+        // posture at the §6 recipe (the review's NOTE-4). Unreachable while the
+        // engine's placement pricing is the exact mirror the registration calls
+        // it, which is the posture `driven.rs` takes for the arms themselves;
+        // swallowing them would have this renderer report a fact about the
+        // POSITION when what moved was the code.
+        Err(miss)
+            if matches!(
+                miss,
+                FeeFlowMiss::CandidateDidNotApply(_) | FeeFlowMiss::PricingMismatch { .. }
+            ) =>
+        {
+            return Err(format!("the Shape-F recipe reports an INSTRUMENT arm: {miss}"))
+        }
+        Err(miss) => return Ok(format!("       (no population: {miss})\n")),
+    };
     let mut out = String::new();
     for candidate in &candidates {
         let _ = writeln!(
@@ -18210,7 +18248,7 @@ fn render_fee_flow_population(root: &GameState, rules: &Rules) -> Option<String>
             canonical_encoding(&candidate.mv),
         );
     }
-    Some(out)
+    Ok(out)
 }
 
 // --- §5.3's THIRD blocking arm over the band --------------------------------
@@ -18613,11 +18651,21 @@ struct Step10Surface {
     verdict: Option<BlockVerdict>,
 }
 
+/// **DID ANY TYPED INSTRUMENT FAILURE FIRE?** — precedence (0)'s own predicate.
+///
+/// ONE spelling, read by [`Step10Surface::instrument_failed`] (which a
+/// born-validation exit code reads) and by the [`BandInputs`] a band-mode
+/// composition reads. They were the same expression written twice; two
+/// spellings of one predicate is an exit code and a verdict that can drift.
+fn step10_instrument_failed(blocks: &[OrdinalBlock], signing_failures: &[String]) -> bool {
+    blocks.iter().any(|b| matches!(b.body, OrdinalBody::Instrument(_)))
+        || !signing_failures.is_empty()
+}
+
 impl Step10Surface {
     /// **THE ONE COMPOSITION**, read by the report line AND by the exit code.
     fn instrument_failed(&self) -> bool {
-        self.blocks.iter().any(|b| matches!(b.body, OrdinalBody::Instrument(_)))
-            || !self.signing_failures.is_empty()
+        step10_instrument_failed(&self.blocks, &self.signing_failures)
     }
 
     fn exit_code(&self) -> i32 {
@@ -18710,10 +18758,7 @@ fn step10_read(opts: &Step10Options, rules: &Rules) -> Result<Step10Surface, Str
 
     let part_a = classify(views);
     let inputs = BandInputs {
-        instrument_failure: blocks
-            .iter()
-            .any(|b| matches!(b.body, OrdinalBody::Instrument(_)))
-            || !signing_failures.is_empty(),
+        instrument_failure: step10_instrument_failed(&blocks, &signing_failures),
         blocking_collisions: part_a.blocking().len(),
     };
     let verdict = match opts.mode {
@@ -18952,23 +18997,45 @@ fn render_static(out: &mut String, band: Step10Band, statics: &StaticRead) {
             );
         }
     }
-    let verdict = if statics.agrees() {
-        format!("PASS — the preferences AGREE ({})", statics.preference_prod().label(band))
-    } else {
-        format!(
-            "*** MISS *** PARITY DIVERGENCE: production says {}, probe says {}",
-            statics.preference_prod().label(band),
-            statics.preference_probe().label(band),
-        )
+    // **THE BAND DECIDES WHAT THIS LINE CAN SAY.** At the recorded band the
+    // gate is live and a preference disagreement is that ordinal's MISS. At PF
+    // NOTHING gates on the static preference — clause (iii) gates in full there
+    // — so `*** MISS ***` must never appear: the only two things that can be
+    // true at PF are RECORDED and, on a delta inequality, the precedence-(0)
+    // refusal `static_parity_refusal` raises before this line is composed.
+    let verdict = match band {
+        Step10Band::Ose => {
+            if statics.agrees() {
+                format!(
+                    "PASS — the preferences AGREE ({})",
+                    statics.preference_prod().label(band),
+                )
+            } else {
+                format!(
+                    "*** MISS *** PARITY DIVERGENCE: production says {}, probe says {}",
+                    statics.preference_prod().label(band),
+                    statics.preference_probe().label(band),
+                )
+            }
+        }
+        Step10Band::Pf => {
+            if statics.deltas_equal() {
+                format!(
+                    "RECORDED — the preference is {}; nothing gates on it at PF (clause (iii) \
+                     gates in full there)",
+                    statics.preference_prod().label(band),
+                )
+            } else {
+                format!(
+                    "*** TYPED INSTRUMENT FAILURE *** probe/production column disagreement \
+                     (production {:+}, probe {:+}) — precedence (0), never a verdict",
+                    statics.delta_prod(),
+                    statics.delta_probe(),
+                )
+            }
+        }
     };
-    let _ = writeln!(
-        out,
-        "       GATE (β+)       {verdict}{}",
-        match band {
-            Step10Band::Ose => "",
-            Step10Band::Pf => "   [RECORDED at PF — clause (iii) gates in full there]",
-        },
-    );
+    let _ = writeln!(out, "       GATE (β+)       {verdict}");
 }
 
 fn render_ordinal(out: &mut String, surface: &Step10Surface, block: &OrdinalBlock) {
@@ -18983,6 +19050,14 @@ fn render_ordinal(out: &mut String, surface: &Step10Surface, block: &OrdinalBloc
         block.digest, block.anchor,
     );
     let _ = writeln!(out, "     mover             p{}", block.seat.0);
+    // **THE ROOT'S POSITION**, in the identity block (the review's MUST-2).
+    // Under R-S10-14 the phase is the recipe's own premise, so a step-10 ledger
+    // row has to be able to read it off the artifact.
+    let _ = writeln!(
+        out,
+        "     position          {:?} · {} pending choice(s) · mercenary={}",
+        block.phase, block.pending, block.mercenary,
+    );
     if block.burned {
         let _ = writeln!(
             out,
@@ -19123,14 +19198,6 @@ fn render_ordinal(out: &mut String, surface: &Step10Surface, block: &OrdinalBloc
             ose_ordinal_verdict(&OseOrdinal { ordinal: block.ordinal, burned: block.burned, read })
         }),
     };
-    // W2c RED: the deliberate placeholder — the position line is printed, but
-    // at the END of the block rather than in the IDENTITY block beside the
-    // mover, where a reader looking up "what position is this?" reads.
-    let _ = writeln!(
-        out,
-        "     position          {:?} · {} pending choice(s) · mercenary={}",
-        block.phase, block.pending, block.mercenary,
-    );
     let _ = writeln!(
         out,
         "     VERDICT {:<9} {}",
@@ -19291,7 +19358,8 @@ fn render_step10(surface: &Step10Surface) -> String {
             Step10Band::Ose => format!(
                 "the FLOOR reads this: fewer than {STEP10_FLOOR} is VOID-AS-BLOCK"
             ),
-            Step10Band::Pf => "RECORDED: spec §6's letter registers NO floor for this band, so                                nothing here enters the verdict"
+            Step10Band::Pf => "RECORDED: spec §6's letter registers NO floor for this band, \
+                               so nothing here enters the verdict"
                 .to_string(),
         },
     );
@@ -19321,13 +19389,23 @@ fn render_block_verdict(out: &mut String, band: Step10Band, verdict: &BlockVerdi
     use std::fmt::Write;
     let _ = writeln!(out, "\n  == THE BLOCK ==");
     if let Some(split) = verdict.split() {
+        // The counts, ONCE and without a verdict word in front of them — the
+        // verdict is the BLOCK VERDICT line's to say, and "PASS real=…" on a
+        // MISS line read wrong (the review's NOTE-5).
         let _ = writeln!(
             out,
-            "     split             PASS real={} vacuous={} miss={} void={} burned={}   \
+            "     split             real={} vacuous={} miss={} void={} burned={}   \
              (denominator {})",
             split.real, split.vacuous, split.miss, split.void, split.burned, split.total(),
         );
         let _ = writeln!(out, "     blocking          {} collision(s)", split.collisions);
+        // **THE WORST-CASE SENTENCE RIDES EVERY RECORDED-BAND BLOCK LINE**, not
+        // only a passing one (the review's SHOULD-4). The owner read it before
+        // any evidence existed; an artifact carrying it only on a PASS would
+        // drop it exactly where the block's vacuity is worth reading.
+        if band == Step10Band::Ose {
+            let _ = writeln!(out, "     worst case        \"{STEP10_WORST_CASE}\"");
+        }
     }
     match verdict {
         BlockVerdict::Refused => {
@@ -19357,9 +19435,6 @@ fn render_block_verdict(out: &mut String, band: Step10Band, verdict: &BlockVerdi
                  collisions",
                 split.passes_for(band),
             );
-            if band == Step10Band::Ose {
-                let _ = writeln!(out, "     worst case        \"{STEP10_WORST_CASE}\"");
-            }
         }
         BlockVerdict::Miss(split) => {
             let _ = writeln!(
@@ -31282,7 +31357,10 @@ mod tests {
         );
         let mut rendered = String::new();
         render_block_verdict(&mut rendered, Step10Band::Ose, &got);
-        assert!(rendered.contains("PASS real=2 vacuous=4 miss=2"), "{rendered}");
+        // The counts print ONCE, without a verdict word in front of them
+        // (the review's NOTE-5); the verdict is the BLOCK VERDICT line's.
+        assert!(rendered.contains("real=2 vacuous=4 miss=2 void=0 burned=0"), "{rendered}");
+        assert!(rendered.contains("BLOCK VERDICT     PASS"), "{rendered}");
         assert!(rendered.contains(STEP10_WORST_CASE), "the sentence is printed VERBATIM: {rendered}");
 
         // INSTRUMENT FAILURE overrides everything, including the floor.
@@ -32711,20 +32789,12 @@ mod tests {
             signing_summary: Vec::new(),
             signing_notes: Vec::new(),
             signing_failures: Vec::new(),
-            verdict: Some(compose_ose_block(
-                &[OseOrdinal {
-                    ordinal: 50,
-                    burned: false,
-                    read: OseOrdinalRead::Substantive {
-                        arithmetic: true,
-                        raw_a: true,
-                        raw_b: true,
-                        raw_c: true,
-                        parity: true,
-                    },
-                }],
-                BandInputs::default(),
-            )),
+            // HAND-BUILT rather than composed: this cell is about the READ and
+            // its artifact, and the compositions are enumerated exhaustively
+            // elsewhere over the registered EIGHT — which they now
+            // `debug_assert` (the review's NOTE-6), so a one-ordinal band is not
+            // theirs to answer.
+            verdict: Some(BlockVerdict::Pass(BlockSplit { real: 1, ..BlockSplit::default() })),
         };
         let rendered = render_step10(&surface);
         for section in [
