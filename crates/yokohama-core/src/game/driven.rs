@@ -6590,6 +6590,204 @@ mod tests {
         ));
     }
 
+
+    // =======================================================================
+    // A-S12-1 — the CAP TAIL: a counted cap's non-gating evidence
+    // (close doc `docs/plans/2026-08-30-phase3.5c-v4-close.md` §2.4 items 1, 5)
+    // =======================================================================
+
+    /// The TAIL KEEPS THE LAST MOVES, not the first — the rider's whole purpose
+    /// is attribution of a loop nobody can see, and a prefix of a 100,000-move
+    /// trajectory says nothing about the state it ended in.
+    ///
+    /// Pinned on a SYNTHETIC move list rather than a driven one because the
+    /// property is about the slice and a real cap's trajectory is not something
+    /// a test can afford to produce twice.
+    #[test]
+    fn a_cap_tail_keeps_the_last_sixteen_applied_moves_and_says_how_many_there_were() {
+        let rules = Rules::standard();
+        let root = root_2p(&rules, world(20).0);
+        let applied: Vec<AppliedMove> = (0..20u8)
+            .map(|i| AppliedMove {
+                seat: PlayerId(u8::from(i % 2 == 1)),
+                mv: Move::SkipBuilding,
+            })
+            .collect();
+
+        let tail = CapTail::capture(&root, &applied);
+        assert_eq!(tail.applied_total, 20, "the tail must say how many moves it is a tail OF");
+        assert_eq!(tail.tail.len(), CAP_TAIL_MOVES, "the tail is not K moves long");
+        // The LAST sixteen: moves 4..20, so the first kept move's seat is
+        // move 4's (seat 0) and the last kept is move 19's (seat 1).
+        assert_eq!(tail.tail, applied[4..], "the tail kept the wrong end of the trajectory");
+
+        // A trajectory SHORTER than K keeps all of it, and never pads.
+        let short = CapTail::capture(&root, &applied[..3]);
+        assert_eq!(short.applied_total, 3);
+        assert_eq!(short.tail, applied[..3]);
+    }
+
+    /// The END-STATE SUMMARY reads the fields the produce-and-hoard attribution
+    /// needs — goods, money, assistant stocks, cards — off the state the cap
+    /// stopped in, and the turn number beside them.
+    ///
+    /// Pinned against a POST-SETUP root, whose every quantity is a rulebook
+    /// constant, so a summary that silently read the wrong field fails on a
+    /// number a reader can check without running anything.
+    #[test]
+    fn a_cap_tails_end_state_reads_the_seats_stocks_at_cap_time() {
+        let rules = Rules::standard();
+        let root = root_2p(&rules, world(21).0);
+
+        let tail = CapTail::capture(&root, &[]);
+        assert_eq!(tail.turn_number, root.turn_number);
+        assert_eq!(tail.turn_phase, root.turn_phase);
+        assert_eq!(tail.current_player, root.current_player);
+        assert_eq!(tail.applied_total, 0);
+        assert!(tail.tail.is_empty(), "an empty trajectory must not invent a tail");
+        assert_eq!(tail.seats.len(), 2, "every seat is summarized");
+
+        for (index, seat) in tail.seats.iter().enumerate() {
+            let truth = &root.players[index];
+            assert_eq!(seat.seat, truth.id);
+            assert_eq!(seat.victory_points, truth.victory_points);
+            assert_eq!(seat.money, truth.money);
+            assert_eq!(seat.copper, truth.copper);
+            assert_eq!(seat.silk, truth.silk);
+            assert_eq!(seat.tea, truth.tea);
+            assert_eq!(seat.seafood, truth.seafood);
+            assert_eq!(seat.imported_goods, truth.imported_goods);
+            assert_eq!(seat.assistants_in_hand, truth.assistants.in_hand);
+            assert_eq!(seat.assistants_in_warehouse, truth.assistants.in_warehouse);
+            assert_eq!(
+                seat.assistants_on_board,
+                truth.assistants.on_board.values().map(|&n| u32::from(n)).sum::<u32>(),
+            );
+            assert_eq!(seat.orders_in_hand, truth.order_cards_in_hand.len());
+            assert_eq!(seat.completed_orders, truth.completed_orders.len());
+            assert_eq!(seat.technologies, truth.technologies.len());
+        }
+        // The rulebook constants, so a field swap fails on a number rather than
+        // on an identity: every seat starts one of each trade good and eight
+        // assistants in hand.
+        assert_eq!(tail.seats[0].copper, 1);
+        assert_eq!(tail.seats[0].assistants_in_hand, 8);
+    }
+
+    /// THE SHARED LOOP's cap carries its partial trajectory into the rooted
+    /// taxonomy (A-S12-1): `PlayError::TurnCap`'s `partial` has ridden out of
+    /// `play_from_state` since V4 step 11, and `classify` used to drop it —
+    /// which is exactly why the S12 achievement arm's refusal could say nothing
+    /// about the loop it refused.
+    ///
+    /// **The MESSAGE is unchanged**, and that is asserted here rather than left
+    /// to the scope pin: the tail is evidence a caller can read, never a new
+    /// sentence in a refusal every other consumer still prints verbatim.
+    #[test]
+    fn the_shared_loops_cap_hands_its_trajectory_to_the_rooted_taxonomy() {
+        let rules = Rules::standard();
+        let root = root_2p(&rules, world(22).0);
+        let seats = [
+            SeatSpec::Reply(ReplyPolicy::FamilyWeighted),
+            SeatSpec::Reply(ReplyPolicy::FamilyWeighted),
+        ];
+        // One turn of headroom: the guard trips the moment `turn_number`
+        // reaches 2, so the partial holds turn 1 and nothing else.
+        let opts = DrivenOpts { max_turns: 1, ..DrivenOpts::default() };
+
+        let err = drive_to_terminal(&root, &seats, &rules, world(23), opts)
+            .expect_err("a one-turn guard must trip");
+        let DrivenError::TurnCapReached { turns, tail } = err else {
+            panic!("expected TurnCapReached, got {err:?}");
+        };
+        assert_eq!(turns, 2, "the refusal names the turn the guard tripped at");
+        let tail = tail.expect("the shared loop hands its partial to the rooted taxonomy");
+        assert_eq!(tail.turn_number, turns, "the tail's end state is not the capped state");
+        assert!(tail.applied_total > 0, "turn 1 applied no moves");
+        assert_eq!(
+            tail.tail.len(),
+            tail.applied_total.min(CAP_TAIL_MOVES),
+            "the tail length does not follow the trajectory's",
+        );
+        assert_eq!(tail.seats.len(), 2);
+
+        assert_eq!(
+            DrivenError::TurnCapReached { turns, tail: None }.to_string(),
+            "turn cap reached at turn 2",
+            "the cap's MESSAGE moved — every consumer below still prints it verbatim",
+        );
+    }
+
+    /// The TURN DRIVER's cap is the same taxonomy and the same sentence, with
+    /// its own trajectory attached.
+    ///
+    /// `drive_turn` cannot borrow `play_from_state`'s partial (it is not that
+    /// loop), so it captures its own — and the DRIFT this pins is the one that
+    /// matters: two loops that report a cap in two different sentences would
+    /// make a counted cap mean two different things on one report.
+    #[test]
+    fn the_turn_drivers_cap_is_the_shared_sentence_with_its_own_tail() {
+        let rules = Rules::standard();
+        let root = root_2p(&rules, world(24).0);
+        let subject = SeatSpec::Contestant(Contestant::GreedyV1 { m: DEFAULT_RETREAT_SAMPLES });
+        // A zero-turn guard: the root's own turn number is already past it, so
+        // the driver refuses before its first decision.
+        let opts = DrivenOpts { max_turns: 0, ..DrivenOpts::default() };
+
+        let err = drive_turn(&root, subject, &rules, 0xA5A5_0000_0000_0001, &opts)
+            .expect_err("a zero-turn guard must trip");
+        let DrivenError::TurnCapReached { turns, tail } = err else {
+            panic!("expected TurnCapReached, got {err:?}");
+        };
+        assert_eq!(turns, root.turn_number);
+        let tail = tail.expect("the turn driver captures its own trajectory");
+        assert_eq!(tail.applied_total, 0, "the cap tripped before any decision");
+        assert_eq!(tail.turn_number, root.turn_number);
+        assert_eq!(
+            classify(PlayError::TurnCap { turns, partial: None }).to_string(),
+            DrivenError::TurnCapReached { turns, tail: None }.to_string(),
+            "the two loops report a cap in two different sentences",
+        );
+    }
+
+    /// **THE SCOPE PIN** (A-S12-1's fence): the STANDALONE adjudicator still
+    /// HARD-REFUSES on a capped playout, in today's words.
+    ///
+    /// The amendment is scoped to the FAMILY harness's adjudication. Every other
+    /// consumer — `examples/driven adjudicate` among them — keeps Phase B's own
+    /// design working as built ("a playout failure REFUSES THE WHOLE TABLE"): a
+    /// table missing a candidate reads exactly like a table of a position with
+    /// fewer options.
+    #[test]
+    fn the_standalone_adjudicator_still_hard_refuses_a_capped_playout() {
+        let rules = Rules::standard();
+        let root = root_2p(&rules, world(25).0);
+        let source = RootSource::Constructed(root);
+        let seats = [
+            SeatSpec::Reply(ReplyPolicy::FamilyWeighted),
+            SeatSpec::Reply(ReplyPolicy::FamilyWeighted),
+        ];
+        let opts = DrivenOpts { max_turns: 1, ..DrivenOpts::default() };
+
+        let err = adjudicate_root(&source, &seats, &rules, world(26), 1, opts)
+            .expect_err("a capped playout must refuse the whole table");
+        let text = err.to_string();
+        match &err {
+            AdjudicationError::Playout { replication, error, .. } => {
+                assert_eq!(*replication, 0);
+                assert!(
+                    matches!(**error, DrivenError::TurnCapReached { .. }),
+                    "the cap is not typed through: {error}",
+                );
+            }
+            other => panic!("expected a Playout refusal, got {other:?}"),
+        }
+        assert!(
+            text.contains("did not complete: turn cap reached at turn 2"),
+            "the standalone refusal's wording moved: {text}",
+        );
+    }
+
     /// An agent refusal is a HARD error with no fallback arm — the arena's
     /// posture, inherited structurally because the loop IS the arena's.
     ///
