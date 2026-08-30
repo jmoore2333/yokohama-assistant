@@ -3893,6 +3893,16 @@ mod tests {
     /// 128 and 104.)
     const W_A1_ALL_VOID_MAX_TURNS: u32 = 50;
 
+    /// The design size of the wave's fixture cell — six units, twelve games.
+    ///
+    /// MEASURED at [`W_A1_MASTER`] before any of this code existed, the way the
+    /// contestant goldens record their probed seeds: the twelve scheduled games
+    /// end naturally at turns `[128, 104] [108, 136] [86, 72] [68, 168]
+    /// [102, 60] [120, 86]` (unit 0 first, arrangement 0 first), so at the
+    /// shipped guard the cell caps NOTHING and under a guard in the low
+    /// hundreds it caps some units and not others.
+    const W_A1_MIXED_UNITS: u32 = 6;
+
     /// **Pin (i), the construction half made a test.** Every existing entry
     /// point reaches ONE loop at `CapPolicy::Refuse` and `HONEST_MAX_TURNS`, so
     /// a report produced through the OLD public entry point and one produced
@@ -3936,6 +3946,63 @@ mod tests {
             !old.spec_echo.contains("capped-ceiling"),
             "an absent ceiling emits NO token at all: {}",
             old.spec_echo,
+        );
+    }
+
+    /// **Pin (ii).** With the flag PRESENT and no game capped, a counting cell
+    /// is the refuse-mode cell: same games, same units, same interval, same
+    /// counters. The only declared differences are the echo's ONE trailing
+    /// token and the five void fields, which now state the mode instead of
+    /// carrying refuse mode's constants.
+    ///
+    /// The comparison strips those six keys and compares the rest as a
+    /// serialized value rather than field by field, so it keeps its meaning the
+    /// next time [`CellReport`] grows.
+    #[test]
+    fn counting_mode_with_zero_capped_games_is_field_equal_to_refuse_mode() {
+        const CEILING: u32 = 4;
+        let rules = Rules::standard();
+        let spec = w_a1_spec("w-a1-zero-caps", W_A1_MIXED_UNITS);
+
+        let refused = run_cell(&spec, &rules).expect("no game of this cell caps at the shipped guard");
+        let (counted, _wall) =
+            run_cell_counting_caps_timed(&spec, &rules, true, CEILING, &mut |_stats, _arr| Ok(()))
+                .expect("the same cell, counting");
+
+        assert!(
+            counted.capped.is_empty(),
+            "this fixture caps NOTHING at the shipped guard — without that the \
+             comparison below would be measuring the void semantics, not their absence",
+        );
+        assert_eq!(counted.capped_ceiling, Some(CEILING));
+        assert_eq!(counted.units_scheduled, spec.units);
+        assert_eq!(counted.units_void, 0);
+        assert_eq!(counted.units_read, spec.units);
+        assert_eq!(
+            counted.spec_echo,
+            format!("{} capped-ceiling={CEILING}", refused.spec_echo),
+            "the flag adds exactly ONE trailing token to the echo",
+        );
+
+        let strip = |report: &CellReport| {
+            let mut value = serde_json::to_value(report).unwrap();
+            let map = value.as_object_mut().expect("a CellReport serializes as an object");
+            for key in [
+                "spec_echo",
+                "capped_ceiling",
+                "units_scheduled",
+                "units_void",
+                "units_read",
+                "capped",
+            ] {
+                assert!(map.remove(key).is_some(), "{key} is not a CellReport field");
+            }
+            value
+        };
+        assert_eq!(
+            strip(&refused),
+            strip(&counted),
+            "counting a cell that caps nothing must not move a single figure",
         );
     }
 
