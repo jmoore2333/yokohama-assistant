@@ -5600,6 +5600,129 @@ mod tests {
         }
     }
 
+
+    /// **THE ZERO-CAP BYTE-IDENTITY PIN** (A-S12-1, close doc §2.4 item 6).
+    ///
+    /// The amendment lets the family harness COUNT a capped playout instead of
+    /// refusing the block. Its inertness obligation is measured, not asserted:
+    /// a block with ZERO caps must render BYTE-IDENTICALLY before and after,
+    /// because the orchestrator proves the amendment inert by re-running two
+    /// banked real blocks and diffing their report bodies against
+    /// `s12-f2-pos.txt` / `s12-f3-ctrl.txt`.
+    ///
+    /// **The expectation below is a CAPTURE taken at `1fd208c`, before any
+    /// A-S12-1 code existed** — baked rather than re-derived through the new
+    /// renderer, which is the whole point: a pin computed by the code it guards
+    /// guards nothing. A deliberate future format change re-bakes it in the
+    /// same commit as the change; an ACCIDENTAL one fails here.
+    ///
+    /// The report it renders carries every section a real block prints: a
+    /// passing admitted root with a turn-grain read and its annotations, an
+    /// excluded root with a FAILS row, the exclusion block, and the sole
+    /// dissenter block.
+    #[test]
+    fn a_zero_cap_family_report_renders_byte_identically_to_the_pre_wave_capture() {
+        let mut excluded =
+            family_row(1, RootVerdict::Excluded(ExclusionReason::NotDemonstrated), None);
+        excluded.admission = Some(AdmissionRead {
+            delta: 5,
+            control: false,
+            policies: vec![
+                policy_admission(ReplyPolicy::FamilyWeighted, AdmissionVerdict::Dominates),
+                policy_admission(ReplyPolicy::LookaheadAtFinal, AdmissionVerdict::Fails),
+            ],
+        });
+        excluded.lookahead_sole_dissenter = true;
+        let report = family_report(
+            FamilyVerdict::Pass,
+            vec![family_row(0, RootVerdict::Pass, Some(turn_read(1, 3))), excluded],
+        );
+
+        let rendered = render_family_block(&report, FamilyArm::Positive);
+        assert_eq!(
+            rendered, ZERO_CAP_BASELINE,
+            "the zero-cap family report moved against its pre-A-S12-1 capture",
+        );
+        // The absent-means-absent half, stated separately so a token that
+        // appeared with a zero count fails HERE with its own sentence rather
+        // than inside a 60-line diff (the arena's `--capped-ceiling` echo rule).
+        assert!(
+            !rendered.contains("capped"),
+            "a zero-cap block prints a cap token:\n{rendered}",
+        );
+    }
+
+    /// The pre-wave capture the pin above compares against — see its doc.
+    const ZERO_CAP_BASELINE: &str = r#"=== driven family ===
+  label          CONFIRMATORY — a pass is evidence FOR the subject and a failure routes through D7; the block confirms a behaviour the canon (or the rules) already call right
+  counter check  D7 step one — 1 root(s) read, 0 REFUSED, 1 annotated (a refusal is a ROUTING and never a failure: a truncated search's pick is not a preference)
+  family         end-trigger   class=end-timing/proximity   block=pilot   arm=positive
+  generator      end-firable-ahead-in-truth
+  master         0x0a3e000000000001
+  subject        lookahead-v1@v2{b=4,eval_impl=3,k=1,m=8,weights=-1160323518167071950}
+  rule           turn:end-fired-by-handoff   grain=turn
+  sizing         R=20  per-root F=1  admission K=4  delta=5 VP  admission-inverted=false
+  menu           family-weighted, greedy-at-final
+  counts         drawn=2  admitted=1  counter-refused=0
+  verdict        PASS
+  robustness     robustness read: each candidate was FORCED and the remainder PLAYED OUT under the named seats, so a margin here is what those policies reach from this position — not exact ground truth about the candidate
+
+  per-policy admission (delta=5 VP, inverted=false) — the TURN-grain admission arithmetic, and at the DECISION grain the LIVE/DEAD split printed per root above:
+    the conjunction runs over the SPLITTING policies (both groups >= 2 playouts): a CANNOT row is recorded and blocks nothing, a FAILS row blocks, and a root needs 2 splitting policies before its admission is a demonstration at all
+    ordinal  policy              true_n  false_n   true_mean   false_mean      diff   verdict
+          0  family-weighted          4        4       12.00         1.00     11.00   DOMINATES
+          0  greedy-at-final          4        4       12.00         1.00     11.00   DOMINATES
+          1  family-weighted          4        4       12.00         1.00     11.00   DOMINATES
+          1  lookahead-at-final       4        4       12.00         1.00     11.00   FAILS
+
+  roots:
+
+    ordinal 0   record-prefix@root-digest-xyz  event=113
+        verdict        PASS
+        draw seed      0x5eed000000000000
+        step           -
+        rule as run    turn:end-fired-by-handoff
+        misses 0   unresolved 0
+        counter check  candidates=2  top=+12  tied-at-top=2  top-band(<=1 pt)=2  distinct=2
+          root_candidates        3
+          nodes                  11
+          handles                11
+          route_dfs_nodes        2
+          forced_nodes           5
+          leaves                 7
+          scored                 29
+          root_scored            3
+          budget_binds           0
+          budget_starved         0
+          placement_cap_binds    0
+          max_line               4
+          ply_cap_hits           0
+          free_extension_steps   0
+          free_cap_hits          0
+        annotation     TiedAtTop { candidates: 2 }
+        annotation     SEPARATOR RECOMMENDED — the evaluator separated little here, so this root goes through b=4 / b=8 / b=16 before an argument rides it
+        binomial       misses 1/3 (rate 0.3333); exact one-sided 95% upper bound on the per-world miss rate 0.8646
+        replications   R=3  master=0x0a3e000000000001  root_word=0x00ff0000000000ab
+          r0   seed=0x0d00000000000000  root_word=0x00ff0000000000ab  MISSED  moves=4  game_over=false  handoff=handoff-0
+          r1   seed=0x0d00000000000001  root_word=0x00ff0000000000ab  HELD  moves=4  game_over=false  handoff=handoff-1
+          r2   seed=0x0d00000000000002  root_word=0x00ff0000000000ab  HELD  moves=4  game_over=false  handoff=handoff-2
+
+    ordinal 1   record-prefix@root-digest-xyz  event=113
+        verdict        EXCLUDED / NOT DEMONSTRATED (the pass behaviour does not dominate here under every SPLITTING policy — a real measurement, and the rate is on the report)
+        draw seed      0x5eed000000000001
+        step           -
+        rule as run    turn:end-fired-by-handoff
+        misses 0   unresolved 0
+        read           none — this root was excluded or counter-refused before any replication ran
+
+  exclusions (roots that never entered the denominator):
+    ordinal 1   EXCLUDED / NOT DEMONSTRATED (the pass behaviour does not dominate here under every SPLITTING policy — a real measurement, and the rate is on the report)
+                 splitting=2 of 2 declared policies
+                 dissenters: lookahead-at-final
+
+  dissent        SOLE DISSENTER at ordinals [1] — dominance held under every declared policy EXCEPT lookahead-at-final
+                 the subject IS lookahead@final, so a subject defect that degrades its POST-candidate play deflates measured dominance under exactly that arm and would exclude exactly the roots where the defect matters — a broken subject passing by shrinking its own denominator. Collected as potential subject SUPPRESSION evidence and routed to D7 as a finding, never silently dropped."#;
+
     fn line_index(rendered: &str, needle: &str) -> usize {
         rendered
             .lines()
