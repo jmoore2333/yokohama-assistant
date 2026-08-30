@@ -875,6 +875,57 @@ mod tests {
         }
     }
 
+    /// **W-D1 review M1.** A run whose master is not printed is a run nobody can
+    /// repeat. CLAUDE.md's arena bullet is binding — *"masters are recorded
+    /// before use"* — and `cell` honours it through its report echo.
+    #[test]
+    fn the_cap_rate_render_names_the_master_its_worlds_came_from() {
+        let rules = Rules::standard();
+        let spec = scratch_spec("wd1-caprate-master", 1);
+        let report = run_cap_rate_capped(&spec, &rules, false, 5).expect("counted, not refused");
+        assert_eq!(report.master, SCRATCH_MASTER);
+        let text = render_cap_rate(&report).join("\n");
+        assert!(
+            text.contains(&format!("master={SCRATCH_MASTER:#018x}")),
+            "the resolved master must be IN the render, not only in a header the library \
+             does not control:\n{text}",
+        );
+    }
+
+    /// The case M1 was actually about: `--os-entropy` prints
+    /// `"os-entropy (drawn per run, printed below)"` in the header, and nothing
+    /// below printed it. The second assertion is the one that matters — the
+    /// master rendered must be the one the schedule descended from, so the run
+    /// reproduces as a diagnostic.
+    #[test]
+    fn an_os_entropy_cap_rate_render_names_the_master_it_drew() {
+        let rules = Rules::standard();
+        let (x, y) = rungs();
+        let spec = CellSpec {
+            name: "wd1-caprate-os-entropy".to_string(),
+            players: 2,
+            x,
+            y,
+            units: 1,
+            master: SeedScheduleKind::OsEntropy,
+        };
+        // A five-turn cap keeps this cheap AND makes the outcome deterministic
+        // (every game caps) even though the master is drawn.
+        let report = run_cap_rate_capped(&spec, &rules, false, 5).expect("counted, not refused");
+        let text = render_cap_rate(&report).join("\n");
+        assert!(
+            text.contains(&format!("master={:#018x}", report.master)),
+            "an os-entropy run must print the master it drew:\n{text}",
+        );
+        let mut schedule = SeedSchedule::diagnostic(report.master);
+        assert_eq!(
+            report.capped[0].seed,
+            schedule.next_world(),
+            "the printed master must be the one the worlds came from — otherwise it is a \
+             number, not a reproduction key",
+        );
+    }
+
     /// **What surface (A) exists to print.** A CAPPED game is the case the arena
     /// could not show anyone: the tail with its turn/mover/phase annotation, the
     /// period line, and the end-state summary all have to render off a partial
