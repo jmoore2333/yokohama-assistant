@@ -239,10 +239,47 @@ const NAMED_IDENTITY_BEAM: u16 = 4;
 const NAMED_IDENTITY_WORLDS: u8 = 1;
 const NAMED_IDENTITY_RETREAT_SAMPLES: u8 = 8;
 
+/// The knobs a [`NamedIdentity`] seat is built at, as a NAMED record rather
+/// than three positional numbers.
+///
+/// `worlds` and `retreat_samples` are adjacent `u8`s, so a transposed tuple
+/// compiles clean and mislabels every seat downstream — a hazard
+/// `driven::mirror_build` names in as many words about the shipped arm's knob
+/// ORDER. Since the 2026-08-30 ship commit the production contestant IS a named
+/// identity, so that mirror and the CLI's production seat both have to read
+/// these three numbers; this type is how they read them instead of retyping
+/// them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NamedIdentityKnobs {
+    /// The S1 turn-boundary beam.
+    pub beam: u16,
+    /// Sampled worlds per decision.
+    pub worlds: u8,
+    /// Retreat samples per decision.
+    pub retreat_samples: u8,
+}
+
 impl NamedIdentity {
     /// Every named identity, for a grammar or a test that must cover them all.
     pub const ALL: [Self; 3] =
         [Self::V2Padded, Self::V2RefitPadded, Self::V4Step9Draft1];
+
+    /// The shipped lookahead knobs EVERY named arm runs — the three transcribed
+    /// literals above, readable from outside this module.
+    ///
+    /// An associated const rather than a method because knobless is the design
+    /// ([`NamedIdentity`]'s own doc): the knobs are a property of the SURFACE,
+    /// not of an arm, and a per-arm accessor would invite a per-arm answer. It
+    /// re-exports the same three consts [`Contestant::build`] and
+    /// [`Contestant::provenance`] read, so the consumers outside this file that
+    /// the ship commit created — `driven::mirror_build` and the CLI's
+    /// production seat — construct from ONE spelling of `(4, 1, 8)` rather than
+    /// from a fourth transcription of it.
+    pub const KNOBS: NamedIdentityKnobs = NamedIdentityKnobs {
+        beam: NAMED_IDENTITY_BEAM,
+        worlds: NAMED_IDENTITY_WORLDS,
+        retreat_samples: NAMED_IDENTITY_RETREAT_SAMPLES,
+    };
 
     /// The WIRE name — what a runner accepts and an echo carries. Read from
     /// here at every site, so the grammar and provenance cannot drift into two
@@ -475,6 +512,50 @@ impl Contestant {
         m: DEFAULT_RETREAT_SAMPLES,
         leaf: LeafRule::HandOff,
     };
+
+    /// **THE SHIPPED PRODUCTION CONTESTANT** — the V4 sighted-evaluator
+    /// identity, confirmed on-policy on 2026-08-30 and shipped AS ITSELF.
+    ///
+    /// Its echo is the identity freeze's §1 block verbatim
+    /// (`docs/plans/2026-08-30-phase3.5c-v4-identity-freeze.md`):
+    /// `v4-step9-draft1@v2{b=4,eval_impl=3,k=1,m=8,weights=6957643967275421640}`.
+    /// The field that cleared it read θ̂ 0.691 [0.667, 0.715] against
+    /// `v2-padded` over 647 read 2P units (that document's §9.9); shipping was
+    /// conditioned on the escrow regression re-read, which is the close doc's
+    /// §2 and not this const's business.
+    ///
+    /// **An EXPLICIT identity, never a `*_DEFAULT`.** Amendment D1
+    /// (`docs/plans/2026-08-11-phase3.5c-scoping-amendment.md`): "the final
+    /// contestant IS the exact `contestant_echo` string (name, controller
+    /// version, b/k/m, eval_impl, weight-table digest, cap-token presence) …
+    /// Every component is identity". The knobs here are the transcribed
+    /// literals inside [`NamedIdentity`], so a later move of
+    /// [`LOOKAHEAD_V1_DEFAULT`](Self::LOOKAHEAD_V1_DEFAULT) cannot re-point what
+    /// this name means — which is the whole reason the shipped seat is a named
+    /// table rather than a shared default.
+    ///
+    /// **Re-pointing this const is a PER-SHIP COMMIT, and it moves four
+    /// bindings or none**: this const, the CLI's `bot::PROVISIONAL_DEFAULT_BOT`
+    /// (and with it `suggest`'s construction, which goes through the same
+    /// function), `driven::ReplyPolicy::LookaheadAtFinal`, and
+    /// `driven_runner::DEFAULT_SEAT` — so the seat you play against, the seat
+    /// that advises you and the seat a rooted question is measured against
+    /// cannot drift apart. That instruction is not this commit's invention: it
+    /// was written into `bot.rs` at W5 and into `driven.rs` at Phase C, against
+    /// the day it would be discharged.
+    ///
+    /// **`lookahead-v1` and `greedy-v1` are GRANDFATHERED byte-identically at
+    /// [`WeightTable::V2`]** — no controller version const moves and no shipped
+    /// constructor's table moves, so every figure ever recorded against those
+    /// names stays comparable forward, and `SEMANTICS_REV` is untouched (a
+    /// weight table is a per-controller identity, not a rules change). The
+    /// 2026-08-10 v2 precedent — move every shipped constructor's table and
+    /// bump all four controller consts (L12) — is deliberately NOT followed
+    /// here, and the reason is stated so nobody re-derives it: it would re-name
+    /// the confirmed identity `lookahead-v1@v3{…}`, a DIFFERENT contestant by
+    /// D1's tuple, and it would move `greedy-v1`, `lookahead-atomic-diag-v1`
+    /// and `mcts-v1` onto a table no field confirmed for them.
+    pub const PRODUCTION: Self = Self::NamedTable(NamedIdentity::V4Step9Draft1);
 
     /// Parse a contestant SPEC — `<name>` or `<name>:<key>=<value>,…` — into the
     /// contestant it names. **THE single-sourced grammar** (Phase 3.5c W1-B):
