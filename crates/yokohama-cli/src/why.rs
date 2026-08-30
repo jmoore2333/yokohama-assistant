@@ -599,11 +599,18 @@ fn render(
         // as a question rather than as a default.
         explanation_only: match r.contestant {
             Contestant::GreedyV1 { .. } => Some(ONE_PLY_ACCOUNT),
-            Contestant::LookaheadV1 { .. } => None,
-            // Unreachable: `read_seat` admits only the two arms above.
-            Contestant::Policy(_) | Contestant::MctsV1 { .. } | Contestant::AtomicDiag { .. } => {
-                None
-            }
+            // A SEARCH has a line and a ranking, so there is no leaner block to
+            // fall back to. The named arms belong here and not in the group
+            // below: since the 2026-08-30 ship commit one of them is the seat
+            // this driver plays, and a named arm IS a `LookaheadAgent` — same
+            // continuation, same ranked roots, same fifteen counters.
+            Contestant::LookaheadV1 { .. } | Contestant::NamedTable(_) => None,
+            // Unreachable: `read_seat` routes through `bot::eligible`, which
+            // admits no rung to the EXPLAINABLE reading (a rung reports as
+            // `SeatReading::Rung`) and refuses both diagnostic arms outright.
+            Contestant::Policy(_)
+            | Contestant::MctsV1 { .. }
+            | Contestant::AtomicDiag { .. } => None,
         },
         forced_lead: r.forced.then_some(FORCED_LEAD),
     };

@@ -217,6 +217,153 @@ fn describe_candidates(candidates: &[(Move, u32)]) -> String {
         .join(", ")
 }
 
+/// The BGA move boundaries that fall strictly INSIDE one engine-atomic Port
+/// action — the ones whose counters describe a state the engine steps over.
+///
+/// Two things can stretch a Port action across BGA moves, and they stack:
+///
+/// * a **5-Power bonus**, booked by BGA at the president-placement move while
+///   the engine books it inside the atomic action (with the take it requires),
+///   so every boundary from the bonus up to the take is interior;
+/// * a **two-card take split across moves** (first measured at m169/m170),
+///   whose intervening boundary is interior for the same reason.
+///
+/// The last take's OWN move is never interior — that boundary is where the
+/// composite's outcome gets pinned. With no bonus this is exactly the
+/// `first_take..second_take` span the pair handling has always used, which is
+/// what keeps every already-green checkpoint on the healthy captures green.
+fn port_composite_interior(
+    bonus_move: Option<u64>,
+    first_take: u64,
+    second_take: Option<u64>,
+) -> std::ops::Range<u64> {
+    bonus_move.unwrap_or(first_take)..second_take.unwrap_or(first_take)
+}
+
+/// One Laboratory payment variant, written as the PRICES it debits.
+///
+/// A summed scalar cannot describe these: `4 yen + 1 import` and
+/// `2 yen + 2 imports` are different debits, and a reader deciding whether the
+/// import guessed right needs to see both currencies. The 4th-tech surcharge is
+/// labelled as such, because two variants can differ ONLY there and would
+/// otherwise render identically.
+fn lab_payment_label(action: &AreaAction) -> String {
+    let AreaAction::Laboratory { extra_yen, extra_imported, extra_tech_payment, .. } = action else {
+        return "not a Laboratory action".to_string();
+    };
+    let plural = |n: u8| if n == 1 { "import" } else { "imports" };
+    let mut parts: Vec<String> = Vec::new();
+    if *extra_yen > 0 {
+        parts.push(format!("{extra_yen} yen"));
+    }
+    if *extra_imported > 0 {
+        parts.push(format!("{extra_imported} {}", plural(*extra_imported)));
+    }
+    match extra_tech_payment {
+        Some(true) => parts.push("4th-tech surcharge 2 yen".to_string()),
+        Some(false) => parts.push("4th-tech surcharge 1 import".to_string()),
+        None => {}
+    }
+    if parts.is_empty() {
+        return "nothing beyond power".to_string();
+    }
+    parts.join(" + ")
+}
+
+/// What one Laboratory variant DEBITS, as `(yen, imported goods)` — the
+/// 4th-tech surcharge included, since it is spent from the same two pockets.
+fn lab_payment_debit(action: &AreaAction) -> (u32, u32) {
+    let AreaAction::Laboratory { extra_yen, extra_imported, extra_tech_payment, .. } = action else {
+        return (0, 0);
+    };
+    let (surcharge_yen, surcharge_imports) = match extra_tech_payment {
+        Some(true) => (2, 0),
+        Some(false) => (0, 1),
+        None => (0, 0),
+    };
+    (*extra_yen as u32 + surcharge_yen, *extra_imported as u32 + surcharge_imports)
+}
+
+/// How a Laboratory take's payment was settled.
+#[derive(Debug, PartialEq, Eq)]
+enum LabPayment {
+    /// The legal list left exactly one mix. No evidence needed, nothing
+    /// declared — the path that existed before any of this, untouched.
+    Determined(Move),
+    /// Several mixes were legal and BGA's counters fit exactly one.
+    Derived { chosen: Move, chosen_label: String, candidates: Vec<String> },
+    /// The observed spend fits NO legal mix. The engine and BGA disagree about
+    /// what happened, which is a divergence — never an ambiguity to be resolved
+    /// by picking something.
+    NoneConsistent { spend: (u32, u32), candidates: Vec<String> },
+    /// Several mixes were legal and the counters did not choose between them —
+    /// no usable window, or a spend that fits more than one. The honest refusal
+    /// stands.
+    Underdetermined { candidates: Vec<String> },
+}
+
+/// Settle which Laboratory payment was made.
+///
+/// **Every exact-cover variant pays the same industry value**, by construction:
+/// `generate_lab_actions` emits `extra_imported = k` with
+/// `extra_yen = 2*(deficit-k)`, so the value is `k + (deficit-k) = deficit` for
+/// every `k`, and the 4th-tech surcharge forks 2 yen against 1 import for the
+/// same entitlement. The mixes are INCOMPARABLE — no ordering exists to prefer
+/// one — so a legal list with more than one entry cannot be narrowed by ranking.
+/// It was ranked once, by a key that summed yen and imports as if one unit, and
+/// on BGA table 896199544 m118 that silently debited a payment nobody made.
+///
+/// What the capture's notification never records, its COUNTERS do. `spend` is
+/// the mover's `(yen, imports)` decrease across the move, read from the T9
+/// checkpoints bracketing it; a mix is consistent when that is exactly what it
+/// debits. **Owner ruling, 2026-08-23 (guidingpath):** seeing the funds and
+/// types available beforehand and afterwards allows a derivation just as good as
+/// seeing the turn, because that is the only way things could have been used in
+/// it.
+///
+/// **The cost, recorded rather than absorbed:** at a derived move the two
+/// consumed counters STOP being an independent check, because they chose the
+/// move — a payment divergence there can no longer be detected. Every other
+/// counter's T9 check still runs at that move, and the chosen mix must still be
+/// one the engine offered, so legality authority is untouched. The declared line
+/// the caller prints says both halves out loud.
+///
+/// Absent or underdetermining evidence may resolve NOTHING: the refusal stands.
+/// Deriving settles an ambiguity; it never manufactures an answer.
+fn resolve_lab_payment(variants: Vec<Move>, spend: Option<(u32, u32)>) -> LabPayment {
+    if variants.len() == 1 {
+        return LabPayment::Determined(variants.into_iter().next().expect("checked len"));
+    }
+    let labels: Vec<String> = variants
+        .iter()
+        .map(|m| match m {
+            Move::ExecuteAreaAction { action } => lab_payment_label(action),
+            _ => "not an area action".to_string(),
+        })
+        .collect();
+    let Some(spend) = spend else {
+        return LabPayment::Underdetermined { candidates: labels };
+    };
+    let fitting: Vec<usize> = variants
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| {
+            matches!(m, Move::ExecuteAreaAction { action } if lab_payment_debit(action) == spend)
+        })
+        .map(|(i, _)| i)
+        .collect();
+    match fitting.as_slice() {
+        [only] => LabPayment::Derived {
+            chosen: variants[*only].clone(),
+            chosen_label: labels[*only].clone(),
+            candidates: labels,
+        },
+        [] => LabPayment::NoneConsistent { spend, candidates: labels },
+        _ => LabPayment::Underdetermined { candidates: labels },
+    }
+}
+
+
 pub struct Translator<'a> {
     session: Session,
     resolved: &'a Resolved,
@@ -419,6 +566,31 @@ impl<'a> Translator<'a> {
         self.cursor = idx + 1;
         self.max_move_seen = self.max_move_seen.max(tf.move_id);
         Some(tf)
+    }
+
+    /// What a `consume_drive()` that returned `None` ACTUALLY means.
+    ///
+    /// **`None` is two unrelated facts wearing one shape**, and telling them
+    /// apart is the whole point of this helper. Either the drive queue is
+    /// genuinely empty, or [`Self::consume_drive`] ran the checkpoints below the
+    /// next fact, one of them FAILED, and the real error was stashed in
+    /// `pending_checkpoint_error` (which is only read at the next [`Self::step`]
+    /// entry — too late for a caller that is about to return an error of its
+    /// own from inside the current one).
+    ///
+    /// So the stashed error WINS whenever there is one, and `when_empty` — the
+    /// caller's description of an exhausted queue — is reachable only when
+    /// nothing was stashed. Reporting a checkpoint divergence as a missing fact
+    /// cost a whole diagnosis on BGA table 896199544, where "port take fact
+    /// vanished" printed at m106 with the `orderAcquisition` notification
+    /// sitting in the feed and the true stop a T9 divergence one move earlier.
+    ///
+    /// Taking the error CLEARS it, so one failure is never reported twice.
+    fn drive_absence(&mut self, move_id: u64, when_empty: &str) -> ImportError {
+        match self.pending_checkpoint_error.take() {
+            Some(e) => e,
+            None => rerr(move_id, when_empty),
+        }
     }
 
     /// Consume WITHOUT advancing the checkpoint boundary — for the 2nd+
@@ -751,6 +923,31 @@ impl<'a> Translator<'a> {
             _ => return None,
         };
         Some(v)
+    }
+
+    /// The mover's `(yen, imports)` SPEND across `move_id`, read from the T9
+    /// checkpoints BRACKETING it — the evidence a derived lab payment rests on.
+    ///
+    /// `None` means no usable window, and every arm that returns it is a reason
+    /// to refuse rather than to derive: no checkpoint at this move or below it,
+    /// no counters for this seat, non-numeric values — or **either pocket GREW**.
+    /// A payment only ever spends, so a rise means something else moved money in
+    /// this window and the delta no longer isolates the payment. Reading it as
+    /// one would be exactly the guess this machinery exists to avoid.
+    fn observed_spend(&self, seat: u8, move_id: u64) -> Option<(u32, u32)> {
+        let pid = self.pid_of_seat.get(seat as usize)?;
+        let read = |cp: &super::facts::CounterCheckpoint| -> Option<(u64, u64)> {
+            let obj = cp.per_player.get(pid)?.as_object()?;
+            let yens = yokohama_bridge::feed::flex_u64(obj.get("yens")?)?;
+            let imports = yokohama_bridge::feed::flex_u64(obj.get("imports")?)?;
+            Some((yens, imports))
+        };
+        let after = read(self.checkpoints.iter().find(|cp| cp.move_id == move_id)?)?;
+        let before = read(self.checkpoints.iter().rfind(|cp| cp.move_id < move_id)?)?;
+        Some((
+            before.0.checked_sub(after.0)? as u32,
+            before.1.checked_sub(after.1)? as u32,
+        ))
     }
 
     /// Does snapshot `snap` satisfy checkpoint `cp`? Returns the diffs when it
@@ -1450,10 +1647,39 @@ impl<'a> Translator<'a> {
         }
     }
 
+    /// The move of the 5-Power Port bonus BGA is about to book ahead of this
+    /// take, if it booked one.
+    ///
+    /// The bonus arrives as a NOTE fact (`PortAccess` with a nonzero
+    /// `vp_bonus`), so it is skipped rather than consumed — and it has to be
+    /// read BEFORE the take's `consume_drive`, because that call is what runs
+    /// the checkpoint on the bonus's own move. Scanning forward from the cursor
+    /// to the next drive fact is exactly the window of notes that call will
+    /// skip.
+    /// Returns `(bonus_move, take_move)`.
+    fn pending_port_bonus(&self, seat: u8) -> Option<(u64, u64)> {
+        let next = self.next_drive_index(self.cursor)?;
+        let take_move = self.facts[next].move_id;
+        self.facts[self.cursor..next]
+            .iter()
+            .find(|tf| {
+                matches!(tf.fact, Fact::PortAccess { seat: s, vp_bonus } if s == seat && vp_bonus > 0)
+            })
+            .map(|tf| (tf.move_id, take_move))
+    }
+
     fn step_port_take(&mut self, move_id: u64) -> Result<(), ImportError> {
         let seat = self.current_seat();
+        // Mark the bonus boundary BEFORE consuming: `consume_drive` is the call
+        // that runs the checkpoint standing on it, so marking afterwards would
+        // be marking a boundary that has already stopped the replay.
+        if let Some((bonus, take)) = self.pending_port_bonus(seat) {
+            self.mid_composite_moves.extend(port_composite_interior(Some(bonus), take, None));
+        }
         // First take fact.
-        let first = self.consume_drive().ok_or_else(|| rerr(move_id, "port take fact vanished"))?;
+        let Some(first) = self.consume_drive() else {
+            return Err(self.drive_absence(move_id, "port take fact vanished"));
+        };
         let Fact::PortTake { card: card1, .. } = first.fact else {
             return Err(rerr(move_id, "port take arm consumed a non-take fact"));
         };
@@ -1470,15 +1696,13 @@ impl<'a> Translator<'a> {
                 // The pair can SPAN BGA moves (measured at m169/m170) — every
                 // boundary strictly inside the span carries counters for a
                 // state the atomic engine Port move steps over.
-                for interior in first.move_id..m2 {
-                    self.mid_composite_moves.insert(interior);
-                }
+                self.mid_composite_moves
+                    .extend(port_composite_interior(None, first.move_id, Some(m2)));
             }
             Some(TimedFact { fact: Fact::PortSecondDeclined { seat: s }, move_id: m2, .. }) if s == seat => {
                 self.consume_drive_uncheckpointed();
-                for interior in first.move_id..m2 {
-                    self.mid_composite_moves.insert(interior);
-                }
+                self.mid_composite_moves
+                    .extend(port_composite_interior(None, first.move_id, Some(m2)));
             }
             _ => {}
         }
@@ -1558,7 +1782,9 @@ impl<'a> Translator<'a> {
     }
 
     fn step_lab_take(&mut self, move_id: u64) -> Result<(), ImportError> {
-        let tf = self.consume_drive().ok_or_else(|| rerr(move_id, "lab take fact vanished"))?;
+        let Some(tf) = self.consume_drive() else {
+            return Err(self.drive_absence(move_id, "lab take fact vanished"));
+        };
         let Fact::LabTake { tech_name, tech_id_key, .. } = tf.fact else {
             return Err(rerr(move_id, "lab take arm consumed a non-take fact"));
         };
@@ -1616,8 +1842,9 @@ impl<'a> Translator<'a> {
             .get(&key)
             .ok_or_else(|| rerr(move_id, format!("tech_key {key} has no resolved engine card")))?;
         self.lab_shadow.retain(|k| *k != key);
-        // Payment variant: the minimal-extra legal variant must be unique.
-        let mut variants: Vec<Move> = self
+        // Payment variant: one legal mix needs nothing; several are settled by
+        // BGA's counters, or refused (see `resolve_lab_payment`).
+        let variants: Vec<Move> = self
             .session
             .legal()
             .into_iter()
@@ -1625,34 +1852,54 @@ impl<'a> Translator<'a> {
                 matches!(m, Move::ExecuteAreaAction { action: AreaAction::Laboratory { card_id, .. } } if *card_id == card)
             })
             .collect();
-        variants.sort_by_key(|m| match m {
-            Move::ExecuteAreaAction { action: AreaAction::Laboratory { extra_yen, extra_imported, .. } } => {
-                (*extra_yen as u32) + (*extra_imported as u32)
+        if variants.is_empty() {
+            return Err(rerr(move_id, format!("no legal Laboratory take of {card:?}")));
+        }
+        let seat = self.current_seat();
+        let spend = self.observed_spend(seat, move_id);
+        let mv = match resolve_lab_payment(variants, spend) {
+            LabPayment::Determined(one) => one,
+            LabPayment::Derived { chosen, chosen_label, candidates } => {
+                let (yen, imports) = spend.expect("a derivation implies a counter window");
+                self.report.notes.push(format!(
+                    "move {move_id}: DERIVATION (declared, counter-evidenced) — the capture names \
+                     no lab payment, and {} legal mixes debit different resources for the same \
+                     industry value [{}]. BGA's own counters bracketing this move show seat \
+                     {seat} spending {yen} yen and {imports} {}, which fits exactly one: took \
+                     {chosen_label}. `yens` and `imports` for seat {seat} are therefore NOT \
+                     independently cross-checked at this move — they selected it; every other \
+                     counter's T9 check still runs here, and the mix taken is one the engine \
+                     itself offered.",
+                    candidates.len(),
+                    candidates.join(" | "),
+                    if imports == 1 { "import" } else { "imports" },
+                ));
+                chosen
             }
-            _ => u32::MAX,
-        });
-        let minimal_cost = variants.first().map(|m| match m {
-            Move::ExecuteAreaAction { action: AreaAction::Laboratory { extra_yen, extra_imported, .. } } => {
-                (*extra_yen as u32) + (*extra_imported as u32)
-            }
-            _ => u32::MAX,
-        });
-        let minimal: Vec<&Move> = variants
-            .iter()
-            .filter(|m| match m {
-                Move::ExecuteAreaAction { action: AreaAction::Laboratory { extra_yen, extra_imported, .. } } => {
-                    Some((*extra_yen as u32) + (*extra_imported as u32)) == minimal_cost
-                }
-                _ => false,
-            })
-            .collect();
-        let mv = match minimal.as_slice() {
-            [one] => (*one).clone(),
-            [] => return Err(rerr(move_id, format!("no legal Laboratory take of {card:?}"))),
-            several => {
+            LabPayment::NoneConsistent { spend, candidates } => {
                 return Err(rerr(
                     move_id,
-                    format!("ambiguous lab payment variants for {card:?}: {several:?}"),
+                    format!(
+                        "lab payment divergence for {card:?}: BGA's counters show seat {seat} \
+                         spending {} yen and {} import(s) across this move, which NO legal mix \
+                         debits — the engine and the capture disagree about what was paid, not \
+                         merely about which of several payments it was; the legal mixes were {}",
+                        spend.0,
+                        spend.1,
+                        candidates.join(" | ")
+                    ),
+                ))
+            }
+            LabPayment::Underdetermined { candidates } => {
+                return Err(rerr(
+                    move_id,
+                    format!(
+                        "ambiguous lab payment variants for {card:?}: the capture names no \
+                         payment and {} legal mixes debit different resources for the same \
+                         industry value — {}",
+                        candidates.len(),
+                        candidates.join(" | ")
+                    ),
                 ))
             }
         };
@@ -2330,6 +2577,269 @@ mod tests {
             .to_string();
         assert!(detail.contains("T9 counter divergence"), "{detail}");
         assert!(detail.contains("board_assists") || detail.contains("hand_assists"), "{detail}");
+    }
+
+    /// The owned prerequisites of a translator over the committed excerpt, with
+    /// `checkpoints` as its ENTIRE checkpoint set — the shape
+    /// [`a_checkpoint_no_state_satisfies_stops_with_its_field_level_diff`]
+    /// established, factored out so several cells can place a checkpoint
+    /// wherever the mechanism under test needs one. Returns the parts rather
+    /// than a `Translator` because a translator BORROWS its feed and resolution,
+    /// so both have to outlive it in the caller's frame. `seat0_pid` is handed
+    /// back too: `resolve` consumes the answers a caller would read it from.
+    ///
+    /// `checkpoints` is built from seat 0's player id rather than passed in,
+    /// since every cell that places one needs that id to key it.
+    fn excerpt_parts(
+        checkpoints: impl FnOnce(&str) -> Vec<super::super::facts::CounterCheckpoint>,
+    ) -> (
+        yokohama_bridge::feed::CollapsedFeed,
+        super::super::resolve::Resolved,
+        super::super::facts::FactStream,
+        Rules,
+    ) {
+        let text = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../yokohama-bridge/tests/data/excerpt-895724349.ndjson"
+        ))
+        .unwrap();
+        let rules = Rules::standard();
+        let feed = yokohama_bridge::feed::read_and_collapse(&text, None).unwrap();
+        let answers = super::super::setup::synthesize(&feed, &rules).unwrap();
+        let mapper = super::super::orders::OrderMapper::from_rules(&rules).unwrap();
+        let seats = answers.seats.clone();
+        let seat0_pid = answers.seats[0].bga_player_id.clone();
+        let mut stream = super::super::facts::extract(
+            &feed,
+            &|pid| seats.iter().find(|s| s.bga_player_id == pid).map(|s| s.seat),
+            &mapper,
+        )
+        .unwrap();
+        stream.checkpoints = checkpoints(&seat0_pid);
+        let resolved = super::super::resolve::resolve(answers, &feed, &stream, &rules).unwrap();
+        (feed, resolved, stream, rules)
+    }
+
+    /// **The message-masking regression (BGA table 896199544, the game-3 m106
+    /// stop).** `consume_drive` returns `None` for TWO unrelated reasons — the
+    /// drive queue is empty, or a checkpoint FAILED and its real error was
+    /// stashed in `pending_checkpoint_error`. The take arms turned the second
+    /// into a claim about the first ("lab/port take fact vanished"), and because
+    /// that fabricated error throws from INSIDE the current `step()`, the stashed
+    /// diagnosis is never reached at `step()`'s entry and is discarded outright.
+    ///
+    /// On the live capture this printed "port take fact vanished" while the
+    /// m106 `orderAcquisition` notification was sitting right there in the feed —
+    /// the real stop being a T9 divergence at m105. The shape is reproduced here
+    /// on the LAB arm, which carries the identical defect: the excerpt's lab take
+    /// at m6 consumes the checkpoint placed at m5, so the failure lands inside
+    /// `step_lab_take`'s `consume_drive`.
+    #[test]
+    fn a_checkpoint_failure_inside_a_take_arm_surfaces_the_real_divergence() {
+        // m5 (the president placement onto the Laboratory) is real-turn era and
+        // inside the excerpt's clean window; the m6 lab take is the first fact
+        // consumed past it, so ITS `consume_drive` runs this checkpoint.
+        let (feed, resolved, stream, rules) = excerpt_parts(|pid| {
+            vec![super::super::facts::CounterCheckpoint {
+                move_id: 5,
+                per_player: BTreeMap::from([(pid.to_string(), serde_json::json!({ "yens": 9999 }))]),
+            }]
+        });
+        let session = super::super::setup::build_session(&resolved.answers, rules).unwrap();
+        let mut t = Translator::new(session, &resolved, stream, &feed).unwrap();
+        let detail = t.run().expect_err("a checkpoint no engine state satisfies must STOP").to_string();
+        assert!(
+            detail.contains("T9 counter divergence"),
+            "the REAL error must survive the take arm: {detail}"
+        );
+        assert!(detail.contains("`yens`"), "the diff names the counter: {detail}");
+        assert!(detail.contains("BGA 9999"), "the diff carries BGA's value: {detail}");
+        assert!(
+            !detail.contains("vanished"),
+            "a checkpoint failure must never be reported as a missing fact: {detail}"
+        );
+    }
+
+    /// The general mechanism, both arms, at the helper every paraphrasing site
+    /// now goes through: a stashed checkpoint error WINS, and the caller's own
+    /// "vanished" wording is reachable ONLY when nothing was stashed — i.e. only
+    /// when the queue is genuinely empty.
+    #[test]
+    fn drive_absence_prefers_the_stashed_error_and_only_then_the_callers_wording() {
+        let (feed, resolved, stream, rules) = excerpt_parts(|_| vec![]);
+        let session = super::super::setup::build_session(&resolved.answers, rules).unwrap();
+        let mut t = Translator::new(session, &resolved, stream, &feed).unwrap();
+
+        // Nothing stashed: the caller's wording stands, and the caller is the
+        // only one who can describe an empty queue.
+        let empty = t.drive_absence(42, "port take fact vanished").to_string();
+        assert!(empty.contains("port take fact vanished"), "{empty}");
+        assert!(empty.contains("42"), "the caller's move id rides the error: {empty}");
+
+        // A stashed checkpoint error: it wins, and the wording is never applied.
+        t.pending_checkpoint_error = Some(rerr(7, "T9 counter divergence — seat 0 `yens`"));
+        let stashed = t.drive_absence(42, "port take fact vanished").to_string();
+        assert!(stashed.contains("T9 counter divergence"), "the stashed error wins: {stashed}");
+        assert!(!stashed.contains("vanished"), "the fabricated claim is gone: {stashed}");
+
+        // And taking it CLEARS it, so one failure is never reported twice.
+        assert!(
+            t.pending_checkpoint_error.is_none(),
+            "the stashed error must be taken, not left to surface again"
+        );
+    }
+
+    fn lab(extra_yen: u8, extra_imported: u8, extra_tech_payment: Option<bool>) -> Move {
+        Move::ExecuteAreaAction {
+            action: AreaAction::Laboratory {
+                card_id: yokohama_core::TechCardId(4),
+                extra_yen,
+                extra_imported,
+                extra_tech_payment,
+            },
+        }
+    }
+
+    /// **The m118 shape (BGA table 896199544), and why the old key was wrong.**
+    ///
+    /// Seat 1 buys Tram: industry cost 5, slot surcharge +1, president power 3,
+    /// so the deficit is 3 — and holding 4 yen and 2 imports, exactly TWO mixes
+    /// are affordable. `k=1` debits 4 yen + 1 import (what the human paid, and
+    /// what BGA's counters show); `k=2` debits 2 yen + 2 imports.
+    ///
+    /// Both pay the SAME industry value — every exact-cover variant does, since
+    /// `extra_yen = 2*(deficit-k)` makes the value `k + (deficit-k) = deficit`
+    /// for every `k`. So there is no "cheaper" mix to prefer: they are
+    /// incomparable choices a player makes, and the capture's notification does
+    /// not say which. The old key summed yen and imports as if they were one
+    /// unit, ranked `k=2` (sum 4) below `k=1` (sum 5), found its "minimum"
+    /// unique, and silently paid the wrong one — diverging the economy for the
+    /// rest of the game. FALSE uniqueness, manufactured by the key.
+    ///
+    /// The declared policy is that the payment must be UNIQUE or the import
+    /// refuses; with a key that cannot invent an ordering, this shape refuses,
+    /// and it names each candidate by the prices it debits.
+    /// **The m118 derivation (BGA table 896199544), owner-ruled option (a).**
+    ///
+    /// Two legal mixes, and BGA's own counters say which was paid: seat 1's yen
+    /// fell by 4 and imports by 1 across the move. That fits `k=1` exactly and
+    /// `k=2` not at all, so the capture DID determine the payment — just in the
+    /// counters rather than in the notification. The owner's grounds, recorded
+    /// in the 2026-08-23 ruling row: seeing the funds and types available before
+    /// and after allows a derivation as good as seeing the turn, because that is
+    /// the only way things could have been used in it.
+    #[test]
+    fn counters_that_fit_exactly_one_mix_derive_it_and_name_what_they_saw() {
+        let variants = vec![lab(4, 1, None), lab(2, 2, None)];
+        let LabPayment::Derived { chosen, chosen_label, candidates } =
+            resolve_lab_payment(variants, Some((4, 1)))
+        else {
+            panic!("a spend fitting exactly one mix is evidence, not ambiguity");
+        };
+        assert_eq!(chosen, lab(4, 1, None), "the human's mix, not the cheapest-looking one");
+        assert_eq!(chosen_label, "4 yen + 1 import");
+        assert_eq!(candidates, vec!["4 yen + 1 import", "2 yen + 2 imports"]);
+    }
+
+    /// No usable counter evidence → dad87f6's honest refusal STANDS, unchanged.
+    /// Deriving is allowed to resolve an ambiguity; its absence may not create
+    /// a guess.
+    #[test]
+    fn without_counter_evidence_the_ambiguity_refusal_still_stands() {
+        let variants = vec![lab(4, 1, None), lab(2, 2, None)];
+        let LabPayment::Underdetermined { candidates } = resolve_lab_payment(variants, None) else {
+            panic!("no evidence must leave the refusal in place");
+        };
+        assert_eq!(candidates, vec!["4 yen + 1 import", "2 yen + 2 imports"]);
+    }
+
+    /// Counters CAN underdetermine even when present: two different variants can
+    /// debit the same resources. `2 yen + (surcharge 1 import)` and
+    /// `1 import + (surcharge 2 yen)` both spend 2 yen and 1 import, so a spend
+    /// of (2,1) does not choose between them — and the refusal must stand rather
+    /// than take the first.
+    #[test]
+    fn counters_that_fit_two_mixes_equally_do_not_choose_between_them() {
+        let variants = vec![lab(2, 0, Some(false)), lab(0, 1, Some(true))];
+        let LabPayment::Underdetermined { candidates } =
+            resolve_lab_payment(variants, Some((2, 1)))
+        else {
+            panic!("an equal fit is not a derivation");
+        };
+        assert_eq!(
+            candidates,
+            vec!["2 yen + 4th-tech surcharge 1 import", "1 import + 4th-tech surcharge 2 yen"]
+        );
+    }
+
+    /// A spend matching NO legal mix is a real divergence — the engine and BGA
+    /// disagree about what happened, which is a drift STOP and emphatically not
+    /// an ambiguity to be resolved by picking something.
+    #[test]
+    fn a_spend_no_legal_mix_explains_is_a_divergence_not_an_ambiguity() {
+        let variants = vec![lab(4, 1, None), lab(2, 2, None)];
+        let LabPayment::NoneConsistent { spend, candidates } =
+            resolve_lab_payment(variants, Some((3, 3)))
+        else {
+            panic!("an unexplainable spend must not resolve to any mix");
+        };
+        assert_eq!(spend, (3, 3));
+        assert_eq!(candidates, vec!["4 yen + 1 import", "2 yen + 2 imports"]);
+    }
+
+    /// The single-legal-mix path is UNTOUCHED: no derivation, nothing declared,
+    /// with or without counters. Nothing changed where nothing was ambiguous.
+    #[test]
+    fn a_single_legal_lab_payment_resolves_without_deriving_anything() {
+        for spend in [None, Some((0, 0)), Some((9, 9))] {
+            let LabPayment::Determined(mv) = resolve_lab_payment(vec![lab(2, 1, None)], spend)
+            else {
+                panic!("one legal mix needs no evidence and declares nothing");
+            };
+            assert_eq!(mv, lab(2, 1, None));
+        }
+    }
+
+    /// The 4th-tech surcharge is labelled as such — two variants can differ ONLY
+    /// there and would otherwise render identically.
+    #[test]
+    fn the_fourth_tech_surcharge_fork_is_named_as_a_surcharge() {
+        let variants = vec![lab(0, 0, Some(true)), lab(0, 0, Some(false))];
+        let LabPayment::Underdetermined { candidates } = resolve_lab_payment(variants, None) else {
+            panic!("the surcharge fork is a real choice, not a tie to break");
+        };
+        assert_eq!(
+            candidates,
+            vec!["4th-tech surcharge 2 yen", "4th-tech surcharge 1 import"]
+        );
+    }
+
+    /// **The m105-boundary shape (BGA table 896199544), as arithmetic.**
+    ///
+    /// A Port action at 5 Power books its +3 VP at the PRESIDENT-PLACEMENT move,
+    /// one move before the take; the engine books it inside the atomic Port
+    /// action, with the take. So the boundary carrying "bonus granted, nothing
+    /// taken" is a state the engine steps over — mid-composite by granularity,
+    /// exactly like the m169/m170 two-move take pair already handled — and the
+    /// composite's interior has to START at the bonus rather than at the first
+    /// take. Before this, m105 fell outside the span, was CHECKED, and stopped
+    /// the whole import on a divergence that was pure bookkeeping order.
+    ///
+    /// The no-bonus rows are the ones that must not move: with `None` the span
+    /// is byte-identical to the old `first.move_id..m2`, which is what keeps
+    /// every already-green checkpoint on the healthy captures green.
+    #[test]
+    fn the_port_composite_interior_starts_at_the_bonus_and_is_unchanged_without_one() {
+        // Game 3's shape: bonus at m105, takes at m106 and m107. Both interior
+        // boundaries are skipped; the LAST take's own move stays checked.
+        assert_eq!(port_composite_interior(Some(105), 106, Some(107)), 105..107);
+        // A single take after a bonus: the bonus boundary alone.
+        assert_eq!(port_composite_interior(Some(105), 106, None), 105..106);
+
+        // NO bonus — the pre-existing behaviour, unchanged. The m169/m170 pair:
+        assert_eq!(port_composite_interior(None, 169, Some(170)), 169..170);
+        // and a lone take spans nothing at all.
+        assert!(port_composite_interior(None, 169, None).is_empty());
     }
 
     /// F2 (lens-2 MUST): the T9 counter cross-check gets its NEGATIVE pin. A

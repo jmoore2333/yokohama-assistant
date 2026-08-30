@@ -1099,11 +1099,17 @@ fn port_fingerprint(port: &PortState) -> u64 {
 /// >  right: 13959226634306007
 ///
 /// **WHAT A RED HERE MEANS, FOR WHOEVER SEES IT NEXT.** It is not (necessarily)
-/// a bug. It means an evaluator term has started reading a quantity that depends
-/// on which world was determinized — and per spec §4.3 that is the signal that
-/// **K > 1 has become live**: at K = 1 such a term makes the bot's decision a
-/// function of one arbitrary draw. Route it to the ledger as the K-decision
-/// re-opening input; do not silence it by dropping the term from the comparison.
+/// a bug. It means an *active* evaluator term has started reading a quantity
+/// that depends on which world was determinized — and per spec §4.3 that is the
+/// signal that **K > 1 has become live**: at K = 1 such a term makes the bot's
+/// decision a function of one arbitrary draw. "Active" means nonzero weight:
+/// step 8 deliberately exposes zero-weight candidate rows in explanations, and
+/// their diagnostic raw values may differ while their product and the decision
+/// cannot. The comparison below checks every row's identity, weight, and
+/// product, and also checks raw values for every nonzero-weight row; assigning a
+/// candidate a nonzero weight therefore turns its raw-value invariance on
+/// automatically. Route such a red to the ledger as the K-decision re-opening
+/// input; do not silence it by dropping the active term from the comparison.
 ///
 /// SCOPE, stated: the cell is about the ROOT channel (§4.3's structural half).
 /// The TURN-COMPLETION channel — a continuation applying moves inside the
@@ -1141,6 +1147,7 @@ fn t8_greedy_v1s_scores_and_explanations_are_invariant_across_determinizations()
     let mut poison_caught = 0usize;
     let mut poison_lab_caught = 0usize;
     let mut candidate_sets_differed = 0usize;
+    let mut zero_weight_raw_differences = 0usize;
 
     let points: Vec<_> =
         DETERMINIZATION_WALKS.iter().flat_map(|s| decision_points(2, *s, 150, &rules)).collect();
@@ -1270,12 +1277,34 @@ fn t8_greedy_v1s_scores_and_explanations_are_invariant_across_determinizations()
                 "a determinization moved Greedy-v1's argmax ({:?} vs {:?})",
                 common[arg], common[base_arg]
             );
-            assert_eq!(
-                eval::explain(&successors[w][arg], &rules, &weights),
-                base_explanation,
-                "a determinization moved the chosen move's explanation ({:?})",
-                common[arg]
-            );
+            let explanation = eval::explain(&successors[w][arg], &rules, &weights);
+            assert_eq!(explanation.total, base_explanation.total);
+            assert_eq!(explanation.terminal, base_explanation.terminal);
+            assert_eq!(explanation.progress_ppm, base_explanation.progress_ppm);
+            assert_eq!(explanation.terms.len(), base_explanation.terms.len());
+            for (got, expected) in explanation.terms.iter().zip(&base_explanation.terms) {
+                assert_eq!(
+                    (got.feature, got.weight, got.product),
+                    (expected.feature, expected.weight, expected.product),
+                    "a determinization moved an explanation row that can affect the chosen move \
+                     ({:?})",
+                    common[arg],
+                );
+                if expected.weight == 0 {
+                    zero_weight_raw_differences += usize::from(
+                        (got.viewer_value, got.opponent_value)
+                            != (expected.viewer_value, expected.opponent_value),
+                    );
+                } else {
+                    assert_eq!(
+                        (got.viewer_value, got.opponent_value),
+                        (expected.viewer_value, expected.opponent_value),
+                        "a determinization moved active explanation term {} for {:?}",
+                        got.feature.name(),
+                        common[arg],
+                    );
+                }
+            }
             explanations_compared += 1;
         }
     }
@@ -1285,7 +1314,8 @@ fn t8_greedy_v1s_scores_and_explanations_are_invariant_across_determinizations()
          {explanations_compared} argmax+explanation comparisons, {port_take_candidates} port-take \
          candidates, candidate sets differed at {candidate_sets_differed} points; POSITIVE \
          CONTROLS: {differing_successor_views} successor views differed ({differing_port_states} \
-         by port refill, {differing_lab_states} by lab refill), poison caught {poison_caught}"
+         by port refill, {differing_lab_states} by lab refill), poison caught {poison_caught}; \
+         zero-weight diagnostic raw differences {zero_weight_raw_differences}"
     );
 
     // Coverage floors, MEASURED FIRST AND THEN SET (§0.2's authoring rule; the
@@ -1295,6 +1325,14 @@ fn t8_greedy_v1s_scores_and_explanations_are_invariant_across_determinizations()
     assert!(checked_points >= 400, "only {checked_points} decision points");
     assert!(compared >= 20_000, "only {compared} score comparisons");
     assert!(explanations_compared >= 800, "only {explanations_compared} explanation comparisons");
+    // Step-8 refinement control, measured before setting: 2 zero-weight raw
+    // differences over the deterministic 1,200 explanation comparisons; floor
+    // = measured/2, rounded down.
+    assert!(
+        zero_weight_raw_differences >= 1,
+        "the step-8 zero-weight diagnostic suffix never observed a raw-value difference; the \
+         refined active-term comparison was not exercised",
+    );
 
     // THE NON-VACUITY ASSERTIONS — what makes this cell §0.4(ii) and not
     // another §0.4(i). Floors MEASURED THEN SET at ~half the authoring run's
@@ -1403,7 +1441,8 @@ const DIVERGENCE_SENSITIVITY_POINTS: usize = 40;
 /// The mechanism is visible once measured: no v1 feature reads a
 /// refill-dependent quantity, so two hand-off states that differ ONLY in
 /// refilled port/lab content score IDENTICALLY, and a determinization has to
-/// change something the sixteen features can see before it can move an argmax.
+/// change something the sixteen nonzero V2 incumbent features can see before it
+/// can move an argmax.
 /// The zero is therefore pinned as a REGRESSION NET on that reading — NOT as a
 /// structural claim — and the assert's message says what to do if it ever
 /// fires: **do not relax it.** A nonzero rate is §4.3's K-decision re-opening

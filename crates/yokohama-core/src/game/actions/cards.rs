@@ -3,14 +3,33 @@
 use crate::types::{AreaType, GameState, LabBoard, MoveError, OrderCardId, PlayerId, PortBoard, PortZone, PortPayment, PresidentLocation, TechCardId, TechEffect};
 use crate::game::cards::{check_mercenary_eligibility, refill_port, refill_lab, remove_and_slide_lab, OrderRegistry, TechRegistry};
 
-/// Which Port zones are accessible at a given power level.
-pub fn port_accessible_zones(power: u8) -> Vec<PortZone> {
-    match power {
-        0..=1 => vec![],
-        2 => vec![PortZone::Low],
-        3 => vec![PortZone::Low, PortZone::Mid],
-        _ => vec![PortZone::Low, PortZone::Mid, PortZone::High], // 4-5
+/// Is one Port zone accessible at `power`? The three printed gates, and the
+/// ONE place they are written down (V4 spec §13's registered refactor).
+///
+/// Allocation-free by construction, which is why it exists: the evaluator's
+/// `PortTakeable` term asks this question once per port SLOT while scoring a
+/// position, and the list form below builds a `Vec` to answer it. The list is
+/// now this function's caller, so there is one derivation of the gate rather
+/// than two that can drift.
+pub fn port_zone_accessible(power: u8, zone: PortZone) -> bool {
+    match zone {
+        PortZone::Low => power >= 2,
+        PortZone::Mid => power >= 3,
+        PortZone::High => power >= 4,
     }
+}
+
+/// Which Port zones are accessible at a given power level.
+///
+/// The zones [`port_zone_accessible`] admits, in the board's printed
+/// Low/Mid/High order — the order every caller's `contains` already ignores and
+/// the tests pin anyway, so that the delegation is byte-for-byte the list this
+/// function used to build.
+pub fn port_accessible_zones(power: u8) -> Vec<PortZone> {
+    [PortZone::Low, PortZone::Mid, PortZone::High]
+        .into_iter()
+        .filter(|zone| port_zone_accessible(power, *zone))
+        .collect()
 }
 
 /// Validate Port action. Cards are named by id (not slot, since slots shift
@@ -548,6 +567,50 @@ mod tests {
             port_accessible_zones(4),
             vec![PortZone::Low, PortZone::Mid, PortZone::High]
         );
+    }
+
+    /// The ALLOCATION-FREE core, stated as the three printed gates (manual
+    /// p.13): LOW opens at power 2, MID at 3, HIGH at 4. V4 spec §13 registers
+    /// this refactor, and §7 names it as X2's rules-arithmetic comparator.
+    ///
+    /// The sweep runs 0..=6 — past the printed range on both ends, since power
+    /// 0 and 1 open nothing and the engine caps at 5.
+    #[test]
+    fn port_zone_accessible_is_the_three_printed_power_gates() {
+        for power in 0..=6u8 {
+            assert_eq!(
+                port_zone_accessible(power, PortZone::Low),
+                power >= 2,
+                "LOW at power {power}"
+            );
+            assert_eq!(
+                port_zone_accessible(power, PortZone::Mid),
+                power >= 3,
+                "MID at power {power}"
+            );
+            assert_eq!(
+                port_zone_accessible(power, PortZone::High),
+                power >= 4,
+                "HIGH at power {power}"
+            );
+        }
+    }
+
+    /// BEHAVIOUR IDENTITY: the allocating list is exactly the core's `true`
+    /// zones, in the printed Low/Mid/High order, at every power.
+    ///
+    /// This is what makes the refactor single-sourcing rather than a second
+    /// derivation — `validate_port_action` and `legal_moves` keep calling the
+    /// list, and the list now calls the core, so the two can no longer drift.
+    #[test]
+    fn the_accessible_zone_list_is_exactly_the_cores_true_zones() {
+        for power in 0..=6u8 {
+            let expected: Vec<PortZone> = [PortZone::Low, PortZone::Mid, PortZone::High]
+                .into_iter()
+                .filter(|zone| port_zone_accessible(power, *zone))
+                .collect();
+            assert_eq!(port_accessible_zones(power), expected, "power {power}");
+        }
     }
 
     #[test]

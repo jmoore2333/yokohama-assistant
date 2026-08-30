@@ -36,7 +36,7 @@ use crate::game::lookahead::{self, DEFAULT_ATOMIC_DEPTH, DEFAULT_BEAM, DEFAULT_W
 use crate::game::mcts::{self, LeafRule, DEFAULT_EXPLORATION_PPM, DEFAULT_SQUASH_SCALE};
 use crate::game::policy::RolloutPolicy;
 
-use super::Contestant;
+use super::{Contestant, NamedIdentity};
 
 /// The short alias for the S2 diagnostic arm.
 ///
@@ -156,6 +156,17 @@ pub(super) fn parse_contestant(spec: &str) -> Result<Contestant, String> {
         return Ok(Contestant::AtomicDiag { d, k, m });
     }
 
+    // The NAMED IDENTITIES (V4 step 8, spec §13): knobless by design — see
+    // [`NamedIdentity`]'s doc — so any knob group at all is refused here in the
+    // knobless rungs' own sentence rather than falling through to an
+    // unknown-contestant refusal that would name the wrong problem.
+    if let Some(arm) = NamedIdentity::from_str_name(name) {
+        if let Some(knobs) = knobs {
+            return Err(format!("named identity {name:?} has no knobs, but {knobs:?} was given"));
+        }
+        return Ok(Contestant::NamedTable(arm));
+    }
+
     parse_policy(name, knobs).map(Contestant::Policy)
 }
 
@@ -221,10 +232,13 @@ fn parse_policy(name: &str, knobs: Option<&str>) -> Result<RolloutPolicy, String
     let base = RolloutPolicy::from_str_name(name).ok_or_else(|| {
         format!(
             "unknown contestant {name:?} (rungs: uniform | retreat-averse | family-weighted; \
-             evaluator: {} | {} | {ATOMIC_DIAG_ALIAS}; architecture: {})",
+             evaluator: {} | {} | {ATOMIC_DIAG_ALIAS}; architecture: {}; named identities: {})",
             greedy::GREEDY_CONTROLLER,
             lookahead::LOOKAHEAD_CONTROLLER,
             mcts::MCTS_CONTROLLER,
+            // Built FROM `NamedIdentity::ALL`, so a new arm joins the usage
+            // line by existing rather than by anyone remembering to add it.
+            NamedIdentity::ALL.map(NamedIdentity::name).join(" | "),
         )
     })?;
     let Some(knobs) = knobs else { return Ok(base) };
@@ -268,12 +282,38 @@ mod tests {
     /// every field, defaults included); `Err` rows carry the error string
     /// VERBATIM, because those strings are user-facing in the runner.
     ///
-    /// **ONE row has deliberately departed from that capture** — W5 landed the
-    /// refusal-text repair the W1 fix wave recorded and deferred (see
-    /// [`parse_policy`]), so `family-weighted:z=1` now names the contestant the
-    /// way every other arm's fall-through always did. It is marked in place
-    /// below. Every other row is still byte-for-byte the old code's own output,
-    /// and a second unmarked departure is a regression, not a re-capture.
+    /// **TWO GROUPS OF ROWS have deliberately departed from that capture**, and
+    /// an UNMARKED departure is a regression rather than a re-capture:
+    ///
+    /// 1. W5 landed the refusal-text repair the W1 fix wave recorded and
+    ///    deferred (see [`parse_policy`]), so `family-weighted:z=1` now names the
+    ///    contestant the way every other arm's fall-through always did. Marked
+    ///    in place below.
+    /// 2. **V4 §7 step 8 T3** added the named-identity arms, so the
+    ///    unknown-contestant refusal's ALTERNATIVES LIST gained a fourth
+    ///    category — `; named identities: v2-padded | v2-refit-padded`. That
+    ///    moved the NINE rows whose expectation is that sentence (`""`,
+    ///    `"nope"`, `"greedy-v2"`, `" uniform"`, `"UNIFORM"`, `"uniform "`,
+    ///    `"mcts-v1 "`, `":"`, `":m=4"`), carrying SEVEN distinct sentences
+    ///    between them — `""`, `":"` and `":m=4"` all report the empty name and
+    ///    so share one, while the other six are unique. Every SPEC and every
+    ///    accepted parse is untouched: what
+    ///    changed is the list of names the refusal offers, and leaving it stale
+    ///    would refuse `v2-refit-padde` with a menu that omits the arm the
+    ///    typist wanted. The row COUNT and the refusal COUNT below are
+    ///    unchanged, which is what keeps this an amendment to the capture
+    ///    rather than a re-capture of it.
+    /// 3. **V4 §7 step 9 T5** registered the CANDIDATE arm, so that same
+    ///    alternatives list gained a third named identity —
+    ///    `; named identities: v2-padded | v2-refit-padded | v4-step9-draft1`.
+    ///    It moved the SAME nine rows as departure 2, carrying the same seven
+    ///    distinct sentences, for the same reason: leaving the menu stale would
+    ///    refuse `v4-step9-draft` with a list omitting the arm the typist
+    ///    wanted. Every SPEC and every accepted parse is untouched, and the row
+    ///    COUNT and refusal COUNT below are unchanged — an amendment to the
+    ///    capture, not a re-capture. The usage line is now built FROM
+    ///    `NamedIdentity::ALL`, so a fourth arm will move these rows again and
+    ///    must mark departure 4 here rather than silently re-baselining.
     const FROZEN_BATTERY: &[(&str, Result<&str, &str>)] = &[
         ("uniform", Ok("Policy(Uniform)")),
         ("retreat-averse", Ok("Policy(RetreatAverse)")),
@@ -348,15 +388,15 @@ mod tests {
         ("mcts-v1:c=abc", Err("c must be parts per million: invalid digit found in string")),
         ("mcts-v1:scale=abc", Err("scale must be an integer: invalid digit found in string")),
         ("mcts-v1:w=1", Err("unknown knob \"w\" for mcts-v1 (cap | c | scale | m | leaf)")),
-        ("", Err("unknown contestant \"\" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1)")),
-        ("nope", Err("unknown contestant \"nope\" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1)")),
-        ("greedy-v2", Err("unknown contestant \"greedy-v2\" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1)")),
-        (" uniform", Err("unknown contestant \" uniform\" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1)")),
-        ("UNIFORM", Err("unknown contestant \"UNIFORM\" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1)")),
-        ("uniform ", Err("unknown contestant \"uniform \" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1)")),
-        ("mcts-v1 ", Err("unknown contestant \"mcts-v1 \" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1)")),
-        (":", Err("unknown contestant \"\" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1)")),
-        (":m=4", Err("unknown contestant \"\" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1)")),
+        ("", Err("unknown contestant \"\" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1; named identities: v2-padded | v2-refit-padded | v4-step9-draft1)")),
+        ("nope", Err("unknown contestant \"nope\" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1; named identities: v2-padded | v2-refit-padded | v4-step9-draft1)")),
+        ("greedy-v2", Err("unknown contestant \"greedy-v2\" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1; named identities: v2-padded | v2-refit-padded | v4-step9-draft1)")),
+        (" uniform", Err("unknown contestant \" uniform\" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1; named identities: v2-padded | v2-refit-padded | v4-step9-draft1)")),
+        ("UNIFORM", Err("unknown contestant \"UNIFORM\" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1; named identities: v2-padded | v2-refit-padded | v4-step9-draft1)")),
+        ("uniform ", Err("unknown contestant \"uniform \" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1; named identities: v2-padded | v2-refit-padded | v4-step9-draft1)")),
+        ("mcts-v1 ", Err("unknown contestant \"mcts-v1 \" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1; named identities: v2-padded | v2-refit-padded | v4-step9-draft1)")),
+        (":", Err("unknown contestant \"\" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1; named identities: v2-padded | v2-refit-padded | v4-step9-draft1)")),
+        (":m=4", Err("unknown contestant \"\" (rungs: uniform | retreat-averse | family-weighted; evaluator: greedy-v1 | lookahead-v1 | atomic-diag-v1; architecture: mcts-v1; named identities: v2-padded | v2-refit-padded | v4-step9-draft1)")),
     ];
 
     fn rendered(spec: &str) -> Result<String, String> {
@@ -563,6 +603,83 @@ mod tests {
         for spec in ["lookahead-v1:cap=0", "mcts-v1:cap=0"] {
             let message = Contestant::from_str_name(spec).expect_err("cap=0 must be refused");
             assert!(message.contains("omit the knob"), "{spec:?}: {message}");
+        }
+    }
+
+    /// **V4 §7 STEP 8 T3 — THE NAMED-IDENTITY ARMS ARE CONTESTANT NAMES**
+    /// (spec §13's step-8 blast-radius addition: "the ARENA gains an
+    /// explicit-table / named-identity contestant surface … so the §11 arms are
+    /// runnable identities rather than names").
+    ///
+    /// The two wire names are written as LITERALS here, deliberately, on
+    /// [`ATOMIC_DIAG_ALIAS`]'s and `contestant_golden`'s
+    /// `ECHO_LOOKAHEAD_PREFIX` reasoning: these are the strings an owner types
+    /// at a runner and a corpus reader reads back, so they are exactly the
+    /// tokens a rename must be unable to slip past. The GREEN half of this wave
+    /// pins the literals against the arms' own name consts, so there is still
+    /// one source and this test is the check on it rather than a second one.
+    ///
+    /// **Born RED** at the pre-arm tree, where both names refuse with the
+    /// grammar's typed unknown-contestant sentence — the refusal this surface
+    /// replaces, recorded in the RED commit message.
+    #[test]
+    fn the_named_identity_arms_are_contestant_names_the_grammar_accepts() {
+        for name in ["v2-padded", "v2-refit-padded"] {
+            let parsed = Contestant::from_str_name(name)
+                .unwrap_or_else(|e| panic!("{name:?} must be a contestant name: {e}"));
+            // A named arm is an evaluator seat: it resolves its dealt pair by
+            // `greedy::score_starting_order`, exactly as every other evaluator
+            // contestant does, so a §11 cell against one stays Keep-homogeneous.
+            assert_eq!(
+                parsed.keep_kind(),
+                crate::game::arena::KeepKind::EvaluatorScored,
+                "{name:?} must keep by the evaluator rule",
+            );
+            // The echo carries the NAME and the table IDENTITY, composed through
+            // the one `compose_echo` every contestant echoes through.
+            let echo = parsed.echo();
+            assert!(
+                echo.starts_with(&format!("{name}@v")),
+                "{name:?} must echo under its own name: {echo}",
+            );
+            assert!(echo.contains("weights="), "{name:?} must echo its table identity: {echo}");
+        }
+
+        // The two arms are DIFFERENT identities (the T2 review's carry): a cell
+        // that could conflate them would report one arm's figures under the
+        // other's name.
+        let padded = Contestant::from_str_name("v2-padded").expect("v2-padded parses");
+        let refit = Contestant::from_str_name("v2-refit-padded").expect("v2-refit-padded parses");
+        assert_ne!(padded, refit, "the two named arms must not be the same contestant");
+        assert_ne!(padded.echo(), refit.echo(), "the two named arms must not share an echo");
+    }
+
+    /// A named identity carries NO knobs, and typing one is refused rather than
+    /// ignored — `eval_screen`'s rule (`ScreenRung` "has no knob fields: each
+    /// variant runs its controller's SHIPPED knobs … The screen's subject is the
+    /// WEIGHTS; a knob that moved in the same cell would confound the only thing
+    /// it measures"), which is the whole reason these arms exist.
+    ///
+    /// **Born RED**: at the pre-arm tree the refusal is the unknown-contestant
+    /// sentence, not the knobless one.
+    #[test]
+    fn a_knob_on_a_named_identity_arm_is_refused_rather_than_ignored() {
+        // Driven from `NamedIdentity::ALL`, not a hand-written list: a new arm
+        // whose knobless refusal nothing checked is `driven.rs`'s own rule
+        // ("a refusal nothing checked"), and a fixed list quietly stops
+        // covering the arm that was added last.
+        for arm in NamedIdentity::ALL {
+            for suffix in [":b=8", ":m=1", ":"] {
+                let spec = format!("{}{suffix}", arm.name());
+                let message = Contestant::from_str_name(&spec)
+                    .map(|c| format!("{c:?}"))
+                    .expect_err("a knob on a knobless named arm must be refused");
+                assert!(
+                    message.contains("has no knobs"),
+                    "{spec:?} must be refused as knobless, not as unknown: {message}",
+                );
+                assert!(message.contains(arm.name()), "and must name the arm: {message}");
+            }
         }
     }
 }

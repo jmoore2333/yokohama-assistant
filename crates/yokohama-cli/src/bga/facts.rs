@@ -89,7 +89,12 @@ pub enum Fact {
     PassFee { seat: u8 },
     PlaceFee { seat: u8, amount: u8 },
     Gain { seat: u8, text: String },
-    PortAccess { seat: u8 },
+    /// BGA granted the Port's order-row entitlement. `vp_bonus` is the VP booked
+    /// WITH it — 0 below 5 Power, 3 at 5 Power, where BGA books the bonus at the
+    /// president-placement move while the engine books it inside the atomic Port
+    /// action. A note fact either way; the bonus is typed because the translator
+    /// needs the MOVE it landed on to skip that boundary by granularity.
+    PortAccess { seat: u8, vp_bonus: u8 },
     PortRefill,
     Discard { seat: u8 },
     EndGameMarker,
@@ -141,7 +146,7 @@ impl Fact {
             | Fact::PassFee { seat }
             | Fact::PlaceFee { seat, .. }
             | Fact::Gain { seat, .. }
-            | Fact::PortAccess { seat }
+            | Fact::PortAccess { seat, .. }
             | Fact::Discard { seat } => Some(*seat),
             _ => None,
         }
@@ -438,7 +443,30 @@ pub fn extract(
                     } else if log.contains("for passing through their President") {
                         push(Fact::PassFee { seat: s });
                     } else if log.contains("gains: access to") {
-                        push(Fact::PortAccess { seat: s });
+                        push(Fact::PortAccess { seat: s, vp_bonus: 0 });
+                    } else if log.contains("VPs,access to") {
+                        // The 5-Power Port bonus, measured live at async table
+                        // 896199544 m105 — the first banked capture to run a
+                        // Port action at 5 Power. BGA books the +3 HERE, at the
+                        // president placement; the engine books it inside the
+                        // atomic Port action, which requires an actual take. The
+                        // totals agree, the instants do not, and `translate`
+                        // skips the intervening boundary by granularity.
+                        //
+                        // The "3" is literal wire text, on the Stock Market
+                        // precedent below: a different amount is a different
+                        // template and stays a hard error until measured. That
+                        // promise is why the SHAPE is matched here and the
+                        // AMOUNT checked inside it. Matching `gains: 3 VPs,
+                        // access to` directly would let `gains: 2 VPs,access to`
+                        // fall past every Port arm into the generic `gains:`
+                        // splitter as an untyped note — surfacing much later as
+                        // a truthful but far-removed T9 divergence instead of
+                        // the template error promised right here.
+                        if !log.contains("gains: 3 VPs,access to") {
+                            return Err(err_template(mid, "resourceChange", log));
+                        }
+                        push(Fact::PortAccess { seat: s, vp_bonus: 3 });
                     } else if log == "${player_name}'s Stock Market sets yens to 2" {
                         // The SystemOfStock turn-start top-up (measured live at
                         // table 896157897, m95/m109). The engine applies the
@@ -803,6 +831,79 @@ mod tests {
                 via: PresidentVia::Tram
             }
         );
+    }
+
+    /// The Port entitlement line comes in TWO wordings, and the difference is
+    /// three victory points.
+    ///
+    /// Below 5 Power BGA logs "gains: access to …" and nothing else moves. AT 5
+    /// Power it logs the bonus FIRST — "gains: 3 VPs,access to …" — and books
+    /// the VP at the president-placement move, before any order is taken. The
+    /// engine grants the same +3 inside its atomic Port action, which requires
+    /// an actual take (`apply_move.rs`'s `skip_at_power_5_port_does_not_grant_
+    /// vp_bonus`), so the two systems agree on the total and disagree on the
+    /// instant — and the translator can only skip that boundary by granularity
+    /// if the bonus is TYPED rather than swallowed by the generic `gains:` arm.
+    ///
+    /// Verbatim from async table 896199544 m105, the first banked capture ever
+    /// to run a Port action at 5 Power. The "3" is literal wire text, on the
+    /// Stock Market precedent above: a different amount is a different template
+    /// and stays a hard error until measured.
+    #[test]
+    fn the_five_power_port_line_types_its_vp_bonus_and_the_plain_one_reads_zero() {
+        const T_RESOURCE: &str = "${player_name} gains: 3 VPs,access to <B>Low-High</B> Orders on the <B>Port Management Board</B>";
+        let line = wire_line(
+            105,
+            "resourceChange",
+            T_RESOURCE,
+            serde_json::json!({ "player_id": "11111111" }),
+        );
+        let stream = extract_one(&line).expect("the 5-power port line is inside the observed set");
+        assert_eq!(
+            stream.facts[0].fact,
+            Fact::PortAccess { seat: 0, vp_bonus: 3 },
+            "the 5-power wording must carry its bonus, not fall to the generic `gains:` arm"
+        );
+
+        // The sub-5-power wording is the same fact with no bonus — so a reader
+        // never has to ask which wording produced it.
+        let plain = wire_line(
+            30,
+            "resourceChange",
+            "${player_name} gains: access to <B>Low</B> Orders on the <B>Port Management Board</B>",
+            serde_json::json!({ "player_id": "11111111" }),
+        );
+        let stream = extract_one(&plain).expect("the plain port line still extracts");
+        assert_eq!(stream.facts[0].fact, Fact::PortAccess { seat: 0, vp_bonus: 0 });
+    }
+
+    /// **The claim above has to be TRUE, not merely intended.**
+    ///
+    /// "A different amount is a different template and stays a hard error until
+    /// measured" is the Stock Market precedent, and there it holds: that arm
+    /// matches the whole log EXACTLY, so any other amount falls through to
+    /// `err_template`. Borrowed onto a `contains` arm it did NOT hold — a
+    /// hypothetical `gains: 2 VPs,access to …` matched neither Port arm and fell
+    /// to the generic `gains:` splitter as an untyped note, which would surface
+    /// much later as a truthful but far-removed T9 divergence rather than as the
+    /// template error the comment promises.
+    ///
+    /// The shape is now matched on its own and the AMOUNT checked inside it, so
+    /// the promise is kept. Unmeasured and unreachable in all three banked
+    /// captures — which is exactly why it needs a test rather than a reader's
+    /// trust.
+    #[test]
+    fn a_port_bonus_amount_other_than_the_measured_three_is_a_hard_error() {
+        let line = wire_line(
+            105,
+            "resourceChange",
+            "${player_name} gains: 2 VPs,access to <B>Low-High</B> Orders on the <B>Port Management Board</B>",
+            serde_json::json!({ "player_id": "11111111" }),
+        );
+        let err = extract_one(&line).expect_err("an unmeasured VP amount must STOP, not be noted");
+        let text = err.to_string();
+        assert!(text.contains("resourceChange"), "the refusal names the notification: {text}");
+        assert!(text.contains("2 VPs,access to"), "the refusal quotes what it saw: {text}");
     }
 
     /// Register U5, shape 2 — a Tram move whose `route_keys` is NON-empty.

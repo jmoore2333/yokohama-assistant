@@ -38,11 +38,11 @@ use crate::game::driven::{
 };
 use crate::game::driven_exact::{self, ExactTable, WorldInvariance};
 use crate::game::driven_families::{
-    families, run_family_block_with, AdmissionVerdict, BlockKind, BlockOpts, ExclusionReason,
-    FamilyBlockReport, FamilyDecl, FamilyGenerator, FamilyLabel, FamilyRunError, FamilyVerdict,
-    PassRule, RootRow, RootVerdict, TurnPredicate, DECLARED_BY_THE_ROOT,
-    FAMILY2_CONTROL_GENERATOR, FROZEN_EPSILON_VP, PROXIMITY_CORNER_GENERATOR,
-    RACE_CONTROL_GENERATOR,
+    families, run_family_block_with, AdmissionVerdict, BlockKind, BlockOpts, CapSite,
+    CappedPlayout, ExclusionReason, FamilyBlockReport, FamilyDecl, FamilyGenerator, FamilyLabel,
+    FamilyRunError, FamilyVerdict, PassRule, RootRow, RootVerdict, TurnPredicate,
+    DECLARED_BY_THE_ROOT, FAMILY2_CONTROL_GENERATOR, FROZEN_EPSILON_VP,
+    PROXIMITY_CORNER_GENERATOR, RACE_CONTROL_GENERATOR,
 };
 use crate::game::lookahead::SearchStats;
 use crate::game::metrics::wilson_95;
@@ -55,20 +55,33 @@ use crate::types::{AreaAction, AreaId, GameConfig, Move, PlayerId};
 /// Every subcommand this runner answers. The parser reads it and
 /// [`USAGE`]'s completeness pin asserts every member is documented.
 pub const SUBCOMMANDS: &[&str] =
-    &["list", "table", "run", "adjudicate", "exact", "family", "opening"];
+    &["list", "table", "run", "adjudicate", "exact", "family", "opening", "capacity"];
 
 /// `list`'s flags: none.
 pub const LIST_FLAGS: &[&str] = &[];
 
+/// The BURN-RULE acknowledgement, on every subcommand that READS a root.
+///
+/// **A valued flag rather than a bare switch, and the value is the ordinal being
+/// burned.** [`split_args`] has no bare-flag arm by design, and the design is
+/// right here for a second reason: a switch copied off somebody else's command
+/// line unlocks whatever it is pasted onto, while a flag that must NAME the
+/// ordinal can only unlock the read its typist meant. See [`deny_escrow_burn`].
+pub const ESCROW_READ_FLAG: &str = "escrow-read";
+
 /// `table`'s flags.
-pub const TABLE_FLAGS: &[&str] = &["contestant", "decision-seed"];
+pub const TABLE_FLAGS: &[&str] = &["contestant", "decision-seed", ESCROW_READ_FLAG];
 
 /// `exact`'s flags.
 ///
 /// **`master` is deliberately ABSENT and its absence is enforced with a REASON**
 /// (see the parse arm): the exact solve draws no worlds, so accepting a master
 /// would advertise a dependence it does not have.
-pub const EXACT_FLAGS: &[&str] = &["max-nodes", "max-depth", "max-memo", "eps", "rider"];
+pub const EXACT_FLAGS: &[&str] =
+    &["max-nodes", "max-depth", "max-memo", "eps", "rider", ESCROW_READ_FLAG];
+
+/// `capacity`'s flags.
+pub const CAPACITY_FLAGS: &[&str] = &["master", "stop-after"];
 
 /// `family`'s flags.
 pub const FAMILY_FLAGS: &[&str] = &["block", "master", "arm"];
@@ -86,14 +99,23 @@ pub const GEN_PREFIX: &str = "gen:";
 
 /// The blocks `family --block` accepts, in declaration order.
 ///
-/// **THERE ARE TWO AND THERE IS NO THIRD.** Escrow ordinals live in the FREEZE
-/// DOCUMENT and deliberately not in code (design §2's escrow hygiene), so no
-/// command can burn one by accident — `--block escrow` is exactly as unknown as
-/// any other typo, and this array is what makes that a property rather than an
-/// omission. The `gen:` escape hatch technically REACHES an escrow ordinal;
-/// that protection is procedural (the runs report's commands-as-record), and
-/// saying so out loud is the design's own instruction.
-pub const BLOCK_NAMES: [&str; 2] = ["pilot", "confirmatory"];
+/// **THERE ARE THREE, AND THE THIRD IS A RELEASE.** The first two were the
+/// whole vocabulary until 2026-08-30, when V4 step 12 RELEASED the post-fix
+/// re-read tier of three named arms as `regression` (close doc §1.4). That is
+/// the families design's own procedure and not a hole in it (design §2:
+/// escrow ordinals live in the freeze DOCUMENT, and *"releasing escrow is a
+/// doc-plus-code change with its own commit"*) — the release names three arms,
+/// carries its own commit, and leaves every other escrowed ordinal exactly
+/// where it was.
+///
+/// **What is STILL unnameable**: the final-controller tier, the three unnamed
+/// post-fix arms, and family 1's own tier. `--block escrow` is exactly as
+/// unknown as any other typo, and this array is what makes that a property
+/// rather than an omission. The `gen:` escape hatch technically REACHES an
+/// escrowed ordinal; that protection is procedural (the runs report's
+/// commands-as-record), and saying so out loud is the design's own
+/// instruction.
+pub const BLOCK_NAMES: [&str; 3] = ["pilot", "confirmatory", "regression"];
 
 /// The arms `family --arm` accepts, in declaration order.
 pub const ARM_NAMES: [&str; 2] = ["positive", "control"];
@@ -101,18 +123,32 @@ pub const ARM_NAMES: [&str; 2] = ["positive", "control"];
 /// `run`'s flags. **`replications` is deliberately absent** — a single rooted
 /// run has nothing to replicate, and accepting the flag would silently ignore
 /// it.
-pub const RUN_FLAGS: &[&str] = &["master", "seats"];
+pub const RUN_FLAGS: &[&str] = &["master", "seats", ESCROW_READ_FLAG];
 
 /// `adjudicate`'s flags.
-pub const ADJUDICATE_FLAGS: &[&str] = &["master", "seats", "replications"];
+pub const ADJUDICATE_FLAGS: &[&str] =
+    &["master", "seats", "replications", ESCROW_READ_FLAG];
 
 /// The seat and contestant DEFAULT, spelled as the grammar spells it.
 ///
 /// A string rather than a `Contestant` const on purpose: this is what a user
-/// would type, `Contestant::from_str_name` fills every knob from its own shipped
-/// defaults, and the runner therefore introduces no second opinion about what
-/// "the shipped lookahead-v1" is.
-pub const DEFAULT_SEAT: &str = "lookahead-v1";
+/// would type, `Contestant::from_str_name` resolves it, and the runner
+/// therefore introduces no second opinion about what the shipped contestant is.
+///
+/// **RE-POINTED 2026-08-30 at the V4 ship commit**, from `lookahead-v1` to the
+/// production identity — one of the four bindings that commit moves together
+/// (`Contestant::PRODUCTION`, the CLI's default bot seat and `suggest`,
+/// `ReplyPolicy::LookaheadAtFinal`, and this). A named identity is KNOBLESS, so
+/// unlike the old default this string fills no knob from anywhere: the knobs
+/// are transcribed literals inside `NamedIdentity`, which is amendment D1's own
+/// rule about what a shipped identity may be built from.
+///
+/// **Reproducing a REGISTRY root's recorded move is `--contestant
+/// lookahead-v1`**, and the usage text says so: all six recorded moves were
+/// made under `lookahead-v1@v2`, so the reproduction check is a question about
+/// that contestant and not about this default. The default moved; the recorded
+/// history did not.
+pub const DEFAULT_SEAT: &str = "v4-step9-draft1";
 
 /// `adjudicate`'s default K.
 pub const DEFAULT_REPLICATIONS: u32 = 4;
@@ -187,14 +223,19 @@ usage: driven <subcommand> [options]
       mechanical separator's instrument, and the surface `why` cannot be (it
       prints 2 of the 15).
 
-      --contestant <spec>    default `lookahead-v1`, the grammar's own shipped
-                             default (beam 4, one world, 8 retreat samples,
-                             UNCAPPED). The separator's wider beams are
-                             `lookahead-v1:b=8` and `lookahead-v1:b=16`, and a
-                             wider beam is EXPECTED to diverge from the recorded
-                             move -- that divergence is the measurement.
-                             ONLY `lookahead-v1` and its knob variants have a
-                             root table at all. Every other arm is a TYPED
+      --contestant <spec>    default `v4-step9-draft1`, the shipped PRODUCTION
+                             contestant (beam 4, one world, 8 retreat samples,
+                             UNCAPPED). The six REGISTRY roots' recorded moves
+                             were all made under `lookahead-v1@v2`, so
+                             reproducing a recorded move is `--contestant
+                             lookahead-v1`: the default moved on 2026-08-30 and
+                             the recorded history did not. The separator's wider
+                             beams are `lookahead-v1:b=8` and `lookahead-v1:b=16`,
+                             and a wider beam is EXPECTED to diverge from the
+                             recorded move -- that divergence is the measurement.
+                             ONLY the S1 turn-boundary arms have a root table at
+                             all: `lookahead-v1` and its knob variants, and the
+                             named identities. Every other arm is a TYPED
                              REFUSAL naming why, never an empty table: a rung
                              SAMPLES its move and values no candidate,
                              `greedy-v1` is a one-ply argmax that reports no
@@ -294,6 +335,7 @@ usage: driven <subcommand> [options]
 
   family <id> --block pilot --master <u64> [--arm positive|control]
   family <id> --block confirmatory [--arm positive|control]
+  family <id> --block regression [--arm positive|control]
       Run ONE declared block of ONE frozen family and print its report: the
       label FIRST, D7's step-one counter check SECOND, then the per-policy
       admission table, the per-root replication lines (each carrying its own
@@ -314,6 +356,21 @@ usage: driven <subcommand> [options]
                              committed identity, and a typo must not be able to
                              run a plausible-looking non-frozen block. An arm
                              carrying no baked block refuses BY NAME.
+      --block regression     the RELEASED post-fix escrow of the family freeze
+                             §4 -- ordinals 36..42, disjoint from every tier
+                             already read -- released 2026-08-30 for V4 step
+                             12's regression re-read at the shipped production
+                             contestant (close doc §1.4). Releasing escrow is a
+                             doc-plus-code change with its own commit, which is
+                             what that release was. ONLY THREE ARMS CARRY ONE:
+                             end-trigger positive (the timidity guard),
+                             exclusive-race control (no-denial), achievement
+                             positive (the claim path). Every OTHER arm refuses
+                             BY NAME -- the final-controller tier, the three
+                             unnamed post-fix arms and family 1's own tier stay
+                             in the freeze DOCUMENT, unburned, and no command
+                             can name them. --master is REFUSED here for the
+                             confirmatory reason.
       --arm positive         (default) the family's positive generator.
       --arm control          its declared control (or corner) arm, at the
                              control PASS RULE where the control asks a
@@ -326,10 +383,13 @@ usage: driven <subcommand> [options]
                                achievement     the proximity corner, same rule
       SIZING is the BLOCK's: a pilot runs BlockOpts::pilot (admission K = 4, the
       posture the pilot runs were taken at, unchanged so a pilot re-draws the
-      same roots and adjudications) and a confirmatory runs BlockOpts::freeze
-      (admission K = 8, doubled against group-mean noise). The ARM never moves
-      the sizing. The SUBJECT is the shipped `lookahead-v1`: a family result is a
-      statement about that subject, so it is deliberately not a flag here.
+      same roots and adjudications) and a confirmatory -- OR a regression block
+      -- runs BlockOpts::freeze (admission K = 8, doubled against group-mean
+      noise; the regression re-read runs the frozen sizing precisely so it reads
+      the instrument its baseline was read with). The ARM never moves the
+      sizing. The SUBJECT is the shipped PRODUCTION contestant
+      `v4-step9-draft1`: a family result is a statement about that subject, so
+      it is deliberately not a flag here.
       COST: `roots x menu x candidates x K` whole games for admission plus
       `roots x R` subject turns for the reads -- tens of minutes per root in
       release at the declared sizing. The pilot is what priced it, and a
@@ -345,10 +405,30 @@ usage: driven <subcommand> [options]
 
       --games <N>            required; 0 is refused (a probe of no games
                              measures nothing).
-      --contestant <spec>    default `lookahead-v1`. Any contestant the grammar
-                             spells plays here -- unlike `table`, an opening turn
+      --contestant <spec>    default `v4-step9-draft1`, the shipped production
+                             contestant. Any contestant the grammar spells plays
+                             here -- unlike `table`, an opening turn
                              needs no ranked surface, so a rung is a legitimate
                              (and much cheaper) subject.
+
+  capacity <predicate> --master <u64> [--stop-after <n>]
+      Measure how many strided ORDINALS a predicate's scan realizes at a master,
+      and which generated game each one came from. NO ROOT TABLE is built or
+      read and no position appears anywhere in the output -- which is why V4's
+      spec §6 calls this measurement permitted, required at step 2, and NOT a
+      burn. It takes a PREDICATE and not a <root>, deliberately: capacity is a
+      question about a predicate and a master, and taking a root would let the
+      one command §6 exempts be pointed at an ordinal.
+
+      --stop-after <n>       bound the walk at n ordinals. The report then says
+                             TRUNCATED and its count is a LOWER BOUND on the
+                             supply, never the supply. 0 is refused (a walk
+                             bounded at zero ordinals measures nothing). Omit it
+                             for the exact figure, at the ecology's whole price.
+      COST is the ECOLOGY's, and it is a scan's: seconds for the rung-scanned
+      family-1 pair, minutes to hours for the six that scan the v2 LOOKAHEAD
+      ecology. That price is the reason to know the number BEFORE a master is
+      drawn, which is where §6 puts the measurement.
 
 roots (<root> above):
   <fixture-name>   a name from `list`. Its record resolves against the WORKSPACE
@@ -376,28 +456,51 @@ roots (<root> above):
                    recorded move, so `table` requires --decision-seed and prints
                    NOT CHECKED, exactly as it does for a path root.
                    COST is the ECOLOGY's: the family-1 predicates scan a rung
-                   ecology (seconds); the four layer-2 predicates scan the v2
-                   LOOKAHEAD ecology, where both generating seats search, and
-                   that is minutes.
+                   ecology (seconds); the four layer-2 predicates and the two V4
+                   predicates scan the v2 LOOKAHEAD ecology, where both
+                   generating seats search, and that is minutes.
                    <predicate> is one of:
                      final-round-already-triggered | trigger-round-not-final
                      end-firable-ahead-in-truth | end-firable-behind-in-truth
                      exclusive-race-one-step | achievement-claim-available
+                     placement-fork-same-count | opponent-sitting-executable
+                   The last two are V4's step-2 pair (spec §6). They alone carry
+                   ORDINAL BANDS -- development 0..4, development extension 4..8,
+                   escrow 8..16 -- and the escrow band is fenced by the BURN
+                   RULE. The other six have no band: family blocks run
+                   confirmatory ordinals 4..28 by declaration.
+
+the BURN RULE (--escrow-read <ordinal>, on table / run / adjudicate / exact):
+  Spec §6 fences every read at ordinal >= 8 of a BANDED predicate until step 10,
+  and `table` / `run` / `adjudicate` / `exact` REFUSE such a root rather than
+  taking it. The refusal names the predicate, the ordinal, the escrow floor and
+  the development bands. If this IS step 10, acknowledge the burn by naming the
+  ordinal: --escrow-read <that same ordinal>. It is an ACKNOWLEDGEMENT and not a
+  switch -- it must MATCH, and it is REFUSED where no burn is happening, so a
+  flag pasted off another command line can never unlock this one. The scope is
+  the two banded predicates alone: ordinal >= 8 is entirely ordinary for the
+  other six, whose frozen family blocks run confirmatory ordinals 4..28.
 
 seats (--seats <a,b[,c,d]>, one spec per seat in seat order, default
-`lookahead-v1` on EVERY seat):
+`v4-step9-draft1` on EVERY seat):
   the contestant grammar   Contestant::from_str_name's, where unknown is an error
                            at every level and an unknown knob is never silently
                            ignored:
       greedy-v1[:m=<n>]
       lookahead-v1[:b=<n>,k=<n>,m=<n>,cap=<n>]
+      v2-padded | v2-refit-padded | v4-step9-draft1   (named identities: one
+                           evaluator seat each, KNOBLESS -- the knobs are
+                           transcribed literals, so any knob group is refused)
       uniform | retreat-averse | family-weighted[:p=<ppm>,k=<n>]
       atomic-diag-v1[:d=<n>,k=<n>,m=<n>] | mcts-v1[:cap=,c=,scale=,m=,leaf=]
   the declared REPLY menu  the four bare names below. The first three resolve to
                            the same contestants the grammar spells and differ
                            only in what the provenance records they were ASKED
-                           FOR, which is the half that stops meaning what it
-                           means at D1's identity freeze:
+                           FOR -- the half whose meaning MOVED on 2026-08-30:
+                           `lookahead-at-final` now resolves to the production
+                           contestant, while `greedy-at-final` is grandfathered
+                           at greedy-v1@v2 because no greedy identity was
+                           confirmed:
       family-weighted | greedy-at-final | lookahead-at-final | race-rusher
   `family-weighted` ALONE is the reply-menu slot; `family-weighted:p=...` is the
   knobbed rung through the contestant grammar. Both resolve to a rung.
@@ -528,6 +631,19 @@ pub enum Command {
         games: u32,
         contestant: Contestant,
     },
+    /// ONE predicate's realized ordinal SUPPLY at a master — spec §6's step-2
+    /// capacity measurement.
+    ///
+    /// Deliberately NOT a `<root>` subcommand: capacity is a question about a
+    /// predicate and a master, not about a position, and taking a root here
+    /// would let the one command §6 calls "not a burn" be pointed at an ordinal.
+    Capacity {
+        predicate: RootPredicate,
+        master: u64,
+        /// `None` walks the ecology's whole game budget — the exact supply, at
+        /// the ecology's whole price.
+        stop_after: Option<u32>,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -553,6 +669,7 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
         "table" => {
             let (positional, flags) = split_args(rest, TABLE_FLAGS)?;
             let root = one_root(&positional, "table")?;
+            deny_escrow_burn(&root, flags.get(ESCROW_READ_FLAG), "table")?;
             let contestant = match flags.get("contestant") {
                 Some(spec) => Contestant::from_str_name(spec)
                     .map_err(|e| format!("--contestant {spec:?}: {e}\n\n{USAGE}"))?,
@@ -564,6 +681,7 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
         "run" => {
             let (positional, flags) = split_args(rest, RUN_FLAGS)?;
             let root = one_root(&positional, "run")?;
+            deny_escrow_burn(&root, flags.get(ESCROW_READ_FLAG), "run")?;
             Ok(Command::Run {
                 root,
                 master: master_of(&flags, "run")?,
@@ -573,6 +691,7 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
         "adjudicate" => {
             let (positional, flags) = split_args(rest, ADJUDICATE_FLAGS)?;
             let root = one_root(&positional, "adjudicate")?;
+            deny_escrow_burn(&root, flags.get(ESCROW_READ_FLAG), "adjudicate")?;
             let replications = match flags.get("replications") {
                 Some(raw) => u32::try_from(parse_u64(raw)?)
                     .map_err(|_| format!("--replications {raw:?} is not a u32\n\n{USAGE}"))?,
@@ -599,6 +718,7 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
             }
             let (positional, flags) = split_args(rest, EXACT_FLAGS)?;
             let root = one_root(&positional, "exact")?;
+            deny_escrow_burn(&root, flags.get(ESCROW_READ_FLAG), "exact")?;
             let defaults = driven_exact::ExactBounds::default();
             let bounds = driven_exact::ExactBounds {
                 max_nodes: match flags.get("max-nodes") {
@@ -676,7 +796,139 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
             };
             Ok(Command::Opening { master: master_of(&flags, "opening")?, games, contestant })
         }
+        "capacity" => {
+            let (positional, flags) = split_args(rest, CAPACITY_FLAGS)?;
+            let predicate = one_predicate(&positional)?;
+            let stop_after = match flags.get("stop-after") {
+                Some(raw) => {
+                    let bound = u32::try_from(parse_u64(raw)?).map_err(|_| {
+                        format!("--stop-after {raw:?} is not a u32\n\n{USAGE}")
+                    })?;
+                    if bound == 0 {
+                        return Err(format!(
+                            "capacity --stop-after 0 measures nothing: a walk bounded at zero \
+                             ordinals plays no game and counts no hit, so it reports neither a \
+                             supply nor a lower bound on one. Omit the flag to walk the whole \
+                             ecology.\n\n{USAGE}"
+                        ));
+                    }
+                    Some(bound)
+                }
+                None => None,
+            };
+            Ok(Command::Capacity {
+                predicate,
+                master: master_of(&flags, "capacity")?,
+                stop_after,
+            })
+        }
         other => Err(format!("unknown subcommand {other:?}\n\n{USAGE}")),
+    }
+}
+
+/// The ONE predicate `capacity` takes, named exactly as a `gen:` root names it.
+fn one_predicate(positional: &[String]) -> Result<RootPredicate, String> {
+    let [only] = positional else {
+        return Err(format!(
+            "capacity takes exactly ONE predicate, got {}: {positional:?}\n\n{USAGE}",
+            positional.len(),
+        ));
+    };
+    RootPredicate::ALL.into_iter().find(|candidate| candidate.as_str() == only).ok_or_else(|| {
+        let known: Vec<&str> = RootPredicate::ALL.into_iter().map(RootPredicate::as_str).collect();
+        format!(
+            "unknown predicate {only:?}: the scan predicates are {}\n\n{USAGE}",
+            known.join(" | "),
+        )
+    })
+}
+
+/// **THE BURN-RULE GUARD** (spec §6): no `table` / `adjudicate` / read of any
+/// kind at ordinal ≥ 8 of a BANDED predicate before step 10.
+///
+/// **Why a guard at all, when the rule is written down.** The existing
+/// [`BLOCK_NAMES`] note says out loud that UNRELEASED escrow ordinals live in a
+/// freeze DOCUMENT so no command can burn one by accident — and then that the
+/// `gen:` escape hatch technically reaches one anyway, with the protection
+/// procedural.
+/// That was the honest disposition for a family block whose escrow lived in
+/// prose. V4's escrow band lives in CODE ([`driven::V4_ESCROW_ORDINALS`]), so
+/// the same honesty now buys a refusal instead of a sentence.
+///
+/// **Why SCOPED to [`driven::V4_BANDED_PREDICATES`].** Ordinal ≥ 8 is entirely
+/// ordinary for the other six: the frozen family blocks run confirmatory
+/// ordinals 4..28 by declaration, and a general fence would refuse the frozen
+/// blocks' own roots. Only the two V4 predicates have bands, so only they are
+/// fenced.
+///
+/// **Why ≥ 8 rather than the band 8..16.** The rule §6 states is "no read of any
+/// kind at ordinal ≥ 8", not "inside the escrow band" — an ordinal past the
+/// band is not a development ordinal either, and reading one would be a read of
+/// the same population the escrow block is drawn from.
+///
+/// **Why the acknowledgement takes the ORDINAL.** Step 10 has to be able to read
+/// escrow, so a refusal with no way through would only move the problem to a
+/// code edit made under time pressure. `--escrow-read <ordinal>` is a way
+/// through that cannot be taken by accident: it must be typed, it must MATCH,
+/// it lands verbatim in the commands-as-record, and it is REFUSED where no burn
+/// is happening — so it can never be a habit already present when the burn
+/// arrives.
+fn deny_escrow_burn(
+    root: &RootRef,
+    acknowledgement: Option<&String>,
+    subcommand: &str,
+) -> Result<(), String> {
+    let burning = match root {
+        RootRef::Generated { predicate, ordinal, .. }
+            if driven::V4_BANDED_PREDICATES.contains(predicate)
+                && *ordinal >= driven::V4_ESCROW_ORDINALS.start =>
+        {
+            Some((*predicate, *ordinal))
+        }
+        _ => None,
+    };
+    match (burning, acknowledgement) {
+        (None, None) => Ok(()),
+        (None, Some(raw)) => Err(format!(
+            "--{ESCROW_READ_FLAG} {raw:?} names a burn that is not happening: {subcommand} was \
+             pointed at a root that is not an escrow ordinal of a banded predicate. The flag is an \
+             ACKNOWLEDGEMENT of spec §6's burn rule, not a switch, and accepting it where there is \
+             nothing to acknowledge would let it become a habit that is already typed when the \
+             burn arrives.\n\n{USAGE}"
+        )),
+        (Some((predicate, ordinal)), None) => Err(format!(
+            "BURN RULE (spec §6): ordinal {ordinal} of `{}` is at or past the escrow floor {}, and \
+             no table / adjudicate / read of any kind may touch it before step 10. Development \
+             ordinals are {}..{} and the development extension is {}..{}. If this IS step 10, say \
+             so by naming the ordinal: --{ESCROW_READ_FLAG} {ordinal}. The step-10 ledger row \
+             records exactly which ordinals were read, and this command is what it \
+             records.\n\n{USAGE}",
+            predicate.as_str(),
+            driven::V4_ESCROW_ORDINALS.start,
+            driven::V4_DEVELOPMENT_ORDINALS.start,
+            driven::V4_DEVELOPMENT_ORDINALS.end,
+            driven::V4_DEVELOPMENT_EXTENSION_ORDINALS.start,
+            driven::V4_DEVELOPMENT_EXTENSION_ORDINALS.end,
+        )),
+        (Some((predicate, ordinal)), Some(raw)) => {
+            let acknowledged = raw.parse::<u32>().map_err(|e| {
+                format!(
+                    "--{ESCROW_READ_FLAG} {raw:?} is not a decimal ordinal: {e}. It acknowledges \
+                     the ordinal being burned, so it is that number and nothing else.\n\n{USAGE}"
+                )
+            })?;
+            if acknowledged == ordinal {
+                Ok(())
+            } else {
+                Err(format!(
+                    "--{ESCROW_READ_FLAG} {acknowledged} does not acknowledge ordinal {ordinal} of \
+                     `{}`, which is the escrow read this command would take. An acknowledgement \
+                     that did not have to match would unlock whichever command it was pasted \
+                     onto.\n\n{USAGE}",
+                    predicate.as_str(),
+                ))
+            }
+        }
     }
 }
 
@@ -686,8 +938,8 @@ fn family_vocabulary() -> String {
     ids.join(" | ")
 }
 
-/// The two block names, as one sentence — see [`BLOCK_NAMES`] for why there are
-/// exactly two.
+/// The three block names, as one sentence — see [`BLOCK_NAMES`] for what each
+/// one is.
 fn block_vocabulary() -> String {
     format!("the blocks are {}", BLOCK_NAMES.join(" | "))
 }
@@ -719,6 +971,7 @@ fn parse_block(raw: &str) -> Result<BlockKind, String> {
     match raw {
         "pilot" => Ok(BlockKind::Pilot),
         "confirmatory" => Ok(BlockKind::Confirmatory),
+        "regression" => Ok(BlockKind::Regression),
         other => Err(format!("unknown block {other:?}: {}\n\n{USAGE}", block_vocabulary())),
     }
 }
@@ -989,6 +1242,10 @@ pub fn control_arm(decl: &FamilyDecl) -> Result<FamilyDecl, String> {
     arm.generator = generator;
     arm.rule = rule;
     arm.confirmatory = decl.confirmatory_control.clone();
+    // THE SAME RE-POINT, one tier later (V4 step 12): the released post-fix
+    // escrow is per arm for the same reason the confirmatory block is, so
+    // `resolve_block` stays one rule over one field at both kinds.
+    arm.regression = decl.regression_control.clone();
     Ok(arm)
 }
 
@@ -1032,12 +1289,17 @@ pub fn control_arm(decl: &FamilyDecl) -> Result<FamilyDecl, String> {
 ///
 /// Both `match`es are EXHAUSTIVE rather than `_ => BlockOpts::pilot()`: a third
 /// arm — or a third block — has to answer this question rather than inherit an
-/// answer written for two.
+/// answer written for two. **The third BLOCK arrived on 2026-08-30 and
+/// answered it**: the RELEASED post-fix escrow runs [`BlockOpts::freeze`], the
+/// same frozen sizing its confirmatory tier ran (family freeze §3 — admission
+/// K = 8, R = 20, per-root F = 1/20, δ = 5, VOID below 4 admitted), because a
+/// regression re-read that moved the sizing would not be reading the same
+/// instrument the baseline was read with (close doc §1.4).
 pub(crate) fn family_block_opts(arm: FamilyArm, block: BlockKind) -> BlockOpts {
     match arm {
         FamilyArm::Positive | FamilyArm::Control => match block {
             BlockKind::Pilot => BlockOpts::pilot(),
-            BlockKind::Confirmatory => BlockOpts::freeze(),
+            BlockKind::Confirmatory | BlockKind::Regression => BlockOpts::freeze(),
         },
     }
 }
@@ -1663,6 +1925,13 @@ fn root_verdict_text(verdict: &RootVerdict) -> String {
              {minimum} of the declared policies split their playouts into two groups of two, so \
              there is no measurement here to fail — a different finding from NOT DEMONSTRATED"
         ),
+        RootVerdict::Excluded(ExclusionReason::CappedAdmission { policy }) => format!(
+            "EXCLUDED / CAPPED ADMISSION ({}): that policy's adjudication reached the honest \
+             turn cap, so the declared menu is short an arm and this root's picks would be \
+             judged against fewer top sets than the rule names — the cap is COUNTED and the \
+             root leaves the denominator",
+            policy.as_str(),
+        ),
         RootVerdict::CounterRefused(detail) => {
             format!("COUNTER REFUSED — a D7 branch-0 ROUTING and never a failure: {detail}")
         }
@@ -1842,6 +2111,98 @@ fn root_detail_lines(row: &RootRow) -> Vec<String> {
     lines
 }
 
+/// The counts line, with A-S12-1's summary TOKEN when — and only when — the
+/// block counted a capped playout.
+///
+/// The token rides here rather than in the cap section alone so a reader learns
+/// N from the header, beside the other three denominators, without scrolling to
+/// find out whether the block hit any.
+fn counts_line(report: &FamilyBlockReport) -> String {
+    let mut line = format!(
+        "  counts         drawn={}  admitted={}  counter-refused={}",
+        report.drawn, report.admitted, report.counter_refused,
+    );
+    if !report.capped.is_empty() {
+        line.push_str(&format!("  capped playouts={}", report.capped.len()));
+    }
+    line
+}
+
+/// The COUNTED-CAP block (A-S12-1, close doc §2.4 item 5) — EMPTY when the block
+/// counted none.
+///
+/// One identity line per cap with the rider's tail indented under it. **Nothing
+/// here is gated on and nothing here is asserted**: the section exists so the
+/// produce-and-hoard attribution stands as evidence rather than inference, which
+/// is what a refusal carrying one line of text could not do.
+fn capped_lines(capped: &[CappedPlayout]) -> Vec<String> {
+    if capped.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = vec![
+        String::new(),
+        "  capped playouts (COUNTED, non-gating — a replication reached the honest turn cap; the \
+         (root x policy) admission row it belongs to reads CANNOT, the ROOT LEAVES THE \
+         DENOMINATOR as a typed CAPPED-ADMISSION exclusion, and the block refuses only past the \
+         registered ceiling):"
+            .to_string(),
+    ];
+    for cap in capped {
+        // The policy column reads `CapSite::as_str` — the ONE spelling of a
+        // site's column name (review S-2); the grain token stays its own word.
+        let (grain, policy) = match cap.site {
+            CapSite::Admission { .. } => ("admission", cap.site.as_str()),
+            CapSite::Read => ("read", cap.site.as_str()),
+        };
+        lines.push(format!(
+            "    ordinal {}   grain {grain:<9}   policy {policy:<18}   replication {}   \
+             seed {:#018x}   turn {}",
+            cap.ordinal, cap.replication, cap.seed, cap.turns,
+        ));
+        let Some(tail) = &cap.tail else {
+            lines.push("        tail           -  (the refusal carried no trajectory)".to_string());
+            continue;
+        };
+        lines.push(format!(
+            "        tail (last {} of {} applied moves):",
+            tail.tail.len(),
+            tail.applied_total,
+        ));
+        for step in &tail.tail {
+            lines.push(format!("          seat{}  {:?}", step.seat.0, step.mv));
+        }
+        lines.push(format!(
+            "        end state at cap: turn={}  phase={:?}  current=seat{}",
+            tail.turn_number, tail.turn_phase, tail.current_player.0,
+        ));
+        for seat in &tail.seats {
+            // `vp(track)`, never a bare `vp`: a capped game never finished, so
+            // the running track is the only VP figure the state actually
+            // carries (the arena's step-11 end-state block draws the same line).
+            lines.push(format!(
+                "          seat{}: money={} · copper={} silk={} tea={} seafood={} import={} · \
+                 assistants hand={} warehouse={} board={} · orders held={} completed={} tech={} · \
+                 vp(track)={}",
+                seat.seat.0,
+                seat.money,
+                seat.copper,
+                seat.silk,
+                seat.tea,
+                seat.seafood,
+                seat.imported_goods,
+                seat.assistants_in_hand,
+                seat.assistants_in_warehouse,
+                seat.assistants_on_board,
+                seat.orders_in_hand,
+                seat.completed_orders,
+                seat.technologies,
+                seat.victory_points,
+            ));
+        }
+    }
+    lines
+}
+
 /// ONE family block, rendered (design §2: label first, counter check second,
 /// per-policy table, per-root replication lines, binomial line, exclusion and
 /// dissent blocks).
@@ -1907,10 +2268,7 @@ pub fn render_family_block(report: &FamilyBlockReport, arm: FamilyArm) -> String
             report.control,
         ),
         format!("  menu           {}", menu.join(", ")),
-        format!(
-            "  counts         drawn={}  admitted={}  counter-refused={}",
-            report.drawn, report.admitted, report.counter_refused,
-        ),
+        counts_line(report),
     ]);
     lines.extend(family_verdict_lines(&report.verdict));
     lines.push(format!("  robustness     {}", report.robustness_read));
@@ -1966,6 +2324,13 @@ pub fn render_family_block(report: &FamilyBlockReport, arm: FamilyArm) -> String
         lines.extend(root_detail_lines(row));
     }
 
+    // ---- the counted caps (A-S12-1) ---------------------------------------
+    // ABSENT WHEN THERE ARE NONE, and that is the byte-inertness obligation
+    // rather than a taste (close doc §2.4 item 6, the arena's `--capped-ceiling`
+    // echo rule): a zero-cap block must render exactly as it did before the
+    // amendment, which the pre-wave capture pins.
+    lines.extend(capped_lines(&report.capped));
+
     // ---- exclusions and dissent -------------------------------------------
     lines.push(String::new());
     lines.push("  exclusions (roots that never entered the denominator):".to_string());
@@ -2005,7 +2370,7 @@ pub fn render_family_block(report: &FamilyBlockReport, arm: FamilyArm) -> String
             report.sole_dissenters,
         ));
         lines.push(
-            "                 the subject IS (provisionally) lookahead@final, so a subject defect \
+            "                 the subject IS lookahead@final, so a subject defect \
              that degrades its POST-candidate play deflates measured dominance under exactly that \
              arm and would exclude exactly the roots where the defect matters — a broken subject \
              passing by shrinking its own denominator. Collected as potential subject SUPPRESSION \
@@ -2454,7 +2819,86 @@ pub(crate) fn run_with(
             let probe = run_opening(master, games, contestant, &rules)?;
             Ok(render_opening(&probe))
         }
+
+        Command::Capacity { predicate, master, stop_after } => {
+            let capacity = driven::scan_capacity(predicate, master, stop_after, &rules)
+                .map_err(|e| format!("capacity {}: {e}", predicate.as_str()))?;
+            Ok(render_capacity(&capacity))
+        }
     }
+}
+
+/// What the capacity report says it did NOT do — spec §6's "not a burn" clause,
+/// on the page rather than only in the type.
+pub const CAPACITY_NO_TABLE: &str =
+    "NO ROOT TABLE was built or read: this walk counts strided hits and records which generated \
+     game each came from. Spec §6 permits and requires capacity measurement at step 2 for exactly \
+     that reason -- there is no position anywhere in this report.";
+
+/// ONE predicate's realized ordinal supply at a master.
+pub fn render_capacity(capacity: &driven::ScanCapacity) -> String {
+    let ecology = &capacity.ecology;
+    let bound = if capacity.truncated { "TRUNCATED at the caller's bound" } else { "EXHAUSTIVE" };
+    let mut lines = vec![
+        "=== driven capacity ===".to_string(),
+        format!("  {CAPACITY_NO_TABLE}"),
+        format!("  predicate      {}", capacity.predicate.as_str()),
+        format!("  master         {:#018x}", capacity.master),
+        format!(
+            "  ecology        {}   games={}   per_game_cap={}",
+            ecology.id, ecology.games, ecology.per_game_cap,
+        ),
+        format!(
+            "  found          {} strided ordinal(s) in {} game(s)   [{bound}]",
+            capacity.found(),
+            capacity.games_walked,
+        ),
+    ];
+    if capacity.truncated {
+        lines.push(
+            "  a TRUNCATED walk is a LOWER BOUND on the supply and never the supply itself"
+                .to_string(),
+        );
+    }
+    lines.push(String::new());
+    lines.push("  ordinal -> generated game".to_string());
+    for (ordinal, game) in capacity.game_of_ordinal.iter().enumerate() {
+        lines.push(format!("      ordinal {ordinal:>3}   game {game}"));
+    }
+    if capacity.game_of_ordinal.is_empty() {
+        lines.push("      (none)".to_string());
+    }
+
+    // The BAND verdicts, for the two banded predicates' own question. An
+    // unmeasured band reads UNMEASURED and never "disjoint" -- an ordinal the
+    // walk never reached is not one it found in another game.
+    lines.push(String::new());
+    lines.push("  band disjointness (measured, not the stride lemma)".to_string());
+    for (name, band) in [
+        ("development   vs escrow", driven::V4_DEVELOPMENT_ORDINALS),
+        ("dev extension vs escrow", driven::V4_DEVELOPMENT_EXTENSION_ORDINALS),
+    ] {
+        let verdict = match capacity.bands_are_disjoint(band, driven::V4_ESCROW_ORDINALS) {
+            Some(true) => "DISJOINT".to_string(),
+            Some(false) => "SHARES A GAME".to_string(),
+            None => "UNMEASURED (the walk did not reach every ordinal of both bands)".to_string(),
+        };
+        lines.push(format!("      {name}   {verdict}"));
+    }
+    lines.push(format!(
+        "      the STRIDE alone separates development {}..{} from escrow {}..{} (gap {} >= cap {}); \
+         it does NOT separate the extension's top ordinal {} from escrow's floor {}, which is what \
+         the measured line above is for",
+        driven::V4_DEVELOPMENT_ORDINALS.start,
+        driven::V4_DEVELOPMENT_ORDINALS.end,
+        driven::V4_ESCROW_ORDINALS.start,
+        driven::V4_ESCROW_ORDINALS.end,
+        driven::V4_ESCROW_ORDINALS.start - (driven::V4_DEVELOPMENT_ORDINALS.end - 1),
+        ecology.per_game_cap,
+        driven::V4_DEVELOPMENT_EXTENSION_ORDINALS.end - 1,
+        driven::V4_ESCROW_ORDINALS.start,
+    ));
+    lines.join("\n")
 }
 
 /// A root REFERENCE turned into the material a subcommand needs: the source
@@ -2590,8 +3034,9 @@ mod tests {
     use super::*;
     use crate::game::arena::{agent_stream_seed, run_arena_game, ArenaAgent, Slot};
     use crate::game::driven::{
-        AdjudicationProvenance, AdjudicationSeat, CandidatePlayout, CandidateRow, DrivenOpts,
-        RootOrigin, RootSource, SampledWorld, SeatCounters, SESSION_BOT_SEAT,
+        AdjudicationProvenance, AdjudicationSeat, AppliedMove, CandidatePlayout, CandidateRow,
+        CapSeatSummary, CapTail, DrivenOpts, RootOrigin, RootSource, SampledWorld, SeatCounters,
+        GENERATED_ECOLOGY_V1, SESSION_BOT_SEAT, V4_BANDED_PREDICATES,
     };
     use crate::game::driven_families::{
         AdmissionRead, AdmissionVerdict, CounterAnnotation, CounterCheck, ExclusionReason,
@@ -2623,6 +3068,21 @@ mod tests {
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    /// ONE declared family arm, resolved the way the runner resolves it — the
+    /// declaration for `positive`, `control_arm`'s re-point for `control`.
+    fn arm_of(id: &str, arm: FamilyArm) -> FamilyDecl {
+        let decl = families()
+            .into_iter()
+            .find(|d| d.id == id)
+            .unwrap_or_else(|| panic!("{id} is declared"));
+        match arm {
+            FamilyArm::Positive => decl,
+            FamilyArm::Control => {
+                control_arm(&decl).unwrap_or_else(|e| panic!("{id} declares a control arm: {e}"))
+            }
+        }
     }
 
     fn world(index: u64) -> WorldSeed {
@@ -3051,6 +3511,7 @@ mod tests {
             EXACT_FLAGS,
             FAMILY_FLAGS,
             OPENING_FLAGS,
+            CAPACITY_FLAGS,
         ]
         {
             for flag in flags {
@@ -3254,18 +3715,26 @@ mod tests {
         assert!(parse_seats("family-weighted,nope").is_err(), "one bad seat refuses the list");
     }
 
-    /// The default seat and the default contestant are THE SHIPPED
-    /// lookahead-v1, spelled through the grammar rather than through a second
+    /// The default seat and the default contestant are THE SHIPPED PRODUCTION
+    /// CONTESTANT, spelled through the grammar rather than through a second
     /// const this module would own.
+    ///
+    /// **Re-pointed 2026-08-30 at the V4 ship commit** — one of the four
+    /// bindings that commit moves together. The string is pinned against
+    /// `Contestant::PRODUCTION`'s OWN descriptor name rather than typed twice:
+    /// this module's whole reason for holding a string is that it introduces no
+    /// second opinion about what the shipped contestant is, and a hand-typed
+    /// name that drifted from the const would be exactly that second opinion.
     #[test]
-    fn the_default_seat_is_the_shipped_lookahead_v1_through_the_grammar() {
+    fn the_default_seat_is_the_shipped_production_contestant_through_the_grammar() {
+        assert_eq!(DEFAULT_SEAT, Contestant::PRODUCTION.descriptor().0);
         assert_eq!(
             Contestant::from_str_name(DEFAULT_SEAT).expect("the default spells a contestant"),
-            Contestant::LOOKAHEAD_V1_DEFAULT,
+            Contestant::PRODUCTION,
         );
         match parse(&args(&["table", "g"])).expect("table parses without --contestant") {
             Command::Table { contestant, decision_seed, .. } => {
-                assert_eq!(contestant, Contestant::LOOKAHEAD_V1_DEFAULT);
+                assert_eq!(contestant, Contestant::PRODUCTION);
                 assert_eq!(decision_seed, None, "the seed defaults at EXECUTION, not at parse");
             }
             other => panic!("expected a Table command, got {other:?}"),
@@ -4170,8 +4639,8 @@ mod tests {
         )
         .expect("the last-decision run completes");
         assert!(
-            out.contains(&Contestant::LOOKAHEAD_V1_DEFAULT.echo()),
-            "the default seat is not the shipped lookahead-v1: {out}",
+            out.contains(&Contestant::PRODUCTION.echo()),
+            "the default seat is not the shipped production contestant: {out}",
         );
     }
 
@@ -4532,13 +5001,17 @@ mod tests {
         assert!(err.contains(USAGE), "the refusal drops USAGE: {err}");
     }
 
-    /// An unknown block name refuses naming THE TWO valid blocks — and the
-    /// ESCROW-ABSENT property rides this arm: no grammar names an escrow block,
+    /// An unknown block name refuses naming THE THREE valid blocks — and the
+    /// ESCROW-ABSENT property rides this arm still, narrowed to what is true
+    /// after V4 step 12's release (close doc §1.4): the grammar names the
+    /// RELEASED post-fix tier as `regression` and NOTHING else escrow-shaped,
     /// so `--block escrow` is exactly as unknown as `--block wibble` and the
-    /// refusal does not offer it as an alternative (design §2's escrow hygiene:
-    /// escrow ordinals live in the freeze DOCUMENT so no command can burn one).
+    /// refusal does not offer it as an alternative. The UNRELEASED escrow —
+    /// the final-controller tier, the three unnamed post-fix arms, family 1's
+    /// own tier — still lives in the freeze DOCUMENT, where no command can
+    /// name it.
     #[test]
-    fn an_unknown_block_name_refuses_naming_the_two_valid_blocks_and_no_third() {
+    fn an_unknown_block_name_refuses_naming_the_three_valid_blocks_and_no_fourth() {
         for typed in ["escrow", "wibble"] {
             let err = parse(&args(&["family", "final-round", "--block", typed])).unwrap_err();
             assert!(err.contains(typed), "the refusal hides what was typed: {err}");
@@ -4547,8 +5020,16 @@ mod tests {
                 err.contains("confirmatory"),
                 "the refusal does not name `confirmatory`: {err}",
             );
+            assert!(
+                err.contains("regression"),
+                "the refusal does not name `regression`: {err}",
+            );
         }
-        assert_eq!(BLOCK_NAMES, ["pilot", "confirmatory"], "the block vocabulary moved");
+        assert_eq!(
+            BLOCK_NAMES,
+            ["pilot", "confirmatory", "regression"],
+            "the block vocabulary moved",
+        );
         assert!(!USAGE.contains("escrow block"), "USAGE names an escrow block");
     }
 
@@ -4664,6 +5145,223 @@ mod tests {
         );
     }
 
+    // =======================================================================
+    // V4 step 12 — THE ESCROW RELEASE: `--block regression`
+    // =======================================================================
+
+    /// The verb parses the RELEASED third block, in both arms, with no master.
+    #[test]
+    fn the_family_command_parses_the_released_regression_block() {
+        match parse(&args(&["family", "end-trigger", "--block", "regression"]))
+            .expect("the released regression block parses")
+        {
+            Command::Family { id, block, master, arm } => {
+                assert_eq!(id, "end-trigger");
+                assert_eq!(block, BlockKind::Regression);
+                assert_eq!(master, None);
+                assert_eq!(arm, FamilyArm::Positive, "the default arm is not positive");
+            }
+            other => panic!("parsed as {other:?}"),
+        }
+        match parse(&args(&[
+            "family",
+            "exclusive-race",
+            "--block",
+            "regression",
+            "--arm",
+            "control",
+        ]))
+        .expect("a regression control arm parses")
+        {
+            Command::Family { id, block, master, arm } => {
+                assert_eq!(id, "exclusive-race");
+                assert_eq!(block, BlockKind::Regression);
+                assert_eq!(master, None);
+                assert_eq!(arm, FamilyArm::Control);
+            }
+            other => panic!("parsed as {other:?}"),
+        }
+        assert_eq!(BlockKind::Regression.as_str(), "regression");
+    }
+
+    /// A regression run carrying a caller's master REFUSES, for the
+    /// confirmatory reason and with the confirmatory sentence — and it refuses
+    /// in `resolve_block` before a single draw, so this cell costs nothing and
+    /// burns no ordinal.
+    #[test]
+    fn a_regression_block_refuses_a_callers_master() {
+        let supplied = run_with(
+            &args(&["family", "end-trigger", "--block", "regression", "--master", "0x1"]),
+            &[],
+            Path::new("."),
+        )
+        .expect_err("a regression block with a caller's master must refuse");
+        assert!(
+            supplied.contains("caller-supplied master is refused"),
+            "the refusal loses its sentence: {supplied}",
+        );
+        assert!(
+            supplied.contains("end-trigger"),
+            "the refusal does not name the family: {supplied}",
+        );
+        assert!(
+            supplied.contains("regression"),
+            "the refusal does not name the block kind: {supplied}",
+        );
+        assert!(supplied.contains(USAGE), "the command-shaped refusal drops USAGE: {supplied}");
+    }
+
+    /// **THE RELEASED BLOCKS, HEX FOR HEX** — a TRANSCRIPTION pin over the
+    /// family freeze §4 escrow table's post-fix tier, for exactly the three
+    /// arms V4 step 12 released (close doc §1.2).
+    ///
+    /// Written as LITERALS rather than derived from the declaration: these
+    /// numbers ARE the committed identity of the regression re-read, and a
+    /// derivation would let one of them move without a test noticing. It is the
+    /// same discipline `the_four_declarations_carry_the_baked_confirmatory_and_control_blocks`
+    /// applies to the confirmatory tier, one tier later.
+    ///
+    /// **RESOLVING is not BURNING** (freeze §4: "burning = running
+    /// table/adjudicate/read at an ordinal"): this cell maps `(master,
+    /// ordinals)` and draws no root, so it costs nothing and consumes nothing.
+    #[test]
+    fn the_three_released_regression_blocks_resolve_their_transcribed_identity() {
+        let expected: [(&str, FamilyArm, u64); 3] = [
+            ("end-trigger", FamilyArm::Positive, 0xA3E1_2026_0818_0005),
+            ("exclusive-race", FamilyArm::Control, 0xA3E1_2026_0818_0009),
+            ("achievement", FamilyArm::Positive, 0xA3E1_2026_0818_0007),
+        ];
+        for (id, arm, transcribed) in expected {
+            let resolved = arm_of(id, arm);
+            let (master, ordinals) = crate::game::driven_families::resolve_block(
+                &resolved,
+                BlockKind::Regression,
+                None,
+            )
+            .unwrap_or_else(|e| panic!("{id} --arm {}: {e}", arm.as_str()));
+            assert_eq!(master, transcribed, "{id} --arm {}: the wrong master", arm.as_str());
+            assert_eq!(
+                ordinals,
+                vec![36, 37, 38, 39, 40, 41],
+                "{id} --arm {}: the wrong ordinals",
+                arm.as_str(),
+            );
+            // DISJOINT from the tier already read, which is what makes the
+            // re-read a fresh reading rather than a re-quote of the
+            // confirmatory roots.
+            let already_read =
+                resolved.confirmatory.as_ref().expect("baked at the freeze").ordinals.end;
+            assert!(
+                ordinals[0] >= already_read,
+                "{id} --arm {}: the released tier overlaps the confirmatory block",
+                arm.as_str(),
+            );
+        }
+    }
+
+    /// **THE RELEASE LEDGER, ALL EIGHT ARMS**: exactly THREE arms answer
+    /// `--block regression`, and the other five refuse BY NAME.
+    ///
+    /// Enumerated rather than derived, so a future release has to add its row
+    /// here deliberately. The five `false` rows are the UNRELEASED escrow —
+    /// end-trigger control, exclusive-race positive, achievement corner, and
+    /// both of family 1's — which stays in the freeze DOCUMENT, unburned.
+    #[test]
+    fn only_the_three_released_arms_answer_the_regression_block() {
+        let ledger = [
+            ("final-round", FamilyArm::Positive, false),
+            ("final-round", FamilyArm::Control, false),
+            ("end-trigger", FamilyArm::Positive, true),
+            ("end-trigger", FamilyArm::Control, false),
+            ("exclusive-race", FamilyArm::Positive, false),
+            ("exclusive-race", FamilyArm::Control, true),
+            ("achievement", FamilyArm::Positive, true),
+            ("achievement", FamilyArm::Control, false),
+        ];
+        let mut released_seen = 0;
+        for (id, arm, released) in ledger {
+            let resolved = arm_of(id, arm);
+            let outcome = crate::game::driven_families::resolve_block(
+                &resolved,
+                BlockKind::Regression,
+                None,
+            );
+            match (released, outcome) {
+                (true, Ok(_)) => released_seen += 1,
+                (true, Err(e)) => {
+                    panic!("{id} --arm {}: a RELEASED arm refused: {e}", arm.as_str())
+                }
+                (false, Ok((master, ordinals))) => panic!(
+                    "{id} --arm {}: an UNRELEASED arm resolved {master:#018x} at {ordinals:?} — \
+                     an escrowed ordinal reached the grammar",
+                    arm.as_str(),
+                ),
+                (false, Err(e)) => {
+                    let text = e.to_string();
+                    assert!(
+                        text.contains(id),
+                        "{id} --arm {}: the refusal does not name the family: {text}",
+                        arm.as_str(),
+                    );
+                    assert!(
+                        text.contains("regression"),
+                        "{id} --arm {}: the refusal does not name the block kind: {text}",
+                        arm.as_str(),
+                    );
+                }
+            }
+        }
+        assert_eq!(released_seen, 3, "the release ledger no longer names exactly three arms");
+    }
+
+    /// **THE READ SURFACE**: a regression report says so on its family line.
+    ///
+    /// `render_family_block` prints `report.block.as_str()`, so the release
+    /// needed no renderer change — which is precisely why this needs a cell.
+    /// Close doc §1.7 reads `block=` (with `subject`, `master` and the
+    /// ordinals) on all three reports BEFORE any verdict is quoted, and "it
+    /// should fall out of the existing format string" is an argument, not a
+    /// check.
+    ///
+    /// Rendered from a HAND-BUILT report: no block is run and no ordinal is
+    /// drawn.
+    #[test]
+    fn a_regression_report_says_block_regression_on_its_family_line() {
+        let mut report = family_report(FamilyVerdict::Pass, vec![]);
+        report.block = BlockKind::Regression;
+        let rendered = render_family_block(&report, FamilyArm::Positive);
+        let family_line = rendered
+            .lines()
+            .find(|line| line.trim_start().starts_with("family "))
+            .unwrap_or_else(|| panic!("the report has no family line:\n{rendered}"));
+        assert!(
+            family_line.contains("block=regression"),
+            "the family line does not name the block: {family_line}",
+        );
+        // ANTI-VACUITY: the token READS the report rather than being a
+        // constant that happens to say the right word.
+        report.block = BlockKind::Confirmatory;
+        assert!(
+            render_family_block(&report, FamilyArm::Positive).contains("block=confirmatory"),
+            "the block token is not reading the report",
+        );
+    }
+
+    /// The RELEASED regression block runs the FROZEN sizing in BOTH arms —
+    /// admission K = 8, R = 20, per-root F = 1/20, δ = 5, VOID below 4 admitted
+    /// (family freeze §3, held UNCHANGED by the release: close doc §1.4).
+    #[test]
+    fn the_released_regression_block_runs_the_frozen_sizing_in_both_arms() {
+        for arm in [FamilyArm::Positive, FamilyArm::Control] {
+            assert_eq!(
+                format!("{:?}", family_block_opts(arm, BlockKind::Regression)),
+                format!("{:?}", BlockOpts::freeze()),
+                "the regression block does not run the FROZEN posture at arm {}",
+                arm.as_str(),
+            );
+        }
+    }
+
     /// **THE SUPPLY ARITHMETIC** (the freeze wave, item 6): every frozen block's
     /// highest ordinal is inside the supply its generator's ECOLOGY declares.
     ///
@@ -4672,8 +5370,9 @@ mod tests {
     /// middle of a confirmatory run. This is that check as a test rather than as
     /// arithmetic in a commit message — and it is why the freeze needed NO
     /// games-bound change: v1.1 supplies 32 against family 1's 20 (pilot 4 +
-    /// confirmatory 16), and the v2.2 lookahead ecology supplies 480 against the
-    /// layer-2 families' 28 (pilot 4 + confirmatory 24).
+    /// confirmatory 16), and the v2.3 pinned-lookahead ecology supplies 480 against the
+    /// layer-2 families' 42 (pilot 4 + confirmatory 24 + the released
+    /// regression tier's ceiling at ordinal 41).
     ///
     /// **WHAT THIS CHECK DOES NOT PROVE, learned the hard way TWICE
     /// (2026-08-18):** `games × per_game_cap` is the CAPACITY of the ordinal
@@ -4694,11 +5393,23 @@ mod tests {
         let mut checked_builders = 0;
         for decl in families() {
             let control = control_arm(&decl).expect("every family declares a control arm");
-            for (arm, generator, block) in [
-                ("positive", decl.generator, decl.confirmatory.clone()),
-                ("control", control.generator, decl.confirmatory_control.clone()),
+            for (arm, generator, block, baked) in [
+                ("positive confirmatory", decl.generator, decl.confirmatory.clone(), true),
+                (
+                    "control confirmatory",
+                    control.generator,
+                    decl.confirmatory_control.clone(),
+                    true,
+                ),
+                ("positive regression", decl.generator, decl.regression.clone(), false),
+                ("control regression", control.generator, decl.regression_control.clone(), false),
             ] {
-                let block = block.expect("baked at the freeze");
+                // A REGRESSION row is present only where V4 step 12 released
+                // one; a CONFIRMATORY row is baked for every arm.
+                let Some(block) = block else {
+                    assert!(!baked, "{} --arm {arm}: baked at the freeze", decl.id);
+                    continue;
+                };
                 let highest = block.ordinals.end - 1;
                 match generator {
                     FamilyGenerator::Predicate(predicate) => {
@@ -4723,8 +5434,10 @@ mod tests {
                 }
             }
         }
-        // ANTI-VACUITY: both kinds were actually met.
-        assert_eq!((checked_predicates, checked_builders), (5, 3));
+        // ANTI-VACUITY: both kinds were actually met, at both released tiers
+        // — eight confirmatory arms (5 predicate + 3 builder) plus the three
+        // released regression arms (2 predicate + 1 builder).
+        assert_eq!((checked_predicates, checked_builders), (7, 4));
     }
 
     // =======================================================================
@@ -4822,7 +5535,7 @@ mod tests {
     /// same seam for the same reason.
     #[test]
     fn the_family_block_sizing_keeps_the_admission_inversion_off_in_both_arms() {
-        for block in [BlockKind::Pilot, BlockKind::Confirmatory] {
+        for block in [BlockKind::Pilot, BlockKind::Confirmatory, BlockKind::Regression] {
             let positive = family_block_opts(FamilyArm::Positive, block);
             let control = family_block_opts(FamilyArm::Control, block);
             assert!(
@@ -4914,6 +5627,7 @@ mod tests {
             root_digest: "00ff0000000000ab".to_string(),
             subject_echo: Contestant::LOOKAHEAD_V1_DEFAULT.echo(),
             replications: (0..r).map(|i| turn_replication(i, i >= misses)).collect(),
+            voids: Vec::new(),
             counter_check: counter_check(2, 2, 2),
             annotations: vec![CounterAnnotation::TiedAtTop { candidates: 2 }],
         }
@@ -4985,10 +5699,302 @@ mod tests {
             admitted,
             counter_refused,
             sole_dissenters,
+            capped: Vec::new(),
             verdict,
             robustness_read: driven::ROBUSTNESS_READ,
         }
     }
+
+
+    /// **THE ZERO-CAP BYTE-IDENTITY PIN** (A-S12-1, close doc §2.4 item 6).
+    ///
+    /// The amendment lets the family harness COUNT a capped playout instead of
+    /// refusing the block. Its inertness obligation is measured, not asserted:
+    /// a block with ZERO caps must render BYTE-IDENTICALLY before and after,
+    /// because the orchestrator proves the amendment inert by re-running two
+    /// banked real blocks and diffing their report bodies against
+    /// `s12-f2-pos.txt` / `s12-f3-ctrl.txt`.
+    ///
+    /// **The expectation below is a CAPTURE taken at `1fd208c`, before any
+    /// A-S12-1 code existed** — baked rather than re-derived through the new
+    /// renderer, which is the whole point: a pin computed by the code it guards
+    /// guards nothing. A deliberate future format change re-bakes it in the
+    /// same commit as the change; an ACCIDENTAL one fails here.
+    ///
+    /// The report it renders carries every section a real block prints: a
+    /// passing admitted root with a turn-grain read and its annotations, an
+    /// excluded root with a FAILS row, the exclusion block, and the sole
+    /// dissenter block.
+    #[test]
+    fn a_zero_cap_family_report_renders_byte_identically_to_the_pre_wave_capture() {
+        let mut excluded =
+            family_row(1, RootVerdict::Excluded(ExclusionReason::NotDemonstrated), None);
+        excluded.admission = Some(AdmissionRead {
+            delta: 5,
+            control: false,
+            policies: vec![
+                policy_admission(ReplyPolicy::FamilyWeighted, AdmissionVerdict::Dominates),
+                policy_admission(ReplyPolicy::LookaheadAtFinal, AdmissionVerdict::Fails),
+            ],
+        });
+        excluded.lookahead_sole_dissenter = true;
+        let report = family_report(
+            FamilyVerdict::Pass,
+            vec![family_row(0, RootVerdict::Pass, Some(turn_read(1, 3))), excluded],
+        );
+
+        let rendered = render_family_block(&report, FamilyArm::Positive);
+        assert_eq!(
+            rendered, ZERO_CAP_BASELINE,
+            "the zero-cap family report moved against its pre-A-S12-1 capture",
+        );
+        // The absent-means-absent half, stated separately so a token that
+        // appeared with a zero count fails HERE with its own sentence rather
+        // than inside a 60-line diff (the arena's `--capped-ceiling` echo rule).
+        assert!(
+            !rendered.contains("capped"),
+            "a zero-cap block prints a cap token:\n{rendered}",
+        );
+    }
+
+    /// The pre-wave capture the pin above compares against — see its doc.
+    const ZERO_CAP_BASELINE: &str = r#"=== driven family ===
+  label          CONFIRMATORY — a pass is evidence FOR the subject and a failure routes through D7; the block confirms a behaviour the canon (or the rules) already call right
+  counter check  D7 step one — 1 root(s) read, 0 REFUSED, 1 annotated (a refusal is a ROUTING and never a failure: a truncated search's pick is not a preference)
+  family         end-trigger   class=end-timing/proximity   block=pilot   arm=positive
+  generator      end-firable-ahead-in-truth
+  master         0x0a3e000000000001
+  subject        lookahead-v1@v2{b=4,eval_impl=3,k=1,m=8,weights=-1160323518167071950}
+  rule           turn:end-fired-by-handoff   grain=turn
+  sizing         R=20  per-root F=1  admission K=4  delta=5 VP  admission-inverted=false
+  menu           family-weighted, greedy-at-final
+  counts         drawn=2  admitted=1  counter-refused=0
+  verdict        PASS
+  robustness     robustness read: each candidate was FORCED and the remainder PLAYED OUT under the named seats, so a margin here is what those policies reach from this position — not exact ground truth about the candidate
+
+  per-policy admission (delta=5 VP, inverted=false) — the TURN-grain admission arithmetic, and at the DECISION grain the LIVE/DEAD split printed per root above:
+    the conjunction runs over the SPLITTING policies (both groups >= 2 playouts): a CANNOT row is recorded and blocks nothing, a FAILS row blocks, and a root needs 2 splitting policies before its admission is a demonstration at all
+    ordinal  policy              true_n  false_n   true_mean   false_mean      diff   verdict
+          0  family-weighted          4        4       12.00         1.00     11.00   DOMINATES
+          0  greedy-at-final          4        4       12.00         1.00     11.00   DOMINATES
+          1  family-weighted          4        4       12.00         1.00     11.00   DOMINATES
+          1  lookahead-at-final       4        4       12.00         1.00     11.00   FAILS
+
+  roots:
+
+    ordinal 0   record-prefix@root-digest-xyz  event=113
+        verdict        PASS
+        draw seed      0x5eed000000000000
+        step           -
+        rule as run    turn:end-fired-by-handoff
+        misses 0   unresolved 0
+        counter check  candidates=2  top=+12  tied-at-top=2  top-band(<=1 pt)=2  distinct=2
+          root_candidates        3
+          nodes                  11
+          handles                11
+          route_dfs_nodes        2
+          forced_nodes           5
+          leaves                 7
+          scored                 29
+          root_scored            3
+          budget_binds           0
+          budget_starved         0
+          placement_cap_binds    0
+          max_line               4
+          ply_cap_hits           0
+          free_extension_steps   0
+          free_cap_hits          0
+        annotation     TiedAtTop { candidates: 2 }
+        annotation     SEPARATOR RECOMMENDED — the evaluator separated little here, so this root goes through b=4 / b=8 / b=16 before an argument rides it
+        binomial       misses 1/3 (rate 0.3333); exact one-sided 95% upper bound on the per-world miss rate 0.8646
+        replications   R=3  master=0x0a3e000000000001  root_word=0x00ff0000000000ab
+          r0   seed=0x0d00000000000000  root_word=0x00ff0000000000ab  MISSED  moves=4  game_over=false  handoff=handoff-0
+          r1   seed=0x0d00000000000001  root_word=0x00ff0000000000ab  HELD  moves=4  game_over=false  handoff=handoff-1
+          r2   seed=0x0d00000000000002  root_word=0x00ff0000000000ab  HELD  moves=4  game_over=false  handoff=handoff-2
+
+    ordinal 1   record-prefix@root-digest-xyz  event=113
+        verdict        EXCLUDED / NOT DEMONSTRATED (the pass behaviour does not dominate here under every SPLITTING policy — a real measurement, and the rate is on the report)
+        draw seed      0x5eed000000000001
+        step           -
+        rule as run    turn:end-fired-by-handoff
+        misses 0   unresolved 0
+        read           none — this root was excluded or counter-refused before any replication ran
+
+  exclusions (roots that never entered the denominator):
+    ordinal 1   EXCLUDED / NOT DEMONSTRATED (the pass behaviour does not dominate here under every SPLITTING policy — a real measurement, and the rate is on the report)
+                 splitting=2 of 2 declared policies
+                 dissenters: lookahead-at-final
+
+  dissent        SOLE DISSENTER at ordinals [1] — dominance held under every declared policy EXCEPT lookahead-at-final
+                 the subject IS lookahead@final, so a subject defect that degrades its POST-candidate play deflates measured dominance under exactly that arm and would exclude exactly the roots where the defect matters — a broken subject passing by shrinking its own denominator. Collected as potential subject SUPPRESSION evidence and routed to D7 as a finding, never silently dropped."#;
+
+
+    /// **THE COUNTED-CAP BLOCK** (A-S12-1, close doc §2.4 items 5 and 6): every
+    /// counted cap prints its identity on ONE line — grain, policy, ordinal,
+    /// replication, seed, turn — with the rider's tail block indented under it,
+    /// and a SUMMARY TOKEN rides the counts line so a reader sees N without
+    /// scanning.
+    ///
+    /// The zero-cap half of the same contract is
+    /// `a_zero_cap_family_report_renders_byte_identically_to_the_pre_wave_capture`
+    /// — absent means absent, the arena's `--capped-ceiling` echo rule.
+    #[test]
+    fn a_counted_cap_prints_its_identity_its_tail_and_a_summary_token() {
+        let tail = CapTail {
+            turn_number: 10_001,
+            turn_phase: TurnPhase::Placement,
+            current_player: PlayerId(0),
+            applied_total: 123_456,
+            tail: vec![
+                AppliedMove { seat: PlayerId(0), mv: Move::UseSpinningMill },
+                AppliedMove { seat: PlayerId(1), mv: Move::SkipBuilding },
+            ],
+            seats: vec![
+                CapSeatSummary {
+                    seat: PlayerId(0),
+                    victory_points: 41,
+                    money: 12,
+                    copper: 3,
+                    silk: 0,
+                    tea: 9,
+                    seafood: 2,
+                    imported_goods: 1,
+                    assistants_in_hand: 2,
+                    assistants_in_warehouse: 0,
+                    assistants_on_board: 6,
+                    orders_in_hand: 3,
+                    completed_orders: 1,
+                    technologies: 2,
+                },
+                CapSeatSummary {
+                    seat: PlayerId(1),
+                    victory_points: 17,
+                    money: 0,
+                    copper: 0,
+                    silk: 0,
+                    tea: 0,
+                    seafood: 0,
+                    imported_goods: 0,
+                    assistants_in_hand: 8,
+                    assistants_in_warehouse: 12,
+                    assistants_on_board: 0,
+                    orders_in_hand: 0,
+                    completed_orders: 0,
+                    technologies: 0,
+                },
+            ],
+        };
+        let admission_cap = CappedPlayout {
+            site: CapSite::Admission { policy: ReplyPolicy::LookaheadAtFinal },
+            ordinal: 40,
+            replication: 2,
+            seed: 0x1234_5678_9ABC_DEF0,
+            turns: 10_001,
+            tail: Some(tail),
+        };
+        // A READ-grain void beside it: the same line shape with no policy, and
+        // no tail at all — the two absences must each render as absent.
+        let read_cap = CappedPlayout {
+            site: CapSite::Read,
+            ordinal: 41,
+            replication: 5,
+            seed: 0x0FED_CBA9_8765_4321,
+            turns: 10_001,
+            tail: None,
+        };
+
+        let mut report = family_report(
+            FamilyVerdict::Pass,
+            vec![family_row(0, RootVerdict::Pass, Some(turn_read(0, 2)))],
+        );
+        report.capped = vec![admission_cap, read_cap];
+        let rendered = render_family_block(&report, FamilyArm::Positive);
+
+        // THE SUMMARY TOKEN, on the counts line and nowhere else.
+        let counts = rendered
+            .lines()
+            .find(|line| line.starts_with("  counts "))
+            .expect("the report has a counts line");
+        assert!(
+            counts.contains("capped playouts=2"),
+            "the counts line carries no cap token: {counts}",
+        );
+
+        // THE IDENTITY LINE — every field §2.4 item 5 names.
+        assert!(
+            rendered.contains(
+                "    ordinal 40   grain admission   policy lookahead-at-final   replication 2   \
+                 seed 0x123456789abcdef0   turn 10001"
+            ),
+            "the admission cap's identity line is missing or moved:\n{rendered}",
+        );
+        assert!(
+            rendered.contains(
+                "    ordinal 41   grain read        policy subject-read         replication 5   \
+                 seed 0x0fedcba987654321   turn 10001"
+            ),
+            "the read-grain void's identity line is missing or moved:\n{rendered}",
+        );
+
+        // THE TAIL BLOCK, indented under its own cap.
+        assert!(
+            rendered.contains("        tail (last 2 of 123456 applied moves):"),
+            "the tail does not say it is a TAIL of a longer trajectory:\n{rendered}",
+        );
+        assert!(rendered.contains("          seat0  UseSpinningMill"), "no move labels:\n{rendered}");
+        assert!(rendered.contains("          seat1  SkipBuilding"), "no move labels:\n{rendered}");
+        assert!(
+            rendered.contains(
+                "        end state at cap: turn=10001  phase=Placement  current=seat0"
+            ),
+            "the end-state header is missing:\n{rendered}",
+        );
+        assert!(
+            rendered.contains(
+                "          seat0: money=12 · copper=3 silk=0 tea=9 seafood=2 import=1 · \
+                 assistants hand=2 warehouse=0 board=6 · orders held=3 completed=1 tech=2 · \
+                 vp(track)=41"
+            ),
+            "the per-seat stock line is missing or moved:\n{rendered}",
+        );
+        // The ABSENT tail says so rather than printing an empty block.
+        assert!(
+            rendered.contains("        tail           -  (the refusal carried no trajectory)"),
+            "an absent tail does not render as absent:\n{rendered}",
+        );
+
+        // NON-GATING, said on the report: the verdict is untouched and the
+        // section says what a counted cap is.
+        assert!(rendered.contains("  verdict        PASS"), "the cap moved the verdict");
+        let section = line_index(&rendered, "  capped playouts (COUNTED, non-gating");
+        let roots = line_index(&rendered, "  roots:");
+        let exclusions = line_index(&rendered, "  exclusions (");
+        assert!(
+            roots < section && section < exclusions,
+            "the cap block is not between the roots and the exclusions:\n{rendered}",
+        );
+    }
+    /// A READ-site cap prints its own column name (review S-2): `CapSite::as_str`
+    /// is documented as the report's policy-column spelling, and the renderer
+    /// must read it rather than hand-typing a dash.
+    #[test]
+    fn a_read_site_cap_prints_subject_read_in_the_policy_column() {
+        let cap = CappedPlayout {
+            site: CapSite::Read,
+            ordinal: 5,
+            replication: 2,
+            seed: 0xABCD,
+            turns: 11,
+            tail: None,
+        };
+        let lines = capped_lines(std::slice::from_ref(&cap)).join("\n");
+        assert!(
+            lines.contains("policy subject-read"),
+            "a read-site cap must print CapSite::as_str in the policy column: {lines}",
+        );
+        assert!(!lines.contains("policy -"), "the hand-typed dash must be gone: {lines}");
+    }
+
 
     fn line_index(rendered: &str, needle: &str) -> usize {
         rendered
@@ -5287,6 +6293,7 @@ mod tests {
             root_word: 0x00FF_0000_0000_00AB,
             root_digest: "00ff0000000000ab".to_string(),
             subject_echo: Contestant::LOOKAHEAD_V1_DEFAULT.echo(),
+            voids: Vec::new(),
             replications: vec![ReplicationRead {
                 replication: 0,
                 decision_seed: 0x0DEC_0000_0000_0007,
@@ -5448,7 +6455,9 @@ mod tests {
             Command::Opening { master, games, contestant } => {
                 assert_eq!(master, 0x2A);
                 assert_eq!(games, 3);
-                assert_eq!(contestant, Contestant::LOOKAHEAD_V1_DEFAULT);
+                // `opening` shares `DEFAULT_SEAT` with the rest of the runner,
+                // so the 2026-08-30 re-point moved this default with it.
+                assert_eq!(contestant, Contestant::PRODUCTION);
             }
             other => panic!("parsed as {other:?}"),
         }
@@ -5686,6 +6695,16 @@ mod tests {
             USAGE.contains("REFUSED"),
             "USAGE does not state that a confirmatory block refuses a caller's master",
         );
+        // THE RELEASED THIRD BLOCK (V4 step 12): the command form a caller
+        // types, and the release's own authority, on the page.
+        assert!(
+            USAGE.contains("family <id> --block regression"),
+            "USAGE does not carry the regression command form:\n{USAGE}",
+        );
+        assert!(
+            USAGE.contains("36..42"),
+            "USAGE does not name the released post-fix tier's ordinals:\n{USAGE}",
+        );
         // THE TWO SIZINGS (the freeze wave): the page a caller reads before
         // typing the command names the K each block runs at.
         assert!(
@@ -5716,5 +6735,207 @@ mod tests {
             anchor.0.display(),
         );
         assert_eq!(rendered, expected);
+    }
+
+    // =======================================================================
+    // V4 step 2 — the capacity read and the BURN-RULE guard (spec §6)
+    // =======================================================================
+
+    /// The V4 step-2 DEV-SMOKE master, the declared 9999-convention throwaway.
+    /// Spec §6 is FREEZE-THEN-DRAW, so no cell here may carry a recorded one.
+    const V4_MASTER: u64 = 0x0401_2026_0821_9999;
+
+    /// `capacity <predicate>` parses, takes the master everything else does, and
+    /// bounds its walk.
+    #[test]
+    fn the_capacity_subcommand_parses_a_predicate_a_master_and_a_bound() {
+        assert!(SUBCOMMANDS.contains(&"capacity"), "capacity is not in the subcommand list");
+
+        for predicate in RootPredicate::ALL {
+            let parsed = parse(&args(&["capacity", predicate.as_str(), "--master", "0x1"]))
+                .unwrap_or_else(|e| panic!("capacity {} must parse: {e}", predicate.as_str()));
+            match parsed {
+                Command::Capacity { predicate: got, master, stop_after } => {
+                    assert_eq!(got, predicate);
+                    assert_eq!(master, 1);
+                    assert_eq!(stop_after, None, "an absent bound is the whole ecology");
+                }
+                other => panic!("capacity parsed as {other:?}"),
+            }
+        }
+
+        match parse(&args(&["capacity", "placement-fork-same-count", "--master", "0x2", "--stop-after", "16"]))
+            .expect("a bounded capacity parses")
+        {
+            Command::Capacity { stop_after, .. } => assert_eq!(stop_after, Some(16)),
+            other => panic!("capacity parsed as {other:?}"),
+        }
+    }
+
+    /// Every way a `capacity` command can be wrong refuses on its own terms,
+    /// carrying USAGE.
+    #[test]
+    fn a_malformed_capacity_command_refuses_naming_what_is_wrong() {
+        let cases: [(&[&str], &str); 5] = [
+            // No predicate.
+            (&["capacity", "--master", "0x1"], "exactly ONE"),
+            // Two predicates.
+            (&["capacity", "trigger-round-not-final", "achievement-claim-available", "--master", "0x1"], "exactly ONE"),
+            // An unknown predicate — and the refusal names the vocabulary.
+            (&["capacity", "final-round", "--master", "0x1"], "final-round-already-triggered"),
+            // No master.
+            (&["capacity", "trigger-round-not-final"], "NO DEFAULT"),
+            // A zero bound measures nothing.
+            (&["capacity", "trigger-round-not-final", "--master", "0x1", "--stop-after", "0"], "measures nothing"),
+        ];
+        for (line, needle) in cases {
+            let err = parse(&args(line)).unwrap_err();
+            assert!(err.contains(needle), "{line:?}: the refusal hides {needle:?}: {err}");
+            assert!(err.contains(USAGE), "{line:?}: the refusal drops USAGE: {err}");
+        }
+    }
+
+    /// A `capacity` run reports the count, the ecology, the ordinal-to-game map
+    /// and the two band verdicts — and reads NO root table on the way.
+    ///
+    /// Run on the CHEAP rung ecology deliberately: the report's SHAPE is what a
+    /// cell can check, and a V4 predicate would buy the same shape for minutes
+    /// of lookahead scan.
+    #[test]
+    fn a_capacity_run_reports_the_map_and_never_reads_a_root_table() {
+        let anchor = TempRoot::make("capacity-run");
+        let rendered = run_with(
+            &args(&[
+                "capacity",
+                "final-round-already-triggered",
+                "--master",
+                &format!("{V4_MASTER:#018x}"),
+                "--stop-after",
+                "4",
+            ]),
+            &[],
+            &anchor.0,
+        )
+        .expect("a bounded rung capacity walk completes");
+
+        assert!(rendered.contains("=== driven capacity ==="), "no header: {rendered}");
+        assert!(rendered.contains("final-round-already-triggered"), "the predicate is missing: {rendered}");
+        assert!(rendered.contains(&format!("{V4_MASTER:#018x}")), "the master is missing: {rendered}");
+        assert!(rendered.contains(GENERATED_ECOLOGY_V1), "the ecology is missing: {rendered}");
+        assert!(rendered.contains("TRUNCATED"), "a bounded walk must say so: {rendered}");
+        assert!(rendered.contains("ordinal -> generated game"), "no map section: {rendered}");
+        let mapped: Vec<&str> = rendered
+            .lines()
+            .filter(|line| line.trim_start().starts_with("ordinal ") && line.contains("game "))
+            .collect();
+        assert_eq!(
+            mapped.len(),
+            4,
+            "the map does not carry one line per measured ordinal: {rendered}",
+        );
+        assert!(
+            rendered.contains("development   vs escrow"),
+            "the band verdicts are missing: {rendered}",
+        );
+        assert!(
+            rendered.contains("NO ROOT TABLE"),
+            "the report does not say what it did NOT do: {rendered}",
+        );
+    }
+
+    /// **THE BURN-RULE GUARD.** Spec §6 fences every read at ordinal >= 8 of the
+    /// two banded predicates until step 10, and the fence is a REFUSAL rather
+    /// than a comment: the `gen:` grammar reaches an escrow ordinal, so nothing
+    /// but a guard stops a copy-pasted command from burning one.
+    #[test]
+    fn an_escrow_ordinal_of_a_banded_predicate_refuses_on_every_root_taking_subcommand() {
+        for predicate in V4_BANDED_PREDICATES {
+            let spec = format!("gen:{}:0x1:8", predicate.as_str());
+            for line in [
+                vec!["table", &spec, "--decision-seed", "9"],
+                vec!["run", &spec, "--master", "0x1"],
+                vec!["adjudicate", &spec, "--master", "0x1"],
+                vec!["exact", &spec],
+            ] {
+                let err = parse(&args(&line)).unwrap_err();
+                assert!(err.contains("BURN RULE"), "{line:?}: the refusal does not name the rule: {err}");
+                assert!(err.contains(predicate.as_str()), "{line:?}: the refusal hides the predicate: {err}");
+                assert!(err.contains("--escrow-read"), "{line:?}: the refusal hides the way through: {err}");
+            }
+
+            // The band's FLOOR is 8 and ordinal 7 is the development extension:
+            // the guard must not fence a development read.
+            let development = format!("gen:{}:0x1:7", predicate.as_str());
+            parse(&args(&["table", &development, "--decision-seed", "9"]))
+                .unwrap_or_else(|e| panic!("a development ordinal must pass the guard: {e}"));
+
+            // Past the declared band is still >= 8, and the burn rule says >= 8.
+            let past = format!("gen:{}:0x1:99", predicate.as_str());
+            assert!(
+                parse(&args(&["table", &past, "--decision-seed", "9"])).is_err(),
+                "an ordinal past the escrow band escaped the >= 8 fence",
+            );
+        }
+    }
+
+    /// The guard is SCOPED to the two banded predicates: family blocks run
+    /// confirmatory ordinals 4..28, so fencing ordinal >= 8 in general would
+    /// refuse the frozen blocks' own roots.
+    #[test]
+    fn the_burn_guard_leaves_the_unbanded_predicates_alone() {
+        for predicate in RootPredicate::ALL {
+            if V4_BANDED_PREDICATES.contains(&predicate) {
+                continue;
+            }
+            let spec = format!("gen:{}:0x1:27", predicate.as_str());
+            parse(&args(&["table", &spec, "--decision-seed", "9"])).unwrap_or_else(|e| {
+                panic!("{} is unbanded and must not be fenced: {e}", predicate.as_str())
+            });
+        }
+    }
+
+    /// `--escrow-read` is an ACKNOWLEDGEMENT and not a switch: it takes the
+    /// ordinal being burned, must match it, and is refused where no burn is
+    /// happening.
+    #[test]
+    fn the_escrow_acknowledgement_must_name_the_ordinal_it_is_burning() {
+        let spec = format!("gen:{}:0x1:11", RootPredicate::PlacementForkSameCount.as_str());
+
+        // The MATCHING acknowledgement is the way through.
+        match parse(&args(&["table", &spec, "--decision-seed", "9", "--escrow-read", "11"]))
+            .expect("a matching acknowledgement passes the guard")
+        {
+            Command::Table { root, .. } => assert_eq!(
+                root,
+                RootRef::Generated {
+                    predicate: RootPredicate::PlacementForkSameCount,
+                    master: 1,
+                    ordinal: 11,
+                },
+            ),
+            other => panic!("table parsed as {other:?}"),
+        }
+
+        // A MISMATCH is a refusal — a flag copied off another command cannot
+        // unlock this one.
+        let err = parse(&args(&["table", &spec, "--decision-seed", "9", "--escrow-read", "8"]))
+            .expect_err("a mismatched acknowledgement must refuse");
+        assert!(err.contains("11"), "the refusal hides the ordinal asked for: {err}");
+        assert!(err.contains("8"), "the refusal hides the ordinal acknowledged: {err}");
+
+        // A non-numeric acknowledgement refuses as one.
+        assert!(parse(&args(&["table", &spec, "--decision-seed", "9", "--escrow-read", "yes"]))
+            .is_err());
+
+        // And the flag is refused where NO burn is happening, so it cannot
+        // become a habit that is already typed when the burn arrives.
+        let development =
+            format!("gen:{}:0x1:2", RootPredicate::PlacementForkSameCount.as_str());
+        let err = parse(&args(&["table", &development, "--decision-seed", "9", "--escrow-read", "2"]))
+            .expect_err("the flag must refuse where there is nothing to acknowledge");
+        assert!(err.contains("not happening"), "the refusal does not say why: {err}");
+
+        let fixture = parse(&args(&["run", "g1-e113-tiemass", "--master", "0x1", "--escrow-read", "8"]));
+        assert!(fixture.is_err(), "the flag was accepted on a registry root");
     }
 }

@@ -6871,8 +6871,9 @@ mod tests {
     /// -- so every fixture here exercises the SAME restoration path a resumed
     /// save does, rather than a test-only constructor that could drift from it.
     ///
-    /// **Deliberately the RUNG, not the wizard's default** (W5 task 4, where
-    /// that default became `lookahead-v1`). Every fixture below wants SOME bot
+    /// **Deliberately the RUNG, not the wizard's default** (W5 task 4 made that
+    /// default `lookahead-v1`; the 2026-08-30 ship commit made it the
+    /// production contestant `v4-step9-draft1`). Every fixture below wants SOME bot
     /// moving so a pump, a review surface, an `undo` or a lockdown can be
     /// observed; none of them is about which contestant sits there, and a
     /// search per decision would pay for a property no test here asserts. The

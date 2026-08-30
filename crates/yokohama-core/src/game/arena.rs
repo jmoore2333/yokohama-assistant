@@ -140,6 +140,12 @@
 //! other seat's.
 
 pub mod corpus;
+/// The V4 step-11 diagnosis wave's read surfaces (W-D1) — the `world` and
+/// `caprate` instruments and their help text. PUBLIC because `examples/arena`
+/// is print-only glue over them (the `driven_runner` precedent): the parse and
+/// render logic is lib-tested here, so the runner needs no test target of its
+/// own.
+pub mod diagnostic;
 pub mod stats;
 /// The contestant name grammar (Phase 3.5c W1-B). PRIVATE, deliberately: the
 /// public entry is [`Contestant::from_str_name`], so there is exactly ONE way to
@@ -148,6 +154,7 @@ pub mod stats;
 /// reason `eval`/`greedy`/`lookahead`/`mcts` are namespaced in `game/mod.rs`.)
 mod grammar;
 pub use corpus::*;
+pub use diagnostic::*;
 pub use grammar::ATOMIC_DIAG_ALIAS;
 pub use stats::*;
 
@@ -254,13 +261,26 @@ fn setup_stream_seed(seat: PlayerId, deal: &[OrderCardId; 2]) -> u64 {
 // Errors
 // ---------------------------------------------------------------------------
 
-/// Why an arena game did not produce a completed, recorded result.
+/// Why an arena game did not produce a completed, recorded result — and, for
+/// the two counting-mode arms A-S11-1 added, why a whole CELL stopped.
 ///
 /// Every variant is a HARD stop that emits nothing — spec §4's failure
 /// taxonomy. A driver error is a bug and fails the run loudly;
 /// [`CapReached`](Self::CapReached) is a DISTINGUISHED outcome that also fails
 /// an asserting cell but names its seed so the run is reproducible (uniform
 /// tails run to 5,364 of the 10,000 cap in E1's held-out cells).
+///
+/// **AMENDED at V4 step 11 by A-S11-1 (freeze doc
+/// `docs/plans/2026-08-30-phase3.5c-v4-identity-freeze.md` §9.6), and the
+/// amendment is narrower than it looks.** `CapReached` is the REFUSE mode's
+/// arm, which is what every public driver and every unflagged cell still
+/// raises. A cell run in the opt-in COUNTING mode
+/// ([`CapPolicy::Count`](stats::CapPolicy::Count)) does not raise it at all: a
+/// capped game is a typed, counted event there, and the two arms that can end
+/// such a cell — [`CappedCeilingExceeded`](Self::CappedCeilingExceeded) and
+/// [`NoReadUnits`](Self::NoReadUnits) — are INSTRUMENT GUARDS that carry the
+/// counted games with them. Every other variant still refuses a whole cell,
+/// emitting nothing, in either mode.
 ///
 /// CLASSIFICATION RULE, stated because it is not inferable: [`ArenaAgent`]'s
 /// error is an untyped `String`, so the driver cannot re-classify what an agent
@@ -283,6 +303,25 @@ pub enum ArenaError {
     /// The turn cap was hit before the game ended. Carries the seed so the run
     /// reproduces.
     CapReached { seed: WorldSeed, turns: u32 },
+    /// **Counting mode only** (V4 step 11, amendment A-S11-1; freeze doc
+    /// `docs/plans/2026-08-30-phase3.5c-v4-identity-freeze.md` §9.6 item 2): a
+    /// cell's capped games passed its registered ceiling.
+    ///
+    /// An INSTRUMENT GUARD, outcome-independent, and raised the moment the
+    /// count passes the ceiling rather than at the schedule's end — so the run
+    /// is INVALID and the rest of it is not spent. Deliberately NOT
+    /// [`CapReached`](Self::CapReached): a reader of a failed run must be able
+    /// to tell a ceiling refusal from the un-amended refuse-at-the-first-cap
+    /// rule, which a shared arm would hide. `capped` carries every capped game
+    /// so far, the (c+1)-th included.
+    CappedCeilingExceeded { ceiling: u32, capped: Vec<stats::CappedGame> },
+    /// **Counting mode only** (A-S11-1): every scheduled design unit is void,
+    /// so no unit outcome constrains θ.
+    ///
+    /// Typed rather than a report of NaNs: a number-shaped answer to a question
+    /// the data cannot answer is the one thing this module's refusals exist to
+    /// never print.
+    NoReadUnits { scheduled: u32, capped: Vec<stats::CappedGame> },
     /// Setup, observation, or application failed — always a bug here, since
     /// every input was engine-produced.
     Driver(String),
@@ -301,12 +340,58 @@ impl std::fmt::Display for ArenaError {
             Self::CapReached { seed, turns } => {
                 write!(f, "turn cap reached at turn {turns} (world seed {:#018x})", seed.0)
             }
+            Self::CappedCeilingExceeded { ceiling, capped } => write!(
+                f,
+                "capped games ({}) exceeded the registered ceiling of {ceiling}: {}",
+                capped.len(),
+                capped_roll(capped),
+            ),
+            Self::NoReadUnits { scheduled, capped } => write!(
+                f,
+                "no read units: all {scheduled} scheduled units are void ({} capped games), \
+                 so nothing constrains theta: {}",
+                capped.len(),
+                capped_roll(capped),
+            ),
             Self::Driver(message) => write!(f, "arena driver: {message}"),
         }
     }
 }
 
 impl std::error::Error for ArenaError {}
+
+/// THE spelling of one capped game's figures, shared by the two surfaces that
+/// print them as a FIGURE LIST: [`diagnostic::render_cap_rate`]'s per-world
+/// line and [`capped_roll`] below.
+///
+/// One function rather than two `format!`s that happen to agree — an operator
+/// carries such a line into `arena world`, and a second spelling free to drift
+/// from the first is a second thing a reader has to recognize.
+///
+/// **A THIRD surface names a capped game and deliberately does not use this**
+/// (review N1): [`stats::CellReport::capped_lines`] prints `capped: arena world
+/// <x> <y> <seed> --arrangement <arr> · turns=<n>`, i.e. the reproduce COMMAND
+/// with its arguments filled in, because `render_cap_rate` carries that
+/// template in a group header a per-line helper has no room for. The two shapes
+/// answer different questions — a figure list versus a command to paste — and
+/// §9.6 does not require them identical. It takes the
+/// three FIGURES rather than either surface's struct
+/// ([`stats::CappedGame`] / [`diagnostic::CappedWorld`]) because the two types
+/// are deliberately separate: one is a counted cell event, the other a
+/// cap-rate observation, and neither should have to name the other to print.
+pub(crate) fn capped_figures(seed: WorldSeed, arrangement: u8, turns: u32) -> String {
+    format!("seed={:#018x} arrangement={arrangement} turns={turns}", seed.0)
+}
+
+/// The `(seed, arrangement, turns)` roll of a counting cell's capped games,
+/// through [`capped_figures`] — the shared spelling.
+fn capped_roll(capped: &[stats::CappedGame]) -> String {
+    capped
+        .iter()
+        .map(|game| capped_figures(game.seed, game.arrangement, game.turns))
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
 
 // ---------------------------------------------------------------------------
 // The agent seam
@@ -581,10 +666,15 @@ pub fn unit_for(players: u8, seed: WorldSeed) -> UnitSpec {
 /// so it never travels back to an agent.
 ///
 /// **The arena's typed COMPLETED-game shape**, which is why emission filters on
-/// it rather than on a flag: every failure in spec §4's taxonomy — cap reached,
-/// dead end, driver bug — is an [`ArenaError`], so a game that did not complete
-/// has no `ArenaGameStats` in existence to be filed, tabulated, or observed.
+/// it rather than on a flag: a game that did not complete has no
+/// `ArenaGameStats` in existence to be filed, tabulated, or observed.
 /// "Completed games only" is therefore structural here rather than checked.
+///
+/// The ROUTE to that fact has two shapes since A-S11-1 (freeze doc §9.6), and
+/// the conclusion is the same on both: in refuse mode every failure in spec
+/// §4's taxonomy — cap reached, dead end, driver bug — is an [`ArenaError`]; in
+/// a counting cell a capped game is a typed event carrying the partial run's
+/// per-seat moves and NOTHING of this type.
 /// (Cross-reference, NOT a change: `metrics::TriggerTally::observe` takes an
 /// `Option<&EndGameTrigger>` and states the same rule in prose, so it could one
 /// day take this type instead and get the rule from the compiler. Out of scope
@@ -881,7 +971,18 @@ pub(crate) enum PlayError {
     /// An invariant broke after an applied move.
     Invariant { seat: PlayerId, reason: String },
     /// The turn guard tripped.
-    TurnCap { turns: u32 },
+    ///
+    /// `partial` is what the loop HAD when it stopped — every applied move in
+    /// play order and the state it stopped in — and is `Some` from
+    /// [`play_from_state`] alone. It exists for the V4 step-11 diagnosis wave:
+    /// the arena's public drivers drop it (in refuse mode a capped game is a
+    /// failure and emits nothing, unchanged), and
+    /// `run_arena_game_diagnostic` keeps it, because a loop nobody can look at
+    /// cannot be diagnosed — which is also how a COUNTING cell gets a capped
+    /// game's per-seat move split since A-S11-1 (freeze doc §9.6). A rooted turn-driver has no
+    /// from-setup outcome to hand back and passes `None`, which is why the field
+    /// is an `Option` rather than a promise this error cannot keep.
+    TurnCap { turns: u32, partial: Option<Box<PlayOutcome>> },
     /// The decision guard tripped — only reachable when a caller SETS one
     /// ([`PlayLimits::max_decisions`]); the arena passes `None`.
     DecisionCap { decisions: u64 },
@@ -905,7 +1006,10 @@ pub(crate) struct PlayLimits {
 /// as one).
 #[derive(Debug)]
 pub(crate) struct PlayOutcome {
-    /// The state the loop stopped in — terminal by construction on `Ok`.
+    /// The state the loop stopped in — terminal by construction on `Ok`, and
+    /// merely the state the turn guard tripped in when this value rides out
+    /// inside [`PlayError::TurnCap`]'s `partial` (which is the ONLY non-`Ok`
+    /// route it takes).
     pub(crate) final_state: GameState,
     /// Every applied move with its MOVER, in play order. The mover is
     /// `state.current_player` read BEFORE the apply.
@@ -953,7 +1057,22 @@ pub(crate) fn play_from_state(
             });
         }
         if state.turn_number > limits.max_turns {
-            return Err(PlayError::TurnCap { turns: state.turn_number });
+            // The partial run rides OUT with the refusal (V4 step-11). Nothing
+            // downstream of the public drivers reads it — they map this arm to
+            // `ArenaError::CapReached` exactly as before — so the arena's
+            // behaviour is unmoved; the diagnostic driver is the one caller that
+            // looks.
+            let turns = state.turn_number;
+            return Err(PlayError::TurnCap {
+                turns,
+                partial: Some(Box::new(PlayOutcome {
+                    final_state: state,
+                    applied,
+                    moves_by_seat,
+                    volumes,
+                    coverage,
+                })),
+            });
         }
         // The decision guard, checked BEFORE the decision it would be the
         // (max+1)-th of, so the refusal names the bound the caller set rather
@@ -1053,7 +1172,12 @@ fn arena_error(seed: WorldSeed, error: PlayError) -> ArenaError {
             "invariant violated after seat {}'s move: {reason}",
             seat.0
         )),
-        PlayError::TurnCap { turns } => ArenaError::CapReached { seed, turns },
+        // The partial run is DROPPED here, deliberately: `ArenaError` is the
+        // public drivers' taxonomy and, in REFUSE mode, a capped game is a
+        // failure that emits nothing. `drive_capturing` is the one caller that
+        // reads it instead — and a COUNTING cell reaches this loop through
+        // that caller, so it never passes here (A-S11-1, freeze doc §9.6).
+        PlayError::TurnCap { turns, .. } => ArenaError::CapReached { seed, turns },
         // Unreachable from here BY CONSTRUCTION — `drive` passes
         // `max_decisions: None`, which is what makes the split behaviour-inert
         // for the arena. Mapped rather than `unreachable!()` because a panic in
@@ -1065,15 +1189,23 @@ fn arena_error(seed: WorldSeed, error: PlayError) -> ArenaError {
     }
 }
 
-/// The shared loop: setup choices, then validate/apply/record per decision.
-fn drive(
+/// The setup half of [`drive`], factored so the diagnostic driver enters the
+/// SAME setup rather than a second transcription of it (V4 step-11 W-D1).
+///
+/// Everything up to and including `finalize_setup`: the keep choices, the
+/// record with its seat provenance, and the post-setup state to play from.
+struct DriveStart {
+    players: u8,
+    record: GameRecord,
+    start: GameState,
+}
+
+fn drive_setup(
     seed: WorldSeed,
     rules: &Rules,
     pending: PendingSetup,
     bench: &mut dyn SeatBench,
-    invariants: bool,
-    max_turns: u32,
-) -> Result<ArenaGameStats, ArenaError> {
+) -> Result<DriveStart, ArenaError> {
     let players = pending.state.players.len() as u8;
     // From `pending.state`, not the caller's config: `new_game` stamps
     // `setup_seed` into it, so `record.config.setup_seed == record.seed` holds
@@ -1105,6 +1237,55 @@ fn drive(
     let start = finalize_setup(pending, &choices)
         .map_err(|e| ArenaError::Driver(format!("finalize_setup failed: {e}")))?;
 
+    Ok(DriveStart { players, record, start })
+}
+
+/// The COMPLETED half of [`drive`]'s tail: fold the applied moves into the
+/// record, stamp the terminal digest, and tabulate. Factored for `drive_setup`'s
+/// reason — one transcription, two callers.
+fn finish_game(
+    seed: WorldSeed,
+    players: u8,
+    mut record: GameRecord,
+    outcome: PlayOutcome,
+    rules: &Rules,
+) -> ArenaGameStats {
+    let PlayOutcome { final_state, applied, moves_by_seat, volumes, coverage } = outcome;
+    let moves_applied = applied.len() as u64;
+    // The record is stamped HERE rather than inside the loop, because a record is
+    // the from-setup driver's artifact and a rooted run must never produce one
+    // (design §3). `push_move` is a pure append and the log is not read during
+    // play, so appending in play order after the fact is the same record.
+    for (_mover, mv) in applied {
+        record.push_move(mv);
+    }
+    record.stamp_terminal_digest(&final_state);
+
+    ArenaGameStats {
+        seed,
+        players,
+        turns: final_state.turn_number,
+        moves_applied,
+        moves_by_seat,
+        result: final_result(&final_state, rules),
+        trigger: final_state.trigger_reason,
+        volumes,
+        coverage,
+        record,
+    }
+}
+
+/// The shared loop: setup choices, then validate/apply/record per decision.
+fn drive(
+    seed: WorldSeed,
+    rules: &Rules,
+    pending: PendingSetup,
+    bench: &mut dyn SeatBench,
+    invariants: bool,
+    max_turns: u32,
+) -> Result<ArenaGameStats, ArenaError> {
+    let DriveStart { players, record, start } = drive_setup(seed, rules, pending, bench)?;
+
     // THE SHARED HALF (Phase 3.5c Phase-B T1). Everything from the incoming-state
     // guard to the terminal check lives in `play_from_state`, which a ROOTED run
     // drives too — so the two cannot drift in what they consider a legal,
@@ -1119,29 +1300,196 @@ fn drive(
     )
     .map_err(|e| arena_error(seed, e))?;
 
-    let PlayOutcome { final_state, applied, moves_by_seat, volumes, coverage } = outcome;
-    let moves_applied = applied.len() as u64;
-    // The record is stamped HERE rather than inside the loop, because a record is
-    // the from-setup driver's artifact and a rooted run must never produce one
-    // (design §3). `push_move` is a pure append and the log is not read during
-    // play, so appending in play order after the fact is the same record.
-    for (_mover, mv) in applied {
-        record.push_move(mv);
-    }
-    record.stamp_terminal_digest(&final_state);
+    Ok(finish_game(seed, players, record, outcome, rules))
+}
 
-    Ok(ArenaGameStats {
+// ---------------------------------------------------------------------------
+// The DIAGNOSTIC driver (V4 step-11 diagnosis wave, W-D1 surface A)
+// ---------------------------------------------------------------------------
+
+/// How a DIAGNOSTIC run of one arena game ended.
+///
+/// The contrast with [`ArenaGameStats`]'s doc is the whole point of this type:
+/// there, "completed" is STRUCTURAL because every non-completion is an
+/// [`ArenaError`] and a failed game has no stats in existence. That rule is what
+/// keeps a corpus honest, and it is unchanged — [`run_arena_game`] still refuses
+/// a capped game and emits nothing, and so does an unflagged cell. It also
+/// means a capped game leaves NO
+/// evidence, so the V4 step-11 field's `cell failed: turn cap reached at turn
+/// 10001` could name a world and nothing about what the world was doing.
+///
+/// This enum is the diagnosis-only exception, and it says so in its shape: a
+/// [`Capped`](Self::Capped) game is a DIFFERENT variant carrying a DIFFERENT
+/// payload, so no caller can mistake a partial run for a completed one and no
+/// [`ArenaGameStats`] — the type every tabulator in `arena::stats` takes — is
+/// ever built from one.
+///
+/// **WHAT THAT DOES AND DOES NOT BUY, stated precisely (W-D1 review), because
+/// the obvious stronger reading is false.** The variant split protects the
+/// TABULATORS, which take `ArenaGameStats`. It does NOT protect the corpus by
+/// typing: [`corpus::emit_record`] takes a `&GameRecord`, and a capped game's
+/// partial record is a perfectly ordinary `GameRecord` that could be handed to
+/// it. Nor does the missing terminal digest make such a record self-refusing:
+/// `replay_strict` SKIPS its terminal check when a record carries no digest
+/// (`record.rs`, `if let Some(expected_digest)`), so a partial record replays
+/// strict-clean. **The real protection is a CODE-PATH fact, not a type fact —
+/// no path in `arena::diagnostic` or in `examples/arena`'s two diagnostic
+/// subcommands calls `emit_record` at all** — and a future caller that wanted to
+/// file one of these would have to write that call itself, deliberately.
+#[derive(Debug)]
+pub enum DiagnosticOutcome {
+    /// The game reached a terminal state. Byte-for-byte the game
+    /// [`run_arena_game`] plays at the same world and bench.
+    Terminated(Box<ArenaGameStats>),
+    /// The turn guard tripped. `turns` is the turn number the guard read (one
+    /// past the limit), `record` carries every applied move in play order and
+    /// nothing else, `state` is the state the guard tripped in, and
+    /// `moves_by_seat` is the per-seat split.
+    ///
+    /// **The record carries NO terminal digest**, deliberately: the state is not
+    /// terminal, so there is no terminal digest to honestly stamp — a digest
+    /// here would ASSERT a claim about a game that has not ended. It does not
+    /// follow that the digest-less record is thereby rejected anywhere:
+    /// `replay_strict` skips its terminal check when there is no digest to check
+    /// against (see this enum's doc). What is true is narrower and is what the
+    /// wave relies on — lenient [`replay`](crate::game::record::replay)
+    /// reproduces `state` exactly, the property
+    /// `the_diagnostic_driver_surfaces_the_partial_record_and_state_on_a_cap`
+    /// pins and `diagnostic::render_world` re-checks on every report.
+    ///
+    /// Both payloads are BOXED, matching [`Terminated`](Self::Terminated)'s
+    /// indirection: a `GameRecord` of a capped game holds tens of thousands of
+    /// events, and an unboxed variant would make every `DiagnosticGame` that
+    /// size (`clippy::large_enum_variant`).
+    Capped {
+        turns: u32,
+        record: Box<GameRecord>,
+        state: Box<GameState>,
+        moves_by_seat: Vec<u64>,
+    },
+}
+
+/// One DIAGNOSTIC game: the world it was played at, its player count, and how
+/// it ended.
+#[derive(Debug)]
+pub struct DiagnosticGame {
+    pub seed: WorldSeed,
+    pub players: u8,
+    pub outcome: DiagnosticOutcome,
+}
+
+/// [`run_arena_game`] that KEEPS what a capped game had instead of dropping it.
+///
+/// Identical play: same setup half, same shared loop, same validation, same
+/// keying — a terminating world produces the same moves, the same terminal
+/// digest and the same stats. The ONLY difference is at the turn guard, where
+/// this returns [`DiagnosticOutcome::Capped`] rather than
+/// [`ArenaError::CapReached`].
+///
+/// **It does not replace either public driver.** An unflagged cell refuses at
+/// the first capped game by design (a skipped game would read as a different
+/// N); that rule is what keeps every recorded figure honest and is untouched.
+///
+/// **AMENDED by A-S11-1 (freeze doc §9.6): it IS how a cell runs in the opt-in
+/// COUNTING mode.** `stats::run_cell_loop` plays every game of a
+/// [`CapPolicy::Count`](stats::CapPolicy::Count) cell through this driver,
+/// because it is the only one that hands a capped game's partial run back
+/// instead of dropping it — the same setup half, the same shared loop and the
+/// same keying, which is what makes a counted game reproduce here. In refuse
+/// mode the cell still calls [`run_arena_game_capped`] and this driver is not
+/// on its path at all. Its other use is unchanged: the V4 step-11 diagnosis
+/// wave reproduces one world and looks at the loop.
+pub fn run_arena_game_diagnostic(
+    seed: WorldSeed,
+    players: u8,
+    rules: &Rules,
+    make_agent: &mut dyn FnMut(PlayerId, u8) -> Box<dyn ArenaAgent>,
+    invariants: bool,
+) -> Result<DiagnosticGame, ArenaError> {
+    run_arena_game_diagnostic_capped(
         seed,
         players,
-        turns: final_state.turn_number,
-        moves_applied,
-        moves_by_seat,
-        result: final_result(&final_state, rules),
-        trigger: final_state.trigger_reason,
-        volumes,
-        coverage,
-        record,
-    })
+        rules,
+        make_agent,
+        invariants,
+        HONEST_MAX_TURNS,
+    )
+}
+
+/// [`run_arena_game_diagnostic`] with the non-termination guard as a parameter —
+/// [`run_arena_game_capped`]'s reason exactly: a test must reach the cap arm in
+/// milliseconds instead of playing 10,000 no-op turns.
+pub fn run_arena_game_diagnostic_capped(
+    seed: WorldSeed,
+    players: u8,
+    rules: &Rules,
+    make_agent: &mut dyn FnMut(PlayerId, u8) -> Box<dyn ArenaAgent>,
+    invariants: bool,
+    max_turns: u32,
+) -> Result<DiagnosticGame, ArenaError> {
+    require_supported_player_count(players)?;
+    let pending = new_game(GameConfig::for_player_count(players), rules, seed.0)
+        .map_err(|e| ArenaError::Driver(format!("new_game failed ({players}P): {e}")))?;
+
+    // The factory runs HERE — after `new_game`, before anything else — and sees
+    // only (seat, player_count). The honesty rule `run_arena_game_capped` states
+    // is not relaxed for a diagnostic.
+    let agents: Vec<Box<dyn ArenaAgent>> =
+        (0..players).map(|i| make_agent(PlayerId(i), players)).collect();
+
+    let mut bench = AgentBench::new(agents);
+    drive_capturing(seed, rules, pending, &mut bench, invariants, max_turns)
+}
+
+/// [`drive`], with the turn cap read as an OUTCOME instead of an error.
+fn drive_capturing(
+    seed: WorldSeed,
+    rules: &Rules,
+    pending: PendingSetup,
+    bench: &mut dyn SeatBench,
+    invariants: bool,
+    max_turns: u32,
+) -> Result<DiagnosticGame, ArenaError> {
+    let DriveStart { players, mut record, start } = drive_setup(seed, rules, pending, bench)?;
+
+    match play_from_state(
+        &start,
+        rules,
+        bench,
+        PlayLimits { max_turns, max_decisions: None },
+        invariants,
+    ) {
+        Ok(outcome) => Ok(DiagnosticGame {
+            seed,
+            players,
+            outcome: DiagnosticOutcome::Terminated(Box::new(finish_game(
+                seed, players, record, outcome, rules,
+            ))),
+        }),
+        Err(PlayError::TurnCap { turns, partial: Some(partial) }) => {
+            let PlayOutcome { final_state, applied, moves_by_seat, .. } = *partial;
+            for (_mover, mv) in applied {
+                record.push_move(mv);
+            }
+            // NO `stamp_terminal_digest`: see `DiagnosticOutcome::Capped`.
+            Ok(DiagnosticGame {
+                seed,
+                players,
+                outcome: DiagnosticOutcome::Capped {
+                    turns,
+                    record: Box::new(record),
+                    state: Box::new(final_state),
+                    moves_by_seat,
+                },
+            })
+        }
+        // `play_from_state` always attaches the partial (it is the only
+        // constructor of this arm that has one to attach). A `None` here would
+        // mean the loop refused a cap without the run behind it, which this
+        // driver cannot honestly present as a diagnosis — so it reports the
+        // ordinary cap failure rather than inventing an empty one.
+        Err(e) => Err(arena_error(seed, e)),
+    }
 }
 
 #[cfg(test)]
@@ -1149,6 +1497,7 @@ mod tests {
     use super::*;
     use crate::game::policy::POLICY_IMPL_VERSION;
     use crate::game::record::{replay, replay_strict, RUN_PROVENANCE_SCHEMA};
+    use crate::game::semantics::state_digest;
     use crate::game::seeds::SeedSchedule;
     use crate::game::semantics::SEMANTICS_REV;
     use crate::types::TurnPhase;
@@ -1643,6 +1992,97 @@ mod tests {
             other => panic!("expected CapReached, got {other:?}"),
         }
         assert_eq!(HONEST_MAX_TURNS, 10_000, "the shared termination guard moved");
+    }
+
+    /// **W-D1 (A), the diagnostic driver's cap path.** The arena's public driver
+    /// DROPS the partial record and the state it capped in: a capped cell can
+    /// therefore report games-until-first-hit and nothing about what the game
+    /// was doing. This is the surface that keeps them, and these are its two
+    /// honesty pins — the record carries every applied move and nothing else,
+    /// and replaying it from setup reproduces the state handed back.
+    #[test]
+    fn the_diagnostic_driver_surfaces_the_partial_record_and_state_on_a_cap() {
+        let rules = Rules::standard();
+        let seed = world(7);
+        let seating = unit_for(2, seed).seatings[0].clone();
+        let mut make = uniform_bench(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT, seed, seating);
+        // The cap is a parameter for the same reason `cap_reached_is_distinguished`
+        // takes one: reaching this arm must cost milliseconds, not 10,000 turns.
+        let game = run_arena_game_diagnostic_capped(seed, 2, &rules, &mut make, false, 20)
+            .expect("a cap is an OUTCOME for the diagnostic driver, never an error");
+        assert_eq!(game.seed, seed);
+        assert_eq!(game.players, 2);
+        let DiagnosticOutcome::Capped { turns, record, state, moves_by_seat } = game.outcome else {
+            panic!("a 20-turn cap cannot contain a full 2P game");
+        };
+        assert!(turns > 20, "the cap fires past the limit, got turn {turns}");
+        assert_eq!(
+            record.events.len() as u64,
+            moves_by_seat.iter().sum::<u64>(),
+            "the partial record must carry EVERY applied move and nothing else",
+        );
+        assert!(
+            record.terminal_digest.is_none(),
+            "a capped game is NOT terminal — stamping a terminal digest would let a partial \
+             record masquerade as a completed one",
+        );
+        let replayed = replay(&record, &rules).expect("the partial record replays from setup");
+        assert_eq!(
+            state_digest(&replayed),
+            state_digest(&state),
+            "the returned state must be the one the returned record folds to",
+        );
+    }
+
+    /// **W-D1 (A), the diagnostic driver's terminating path IS the same game.**
+    /// A separate driver that played a different game would make every tail read
+    /// taken off it a read of something else.
+    #[test]
+    fn the_diagnostic_driver_plays_the_same_game_as_the_public_driver() {
+        let rules = Rules::standard();
+        let seed = world(3);
+        let seating = unit_for(2, seed).seatings[0].clone();
+        let mut public_make =
+            uniform_bench(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT, seed, seating.clone());
+        let public = run_arena_game(seed, 2, &rules, &mut public_make, false)
+            .expect("the rung plays this world to a trigger");
+        let mut diag_make = uniform_bench(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT, seed, seating);
+        let game = run_arena_game_diagnostic(seed, 2, &rules, &mut diag_make, false)
+            .expect("the diagnostic driver plays the same world");
+        let DiagnosticOutcome::Terminated(stats) = game.outcome else {
+            panic!("this world terminates under the public driver, so it must here too");
+        };
+        assert_eq!(stats.turns, public.turns, "turns");
+        assert_eq!(stats.moves_by_seat, public.moves_by_seat, "moves per seat");
+        assert_eq!(stats.trigger, public.trigger, "end trigger");
+        assert_eq!(stats.record.events, public.record.events, "the applied move sequence");
+        assert_eq!(
+            stats.record.terminal_digest, public.record.terminal_digest,
+            "the terminal-state digest",
+        );
+    }
+
+    /// **W-D1's byte-inertness pin on the PUBLIC driver.** The diagnostic
+    /// variant exists BESIDE `run_arena_game`, never inside its answer: a cap
+    /// stays an `ArenaError::CapReached` whose message is the one every cell,
+    /// artifact and ledger row already quotes.
+    #[test]
+    fn the_public_drivers_cap_error_text_is_unmoved_by_the_diagnostic_variant() {
+        let rules = Rules::standard();
+        let seed = world(7);
+        let seating = unit_for(2, seed).seatings[0].clone();
+        let mut make = uniform_bench(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT, seed, seating);
+        let err = run_arena_game_capped(seed, 2, &rules, &mut make, false, 2)
+            .expect_err("a 2-turn cap cannot contain a full game");
+        let ArenaError::CapReached { seed: reported, turns } = err else {
+            panic!("expected CapReached, got {err:?}");
+        };
+        assert_eq!(reported, seed);
+        assert_eq!(
+            ArenaError::CapReached { seed, turns }.to_string(),
+            format!("turn cap reached at turn {turns} (world seed {:#018x})", seed.0),
+            "the operator-facing cap message is what the V4 step-11 record quotes verbatim",
+        );
     }
 
     #[test]

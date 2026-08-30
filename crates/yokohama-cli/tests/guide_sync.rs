@@ -21,9 +21,9 @@
 use yokohama_cli::repl::{Repl, HELP_TEXT};
 use yokohama_cli::session::Session;
 use yokohama_cli::style::glyph;
-use yokohama_cli::suggest::{NONZERO_SUMMARY_TAIL, RUNNER_UPS_LABEL, TABLE_HEADINGS, TOTAL_LABEL};
+use yokohama_cli::suggest::{HONESTY_NOTE, NONZERO_SUMMARY_TAIL, RUNNER_UPS_LABEL, TABLE_HEADINGS, TOTAL_LABEL};
 use yokohama_cli::{render, screen, suggest};
-use yokohama_core::{eval, greedy, lookahead, GameConfig, Rules, StartingOrderChoice};
+use yokohama_core::{eval, Contestant, GameConfig, NamedIdentity, Rules, StartingOrderChoice};
 
 const GUIDE_MD: &str = include_str!("../../../docs/cli-guide.md");
 const GUIDE_HTML: &str = include_str!("../../../docs/cli-guide.html");
@@ -337,14 +337,18 @@ const SUGGEST_BLOCK_OPENING: &str = "─ Suggest ";
 fn the_captured_suggest_screen_matches_the_renderers_own_strings() {
     let (md, html) = captured_block_starting_with(SUGGEST_BLOCK_OPENING);
 
-    // The knob line, DERIVED from the same consts `render_suggestion` reads, so
-    // a rung/version/default change forces the capture to be retaken.
+    // The identity line, DERIVED from the same values `render_suggestion` reads,
+    // so a contestant/version/default change forces the capture to be retaken.
+    // The NAME comes off the production contestant's own descriptor and the
+    // three knobs off `NamedIdentity::KNOBS` — the 2026-08-30 ship commit moved
+    // both from the bare `lookahead-v1` consts, and a needle left on the old
+    // ones would have gone on passing a capture of a seat nothing plays.
     let knobs = format!(
         " · {} · beam {}, K={}, M={}, evaluator impl {} · stream ",
-        lookahead::LOOKAHEAD_CONTROLLER,
-        lookahead::DEFAULT_BEAM,
-        lookahead::DEFAULT_WORLDS,
-        greedy::DEFAULT_RETREAT_SAMPLES,
+        Contestant::PRODUCTION.descriptor().0,
+        NamedIdentity::KNOBS.beam,
+        NamedIdentity::KNOBS.worlds,
+        NamedIdentity::KNOBS.retreat_samples,
         eval::EVAL_IMPL_VERSION,
     );
     // The table header row at its real column widths: this is the one line in
@@ -360,6 +364,9 @@ fn the_captured_suggest_screen_matches_the_renderers_own_strings() {
             ("the explanation table's total row", total),
             ("the runner-up heading", RUNNER_UPS_LABEL),
             ("the nonzero-product summary", NONZERO_SUMMARY_TAIL),
+            ("the honesty note, line 1", HONESTY_NOTE[0]),
+            ("the honesty note, line 2", HONESTY_NOTE[1]),
+            ("the honesty note, line 3", HONESTY_NOTE[2]),
         ] {
             assert!(
                 block.contains(needle),

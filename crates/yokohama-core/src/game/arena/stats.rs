@@ -67,9 +67,11 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 use super::{
-    agent_stream_seed, mix, run_arena_game, unit_for, ArenaAgent, ArenaError, ArenaGameStats,
-    ControllerProvenance, DecisionReport, PolicyAgent, Slot,
+    agent_stream_seed, mix, run_arena_game_capped, run_arena_game_diagnostic_capped, unit_for,
+    ArenaAgent, ArenaError, ArenaGameStats, ControllerProvenance, DecisionReport,
+    DiagnosticOutcome, PolicyAgent, Slot,
 };
+use crate::game::agent::HONEST_MAX_TURNS;
 use crate::game::eval::WeightTable;
 use crate::game::greedy::{self, ExplanationTally, GreedyAgent, DEFAULT_RETREAT_SAMPLES};
 use crate::game::lookahead::{
@@ -82,8 +84,8 @@ use crate::game::mcts::{
 use crate::game::metrics::{nearest_rank_index, wilson_95, TriggerTally, Z_95};
 use crate::game::policy::RolloutPolicy;
 use crate::game::rules::Rules;
-use crate::game::seeds::SeedSchedule;
-use crate::types::{OrderCardId, PlayerId, PlayerView};
+use crate::game::seeds::{SeedSchedule, WorldSeed};
+use crate::types::{EndGameTrigger, OrderCardId, PlayerId, PlayerView};
 
 /// Domain salt for the bootstrap resample stream.
 pub(crate) const SALT_BOOTSTRAP: u64 = 0xA3E1_B007_0000_0004;
@@ -91,7 +93,12 @@ pub(crate) const SALT_BOOTSTRAP: u64 = 0xA3E1_B007_0000_0004;
 /// The contestant under test. Every other slot in the unit is Y — the
 /// single-champion shape [`unit_for`]'s rotations are built for, and the reason
 /// the null value is `1/players` rather than 0.5.
-const X_SLOT: Slot = Slot(0);
+///
+/// `pub(crate)` since the V4 step-11 diagnosis wave: `arena::diagnostic` seats
+/// one world EXACTLY as a cell seats it, and re-typing `Slot(0)` there would be
+/// a second spelling of the rule deciding which contestant is X — free to drift
+/// from this one, and a drift no test would name.
+pub(crate) const X_SLOT: Slot = Slot(0);
 
 /// Bootstrap replicates for the primary interval (spec §4: B = 10,000).
 pub const BOOTSTRAP_REPLICATES: u32 = 10_000;
@@ -175,6 +182,133 @@ pub enum Contestant {
     /// scale`, so all three are cell parameters. There is deliberately no weight
     /// knob (spec §0.5).
     MctsV1 { cap: Option<u32>, c_ppm: u32, scale: i64, m: u8, leaf: LeafRule },
+    /// **A NAMED EVALUATOR IDENTITY** (V4 §7 step 8, spec §13's step-8
+    /// blast-radius addition): a [`LookaheadAgent`] seat at the shipped knobs
+    /// whose WEIGHT TABLE is named rather than hardwired, so the §11 arms are
+    /// runnable identities rather than names. See [`NamedIdentity`].
+    NamedTable(NamedIdentity),
+}
+
+/// The named weight-table identities the arena can seat — spec §13's
+/// explicit-table surface, as NAMES rather than raw weight dumps.
+///
+/// **Why a distinct contestant rather than a weight KNOB on `lookahead-v1`.**
+/// This type's own enclosing doc states the house rule: "a weight change is a
+/// version bump (spec §0.5 / L12), not a cell parameter". A `weights=` knob on
+/// the shipped arm would break that rule outright; a distinct NAMED contestant
+/// does not — it is a new identity, which is exactly the thing §13 sanctioned
+/// adding. The `weights=<identity>` token still rides the params map, so the
+/// echo carries both halves: the name a reader types and the digest of the
+/// thirty-four numbers it resolved to.
+///
+/// **Knobless, deliberately** — `eval_screen`'s stated rule for the same job
+/// ("`ScreenRung` has no knob fields: each variant runs its controller's
+/// SHIPPED knobs … The screen's subject is the WEIGHTS; a knob that moved in
+/// the same cell would confound the only thing it measures"). Both arms
+/// therefore run ONE knob set, and a cell pitting them against each other
+/// varies the table alone.
+///
+/// **The knob literals are TRANSCRIBED, not tracked** —
+/// [`build_pinned_v2_seat`](crate::game::driven)'s discipline, adopted for its
+/// reason: an arm is an IDENTITY, and a later move of the shipped default must
+/// not silently re-point figures already recorded against these names.
+/// `the_named_identity_arms_transcribe_todays_shipped_knobs` states the
+/// present equality as a transcription fact and is DELETED (never edited) in
+/// the commit that legitimately moves the default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NamedIdentity {
+    /// [`WeightTable::V2`] — THE shipped table, named. Post-padding this is
+    /// spec §10's `V2-padded`, so this arm's play is the shipped seat's play
+    /// and `the_named_identity_arms_walk_their_own_tables` holds it there.
+    V2Padded,
+    /// [`WeightTable::V2_REFIT_PADDED`] — the §8 B-cell refit (the sixteen
+    /// incumbents refit with no candidate columns admitted). NOT a shipped
+    /// table; that const's doc carries the provenance and the never-move rule.
+    V2RefitPadded,
+    /// [`WeightTable::V4_STEP9_DRAFT1`] — the V4 step-9 CANDIDATE, draft 1's
+    /// table: the first arm here whose candidate slots are nonzero, which is
+    /// the whole of what the sighted evaluator is. NOT a shipped table; that
+    /// const's doc carries the provenance, the never-move rule, and the note
+    /// that this WIRE NAME is proposed rather than spec-registered.
+    V4Step9Draft1,
+}
+
+/// The shipped lookahead knobs every named arm runs, TRANSCRIBED (see
+/// [`NamedIdentity`]): beam 4, one sampled world, eight retreat samples, no cap.
+const NAMED_IDENTITY_BEAM: u16 = 4;
+const NAMED_IDENTITY_WORLDS: u8 = 1;
+const NAMED_IDENTITY_RETREAT_SAMPLES: u8 = 8;
+
+/// The knobs a [`NamedIdentity`] seat is built at, as a NAMED record rather
+/// than three positional numbers.
+///
+/// `worlds` and `retreat_samples` are adjacent `u8`s, so a transposed tuple
+/// compiles clean and mislabels every seat downstream — a hazard
+/// `driven::mirror_build` names in as many words about the shipped arm's knob
+/// ORDER. Since the 2026-08-30 ship commit the production contestant IS a named
+/// identity, so that mirror and the CLI's production seat both have to read
+/// these three numbers; this type is how they read them instead of retyping
+/// them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NamedIdentityKnobs {
+    /// The S1 turn-boundary beam.
+    pub beam: u16,
+    /// Sampled worlds per decision.
+    pub worlds: u8,
+    /// Retreat samples per decision.
+    pub retreat_samples: u8,
+}
+
+impl NamedIdentity {
+    /// Every named identity, for a grammar or a test that must cover them all.
+    pub const ALL: [Self; 3] =
+        [Self::V2Padded, Self::V2RefitPadded, Self::V4Step9Draft1];
+
+    /// The shipped lookahead knobs EVERY named arm runs — the three transcribed
+    /// literals above, readable from outside this module.
+    ///
+    /// An associated const rather than a method because knobless is the design
+    /// ([`NamedIdentity`]'s own doc): the knobs are a property of the SURFACE,
+    /// not of an arm, and a per-arm accessor would invite a per-arm answer. It
+    /// re-exports the same three consts [`Contestant::build`] and
+    /// [`Contestant::provenance`] read, so the consumers outside this file that
+    /// the ship commit created — `driven::mirror_build` and the CLI's
+    /// production seat — construct from ONE spelling of `(4, 1, 8)` rather than
+    /// from a fourth transcription of it.
+    pub const KNOBS: NamedIdentityKnobs = NamedIdentityKnobs {
+        beam: NAMED_IDENTITY_BEAM,
+        worlds: NAMED_IDENTITY_WORLDS,
+        retreat_samples: NAMED_IDENTITY_RETREAT_SAMPLES,
+    };
+
+    /// The WIRE name — what a runner accepts and an echo carries. Read from
+    /// here at every site, so the grammar and provenance cannot drift into two
+    /// spellings (`greedy::GREEDY_CONTROLLER`'s rule for the shipped arms).
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::V2Padded => "v2-padded",
+            Self::V2RefitPadded => "v2-refit-padded",
+            Self::V4Step9Draft1 => "v4-step9-draft1",
+        }
+    }
+
+    /// The thirty-four numbers this name resolves to — the ONE site that
+    /// decides an arm's table, so `build` and `provenance` cannot disagree
+    /// about what a seat played.
+    pub fn table(self) -> WeightTable {
+        match self {
+            Self::V2Padded => WeightTable::V2,
+            Self::V2RefitPadded => WeightTable::V2_REFIT_PADDED,
+            Self::V4Step9Draft1 => WeightTable::V4_STEP9_DRAFT1,
+        }
+    }
+
+    /// The name's inverse — `None` for anything else, [`RolloutPolicy::from_str_name`]'s
+    /// shape because an arm name either is or is not one of two literals and
+    /// the caller composes its own refusal around that.
+    pub fn from_str_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|arm| arm.name() == name)
+    }
 }
 
 /// How a contestant resolves its dealt starting-order pair — the property spec
@@ -345,6 +479,18 @@ impl BudgetMeters {
     }
 }
 
+/// `name@vN` / `name@vN{k=v,…}` — THE one echo composition, shared by
+/// [`Contestant::echo`] and the driven generating-ecology's pinned seat (V4
+/// step 8), so a pinned construction's recorded echo and a contestant's cannot
+/// drift into two spellings of the same identity.
+pub(crate) fn compose_echo(name: &str, version: u32, params: &BTreeMap<String, i64>) -> String {
+    if params.is_empty() {
+        return format!("{name}@v{version}");
+    }
+    let knobs: Vec<String> = params.iter().map(|(k, v)| format!("{k}={v}")).collect();
+    format!("{name}@v{version}{{{}}}", knobs.join(","))
+}
+
 impl Contestant {
     /// Greedy-v1 at its shipped knob.
     pub const GREEDY_V1_DEFAULT: Self = Self::GreedyV1 { m: DEFAULT_RETREAT_SAMPLES };
@@ -366,6 +512,50 @@ impl Contestant {
         m: DEFAULT_RETREAT_SAMPLES,
         leaf: LeafRule::HandOff,
     };
+
+    /// **THE SHIPPED PRODUCTION CONTESTANT** — the V4 sighted-evaluator
+    /// identity, confirmed on-policy on 2026-08-30 and shipped AS ITSELF.
+    ///
+    /// Its echo is the identity freeze's §1 block verbatim
+    /// (`docs/plans/2026-08-30-phase3.5c-v4-identity-freeze.md`):
+    /// `v4-step9-draft1@v2{b=4,eval_impl=3,k=1,m=8,weights=6957643967275421640}`.
+    /// The field that cleared it read θ̂ 0.691 [0.667, 0.715] against
+    /// `v2-padded` over 647 read 2P units (that document's §9.9); shipping was
+    /// conditioned on the escrow regression re-read, which is the close doc's
+    /// §2 and not this const's business.
+    ///
+    /// **An EXPLICIT identity, never a `*_DEFAULT`.** Amendment D1
+    /// (`docs/plans/2026-08-11-phase3.5c-scoping-amendment.md`): "the final
+    /// contestant IS the exact `contestant_echo` string (name, controller
+    /// version, b/k/m, eval_impl, weight-table digest, cap-token presence) …
+    /// Every component is identity". The knobs here are the transcribed
+    /// literals inside [`NamedIdentity`], so a later move of
+    /// [`LOOKAHEAD_V1_DEFAULT`](Self::LOOKAHEAD_V1_DEFAULT) cannot re-point what
+    /// this name means — which is the whole reason the shipped seat is a named
+    /// table rather than a shared default.
+    ///
+    /// **Re-pointing this const is a PER-SHIP COMMIT, and it moves four
+    /// bindings or none**: this const, the CLI's `bot::PROVISIONAL_DEFAULT_BOT`
+    /// (and with it `suggest`'s construction, which goes through the same
+    /// function), `driven::ReplyPolicy::LookaheadAtFinal`, and
+    /// `driven_runner::DEFAULT_SEAT` — so the seat you play against, the seat
+    /// that advises you and the seat a rooted question is measured against
+    /// cannot drift apart. That instruction is not this commit's invention: it
+    /// was written into `bot.rs` at W5 and into `driven.rs` at Phase C, against
+    /// the day it would be discharged.
+    ///
+    /// **`lookahead-v1` and `greedy-v1` are GRANDFATHERED byte-identically at
+    /// [`WeightTable::V2`]** — no controller version const moves and no shipped
+    /// constructor's table moves, so every figure ever recorded against those
+    /// names stays comparable forward, and `SEMANTICS_REV` is untouched (a
+    /// weight table is a per-controller identity, not a rules change). The
+    /// 2026-08-10 v2 precedent — move every shipped constructor's table and
+    /// bump all four controller consts (L12) — is deliberately NOT followed
+    /// here, and the reason is stated so nobody re-derives it: it would re-name
+    /// the confirmed identity `lookahead-v1@v3{…}`, a DIFFERENT contestant by
+    /// D1's tuple, and it would move `greedy-v1`, `lookahead-atomic-diag-v1`
+    /// and `mcts-v1` onto a table no field confirmed for them.
+    pub const PRODUCTION: Self = Self::NamedTable(NamedIdentity::V4Step9Draft1);
 
     /// Parse a contestant SPEC — `<name>` or `<name>:<key>=<value>,…` — into the
     /// contestant it names. **THE single-sourced grammar** (Phase 3.5c W1-B):
@@ -497,14 +687,45 @@ impl Contestant {
             });
         }
 
+        // A named identity's descriptor emits the LOOKAHEAD knob keys under the
+        // ARM's name, so the inverse reads them back and CHECKS them rather
+        // than defaulting: the knobs are transcribed literals, not knobs a
+        // record may vary, so a record naming this arm at other knobs did not
+        // come from this arm and must not be silently resumed as if it had.
+        if let Some(arm) = NamedIdentity::from_str_name(name) {
+            reject_unknown_params(name, params, &["b", "k", "m"], &[])?;
+            let (b, k, m) = (
+                param_u16(name, params, "b")?,
+                param_worlds(name, params)?,
+                param_u8(name, params, "m")?,
+            );
+            if (b, k, m)
+                != (NAMED_IDENTITY_BEAM, NAMED_IDENTITY_WORLDS, NAMED_IDENTITY_RETREAT_SAMPLES)
+            {
+                return Err(format!(
+                    "{name} is a knobless named identity at b={NAMED_IDENTITY_BEAM}, \
+                     k={NAMED_IDENTITY_WORLDS}, m={NAMED_IDENTITY_RETREAT_SAMPLES}, but the \
+                     record carries b={b}, k={k}, m={m}",
+                ));
+            }
+            return Ok(Self::NamedTable(arm));
+        }
+
         let Some(policy) = RolloutPolicy::from_str_name(name) else {
             return Err(format!(
                 "unknown controller {name:?} (rungs: uniform | retreat-averse | family-weighted; \
-                 evaluator: {} | {} | {}; architecture: {})",
+                 evaluator: {} | {} | {}; architecture: {}; named identities: {})",
                 greedy::GREEDY_CONTROLLER,
                 lookahead::LOOKAHEAD_CONTROLLER,
                 lookahead::ATOMIC_DIAG_CONTROLLER,
                 mcts::MCTS_CONTROLLER,
+                // Built FROM `NamedIdentity::ALL`, `super::grammar`'s rule at
+                // the same sentence. It listed two of the three by hand until
+                // 2026-08-30, and the one it omitted became the SHIPPED seat's
+                // own name that day: a resume refusal that could not name the
+                // contestant this driver plays is the worst version of this
+                // message there is.
+                NamedIdentity::ALL.map(NamedIdentity::name).join(" | "),
             ));
         };
         match policy {
@@ -566,6 +787,27 @@ impl Contestant {
                 &WeightTable::V2,
                 agent_seed,
             ),
+            // The controller's OWN descriptor over the arm's OWN table, with
+            // one field replaced: the NAME. Everything a reader needs to price
+            // the seat — the knobs, `eval_impl`, and the `weights=` digest of
+            // the thirty-four numbers — is the lookahead controller's own
+            // answer, so this arm cannot echo a search it did not run; and the
+            // name is the arm's, because "lookahead-v1" would leave two
+            // different tables echoing under one identity, which is the exact
+            // confusion §13's surface exists to remove. The name is read from
+            // `NamedIdentity::name` rather than typed here, so there is still
+            // one spelling of it (`greedy::GREEDY_CONTROLLER`'s rule).
+            Self::NamedTable(arm) => {
+                let mut p = lookahead::controller_provenance(
+                    SearchScheme::TurnBoundary { beam: NAMED_IDENTITY_BEAM },
+                    NAMED_IDENTITY_WORLDS,
+                    NAMED_IDENTITY_RETREAT_SAMPLES,
+                    &arm.table(),
+                    agent_seed,
+                );
+                p.name = arm.name().to_string();
+                p
+            }
         }
     }
 
@@ -597,11 +839,7 @@ impl Contestant {
     /// record's two halves rather than over this string.
     pub fn echo(&self) -> String {
         let (name, version, params) = self.descriptor();
-        if params.is_empty() {
-            return format!("{name}@v{version}");
-        }
-        let knobs: Vec<String> = params.iter().map(|(k, v)| format!("{k}={v}")).collect();
-        format!("{name}@v{version}{{{}}}", knobs.join(","))
+        compose_echo(&name, version, &params)
     }
 
     /// Which starting-order rule this contestant plays (spec §5.5).
@@ -612,10 +850,23 @@ impl Contestant {
             // `greedy::score_starting_order` VERBATIM (spec §3.6 / map row 20),
             // which is what makes an mcts-vs-lookahead cell setup-identical —
             // and every §5 cell depends on that.
+            // A named arm joins the evaluator group for the SAME reason, and
+            // the reason is worth stating precisely because it is the one an
+            // identity leak would hide in: `greedy::score_starting_order` takes
+            // NO weight table (`eval_screen`'s doc says so in as many words —
+            // "the KEEP function … takes NO weight table — so a screen is
+            // Keep-HOMOGENEOUS and setup-IDENTICAL by construction, at any pair
+            // of tables"). So an arm's table cannot reach its Keep at all: the
+            // two named arms resolve every deal identically, to each other and
+            // to the shipped seat, and a §11 cell is setup-identical
+            // STRUCTURALLY. `the_named_identity_arms_keep_by_a_weight_blind_rule`
+            // pins that, so a future weight-sensitive Keep has to answer for
+            // itself here instead of quietly making two arms' setups differ.
             Self::GreedyV1 { .. }
             | Self::LookaheadV1 { .. }
             | Self::AtomicDiag { .. }
-            | Self::MctsV1 { .. } => KeepKind::EvaluatorScored,
+            | Self::MctsV1 { .. }
+            | Self::NamedTable(_) => KeepKind::EvaluatorScored,
         }
     }
 
@@ -658,6 +909,7 @@ impl Contestant {
                 k,
                 m,
                 cap,
+                WeightTable::V2,
                 agent_seed,
             ),
             Self::AtomicDiag { d, k, m } => Self::build_search(
@@ -666,6 +918,21 @@ impl Contestant {
                 k,
                 m,
                 None,
+                WeightTable::V2,
+                agent_seed,
+            ),
+            // The SAME construction path as the shipped rung, differing in the
+            // one thing the arm names: its table. Routing it through
+            // `build_search` rather than a private constructor is what makes
+            // "a named arm is a lookahead seat" true by construction rather
+            // than by comment — a divergence would have to be authored here.
+            Self::NamedTable(arm) => Self::build_search(
+                rules,
+                SearchScheme::TurnBoundary { beam: NAMED_IDENTITY_BEAM },
+                NAMED_IDENTITY_WORLDS,
+                NAMED_IDENTITY_RETREAT_SAMPLES,
+                None,
+                arm.table(),
                 agent_seed,
             ),
             Self::MctsV1 { cap, c_ppm, scale, m, leaf } => {
@@ -682,23 +949,24 @@ impl Contestant {
         }
     }
 
+    /// `weights` is a PARAMETER rather than the hardwired shipped table since
+    /// V4 step 8: the two shipped arms pass [`WeightTable::V2`] explicitly (so
+    /// their construction is byte-identical to what it always was, and the
+    /// caller above still reads as "the one place a cell's table is decided"),
+    /// and the named arms pass their own. One search constructor, one place a
+    /// table enters it.
     fn build_search(
         rules: &Rules,
         scheme: SearchScheme,
         worlds: u8,
         retreat_samples: u8,
         cap: Option<u32>,
+        weights: WeightTable,
         agent_seed: u64,
     ) -> (Box<dyn ArenaAgent>, Option<ExplainHandle>) {
-        let agent = LookaheadAgent::with_knobs(
-            rules,
-            scheme,
-            worlds,
-            retreat_samples,
-            WeightTable::V2,
-            agent_seed,
-        )
-        .with_cap(cap);
+        let agent =
+            LookaheadAgent::with_knobs(rules, scheme, worlds, retreat_samples, weights, agent_seed)
+                .with_cap(cap);
         let handle = ExplainHandle::Search(agent.tally());
         (Box::new(agent), Some(handle))
     }
@@ -829,6 +1097,45 @@ fn param_leaf(name: &str, params: &BTreeMap<String, i64>) -> Result<LeafRule, St
                 .collect();
             format!("unknown leaf code {code} for {name} ({})", known.join(" | "))
         })
+}
+
+/// What a cell does when one of its games reaches the turn guard — V4 step 11,
+/// amendment A-S11-1 (freeze doc
+/// `docs/plans/2026-08-30-phase3.5c-v4-identity-freeze.md` §9.6).
+///
+/// **[`Refuse`](Self::Refuse) is the behaviour every figure recorded in this
+/// repo was measured under, and it is what an unflagged cell still does**: the
+/// first capped game refuses the WHOLE cell with
+/// [`ArenaError::CapReached`], because a skipped game would read as a different
+/// N. Every existing entry point passes it, through the same call chain it
+/// always used, so the choice is opt-in at the CALLER and no recorded figure
+/// moves.
+///
+/// [`Count`](Self::Count) is the amendment's counting mode: a capped game
+/// becomes a typed, COUNTED event, the design unit containing it is VOID, and
+/// the cell refuses only when the count passes the arm's registered `ceiling`.
+/// `ceiling: 0` is legal and refuses at the first capped game — through
+/// [`ArenaError::CappedCeilingExceeded`], deliberately distinct from refuse
+/// mode's `CapReached`, so the two refusals are never read as the same event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CapPolicy {
+    /// Today's rule: the first capped game refuses the cell.
+    Refuse,
+    /// Count capped games, void their units, and refuse only above `ceiling`.
+    Count { ceiling: u32 },
+}
+
+/// One capped game of a counting cell, named so it reproduces.
+///
+/// `arrangement` is the index into [`unit_for`]'s seatings — the same number
+/// `arena world --arrangement` takes — so `arena world <x> <y> <seed>
+/// --arrangement <arr>` replays exactly this game. `turns` is the driver's own
+/// number, one past the guard (10,001 at the shipped [`HONEST_MAX_TURNS`]).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct CappedGame {
+    pub seed: WorldSeed,
+    pub arrangement: u8,
+    pub turns: u32,
 }
 
 /// One cell of the arena: contestant X against contestant Y at a player count,
@@ -1019,6 +1326,75 @@ pub struct CellReport {
     /// [`SeedScheduleKind::Diagnostic`], the DRAWN one for
     /// [`SeedScheduleKind::OsEntropy`].
     pub master: u64,
+    /// The registered void CEILING this cell ran under, or `None` in REFUSE
+    /// mode — V4 step 11, amendment A-S11-1 (freeze doc §9.6).
+    ///
+    /// `None` is the shape of every figure recorded before the amendment and of
+    /// every unflagged run since: it says "the first capped game would have
+    /// refused this cell", which is why the four fields below then carry no
+    /// information (`units_void` is 0 and `capped` is empty BY CONSTRUCTION,
+    /// not by observation).
+    pub capped_ceiling: Option<u32>,
+    /// Design units the cell SCHEDULED — `spec.units`, always.
+    pub units_scheduled: u32,
+    /// Scheduled units containing at least one capped game. Such a unit is VOID
+    /// and contributes NO outcome: every outcome statistic on this report reads
+    /// over the READ units alone.
+    pub units_void: u32,
+    /// Units that contributed an outcome — `x_unit_shares.len()`, and the `n`
+    /// of the interval.
+    pub units_read: u32,
+    /// Every capped game, in schedule order. Empty in refuse mode.
+    pub capped: Vec<CappedGame>,
+}
+
+impl CellReport {
+    /// The VOID LINE a counting cell prints, or `None` in refuse mode — V4 step
+    /// 11, amendment A-S11-1 (freeze doc §9.6).
+    ///
+    /// `None` and not an empty string: the runner prints this line and
+    /// [`capped_lines`](Self::capped_lines) ONLY when this is `Some`, which is
+    /// what keeps an unflagged `cell` run's output byte-for-byte what it always
+    /// was. The refuse-mode fields carry no information to print — `units_void`
+    /// is 0 and `capped` is empty by CONSTRUCTION there, not by observation —
+    /// so a line stating them would read as a measurement.
+    ///
+    /// It lives in core, beside the fields it reads, for
+    /// [`super::diagnostic::render_cap_rate`]'s reason: the runner is
+    /// print-only glue, and text composed there is text no library test covers.
+    pub fn void_summary(&self) -> Option<String> {
+        let ceiling = self.capped_ceiling?;
+        Some(format!(
+            "units scheduled={} · void={} · read={} · capped games={} (ceiling {ceiling})",
+            self.units_scheduled,
+            self.units_void,
+            self.units_read,
+            self.capped.len(),
+        ))
+    }
+
+    /// ONE line per capped game, each carrying the command that replays it.
+    ///
+    /// **The `<x>`/`<y>` placeholders are deliberate and are
+    /// [`super::diagnostic::render_cap_rate`]'s own spelling:** a `CellReport`
+    /// carries no contestant fields (they live in
+    /// [`spec_echo`](Self::spec_echo), printed directly above), so this line
+    /// cannot honestly fill them in. The seed and the arrangement — the two
+    /// things that identify WHICH game, and the two a reader cannot reconstruct
+    /// — are concrete.
+    ///
+    /// Empty in refuse mode, where no capped game exists.
+    pub fn capped_lines(&self) -> Vec<String> {
+        self.capped
+            .iter()
+            .map(|game| {
+                format!(
+                    "capped: arena world <x> <y> {:#018x} --arrangement {} · turns={}",
+                    game.seed.0, game.arrangement, game.turns,
+                )
+            })
+            .collect()
+    }
 }
 
 /// One side's in-cell WALL — nanoseconds spent inside `choose`, and the
@@ -1118,6 +1494,51 @@ impl ArenaAgent for TimedAgent {
     }
 }
 
+/// What one scheduled game of a cell produced.
+///
+/// In [`CapPolicy::Refuse`] only [`Completed`](Self::Completed) is ever built —
+/// the driver's cap is an `Err` there, exactly as it always was. The variant
+/// split exists so the counting mode cannot hand a partial run to anything that
+/// takes an [`ArenaGameStats`]: a capped game has none, and the corpus sink,
+/// the trigger tally and the outcome buffer all take one.
+enum PlayedGame {
+    Completed(Box<ArenaGameStats>),
+    /// The turn guard tripped. `moves_by_seat` is the PARTIAL run's per-seat
+    /// split, which the volume counters fold exactly as a completed game's.
+    Capped { turns: u32, moves_by_seat: Vec<u64> },
+}
+
+/// One design unit's OUTCOME contributions, held back until the unit is known
+/// READ — V4 step 11, amendment A-S11-1 (freeze doc §9.6).
+///
+/// **Why a buffer and not a running total.** A unit is VOID as soon as ANY of
+/// its games caps, and a cap can land in the unit's SECOND game — after the
+/// first has already completed, been emitted and been tabulated. An outcome
+/// folded the moment its game finished cannot be taken back, so the outcome
+/// half of every game waits here and folds into the cell only once the whole
+/// unit has been played and read.
+///
+/// **The VOLUME half is deliberately NOT here.** `applied_by_seat`,
+/// `x_applied_moves`, the explanation tally, the two cap counters and the
+/// budget meters fold over EVERY played game, capped ones included, so
+/// `x_explanations == Some(x_applied_moves)` stays a claim about every move X
+/// played rather than about the moves that happened to land in a read unit.
+///
+/// `vp_margins` is a per-GAME vector rather than a running `f64` subtotal so
+/// the cell's float addition sequence is EXACTLY the one it always was — units
+/// in schedule order, games in arrangement order. A per-unit subtotal would
+/// re-associate the sum, and the goldens compare that figure byte for byte.
+#[derive(Default)]
+struct UnitOutcome {
+    games: u32,
+    x_wins: u32,
+    seat0_wins: u32,
+    top_vp_ties: u32,
+    ties_to_seat0: u32,
+    vp_margins: Vec<f64>,
+    triggers: Vec<Option<EndGameTrigger>>,
+}
+
 /// Run one cell with per-move invariant checking ON — the default every driver
 /// in the repo contracts for, and what every asserting gate cell wants.
 ///
@@ -1146,10 +1567,16 @@ pub fn run_cell_with(
 /// `sink(stats, arr)` sees every COMPLETED game as it finishes, where `arr` is
 /// the arrangement index within its design unit — the two things
 /// `corpus::corpus_path` needs that a `CellReport` cannot carry. Completed only
-/// is structural rather than checked: a cap hit or a driver error is an `Err`
-/// from the driver and short-circuits this loop, so a failed game has no
-/// [`ArenaGameStats`] to hand anyone (spec §4's failure taxonomy — see that
-/// type's doc).
+/// is structural rather than checked: on THIS entry point a cap hit or a driver
+/// error is an `Err` from the driver and short-circuits the loop, so a failed
+/// game has no [`ArenaGameStats`] to hand anyone (spec §4's failure taxonomy —
+/// see that type's doc).
+///
+/// **The rule survives A-S11-1's counting mode, by a different route** (freeze
+/// doc §9.6): there a capped game does not short-circuit anything, but it
+/// produces no `ArenaGameStats` either, so the sink still sees every completed
+/// game and nothing else — including the completed games of a VOID unit. A
+/// record is a record; voiding is a unit-level statistic.
 ///
 /// Streaming rather than returning the records: a 200-unit 4P cell is 800 games
 /// of event log, which is a corpus, not a report.
@@ -1183,6 +1610,48 @@ pub fn run_cell_emitting_timed(
     invariants: bool,
     sink: &mut dyn FnMut(&ArenaGameStats, u8) -> Result<(), ArenaError>,
 ) -> Result<(CellReport, CellWall), ArenaError> {
+    run_cell_loop(spec, rules, invariants, CapPolicy::Refuse, HONEST_MAX_TURNS, sink)
+}
+
+/// [`run_cell_emitting_timed`] in A-S11-1's COUNTING mode: a capped game is a
+/// typed, counted event, its design unit is VOID, and the cell refuses only
+/// when the count passes `ceiling` (freeze doc §9.6).
+///
+/// A SEPARATE entry point rather than a parameter on the four above, for the
+/// reason the amendment gives: the counting mode is opt-in per cell, and every
+/// caller that does not ask for it must keep reaching the refuse path through
+/// the call chain it always used. `ceiling` travels as an argument rather than
+/// on [`CellSpec`] for the same reason — the spec is the DESIGN, and 47
+/// constructor sites across the gate binaries and the committed goldens spell
+/// it.
+pub fn run_cell_counting_caps_timed(
+    spec: &CellSpec,
+    rules: &Rules,
+    invariants: bool,
+    ceiling: u32,
+    sink: &mut dyn FnMut(&ArenaGameStats, u8) -> Result<(), ArenaError>,
+) -> Result<(CellReport, CellWall), ArenaError> {
+    run_cell_loop(spec, rules, invariants, CapPolicy::Count { ceiling }, HONEST_MAX_TURNS, sink)
+}
+
+/// THE cell loop — the one every entry point above reaches.
+///
+/// `max_turns` is a parameter for [`super::run_arena_game_capped`]'s reason
+/// exactly: a test must reach a capping cell in milliseconds instead of playing
+/// 10,000 no-op turns. Every public entry point passes [`HONEST_MAX_TURNS`], the
+/// shared non-termination guard, which is therefore untouched by the widening.
+///
+/// `pub(crate)` and not `pub`: the guard is a TEST affordance, and a public
+/// surface that let a caller shorten the guard would let a published figure be
+/// measured against a different definition of "stuck".
+pub(crate) fn run_cell_loop(
+    spec: &CellSpec,
+    rules: &Rules,
+    invariants: bool,
+    policy: CapPolicy,
+    max_turns: u32,
+    sink: &mut dyn FnMut(&ArenaGameStats, u8) -> Result<(), ArenaError>,
+) -> Result<(CellReport, CellWall), ArenaError> {
     // Both guards run BEFORE any game, because both failure modes are silent
     // otherwise: `unit_for(0, ..)` yields an empty seating list, so a zero or
     // one player count would tabulate zero games into a report full of NaNs
@@ -1201,7 +1670,17 @@ pub fn run_cell_emitting_timed(
     };
 
     let players = spec.players;
+    // The registered ceiling, read off the policy ONCE: it is both a report
+    // field and the echo's token, and deriving it twice is two places to
+    // disagree about which mode a printed figure was measured in.
+    let capped_ceiling = match policy {
+        CapPolicy::Refuse => None,
+        CapPolicy::Count { ceiling } => Some(ceiling),
+    };
     let mut x_unit_shares: Vec<f64> = Vec::with_capacity(spec.units as usize);
+    // Every capped game, in schedule order. Stays empty in refuse mode, where
+    // the driver's cap is an `Err` that never reaches this loop.
+    let mut capped: Vec<CappedGame> = Vec::new();
     let mut games = 0u32;
     let mut x_game_wins = 0u32;
     let mut seat0_wins = 0u32;
@@ -1232,7 +1711,10 @@ pub fn run_cell_emitting_timed(
     for _ in 0..spec.units {
         let seed = schedule.next_world();
         let unit = unit_for(players, seed);
-        let mut unit_x_wins = 0u32;
+        // The unit's outcome, held back until the unit is known READ, and the
+        // flag that decides whether it ever folds.
+        let mut unit_outcome = UnitOutcome::default();
+        let mut unit_void = false;
 
         for (arr, seating) in unit.seatings.iter().enumerate() {
             // Which seat X is sitting in THIS arrangement. `unit_for` puts every
@@ -1259,7 +1741,7 @@ pub fn run_cell_emitting_timed(
             // plays on `agent_stream_seed(seed, seat, slot)`.
             let mut x_handles: Vec<ExplainHandle> = Vec::new();
             let mut y_handles: Vec<ExplainHandle> = Vec::new();
-            let mut stats = {
+            let mut played = {
                 let (xh, yh) = (&mut x_handles, &mut y_handles);
                 let (xc, yc) = (&x_clock, &y_clock);
                 let mut make_agent = |seat: PlayerId, _players: u8| -> Box<dyn ArenaAgent> {
@@ -1280,25 +1762,60 @@ pub fn run_cell_emitting_timed(
                         clock: if is_x { xc.clone() } else { yc.clone() },
                     })
                 };
-                run_arena_game(seed, players, rules, &mut make_agent, invariants)?
+                match policy {
+                    // REFUSE MODE'S PER-GAME DRIVER CALL IS UNCHANGED: the
+                    // public `run_arena_game` IS this call at
+                    // `HONEST_MAX_TURNS`, so an unflagged cell reaches the same
+                    // driver through the same chain it always did — a
+                    // construction fact, which is what freeze doc §9.6 asks for
+                    // ahead of any pin. Its cap is still an `Err`, so no
+                    // `PlayedGame::Capped` can exist in this mode.
+                    CapPolicy::Refuse => PlayedGame::Completed(Box::new(run_arena_game_capped(
+                        seed, players, rules, &mut make_agent, invariants, max_turns,
+                    )?)),
+                    // COUNTING MODE plays the SAME game through the diagnostic
+                    // driver — same setup half, same shared loop, same keying
+                    // (W-D1 pinned the equivalence) — which is the only driver
+                    // that hands a capped game's partial run back instead of
+                    // dropping it.
+                    CapPolicy::Count { .. } => {
+                        let game = run_arena_game_diagnostic_capped(
+                            seed, players, rules, &mut make_agent, invariants, max_turns,
+                        )?;
+                        match game.outcome {
+                            DiagnosticOutcome::Terminated(stats) => PlayedGame::Completed(stats),
+                            DiagnosticOutcome::Capped { turns, moves_by_seat, .. } => {
+                                PlayedGame::Capped { turns, moves_by_seat }
+                            }
+                        }
+                    }
+                }
             };
             // The RUN half of provenance (spec §5): the driver stamped who
             // played each seat, and this is the only layer that knows which
-            // schedule and which cell they played for.
-            stats.record.set_run_context(master, &spec.name);
-            sink(&stats, arr as u8)?;
-
-            games += 1;
-            trigger.observe(stats.trigger.as_ref());
+            // schedule and which cell they played for. A capped game reaches
+            // neither line — it has no `ArenaGameStats`, and the sink sees every
+            // COMPLETED game and nothing else, void unit or not (a record is a
+            // record; voiding is a unit-level statistic).
+            if let PlayedGame::Completed(stats) = &mut played {
+                stats.record.set_run_context(master, &spec.name);
+                sink(stats, arr as u8)?;
+            }
 
             // Spec §5.4's driver extension, aggregated two ways because they
             // answer two questions: `applied_by_seat` follows the SEAT (a design
             // balance read), `x_applied_moves` follows the CONTESTANT through the
-            // rotation (spec §0.3(b)'s right-hand side).
-            for (seat, moves) in stats.moves_by_seat.iter().enumerate() {
+            // rotation (spec §0.3(b)'s right-hand side). BOTH fold over every
+            // played game — a capped game's per-seat split comes off the partial
+            // run the diagnostic driver hands back.
+            let moves_by_seat: &[u64] = match &played {
+                PlayedGame::Completed(stats) => &stats.moves_by_seat,
+                PlayedGame::Capped { moves_by_seat, .. } => moves_by_seat,
+            };
+            for (seat, moves) in moves_by_seat.iter().enumerate() {
                 applied_by_seat[seat] += moves;
             }
-            x_applied_moves += stats.moves_by_seat[x_seat.0 as usize];
+            x_applied_moves += moves_by_seat[x_seat.0 as usize];
             for handle in &x_handles {
                 *x_explanations.get_or_insert(0) += handle.explained();
                 if let Some(hits) = handle.ply_cap_hits() {
@@ -1313,47 +1830,103 @@ pub fn run_cell_emitting_timed(
                 y_meters.fold(handle);
             }
 
-            if stats.result.winner == x_seat {
-                unit_x_wins += 1;
-                x_game_wins += 1;
-            }
-            if stats.result.winner == PlayerId(0) {
-                seat0_wins += 1;
-            }
+            // THE OUTCOME HALF — buffered, never folded here. See
+            // [`UnitOutcome`]: a cap in this unit's later game would otherwise
+            // leave a contribution that cannot be taken back.
+            match played {
+                PlayedGame::Completed(stats) => {
+                    unit_outcome.games += 1;
+                    unit_outcome.triggers.push(stats.trigger);
 
-            // `final_result` (game::scoring) is a TOTAL order: it sorts on
-            // `(Reverse(total), clockwise distance from start_player)`, and the
-            // distance `(seat + n - start) % n` is a bijection from seat onto
-            // 0..n, so no two players can share a sort key. A game therefore
-            // NEVER reports a tie — the clockwise tie-break has already decided
-            // it, and `winner` is always exactly one seat. What is recorded here
-            // is the tie-break's WORK: how often the top VP total was shared at
-            // all, and how often seat 0 was the one it awarded.
-            let standings = &stats.result.standings;
-            let top_shared = standings.len() >= 2
-                && standings[0].breakdown.total == standings[1].breakdown.total;
-            if top_shared {
-                top_vp_ties += 1;
-                if stats.result.winner == PlayerId(0) {
-                    ties_to_seat0 += 1;
+                    if stats.result.winner == x_seat {
+                        unit_outcome.x_wins += 1;
+                    }
+                    if stats.result.winner == PlayerId(0) {
+                        unit_outcome.seat0_wins += 1;
+                    }
+
+                    // `final_result` (game::scoring) is a TOTAL order: it sorts
+                    // on `(Reverse(total), clockwise distance from
+                    // start_player)`, and the distance `(seat + n - start) % n`
+                    // is a bijection from seat onto 0..n, so no two players can
+                    // share a sort key. A game therefore NEVER reports a tie —
+                    // the clockwise tie-break has already decided it, and
+                    // `winner` is always exactly one seat. What is recorded here
+                    // is the tie-break's WORK: how often the top VP total was
+                    // shared at all, and how often seat 0 was the one it
+                    // awarded.
+                    let standings = &stats.result.standings;
+                    let top_shared = standings.len() >= 2
+                        && standings[0].breakdown.total == standings[1].breakdown.total;
+                    if top_shared {
+                        unit_outcome.top_vp_ties += 1;
+                        if stats.result.winner == PlayerId(0) {
+                            unit_outcome.ties_to_seat0 += 1;
+                        }
+                    }
+
+                    let mut x_total = 0.0f64;
+                    let mut y_total = 0.0f64;
+                    for standing in standings {
+                        if standing.player == x_seat {
+                            x_total = f64::from(standing.breakdown.total);
+                        } else {
+                            y_total += f64::from(standing.breakdown.total);
+                        }
+                    }
+                    unit_outcome.vp_margins.push(x_total - y_total / f64::from(players - 1));
+                }
+                PlayedGame::Capped { turns, .. } => {
+                    // The counted event. The unit is VOID from here — and the
+                    // rest of its schedule is still PLAYED, because the ceiling
+                    // counts capped games over the full schedule, which is what
+                    // the measured per-game rates priced.
+                    unit_void = true;
+                    capped.push(CappedGame { seed, arrangement: arr as u8, turns });
+                    // THE CEILING, checked the moment the count passes it: the
+                    // (c+1)-th capped game refuses the cell AT ONCE rather than
+                    // at the schedule's end, because an instrument guard that
+                    // waited would spend the rest of a run it has already
+                    // invalidated (freeze doc §9.6 item 2).
+                    if let Some(ceiling) = capped_ceiling {
+                        if capped.len() as u64 > u64::from(ceiling) {
+                            return Err(ArenaError::CappedCeilingExceeded { ceiling, capped });
+                        }
+                    }
                 }
             }
-
-            let mut x_total = 0.0f64;
-            let mut y_total = 0.0f64;
-            for standing in standings {
-                if standing.player == x_seat {
-                    x_total = f64::from(standing.breakdown.total);
-                } else {
-                    y_total += f64::from(standing.breakdown.total);
-                }
-            }
-            vp_margin_sum += x_total - y_total / f64::from(players - 1);
         }
 
-        x_unit_shares.push(f64::from(unit_x_wins) / unit.seatings.len() as f64);
+        if unit_void {
+            // A VOID unit contributes NO OUTCOME. Its games were played, its
+            // completed ones reached the sink, and its volume is counted — the
+            // outcome, and only the outcome, is dropped.
+            continue;
+        }
+        games += unit_outcome.games;
+        x_game_wins += unit_outcome.x_wins;
+        seat0_wins += unit_outcome.seat0_wins;
+        top_vp_ties += unit_outcome.top_vp_ties;
+        ties_to_seat0 += unit_outcome.ties_to_seat0;
+        for game_trigger in &unit_outcome.triggers {
+            trigger.observe(game_trigger.as_ref());
+        }
+        // In game order, so the cell's float sum is the sequence it always was.
+        for margin in &unit_outcome.vp_margins {
+            vp_margin_sum += margin;
+        }
+        x_unit_shares.push(f64::from(unit_outcome.x_wins) / unit.seatings.len() as f64);
     }
 
+    // NO READ UNIT: nothing constrains theta, and a report of NaNs would be a
+    // number-shaped answer to a question the data cannot answer. Unreachable in
+    // refuse mode — the zero-unit guard above runs before any game and every
+    // unit is read there — so this is the counting mode's own refusal.
+    if x_unit_shares.is_empty() {
+        return Err(ArenaError::NoReadUnits { scheduled: spec.units, capped });
+    }
+
+    let x_unit_shares_len = x_unit_shares.len() as u32;
     let theta_hat = mean(&x_unit_shares);
     // Derived from the design, never from the outcomes — a resample stream that
     // read the unit vector would make the interval a function of the data twice
@@ -1379,7 +1952,7 @@ pub fn run_cell_emitting_timed(
 
     Ok((
         CellReport {
-            spec_echo: spec_echo(spec, master, resample_seed),
+            spec_echo: spec_echo(spec, master, resample_seed, capped_ceiling),
             games,
             x_unit_shares,
             theta_hat,
@@ -1403,6 +1976,11 @@ pub fn run_cell_emitting_timed(
             y_budget_starved_decisions: y_meters.starved,
             trigger,
             master,
+            capped_ceiling,
+            units_scheduled: spec.units,
+            units_void: spec.units - x_unit_shares_len,
+            units_read: x_unit_shares_len,
+            capped,
         },
         CellWall { x: x_clock.read(), y: y_clock.read() },
     ))
@@ -1569,7 +2147,12 @@ fn student_t_975(df: u64) -> f64 {
             / (92160.0 * v.powi(4))
 }
 
-fn spec_echo(spec: &CellSpec, master: u64, resample_seed: u64) -> String {
+fn spec_echo(
+    spec: &CellSpec,
+    master: u64,
+    resample_seed: u64,
+    capped_ceiling: Option<u32>,
+) -> String {
     let unit_shape = if spec.players == 2 {
         "pair (2 seatings)".to_string()
     } else {
@@ -1594,11 +2177,20 @@ fn spec_echo(spec: &CellSpec, master: u64, resample_seed: u64) -> String {
     // a colon spelling would not have disturbed. The `key=value` spelling is
     // kept for consistency, not necessity. Recorded formatting deviation.
     let setup_identical = if spec.x.keep_kind() == spec.y.keep_kind() { "yes" } else { "no" };
+    // A-S11-1's ONE trailing token, and only in COUNTING mode: an absent
+    // `--capped-ceiling` emits no token at all, exactly as an absent `cap` knob
+    // emits none on `lookahead-v1` (freeze doc §9.6). TRAILING, so a counting
+    // echo is the refuse-mode echo plus a suffix — a property a test can state
+    // in one line, rather than a second echo format to keep in step.
+    let capped_ceiling = match capped_ceiling {
+        Some(ceiling) => format!(" capped-ceiling={ceiling}"),
+        None => String::new(),
+    };
     format!(
         "cell={} players={} x={} y={} units={} unit={} games={} \
          master={master_kind}:{master:#018x} bootstrap_B={BOOTSTRAP_REPLICATES} \
          resample_seed={resample_seed:#018x} single-threaded=yes fixed-N=yes \
-         setup-identical={setup_identical}",
+         setup-identical={setup_identical}{capped_ceiling}",
         spec.name,
         spec.players,
         // [`Contestant::echo`], the one composer — public since W5 so the CLI
@@ -2012,7 +2604,7 @@ mod tests {
             units: 100,
             master: SeedScheduleKind::Diagnostic(MASTER),
         };
-        let echo = spec_echo(&spec, MASTER, 0xDEAD_BEEF);
+        let echo = spec_echo(&spec, MASTER, 0xDEAD_BEEF, None);
 
         assert!(echo.contains("cell=fw-knob-edge players=4"), "{echo}");
         assert!(echo.contains("units=100"), "{echo}");
@@ -2353,6 +2945,7 @@ mod tests {
             },
             MASTER,
             0,
+            None,
         );
         assert!(echo.contains("setup-identical=yes"), "{echo}");
         assert!(echo.contains(&format!("x={MCTS_CONTROLLER}@v{MCTS_IMPL_VERSION}{{")), "{echo}");
@@ -2469,6 +3062,20 @@ mod tests {
                 "the refusal of {name:?} did not name it: {message}",
             );
         }
+
+        // ... and the refusal must NAME every named identity (review SHOULD-4,
+        // pinning the a979b08 fix): the list was hand-typed until 2026-08-30,
+        // listed two of the three, and the omitted one was the SHIPPED seat's
+        // own name — the worst possible omission for a resume refusal.
+        let message = Contestant::from_parts("nope", &params)
+            .expect_err("an unknown controller name must be refused");
+        for arm in NamedIdentity::ALL {
+            assert!(
+                message.contains(arm.name()),
+                "the unknown-controller refusal does not name {}: {message}",
+                arm.name(),
+            );
+        }
     }
 
     /// A key no arm knows is an error rather than a silent ignore — a swallowed
@@ -2568,9 +3175,13 @@ mod tests {
     /// branches are covered: knobless, and knob-bearing.
     #[test]
     fn the_echo_is_public_and_matches_the_spec_echo_format() {
+        // The `weights=` identity moved ONCE at the V4 step-8 padding (the
+        // table hashes 68 numbers instead of 32): -7339724794018772210 was the
+        // sixteen-slot V2, -1160323518167071950 is the padded table whose
+        // sixteen live slots are byte-identical to it.
         assert_eq!(
             Contestant::LOOKAHEAD_V1_DEFAULT.echo(),
-            "lookahead-v1@v2{b=4,eval_impl=3,k=1,m=8,weights=-7339724794018772210}",
+            "lookahead-v1@v2{b=4,eval_impl=3,k=1,m=8,weights=-1160323518167071950}",
         );
         assert_eq!(Contestant::Policy(RolloutPolicy::Uniform).echo(), "uniform@v1");
 
@@ -2587,6 +3198,7 @@ mod tests {
             },
             MASTER,
             0,
+            None,
         );
         assert!(
             echo.contains(&format!("x={}", Contestant::LOOKAHEAD_V1_DEFAULT.echo())),
@@ -2611,11 +3223,11 @@ mod tests {
             units: 4,
             master: SeedScheduleKind::Diagnostic(MASTER),
         };
-        let echo = spec_echo(&homogeneous, MASTER, 0);
+        let echo = spec_echo(&homogeneous, MASTER, 0, None);
         assert!(echo.contains("setup-identical=yes"), "{echo}");
 
         let mixed = CellSpec { x: Contestant::GREEDY_V1_DEFAULT, ..homogeneous.clone() };
-        let echo = spec_echo(&mixed, MASTER, 0);
+        let echo = spec_echo(&mixed, MASTER, 0, None);
         assert!(echo.contains("setup-identical=no"), "{echo}");
     }
 
@@ -3063,5 +3675,1400 @@ mod tests {
                 );
             }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // V4 §7 STEP 8 T3 — the named-identity arms (spec §13)
+    // -----------------------------------------------------------------------
+
+    /// The arms' knob literals equal the shipped default's TODAY — a
+    /// TRANSCRIPTION FACT, not a coupling, exactly as
+    /// `the_pinned_v2_seat_transcribes_todays_shipped_knobs` is for the
+    /// generating ecology. If the shipped default legitimately moves later,
+    /// DELETE this assertion in the moving commit; the literals stay, because
+    /// an arm is an identity and figures already recorded against these names
+    /// must not silently re-point.
+    #[test]
+    fn the_named_identity_arms_transcribe_todays_shipped_knobs() {
+        assert_eq!(
+            Contestant::LOOKAHEAD_V1_DEFAULT,
+            Contestant::LookaheadV1 {
+                b: NAMED_IDENTITY_BEAM,
+                k: NAMED_IDENTITY_WORLDS,
+                m: NAMED_IDENTITY_RETREAT_SAMPLES,
+                cap: None,
+            },
+            "the named arms' knob literals transcribe the shipped default of 2026-08-24",
+        );
+    }
+
+    /// **THE SHIP PIN** (V4 step 12, 2026-08-30): [`Contestant::PRODUCTION`] is
+    /// the identity the confirmatory field cleared, and the echo is written out
+    /// as a LITERAL rather than derived.
+    ///
+    /// The string is the freeze document's §1 block verbatim
+    /// (`docs/plans/2026-08-30-phase3.5c-v4-identity-freeze.md`), and it is
+    /// hand-typed here for the reason every golden in this file is: a pin that
+    /// composed the echo from the same consts `echo` composes it from would
+    /// pass through any re-point of them, which is the one failure this pin
+    /// exists to catch. Amendment D1's tuple is exactly what the string carries
+    /// — name, controller version, `b`/`k`/`m`, `eval_impl`, the weight-table
+    /// digest, and the ABSENCE of a cap token — so asserting the string asserts
+    /// every component of the identity at once.
+    ///
+    /// The two shipped arms are asserted here too, and not as decoration: the
+    /// ship commit's whole grandfathering claim is that it moved no controller
+    /// const and no shipped constructor's table, so every figure ever recorded
+    /// against `lookahead-v1` and `greedy-v1` stays comparable forward. That
+    /// claim is a pair of unchanged strings, and this is where they are.
+    #[test]
+    fn the_production_contestant_is_the_confirmed_v4_identity() {
+        assert_eq!(
+            Contestant::PRODUCTION.echo(),
+            "v4-step9-draft1@v2{b=4,eval_impl=3,k=1,m=8,weights=6957643967275421640}",
+        );
+        assert_eq!(
+            Contestant::PRODUCTION,
+            Contestant::NamedTable(NamedIdentity::V4Step9Draft1),
+            "the production seat is the NAMED identity, never a `*_DEFAULT` (amendment D1)",
+        );
+        assert!(
+            !Contestant::PRODUCTION.echo().contains("cap="),
+            "the confirmed identity is UNCAPPED, and an absent cap is not any set cap: {}",
+            Contestant::PRODUCTION.echo(),
+        );
+
+        // GRANDFATHERED, byte-identically, at `WeightTable::V2`.
+        assert_eq!(
+            Contestant::LOOKAHEAD_V1_DEFAULT.echo(),
+            "lookahead-v1@v2{b=4,eval_impl=3,k=1,m=8,weights=-1160323518167071950}",
+        );
+        assert_eq!(
+            Contestant::GREEDY_V1_DEFAULT.echo(),
+            "greedy-v1@v2{eval_impl=3,m=8,placement_cap=512,weights=-1160323518167071950}",
+        );
+    }
+
+    /// **THE GOLDEN TRANSCRIPTION PIN.** All sixty-eight literals of
+    /// [`WeightTable::V4_STEP9_DRAFT1`] against the draft-1 ledger row, written
+    /// out here rather than computed, because the risk this wave carries is a
+    /// MIS-TRANSCRIPTION and a pin that derived the numbers from the same place
+    /// the const did would catch nothing.
+    ///
+    /// Source of record: the execution ledger's draft-1 row (2026-08-29, "DRAFT
+    /// 1 (1 of ≤ 3), LEDGER-RECORDED BEFORE ITS READ"), whose vectors are
+    /// themselves verified against the `t4-entry-run.txt` artifact of record.
+    ///
+    /// The row's own per-change provenance is re-derived here as a SECOND,
+    /// independent check: the moves it names must be exactly the coordinates
+    /// where this table differs from `V2`, and the displacements it records
+    /// (14 early over 11 moves, 102 late over 12) must be what those
+    /// differences sum to. A transcription that hit the literals but broke the
+    /// arithmetic, or vice versa, fails one of the two.
+    #[test]
+    fn the_v4_step9_draft1_table_is_the_ledger_recorded_draft_one_vectors() {
+        const LEDGER_EARLY: [i64; 34] = [
+            1, 20, 14, -4, 3, 30, 5, -10, 6, 12, 15, 8, 5, 0, 3, -1, //
+            1, 1, 0, 0, 1, 1, 1, 2, 2, 0, 0, 1, 0, 0, 0, 1, 1, 0,
+        ];
+        const LEDGER_LATE: [i64; 34] = [
+            40, 40, 20, 8, 20, 20, 8, -10, 10, 20, 25, 14, 8, 4, 4, -2, //
+            14, 1, -6, -2, 20, 0, 5, 21, 15, 0, 1, 0, 0, 1, 0, 0, 0, 0,
+        ];
+        use crate::game::eval::Feature;
+        let table = WeightTable::V4_STEP9_DRAFT1;
+        assert_eq!(table.early, LEDGER_EARLY, "EARLY differs from the draft-1 ledger row");
+        assert_eq!(table.late, LEDGER_LATE, "LATE differs from the draft-1 ledger row");
+
+        // SECOND CHECK, from the row's provenance rather than its vectors: the
+        // moves it names, and the displacements it records.
+        let moved = |from: &[i64; 34], to: &[i64; 34]| -> Vec<(&'static str, i64)> {
+            Feature::ALL
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| from[*i] != to[*i])
+                .map(|(i, f)| (f.name(), to[i] - from[i]))
+                .collect()
+        };
+        // **NAMED AND SIGNED.** A count-and-magnitude check has a
+        // duplicated-sign-flip blind spot: flipping one coordinate in BOTH the
+        // const and the ledger literals above moves no count and no `abs()`
+        // sum, so it would pass while shipping the opposite weight. The row
+        // records which coordinates moved AND which way, so both are asserted
+        // against literals here.
+        assert_eq!(
+            moved(&WeightTable::V2.early, &table.early),
+            vec![
+                ("achievement_progress_sum", -2),
+                ("production_access", 1),
+                ("track_access", 1),
+                ("bank_access", 1),
+                ("employment_agency_access", 1),
+                ("president_reachable_areas", 1),
+                ("money_stock", 2),
+                ("trade_goods_stock", 2),
+                ("order_matched_goods", 1),
+                ("lab_takeable", 1),
+                ("port_takeable", 1),
+            ],
+            "the draft-1 row's EARLY moves, by name and signed delta",
+        );
+        assert_eq!(
+            moved(&WeightTable::V2.late, &table.late),
+            vec![
+                ("country_bonus_now", 10),
+                ("assistants_in_hand_excess", 6),
+                ("production_access", 14),
+                ("track_access", 1),
+                ("assistant_areas_distinct", -6),
+                ("president_local_access", -2),
+                ("bank_access", 20),
+                ("president_reachable_areas", 5),
+                ("money_stock", 21),
+                ("trade_goods_stock", 15),
+                ("held_order_value", 1),
+                ("flag_icon_marginal", 1),
+            ],
+            "the draft-1 row's LATE moves, by name and signed delta",
+        );
+        // The displacements those signed deltas must sum to, kept as the third
+        // independent reading of the same row.
+        assert_eq!(
+            moved(&WeightTable::V2.early, &table.early).iter().map(|(_, d)| d.abs()).sum::<i64>(),
+            14,
+            "the row records early displacement 14 over 11 moves",
+        );
+        assert_eq!(
+            moved(&WeightTable::V2.late, &table.late).iter().map(|(_, d)| d.abs()).sum::<i64>(),
+            102,
+            "the row records late displacement 102 over 12 moves",
+        );
+        // The two findings the row calls out by name.
+        assert_eq!(
+            table.early[Feature::AchievementProgressSum.index()],
+            0,
+            "the forced incumbent zeroing, priced by 6(b)-early",
+        );
+        assert_eq!(
+            (
+                table.late[Feature::AssistantAreasDistinct.index()],
+                table.late[Feature::PresidentLocalAccess.index()],
+            ),
+            (-6, -2),
+            "the B1' forced-set members at their certified doses",
+        );
+        // B3's registered exclusion: X carries EARLY sight only.
+        for x in [Feature::LabTakeable, Feature::PortTakeable, Feature::MatchedProductionAccess] {
+            assert_eq!(table.late[x.index()], 0, "{} is zero at late (B3)", x.name());
+        }
+    }
+
+    /// **THE LOCK RECORD** (spec §9's closing clause, lines 1026-1028): the
+    /// digests and FULL echoes of all three identities — candidate, baseline,
+    /// control — printed in a form the close row can transcribe.
+    ///
+    /// Printed rather than asserted, except for the one property that must
+    /// hold: the three `weights=` identities are DISTINCT. Two arms echoing one
+    /// identity could trade places in a corpus and nothing downstream could
+    /// tell.
+    #[test]
+    fn the_three_locked_identities_print_their_digests_and_echoes() {
+        let identity_of = |table: &WeightTable| crate::game::greedy::weight_table_identity(table);
+        println!("\n=== T5 LOCK RECORD (spec §9:1026-1028) ===");
+        println!("SEMANTICS_REV     {}", crate::game::semantics::SEMANTICS_REV);
+        println!("rules hash        {}", Rules::standard().content_hash());
+        for (role, arm) in [
+            ("candidate", NamedIdentity::V4Step9Draft1),
+            ("baseline ", NamedIdentity::V2Padded),
+            ("control  ", NamedIdentity::V2RefitPadded),
+        ] {
+            let table = arm.table();
+            let id = identity_of(&table);
+            println!(
+                "{role}  {:<16}  weights={id:#018x} ({id})\n             echo  {}",
+                arm.name(),
+                Contestant::NamedTable(arm).echo(),
+            );
+        }
+        // **THE DIGESTS, PINNED AS LITERALS.** Nothing else in the tree pins
+        // `weight_table_identity`'s OUTPUT — it is a fixed-seed splitmix64
+        // chain over the sixty-eight numbers, so these do not drift across
+        // platforms or builds. A failure here means one of exactly two things,
+        // and both need a human: a named table MOVED (forbidden by the
+        // never-move rule on each const), or `weight_table_identity` itself
+        // changed (a deliberate act that re-points every figure ever recorded
+        // against these names, and owes a ledger row).
+        assert_eq!(
+            identity_of(&WeightTable::V4_STEP9_DRAFT1),
+            0x608e_8453_3717_4fc8_u64 as i64,
+            "the T5-locked CANDIDATE identity",
+        );
+        assert_eq!(
+            identity_of(&WeightTable::V2),
+            0xefe5_b3e8_6b1e_c332_u64 as i64,
+            "the T5-locked BASELINE identity",
+        );
+        assert_eq!(
+            identity_of(&WeightTable::V2_REFIT_PADDED),
+            0x128a_84d3_51d0_9230_u64 as i64,
+            "the T5-locked CONTROL identity",
+        );
+
+        let ids: Vec<_> = NamedIdentity::ALL.iter().map(|a| identity_of(&a.table())).collect();
+        let mut distinct = ids.clone();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert_eq!(distinct.len(), ids.len(), "the three arms' identities must DIFFER: {ids:?}");
+    }
+
+    /// The WIRE names are the arms' own consts, and the grammar's literals are
+    /// checks on them rather than a second source.
+    #[test]
+    fn the_named_identity_wire_names_round_trip_through_their_own_consts() {
+        assert_eq!(NamedIdentity::ALL.len(), 3, "a new arm must be dispositioned in these pins");
+        for arm in NamedIdentity::ALL {
+            assert_eq!(NamedIdentity::from_str_name(arm.name()), Some(arm));
+            assert_eq!(Contestant::from_str_name(arm.name()), Ok(Contestant::NamedTable(arm)));
+        }
+        assert_eq!(NamedIdentity::V2Padded.name(), "v2-padded");
+        assert_eq!(NamedIdentity::V2RefitPadded.name(), "v2-refit-padded");
+        assert_eq!(NamedIdentity::V4Step9Draft1.name(), "v4-step9-draft1");
+        assert_eq!(NamedIdentity::from_str_name("v2"), None);
+        assert_eq!(NamedIdentity::from_str_name("V2-PADDED"), None);
+    }
+
+    /// **THE ECHO CARRIES THE NAME AND THE ARM'S OWN TABLE IDENTITY**, composed
+    /// through the one [`compose_echo`] every contestant echoes through.
+    ///
+    /// The two `weights=` values must DIFFER (the T2 review's carry): two arms
+    /// that echoed one identity could trade places in a corpus and nothing
+    /// downstream could tell. And `v2-padded` must resolve `WeightTable::V2`'s
+    /// identity exactly — an arm whose construction drifted off its named table
+    /// would echo some third digest, which is the always-on shape of V3 §5.1's
+    /// behavior-identity pin.
+    #[test]
+    fn the_named_identity_arms_echo_their_name_and_their_own_table_identity() {
+        let identity_of = |table: &WeightTable| crate::game::greedy::weight_table_identity(table);
+        // Recorded for the wave's commit message; a digest is only useful if it
+        // is written down somewhere a reader can compare against.
+        println!(
+            "named-identity weights: v2-padded={} v2-refit-padded={} v4-step9-draft1={}",
+            identity_of(&WeightTable::V2),
+            identity_of(&WeightTable::V2_REFIT_PADDED),
+            identity_of(&WeightTable::V4_STEP9_DRAFT1),
+        );
+
+        for arm in NamedIdentity::ALL {
+            let echo = Contestant::NamedTable(arm).echo();
+            assert!(
+                echo.starts_with(&format!("{}@v", arm.name())),
+                "{} must echo under its own name: {echo}",
+                arm.name(),
+            );
+            assert!(
+                echo.contains(&format!("weights={}", identity_of(&arm.table()))),
+                "{} must echo its OWN table's identity: {echo}",
+                arm.name(),
+            );
+            // The knobs are the controller's own answer, so an arm cannot echo
+            // a search it did not run.
+            for token in ["b=4", "k=1", "m=8", "eval_impl="] {
+                assert!(echo.contains(token), "{} lost {token} from its echo: {echo}", arm.name());
+            }
+            assert!(!echo.contains("cap="), "an uncapped arm must emit no cap token: {echo}");
+        }
+
+        assert_ne!(
+            identity_of(&WeightTable::V2),
+            identity_of(&WeightTable::V2_REFIT_PADDED),
+            "the two named arms must resolve DIFFERENT tables, or every cell between them is \
+             a comparison of one table with itself",
+        );
+        // **THE DISTINCT-IDENTITIES PIN** (the T2 review's carry), read off the
+        // RESOLVED echoes rather than off the consts: a name that resolved to
+        // the wrong table would still echo a well-formed `weights=` token, and
+        // only comparing what the two arms ACTUALLY resolved catches it.
+        let weights_token = |arm: NamedIdentity| {
+            let echo = Contestant::NamedTable(arm).echo();
+            let token = echo
+                .split("weights=")
+                .nth(1)
+                .unwrap_or_else(|| panic!("{} echoed no weights token: {echo}", arm.name()))
+                .trim_end_matches('}')
+                .to_string();
+            token
+        };
+        assert_ne!(
+            weights_token(NamedIdentity::V2Padded),
+            weights_token(NamedIdentity::V2RefitPadded),
+            "the two named arms RESOLVED the same table, so the arms can be conflated and a \
+             cell between them would report one arm's figures under the other's name",
+        );
+        assert_ne!(
+            Contestant::NamedTable(NamedIdentity::V2Padded).echo(),
+            Contestant::NamedTable(NamedIdentity::V2RefitPadded).echo(),
+        );
+        // `v2-padded` IS the shipped seat, so the two differ in NAME and in
+        // nothing else — the identity claim spec §10 makes, as a string compare.
+        let padded = Contestant::NamedTable(NamedIdentity::V2Padded).echo();
+        let shipped = Contestant::LOOKAHEAD_V1_DEFAULT.echo();
+        assert_eq!(
+            padded.replace("v2-padded@", "lookahead-v1@"),
+            shipped,
+            "v2-padded must be the shipped seat under another name: {padded} vs {shipped}",
+        );
+    }
+
+    /// **THE KEEP IS WEIGHT-BLIND, AND THAT IS WHY THERE IS NO IDENTITY LEAK.**
+    ///
+    /// A named arm's Keep cannot come off the wrong table, because
+    /// `greedy::score_starting_order` reads NO table at all — `eval_screen`'s
+    /// doc states it in as many words ("the KEEP function … takes NO weight
+    /// table — so a screen is Keep-HOMOGENEOUS and setup-IDENTICAL by
+    /// construction, at any pair of tables"). So the honest pin is not "each
+    /// arm keeps by its own table" (nothing does) but the structural fact that
+    /// makes a §11 cell setup-identical: both arms and the shipped seat resolve
+    /// EVERY deal identically.
+    ///
+    /// It is pinned rather than assumed so a future weight-sensitive Keep
+    /// cannot land silently: it would fail here, and the arm-identity question
+    /// it raises would have to be answered in that commit.
+    #[test]
+    fn the_named_identity_arms_keep_by_a_weight_blind_rule() {
+        let rules = Rules::standard();
+        for arm in NamedIdentity::ALL {
+            assert_eq!(
+                Contestant::NamedTable(arm).keep_kind(),
+                KeepKind::EvaluatorScored,
+                "{} must keep by the evaluator rule",
+                arm.name(),
+            );
+        }
+        // Maximally different streams, `every_evaluator_contestant_shares_one_keep_function`'s
+        // rule: agreement must come from the deal, never from a shared stream.
+        let (mut padded, _) =
+            Contestant::NamedTable(NamedIdentity::V2Padded).build(&rules, 3);
+        let (mut refit, _) =
+            Contestant::NamedTable(NamedIdentity::V2RefitPadded).build(&rules, u64::MAX / 7);
+        let (mut shipped, _) = Contestant::LOOKAHEAD_V1_DEFAULT.build(&rules, u64::MAX - 29);
+        for seat in 0..4u8 {
+            for card in 1..=18u8 {
+                let deal = [OrderCardId(card), OrderCardId(card + 18)];
+                let p = padded.choose_starting_order(PlayerId(seat), &deal);
+                let r = refit.choose_starting_order(PlayerId(seat), &deal);
+                let s = shipped.choose_starting_order(PlayerId(seat), &deal);
+                assert!(
+                    p == r && r == s,
+                    "the Keep became table-sensitive at seat {seat}, deal {deal:?}: \
+                     v2-padded {p}, v2-refit-padded {r}, shipped {s} — a §11 cell's \
+                     setup-identical=yes rests on these agreeing",
+                );
+            }
+        }
+    }
+
+    /// **EACH ARM PLAYS ITS OWN TABLE** — the play-side routing, where an
+    /// identity leak WOULD be possible, driven rather than asserted about.
+    ///
+    /// Six decisions over three deterministic positions (the
+    /// `the_pinned_v2_seat_walk_reproduces_the_recorded_pre_padding_decisions`
+    /// shape), built through `Contestant::build` so a table swapped there has
+    /// to move a played move rather than escaping through a direct helper.
+    /// Three claims, and the third is what keeps the other two from being
+    /// vacuous:
+    ///
+    /// 1. `v2-padded` plays exactly what `lookahead-v1` plays (it IS that seat);
+    /// 2. `v2-refit-padded` plays exactly what a DIRECT `with_knobs`
+    ///    construction on `WeightTable::V2_REFIT_PADDED` plays (the named table
+    ///    reaches the agent);
+    /// 3. the two arms DIVERGE somewhere on this walk — without which every
+    ///    table pin here would pass on two tables that play identically.
+    #[test]
+    fn the_named_identity_arms_walk_their_own_tables() {
+        use crate::game::policy::RolloutPolicy;
+        use crate::game::search_actions::DecisionHandle;
+        use crate::types::GameConfig;
+        use crate::StartingOrderChoice;
+
+        let rules = Rules::standard();
+        // (setup seed, family-weighted steps forward, agent stream seed)
+        const POSITIONS: [(u64, usize, u64); 3] =
+            [(0xD1, 0, 0xA11CE0), (0xD2, 60, 0xA11CE1), (0xD3, 140, 0xA11CE2)];
+        const DECISIONS: usize = 2;
+
+        let walk = |build: &mut dyn FnMut(&Rules, u64) -> Box<dyn ArenaAgent>| -> Vec<String> {
+            let mut moves = Vec::new();
+            for (seed, steps, agent_seed) in POSITIONS {
+                let pending = crate::game::new_game(GameConfig::for_player_count(2), &rules, seed)
+                    .expect("setup");
+                let mut state =
+                    crate::game::finalize_setup(pending, &[StartingOrderChoice::Keep(0); 2])
+                        .expect("finalize");
+                let mut rng = ChaCha8Rng::seed_from_u64(seed ^ 0x3F3F);
+                let policy = RolloutPolicy::FAMILY_WEIGHTED_DEFAULT;
+                for step in 0..steps {
+                    let mv = {
+                        let handle = DecisionHandle::new(&state, &rules);
+                        policy
+                            .pick(&handle, &mut rng)
+                            .unwrap_or_else(|| panic!("dead end at seed {seed:#x} step {step}"))
+                    };
+                    state = crate::game::apply_move_unchecked(&state, &mv, &rules)
+                        .expect("policy move applies");
+                }
+                let mut agent = build(&rules, agent_seed);
+                for _ in 0..DECISIONS {
+                    let mover = state.current_player;
+                    let view = crate::game::observe(&state, mover).expect("the mover's view");
+                    let report = agent.choose(&view, &rules).expect("the seat decides");
+                    moves.push(format!("{:?}", report.mv));
+                    state = crate::game::apply_move(&state, &report.mv, &rules)
+                        .expect("the seat's move is legal at the checked boundary");
+                }
+            }
+            moves
+        };
+
+        let contestant = |c: Contestant| {
+            move |rules: &Rules, seed: u64| -> Box<dyn ArenaAgent> { c.build(rules, seed).0 }
+        };
+        let padded = walk(&mut contestant(Contestant::NamedTable(NamedIdentity::V2Padded)));
+        let refit = walk(&mut contestant(Contestant::NamedTable(NamedIdentity::V2RefitPadded)));
+        let shipped = walk(&mut contestant(Contestant::LOOKAHEAD_V1_DEFAULT));
+        // The DIRECT construction on the named table, bypassing `build`
+        // entirely: if `build` handed the agent some other table, this walk and
+        // the arm's would part company.
+        let direct = walk(&mut |rules: &Rules, seed: u64| -> Box<dyn ArenaAgent> {
+            Box::new(LookaheadAgent::with_knobs(
+                rules,
+                SearchScheme::TurnBoundary { beam: NAMED_IDENTITY_BEAM },
+                NAMED_IDENTITY_WORLDS,
+                NAMED_IDENTITY_RETREAT_SAMPLES,
+                WeightTable::V2_REFIT_PADDED,
+                seed,
+            ))
+        });
+        assert_eq!(padded.len(), POSITIONS.len() * DECISIONS, "the walk must reach every decision");
+
+        assert_eq!(
+            padded, shipped,
+            "v2-padded must play the shipped seat's game — it names the shipped table",
+        );
+        assert_eq!(
+            refit, direct,
+            "v2-refit-padded's built agent must play the table its name resolves to",
+        );
+        assert_ne!(
+            refit, padded,
+            "the two arms played an IDENTICAL walk, so this walk cannot tell their tables \
+             apart and every table pin resting on it is vacuous",
+        );
+        println!("named-identity walk: v2-padded {padded:?}\n                     refit {refit:?}");
+    }
+
+    /// A named arm survives the descriptor round trip — and a record naming an
+    /// arm at knobs the arm does not have is REFUSED rather than resumed as if
+    /// it were that arm.
+    #[test]
+    fn a_named_identity_round_trips_through_its_descriptor() {
+        for arm in NamedIdentity::ALL {
+            let contestant = Contestant::NamedTable(arm);
+            let (name, _version, params) = contestant.descriptor();
+            assert_eq!(name, arm.name());
+            assert_eq!(
+                Contestant::from_parts(&name, &params),
+                Ok(contestant),
+                "{} must reconstruct from its own descriptor",
+                arm.name(),
+            );
+            // The identity keys ride the map and are NOT consumed — the
+            // preserve-list rule, so a record from a build whose table moved
+            // stays loadable and the drift stays visible to the caller.
+            assert!(params.contains_key("weights") && params.contains_key("eval_impl"));
+
+            let mut wrong = params.clone();
+            wrong.insert("b".to_string(), 8);
+            let message = Contestant::from_parts(&name, &wrong)
+                .map(|c| format!("{c:?}"))
+                .expect_err("a knobbed record must not resume as a knobless arm");
+            assert!(message.contains("knobless"), "{}: {message}", arm.name());
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // W-A1 — the void-unit instrument (V4 step 11, amendment A-S11-1; the
+    // operational definitions are freeze doc
+    // `docs/plans/2026-08-30-phase3.5c-v4-identity-freeze.md` §9.6, registered
+    // before this code existed).
+    // -----------------------------------------------------------------------
+
+    /// W-A1's OWN committed diagnostic master. The constructor's NAME is the
+    /// waiver (`game::seeds`): these cells assert, and an OS-entropy master
+    /// would flake by construction.
+    ///
+    /// A FRESH literal, deliberately none of the step-11 masters that carry a
+    /// read: not the registered `0x0B0120260831990{1..5}` of the D2 cap-rate
+    /// wave, not the `999{7,8,9}` scratch masters the freeze doc already spent,
+    /// and not `arena::diagnostic`'s own `0x0B0120260831_9999`. A test that
+    /// played a registered schedule would consume a read the orchestrator has
+    /// not taken.
+    const W_A1_MASTER: u64 = 0x0B01_2026_0830_A1A1;
+
+    /// A cell of two RUNGS at [`W_A1_MASTER`] — cheap enough to play whole 2P
+    /// games in the per-edit tier, which every cell below does.
+    fn w_a1_spec(name: &str, units: u32) -> CellSpec {
+        w_a1_spec_at(name, W_A1_MASTER, units)
+    }
+
+    /// [`w_a1_spec`] at a stated master — the wave ships two fixtures on two
+    /// masters, and the CONTESTANTS are the same pair in both so the two differ
+    /// only in the schedule they draw.
+    fn w_a1_spec_at(name: &str, master: u64, units: u32) -> CellSpec {
+        CellSpec {
+            name: name.to_string(),
+            players: 2,
+            x: Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT),
+            y: Contestant::Policy(RolloutPolicy::RetreatAverse),
+            units,
+            master: SeedScheduleKind::Diagnostic(master),
+        }
+    }
+
+    /// The turn guard at which EVERY game of a one-unit [`w_a1_spec`] caps —
+    /// the all-void shape. (Measured: unit 0's two games end naturally at turns
+    /// 128 and 104.)
+    const W_A1_ALL_VOID_MAX_TURNS: u32 = 50;
+
+    /// **THE MIXED FIXTURE'S GUARD.** Under it exactly TWO of
+    /// [`W_A1_MIXED_UNITS`]'s twelve games pass the guard — and both are their
+    /// unit's SECOND game, after a first game that COMPLETED. That is the shape
+    /// the void semantics can get wrong: an outcome folded when its game
+    /// finished cannot be taken back once the unit turns out to be void, so the
+    /// loop has to buffer a unit's outcome and fold it only when the unit is
+    /// known READ.
+    const W_A1_MIXED_MAX_TURNS: u32 = 130;
+
+    /// The `(unit index, arrangement)` of every capped game of the mixed
+    /// fixture, in schedule order — recorded the way the contestant goldens
+    /// record their probed seeds, and asserted below rather than trusted.
+    const W_A1_MIXED_CAPPED: [(usize, u8); 2] = [(1, 1), (3, 1)];
+
+    /// **THE TIE FIXTURE** — a second master, added by the fix wave for review
+    /// S1: the wave's first fixture reads ZERO for both tie counters, so every
+    /// assertion about them compared 0 with 0 and a mutant that leaked
+    /// `top_vp_ties`/`ties_to_seat0` out of a void unit survived the suite.
+    ///
+    /// FOUND BY A BOUNDED SEARCH, recorded so it is reproducible: 20 masters
+    /// `0x0B01_2026_0830_A101..=A114` × 40 units of [`w_a1_spec_at`], every game
+    /// played to the shipped guard through `diagnostic::run_world_capped` and
+    /// scored for `standings[0].total == standings[1].total`. 27 shared-top
+    /// games in 1,600 (1.7%, the repo's own ~1.26% figure at this size), ALL of
+    /// them decided for seat 0 — which is `cross_checks`'s "at 2P seat 0 takes
+    /// every tie", measured. This master is the one shape in that search
+    /// carrying a shared top total on BOTH sides of the void/read line.
+    ///
+    /// At `A10D`, 19 units, guard 94, the 38 scheduled games end naturally at
+    /// `[114,40] [168,58] [118,58] [94,100] [58,98] [38,154] [94,80] [82,86]
+    /// [58,106] [76,84] [80,228] [148,134] [84,110] [138,140] [68,72]
+    /// [102,134] [82,88] [178,152] [66,48]` (unit 0 first, arrangement 0
+    /// first). Seventeen pass the guard, leaving 13 void units and 6 read
+    /// (units 6, 7, 9, 14, 16, 18):
+    ///
+    ///   * **unit 3 arrangement 0** completes at 94 turns with a SHARED top VP
+    ///     total, and its sibling caps at 100 — so the tie sits INSIDE a void
+    ///     unit and must not reach either counter;
+    ///   * **unit 18 arrangement 1** completes at 48 turns with a shared top
+    ///     total in a READ unit — so the healthy report reads ONE, not zero,
+    ///     and a mutation that DROPPED a read unit's tie is caught too.
+    const W_A1_TIE_MASTER: u64 = 0x0B01_2026_0830_A10D;
+    const W_A1_TIE_UNITS: u32 = 19;
+    const W_A1_TIE_MAX_TURNS: u32 = 94;
+    /// Every capped game of the tie fixture, `(unit index, arrangement)`, in
+    /// schedule order.
+    const W_A1_TIE_CAPPED: [(usize, u8); 17] = [
+        (0, 0),
+        (1, 0),
+        (2, 0),
+        (3, 1),
+        (4, 1),
+        (5, 1),
+        (8, 1),
+        (10, 1),
+        (11, 0),
+        (11, 1),
+        (12, 1),
+        (13, 0),
+        (13, 1),
+        (15, 0),
+        (15, 1),
+        (17, 0),
+        (17, 1),
+    ];
+    /// The completed game of a VOID unit whose top VP total was SHARED.
+    const W_A1_TIE_IN_A_VOID_UNIT: (usize, u8) = (3, 0);
+
+    /// The greedy fixture: three units at the same master and the same guard,
+    /// where unit 0's FIRST game caps and its second COMPLETES — the mirror of
+    /// the rung fixture's shape, and the one that proves a void unit's other
+    /// arrangement is still played.
+    const W_A1_GREEDY_UNITS: u32 = 3;
+
+    /// The scheduled world seeds of a cell at [`W_A1_MASTER`], re-derived from
+    /// the DESIGN exactly as the loop derives them. Never transcribed: a
+    /// schedule change must fail here rather than leave a stale literal that
+    /// still passes.
+    fn w_a1_scheduled_seeds(units: u32) -> Vec<WorldSeed> {
+        w_a1_scheduled_seeds_at(W_A1_MASTER, units)
+    }
+
+    /// [`w_a1_scheduled_seeds`] at a stated master.
+    fn w_a1_scheduled_seeds_at(master: u64, units: u32) -> Vec<WorldSeed> {
+        let mut schedule = SeedSchedule::diagnostic(master);
+        (0..units).map(|_| schedule.next_world()).collect()
+    }
+
+    /// The design size of the wave's fixture cell — six units, twelve games.
+    ///
+    /// MEASURED at [`W_A1_MASTER`] before any of this code existed, the way the
+    /// contestant goldens record their probed seeds: the twelve scheduled games
+    /// end naturally at turns `[128, 104] [108, 136] [86, 72] [68, 168]
+    /// [102, 60] [120, 86]` (unit 0 first, arrangement 0 first), so at the
+    /// shipped guard the cell caps NOTHING and under a guard in the low
+    /// hundreds it caps some units and not others.
+    const W_A1_MIXED_UNITS: u32 = 6;
+
+    /// **What this cell pins is the ARGUMENTS, and it is worth being exact**
+    /// (review S2). [`run_cell`] DELEGATES to [`run_cell_loop`], so the
+    /// serialized comparison below is between the loop and itself: it cannot
+    /// detect any change INSIDE the loop, and a `run_cell_loop` that ignored
+    /// its `policy` and `max_turns` entirely would satisfy it. What it does
+    /// establish, non-vacuously, is that the existing public chain reaches that
+    /// one loop carrying `(invariants = true, CapPolicy::Refuse,
+    /// HONEST_MAX_TURNS)` — pass a different policy or a shorter guard and the
+    /// reports diverge (the cell below, which caps at a 50-turn guard, is the
+    /// other half of that).
+    ///
+    /// **Absent-flag inertness itself rests on three other things**, none of
+    /// them this cell: the CONSTRUCTION fact that `CapPolicy::Refuse` calls
+    /// `run_arena_game_capped(seed, players, rules, &mut make_agent,
+    /// invariants, max_turns)`, which is [`super::run_arena_game`] verbatim;
+    /// the five untouched contestant goldens; and the measured byte-identity of
+    /// the release runner's unflagged `cell` output at base versus head (freeze
+    /// doc §9.6 pin (v)).
+    ///
+    /// The void fields' refuse-mode values are pinned here too, and the echo is
+    /// pinned NEGATIVELY: an absent `--capped-ceiling` emits no token at all
+    /// (the `cap`-knob precedent, freeze doc §9.6).
+    #[test]
+    fn refuse_mode_reaches_the_same_report_through_the_parameterized_loop() {
+        let rules = Rules::standard();
+        let spec = w_a1_spec("w-a1-refuse-inert", 3);
+
+        let old = run_cell(&spec, &rules).expect("a rung cell completes");
+        let (looped, _wall) = run_cell_loop(
+            &spec,
+            &rules,
+            true,
+            CapPolicy::Refuse,
+            HONEST_MAX_TURNS,
+            &mut |_stats, _arr| Ok(()),
+        )
+        .expect("the same cell through the parameterized loop");
+
+        assert_eq!(
+            serde_json::to_string(&old).unwrap(),
+            serde_json::to_string(&looped).unwrap(),
+            "the existing entry chain must reach the loop at (invariants = true, \
+             CapPolicy::Refuse, HONEST_MAX_TURNS) — this does NOT pin the loop's \
+             insides, which are the same code on both sides of this comparison",
+        );
+
+        assert_eq!(old.capped_ceiling, None, "refuse mode registers no ceiling");
+        assert_eq!(old.units_scheduled, spec.units);
+        assert_eq!(old.units_void, 0, "no unit can be void in refuse mode");
+        assert_eq!(old.units_read, spec.units);
+        assert_eq!(old.units_read as usize, old.x_unit_shares.len());
+        assert!(old.capped.is_empty(), "refuse mode counts no capped game");
+        assert_eq!(old.games, spec.units * u32::from(spec.players));
+        assert!(
+            !old.spec_echo.contains("capped-ceiling"),
+            "an absent ceiling emits NO token at all: {}",
+            old.spec_echo,
+        );
+    }
+
+    /// **THE VOID SEMANTICS.** The design UNIT containing a capped game is
+    /// void: it contributes no outcome, and every outcome statistic on the
+    /// report — the unit vector, θ̂, the interval, `games`, the trigger tally —
+    /// reads over the READ units alone (freeze doc §9.6).
+    ///
+    /// The resample stream is the one thing that does NOT move with the read
+    /// count: it is derived from the DESIGN (master, SCHEDULED units, players)
+    /// exactly as before, so an interval stays a function of the data once.
+    #[test]
+    fn a_mixed_cell_voids_the_units_that_capped_and_reads_the_rest() {
+        use std::collections::BTreeSet;
+
+        let rules = Rules::standard();
+        let spec = w_a1_spec("w-a1-mixed", W_A1_MIXED_UNITS);
+        let (report, _wall) = run_cell_loop(
+            &spec,
+            &rules,
+            true,
+            CapPolicy::Count { ceiling: W_A1_MIXED_CAPPED.len() as u32 },
+            W_A1_MIXED_MAX_TURNS,
+            &mut |_stats, _arr| Ok(()),
+        )
+        .expect("a cell at its own ceiling completes");
+
+        let seeds = w_a1_scheduled_seeds(spec.units);
+        let expected: Vec<CappedGame> = W_A1_MIXED_CAPPED
+            .iter()
+            .map(|&(unit, arrangement)| CappedGame {
+                seed: seeds[unit],
+                arrangement,
+                // The driver's own number, one past the guard.
+                turns: W_A1_MIXED_MAX_TURNS + 1,
+            })
+            .collect();
+        assert_eq!(report.capped, expected, "the counted events, in schedule order");
+
+        let void: BTreeSet<usize> = W_A1_MIXED_CAPPED.iter().map(|&(unit, _)| unit).collect();
+        assert_eq!(report.units_scheduled, spec.units);
+        assert_eq!(report.units_void, void.len() as u32);
+        assert_eq!(report.units_read, spec.units - void.len() as u32);
+        assert_eq!(report.x_unit_shares.len(), report.units_read as usize, "units_read IS n");
+        assert_eq!(
+            report.games,
+            report.units_read * u32::from(spec.players),
+            "`games` on the report is the READ count",
+        );
+        assert_eq!(
+            report.trigger.games(),
+            u64::from(report.games),
+            "a void unit's completed game is not an observation of the trigger distribution",
+        );
+        assert_eq!(report.theta_hat, mean(&report.x_unit_shares));
+
+        let resample_seed = mix(
+            SALT_BOOTSTRAP,
+            &[W_A1_MASTER, u64::from(spec.units), u64::from(spec.players)],
+        );
+        assert_eq!(
+            report.interval,
+            interval_for_units(&report.x_unit_shares, BOOTSTRAP_REPLICATES, resample_seed),
+            "the interval is the one the READ vector gives at the DESIGN-derived seed",
+        );
+
+        // The echo's `games=` is the SCHEDULED count — item 4's two clauses
+        // answered by two numbers.
+        assert!(report.spec_echo.contains(&format!("units={} ", spec.units)), "{}", report.spec_echo);
+        assert!(
+            report
+                .spec_echo
+                .contains(&format!("games={} ", u32::from(spec.players) * spec.units)),
+            "{}",
+            report.spec_echo,
+        );
+    }
+
+    /// **THE CROSS-SURFACE PIN (pin (iii)).** The cell's figures are the fold of
+    /// independent world reads over the RIGHT games: the outcome figures over
+    /// the READ units only, the volume counters over ALL games — the capped
+    /// ones' partial `moves_by_seat` included.
+    ///
+    /// The reads come from `arena::diagnostic::run_world_capped`, which seats
+    /// and keys a world exactly as a cell does but tabulates nothing, so this
+    /// compares the tabulation against a surface that shares only the play.
+    ///
+    /// ANTI-VACUITY is load-bearing on the volume half: the fold over ALL games
+    /// and the fold over READ games alone must actually DIFFER at this fixture,
+    /// or "over every played game" would be indistinguishable from "over the
+    /// read units".
+    #[test]
+    fn a_mixed_cells_figures_are_the_fold_of_the_world_reads_over_the_right_games() {
+        use crate::game::arena::diagnostic::{run_world_capped, WorldSpec};
+
+        let rules = Rules::standard();
+        let spec = w_a1_spec("w-a1-mixed-cross", W_A1_MIXED_UNITS);
+        let (report, _wall) = run_cell_loop(
+            &spec,
+            &rules,
+            true,
+            CapPolicy::Count { ceiling: W_A1_MIXED_CAPPED.len() as u32 },
+            W_A1_MIXED_MAX_TURNS,
+            &mut |_stats, _arr| Ok(()),
+        )
+        .expect("a cell at its own ceiling completes");
+
+        let players = spec.players;
+        let mut applied_by_seat = vec![0u64; players as usize];
+        let mut applied_by_seat_read_only = vec![0u64; players as usize];
+        let mut x_applied_moves = 0u64;
+        let mut seat0_wins = 0u32;
+        let mut ties_to_seat0 = 0u32;
+        let mut trigger = TriggerTally::default();
+        let mut vp_margin_sum = 0.0f64;
+        let mut shares: Vec<f64> = Vec::new();
+        let mut games = 0u32;
+
+        for seed in w_a1_scheduled_seeds(spec.units) {
+            let mut completed = Vec::new();
+            let mut unit_void = false;
+            for arrangement in 0..players {
+                let run = run_world_capped(
+                    &WorldSpec { x: spec.x, y: spec.y, seed, players, arrangement },
+                    &rules,
+                    true,
+                    W_A1_MIXED_MAX_TURNS,
+                )
+                .expect("the world plays");
+                let x_seat = run.x_seat;
+                match run.game.outcome {
+                    DiagnosticOutcome::Capped { moves_by_seat, .. } => {
+                        for (seat, moves) in moves_by_seat.iter().enumerate() {
+                            applied_by_seat[seat] += moves;
+                        }
+                        x_applied_moves += moves_by_seat[x_seat.0 as usize];
+                        unit_void = true;
+                    }
+                    DiagnosticOutcome::Terminated(stats) => {
+                        for (seat, moves) in stats.moves_by_seat.iter().enumerate() {
+                            applied_by_seat[seat] += moves;
+                        }
+                        x_applied_moves += stats.moves_by_seat[x_seat.0 as usize];
+                        completed.push((stats, x_seat));
+                    }
+                }
+            }
+            if unit_void {
+                continue;
+            }
+            let mut unit_x_wins = 0u32;
+            for (stats, x_seat) in completed {
+                games += 1;
+                for (seat, moves) in stats.moves_by_seat.iter().enumerate() {
+                    applied_by_seat_read_only[seat] += moves;
+                }
+                trigger.observe(stats.trigger.as_ref());
+                if stats.result.winner == x_seat {
+                    unit_x_wins += 1;
+                }
+                if stats.result.winner == PlayerId(0) {
+                    seat0_wins += 1;
+                }
+                let standings = &stats.result.standings;
+                let top_shared = standings.len() >= 2
+                    && standings[0].breakdown.total == standings[1].breakdown.total;
+                if top_shared && stats.result.winner == PlayerId(0) {
+                    ties_to_seat0 += 1;
+                }
+                let (mut x_total, mut y_total) = (0.0f64, 0.0f64);
+                for standing in standings {
+                    if standing.player == x_seat {
+                        x_total = f64::from(standing.breakdown.total);
+                    } else {
+                        y_total += f64::from(standing.breakdown.total);
+                    }
+                }
+                vp_margin_sum += x_total - y_total / f64::from(players - 1);
+            }
+            shares.push(f64::from(unit_x_wins) / f64::from(players));
+        }
+
+        assert_ne!(
+            applied_by_seat, applied_by_seat_read_only,
+            "ANTI-VACUITY: this fixture's capped games must move the volume fold",
+        );
+
+        // (a) OUTCOME — over the READ units only.
+        assert_eq!(report.games, games, "games");
+        assert_eq!(report.x_unit_shares, shares, "the unit vector");
+        assert_eq!(report.seat0_wins, seat0_wins, "seat-0 wins");
+        assert_eq!(report.ties_to_seat0, ties_to_seat0, "ties decided for seat 0");
+        assert_eq!(report.trigger, trigger, "the end-trigger tally");
+        assert_eq!(
+            report.vp_margin_mean,
+            vp_margin_sum / f64::from(games),
+            "the VP margin, summed in the same order the cell sums it",
+        );
+
+        // (b) VOLUME — over EVERY played game, capped ones included.
+        assert_eq!(report.applied_by_seat, applied_by_seat, "applied moves per seat");
+        assert_eq!(report.x_applied_moves, x_applied_moves, "X's applied moves");
+    }
+
+    /// **Pin (v)'s library half.** The two lines a counting cell prints are
+    /// composed HERE and lib-tested, so `examples/arena` stays print-only glue
+    /// — and `void_summary` returns `None` in refuse mode, which is what makes
+    /// an unflagged run print byte-for-byte what it always printed.
+    #[test]
+    fn the_render_helpers_are_none_in_refuse_mode_and_exact_in_counting_mode() {
+        const CEILING: u32 = 7;
+        let rules = Rules::standard();
+
+        let refused =
+            run_cell(&w_a1_spec("w-a1-render-refuse", 1), &rules).expect("a rung cell completes");
+        assert_eq!(refused.void_summary(), None, "refuse mode prints no void line at all");
+        assert!(refused.capped_lines().is_empty());
+
+        let spec = w_a1_spec("w-a1-render", W_A1_MIXED_UNITS);
+        let (report, _wall) = run_cell_loop(
+            &spec,
+            &rules,
+            true,
+            CapPolicy::Count { ceiling: CEILING },
+            W_A1_MIXED_MAX_TURNS,
+            &mut |_stats, _arr| Ok(()),
+        )
+        .expect("under its ceiling the cell completes");
+
+        assert_eq!(
+            report.void_summary(),
+            Some("units scheduled=6 · void=2 · read=4 · capped games=2 (ceiling 7)".to_string()),
+        );
+
+        let lines = report.capped_lines();
+        assert_eq!(lines.len(), report.capped.len(), "ONE line per capped game");
+        for (line, game) in lines.iter().zip(&report.capped) {
+            assert_eq!(
+                *line,
+                format!(
+                    "capped: arena world <x> <y> {:#018x} --arrangement {} · turns={}",
+                    game.seed.0, game.arrangement, game.turns,
+                ),
+            );
+        }
+    }
+
+    /// **Pin (iv), the ceiling.** The (c+1)-th capped game refuses the cell AT
+    /// ONCE — not at the schedule's end — with a typed arm naming the ceiling
+    /// and every capped game so far, and the run is INVALID (freeze doc §9.6
+    /// item 2).
+    ///
+    /// The EARLY half is what the sink's call count proves: the fixture's
+    /// second cap is its eighth scheduled game, so a cell that finished the
+    /// schedule and refused afterwards would have emitted all ten completed
+    /// games instead of six.
+    #[test]
+    fn the_ceiling_refuses_at_the_next_capped_game_and_cuts_the_schedule_short() {
+        let rules = Rules::standard();
+        let spec = w_a1_spec("w-a1-ceiling", W_A1_MIXED_UNITS);
+        let caps = W_A1_MIXED_CAPPED.len() as u32;
+
+        // The whole schedule's completed games, for the comparison below.
+        let mut all_calls = 0u32;
+        run_cell_loop(
+            &spec,
+            &rules,
+            true,
+            CapPolicy::Count { ceiling: caps },
+            W_A1_MIXED_MAX_TURNS,
+            &mut |_stats, _arr| {
+                all_calls += 1;
+                Ok(())
+            },
+        )
+        .expect("at its own ceiling the cell completes");
+        assert_eq!(
+            all_calls,
+            W_A1_MIXED_UNITS * 2 - caps,
+            "the full schedule emits every completed game",
+        );
+
+        let mut calls = 0u32;
+        let err = run_cell_loop(
+            &spec,
+            &rules,
+            true,
+            CapPolicy::Count { ceiling: caps - 1 },
+            W_A1_MIXED_MAX_TURNS,
+            &mut |_stats, _arr| {
+                calls += 1;
+                Ok(())
+            },
+        )
+        .expect_err("one cap above the ceiling refuses");
+
+        let ArenaError::CappedCeilingExceeded { ceiling, capped } = &err else {
+            panic!("the ceiling has its OWN typed arm, got {err:?}");
+        };
+        assert_eq!(*ceiling, caps - 1);
+        assert_eq!(
+            capped.len() as u32,
+            caps,
+            "the refusal carries every capped game so far, the (c+1)-th included",
+        );
+        assert!(
+            calls < all_calls,
+            "the refusal must cut the schedule SHORT: {calls} emitted, {all_calls} in the full run",
+        );
+
+        let message = err.to_string();
+        assert!(message.contains(&format!("{}", caps - 1)), "{message}");
+        assert!(message.contains(&format!("{caps}")), "{message}");
+        for game in capped {
+            assert!(
+                message.contains(&format!(
+                    "seed={:#018x} arrangement={} turns={}",
+                    game.seed.0, game.arrangement, game.turns,
+                )),
+                "every capped game must be named: {message}",
+            );
+        }
+    }
+
+    /// **Pin (iv), `Some(0)` is not `None`.** A registered ceiling of zero is
+    /// legal and refuses at the FIRST capped game — through the ceiling arm,
+    /// deliberately distinct from an absent flag's `CapReached`, so a reader of
+    /// a failed run can tell an instrument-guard refusal from the un-amended
+    /// rule.
+    #[test]
+    fn a_zero_ceiling_and_an_absent_flag_are_different_refusals() {
+        let rules = Rules::standard();
+        let spec = w_a1_spec("w-a1-zero-ceiling", W_A1_MIXED_UNITS);
+
+        let counted = run_cell_loop(
+            &spec,
+            &rules,
+            true,
+            CapPolicy::Count { ceiling: 0 },
+            W_A1_MIXED_MAX_TURNS,
+            &mut |_stats, _arr| Ok(()),
+        )
+        .expect_err("ceiling 0 refuses at the first capped game");
+        let ArenaError::CappedCeilingExceeded { ceiling, capped } = &counted else {
+            panic!("expected the ceiling arm, got {counted:?}");
+        };
+        assert_eq!(*ceiling, 0);
+        assert_eq!(capped.len(), 1, "the FIRST capped game, and no more of the schedule");
+
+        let refused = run_cell_loop(
+            &spec,
+            &rules,
+            true,
+            CapPolicy::Refuse,
+            W_A1_MIXED_MAX_TURNS,
+            &mut |_stats, _arr| Ok(()),
+        )
+        .expect_err("refuse mode refuses at the first capped game too");
+        assert!(
+            matches!(refused, ArenaError::CapReached { .. }),
+            "an absent flag keeps its OWN refusal, got {refused:?}",
+        );
+    }
+
+    /// **Pin (iv), the all-void refusal.** A cell whose every scheduled unit is
+    /// void has no read unit, so nothing constrains θ — and it refuses, typed,
+    /// rather than reporting a table of NaNs.
+    #[test]
+    fn a_cell_with_no_read_units_refuses_instead_of_reporting_nans() {
+        let rules = Rules::standard();
+        let spec = w_a1_spec("w-a1-all-void", 1);
+
+        let err = run_cell_loop(
+            &spec,
+            &rules,
+            true,
+            // At or above the game count, so the ceiling cannot be what refuses.
+            CapPolicy::Count { ceiling: u32::from(spec.players) },
+            W_A1_ALL_VOID_MAX_TURNS,
+            &mut |_stats, _arr| Ok(()),
+        )
+        .expect_err("a cell with no read unit cannot report a theta");
+
+        let ArenaError::NoReadUnits { scheduled, capped } = &err else {
+            panic!("expected the no-read-units arm, got {err:?}");
+        };
+        assert_eq!(*scheduled, spec.units);
+        assert_eq!(capped.len(), usize::from(spec.players), "both games of the only unit capped");
+        let message = err.to_string();
+        for game in capped {
+            assert!(
+                message.contains(&format!(
+                    "seed={:#018x} arrangement={} turns={}",
+                    game.seed.0, game.arrangement, game.turns,
+                )),
+                "{message}",
+            );
+        }
+    }
+
+    /// **THE TIE COUNTERS' void-exclusion, MEASURED** (fix wave, review S1).
+    ///
+    /// `top_vp_ties` and `ties_to_seat0` are the two buffered outcome
+    /// quantities the wave's first fixture could not cover: they read ZERO
+    /// there, so every assertion about them compared 0 with 0 and a mutant
+    /// leaking them out of a void unit survived the whole suite. This cell runs
+    /// the TIE FIXTURE, where a shared top VP total sits on BOTH sides of the
+    /// void/read line, and asserts both counters against an independent fold
+    /// over the READ units alone.
+    ///
+    /// `top_vp_ties` is not a [`CellReport`] field — it reaches a reader only
+    /// through the `cross_checks` top-VP row — so that row is asserted by its
+    /// printed text, which is the surface a reader actually quotes.
+    ///
+    /// MUTATION-PROVEN, and recorded because the cell's healthy values are
+    /// small: with the review's probe (g) applied — `top_vp_ties` and
+    /// `ties_to_seat0` folded in the void `continue` instead of dropped — this
+    /// cell FAILS (`ties_to_seat0` reads 2 where the read-unit fold says 1) and
+    /// the whole rest of the suite still passes.
+    #[test]
+    fn a_void_units_shared_top_vp_total_reaches_neither_tie_counter() {
+        use crate::game::arena::diagnostic::{run_world_capped, WorldSpec};
+
+        let rules = Rules::standard();
+        let spec = w_a1_spec_at("w-a1-tie", W_A1_TIE_MASTER, W_A1_TIE_UNITS);
+        let (report, _wall) = run_cell_loop(
+            &spec,
+            &rules,
+            true,
+            CapPolicy::Count { ceiling: W_A1_TIE_CAPPED.len() as u32 },
+            W_A1_TIE_MAX_TURNS,
+            &mut |_stats, _arr| Ok(()),
+        )
+        .expect("at its own ceiling the cell completes");
+
+        let seeds = w_a1_scheduled_seeds_at(W_A1_TIE_MASTER, spec.units);
+        let expected: Vec<CappedGame> = W_A1_TIE_CAPPED
+            .iter()
+            .map(|&(unit, arrangement)| CappedGame {
+                seed: seeds[unit],
+                arrangement,
+                turns: W_A1_TIE_MAX_TURNS + 1,
+            })
+            .collect();
+        assert_eq!(report.capped, expected, "the fixture's recorded capped set");
+
+        let void: std::collections::BTreeSet<usize> =
+            W_A1_TIE_CAPPED.iter().map(|&(unit, _)| unit).collect();
+        assert_eq!(report.units_void, void.len() as u32);
+        assert_eq!(report.units_read, spec.units - void.len() as u32);
+
+        // THE INDEPENDENT FOLD, over the READ units alone — the units the
+        // recorded capped set does not name.
+        let mut read_top_vp_ties = 0u32;
+        let mut read_ties_to_seat0 = 0u32;
+        for (unit, &seed) in seeds.iter().enumerate() {
+            if void.contains(&unit) {
+                continue;
+            }
+            for arrangement in 0..spec.players {
+                let run = run_world_capped(
+                    &WorldSpec { x: spec.x, y: spec.y, seed, players: spec.players, arrangement },
+                    &rules,
+                    true,
+                    W_A1_TIE_MAX_TURNS,
+                )
+                .expect("the world plays");
+                let DiagnosticOutcome::Terminated(stats) = run.game.outcome else {
+                    panic!("unit {unit} arrangement {arrangement} is a READ unit's game");
+                };
+                let standings = &stats.result.standings;
+                if standings.len() >= 2
+                    && standings[0].breakdown.total == standings[1].breakdown.total
+                {
+                    read_top_vp_ties += 1;
+                    if stats.result.winner == PlayerId(0) {
+                        read_ties_to_seat0 += 1;
+                    }
+                }
+            }
+        }
+
+        // ANTI-VACUITY: the whole point of this fixture is that these are NOT
+        // zero, so the equalities below compare something.
+        assert!(
+            read_top_vp_ties > 0 && read_ties_to_seat0 > 0,
+            "the tie fixture must carry a shared top VP total in a READ unit \
+             (top_vp_ties {read_top_vp_ties}, ties_to_seat0 {read_ties_to_seat0})",
+        );
+
+        assert_eq!(report.ties_to_seat0, read_ties_to_seat0, "ties decided for seat 0");
+        let rows = report.cross_checks.join("\n");
+        assert!(
+            rows.contains(&format!("top-VP ties: {read_top_vp_ties}/{} games", report.games)),
+            "the top-VP row reads over the READ units: {rows}",
+        );
+        assert!(
+            rows.contains(&format!(", {read_ties_to_seat0} decided for seat 0")),
+            "{rows}",
+        );
+
+        // THE EXCLUSION ITSELF: a VOID unit's completed game had a shared top VP
+        // total too. Replaying it is what turns "the counters happen to agree"
+        // into "a tie was dropped BECAUSE its unit was void" — without this the
+        // cell would pass on a fixture where no void unit ever tied.
+        let (void_unit, void_arrangement) = W_A1_TIE_IN_A_VOID_UNIT;
+        assert!(void.contains(&void_unit), "the named unit must be VOID");
+        let run = run_world_capped(
+            &WorldSpec {
+                x: spec.x,
+                y: spec.y,
+                seed: seeds[void_unit],
+                players: spec.players,
+                arrangement: void_arrangement,
+            },
+            &rules,
+            true,
+            W_A1_TIE_MAX_TURNS,
+        )
+        .expect("the world plays");
+        let DiagnosticOutcome::Terminated(stats) = run.game.outcome else {
+            panic!("the void unit's OTHER game is the one that caps");
+        };
+        let standings = &stats.result.standings;
+        assert!(
+            standings.len() >= 2 && standings[0].breakdown.total == standings[1].breakdown.total,
+            "the void unit's completed game must SHARE its top VP total — that is the \
+             fixture's whole content",
+        );
+        assert_eq!(stats.result.winner, PlayerId(0), "and be decided for seat 0");
+    }
+
+    /// **The explanation identity stays TOTAL over a capped game.** Spec
+    /// §0.3(b)'s `x_explanations == Some(x_applied_moves)` is a claim about
+    /// every move X played, and a capped game's moves are moves X played.
+    ///
+    /// This cell is the decisive pin that the two halves are folded TOGETHER:
+    /// `greedy-v1` explains exactly once per move it plays, so a loop that
+    /// folded the capped game's `moves_by_seat` but not its explanation handle
+    /// (or the reverse) breaks the equality. Its capped game is the unit's
+    /// FIRST — the mirror of the rung fixture — so the unit's SECOND game
+    /// completes after the cap and proves a void unit's other arrangement is
+    /// still played.
+    #[test]
+    fn the_explanation_identity_covers_a_mixed_cells_capped_game() {
+        let rules = Rules::standard();
+        let spec = CellSpec {
+            name: "w-a1-mixed-greedy".to_string(),
+            players: 2,
+            x: Contestant::GREEDY_V1_DEFAULT,
+            y: Contestant::Policy(RolloutPolicy::RetreatAverse),
+            units: W_A1_GREEDY_UNITS,
+            master: SeedScheduleKind::Diagnostic(W_A1_MASTER),
+        };
+        let mut sink_calls = 0u32;
+        let (report, _wall) = run_cell_loop(
+            &spec,
+            &rules,
+            true,
+            CapPolicy::Count { ceiling: 1 },
+            W_A1_MIXED_MAX_TURNS,
+            &mut |_stats, _arr| {
+                sink_calls += 1;
+                Ok(())
+            },
+        )
+        .expect("a cell at its own ceiling completes");
+
+        assert_eq!(
+            report.capped,
+            vec![CappedGame {
+                seed: w_a1_scheduled_seeds(spec.units)[0],
+                arrangement: 0,
+                turns: W_A1_MIXED_MAX_TURNS + 1,
+            }],
+        );
+        assert_eq!(report.units_void, 1);
+        assert_eq!(report.units_read, 2);
+        assert_eq!(
+            sink_calls, 5,
+            "the sink sees every COMPLETED game, void unit or not — five of the six scheduled",
+        );
+        assert_eq!(
+            report.x_explanations,
+            Some(report.x_applied_moves),
+            "spec §0.3(b): every move X played was explained, the capped game's included",
+        );
+        assert!(report.x_applied_moves > 0);
+    }
+
+    /// **Pin (ii).** With the flag PRESENT and no game capped, a counting cell
+    /// is the refuse-mode cell: same games, same units, same interval, same
+    /// counters. The only declared differences are the echo's ONE trailing
+    /// token and the five void fields, which now state the mode instead of
+    /// carrying refuse mode's constants.
+    ///
+    /// The comparison strips those six keys and compares the rest as a
+    /// serialized value rather than field by field, so it keeps its meaning the
+    /// next time [`CellReport`] grows.
+    #[test]
+    fn counting_mode_with_zero_capped_games_is_field_equal_to_refuse_mode() {
+        const CEILING: u32 = 4;
+        let rules = Rules::standard();
+        let spec = w_a1_spec("w-a1-zero-caps", W_A1_MIXED_UNITS);
+
+        let refused = run_cell(&spec, &rules).expect("no game of this cell caps at the shipped guard");
+        let (counted, _wall) =
+            run_cell_counting_caps_timed(&spec, &rules, true, CEILING, &mut |_stats, _arr| Ok(()))
+                .expect("the same cell, counting");
+
+        assert!(
+            counted.capped.is_empty(),
+            "this fixture caps NOTHING at the shipped guard — without that the \
+             comparison below would be measuring the void semantics, not their absence",
+        );
+        assert_eq!(counted.capped_ceiling, Some(CEILING));
+        assert_eq!(counted.units_scheduled, spec.units);
+        assert_eq!(counted.units_void, 0);
+        assert_eq!(counted.units_read, spec.units);
+        assert_eq!(
+            counted.spec_echo,
+            format!("{} capped-ceiling={CEILING}", refused.spec_echo),
+            "the flag adds exactly ONE trailing token to the echo",
+        );
+
+        let strip = |report: &CellReport| {
+            let mut value = serde_json::to_value(report).unwrap();
+            let map = value.as_object_mut().expect("a CellReport serializes as an object");
+            for key in [
+                "spec_echo",
+                "capped_ceiling",
+                "units_scheduled",
+                "units_void",
+                "units_read",
+                "capped",
+            ] {
+                assert!(map.remove(key).is_some(), "{key} is not a CellReport field");
+            }
+            value
+        };
+        assert_eq!(
+            strip(&refused),
+            strip(&counted),
+            "counting a cell that caps nothing must not move a single figure",
+        );
+    }
+
+    /// **Pin (i), the refusal half.** Refuse mode is not merely the default: a
+    /// cell that caps under it still fails whole, through the SAME
+    /// [`ArenaError::CapReached`] whose operator-facing message the V4 step-11
+    /// record quotes verbatim.
+    #[test]
+    fn a_refuse_mode_cell_that_caps_still_refuses_with_cap_reached() {
+        let rules = Rules::standard();
+        let spec = w_a1_spec("w-a1-refuse-caps", 1);
+
+        let err = run_cell_loop(
+            &spec,
+            &rules,
+            true,
+            CapPolicy::Refuse,
+            W_A1_ALL_VOID_MAX_TURNS,
+            &mut |_stats, _arr| Ok(()),
+        )
+        .expect_err("a 50-turn guard cannot contain this cell's games");
+
+        let (seed, turns) = match err {
+            ArenaError::CapReached { seed, turns } => (seed, turns),
+            other => panic!("refuse mode must still refuse through CapReached, got {other:?}"),
+        };
+        assert_eq!(turns, W_A1_ALL_VOID_MAX_TURNS + 1, "the cap fires one past the guard");
+        assert_eq!(
+            ArenaError::CapReached { seed, turns }.to_string(),
+            format!("turn cap reached at turn {turns} (world seed {:#018x})", seed.0),
+            "the message every cell, artifact and ledger row already quotes",
+        );
     }
 }

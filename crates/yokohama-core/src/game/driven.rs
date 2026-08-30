@@ -131,21 +131,22 @@ use serde::{Deserialize, Serialize};
 
 use crate::actions::{
     calculate_church_faith, customs_max_imported_goods, eligible_church_spaces,
-    eligible_customs_spaces_for_cost, has_church_or_customs_assistant,
+    eligible_customs_spaces_for_cost, exported_reward, has_church_or_customs_assistant,
 };
 use crate::game::agent::HONEST_MAX_TURNS;
 use crate::game::apply_move::apply_move_unchecked;
 use crate::game::arena::{
     agent_stream_seed, mix, play_from_state, require_supported_player_count, run_arena_game,
     AgentBench, ArenaAgent, Contestant, ControllerProvenance, DecisionReport, ExplainHandle,
-    PlayError, PlayLimits, SeatBench, Slot, SALT_DRIVEN_REPLICATION,
+    NamedIdentity, PlayError, PlayLimits, SeatBench, Slot, SALT_DRIVEN_REPLICATION,
 };
 use crate::game::belief::BeliefSampler;
+use crate::game::can_fulfill_order;
 use crate::game::end_game::is_game_over;
-use crate::game::eval::WeightTable;
+use crate::game::eval::{realizable_power, WeightTable};
 use crate::game::greedy::{GreedyAgent, DEFAULT_RETREAT_SAMPLES};
 use crate::game::invariants::check_invariants;
-use crate::game::legal_moves::get_legal_moves;
+use crate::game::legal_moves::{calculate_placement_cost, get_legal_moves};
 use crate::game::lookahead::{LookaheadAgent, RootScore, SearchScheme, SearchStats};
 use crate::game::metrics::decision_volume;
 use crate::game::move_legality::{is_move_legal, PathMode};
@@ -160,7 +161,7 @@ use crate::game::seeds::{SeedSchedule, WorldSeed};
 use crate::game::semantics::{record_digest, state_digest, SEMANTICS_REV};
 use crate::types::{
     AreaId, AreaType, ChurchTrack, CustomsTrack, EndGameTrigger, GameState, Move, OrderCardId,
-    PendingChoice, PlayerId, PlayerView, PresidentLocation,
+    PendingChoice, PlayerId, PlayerView, PresidentLocation, TurnPhase,
 };
 
 /// The decision guard's default: how many decisions a rooted run may apply
@@ -203,38 +204,54 @@ pub const DEFAULT_MAX_DECISIONS: u64 = 100_000;
 /// STATED RULE over state — the rule is in this file, in full, and it was
 /// written before any family root was drawn.
 ///
-/// **The two `*AtFinal` arms are PROVISIONAL, and the word is load-bearing** —
-/// the same obligation `yokohama-cli`'s `bot::PROVISIONAL_DEFAULT_BOT` carries,
-/// written here because this is core's own copy of it. Today they bind to the
-/// SHIPPED defaults ([`Contestant::GREEDY_V1_DEFAULT`] and
-/// [`Contestant::LOOKAHEAD_V1_DEFAULT`]); at D1's identity freeze they re-point
-/// at the frozen champion constructed from the EXPLICIT knobs that
-/// pre-registration records — never from a `*_DEFAULT` constant, which is D1's
-/// own rule — in the same commit that re-points the CLI's const, so the seat you
-/// play against and the seat a rooted question is measured against cannot drift
-/// apart. Until then the shared defaults are themselves frozen identity (D1:
-/// they may not move without an owner ruling), so the binding cannot drift
-/// silently either. What a report quotes is the RESOLVED echo and never the menu
-/// name: the name is a symbol whose meaning moves at the freeze.
+/// **THE LOOKAHEAD ARM RE-POINTED ON 2026-08-30; THE GREEDY ARM DID NOT, and
+/// the asymmetry is the record.** [`LookaheadAtFinal`](Self::LookaheadAtFinal)
+/// binds [`Contestant::PRODUCTION`] — the V4 sighted-evaluator identity
+/// `v4-step9-draft1`, confirmed on-policy that day and shipped AS ITSELF — set
+/// in the SAME commit that re-pointed the CLI's `bot::PROVISIONAL_DEFAULT_BOT`
+/// (and with it `suggest`'s construction) and `driven_runner::DEFAULT_SEAT`, so
+/// the seat you play against, the seat that advises you and the seat a rooted
+/// question is measured against cannot drift apart. That was this doc's own
+/// standing instruction and it is DISCHARGED rather than deleted: what it asked
+/// for was an EXPLICIT identity — the knobs are transcribed literals inside
+/// [`NamedIdentity`], never a `*_DEFAULT` constant, which is amendment D1's
+/// rule — and that is what landed.
+///
+/// **[`GreedyAtFinal`](Self::GreedyAtFinal) STAYS on
+/// [`Contestant::GREEDY_V1_DEFAULT`], and the reason is that no greedy identity
+/// was confirmed.** V4's field measured one lookahead table against another;
+/// re-pointing a one-ply arm onto a table no field ever seated it at would put
+/// an unmeasured contestant into the reply menu under a name whose every
+/// recorded figure was taken elsewhere. It is grandfathered byte-identically at
+/// [`WeightTable::V2`] with no controller-version bump, and so is
+/// [`RACE_RUSHER_FALLBACK`], which IS this arm's binding. The two `*AtFinal`
+/// arms therefore no longer move together; a future greedy freeze moves this
+/// one, on its own evidence, in its own commit.
+///
+/// What a report quotes is the RESOLVED echo and never the menu name: the name
+/// is a symbol whose meaning moved once, on the date above, and may move again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReplyPolicy {
     /// The shipped rollout rung — `RolloutPolicy::FAMILY_WEIGHTED_DEFAULT`.
     FamilyWeighted,
     /// Greedy-v1 at its shipped retreat-sample knob.
     GreedyAtFinal,
-    /// Lookahead-v1 at its shipped knobs, UNCAPPED — the provisional production
-    /// contestant.
+    /// **The shipped PRODUCTION contestant** — [`Contestant::PRODUCTION`], the
+    /// V4 identity `v4-step9-draft1` at the shipped knobs, UNCAPPED. The menu
+    /// name is a ROLE ("the strongest seat this repo ships") and not a
+    /// controller name, which is why it survived the re-point unchanged while
+    /// what it resolves to did not.
     LookaheadAtFinal,
     /// **The declared adversarial arm** (Phase C, design §2): a positional
     /// OPPORTUNIST that takes a race step when one is in front of it and plays
     /// [`GreedyAtFinal`](Self::GreedyAtFinal) otherwise. See
     /// [`RaceRusherAgent`] for the rule in full — it is a HARNESS INSTRUMENT and
     /// has no [`Contestant`], which is why [`contestant`](Self::contestant) is
-    /// partial. Its FALLBACK is provisional in exactly the sense the two
-    /// `*AtFinal` arms are, and for the same reason: it IS
-    /// [`GreedyAtFinal`](Self::GreedyAtFinal)'s binding
-    /// ([`RACE_RUSHER_FALLBACK`]), so D1's identity freeze moves the two
-    /// together or the pin fails.
+    /// partial. Its FALLBACK is provisional in exactly the sense
+    /// [`GreedyAtFinal`](Self::GreedyAtFinal) still is (the lookahead arm's
+    /// binding was discharged at the 2026-08-30 ship), and for the same
+    /// reason: it IS that arm's binding ([`RACE_RUSHER_FALLBACK`]), so a
+    /// future greedy re-point moves the two together or the pin fails.
     RaceRusher,
 }
 
@@ -275,7 +292,7 @@ impl ReplyPolicy {
         match self {
             Self::FamilyWeighted => Ok(Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT)),
             Self::GreedyAtFinal => Ok(Contestant::GREEDY_V1_DEFAULT),
-            Self::LookaheadAtFinal => Ok(Contestant::LOOKAHEAD_V1_DEFAULT),
+            Self::LookaheadAtFinal => Ok(Contestant::PRODUCTION),
             Self::RaceRusher => Err(NotAContestant::RaceRusher),
         }
     }
@@ -432,7 +449,8 @@ fn race_probe_seed(agent_seed: u64, decision_ordinal: u64) -> u64 {
 /// re-points the fallback with the menu arm it is named after rather than
 /// leaving this instrument on a stale binding.
 ///
-/// **PROVISIONAL until D1, exactly as the other `*AtFinal` bindings are** — the
+/// **PROVISIONAL exactly as [`ReplyPolicy::GreedyAtFinal`] still is** (the
+/// lookahead binding was discharged at the 2026-08-30 ship) — the
 /// echo a report quotes carries the RESOLVED fallback (`fallback=<greedy
 /// echo>`), never the word "greedy@final", for that reason.
 const RACE_RUSHER_FALLBACK: Contestant = Contestant::GreedyV1 { m: DEFAULT_RETREAT_SAMPLES };
@@ -864,6 +882,128 @@ pub enum RootPredicate {
     /// two decisions away is not a claim in the legal list and a predicate that
     /// tried to see it would be searching, not selecting.
     AchievementClaimAvailable,
+    /// **V4 STEP 2, the S-group's development/escrow generator** (spec
+    /// `docs/plans/2026-08-20-phase3.5c-v4-spec-prereg.md` §6): the mover's turn
+    /// STARTS with ≥ 2 same-total placements into different area sets.
+    ///
+    /// The registration is one sentence and every word of it is a conjunct — see
+    /// [`is_mover_turn_start`] for "turn starts", [`turn_start_placements`] for
+    /// which placements are meant, and [`same_count_fork`] for "≥ 2 same-total
+    /// into different area sets". What is NOT here is as load-bearing:
+    ///
+    /// * **no width conjunct.** Families 2–4 carry [`MAX_ROOT_CANDIDATES`]
+    ///   because their reads ADJUDICATE (every root candidate, K playouts, the
+    ///   whole reply menu). A V4 development root is read by evaluating feature
+    ///   COLUMNS over the fork, which is cents per candidate — and the width a
+    ///   bound would measure at a turn-start state is the ADDITIONAL-ACTION
+    ///   list's, not the placement list's, so the conjunct would exclude the
+    ///   rich placement positions for a number computed at the wrong position.
+    /// * **no `!is_game_over`.** It is implied: `is_game_over` keys on
+    ///   [`TurnPhase::TurnEnd`] and nothing else ever assigns that phase, so a
+    ///   state in `AdditionalActionFirst` is never over. The pin says so rather
+    ///   than a redundant conjunct claiming to.
+    ///
+    /// **DISCLOSED LOOSENESS, measured rather than argued.** The literal rule is
+    /// satisfied by any turn start where the mover holds an assistant and can
+    /// afford two different single-area placements — which is most turn starts.
+    /// That is the registration, and this predicate implements the registration;
+    /// [`scan_capacity`] is the instrument that says how loose it is at a master,
+    /// and step 2's capacity measurement is where that number belongs.
+    ///
+    /// # MEASURED SUPPLY (2026-08-21, step-2 capacity read)
+    ///
+    /// `capacity placement-fork-same-count --master 0x0401_2026_0821_9999`
+    /// (the declared dev-smoke throwaway) reached its `--stop-after 4` bound in
+    /// TWO generated games — ordinals 0,1 from game 0 and 2,3 from game 1, i.e.
+    /// the stride cap was spent in both. So the supply is ample and the
+    /// looseness above is confirmed rather than merely suspected: this predicate
+    /// selects near the first turn start it sees. What makes a development root
+    /// worth reading is therefore the step-5 gate (the S columns take ≥ 2
+    /// distinct values across the fork's same-count set), not this selection.
+    PlacementForkSameCount,
+    /// **V4 STEP 2, the E-group's development/escrow generator** (spec §6): the
+    /// NON-MOVER holds ≥ 1 order, VISIBLE to the mover, whose requirements the
+    /// non-mover's own stocks satisfy.
+    ///
+    /// **The visibility qualifier is the whole point and it is not decorative.**
+    /// An unfulfilled hidden STARTING order is a card the mover cannot see, and
+    /// an E-column read over a card no seat could read would be a read about
+    /// privileged information. [`order_visible_to_others`] is the exact masking
+    /// rule `observe::visible_player` applies, mirrored here and PINNED against
+    /// `observe` itself rather than restated and hoped about.
+    ///
+    /// **The predicate still selects on TRUTH** (design §2), and the two facts
+    /// are not in tension: a generator reads the whole `GameState` because it is
+    /// choosing the position, and what it chooses here is a position where a
+    /// MOVER-VISIBLE fact holds. The stocks half is `can_fulfill_order`'s own
+    /// arithmetic on the holder — public goods, so nothing hidden enters either
+    /// half.
+    ///
+    /// `!is_game_over` IS a conjunct here and is a judgment call named as one:
+    /// spec §6's sentence does not carry it, but the §6 read is
+    /// "≥ 1 for the opponent WITH the do-nothing-successor contrast", and a
+    /// terminal state has no successor to contrast against. Every other layer-2
+    /// arm excludes the terminal position for the same reason.
+    ///
+    /// # MEASURED SUPPLY: ZERO (2026-08-21, step-2 capacity read)
+    ///
+    /// `capacity opponent-sitting-executable --master 0x0401_2026_0821_9999`
+    /// (the declared dev-smoke throwaway) walked the WHOLE registered ecology —
+    /// all 240 games of `driven-generated-v2.2-lookahead`, EXHAUSTIVE, not
+    /// truncated — and found **0 strided ordinals**. This predicate has no
+    /// development band and no escrow band to draw at that master, and spec §6's
+    /// supply-miss recovery (a prefix-stable scan-games raise) cannot help a
+    /// rate that is not small but ZERO.
+    ///
+    /// **The zero is the POPULATION, not the implementation**, and the
+    /// diagnostic that separates them is recorded here because it is the whole
+    /// finding. It was taken over THE WALK'S OWN FIRST EIGHT GAMES — the same
+    /// master, the same `SeedSchedule::diagnostic` draw order, the same
+    /// `LOOKAHEAD_V1_DEFAULT` at both seats on the same
+    /// `agent_stream_seed(world, seat, Slot(seat.0))` keying — instrumented to
+    /// count instead of to select. It is a PREFIX of the 240-game walk and not an
+    /// independent sample, and quoting it as corroboration would be quoting the
+    /// same games twice. Across those 2,399 non-terminal positions:
+    ///
+    /// | quantity (position × held card)                   | count |
+    /// |---------------------------------------------------|-------|
+    /// | non-mover holds a VISIBLE card                     |   472 |
+    /// | non-mover holds a PAYABLE card (visible or not)    |    24 |
+    /// | non-mover holds a payable VISIBLE card (this arm)  | **0** |
+    /// | MOVER holds a payable visible card                 |    48 |
+    ///
+    /// Visible non-mover cards are common and payable visible cards exist — but
+    /// only ever in the hand of the seat ON THE MOVE. Every payable card a
+    /// NON-mover holds is its unfulfilled hidden STARTING order, which this arm
+    /// correctly excludes. The mechanism is not subtle: `Move::FulfillOrder` is
+    /// an additional action in BOTH of a turn's phases, a visible held card is a
+    /// CHOSEN Port take rather than a dealt one, and a non-mover's trade-good
+    /// stocks cannot change during the opponent's turn (the mover's actions move
+    /// no goods across seats; Trading House passive income is yen). So a seat
+    /// that fulfils what it can before handing off is a seat that never sits on
+    /// a visible executable order — and `lookahead-v1` does, at every one of
+    /// those positions.
+    ///
+    /// **The consequence reaches past root supply**: `O3(opponent)` — spec §3.2's
+    /// `ExecutableOrders` over KNOWN held orders, which is this arm's quantity
+    /// exactly — is a CONSTANT ZERO on this ecology's production bytes, which is
+    /// §8's business and not a generator's. Two scope limits keep that honest:
+    /// the ecology seats the SHIPPED `lookahead-v1` at `WeightTable::V2`, so a
+    /// fitted V4 identity may play differently; and hand-built pair fixtures
+    /// (family 4(b)) declare their own O3 and are untouched by any of this.
+    ///
+    /// **RULED 2026-08-22 (owner; the guidingpath four-flags row): this
+    /// predicate's generated bands are STRUCK and its master (M-OSE) is closed
+    /// permanently undrawn.** The step-5/step-10 opponent-sitting reads re-scope
+    /// to the game-3 (table 896199544) opponent-pending RECORDED root plus the
+    /// constructed fixtures — the owner's grounds, recorded as design evidence:
+    /// human players deliberately sit on executable orders (batching
+    /// fulfillments, masking an import race, banking action-bonus icons), so the
+    /// phenomenon is real in the target distribution and this ecology's zero
+    /// only measures what the shipped never-declining policy cannot express.
+    /// The variant stays in the vocabulary: its refusal text and this record are
+    /// what a future ecology amendment would build from.
+    OpponentSittingExecutable,
 }
 
 impl RootPredicate {
@@ -874,13 +1014,15 @@ impl RootPredicate {
     /// [`Self::holds`] and [`Self::config`] — all three are exhaustive matches —
     /// but NOT here, so a new variant must be added to this array by hand. The
     /// name-distinctness pin is what catches a copy-paste that forgot to.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 8] = [
         Self::FinalRoundAlreadyTriggered,
         Self::TriggerRoundNotFinal,
         Self::EndFirableAheadInTruth,
         Self::EndFirableBehindInTruth,
         Self::ExclusiveRaceOneStep,
         Self::AchievementClaimAvailable,
+        Self::PlacementForkSameCount,
+        Self::OpponentSittingExecutable,
     ];
 
     /// The stable name, for descriptors and error text.
@@ -892,6 +1034,8 @@ impl RootPredicate {
             Self::EndFirableBehindInTruth => "end-firable-behind-in-truth",
             Self::ExclusiveRaceOneStep => "exclusive-race-one-step",
             Self::AchievementClaimAvailable => "achievement-claim-available",
+            Self::PlacementForkSameCount => "placement-fork-same-count",
+            Self::OpponentSittingExecutable => "opponent-sitting-executable",
         }
     }
 
@@ -949,6 +1093,32 @@ impl RootPredicate {
                 width_ok_len(legal.len())
                     && legal.iter().any(|mv| matches!(mv, Move::FulfillAchievement { .. }))
             }
+            Self::PlacementForkSameCount => {
+                if !is_mover_turn_start(state) {
+                    return false;
+                }
+                // The cheapest conjunct there is, and it comes before the
+                // clone: a mover holding nothing reaches exactly ONE placement
+                // (the always-legal empty one), which no total can fork on.
+                if state.player(state.current_player).assistants.in_hand == 0 {
+                    return false;
+                }
+                turn_start_placements(state, rules)
+                    .is_some_and(|placements| same_count_fork(&placements))
+            }
+            Self::OpponentSittingExecutable => {
+                if is_game_over(state) {
+                    return false;
+                }
+                let mover = state.current_player;
+                state.players.iter().any(|holder| {
+                    holder.id != mover
+                        && holder.order_cards_in_hand.iter().any(|&order| {
+                            order_visible_to_others(holder, order)
+                                && can_fulfill_order(state, holder.id, order, &rules.orders)
+                        })
+                })
+            }
         }
     }
 
@@ -960,6 +1130,11 @@ impl RootPredicate {
     /// generates the SUBJECT'S OWN reachable positions — the right population
     /// for an on-policy checkpoint, and the reason the ecology is recorded on
     /// every descriptor rather than assumed.
+    ///
+    /// The two V4 arms scan the LOOKAHEAD ecology too, and that is spec §6's own
+    /// registration (`driven-generated-v2.3-lookahead`), not an inference: the
+    /// V4 read is about positions the SUBJECT reaches, so the population has to
+    /// be the subject's.
     pub fn ecology(self) -> GeneratingEcology {
         self.config().ecology
     }
@@ -973,9 +1148,1198 @@ impl RootPredicate {
             Self::EndFirableAheadInTruth
             | Self::EndFirableBehindInTruth
             | Self::ExclusiveRaceOneStep
-            | Self::AchievementClaimAvailable => v2_lookahead_config(),
+            | Self::AchievementClaimAvailable
+            | Self::PlacementForkSameCount
+            | Self::OpponentSittingExecutable => v2_lookahead_config(),
         }
     }
+}
+
+/// The TWO predicates spec §6 declares ORDINAL BANDS for.
+///
+/// A named array rather than a method, so every consumer of the bands (the burn
+/// guard, the disjointness pins, the capacity report) reads ONE list and a third
+/// V4 predicate cannot be added to the bands by being added to
+/// [`RootPredicate::ALL`]. The other six arms have no band at all — family
+/// blocks run confirmatory ordinals 4..28 by declaration, so a band applied to
+/// them would refuse the frozen blocks.
+pub const V4_BANDED_PREDICATES: [RootPredicate; 2] =
+    [RootPredicate::PlacementForkSameCount, RootPredicate::OpponentSittingExecutable];
+
+/// Spec §6's DEVELOPMENT band, half-open, per predicate.
+pub const V4_DEVELOPMENT_ORDINALS: std::ops::Range<u32> = 0..4;
+
+/// Spec §6's DEVELOPMENT EXTENSION band — drawn only on a development supply
+/// miss, ledger-recorded, and still development.
+pub const V4_DEVELOPMENT_EXTENSION_ORDINALS: std::ops::Range<u32> = 4..8;
+
+/// Spec §6's ESCROW band, never re-purposed. The BURN RULE fences it: no
+/// `table` / `adjudicate` / read of any kind here before step 10.
+pub const V4_ESCROW_ORDINALS: std::ops::Range<u32> = 8..16;
+
+/// Are ordinals `a` and `b` GUARANTEED to come from different generated games,
+/// whatever any scan at any master happens to find?
+///
+/// **The stride lemma, and it is arithmetic rather than a hope.**
+/// [`generate_roots`] walks games in draw order and positions in play order,
+/// increments the ordinal once per kept hit, and stops walking a game the moment
+/// `per_game_cap` hits have been kept there. So the ordinals one game
+/// contributes are CONSECUTIVE and number at most `per_game_cap` — which makes
+/// two ordinals from one game differ by at most `per_game_cap - 1`, and any pair
+/// at least `per_game_cap` apart provably different games.
+///
+/// **This is a GUARANTEE and not a test.** A pair closer than the cap MAY still
+/// land in different games (they usually do); what this says is that nothing
+/// about the population can make a separated pair share one. Spec §6's
+/// independence claim is exactly this lemma at `GENERATED_STRIDE_CAP = 2`, and
+/// the place it does NOT reach is the development-EXTENSION boundary: ordinals 7
+/// and 8 are one apart, so a game contributing a TWO-ordinal run can land
+/// exactly `{7, 8}` and hold both. (The straddler is a two-hit game, never a
+/// one-hit one — a game contributing a single ordinal cannot hold two. What
+/// one-hit games do is shift the run boundaries: with every game yielding two
+/// hits the runs are `{0,1} {2,3} {4,5} {6,7} {8,9}` and 7/8 never share, and it
+/// takes an ODD number of ordinals ahead of a two-hit game to line it up on
+/// `{7, 8}`.)
+/// `the_stride_separates_the_development_band_from_escrow_but_not_the_extension`
+/// pins both halves of that, and [`scan_capacity`] is what an orchestrator
+/// checks the straddle with if the extension is ever drawn.
+pub const fn ordinals_are_stride_separated(a: u32, b: u32, per_game_cap: u32) -> bool {
+    a.abs_diff(b) >= per_game_cap
+}
+
+// ---------------------------------------------------------------------------
+// V4 step 2: the two predicates' shared conjuncts (spec §6)
+// ---------------------------------------------------------------------------
+
+/// Is the MOVER'S TURN at its first phase, with nothing queued and no nested
+/// sub-turn running?
+///
+/// **This is "the turn starts" as a state can express it, and the gap is named
+/// rather than papered over.** `GameState` is HISTORY-FREE by design, so no
+/// state-local rule can tell the FIRST decision of phase A from a later one:
+/// the mover may already have fulfilled an order or claimed an achievement
+/// there, and neither writes a flag ([`AdditionalActionState`] records only the
+/// mercenary / University / Spinning Mill once-per-turn locks — see
+/// `crate::types::AdditionalActionState`, which is the whole of it). A test that
+/// demanded a pristine `additional_action_state` would therefore be a PARTIAL
+/// rule wearing a total name — it would reject a mover who used University and
+/// accept one who fulfilled three orders. What this predicate actually needs is
+/// the property that IS total: the turn's PLACEMENT is still ahead of the mover,
+/// which is exactly `AdditionalActionFirst`.
+///
+/// `pending_choices.is_empty()` is load-bearing twice over — a queued choice is
+/// a different decision from the one the root is about, and
+/// `EndAdditionalPhase` (the probe [`turn_start_placements`] applies) refuses
+/// mid-queue by its own self-defence.
+///
+/// `!is_mercenary_action` is UNREACHABLE under legal play — a mercenary sub-turn
+/// runs in the AreaAction..Recovery phases and restores `AdditionalActionFirst`
+/// only as it clears the flag — and it is still checked, because `holds` must be
+/// total over hand-built states too, and a probe that ended the phase inside a
+/// nested sub-turn would enumerate placements the mover never reaches.
+fn is_mover_turn_start(state: &GameState) -> bool {
+    state.turn_phase == TurnPhase::AdditionalActionFirst
+        && state.pending_choices.is_empty()
+        && !state.is_mercenary_action
+}
+
+/// The placements the mover reaches by DECLINING every additional action —
+/// `None` at a position that is not a turn start.
+///
+/// **The probe applies the engine's own move and reads the engine's own list,
+/// and both halves are the point.** The placement family is not in the legal
+/// list at a turn start (phase A offers additional actions and
+/// `EndAdditionalPhase`), so a predicate that wanted to see it had two choices:
+/// re-derive the placement enumeration from hand count and board, or ADVANCE the
+/// state one move and ask `get_legal_moves`. The first is a second
+/// implementation of `generate_placement_moves_with_tech` — including the
+/// Newspaper 4-area case, the Telegram adjacency, the Canal exclusion and the
+/// per-President placement toll — and a generator whose population depended on a
+/// second opinion about legality is a generator nobody can check. This is the
+/// second.
+///
+/// `EndAdditionalPhase` is ALWAYS in the legal list at
+/// `AdditionalActionFirst` with no queue (`generate_additional_action_moves`
+/// pushes it unconditionally, first), so `apply_move_unchecked` is being handed
+/// a move drawn from the list exactly as its contract requires, and the `.ok()`
+/// is not a fallback: the only failure it can express is the pending-choice
+/// self-defence that [`is_mover_turn_start`] has already excluded.
+///
+/// **What this DOES fix is which line the fork is measured on**: the placements
+/// a mover reaches after using University (one more assistant) or a mercenary
+/// are a different set. Selecting on the plain line is a selection rule, stated;
+/// it is not a claim that the mover will take it.
+fn turn_start_placements(state: &GameState, rules: &Rules) -> Option<Vec<Move>> {
+    if !is_mover_turn_start(state) {
+        return None;
+    }
+    let placing = apply_move_unchecked(state, &Move::EndAdditionalPhase, rules).ok()?;
+    Some(get_legal_moves(&placing, rules))
+}
+
+/// **IS THIS ROOT THE MOVER'S PLACEMENT DECISION?** (guidingpath / execution
+/// ledger R-S10-14, 2026-08-30.)
+///
+/// [`is_mover_turn_start`]'s sibling, one phase-only ply on: the state the
+/// mover decided its PLACEMENT in — phase [`TurnPhase::Placement`], nothing
+/// queued, no nested sub-turn running.
+///
+/// # Why this class exists
+///
+/// Born-validation on the licensed development band found the 2026-08-23
+/// registration's exhibit-class premise — "a hand-off in `AdditionalActionFirst`"
+/// — FALSE AT THE BYTES by exactly one ply: at every one of the thirteen flag-1
+/// exhibits, event `k−1` is the mover's own plain-line `EndAdditionalPhase` and
+/// event `k` is its placement, so `state_at(k)` IS the successor
+/// [`turn_start_placements`] would have crossed to. R-S10-14 reads the recipe's
+/// "one ply" as ALREADY CROSSED at such a root: the placement family is the
+/// root's own legal list, and every other rule stands verbatim.
+///
+/// **"The mover on the move" needs no conjunct**: `current_player` is the seat
+/// on the move by construction, and the family below is that seat's own legal
+/// list.
+///
+/// **The mercenary conjunct is [`is_mover_turn_start`]'s, carried over, and it
+/// is a total statement rather than a live branch**: a mercenary sub-turn runs
+/// `AreaAction -> ... -> Recovery` and never reaches `Placement`, so it can
+/// exclude no real placement decision. It is written because the two predicates
+/// are siblings and a reader comparing them should not have to ask why one
+/// carries a guard the other drops.
+///
+/// **`pub` is a VISIBILITY-ONLY unblock**, on [`placement_shape`]'s precedent
+/// and for its reason: the step-10 read surface has to ask the same question
+/// (its fork state is the root at such a position, and its Part A block labels
+/// the coincident successor sets), and the alternative was a second copy of the
+/// predicate in the probe — the drift class this repo fences. The body is what
+/// the recipe reads.
+pub fn is_placement_decision(state: &GameState) -> bool {
+    state.turn_phase == TurnPhase::Placement
+        && state.pending_choices.is_empty()
+        && !state.is_mercenary_action
+}
+
+/// The placement family this root offers — **from EITHER admitted class**
+/// (R-S10-14).
+///
+/// At a mover TURN START the ply is crossed exactly as it always was, through
+/// [`turn_start_placements`], so the frozen selection line is unchanged. At a
+/// PLACEMENT DECISION the ply is already crossed and the family is the root's
+/// own legal list. Nothing else differs: candidates are applied to the ROOT in
+/// both cases (they were already, because the placement arms are phase-blind),
+/// and the pricing cross-check is the same call.
+///
+/// `None` at a root that is neither — the typed
+/// [`FeeFlowMiss::NotAPlacementDecision`].
+fn placement_decision_family(state: &GameState, rules: &Rules) -> Option<Vec<Move>> {
+    if let Some(placements) = turn_start_placements(state, rules) {
+        return Some(placements);
+    }
+    is_placement_decision(state).then(|| get_legal_moves(state, rules))
+}
+
+/// One placement move's SHAPE: how many assistants it places, and the SET of
+/// areas it places them into.
+///
+/// The two encodings are not symmetric and the arithmetic says so:
+/// `PlaceThreeAreas` places ONE assistant per listed area (Option A's "1 in each
+/// of 1–N DIFFERENT areas", so the list is already distinct and the generator
+/// emits it in ascending area order — there is no `[A,B]` / `[B,A]` pair to
+/// collapse), while `PlaceTwoSameArea` places TWO into its area and, with
+/// Telegram, one more into an adjacent one. So the totals are `len`, 2 and 3,
+/// and the sets are 1-, 1- and 2-element.
+///
+/// `None` for anything else. Nothing else is reachable — the Placement phase
+/// generates only these two variants — and the caller SKIPS rather than panics,
+/// because a predicate is not the place to discover that the phase machine
+/// changed.
+///
+/// **`pub` is a VISIBILITY-ONLY unblock (V4 §7 step 5), on `visible_power`'s
+/// precedent — the body is untouched and the frozen predicate above computes
+/// exactly what it computed before.** The step-5 e113 exemplar registration has
+/// to ask a candidate placement for its total and its area set to apply its own
+/// selection criterion, and the only two honest options were to call THIS or to
+/// restate the `PlaceThreeAreas` / `PlaceTwoSameArea` arithmetic in the probe —
+/// where a Telegram-swap arm quietly disagreeing with the predicate's reading
+/// would make "same count" mean two different things in two files.
+pub fn placement_shape(mv: &Move) -> Option<(usize, BTreeSet<AreaId>)> {
+    match mv {
+        Move::PlaceThreeAreas { placements } => {
+            Some((placements.len(), placements.iter().copied().collect()))
+        }
+        Move::PlaceTwoSameArea { area, adjacent_bonus } => {
+            let mut areas = BTreeSet::new();
+            areas.insert(*area);
+            match adjacent_bonus {
+                Some(adjacent) => {
+                    areas.insert(*adjacent);
+                    Some((3, areas))
+                }
+                None => Some((2, areas)),
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Spec §6's "≥ 2 same-total placements into different area sets": does any ONE
+/// total carry two distinct area sets?
+///
+/// **SETS, because "sets" is what the registration says** — and the reading
+/// costs nothing, which is worth showing rather than asserting. The only pair a
+/// MULTISET reading would admit and this one would not is the Telegram swap:
+/// `{A:2, B:1}` against `{B:2, A:1}`, same total 3, same SET `{A, B}`. Wherever
+/// that pair is offered, the position also offers the two single-area placements
+/// `[A]` and `[B]` — total 1 with sets `{A}` and `{B}`, trivially different —
+/// because the Telegram move's own price is `cost(A,A) + cost(B)`, which
+/// dominates each of `cost(A)` and `cost(B)`, so a mover who can afford the swap
+/// can afford both singles. The two readings therefore never DISAGREE about a
+/// position; they differ only in which pair witnesses. The sweep in
+/// `the_set_reading_and_the_multiset_reading_never_disagree_about_a_position`
+/// is that argument made executable over organic states.
+///
+/// The scan runs this at every turn start of every generated game, so it returns
+/// the moment a total reaches two sets rather than tabulating the whole family.
+fn same_count_fork(placements: &[Move]) -> bool {
+    let mut by_total: BTreeMap<usize, BTreeSet<BTreeSet<AreaId>>> = BTreeMap::new();
+    for mv in placements {
+        let Some((total, areas)) = placement_shape(mv) else {
+            continue;
+        };
+        let sets = by_total.entry(total).or_default();
+        sets.insert(areas);
+        if sets.len() >= 2 {
+            return true;
+        }
+    }
+    false
+}
+
+/// Is `order`, held by `holder`, a card the OTHER seats can see?
+///
+/// **A MIRROR of `observe::visible_player`'s hand-masking branch, and the mirror
+/// is drift-pinned rather than trusted** (`the_visibility_mirror_agrees_with_
+/// observe_on_every_held_order`). The masking rule is one of the five hidden
+/// members, so the honest options were to CALL `observe` — which clones the
+/// whole board layout and every seat, at every position of a 240-game scan — or
+/// to restate the branch and hold it equal to its authority. This is the second,
+/// on `root_table`-mirrors-`Contestant::build`'s precedent.
+///
+/// The two arms are `visible_player`'s own, in its own order:
+///
+/// * `starting_order_hidden` — the LIVE-tracking fiction, where the dealt card
+///   is recorded NOWHERE and the view SYNTHESIZES a masked slot ahead of the
+///   hand. Every card actually in `order_cards_in_hand` is a witnessed Port take
+///   there, so every one of them is visible. (The invariant net makes the arm
+///   exclusive: a seat may not carry the flag AND an identity.)
+/// * otherwise the unfulfilled starting order is masked IN PLACE and nothing
+///   else is. Once fulfilled it has left the hand for the face-up completed
+///   pile, so the equality below stops masking exactly when the view does.
+fn order_visible_to_others(holder: &crate::types::PlayerState, order: OrderCardId) -> bool {
+    if holder.starting_order_hidden {
+        true
+    } else {
+        holder.starting_order != Some(order)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// V4 step 2: the §6 ESCROW RECIPE (spec §6's placement-fork pair recipe)
+// ---------------------------------------------------------------------------
+
+/// Which side of the §6 recipe one placement candidate is on.
+///
+/// **THREE outcomes, not two, and the third is the load-bearing one.** §6's
+/// recipe wants a pair whose value distinctness is RULES-DERIVED and
+/// unambiguous, so a candidate qualifies as a side only when its whole placed
+/// set agrees:
+///
+/// * every placed area is a production area and every one of them exports a
+///   nonzero reward → [`Productive`](Self::Productive);
+/// * every placed area is a production area and every one of them exports zero
+///   → [`Dead`](Self::Dead);
+/// * anything else → [`Ineligible`](Self::Ineligible).
+///
+/// The `Ineligible` bucket holds three genuinely different positions, all of
+/// which would corrupt the read if admitted:
+///
+/// 1. **A placement touching a NON-production area.** The dispatcher is silent
+///    outside the four production types, and silence is not zero: a Bank
+///    placement exports 1..5 Yen through a different helper, so calling it dead
+///    would state a rules falsehood.
+/// 2. **A MIXED production placement** — some placed areas exporting, some not.
+///    §6 asks for the candidate placing into "areas whose exported action
+///    reward … is nonzero" against "one where it is zero"; a mixed candidate
+///    answers to neither description, and admitting it would make the pair's
+///    direction a matter of which reading a reader picked.
+/// 3. **The EMPTY placement.** `PlaceThreeAreas { placements: vec![] }` is
+///    always in the list — it is how a mover declines to place — and both "all
+///    exporting" and "all not exporting" are VACUOUSLY true of an empty set. A
+///    classifier that let the vacuous truth decide would pair a placement
+///    against a non-placement and call the difference a value distinction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecipeSide {
+    /// Every placed area is a production area and every one of them exports a
+    /// NONZERO reward at the post-placement arriving power; the payload is the
+    /// summed reward.
+    Productive(u32),
+    /// Every placed area is a production area and every one of them exports
+    /// ZERO.
+    Dead,
+    /// Neither side of a rules-distinct pair.
+    Ineligible,
+}
+
+/// One placement candidate from the fork, classified.
+///
+/// Carried as DATA so the step-10 ledger row can record what the recipe saw
+/// rather than only what it chose — a miss is then diagnosable from the same
+/// call that produced it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecipeCandidate {
+    /// The placement move itself, as the engine enumerated it.
+    pub mv: Move,
+    /// How many assistants it places.
+    pub total: usize,
+    /// The SET of areas it places into.
+    pub areas: BTreeSet<AreaId>,
+    /// Which side of the recipe it is on.
+    pub side: RecipeSide,
+}
+
+/// The §6 recipe PAIR: two same-total placements from one fork, separated by
+/// the ENGINE-EXPORTED rules quantity and by nothing else.
+///
+/// **It fixes the recipe's QUANTITIES and no more than that** (spec §13's
+/// driven-side clause). It carries no feature column, no weight, no evaluator
+/// reading and no direction claim: the three things §6's escrow read then asks
+/// of this pair — that the frozen raw definitions separate it, that no blocking
+/// collision sits between its sides, and that the locked production identity's
+/// weighted preference agrees with the rules-derived direction — are asked of
+/// it by the READ, at step 10, over an object that was fixed before any of them
+/// could influence it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecipePair {
+    /// The seat whose turn is starting.
+    pub mover: PlayerId,
+    /// The shared placement total both sides carry.
+    pub total: usize,
+    /// The placement into areas that export a nonzero reward.
+    pub productive: Move,
+    /// That placement's area set.
+    pub productive_areas: BTreeSet<AreaId>,
+    /// The summed exported reward of the productive side, > 0.
+    pub productive_reward: u32,
+    /// The same-total placement into areas that export zero.
+    pub dead: Move,
+    /// That placement's area set.
+    pub dead_areas: BTreeSet<AreaId>,
+}
+
+/// Why a root yields no §6 recipe pair.
+///
+/// **Typed, and every arm is a STOP.** The recipe's whole claim is that its
+/// pair is rules-distinct; a nearest-available pair would be a pair whose
+/// distinctness nobody established, and the escrow read riding it would be
+/// wrong with no way to notice. So there is no fallback arm anywhere below —
+/// the ordinal simply does not carry the read, which is a fact the step-10
+/// ledger row records rather than a failure to work around.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RecipeMiss {
+    /// The root is not a mover turn start.
+    NotATurnStart,
+    /// A placement the engine's own legal list offered did not apply.
+    ///
+    /// # Unreachable today, and the argument is NOT "it came from the legal list"
+    ///
+    /// [`classify_recipe_candidates`] enumerates on the state AFTER
+    /// `EndAdditionalPhase` (phase `Placement`) and then applies each candidate
+    /// to the ROOT (phase `AdditionalActionFirst`). The two applications agree
+    /// BYTE FOR BYTE, but not because a move drawn from a legal list always
+    /// applies — it is because of three facts about those particular arms, and
+    /// a step-10 debugger reading this arm deserves the real ones:
+    ///
+    /// 1. The successor differs from the root in `turn_phase` and in NOTHING
+    ///    ELSE. `advance_phase`'s `AdditionalActionFirst` arm is the single
+    ///    assignment `AdditionalActionFirst => Placement`
+    ///    (apply_move.rs:252–254); every other side effect of that function —
+    ///    the mover, the turn number, the additional-action locks, the
+    ///    turn-start tech effects — lives in the `AdditionalActionSecond` arm
+    ///    and is not on this path.
+    /// 2. **Both placement arms are PHASE-BLIND.** Neither `PlaceThreeAreas`
+    ///    nor `PlaceTwoSameArea` reads `turn_phase` — their self-defence is the
+    ///    count cap, distinctness, Telegram ownership and adjacency, and
+    ///    per-area membership/placeability/supply/fees — and each ENDS by
+    ///    overwriting `turn_phase` with `Movement`. So the one field that
+    ///    differs is neither read nor preserved.
+    /// 3. The queue guard is pre-satisfied: [`is_mover_turn_start`] already
+    ///    required `pending_choices.is_empty()`, and the placement arms do not
+    ///    consult the queue at all.
+    ///
+    /// **So the unreachability DEPENDS on fact 2 holding.** If a placement arm
+    /// ever grew a `turn_phase` conjunct, every root would refuse loudly
+    /// through this arm rather than silently returning a recipe computed from a
+    /// thinned candidate set — which is the designed failure mode and the
+    /// reason this is a typed variant instead of a `continue`.
+    ///
+    /// Typed on
+    /// [`BuilderError::MissingArea`](crate::game::driven_families::BuilderError)'s
+    /// precedent: an engine change must surface HERE, naming itself, rather
+    /// than as a candidate quietly missing from a frozen recipe's population.
+    /// Mapping it onto one of the other arms would have the recipe report a
+    /// fact about the POSITION when what moved was the engine.
+    CandidateDidNotApply(String),
+    /// The mover's own view is unavailable.
+    MoverViewUnavailable,
+    /// The turn-start probe found no placement-shaped move at all.
+    NoPlacementCandidates,
+    /// Candidates exist and not one of them is a side: the mover can only
+    /// DECLINE to place (the empty placement is the whole list — no assistant in
+    /// hand, or no placement it can afford), or every candidate it can afford
+    /// touches a non-production area or mixes paying and non-paying ones.
+    NoEligibleCandidate,
+    /// Some candidate is eligible, but none places into production areas that
+    /// all export nonzero.
+    NoProductiveSide,
+    /// No candidate places into production areas that all export zero.
+    NoDeadSide,
+    /// Both sides exist, but never at the same placement total.
+    NoSharedTotal,
+}
+
+impl std::fmt::Display for RecipeMiss {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotATurnStart => write!(f, "the root is not a mover turn start"),
+            Self::CandidateDidNotApply(detail) => {
+                write!(f, "a legal placement did not apply: {detail}")
+            }
+            Self::MoverViewUnavailable => write!(f, "the mover's own view is unavailable"),
+            Self::NoPlacementCandidates => write!(f, "the turn start offers no placement"),
+            Self::NoEligibleCandidate => {
+                write!(f, "no candidate is a recipe side at all")
+            }
+            Self::NoProductiveSide => {
+                write!(f, "no candidate places into all-nonzero production areas")
+            }
+            Self::NoDeadSide => write!(f, "no candidate places into all-zero production areas"),
+            Self::NoSharedTotal => {
+                write!(f, "the two sides exist but never at the same placement total")
+            }
+        }
+    }
+}
+
+/// Every placement the fork offers, with the exported production reward it
+/// would realize.
+///
+/// **Two engine calls do all the work, and both are deliberate.**
+///
+/// * The candidate list is [`turn_start_placements`]' — the SAME probe the
+///   frozen §6 predicate selects the position with, so the recipe keys on
+///   exactly the population the generator drew rather than on a second opinion
+///   about which placements a turn start offers.
+/// * Each candidate is APPLIED, and the reward is read on the successor. The
+///   placement is what creates the access being priced, so a pre-placement
+///   reading would call every empty area dead however many assistants the
+///   candidate puts there; and applying is also what makes the Telegram swap,
+///   the multi-area spreads and the per-President tolls come out right without
+///   this function knowing anything about them.
+///
+/// The reward itself is [`exported_reward`] at
+/// [`realizable_power`](crate::game::eval::realizable_power) — the §13
+/// dispatcher and §3.2's shared arithmetic, CALLED rather than restated, which
+/// is why this helper can be frozen without freezing a copy of the reward table
+/// beside it. It observes the MOVER's own view to do so: every term of the
+/// power sum is public, so the seat the view belongs to cannot change the
+/// answer, and taking the reading through a view is what keeps the recipe's
+/// quantity the same object a seated evaluator would compute.
+pub fn classify_recipe_candidates(
+    root: &GameState,
+    rules: &Rules,
+) -> Result<Vec<RecipeCandidate>, RecipeMiss> {
+    let placements = turn_start_placements(root, rules).ok_or(RecipeMiss::NotATurnStart)?;
+    let mover = root.current_player;
+
+    let mut candidates = Vec::new();
+    for mv in &placements {
+        let Some((total, areas)) = placement_shape(mv) else {
+            continue;
+        };
+        let placed = apply_move_unchecked(root, mv, rules)
+            .map_err(|e| RecipeMiss::CandidateDidNotApply(e.to_string()))?;
+        let view = observe(&placed, mover).map_err(|_| RecipeMiss::MoverViewUnavailable)?;
+        let player =
+            view.players.iter().find(|p| p.id == mover).ok_or(RecipeMiss::MoverViewUnavailable)?;
+
+        // The three-way classification of the WHOLE placed set. `exporting`
+        // stays true only while every area is production AND pays; `dead` only
+        // while every area is production and pays nothing. An empty set leaves
+        // both true, which is why emptiness is refused before they are read.
+        let mut sum = 0u32;
+        let mut all_exporting = true;
+        let mut all_zero = true;
+        for area in &areas {
+            let area_type = view.board_layout.areas.get(area).map(|config| config.area_type);
+            match area_type.and_then(|t| exported_reward(t, realizable_power(&view, player, *area)))
+            {
+                Some(0) => all_exporting = false,
+                Some(reward) => {
+                    all_zero = false;
+                    sum += u32::from(reward);
+                }
+                // Outside the four production helpers — whatever the area pays
+                // through some other one — or (unreachably, since a placement
+                // names a board area) an area the layout does not carry.
+                // Neither side, either way.
+                None => {
+                    all_exporting = false;
+                    all_zero = false;
+                }
+            }
+        }
+
+        let side = if areas.is_empty() {
+            RecipeSide::Ineligible
+        } else if all_exporting {
+            RecipeSide::Productive(sum)
+        } else if all_zero {
+            RecipeSide::Dead
+        } else {
+            RecipeSide::Ineligible
+        };
+        candidates.push(RecipeCandidate { mv: mv.clone(), total, areas, side });
+    }
+
+    Ok(candidates)
+}
+
+/// §6's pair, chosen from classified candidates.
+///
+/// **The rule, stated once because it is FROZEN**: scan placement totals
+/// ASCENDING and take the first total carrying both a productive and a dead
+/// candidate; within it take each side's LOWEST area set.
+///
+/// Both halves are selection, not optimization, and that is the point. The
+/// smallest total is the least confounded pair available — fewest assistants
+/// moved, smallest fee, smallest collateral change to everything else the
+/// escrow read will look at — and a total carrying only one side is SKIPPED
+/// rather than refused, so a position offering its pair only at two assistants
+/// still carries the read. The within-total tie-break is the area set's own
+/// order, which has no value content in it; picking (say) the largest reward
+/// instead would be the recipe quietly optimizing the very quantity the read
+/// exists to test.
+///
+/// The refusals are a LATTICE, ordered so the name says the most specific true
+/// thing: no candidates at all, then none of them a side, then no side of one
+/// kind anywhere, then both kinds but never together. A miss recorded in a
+/// step-10 ledger row is then a fact about the position rather than a shrug.
+fn select_recipe_pair(
+    mover: PlayerId,
+    candidates: &[RecipeCandidate],
+) -> Result<RecipePair, RecipeMiss> {
+    if candidates.is_empty() {
+        return Err(RecipeMiss::NoPlacementCandidates);
+    }
+    let is_productive = |c: &RecipeCandidate| matches!(c.side, RecipeSide::Productive(_));
+    let is_dead = |c: &RecipeCandidate| c.side == RecipeSide::Dead;
+    if candidates.iter().all(|c| c.side == RecipeSide::Ineligible) {
+        return Err(RecipeMiss::NoEligibleCandidate);
+    }
+    if !candidates.iter().any(is_productive) {
+        return Err(RecipeMiss::NoProductiveSide);
+    }
+    if !candidates.iter().any(is_dead) {
+        return Err(RecipeMiss::NoDeadSide);
+    }
+
+    let totals: BTreeSet<usize> = candidates.iter().map(|c| c.total).collect();
+    for total in totals {
+        let at_total = || candidates.iter().filter(move |c| c.total == total);
+        // `min_by` keeps the FIRST minimum, so equal area sets fall back to the
+        // engine's own enumeration order — deterministic either way.
+        let live = at_total().filter(|c| is_productive(c)).min_by(|a, b| a.areas.cmp(&b.areas));
+        let gone = at_total().filter(|c| is_dead(c)).min_by(|a, b| a.areas.cmp(&b.areas));
+        let (Some(live), Some(gone)) = (live, gone) else {
+            continue;
+        };
+        let RecipeSide::Productive(reward) = live.side else {
+            unreachable!("filtered to the productive side");
+        };
+        return Ok(RecipePair {
+            mover,
+            total,
+            productive: live.mv.clone(),
+            productive_areas: live.areas.clone(),
+            productive_reward: reward,
+            dead: gone.mv.clone(),
+            dead_areas: gone.areas.clone(),
+        });
+    }
+    Err(RecipeMiss::NoSharedTotal)
+}
+
+/// **THE §6 ESCROW RECIPE** (spec `docs/plans/2026-08-20-phase3.5c-v4-spec-prereg.md`
+/// §6, the escrow-read paragraph): from a placement-fork root, the pair of
+/// same-count placements that the ENGINE-EXPORTED rules quantity separates —
+/// one placing into areas whose exported action reward at realizable power is
+/// nonzero, one where it is zero.
+///
+/// # What this object is, and what it is deliberately not
+///
+/// **FROZEN as of the commit that lands it**, and INSTANTIATED only at step 10.
+/// Nothing here reads a feature column, a weight or an evaluator: §6 requires
+/// value-distinctness to be rules-derived BEFORE the read, so this helper is
+/// independent of `Feature::ALL` and stays independent of it — a later feature
+/// list, a later fit, a later shipping identity all leave the pair it names
+/// unmoved. That independence is what lets the step-10 read be a test of the
+/// features rather than of itself.
+///
+/// It fixes the recipe's QUANTITIES only. The direction claim, the collision
+/// check and the weighted-preference clause are the READ's, over the pair this
+/// returns.
+///
+/// # Selection is by RULES, tie-broken structurally
+///
+/// The pair comes from [`classify_recipe_candidates`] and
+/// [`select_recipe_pair`]; between them they call the §13 reward dispatcher and
+/// §3.2's shared power arithmetic and derive nothing of their own. A root that
+/// carries no such pair gets a TYPED [`RecipeMiss`] naming which half is
+/// missing — never a nearest-available pair, because a pair whose distinctness
+/// nobody established is exactly the thing the recipe exists to rule out.
+pub fn escrow_recipe_pair(root: &GameState, rules: &Rules) -> Result<RecipePair, RecipeMiss> {
+    let candidates = classify_recipe_candidates(root, rules)?;
+    select_recipe_pair(root.current_player, &candidates)
+}
+
+// ---------------------------------------------------------------------------
+// V4 step 10: the SHAPE-F FEE-FLOW RECIPE (guidingpath 2026-08-23, "THE STEP-10
+// RECORDED-BAND RECIPE IS REGISTERED", item (1); the execution ledger's reading
+// R-S10-4)
+// ---------------------------------------------------------------------------
+
+/// One placement the turn start offers, with the OPPONENT FEE FLOW it prices.
+///
+/// Carried as DATA on [`RecipeCandidate`]'s precedent: a step-10 row records
+/// what the recipe SAW and not only what it chose, so a miss at a reserved
+/// ordinal is diagnosable from the same call that produced it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FeeFlowCandidate {
+    /// The placement move itself, as the engine enumerated it.
+    pub mv: Move,
+    /// How many assistants it places.
+    pub total: usize,
+    /// The SET of areas it places into.
+    pub areas: BTreeSet<AreaId>,
+    /// The Yen this placement moves from the mover to the opponent — the
+    /// engine's own placement pricing, CROSS-CHECKED against the applied
+    /// successor's money deltas before the candidate is admitted (see
+    /// [`classify_fee_flow_candidates`]). Zero for a placement that touches no
+    /// area the opponent's President stands in.
+    pub fee: u32,
+}
+
+/// **THE SHAPE-F PAIR**: two same-total placements from one turn start,
+/// separated by the OPPONENT FEE FLOW the engine's own pricing exports and by
+/// nothing else — `F+` the minimal NONZERO flow at that total, `F0` a
+/// same-total ZERO flow.
+///
+/// The registration's words for the quantity (guidingpath 2026-08-23, item
+/// (1)): "Fee flow = the engine's own placement pricing
+/// (`calculate_placement_cost`/`credit_placement_fees`, an exact mirror; at 2P
+/// payer cost == opponent income) — **the Trading House term is STRUCK**
+/// (passive income fires only inside `apply_area_action`, never at placement)."
+///
+/// # What this object is, and what it is deliberately not
+///
+/// [`RecipePair`]'s posture, verbatim: it fixes the recipe's QUANTITIES and no
+/// more. It carries no feature column, no weight, no evaluator reading and no
+/// direction claim. The three things the step-10 read then asks of this pair —
+/// the gated raw arm (opponent-E1 differs by EXACTLY the exported fee delta,
+/// every other opponent column invariant, X1 recomputed), the collision check,
+/// and clause (iii)'s RECORDED weighted preference under its mandatory parity
+/// gate — are asked of it by the READ, over an object fixed before any of them
+/// could influence it.
+///
+/// The direction is the RULES': the fee is 1 Yen per assistant placed into an
+/// area an opponent President occupies, paid to that President's owner, and at
+/// 2P the non-dummy opponent is the only President owner there — so the mover's
+/// purse falls by exactly what the opponent's purse rises by. That is why the
+/// raw arm can gate a magnitude and not merely a sign.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FeeFlowPair {
+    /// The seat whose turn is starting.
+    pub mover: PlayerId,
+    /// The ONE non-dummy other seat — the fee's payee.
+    pub opponent: PlayerId,
+    /// The shared placement total both sides carry.
+    pub total: usize,
+    /// `F+`: the minimal NONZERO opponent fee flow at that total.
+    pub fee_side: Move,
+    /// That placement's area set.
+    pub fee_side_areas: BTreeSet<AreaId>,
+    /// `F+`'s priced fee, > 0.
+    pub fee: u32,
+    /// `F0`: the same-total placement whose opponent fee flow is ZERO.
+    pub free_side: Move,
+    /// That placement's area set.
+    pub free_side_areas: BTreeSet<AreaId>,
+}
+
+/// Why a root yields no Shape-F pair.
+///
+/// **Typed, and the arms are of TWO kinds** — the distinction is the
+/// registration's own and the step-10 composition table reads it:
+///
+/// * The VOID lattice — [`NotAPlacementDecision`](Self::NotAPlacementDecision),
+///   [`NotTwoPlayer`](Self::NotTwoPlayer),
+///   [`NoOpponentPresidentOnBoard`](Self::NoOpponentPresidentOnBoard),
+///   [`NoPlacementCandidates`](Self::NoPlacementCandidates),
+///   [`NoFeeSide`](Self::NoFeeSide), [`NoFreeSide`](Self::NoFreeSide),
+///   [`NoSharedTotal`](Self::NoSharedTotal) — each a FACT ABOUT THE POSITION,
+///   ordered most-specific-first so the name says the most specific true thing.
+///   These are the recipe's non-instantiation, which the 2026-08-23 row rules
+///   "VOID ≠ miss, the remaining arms still read".
+/// * The INSTRUMENT arms — [`CandidateDidNotApply`](Self::CandidateDidNotApply)
+///   and [`PricingMismatch`](Self::PricingMismatch) — which are facts about the
+///   ENGINE or this helper, never about the position. The composition table
+///   routes them to precedence (0): "typed harness/identity failure ⇒ REFUSE
+///   classification until resolved, never auto-classified". Mapping either onto
+///   a void would have the recipe report a fact about the POSITION when what
+///   moved was the code.
+///
+/// There is no fallback arm anywhere below, on [`RecipeMiss`]'s reasoning: a
+/// nearest-available pair is a pair whose fee separation nobody established,
+/// and the read riding it would be wrong with no way to notice.
+///
+/// **`MoverViewUnavailable` is deliberately ABSENT** (R-S10-4 lists it; this
+/// helper cannot reach it). Fee flow is ENGINE PRICING — `president_location`,
+/// the placed areas, and the two purses — so nothing here calls `observe` and
+/// no view can be unavailable to it. Viewability is a SEPARATE step-10
+/// determination over the root (R-S10-5: "VIEWABILITY = `observe(root, mover)`
+/// succeeds"), made by the read surface, not by the recipe; an arm this module
+/// can never construct would be an arm no cell could reach.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FeeFlowMiss {
+    /// The root is neither a mover TURN START nor a mover PLACEMENT DECISION —
+    /// the two classes [`placement_decision_family`] admits (R-S10-14).
+    ///
+    /// Named for what it now MEANS rather than for the one class it used to
+    /// test: a root at `Movement`, at `AreaAction`, mid-queue or inside a
+    /// mercenary sub-turn offers no placement family to price, and saying only
+    /// "not a turn start" of a root that sits at `Placement` would be a true
+    /// sentence about the wrong question.
+    NotAPlacementDecision,
+    /// The root does not seat exactly one non-dummy opponent.
+    ///
+    /// The recorded band is 2P and the registered raw arm names ONE seat
+    /// ("opponent-E1 differs by EXACTLY the exported fee delta"), so a
+    /// three- or four-seat root is refused rather than answered about some
+    /// arbitrarily chosen rival: at 3P+ two different opponents can both hold a
+    /// President in the placed area (`calculate_placement_cost` sums over the
+    /// pairs and `credit_placement_fees` credits each owner), and "the
+    /// opponent's fee flow" stops naming one number.
+    ///
+    /// The count is the seat count. **The 2P dummy is not among them**:
+    /// `PlayerId::DUMMY` "appears ONLY as a track-slot owner", and
+    /// `place_setup_dummies` touches only the Church faith-7 and Customs
+    /// space-4 slots — it holds no President and no purse, so it can neither
+    /// charge a fee nor receive one. The `!is_dummy` filter below is therefore
+    /// a total statement rather than a live branch.
+    NotTwoPlayer { players: usize },
+    /// The opponent's President is not on the board.
+    ///
+    /// **The instantiation condition, NAMED and checked BEFORE classification**
+    /// (guidingpath 2026-08-23, item (1): "Instantiation conditions NAMED:
+    /// opponent president ON BOARD + a mover assistant held + the fee
+    /// affordable"). With the President in hand no placement can pay anything,
+    /// so every candidate would price zero and the position would refuse as
+    /// [`NoFeeSide`](Self::NoFeeSide) — true, but it would blame the mover's
+    /// wallet for the opponent's geometry. Naming this arm makes the void
+    /// INFORMATIVE, which is the whole point of a void that the step-10 row
+    /// records rather than a shrug.
+    ///
+    /// It is also the arm the registration expects to see: "Recovery never
+    /// recalls the president — the sole recall is the voluntary
+    /// `ReturnPresidentToHand` — so organic instantiation is realistic but
+    /// UNCERTIFIABLE; no census fact covers president positions; the floor does
+    /// real work."
+    NoOpponentPresidentOnBoard,
+    /// A placement the engine's own legal list offered did not apply.
+    ///
+    /// **An INSTRUMENT arm, and unreachable today for exactly the three reasons
+    /// [`RecipeMiss::CandidateDidNotApply`] spells out** — this helper
+    /// enumerates on the post-`EndAdditionalPhase` state and applies to the
+    /// ROOT, and the two agree byte for byte because (1) the successor differs
+    /// only in `turn_phase`, (2) both placement arms are PHASE-BLIND, and (3)
+    /// the queue guard is pre-satisfied by [`is_mover_turn_start`]. **So the
+    /// unreachability DEPENDS on fact (2) holding.** If a placement arm ever
+    /// grew a `turn_phase` conjunct, every root would refuse loudly here rather
+    /// than silently pricing a thinned candidate set.
+    CandidateDidNotApply(String),
+    /// The priced fee and the APPLIED successor's money deltas disagree.
+    ///
+    /// **The exact-mirror cross-check's failure arm — an INSTRUMENT failure,
+    /// never a void and never a miss** (R-S10-4: "a disagreement between the
+    /// two is TYPED"). The registration calls `calculate_placement_cost` and
+    /// `credit_placement_fees` "an exact mirror"; this arm is that claim made
+    /// executable at every candidate, at every root the read touches.
+    ///
+    /// # Unreachable while the mirror holds, and here is what that depends on
+    ///
+    /// `apply_placement` charges `calculate_placement_cost(state, player,
+    /// placements)` and then credits `credit_placement_fees` over the SAME
+    /// slice, whose owner filter is `calculate_placement_cost`'s pairing
+    /// restated; `apply_placement_same_area` does the same over `[area, area]`;
+    /// and `PlaceTwoSameArea`'s Telegram leg runs `apply_placement(&[adj])`,
+    /// which prices that leg the same way again. Placement moves NOTHING else
+    /// through either purse — the Trading House term the registration STRUCK
+    /// fires only inside `apply_area_action`. So the payer's deduction, the
+    /// opponent's credit and the price below are three readings of one number.
+    ///
+    /// If a re-pricing ever moved one of them without the others — a
+    /// per-President cap, a tech that waives the toll, a fee routed to the bank
+    /// — this arm fires by name at the root that shows it, carrying both deltas
+    /// and the price, instead of the read quietly gating a magnitude the engine
+    /// never charged.
+    PricingMismatch {
+        /// The candidate, `Debug`-formatted (the type is not `Display`).
+        candidate: String,
+        /// What [`calculate_placement_cost`] priced it at.
+        priced: u32,
+        /// What the mover's purse actually fell by.
+        payer_delta: i64,
+        /// What the opponent's purse actually rose by.
+        opponent_delta: i64,
+    },
+    /// The turn start offers no NON-EMPTY placement at all: the mover can only
+    /// decline to place (no assistant in hand, or nothing it can afford).
+    NoPlacementCandidates,
+    /// No candidate pays the opponent anything.
+    ///
+    /// The generator has already dropped every placement the mover cannot
+    /// afford, so this arm covers BOTH "no placement touches the opponent's
+    /// President area" and "the ones that do are unaffordable" — a distinction
+    /// the candidate list cannot express, because an unaffordable placement was
+    /// never in it. The Yen-less mover and the far-from-the-President mover
+    /// therefore record the same void, and that is honest: neither carries the
+    /// read.
+    NoFeeSide,
+    /// Every non-empty candidate pays the opponent, so no zero-fee control
+    /// exists at any total.
+    NoFreeSide,
+    /// Both kinds exist, but never at the same placement total.
+    NoSharedTotal,
+}
+
+impl std::fmt::Display for FeeFlowMiss {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotAPlacementDecision => {
+                write!(f, "the root is neither a mover turn start nor a placement decision")
+            }
+            Self::NotTwoPlayer { players } => {
+                write!(f, "the fee-flow recipe is 2P and this root seats {players}")
+            }
+            Self::NoOpponentPresidentOnBoard => {
+                write!(f, "the opponent's president is not on the board")
+            }
+            Self::CandidateDidNotApply(detail) => {
+                write!(f, "a legal placement did not apply: {detail}")
+            }
+            Self::PricingMismatch { candidate, priced, payer_delta, opponent_delta } => write!(
+                f,
+                "placement pricing disagrees with the applied successor at {candidate}: \
+                 priced {priced}, payer paid {payer_delta}, opponent received {opponent_delta}"
+            ),
+            Self::NoPlacementCandidates => write!(f, "the turn start offers no placement"),
+            Self::NoFeeSide => write!(f, "no affordable placement pays the opponent"),
+            Self::NoFreeSide => write!(f, "every placement pays the opponent"),
+            Self::NoSharedTotal => {
+                write!(f, "the two sides exist but never at the same placement total")
+            }
+        }
+    }
+}
+
+/// The ONE non-dummy seat other than `mover`.
+///
+/// See [`FeeFlowMiss::NotTwoPlayer`] for why one is the only workable count and
+/// why the dummy cannot be it.
+fn sole_opponent(root: &GameState, mover: PlayerId) -> Result<PlayerId, FeeFlowMiss> {
+    let others: Vec<PlayerId> =
+        root.players.iter().map(|p| p.id).filter(|id| *id != mover && !id.is_dummy()).collect();
+    match others.as_slice() {
+        [only] => Ok(*only),
+        _ => Err(FeeFlowMiss::NotTwoPlayer { players: root.players.len() }),
+    }
+}
+
+/// What a placement costs its mover, PER ENCODING, exactly as `apply_move`
+/// prices it.
+///
+/// The two encodings are priced by two different call shapes and the asymmetry
+/// is the engine's, not this function's (R-S10-4: "`PlaceThreeAreas` → its
+/// list; `PlaceTwoSameArea` → `[area, area]` then the Telegram `[adjacent]`"):
+///
+/// * `PlaceThreeAreas { placements }` — one assistant per listed area, so the
+///   list IS the per-assistant slice `apply_placement` prices.
+/// * `PlaceTwoSameArea { area, adjacent_bonus }` — TWO assistants land in
+///   `area`, which `apply_placement_same_area` prices as the two-element slice
+///   `[area, area]` ("pay 1 Yen to each President's owner PER ASSISTANT
+///   PLACED"), and the Telegram leg then runs `apply_placement(&[adj])`, a
+///   second, separately-priced call. Summing the two mirrors both the
+///   generator's own `cost + adj_cost` affordability test and the applied
+///   arm's two charges.
+///
+/// **Both legs are priced on the ROOT, and that is not an approximation.**
+/// `calculate_placement_cost` reads exactly one thing about the other seats —
+/// `president_location` — and a placement moves no President: the
+/// `PlaceTwoSameArea` arm mutates purses, assistants and `turn_phase`, and
+/// `set_president_start_area` RECORDS where the President already is. So
+/// pricing the adjacent leg on the root and pricing it on the post-same-area
+/// state are the same computation, and the applied cross-check in
+/// [`classify_fee_flow_candidates`] is what holds that argument to account
+/// rather than leaving it as a comment.
+///
+/// `None` for anything that is not a placement — the same two encodings
+/// [`placement_shape`] admits, so a caller that got a shape always gets a
+/// price.
+fn placement_fee(root: &GameState, mover: PlayerId, mv: &Move) -> Option<u32> {
+    match mv {
+        Move::PlaceThreeAreas { placements } => {
+            Some(calculate_placement_cost(root, mover, placements))
+        }
+        Move::PlaceTwoSameArea { area, adjacent_bonus } => Some(
+            calculate_placement_cost(root, mover, &[*area, *area])
+                + adjacent_bonus
+                    .map_or(0, |adj| calculate_placement_cost(root, mover, &[adj])),
+        ),
+        _ => None,
+    }
+}
+
+/// **THE EXACT-MIRROR CROSS-CHECK, as a function of four numbers.**
+///
+/// The price and the applied successor's two money deltas must all be the same
+/// number: the mover's purse falls by the fee and the opponent's rises by it.
+/// A disagreement in EITHER direction is [`FeeFlowMiss::PricingMismatch`], an
+/// instrument failure the step-10 table routes to precedence (0).
+///
+/// # Why this is a separate function
+///
+/// **The opponent half is undiscriminated by every position there is**, and
+/// that is a property of the engine rather than of the cells: while
+/// `apply_placement` charges `calculate_placement_cost` and credits
+/// `credit_placement_fees` over the same slice, the two purses move together
+/// at every root, so no constructed fixture and no organic sweep can tell a
+/// two-sided check from a payer-only one. A conjunct nothing can falsify is a
+/// conjunct that can be deleted with the suite still green — which is exactly
+/// what the W1 review demonstrated.
+///
+/// Pulling the comparison out of the loop makes the four combinations
+/// reachable FROM DATA, which is the `select_fee_flow_pair` precedent applied
+/// to an arithmetic check instead of a selection rule. The half that matters is
+/// the opponent's: under the drift the doc above names — a fee routed to the
+/// bank rather than to the President's owner — the payer's purse still falls by
+/// the price and only this conjunct fires, and it is the step-10 raw arm's E1
+/// gate (opponent-E1 differs by EXACTLY the exported fee delta) that would
+/// otherwise be riding a number the engine never credited.
+fn cross_check_pricing(
+    candidate: &Move,
+    priced: u32,
+    payer_delta: i64,
+    opponent_delta: i64,
+) -> Result<(), FeeFlowMiss> {
+    if payer_delta == i64::from(priced) && opponent_delta == i64::from(priced) {
+        return Ok(());
+    }
+    Err(FeeFlowMiss::PricingMismatch {
+        candidate: format!("{candidate:?}"),
+        priced,
+        payer_delta,
+        opponent_delta,
+    })
+}
+
+/// Every placement the turn start offers, with the opponent fee flow it prices
+/// and the applied cross-check already paid.
+///
+/// **The ply is crossed by [`turn_start_placements`] — THAT function, not a
+/// second walk** (R-S10-4: "crosses the ply through the SAME
+/// `turn_start_placements`"). It applies `EndAdditionalPhase` and reads
+/// `get_legal_moves`, so this recipe keys on exactly the population the frozen
+/// §6 recipe keys on, and a re-derivation of the placement enumeration — the
+/// Newspaper 4-area case, the Telegram adjacency, the Canal exclusion, the
+/// per-President toll — never exists to drift.
+///
+/// **The order of the three refusals is the void lattice's own**: not a turn
+/// start, then not 2P, then no opponent President on the board — each checked
+/// before the work whose answer it would make meaningless.
+///
+/// **Every candidate is APPLIED and cross-checked.** The fee is priced by
+/// [`placement_fee`] and then held against the successor from BOTH sides — the
+/// mover's purse must fall by it and the opponent's must rise by it — because
+/// the registration's claim is that the two engine functions are "an exact
+/// mirror", and a claim a helper depends on is a claim the helper should test
+/// at every root it is used on. A disagreement is
+/// [`FeeFlowMiss::PricingMismatch`], an instrument failure, never a void.
+///
+/// **Nothing here reads a candidate column, a weight or an evaluator** — no
+/// `observe`, no `Feature`, no `eval` (R-S10-5: "INSTANTIABILITY reads no
+/// candidate column ... burn-free by construction"). Determinism follows:
+/// the answer is a function of the root and the rules alone.
+pub fn classify_fee_flow_candidates(
+    root: &GameState,
+    rules: &Rules,
+) -> Result<Vec<FeeFlowCandidate>, FeeFlowMiss> {
+    let placements =
+        placement_decision_family(root, rules).ok_or(FeeFlowMiss::NotAPlacementDecision)?;
+    let mover = root.current_player;
+    let opponent = sole_opponent(root, mover)?;
+    if !matches!(root.player(opponent).president_location, PresidentLocation::OnBoard(_)) {
+        return Err(FeeFlowMiss::NoOpponentPresidentOnBoard);
+    }
+
+    let mut candidates = Vec::new();
+    for mv in &placements {
+        let Some((total, areas)) = placement_shape(mv) else {
+            continue;
+        };
+        // Unreachable after the shape matched: both functions admit the same
+        // two encodings, so a shaped move is always a priced one. Skipping
+        // rather than unwrapping keeps that a structural fact instead of a
+        // panic waiting for a third placement encoding.
+        let Some(fee) = placement_fee(root, mover, mv) else {
+            continue;
+        };
+        let after = apply_move_unchecked(root, mv, rules)
+            .map_err(|e| FeeFlowMiss::CandidateDidNotApply(e.to_string()))?;
+        let payer_delta =
+            i64::from(root.player(mover).money) - i64::from(after.player(mover).money);
+        let opponent_delta =
+            i64::from(after.player(opponent).money) - i64::from(root.player(opponent).money);
+        cross_check_pricing(mv, fee, payer_delta, opponent_delta)?;
+        candidates.push(FeeFlowCandidate { mv: mv.clone(), total, areas, fee });
+    }
+
+    Ok(candidates)
+}
+
+/// The Shape-F pair, chosen from priced candidates.
+///
+/// **The rule is [`select_recipe_pair`]'s, VERBATIM** (guidingpath 2026-08-23,
+/// item (1): "scan totals ASCENDING, first total carrying both sides, ties by
+/// lowest area set — the `select_recipe_pair` convention VERBATIM, never
+/// maximal-fee (selecting by maximizing the read quantity would be the recipe
+/// optimizing the very quantity the read exists to test)"). So:
+///
+/// * totals ASCENDING, first total carrying BOTH a paying and a free
+///   candidate; a total carrying only one side is SKIPPED, not refused;
+/// * `F+` = the MINIMAL nonzero fee at that total, ties broken by the lowest
+///   area set — never the largest fee, which is exactly the optimization the
+///   registration forbids;
+/// * `F0` = the lowest area set among that total's zero-fee candidates.
+///
+/// `min_by` keeps the FIRST minimum, so a tie in both keys falls back to the
+/// engine's own enumeration order — deterministic either way.
+///
+/// **The EMPTY placement is ineligible for either side.**
+/// `PlaceThreeAreas { placements: vec![] }` is always in the list — it is how a
+/// mover declines to place — and it prices at zero for the arithmetic reason
+/// that it places nothing, not because it avoids the opponent's President.
+/// Admitting it as `F0` would pair a placement against a NON-placement and call
+/// the difference a fee-flow distinction, which is
+/// `the_empty_placement_is_never_a_side_of_the_recipe`'s objection at the §6
+/// recipe and is the same objection here. It is filtered by total and by
+/// emptiness together: two readings of one fact, and neither alone is a
+/// definition of "declines to place" a future encoding could not slip past.
+fn select_fee_flow_pair(
+    mover: PlayerId,
+    opponent: PlayerId,
+    candidates: &[FeeFlowCandidate],
+) -> Result<FeeFlowPair, FeeFlowMiss> {
+    let placing: Vec<&FeeFlowCandidate> =
+        candidates.iter().filter(|c| c.total > 0 && !c.areas.is_empty()).collect();
+    if placing.is_empty() {
+        return Err(FeeFlowMiss::NoPlacementCandidates);
+    }
+    if !placing.iter().any(|c| c.fee > 0) {
+        return Err(FeeFlowMiss::NoFeeSide);
+    }
+    if !placing.iter().any(|c| c.fee == 0) {
+        return Err(FeeFlowMiss::NoFreeSide);
+    }
+
+    let totals: BTreeSet<usize> = placing.iter().map(|c| c.total).collect();
+    for total in totals {
+        let at_total = || placing.iter().filter(move |c| c.total == total);
+        let paying = at_total()
+            .filter(|c| c.fee > 0)
+            .min_by(|a, b| (a.fee, &a.areas).cmp(&(b.fee, &b.areas)));
+        let free = at_total().filter(|c| c.fee == 0).min_by(|a, b| a.areas.cmp(&b.areas));
+        let (Some(paying), Some(free)) = (paying, free) else {
+            continue;
+        };
+        return Ok(FeeFlowPair {
+            mover,
+            opponent,
+            total,
+            fee_side: paying.mv.clone(),
+            fee_side_areas: paying.areas.clone(),
+            fee: paying.fee,
+            free_side: free.mv.clone(),
+            free_side_areas: free.areas.clone(),
+        });
+    }
+    Err(FeeFlowMiss::NoSharedTotal)
+}
+
+/// **THE SHAPE-F FEE-FLOW RECIPE** (guidingpath 2026-08-23, "THE STEP-10
+/// RECORDED-BAND RECIPE IS REGISTERED — CHOSEN, NOT FORCED", item (1); the
+/// execution ledger's R-S10-4): from a turn-start root, the pair of same-total
+/// placements the ENGINE'S OWN placement pricing separates — one exporting a
+/// minimal nonzero fee flow to the opponent, one exporting none.
+///
+/// # Why a SECOND copy of the §6 machinery, and not a shared one
+///
+/// The §6 recipe ([`escrow_recipe_pair`] and its two halves) is a FROZEN
+/// artifact: its digests are pinned and its band is escrowed, so factoring a
+/// shared selector out of it would move frozen bytes to serve a helper written
+/// two steps later. The structure below is therefore MIRRORED — the same ply
+/// crossing (which IS shared: [`turn_start_placements`] is called, never
+/// re-walked), the same [`placement_shape`] reading (also shared), the same
+/// classify/select split, the same ascending-totals convention, the same
+/// lowest-area-set tie-break, the same lattice discipline — while the selection
+/// body is a second copy. The copy is ACCEPTED and named here so a later reader
+/// does not mistake it for drift: what the two recipes share is called, what
+/// would have required editing the frozen artifact is duplicated.
+///
+/// # Independence
+///
+/// Like §6's, this recipe reads no feature column, no weight and no evaluator,
+/// and unlike §6's it reads no VIEW either — fee flow is engine pricing over
+/// `president_location` and the two purses. That is R-S10-5's "burn-free by
+/// construction": instantiability at a reserved ordinal can be decided without
+/// any candidate column being computed, so deciding it cannot burn the ordinal.
+///
+/// # What rides on the pair, and what does not
+///
+/// The registration's item (2) gates the RAW arm over these two successors
+/// (opponent-E1 differs by exactly the exported fee delta; the rest of the
+/// opponent's columns exactly invariant; X1 recomputed at the successor purse),
+/// and its item (3) RECORDS clause (iii)'s weighted preference under a
+/// mandatory production-vs-probe parity gate. Neither is this function's
+/// business. It fixes the pair, and it fixes it out of quantities that were
+/// settled before any of those reads existed.
+pub fn fee_flow_recipe_pair(root: &GameState, rules: &Rules) -> Result<FeeFlowPair, FeeFlowMiss> {
+    let candidates = classify_fee_flow_candidates(root, rules)?;
+    let mover = root.current_player;
+    // Re-derived rather than threaded out of the classifier: it is two seat-list
+    // comparisons, and keeping `classify_fee_flow_candidates`' return type the
+    // candidate list ALONE is what lets a caller record what the recipe saw
+    // without also being handed a decision it did not ask for.
+    let opponent = sole_opponent(root, mover)?;
+    select_fee_flow_pair(mover, opponent, &candidates)
 }
 
 // ---------------------------------------------------------------------------
@@ -1483,7 +2847,18 @@ const GENERATED_SEAT: Contestant = Contestant::Policy(RolloutPolicy::FAMILY_WEIG
 /// `v2` or `v2.1` still resolves to exactly the state it resolved to then, and
 /// the version moves only so that a quoted reading names the scan that produced
 /// it.
-pub const GENERATED_ECOLOGY_V2_LOOKAHEAD: &str = "driven-generated-v2.2-lookahead";
+///
+/// **RE-PINNED to `v2.3` (V4 step 8, the `Feature::ALL` adoption commit).**
+/// The generating SEATS moved from the live shipped contestant to the PINNED
+/// explicit-V2 construction ([`build_pinned_v2_seat`]) — a seat-field change,
+/// so the id bumps per this const's own any-field-change rule. The bump is
+/// again a NAMING obligation, not a re-pointing: pinned-V2 is the padded live
+/// default byte-for-byte at the adoption commit (the walk pin proves the
+/// decisions did not move), so every `v2`/`v2.1`/`v2.2` triple still resolves
+/// to exactly the state it resolved to — and, from this commit on, KEEPS
+/// resolving there through every later controller re-point, which is what the
+/// pin buys.
+pub const GENERATED_ECOLOGY_V2_LOOKAHEAD: &str = "driven-generated-v2.3-lookahead";
 
 /// The v2 ecology's scan bound.
 ///
@@ -1556,16 +2931,69 @@ pub const GENERATED_V2_SCAN_GAMES: u32 = 240;
 /// priors are 2P priors).
 const GENERATED_V2_PLAYERS: u8 = 2;
 
-/// The contestant every seat of v2's generating ecology plays: the shipped
-/// provisional production contestant, uncapped.
+/// **THE PINNED v2 SEAT (V4 step 8; V3 spec §5.1's fix, adopted verbatim).**
+/// The contestant every seat of v2's generating ecology plays: lookahead at
+/// the shipped knobs, with `WeightTable::V2` EXPLICIT — an in-crate weighted
+/// construction, never the live default.
+///
+/// This const WAS `Contestant::LOOKAHEAD_V1_DEFAULT`, whose doc promised to
+/// re-point at the identity freeze "because the ecology is identity" — and
+/// that promise is exactly the failure V3 §5.1 named: at any later controller
+/// re-point both scanning seats would play differently and every recorded
+/// `(predicate, master, ordinal)` triple would silently resolve to a DIFFERENT
+/// state. The pin inverts the promise: the seats are frozen HERE, at explicit
+/// V2 values, so ordinal semantics survive every controller bump including the
+/// identity-freeze era — and the version string moved `v2.2` → `v2.3` because
+/// the seat field is identity.
+///
+/// The knobs are TRANSCRIBED LITERALS (beam 4, one sampled world, eight
+/// retreat samples, no cap), equal to `Contestant::LOOKAHEAD_V1_DEFAULT`'s
+/// today — `the_pinned_v2_seat_transcribes_todays_shipped_knobs` states that
+/// equality as a transcription fact. If the shipped default legitimately moves
+/// later, THAT assertion is deleted in the moving commit and these literals
+/// stay, exactly as `PRE_FREEZE_2026_07_27`'s doc prescribes for a historical
+/// record.
 ///
 /// This ecology generates the SUBJECT'S OWN reachable positions, which is the
 /// right population for an on-policy checkpoint and is said out loud here
-/// because it is also the ecology's whole cost: both seats search. PROVISIONAL
-/// until D1's identity freeze, exactly as [`ReplyPolicy`]'s `*AtFinal` arms are
-/// — when that freeze re-points the champion, this const re-points with it and
-/// the version string bumps, because the ecology is identity.
-const GENERATED_V2_SEAT: Contestant = Contestant::LOOKAHEAD_V1_DEFAULT;
+/// because it is also the ecology's whole cost: both seats search.
+const PINNED_V2_SEAT_BEAM: u16 = 4;
+const PINNED_V2_SEAT_WORLDS: u8 = 1;
+const PINNED_V2_SEAT_RETREAT_SAMPLES: u8 = 8;
+
+/// Build one pinned v2 generating seat on `agent_seed` — the `eval_screen`
+/// precedent (`LookaheadAgent::with_knobs`, public in-crate weighted
+/// construction), used only by the scan, never the runner grammar.
+fn build_pinned_v2_seat(rules: &Rules, agent_seed: u64) -> Box<dyn ArenaAgent> {
+    Box::new(crate::game::lookahead::LookaheadAgent::with_knobs(
+        rules,
+        crate::game::lookahead::SearchScheme::TurnBoundary {
+            beam: PINNED_V2_SEAT_BEAM,
+        },
+        PINNED_V2_SEAT_WORLDS,
+        PINNED_V2_SEAT_RETREAT_SAMPLES,
+        WeightTable::V2,
+        agent_seed,
+    ))
+}
+
+/// The pinned v2 seat's RESOLVED echo — composed from the same
+/// `controller_provenance` + `compose_echo` pair every contestant echoes
+/// through, over the pinned construction's own explicit inputs, so the
+/// recorded seat identity carries `WeightTable::V2`'s table identity forever
+/// (the always-on half of V3 §5.1's two-tier behavior-identity pin).
+fn pinned_v2_seat_echo() -> String {
+    let p = crate::game::lookahead::controller_provenance(
+        crate::game::lookahead::SearchScheme::TurnBoundary {
+            beam: PINNED_V2_SEAT_BEAM,
+        },
+        PINNED_V2_SEAT_WORLDS,
+        PINNED_V2_SEAT_RETREAT_SAMPLES,
+        &WeightTable::V2,
+        None,
+    );
+    crate::game::arena::compose_echo(&p.name, p.version, &p.params)
+}
 
 /// The one driver line both ecologies record — spelled once so a reworded
 /// sentence cannot make the two ecologies look like different drivers.
@@ -1629,7 +3057,7 @@ impl GeneratingEcology {
     }
 
     /// The v2 LOOKAHEAD configuration — Phase C's layer-2 ecology, both seats
-    /// the shipped provisional contestant.
+    /// the step-8 pinned explicit-V2 construction.
     pub fn v2_lookahead() -> Self {
         v2_lookahead_config().ecology
     }
@@ -1638,13 +3066,41 @@ impl GeneratingEcology {
 /// A generating configuration: the recorded [`GeneratingEcology`] plus the live
 /// parts a scan needs to play the games.
 ///
-/// The two travel together, and the ecology is BUILT FROM the contestant rather
-/// than written beside it, so the recorded seat echoes cannot drift from the
-/// seats the scan actually benches — the failure mode a descriptor exists to
-/// prevent, appearing inside the thing that writes descriptors.
+/// How a generating ecology CONSTRUCTS its seats — a named contestant built
+/// through `Contestant::build` (v1's rung), or the V4 step-8 PINNED explicit-V2
+/// lookahead construction (v2.3's seats; see [`build_pinned_v2_seat`] and V3
+/// spec §5.1). An enum rather than a `Contestant` because the pin's whole
+/// point is that the pinned seat is NOT a name a later freeze can re-point.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GeneratingSeat {
+    /// Built through [`Contestant::build`], echoing [`Contestant::echo`].
+    Contestant(Contestant),
+    /// The pinned v2 seat: `WeightTable::V2` explicit at transcribed knobs.
+    PinnedLookaheadV2,
+}
+
+impl GeneratingSeat {
+    fn build(&self, rules: &Rules, agent_seed: u64) -> Box<dyn ArenaAgent> {
+        match self {
+            GeneratingSeat::Contestant(c) => c.build(rules, agent_seed).0,
+            GeneratingSeat::PinnedLookaheadV2 => build_pinned_v2_seat(rules, agent_seed),
+        }
+    }
+
+    fn echo(&self) -> String {
+        match self {
+            GeneratingSeat::Contestant(c) => c.echo(),
+            GeneratingSeat::PinnedLookaheadV2 => pinned_v2_seat_echo(),
+        }
+    }
+}
+
+/// The live construction and its recorded echo travel together: each config
+/// builds both from one [`GeneratingSeat`], so the descriptor cannot drift from
+/// the seats the scan actually benches.
 struct GeneratingConfig {
-    /// The contestant every seat plays.
-    seat: Contestant,
+    /// The construction every seat plays.
+    seat: GeneratingSeat,
     /// The seat count.
     players: u8,
     /// What gets recorded on the descriptor.
@@ -1653,14 +3109,15 @@ struct GeneratingConfig {
 
 /// The v1 (rung) generating configuration — family 1's.
 fn v1_config() -> GeneratingConfig {
+    let seat = GeneratingSeat::Contestant(GENERATED_SEAT);
     GeneratingConfig {
-        seat: GENERATED_SEAT,
+        seat,
         players: GENERATED_PLAYERS,
         ecology: GeneratingEcology {
             id: GENERATED_ECOLOGY_V1.to_string(),
             driver: GENERATED_DRIVER.to_string(),
             players: GENERATED_PLAYERS,
-            seats: vec![GENERATED_SEAT.echo(); GENERATED_PLAYERS as usize],
+            seats: vec![seat.echo(); GENERATED_PLAYERS as usize],
             seed_derivation: GENERATED_SEED_DERIVATION.to_string(),
             games: GENERATED_SCAN_GAMES,
             per_game_cap: GENERATED_STRIDE_CAP,
@@ -1670,14 +3127,15 @@ fn v1_config() -> GeneratingConfig {
 
 /// The v2 (lookahead) generating configuration — the layer-2 families'.
 fn v2_lookahead_config() -> GeneratingConfig {
+    let seat = GeneratingSeat::PinnedLookaheadV2;
     GeneratingConfig {
-        seat: GENERATED_V2_SEAT,
+        seat,
         players: GENERATED_V2_PLAYERS,
         ecology: GeneratingEcology {
             id: GENERATED_ECOLOGY_V2_LOOKAHEAD.to_string(),
             driver: GENERATED_DRIVER.to_string(),
             players: GENERATED_V2_PLAYERS,
-            seats: vec![GENERATED_V2_SEAT.echo(); GENERATED_V2_PLAYERS as usize],
+            seats: vec![seat.echo(); GENERATED_V2_PLAYERS as usize],
             seed_derivation: GENERATED_SEED_DERIVATION.to_string(),
             games: GENERATED_V2_SCAN_GAMES,
             per_game_cap: GENERATED_STRIDE_CAP,
@@ -2261,6 +3719,132 @@ fn opt(value: Option<u64>) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// The cap tail (A-S12-1's rider, close doc §2.4 item 5)
+// ---------------------------------------------------------------------------
+
+/// How many trailing applied moves a [`CapTail`] keeps.
+///
+/// **Sixteen, and the number is the owner's** (close doc
+/// `docs/plans/2026-08-30-phase3.5c-v4-close.md` §2.4 item 5). It is a WINDOW
+/// on a trajectory that can run to a hundred thousand moves, sized to show the
+/// loop's period rather than its history: the arena's own step-11 diagnostic
+/// reads a turn-keyed tail for the same question, and a longer window here
+/// would put a page of moves on a report line for every counted cap.
+pub const CAP_TAIL_MOVES: usize = 16;
+
+/// ONE seat's stocks at cap time — the produce-and-hoard columns.
+///
+/// **Every field is a raw state read, and no field is a score.** A capped game
+/// never finished, so an "official" total computed over it would be a number
+/// the game never produced; the running VP TRACK is what the state actually
+/// carries and is what this records (the arena's step-11 end-state block draws
+/// the same line for the same reason).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapSeatSummary {
+    pub seat: PlayerId,
+    /// The running VP TRACK — never a final score (see the type's doc).
+    pub victory_points: u32,
+    pub money: u32,
+    pub copper: u32,
+    pub silk: u32,
+    pub tea: u32,
+    pub seafood: u32,
+    pub imported_goods: u32,
+    pub assistants_in_hand: u8,
+    pub assistants_in_warehouse: u8,
+    /// Summed over every area — the board total, not a per-area split.
+    pub assistants_on_board: u32,
+    pub orders_in_hand: usize,
+    pub completed_orders: usize,
+    pub technologies: usize,
+}
+
+/// What a COUNTED cap leaves behind: the last [`CAP_TAIL_MOVES`] applied moves
+/// and the state the guard tripped in.
+///
+/// **NON-GATING BY CONSTRUCTION** (close doc §2.4 item 5: "Nothing asserts on
+/// its content"). It exists so the produce-and-hoard attribution stands as
+/// EVIDENCE rather than inference — the V4 step-11 lesson at a second grain:
+/// a loop nobody can look at cannot be diagnosed, and until A-S12-1 the family
+/// harness's cap refusal carried exactly one line of text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapTail {
+    /// The state's own turn number at cap time — the guard's number, one past
+    /// the bound.
+    pub turn_number: u32,
+    pub turn_phase: TurnPhase,
+    pub current_player: PlayerId,
+    /// How many moves the whole trajectory applied. Printed beside the tail so
+    /// a reader knows it IS a tail — a bare sixteen-move list reads as a whole
+    /// game.
+    pub applied_total: usize,
+    /// The last [`CAP_TAIL_MOVES`] of them, in play order. Shorter when the
+    /// trajectory was, and never padded.
+    pub tail: Vec<AppliedMove>,
+    /// One entry per seat, in seat order.
+    pub seats: Vec<CapSeatSummary>,
+}
+
+impl CapTail {
+    /// Capture the tail off a trajectory the caller holds as [`AppliedMove`]s
+    /// — the turn driver's shape.
+    pub fn capture(state: &GameState, applied: &[AppliedMove]) -> Self {
+        let start = applied.len().saturating_sub(CAP_TAIL_MOVES);
+        Self::assemble(state, applied.len(), applied[start..].to_vec())
+    }
+
+    /// Capture the tail off the shared loop's own `(mover, move)` pairs.
+    ///
+    /// Private and pair-shaped rather than converting the whole trajectory
+    /// first: a capped game applies on the order of a hundred thousand moves,
+    /// and materializing all of them to keep sixteen would be the one place
+    /// this rider could cost something.
+    fn capture_pairs(state: &GameState, applied: &[(PlayerId, Move)]) -> Self {
+        let start = applied.len().saturating_sub(CAP_TAIL_MOVES);
+        let tail = applied[start..]
+            .iter()
+            .map(|(seat, mv)| AppliedMove { seat: *seat, mv: mv.clone() })
+            .collect();
+        Self::assemble(state, applied.len(), tail)
+    }
+
+    fn assemble(state: &GameState, applied_total: usize, tail: Vec<AppliedMove>) -> Self {
+        Self {
+            turn_number: state.turn_number,
+            turn_phase: state.turn_phase,
+            current_player: state.current_player,
+            applied_total,
+            tail,
+            seats: state
+                .players
+                .iter()
+                .map(|p| CapSeatSummary {
+                    seat: p.id,
+                    victory_points: p.victory_points,
+                    money: p.money,
+                    copper: p.copper,
+                    silk: p.silk,
+                    tea: p.tea,
+                    seafood: p.seafood,
+                    imported_goods: p.imported_goods,
+                    assistants_in_hand: p.assistants.in_hand,
+                    assistants_in_warehouse: p.assistants.in_warehouse,
+                    assistants_on_board: p
+                        .assistants
+                        .on_board
+                        .values()
+                        .map(|&n| u32::from(n))
+                        .sum(),
+                    orders_in_hand: p.order_cards_in_hand.len(),
+                    completed_orders: p.completed_orders.len(),
+                    technologies: p.technologies.len(),
+                })
+                .collect(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
 
@@ -2307,7 +3891,18 @@ pub enum DrivenError {
     /// The engine rejected a validated move, or an invariant broke after one.
     Engine(String),
     /// The turn guard tripped.
-    TurnCapReached { turns: u32 },
+    ///
+    /// `tail` is the NON-GATING evidence A-S12-1 attached (close doc §2.4 item
+    /// 5): the last [`CAP_TAIL_MOVES`] applied moves and the state the guard
+    /// tripped in. It rides the error rather than the message — the DISPLAY is
+    /// unchanged, because every consumer below prints it verbatim and the
+    /// amendment is scoped to what the FAMILY harness does with the error, not
+    /// to how any refusal reads.
+    ///
+    /// `None` is a shape no driver in this module produces today and is kept
+    /// reachable deliberately: a future caller that classifies a cap without a
+    /// trajectory in hand must be able to say so rather than fabricate one.
+    TurnCapReached { turns: u32, tail: Option<Box<CapTail>> },
     /// The decision guard tripped: this root did not terminate within the bound
     /// — a REFUSAL naming the bound, never a hang and never a truncated run
     /// reported as a result.
@@ -2335,7 +3930,9 @@ impl std::fmt::Display for DrivenError {
             }
             Self::DeadEnd { seat } => write!(f, "seat {} reached a dead end", seat.0),
             Self::Engine(m) => write!(f, "engine: {m}"),
-            Self::TurnCapReached { turns } => write!(f, "turn cap reached at turn {turns}"),
+            // The tail is EVIDENCE, never a sentence: this message is what the
+            // standalone adjudicator, the runner and the CLI all print.
+            Self::TurnCapReached { turns, .. } => write!(f, "turn cap reached at turn {turns}"),
             Self::DecisionCapReached { decisions } => write!(
                 f,
                 "the root did not terminate within {decisions} decisions (the guard is a refusal, \
@@ -2377,7 +3974,16 @@ fn classify(error: PlayError) -> DrivenError {
             "invariant violated after seat {}'s move: {reason}",
             seat.0
         )),
-        PlayError::TurnCap { turns } => DrivenError::TurnCapReached { turns },
+        // The V4 step-11 `partial` rides only out of `play_from_state`. Until
+        // A-S12-1 a rooted run DROPPED it and classified on `turns` alone —
+        // which is exactly why the S12 achievement arm's refusal could say
+        // nothing about the loop it refused (close doc §2.2). It is kept now,
+        // as the cap's tail; the message is unchanged.
+        PlayError::TurnCap { turns, partial } => DrivenError::TurnCapReached {
+            turns,
+            tail: partial
+                .map(|outcome| Box::new(CapTail::capture_pairs(&outcome.final_state, &outcome.applied))),
+        },
         PlayError::DecisionCap { decisions } => DrivenError::DecisionCapReached { decisions },
     }
 }
@@ -2763,7 +4369,18 @@ pub fn drive_turn(
             break false;
         }
         if state.turn_number > opts.max_turns {
-            return Err(classify(PlayError::TurnCap { turns: state.turn_number }));
+            // The taxonomy is `classify`'s arm and the SENTENCE is the shared
+            // one (pinned by
+            // `the_turn_drivers_cap_is_the_shared_sentence_with_its_own_tail`);
+            // the value is built here rather than routed through `classify`
+            // because this loop holds its OWN trajectory and has no
+            // `PlayOutcome` to hand it — a rooted turn-driver has no from-setup
+            // outcome, which is the same reason it always passed `partial:
+            // None` (see `PlayError::TurnCap`'s doc).
+            return Err(DrivenError::TurnCapReached {
+                turns: state.turn_number,
+                tail: Some(Box::new(CapTail::capture(&state, &moves))),
+            });
         }
         // The decision guard, checked BEFORE the decision it would be the
         // (max+1)-th of, so the refusal names the bound the caller set rather
@@ -2989,6 +4606,21 @@ impl RootTable {
 /// Typed rather than a message, because each arm is a different KIND of answer:
 /// two are permanent facts about what the contestant is, and one is a scope
 /// statement this module can revisit with a consumer.
+///
+/// **`AlternateTable` was RETIRED on 2026-08-30, at the V4 ship commit, and the
+/// reason it existed is recorded here rather than deleted with it.** It refused
+/// [`Contestant::NamedTable`] on SCOPE: V3 spec §5.1 admitted in-crate weighted
+/// construction "used only by the scan, **never the runner grammar**", and
+/// admitting a seat whose table was a runner ARGUMENT would have put a weight
+/// identity into a grammar whose rooted reads are keyed to ONE pinned
+/// generating identity. That scope is intact; the refusal is simply no longer
+/// how it is kept. The contestant this repo ships IS a named table now
+/// ([`Contestant::PRODUCTION`]), the generating ecology stays pinned to
+/// EXPLICIT V2 ([`GENERATED_ECOLOGY_V2_LOOKAHEAD`], v2.3 — so no recorded root
+/// move belongs to a named arm), and a rooted read of the shipped bot is
+/// therefore a named-table read rather than an alternate-table one. What would
+/// re-open the question is a runner FLAG that took a weight table; there is
+/// none, `--contestant` still spells only NAMES, and a name is an identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnsupportedReason {
     /// A [`RolloutPolicy`] rung: it SAMPLES a move from a distribution and
@@ -3216,6 +4848,24 @@ fn mirror_build(
         .with_cap(cap)),
         Contestant::Policy(_) => refuse(UnsupportedReason::Sampled),
         Contestant::GreedyV1 { .. } => refuse(UnsupportedReason::Unranked),
+        // `Contestant::build`'s `NamedTable` arm, verbatim: the same
+        // `build_search` construction, the same knob ORDER, the arm's OWN table
+        // rather than a hardwired one, and UNCAPPED. The three numbers come
+        // from `NamedIdentity::KNOBS` rather than being retyped here — one
+        // spelling of `(4, 1, 8)` across the two files, which is the only form
+        // of this mirror that a transposition cannot survive.
+        Contestant::NamedTable(arm) => {
+            let knobs = NamedIdentity::KNOBS;
+            Ok(LookaheadAgent::with_knobs(
+                rules,
+                SearchScheme::TurnBoundary { beam: knobs.beam },
+                knobs.worlds,
+                knobs.retreat_samples,
+                arm.table(),
+                decision_seed,
+            )
+            .with_cap(None))
+        }
         Contestant::MctsV1 { .. } | Contestant::AtomicDiag { .. } => {
             refuse(UnsupportedReason::Diagnostic)
         }
@@ -3294,7 +4944,103 @@ pub fn generate_roots(
     let Some(&highest) = wanted.iter().next_back() else {
         return Ok(Vec::new());
     };
-    // AFTER the empty-block return, so the probe counts WALKS and not calls.
+    let ecology = predicate.ecology();
+    let mut collected: BTreeMap<u32, (GameState, RootDescriptor)> = BTreeMap::new();
+    let walk = walk_scan(predicate, master, rules, &mut |hit| {
+        if wanted.contains(&hit.ordinal) {
+            let root_digest = state_digest(hit.state);
+            collected.insert(
+                hit.ordinal,
+                (
+                    hit.state.clone(),
+                    RootDescriptor {
+                        origin: RootOrigin::Generated {
+                            predicate,
+                            master,
+                            ordinal: hit.ordinal,
+                            game_index: hit.game_index,
+                            ecology: ecology.clone(),
+                        },
+                        event_index: Some(hit.position),
+                        root_digest,
+                    },
+                ),
+            );
+            if hit.ordinal == highest {
+                return ScanStep::Stop;
+            }
+        }
+        ScanStep::Continue
+    })?;
+
+    ordinals
+        .iter()
+        .map(|ordinal| {
+            collected.get(ordinal).cloned().ok_or(RootError::Exhausted {
+                predicate,
+                ordinal: *ordinal,
+                found: walk.found,
+                games: ecology.games,
+            })
+        })
+        .collect()
+}
+
+/// One hit a [`walk_scan`] kept — the strided ordinal, the game and position it
+/// was found at, and the state itself, BORROWED.
+///
+/// The lifetime is the honest part: a visitor that wants the state keeps it by
+/// CLONING, and one that only counts pays nothing. That is what lets
+/// [`scan_capacity`] measure a predicate's supply without any position ever
+/// leaving the walk.
+struct ScanHit<'a> {
+    ordinal: u32,
+    game_index: u32,
+    position: usize,
+    state: &'a GameState,
+}
+
+/// Whether a [`walk_scan`] visitor has seen enough.
+enum ScanStep {
+    Continue,
+    Stop,
+}
+
+/// What a completed [`walk_scan`] counted.
+struct ScanWalk {
+    /// Strided hits COUNTED — the number a [`RootError::Exhausted`] reports.
+    /// A visitor that stopped the walk early leaves this at the ordinal it
+    /// stopped on, exactly as the pre-split loop did.
+    found: u32,
+    /// Generated games actually played.
+    games_walked: u32,
+}
+
+/// THE SCAN WALK — one implementation, two consumers.
+///
+/// [`generate_roots`] resolves ordinals to roots and [`scan_capacity`] measures
+/// how many ordinals there are; both are the SAME sequence of games, positions,
+/// predicate evaluations and stride decisions, and one walk is what makes that a
+/// property rather than two functions agreeing today. The visitor sees every
+/// kept hit and decides whether the walk goes on.
+///
+/// **Every ordering rule the sequence depends on lives here**: games in
+/// `SeedSchedule::diagnostic(master)` draw order, positions within a game in
+/// PLAY order (`state_at`'s own index), the ordinal incremented once per KEPT
+/// hit and never restarted across games, and the STRIDE — at most
+/// `per_game_cap` hits per game, the rest skipped without consuming an ordinal,
+/// with the game abandoned the moment its cap is spent.
+///
+/// The `Stop` arm short-circuits BEFORE the ordinal increment and before the
+/// stride bookkeeping, which is where the pre-split loop's `break 'games` sat;
+/// the split is behaviour-preserving and `generate_roots`' own reproduction pins
+/// are what say so.
+fn walk_scan(
+    predicate: RootPredicate,
+    master: u64,
+    rules: &Rules,
+    on_hit: &mut dyn FnMut(ScanHit<'_>) -> ScanStep,
+) -> Result<ScanWalk, RootError> {
     #[cfg(test)]
     scan_probe::record_walk();
     let config = predicate.config();
@@ -3303,7 +5049,7 @@ pub fn generate_roots(
     let per_game_cap = ecology.per_game_cap;
     let mut schedule = SeedSchedule::diagnostic(master);
     let mut found: u32 = 0;
-    let mut collected: BTreeMap<u32, (GameState, RootDescriptor)> = BTreeMap::new();
+    let mut games_walked: u32 = 0;
 
     'games: for game_index in 0..games {
         let world = schedule.next_world();
@@ -3311,10 +5057,13 @@ pub fn generate_roots(
         // derivation `drive_to_terminal` uses, so a generated root is reachable
         // by a run anyone can reproduce from the master alone.
         let mut make = |seat: PlayerId, _players: u8| -> Box<dyn ArenaAgent> {
-            config.seat.build(rules, agent_stream_seed(world, seat, Slot(seat.0))).0
+            config
+                .seat
+                .build(rules, agent_stream_seed(world, seat, Slot(seat.0)))
         };
         let stats = run_arena_game(world, config.players, rules, &mut make, true)
             .map_err(|e| RootError::Generate { game_index, detail: e.to_string() })?;
+        games_walked += 1;
 
         let events = &stats.record.events;
         let mut state = state_at(&stats.record, 0, rules)
@@ -3327,28 +5076,9 @@ pub fn generate_roots(
         // range one short would make the scan quietly predicate-specific.
         for position in 0..=events.len() {
             if predicate.holds(&state, rules) {
-                if wanted.contains(&found) {
-                    let root_digest = state_digest(&state);
-                    collected.insert(
-                        found,
-                        (
-                            state.clone(),
-                            RootDescriptor {
-                                origin: RootOrigin::Generated {
-                                    predicate,
-                                    master,
-                                    ordinal: found,
-                                    game_index,
-                                    ecology: ecology.clone(),
-                                },
-                                event_index: Some(position),
-                                root_digest,
-                            },
-                        ),
-                    );
-                    if found == highest {
-                        break 'games;
-                    }
+                let step = on_hit(ScanHit { ordinal: found, game_index, position, state: &state });
+                if matches!(step, ScanStep::Stop) {
+                    break 'games;
                 }
                 found += 1;
                 hits_this_game += 1;
@@ -3367,17 +5097,141 @@ pub fn generate_roots(
         }
     }
 
-    ordinals
-        .iter()
-        .map(|ordinal| {
-            collected.get(ordinal).cloned().ok_or(RootError::Exhausted {
-                predicate,
-                ordinal: *ordinal,
-                found,
-                games,
-            })
-        })
-        .collect()
+    Ok(ScanWalk { found, games_walked })
+}
+
+/// A CAPACITY measurement: how many strided ordinals a predicate's scan realizes
+/// at a master, and which generated game each one came from.
+///
+/// **THIS TYPE IS THE NO-BURN ARGUMENT.** Spec §6 permits — and requires —
+/// capacity measurement at step 2 while fencing every root-table read at ordinal
+/// ≥ 8 until step 10, and the fence is only worth something if "measuring" and
+/// "reading" are different acts. Here they are different by CONSTRUCTION: this
+/// struct carries counts and game indices and nothing else. There is no
+/// `GameState`, no [`RootDescriptor`], no digest, and no field a position could
+/// hide in — so a capacity report cannot tell anybody what an escrow root LOOKS
+/// like, whatever they do with it afterwards. [`scan_capacity`] builds no root
+/// table and clones no state; the borrow in [`ScanHit`] is what makes that
+/// cheap, and this type is what makes it checkable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScanCapacity {
+    /// The predicate measured.
+    pub predicate: RootPredicate,
+    /// The master measured at. RECORDED BY THE CALLER before use, as ever.
+    pub master: u64,
+    /// The generating ecology the scan ran under — without which a count is not
+    /// an identity, on the descriptor's own reasoning.
+    pub ecology: GeneratingEcology,
+    /// `game_of_ordinal[n]` is the generated game strided ordinal `n` was found
+    /// in. Its LENGTH is the realized supply (or the stop bound, if
+    /// [`truncated`](Self::truncated)).
+    pub game_of_ordinal: Vec<u32>,
+    /// Generated games actually played.
+    pub games_walked: u32,
+    /// The walk stopped at the caller's bound rather than exhausting the
+    /// ecology's games — so the supply is AT LEAST `game_of_ordinal.len()`,
+    /// never exactly it.
+    pub truncated: bool,
+}
+
+impl ScanCapacity {
+    /// Strided ordinals found (`>=` the true supply's lower bound; exactly the
+    /// supply when not [`truncated`](Self::truncated)).
+    pub fn found(&self) -> u32 {
+        self.game_of_ordinal.len() as u32
+    }
+
+    /// Whether ordinal `n` was realized by this measurement.
+    pub fn covers(&self, ordinal: u32) -> bool {
+        (ordinal as usize) < self.game_of_ordinal.len()
+    }
+
+    /// Do the ordinals in `left` and `right` come from DISJOINT generated games,
+    /// as measured?
+    ///
+    /// The MEASURED companion to [`ordinals_are_stride_separated`]'s guarantee,
+    /// and the instrument spec §6's independence claim needs where the lemma
+    /// does not reach — the development-EXTENSION boundary, where ordinals 7 and
+    /// 8 are one apart, so a game contributing a TWO-ordinal run can land exactly
+    /// `{7, 8}` and hold both. `None` when the measurement does not cover every
+    /// ordinal asked about: an unmeasured ordinal is not a disjoint one.
+    pub fn bands_are_disjoint(
+        &self,
+        left: std::ops::Range<u32>,
+        right: std::ops::Range<u32>,
+    ) -> Option<bool> {
+        let games_of = |band: std::ops::Range<u32>| -> Option<BTreeSet<u32>> {
+            band.map(|ordinal| self.game_of_ordinal.get(ordinal as usize).copied()).collect()
+        };
+        let left = games_of(left)?;
+        let right = games_of(right)?;
+        Some(left.is_disjoint(&right))
+    }
+}
+
+/// Measure a predicate's realized ordinal supply at `master` — WITHOUT building
+/// or reading any root table.
+///
+/// Spec §6: "Capacity measurement at step 2 is permitted, required, and not a
+/// burn (no root table read)." This is that measurement. It walks the same scan
+/// [`generate_roots`] walks (the same function, [`walk_scan`]), counts the
+/// strided hits and records which game each came from, and returns
+/// [`ScanCapacity`] — a type with nowhere to put a position. Nothing anywhere on
+/// this path calls `root_table` or `adjudicate_root`, and NO CONTESTANT IS BUILT
+/// TO EVALUATE ANY ROOT — the only builds are the GENERATING seats, the same
+/// ones [`generate_roots`] seats, which is what makes this the same walk rather
+/// than a cheaper imitation of it. No `GameState` is cloned out of the walk at
+/// all.
+///
+/// `stop_after` bounds the walk at that many ordinals, which is what makes a
+/// measurement affordable on the v2 lookahead ecology; the report says
+/// [`truncated`](ScanCapacity::truncated) so a bounded count is never read as an
+/// exact supply. `None` walks the ecology's whole game budget — the exact
+/// figure, at the ecology's whole price. `Some(0)` measures nothing and says so
+/// rather than walking.
+///
+/// **COST is the ECOLOGY's, and it is the same cost a scan pays**: the two V4
+/// predicates scan `driven-generated-v2.3-lookahead`, where both generating
+/// seats search — minutes to hours for the full walk. That is the price of the
+/// number, and knowing it before the masters are drawn is exactly why spec §6
+/// puts the measurement at step 2.
+pub fn scan_capacity(
+    predicate: RootPredicate,
+    master: u64,
+    stop_after: Option<u32>,
+    rules: &Rules,
+) -> Result<ScanCapacity, RootError> {
+    let ecology = predicate.ecology();
+    if stop_after == Some(0) {
+        return Ok(ScanCapacity {
+            predicate,
+            master,
+            ecology,
+            game_of_ordinal: Vec::new(),
+            games_walked: 0,
+            truncated: true,
+        });
+    }
+    let mut game_of_ordinal: Vec<u32> = Vec::new();
+    let mut truncated = false;
+    let walk = walk_scan(predicate, master, rules, &mut |hit| {
+        game_of_ordinal.push(hit.game_index);
+        match stop_after {
+            Some(bound) if game_of_ordinal.len() as u32 >= bound => {
+                truncated = true;
+                ScanStep::Stop
+            }
+            _ => ScanStep::Continue,
+        }
+    })?;
+    Ok(ScanCapacity {
+        predicate,
+        master,
+        ecology,
+        game_of_ordinal,
+        games_walked: walk.games_walked,
+        truncated,
+    })
 }
 
 /// A TEST-ONLY meter for the one thing a signature cannot state: how many times
@@ -4584,16 +6438,30 @@ mod tests {
         );
         assert_eq!(ReplyPolicy::GreedyAtFinal.contestant(), Ok(Contestant::GREEDY_V1_DEFAULT));
         assert_eq!(ReplyPolicy::GreedyAtFinal.contestant(), Ok(Contestant::GreedyV1 { m: 8 }));
-        assert_eq!(
-            ReplyPolicy::LookaheadAtFinal.contestant(),
-            Ok(Contestant::LOOKAHEAD_V1_DEFAULT),
-        );
+
+        // RE-POINTED 2026-08-30 at the V4 ship commit: this arm is the shipped
+        // PRODUCTION contestant, which is a NAMED identity and not a
+        // `*_DEFAULT` (amendment D1's rule). The greedy arm above did NOT move
+        // — no greedy identity was confirmed — so the two `*AtFinal` arms are
+        // deliberately no longer one binding, and that asymmetry is asserted
+        // here rather than left to be noticed.
+        assert_eq!(ReplyPolicy::LookaheadAtFinal.contestant(), Ok(Contestant::PRODUCTION));
         assert!(
             matches!(
                 ReplyPolicy::LookaheadAtFinal.contestant(),
-                Ok(Contestant::LookaheadV1 { cap: None, .. })
+                Ok(Contestant::NamedTable(_))
             ),
-            "the shipped S1 arm is UNCAPPED: an absent cap is not any set cap",
+            "the production seat is a named table",
+        );
+        assert!(
+            !Contestant::PRODUCTION.echo().contains("cap="),
+            "the production arm is UNCAPPED: an absent cap is not any set cap ({})",
+            Contestant::PRODUCTION.echo(),
+        );
+        assert_ne!(
+            ReplyPolicy::LookaheadAtFinal.contestant(),
+            ReplyPolicy::GreedyAtFinal.contestant(),
+            "the two *AtFinal arms name two contestants",
         );
 
         // The two arms of `SeatSpec` are one vocabulary, not two agent kinds.
@@ -4870,6 +6738,204 @@ mod tests {
             drive_to_terminal(&root, &seats, &rules, world(10), none),
             Err(DrivenError::UnsupportedRoot(_)),
         ));
+    }
+
+
+    // =======================================================================
+    // A-S12-1 — the CAP TAIL: a counted cap's non-gating evidence
+    // (close doc `docs/plans/2026-08-30-phase3.5c-v4-close.md` §2.4 items 1, 5)
+    // =======================================================================
+
+    /// The TAIL KEEPS THE LAST MOVES, not the first — the rider's whole purpose
+    /// is attribution of a loop nobody can see, and a prefix of a 100,000-move
+    /// trajectory says nothing about the state it ended in.
+    ///
+    /// Pinned on a SYNTHETIC move list rather than a driven one because the
+    /// property is about the slice and a real cap's trajectory is not something
+    /// a test can afford to produce twice.
+    #[test]
+    fn a_cap_tail_keeps_the_last_sixteen_applied_moves_and_says_how_many_there_were() {
+        let rules = Rules::standard();
+        let root = root_2p(&rules, world(20).0);
+        let applied: Vec<AppliedMove> = (0..20u8)
+            .map(|i| AppliedMove {
+                seat: PlayerId(u8::from(i % 2 == 1)),
+                mv: Move::SkipBuilding,
+            })
+            .collect();
+
+        let tail = CapTail::capture(&root, &applied);
+        assert_eq!(tail.applied_total, 20, "the tail must say how many moves it is a tail OF");
+        assert_eq!(tail.tail.len(), CAP_TAIL_MOVES, "the tail is not K moves long");
+        // The LAST sixteen: moves 4..20, so the first kept move's seat is
+        // move 4's (seat 0) and the last kept is move 19's (seat 1).
+        assert_eq!(tail.tail, applied[4..], "the tail kept the wrong end of the trajectory");
+
+        // A trajectory SHORTER than K keeps all of it, and never pads.
+        let short = CapTail::capture(&root, &applied[..3]);
+        assert_eq!(short.applied_total, 3);
+        assert_eq!(short.tail, applied[..3]);
+    }
+
+    /// The END-STATE SUMMARY reads the fields the produce-and-hoard attribution
+    /// needs — goods, money, assistant stocks, cards — off the state the cap
+    /// stopped in, and the turn number beside them.
+    ///
+    /// Pinned against a POST-SETUP root, whose every quantity is a rulebook
+    /// constant, so a summary that silently read the wrong field fails on a
+    /// number a reader can check without running anything.
+    #[test]
+    fn a_cap_tails_end_state_reads_the_seats_stocks_at_cap_time() {
+        let rules = Rules::standard();
+        let root = root_2p(&rules, world(21).0);
+
+        let tail = CapTail::capture(&root, &[]);
+        assert_eq!(tail.turn_number, root.turn_number);
+        assert_eq!(tail.turn_phase, root.turn_phase);
+        assert_eq!(tail.current_player, root.current_player);
+        assert_eq!(tail.applied_total, 0);
+        assert!(tail.tail.is_empty(), "an empty trajectory must not invent a tail");
+        assert_eq!(tail.seats.len(), 2, "every seat is summarized");
+
+        for (index, seat) in tail.seats.iter().enumerate() {
+            let truth = &root.players[index];
+            assert_eq!(seat.seat, truth.id);
+            assert_eq!(seat.victory_points, truth.victory_points);
+            assert_eq!(seat.money, truth.money);
+            assert_eq!(seat.copper, truth.copper);
+            assert_eq!(seat.silk, truth.silk);
+            assert_eq!(seat.tea, truth.tea);
+            assert_eq!(seat.seafood, truth.seafood);
+            assert_eq!(seat.imported_goods, truth.imported_goods);
+            assert_eq!(seat.assistants_in_hand, truth.assistants.in_hand);
+            assert_eq!(seat.assistants_in_warehouse, truth.assistants.in_warehouse);
+            assert_eq!(
+                seat.assistants_on_board,
+                truth.assistants.on_board.values().map(|&n| u32::from(n)).sum::<u32>(),
+            );
+            assert_eq!(seat.orders_in_hand, truth.order_cards_in_hand.len());
+            assert_eq!(seat.completed_orders, truth.completed_orders.len());
+            assert_eq!(seat.technologies, truth.technologies.len());
+        }
+        // The rulebook constants, so a field swap fails on a number rather than
+        // on an identity: every seat starts one of each trade good and eight
+        // assistants in hand.
+        assert_eq!(tail.seats[0].copper, 1);
+        assert_eq!(tail.seats[0].assistants_in_hand, 8);
+    }
+
+    /// THE SHARED LOOP's cap carries its partial trajectory into the rooted
+    /// taxonomy (A-S12-1): `PlayError::TurnCap`'s `partial` has ridden out of
+    /// `play_from_state` since V4 step 11, and `classify` used to drop it —
+    /// which is exactly why the S12 achievement arm's refusal could say nothing
+    /// about the loop it refused.
+    ///
+    /// **The MESSAGE is unchanged**, and that is asserted here rather than left
+    /// to the scope pin: the tail is evidence a caller can read, never a new
+    /// sentence in a refusal every other consumer still prints verbatim.
+    #[test]
+    fn the_shared_loops_cap_hands_its_trajectory_to_the_rooted_taxonomy() {
+        let rules = Rules::standard();
+        let root = root_2p(&rules, world(22).0);
+        let seats = [
+            SeatSpec::Reply(ReplyPolicy::FamilyWeighted),
+            SeatSpec::Reply(ReplyPolicy::FamilyWeighted),
+        ];
+        // One turn of headroom: the guard trips the moment `turn_number`
+        // reaches 2, so the partial holds turn 1 and nothing else.
+        let opts = DrivenOpts { max_turns: 1, ..DrivenOpts::default() };
+
+        let err = drive_to_terminal(&root, &seats, &rules, world(23), opts)
+            .expect_err("a one-turn guard must trip");
+        let DrivenError::TurnCapReached { turns, tail } = err else {
+            panic!("expected TurnCapReached, got {err:?}");
+        };
+        assert_eq!(turns, 2, "the refusal names the turn the guard tripped at");
+        let tail = tail.expect("the shared loop hands its partial to the rooted taxonomy");
+        assert_eq!(tail.turn_number, turns, "the tail's end state is not the capped state");
+        assert!(tail.applied_total > 0, "turn 1 applied no moves");
+        assert_eq!(
+            tail.tail.len(),
+            tail.applied_total.min(CAP_TAIL_MOVES),
+            "the tail length does not follow the trajectory's",
+        );
+        assert_eq!(tail.seats.len(), 2);
+
+        assert_eq!(
+            DrivenError::TurnCapReached { turns, tail: None }.to_string(),
+            "turn cap reached at turn 2",
+            "the cap's MESSAGE moved — every consumer below still prints it verbatim",
+        );
+    }
+
+    /// The TURN DRIVER's cap is the same taxonomy and the same sentence, with
+    /// its own trajectory attached.
+    ///
+    /// `drive_turn` cannot borrow `play_from_state`'s partial (it is not that
+    /// loop), so it captures its own — and the DRIFT this pins is the one that
+    /// matters: two loops that report a cap in two different sentences would
+    /// make a counted cap mean two different things on one report.
+    #[test]
+    fn the_turn_drivers_cap_is_the_shared_sentence_with_its_own_tail() {
+        let rules = Rules::standard();
+        let root = root_2p(&rules, world(24).0);
+        let subject = SeatSpec::Contestant(Contestant::GreedyV1 { m: DEFAULT_RETREAT_SAMPLES });
+        // A zero-turn guard: the root's own turn number is already past it, so
+        // the driver refuses before its first decision.
+        let opts = DrivenOpts { max_turns: 0, ..DrivenOpts::default() };
+
+        let err = drive_turn(&root, subject, &rules, 0xA5A5_0000_0000_0001, &opts)
+            .expect_err("a zero-turn guard must trip");
+        let DrivenError::TurnCapReached { turns, tail } = err else {
+            panic!("expected TurnCapReached, got {err:?}");
+        };
+        assert_eq!(turns, root.turn_number);
+        let tail = tail.expect("the turn driver captures its own trajectory");
+        assert_eq!(tail.applied_total, 0, "the cap tripped before any decision");
+        assert_eq!(tail.turn_number, root.turn_number);
+        assert_eq!(
+            classify(PlayError::TurnCap { turns, partial: None }).to_string(),
+            DrivenError::TurnCapReached { turns, tail: None }.to_string(),
+            "the two loops report a cap in two different sentences",
+        );
+    }
+
+    /// **THE SCOPE PIN** (A-S12-1's fence): the STANDALONE adjudicator still
+    /// HARD-REFUSES on a capped playout, in today's words.
+    ///
+    /// The amendment is scoped to the FAMILY harness's adjudication. Every other
+    /// consumer — `examples/driven adjudicate` among them — keeps Phase B's own
+    /// design working as built ("a playout failure REFUSES THE WHOLE TABLE"): a
+    /// table missing a candidate reads exactly like a table of a position with
+    /// fewer options.
+    #[test]
+    fn the_standalone_adjudicator_still_hard_refuses_a_capped_playout() {
+        let rules = Rules::standard();
+        let root = root_2p(&rules, world(25).0);
+        let source = RootSource::Constructed(root);
+        let seats = [
+            SeatSpec::Reply(ReplyPolicy::FamilyWeighted),
+            SeatSpec::Reply(ReplyPolicy::FamilyWeighted),
+        ];
+        let opts = DrivenOpts { max_turns: 1, ..DrivenOpts::default() };
+
+        let err = adjudicate_root(&source, &seats, &rules, world(26), 1, opts)
+            .expect_err("a capped playout must refuse the whole table");
+        let text = err.to_string();
+        match &err {
+            AdjudicationError::Playout { replication, error, .. } => {
+                assert_eq!(*replication, 0);
+                assert!(
+                    matches!(**error, DrivenError::TurnCapReached { .. }),
+                    "the cap is not typed through: {error}",
+                );
+            }
+            other => panic!("expected a Playout refusal, got {other:?}"),
+        }
+        assert!(
+            text.contains("did not complete: turn cap reached at turn 2"),
+            "the standalone refusal's wording moved: {text}",
+        );
     }
 
     /// An agent refusal is a HARD error with no fallback arm — the arena's
@@ -5618,7 +7684,7 @@ mod tests {
     fn the_mirrored_agent_picks_what_contestant_build_picks() {
         let rules = Rules::standard();
         let stats = rung_game(&rules, world(34));
-        let arms = [
+        let mut arms = vec![
             (Contestant::LOOKAHEAD_V1_DEFAULT, 40),
             (Contestant::from_str_name("lookahead-v1:b=8").expect("b=8 parses"), 12),
             (
@@ -5626,6 +7692,25 @@ mod tests {
                 12,
             ),
         ];
+        // **EVERY NAMED IDENTITY, since the 2026-08-30 ship commit** — one of
+        // them is the contestant this repo ships, and all three reach the
+        // mirror now that `AlternateTable` has retired. Built FROM
+        // `NamedIdentity::ALL`, so a fourth arm joins this pin by existing.
+        //
+        // They ride the knob arms' shorter window for the knob arms' reason:
+        // their CONSTRUCTION drift is what half (a) is for — and for a named
+        // arm the field most at risk is the TABLE, which `controller()` carries
+        // as the `weights=` identity — while a searching decision is not free
+        // in debug. Half (b) is still the honest half here: the authoring
+        // measurement in this cell's doc (a V1 mirror against a V2 build
+        // disagreeing at only 3 of 40 roots) is exactly a table drift, and it
+        // is why the window is not one root.
+        arms.extend(NamedIdentity::ALL.map(|arm| (Contestant::NamedTable(arm), 12)));
+        assert_eq!(arms.len(), 3 + NamedIdentity::ALL.len(), "every named arm is swept");
+        assert!(
+            arms.iter().any(|(arm, _)| *arm == Contestant::PRODUCTION),
+            "the SHIPPED contestant must be one of the arms this pin sweeps",
+        );
 
         for (arm, window) in arms {
             // (a) the construction, compared through the trait object.
@@ -5699,6 +7784,26 @@ mod tests {
             (Contestant::MCTS_V1_DEFAULT, UnsupportedReason::Diagnostic),
             (Contestant::ATOMIC_DIAG_DEFAULT, UnsupportedReason::Diagnostic),
         ];
+        // **THE NAMED IDENTITIES ARE NO LONGER HERE**, and their absence is
+        // asserted rather than left as a gap: at the 2026-08-30 ship commit
+        // `UnsupportedReason::AlternateTable` retired, because the contestant
+        // this repo SHIPS is a named table and a rooted read of the shipped bot
+        // cannot be a refusal. Every arm is supported now, and
+        // `the_mirrored_agent_picks_what_contestant_build_picks` is where they
+        // are held equal to what they mirror. A FOURTH named arm does NOT land
+        // as a compile error — `mirror_build`'s `NamedTable(arm)` arm is a
+        // catch-all over `NamedIdentity` — so what holds a new arm honest is
+        // this cell's own `NamedIdentity::ALL` sweep below plus the mirrored
+        // drift pin, both of which iterate `ALL` and grow with it.
+        for arm in NamedIdentity::ALL {
+            assert!(
+                !expected.iter().any(|(c, _)| *c == Contestant::NamedTable(arm)),
+                "{} must not be refused: the production contestant is a named table",
+                arm.name(),
+            );
+            root_table(&root, seat, Contestant::NamedTable(arm), &rules, DECISION_SEED)
+                .unwrap_or_else(|e| panic!("{} must have a root table: {e}", arm.name()));
+        }
         for (contestant, reason) in expected {
             let err = root_table(&root, seat, contestant, &rules, DECISION_SEED)
                 .expect_err("v1 supports the S1 turn-boundary arm and nothing else");
@@ -5732,6 +7837,12 @@ mod tests {
         ));
         assert!(matches!(
             root_table(&corrupt, seat, Contestant::LOOKAHEAD_V1_DEFAULT, &rules, DECISION_SEED),
+            Err(RootTableError::CorruptRoot(_)),
+        ));
+        // ...and the SHIPPED contestant reaches the root check too, rather than
+        // stopping one step earlier at an arm refusal it no longer has.
+        assert!(matches!(
+            root_table(&corrupt, seat, Contestant::PRODUCTION, &rules, DECISION_SEED),
             Err(RootTableError::CorruptRoot(_)),
         ));
     }
@@ -7650,6 +9761,40 @@ mod tests {
         what: &str,
         want: &mut dyn FnMut(&GameState) -> bool,
     ) -> GameState {
+        let mut found = None;
+        sweep(rules, master, games, &mut |state| {
+            if want(state) {
+                found = Some(state.clone());
+                Visit::Stop
+            } else {
+                Visit::Continue
+            }
+        });
+        found.unwrap_or_else(|| {
+            panic!("anti-vacuity: no position in {games} rung games at {master:#018x} is {what}")
+        })
+    }
+
+    /// Whether a [`sweep`] visitor has seen enough.
+    enum Visit {
+        Continue,
+        Stop,
+    }
+
+    /// [`harvest`]'s walk, without the early return baked in: EVERY position of
+    /// the first `games` organic 2P rung games at `master`, in play order, until
+    /// the visitor stops it.
+    ///
+    /// Split out so the two shapes of cell share ONE walk — `harvest` wants the
+    /// first match and the V4 equivalence sweeps want all of them, and two
+    /// hand-written walks over the same population would eventually disagree
+    /// about which population that is.
+    fn sweep(
+        rules: &Rules,
+        master: u64,
+        games: u32,
+        visit: &mut dyn FnMut(&GameState) -> Visit,
+    ) {
         let mut schedule = SeedSchedule::diagnostic(master);
         for _ in 0..games {
             let world = schedule.next_world();
@@ -7662,8 +9807,8 @@ mod tests {
             let mut state =
                 state_at(&stats.record, 0, rules).expect("position 0 of any record replays");
             for position in 0..=events.len() {
-                if want(&state) {
-                    return state;
+                if matches!(visit(&state), Visit::Stop) {
+                    return;
                 }
                 if let Some(event) = events.get(position) {
                     state = replay_from(&state, std::slice::from_ref(event), rules)
@@ -7671,7 +9816,6 @@ mod tests {
                 }
             }
         }
-        panic!("anti-vacuity: no position in {games} rung games at {master:#018x} is {what}");
     }
 
     /// Doctor base VP until the mover's true margin is exactly `target`, and
@@ -8195,6 +10339,596 @@ mod tests {
         );
     }
 
+    // =======================================================================
+    // V4 step 2: the two frozen generator predicates (spec §6)
+    // =======================================================================
+
+    /// The V4 step-2 DEV-SMOKE master.
+    ///
+    /// **The 9999-convention throwaway and nothing else.** Spec §6 is
+    /// FREEZE-THEN-DRAW: the predicate implementations freeze first and only then
+    /// are M-PF / M-OSE drawn from OS entropy and ledger-recorded. A master
+    /// invented in a test file before that draw, and used at any ordinal, would
+    /// be a read taken before the thing it is a read of exists — so every cell
+    /// below runs on this one declared throwaway, whose trailing `9999` says out
+    /// loud that it is not anybody's recorded master.
+    const V4_MASTER: u64 = 0x0401_2026_0821_9999;
+
+    /// Move one order card from the top of the deck into `holder`'s hand — a
+    /// PORT TAKE's net effect on the conservation identity, and nothing else.
+    ///
+    /// Conservation is why this is a helper rather than three lines inline:
+    /// `check_invariants` counts deck + ports + hands + completed + removed = 36,
+    /// so a card CONJURED into a hand fails the net and a card moved deck → hand
+    /// does not. Every caller asserts the invariants afterwards.
+    fn deal_from_deck(state: &mut GameState, holder: PlayerId) -> OrderCardId {
+        let card = state.order_deck.pop().expect("the setup deck is not empty");
+        let idx = holder.0 as usize;
+        state.players[idx].order_cards_in_hand.push(card);
+        card
+    }
+
+    /// Raise `holder`'s trade goods until `order`'s requirements are met.
+    ///
+    /// Trade goods have NO conservation invariant (there is no pool — the engine
+    /// stores four per-player counters), so raising them is inside the net, and
+    /// the callers assert `check_invariants` to say so rather than assume it.
+    fn stock_for(state: &mut GameState, holder: PlayerId, order: OrderCardId, rules: &Rules) {
+        let req = rules.orders.get(order).expect("the registry knows the card").requirements;
+        let p = &mut state.players[holder.0 as usize];
+        p.copper = p.copper.max(req.copper as u32);
+        p.silk = p.silk.max(req.silk as u32);
+        p.tea = p.tea.max(req.tea as u32);
+        p.seafood = p.seafood.max(req.seafood as u32);
+    }
+
+    /// The seat that is NOT on the move.
+    fn non_mover(state: &GameState) -> PlayerId {
+        state
+            .players
+            .iter()
+            .map(|p| p.id)
+            .find(|id| *id != state.current_player)
+            .expect("a 2P fixture has a non-mover")
+    }
+
+    /// Both V4 arms are REGISTERED: spec-§6 names, in `ALL`, distinct, and
+    /// scanning the ecology §6 declares at the stride cap §6's independence
+    /// claim rests on.
+    #[test]
+    fn the_two_v4_predicates_are_registered_with_their_spec_names_and_ecology() {
+        assert_eq!(RootPredicate::PlacementForkSameCount.as_str(), "placement-fork-same-count");
+        assert_eq!(RootPredicate::OpponentSittingExecutable.as_str(), "opponent-sitting-executable");
+
+        let mut names: Vec<&str> = RootPredicate::ALL.into_iter().map(RootPredicate::as_str).collect();
+        assert_eq!(names.len(), 8, "the predicate vocabulary changed size");
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), 8, "two predicates answer to one name");
+
+        for predicate in V4_BANDED_PREDICATES {
+            assert!(
+                RootPredicate::ALL.contains(&predicate),
+                "{} is banded but not in ALL, so `gen:` cannot name it",
+                predicate.as_str(),
+            );
+            let ecology = predicate.ecology();
+            assert_eq!(
+                ecology.id, GENERATED_ECOLOGY_V2_LOOKAHEAD,
+                "{} does not scan the ecology spec §6 registers",
+                predicate.as_str(),
+            );
+            assert_eq!(
+                ecology.per_game_cap, GENERATED_STRIDE_CAP,
+                "{} does not carry the stride §6's independence claim rests on",
+                predicate.as_str(),
+            );
+            assert_eq!(ecology.games, GENERATED_V2_SCAN_GAMES);
+        }
+    }
+
+    /// The placement-fork predicate holds at a TURN START offering two
+    /// same-total placements into different area sets, and each conjunct is
+    /// shown refusing on its own.
+    ///
+    /// The positive is a FRESH 2P setup and the choice is deliberate: it is a
+    /// turn start by construction (`finalize_setup` hands the start player phase
+    /// A), every seat holds eight assistants, no President is on the board so
+    /// every placement is free, and nothing about it was selected after looking
+    /// at what the predicate says.
+    #[test]
+    fn the_placement_fork_predicate_needs_a_turn_start_and_a_same_count_fork() {
+        let rules = Rules::standard();
+        let fork = RootPredicate::PlacementForkSameCount;
+
+        let start = root_2p(&rules, world(40).0);
+        assert_eq!(start.turn_phase, TurnPhase::AdditionalActionFirst);
+        assert!(start.pending_choices.is_empty());
+        assert!(fork.holds(&start, &rules), "a fresh 2P turn start offers no same-count fork");
+
+        // THE FORK, re-derived here rather than trusted: the placements the
+        // mover reaches by declining every additional action, grouped by total.
+        let placing =
+            apply_move(&start, &Move::EndAdditionalPhase, &rules).expect("phase A always ends");
+        assert_eq!(placing.turn_phase, TurnPhase::Placement);
+        let mut by_total: BTreeMap<usize, BTreeSet<BTreeSet<AreaId>>> = BTreeMap::new();
+        for mv in get_legal_moves(&placing, &rules) {
+            let (total, areas) = match mv {
+                Move::PlaceThreeAreas { placements } => {
+                    (placements.len(), placements.into_iter().collect())
+                }
+                Move::PlaceTwoSameArea { area, adjacent_bonus } => {
+                    let mut areas: BTreeSet<AreaId> = BTreeSet::new();
+                    areas.insert(area);
+                    match adjacent_bonus {
+                        Some(adj) => {
+                            areas.insert(adj);
+                            (3, areas)
+                        }
+                        None => (2, areas),
+                    }
+                }
+                other => panic!("the Placement phase offered a non-placement move: {other:?}"),
+            };
+            by_total.entry(total).or_default().insert(areas);
+        }
+        assert!(
+            by_total.values().any(|sets| sets.len() >= 2),
+            "the independently derived fork is empty, so the positive proves nothing",
+        );
+
+        // NEGATIVE — NOT A TURN START: the SAME position one move on. Every
+        // placement the predicate is about is now in the legal list itself,
+        // which is exactly the position the registration does not name.
+        assert!(
+            !fork.holds(&placing, &rules),
+            "the Placement phase itself was read as a turn START",
+        );
+
+        // NEGATIVE — NO ASSISTANT TO PLACE: the only placement is the empty one,
+        // so no total has two sets. The eight assistants move hand → warehouse,
+        // which keeps each seat's total at the 20 `check_invariants` counts.
+        let mut empty_handed = start.clone();
+        {
+            let mover = empty_handed.current_player.0 as usize;
+            let p = &mut empty_handed.players[mover];
+            p.assistants.in_warehouse += p.assistants.in_hand;
+            p.assistants.in_hand = 0;
+        }
+        assert!(check_invariants(&empty_handed, &rules).is_ok(), "the doctor broke conservation");
+        assert!(
+            !fork.holds(&empty_handed, &rules),
+            "a mover with nothing in hand was read as facing a fork",
+        );
+    }
+
+    /// The sitting-executable predicate needs all three of its parts, and the
+    /// VISIBILITY part is the one that must be shown separately: a hidden
+    /// starting order the opponent could pay for RIGHT NOW does not count.
+    ///
+    /// The fixture is a fresh 2P setup, where each seat's whole hand is its KEPT
+    /// starting order — the masked slot itself. One deck card dealt into the
+    /// opponent's hand is the publicly-witnessed Port take that makes the
+    /// contrast a one-card difference on one state.
+    #[test]
+    fn the_sitting_executable_predicate_needs_a_visible_executable_opponent_order() {
+        let rules = Rules::standard();
+        let sitting = RootPredicate::OpponentSittingExecutable;
+
+        let base = root_2p(&rules, world(41).0);
+        let opponent = non_mover(&base);
+        let hidden = base.players[opponent.0 as usize].starting_order.expect("a kept deal");
+        assert_eq!(
+            base.players[opponent.0 as usize].order_cards_in_hand,
+            vec![hidden],
+            "the fixture's premise is that the opponent's whole hand is the masked slot",
+        );
+
+        // NEGATIVE — VISIBILITY: the hidden starting order, fully payable.
+        let mut hidden_only = base.clone();
+        stock_for(&mut hidden_only, opponent, hidden, &rules);
+        assert!(check_invariants(&hidden_only, &rules).is_ok());
+        assert!(
+            can_fulfill_order(&hidden_only, opponent, hidden, &rules.orders),
+            "anti-vacuity: the hidden card is not payable, so visibility is untested",
+        );
+        assert!(
+            !sitting.holds(&hidden_only, &rules),
+            "an unfulfilled HIDDEN starting order was counted as visible to the mover",
+        );
+
+        // POSITIVE: one publicly-witnessed card in the same hand, payable.
+        let mut visible = hidden_only.clone();
+        let taken = deal_from_deck(&mut visible, opponent);
+        stock_for(&mut visible, opponent, taken, &rules);
+        assert!(check_invariants(&visible, &rules).is_ok());
+        assert!(sitting.holds(&visible, &rules));
+
+        // NEGATIVE — STOCKS: the same visible card with the goods stripped.
+        let mut broke = visible.clone();
+        {
+            let p = &mut broke.players[opponent.0 as usize];
+            p.copper = 0;
+            p.silk = 0;
+            p.tea = 0;
+            p.seafood = 0;
+        }
+        assert!(check_invariants(&broke, &rules).is_ok());
+        assert!(
+            !can_fulfill_order(&broke, opponent, taken, &rules.orders),
+            "anti-vacuity: the stripped hand can still pay, so the stocks half is untested",
+        );
+        assert!(!sitting.holds(&broke, &rules));
+
+        // NEGATIVE — THE MOVER'S OWN: an executable visible card in the MOVER's
+        // hand is not the non-mover's, and the predicate says non-mover.
+        let mut mine = base.clone();
+        let mover = mine.current_player;
+        let own = deal_from_deck(&mut mine, mover);
+        stock_for(&mut mine, mover, own, &rules);
+        assert!(check_invariants(&mine, &rules).is_ok());
+        assert!(
+            can_fulfill_order(&mine, mover, own, &rules.orders),
+            "anti-vacuity: the mover cannot pay either, so the seat half is untested",
+        );
+        assert!(
+            !sitting.holds(&mine, &rules),
+            "the MOVER's own executable order satisfied a predicate about the NON-mover",
+        );
+
+        // NEGATIVE — TERMINAL: nothing is decided at a finished game, so there
+        // is no do-nothing successor for the §6 read to contrast against.
+        let terminal = harvest(&rules, C_MASTER, 4, "a terminal position", &mut |s| is_game_over(s));
+        let mut over = terminal.clone();
+        let over_opponent = non_mover(&over);
+        let over_card = deal_from_deck(&mut over, over_opponent);
+        stock_for(&mut over, over_opponent, over_card, &rules);
+        assert!(
+            can_fulfill_order(&over, over_opponent, over_card, &rules.orders),
+            "anti-vacuity: the terminal fixture has no executable visible order anyway",
+        );
+        assert!(!sitting.holds(&over, &rules));
+    }
+
+    /// **THE VISIBILITY DRIFT PIN.** `order_visible_to_others` is a MIRROR of
+    /// `observe::visible_player`'s hand-masking branch, and a mirror that is not
+    /// held equal to what it mirrors goes on producing plausible answers about a
+    /// masking rule nobody runs.
+    ///
+    /// The comparison is exact and total over the population: for every seat
+    /// pair at every swept position, the mirror's verdict on each held card
+    /// equals whether `observe` gave the mover a `HandCard::Known` for it. The
+    /// constructed half supplies the shape a sweep of on-policy games may not
+    /// reach quickly — ONE hand holding both a masked starting order and a
+    /// witnessed Port take — so the pin has a disagreement to find.
+    ///
+    /// **The `starting_order_hidden` arm is constructed too, and it has to be**:
+    /// the mirror has TWO branches and the generator's domain contains only one.
+    /// A hidden deal is the LIVE-TRACKING fiction — a state no `new_game` ever
+    /// produces and no rooted run may start from (the viewer's own flag is a
+    /// typed `observe` refusal) — so a sweep can sweep forever without reaching
+    /// it, and this cell's name would over-promise. The fiction is three field
+    /// moves and they keep the conservation net: the dealt card goes hand →
+    /// `orders_removed` (the identity's total is unchanged), the recorded
+    /// identity is cleared (the invariant net forbids flag AND identity
+    /// together), and the flag goes up.
+    #[test]
+    fn the_visibility_mirror_agrees_with_observe_on_every_held_order() {
+        let rules = Rules::standard();
+
+        // The CONSTRUCTED half: one hand, one masked card, one witnessed card.
+        let mut mixed = root_2p(&rules, world(42).0);
+        let opponent = non_mover(&mixed);
+        let hidden =
+            mixed.players[opponent.0 as usize].starting_order.expect("a kept deal is recorded");
+        let taken = deal_from_deck(&mut mixed, opponent);
+        assert_ne!(hidden, taken, "the deal and the take must be different cards");
+        assert!(check_invariants(&mixed, &rules).is_ok());
+        assert!(
+            !order_visible_to_others(&mixed.players[opponent.0 as usize], hidden),
+            "the mirror let an unfulfilled starting order through",
+        );
+        assert!(
+            order_visible_to_others(&mixed.players[opponent.0 as usize], taken),
+            "the mirror masked a witnessed Port take",
+        );
+
+        // THE OTHER BRANCH: the same hand under the LIVE-TRACKING fiction, where
+        // the deal is recorded nowhere and the view SYNTHESIZES the masked slot.
+        // Every card actually in the hand is then a witnessed take, so the arm
+        // answers `true` for all of them — including the one the identity arm
+        // above masked.
+        let mut unrecorded = mixed.clone();
+        {
+            let holder = &mut unrecorded.players[opponent.0 as usize];
+            holder.order_cards_in_hand.retain(|card| *card != hidden);
+            holder.starting_order = None;
+            holder.starting_order_hidden = true;
+        }
+        unrecorded.orders_removed.push(hidden);
+        assert!(
+            check_invariants(&unrecorded, &rules).is_ok(),
+            "the live-tracking fiction left an engine-invalid state",
+        );
+        assert!(
+            order_visible_to_others(&unrecorded.players[opponent.0 as usize], taken),
+            "the flag arm masked a card the view publishes as Known",
+        );
+        assert!(
+            order_visible_to_others(&unrecorded.players[opponent.0 as usize], hidden),
+            "the flag arm is not `true` for every recorded hand card — and the card it \
+             refused is not even in that hand, which is the fiction's whole point",
+        );
+
+        let mut compared = 0_usize;
+        let mut masked_seen = 0_usize;
+        let mut check = |state: &GameState| {
+            let viewer = state.current_player;
+            let view = observe(state, viewer).expect("a generated seat's view is derivable");
+            for holder in &state.players {
+                if holder.id == viewer {
+                    continue;
+                }
+                // A `Vec` rather than a set: `OrderCardId` carries no `Ord`, and
+                // a hand holds at most three cards, so membership over the
+                // vector IS set membership at no cost worth a new bound.
+                let known: Vec<OrderCardId> = view.players[holder.id.0 as usize]
+                    .hand
+                    .iter()
+                    .filter_map(|card| match card {
+                        crate::types::HandCard::Known(id) => Some(*id),
+                        crate::types::HandCard::HiddenStartingOrder => None,
+                    })
+                    .collect();
+                for &order in &holder.order_cards_in_hand {
+                    let mirrored = order_visible_to_others(holder, order);
+                    assert_eq!(
+                        mirrored,
+                        known.contains(&order),
+                        "the mirror and `observe` disagree about p{}'s card {} at turn {}",
+                        holder.id.0,
+                        order.0,
+                        state.turn_number,
+                    );
+                    compared += 1;
+                    if !mirrored {
+                        masked_seen += 1;
+                    }
+                }
+            }
+        };
+
+        check(&mixed);
+        // The `observe` half of the flag arm: the view synthesizes ONE masked
+        // slot for the unrecorded deal and publishes the take as Known, and the
+        // mirror is held to that, card by card, exactly as everywhere else.
+        check(&unrecorded);
+        assert_eq!(
+            observe(&unrecorded, unrecorded.current_player)
+                .expect("the MOVER's own deal is recorded, so its view derives")
+                .hidden_slot_count(),
+            1,
+            "anti-vacuity: the fiction produced no synthesized slot, so the arm is untested",
+        );
+        sweep(&rules, V4_MASTER, 2, &mut |state| {
+            if !is_game_over(state) {
+                check(state);
+            }
+            Visit::Continue
+        });
+        assert!(compared > 100, "the sweep compared only {compared} cards — too thin to mean much");
+        assert!(masked_seen > 0, "anti-vacuity: nothing in the population was ever masked");
+    }
+
+    /// **The SET reading and the MULTISET reading never disagree about a
+    /// POSITION**, though they do disagree about a move LIST — which is the
+    /// whole of `same_count_fork`'s "sets, because sets is what §6 says" note,
+    /// made executable.
+    ///
+    /// The first half is arithmetic on a synthetic pair: the Telegram swap is
+    /// two distinct multisets over ONE set, so the readings differ there. The
+    /// second half is the reason that never matters: over organic turn starts,
+    /// no position offers the swap without also offering the single-area
+    /// placements whose sets differ trivially, so the two readings agree
+    /// everywhere the scan can see.
+    #[test]
+    fn the_set_reading_and_the_multiset_reading_never_disagree_about_a_position() {
+        let rules = Rules::standard();
+
+        /// The MULTISET reading, computed only here: ≥ 2 same-total placements
+        /// whose per-area COUNTS differ.
+        fn multiset_fork(placements: &[Move]) -> bool {
+            let mut by_total: BTreeMap<usize, BTreeSet<BTreeMap<AreaId, u8>>> = BTreeMap::new();
+            for mv in placements {
+                let counts: BTreeMap<AreaId, u8> = match mv {
+                    Move::PlaceThreeAreas { placements } => {
+                        placements.iter().map(|&area| (area, 1)).collect()
+                    }
+                    Move::PlaceTwoSameArea { area, adjacent_bonus } => {
+                        let mut counts = BTreeMap::new();
+                        counts.insert(*area, 2);
+                        if let Some(adjacent) = adjacent_bonus {
+                            counts.insert(*adjacent, 1);
+                        }
+                        counts
+                    }
+                    _ => continue,
+                };
+                let total: usize = counts.values().map(|&n| n as usize).sum();
+                by_total.entry(total).or_default().insert(counts);
+            }
+            by_total.values().any(|shapes| shapes.len() >= 2)
+        }
+
+        // The readings DO differ on a LIST — the Telegram swap, alone.
+        let a = AreaId(0);
+        let b = AreaId(1);
+        let swap = [
+            Move::PlaceTwoSameArea { area: a, adjacent_bonus: Some(b) },
+            Move::PlaceTwoSameArea { area: b, adjacent_bonus: Some(a) },
+        ];
+        assert!(!same_count_fork(&swap), "the set reading found two sets in {{A, B}} twice");
+        assert!(multiset_fork(&swap), "the multiset reading missed a 2+1 / 1+2 difference");
+
+        // And they never differ on a POSITION, because the singles ride along.
+        let mut turn_starts = 0_usize;
+        let mut forks = 0_usize;
+        sweep(&rules, V4_MASTER, 2, &mut |state| {
+            if let Some(placements) = turn_start_placements(state, &rules) {
+                turn_starts += 1;
+                let set_reading = same_count_fork(&placements);
+                assert_eq!(
+                    set_reading,
+                    multiset_fork(&placements),
+                    "the two readings disagree at turn {} of a swept game",
+                    state.turn_number,
+                );
+                if set_reading {
+                    forks += 1;
+                }
+            }
+            Visit::Continue
+        });
+        assert!(turn_starts > 20, "only {turn_starts} turn starts swept — too thin to mean much");
+        assert!(forks > 0, "anti-vacuity: no swept turn start offered a fork at all");
+    }
+
+    /// Spec §6's ordinal bands are half-open, contiguous and disjoint, and the
+    /// escrow band's floor is the number the burn rule fences.
+    #[test]
+    fn the_v4_ordinal_bands_are_half_open_contiguous_and_disjoint() {
+        assert_eq!(V4_DEVELOPMENT_ORDINALS, 0..4);
+        assert_eq!(V4_DEVELOPMENT_EXTENSION_ORDINALS, 4..8);
+        assert_eq!(V4_ESCROW_ORDINALS, 8..16);
+        assert_eq!(V4_DEVELOPMENT_ORDINALS.end, V4_DEVELOPMENT_EXTENSION_ORDINALS.start);
+        assert_eq!(V4_DEVELOPMENT_EXTENSION_ORDINALS.end, V4_ESCROW_ORDINALS.start);
+        for ordinal in V4_DEVELOPMENT_ORDINALS.chain(V4_DEVELOPMENT_EXTENSION_ORDINALS) {
+            assert!(!V4_ESCROW_ORDINALS.contains(&ordinal), "ordinal {ordinal} is in two bands");
+        }
+        assert_eq!(V4_ESCROW_ORDINALS.len(), 8, "the escrow block is eight ordinals");
+    }
+
+    /// The CAPACITY read counts the same sequence the resolving scan resolves,
+    /// and its report carries the ordinal → game map spec §6's independence
+    /// claim is checked with.
+    ///
+    /// Measured on the CHEAP rung ecology and a family-1 predicate on purpose,
+    /// and the choice costs the cell nothing it is about: the stride mechanics,
+    /// the ordinal sequence and the map are properties of [`walk_scan`], which
+    /// is ONE function for every predicate. Running this on a V4 predicate would
+    /// buy the same assertions for minutes of lookahead scan — and would put a
+    /// scan of a banded predicate in the per-edit suite, which is not a thing
+    /// this task should make routine.
+    #[test]
+    fn the_capacity_read_counts_the_sequence_the_scan_resolves() {
+        let rules = Rules::standard();
+        let predicate = RootPredicate::FinalRoundAlreadyTriggered;
+        assert_eq!(predicate.ecology().id, GENERATED_ECOLOGY_V1, "this cell is priced as a rung scan");
+
+        let capacity = scan_capacity(predicate, V4_MASTER, Some(6), &rules)
+            .expect("the rung scan supplies six strided ordinals");
+        assert_eq!(capacity.predicate, predicate);
+        assert_eq!(capacity.master, V4_MASTER);
+        assert_eq!(capacity.ecology, predicate.ecology(), "the report drops the ecology");
+        assert_eq!(capacity.found(), 6);
+        assert!(capacity.truncated, "a bounded walk must say it stopped at its bound");
+        assert!(capacity.covers(5) && !capacity.covers(6));
+        assert!(capacity.games_walked >= 1);
+
+        // THE STRIDE, measured: each game contributes a CONTIGUOUS run of at
+        // most `per_game_cap` ordinals, which is the whole of the lemma
+        // `ordinals_are_stride_separated` states as arithmetic.
+        let cap = capacity.ecology.per_game_cap;
+        let mut run_start = 0_usize;
+        for n in 1..=capacity.game_of_ordinal.len() {
+            let ends = n == capacity.game_of_ordinal.len()
+                || capacity.game_of_ordinal[n] != capacity.game_of_ordinal[run_start];
+            if ends {
+                assert!(
+                    (n - run_start) as u32 <= cap,
+                    "game {} contributed {} ordinals past a cap of {cap}",
+                    capacity.game_of_ordinal[run_start],
+                    n - run_start,
+                );
+                if n < capacity.game_of_ordinal.len() {
+                    assert!(
+                        capacity.game_of_ordinal[n] > capacity.game_of_ordinal[run_start],
+                        "the ordinal sequence revisited an earlier game",
+                    );
+                }
+                run_start = n;
+            }
+        }
+
+        // The map AGREES with the resolving scan: the descriptors
+        // `generate_roots` returns name the same games.
+        let roots = generate_roots(predicate, V4_MASTER, &[0, 1, 2, 3, 4, 5], &rules)
+            .expect("the same six ordinals resolve");
+        for (ordinal, (_, descriptor)) in roots.iter().enumerate() {
+            let RootOrigin::Generated { game_index, ordinal: recorded, .. } = descriptor.origin
+            else {
+                panic!("a generated root carries a non-generated origin");
+            };
+            assert_eq!(recorded, ordinal as u32);
+            assert_eq!(
+                capacity.game_of_ordinal[ordinal], game_index,
+                "the capacity map and the resolved descriptor disagree about ordinal {ordinal}",
+            );
+        }
+
+        // A bound of ZERO measures nothing and walks nothing.
+        let none = scan_capacity(predicate, V4_MASTER, Some(0), &rules).expect("a zero bound");
+        assert_eq!(none.found(), 0);
+        assert_eq!(none.games_walked, 0, "a zero-bound measurement played a game");
+        assert!(none.truncated);
+        assert_eq!(none.bands_are_disjoint(0..4, 8..16), None, "an unmeasured band read as disjoint");
+
+        // The measured disjointness instrument, over what WAS measured.
+        assert_eq!(capacity.bands_are_disjoint(0..2, 2..4), Some(true));
+        assert_eq!(capacity.bands_are_disjoint(0..2, 0..2), Some(false), "a band is not disjoint from itself");
+    }
+
+    /// **THE STRIDE LEMMA, and the place it does not reach.**
+    ///
+    /// Spec §6 claims `GENERATED_STRIDE_CAP = 2` puts development and escrow
+    /// ordinals in different generated games. The arithmetic half of that is
+    /// [`ordinals_are_stride_separated`], and it is TRUE for the development
+    /// band {0..4} against escrow (min gap 5) and FALSE at the
+    /// development-EXTENSION boundary: ordinals 7 and 8 are one apart, so a game
+    /// contributing a TWO-ordinal run can land exactly {7, 8} and hold both.
+    /// Both halves are pinned, because the second is a residual an orchestrator
+    /// has to know about before it draws the extension rather than after.
+    #[test]
+    fn the_stride_separates_the_development_band_from_escrow_but_not_the_extension() {
+        assert_eq!(GENERATED_STRIDE_CAP, 2, "the stride moved, so both claims below move with it");
+
+        for dev in V4_DEVELOPMENT_ORDINALS {
+            for escrow in V4_ESCROW_ORDINALS {
+                assert!(
+                    ordinals_are_stride_separated(dev, escrow, GENERATED_STRIDE_CAP),
+                    "development ordinal {dev} and escrow ordinal {escrow} can share a game",
+                );
+            }
+        }
+        // The lemma is not vacuous: adjacent ordinals are NOT separated.
+        assert!(!ordinals_are_stride_separated(0, 1, GENERATED_STRIDE_CAP));
+        assert!(ordinals_are_stride_separated(0, 2, GENERATED_STRIDE_CAP));
+
+        // THE RESIDUAL, stated as an assertion so it cannot be forgotten: the
+        // top of the development EXTENSION and the bottom of escrow are one
+        // apart, so the stride alone does not separate them.
+        let last_extension = V4_DEVELOPMENT_EXTENSION_ORDINALS.end - 1;
+        assert_eq!(last_extension + 1, V4_ESCROW_ORDINALS.start);
+        assert!(
+            !ordinals_are_stride_separated(
+                last_extension,
+                V4_ESCROW_ORDINALS.start,
+                GENERATED_STRIDE_CAP,
+            ),
+            "the extension/escrow boundary is separated after all — re-read the residual note",
+        );
+    }
+
     // -----------------------------------------------------------------------
     // Item 3: `firing_moves` and its short circuit
     // -----------------------------------------------------------------------
@@ -8602,10 +11336,25 @@ mod tests {
 
     /// v2's identity — pinned WITHOUT running a scan, because a lookahead scan
     /// is up to 240 games of both-seats search and this is a unit test.
+    ///
+    /// **Since the step-8 re-pin (V3 spec §5.1)** the seats are the PINNED
+    /// explicit-V2 construction, and the recorded echo is that construction's
+    /// own resolved provenance. That it ALSO equals the live shipped default's
+    /// echo today is the padding identity (`pinned-V2 == padded-live-V2`),
+    /// asserted separately below as a TRANSCRIPTION FACT — when a later freeze
+    /// re-points the live default, DELETE that assertion in the same commit
+    /// and keep the pinned echo, exactly as
+    /// `the_pre_freeze_table_is_the_corpus_generator...`'s doc prescribes.
     #[test]
-    fn the_v2_lookahead_ecology_names_the_shipped_contestant_at_both_seats() {
-        let ecology = GeneratingEcology::v2_lookahead();
-        assert_eq!(ecology.id, "driven-generated-v2.2-lookahead");
+    fn the_v2_lookahead_ecology_names_the_pinned_explicit_v2_seat_at_both_seats() {
+        let config = v2_lookahead_config();
+        assert_eq!(
+            config.seat,
+            GeneratingSeat::PinnedLookaheadV2,
+            "the live configuration must build the pinned seat, not the re-pointable default",
+        );
+        let ecology = config.ecology;
+        assert_eq!(ecology.id, "driven-generated-v2.3-lookahead");
         assert_eq!(ecology.id, GENERATED_ECOLOGY_V2_LOOKAHEAD);
         assert_eq!(ecology.players, 2, "the canon priors are 2P priors");
         assert_eq!(ecology.games, 240);
@@ -8613,8 +11362,27 @@ mod tests {
         assert_eq!(ecology.per_game_cap, GENERATED_STRIDE_CAP, "both ecologies stride the same");
         assert_eq!(
             ecology.seats,
-            vec![Contestant::LOOKAHEAD_V1_DEFAULT.echo(); 2],
-            "the layer-2 ecology must seat the SHIPPED provisional contestant, resolved",
+            vec![GeneratingSeat::PinnedLookaheadV2.echo(); 2],
+            "the layer-2 ecology must seat the PINNED explicit-V2 construction, resolved",
+        );
+        // The pinned echo carries WeightTable::V2's own table identity — the
+        // always-on half of V3 §5.1's behavior-identity pin: a construction
+        // that drifted off the explicit table would echo a different identity.
+        assert!(
+            GeneratingSeat::PinnedLookaheadV2.echo().contains(&format!(
+                "weights={}",
+                crate::game::greedy::weight_table_identity(&WeightTable::V2)
+            )),
+            "the pinned seat echo must resolve WeightTable::V2's identity: {}",
+            GeneratingSeat::PinnedLookaheadV2.echo(),
+        );
+        // TRANSCRIPTION FACT (deletable at a live-default re-point, per the
+        // doc above): today the pinned construction and the live shipped
+        // default are the same identity, echo-for-echo.
+        assert_eq!(
+            GeneratingSeat::PinnedLookaheadV2.echo(),
+            Contestant::LOOKAHEAD_V1_DEFAULT.echo(),
+            "pinned-V2 == padded-live-V2 at the adoption commit",
         );
         // The two ecologies share their driver and seed derivation verbatim —
         // one spelling each, so a reworded sentence cannot make them look like
@@ -8639,11 +11407,15 @@ mod tests {
     fn the_v2_ecology_carries_its_extended_identity() {
         let ecology = GeneratingEcology::v2_lookahead();
         assert_eq!(
-            ecology.id, "driven-generated-v2.2-lookahead",
-            "the games raise did not bump the version",
+            ecology.id, "driven-generated-v2.3-lookahead",
+            "the games raise did not bump the version; the step-8 seat re-pin did",
         );
         assert_eq!(ecology.id, GENERATED_ECOLOGY_V2_LOOKAHEAD);
-        for retired in ["driven-generated-v2-lookahead", "driven-generated-v2.1-lookahead"] {
+        for retired in [
+            "driven-generated-v2-lookahead",
+            "driven-generated-v2.1-lookahead",
+            "driven-generated-v2.2-lookahead",
+        ] {
             assert_ne!(
                 ecology.id, retired,
                 "a pre-extension id must survive as test history and nowhere else",
@@ -8686,7 +11458,9 @@ mod tests {
                 RootPredicate::EndFirableAheadInTruth
                 | RootPredicate::EndFirableBehindInTruth
                 | RootPredicate::ExclusiveRaceOneStep
-                | RootPredicate::AchievementClaimAvailable => GeneratingEcology::v2_lookahead(),
+                | RootPredicate::AchievementClaimAvailable
+                | RootPredicate::PlacementForkSameCount
+                | RootPredicate::OpponentSittingExecutable => GeneratingEcology::v2_lookahead(),
             };
             assert_eq!(
                 predicate.ecology(),
@@ -8716,6 +11490,8 @@ mod tests {
                 "end-firable-behind-in-truth",
                 "exclusive-race-one-step",
                 "achievement-claim-available",
+                "placement-fork-same-count",
+                "opponent-sitting-executable",
             ],
         );
         let unique: std::collections::BTreeSet<&str> = names.iter().copied().collect();
@@ -10194,6 +12970,989 @@ mod tests {
                 seen[index].1, row.continuation_digest,
                 "row {index}: the walk did not run past the forced candidate",
             );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // V4 step 2: the §6 ESCROW RECIPE
+    // -----------------------------------------------------------------------
+
+    /// A hand-built classified candidate, for the SELECTION rule's own cells.
+    ///
+    /// The selection rule is a function of classified candidates and of nothing
+    /// else, so its arms are reachable from data rather than only from a
+    /// position that happens to produce them — which matters because two of
+    /// them (no productive side, no shared total) are hard to reach organically
+    /// on a printed board, and an arm no cell exercises is an arm that can be
+    /// deleted with the suite still green.
+    fn candidate(total: usize, areas: &[u8], side: RecipeSide) -> RecipeCandidate {
+        let areas: BTreeSet<AreaId> = areas.iter().map(|&a| AreaId(a)).collect();
+        RecipeCandidate {
+            mv: Move::PlaceThreeAreas { placements: areas.iter().copied().collect() },
+            total,
+            areas,
+            side,
+        }
+    }
+
+    /// The area of `area_type` on a 2P board, which carries exactly one of each.
+    fn area_of(state: &GameState, area_type: AreaType) -> AreaId {
+        state
+            .board_layout
+            .areas
+            .iter()
+            .find(|(_, config)| config.area_type == area_type)
+            .map(|(&id, _)| id)
+            .unwrap_or_else(|| panic!("the board carries no {area_type:?}"))
+    }
+
+    /// Spec §6's recipe, at the cheapest turn start there is: among the fork's
+    /// same-count candidates, one placing where the exported action reward at
+    /// realizable power is NONZERO against one where it is ZERO.
+    ///
+    /// The arithmetic is the dossier's own family-1(a) row: one assistant at a
+    /// Copper Mine arrives at power 2 and exports nothing, while one assistant
+    /// at any other production area at that same power exports at least one
+    /// good. So the pair is rules-derived before any column is read, which is
+    /// what §6 requires of it.
+    #[test]
+    fn the_escrow_recipe_pairs_a_dead_production_placement_against_a_productive_one() {
+        let rules = Rules::standard();
+        let root = root_2p(&rules, world(93).0);
+        let pair =
+            escrow_recipe_pair(&root, &rules).expect("a fresh 2P turn start carries the recipe");
+
+        assert_eq!(pair.mover, root.current_player);
+        assert_eq!(pair.total, 1, "one assistant is the smallest total carrying both sides");
+        let area_type = |a: &AreaId| root.board_layout.areas[a].area_type;
+
+        assert_eq!(pair.dead_areas.len(), 1, "the dead side places into one area");
+        let dead = *pair.dead_areas.iter().next().expect("one area");
+        assert_eq!(area_type(&dead), AreaType::CopperMine);
+        assert_eq!(exported_reward(AreaType::CopperMine, 2), Some(0));
+
+        assert_eq!(pair.productive_areas.len(), 1, "the productive side places into one area");
+        let live = *pair.productive_areas.iter().next().expect("one area");
+        assert!(area_type(&live).is_production(), "{:?} is not a production area", area_type(&live));
+        assert!(pair.productive_reward > 0);
+        assert_eq!(
+            exported_reward(area_type(&live), 2),
+            Some(u8::try_from(pair.productive_reward).expect("a printed reward fits a u8")),
+            "the recorded quantity is the engine's own export at the arriving power"
+        );
+    }
+
+    /// The reward is read AFTER the placement lands, which is the only reading
+    /// under which the recipe means anything: the placement is what creates the
+    /// access being priced.
+    ///
+    /// The cell is decisive because ONE area sits on both sides of it. At a
+    /// fresh 2P start the Copper Mine is DEAD as a one-assistant placement
+    /// (arriving power 2, exports 0) and PRODUCTIVE as a two-assistant one
+    /// (arriving power 3, exports 1). A classifier reading the pre-placement
+    /// position would call both of them dead.
+    #[test]
+    fn the_recipe_reads_the_exported_reward_after_the_placement_lands() {
+        let rules = Rules::standard();
+        let root = root_2p(&rules, world(94).0);
+        let copper = area_of(&root, AreaType::CopperMine);
+        let candidates = classify_recipe_candidates(&root, &rules).expect("a turn start classifies");
+
+        let side_of = |mv: &Move| {
+            candidates
+                .iter()
+                .find(|c| &c.mv == mv)
+                .unwrap_or_else(|| panic!("the fork does not offer {mv:?}"))
+                .side
+        };
+        assert_eq!(
+            side_of(&Move::PlaceThreeAreas { placements: vec![copper] }),
+            RecipeSide::Dead,
+            "one assistant at the Copper Mine arrives at power 2 and exports nothing"
+        );
+        assert_eq!(
+            side_of(&Move::PlaceTwoSameArea { area: copper, adjacent_bonus: None }),
+            RecipeSide::Productive(1),
+            "two assistants at the Copper Mine arrive at power 3 and export one copper"
+        );
+    }
+
+    /// **The empty placement is INELIGIBLE, and it has to be said out loud.**
+    /// `PlaceThreeAreas { placements: vec![] }` is always in the list — it is
+    /// how a mover declines to place — and its area set is EMPTY, so "every
+    /// placed area exports nonzero" and "every placed area exports zero" are
+    /// BOTH vacuously true of it. A classifier that let the vacuous truth
+    /// decide would pair a placement against a non-placement and call the
+    /// difference a rules-derived value distinction.
+    #[test]
+    fn the_empty_placement_is_never_a_side_of_the_recipe() {
+        let rules = Rules::standard();
+        let root = root_2p(&rules, world(95).0);
+        let candidates = classify_recipe_candidates(&root, &rules).expect("a turn start classifies");
+        let empty: Vec<&RecipeCandidate> = candidates.iter().filter(|c| c.total == 0).collect();
+        assert_eq!(empty.len(), 1, "the decline-to-place move is offered exactly once");
+        assert_eq!(empty[0].side, RecipeSide::Ineligible);
+        assert!(empty[0].areas.is_empty());
+    }
+
+    /// Off a turn start there is no fork to key on, and the refusal is TYPED
+    /// rather than an empty result that a caller could read as "no pair here".
+    #[test]
+    fn the_recipe_refuses_a_position_that_is_not_a_turn_start() {
+        let rules = Rules::standard();
+        let root = root_2p(&rules, world(96).0);
+        let placing = apply_move_unchecked(&root, &Move::EndAdditionalPhase, &rules)
+            .expect("ending the additional phase is always legal at a turn start");
+        assert_eq!(escrow_recipe_pair(&placing, &rules), Err(RecipeMiss::NotATurnStart));
+        assert_eq!(
+            classify_recipe_candidates(&placing, &rules),
+            Err(RecipeMiss::NotATurnStart)
+        );
+    }
+
+    /// Over ORGANIC turn starts: a returned pair always WITNESSES the frozen
+    /// §6 predicate (two distinct area sets at one total is what both objects
+    /// mean), both of its sides place only into production areas, and the
+    /// answer is a function of the root alone.
+    ///
+    /// The predicate is read here and never touched — this cell is what says
+    /// the recipe and the generator select compatible things.
+    #[test]
+    fn every_organic_recipe_pair_witnesses_the_frozen_fork_predicate() {
+        let rules = Rules::standard();
+        let mut pairs = 0usize;
+        let mut misses: BTreeMap<String, usize> = BTreeMap::new();
+        for index in [11u64, 12] {
+            let stats = rung_game(&rules, world(index));
+            let events = stats.record.events.len();
+            for k in (0..events).step_by(5) {
+                let Ok(state) = state_at(&stats.record, k, &rules) else { continue };
+                match escrow_recipe_pair(&state, &rules) {
+                    Ok(pair) => {
+                        pairs += 1;
+                        assert!(
+                            RootPredicate::PlacementForkSameCount.holds(&state, &rules),
+                            "event {k}: a recipe pair at a position the fork predicate rejects"
+                        );
+                        assert_ne!(pair.productive_areas, pair.dead_areas);
+                        for area in pair.productive_areas.iter().chain(pair.dead_areas.iter()) {
+                            assert!(
+                                state.board_layout.areas[area].area_type.is_production(),
+                                "event {k}: the recipe admitted a non-production area"
+                            );
+                        }
+                        assert_eq!(
+                            Ok(pair),
+                            escrow_recipe_pair(&state, &rules),
+                            "event {k}: the recipe is not a function of the root"
+                        );
+                    }
+                    Err(miss) => *misses.entry(miss.to_string()).or_default() += 1,
+                }
+            }
+        }
+        assert!(pairs > 0, "the sweep found no recipe pair at all ({misses:?})");
+        // RECORDED, never asserted: the yield at a turn start is what says
+        // whether §6's "≥ 6 of 8 ordinals" block rule is comfortable or tight,
+        // and it is a property of the ecology rather than of this helper.
+        let off_turn_start = misses.get(&RecipeMiss::NotATurnStart.to_string()).copied().unwrap_or(0);
+        println!(
+            "escrow recipe over organic play: {pairs} pairs, {off_turn_start} positions off a \
+             turn start, other misses {:?}",
+            misses
+                .iter()
+                .filter(|(name, _)| *name != &RecipeMiss::NotATurnStart.to_string())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// The selection rule's five arms, each from data.
+    ///
+    /// The scan is ASCENDING in placement total and stops at the first total
+    /// carrying BOTH sides — so a lower total with only one side is skipped
+    /// rather than refused, which the third case is there to show.
+    #[test]
+    fn the_selection_rule_refuses_by_name_and_scans_totals_upward() {
+        let mover = PlayerId(0);
+        assert_eq!(select_recipe_pair(mover, &[]), Err(RecipeMiss::NoPlacementCandidates));
+        assert_eq!(
+            select_recipe_pair(mover, &[candidate(1, &[3], RecipeSide::Ineligible)]),
+            Err(RecipeMiss::NoEligibleCandidate)
+        );
+        assert_eq!(
+            select_recipe_pair(
+                mover,
+                &[candidate(1, &[3], RecipeSide::Dead), candidate(1, &[4], RecipeSide::Ineligible)]
+            ),
+            Err(RecipeMiss::NoProductiveSide)
+        );
+        assert_eq!(
+            select_recipe_pair(mover, &[candidate(1, &[3], RecipeSide::Productive(2))]),
+            Err(RecipeMiss::NoDeadSide)
+        );
+        assert_eq!(
+            select_recipe_pair(
+                mover,
+                &[candidate(1, &[3], RecipeSide::Productive(2)), candidate(2, &[4], RecipeSide::Dead)]
+            ),
+            Err(RecipeMiss::NoSharedTotal)
+        );
+        // A lower total carrying only one side is SKIPPED, not refused.
+        let pair = select_recipe_pair(
+            mover,
+            &[
+                candidate(1, &[3], RecipeSide::Productive(2)),
+                candidate(2, &[4], RecipeSide::Dead),
+                candidate(2, &[5], RecipeSide::Productive(7)),
+            ],
+        )
+        .expect("total 2 carries both sides");
+        assert_eq!(pair.total, 2);
+        assert_eq!(pair.productive_reward, 7);
+        assert_eq!(pair.dead_areas, [AreaId(4)].into_iter().collect::<BTreeSet<_>>());
+    }
+
+    /// Within the chosen total the sides are picked by the LOWEST area set, a
+    /// tie-break with no value content in it: the alternative — the largest
+    /// reward, say — would be the recipe quietly optimizing what it is supposed
+    /// to be merely selecting.
+    #[test]
+    fn the_selection_tie_break_is_the_lowest_area_set() {
+        let pair = select_recipe_pair(
+            PlayerId(1),
+            &[
+                candidate(1, &[9], RecipeSide::Productive(4)),
+                candidate(1, &[2], RecipeSide::Productive(1)),
+                candidate(1, &[8], RecipeSide::Dead),
+                candidate(1, &[5], RecipeSide::Dead),
+            ],
+        )
+        .expect("both sides sit at total 1");
+        assert_eq!(pair.mover, PlayerId(1));
+        assert_eq!(pair.productive_areas, [AreaId(2)].into_iter().collect::<BTreeSet<_>>());
+        assert_eq!(pair.productive_reward, 1);
+        assert_eq!(pair.dead_areas, [AreaId(5)].into_iter().collect::<BTreeSet<_>>());
+    }
+
+    // -----------------------------------------------------------------------
+    // V4 step 10: the SHAPE-F FEE-FLOW RECIPE
+    // -----------------------------------------------------------------------
+
+    /// A hand-built priced candidate, for the SELECTION rule's own cells —
+    /// [`candidate`]'s counterpart, and for its reason: two of the lattice's
+    /// arms (no free side, no shared total) are hard to reach on a printed
+    /// board, and an arm no cell exercises is an arm that can be deleted with
+    /// the suite still green.
+    fn fee_candidate(total: usize, areas: &[u8], fee: u32) -> FeeFlowCandidate {
+        let areas: BTreeSet<AreaId> = areas.iter().map(|&a| AreaId(a)).collect();
+        FeeFlowCandidate {
+            mv: Move::PlaceThreeAreas { placements: areas.iter().copied().collect() },
+            total,
+            areas,
+            fee,
+        }
+    }
+
+    /// A fresh 2P turn start with the OPPONENT's President standing on a
+    /// placeable production area — the Shape-F instantiation condition,
+    /// CONSTRUCTED.
+    ///
+    /// It has to be constructed: `new_game` starts both Presidents in hand and
+    /// `place_setup_dummies` puts none on the board (it touches the Church
+    /// faith-7 and Customs space-4 slots and nothing else), so the fee flow at
+    /// a fresh root is identically zero. The organic walk that reaches the
+    /// condition — a Movement Option A onto a Possible Action Area, which then
+    /// PERSISTS, because Recovery never recalls a President — is the sweep
+    /// below's subject. `check_invariants` is what says this shortcut produces
+    /// a legal state rather than a convenient one.
+    fn fee_flow_root(rules: &Rules, seed: u64) -> (GameState, PlayerId, PlayerId, AreaId) {
+        let mut root = root_2p(rules, seed);
+        let mover = root.current_player;
+        let opponent =
+            root.players.iter().map(|p| p.id).find(|id| *id != mover).expect("2P seats two");
+        let occupied = area_of(&root, AreaType::CopperMine);
+        root.player_mut(opponent).president_location = PresidentLocation::OnBoard(occupied);
+        check_invariants(&root, rules).expect("the constructed root is a legal state");
+        (root, mover, opponent, occupied)
+    }
+
+    /// Move one Telegram card from the tech deck (or, failing that, a lab slot)
+    /// into `player`'s technologies — CONSERVING the 30-card total the
+    /// invariant checks, which is why the card is taken from somewhere rather
+    /// than minted.
+    fn grant_telegram(state: &mut GameState, rules: &Rules, player: PlayerId) {
+        let is_telegram = |id: crate::types::TechCardId| {
+            rules.techs.get(id).is_some_and(|t| t.effect == crate::types::TechEffect::Telegram)
+        };
+        let card = if let Some(pos) = state.tech_deck.iter().position(|&id| is_telegram(id)) {
+            state.tech_deck.remove(pos)
+        } else {
+            let mut found = None;
+            for slot in state
+                .lab_state
+                .lab_a
+                .slots
+                .iter_mut()
+                .chain(state.lab_state.lab_b.iter_mut().flat_map(|b| b.slots.iter_mut()))
+            {
+                if slot.is_some_and(is_telegram) {
+                    found = slot.take();
+                    break;
+                }
+            }
+            found.expect("the standard 30-card deck carries two Telegram cards")
+        };
+        state.player_mut(player).technologies.push(card);
+    }
+
+    /// Two adjacent placeable areas whose edge is NOT a Canal crossing — the
+    /// generator's own three conditions for offering a Telegram bonus leg
+    /// (`generate_placement_moves_with_tech`), restated as a fixture search so
+    /// the fixture cannot ask for a move the engine would not offer.
+    fn adjacent_placeable_pair(state: &GameState) -> (AreaId, AreaId) {
+        let placeable = |a: &AreaId| {
+            state.board_layout.areas.get(a).is_some_and(|c| c.area_type.allows_placement())
+        };
+        for (&area, config) in &state.board_layout.areas {
+            if !config.area_type.allows_placement() {
+                continue;
+            }
+            for &adj in state.board_layout.adjacent_areas(area) {
+                if !state.board_layout.is_canal_crossing(area, adj) && placeable(&adj) {
+                    return (area, adj);
+                }
+            }
+        }
+        panic!("the 2P board carries an adjacent placeable pair");
+    }
+
+    /// **THE TYPED VOID IS ABOUT BOTH CLASSES, AND THE CONTROL IS IN THE SAME
+    /// CELL.**
+    ///
+    /// R-S10-14 admits a mover TURN START and a mover PLACEMENT DECISION. A
+    /// root at neither — here the `Movement` state a placement leaves behind —
+    /// is [`FeeFlowMiss::NotAPlacementDecision`]. A guard that refused
+    /// EVERYTHING would satisfy the refusal half and be useless, so the
+    /// admitted class is asserted in the same breath: same fixture, same seats,
+    /// one phase apart.
+    #[test]
+    fn the_fee_flow_recipe_refuses_a_root_that_is_neither_class_and_admits_both() {
+        let rules = Rules::standard();
+        let (root, ..) = fee_flow_root(&rules, world(101).0);
+        let placing = apply_move_unchecked(&root, &Move::EndAdditionalPhase, &rules)
+            .expect("ending the additional phase is always legal at a turn start");
+        assert_eq!(placing.turn_phase, TurnPhase::Placement);
+
+        // THE CONTROL — the placement decision is ADMITTED.
+        assert!(
+            classify_fee_flow_candidates(&placing, &rules).is_ok(),
+            "a placement decision is one of the two admitted classes (R-S10-14)",
+        );
+        assert!(fee_flow_recipe_pair(&placing, &rules).is_ok());
+
+        // THE REFUSAL — a root at neither class, reached by placing.
+        let moved = get_legal_moves(&placing, &rules)
+            .into_iter()
+            .find(|mv| placement_shape(mv).is_some_and(|(total, _)| total > 0))
+            .and_then(|mv| apply_move(&placing, &mv, &rules).ok())
+            .expect("a placement leaves the Movement phase behind");
+        assert_eq!(moved.turn_phase, TurnPhase::Movement);
+        assert_eq!(
+            fee_flow_recipe_pair(&moved, &rules),
+            Err(FeeFlowMiss::NotAPlacementDecision)
+        );
+        assert_eq!(
+            classify_fee_flow_candidates(&moved, &rules),
+            Err(FeeFlowMiss::NotAPlacementDecision)
+        );
+        assert_eq!(
+            FeeFlowMiss::NotAPlacementDecision.to_string(),
+            "the root is neither a mover turn start nor a placement decision",
+        );
+    }
+
+    /// **THE PLY IS PHASE-ONLY, AND THE RECIPE PROVES IT** (R-S10-14).
+    ///
+    /// The whole reading rests on one fact: the state a turn start reaches by
+    /// `EndAdditionalPhase` differs from it in `turn_phase` and in NOTHING the
+    /// recipe or its arms touch. W1's review proved that at the bytes; this
+    /// asserts it of the recipe's own answer — the pair a turn start yields and
+    /// the pair its placement-decision successor yields are THE SAME OBJECT,
+    /// mover, opponent, total, both sides, both area sets and the fee.
+    ///
+    /// If that equality ever broke, the reading would be selecting a different
+    /// pair at the reserved band from the one the registration fixed, which is
+    /// exactly what a reading may not do.
+    #[test]
+    fn the_placement_decision_pair_is_its_turn_starts_pair_one_phase_only_ply_on() {
+        let rules = Rules::standard();
+        let (root, ..) = fee_flow_root(&rules, world(104).0);
+        assert_eq!(root.turn_phase, TurnPhase::AdditionalActionFirst);
+        let placing = apply_move(&root, &Move::EndAdditionalPhase, &rules)
+            .expect("ending the additional phase is always legal at a turn start");
+
+        let from_start = fee_flow_recipe_pair(&root, &rules).expect("the fixture carries F");
+        let from_decision =
+            fee_flow_recipe_pair(&placing, &rules).expect("and so does its successor");
+        assert_eq!(from_start, from_decision, "the ply is phase-only");
+
+        // The POPULATIONS agree too, candidate for candidate — the pair being
+        // equal would not by itself say the family was.
+        assert_eq!(
+            classify_fee_flow_candidates(&root, &rules),
+            classify_fee_flow_candidates(&placing, &rules),
+            "the two classes price the same population",
+        );
+    }
+
+    /// **The instantiation condition, named rather than inferred.** At a fresh
+    /// 2P start both Presidents are in hand, so no placement can pay anything;
+    /// the recipe says THAT, instead of reporting a fee-less position as a
+    /// mover who cannot afford one. A void the step-10 row records has to be a
+    /// fact about the position, and "the opponent's President is not on the
+    /// board" is the fact.
+    #[test]
+    fn the_fee_flow_recipe_names_the_missing_opponent_president() {
+        let rules = Rules::standard();
+        let root = root_2p(&rules, world(102).0);
+        for p in &root.players {
+            assert_eq!(
+                p.president_location,
+                PresidentLocation::InHand,
+                "a fresh setup starts every President in hand"
+            );
+        }
+        assert_eq!(
+            fee_flow_recipe_pair(&root, &rules),
+            Err(FeeFlowMiss::NoOpponentPresidentOnBoard)
+        );
+        assert_eq!(
+            classify_fee_flow_candidates(&root, &rules),
+            Err(FeeFlowMiss::NoOpponentPresidentOnBoard)
+        );
+    }
+
+    /// The recorded band is 2P and the registered raw arm names ONE seat, so a
+    /// three-seat root is REFUSED rather than answered about an arbitrarily
+    /// chosen rival — at 3P two opponents can hold Presidents in the same area
+    /// and "the opponent's fee flow" stops naming one number.
+    ///
+    /// The cell also pins the lattice's ORDER: this root IS a turn start, so
+    /// the seat-count arm is what it reports.
+    #[test]
+    fn the_fee_flow_recipe_refuses_a_root_that_is_not_two_player() {
+        let rules = Rules::standard();
+        let pending = new_game(GameConfig::for_player_count(3), &rules, world(103).0)
+            .expect("new_game builds a 3P setup");
+        let root = finalize_setup(
+            pending,
+            &[
+                StartingOrderChoice::Keep(0),
+                StartingOrderChoice::Keep(0),
+                StartingOrderChoice::Keep(0),
+            ],
+        )
+        .expect("the setup finalizes");
+        assert!(is_mover_turn_start(&root), "a finalized setup is a turn start");
+        assert_eq!(
+            fee_flow_recipe_pair(&root, &rules),
+            Err(FeeFlowMiss::NotTwoPlayer { players: 3 })
+        );
+    }
+
+    /// **The recipe's quantity, at the cheapest instantiation there is**: one
+    /// assistant into the area the opponent's President stands in costs 1 Yen,
+    /// paid to that President's owner (KB 01-rules-reference.md:97, "pay 1 Yen
+    /// to each President's owner per assistant placed"), and the same-total
+    /// placement anywhere else costs nothing.
+    ///
+    /// The cross-check runs through the CHECKED boundary, on purpose: the
+    /// helper prices with `calculate_placement_cost` and verifies against its
+    /// own `apply_move_unchecked` successor, so a cell re-verifying with the
+    /// same call would be asking the same question twice. `EndAdditionalPhase`
+    /// then `apply_move` puts both sides through `get_legal_moves`'s membership
+    /// gate at the phase they are legal in, and reads the two purses there.
+    #[test]
+    fn the_fee_flow_pair_prices_one_yen_per_assistant_into_the_opponents_president_area() {
+        let rules = Rules::standard();
+        let (root, mover, opponent, occupied) = fee_flow_root(&rules, world(104).0);
+        assert!(root.player(mover).assistants.in_hand >= 2, "the fixture holds assistants");
+        assert!(root.player(mover).money >= 2, "the fixture can afford a fee");
+
+        let pair = fee_flow_recipe_pair(&root, &rules).expect("the constructed root carries F");
+        assert_eq!(pair.mover, mover);
+        assert_eq!(pair.opponent, opponent);
+        assert_eq!(pair.total, 1, "one assistant is the smallest total carrying both sides");
+        assert_eq!(pair.fee, 1, "one assistant, one President, one Yen");
+        assert_eq!(pair.fee_side, Move::PlaceThreeAreas { placements: vec![occupied] });
+        assert_eq!(pair.fee_side_areas, [occupied].into_iter().collect::<BTreeSet<_>>());
+        assert_eq!(pair.free_side_areas.len(), 1, "the free side shares the total");
+        assert!(
+            !pair.free_side_areas.contains(&occupied),
+            "the free side must avoid the President's area"
+        );
+
+        let placing = apply_move(&root, &Move::EndAdditionalPhase, &rules)
+            .expect("ending the additional phase is legal at a turn start");
+        assert_eq!(placing.player(mover).money, root.player(mover).money, "the ply is free");
+
+        let paid = apply_move(&placing, &pair.fee_side, &rules)
+            .expect("F+ is in the placement phase's own legal list");
+        assert_eq!(paid.player(mover).money + pair.fee, root.player(mover).money);
+        assert_eq!(paid.player(opponent).money, root.player(opponent).money + pair.fee);
+
+        let free = apply_move(&placing, &pair.free_side, &rules)
+            .expect("F0 is in the placement phase's own legal list");
+        assert_eq!(free.player(mover).money, root.player(mover).money);
+        assert_eq!(free.player(opponent).money, root.player(opponent).money);
+    }
+
+    /// The selection rule's arms, each from data, and the two rules that make
+    /// it a SELECTION rather than an optimization: ascending totals, and the
+    /// MINIMAL nonzero fee at the first total carrying both sides.
+    ///
+    /// Picking the largest fee instead would be the recipe maximizing the very
+    /// quantity the step-10 read exists to test — the registration's own
+    /// objection, in its own words.
+    #[test]
+    fn the_selection_takes_the_minimal_nonzero_fee_then_the_lowest_area_set() {
+        let mover = PlayerId(0);
+        let opponent = PlayerId(1);
+        let select = |candidates: &[FeeFlowCandidate]| {
+            select_fee_flow_pair(mover, opponent, candidates)
+        };
+
+        assert_eq!(select(&[]), Err(FeeFlowMiss::NoPlacementCandidates));
+        assert_eq!(
+            select(&[fee_candidate(0, &[], 0)]),
+            Err(FeeFlowMiss::NoPlacementCandidates),
+            "the decline-to-place move is not a placement candidate"
+        );
+        assert_eq!(
+            select(&[fee_candidate(1, &[3], 0), fee_candidate(2, &[4, 5], 0)]),
+            Err(FeeFlowMiss::NoFeeSide)
+        );
+        assert_eq!(
+            select(&[fee_candidate(1, &[3], 1), fee_candidate(2, &[4, 5], 2)]),
+            Err(FeeFlowMiss::NoFreeSide)
+        );
+        assert_eq!(
+            select(&[fee_candidate(1, &[3], 1), fee_candidate(2, &[4, 5], 0)]),
+            Err(FeeFlowMiss::NoSharedTotal)
+        );
+
+        // Total 1 carries only a paying side, so it is SKIPPED, not refused;
+        // at total 2 the fees are {2, 1, 1} and the two fee-1 candidates tie,
+        // so the lowest area set wins on both sides.
+        let pair = select(&[
+            fee_candidate(1, &[3], 1),
+            fee_candidate(2, &[7, 9], 2),
+            fee_candidate(2, &[5, 6], 1),
+            fee_candidate(2, &[4, 6], 1),
+            fee_candidate(2, &[8, 9], 0),
+            fee_candidate(2, &[2, 9], 0),
+        ])
+        .expect("total 2 carries both sides");
+        assert_eq!(pair.mover, mover);
+        assert_eq!(pair.opponent, opponent);
+        assert_eq!(pair.total, 2, "a lower total with one side is skipped");
+        assert_eq!(pair.fee, 1, "the MINIMAL nonzero fee, never the maximal");
+        assert_eq!(pair.fee_side_areas, [AreaId(4), AreaId(6)].into_iter().collect::<BTreeSet<_>>());
+        assert_eq!(pair.free_side_areas, [AreaId(2), AreaId(9)].into_iter().collect::<BTreeSet<_>>());
+    }
+
+    /// A mover with no Yen has no fee side at all — the generator drops every
+    /// paying placement at its affordability test, so the paying candidates are
+    /// not filtered out downstream, they were never enumerated.
+    ///
+    /// The void is [`FeeFlowMiss::NoFeeSide`] rather than a wallet-specific
+    /// arm, and that is deliberate: a candidate list cannot distinguish "no
+    /// placement reaches the President" from "the ones that do are
+    /// unaffordable", because an unaffordable placement is not in it. Neither
+    /// position carries the read, and the recipe says exactly that much.
+    #[test]
+    fn the_fee_flow_recipe_is_unaffordable_without_money() {
+        let rules = Rules::standard();
+        let (mut root, mover, _, occupied) = fee_flow_root(&rules, world(105).0);
+        root.player_mut(mover).money = 0;
+        check_invariants(&root, &rules).expect("a broke mover is a legal state");
+
+        let candidates = classify_fee_flow_candidates(&root, &rules).expect("a turn start classifies");
+        assert!(
+            candidates.iter().all(|c| c.fee == 0),
+            "every enumerated placement is free — the paying ones were never offered"
+        );
+        assert!(
+            !candidates.iter().any(|c| c.areas.contains(&occupied)),
+            "no placement into the President's area survives the generator's price check"
+        );
+        assert_eq!(fee_flow_recipe_pair(&root, &rules), Err(FeeFlowMiss::NoFeeSide));
+    }
+
+    /// **`PlaceTwoSameArea` is priced per ENCODING, exactly as `apply_move`
+    /// prices it**: two assistants into `area` (the `[area, area]` slice) plus
+    /// the Telegram leg's own `apply_placement(&[adj])` call. So the President
+    /// standing in the ADJACENT area is charged once and the President standing
+    /// in the MAIN area is charged twice — the "per assistant placed" rule,
+    /// which a naive per-AREA price would get wrong in exactly one direction.
+    ///
+    /// Both fees are cross-checked twice over: `classify_fee_flow_candidates`
+    /// refuses with [`FeeFlowMiss::PricingMismatch`] if the applied successor
+    /// disagrees with the price, so the classification succeeding IS the
+    /// unchecked-path cross-check, and the checked boundary is re-read here for
+    /// the fee side of each case.
+    #[test]
+    fn the_telegram_adjacent_leg_is_priced_like_apply_prices_it() {
+        let rules = Rules::standard();
+        let (probe, ..) = fee_flow_root(&rules, world(106).0);
+        let (area, adj) = adjacent_placeable_pair(&probe);
+
+        // `president` names the area the opponent's President stands in; the
+        // expected fee is the number of ASSISTANTS the move puts there.
+        for (president, expected) in [(adj, 1u32), (area, 2u32)] {
+            let mut root = root_2p(&rules, world(106).0);
+            let mover = root.current_player;
+            let opponent =
+                root.players.iter().map(|p| p.id).find(|id| *id != mover).expect("2P seats two");
+            grant_telegram(&mut root, &rules, mover);
+            root.player_mut(opponent).president_location = PresidentLocation::OnBoard(president);
+            check_invariants(&root, &rules).expect("the Telegram fixture is a legal state");
+            assert!(root.player(mover).assistants.in_hand >= 3, "the bonus leg needs three");
+
+            let telegram = Move::PlaceTwoSameArea { area, adjacent_bonus: Some(adj) };
+            let candidates =
+                classify_fee_flow_candidates(&root, &rules).expect("a turn start classifies");
+            let priced = candidates
+                .iter()
+                .find(|c| c.mv == telegram)
+                .unwrap_or_else(|| panic!("the fork does not offer {telegram:?}"));
+            assert_eq!(priced.fee, expected, "President in {president:?}");
+            assert_eq!(priced.total, 3, "two assistants plus the bonus one");
+
+            let placing = apply_move(&root, &Move::EndAdditionalPhase, &rules)
+                .expect("ending the additional phase is legal at a turn start");
+            let after = apply_move(&placing, &telegram, &rules)
+                .expect("the Telegram placement is in the legal list");
+            assert_eq!(after.player(mover).money + expected, root.player(mover).money);
+            assert_eq!(after.player(opponent).money, root.player(opponent).money + expected);
+        }
+    }
+
+    /// Over ORGANIC turn starts: every pair the recipe returns is priced by the
+    /// engine's own bytes at the CHECKED boundary, both sides share the total,
+    /// the sides differ, and the answer is a function of the root alone.
+    ///
+    /// The miss histogram is RECORDED, never asserted — the yield is a property
+    /// of the ecology (whether the opponent's President is on the board at a
+    /// mover's turn start), and the registration says so out loud: "organic
+    /// instantiation is realistic but UNCERTIFIABLE; no census fact covers
+    /// president positions; the floor does real work." So the only asserted
+    /// facts are that the sweep exercised the instrument at all: a position off
+    /// a turn start, and a position whose candidate list classified.
+    #[test]
+    fn every_organic_fee_flow_pair_is_priced_by_the_bytes_and_is_a_function_of_the_root() {
+        let rules = Rules::standard();
+        let mut pairs = 0usize;
+        let mut classified = 0usize;
+        // The two admitted classes, counted apart: a sweep that met only one of
+        // them would prove the reading over half its domain.
+        let mut starts = 0usize;
+        let mut decisions = 0usize;
+        let mut misses: BTreeMap<String, usize> = BTreeMap::new();
+        for index in [11u64, 12] {
+            let stats = rung_game(&rules, world(index));
+            let events = stats.record.events.len();
+            for k in (0..events).step_by(5) {
+                let Ok(state) = state_at(&stats.record, k, &rules) else { continue };
+                if classify_fee_flow_candidates(&state, &rules).is_ok() {
+                    classified += 1;
+                }
+                match fee_flow_recipe_pair(&state, &rules) {
+                    Ok(pair) => {
+                        pairs += 1;
+                        let mover = pair.mover;
+                        let opponent = pair.opponent;
+                        assert!(pair.fee > 0, "event {k}: F+ must export a NONZERO fee");
+                        assert_ne!(
+                            pair.fee_side_areas, pair.free_side_areas,
+                            "event {k}: the two sides are the same placement"
+                        );
+                        for side in [&pair.fee_side, &pair.free_side] {
+                            assert_eq!(
+                                placement_shape(side).map(|(total, _)| total),
+                                Some(pair.total),
+                                "event {k}: a side does not carry the pair's total"
+                            );
+                        }
+
+                        // The state the pair's sides are legal in: CROSSED
+                        // from a turn start, ALREADY THERE at a placement
+                        // decision (R-S10-14). The sweep now meets both classes,
+                        // so it can no longer assume the crossing exists.
+                        let at_start = !is_placement_decision(&state);
+                        let placing = if at_start {
+                            apply_move(&state, &Move::EndAdditionalPhase, &rules)
+                                .expect("a turn start ends its additional phase")
+                        } else {
+                            state.clone()
+                        };
+                        if at_start {
+                            starts += 1;
+                        } else {
+                            decisions += 1;
+                        }
+                        let paid = apply_move(&placing, &pair.fee_side, &rules)
+                            .expect("F+ is in the placement phase's legal list");
+                        assert_eq!(
+                            paid.player(mover).money + pair.fee,
+                            state.player(mover).money,
+                            "event {k}: the payer's purse disagrees with the price"
+                        );
+                        assert_eq!(
+                            paid.player(opponent).money,
+                            state.player(opponent).money + pair.fee,
+                            "event {k}: the opponent's purse disagrees with the price"
+                        );
+                        let free = apply_move(&placing, &pair.free_side, &rules)
+                            .expect("F0 is in the placement phase's legal list");
+                        assert_eq!(free.player(mover).money, state.player(mover).money);
+                        assert_eq!(free.player(opponent).money, state.player(opponent).money);
+
+                        // R-S10-14: at a TURN START the pair must equal the
+                        // pair at its placement-decision successor — the ply is
+                        // phase-only, asserted over organic play rather than
+                        // only at a constructed fixture. At a placement decision
+                        // `placing` IS the state, so the comparison is the
+                        // function-of-the-root one below and not a second copy
+                        // of it.
+                        if at_start {
+                            assert_eq!(
+                                Ok(pair.clone()),
+                                fee_flow_recipe_pair(&placing, &rules),
+                                "event {k}: the placement-decision successor yields a different \
+                                 pair"
+                            );
+                        }
+                        assert_eq!(
+                            Ok(pair),
+                            fee_flow_recipe_pair(&state, &rules),
+                            "event {k}: the recipe is not a function of the root"
+                        );
+                    }
+                    Err(miss) => *misses.entry(miss.to_string()).or_default() += 1,
+                }
+            }
+        }
+        // RECORDED, never asserted (see the doc comment).
+        let off_class =
+            misses.get(&FeeFlowMiss::NotAPlacementDecision.to_string()).copied().unwrap_or(0);
+        println!(
+            "fee-flow recipe over organic play: {pairs} pairs ({starts} at a turn start, \
+             {decisions} at a placement decision), {classified} positions classified, \
+             {off_class} positions at neither admitted class, other misses {:?}",
+            misses
+                .iter()
+                .filter(|(name, _)| *name != &FeeFlowMiss::NotAPlacementDecision.to_string())
+                .collect::<Vec<_>>()
+        );
+        assert!(off_class > 0, "the sweep never saw a position at neither admitted class");
+        // BOTH admitted classes are met organically (measured 27 / 35 over the
+        // two rung games at the landing), so the equality above is asserted
+        // over the reading's whole domain rather than over half of it.
+        assert!(starts > 0, "the sweep never saw a pair at a turn start");
+        assert!(decisions > 0, "the sweep never saw a pair at a placement decision");
+        assert!(classified > 0, "the sweep never classified a candidate list ({misses:?})");
+    }
+
+    /// **The empty placement is never a side.** `PlaceThreeAreas { placements:
+    /// vec![] }` is always in the list — it is how a mover declines to place —
+    /// and it prices at zero because it places NOTHING, not because it avoids
+    /// the opponent's President. Admitting it as `F0` would pair a placement
+    /// against a non-placement and call the difference a fee-flow distinction,
+    /// which is [`the_empty_placement_is_never_a_side_of_the_recipe`]'s
+    /// objection at the §6 recipe and the same objection here.
+    ///
+    /// The second half is the decisive one: from data, a list whose only
+    /// zero-priced move is the empty placement refuses as
+    /// [`FeeFlowMiss::NoFreeSide`] rather than pairing against it.
+    #[test]
+    fn the_empty_placement_is_never_a_fee_flow_side() {
+        let rules = Rules::standard();
+        let (root, ..) = fee_flow_root(&rules, world(107).0);
+        let candidates = classify_fee_flow_candidates(&root, &rules).expect("a turn start classifies");
+        let empty: Vec<&FeeFlowCandidate> = candidates.iter().filter(|c| c.total == 0).collect();
+        assert_eq!(empty.len(), 1, "the decline-to-place move is offered exactly once");
+        assert_eq!(empty[0].fee, 0);
+        assert!(empty[0].areas.is_empty());
+
+        let pair = fee_flow_recipe_pair(&root, &rules).expect("the constructed root carries F");
+        assert!(pair.total > 0, "neither side is the decline");
+        assert!(!pair.fee_side_areas.is_empty());
+        assert!(!pair.free_side_areas.is_empty());
+
+        assert_eq!(
+            select_fee_flow_pair(
+                PlayerId(0),
+                PlayerId(1),
+                &[fee_candidate(0, &[], 0), fee_candidate(1, &[3], 1)]
+            ),
+            Err(FeeFlowMiss::NoFreeSide),
+            "the empty placement is not the zero-fee side of anything"
+        );
+    }
+
+    /// **Both halves of the exact-mirror cross-check, from data.**
+    ///
+    /// The check compares three numbers that must agree — the price, the
+    /// mover's fall, the opponent's rise — and at every position the engine can
+    /// produce, the two purses move TOGETHER, so no fixture and no organic
+    /// sweep discriminates the opponent conjunct: delete it and the whole
+    /// driven suite stays green. That is what this cell exists to stop, and it
+    /// is why the comparison is a function of four numbers rather than four
+    /// lines inside a loop.
+    ///
+    /// The decisive row is the third: the price is charged to the payer and the
+    /// opponent receives NOTHING — a fee routed to the bank, the drift
+    /// [`cross_check_pricing`]'s own doc names. Under a payer-only check that
+    /// row passes, and the step-10 raw arm would gate opponent-E1 against a
+    /// number the engine never credited.
+    #[test]
+    fn the_pricing_cross_check_fires_on_either_purse_alone() {
+        let mv = Move::PlaceThreeAreas { placements: vec![AreaId(3)] };
+        let named = format!("{mv:?}");
+        let mismatch = |priced, payer_delta, opponent_delta| {
+            Err(FeeFlowMiss::PricingMismatch {
+                candidate: named.clone(),
+                priced,
+                payer_delta,
+                opponent_delta,
+            })
+        };
+
+        assert_eq!(cross_check_pricing(&mv, 1, 1, 1), Ok(()), "all three agree");
+        assert_eq!(cross_check_pricing(&mv, 1, 0, 1), mismatch(1, 0, 1), "the payer half");
+        assert_eq!(cross_check_pricing(&mv, 1, 1, 0), mismatch(1, 1, 0), "the opponent half");
+        assert_eq!(cross_check_pricing(&mv, 1, 0, 0), mismatch(1, 0, 0), "both halves");
+
+        // The mirror direction at price zero: a credit nobody was charged for
+        // is as much a broken mirror as a charge nobody was credited.
+        assert_eq!(cross_check_pricing(&mv, 0, 0, 0), Ok(()));
+        assert_eq!(cross_check_pricing(&mv, 0, 0, 1), mismatch(0, 0, 1));
+    }
+
+    // -----------------------------------------------------------------------
+    // V4 §7 STEP 8 — the generating-ecology pinning (spec §10; V3 spec §5.1's
+    // design adopted verbatim). RED at the pre-move tree by design.
+    // -----------------------------------------------------------------------
+
+    /// **THE ECOLOGY RE-PIN (V3 spec §5.1, landing at the step-8 adoption
+    /// commit).** The v2 generating ecology's seats stop being the LIVE shipped
+    /// contestant and become an EXPLICIT in-crate weighted construction keyed
+    /// to `WeightTable::V2` — so every recorded `(predicate, master, ordinal)`
+    /// triple keeps resolving to the same state through every later controller
+    /// re-point, the identity-freeze era included. The seat field is ecology
+    /// identity, so the id bumps `v2.2` → `v2.3` per the in-source
+    /// any-field-change rule.
+    ///
+    /// RED at the pre-move tree (the id still reads `v2.2` there): that
+    /// failure is checkpoint §7 step 8's red-then-green, on the ecology half.
+    #[test]
+    fn the_v2_ecology_repins_its_seats_and_bumps_to_v2_3_at_the_widening() {
+        let ecology = GeneratingEcology::v2_lookahead();
+        assert_eq!(
+            ecology.id, "driven-generated-v2.3-lookahead",
+            "the seat re-pin is an ecology field change and must bump the version string",
+        );
+    }
+
+    /// The pinned seat's knob literals equal the shipped default's TODAY — a
+    /// TRANSCRIPTION FACT, not a coupling: the pinned literals are the
+    /// historical record and can never move; if the shipped default
+    /// legitimately moves later, delete THIS assertion in the moving commit
+    /// and the literals stay (the `PRE_FREEZE_2026_07_27` discipline).
+    #[test]
+    fn the_pinned_v2_seat_transcribes_todays_shipped_knobs() {
+        assert_eq!(
+            Contestant::LOOKAHEAD_V1_DEFAULT,
+            Contestant::LookaheadV1 {
+                b: PINNED_V2_SEAT_BEAM,
+                k: PINNED_V2_SEAT_WORLDS,
+                m: PINNED_V2_SEAT_RETREAT_SAMPLES,
+                cap: None,
+            },
+            "the pinned knob literals transcribe the shipped default of 2026-08-24",
+        );
+    }
+
+    /// **THE PRE-PADDING DECISION WALK, RECORDED (V3 spec §5.1's agent-level
+    /// behavior-identity pin, the fixture-walk half).** Six lookahead decisions
+    /// at the v2 ecology's seat construction — shipped knobs `b=4, k=1, m=8`,
+    /// `WeightTable::V2` EXPLICIT — over three deterministic positions (a fresh
+    /// 2P setup and two family-weighted walks forward), each agent on a fixed
+    /// literal stream seed. The chosen moves are transcribed below from the
+    /// PRE-MOVE tree (HEAD `08fd5ae`), so the walk enforces, forever and
+    /// through the identity freeze, that the PINNED construction decides
+    /// exactly as the pre-padding shipped seat decided.
+    ///
+    /// GREEN at the pre-move tree (it records the standing walk); REQUIRED
+    /// GREEN after the move (padding must not move a decision); REQUIRED GREEN
+    /// through every later controller re-point (the construction is pinned,
+    /// not live). Mutation-proven at the wave: a table swap (V1 or ZERO) or a
+    /// knob swap must flip at least one recorded move.
+    #[test]
+    fn the_pinned_v2_seat_walk_reproduces_the_recorded_pre_padding_decisions() {
+        use crate::game::policy::RolloutPolicy;
+        use crate::game::search_actions::DecisionHandle;
+        use rand::SeedableRng;
+
+        let rules = Rules::standard();
+        // (setup seed, family-weighted steps forward, agent stream seed)
+        const POSITIONS: [(u64, usize, u64); 3] =
+            [(0xD1, 0, 0xA11CE0), (0xD2, 60, 0xA11CE1), (0xD3, 140, 0xA11CE2)];
+        // The recorded walk: two consecutive decisions per position, the move's
+        // `Debug` form verbatim.
+        const RECORDED: [[&str; 2]; 3] = [
+            ["EndAdditionalPhase", "PlaceThreeAreas { placements: [AreaId(0), AreaId(1), AreaId(8)] }"],
+            [
+                "PlaceThreeAreas { placements: [] }",
+                "MovePresident { path: [AreaId(7), AreaId(4)], destination: AreaId(4) }",
+            ],
+            ["SkipBuilding", "EndAdditionalPhase"],
+        ];
+
+        for (i, (seed, steps, agent_seed)) in POSITIONS.into_iter().enumerate() {
+            let pending =
+                new_game(GameConfig::for_player_count(2), &rules, seed).expect("setup");
+            let mut state =
+                finalize_setup(pending, &[StartingOrderChoice::Keep(0); 2]).expect("finalize");
+            let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(seed ^ 0x3F3F);
+            let policy = RolloutPolicy::FAMILY_WEIGHTED_DEFAULT;
+            for step in 0..steps {
+                let mv = {
+                    let handle = DecisionHandle::new(&state, &rules);
+                    policy
+                        .pick(&handle, &mut rng)
+                        .unwrap_or_else(|| panic!("dead end at seed {seed:#x} step {step}"))
+                };
+                state = apply_move_unchecked(&state, &mv, &rules).expect("policy move applies");
+            }
+            // Build through the SAME configuration path the scan uses. A
+            // mutation from the pinned variant to the live default must move
+            // this recorded walk rather than escaping through a direct helper.
+            let mut agent = v2_lookahead_config().seat.build(&rules, agent_seed);
+            for (j, recorded) in RECORDED[i].iter().enumerate() {
+                let mover = state.current_player;
+                let view = observe(&state, mover).expect("the mover's view");
+                let report = agent.choose(&view, &rules).expect("the pinned seat decides");
+                assert_eq!(
+                    format!("{:?}", report.mv),
+                    *recorded,
+                    "position {i} decision {j}: the pinned v2 seat construction diverged from \
+                     the recorded pre-padding walk",
+                );
+                state = apply_move(&state, &report.mv, &rules)
+                    .expect("the pinned seat's move is legal at the checked boundary");
+            }
         }
     }
 }

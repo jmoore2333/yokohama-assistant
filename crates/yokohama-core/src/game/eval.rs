@@ -50,7 +50,7 @@
 //!
 //! # The score-structure mirrors (§2.2, landed at T2)
 //!
-//! Five of the sixteen features re-derive a piece of the rulebook's END
+//! Five of the incumbent sixteen features re-derive a piece of the rulebook's END
 //! SCORING from the view: the country-set bonus, the technology
 //! industry-value majority, the church and customs pawn majorities (with the
 //! 2-player dummy competitor priced exactly as the rules price it — finding
@@ -106,13 +106,32 @@
 //! tensions were acted on in the v2 rounds; the artifact stays the record of
 //! what was measured when.
 //!
-//! The FEATURE LIST is unchanged across both freezes at sixteen. The one
+//! At both freeze commits the feature list was sixteen; the V4 step-8 move
+//! later APPENDED the eighteen §3.2 candidates after them (zero
+//! weighted in every named table, so shipped behavior did not move). The one
 //! feature-level change v2 made is inside a value rather than in the list:
 //! [`Feature::AchievementProgressSum`] now drops the legs of cards the valued
 //! seat has already claimed (T3's post-claim filter).
 
 use crate::game::rules::Rules;
-use crate::types::{AchievementType, Country, PlayerId, PlayerView, TurnPhase, VisiblePlayer};
+// V4 spec §3.2's registered engine paths, and the ONE reason this module reaches
+// past the registries: S1, S5 and S6 price an option at the reward the ENGINE
+// pays for it. Re-deriving those tables here would be a second copy of the
+// rulebook's own numbers — the exact duplication §13's dispatcher exists to
+// prevent — so the shipped helpers are called instead. Nothing here reads state:
+// all three take a power and return a printed quantity. The §2.1 guard's
+// allowlist names this line, which is what makes widening it a deliberate act.
+use crate::game::actions::{bank_reward, employment_agency_tokens_allowed, exported_reward};
+// V4 §3.2's Group X, on the same grounds as the line above and no wider: X1's
+// slot surcharge and X2's zone gate are the ENGINE's arithmetic, printed on the
+// two card boards. Both are pure functions of a number — a slot index and a
+// power — and neither can carry state into a module whose whole contract is that
+// it holds none. The §2.1 guard's allowlist names this line as its third entry.
+use crate::game::actions::{lab_position_surcharge, port_zone_accessible};
+use crate::types::{
+    AchievementType, AreaId, AreaType, Country, HandCard, OrderCard, OrderCardId, PlayerId,
+    PlayerView, PortBoard, PresidentLocation, TechCardId, TurnPhase, VisiblePlayer,
+};
 
 /// Bumped on ANY behavior-affecting change to the evaluator — the feature list,
 /// the relative form, the stage shape, or the weight tables (T4's freeze is a
@@ -209,8 +228,10 @@ pub const HAND_CORE_RESERVE: u8 = 2;
 // Features
 // ---------------------------------------------------------------------------
 
-/// The sixteen relative features of evaluator v1, in THE canonical order
-/// (spec §2.2's list, read top to bottom, AMENDED AT T3 by the in-hand split).
+/// The relative features, in THE canonical order: evaluator v1's sixteen
+/// (spec §2.2's list, read top to bottom, AMENDED AT T3 by the in-hand split)
+/// and, since the V4 step-8 move, the eighteen §3.2 candidates appended after
+/// them.
 /// The order is load-bearing: it indexes both weight vectors, it is the order
 /// `explain` reports terms in, and T4's probe reports per-feature figures
 /// against it.
@@ -224,8 +245,8 @@ pub const HAND_CORE_RESERVE: u8 = 2;
 /// is a compile error too — the array lengths really do move together. **The one
 /// silent path is omission from `ALL` itself**: `ALL` is a hand-maintained
 /// literal with no compiler-checked relation to the variant set, so a variant
-/// given its match arms but left out of `ALL` compiles clean, keeps `COUNT` at
-/// 16, and never appears in `score`/`explain`'s `for feature in Feature::ALL`
+/// given its match arms but left out of `ALL` compiles clean, keeps `COUNT`
+/// unchanged at 34, and never appears in `score`/`explain`'s `for feature in Feature::ALL`
 /// loops — scoring zero, silently. Adding a feature therefore means `ALL` FIRST,
 /// then both vectors; the compiler covers the rest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -285,11 +306,80 @@ pub enum Feature {
     /// Order cards in hand. R1-7: 0.4745/0.4171/0.3753 — NEGATIVE and growing
     /// (an unfulfilled order is a commitment, not an asset).
     HandSize,
+
+    // -- THE V4 §3.2 CANDIDATES (the step-8 `Feature::ALL` 16 → 34 move) -----
+    //
+    // Eighteen features, APPENDED after the incumbent sixteen in
+    // `CandidateFeature::ALL`'s registered order so every recorded row index —
+    // the §5 pair registrations', the snapshot matrix's — keeps meaning what it
+    // meant. Their formulas are the `ScoreStructure` helper methods further
+    // down this file (each carries its §3.2 card); their values are
+    // precomputed per seat by [`ScoreStructure::derive`] and read back through
+    // [`ScoreStructure::value_of`], exactly as the five bonus mirrors are.
+    // Every named table pads them at weight (0, 0) until step 9 materializes a
+    // fitted table, which is what keeps `V2-padded` the same BEHAVIOR as
+    // shipped V2 (spec §10).
+    //
+    /// S1 — exported reward at realizable power, over own-occupied production
+    /// areas. See [`ScoreStructure::production_access`].
+    ProductionAccess,
+    /// S2 — realizable power over own-occupied {Church, Customs}. See
+    /// [`ScoreStructure::track_access`].
+    TrackAccess,
+    /// S3 — count of non-Canal areas holding ≥ 1 own assistant. See
+    /// [`ScoreStructure::assistant_areas_distinct`].
+    AssistantAreasDistinct,
+    /// S4 — the president's ring mass (on-board), or the best re-entry ring
+    /// (in hand). See [`ScoreStructure::president_local_access`].
+    PresidentLocalAccess,
+    /// S5 — bank reward at realizable power, gated on own presence. See
+    /// [`ScoreStructure::bank_access`].
+    BankAccess,
+    /// S6 — takeable Employment-Agency tokens, gated by the warehouse min. See
+    /// [`ScoreStructure::employment_agency_access`].
+    EmploymentAgencyAccess,
+    /// S7 — areas actionable in principle from the president's position. See
+    /// [`ScoreStructure::president_reachable_areas`].
+    PresidentReachableAreas,
+    /// E1 — `player.money`, linear. See [`ScoreStructure::money_stock`].
+    MoneyStock,
+    /// E2 — `copper + silk + tea + seafood`, linear. See
+    /// [`ScoreStructure::trade_goods_stock`].
+    TradeGoodsStock,
+    /// E3 — building tokens retrieved to hand and deployment-ready. See
+    /// [`ScoreStructure::building_tokens_ready`].
+    BuildingTokensReady,
+    /// O1 — held order value in HALF-VP units, opponent slots at the pool
+    /// floor. See [`ScoreStructure::held_order_value`].
+    HeldOrderValue,
+    /// O2 — goods held against known held orders' summed requirements. See
+    /// [`ScoreStructure::order_matched_goods`].
+    OrderMatchedGoods,
+    /// O3 — count of known held orders with every requirement met. See
+    /// [`ScoreStructure::executable_orders`].
+    ExecutableOrders,
+    /// O5 — the best attainable country-set marginal. See
+    /// [`ScoreStructure::flag_icon_marginal`].
+    FlagIconMarginal,
+    /// O6 — icon faces on known held orders, in ICON units. See
+    /// [`ScoreStructure::held_order_icons`].
+    HeldOrderIcons,
+    /// X1 — lab slots takeable ALL-IN at the seat's own lab presence. See
+    /// [`ScoreStructure::lab_takeable`].
+    LabTakeable,
+    /// X2 — matched goods over port offers in the zones open at the seat's
+    /// power. See [`ScoreStructure::port_takeable`].
+    PortTakeable,
+    /// X3 — production access conditioned on held orders' residual need. See
+    /// [`ScoreStructure::matched_production_access`].
+    MatchedProductionAccess,
 }
 
 impl Feature {
-    /// The canonical order. `ALL[f.index()] == f` for every feature.
-    pub const ALL: [Feature; 16] = [
+    /// The canonical order: the incumbent sixteen, then the eighteen V4 §3.2
+    /// candidates in `CandidateFeature::ALL`'s registered order (the step-8
+    /// append — never a re-numbering). `ALL[f.index()] == f` for every feature.
+    pub const ALL: [Feature; 34] = [
         Feature::VictoryPoints,
         Feature::CountryBonusNow,
         Feature::TechBonusNow,
@@ -306,10 +396,38 @@ impl Feature {
         Feature::AchievementProgressSum,
         Feature::MercenariesTotal,
         Feature::HandSize,
+        Feature::ProductionAccess,
+        Feature::TrackAccess,
+        Feature::AssistantAreasDistinct,
+        Feature::PresidentLocalAccess,
+        Feature::BankAccess,
+        Feature::EmploymentAgencyAccess,
+        Feature::PresidentReachableAreas,
+        Feature::MoneyStock,
+        Feature::TradeGoodsStock,
+        Feature::BuildingTokensReady,
+        Feature::HeldOrderValue,
+        Feature::OrderMatchedGoods,
+        Feature::ExecutableOrders,
+        Feature::FlagIconMarginal,
+        Feature::HeldOrderIcons,
+        Feature::LabTakeable,
+        Feature::PortTakeable,
+        Feature::MatchedProductionAccess,
     ];
 
     /// Length of [`Feature::ALL`] and of each weight vector.
     pub const COUNT: usize = Feature::ALL.len();
+
+    /// The PRE-V4 shipped width — the first sixteen rows of [`Feature::ALL`],
+    /// which every V1/V2-era record, sign pin and registered row index is a
+    /// statement about. The step-8 move APPENDED the eighteen candidates after
+    /// these, so this constant is the append point: `pair_fixtures`' axis
+    /// anchors on it (the frozen package digest serializes exactly
+    /// `INCUMBENT_COUNT + CandidateFeature::COUNT` rows), the research-notes
+    /// sign pin scopes to it, and the named tables' padding pins read from it.
+    /// It is a HISTORICAL fact, not a tunable — it can never move again.
+    pub const INCUMBENT_COUNT: usize = 16;
 
     /// Position in [`Feature::ALL`] — the weight-vector index.
     ///
@@ -335,6 +453,24 @@ impl Feature {
             Feature::AchievementProgressSum => 13,
             Feature::MercenariesTotal => 14,
             Feature::HandSize => 15,
+            Feature::ProductionAccess => 16,
+            Feature::TrackAccess => 17,
+            Feature::AssistantAreasDistinct => 18,
+            Feature::PresidentLocalAccess => 19,
+            Feature::BankAccess => 20,
+            Feature::EmploymentAgencyAccess => 21,
+            Feature::PresidentReachableAreas => 22,
+            Feature::MoneyStock => 23,
+            Feature::TradeGoodsStock => 24,
+            Feature::BuildingTokensReady => 25,
+            Feature::HeldOrderValue => 26,
+            Feature::OrderMatchedGoods => 27,
+            Feature::ExecutableOrders => 28,
+            Feature::FlagIconMarginal => 29,
+            Feature::HeldOrderIcons => 30,
+            Feature::LabTakeable => 31,
+            Feature::PortTakeable => 32,
+            Feature::MatchedProductionAccess => 33,
         }
     }
 
@@ -358,7 +494,34 @@ impl Feature {
             Feature::AchievementProgressSum => "achievement_progress_sum",
             Feature::MercenariesTotal => "mercenaries_total",
             Feature::HandSize => "hand_size",
+            Feature::ProductionAccess => "production_access",
+            Feature::TrackAccess => "track_access",
+            Feature::AssistantAreasDistinct => "assistant_areas_distinct",
+            Feature::PresidentLocalAccess => "president_local_access",
+            Feature::BankAccess => "bank_access",
+            Feature::EmploymentAgencyAccess => "employment_agency_access",
+            Feature::PresidentReachableAreas => "president_reachable_areas",
+            Feature::MoneyStock => "money_stock",
+            Feature::TradeGoodsStock => "trade_goods_stock",
+            Feature::BuildingTokensReady => "building_tokens_ready",
+            Feature::HeldOrderValue => "held_order_value",
+            Feature::OrderMatchedGoods => "order_matched_goods",
+            Feature::ExecutableOrders => "executable_orders",
+            Feature::FlagIconMarginal => "flag_icon_marginal",
+            Feature::HeldOrderIcons => "held_order_icons",
+            Feature::LabTakeable => "lab_takeable",
+            Feature::PortTakeable => "port_takeable",
+            Feature::MatchedProductionAccess => "matched_production_access",
         }
+    }
+
+    /// True for the eighteen V4 §3.2 candidates — the rows past
+    /// [`INCUMBENT_COUNT`](Self::INCUMBENT_COUNT). The predicate the padding
+    /// pins and the incumbent-scoped sign pins read, written as index
+    /// arithmetic over [`index`](Self::index) (itself an exhaustive match) so
+    /// a new variant cannot dodge classification by omission.
+    pub fn is_candidate(self) -> bool {
+        self.index() >= Self::INCUMBENT_COUNT
     }
 
     /// True for the five features whose value is re-derived END SCORING
@@ -366,7 +529,10 @@ impl Feature {
     /// achievement progress). Their values come from [`ScoreStructure`], which
     /// is computed once per [`score`] call — this predicate is what lets the
     /// tests assert that grouping instead of trusting a comment, and it is the
-    /// set the drift pin holds against the engine's own breakdown.
+    /// set the drift pin holds against the engine's own breakdown. The V4
+    /// candidates also read back from precomputed [`ScoreStructure`] storage,
+    /// but they mirror no end-scoring arithmetic — this predicate stays the
+    /// drift pin's five, and [`is_candidate`](Self::is_candidate) is theirs.
     pub fn is_score_structure(self) -> bool {
         matches!(
             self,
@@ -391,6 +557,25 @@ pub struct WeightTable {
     pub early: [i64; Feature::COUNT],
     /// Weights at `p == PROGRESS_FULL_PPM` (a clock is full).
     pub late: [i64; Feature::COUNT],
+}
+
+/// The step-8 padding, mechanical and auditable: the historical sixteen-slot
+/// vector verbatim in slots `0..16`, ZERO in every candidate slot. Every named
+/// table below is written through this so the widening could not retype an
+/// incumbent number — the sixteen literals on the page are byte-for-byte the
+/// pre-move arrays, and the padding pin
+/// (`the_named_tables_are_the_historical_sixteen_padded_with_zero_candidates`)
+/// holds both halves.
+const fn padded_incumbent_vector(
+    sixteen: [i64; Feature::INCUMBENT_COUNT],
+) -> [i64; Feature::COUNT] {
+    let mut out = [0i64; Feature::COUNT];
+    let mut i = 0;
+    while i < Feature::INCUMBENT_COUNT {
+        out[i] = sixteen[i];
+        i += 1;
+    }
+    out
 }
 
 impl WeightTable {
@@ -557,10 +742,12 @@ impl WeightTable {
     /// the sixteen slots, with
     /// `the_hand_split_orders_core_above_board_above_excess_in_both_vectors`
     /// pinning the two ordering inequalities the assistant triple turns on.
+    /// (Since the step-8 widening the vectors are PADDED — the sixteen
+    /// literals below are the table, and every candidate slot is 0.)
     pub const V1: WeightTable = WeightTable {
         //     [vp, ctry, tech, chur, cust, hCORE, hEXC, ware, brd, shop, trad, 5pw, imp, achv, merc, hnd#]
-        early: [10,   12,    6,   -4,    3,    30,    4,  -10,  14,   12,   15,   8,   5,    2,    3,   -3],
-        late:  [40,   30,   20,   16,   20,    20,    2,   -4,  10,   20,   25,  10,   8,    4,    4,   -6],
+        early: padded_incumbent_vector([10, 12, 6, -4, 3, 30, 4, -10, 14, 12, 15, 8, 5, 2, 3, -3]),
+        late: padded_incumbent_vector([40, 30, 20, 16, 20, 20, 2, -4, 10, 20, 25, 10, 8, 4, 4, -6]),
     };
 
     /// The hand-set first cut that GENERATED the T4 freeze corpus — the
@@ -589,10 +776,12 @@ impl WeightTable {
     /// either — they take [`WeightTable::V2`] — so this const's neighbour is a
     /// record too, and the equality pin below is a statement about 2026-07-27
     /// that both of them still satisfy.
+    /// (Padded at step 8 like every named table; the HISTORICAL RECORD is the
+    /// sixteen literals, unmoved, and a zero pad prices nothing.)
     pub const PRE_FREEZE_2026_07_27: WeightTable = WeightTable {
         //     [vp, ctry, tech, chur, cust, hCORE, hEXC, ware, brd, shop, trad, 5pw, imp, achv, merc, hnd#]
-        early: [10,   12,    6,   -4,    3,    30,    4,  -10,  14,   12,   15,   8,   5,    2,    3,   -3],
-        late:  [40,   30,   20,   16,   20,    20,    2,   -4,  10,   20,   25,  10,   8,    4,    4,   -6],
+        early: padded_incumbent_vector([10, 12, 6, -4, 3, 30, 4, -10, 14, 12, 15, 8, 5, 2, 3, -3]),
+        late: padded_incumbent_vector([40, 30, 20, 16, 20, 20, 2, -4, 10, 20, 25, 10, 8, 4, 4, -6]),
     };
 
     /// **THE SHIPPED TABLE since the Phase-3.5c freeze (2026-08-10)** — what
@@ -600,7 +789,10 @@ impl WeightTable {
     /// arena contestant evaluate with. It is the evaluator-v2 protocol's
     /// iteration candidate promoted verbatim: the numbers below are the ones
     /// round 2 adopted, unchanged by the promotion, weight identity
-    /// **`0x9a240f2ff7624b0e`** (V1's is `0xe1fedd5efc49d0f6`).
+    /// **`0x9a240f2ff7624b0e`** (V1's is `0xe1fedd5efc49d0f6`) — the
+    /// SIXTEEN-SLOT identities; since the step-8 zero-padding the widened
+    /// tables hash to `0xefe5b3e86b1ec332` (V2) and `0x8ce9e676d17fdb02` (V1),
+    /// the sixteen live slots unmoved.
     ///
     /// [`WeightTable::V1`] is RETAINED VERBATIM beside it — byte-identical to
     /// what it was before the freeze — exactly as
@@ -764,7 +956,9 @@ impl WeightTable {
     /// on their home stages, the second negative on the greedy corpus too — which
     /// is the merge rule doing its job rather than a grid that happened to agree
     /// with itself. **Weight identity `0x9a240f2ff7624b0e`**, verified at this
-    /// commit against the probe's own digest of the two arrays below.
+    /// commit against the probe's own digest of the two arrays below (the
+    /// sixteen-slot identity; the step-8 padded table reads
+    /// `0xefe5b3e86b1ec332`).
     ///
     /// Read the honest limits with these numbers too, and they are round 1's
     /// unchanged: the AUCs are measured on INCUMBENT-play corpora and are
@@ -849,17 +1043,28 @@ impl WeightTable {
     ///   declare, last, and this table is one input to it.
     /// * **Two-player only.** Every corpus, fit, scenario and screen in the
     ///   trail is 2P. Nothing has measured what these weights do at 3–4P.
+    ///
+    /// (Since the step-8 widening the vectors are PADDED: the sixteen literals
+    /// below are still round 2's numbers verbatim, every candidate slot is 0,
+    /// and `V2` therefore IS spec §10's `V2-padded` — the same BEHAVIOR as the
+    /// shipped pre-move table, held to the recorded battery by
+    /// `the_padded_tables_preserve_pre_move_totals_and_terms_over_constructed_and_organic_views`.
+    /// The `weight_table_identity` value moved with the width — the padded
+    /// table hashes 68 numbers — and the historical identity above describes
+    /// the sixteen-slot arrays this padding preserves.)
     pub const V2: WeightTable = WeightTable {
         //     [vp, ctry, tech, chur, cust, hCORE, hEXC, ware, brd, shop, trad, 5pw, imp, achv, merc, hnd#]
-        early: [ 1,   20,   14,   -4,    3,    30,    5,  -10,   6,   12,   15,   8,   5,    2,    3,   -1],
-        late:  [40,   30,   20,    8,   20,    20,    2,  -10,  10,   20,   25,  14,   8,    4,    4,   -2],
+        early: padded_incumbent_vector([1, 20, 14, -4, 3, 30, 5, -10, 6, 12, 15, 8, 5, 2, 3, -1]),
+        late: padded_incumbent_vector([40, 30, 20, 8, 20, 20, 2, -10, 10, 20, 25, 14, 8, 4, 4, -2]),
     };
 
     /// **THE ITERATION CANDIDATE, retained as an ALIAS of [`WeightTable::V2`]
     /// now that its job is done.** Through rounds 1–3 this const WAS the
     /// candidate — it moved twice and every round instrument named it. The
     /// freeze promoted its final value to `V2` verbatim, so the two hold the
-    /// same thirty-two numbers and the same identity `0x9a240f2ff7624b0e`.
+    /// same live numbers and the same identity — `0x9a240f2ff7624b0e` at
+    /// sixteen slots, `0xefe5b3e86b1ec332` since the step-8 padding (the alias
+    /// tracks V2 through the widening too).
     ///
     /// **Why it is kept rather than deleted, and what that buys.** The round
     /// commands are committed, in the ledger rows and in both evidence
@@ -885,6 +1090,136 @@ impl WeightTable {
     /// and a table is how a caller builds a mutant without a second code path.
     pub const ZERO: WeightTable =
         WeightTable { early: [0; Feature::COUNT], late: [0; Feature::COUNT] };
+
+    /// **NOT A SHIPPED TABLE, AND NEVER TO BECOME ONE BY DRIFT.**
+    /// [`WeightTable::V2`] is THE shipped table; this const is a §11 ARM
+    /// IDENTITY — one named alternative the arena can seat against V2 so the
+    /// comparison is a runnable cell rather than a document (V4 §7 step 8 wave
+    /// T3, spec §13's "the §11 arms are runnable identities rather than
+    /// names"). Nothing in the engine, the CLI or the shipped constructors
+    /// reads it; `Contestant::NamedTable(NamedIdentity::V2RefitPadded)` is its
+    /// only consumer, and the CLI and the probe both refuse that arm by name.
+    ///
+    /// # Where the sixteen numbers came from
+    ///
+    /// They are the **B cell** of the §8 fitting protocol — the sixteen
+    /// incumbents REFIT with no candidate columns admitted, which is what makes
+    /// this "V2, refit" rather than a new feature set. Recorded in the step-6
+    /// evidence artifact (`v3l-final-artifact.txt`, `== cell B (0 candidates)
+    /// ==`) as
+    ///
+    /// ```text
+    /// [base/all-zero] fit-half 0.8030 sweeps=8 moves=110 evals=2659 converged=true  <- the cell's fit
+    /// ```
+    ///
+    /// and REGENERATED deterministically at T3 before transcription — the
+    /// vectors below are the regeneration's own output, not a reading of the
+    /// artifact:
+    ///
+    /// ```text
+    /// cargo run --release -p yokohama-core --example eval_probe -- \
+    ///     fit --matrix docs/temp/step6-artifacts/v3l-matrix.txt --descend incumbents
+    /// ```
+    ///
+    /// over the banked matrix at sha256
+    /// `d348dcca30e304d8d97277771d22da5aed9e5d480441e7137409e78d9348e7b9`
+    /// (verified at use), on a clean build. `fit` is deterministic and
+    /// master-free — §8's own words, "Deterministic; no master" — so the
+    /// regeneration is a reproduction and not a second experiment: it returned
+    /// the artifact's figures to the digit, both inits, and chose the same one
+    /// (all-zero, fit-half 0.8030 against v2-start's 0.7977).
+    ///
+    /// # What may never move
+    ///
+    /// The sixteen literals are a HISTORICAL RECORD of a fit that ran on a
+    /// specific matrix, exactly as [`PRE_FREEZE_2026_07_27`](Self::PRE_FREEZE_2026_07_27)
+    /// is a record of a specific table. A re-fit is a NEW const with its own
+    /// literals and its own provenance, never an edit here — editing these
+    /// would silently re-point every figure ever recorded against this arm's
+    /// `weights=` identity. The eighteen candidate slots are ZERO and stay
+    /// zero: the B cell admitted no candidate, so a nonzero slot here would be
+    /// a claim the fit never made.
+    ///
+    /// Padded through [`padded_incumbent_vector`] like every named table above,
+    /// so the widening cannot retype a fitted number, and pinned
+    /// behavior-equivalent to its own sixteen-wide arithmetic by
+    /// `the_v2_refit_padded_table_is_its_pre_padding_sixteen_wide_arithmetic`.
+    pub const V2_REFIT_PADDED: WeightTable = WeightTable {
+        //     [vp, ctry, tech, chur, cust, hCORE, hEXC, ware, brd, shop, trad, 5pw, imp, achv, merc, hnd#]
+        early: padded_incumbent_vector([1, 3, 1, -2, 0, -63, 3, -9, 7, 0, 32, -3, 10, 3, 7, 10]),
+        late: padded_incumbent_vector([3, 4, 3, 3, 3, 36, -2, 1, 0, 4, -1, 10, 44, -2, -4, -2]),
+    };
+
+    /// **THE V4 STEP-9 CANDIDATE — draft 1's table, the sighted evaluator's
+    /// thirty-four numbers, named.**
+    ///
+    /// **NAME NOT REGISTERED — PROPOSED AT T5 AND FLAGGED.** Spec §§10–11 name
+    /// the other two arms literally (`V2-padded`, `V2-refit-padded`) but call
+    /// this one only "THE SELECTED IDENTITY"; §13 likewise. `V4_STEP9_DRAFT1` /
+    /// `v4-step9-draft1` is the implementer's proposal, chosen so the name says
+    /// WHICH draft produced these literals: under the never-move rule below a
+    /// second draft is a NEW const with its own name, and a name like
+    /// `v4-candidate` could not say which draft a recorded figure belonged to.
+    /// Rename before the §11 field if the owner prefers — nothing outside this
+    /// wave cites it yet.
+    ///
+    /// # Where the thirty-four numbers came from
+    ///
+    /// Draft 1 of ≤ 3 (V4 step 9), ledger-recorded BEFORE its read on
+    /// 2026-08-29 and green on that read at the first attempt. **Every changed
+    /// coordinate is R3's exact certified projection's own priced answer —
+    /// ZERO R4 class moves, no discretionary dose anywhere**, which is what
+    /// makes this R9's "minimal registered sight".
+    ///
+    /// * **EARLY** — displacement 14 over 11 moves from V2-padded. Ten
+    ///   candidates lit (S1, S2, S5, S6, S7 at +1, E1/E2 at +2, O2, X1, X2 at
+    ///   +1) and ONE incumbent moved: `achievement_progress_sum` 2 → 0, priced
+    ///   by 6(b)-early and reviewer-verified forced with no cheaper route.
+    /// * **LATE** — displacement 102 over 12 moves. Two incumbents
+    ///   (`country_bonus_now` 30 → 40 by 4(d); `assistants_in_hand_excess`
+    ///   2 → 8 by row 8) and ten candidates, including the B1′ certified forced
+    ///   set **S3 → −6** (both-sides-pinned) and **S4 → −2** (floor-exact),
+    ///   each carrying its own restoration-infeasibility certificate (S3
+    ///   `y·b = 15`, S4 `y·b = 5`). X-late is all zero, consistent with B3's
+    ///   registered exclusion: X carries EARLY sight only.
+    ///
+    /// The 3(c)/11(b) coupling that has driven the analysis since T3 sits at its
+    /// arithmetic minimum here — `S5 = 20` and `E1 = 21`.
+    ///
+    /// Certification: late `d* = 102` by ordinary bisection (`≤ 101` EMPTY at 36
+    /// cuts plus a Farkas of 49 multipliers), changed-count 12 minimal (`≤ 11`
+    /// refuted over 263,934 subsets), stage 2 at 907,301 of the registered 10⁷,
+    /// `System::violation` = 0; early `d* = 14` (`≤ 13` EMPTY at 4 cuts), 11
+    /// minimal, 40,726 supports.
+    ///
+    /// # What may never move
+    ///
+    /// [`V2_REFIT_PADDED`](Self::V2_REFIT_PADDED)'s rule, verbatim in force:
+    /// these literals are a HISTORICAL RECORD of one draft that passed one
+    /// read. A second draft is a NEW const with its own literals and its own
+    /// provenance, never an edit here — editing these would silently re-point
+    /// every figure ever recorded against this arm's `weights=` identity.
+    ///
+    /// **Not written through [`padded_incumbent_vector`]**, unlike every named
+    /// table above it, and deliberately: the candidate slots are NONZERO —
+    /// that is the whole of what "sighted" means — so a padding helper would
+    /// have nothing to pad. What stands in for the padding pin is the golden
+    /// transcription pin
+    /// (`the_v4_step9_draft1_table_is_the_ledger_recorded_draft_one_vectors`),
+    /// which compares all sixty-eight literals against the draft-1 ledger row.
+    pub const V4_STEP9_DRAFT1: WeightTable = WeightTable {
+        // 16 incumbents, then the 18 candidates in `Feature::ALL` order:
+        //   [vp, ctry, tech, chur, cust, hCORE, hEXC, ware, brd, shop, trad, 5pw, imp, achv, merc, hnd#]
+        //   [S1, S2, S3, S4, S5, S6, S7, E1, E2, E3, O1, O2, O3, O5, O6, X1, X2, X3]
+        early: [
+            1, 20, 14, -4, 3, 30, 5, -10, 6, 12, 15, 8, 5, 0, 3, -1, //
+            1, 1, 0, 0, 1, 1, 1, 2, 2, 0, 0, 1, 0, 0, 0, 1, 1, 0,
+        ],
+        late: [
+            40, 40, 20, 8, 20, 20, 8, -10, 10, 20, 25, 14, 8, 4, 4, -2, //
+            14, 1, -6, -2, 20, 0, 5, 21, 15, 0, 1, 0, 0, 1, 0, 0, 0, 0,
+        ],
+    };
 
     /// `(early, late)` for one feature.
     pub fn get(&self, feature: Feature) -> (i64, i64) {
@@ -942,13 +1277,13 @@ pub struct TermContribution {
 /// reporting an interpolated weight there would be a lie about what [`score`]
 /// used — while the raw `viewer_value`/`opponent_value` stay populated so a
 /// terminal explanation is still readable. The `terminal` value is then the
-/// whole score, and it is a named additive contribution rather than a
-/// seventeenth `Feature` because it is not a feature: §2.2's list is sixteen
-/// entries and a rank is not one of them.
+/// whole score, and it is a named additive contribution rather than a 35th
+/// `Feature` because a terminal rank is not a positional feature.
 ///
-/// `PartialEq`/`Eq` are load-bearing, not conveniences: spec §0.4(ii)'s
-/// determinization cell asserts that a candidate's explanation is EQUAL across
-/// sampled belief worlds.
+/// `PartialEq`/`Eq` are load-bearing, not conveniences: callers and regression
+/// cells compare complete explanations. Spec §0.4(ii)'s determinization cell
+/// compares all score-affecting fields; zero-weight diagnostic raw values are
+/// permitted to expose the sampled-world differences they cannot price.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Explanation {
     pub terms: Vec<TermContribution>,
@@ -1023,8 +1358,9 @@ pub fn explain(view: &PlayerView, rules: &Rules, weights: &WeightTable) -> Expla
     let progress = progress_ppm(view, rules);
     let structure = ScoreStructure::derive(view, rules);
     // A view without its own seat is degenerate rather than fatal (`observe`
-    // cannot make one; a fixture can). It reports sixteen zero terms and a zero
-    // total — the same answer `score` gives — instead of an empty explanation.
+    // cannot make one; a fixture can). It reports one zero term per feature
+    // and a zero total — the same answer `score` gives — instead of an empty
+    // explanation.
     let me = seated_viewer(view);
     let terminal = me.and_then(|m| terminal_standing_of(view, m, &structure));
 
@@ -1149,6 +1485,478 @@ const MAX_CONTENDERS: usize = MAX_SEATS + 1;
 /// Where the dummy's tally lives in a [`MAX_CONTENDERS`]-wide array.
 const DUMMY_SLOT: usize = MAX_SEATS;
 
+// ---------------------------------------------------------------------------
+// V4 §3.2 — the view context the candidate features ride
+// ---------------------------------------------------------------------------
+
+/// The widest area vector any real board carries: `AreaId`'s own validated
+/// range is `0..18`, and 4P's staggered pyramid (6+5+4+3) fills it exactly.
+/// 2P and 3P carry 10 and 14, so the tail of every array below is unset rather
+/// than absent — the arrays are sized by the TYPE, not by the position.
+pub const MAX_AREAS: usize = 18;
+
+/// How many of each CARD BOARD a table can carry — an A board always, a B board
+/// at 3P (port) and 4P (lab). Index 0 is A, index 1 is B throughout.
+pub const CARD_BOARDS: usize = 2;
+
+/// The printed slot count of one lab board (`LabBoard::slots`), and of one port
+/// board: six each, two per surcharge step and two per port zone.
+pub const LAB_SLOTS: usize = 6;
+
+/// One lab slot's bit in [`ViewContext::lab_unowned`] — `board * LAB_SLOTS +
+/// slot`, and the EMPTY mask for a board or slot outside the printed range.
+///
+/// Twelve bits of a `u16`, so a seat's whole "which titles may I still take"
+/// answer is one register — the same fixed-array-and-bitset discipline §3.2's
+/// allocation contract asks of every view-context derivation.
+pub fn lab_bit(board: usize, slot: usize) -> u16 {
+    if board < CARD_BOARDS && slot < LAB_SLOTS {
+        1 << (board * LAB_SLOTS + slot)
+    } else {
+        0
+    }
+}
+
+/// A set of areas, one bit per `AreaId`.
+///
+/// Eighteen areas fit in a `u32` with fourteen bits spare, so every set the V4
+/// features build is ONE register: the reachable-set walk `S7` runs has a
+/// fixed-size bitset frontier rather than a queue, which is what keeps
+/// §0.3(a)'s `score` allocs==0 pin true with [`ScoreStructure::derive`] on its
+/// path (§3.2's allocation contract, in the words it uses: "counters / fixed
+/// arrays / bitsets").
+pub type AreaSet = u32;
+
+/// One area's bit, or the EMPTY set for an area outside the printed range.
+///
+/// `AreaId::unchecked` exists for deserialization and does not validate, so an
+/// out-of-range id is representable. It reads here as "in no set", which is the
+/// answer every consumer below wants — a phantom area holds no assistants, is
+/// adjacent to nothing, and is not on the board — rather than a shift overflow.
+pub fn area_bit(area: AreaId) -> AreaSet {
+    let i = usize::from(area.0);
+    if i < MAX_AREAS {
+        1 << i
+    } else {
+        0
+    }
+}
+
+/// The areas of a set, ascending by `AreaId`.
+///
+/// Ascending order is load-bearing where a card breaks ties by lowest `AreaId`
+/// (S4's best re-entry anchor), and allocation-free everywhere: the iterator is
+/// the `u32` itself, cleared one low bit at a time.
+pub fn areas_in(set: AreaSet) -> impl Iterator<Item = AreaId> {
+    let mut rest = set;
+    std::iter::from_fn(move || {
+        if rest == 0 {
+            return None;
+        }
+        let i = rest.trailing_zeros();
+        rest &= rest - 1;
+        Some(AreaId(i as u8))
+    })
+}
+
+/// A set of order cards, one bit per `OrderCardId`.
+///
+/// The printed manifest is thirty-six cards keyed by printed corner index
+/// 1..=36, so a `u64` holds the whole deck in ONE register with bit 0 spare —
+/// which is what lets O1's located set and its complement ride
+/// [`ScoreStructure::derive`] under §3.2's allocation contract, exactly as
+/// [`AreaSet`] does for the board.
+pub type OrderSet = u64;
+
+/// One order card's bit, or the EMPTY set for an id outside a `u64`'s reach.
+///
+/// `OrderCardId` is a bare newtype over `u8` with no validated range, so an
+/// id past 63 is representable by a hand-built registry. It reads here as "in
+/// no set" rather than as a shift overflow; the debug assertion is what says
+/// that answer is a defence and not a supported width.
+pub fn order_bit(card: OrderCardId) -> OrderSet {
+    debug_assert!(card.0 < 64, "an order id past 63 has no bit in an OrderSet");
+    if card.0 < 64 {
+        1u64 << card.0
+    } else {
+        0
+    }
+}
+
+/// A set of countries, one bit per flag — the five-wide axis O5's attainable
+/// scan and the country-set bonus both speak.
+pub type CountrySet = u8;
+
+/// One country's bit. Public because §7's audit cells read
+/// [`ViewContext::attainable`] against named flags, and a test that had to
+/// know the bit layout would be asserting the implementation rather than the
+/// set.
+pub fn country_bit(country: Country) -> CountrySet {
+    1u8 << country_index(country)
+}
+
+/// The countries of a set, in [`country_index`] order — [`country_bit`]'s
+/// inverse, and public for the same reason it is: O5 walks a mask back into
+/// flags to ask [`set_bonus`] what each one buys, so the two have to agree, and
+/// §7's audit cell pins the round trip directly rather than through a value the
+/// two happen to disagree about.
+///
+/// Order is not load-bearing — O5 takes a MAX over the set and the country-set
+/// loop is symmetric in the flags — and the iterator is the `u8` itself,
+/// cleared one low bit at a time, so nothing allocates.
+pub fn countries_in(set: CountrySet) -> impl Iterator<Item = Country> {
+    let mut rest = set;
+    std::iter::from_fn(move || {
+        if rest == 0 {
+            return None;
+        }
+        let i = rest.trailing_zeros() as usize;
+        rest &= rest - 1;
+        Some(COUNTRY_BY_INDEX[i])
+    })
+}
+
+/// [`country_index`]'s inverse, as a table so the two cannot drift: the index
+/// is an array position, and this is the array.
+const COUNTRY_BY_INDEX: [Country; 5] = [
+    Country::English,
+    Country::American,
+    Country::French,
+    Country::German,
+    Country::Dutch,
+];
+
+/// One order card's face in O1's HALF-VP units — `2·victory_points +
+/// 2·imported_goods + money` (§3.2's O1 card).
+///
+/// The doubling is what keeps the two amortized terminal identities integer:
+/// one imported good is one VP, and two Yen are one VP, so the card's value in
+/// half-VP is a sum of whole numbers rather than a rounded one. **Icon faces
+/// are deliberately absent** — they are O6's, in ICON units, and §3.1's owner
+/// ruling is that they are never VP-mapped.
+fn half_vp_face(card: &OrderCard) -> i64 {
+    i64::from(
+        2 * u32::from(card.rewards.victory_points)
+            + 2 * u32::from(card.rewards.imported_goods)
+            + u32::from(card.rewards.money),
+    )
+}
+
+/// The printed requirements of a seat's KNOWN held orders, SUMMED per good as
+/// `[copper, silk, tea, seafood]`.
+///
+/// **One derivation, two readers.** O2 caps this against the stock; X3 subtracts
+/// the stock FROM it. §2's partition table registers `{X3, S1, O2}` as one
+/// collinearity group precisely because they share this quantity, and two copies
+/// of the fold would be two places for it to drift — the O2 ≤ E2 identity and
+/// X3's residual would then be answering slightly different questions.
+///
+/// Masked slots contribute nothing: reading a requirement off a card the seat
+/// cannot see is exactly the honesty §3.1 excludes.
+fn summed_requirements(player: &VisiblePlayer, rules: &Rules) -> [u32; 4] {
+    let mut required = [0u32; 4];
+    for card in &player.hand {
+        let HandCard::Known(id) = card else { continue };
+        let Some(order) = rules.orders.get(*id) else { continue };
+        required[0] += u32::from(order.requirements.copper);
+        required[1] += u32::from(order.requirements.silk);
+        required[2] += u32::from(order.requirements.tea);
+        required[3] += u32::from(order.requirements.seafood);
+    }
+    required
+}
+
+/// Every order card the port displays, both boards. Allocation-free: an
+/// `Option<PortBoard>` iterates as at most one element.
+fn port_offers(view: &PlayerView) -> impl Iterator<Item = OrderCardId> + '_ {
+    view.port_state
+        .port_a
+        .slots
+        .iter()
+        .flatten()
+        .copied()
+        .chain(view.port_state.port_b.iter().flat_map(|b| b.slots.iter().flatten().copied()))
+}
+
+/// Every technology card the labs display, as `(board, slot, id)` — board 0 is
+/// the A board, board 1 the B board, and `slot` is the 0-based printed position.
+///
+/// **Positional, where the port's twin is flat, and the asymmetry is the
+/// rulebook's.** A port offer's zone comes from its slot and a lab slot's
+/// surcharge comes from its slot, so both would need positions; what differs is
+/// that the port term reads its display directly (X2 iterates
+/// `view.port_state` at the moment it needs the requirements) while the lab
+/// display is walked ONCE HERE, inside `derive`, for every reader at once.
+///
+/// That single walk is a measured constraint and not a preference. It is the
+/// dominant term in `ScoreStructure::derive`'s cost (see [`ViewContext`]'s
+/// MEASURED paragraph: ~31% of a debug `contestant_golden` wall), so O5's
+/// attainable scan and X1's slot pricing share it rather than each taking one.
+///
+/// Allocation-free: an `Option<LabBoard>` iterates as at most one element, and
+/// the two-element array of borrows never leaves the stack.
+fn open_lab_slots(view: &PlayerView) -> impl Iterator<Item = (usize, usize, TechCardId)> + '_ {
+    [Some(&view.lab_state.lab_a), view.lab_state.lab_b.as_ref()]
+        .into_iter()
+        .enumerate()
+        .flat_map(|(board, lab)| {
+            lab.into_iter().flat_map(move |lab| {
+                lab.slots
+                    .iter()
+                    .enumerate()
+                    .filter_map(move |(slot, card)| card.map(|id| (board, slot, id)))
+            })
+        })
+}
+
+/// The PUBLIC board and seat context V4 spec §3.2's view-context features read,
+/// derived once per [`ScoreStructure::derive`] and indexed by `AreaId` or by
+/// seat number.
+///
+/// # Why a context rather than seven private scans
+///
+/// §3.2 registers ten view-context features (S1–S7, X1–X3) plus two more
+/// derivations, and every one of them starts from the same three questions:
+/// what KIND of area is this, which areas hold this seat's assistants, and
+/// which edges may a President cross for free. Deriving those once per call
+/// makes each feature a fold over a `u32`; deriving them per feature would pay
+/// the board scan up to eighteen times a call and would give eighteen places
+/// for the Canal rule to be spelled differently.
+///
+/// # What is here, and what deliberately is not
+///
+/// This is CONTEXT, not values: the feature helpers compute from it on demand
+/// rather than being folded into `derive` themselves. That split is the
+/// milestone's own — the candidate features are probe-space until §7's step 8
+/// moves `Feature::ALL`, and `score` must not pay for a reachability walk it
+/// does not yet use.
+///
+/// **What `score` DOES pay, stated because the hot path is measured elsewhere.**
+/// The context is derived unconditionally, so every `score` call now walks the
+/// area map and the adjacency map once more — at most 18 areas and their ≤ 6
+/// neighbours each, plus one pass over every seat's occupied areas — and, since
+/// the order-card fields landed, one pass over the 36-card order registry plus a
+/// per-seat scan of the hand and the two lab displays. Fixed work, no allocation
+/// (§0.3(a)'s pin still binds), and bounded by the board and the manifest rather
+/// than by the search.
+///
+/// **MEASURED, because the second half of that is no longer a small constant.**
+/// `tests/contestant_golden.rs` — the score-heaviest binary in the repo — runs
+/// **18.2s without the order-card pass and 23.8s with it**, a ~31% debug wall
+/// (M4 mini, 2026-08-22, A/B on one machine minutes apart, the pass deleted and
+/// restored; both configurations pass all six golden pins, which is the same
+/// A/B saying the pass is behaviourally inert). The dominant term is the lab
+/// scan: per seat, ≤ 12 open slots × a registry lookup × the seat's owned-title
+/// list. The recorded disposition is UNCHANGED and deliberate — §3.2 puts these
+/// derivations in `derive`, the figure is a debug one, and nothing on the hot
+/// path reads them until §7's step 8. If it has to move, the answer is to make
+/// the derivation lazy, not to give each feature its own scan.
+///
+/// **THE SEAM IS CLOSED, and it cost nothing measurable.** Group X's lab and
+/// port context landed here as further fields, and X1 rides the SAME lab walk
+/// O5's attainable scan makes rather than taking one of its own: the walk now
+/// yields `(board, slot, id)` and each pass records the slot's all-in price and
+/// the seat's unowned-title bit beside the country it already collected. A/B on
+/// the same machine minutes apart, the same protocol as the figures above:
+/// **24.12s with the entry file, 24.70s with this one** — inside the run-to-run
+/// band, and nowhere near the doubling a second ownership scan would have cost.
+/// The remaining lab/port reads (X2's offers, X3's tiles) are per-CALL rather
+/// than per-derive by design, because they need the printed requirements and the
+/// helpers already hold `&Rules`.
+///
+/// # Honesty
+///
+/// Every input is public: the board layout and the station token are on the
+/// table, and assistant positions and President locations are face-up for every
+/// seat. Nothing here is masked information, and the type could not be handed
+/// any — its only constructor reads a [`PlayerView`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ViewContext {
+    /// Every area the layout carries. The bound on every other mask.
+    pub present: AreaSet,
+    /// Areas a pawn may stand on — [`Self::present`] minus the Canal. **A 2P
+    /// board carries no Canal tile at all**, so this equals `present` there.
+    pub placeable: AreaSet,
+    /// The production areas (Copper Mine, Silk Mill, Tea Plantation, Fishing
+    /// Ground) — S1's and X3's summation domain.
+    pub production: AreaSet,
+    /// The Church and the Customs House — S2's summation domain.
+    pub tracks: AreaSet,
+    /// The Bank — S5's.
+    pub bank: AreaSet,
+    /// The Employment Agency — S6's.
+    pub employment_agency: AreaSet,
+    /// FREE adjacency per area: the layout's `adjacency` MINUS its
+    /// `canal_crossings`.
+    ///
+    /// A REAL subtraction, not a defensive one. The board generator adds each
+    /// tolled crossing pair to BOTH maps (`board_gen.rs`'s
+    /// `derive_canal_crossings` doc: "The caller adds each returned pair to both
+    /// adjacency and `canal_crossings`"), so the raw adjacency map already
+    /// contains the paid transits. S4's ring and S7's step relation are both
+    /// declared over the FREE edges.
+    pub free_adjacency: [AreaSet; MAX_AREAS],
+    /// Per seat: the areas holding at least one of that seat's assistants —
+    /// the engine's own action-legality condition (§3.2's presence gate).
+    pub occupied: [AreaSet; MAX_SEATS],
+    /// Per seat: the singleton set of that seat's President's area, EMPTY when
+    /// the President is in hand. Read across seats: an opponent's President
+    /// bars S4's re-entry targets and S7's counted areas.
+    pub president: [AreaSet; MAX_SEATS],
+    /// Every order card THIS view can point at: the completed piles of all
+    /// seats, the Known entries of all hands, the face-up port offers, and the
+    /// viewer's own starting order.
+    ///
+    /// Its COMPLEMENT within the printed registry is O1's unseen pool — the
+    /// deck, the boxed setup discards, and every opponent's still-masked
+    /// starting order, which is exactly the population a masked slot is drawn
+    /// from. The starting-order term is the VIEWER's alone, as §3.2's O1 card
+    /// states it; it is redundant on every view `observe` can produce (a kept
+    /// card sits in the hand until it is fulfilled and in `completed_orders`
+    /// after), and the card names it for the live-tracking case where a seat's
+    /// own deal was recorded before its hand was reconciled. The audit cell
+    /// against `PlayerView::unseen_orders` is what keeps the redundancy true.
+    pub located_orders: OrderSet,
+    /// How many printed order cards [`Self::located_orders`] does NOT account
+    /// for — the unseen pool's size.
+    pub unseen_orders: u32,
+    /// The summed [`half_vp_face`] of that pool. With the count above it is
+    /// everything O1 needs from the pool, which is why the pool is two
+    /// accumulators rather than a list.
+    pub unseen_order_halfvp: i64,
+    /// Per seat: the countries that seat could still ADD an icon of — O5's
+    /// attainable set. The seat's KNOWN held orders, the face-up port offers,
+    /// and the open lab titles the seat does not already own by EFFECT
+    /// equality.
+    ///
+    /// Per SEAT rather than per table because the lab clause is: the rulebook
+    /// lets each player own one card of a name, so the same open slot is a
+    /// source for one seat and not for another.
+    pub attainable_countries: [CountrySet; MAX_SEATS],
+    /// Per LAB board (0 = the A board, 1 = the B board): the singleton set of
+    /// the area that board sits at, EMPTY where the board is not in play.
+    ///
+    /// A per-board mask rather than one merged set because X1's gates are
+    /// per-board: the presence and the power that price Lab B's slots are the
+    /// ones at Lab B's area, and a seat standing at Lab A alone may take nothing
+    /// from Lab B however cheap it looks.
+    pub lab_areas: [AreaSet; CARD_BOARDS],
+    /// Per PORT board, the same, for the same reason ([`Self::lab_areas`]).
+    pub port_areas: [AreaSet; CARD_BOARDS],
+    /// Per `(lab board, slot)`: the ALL-IN industry value an open slot costs —
+    /// the card's printed gear cost plus `lab_position_surcharge(slot)`.
+    ///
+    /// A property of the TABLE, not of a seat: what a slot costs is printed on
+    /// the board and on the card. What the SEAT brings to it — power, purse and
+    /// the fourth-card duty — is X1's arithmetic. Meaningful exactly where
+    /// [`Self::lab_unowned`] has a bit set; an empty slot and an absent board
+    /// both read 0 and are never consulted.
+    pub lab_industry_cost: [[u8; LAB_SLOTS]; CARD_BOARDS],
+    /// Per seat: the open lab slots whose TITLE that seat does not already own
+    /// by EFFECT equality — a bitset over `board * LAB_SLOTS + slot`
+    /// ([`lab_bit`]).
+    ///
+    /// The same test O5's attainable set applies, recorded rather than repeated:
+    /// both readers want "may this seat still take this card", the ownership
+    /// scan is the expensive half of `derive`'s lab pass, and running it twice
+    /// would double the measured cost for one bit of information.
+    pub lab_unowned: [u16; MAX_SEATS],
+}
+
+impl ViewContext {
+    /// An empty context — no board, no seats.
+    const EMPTY: Self = Self {
+        present: 0,
+        placeable: 0,
+        production: 0,
+        tracks: 0,
+        bank: 0,
+        employment_agency: 0,
+        free_adjacency: [0; MAX_AREAS],
+        occupied: [0; MAX_SEATS],
+        president: [0; MAX_SEATS],
+        located_orders: 0,
+        unseen_orders: 0,
+        unseen_order_halfvp: 0,
+        attainable_countries: [0; MAX_SEATS],
+        lab_areas: [0; CARD_BOARDS],
+        port_areas: [0; CARD_BOARDS],
+        lab_industry_cost: [[0; LAB_SLOTS]; CARD_BOARDS],
+        lab_unowned: [0; MAX_SEATS],
+    };
+
+    /// The areas `area` reaches across a FREE edge (see
+    /// [`free_adjacency`](Self::free_adjacency)); the empty set for an area
+    /// outside the printed range.
+    pub fn free_adjacent(&self, area: AreaId) -> AreaSet {
+        let i = usize::from(area.0);
+        if i < MAX_AREAS {
+            self.free_adjacency[i]
+        } else {
+            0
+        }
+    }
+
+    /// Areas holding some OTHER seat's President, from `seat`'s side. The
+    /// registered cross-seat read of §5.2's family 5(a).
+    pub fn opponent_presidents(&self, seat: usize) -> AreaSet {
+        let mut set = 0;
+        for (other, mask) in self.president.iter().enumerate() {
+            if other != seat {
+                set |= mask;
+            }
+        }
+        set
+    }
+
+    /// The seat's own-assistant areas, Canal excluded — S3's count, and the
+    /// domain S4 and S7 narrow further.
+    pub fn occupied_placeable(&self, seat: usize) -> AreaSet {
+        if seat >= MAX_SEATS {
+            return 0;
+        }
+        self.occupied[seat] & self.placeable
+    }
+
+    /// The `PlacePresident` target class MODULO the placement fee: the seat's
+    /// own-assistant, non-Canal, opponent-President-free areas
+    /// (`legal_moves.rs:275-282` gates exactly these three, then filters by
+    /// affordability, which §3.2's S4 card declares unmodeled).
+    ///
+    /// S4's in-hand branch maximizes over this set; S7's in-hand branch counts
+    /// it.
+    pub fn reentry_targets(&self, seat: usize) -> AreaSet {
+        self.occupied_placeable(seat) & !self.opponent_presidents(seat)
+    }
+
+    /// The FLOOR of the unseen pool's mean half-VP face — what O1 pays for an
+    /// opponent's masked `HiddenStartingOrder` slot, and 0 on an empty pool.
+    ///
+    /// **p-INDEPENDENT** (§5.2 family 5(a)'s registered cross-seat read): the
+    /// pool is a property of the table, so every masked slot at a view reads
+    /// this one number whichever seat's row is being valued.
+    ///
+    /// The floor rather than the mean because the feature axis is integer, and
+    /// the estimator's two registered biases pull opposite ways anyway: a kept
+    /// starting order is selection-biased UP out of two dealt cards, and the
+    /// boxed twin biases the pool DOWN.
+    pub fn unseen_order_floor(&self) -> i64 {
+        if self.unseen_orders == 0 {
+            return 0;
+        }
+        self.unseen_order_halfvp / i64::from(self.unseen_orders)
+    }
+
+    /// The countries `seat` could still add an icon of — O5's summation
+    /// domain; the empty set for a seat outside the printed range.
+    pub fn attainable(&self, seat: usize) -> CountrySet {
+        if seat >= MAX_SEATS {
+            return 0;
+        }
+        self.attainable_countries[seat]
+    }
+}
+
 /// Every quantity that is a property of the WHOLE table rather than of one
 /// seat, re-derived from the view ONCE and indexed by seat number.
 ///
@@ -1204,6 +2012,76 @@ pub struct ScoreStructure {
     pub remainder: [i64; MAX_SEATS],
     /// Summed progress toward the three Achievement cards in play.
     pub achievement: [i64; MAX_SEATS],
+    /// V4 §3.2's view context — the board and seat facts the candidate feature
+    /// helpers read. Derived unconditionally beside the rest; see
+    /// [`ViewContext`] for why it is context rather than values.
+    pub context: ViewContext,
+    /// The eighteen V4 candidate values, precomputed per seat — the step-8
+    /// move's storage. See [`CandidateValues`] for the derivation rule.
+    pub candidates: CandidateValues,
+}
+
+/// The eighteen V4 §3.2 candidate values, one per-seat row each — the same
+/// "derive once, answer per seat" storage the five bonus mirrors use, extended
+/// to the candidates when the step-8 move put them on `score`'s path.
+///
+/// **The helper METHODS below stay the single formula source**: [`ScoreStructure::derive`]
+/// fills these arrays by calling them once per real seat AFTER the board and
+/// order-card context passes complete (O1's pool is the complement of a set
+/// every seat contributes to, so no row can be valued before the pass ends),
+/// and [`ScoreStructure::value_of`] reads them back. Nothing else computes a
+/// candidate value, so the stored numbers and the probe's helper calls cannot
+/// disagree. Dummy seats get no row (a dummy holds no cards, stands no
+/// assistants, and [`seat_index`] excludes it), so a dummy query reads 0
+/// through `value_of`'s `map_or`, exactly as the mirrors answer.
+///
+/// Fixed arrays throughout — `score` is the allocation-free hot path and this
+/// struct rides every [`ScoreStructure::derive`]
+/// (`score_allocates_nothing_and_explain_allocates` holds it to that).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CandidateValues {
+    pub production_access: [i64; MAX_SEATS],
+    pub track_access: [i64; MAX_SEATS],
+    pub assistant_areas_distinct: [i64; MAX_SEATS],
+    pub president_local_access: [i64; MAX_SEATS],
+    pub bank_access: [i64; MAX_SEATS],
+    pub employment_agency_access: [i64; MAX_SEATS],
+    pub president_reachable_areas: [i64; MAX_SEATS],
+    pub money_stock: [i64; MAX_SEATS],
+    pub trade_goods_stock: [i64; MAX_SEATS],
+    pub building_tokens_ready: [i64; MAX_SEATS],
+    pub held_order_value: [i64; MAX_SEATS],
+    pub order_matched_goods: [i64; MAX_SEATS],
+    pub executable_orders: [i64; MAX_SEATS],
+    pub flag_icon_marginal: [i64; MAX_SEATS],
+    pub held_order_icons: [i64; MAX_SEATS],
+    pub lab_takeable: [i64; MAX_SEATS],
+    pub port_takeable: [i64; MAX_SEATS],
+    pub matched_production_access: [i64; MAX_SEATS],
+}
+
+impl CandidateValues {
+    /// All-zero rows — the pre-fill state and the empty-view answer.
+    pub const EMPTY: CandidateValues = CandidateValues {
+        production_access: [0; MAX_SEATS],
+        track_access: [0; MAX_SEATS],
+        assistant_areas_distinct: [0; MAX_SEATS],
+        president_local_access: [0; MAX_SEATS],
+        bank_access: [0; MAX_SEATS],
+        employment_agency_access: [0; MAX_SEATS],
+        president_reachable_areas: [0; MAX_SEATS],
+        money_stock: [0; MAX_SEATS],
+        trade_goods_stock: [0; MAX_SEATS],
+        building_tokens_ready: [0; MAX_SEATS],
+        held_order_value: [0; MAX_SEATS],
+        order_matched_goods: [0; MAX_SEATS],
+        executable_orders: [0; MAX_SEATS],
+        flag_icon_marginal: [0; MAX_SEATS],
+        held_order_icons: [0; MAX_SEATS],
+        lab_takeable: [0; MAX_SEATS],
+        port_takeable: [0; MAX_SEATS],
+        matched_production_access: [0; MAX_SEATS],
+    };
 }
 
 impl ScoreStructure {
@@ -1218,11 +2096,157 @@ impl ScoreStructure {
             customs: [0; MAX_SEATS],
             remainder: [0; MAX_SEATS],
             achievement: [0; MAX_SEATS],
+            context: ViewContext::EMPTY,
+            candidates: CandidateValues::EMPTY,
         };
+
+        // V4 §3.2's board context, BEFORE the seat loop: the per-seat masks
+        // below are narrowed to the areas the layout actually carries, so the
+        // board pass has to have run first.
+        for (area, config) in &view.board_layout.areas {
+            let bit = area_bit(*area);
+            s.context.present |= bit;
+            if config.area_type.allows_placement() {
+                s.context.placeable |= bit;
+            }
+            if config.area_type.is_production() {
+                s.context.production |= bit;
+            }
+            if matches!(config.area_type, AreaType::Church | AreaType::Customs) {
+                s.context.tracks |= bit;
+            }
+            if config.area_type == AreaType::Bank {
+                s.context.bank |= bit;
+            }
+            if config.area_type == AreaType::EmploymentAgency {
+                s.context.employment_agency |= bit;
+            }
+            // The two card boards, kept PER BOARD: X1 and X2 gate presence and
+            // power at the board they are pricing, so A and B may not merge.
+            match config.area_type {
+                AreaType::LaboratoryA => s.context.lab_areas[0] |= bit,
+                AreaType::LaboratoryB => s.context.lab_areas[1] |= bit,
+                AreaType::PortA => s.context.port_areas[0] |= bit,
+                AreaType::PortB => s.context.port_areas[1] |= bit,
+                _ => {}
+            }
+        }
+        for (area, neighbours) in &view.board_layout.adjacency {
+            let i = usize::from(area.0);
+            if i >= MAX_AREAS {
+                continue;
+            }
+            for n in neighbours {
+                s.context.free_adjacency[i] |= area_bit(*n);
+            }
+        }
+        // The tolled pairs come OUT of both directions — the layout carries
+        // them in `adjacency` too (see [`ViewContext::free_adjacency`]).
+        for (a, b) in &view.board_layout.canal_crossings {
+            let (i, j) = (usize::from(a.0), usize::from(b.0));
+            if i < MAX_AREAS {
+                s.context.free_adjacency[i] &= !area_bit(*b);
+            }
+            if j < MAX_AREAS {
+                s.context.free_adjacency[j] &= !area_bit(*a);
+            }
+        }
+
+        // V4 §3.2's ORDER-CARD context, also before the seat loop: O1's pool is
+        // the complement of a set every seat contributes to, so it has to be
+        // complete before any row can be valued against it. Port offers are
+        // walked once here because they feed BOTH the located set and the
+        // seat-independent half of O5's attainable sources.
+        let mut offered_countries: CountrySet = 0;
+        for id in port_offers(view) {
+            s.context.located_orders |= order_bit(id);
+            if let Some(card) = rules.orders.get(id) {
+                offered_countries |= country_bit(card.country);
+            }
+        }
+        for p in &view.players {
+            for card in &p.hand {
+                if let HandCard::Known(id) = card {
+                    s.context.located_orders |= order_bit(*id);
+                }
+            }
+            for id in &p.completed_orders {
+                s.context.located_orders |= order_bit(*id);
+            }
+            // The VIEWER's own starting order, and only the viewer's — §3.2's
+            // O1 card names that term precisely. `observe` fills the field for
+            // no other row, so the restriction changes nothing it can produce;
+            // what it rules out is a hand-built view locating an OPPONENT's
+            // card through a field that seat is not entitled to read.
+            if p.id == view.viewer {
+                if let Some(id) = p.starting_order {
+                    s.context.located_orders |= order_bit(id);
+                }
+            }
+        }
+        // ONE pass over the registry, testing membership rather than looking
+        // each located card up again: the accumulators are the pool's, so the
+        // complement is taken here and never materialized.
+        for card in rules.orders.iter() {
+            if s.context.located_orders & order_bit(card.id) == 0 {
+                s.context.unseen_orders += 1;
+                s.context.unseen_order_halfvp += half_vp_face(card);
+            }
+        }
 
         for player in &view.players {
             let Some(i) = seat_index(player) else { continue };
+            // O5's attainable sources: the offers every seat shares, this
+            // seat's KNOWN hand, and the open lab titles it does not own.
+            let mut attainable = offered_countries;
+            for card in &player.hand {
+                if let HandCard::Known(id) = card {
+                    if let Some(order) = rules.orders.get(*id) {
+                        attainable |= country_bit(order.country);
+                    }
+                }
+            }
+            // THE ONE LAB WALK. Two readers share it — O5's attainable set and
+            // X1's takeable count — because the ownership scan inside it is the
+            // dominant term in this whole derivation (see [`ViewContext`]'s
+            // MEASURED paragraph), and a second walk would pay it twice for the
+            // same bit of information.
+            for (board, slot, id) in open_lab_slots(view) {
+                let Some(tech) = rules.techs.get(id) else { continue };
+                // EFFECT equality IS the ownership-by-title test the engine
+                // applies (`actions/cards.rs:268-270`): effects are 1:1 with
+                // printed names, and ten of the twenty titles circulate as two
+                // physical copies precisely so two seats can each hold one.
+                let owns_title = player.technologies.iter().any(|owned| {
+                    rules.techs.get(*owned).is_some_and(|t| t.effect == tech.effect)
+                });
+                if !owns_title {
+                    attainable |= country_bit(tech.country);
+                    s.context.lab_unowned[i] |= lab_bit(board, slot);
+                }
+                // The all-in price is a fact about the TABLE, so every seat's
+                // pass writes the same number here. Written inside the walk
+                // rather than in a pass of its own, which is the point: the
+                // second pass this saves is over the same twelve slots.
+                if board < CARD_BOARDS && slot < LAB_SLOTS {
+                    s.context.lab_industry_cost[board][slot] =
+                        tech.industry_cost + lab_position_surcharge(slot);
+                }
+            }
+            s.context.attainable_countries[i] = attainable;
             s.seats = s.seats.max(i + 1);
+            for (area, count) in &player.assistants.on_board {
+                if *count >= 1 {
+                    s.context.occupied[i] |= area_bit(*area);
+                }
+            }
+            // Narrowed to the board: an `on_board` key the layout does not
+            // carry is a phantom, and one dropped here is dropped for every
+            // consumer at once.
+            s.context.occupied[i] &= s.context.present;
+            if let PresidentLocation::OnBoard(area) = player.president_location {
+                s.context.president[i] = area_bit(area);
+            }
             s.base_vp[i] = i64::from(player.victory_points);
             s.country[i] = country_set_bonus(player, rules);
             s.remainder[i] = remainder_bonus(player);
@@ -1245,11 +2269,44 @@ impl ScoreStructure {
             &mut s.customs,
         );
 
+        // The V4 candidate values, LAST (the step-8 fill): every context pass
+        // above is complete — O1's pool in particular is the complement of a
+        // set every seat contributes to — so the helper methods may now answer
+        // per seat. The helpers stay the single formula source; this loop only
+        // stores what they say. Computed into a local first because the
+        // helpers borrow `s` immutably.
+        let mut cv = CandidateValues::EMPTY;
+        for player in &view.players {
+            let Some(i) = seat_index(player) else {
+                continue;
+            };
+            cv.production_access[i] = s.production_access(view, player);
+            cv.track_access[i] = s.track_access(view, player);
+            cv.assistant_areas_distinct[i] = s.assistant_areas_distinct(player);
+            cv.president_local_access[i] = s.president_local_access(player);
+            cv.bank_access[i] = s.bank_access(view, player);
+            cv.employment_agency_access[i] = s.employment_agency_access(view, player);
+            cv.president_reachable_areas[i] = s.president_reachable_areas(player);
+            cv.money_stock[i] = s.money_stock(player);
+            cv.trade_goods_stock[i] = s.trade_goods_stock(player);
+            cv.building_tokens_ready[i] = s.building_tokens_ready(player);
+            cv.held_order_value[i] = s.held_order_value(player, rules);
+            cv.order_matched_goods[i] = s.order_matched_goods(player, rules);
+            cv.executable_orders[i] = s.executable_orders(player, rules);
+            cv.flag_icon_marginal[i] = s.flag_icon_marginal(player, rules);
+            cv.held_order_icons[i] = s.held_order_icons(player, rules);
+            cv.lab_takeable[i] = s.lab_takeable(view, player);
+            cv.port_takeable[i] = s.port_takeable(view, player, rules);
+            cv.matched_production_access[i] = s.matched_production_access(view, player, rules);
+        }
+        s.candidates = cv;
+
         s
     }
 
     /// One player's raw feature value. The five score-structure features index
-    /// this table; the other ten read a field of `player` directly.
+    /// this table, and the eighteen candidates read their precomputed
+    /// per-seat rows; the rest read a field of `player` directly.
     pub fn value_of(&self, player: &VisiblePlayer, feature: Feature) -> i64 {
         let seat = seat_index(player);
         let structured = |vector: &[i64; MAX_SEATS]| seat.map_or(0, |i| vector[i]);
@@ -1288,6 +2345,36 @@ impl ScoreStructure {
             // (`observe` masks a starting order's IDENTITY, never the slot), so
             // this term reads the same from every seat.
             Feature::HandSize => player.hand.len() as i64,
+
+            // The V4 candidates read their precomputed per-seat rows — filled
+            // by `derive`'s final pass from the helper methods, which remain
+            // the single formula source (see [`CandidateValues`]).
+            Feature::ProductionAccess => structured(&self.candidates.production_access),
+            Feature::TrackAccess => structured(&self.candidates.track_access),
+            Feature::AssistantAreasDistinct => {
+                structured(&self.candidates.assistant_areas_distinct)
+            }
+            Feature::PresidentLocalAccess => structured(&self.candidates.president_local_access),
+            Feature::BankAccess => structured(&self.candidates.bank_access),
+            Feature::EmploymentAgencyAccess => {
+                structured(&self.candidates.employment_agency_access)
+            }
+            Feature::PresidentReachableAreas => {
+                structured(&self.candidates.president_reachable_areas)
+            }
+            Feature::MoneyStock => structured(&self.candidates.money_stock),
+            Feature::TradeGoodsStock => structured(&self.candidates.trade_goods_stock),
+            Feature::BuildingTokensReady => structured(&self.candidates.building_tokens_ready),
+            Feature::HeldOrderValue => structured(&self.candidates.held_order_value),
+            Feature::OrderMatchedGoods => structured(&self.candidates.order_matched_goods),
+            Feature::ExecutableOrders => structured(&self.candidates.executable_orders),
+            Feature::FlagIconMarginal => structured(&self.candidates.flag_icon_marginal),
+            Feature::HeldOrderIcons => structured(&self.candidates.held_order_icons),
+            Feature::LabTakeable => structured(&self.candidates.lab_takeable),
+            Feature::PortTakeable => structured(&self.candidates.port_takeable),
+            Feature::MatchedProductionAccess => {
+                structured(&self.candidates.matched_production_access)
+            }
         }
     }
 
@@ -1330,21 +2417,13 @@ fn country_index(country: Country) -> usize {
     }
 }
 
-/// The country-set end bonus: 2/3/4/5 DISTINCT countries in one set score
-/// 2/4/8/12 VP, and a player forms as many sets as the icons allow.
+/// The country icons a seat's two FACE-UP piles carry, as a five-wide count
+/// array indexed by [`country_index`].
 ///
-/// Icon sources are the two face-up piles — completed orders and owned
-/// technologies. The matching is the greedy one the rules describe and the
-/// engine implements: repeatedly take one icon of every country still
-/// available, score that set's size, and stop when fewer than two countries
-/// remain. Greedy is not a heuristic here — taking one of each available
-/// country is simultaneously the largest set formable and the one that leaves
-/// the most behind, so the loop is order-independent and the array's country
-/// order cannot matter. Icons do NOT inflate a set: four English icons are one
-/// English country, four times over across four sets.
-///
-/// Termination: every iteration decrements at least two counters.
-fn country_set_bonus(player: &VisiblePlayer, rules: &Rules) -> i64 {
+/// Completed orders and owned technologies, and nothing else — hand cards are
+/// commitments, not icons. Public information on both counts, which is why the
+/// incumbent country bonus and O5's marginal can both be read from a view.
+fn country_icons(player: &VisiblePlayer, rules: &Rules) -> [u8; 5] {
     let mut icons = [0u8; 5];
     for id in &player.completed_orders {
         if let Some(card) = rules.orders.get(*id) {
@@ -1358,7 +2437,34 @@ fn country_set_bonus(player: &VisiblePlayer, rules: &Rules) -> i64 {
             icons[i] = icons[i].saturating_add(1);
         }
     }
+    icons
+}
 
+/// The country-set end bonus over an icon multiset: 2/3/4/5 DISTINCT countries
+/// in one set score 2/4/8/12 VP, and a player forms as many sets as the icons
+/// allow.
+///
+/// # ONE derivation (§13's refactor)
+///
+/// This is the CORE lifted out of [`country_set_bonus`], and it is `pub`
+/// because O5 `FlagIconMarginal` is defined as a STEP of this function —
+/// `set_bonus(icons + 1_c) − set_bonus(icons)`. A marginal computed against a
+/// second copy of the ladder would be a second place for the 2/4/8/12 curve to
+/// live; §3.2 says one, so there is one, and the incumbent feature and the
+/// candidate marginal are the same arithmetic by construction.
+///
+/// The matching is the greedy one the rules describe and the engine implements:
+/// repeatedly take one icon of every country still available, score that set's
+/// size, and stop when fewer than two countries remain. Greedy is not a
+/// heuristic here — taking one of each available country is simultaneously the
+/// largest set formable and the one that leaves the most behind, so the loop is
+/// order-independent and the array's country order cannot matter. Icons do NOT
+/// inflate a set: four English icons are one English country, four times over
+/// across four sets.
+///
+/// Termination: every iteration decrements at least two counters.
+pub fn set_bonus(icons: [u8; 5]) -> i64 {
+    let mut icons = icons;
     let mut total = 0i64;
     loop {
         let distinct = icons.iter().filter(|n| **n > 0).count();
@@ -1377,6 +2483,11 @@ fn country_set_bonus(player: &VisiblePlayer, rules: &Rules) -> i64 {
         }
     }
     total
+}
+
+/// The incumbent `CountryBonusNow`: [`set_bonus`] over the seat's own icons.
+fn country_set_bonus(player: &VisiblePlayer, rules: &Rules) -> i64 {
+    set_bonus(country_icons(player, rules))
 }
 
 /// The technology end bonus: 10 VP to the largest total industry value, 5 to
@@ -1689,6 +2800,836 @@ fn building_areas(view: &PlayerView, player: &VisiblePlayer, kind: AreaKind) -> 
         }
     }
     count
+}
+
+// ---------------------------------------------------------------------------
+// V4 §3.2 — shared arithmetic: the arriving-power reading
+// ---------------------------------------------------------------------------
+
+/// The power `player` would ARRIVE at `area` with — V4 spec §3.2's shared
+/// arithmetic, registered there as
+/// `min(5, own_assistants(a) + 1 + own_shophouse(a) + own_trading_house(a) +
+/// station(a))`.
+///
+/// Implemented ONCE, here, because §3.2 says once: S1, S2, S5, S6, X1, X2 and
+/// X3 all price an option at the power the seat could act with, and seven
+/// copies of one sum is seven things that can drift apart.
+///
+/// # A MIRROR, and it names what it mirrors
+///
+/// The engine's own power function (`power.rs:17-48`) is unreachable from this
+/// module by §2.1's rule, so every term is restated here in the shipped ORDER —
+/// president, assistants, shophouse, trading house, station token, then the cap
+/// applied LAST — over fields the view already carries. Restating a rule is only
+/// honest with a drift pin against its authority, and §7's audit contract part 4
+/// is that pin: `tests/eval_core.rs`'s
+/// `realizable_power_is_the_arriving_power_oracle_over_organic_play` compares
+/// this reading, at every seat and every area of organic 2P and 3P play, against
+/// the engine's own function evaluated on the same position with that seat's
+/// president CONSTRUCTED AT the queried area.
+///
+/// # The one clause that is NOT the engine's, and why
+///
+/// **The president term is UNCONDITIONAL.** The engine adds it where the
+/// president STANDS, because it is reporting the power of an action being taken
+/// now; this reports the power an option would be REALIZED at, and reaching an
+/// area is what a President move is for. The cap is applied after the sum, so
+/// adding the term before capping is the arriving reading rather than a capped
+/// reading plus one.
+///
+/// **Three DECLARED SHAPES ride that choice** (§3.2, verbatim in substance —
+/// they are declared, not defects, and the bias they carry is positive and
+/// known):
+///
+/// 1. These terms price an option PORTFOLIO. At most one area is activatable per
+///    turn — two with an unused mercenary, whose power carries NO president +1
+///    (`apply_move.rs:1226-1236`), so a mercenary activation is one power lower
+///    than priced here.
+/// 2. The president's CURRENT area is barred as next turn's destination by the
+///    no-return-to-start rule, and still receives the +1.
+/// 3. Reachability — the own-assistant chain and the fees along it — is not
+///    applied inside the features that call this.
+///
+/// # Presence is the CALLER's gate
+///
+/// This function answers "with what power", never "may the seat act there":
+/// `own_assistants >= 1` is the engine's action-legality condition and each
+/// calling feature applies it itself (§3.2's presence-gate sentence). A caller
+/// that skipped it would read a nonzero power at an area the seat has never
+/// touched, since the president term alone is 1.
+pub fn realizable_power(view: &PlayerView, player: &VisiblePlayer, area: AreaId) -> u8 {
+    // 1. The president — UNCONDITIONAL; see above.
+    let mut power: u8 = 1;
+    // 2. Assistants.
+    power += player.assistants.in_area(area);
+    // 3. Shophouse.
+    if player.shophouses.built.contains_key(&area) {
+        power += 1;
+    }
+    // 4. Trading house.
+    if player.trading_houses.built.contains(&area) {
+        power += 1;
+    }
+    // 5. The station token, which is +1 for whoever acts there.
+    if view.station_location == Some(area) {
+        power += 1;
+    }
+    // 6. Cap LAST, over the summed terms.
+    power.min(5)
+}
+
+/// WHICH good a production area exports, as its index in the
+/// `[copper, silk, tea, seafood]` vector every stock and requirement reader in
+/// this module uses — and `None` for every area that exports no trade good.
+///
+/// # Why this is here rather than imported
+///
+/// The engine has a reward DISPATCHER (`exported_reward`, §13) but no
+/// area-type-to-good accessor: the correspondence lives inside the apply path's
+/// four production arms, each of which names its own field. So X3 — which has to
+/// pair "how much would this tile pay" with "how much of THAT good is still
+/// needed" — restates the pairing, and the repo's standing answer to a
+/// restatement applies: pin it. `tests/eval_core.rs`'s
+/// `the_production_good_map_is_the_good_the_engines_own_action_pays` reads the
+/// map off ORGANIC play at 2/3/4P, requiring the named good to rise by at least
+/// the dispatcher's printed reward at every applied production action, with all
+/// four arms required to fire.
+///
+/// # The domain, and why it is an `Option`
+///
+/// The same shape, and the same reason, as the dispatcher's: the ten other area
+/// types are OUTSIDE this function rather than worth index-zero in it. The match
+/// is exhaustive with no `_` arm, so a new area type is a compile error here.
+pub fn production_good(area_type: AreaType) -> Option<usize> {
+    match area_type {
+        AreaType::CopperMine => Some(0),
+        AreaType::SilkMill => Some(1),
+        AreaType::TeaPlantation => Some(2),
+        AreaType::FishingGround => Some(3),
+        AreaType::Bank
+        | AreaType::PortA
+        | AreaType::PortB
+        | AreaType::LaboratoryA
+        | AreaType::LaboratoryB
+        | AreaType::EmploymentAgency
+        | AreaType::Chinatown
+        | AreaType::Church
+        | AreaType::Customs
+        | AreaType::Canal => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// V4 §3.2 — Group S: spatial and action affordance
+// ---------------------------------------------------------------------------
+
+/// The seven Group-S candidate features of V4 spec §3.2, one method per formula
+/// card.
+///
+/// # Shape, and why it is this one
+///
+/// Each is a per-seat `-> i64` over PUBLIC view state, riding
+/// [`ScoreStructure::derive`]'s [`ViewContext`] — the same "derive once, answer
+/// per seat" split [`ScoreStructure::value_of`] already uses for the five
+/// score-structure mirrors. What differs is that these are CONTEXT-fed rather
+/// than precomputed: they are probe-space until §7's step 8 moves
+/// `Feature::ALL`, and `score` must not pay for a reachability walk it does not
+/// yet use.
+///
+/// **The signatures are not uniform, deliberately.** Four of the seven take the
+/// view because they price an option at [`realizable_power`] (whose station term
+/// is a view field) or need an area's TYPE; the three that are pure topology
+/// take only the seat's row. A signature that named an input the feature does
+/// not read would weaken the §7 cleanliness claim it is there to support.
+///
+/// # The probe adapter's seam
+///
+/// §7's probe columns dispatch through a
+/// `(view, player, candidate label, rules) -> Option<i64>` function. That
+/// adapter belongs on the FIXTURE side, not here: the candidate labels are the
+/// fixture module's enum, and an evaluator that imported them would invert the
+/// dependency — the fixture harness reads `eval`, never the other way round.
+/// So the adapter derives a [`ScoreStructure`] and matches its label onto these
+/// methods, exactly as [`raw_value`] does for the incumbent sixteen.
+///
+/// # What Group S may read (§7's cross-group cleanliness assert)
+///
+/// Presence, power, position and the board. **No money, no imported goods, no
+/// order cards** — those are Group E's and Group O's, and only Group X reads
+/// both sides. `tests/eval_core.rs` scans these bodies for the forbidden fields.
+///
+/// # The declared shapes ride here
+///
+/// [`realizable_power`]'s three declared shapes (portfolio pricing, the barred
+/// current area keeping its +1, unapplied reachability) are inherited by every
+/// caller below, and S2 and S6 each add one of their own — both registered in
+/// §3.2 as DECLARED SHAPES with a known positive bias, both pinned as
+/// declarations in the audit cells rather than repaired.
+impl ScoreStructure {
+    /// **S1 `ProductionAccess`** — Σ over production areas the seat occupies of
+    /// the engine's EXPORTED reward at [`realizable_power`].
+    ///
+    /// The reward comes from the §13 dispatcher (`actions/production.rs:37`),
+    /// never from a table restated here: one job, one object. Units are
+    /// goods per activation.
+    ///
+    /// Sparsity is real and is not a gate failure: a Copper Mine at power 2
+    /// exports NOTHING, so a satisfied presence gate can still sum to zero
+    /// (§3.2's cited fact; the dispatcher returns `Some(0)` there precisely so
+    /// this reads as a price rather than as "not my area").
+    pub fn production_access(&self, view: &PlayerView, player: &VisiblePlayer) -> i64 {
+        let Some(seat) = seat_index(player) else { return 0 };
+        let mut total = 0i64;
+        for area in areas_in(self.context.occupied[seat] & self.context.production) {
+            let Some(config) = view.board_layout.areas.get(&area) else { continue };
+            let reward = exported_reward(config.area_type, realizable_power(view, player, area));
+            debug_assert!(
+                reward.is_some(),
+                "the production mask admitted an area the dispatcher does not price"
+            );
+            total += i64::from(reward.unwrap_or(0));
+        }
+        total
+    }
+
+    /// **S2 `TrackAccess`** — Σ over the Church and the Customs House, where the
+    /// seat has a presence, of [`realizable_power`]. Units are power-steps.
+    ///
+    /// **An ACCESS potential, deliberately NOT a legality mirror** (§3.2's
+    /// OPTIMISTIC-PROXY DECLARATION). This reads > 0 at states where the track
+    /// action is Skip-only — Church below total faith 4, Customs at zero
+    /// imports, and full or blocked eligible spaces (the 2P dummy occupies
+    /// faith-7 and space-4 all game). The positive bias is declared and known;
+    /// `tests/eval_core.rs` pins the declaration against the engine's own
+    /// eligibility functions so that "fixing" it into a legality mirror is a
+    /// spec change rather than a tidy-up.
+    pub fn track_access(&self, view: &PlayerView, player: &VisiblePlayer) -> i64 {
+        let Some(seat) = seat_index(player) else { return 0 };
+        areas_in(self.context.occupied[seat] & self.context.tracks)
+            .map(|area| i64::from(realizable_power(view, player, area)))
+            .sum()
+    }
+
+    /// **S3 `AssistantAreasDistinct`** — the count of non-Canal areas holding at
+    /// least one of the seat's assistants. Units are areas.
+    ///
+    /// The SPREAD axis, in tension with the building legs by construction: a
+    /// build needs power ≥ 4 at ONE area, which is a stacking requirement. A
+    /// count has no cliff — every Recovery of a sole-pawn area, and every
+    /// D6 track placement that empties one, is worth exactly one step.
+    pub fn assistant_areas_distinct(&self, player: &VisiblePlayer) -> i64 {
+        let Some(seat) = seat_index(player) else { return 0 };
+        i64::from(self.context.occupied_placeable(seat).count_ones())
+    }
+
+    /// **S4 `PresidentLocalAccess`** — the assistants within one FREE step of the
+    /// President's centre.
+    ///
+    /// Two branches, and they answer different questions:
+    ///
+    /// * `OnBoard(a)`: the ANCHOR `own_assistants(a)` plus the RING — the same
+    ///   sum over `a`'s free-adjacent areas (free = the layout's adjacency MINUS
+    ///   its tolled canal crossings).
+    /// * `InHand`: the MAXIMUM of that same local sum over the seat's re-entry
+    ///   targets ([`ViewContext::reentry_targets`] — the `PlacePresident` class
+    ///   modulo the placement fee, which §3.2 declares unmodeled), and 0 when
+    ///   the seat has no board assistants. Ties go to the lowest `AreaId`; the
+    ///   ascending walk is what implements that, and the returned VALUE is
+    ///   tie-invariant either way.
+    ///
+    /// **DECLARED ASYMMETRY** (§3.2): at the seat's own hand-off the anchor term
+    /// is structurally 0 — Recovery drains the acted area, Telephone excepted —
+    /// so the RING carries the hand-off signal, and the anchor is live at the
+    /// mid-turn states the beam orders (`lookahead.rs:1230`).
+    pub fn president_local_access(&self, player: &VisiblePlayer) -> i64 {
+        let Some(seat) = seat_index(player) else { return 0 };
+        match player.president_location {
+            PresidentLocation::OnBoard(area) => self.local_assistant_mass(player, area),
+            PresidentLocation::InHand => {
+                let mut best = 0i64;
+                for area in areas_in(self.context.reentry_targets(seat)) {
+                    let mass = self.local_assistant_mass(player, area);
+                    // STRICT: the first (lowest-`AreaId`) maximiser wins the tie.
+                    if mass > best {
+                        best = mass;
+                    }
+                }
+                best
+            }
+        }
+    }
+
+    /// S4's local sum at one centre: the anchor plus its free-adjacent ring.
+    ///
+    /// The ring is NOT filtered to placeable areas and does not need to be — no
+    /// pawn may ever stand on the Canal, so its term is structurally zero.
+    fn local_assistant_mass(&self, player: &VisiblePlayer, area: AreaId) -> i64 {
+        let anchor = i64::from(player.assistants.in_area(area));
+        let ring: i64 = areas_in(self.context.free_adjacent(area))
+            .map(|n| i64::from(player.assistants.in_area(n)))
+            .sum();
+        anchor + ring
+    }
+
+    /// **S5 `BankAccess`** — the engine's `bank_reward` at [`realizable_power`],
+    /// gated on a presence at the Bank. Units are yen per activation (manual
+    /// p.12: 1..5).
+    pub fn bank_access(&self, view: &PlayerView, player: &VisiblePlayer) -> i64 {
+        let Some(seat) = seat_index(player) else { return 0 };
+        areas_in(self.context.occupied[seat] & self.context.bank)
+            .map(|area| i64::from(bank_reward(realizable_power(view, player, area))))
+            .sum()
+    }
+
+    /// **S6 `EmploymentAgencyAccess`** — the engine's token allowance at
+    /// [`realizable_power`] (0/0/1/2/3/4 per power, manual p.14), capped by what
+    /// the seat's warehouse actually holds, gated on a presence at the agency.
+    /// Units are retrievable tokens.
+    ///
+    /// **The warehouse minimum repairs a structural zero** (§3.2): the warehouse
+    /// is one-way and only drains, so an ungated allowance over-credits
+    /// monotonically as the game runs.
+    ///
+    /// **OPTIMISTIC-PROXY DECLARATION**: the minimum gates SUPPLY, not
+    /// AFFORDABILITY. A warehouse holding only trading-house tokens against an
+    /// empty purse is Skip-only while this reads > 0 — token costs (assistants
+    /// free, shophouses 2¥, trading houses 4/5/6/7) belong to the money term, and
+    /// the affordability conditional is declared family-10-class. Pinned as a
+    /// declaration in `tests/eval_core.rs`, not repaired.
+    pub fn employment_agency_access(&self, view: &PlayerView, player: &VisiblePlayer) -> i64 {
+        let Some(seat) = seat_index(player) else { return 0 };
+        let warehouse = i64::from(player.assistants.in_warehouse)
+            + i64::from(player.shophouses.in_warehouse)
+            + i64::from(player.trading_houses.in_warehouse);
+        areas_in(self.context.occupied[seat] & self.context.employment_agency)
+            .map(|area| {
+                let allowed =
+                    employment_agency_tokens_allowed(realizable_power(view, player, area));
+                i64::from(allowed).min(warehouse)
+            })
+            .sum()
+    }
+
+    /// **S7 `PresidentReachableAreas`** — how many areas are actionable in
+    /// principle from where the President is. Units are areas.
+    ///
+    /// The count of [`Self::president_reachable_set`]; see that method for the
+    /// walk, the two exclusions and the declared narrowings.
+    pub fn president_reachable_areas(&self, player: &VisiblePlayer) -> i64 {
+        i64::from(self.president_reachable_set(player).count_ones())
+    }
+
+    /// S7's counted SET, exposed because §7's audit contract compares it against
+    /// the engine's own possible-action-area set rather than only its size.
+    ///
+    /// # On board: a walk, then two exclusions
+    ///
+    /// From the President's area, step along FREE edges ONTO areas holding at
+    /// least one of the seat's assistants — the shape of the engine's own hop
+    /// predicate (`can_step_onto` movement.rs:256-260), which has NO President
+    /// clause. **Transit through an opponent's President is therefore
+    /// UNRESTRICTED**; what an opponent's President blocks is STOPPING
+    /// (`is_possible_action_area_full` movement.rs:92-101, waivable by Postal
+    /// System), so those areas are walked through and then excluded from the
+    /// count, along with the Canal.
+    ///
+    /// The President's OWN area is excluded at the step gate, which does double
+    /// duty: it is `can_step_onto`'s `to != start` canonicalization, and it is
+    /// §3.2's "MINUS the president's current area" — the no-return-to-start rule
+    /// bars acting there next turn (`apply_move.rs:241-250`), and at a hand-off
+    /// state the barred start area IS the current area.
+    ///
+    /// # In hand: no walk at all
+    ///
+    /// `PlacePresident` reaches every own-assistant, non-Canal,
+    /// opponent-President-free area with no chain (`legal_moves.rs:275-282`), so
+    /// the in-hand reading is the DIRECT [`ViewContext::reentry_targets`] set —
+    /// no BFS, no anchor, and 0 with no board assistants.
+    ///
+    /// # Declared narrowings
+    ///
+    /// Tram, Postal System and mercenary bypasses, and every fee — placement,
+    /// pass-through and canal tolls — are unmodeled (§3.1's scope).
+    pub fn president_reachable_set(&self, player: &VisiblePlayer) -> AreaSet {
+        let Some(seat) = seat_index(player) else { return 0 };
+        match player.president_location {
+            PresidentLocation::InHand => self.context.reentry_targets(seat),
+            PresidentLocation::OnBoard(start) => {
+                // The one bitset the walk needs: areas the seat occupies, minus
+                // the President's own area (both exclusions, one mask), and
+                // placeable — the Canal is not a hop the engine's own predicate
+                // allows either (`can_step_onto`'s `allows_placement` test).
+                // Card-literal conformance is unchanged: no view the rules can
+                // reach stands a pawn on the Canal, so this narrows nothing in
+                // play. It is here so a CONSTRUCTED view cannot transit it.
+                let steppable =
+                    self.context.occupied[seat] & self.context.placeable & !area_bit(start);
+                let mut reached: AreaSet = 0;
+                let mut frontier: AreaSet = area_bit(start);
+                while frontier != 0 {
+                    let here = frontier.trailing_zeros() as usize;
+                    frontier &= frontier - 1;
+                    let next = self.context.free_adjacency[here] & steppable & !reached;
+                    reached |= next;
+                    frontier |= next;
+                }
+                reached & self.context.placeable & !self.context.opponent_presidents(seat)
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// V4 §3.2 — Group E: economic stocks and the order pipeline
+// ---------------------------------------------------------------------------
+
+/// The eight Group-E candidate features of V4 spec §3.2 — the three
+/// E-resource cards (E1, E2, E3) and the five E-order cards (O1, O2, O3, O5,
+/// O6) — one method per formula card.
+///
+/// # Shape, and how it differs from Group S's
+///
+/// Each is a per-seat `-> i64` over PUBLIC row state, in the same
+/// "derive once, answer per seat" split. **Not one of them takes a
+/// `&PlayerView`**: this group needs no board, no station token and no track.
+/// What the five order cards take instead is `&Rules` — the printed order and
+/// technology registries, which are on the table in the most literal sense.
+/// Three take neither, being folds of the row's own integers.
+///
+/// The signature is the honesty claim, and §7's audit cell reads it off the
+/// declaration rather than inferring it: a helper here can see a seat's money,
+/// its goods, its face-up piles and the Known entries of its hand, and it can
+/// see the manifest. It cannot see a masked card, because no argument carries
+/// one.
+///
+/// # The two context terms
+///
+/// O1 and O5 ride [`ScoreStructure::derive`]'s order-card pass rather than
+/// scanning for themselves, for the reason the board masks do: O1's pool is a
+/// complement over the WHOLE table (every seat's piles and hands, and the port
+/// display), and O5's attainable set folds the same offers for every seat. One
+/// pass, two accumulators and a five-bit mask per seat; see [`ViewContext`].
+///
+/// # What Group E may read (§7's cross-group cleanliness assert)
+///
+/// Money, goods, tokens in hand, and the order pipeline. **No power, no
+/// presence, no position, no board** — those are Group S's, and §3.2 registers
+/// the interaction cell (Group X) as the ONLY group that reads both sides.
+/// `tests/eval_core.rs` scans these bodies for the forbidden fields.
+///
+/// # The registered epistemic asymmetry
+///
+/// O1 is the one card here that prices something it cannot see. A seat's own
+/// cards are valued at their true face; an opponent's masked slot is valued at
+/// the unseen pool's floor. That is an ASYMMETRY, not an inconsistency, and it
+/// is exactly what makes O1 a function of the view: substituting the hidden
+/// card changes the holder's own reading and leaves every other seat's
+/// untouched.
+impl ScoreStructure {
+    /// **E1 `MoneyStock`** — the purse, linear. Units are Yen.
+    ///
+    /// Every spend class (placement and movement fees, the church 2¥ leg, lab
+    /// supplements at 2¥ per industry value, Employment-Agency token costs, the
+    /// port's second card) debits this at the instant it is paid; nonlinear
+    /// shapes — deficit pricing, timing — are a deferred layer, not a term.
+    pub fn money_stock(&self, player: &VisiblePlayer) -> i64 {
+        i64::from(player.money)
+    }
+
+    /// **E2 `TradeGoodsStock`** — `copper + silk + tea + seafood`, linear.
+    /// Units are goods.
+    ///
+    /// Boundary: a fulfillment consumes exactly the printed requirements before
+    /// the rewards land, and a church donation consumes singles. The
+    /// after ≻ before ordering at those instants is a weight-side question
+    /// (§5.2 families 6(a)/6(d)), not this term's.
+    pub fn trade_goods_stock(&self, player: &VisiblePlayer) -> i64 {
+        i64::from(player.copper)
+            + i64::from(player.silk)
+            + i64::from(player.tea)
+            + i64::from(player.seafood)
+    }
+
+    /// **E3 `BuildingTokensReady`** — shophouse plus trading-house tokens IN
+    /// HAND: retrieved from the warehouse and deployment-ready. Units are
+    /// tokens.
+    ///
+    /// **The partition is the whole point** (§3.2): warehouse stock is S6's
+    /// visible supply, hand tokens are E3's, and BUILT tokens are the
+    /// incumbents' (`ShophousesBuilt` / `TradingHousesBuilt`). Without this
+    /// middle term an Employment-Agency retrieval would trade S6-visible supply
+    /// for nothing at all until the build lands — a boundary collapse, which is
+    /// why the term is owner-ruled IN. The take that creates a token pays its
+    /// printed cost, and E1 feels that.
+    pub fn building_tokens_ready(&self, player: &VisiblePlayer) -> i64 {
+        i64::from(player.shophouses.in_hand) + i64::from(player.trading_houses.in_hand)
+    }
+
+    /// **O1 `HeldOrderValue`** — the seat's hand in HALF-VP units: a Known card
+    /// at `2·victory_points + 2·imported_goods + money`, an opponent's masked
+    /// `HiddenStartingOrder` slot at the unseen pool's floor.
+    ///
+    /// **Icon faces are NOT priced here** — they are O6's, in ICON units, never
+    /// VP-mapped (§3.1's owner ruling). What O1 carries is the resource-face
+    /// residue: the printed VP star and the two amortized terminal identities.
+    ///
+    /// The hand is iterated WITHOUT assuming its length. The rules cap it at
+    /// three; a live-tracking view can carry FOUR, because the masked slot is
+    /// SYNTHESIZED ahead of the publicly-witnessed Port takes rather than
+    /// replacing one of them.
+    ///
+    /// Partition: the commitment burden an unfulfilled order carries stays with
+    /// the incumbent `HandSize`, which is negative and growing. O1 prices what
+    /// the cards are worth; `HandSize` prices what holding them costs.
+    pub fn held_order_value(&self, player: &VisiblePlayer, rules: &Rules) -> i64 {
+        let floor = self.context.unseen_order_floor();
+        player
+            .hand
+            .iter()
+            .map(|card| match card {
+                HandCard::Known(id) => rules.orders.get(*id).map_or(0, half_vp_face),
+                HandCard::HiddenStartingOrder => floor,
+            })
+            .sum()
+    }
+
+    /// **O2 `OrderMatchedGoods`** — `Σ_g min(stock_g, total_req_g)` over the
+    /// seat's KNOWN held orders. Units are matched goods.
+    ///
+    /// **The cap is per good and SUMMED across the hand**, which is what makes
+    /// `O2 ≤ E2` an identity rather than a coincidence: each good contributes at
+    /// most its own stock. A per-CARD cap would double-count a good two cards
+    /// both need, and would break the bound.
+    ///
+    /// Masked slots contribute 0 — reading a requirement off a card the seat
+    /// cannot see is exactly the honesty §3.1 excludes. Boundary: a fulfillment
+    /// retires the card's contribution (§5.2 family 6(a)).
+    pub fn order_matched_goods(&self, player: &VisiblePlayer, rules: &Rules) -> i64 {
+        let required = summed_requirements(player, rules);
+        let stock = [player.copper, player.silk, player.tea, player.seafood];
+        stock.iter().zip(required.iter()).map(|(s, r)| i64::from(*s.min(r))).sum()
+    }
+
+    /// **O3 `ExecutableOrders`** — how many KNOWN held orders the seat could
+    /// fulfil right now, each judged INDEPENDENTLY against the full stock.
+    ///
+    /// Independent rather than jointly allocated because the rules are: both
+    /// Additional Action phases can fulfil, uncapped, and this is a static read
+    /// of executability rather than of a sequence. Sequencing is the search's.
+    ///
+    /// **Imports and money never substitute for a trade good.** Masked slots
+    /// are not counted.
+    pub fn executable_orders(&self, player: &VisiblePlayer, rules: &Rules) -> i64 {
+        player
+            .hand
+            .iter()
+            .filter(|card| {
+                let HandCard::Known(id) = card else { return false };
+                let Some(order) = rules.orders.get(*id) else { return false };
+                let r = order.requirements;
+                player.copper >= u32::from(r.copper)
+                    && player.silk >= u32::from(r.silk)
+                    && player.tea >= u32::from(r.tea)
+                    && player.seafood >= u32::from(r.seafood)
+            })
+            .count() as i64
+    }
+
+    /// **O5 `FlagIconMarginal`** — the best [`set_bonus`] STEP the seat could
+    /// still buy: the maximum over its ATTAINABLE countries
+    /// ([`ViewContext::attainable`]) of `set_bonus(icons + 1_c) −
+    /// set_bonus(icons)`, where `icons` is the multiset over
+    /// `completed_orders + technologies`. Units are VP.
+    ///
+    /// **0 on an empty attainable set** — a real zero, and the reason the
+    /// computation is written over an `Option` rather than seeded at 0: the
+    /// card says "max over the set, 0 when the set is empty", and those are two
+    /// statements. (They happen to coincide, because adding an icon can never
+    /// lower the bonus; writing the maximum exactly means a future curve where
+    /// they did not coincide would be read correctly rather than clamped.)
+    ///
+    /// **No power or affordability gating** — that is Group X's half of the
+    /// attribution split. This prices the STEP; whether the seat can reach and
+    /// pay for the card is X1's and X2's question.
+    ///
+    /// Boundary: realizing the icon moves the step into `CountryBonusNow`, and
+    /// the marginal then collapses — the 2/4/8/12 curve's own curvature, not the
+    /// source disappearing.
+    pub fn flag_icon_marginal(&self, player: &VisiblePlayer, rules: &Rules) -> i64 {
+        let Some(seat) = seat_index(player) else { return 0 };
+        let icons = country_icons(player, rules);
+        let base = set_bonus(icons);
+        let mut best: Option<i64> = None;
+        for country in countries_in(self.context.attainable(seat)) {
+            let mut with = icons;
+            let i = country_index(country);
+            with[i] = with[i].saturating_add(1);
+            let step = set_bonus(with) - base;
+            best = Some(best.map_or(step, |b: i64| b.max(step)));
+        }
+        best.unwrap_or(0)
+    }
+
+    /// **O6 `HeldOrderIcons`** — the movement and warehouse faces printed on the
+    /// seat's KNOWN held orders, summed. Units are ICONS.
+    ///
+    /// **Never converted to VP**, and that is the owner's ruling with its
+    /// grounds (§3.1): an icon's true value is action COMPRESSION — a
+    /// fulfillment that also moves assistants or pulls tokens out of the
+    /// warehouse can save a whole turn — and compression is sequencing value the
+    /// §3 contract assigns to SEARCH. Within the search's horizon the icons
+    /// price themselves exactly, because a fulfillment queues them as real
+    /// choice-moves. This leaf term prices only the HELD OPTION, in its own
+    /// unit, and the fit sets the tempo weight.
+    ///
+    /// The manifest carries two movement cards and five warehouse cards of
+    /// thirty-six; the any-good face is structurally unreachable from an order.
+    /// Masked slots show no face and contribute 0. Boundary: a fulfillment
+    /// retires the count at the instant the icons' real value is realized
+    /// through the choice queue — no double count, since the realized effects
+    /// land in incumbent-priced stocks and positions.
+    pub fn held_order_icons(&self, player: &VisiblePlayer, rules: &Rules) -> i64 {
+        player
+            .hand
+            .iter()
+            .map(|card| match card {
+                HandCard::Known(id) => rules.orders.get(*id).map_or(0, |order| {
+                    i64::from(
+                        u32::from(order.rewards.movement)
+                            + u32::from(order.rewards.warehouse_tokens),
+                    )
+                }),
+                HandCard::HiddenStartingOrder => 0,
+            })
+            .sum()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// V4 §3.2 — Group X: joint availability, the interaction cell's three terms
+// ---------------------------------------------------------------------------
+
+/// The three Group-X candidate features of V4 spec §3.2 — one method per formula
+/// card, and the ONLY group that reads both sides of §2's partition.
+///
+/// # What makes these the interaction cell's, and not Group S's or Group E's
+///
+/// Every card here is a CONJUNCTION the rulebook itself writes. A lab slot is
+/// takeable when the seat can reach it (presence, power) AND pay the industry it
+/// still owes (money, imports). A port offer is worth taking when the seat can
+/// reach the zone it sits in AND holds goods the card wants and room in hand for
+/// it. A production tile is worth activating for goods a held order still NEEDS.
+/// Split across two groups, each half prices an option that may not exist:
+/// §3.2's attribution split gives access to Group S, resources to Group E, and
+/// the CROSS to these three.
+///
+/// So the cleanliness assert §7 closes with — "no S helper reads money/imports/
+/// orders; no E helper reads power/presence; only X reads both" — is a statement
+/// about these bodies, and `tests/eval_core.rs` scans them for BOTH needle lists
+/// rather than for neither.
+///
+/// # What they ride, and what they do not
+///
+/// X1 reads the lab context [`ScoreStructure::derive`] fills on its one lab walk
+/// and needs no registry of its own. X2 and X3 take `&Rules` because they read
+/// PRINTED REQUIREMENTS — of a face-up port offer and of a card in the seat's own
+/// hand — which are on the table in the most literal sense. None takes engine
+/// state, and none can be handed a masked card: X3 and X2 see `HandCard::Known`
+/// entries and hand LENGTH, both of which `observe` leaves public.
+///
+/// # The declared shapes ride here too
+///
+/// [`realizable_power`]'s three (portfolio pricing, the barred current area
+/// keeping its +1, unapplied reachability) are inherited by all three, and each
+/// card adds its own — X1's third-purchase duty raising every later cost, X2's
+/// post-take refill discontinuity, X3's need closing from both ends. All are
+/// §3.2 DECLARED SHAPES, pinned as declarations rather than repaired.
+impl ScoreStructure {
+    /// **X1 `LabTakeable`** — how many open lab slots the seat could take ALL IN
+    /// right now. Units are takeable cards.
+    ///
+    /// Per lab board the seat has a presence at:
+    ///
+    /// ```text
+    /// deficit = max(0, gear_cost + lab_position_surcharge(slot) − realizable_power)
+    /// duty    = 1 if the seat already owns 3 technologies, else 0
+    /// takeable ⟺ title unowned AND floor(money/2) + imports ≥ deficit + duty
+    /// ```
+    ///
+    /// # The pooled comparison is EXACT, and that is the whole card
+    ///
+    /// Both legs price at the same rate — two Yen or one imported good buys one
+    /// point of industry, and the fourth-card duty costs two Yen or one imported
+    /// good — so a single budget covers both and the halving is a FLOOR because
+    /// an odd Yen buys nothing (`validate_lab_action`'s exact-cover rule refuses
+    /// it outright).
+    ///
+    /// **POWER NEVER PAYS THE DUTY.** Excess industry value is lost, so a seat
+    /// whose power over-covers every printed cost still takes NOTHING once it
+    /// owns three technologies and holds no money and no imports: deficit 0,
+    /// duty 1, budget 0. That is the six-lens round's counterexample, it is
+    /// `validate_lab_action`'s own refusal, and it is the negative cell §7 names
+    /// by hand.
+    ///
+    /// Boundary: the purchase realizes the card into `TechBonusNow` /
+    /// `CountryBonusNow` and O5's recompute, and the presence drains at
+    /// Recovery — so this reads 0 at the following hand-off (family 11(d)). The
+    /// third purchase also raises every future cost by the duty, which is
+    /// declared rather than smoothed.
+    pub fn lab_takeable(&self, view: &PlayerView, player: &VisiblePlayer) -> i64 {
+        let Some(seat) = seat_index(player) else { return 0 };
+        // The FLOOR is the rule, not a rounding convenience: an odd Yen is not
+        // half a point of industry, it is nothing.
+        let budget = i64::from(player.money / 2) + i64::from(player.imported_goods);
+        let duty = i64::from(player.technologies.len() >= 3);
+        let mut takeable = 0i64;
+        for board in 0..CARD_BOARDS {
+            for area in areas_in(self.context.occupied[seat] & self.context.lab_areas[board]) {
+                // Already capped at 5 by `realizable_power`, which is the
+                // `min(5, ...)` the card writes around this term.
+                let power = i64::from(realizable_power(view, player, area));
+                for slot in 0..LAB_SLOTS {
+                    if self.context.lab_unowned[seat] & lab_bit(board, slot) == 0 {
+                        continue;
+                    }
+                    let cost = i64::from(self.context.lab_industry_cost[board][slot]);
+                    let deficit = (cost - power).max(0);
+                    if deficit + duty <= budget {
+                        takeable += 1;
+                    }
+                }
+            }
+        }
+        takeable
+    }
+
+    /// **X2 `PortTakeable`** — the goods the seat's face-up, REACHABLE port
+    /// offers would match, each offer capped by its own printed requirement.
+    /// Units are matched goods toward takeable orders.
+    ///
+    /// # Three gates, and the order they are asked in
+    ///
+    /// The hand cap first, because it is a property of the SEAT and collapses
+    /// everything: the manual refuses a take into a hand already holding three
+    /// orders, so the term is 0 — not one offer's worth, all of it — and stays 0
+    /// until a fulfillment. A PERSISTENT collapse, declared; §5.2's 4(f) is the
+    /// pair that prices it.
+    ///
+    /// Then, per port board, the seat's presence and its power at THAT board's
+    /// area. (The card states the power gate as `>= 2`; a board the seat has a
+    /// presence at reads at least 2 by construction, since `realizable_power`
+    /// adds the President's own +1 to a count that is already ≥ 1. Both are
+    /// written, because the card writes both.)
+    ///
+    /// Then, per SLOT, the zone gate — `port_zone_accessible`, the engine's own,
+    /// against `PortBoard::zone_of(slot)`. **The zone is POSITIONAL**: once the
+    /// order deck runs dry the port stops refilling and a `None` may sit at any
+    /// index, so the offer at index 1 is a LOW offer whether or not index 0 holds
+    /// anything. Iterating the flattened list of present cards would call it
+    /// whatever its rank happened to be.
+    ///
+    /// Boundary: the take moves the card into O1/O2/O3 and `HandSize`; the refill
+    /// left-compacts and can slide a High card down into an open zone, so this
+    /// can JUMP UP after a take; and through the relative form the opponent's
+    /// reading moves discontinuously when I take. All declared. The presence
+    /// drains at Recovery — family 11(e).
+    pub fn port_takeable(&self, view: &PlayerView, player: &VisiblePlayer, rules: &Rules) -> i64 {
+        if player.hand.len() >= 3 {
+            return 0;
+        }
+        let Some(seat) = seat_index(player) else { return 0 };
+        let stock = [player.copper, player.silk, player.tea, player.seafood];
+        let boards = [Some(&view.port_state.port_a), view.port_state.port_b.as_ref()];
+        let mut total = 0i64;
+        for (board, port) in boards.into_iter().enumerate() {
+            let Some(port) = port else { continue };
+            for area in areas_in(self.context.occupied[seat] & self.context.port_areas[board]) {
+                let power = realizable_power(view, player, area);
+                if power < 2 {
+                    continue;
+                }
+                for (slot, offer) in port.slots.iter().enumerate() {
+                    let Some(id) = offer else { continue };
+                    if !port_zone_accessible(power, PortBoard::zone_of(slot)) {
+                        continue;
+                    }
+                    let Some(order) = rules.orders.get(*id) else { continue };
+                    let required = [
+                        u32::from(order.requirements.copper),
+                        u32::from(order.requirements.silk),
+                        u32::from(order.requirements.tea),
+                        u32::from(order.requirements.seafood),
+                    ];
+                    // The cap is PER OFFER, which is what makes the sum a
+                    // portfolio: three cards each wanting one seafood, against
+                    // one seafood in stock, match three — the seat may only take
+                    // one of them, and which one is the search's question.
+                    total += (0..4).map(|g| i64::from(stock[g].min(required[g]))).sum::<i64>();
+                }
+            }
+        }
+        total
+    }
+
+    /// **X3 `MatchedProductionAccess`** — the export each occupied production
+    /// tile would pay, capped by what the seat's KNOWN held orders STILL NEED of
+    /// that good. Units are needed-goods per activation.
+    ///
+    /// ```text
+    /// residual_need(g) = max(0, summed_requirement(g) − stock(g))
+    /// X3 = Σ over occupied production areas a of
+    ///          min(exported_reward(kind(a), realizable_power(a)), residual_need(good(a)))
+    /// ```
+    ///
+    /// # What it prices, precisely
+    ///
+    /// REQUIREMENT-DISTANCE-CONDITIONED access: access to goods an order still
+    /// needs, which is the PRE-EXECUTABLE horizon. Once an order is executable
+    /// its residual is zero and this correctly reads 0 — the access has done its
+    /// work and the value has moved into O3 and E2. The reward comes from the §13
+    /// dispatcher and the requirements from [`summed_requirements`], the same
+    /// fold O2 caps against, so the two terms of §2's `{X3, S1, O2}` group cannot
+    /// drift apart.
+    ///
+    /// **The sum is a PORTFOLIO, and at 3–4P that is visible.** A board carrying
+    /// two tiles of one good credits the residual TWICE — each tile is priced
+    /// against the whole remaining need, because each is a separate option and
+    /// only one area is activatable per turn. That is [`realizable_power`]'s
+    /// first declared shape applied to this card, the same shape X2's per-offer
+    /// cap has, and it is declared rather than deduplicated: which tile to spend
+    /// the turn at is the SEARCH's question, not a leaf term's. At 2P — the
+    /// milestone's whole fitting domain — the board carries one tile of each
+    /// good and the question does not arise.
+    ///
+    /// Boundary: the need closes at a fulfillment (family 6(a)) or as the stock
+    /// fills — each production tick shrinks the residual by one, so there is no
+    /// cliff, only a minimum — and the acted tile's presence drains at Recovery
+    /// like every access term. Gate: family 10(d).
+    pub fn matched_production_access(
+        &self,
+        view: &PlayerView,
+        player: &VisiblePlayer,
+        rules: &Rules,
+    ) -> i64 {
+        let Some(seat) = seat_index(player) else { return 0 };
+        let required = summed_requirements(player, rules);
+        let stock = [player.copper, player.silk, player.tea, player.seafood];
+        let mut total = 0i64;
+        for area in areas_in(self.context.occupied[seat] & self.context.production) {
+            let Some(config) = view.board_layout.areas.get(&area) else { continue };
+            let kind = config.area_type;
+            let reward = exported_reward(kind, realizable_power(view, player, area));
+            let good = production_good(kind);
+            debug_assert!(
+                reward.is_some() && good.is_some(),
+                "the production mask admitted an area the dispatcher does not price"
+            );
+            let (Some(reward), Some(good)) = (reward, good) else { continue };
+            let residual = required[good].saturating_sub(stock[good]);
+            total += i64::from(reward).min(i64::from(residual));
+        }
+        total
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2062,14 +4003,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_feature_list_is_sixteen_features_in_a_canonical_order() {
+    fn the_feature_list_is_thirty_four_features_in_a_canonical_order() {
         assert_eq!(
             Feature::COUNT,
+            34,
+            "the V4 step-8 move: §2.2's sixteen plus §3.2's eighteen candidates",
+        );
+        assert_eq!(
+            Feature::INCUMBENT_COUNT,
             16,
-            "spec §2.2's list is sixteen entries since T3's in-hand split",
+            "the incumbent width is a historical fact and can never move again",
         );
         for (i, feature) in Feature::ALL.into_iter().enumerate() {
             assert_eq!(feature.index(), i, "{} is not at its own index", feature.name());
+            assert_eq!(
+                feature.is_candidate(),
+                i >= Feature::INCUMBENT_COUNT,
+                "{} is classified on the wrong side of the append point",
+                feature.name(),
+            );
         }
         // Names are the artifact/report key, so they must be unique.
         let mut names: Vec<&str> = Feature::ALL.iter().map(|f| f.name()).collect();
@@ -2077,8 +4029,10 @@ mod tests {
         let unique = names.len();
         names.dedup();
         assert_eq!(names.len(), unique, "duplicate feature name");
-        // The exact five whose values come from `ScoreStructure`.
+        // The exact five END-SCORING mirrors — the candidates also read from
+        // `ScoreStructure` storage, but the drift-pin set stays the five.
         assert_eq!(Feature::ALL.iter().filter(|f| f.is_score_structure()).count(), 5);
+        assert_eq!(Feature::ALL.iter().filter(|f| f.is_candidate()).count(), 18);
     }
 
     #[test]
@@ -2145,7 +4099,10 @@ mod tests {
     #[test]
     fn frozen_v1_weight_signs_follow_the_research_notes() {
         let w = WeightTable::V1;
-        for feature in Feature::ALL {
+        // The INCUMBENT sixteen only: the research notes measured those, and
+        // the candidate slots are zero pads by the step-8 padding pin — a sign
+        // claim about a deliberate zero would be a claim about nothing.
+        for feature in Feature::ALL.into_iter().filter(|f| !f.is_candidate()) {
             let (early, late) = w.get(feature);
             match feature {
                 // R1-4 and R1-7: the two negative features, in BOTH vectors.
@@ -2190,7 +4147,7 @@ mod tests {
             .into_iter()
             .map(|f| w.get(f).0.abs())
             .max()
-            .expect("sixteen features");
+            .expect("the feature axis is nonempty");
         assert!(vp_early < early_max, "early VP must NOT dominate (R1-1)");
     }
 
@@ -2272,14 +4229,18 @@ mod tests {
     #[test]
     fn the_pre_freeze_table_is_the_corpus_generator_and_v1_matches_it_today() {
         let pre = WeightTable::PRE_FREEZE_2026_07_27;
+        // The historical record is the SIXTEEN-slot table; the step-8 widening
+        // padded every named const with zero candidate slots (held by the
+        // padding pin), so the literals here compare against the incumbent
+        // slice — the slots the 2026-07-27 corpus was generated by.
         assert_eq!(
-            pre.early,
-            [10, 12, 6, -4, 3, 30, 4, -10, 14, 12, 15, 8, 5, 2, 3, -3],
+            &pre.early[..Feature::INCUMBENT_COUNT],
+            &[10, 12, 6, -4, 3, 30, 4, -10, 14, 12, 15, 8, 5, 2, 3, -3],
             "the freeze corpus's EARLY vector is a historical fact and cannot be re-priced",
         );
         assert_eq!(
-            pre.late,
-            [40, 30, 20, 16, 20, 20, 2, -4, 10, 20, 25, 10, 8, 4, 4, -6],
+            &pre.late[..Feature::INCUMBENT_COUNT],
+            &[40, 30, 20, 16, 20, 20, 2, -4, 10, 20, 25, 10, 8, 4, 4, -6],
             "the freeze corpus's LATE vector is a historical fact and cannot be re-priced",
         );
         assert_eq!(
@@ -2300,5 +4261,52 @@ mod tests {
         assert_eq!(w.get(Feature::VictoryPoints), (10, 40), "and nothing else moved");
         assert_eq!(WeightTable::ZERO.get(Feature::VictoryPoints), (0, 0));
         assert_eq!(WeightTable::ZERO.early.iter().chain(WeightTable::ZERO.late.iter()).sum::<i64>(), 0);
+    }
+
+    /// **V4 §7 STEP 8 — THE PADDING PIN.** Every named table is the historical
+    /// sixteen-slot table with ZERO in every candidate slot: the first sixteen
+    /// entries of `V2` are transcribed literals (the same double-entry
+    /// discipline `the_pre_freeze_table_is_the_corpus_generator...` uses — the
+    /// padding must be unable to move an incumbent number silently), and every
+    /// slot past 15 in every named const is `0`, which is what makes
+    /// `V2-padded` the SAME BEHAVIOR as shipped V2 rather than a new table
+    /// (spec §10: "incumbents padded; `V2-padded` … pinned behavior-EQUIVALENT
+    /// to their pre-padding tables").
+    ///
+    /// Written over SLICES so it compiles at the pre-move tree: there the
+    /// `[16..]` ranges are empty and the candidate half is vacuous, and the
+    /// move is what gives it teeth. The transcription half is live at both
+    /// trees.
+    #[test]
+    fn the_named_tables_are_the_historical_sixteen_padded_with_zero_candidates() {
+        assert_eq!(
+            &WeightTable::V2.early[..16],
+            &[1, 20, 14, -4, 3, 30, 5, -10, 6, 12, 15, 8, 5, 2, 3, -1],
+            "V2's EARLY sixteen are the round-2 adoption's numbers and may not move",
+        );
+        assert_eq!(
+            &WeightTable::V2.late[..16],
+            &[40, 30, 20, 8, 20, 20, 2, -10, 10, 20, 25, 14, 8, 4, 4, -2],
+            "V2's LATE sixteen are the round-2 adoption's numbers and may not move",
+        );
+        for (name, table) in [
+            ("V1", WeightTable::V1),
+            ("V2", WeightTable::V2),
+            ("V2_DRAFT", WeightTable::V2_DRAFT),
+            ("PRE_FREEZE_2026_07_27", WeightTable::PRE_FREEZE_2026_07_27),
+            ("ZERO", WeightTable::ZERO),
+        ] {
+            for (i, w) in table
+                .early
+                .iter()
+                .enumerate()
+                .skip(Feature::INCUMBENT_COUNT)
+            {
+                assert_eq!(*w, 0, "{name}.early[{i}] must be a zero pad, got {w}");
+            }
+            for (i, w) in table.late.iter().enumerate().skip(Feature::INCUMBENT_COUNT) {
+                assert_eq!(*w, 0, "{name}.late[{i}] must be a zero pad, got {w}");
+            }
+        }
     }
 }
