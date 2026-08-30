@@ -146,7 +146,7 @@ use crate::game::end_game::is_game_over;
 use crate::game::eval::{realizable_power, WeightTable};
 use crate::game::greedy::{GreedyAgent, DEFAULT_RETREAT_SAMPLES};
 use crate::game::invariants::check_invariants;
-use crate::game::legal_moves::get_legal_moves;
+use crate::game::legal_moves::{calculate_placement_cost, get_legal_moves};
 use crate::game::lookahead::{LookaheadAgent, RootScore, SearchScheme, SearchStats};
 use crate::game::metrics::decision_volume;
 use crate::game::move_legality::{is_move_legal, PathMode};
@@ -1975,6 +1975,63 @@ impl std::fmt::Display for FeeFlowMiss {
     }
 }
 
+/// The ONE non-dummy seat other than `mover`.
+///
+/// See [`FeeFlowMiss::NotTwoPlayer`] for why one is the only workable count and
+/// why the dummy cannot be it.
+fn sole_opponent(root: &GameState, mover: PlayerId) -> Result<PlayerId, FeeFlowMiss> {
+    let others: Vec<PlayerId> =
+        root.players.iter().map(|p| p.id).filter(|id| *id != mover && !id.is_dummy()).collect();
+    match others.as_slice() {
+        [only] => Ok(*only),
+        _ => Err(FeeFlowMiss::NotTwoPlayer { players: root.players.len() }),
+    }
+}
+
+/// What a placement costs its mover, PER ENCODING, exactly as `apply_move`
+/// prices it.
+///
+/// The two encodings are priced by two different call shapes and the asymmetry
+/// is the engine's, not this function's (R-S10-4: "`PlaceThreeAreas` → its
+/// list; `PlaceTwoSameArea` → `[area, area]` then the Telegram `[adjacent]`"):
+///
+/// * `PlaceThreeAreas { placements }` — one assistant per listed area, so the
+///   list IS the per-assistant slice `apply_placement` prices.
+/// * `PlaceTwoSameArea { area, adjacent_bonus }` — TWO assistants land in
+///   `area`, which `apply_placement_same_area` prices as the two-element slice
+///   `[area, area]` ("pay 1 Yen to each President's owner PER ASSISTANT
+///   PLACED"), and the Telegram leg then runs `apply_placement(&[adj])`, a
+///   second, separately-priced call. Summing the two mirrors both the
+///   generator's own `cost + adj_cost` affordability test and the applied
+///   arm's two charges.
+///
+/// **Both legs are priced on the ROOT, and that is not an approximation.**
+/// `calculate_placement_cost` reads exactly one thing about the other seats —
+/// `president_location` — and a placement moves no President: the
+/// `PlaceTwoSameArea` arm mutates purses, assistants and `turn_phase`, and
+/// `set_president_start_area` RECORDS where the President already is. So
+/// pricing the adjacent leg on the root and pricing it on the post-same-area
+/// state are the same computation, and the applied cross-check in
+/// [`classify_fee_flow_candidates`] is what holds that argument to account
+/// rather than leaving it as a comment.
+///
+/// `None` for anything that is not a placement — the same two encodings
+/// [`placement_shape`] admits, so a caller that got a shape always gets a
+/// price.
+fn placement_fee(root: &GameState, mover: PlayerId, mv: &Move) -> Option<u32> {
+    match mv {
+        Move::PlaceThreeAreas { placements } => {
+            Some(calculate_placement_cost(root, mover, placements))
+        }
+        Move::PlaceTwoSameArea { area, adjacent_bonus } => Some(
+            calculate_placement_cost(root, mover, &[*area, *area])
+                + adjacent_bonus
+                    .map_or(0, |adj| calculate_placement_cost(root, mover, &[adj])),
+        ),
+        _ => None,
+    }
+}
+
 /// Every placement the turn start offers, with the opponent fee flow it prices
 /// and the applied cross-check already paid.
 ///
@@ -2006,10 +2063,43 @@ pub fn classify_fee_flow_candidates(
     root: &GameState,
     rules: &Rules,
 ) -> Result<Vec<FeeFlowCandidate>, FeeFlowMiss> {
-    // W1 RED: the deliberate placeholder — the contract above is what the
-    // cells ask for; the GREEN commit lands the body that answers them.
-    let _ = (root, rules);
-    Err(FeeFlowMiss::CandidateDidNotApply("W1 RED: the Shape-F recipe has no body yet".into()))
+    let placements = turn_start_placements(root, rules).ok_or(FeeFlowMiss::NotATurnStart)?;
+    let mover = root.current_player;
+    let opponent = sole_opponent(root, mover)?;
+    if !matches!(root.player(opponent).president_location, PresidentLocation::OnBoard(_)) {
+        return Err(FeeFlowMiss::NoOpponentPresidentOnBoard);
+    }
+
+    let mut candidates = Vec::new();
+    for mv in &placements {
+        let Some((total, areas)) = placement_shape(mv) else {
+            continue;
+        };
+        // Unreachable after the shape matched: both functions admit the same
+        // two encodings, so a shaped move is always a priced one. Skipping
+        // rather than unwrapping keeps that a structural fact instead of a
+        // panic waiting for a third placement encoding.
+        let Some(fee) = placement_fee(root, mover, mv) else {
+            continue;
+        };
+        let after = apply_move_unchecked(root, mv, rules)
+            .map_err(|e| FeeFlowMiss::CandidateDidNotApply(e.to_string()))?;
+        let payer_delta =
+            i64::from(root.player(mover).money) - i64::from(after.player(mover).money);
+        let opponent_delta =
+            i64::from(after.player(opponent).money) - i64::from(root.player(opponent).money);
+        if payer_delta != i64::from(fee) || opponent_delta != i64::from(fee) {
+            return Err(FeeFlowMiss::PricingMismatch {
+                candidate: format!("{mv:?}"),
+                priced: fee,
+                payer_delta,
+                opponent_delta,
+            });
+        }
+        candidates.push(FeeFlowCandidate { mv: mv.clone(), total, areas, fee });
+    }
+
+    Ok(candidates)
 }
 
 /// The Shape-F pair, chosen from priced candidates.
@@ -2045,10 +2135,40 @@ fn select_fee_flow_pair(
     opponent: PlayerId,
     candidates: &[FeeFlowCandidate],
 ) -> Result<FeeFlowPair, FeeFlowMiss> {
-    // W1 RED: the deliberate placeholder — the contract above is what the
-    // cells ask for; the GREEN commit lands the body that answers them.
-    let _ = (mover, opponent, candidates);
-    Err(FeeFlowMiss::CandidateDidNotApply("W1 RED: the Shape-F recipe has no body yet".into()))
+    let placing: Vec<&FeeFlowCandidate> =
+        candidates.iter().filter(|c| c.total > 0 && !c.areas.is_empty()).collect();
+    if placing.is_empty() {
+        return Err(FeeFlowMiss::NoPlacementCandidates);
+    }
+    if !placing.iter().any(|c| c.fee > 0) {
+        return Err(FeeFlowMiss::NoFeeSide);
+    }
+    if !placing.iter().any(|c| c.fee == 0) {
+        return Err(FeeFlowMiss::NoFreeSide);
+    }
+
+    let totals: BTreeSet<usize> = placing.iter().map(|c| c.total).collect();
+    for total in totals {
+        let at_total = || placing.iter().filter(move |c| c.total == total);
+        let paying = at_total()
+            .filter(|c| c.fee > 0)
+            .min_by(|a, b| (a.fee, &a.areas).cmp(&(b.fee, &b.areas)));
+        let free = at_total().filter(|c| c.fee == 0).min_by(|a, b| a.areas.cmp(&b.areas));
+        let (Some(paying), Some(free)) = (paying, free) else {
+            continue;
+        };
+        return Ok(FeeFlowPair {
+            mover,
+            opponent,
+            total,
+            fee_side: paying.mv.clone(),
+            fee_side_areas: paying.areas.clone(),
+            fee: paying.fee,
+            free_side: free.mv.clone(),
+            free_side_areas: free.areas.clone(),
+        });
+    }
+    Err(FeeFlowMiss::NoSharedTotal)
 }
 
 /// **THE SHAPE-F FEE-FLOW RECIPE** (guidingpath 2026-08-23, "THE STEP-10
@@ -2089,11 +2209,14 @@ fn select_fee_flow_pair(
 /// business. It fixes the pair, and it fixes it out of quantities that were
 /// settled before any of those reads existed.
 pub fn fee_flow_recipe_pair(root: &GameState, rules: &Rules) -> Result<FeeFlowPair, FeeFlowMiss> {
-    // W1 RED: the deliberate placeholder — the WIRING is here and the two
-    // bodies it calls are not, so every cell below fails by name rather than
-    // by absence; the GREEN commit lands them.
     let candidates = classify_fee_flow_candidates(root, rules)?;
-    select_fee_flow_pair(root.current_player, root.current_player, &candidates)
+    let mover = root.current_player;
+    // Re-derived rather than threaded out of the classifier: it is two seat-list
+    // comparisons, and keeping `classify_fee_flow_candidates`' return type the
+    // candidate list ALONE is what lets a caller record what the recipe saw
+    // without also being handed a decision it did not ask for.
+    let opponent = sole_opponent(root, mover)?;
+    select_fee_flow_pair(mover, opponent, &candidates)
 }
 
 // ---------------------------------------------------------------------------
