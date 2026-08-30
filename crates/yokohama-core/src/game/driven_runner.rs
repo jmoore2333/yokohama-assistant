@@ -2938,15 +2938,15 @@ mod tests {
     use super::*;
     use crate::game::arena::{agent_stream_seed, run_arena_game, ArenaAgent, Slot};
     use crate::game::driven::{
-        AdjudicationProvenance, AdjudicationSeat, CandidatePlayout, CandidateRow, DrivenOpts,
-        RootOrigin, RootSource, SampledWorld, SeatCounters, GENERATED_ECOLOGY_V1,
-        SESSION_BOT_SEAT, V4_BANDED_PREDICATES,
+        AdjudicationProvenance, AdjudicationSeat, AppliedMove, CandidatePlayout, CandidateRow,
+        CapSeatSummary, CapTail, DrivenOpts, RootOrigin, RootSource, SampledWorld, SeatCounters,
+        GENERATED_ECOLOGY_V1, SESSION_BOT_SEAT, V4_BANDED_PREDICATES,
     };
     use crate::game::driven_families::{
-        AdmissionRead, AdmissionVerdict, CounterAnnotation, CounterCheck, ExclusionReason,
-        FamilyBlockReport, FamilyLabel, FamilyReadOutcome, FamilyVerdict, PolicyAdmission,
-        ReadGrain, ReplicationRead, RootRow, RootVerdict, StrategicClass, FROZEN_ADMISSION_K,
-        MIN_ADMITTED_ROOTS, PILOT_ADMISSION_K, VOID_DISPOSITION,
+        AdmissionRead, AdmissionVerdict, CapSite, CappedPlayout, CounterAnnotation, CounterCheck,
+        ExclusionReason, FamilyBlockReport, FamilyLabel, FamilyReadOutcome, FamilyVerdict,
+        PolicyAdmission, ReadGrain, ReplicationRead, RootRow, RootVerdict, StrategicClass,
+        FROZEN_ADMISSION_K, MIN_ADMITTED_ROOTS, PILOT_ADMISSION_K, VOID_DISPOSITION,
     };
     use crate::game::legal_moves::get_legal_moves;
     use crate::game::lookahead::RootScore;
@@ -5731,6 +5731,153 @@ mod tests {
 
   dissent        SOLE DISSENTER at ordinals [1] — dominance held under every declared policy EXCEPT lookahead-at-final
                  the subject IS lookahead@final, so a subject defect that degrades its POST-candidate play deflates measured dominance under exactly that arm and would exclude exactly the roots where the defect matters — a broken subject passing by shrinking its own denominator. Collected as potential subject SUPPRESSION evidence and routed to D7 as a finding, never silently dropped."#;
+
+
+    /// **THE COUNTED-CAP BLOCK** (A-S12-1, close doc §2.4 items 5 and 6): every
+    /// counted cap prints its identity on ONE line — grain, policy, ordinal,
+    /// replication, seed, turn — with the rider's tail block indented under it,
+    /// and a SUMMARY TOKEN rides the counts line so a reader sees N without
+    /// scanning.
+    ///
+    /// The zero-cap half of the same contract is
+    /// `a_zero_cap_family_report_renders_byte_identically_to_the_pre_wave_capture`
+    /// — absent means absent, the arena's `--capped-ceiling` echo rule.
+    #[test]
+    fn a_counted_cap_prints_its_identity_its_tail_and_a_summary_token() {
+        let tail = CapTail {
+            turn_number: 10_001,
+            turn_phase: TurnPhase::Placement,
+            current_player: PlayerId(0),
+            applied_total: 123_456,
+            tail: vec![
+                AppliedMove { seat: PlayerId(0), mv: Move::UseSpinningMill },
+                AppliedMove { seat: PlayerId(1), mv: Move::SkipBuilding },
+            ],
+            seats: vec![
+                CapSeatSummary {
+                    seat: PlayerId(0),
+                    victory_points: 41,
+                    money: 12,
+                    copper: 3,
+                    silk: 0,
+                    tea: 9,
+                    seafood: 2,
+                    imported_goods: 1,
+                    assistants_in_hand: 2,
+                    assistants_in_warehouse: 0,
+                    assistants_on_board: 6,
+                    orders_in_hand: 3,
+                    completed_orders: 1,
+                    technologies: 2,
+                },
+                CapSeatSummary {
+                    seat: PlayerId(1),
+                    victory_points: 17,
+                    money: 0,
+                    copper: 0,
+                    silk: 0,
+                    tea: 0,
+                    seafood: 0,
+                    imported_goods: 0,
+                    assistants_in_hand: 8,
+                    assistants_in_warehouse: 12,
+                    assistants_on_board: 0,
+                    orders_in_hand: 0,
+                    completed_orders: 0,
+                    technologies: 0,
+                },
+            ],
+        };
+        let admission_cap = CappedPlayout {
+            site: CapSite::Admission { policy: ReplyPolicy::LookaheadAtFinal },
+            ordinal: 40,
+            replication: 2,
+            seed: 0x1234_5678_9ABC_DEF0,
+            turns: 10_001,
+            tail: Some(tail),
+        };
+        // A READ-grain void beside it: the same line shape with no policy, and
+        // no tail at all — the two absences must each render as absent.
+        let read_cap = CappedPlayout {
+            site: CapSite::Read,
+            ordinal: 41,
+            replication: 5,
+            seed: 0x0FED_CBA9_8765_4321,
+            turns: 10_001,
+            tail: None,
+        };
+
+        let mut report = family_report(
+            FamilyVerdict::Pass,
+            vec![family_row(0, RootVerdict::Pass, Some(turn_read(0, 2)))],
+        );
+        report.capped = vec![admission_cap, read_cap];
+        let rendered = render_family_block(&report, FamilyArm::Positive);
+
+        // THE SUMMARY TOKEN, on the counts line and nowhere else.
+        let counts = rendered
+            .lines()
+            .find(|line| line.starts_with("  counts "))
+            .expect("the report has a counts line");
+        assert!(
+            counts.contains("capped playouts=2"),
+            "the counts line carries no cap token: {counts}",
+        );
+
+        // THE IDENTITY LINE — every field §2.4 item 5 names.
+        assert!(
+            rendered.contains(
+                "    ordinal 40   grain admission   policy lookahead-at-final   replication 2   \
+                 seed 0x123456789abcdef0   turn 10001"
+            ),
+            "the admission cap's identity line is missing or moved:\n{rendered}",
+        );
+        assert!(
+            rendered.contains(
+                "    ordinal 41   grain read        policy -                    replication 5   \
+                 seed 0x0fedcba987654321   turn 10001"
+            ),
+            "the read-grain void's identity line is missing or moved:\n{rendered}",
+        );
+
+        // THE TAIL BLOCK, indented under its own cap.
+        assert!(
+            rendered.contains("        tail (last 2 of 123456 applied moves):"),
+            "the tail does not say it is a TAIL of a longer trajectory:\n{rendered}",
+        );
+        assert!(rendered.contains("          seat0  UseSpinningMill"), "no move labels:\n{rendered}");
+        assert!(rendered.contains("          seat1  SkipBuilding"), "no move labels:\n{rendered}");
+        assert!(
+            rendered.contains(
+                "        end state at cap: turn=10001  phase=Placement  current=seat0"
+            ),
+            "the end-state header is missing:\n{rendered}",
+        );
+        assert!(
+            rendered.contains(
+                "          seat0: money=12 · copper=3 silk=0 tea=9 seafood=2 import=1 · \
+                 assistants hand=2 warehouse=0 board=6 · orders held=3 completed=1 tech=2 · \
+                 vp(track)=41"
+            ),
+            "the per-seat stock line is missing or moved:\n{rendered}",
+        );
+        // The ABSENT tail says so rather than printing an empty block.
+        assert!(
+            rendered.contains("        tail           -  (the refusal carried no trajectory)"),
+            "an absent tail does not render as absent:\n{rendered}",
+        );
+
+        // NON-GATING, said on the report: the verdict is untouched and the
+        // section says what a counted cap is.
+        assert!(rendered.contains("  verdict        PASS"), "the cap moved the verdict");
+        let section = line_index(&rendered, "  capped playouts (COUNTED, non-gating");
+        let roots = line_index(&rendered, "  roots:");
+        let exclusions = line_index(&rendered, "  exclusions (");
+        assert!(
+            roots < section && section < exclusions,
+            "the cap block is not between the roots and the exclusions:\n{rendered}",
+        );
+    }
 
     fn line_index(rendered: &str, needle: &str) -> usize {
         rendered
