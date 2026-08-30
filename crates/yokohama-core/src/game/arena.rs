@@ -261,7 +261,8 @@ fn setup_stream_seed(seat: PlayerId, deal: &[OrderCardId; 2]) -> u64 {
 // Errors
 // ---------------------------------------------------------------------------
 
-/// Why an arena game did not produce a completed, recorded result.
+/// Why an arena game did not produce a completed, recorded result — and, for
+/// the two counting-mode arms A-S11-1 added, why a whole CELL stopped.
 ///
 /// Every variant is a HARD stop that emits nothing — spec §4's failure
 /// taxonomy. A driver error is a bug and fails the run loudly;
@@ -360,12 +361,20 @@ impl std::fmt::Display for ArenaError {
 impl std::error::Error for ArenaError {}
 
 /// THE spelling of one capped game's figures, shared by the two surfaces that
-/// name one: [`diagnostic::render_cap_rate`]'s per-world line and
-/// [`capped_roll`] below.
+/// print them as a FIGURE LIST: [`diagnostic::render_cap_rate`]'s per-world
+/// line and [`capped_roll`] below.
 ///
 /// One function rather than two `format!`s that happen to agree — an operator
 /// carries such a line into `arena world`, and a second spelling free to drift
-/// from the first is a second thing a reader has to recognize. It takes the
+/// from the first is a second thing a reader has to recognize.
+///
+/// **A THIRD surface names a capped game and deliberately does not use this**
+/// (review N1): [`stats::CellReport::capped_lines`] prints `capped: arena world
+/// <x> <y> <seed> --arrangement <arr> · turns=<n>`, i.e. the reproduce COMMAND
+/// with its arguments filled in, because `render_cap_rate` carries that
+/// template in a group header a per-line helper has no room for. The two shapes
+/// answer different questions — a figure list versus a command to paste — and
+/// §9.6 does not require them identical. It takes the
 /// three FIGURES rather than either surface's struct
 /// ([`stats::CappedGame`] / [`diagnostic::CappedWorld`]) because the two types
 /// are deliberately separate: one is a counted cell event, the other a
