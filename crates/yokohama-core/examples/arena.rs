@@ -2,7 +2,9 @@
 //! §4's `examples/arena.rs`, §11's truth-pass invocation, §12's throughput
 //! obligation).
 //!
-//! Three subcommands, one job each:
+//! Three MEASUREMENT subcommands, one job each — plus two DIAGNOSTIC ones added
+//! by the V4 step-11 diagnosis wave (`world`, `caprate`; see the bottom of this
+//! list and `arena::diagnostic`):
 //!
 //!   * **`cell`** — run ONE matchup and print its report. The general instrument:
 //!     any two rungs, any supported player count, any unit count, optionally
@@ -19,6 +21,14 @@
 //!     raw-state driver with no validation and no invariants, and this driver
 //!     observes, samples a world, validates every move, and checks invariants.
 //!     Sizing anything from the wrong one of those is critic #9's hazard.
+//!   * **`world`** and **`caprate`** — the V4 step-11 DIAGNOSIS WAVE's 2P read
+//!     surfaces: play ONE world seated exactly as a cell seats it and print what
+//!     it was doing (tail, period, end state), and COUNT capped games over a
+//!     schedule where a cell refuses at the first. **Neither computes or prints a
+//!     win share, a θ̂ or an interval of any contestant's share** — the wave's
+//!     labelling rule, enforced in `arena::diagnostic` and pinned there. Both are
+//!     print-only glue over that module (the `examples/driven` convention), which
+//!     is why this file still has no test target.
 //!
 //! MEASUREMENT POLICY IS PRINTED, NOT ASSUMED. Every subcommand leads with a
 //! header naming the build profile, the semantics rev, the master and HOW it was
@@ -69,6 +79,10 @@
 //!     lookahead-v1:b=4 atomic-diag-v1:d=2 20
 //! cargo run --release -p yokohama-core --example arena -- cell c2-node-matched 2 \
 //!     mcts-v1:cap=750 lookahead-v1:b=4,cap=750 200 --os-entropy
+//! cargo run --release -p yokohama-core --example arena -- world \
+//!     v4-step9-draft1 v4-step9-draft1 0x76b2d69bc4679287 --tail 40
+//! cargo run --release -p yokohama-core --example arena -- caprate \
+//!     v2-padded v2-padded 100 --master 0x0B01202608319999
 //! ```
 
 use std::collections::BTreeMap;
@@ -76,10 +90,11 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use yokohama_core::{
-    corpus_path, emit_record, greedy, lookahead, mcts, named_identities_usage,
-    run_cell_emitting_timed, run_raw_game, trigger_name, ArenaError, CellReport, CellSpec,
-    CellWall, Contestant, IntervalOutcome, RolloutPolicy, Rules, SeedSchedule, SeedScheduleKind,
-    TriggerTally, DIAGNOSTIC_USAGE, SEMANTICS_REV,
+    corpus_path, emit_record, greedy, lookahead, mcts, named_identities_usage, render_cap_rate,
+    render_world, run_cap_rate, run_cell_emitting_timed, run_raw_game, run_world, trigger_name,
+    ArenaError, CellReport, CellSpec, CellWall, Contestant, IntervalOutcome, RolloutPolicy, Rules,
+    SeedSchedule, SeedScheduleKind, TriggerTally, WorldSeed, WorldSpec, CAP_RATE_LABEL,
+    DIAGNOSTIC_USAGE, SEMANTICS_REV,
 };
 
 const USAGE_HEAD: &str = "\
@@ -159,6 +174,10 @@ fn main() {
         Some("cell") => cmd_cell(&args[1..]),
         Some("ab") => cmd_ab(&args[1..]),
         Some("throughput") => cmd_throughput(&args[1..]),
+        // The V4 step-11 diagnosis wave's two read surfaces. Neither prints a
+        // strength figure of any kind — see `DIAGNOSTIC_USAGE`.
+        Some("world") => cmd_world(&args[1..]),
+        Some("caprate") => cmd_caprate(&args[1..]),
         _ => Err(usage()),
     };
     if let Err(message) = result {
@@ -264,11 +283,20 @@ fn master_echo(kind: SeedScheduleKind) -> String {
 
 /// The measurement-policy header every subcommand leads with.
 fn print_header(what: &str, kind: SeedScheduleKind, rows: &[(&str, String)]) {
+    print_header_provenance(what, &format!("master={}", master_echo(kind)), rows);
+}
+
+/// [`print_header`] with the seed-provenance field spelled by the caller.
+///
+/// `world` (V4 step-11) takes a WORLD, not a master, and drawing no schedule at
+/// all is a fact about the run a reader must meet in the header rather than
+/// infer. Every other caller passes `master=…` through [`print_header`], whose
+/// output is byte-identical to what it always was.
+fn print_header_provenance(what: &str, seed_field: &str, rows: &[(&str, String)]) {
     println!("=== {what} ===");
     println!(
-        "  build={} semantics_rev={SEMANTICS_REV} master={} single-threaded=yes",
+        "  build={} semantics_rev={SEMANTICS_REV} {seed_field} single-threaded=yes",
         profile(),
-        master_echo(kind),
     );
     for (key, value) in rows {
         println!("  {key}={value}");
@@ -437,6 +465,20 @@ fn print_triggers(indent: &str, tally: &TriggerTally) {
 // `cell`
 // ---------------------------------------------------------------------------
 
+/// The shared `--invariants` / `--no-invariants` reading.
+///
+/// Invariants default ON — every driver in this repo contracts for per-move
+/// `check_invariants`, and spec §4's off-switch is for BULK generation whose
+/// records are verified by strict replay instead. `--invariants` is accepted
+/// (and is a no-op) so a caller can state the default explicitly; turning it off
+/// has to be typed out.
+fn invariants_from(flags: &BTreeMap<String, String>) -> Result<bool, String> {
+    if flags.contains_key("invariants") && flags.contains_key("no-invariants") {
+        return Err("--invariants and --no-invariants are mutually exclusive".to_string());
+    }
+    Ok(!flags.contains_key("no-invariants"))
+}
+
 fn cmd_cell(args: &[String]) -> Result<(), String> {
     let (positional, flags) =
         split_args(args, &["emit", "master"], &["os-entropy", "invariants", "no-invariants"])?;
@@ -456,15 +498,7 @@ fn cmd_cell(args: &[String]) -> Result<(), String> {
     let master = master_from(&flags)?;
     let emit: Option<PathBuf> = flags.get("emit").map(PathBuf::from);
 
-    // Invariants default ON — every driver in this repo contracts for per-move
-    // `check_invariants`, and spec §4's off-switch is for BULK corpus generation
-    // whose records are verified by strict replay instead. `--invariants` is
-    // accepted (and is a no-op) so a caller can state the default explicitly;
-    // turning it off has to be typed out.
-    if flags.contains_key("invariants") && flags.contains_key("no-invariants") {
-        return Err("--invariants and --no-invariants are mutually exclusive".to_string());
-    }
-    let invariants = !flags.contains_key("no-invariants");
+    let invariants = invariants_from(&flags)?;
 
     print_header(
         &format!("cell {name}"),
@@ -523,6 +557,135 @@ fn cmd_cell(args: &[String]) -> Result<(), String> {
     if let Some(dir) = &emit {
         println!("  emitted {written} records under {}", dir.display());
     }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// `world` / `caprate` — the V4 step-11 diagnosis wave's read surfaces
+//
+// PRINT-ONLY GLUE, the `examples/driven` convention: every decision these make
+// — the seating, the keying, the period detector, both renderers, the
+// no-strength-figure rule — lives in `arena::diagnostic` and is lib-tested
+// there, so this runner needs no test target of its own.
+// ---------------------------------------------------------------------------
+
+/// 2P is the diagnosis wave's whole scope (the V4 field is a 2P field), and
+/// `--arrangement 0|1|both` is a 2P grammar. Stated as a constant rather than
+/// left as a literal so the refusal below can name it.
+const DIAGNOSTIC_PLAYERS: u8 = 2;
+
+fn cmd_world(args: &[String]) -> Result<(), String> {
+    let (positional, flags) = split_args(
+        args,
+        &["arrangement", "tail"],
+        &["invariants", "no-invariants"],
+    )?;
+    if positional.len() != 3 {
+        return Err(format!("world takes 3 positional arguments\n\n{}", usage()));
+    }
+    let x = Contestant::from_str_name(&positional[0])?;
+    let y = Contestant::from_str_name(&positional[1])?;
+    // A WORLD seed, parsed like `--master` but NOT a master: no schedule is
+    // drawn from it, and the header says so where a master would be named.
+    let seed = WorldSeed(parse_u64(&positional[2])?);
+    let invariants = invariants_from(&flags)?;
+    let tail = parse_flag(&flags, "tail", 40)?;
+    let arrangements: Vec<u8> = match flags.get("arrangement").map(String::as_str) {
+        None | Some("both") => (0..DIAGNOSTIC_PLAYERS).collect(),
+        Some("0") => vec![0],
+        Some("1") => vec![1],
+        Some(other) => {
+            return Err(format!(
+                "--arrangement takes 0, 1 or both at {DIAGNOSTIC_PLAYERS}P (got {other:?})"
+            ))
+        }
+    };
+
+    let rules = Rules::standard();
+    for arrangement in arrangements {
+        print_header_provenance(
+            &format!("world {:#018x} arrangement {arrangement}", seed.0),
+            &format!("world={:#018x} (a WORLD seed, not a master — no schedule is drawn)", seed.0),
+            &[
+                ("players", DIAGNOSTIC_PLAYERS.to_string()),
+                ("x", contestant_echo(x)),
+                ("y", contestant_echo(y)),
+                ("tail (turns)", tail.to_string()),
+                ("per-move invariants", invariants.to_string()),
+                (
+                    "what this is",
+                    "a DIAGNOSTIC read surface — no win share, theta_hat or interval of any \
+                     contestant's share is computed here"
+                        .to_string(),
+                ),
+            ],
+        );
+        let started = Instant::now();
+        let run = run_world(
+            &WorldSpec { x, y, seed, players: DIAGNOSTIC_PLAYERS, arrangement },
+            &rules,
+            invariants,
+        )
+        .map_err(|e| format!("world failed: {e}"))?;
+        for line in render_world(&run, tail, &rules).map_err(|e| format!("world failed: {e}"))? {
+            println!("  {line}");
+        }
+        println!("  wall {:.2}s ({} build)", started.elapsed().as_secs_f64(), profile());
+    }
+    Ok(())
+}
+
+fn cmd_caprate(args: &[String]) -> Result<(), String> {
+    let (positional, flags) = split_args(
+        args,
+        &["master"],
+        &["os-entropy", "invariants", "no-invariants"],
+    )?;
+    if positional.len() != 3 {
+        return Err(format!("caprate takes 3 positional arguments\n\n{}", usage()));
+    }
+    let x = Contestant::from_str_name(&positional[0])?;
+    let y = Contestant::from_str_name(&positional[1])?;
+    let units: u32 = positional[2].parse().map_err(|e| format!("<units>: {e}"))?;
+    let master = master_from(&flags)?;
+    let invariants = invariants_from(&flags)?;
+
+    let name = format!("caprate-{}-vs-{}", positional[0], positional[1]);
+    print_header(
+        &format!("caprate {name}"),
+        master,
+        &[
+            ("players", DIAGNOSTIC_PLAYERS.to_string()),
+            ("x", contestant_echo(x)),
+            ("y", contestant_echo(y)),
+            ("units", units.to_string()),
+            ("games", (u32::from(DIAGNOSTIC_PLAYERS) * units).to_string()),
+            ("per-move invariants", invariants.to_string()),
+            ("what this is", CAP_RATE_LABEL.to_string()),
+        ],
+    );
+
+    let rules = Rules::standard();
+    let spec = CellSpec { name, players: DIAGNOSTIC_PLAYERS, x, y, units, master };
+    let started = Instant::now();
+    // Only a TURN CAP is counted. Every other failure — sampler refusal, illegal
+    // pick, driver bug — still refuses the whole run, exactly as a cell does.
+    let report =
+        run_cap_rate(&spec, &rules, invariants).map_err(|e| format!("caprate failed: {e}"))?;
+    let elapsed = started.elapsed();
+
+    for line in render_cap_rate(&report) {
+        println!("  {line}");
+    }
+    // The runner's existing trigger printer, not a second spelling of it.
+    print_triggers("  ", &report.completed);
+    println!(
+        "  wall {:.2}s for {} games ({:.1} ms/game, {} build)",
+        elapsed.as_secs_f64(),
+        report.games,
+        elapsed.as_secs_f64() * 1000.0 / report.games as f64,
+        profile(),
+    );
     Ok(())
 }
 
