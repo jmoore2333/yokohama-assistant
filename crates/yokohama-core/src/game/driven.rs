@@ -1260,6 +1260,68 @@ fn turn_start_placements(state: &GameState, rules: &Rules) -> Option<Vec<Move>> 
     Some(get_legal_moves(&placing, rules))
 }
 
+/// **IS THIS ROOT THE MOVER'S PLACEMENT DECISION?** (guidingpath / execution
+/// ledger R-S10-14, 2026-08-30.)
+///
+/// [`is_mover_turn_start`]'s sibling, one phase-only ply on: the state the
+/// mover decided its PLACEMENT in — phase [`TurnPhase::Placement`], nothing
+/// queued, no nested sub-turn running.
+///
+/// # Why this class exists
+///
+/// Born-validation on the licensed development band found the 2026-08-23
+/// registration's exhibit-class premise — "a hand-off in `AdditionalActionFirst`"
+/// — FALSE AT THE BYTES by exactly one ply: at every one of the thirteen flag-1
+/// exhibits, event `k−1` is the mover's own plain-line `EndAdditionalPhase` and
+/// event `k` is its placement, so `state_at(k)` IS the successor
+/// [`turn_start_placements`] would have crossed to. R-S10-14 reads the recipe's
+/// "one ply" as ALREADY CROSSED at such a root: the placement family is the
+/// root's own legal list, and every other rule stands verbatim.
+///
+/// **"The mover on the move" needs no conjunct**: `current_player` is the seat
+/// on the move by construction, and the family below is that seat's own legal
+/// list.
+///
+/// **The mercenary conjunct is [`is_mover_turn_start`]'s, carried over, and it
+/// is a total statement rather than a live branch**: a mercenary sub-turn runs
+/// `AreaAction -> ... -> Recovery` and never reaches `Placement`, so it can
+/// exclude no real placement decision. It is written because the two predicates
+/// are siblings and a reader comparing them should not have to ask why one
+/// carries a guard the other drops.
+///
+/// **`pub` is a VISIBILITY-ONLY unblock**, on [`placement_shape`]'s precedent
+/// and for its reason: the step-10 read surface has to ask the same question
+/// (its fork state is the root at such a position, and its Part A block labels
+/// the coincident successor sets), and the alternative was a second copy of the
+/// predicate in the probe — the drift class this repo fences. The body is what
+/// the recipe reads.
+pub fn is_placement_decision(state: &GameState) -> bool {
+    // W2b RED: the deliberate placeholder — the class is not recognized yet, so
+    // every placement-decision root still reports the typed void. The cells
+    // below ask for the reading; GREEN lands the predicate.
+    let _ = state;
+    false
+}
+
+/// The placement family this root offers — **from EITHER admitted class**
+/// (R-S10-14).
+///
+/// At a mover TURN START the ply is crossed exactly as it always was, through
+/// [`turn_start_placements`], so the frozen selection line is unchanged. At a
+/// PLACEMENT DECISION the ply is already crossed and the family is the root's
+/// own legal list. Nothing else differs: candidates are applied to the ROOT in
+/// both cases (they were already, because the placement arms are phase-blind),
+/// and the pricing cross-check is the same call.
+///
+/// `None` at a root that is neither — the typed
+/// [`FeeFlowMiss::NotAPlacementDecision`].
+fn placement_decision_family(state: &GameState, rules: &Rules) -> Option<Vec<Move>> {
+    if let Some(placements) = turn_start_placements(state, rules) {
+        return Some(placements);
+    }
+    is_placement_decision(state).then(|| get_legal_moves(state, rules))
+}
+
 /// One placement move's SHAPE: how many assistants it places, and the SET of
 /// areas it places them into.
 ///
@@ -1813,7 +1875,7 @@ pub struct FeeFlowPair {
 /// **Typed, and the arms are of TWO kinds** — the distinction is the
 /// registration's own and the step-10 composition table reads it:
 ///
-/// * The VOID lattice — [`NotATurnStart`](Self::NotATurnStart),
+/// * The VOID lattice — [`NotAPlacementDecision`](Self::NotAPlacementDecision),
 ///   [`NotTwoPlayer`](Self::NotTwoPlayer),
 ///   [`NoOpponentPresidentOnBoard`](Self::NoOpponentPresidentOnBoard),
 ///   [`NoPlacementCandidates`](Self::NoPlacementCandidates),
@@ -1843,8 +1905,15 @@ pub struct FeeFlowPair {
 /// can never construct would be an arm no cell could reach.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FeeFlowMiss {
-    /// The root is not a mover turn start.
-    NotATurnStart,
+    /// The root is neither a mover TURN START nor a mover PLACEMENT DECISION —
+    /// the two classes [`placement_decision_family`] admits (R-S10-14).
+    ///
+    /// Named for what it now MEANS rather than for the one class it used to
+    /// test: a root at `Movement`, at `AreaAction`, mid-queue or inside a
+    /// mercenary sub-turn offers no placement family to price, and saying only
+    /// "not a turn start" of a root that sits at `Placement` would be a true
+    /// sentence about the wrong question.
+    NotAPlacementDecision,
     /// The root does not seat exactly one non-dummy opponent.
     ///
     /// The recorded band is 2P and the registered raw arm names ONE seat
@@ -1950,7 +2019,9 @@ pub enum FeeFlowMiss {
 impl std::fmt::Display for FeeFlowMiss {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NotATurnStart => write!(f, "the root is not a mover turn start"),
+            Self::NotAPlacementDecision => {
+                write!(f, "the root is neither a mover turn start nor a placement decision")
+            }
             Self::NotTwoPlayer { players } => {
                 write!(f, "the fee-flow recipe is 2P and this root seats {players}")
             }
@@ -2106,7 +2177,8 @@ pub fn classify_fee_flow_candidates(
     root: &GameState,
     rules: &Rules,
 ) -> Result<Vec<FeeFlowCandidate>, FeeFlowMiss> {
-    let placements = turn_start_placements(root, rules).ok_or(FeeFlowMiss::NotATurnStart)?;
+    let placements =
+        placement_decision_family(root, rules).ok_or(FeeFlowMiss::NotAPlacementDecision)?;
     let mover = root.current_player;
     let opponent = sole_opponent(root, mover)?;
     if !matches!(root.player(opponent).president_location, PresidentLocation::OnBoard(_)) {
@@ -12837,20 +12909,82 @@ mod tests {
         panic!("the 2P board carries an adjacent placeable pair");
     }
 
-    /// Off a turn start there is no fork to price, and the refusal is TYPED —
-    /// [`the_recipe_refuses_a_position_that_is_not_a_turn_start`]'s cell at the
-    /// Shape-F recipe, because both recipes cross the ply through the same
-    /// [`turn_start_placements`] and inherit its `None`.
+    /// **THE TYPED VOID IS ABOUT BOTH CLASSES, AND THE CONTROL IS IN THE SAME
+    /// CELL.**
+    ///
+    /// R-S10-14 admits a mover TURN START and a mover PLACEMENT DECISION. A
+    /// root at neither — here the `Movement` state a placement leaves behind —
+    /// is [`FeeFlowMiss::NotAPlacementDecision`]. A guard that refused
+    /// EVERYTHING would satisfy the refusal half and be useless, so the
+    /// admitted class is asserted in the same breath: same fixture, same seats,
+    /// one phase apart.
     #[test]
-    fn the_fee_flow_recipe_refuses_a_position_that_is_not_a_turn_start() {
+    fn the_fee_flow_recipe_refuses_a_root_that_is_neither_class_and_admits_both() {
         let rules = Rules::standard();
         let (root, ..) = fee_flow_root(&rules, world(101).0);
         let placing = apply_move_unchecked(&root, &Move::EndAdditionalPhase, &rules)
             .expect("ending the additional phase is always legal at a turn start");
-        assert_eq!(fee_flow_recipe_pair(&placing, &rules), Err(FeeFlowMiss::NotATurnStart));
+        assert_eq!(placing.turn_phase, TurnPhase::Placement);
+
+        // THE CONTROL — the placement decision is ADMITTED.
+        assert!(
+            classify_fee_flow_candidates(&placing, &rules).is_ok(),
+            "a placement decision is one of the two admitted classes (R-S10-14)",
+        );
+        assert!(fee_flow_recipe_pair(&placing, &rules).is_ok());
+
+        // THE REFUSAL — a root at neither class, reached by placing.
+        let moved = get_legal_moves(&placing, &rules)
+            .into_iter()
+            .find(|mv| placement_shape(mv).is_some_and(|(total, _)| total > 0))
+            .and_then(|mv| apply_move(&placing, &mv, &rules).ok())
+            .expect("a placement leaves the Movement phase behind");
+        assert_eq!(moved.turn_phase, TurnPhase::Movement);
         assert_eq!(
+            fee_flow_recipe_pair(&moved, &rules),
+            Err(FeeFlowMiss::NotAPlacementDecision)
+        );
+        assert_eq!(
+            classify_fee_flow_candidates(&moved, &rules),
+            Err(FeeFlowMiss::NotAPlacementDecision)
+        );
+        assert_eq!(
+            FeeFlowMiss::NotAPlacementDecision.to_string(),
+            "the root is neither a mover turn start nor a placement decision",
+        );
+    }
+
+    /// **THE PLY IS PHASE-ONLY, AND THE RECIPE PROVES IT** (R-S10-14).
+    ///
+    /// The whole reading rests on one fact: the state a turn start reaches by
+    /// `EndAdditionalPhase` differs from it in `turn_phase` and in NOTHING the
+    /// recipe or its arms touch. W1's review proved that at the bytes; this
+    /// asserts it of the recipe's own answer — the pair a turn start yields and
+    /// the pair its placement-decision successor yields are THE SAME OBJECT,
+    /// mover, opponent, total, both sides, both area sets and the fee.
+    ///
+    /// If that equality ever broke, the reading would be selecting a different
+    /// pair at the reserved band from the one the registration fixed, which is
+    /// exactly what a reading may not do.
+    #[test]
+    fn the_placement_decision_pair_is_its_turn_starts_pair_one_phase_only_ply_on() {
+        let rules = Rules::standard();
+        let (root, ..) = fee_flow_root(&rules, world(104).0);
+        assert_eq!(root.turn_phase, TurnPhase::AdditionalActionFirst);
+        let placing = apply_move(&root, &Move::EndAdditionalPhase, &rules)
+            .expect("ending the additional phase is always legal at a turn start");
+
+        let from_start = fee_flow_recipe_pair(&root, &rules).expect("the fixture carries F");
+        let from_decision =
+            fee_flow_recipe_pair(&placing, &rules).expect("and so does its successor");
+        assert_eq!(from_start, from_decision, "the ply is phase-only");
+
+        // The POPULATIONS agree too, candidate for candidate — the pair being
+        // equal would not by itself say the family was.
+        assert_eq!(
+            classify_fee_flow_candidates(&root, &rules),
             classify_fee_flow_candidates(&placing, &rules),
-            Err(FeeFlowMiss::NotATurnStart)
+            "the two classes price the same population",
         );
     }
 
@@ -13149,6 +13283,15 @@ mod tests {
                         assert_eq!(free.player(mover).money, state.player(mover).money);
                         assert_eq!(free.player(opponent).money, state.player(opponent).money);
 
+                        // R-S10-14: at a TURN START the pair must equal the
+                        // pair at its placement-decision successor — the ply is
+                        // phase-only, asserted over organic play rather than
+                        // only at a constructed fixture.
+                        assert_eq!(
+                            Ok(pair.clone()),
+                            fee_flow_recipe_pair(&placing, &rules),
+                            "event {k}: the placement-decision successor yields a different pair"
+                        );
                         assert_eq!(
                             Ok(pair),
                             fee_flow_recipe_pair(&state, &rules),
@@ -13160,17 +13303,17 @@ mod tests {
             }
         }
         // RECORDED, never asserted (see the doc comment).
-        let off_turn_start =
-            misses.get(&FeeFlowMiss::NotATurnStart.to_string()).copied().unwrap_or(0);
+        let off_class =
+            misses.get(&FeeFlowMiss::NotAPlacementDecision.to_string()).copied().unwrap_or(0);
         println!(
             "fee-flow recipe over organic play: {pairs} pairs, {classified} positions \
-             classified, {off_turn_start} positions off a turn start, other misses {:?}",
+             classified, {off_class} positions at neither admitted class, other misses {:?}",
             misses
                 .iter()
-                .filter(|(name, _)| *name != &FeeFlowMiss::NotATurnStart.to_string())
+                .filter(|(name, _)| *name != &FeeFlowMiss::NotAPlacementDecision.to_string())
                 .collect::<Vec<_>>()
         );
-        assert!(off_turn_start > 0, "the sweep never saw a position off a turn start");
+        assert!(off_class > 0, "the sweep never saw a position at neither admitted class");
         assert!(classified > 0, "the sweep never classified a candidate list ({misses:?})");
     }
 

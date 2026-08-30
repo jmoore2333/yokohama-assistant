@@ -114,7 +114,8 @@ use yokohama_core::game::lookahead::{
 };
 use yokohama_core::game::driven::{
     classify_fee_flow_candidates, classify_recipe_candidates, escrow_recipe_pair,
-    fee_flow_recipe_pair, generate_roots, placement_shape, registry, root_table, FeeFlowMiss,
+    fee_flow_recipe_pair, generate_roots, is_placement_decision, placement_shape, registry,
+    root_table, FeeFlowMiss,
     RecipeMiss, RecipePair, RecipeSide, RegistryError, RootDescriptor, RootOrigin, RootPredicate,
     RootSource, V4_ESCROW_ORDINALS,
 };
@@ -17044,14 +17045,25 @@ fn compose_pf_block(reads: &[PfOrdinal], inputs: BandInputs) -> BlockVerdict {
 
 /// The FORK STATE the registered reads are taken at (R-S10-2): the `Placement`
 /// position one ply on, reached by `EndAdditionalPhase` through the CHECKED
-/// `apply_move`.
+/// `apply_move` — **or the ROOT ITSELF where the root already sits there**
+/// (R-S10-14).
 ///
 /// The recipes cross the same ply through `driven::turn_start_placements`, which
 /// uses `apply_move_unchecked` on a move it knows is in the list; this surface
 /// pays the checked boundary because §5.3's own walk does
 /// ([`sign_root_sets`]'s fork arm) and because a step-10 artifact should reach
 /// its states the way play reaches them.
+///
+/// **At a PLACEMENT DECISION there is no ply left to cross and no
+/// `EndAdditionalPhase` to apply**: the recorded document indexes the mover's
+/// placement decision, so `state_at(k)` IS the state the crossing would have
+/// produced. The class is `driven::is_placement_decision`'s — ONE predicate,
+/// read here and by the recipe, so the fork this surface takes its reads at and
+/// the family the recipe prices cannot come to mean different positions.
 fn fork_state(root: &GameState, rules: &Rules) -> Result<GameState, String> {
+    if is_placement_decision(root) {
+        return Ok(root.clone());
+    }
     let legal = get_legal_moves(root, rules);
     if !legal.contains(&Move::EndAdditionalPhase) {
         return Err(format!(
@@ -18166,6 +18178,27 @@ fn sign_step10_ordinal(
 
     let mut sets = Vec::new();
     let moves = get_legal_moves(root, rules);
+
+    // R-S10-14: at a PLACEMENT DECISION the root set and the fork set COINCIDE
+    // — the root's own legal list IS the fork placement set — so the successors
+    // are signed ONCE and the label says which two readings met. Signing them
+    // twice would double every class's membership and turn one ordinal's pair
+    // into a collision with itself.
+    if is_placement_decision(root) {
+        sets.push(sign_one_set(
+            label,
+            "root=fork",
+            "the root's own legal list, which IS the fork placement set here",
+            format!("get_legal_moves(root) at {:?} — the ply is already crossed", root.turn_phase),
+            root,
+            &moves,
+            mover,
+            &role_of,
+            rules,
+        )?);
+        return Ok(sets);
+    }
+
     sets.push(sign_one_set(
         label,
         "root",
@@ -31956,6 +31989,157 @@ mod tests {
         });
         assert!(prefix.contains("document abcdef0123456789"), "{prefix}");
         assert!(prefix.contains("position (event) 50"), "{prefix}");
+    }
+
+    /// **THE PLACEMENT-DECISION READING, THROUGH THE WHOLE PIPELINE**
+    /// (R-S10-14).
+    ///
+    /// The reading's entire claim is that reading at `state_at(k)` — the
+    /// mover's placement decision — is reading the SAME thing the registration
+    /// named one phase-only ply earlier. So this runs the complete per-ordinal
+    /// pipeline from BOTH roots and requires every number to agree: the pair,
+    /// the fork, both successors, the arithmetic arm, the raw arm's vectors and
+    /// its three conjuncts, clause (iii) at the locked identity and at
+    /// `v2-padded`, the same-path pin, and the β+ parity gate.
+    ///
+    /// It also pins the Part A shape the row asks for: at a turn start the two
+    /// successor sets are `root` and `fork`; at the placement decision they
+    /// COINCIDE and are signed ONCE, labelled `root=fork`. Signing them twice
+    /// would double every class's membership and turn one ordinal's own pair
+    /// into a collision with itself.
+    #[test]
+    fn a_placement_decision_root_reads_exactly_as_its_turn_start_parent() {
+        let rules = Rules::standard();
+        let (turn_start, mover, _) = step10_fee_flow_fixture(&rules);
+        let decision = apply_move(&turn_start, &Move::EndAdditionalPhase, &rules)
+            .expect("ending the additional phase is always legal at a turn start");
+        assert!(!is_placement_decision(&turn_start), "the parent is a TURN START");
+        assert!(is_placement_decision(&decision), "the successor is a PLACEMENT DECISION");
+        assert_eq!(decision.turn_phase, TurnPhase::Placement);
+        assert_eq!(decision.current_player, mover, "the ply does not hand off");
+
+        // THE FORK STATE is one position reached two ways: crossed from the
+        // turn start, already there at the decision.
+        let crossed = fork_state(&turn_start, &rules).expect("the crossing");
+        let already = fork_state(&decision, &rules).expect("already crossed");
+        assert_eq!(state_digest(&crossed), state_digest(&already));
+        assert_eq!(
+            state_digest(&already),
+            state_digest(&decision),
+            "at a placement decision the fork IS the root",
+        );
+
+        let read = |state: &GameState, label: &str| -> Box<SubstantiveBlock> {
+            let root = Step10Root {
+                ordinal: 50,
+                label: label.to_string(),
+                origin: "constructed".to_string(),
+                detail: "a hand-built 2P root".to_string(),
+                digest: state_digest(state),
+                anchor: state_digest(state),
+                state: state.clone(),
+            };
+            match read_step10_body(Step10Band::Ose, &root, 7, false, &rules) {
+                Ok(OrdinalBody::Substantive(block)) => block,
+                Ok(_) => panic!("{label} did not read SUBSTANTIVE"),
+                Err(detail) => panic!("{label}: {detail}"),
+            }
+        };
+        let parent = read(&turn_start, "turn-start");
+        let child = read(&decision, "placement-decision");
+
+        // THE PAIR, and the two positions it names.
+        assert_eq!(parent.pair.plus_encoding, child.pair.plus_encoding);
+        assert_eq!(parent.pair.zero_encoding, child.pair.zero_encoding);
+        assert_eq!(parent.pair.plus_areas, child.pair.plus_areas);
+        assert_eq!(parent.pair.zero_areas, child.pair.zero_areas);
+        assert_eq!(parent.pair.total, child.pair.total);
+        assert_eq!(parent.pair.fee, child.pair.fee);
+        assert_eq!(parent.pair.keying, child.pair.keying);
+        assert_eq!(parent.population, child.population, "the same priced population");
+        assert_eq!(parent.fork_digest, child.fork_digest);
+        assert_eq!(parent.plus_digest, child.plus_digest);
+        assert_eq!(parent.zero_digest, child.zero_digest);
+
+        // THE ARMS.
+        let (pa, ca) = (
+            parent.arithmetic.as_ref().expect("arithmetic"),
+            child.arithmetic.as_ref().expect("arithmetic"),
+        );
+        assert_eq!(pa.columns, ca.columns);
+        assert_eq!(pa.mover_columns, ca.mover_columns);
+        assert_eq!(pa.hand, ca.hand);
+        assert_eq!(pa.opponent, ca.opponent);
+        let (pr, cr) = (parent.raw.as_ref().expect("raw"), child.raw.as_ref().expect("raw"));
+        assert_eq!(pr.plus, cr.plus);
+        assert_eq!(pr.zero, cr.zero);
+        assert_eq!(pr.moved, cr.moved);
+        assert_eq!(pr.x1_recomputed, cr.x1_recomputed);
+        assert_eq!(
+            (pr.conjunct_a(), pr.conjunct_b(), pr.conjunct_c()),
+            (cr.conjunct_a(), cr.conjunct_b(), cr.conjunct_c()),
+        );
+
+        // CLAUSE (iii) and the same-path pin, at the fork the two share.
+        for (p, c) in [
+            (&parent.clause_iii.candidate, &child.clause_iii.candidate),
+            (&parent.clause_iii.v2, &child.clause_iii.v2),
+        ] {
+            assert_eq!(p.name, c.name);
+            assert_eq!(p.plus_value, c.plus_value);
+            assert_eq!(p.zero_value, c.zero_value);
+            assert_eq!(p.read.ranked, c.read.ranked, "the same table, candidate for candidate");
+            assert_eq!(p.read.sampler_seed, c.read.sampler_seed, "the same sampled world");
+        }
+        assert!(parent.parity.matched() && child.parity.matched());
+        assert_eq!(parent.parity.root_digest, child.parity.root_digest);
+
+        // THE β+ GATE.
+        assert_eq!(parent.statics.delta_prod(), child.statics.delta_prod());
+        assert_eq!(parent.statics.delta_probe(), child.statics.delta_probe());
+        assert_eq!(parent.statics.agrees(), child.statics.agrees());
+
+        // PART A's SHAPE: two sets from the turn start, ONE from the decision.
+        let sides = (&parent.pair.plus_move, &parent.pair.zero_move);
+        let from_start =
+            sign_step10_ordinal(Step10Band::Ose, "ts", &turn_start, Some(sides), &rules)
+                .expect("the turn start signs");
+        let from_decision =
+            sign_step10_ordinal(Step10Band::Ose, "pd", &decision, Some(sides), &rules)
+                .expect("the placement decision signs");
+        assert_eq!(
+            from_start.iter().map(|set| set.name).collect::<Vec<_>>(),
+            ["root", "fork"],
+        );
+        assert_eq!(
+            from_decision.iter().map(|set| set.name).collect::<Vec<_>>(),
+            ["root=fork"],
+            "signed ONCE, labelled so",
+        );
+        // And the one set IS the turn start's fork set: same enumeration, same
+        // signatures, same registered roles.
+        assert_eq!(from_decision[0].enumerated, from_start[1].enumerated);
+        assert_eq!(from_decision[0].terminal, from_start[1].terminal);
+        assert_eq!(
+            from_decision[0].views.iter().map(|v| &v.sig).collect::<Vec<_>>(),
+            from_start[1].views.iter().map(|v| &v.sig).collect::<Vec<_>>(),
+        );
+        let roles = |set: &SuccessorSet| -> Vec<String> {
+            set.views
+                .iter()
+                .filter_map(|v| match &v.from {
+                    Provenance::Successor { role, mv, .. }
+                        if *role != RecipeRole::Unregistered =>
+                    {
+                        Some(format!("{role:?} {mv}"))
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(roles(&from_decision[0]), roles(&from_start[1]));
+        assert_eq!(roles(&from_decision[0]).len(), 2, "both sides are tagged");
+        assert!(from_decision[0].views[0].from.label().contains("/root=fork#"));
     }
 
     /// **THE WHOLE PER-ORDINAL PIPELINE, END TO END, ON A CONSTRUCTED ROOT.**
