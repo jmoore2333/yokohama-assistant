@@ -290,6 +290,25 @@ pub enum ArenaError {
     /// The turn cap was hit before the game ended. Carries the seed so the run
     /// reproduces.
     CapReached { seed: WorldSeed, turns: u32 },
+    /// **Counting mode only** (V4 step 11, amendment A-S11-1; freeze doc
+    /// `docs/plans/2026-08-30-phase3.5c-v4-identity-freeze.md` §9.6 item 2): a
+    /// cell's capped games passed its registered ceiling.
+    ///
+    /// An INSTRUMENT GUARD, outcome-independent, and raised the moment the
+    /// count passes the ceiling rather than at the schedule's end — so the run
+    /// is INVALID and the rest of it is not spent. Deliberately NOT
+    /// [`CapReached`](Self::CapReached): a reader of a failed run must be able
+    /// to tell a ceiling refusal from the un-amended refuse-at-the-first-cap
+    /// rule, which a shared arm would hide. `capped` carries every capped game
+    /// so far, the (c+1)-th included.
+    CappedCeilingExceeded { ceiling: u32, capped: Vec<stats::CappedGame> },
+    /// **Counting mode only** (A-S11-1): every scheduled design unit is void,
+    /// so no unit outcome constrains θ.
+    ///
+    /// Typed rather than a report of NaNs: a number-shaped answer to a question
+    /// the data cannot answer is the one thing this module's refusals exist to
+    /// never print.
+    NoReadUnits { scheduled: u32, capped: Vec<stats::CappedGame> },
     /// Setup, observation, or application failed — always a bug here, since
     /// every input was engine-produced.
     Driver(String),
@@ -308,12 +327,42 @@ impl std::fmt::Display for ArenaError {
             Self::CapReached { seed, turns } => {
                 write!(f, "turn cap reached at turn {turns} (world seed {:#018x})", seed.0)
             }
+            Self::CappedCeilingExceeded { ceiling, capped } => write!(
+                f,
+                "capped games ({}) exceeded the registered ceiling of {ceiling}: {}",
+                capped.len(),
+                capped_roll(capped),
+            ),
+            Self::NoReadUnits { scheduled, capped } => write!(
+                f,
+                "no read units: all {scheduled} scheduled units are void ({} capped games), \
+                 so nothing constrains theta: {}",
+                capped.len(),
+                capped_roll(capped),
+            ),
             Self::Driver(message) => write!(f, "arena driver: {message}"),
         }
     }
 }
 
 impl std::error::Error for ArenaError {}
+
+/// The `(seed, arrangement, turns)` roll of a counting cell's capped games,
+/// spelled exactly as [`diagnostic::render_cap_rate`] spells one — the two
+/// surfaces that name a capped game name it the same way, so an operator can
+/// carry a line from either into `arena world` unchanged.
+fn capped_roll(capped: &[stats::CappedGame]) -> String {
+    capped
+        .iter()
+        .map(|game| {
+            format!(
+                "seed={:#018x} arrangement={} turns={}",
+                game.seed.0, game.arrangement, game.turns,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
 
 // ---------------------------------------------------------------------------
 // The agent seam

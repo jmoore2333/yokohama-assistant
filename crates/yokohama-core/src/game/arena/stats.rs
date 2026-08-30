@@ -1742,6 +1742,16 @@ pub(crate) fn run_cell_loop(
                     // the measured per-game rates priced.
                     unit_void = true;
                     capped.push(CappedGame { seed, arrangement: arr as u8, turns });
+                    // THE CEILING, checked the moment the count passes it: the
+                    // (c+1)-th capped game refuses the cell AT ONCE rather than
+                    // at the schedule's end, because an instrument guard that
+                    // waited would spend the rest of a run it has already
+                    // invalidated (freeze doc §9.6 item 2).
+                    if let Some(ceiling) = capped_ceiling {
+                        if capped.len() as u64 > u64::from(ceiling) {
+                            return Err(ArenaError::CappedCeilingExceeded { ceiling, capped });
+                        }
+                    }
                 }
             }
         }
@@ -1765,6 +1775,14 @@ pub(crate) fn run_cell_loop(
             vp_margin_sum += margin;
         }
         x_unit_shares.push(f64::from(unit_outcome.x_wins) / unit.seatings.len() as f64);
+    }
+
+    // NO READ UNIT: nothing constrains theta, and a report of NaNs would be a
+    // number-shaped answer to a question the data cannot answer. Unreachable in
+    // refuse mode — the zero-unit guard above runs before any game and every
+    // unit is read there — so this is the counting mode's own refusal.
+    if x_unit_shares.is_empty() {
+        return Err(ArenaError::NoReadUnits { scheduled: spec.units, capped });
     }
 
     let x_unit_shares_len = x_unit_shares.len() as u32;
