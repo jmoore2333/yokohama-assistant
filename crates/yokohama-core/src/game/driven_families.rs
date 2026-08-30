@@ -5571,18 +5571,37 @@ mod tests {
         }
     }
 
-    /// **THE FROZEN STATE**: every declaration carries BOTH frozen blocks, and
-    /// no third block field exists to carry an escrowed one.
+    /// **THE FROZEN STATE, AND THE RELEASE LEDGER**: every declaration carries
+    /// both frozen confirmatory blocks, and the THIRD pair carries exactly what
+    /// V4 step 12 released and nothing else.
     ///
-    /// The escrow half is checked on the DECLARATION rather than on the source
-    /// text (design §2: "escrow ordinals live in the freeze DOCUMENT,
-    /// deliberately not in code — no command can burn an escrowed block by
-    /// accident"). A `Debug` rendering of the struct names every field it has,
-    /// so a field called anything escrow-shaped would show up here. That half is
-    /// UNCHANGED by the freeze wave, which baked two blocks and not three.
+    /// The escrow half is still checked on the DECLARATION rather than on the
+    /// source text. What moved on 2026-08-30 is WHICH escrow a command can
+    /// name: the post-fix tier of the three arms the close doc §1.2 names is
+    /// RELEASED into [`FamilyDecl::regression`] / `regression_control`, exactly
+    /// as families design §2 prescribes ("releasing escrow is a doc-plus-code
+    /// change with its own commit" — this is that change). Everything else —
+    /// the final-controller tier, the three unnamed post-fix arms, family 1's
+    /// own tier — stays in the freeze DOCUMENT, and the `false` rows below are
+    /// what keeps it there.
+    ///
+    /// The `Debug` sweep stays too: a field named anything escrow-shaped would
+    /// show up in it, and the released tier is deliberately NOT named escrow —
+    /// it is named for the read it serves.
     #[test]
-    fn every_declaration_carries_both_frozen_blocks_and_no_escrow_field_exists() {
-        for decl in families() {
+    fn every_declaration_carries_both_frozen_blocks_and_only_released_escrow_reaches_code() {
+        // (id, regression released, regression_control released) — a future
+        // release adds its row here deliberately.
+        let ledger = [
+            ("final-round", false, false),
+            ("end-trigger", true, false),
+            ("exclusive-race", false, true),
+            ("achievement", true, false),
+        ];
+        let decls = families();
+        assert_eq!(decls.len(), ledger.len(), "the registry length moved");
+        for (decl, (id, positive, control)) in decls.iter().zip(ledger) {
+            assert_eq!(decl.id, id, "the registry order moved");
             assert!(
                 decl.confirmatory.is_some(),
                 "{}: the freeze wave bakes the positive arm's block",
@@ -5594,6 +5613,18 @@ mod tests {
                  different roots and cannot share one identity",
                 decl.id,
             );
+            assert_eq!(
+                decl.regression.is_some(),
+                positive,
+                "{}: the positive arm's RELEASE ledger moved",
+                decl.id,
+            );
+            assert_eq!(
+                decl.regression_control.is_some(),
+                control,
+                "{}: the control arm's RELEASE ledger moved",
+                decl.id,
+            );
             let rendered = format!("{decl:?}");
             assert!(rendered.contains("pilot"), "{}: the pilot block is not declared", decl.id);
             assert!(
@@ -5603,10 +5634,65 @@ mod tests {
             );
             assert!(
                 !rendered.to_lowercase().contains("escrow"),
-                "{}: an escrow block reached the code: {rendered}",
+                "{}: an escrow-NAMED field reached the code: {rendered}",
                 decl.id,
             );
         }
+    }
+
+    /// **THE RELEASE, AS `resolve_block` SEES IT** (V4 step 12): the regression
+    /// arm reads [`FamilyDecl::regression`] and NOTHING else — one rule over
+    /// one field, the shape the confirmatory arm already has — with the master
+    /// refusal unmoved and an UNRELEASED arm refusing BY NAME.
+    ///
+    /// **RESOLVING is not BURNING** (family freeze §4: "burning = running
+    /// table/adjudicate/read at an ordinal; supply counting does not burn").
+    /// This cell maps `(master, ordinals)` and draws no root.
+    #[test]
+    fn a_regression_block_reads_its_own_field_and_an_unreleased_arm_refuses_by_name() {
+        let decl = families()
+            .into_iter()
+            .find(|d| d.id == "end-trigger")
+            .expect("family 2 is declared");
+        let released = decl.regression.clone().expect("end-trigger's positive arm is released");
+
+        let (master, ordinals) = resolve_block(&decl, BlockKind::Regression, None)
+            .expect("the released block resolves");
+        assert_eq!(master, released.master, "the block ran another master");
+        assert_eq!(ordinals, released.ordinals.clone().collect::<Vec<u32>>());
+
+        // ITS OWN FIELD: emptying the CONFIRMATORY block does not move it.
+        let confirmatory_gone = FamilyDecl { confirmatory: None, ..decl.clone() };
+        let (still, _) = resolve_block(&confirmatory_gone, BlockKind::Regression, None)
+            .expect("the regression arm does not read the confirmatory field");
+        assert_eq!(still, released.master, "the regression arm read another field");
+
+        // A CALLER'S MASTER is refused, for the confirmatory reason.
+        let substituted = resolve_block(&decl, BlockKind::Regression, Some(MASTER)).unwrap_err();
+        assert!(
+            matches!(substituted, FamilyRunError::MasterRefused { .. }),
+            "a typed master must not be able to run a plausible-looking non-frozen block: \
+             {substituted}",
+        );
+        assert!(
+            substituted.to_string().contains("regression"),
+            "the refusal does not name the block kind: {substituted}",
+        );
+
+        // AN UNRELEASED ARM refuses BY NAME, and says where its escrow stays.
+        let unreleased = FamilyDecl { regression: None, ..decl.clone() };
+        let err = resolve_block(&unreleased, BlockKind::Regression, None).unwrap_err();
+        assert!(
+            matches!(err, FamilyRunError::NoFrozenBlock { .. }),
+            "expected a no-released-block refusal, got {err}",
+        );
+        let text = err.to_string();
+        assert!(text.contains("end-trigger"), "the refusal does not name the family: {text}");
+        assert!(text.contains("regression"), "the refusal does not name the block kind: {text}");
+        assert!(
+            text.contains("freeze"),
+            "the refusal does not say where the unreleased escrow stays: {text}",
+        );
     }
 
     /// **THE BAKED BLOCKS, HEX FOR HEX** (the freeze wave) — a TRANSCRIPTION

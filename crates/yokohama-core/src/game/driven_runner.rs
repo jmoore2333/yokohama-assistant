@@ -2903,6 +2903,21 @@ mod tests {
         list.iter().map(|s| (*s).to_string()).collect()
     }
 
+    /// ONE declared family arm, resolved the way the runner resolves it — the
+    /// declaration for `positive`, `control_arm`'s re-point for `control`.
+    fn arm_of(id: &str, arm: FamilyArm) -> FamilyDecl {
+        let decl = families()
+            .into_iter()
+            .find(|d| d.id == id)
+            .unwrap_or_else(|| panic!("{id} is declared"));
+        match arm {
+            FamilyArm::Positive => decl,
+            FamilyArm::Control => {
+                control_arm(&decl).unwrap_or_else(|e| panic!("{id} declares a control arm: {e}"))
+            }
+        }
+    }
+
     fn world(index: u64) -> WorldSeed {
         let mut schedule = SeedSchedule::diagnostic(MASTER);
         (0..=index).map(|_| schedule.next_world()).last().unwrap()
@@ -4811,13 +4826,17 @@ mod tests {
         assert!(err.contains(USAGE), "the refusal drops USAGE: {err}");
     }
 
-    /// An unknown block name refuses naming THE TWO valid blocks — and the
-    /// ESCROW-ABSENT property rides this arm: no grammar names an escrow block,
+    /// An unknown block name refuses naming THE THREE valid blocks — and the
+    /// ESCROW-ABSENT property rides this arm still, narrowed to what is true
+    /// after V4 step 12's release (close doc §1.4): the grammar names the
+    /// RELEASED post-fix tier as `regression` and NOTHING else escrow-shaped,
     /// so `--block escrow` is exactly as unknown as `--block wibble` and the
-    /// refusal does not offer it as an alternative (design §2's escrow hygiene:
-    /// escrow ordinals live in the freeze DOCUMENT so no command can burn one).
+    /// refusal does not offer it as an alternative. The UNRELEASED escrow —
+    /// the final-controller tier, the three unnamed post-fix arms, family 1's
+    /// own tier — still lives in the freeze DOCUMENT, where no command can
+    /// name it.
     #[test]
-    fn an_unknown_block_name_refuses_naming_the_two_valid_blocks_and_no_third() {
+    fn an_unknown_block_name_refuses_naming_the_three_valid_blocks_and_no_fourth() {
         for typed in ["escrow", "wibble"] {
             let err = parse(&args(&["family", "final-round", "--block", typed])).unwrap_err();
             assert!(err.contains(typed), "the refusal hides what was typed: {err}");
@@ -4826,8 +4845,16 @@ mod tests {
                 err.contains("confirmatory"),
                 "the refusal does not name `confirmatory`: {err}",
             );
+            assert!(
+                err.contains("regression"),
+                "the refusal does not name `regression`: {err}",
+            );
         }
-        assert_eq!(BLOCK_NAMES, ["pilot", "confirmatory"], "the block vocabulary moved");
+        assert_eq!(
+            BLOCK_NAMES,
+            ["pilot", "confirmatory", "regression"],
+            "the block vocabulary moved",
+        );
         assert!(!USAGE.contains("escrow block"), "USAGE names an escrow block");
     }
 
@@ -4943,6 +4970,189 @@ mod tests {
         );
     }
 
+    // =======================================================================
+    // V4 step 12 — THE ESCROW RELEASE: `--block regression`
+    // =======================================================================
+
+    /// The verb parses the RELEASED third block, in both arms, with no master.
+    #[test]
+    fn the_family_command_parses_the_released_regression_block() {
+        match parse(&args(&["family", "end-trigger", "--block", "regression"]))
+            .expect("the released regression block parses")
+        {
+            Command::Family { id, block, master, arm } => {
+                assert_eq!(id, "end-trigger");
+                assert_eq!(block, BlockKind::Regression);
+                assert_eq!(master, None);
+                assert_eq!(arm, FamilyArm::Positive, "the default arm is not positive");
+            }
+            other => panic!("parsed as {other:?}"),
+        }
+        match parse(&args(&[
+            "family",
+            "exclusive-race",
+            "--block",
+            "regression",
+            "--arm",
+            "control",
+        ]))
+        .expect("a regression control arm parses")
+        {
+            Command::Family { id, block, master, arm } => {
+                assert_eq!(id, "exclusive-race");
+                assert_eq!(block, BlockKind::Regression);
+                assert_eq!(master, None);
+                assert_eq!(arm, FamilyArm::Control);
+            }
+            other => panic!("parsed as {other:?}"),
+        }
+        assert_eq!(BlockKind::Regression.as_str(), "regression");
+    }
+
+    /// A regression run carrying a caller's master REFUSES, for the
+    /// confirmatory reason and with the confirmatory sentence — and it refuses
+    /// in `resolve_block` before a single draw, so this cell costs nothing and
+    /// burns no ordinal.
+    #[test]
+    fn a_regression_block_refuses_a_callers_master() {
+        let supplied = run_with(
+            &args(&["family", "end-trigger", "--block", "regression", "--master", "0x1"]),
+            &[],
+            Path::new("."),
+        )
+        .expect_err("a regression block with a caller's master must refuse");
+        assert!(
+            supplied.contains("caller-supplied master is refused"),
+            "the refusal loses its sentence: {supplied}",
+        );
+        assert!(
+            supplied.contains("end-trigger"),
+            "the refusal does not name the family: {supplied}",
+        );
+        assert!(
+            supplied.contains("regression"),
+            "the refusal does not name the block kind: {supplied}",
+        );
+        assert!(supplied.contains(USAGE), "the command-shaped refusal drops USAGE: {supplied}");
+    }
+
+    /// **THE RELEASED BLOCKS, HEX FOR HEX** — a TRANSCRIPTION pin over the
+    /// family freeze §4 escrow table's post-fix tier, for exactly the three
+    /// arms V4 step 12 released (close doc §1.2).
+    ///
+    /// Written as LITERALS rather than derived from the declaration: these
+    /// numbers ARE the committed identity of the regression re-read, and a
+    /// derivation would let one of them move without a test noticing. It is the
+    /// same discipline `the_four_declarations_carry_the_baked_confirmatory_and_control_blocks`
+    /// applies to the confirmatory tier, one tier later.
+    ///
+    /// **RESOLVING is not BURNING** (freeze §4: "burning = running
+    /// table/adjudicate/read at an ordinal"): this cell maps `(master,
+    /// ordinals)` and draws no root, so it costs nothing and consumes nothing.
+    #[test]
+    fn the_three_released_regression_blocks_resolve_their_transcribed_identity() {
+        let expected: [(&str, FamilyArm, u64); 3] = [
+            ("end-trigger", FamilyArm::Positive, 0xA3E1_2026_0818_0005),
+            ("exclusive-race", FamilyArm::Control, 0xA3E1_2026_0818_0009),
+            ("achievement", FamilyArm::Positive, 0xA3E1_2026_0818_0007),
+        ];
+        for (id, arm, transcribed) in expected {
+            let resolved = arm_of(id, arm);
+            let (master, ordinals) = crate::game::driven_families::resolve_block(
+                &resolved,
+                BlockKind::Regression,
+                None,
+            )
+            .unwrap_or_else(|e| panic!("{id} --arm {}: {e}", arm.as_str()));
+            assert_eq!(master, transcribed, "{id} --arm {}: the wrong master", arm.as_str());
+            assert_eq!(
+                ordinals,
+                vec![36, 37, 38, 39, 40, 41],
+                "{id} --arm {}: the wrong ordinals",
+                arm.as_str(),
+            );
+            // DISJOINT from the tier already read, which is what makes the
+            // re-read a fresh reading rather than a re-quote of the
+            // confirmatory roots.
+            let already_read =
+                resolved.confirmatory.as_ref().expect("baked at the freeze").ordinals.end;
+            assert!(
+                ordinals[0] >= already_read,
+                "{id} --arm {}: the released tier overlaps the confirmatory block",
+                arm.as_str(),
+            );
+        }
+    }
+
+    /// **THE RELEASE LEDGER, ALL EIGHT ARMS**: exactly THREE arms answer
+    /// `--block regression`, and the other five refuse BY NAME.
+    ///
+    /// Enumerated rather than derived, so a future release has to add its row
+    /// here deliberately. The five `false` rows are the UNRELEASED escrow —
+    /// end-trigger control, exclusive-race positive, achievement corner, and
+    /// both of family 1's — which stays in the freeze DOCUMENT, unburned.
+    #[test]
+    fn only_the_three_released_arms_answer_the_regression_block() {
+        let ledger = [
+            ("final-round", FamilyArm::Positive, false),
+            ("final-round", FamilyArm::Control, false),
+            ("end-trigger", FamilyArm::Positive, true),
+            ("end-trigger", FamilyArm::Control, false),
+            ("exclusive-race", FamilyArm::Positive, false),
+            ("exclusive-race", FamilyArm::Control, true),
+            ("achievement", FamilyArm::Positive, true),
+            ("achievement", FamilyArm::Control, false),
+        ];
+        let mut released_seen = 0;
+        for (id, arm, released) in ledger {
+            let resolved = arm_of(id, arm);
+            let outcome = crate::game::driven_families::resolve_block(
+                &resolved,
+                BlockKind::Regression,
+                None,
+            );
+            match (released, outcome) {
+                (true, Ok(_)) => released_seen += 1,
+                (true, Err(e)) => {
+                    panic!("{id} --arm {}: a RELEASED arm refused: {e}", arm.as_str())
+                }
+                (false, Ok((master, ordinals))) => panic!(
+                    "{id} --arm {}: an UNRELEASED arm resolved {master:#018x} at {ordinals:?} —                      an escrowed ordinal reached the grammar",
+                    arm.as_str(),
+                ),
+                (false, Err(e)) => {
+                    let text = e.to_string();
+                    assert!(
+                        text.contains(id),
+                        "{id} --arm {}: the refusal does not name the family: {text}",
+                        arm.as_str(),
+                    );
+                    assert!(
+                        text.contains("regression"),
+                        "{id} --arm {}: the refusal does not name the block kind: {text}",
+                        arm.as_str(),
+                    );
+                }
+            }
+        }
+        assert_eq!(released_seen, 3, "the release ledger no longer names exactly three arms");
+    }
+
+    /// The RELEASED regression block runs the FROZEN sizing in BOTH arms —
+    /// admission K = 8, R = 20, per-root F = 1/20, δ = 5, VOID below 4 admitted
+    /// (family freeze §3, held UNCHANGED by the release: close doc §1.4).
+    #[test]
+    fn the_released_regression_block_runs_the_frozen_sizing_in_both_arms() {
+        for arm in [FamilyArm::Positive, FamilyArm::Control] {
+            assert_eq!(
+                format!("{:?}", family_block_opts(arm, BlockKind::Regression)),
+                format!("{:?}", BlockOpts::freeze()),
+                "the regression block does not run the FROZEN posture at arm {}",
+                arm.as_str(),
+            );
+        }
+    }
+
     /// **THE SUPPLY ARITHMETIC** (the freeze wave, item 6): every frozen block's
     /// highest ordinal is inside the supply its generator's ECOLOGY declares.
     ///
@@ -4973,11 +5183,23 @@ mod tests {
         let mut checked_builders = 0;
         for decl in families() {
             let control = control_arm(&decl).expect("every family declares a control arm");
-            for (arm, generator, block) in [
-                ("positive", decl.generator, decl.confirmatory.clone()),
-                ("control", control.generator, decl.confirmatory_control.clone()),
+            for (arm, generator, block, baked) in [
+                ("positive confirmatory", decl.generator, decl.confirmatory.clone(), true),
+                (
+                    "control confirmatory",
+                    control.generator,
+                    decl.confirmatory_control.clone(),
+                    true,
+                ),
+                ("positive regression", decl.generator, decl.regression.clone(), false),
+                ("control regression", control.generator, decl.regression_control.clone(), false),
             ] {
-                let block = block.expect("baked at the freeze");
+                // A REGRESSION row is present only where V4 step 12 released
+                // one; a CONFIRMATORY row is baked for every arm.
+                let Some(block) = block else {
+                    assert!(!baked, "{} --arm {arm}: baked at the freeze", decl.id);
+                    continue;
+                };
                 let highest = block.ordinals.end - 1;
                 match generator {
                     FamilyGenerator::Predicate(predicate) => {
@@ -5002,8 +5224,10 @@ mod tests {
                 }
             }
         }
-        // ANTI-VACUITY: both kinds were actually met.
-        assert_eq!((checked_predicates, checked_builders), (5, 3));
+        // ANTI-VACUITY: both kinds were actually met, at both released tiers
+        // — eight confirmatory arms (5 predicate + 3 builder) plus the three
+        // released regression arms (2 predicate + 1 builder).
+        assert_eq!((checked_predicates, checked_builders), (7, 4));
     }
 
     // =======================================================================
@@ -5101,7 +5325,7 @@ mod tests {
     /// same seam for the same reason.
     #[test]
     fn the_family_block_sizing_keeps_the_admission_inversion_off_in_both_arms() {
-        for block in [BlockKind::Pilot, BlockKind::Confirmatory] {
+        for block in [BlockKind::Pilot, BlockKind::Confirmatory, BlockKind::Regression] {
             let positive = family_block_opts(FamilyArm::Positive, block);
             let control = family_block_opts(FamilyArm::Control, block);
             assert!(
@@ -5964,6 +6188,16 @@ mod tests {
         assert!(
             USAGE.contains("REFUSED"),
             "USAGE does not state that a confirmatory block refuses a caller's master",
+        );
+        // THE RELEASED THIRD BLOCK (V4 step 12): the command form a caller
+        // types, and the release's own authority, on the page.
+        assert!(
+            USAGE.contains("family <id> --block regression"),
+            "USAGE does not carry the regression command form:\n{USAGE}",
+        );
+        assert!(
+            USAGE.contains("36..42"),
+            "USAGE does not name the released post-fix tier's ordinals:\n{USAGE}",
         );
         // THE TWO SIZINGS (the freeze wave): the page a caller reads before
         // typing the command names the K each block runs at.
