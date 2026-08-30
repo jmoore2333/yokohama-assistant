@@ -70,7 +70,7 @@ Questions are asked one at a time. An invalid answer re-asks the SAME question a
 
 **Sim tail:** for each seat the two dealt order cards are shown, numbered `[1]`/`[2]` and each carrying a `(bot Keep score N)` — what the built-in bot (§4) would prefer, read off the card's printed economics alone. It is hand-set and unmeasured, and a note under the pair says so; the choice is yours. The question is `keep card 1 or 2?`; answer `1` or `2` — the numbers printed beside the cards.
 
-**Bot seats (sim only):** the sim tail's last question is `Bot seats?`. **Blank** — just Enter — means none, and so does typing `none`; the game is then exactly the all-human one described everywhere else. Otherwise type the seat numbers a bot should play, space-separated: `1`, or `0 2`. At least one seat must stay human (an all-bot table is refused and the question re-asks), so at a two-player table one bot is the most any legal answer can name, and the prompt's example there offers a single seat rather than a pair. There is no live-mode equivalent — a bot cannot read a face-down card off your table. Every bot plays `lookahead-v1` — the engine's shipped search, a 4-wide beam over one sampled guess at the hidden cards scoring positions with the frozen **v2** weight table, which is the same thing `suggest` runs on your own seat (§4). It is the controller this project intends to ship rather than a sparring dummy, and it is deliberately **provisional**: it stays pinned to that exact identity until the strength work freezes a champion to replace it. There is no difficulty setting and no per-seat choice — the question asks which seats, not which opponent. The wizard draws a full-width stream key for them and echoes it as `bot seed: N`, so write that down beside the game seed if you want the bot's line to be reproducible. The setup review names them in full (`bots: seat 1 playing lookahead-v1@v2{b=4,eval_impl=3,k=1,m=8,weights=-1160323518167071950} (seed N)` — the controller, its implementation version, and every knob and identity value the save records), `edit bots` re-asks the question, and the answer travels in the save file — a resumed game comes back with the same seats botted, playing the search the record names rather than today's default.
+**Bot seats (sim only):** the sim tail's last question is `Bot seats?`. **Blank** — just Enter — means none, and so does typing `none`; the game is then exactly the all-human one described everywhere else. Otherwise type the seat numbers a bot should play, space-separated: `1`, or `0 2`. At least one seat must stay human (an all-bot table is refused and the question re-asks), so at a two-player table one bot is the most any legal answer can name, and the prompt's example there offers a single seat rather than a pair. There is no live-mode equivalent — a bot cannot read a face-down card off your table. Every bot plays `v4-step9-draft1` — the engine's shipped search, a 4-wide beam over one sampled guess at the hidden cards, scoring positions with the **V4 sighted weight table** (the sixteen incumbent features plus eighteen candidate features that see placements, affordances and order/economic opportunity for BOTH seats), which is the same thing `suggest` runs on your own seat (§4). It is the controller this project ships rather than a sparring dummy: it was confirmed on-policy on 2026-08-30 against the previous table and shipped byte-for-byte, unchanged from the identity that was measured. There is no difficulty setting and no per-seat choice — the question asks which seats, not which opponent. The wizard draws a full-width stream key for them and echoes it as `bot seed: N`, so write that down beside the game seed if you want the bot's line to be reproducible. The setup review names them in full (`bots: seat 1 playing v4-step9-draft1@v2{b=4,eval_impl=3,k=1,m=8,weights=6957643967275421640} (seed N)` — the controller, its implementation version, and every knob and identity value the save records), `edit bots` re-asks the question, and the answer travels in the save file — a resumed game comes back with the same seats botted, playing the search the record names rather than today's default.
 
 **Every card question speaks one grammar** (whether you are naming an order card, a technology, a building-site card or an achievement):
 
@@ -272,7 +272,7 @@ YOU ARE DECIDING · whether to use an additional action before Placement, or to 
 > 
 ```
 
-The first two lines are your own move's summary; the four `Seat 1` lines are the bot's turn; the two `Blue:` lines are that turn's single summary, and the `Turn … -> Turn …` line between them is the hand-over marker the summary brackets. Read the summary as a NET change — an assistant a bot places and then recovers in the same turn nets out of it, which is why the per-move lines above it, and `log`, are the record of what actually happened. The bot decides from the same masked view of the game a seated player gets — its own hand, the public board, and a guess at everything hidden — and never from the engine's private state; that is a property the test suite pins rather than a claim about how well it plays. It plays `lookahead-v1`, the same search `suggest` runs (§3 names the exact identity): the controller this project intends to ship, not a sparring dummy — though how WELL it plays is the strength lane's business, measured there rather than claimed here. (The transcript above was captured before this seat ran that controller; every shape in it — the seat-prefixed lines, the cap, the net summary, the hand-over marker — is unchanged, but the exact moves are not what today's bot would play.)
+The first two lines are your own move's summary; the four `Seat 1` lines are the bot's turn; the two `Blue:` lines are that turn's single summary, and the `Turn … -> Turn …` line between them is the hand-over marker the summary brackets. Read the summary as a NET change — an assistant a bot places and then recovers in the same turn nets out of it, which is why the per-move lines above it, and `log`, are the record of what actually happened. The bot decides from the same masked view of the game a seated player gets — its own hand, the public board, and a guess at everything hidden — and never from the engine's private state; that is a property the test suite pins rather than a claim about how well it plays. It plays `v4-step9-draft1`, the same search `suggest` runs (§3 names the exact identity): the controller this project intends to ship, not a sparring dummy — though how WELL it plays is the strength lane's business, measured there rather than claimed here. (The transcript above was captured before this seat ran that controller; every shape in it — the seat-prefixed lines, the cap, the net summary, the hand-over marker — is unchanged, but the exact moves are not what today's bot would play.)
 
 **The turn review, when a game OPENS on a bot.** Starting or resuming a game where a bot is the one to move is the one case that gets its own screen. On a real terminal the bot's turn is played and then shown on a full-screen review of its own — the same lines described above, headed `WHILE YOU WERE AWAY — the bot's turn` — and **one press of Enter** takes you to your board and your options, clean and complete. Nothing is waiting on you while it is up. It is a pause, not a prompt, and it draws no input caret for that reason: `quit` quits, exactly as it does everywhere else, and anything else you type there is discarded. What `log` keeps is every **move** the bot made — re-described against the state at the time, so it is the record of what happened rather than a copy of this screen (the turn summary and the hand-over line live only here). This exists because those lines are tall: composed into the same screen as the board they pushed its top rows, and the title strip with them, off a 50-row terminal — you could only get back to them by scrolling. **Mid-game is deliberately unchanged**: there the bot's reply rides the answer to your own move, exactly as captured above, and a keypress between every turn would be a toll on the ordinary case. A **piped or redirected** run gets no review and no pause at all — the narrative stays in the stream where it has always been, and the first command you send is still the first command it reads.
 
@@ -280,19 +280,19 @@ The first two lines are your own move's summary; the four `Seat 1` lines are the
 
 ```
 ─ Suggest ──────────────────────────────
-Seat 0 (Red) · lookahead-v1 · beam 4, K=1, M=8, evaluator impl 3 · stream 0x7199df924be0e320
+Seat 0 (Red) · v4-step9-draft1 · beam 4, K=1, M=8, evaluator impl 3 · stream 0x7199df924be0e320
 Suggested move:
-  Place 1 assistant in each of: Port A (A00), Laboratory A (A01), Employment Agency (A07)
+  Place 1 assistant in each of: Port A (A00), Laboratory A (A01), Tea Plantation (A02)
 
 The line it searched, 6 move(s) to the hand-over (the move above is step 1):
-  1. Place 1 assistant in each of: Port A (A00), Laboratory A (A01), Employment Agen…
+  1. Place 1 assistant in each of: Port A (A00), Laboratory A (A01), Tea Plantation …
   2. Place President from hand in Laboratory A (A01)
   3. Laboratory: acquire Postal System, slot fee: 2 yen
   4. Skip the 5-Power token
   5. Skip the building
   6. End additional-action phase
 
-Score at that point: 72   ·   stage 0/1000000 ppm (0 = opening, 1000000 = end trigger)
+Score at that point: 76   ·   stage 0/1000000 ppm (0 = opening, 1000000 = end trigger)
   feature                        you   best opp   weight     product
   victory_points                   0          0        1           0
   country_bonus_now                0          0       20           0
@@ -307,44 +307,44 @@ Score at that point: 72   ·   stage 0/1000000 ppm (0 = opening, 1000000 = end t
   trading_houses_built             0          0       15           0
   five_power_tokens                0          0        8           0
   imported_goods                   0          0        5           0
-  achievement_progress_sum         1          1        2           0
+  achievement_progress_sum         1          1        0           0
   mercenaries_total                0          0        3           0
   hand_size                        1          1       -1           0
-  production_access                0          0        0           0
-  track_access                     0          0        0           0
+▶ production_access                2          0        1           2
+  track_access                     0          0        1           0
   assistant_areas_distinct         2          0        0           0
-  president_local_access           1          0        0           0
-  bank_access                      0          0        0           0
-  employment_agency_access         1          0        0           0
-  president_reachable_areas        1          0        0           0
-  money_stock                      1          4        0           0
-  trade_goods_stock                4          4        0           0
+  president_local_access           2          0        0           0
+  bank_access                      0          0        1           0
+  employment_agency_access         0          0        1           0
+▶ president_reachable_areas        2          0        1           2
+▶ money_stock                      1          4        2          -6
+  trade_goods_stock                4          4        2           0
   building_tokens_ready            2          2        0           0
   held_order_value                 8         12        0           0
-  order_matched_goods              2          0        0           0
+▶ order_matched_goods              2          0        1           2
   executable_orders                0          0        0           0
   flag_icon_marginal               2          0        0           0
   held_order_icons                 1          0        0           0
-  lab_takeable                     0          0        0           0
-  port_takeable                    4          0        0           0
+  lab_takeable                     0          0        1           0
+▶ port_takeable                    4          0        1           4
   matched_production_access        0          0        0           0
-  TOTAL                                                           72
-  3 of 34 rows carry a nonzero product — they are this move's whole story.
+  TOTAL                                                           76
+  8 of 34 rows carry a nonzero product — they are this move's whole story.
 
 Runner-ups (margin against the suggestion, so 0 means tied) — 186 candidate(s) ranked:
-           0  Place 1 assistant in each of: Port A (A00), Laboratory A (A01), Tea Plantation …
-           0  Place 1 assistant in each of: Port A (A00), Laboratory A (A01), Fishing Ground …
-           0  Place 1 assistant in each of: Port A (A00), Laboratory A (A01), Silk Mill (A04)
-  36 candidates tie at the top; which one you see is this position's own
+           0  Place 1 assistant in each of: Port A (A00), Laboratory A (A01), Customs (A05)
+          -1  Place 1 assistant in each of: Port A (A00), Laboratory A (A01), Fishing Ground …
+          -1  Place 1 assistant in each of: Port A (A00), Laboratory A (A01), Silk Mill (A04)
+  2 candidates tie at the top; which one you see is this position's own
   keyed draw, so a second press will not change it.
 This is the bot's arithmetic, not advice: each row is (your value − the best
 opponent's) × the weight for this stage, summed. It read ONE guess at the hidden
-cards, and its weights are hand-set rather than tuned.
+cards, and its weights were never tuned on human play.
 ```
 
-**Reading it.** The header names the search that ran — `lookahead-v1`, a 4-wide beam over ONE sampled guess at the hidden cards, scoring positions with the frozen **v2** weight table at **evaluator implementation 3** (two different numbers doing two different jobs: `v2` names the sixty-eight endpoint weights the bot prices positions with — the frozen 2026-08-10 incumbent thirty-two plus thirty-six zero-padded candidate endpoints — while `implementation 3` is the evaluator MODULE's own revision. Neither of them contradicts the `-v1` in `lookahead-v1`, which names the SEARCH and has not changed) — and the stream key that press used, so two presses that differ can be told apart at a glance. **The line it searched** is the sequence the bot valued the move by: it plays *its own* turn out to the hand-over and scores the position **there**, which is why the score belongs to the end of that line and not to the first move alone. That line lives inside the sampled world, and if a step stops matching your real position the tool says so under the list. **The table** is that score, term by term: your value for a feature, the best opponent's value, the weight that feature carries at this stage (weights slide from an early-game set to a late-game one, and `stage` is how far along the tool thinks the game is), and their product; the products sum to `TOTAL`. A `▶` in the left margin marks every row whose product is not zero — those rows, and only those, are what moved the score — the zero rows are dimmed on a colour terminal, and a line under `TOTAL` counts them. The marker is a character, not a colour, so it survives a pipe. **Row order never moves**, so a screen still lines up against an older capture or against the evaluator's own term list. **Runner-ups** are the next-best candidates with their margin against the suggestion — a `0` margin is a genuine tie, and a line under them says how many candidates tie at the top. **Long move names.** Every line of this screen is sized to the frame width §2 states for your player count, so a move name too long for it is wrapped onto an indented second line when it is the suggestion itself — the answer is never cut — and trimmed with a `…` when it is a list row, where keeping the columns aligned is worth more than the last few words. It is the tallest screen this tool prints (roughly 63 rows under the board): on a short terminal the board scrolls off above it, which costs nothing — the suggestion itself stays on screen and the board redraws on your next input — and `panel` or `screen` (§2) buys those rows back.
+**Reading it.** The header names the search that ran — `v4-step9-draft1`, a 4-wide beam over ONE sampled guess at the hidden cards, scoring positions with the V4 sighted weight table at **evaluator implementation 3** (two different things doing two different jobs: `v4-step9-draft1` names the IDENTITY — the fourth weight table this project has shipped, and within the milestone that produced it, step 9's first draft, which is the draft that was confirmed and shipped unchanged — and behind that name sit the sixty-eight endpoint weights the bot prices positions with, while `implementation 3` is the evaluator MODULE's own revision, unchanged by this table. The SEARCH is the same 4-wide one-turn beam it has always been) — and the stream key that press used, so two presses that differ can be told apart at a glance. **The line it searched** is the sequence the bot valued the move by: it plays *its own* turn out to the hand-over and scores the position **there**, which is why the score belongs to the end of that line and not to the first move alone. That line lives inside the sampled world, and if a step stops matching your real position the tool says so under the list. **The table** is that score, term by term: your value for a feature, the best opponent's value, the weight that feature carries at this stage (weights slide from an early-game set to a late-game one, and `stage` is how far along the tool thinks the game is), and their product; the products sum to `TOTAL`. A `▶` in the left margin marks every row whose product is not zero — those rows, and only those, are what moved the score — the zero rows are dimmed on a colour terminal, and a line under `TOTAL` counts them. The marker is a character, not a colour, so it survives a pipe. **Row order never moves**, so a screen still lines up against an older capture or against the evaluator's own term list. **Runner-ups** are the next-best candidates with their margin against the suggestion — a `0` margin is a genuine tie, and a line under them says how many candidates tie at the top. **Long move names.** Every line of this screen is sized to the frame width §2 states for your player count, so a move name too long for it is wrapped onto an indented second line when it is the suggestion itself — the answer is never cut — and trimmed with a `…` when it is a list row, where keeping the columns aligned is worth more than the last few words. It is the tallest screen this tool prints (roughly 63 rows under the board): on a short terminal the board scrolls off above it, which costs nothing — the suggestion itself stays on screen and the board redraws on your next input — and `panel` or `screen` (§2) buys those rows back.
 
-**It is arithmetic, not advice.** The weights are hand-set — informed by measurement since the v2 freeze, but not machine-tuned — the search is one turn deep in one sampled world, the opponents' hidden cards are guessed, and nothing here has been measured against a human player. What it gives you is a window on what the bot thinks — which is exactly what makes it useful for this testing round: a suggestion that is obviously wrong at the table is worth reporting (§9).
+**It is arithmetic, not advice.** The weights are no longer hand-set: they were set by the V4 milestone's certified bounded solve over registered inequalities, then confirmed on-policy against the previous table (θ̂ 0.69, 95% interval [0.67, 0.72], over 650 paired 2-player games). What that does not change is everything else the caveat was about — the search is still one turn deep in one sampled world, the opponents' hidden cards are still guessed, and nothing here has ever been tuned on, or measured against, a human player. What it gives you is a window on what the bot thinks — which is exactly what makes it useful for this testing round: a suggestion that is obviously wrong at the table is worth reporting (§9).
 
 **Asking why the bot played THAT (simulation only).** `why` is `suggest`'s other half. `suggest` answers *what would you play on my seat*, before you move; `why` answers *how did the bot choose the move it just played*, after — the same screen and the same arithmetic, about a move that has already happened. Type `why` for the bot's most recent move, or `why <n>` for one particular event, where `n` is the number `log` prints beside each line. Like `suggest` it applies nothing, records nothing and does not autosave, and two presses at one event give byte-identical output. A **finished game is not a refusal**: `why` reads history, and history survives the end, so reading back through a completed game is exactly what it is for.
 

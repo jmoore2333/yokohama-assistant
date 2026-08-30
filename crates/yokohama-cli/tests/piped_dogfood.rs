@@ -17,7 +17,8 @@
 //!
 //! TWO games run here, sharing that one driver: all-human, and (Phase 3.2
 //! Task 12) human-vs-bot with seat 1 played by whatever the WIZARD configures
-//! -- `lookahead-v1` at shipped knobs since Phase 3.5c W5, the family-weighted
+//! -- the production contestant `v4-step9-draft1` since the 2026-08-30 V4 ship
+//! commit, `lookahead-v1` at shipped knobs from Phase 3.5c W5, the family-weighted
 //! rung before it. The bot is reached through the wizard's own answer rather
 //! than constructed here, so this gate always exercises the SHIPPED default,
 //! and its wall moves when that default does (W5 re-measured both figures).
@@ -162,7 +163,8 @@ fn full_piped_2p_game_runs_plain_to_winner() {
 const BOT_MOVE_PREFIX: &str = "Seat 1 (Blue) \u{2014}";
 
 /// Phase 3.2 Task 12: the same full game with seat 1 played by the wizard's
-/// default bot (`lookahead-v1` since W5). Same binary, same driver, same honesty assertions --
+/// default bot (`lookahead-v1` from W5, `v4-step9-draft1` since 2026-08-30). Same binary,
+/// same driver, same honesty assertions --
 /// the driver answers the HUMAN's prompts and the bot's turns arrive already
 /// played, because the REPL pumps them before printing the prompt. That is the
 /// property this variant exists to prove on the shipped executable: a piped

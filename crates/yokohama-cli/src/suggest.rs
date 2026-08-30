@@ -181,7 +181,20 @@ const ROW_TEXT_WIDTH: usize = 80;
 pub(crate) const PROSE_TEXT_WIDTH: usize = 80;
 
 /// The closing honesty note (spec §7: the explanation text states term
-/// contributions, it does not give play advice). Pre-wrapped as fixed lines
+/// contributions, it does not give play advice).
+///
+/// **The third line changed on 2026-08-30, at the V4 ship commit**, from "its
+/// weights are hand-set rather than tuned" to "its weights were never tuned on
+/// human play". The old sentence stopped being true of the shipped seat that
+/// day: `v4-step9-draft1`'s table came out of the V4 milestone's certified
+/// bounded solve over registered inequalities, which is a fit and not a hand-set.
+/// It is also the WRONG sentence to replace it with "fitted", because this note
+/// renders for every seat this driver explains -- a resumed `lookahead-v1` or a
+/// `greedy-v1` seat is still on the hand-set V2 table. What holds for all of
+/// them, and is the caveat a reader actually needs, is that no weight anywhere
+/// in this project was ever tuned against human play.
+///
+/// Pre-wrapped as fixed lines
 /// rather than reflowed at render time: its longest line is 80 columns, inside
 /// the narrowest frame this driver composes, so re-flowing it per player count
 /// would move a sentence a reader may have been shown before to no purpose. The
@@ -191,7 +204,7 @@ pub(crate) const PROSE_TEXT_WIDTH: usize = 80;
 const HONESTY_NOTE: [&str; 3] = [
     "This is the bot's arithmetic, not advice: each row is (your value − the best",
     "opponent's) × the weight for this stage, summed. It read ONE guess at the hidden",
-    "cards, and its weights are hand-set rather than tuned.",
+    "cards, and its weights were never tuned on human play.",
 ];
 
 /// The line-was-searched-in-a-sampled-world caveat, printed when the fold in
@@ -345,7 +358,8 @@ pub fn stream_seed(record: &GameRecord, seat: PlayerId) -> u64 {
     acc
 }
 
-/// Ask Lookahead-v1 what it would play for `seat`, from `seat`'s own view.
+/// Ask the shipped production bot what it would play for `seat`, from `seat`'s
+/// own view.
 ///
 /// **Nothing here touches the session.** `state` is read to take one view and
 /// nothing else; the agent is a local built from `stream_seed` and dropped when
@@ -353,10 +367,15 @@ pub fn stream_seed(record: &GameRecord, seat: PlayerId) -> u64 {
 /// for a suggestion to leave a mark, so `record.events`, the state, and every
 /// autosave are untouched by construction rather than by care.
 ///
-/// The knobs are the shipped rung's, taken from `LookaheadAgent::new`'s own
-/// defaults rather than restated here: S1 turn-boundary at `B` = 4, `K` = 1,
-/// `M` = 8, `WeightTable::V2` (V1 until the 2026-08-10 v2 freeze — reading the
-/// defaults off the constructor is exactly what let this line lag it once).
+/// **The agent is [`crate::bot::production_agent`]'s, and that shared call is
+/// the point** (the 2026-08-30 V4 ship commit). This line used to read
+/// `LookaheadAgent::new`'s constructor defaults, which is exactly what let it
+/// lag the 2026-08-10 v2 freeze once; it now builds the same identity the bot
+/// seat plays, through the same function, so "the seat that advises you" and
+/// "the seat you play against" are one construction rather than two that agree.
+/// The identity is `v4-step9-draft1` at S1 turn-boundary `B` = 4, `K` = 1,
+/// `M` = 8 over the V4 sighted weight table — read from core's own
+/// `NamedIdentity`, never restated here.
 ///
 /// **The answer is checked against the TRUE position before it is returned**
 /// ([`ensure_offered_by_the_true_state`], T10 review S2).
@@ -367,7 +386,7 @@ pub fn suggest(
     stream_seed: u64,
 ) -> Result<Suggestion, SuggestError> {
     let view = observe(state, seat).map_err(|e| SuggestError::View(e.to_string()))?;
-    let mut agent = lookahead::LookaheadAgent::new(rules, stream_seed);
+    let mut agent = crate::bot::production_agent(rules, stream_seed);
     let report = agent.choose(&view, rules).map_err(SuggestError::Search)?;
     ensure_offered_by_the_true_state(&report.mv, state, rules)?;
 
@@ -606,8 +625,17 @@ pub(crate) fn render_with_header(
 /// The `suggest` screen's own header — the lines this file used to write
 /// inline, moved behind [`Header`] unchanged.
 fn suggest_header(s: &Suggestion) -> Header {
-    // Every knob printed comes from the const the agent itself reads, so this
-    // line cannot describe a rung the press did not run.
+    // Every value printed comes from the identity the agent itself is built
+    // from, so this line cannot describe a seat the press did not run. The NAME
+    // is the production contestant's own descriptor name -- never typed here --
+    // and the three knobs are core's `NamedIdentity::KNOBS`, the same numbers
+    // `bot::production_agent` builds with.
+    //
+    // **The name changed on 2026-08-30** from `lookahead-v1` to
+    // `v4-step9-draft1`, and the change is not cosmetic: the two spell
+    // different weight tables, and a header naming the older one over a press
+    // the newer one took would be the exact lie this line is derived to
+    // prevent.
     //
     // **`evaluator impl {}` is `EVAL_IMPL_VERSION`, and it used to read
     // `eval v{}`, which was the wrong words for the right number** (T11). The
@@ -629,10 +657,10 @@ fn suggest_header(s: &Suggestion) -> Header {
         title: "Suggest",
         identity: format!(
             " · {} · beam {}, K={}, M={}, evaluator impl {} · stream {:#018x}",
-            lookahead::LOOKAHEAD_CONTROLLER,
-            lookahead::DEFAULT_BEAM,
-            lookahead::DEFAULT_WORLDS,
-            greedy::DEFAULT_RETREAT_SAMPLES,
+            crate::bot::PROVISIONAL_DEFAULT_BOT.descriptor().0,
+            NamedIdentity::KNOBS.beam,
+            NamedIdentity::KNOBS.worlds,
+            NamedIdentity::KNOBS.retreat_samples,
             eval::EVAL_IMPL_VERSION,
             s.stream_seed,
         ),
