@@ -1,4 +1,40 @@
-import type { ClientState, Labels, NotOfferedReason } from "./types";
+import type { ClientState, Deciding, Labels, NotOfferedReason, PendingChoice } from "./types";
+
+/** What a QUEUED CHOICE is asking, in the CLI's own words.
+ *
+ *  A queued choice OUTRANKS the phase: `Deciding::Choice` is what
+ *  `screen_model` reports whenever `pending_choices` is non-empty, and
+ *  `decision_render::choice_words` words each variant. The client was switching
+ *  only on `prompt.kind` — which is `"options"` for every queued choice — and
+ *  falling through to the phase, so a player picking a good was told "Area
+ *  Action" and nothing on the screen named the actual question or said how many
+ *  more were stacked behind it. */
+const CHOICE_WORDS: Record<string, string> = {
+  AnyGood: "which good to take — the reward is yours whichever you pick.",
+  WarehouseTake:
+    "what to take out of your warehouse, or to decline — each option shows its price.",
+  AssistantMove: "which assistant to move, and where to — or to decline the move.",
+  RecoveryLeave: "whether to leave one assistant behind (Telephone) or recover them all.",
+  StationPlace:
+    "where the Station token goes — every player reads +1 Power in the area you pick.",
+};
+
+function choiceWords(head: PendingChoice): string {
+  if (typeof head === "string") return CHOICE_WORDS[head] ?? head;
+  if ("ChurchSpace" in head) {
+    return `which Church space to take at faith ${head.ChurchSpace.total_faith} — each shows its points and its rider.`;
+  }
+  const n = head.CustomsSpace.cost;
+  return `which Customs space to take for ${n} imported good${n === 1 ? "" : "s"} — each shows its points and its rider.`;
+}
+
+/** The `Deciding` arm, when it is a choice rather than a phase. */
+function decidingWords(deciding: Deciding): string | null {
+  if (typeof deciding === "string" || !("Choice" in deciding)) return null;
+  const { head, queued } = deciding.Choice;
+  const tail = queued > 1 ? ` (${queued - 1} more to resolve after this one)` : "";
+  return `${choiceWords(head)}${tail}`;
+}
 
 /** The near-miss rows, in the CLI's own words.
  *
@@ -213,6 +249,11 @@ function asking(state: ClientState, labels: Labels | null): string {
   const d = state.frame.decision;
   const phaseKey = d.phase_chain[d.current_phase];
   const phase = (phaseKey && labels?.phases[phaseKey]) || phaseKey || "";
+  // A queued choice outranks the phase, exactly as `deciding_line` has it.
+  const choice = decidingWords(d.deciding);
+  if (choice && (state.prompt.kind === "options" || state.prompt.kind === "pick")) {
+    return `You are deciding — ${choice}`;
+  }
   switch (state.prompt.kind) {
     case "pick":
       return state.prompt.title;

@@ -321,8 +321,31 @@ async fn input(
         }
     }
 
+    // STRIP THE TERMINAL PROMPT BLOCK, keep the deltas.
+    //
+    // `Repl::out` composes `text` as "what just happened" plus a rendered
+    // screen — for the main decision that screen is `prompt()`, which the
+    // browser already draws structurally from `PromptState`. Passing it through
+    // meant the client printed the numbered options a second time as dead text,
+    // a bare `>` caret, and the CLI's standing hint: "'view' any surface · '?'
+    // the card index · 'help' for commands" — three words this same server
+    // REFUSES, in a client with no text input to type them into. The browser was
+    // instructing the player in a grammar it cannot accept.
+    //
+    // The suffix is removed by IDENTITY, not by pattern-matching prose:
+    // `prompt()` is `pub` and pure over the post-step state, so it returns
+    // exactly what `out` appended. A sub-prompt's block is deliberately KEPT —
+    // it carries the live legality verdict and the placement fee, which have no
+    // structured equivalent on the wire yet, so dropping it would lose the only
+    // statement of a cost the player is about to pay.
+    let body = if matches!(repl.sub, yokohama_cli::repl::SubPrompt::None) {
+        let tail = repl.prompt();
+        out.text.strip_suffix(&tail).unwrap_or(&out.text).to_string()
+    } else {
+        out.text.clone()
+    };
     let messages: Vec<String> =
-        out.text.lines().map(str::trim_end).filter(|l| !l.is_empty()).map(str::to_string).collect();
+        body.lines().map(str::trim_end).filter(|l| !l.is_empty()).map(str::to_string).collect();
     let mut client = ClientState::of(&id, &repl, messages);
     client.warnings.extend(warnings);
     Ok(Json(client))

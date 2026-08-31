@@ -88,8 +88,14 @@ function SiteSlots({ site, colors }: { site: SiteModel; colors: PlayerColor[] })
         if (r.silk) parts.push(`s${r.silk}`);
         if (r.copper) parts.push(`c${r.copper}`);
         if (r.any_good) parts.push(`*${r.any_good}`);
-        if (r.movement) parts.push(`m${r.movement}`);
-        if (r.warehouse_tokens) parts.push(`w${r.warehouse_tokens}`);
+        // The CLI's alphabet, not one of our own. `board_render::push_reward`
+        // prints `movement` as `a` — the YAML's `assistants` icon, which the
+        // engine names `movement` because the icon MOVES an assistant — and
+        // `warehouse_tokens` as the built-house glyph. A browser inventing `m`
+        // and `w` gives a player cross-reading the two surfaces an unknown
+        // token, which is the one thing a shared legend is for.
+        if (r.movement) parts.push(`a${r.movement}`);
+        if (r.warehouse_tokens) parts.push(`\u2302${r.warehouse_tokens}`);
         const built = slot.built_by;
         return (
           <span
@@ -220,9 +226,9 @@ function Legend() {
       </div>
       <div>
         site slots: <b>&#8962;</b> built (owner colour) &middot; <b>★n</b> VP &middot; <b>¥n</b>{" "}
-        yen &middot; <b>f/t/s/c n</b> goods &middot; <b>*n</b> any good &middot; <b>mn</b> movement
-        &middot; <b>wn</b> from warehouse &middot; <b>Tn</b> trading-house VP &middot; <b>—</b> a
-        blank space
+        yen &middot; <b>f/t/s/c n</b> goods &middot; <b>*n</b> any good &middot; <b>an</b>{" "}
+        assistants &middot; <b>&#8962;n</b> build &middot; <b>Tn</b> trading-house VP &middot;{" "}
+        <b>—</b> a blank space
       </div>
     </details>
   );

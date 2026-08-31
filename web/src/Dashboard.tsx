@@ -49,12 +49,18 @@ export function Dashboard({
   );
 }
 
-const good = (n: number, cls: string, label: string) =>
-  n > 0 ? (
-    <span className={`chip ${cls}`} key={cls}>
-      {n} {label}
-    </span>
-  ) : null;
+/** All five goods, ALWAYS, zeros included and dimmed.
+ *
+ *  `panel_render::goods_line` prints every one — the CLI's own note says a
+ *  suppressed figure hides the only distinction that scores. A browser that
+ *  drops `0 imports` cannot be read as "no imports" rather than "imports not
+ *  shown on this panel", and imports are what the Customs track and one of the
+ *  church's six faith payment types are counted in. */
+const good = (n: number, cls: string, label: string) => (
+  <span className={`chip ${cls} ${n === 0 ? "zero" : ""}`} key={cls}>
+    {n} {label}
+  </span>
+);
 
 /** Where a seat's president is: in hand, or on a named area.
  *
@@ -87,8 +93,6 @@ function Players({ players, labels }: { players: PlayerModel[]; labels: Labels |
               {good(p.goods.tea, "tea", "tea")}
               {good(p.goods.seafood, "seafood", "seafood")}
               {good(p.goods.imports, "imports", "imports")}
-              {p.goods.copper + p.goods.silk + p.goods.tea + p.goods.seafood + p.goods.imports ===
-                0 && <span className="chip muted">no goods</span>}
             </div>
 
             <div className="stat-row">
@@ -107,9 +111,20 @@ function Players({ players, labels }: { players: PlayerModel[]; labels: Labels |
                   {lock} locked
                 </span>
               )}
-              <span className="chip">shop {p.shophouses.built}/8</span>
-              <span className="chip">
-                trade {p.trading_houses.built}/4 (next &#165;{p.trading_houses.next_take_cost})
+              {/* All three zones, because IN HAND is the one you can build
+                  from. `shop 2/8` cannot distinguish two in hand from none, and
+                  a player reading it plans a build they cannot make; the CLI
+                  prints in-hand first for exactly that reason. The `/8` and
+                  `/4` are also engine end-game constants, and this layer does
+                  not get to know them — the end-trigger strip already carries
+                  them, worded by the engine's own renderer. */}
+              <span className="chip" title="in hand / in warehouse / built">
+                shop {p.shophouses.in_hand}h / {p.shophouses.in_warehouse}w /{" "}
+                {p.shophouses.built}b
+              </span>
+              <span className="chip" title="in hand / in warehouse / built">
+                trade {p.trading_houses.in_hand}h / {p.trading_houses.in_warehouse}w /{" "}
+                {p.trading_houses.built}b (next &#165;{p.trading_houses.next_take_cost})
               </span>
             </div>
 
@@ -121,11 +136,12 @@ function Players({ players, labels }: { players: PlayerModel[]; labels: Labels |
               {p.five_power_tokens > 0 && (
                 <span className="chip yen">{p.five_power_tokens} 5-Power</span>
               )}
-              {(p.mercenaries_unused > 0 || p.mercenaries_used > 0) && (
-                <span className="chip" title="face-up mercenaries score 1 VP each">
-                  merc {p.mercenaries_unused} unused / {p.mercenaries_used} used
-                </span>
-              )}
+              {/* Always, both numbers: unused mercenaries score 1 VP each and
+                  used ones score nothing, so the split IS the only thing about
+                  them that scores. */}
+              <span className="chip" title="face-up mercenaries score 1 VP each; used ones do not">
+                merc {p.mercenaries_unused} unused / {p.mercenaries_used} used
+              </span>
             </div>
 
             {/* Orders filled are public on every seat, in completion order —
@@ -231,6 +247,9 @@ function Tracks({
   art: ArtManifest | null;
   colors: PlayerColor[];
 }) {
+  const hasDummy =
+    tracks.church.some((s) => s.occupant === DUMMY_SEAT) ||
+    tracks.customs.some((s) => s.occupant === DUMMY_SEAT);
   const m = tracks.mercenary_supply;
   const mercTotal = m.english + m.american + m.french + m.german + m.dutch;
   // The summary figure the CLI prints beside each track: what the CHEAPEST and
@@ -242,8 +261,13 @@ function Tracks({
   const churchMv = tracks.church.some((s) => s.movement_rider > 0);
   return (
     <section className="panel">
+      {/* The dummy clause only when a dummy is actually on a track:
+          `place_setup_dummies` returns early above 2 players, so at 3P or 4P
+          the CLI prints no such clause and a browser that teaches a `D` marker
+          which can never appear is teaching a rule that does not apply. */}
       <h2>
-        Tracks &mdash; ends at {tracks.trigger_at} of YOUR pawns &middot; D = dummy, not counted
+        Tracks &mdash; ends at {tracks.trigger_at} of YOUR pawns
+        {hasDummy ? " · D = dummy, not counted" : ""}
       </h2>
 
       <div className="tile-row muted">

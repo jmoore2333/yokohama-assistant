@@ -414,3 +414,8 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
 .merc img { width: 1.35rem; height: 1.35rem; border-radius: 3px; }
 .merc.gone { opacity: 0.3; }
 .merc.gone img { filter: grayscale(1); }
+
+/* A zero good is printed, not dropped — a suppressed figure cannot be read as
+ * "none" rather than "not shown here", and imports are what the Customs track
+ * and one church faith payment type are counted in. */
+.chip.zero { opacity: 0.4; }
