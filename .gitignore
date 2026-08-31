@@ -41,3 +41,11 @@ yokohama-game-*.json
 # importer, not a fixture — a fixture that needs one gets a redacted excerpt
 # committed deliberately, under docs/plans/.
 bridge-captures
+
+# The web client's build inputs and outputs. `node_modules` is restored by
+# `npm ci`; `dist` is produced by `npm run build` and is what the server serves.
+# Neither belongs in history -- the same reasoning the arena corpus row gives:
+# both regenerate from a committed command.
+web/node_modules/
+web/dist/
+web/tsconfig.tsbuildinfo

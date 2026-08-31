@@ -1,0 +1,220 @@
+/* Yokohama — an instrument, not a game portal.
+ *
+ * The palette is inherited rather than invented: the good/VP/yen tones are
+ * `mockgen.py`'s terminal→web map (the one the CLI's colours were reviewed
+ * under), and the semantic roles are `style::Tone`'s — player, good, VP, yen,
+ * reachable, chrome, dim, warn. Colour is never decorative here; every hue
+ * means one thing, which is what lets a player read the board at a glance.
+ */
+
+:root {
+  color-scheme: dark;
+
+  --bg: #0d1013;
+  --bg-raised: #14181d;
+  --bg-sunken: #090b0e;
+  --line: #232a32;
+  --line-bright: #33404d;
+
+  --fg: #e8ecf2;
+  --fg-dim: #8b97a6;
+  --fg-faint: #5c6773;
+
+  --red: #ff5f56;
+  --blue: #6f9bff;
+  --green: #69c25f;
+  --yellow: #f2c14e;
+
+  --copper: #d78742;
+  --silk: #e8ecf2;
+  --tea: #69c25f;
+  --seafood: #5fd7e8;
+  --imports: #d7af5f;
+  --vp: #5fa8ff;
+  --yen: #ffd75f;
+
+  --reachable: #69c25f;
+  --warn: #ff8f6b;
+
+  --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --display: "Fraunces", Georgia, "Times New Roman", serif;
+
+  --tile-w: 12.5rem;
+  --radius: 4px;
+}
+
+@media (prefers-color-scheme: light) {
+  /* The instrument stays dark on purpose — a board read for an hour at a time
+   * is easier on a low-luminance ground — but the chrome lifts so it does not
+   * read as "broken dark mode" beside a light OS. */
+  :root { --bg: #101418; --bg-raised: #171c22; }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3 { font-family: var(--display); font-weight: 500; margin: 0; }
+
+.app { display: flex; flex-direction: column; min-height: 100vh; }
+
+/* ---- banner ------------------------------------------------------------ */
+.banner {
+  display: flex; align-items: baseline; gap: 1.25rem;
+  padding: 0.75rem 1.25rem;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-sunken);
+}
+.banner h1 {
+  font-size: 1.05rem; letter-spacing: 0.42em; text-transform: uppercase;
+}
+.banner .meta { color: var(--fg-faint); font-size: 11px; letter-spacing: 0.04em; }
+
+/* ---- layout ------------------------------------------------------------ */
+.stage { display: flex; gap: 1.5rem; padding: 1.25rem; align-items: flex-start; flex: 1; }
+.board-col { flex: 1 1 auto; min-width: 0; }
+.rail { flex: 0 0 22rem; display: flex; flex-direction: column; gap: 1rem; }
+
+@media (max-width: 1100px) {
+  .stage { flex-direction: column; }
+  .rail { flex: 1 1 auto; width: 100%; }
+}
+
+/* ---- board ------------------------------------------------------------- */
+.board { display: flex; flex-direction: column; gap: 0.4rem; overflow-x: auto; padding-bottom: 0.4rem; }
+.board-row { display: flex; gap: 0.4rem; }
+
+.tile {
+  width: var(--tile-w); flex: 0 0 var(--tile-w);
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0.45rem 0.55rem;
+  display: flex; flex-direction: column; gap: 0.2rem;
+  transition: border-color 120ms ease, transform 120ms ease;
+}
+.tile.reachable { border-color: var(--reachable); box-shadow: inset 0 0 0 1px rgb(105 194 95 / 0.25); }
+.tile.canal { background: repeating-linear-gradient(135deg, #0f1a1f, #0f1a1f 6px, #111f26 6px, #111f26 12px); }
+
+.tile-head { display: flex; align-items: baseline; gap: 0.4rem; }
+.tile-id { color: var(--fg-faint); font-size: 10px; }
+.tile-name {
+  font-family: var(--display); font-size: 0.9rem; line-height: 1.2;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tile-row { display: flex; align-items: center; gap: 0.35rem; font-size: 11px; min-height: 1.15rem; }
+.tile-row.muted { color: var(--fg-faint); }
+
+.pawn { font-size: 12px; line-height: 1; }
+.seat-red { color: var(--red); }
+.seat-blue { color: var(--blue); }
+.seat-green { color: var(--green); }
+.seat-yellow { color: var(--yellow); }
+
+.chip {
+  display: inline-flex; align-items: center; gap: 0.15rem;
+  padding: 0 0.3rem; border-radius: 3px; font-size: 10px;
+  border: 1px solid var(--line-bright); color: var(--fg-dim);
+}
+.chip.vp { color: var(--vp); border-color: color-mix(in oklab, var(--vp) 40%, transparent); }
+.chip.yen { color: var(--yen); border-color: color-mix(in oklab, var(--yen) 40%, transparent); }
+.chip.copper { color: var(--copper); }
+.chip.silk { color: var(--silk); }
+.chip.tea { color: var(--tea); }
+.chip.seafood { color: var(--seafood); }
+.chip.imports { color: var(--imports); }
+
+/* ---- panels ------------------------------------------------------------ */
+.panel {
+  background: var(--bg-raised); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 0.7rem 0.85rem;
+}
+.panel h2 {
+  font-size: 10px; letter-spacing: 0.2em; text-transform: uppercase;
+  color: var(--fg-faint); font-family: var(--mono); font-weight: 500;
+  margin-bottom: 0.5rem;
+}
+.seat { padding: 0.4rem 0; border-top: 1px solid var(--line); }
+.seat:first-of-type { border-top: 0; }
+.seat-head { display: flex; align-items: baseline; gap: 0.5rem; }
+.seat-name { font-family: var(--display); font-size: 0.95rem; }
+.seat-head .tag { font-size: 10px; color: var(--fg-faint); }
+.seat.current .seat-name::before { content: "\25B6"; margin-right: 0.3rem; font-size: 0.7em; }
+.stat-row { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.25rem; }
+
+.track { display: flex; flex-wrap: wrap; gap: 0.2rem; margin-top: 0.2rem; }
+.space {
+  min-width: 1.6rem; text-align: center; padding: 0.05rem 0.2rem;
+  border: 1px solid var(--line-bright); border-radius: 3px; font-size: 10px;
+  color: var(--fg-dim);
+}
+.space.taken { background: var(--line); color: var(--fg); }
+
+/* ---- decision ---------------------------------------------------------- */
+.decision {
+  border-top: 1px solid var(--line); background: var(--bg-sunken);
+  padding: 0.9rem 1.25rem 1.4rem;
+}
+.chain { display: flex; flex-wrap: wrap; gap: 0.45rem; font-size: 10px; color: var(--fg-faint); letter-spacing: 0.08em; text-transform: uppercase; }
+.chain .lit { color: var(--fg); background: var(--line); padding: 0 0.35rem; border-radius: 3px; }
+.asking { font-family: var(--display); font-size: 1.05rem; margin: 0.5rem 0 0.6rem; }
+
+.options { display: flex; flex-direction: column; gap: 0.25rem; max-width: 62rem; }
+.option {
+  display: flex; align-items: baseline; gap: 0.6rem; width: 100%;
+  background: var(--bg-raised); color: var(--fg);
+  border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 0.4rem 0.6rem; font: inherit; text-align: left; cursor: pointer;
+  transition: border-color 100ms ease, background 100ms ease;
+}
+.option:hover:not(:disabled) { border-color: var(--line-bright); background: #1a2027; }
+.option:focus-visible { outline: 2px solid var(--vp); outline-offset: 1px; }
+.option:disabled { opacity: 0.5; cursor: default; }
+.option .num { color: var(--vp); font-weight: 700; min-width: 1.6rem; }
+.option .more { color: var(--fg-faint); margin-left: auto; }
+
+.controls { display: flex; gap: 0.5rem; margin-top: 0.6rem; flex-wrap: wrap; }
+button.ghost {
+  background: transparent; color: var(--fg-dim); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 0.3rem 0.7rem; font: inherit; cursor: pointer;
+}
+button.ghost:hover { color: var(--fg); border-color: var(--line-bright); }
+
+.messages { margin-top: 0.7rem; display: flex; flex-direction: column; gap: 0.15rem; max-width: 62rem; }
+.messages div { color: var(--fg-dim); font-size: 11.5px; }
+.messages div.warn { color: var(--warn); }
+
+/* ---- setup ------------------------------------------------------------- */
+.setup { max-width: 46rem; margin: 3rem auto; padding: 0 1.25rem; }
+.setup h2 { font-size: 1.4rem; margin-bottom: 0.3rem; }
+.setup p.lede { color: var(--fg-dim); margin-top: 0; }
+.field { display: flex; align-items: center; gap: 0.6rem; margin: 0.6rem 0; }
+.field label { min-width: 9rem; color: var(--fg-dim); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; }
+.field input, .field select {
+  background: var(--bg-sunken); color: var(--fg); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 0.3rem 0.5rem; font: inherit;
+}
+button.primary {
+  background: var(--vp); color: #061019; border: 0; border-radius: var(--radius);
+  padding: 0.45rem 1.1rem; font: inherit; font-weight: 700; cursor: pointer;
+}
+button.primary:disabled { opacity: 0.45; cursor: default; }
+
+.deal { display: flex; gap: 0.6rem; flex-wrap: wrap; margin: 0.4rem 0 0.9rem; }
+.card {
+  border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--bg-raised); padding: 0.5rem 0.6rem; min-width: 11rem; cursor: pointer;
+}
+.card.chosen { border-color: var(--vp); box-shadow: inset 0 0 0 1px var(--vp); }
+.card .country { font-family: var(--display); font-size: 0.95rem; }
+
+.error { color: var(--warn); margin-top: 0.6rem; }
+.center { text-align: center; color: var(--fg-dim); padding: 3rem; }

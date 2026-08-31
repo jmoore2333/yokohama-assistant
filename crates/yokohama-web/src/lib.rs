@@ -23,6 +23,7 @@
 //!    records that the public board is an injective fingerprint of the setup
 //!    seed, so a sequential or timestamp seed would hand over the hidden set.
 
+pub mod assets;
 pub mod client;
 pub mod games;
 pub mod store;
@@ -257,6 +258,22 @@ async fn input(
     Ok(Json(ClientState::of(&id, &repl, messages)))
 }
 
+/// Everything no route claimed.
+///
+/// **`/api/*` never falls through to the client.** A mistyped endpoint has to
+/// answer as the API does — a JSON `{"error": ...}` with a 404 — because
+/// serving `index.html` there produces the failure every SPA developer has
+/// debugged at least once: the browser reports a syntax error at `<!doctype`,
+/// the console blames the client, and the real fault (a wrong path) appears
+/// nowhere in the message. Everything else is the client, with the SPA
+/// fallback `assets::serve` describes.
+async fn fallback(uri: axum::http::Uri) -> Response {
+    if uri.path().starts_with("/api/") {
+        return ApiError::not_found(format!("no such endpoint: {}", uri.path())).into_response();
+    }
+    assets::serve(uri).await
+}
+
 /// The router, built over a shared state so tests can drive it through
 /// `tower::ServiceExt::oneshot` without binding a port.
 pub fn app(state: Arc<AppState>) -> Router {
@@ -268,6 +285,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/api/games/{id}", get(get_game).delete(delete_game))
         .route("/api/games/{id}/input", post(input))
         .with_state(state)
+        .fallback(fallback)
 }
 
 #[cfg(test)]
@@ -304,11 +322,19 @@ mod tests {
         assert_eq!(body["server_version"], env!("CARGO_PKG_VERSION"));
     }
 
-    /// An unknown route is a 404, not a 200 with an empty body — a client that
-    /// mistypes a path must find out from the status line.
+    /// An unknown API path answers as the API, not as the client.
+    ///
+    /// The client is served from this same origin on a fallback, so without the
+    /// `/api/` guard a mistyped endpoint would return `index.html` with a 200
+    /// once a build exists — and the caller would see a JSON parse error
+    /// pointing at `<!doctype` instead of the 404 it needed.
     #[tokio::test]
-    async fn an_unknown_route_is_a_404() {
-        let (status, _) = get_json("/api/nope").await;
+    async fn an_unknown_api_path_is_a_json_404_not_the_client() {
+        let (status, body) = get_json("/api/nope").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(
+            body["error"].as_str().is_some_and(|e| e.contains("/api/nope")),
+            "the refusal names the path it refused: {body}",
+        );
     }
 }
