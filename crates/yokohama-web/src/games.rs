@@ -193,11 +193,20 @@ pub struct Games {
     rules: Arc<Rules>,
     store: Arc<dyn SessionStore>,
     live: Mutex<HashMap<GameId, Arc<Mutex<Repl>>>>,
+    /// Ids deleted since this process started, so a request that was already
+    /// holding a handle cannot write the record back after `DELETE` removed it.
+    /// Cleared by `create`, so a name can be reused.
+    deleted: Mutex<std::collections::HashSet<GameId>>,
 }
 
 impl Games {
     pub fn new(rules: Arc<Rules>, store: Arc<dyn SessionStore>) -> Self {
-        Self { rules, store, live: Mutex::new(HashMap::new()) }
+        Self {
+            rules,
+            store,
+            live: Mutex::new(HashMap::new()),
+            deleted: Mutex::new(std::collections::HashSet::new()),
+        }
     }
 
     pub fn store(&self) -> &Arc<dyn SessionStore> {
@@ -221,9 +230,15 @@ impl Games {
             Some(name) => name.clone(),
             None => format!("sim-{seed:016x}"),
         };
-        if self.store.read(&id).is_ok() {
+        // `exists`, not `read(...).is_ok()`. The latter reads EVERY failure as
+        // absence, so a stored game whose file was momentarily unreadable was
+        // answered 201 and overwritten — measured with a `chmod 000`: the
+        // create succeeded and the original record was gone.
+        if self.store.exists(&id)? {
             return Err(format!("a game named {id:?} already exists"));
         }
+
+        self.deleted.lock().expect("games lock").remove(&id);
 
         let mut session = Session::new_sim(config, seed, choices, (*self.rules).clone())?;
         session.set_run_seats(bots.seat_provenance());
@@ -266,15 +281,54 @@ impl Games {
     }
 
     /// Write `repl`'s record through. Called after every mutation.
+    ///
+    /// **Two guards, and each closes a measured way to lose a move.**
+    ///
+    /// A game DELETED while this request was in flight is not resurrected. The
+    /// window is the whole of `Repl::step`, bot pump included — measured at
+    /// 0.16-0.30 s in a debug build — and without the check the file came back:
+    /// `DELETE` answered 204, the file went, the in-flight input finished, and
+    /// `FsStore::write` re-created the parent directory and the record.
+    ///
+    /// A record that has ALREADY MOVED PAST this handle is not overwritten. The
+    /// `live` map caches a handle forever and nothing invalidates it against
+    /// the store, so with two processes over one store — the arrangement
+    /// `SessionStore` exists for — a stale handle could publish a record with
+    /// FEWER events than the one on disk, erasing a move another writer had
+    /// already applied and acknowledged. This is a monotonicity guard, not a
+    /// compare-and-swap: it refuses a write that would go backwards, which is
+    /// the shape of the loss, and does not pretend to serialize two writers
+    /// that are both moving forwards.
     pub fn persist(&self, id: &str, repl: &Repl) -> Result<(), String> {
+        if self.deleted.lock().expect("games lock").contains(id) {
+            return Err(format!("{id:?} was deleted while this move was in flight"));
+        }
+        let events = repl.session.record().events.len();
+        if let Ok(stored) = self.store.read(id) {
+            if let Ok(on_disk) = serde_json::from_str::<GameRecord>(&stored) {
+                if on_disk.events.len() > events {
+                    return Err(format!(
+                        "{id:?} has advanced past this handle ({} stored vs {events} here) — refusing to write backwards",
+                        on_disk.events.len(),
+                    ));
+                }
+            }
+        }
         let json =
             serde_json::to_string_pretty(repl.session.record()).map_err(|e| e.to_string())?;
         self.store.write(id, &json)
     }
 
+    /// Delete, and remember that we did.
+    ///
+    /// The tombstone is what stops an in-flight `input` from writing the record
+    /// back after the file is gone. It is bounded by `create`, which clears the
+    /// id — so the set only ever holds ids that are deleted and not recreated,
+    /// and re-creating a deleted name works exactly as before.
     pub fn delete(&self, id: &str) -> Result<(), String> {
         self.store.delete(id)?;
         self.live.lock().expect("games lock").remove(id);
+        self.deleted.lock().expect("games lock").insert(id.to_string());
         Ok(())
     }
 }
@@ -288,4 +342,121 @@ impl Games {
 /// same two sites, and calls the same pump at both.
 pub fn bring_alive(repl: &mut Repl) -> String {
     repl.pump_bots()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::MemStore;
+
+    fn games() -> Games {
+        Games::new(Arc::new(Rules::standard()), Arc::new(MemStore::default()))
+    }
+
+    fn req(name: &str) -> NewGame {
+        NewGame {
+            players: 2,
+            colors: vec![PlayerColor::Red, PlayerColor::Blue],
+            start_seat: 0,
+            seed: Some(WireSeed(20_260_831)),
+            keeps: vec![1, 1],
+            bot_seats: vec![1],
+            name: Some(name.to_string()),
+        }
+    }
+
+    /// A game DELETED while a move was in flight does not come back.
+    ///
+    /// The window is the whole of `Repl::step`, bot pump included — measured at
+    /// 0.16-0.30 s in a debug build, so this is an ordinary click-then-delete,
+    /// not a microsecond. Without the tombstone the in-flight `persist`
+    /// re-created the record (and `FsStore::write` re-creates the parent
+    /// directory too), so `DELETE` answered 204 and the game reappeared in
+    /// `list`.
+    #[test]
+    fn a_delete_is_not_undone_by_a_move_already_in_flight() {
+        let games = games();
+        let (id, handle) = games.create(&req("drace")).expect("a game");
+        let repl = handle.lock().expect("the handle");
+
+        games.delete(&id).expect("a delete");
+        assert!(games.list().expect("a list").is_empty(), "the delete took");
+
+        let err = games.persist(&id, &repl).expect_err("the in-flight write is refused");
+        assert!(err.contains("deleted"), "the refusal says why: {err}");
+        assert!(games.list().expect("a list").is_empty(), "and the game stays gone");
+
+        // The name is reusable: the tombstone holds ids that are deleted and
+        // NOT recreated, so this must succeed rather than trip the guard.
+        assert!(games.create(&req("drace")).is_ok(), "the name can be reused");
+        assert_eq!(games.list().expect("a list"), vec!["drace".to_string()]);
+    }
+
+    /// A handle that has fallen behind the store cannot write the store
+    /// backwards.
+    ///
+    /// `live` caches a handle forever and nothing invalidates it against the
+    /// store, so with two processes over one store — the arrangement
+    /// `SessionStore` exists for — a stale handle would publish a record with
+    /// FEWER events, erasing a move another writer had already applied and
+    /// acknowledged.
+    #[test]
+    fn a_stale_handle_cannot_erase_a_move_another_writer_already_stored() {
+        let store = Arc::new(MemStore::default());
+        let games = Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn SessionStore>);
+        let (id, handle) = games.create(&req("stale")).expect("a game");
+
+        // One real move, so the handle and the store agree on a non-empty
+        // record before anything diverges.
+        {
+            let mut repl = handle.lock().expect("the handle");
+            repl.step("1");
+            games.persist(&id, &repl).expect("a persist");
+        }
+
+        // Now the store advances behind this handle's back — which is exactly
+        // what a second process doing one move looks like from here.
+        let mut record: GameRecord =
+            serde_json::from_str(&store.read(&id).expect("stored")).expect("a record");
+        let ahead = record.events.last().cloned().expect("the move is recorded");
+        record.events.push(ahead);
+        store.write(&id, &serde_json::to_string(&record).expect("json")).expect("a write");
+        let ahead_len = record.events.len();
+
+        let repl = handle.lock().expect("the handle");
+        assert!(repl.session.record().events.len() < ahead_len, "the premise: this handle is behind");
+
+        let err = games.persist(&id, &repl).expect_err("a backwards write is refused");
+        assert!(err.contains("advanced past"), "the refusal says why: {err}");
+
+        let after: GameRecord =
+            serde_json::from_str(&store.read(&id).expect("stored")).expect("a record");
+        assert_eq!(after.events.len(), ahead_len, "the newer record survived");
+    }
+
+    /// An existing game whose record cannot be READ is still occupied.
+    #[test]
+    fn create_refuses_a_name_whose_record_is_unreadable() {
+        struct Unreadable;
+        impl SessionStore for Unreadable {
+            fn list(&self) -> Result<Vec<GameId>, String> {
+                Ok(vec!["taken".to_string()])
+            }
+            fn read(&self, _: &str) -> Result<String, String> {
+                Err("permission denied".to_string())
+            }
+            fn exists(&self, id: &str) -> Result<bool, String> {
+                Ok(id == "taken")
+            }
+            fn write(&self, _: &str, _: &str) -> Result<(), String> {
+                panic!("a refused create must not reach the store");
+            }
+            fn delete(&self, _: &str) -> Result<(), String> {
+                Ok(())
+            }
+        }
+        let games = Games::new(Arc::new(Rules::standard()), Arc::new(Unreadable));
+        let err = games.create(&req("taken")).err().expect("the name is occupied");
+        assert!(err.contains("already exists"), "{err}");
+    }
 }

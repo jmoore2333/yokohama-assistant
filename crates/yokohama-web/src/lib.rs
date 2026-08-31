@@ -262,13 +262,28 @@ async fn input(
 
     let before = repl.session.record().events.len();
     let out = repl.step(&req.line);
+
+    // A FAILED SAVE IS NOT A FAILED MOVE, and must not be reported as one.
+    //
+    // `step` has already mutated the resident `Repl`; every later request
+    // reuses that handle. Returning the store's error as a 400 told the client
+    // its move was refused while the server kept it — measured with the store
+    // directory at mode 0555: the client got `400 Permission denied` and the
+    // very next GET showed the move applied, with the durable record still one
+    // event behind. So the applied state is returned, and the failure is said
+    // OUT LOUD as a warning: the move happened, and it is not saved.
+    let mut warnings = Vec::new();
     if repl.session.record().events.len() != before {
-        state.games.persist(&id, &repl).map_err(ApiError::bad_request)?;
+        if let Err(e) = state.games.persist(&id, &repl) {
+            warnings.push(format!("APPLIED BUT NOT SAVED — {e}"));
+        }
     }
 
     let messages: Vec<String> =
         out.text.lines().map(str::trim_end).filter(|l| !l.is_empty()).map(str::to_string).collect();
-    Ok(Json(ClientState::of(&id, &repl, messages)))
+    let mut client = ClientState::of(&id, &repl, messages);
+    client.warnings.extend(warnings);
+    Ok(Json(client))
 }
 
 // ---------------------------------------------------------------------------

@@ -49,3 +49,4 @@ bridge-captures
 web/node_modules/
 web/dist/
 web/tsconfig.tsbuildinfo
+docs/tools/__pycache__/
