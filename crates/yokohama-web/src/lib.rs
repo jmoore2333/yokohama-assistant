@@ -32,7 +32,9 @@ pub mod store;
 
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::extract::rejection::{JsonRejection, QueryRejection};
+use axum::extract::{FromRequest, FromRequestParts, Path, Query, Request, State};
+use axum::http::request::Parts;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::{
@@ -73,6 +75,64 @@ impl IntoResponse for ApiError {
 }
 
 type ApiResult<T> = Result<Json<T>, ApiError>;
+
+/// This API's request-BODY extractor, and the reason it is not `axum::Json`.
+///
+/// Two defects, both measured, both closed here:
+///
+/// 1. **A rejection did not carry a sentence.** `axum::Json`'s own rejection is
+///    a PLAIN-TEXT body, and `web/src/api.ts` builds its `ApiError` by reading
+///    `.error` off the body — so `{not json` reached the player as a bare status
+///    code with nothing to show. Every refusal on this API is one shape, and
+///    that has to include the ones raised before a handler runs.
+/// 2. **A shape error was a 422.** Honest for a generic JSON extractor, but
+///    this API has one meaning for "your request was wrong" and it is 400.
+///
+/// The wrapped types carry `#[serde(deny_unknown_fields)]`, which is the half
+/// that matters: `#[serde(default)]` is right for an ABSENT optional field and
+/// wrong for a field the caller believed it was setting. Before the fence, a
+/// client that renamed `start_seat` to `startSeat` got a 201 and a DIFFERENT
+/// GAME. Because the fence sits at the extractor rather than in a handler, a
+/// malformed body is refused before any lookup — so a bad body against a
+/// missing game answers 400, not 404, which is the right precedence.
+pub struct JsonBody<T>(pub T);
+
+impl<T, S> FromRequest<S> for JsonBody<T>
+where
+    Json<T>: FromRequest<S, Rejection = JsonRejection>,
+    S: Send + Sync,
+{
+    type Rejection = ApiError;
+
+    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+        Json::<T>::from_request(req, state)
+            .await
+            .map(|Json(value)| Self(value))
+            .map_err(|rejection| ApiError::bad_request(rejection.body_text()))
+    }
+}
+
+/// The same fence over a QUERY STRING, for the same reasons.
+///
+/// `?tale=5` for `?tail=5` is otherwise a silent full log: the key is dropped,
+/// the `Option` defaults to `None`, and the caller is answered confidently with
+/// something it did not ask for.
+pub struct QueryArgs<T>(pub T);
+
+impl<T, S> FromRequestParts<S> for QueryArgs<T>
+where
+    Query<T>: FromRequestParts<S, Rejection = QueryRejection>,
+    S: Send + Sync,
+{
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        Query::<T>::from_request_parts(parts, state)
+            .await
+            .map(|Query(value)| Self(value))
+            .map_err(|rejection| ApiError::bad_request(rejection.body_text()))
+    }
+}
 
 /// Everything a handler may reach.
 ///
@@ -188,7 +248,7 @@ async fn labels(State(state): State<Arc<AppState>>) -> Json<Labels> {
 
 async fn preview_game(
     State(state): State<Arc<AppState>>,
-    Json(req): Json<NewGame>,
+    JsonBody(req): JsonBody<NewGame>,
 ) -> ApiResult<games::Preview> {
     games::preview(&req, &state.rules).map(Json).map_err(ApiError::bad_request)
 }
@@ -199,7 +259,7 @@ async fn list_games(State(state): State<Arc<AppState>>) -> ApiResult<Vec<String>
 
 async fn create_game(
     State(state): State<Arc<AppState>>,
-    Json(req): Json<NewGame>,
+    JsonBody(req): JsonBody<NewGame>,
 ) -> Result<(StatusCode, Json<ClientState>), ApiError> {
     let (id, handle) = state.games.create(&req).map_err(ApiError::bad_request)?;
     let repl = handle.lock().expect("a fresh game");
@@ -225,6 +285,7 @@ async fn delete_game(
 
 /// What the client sends to act.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Input {
     /// An option's `number`, or a sub-prompt token (`confirm`, `cancel`, an
     /// area id, a count). The grammar is the CLI's — but only the GAMEPLAY part
@@ -270,7 +331,7 @@ pub struct Input {
 async fn input(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-    Json(req): Json<Input>,
+    JsonBody(req): JsonBody<Input>,
 ) -> ApiResult<ClientState> {
     if !grammar::is_gameplay_line(&req.line) {
         return Err(ApiError::bad_request(grammar::refusal(&req.line)));
@@ -415,6 +476,7 @@ surface!(areas, yokohama_cli::screen_model::AreasPanel, yokohama_cli::screen_mod
 /// stays truthful either way, so a client can always say how many it is not
 /// showing.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LogQuery {
     #[serde(default)]
     pub tail: Option<usize>,
@@ -431,7 +493,7 @@ pub struct LogQuery {
 async fn log(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-    axum::extract::Query(q): axum::extract::Query<LogQuery>,
+    QueryArgs(q): QueryArgs<LogQuery>,
 ) -> ApiResult<yokohama_cli::screen_model::LogPanel> {
     let handle = state.games.handle(&id).map_err(ApiError::not_found)?;
     let repl = handle.lock().expect("a game");
@@ -515,6 +577,108 @@ mod tests {
             serde_json::from_slice(&bytes).expect("JSON")
         };
         (status, value)
+    }
+
+    async fn post_json(uri: &str, body: serde_json::Value) -> (StatusCode, serde_json::Value) {
+        raw_post(uri, serde_json::to_vec(&body).expect("a body")).await
+    }
+
+    async fn raw_post(uri: &str, body: Vec<u8>) -> (StatusCode, serde_json::Value) {
+        let res = app(Arc::new(AppState::in_memory()))
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .expect("a POST"),
+            )
+            .await
+            .expect("the router answers");
+        let status = res.status();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.expect("a body");
+        let value = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        (status, value)
+    }
+
+    /// A key this API does not know is a REFUSAL, not a default.
+    ///
+    /// The defect, measured before the fence: `NewGame`'s `start_seat`, `seed`,
+    /// `bot_seats` and `name` are `#[serde(default)]` and nothing used
+    /// `deny_unknown_fields`, so a client that renamed `start_seat` to
+    /// `startSeat` got a **201 and a different game** — seat 0 instead of the
+    /// seat it asked for — with nothing anywhere saying so. A default is the
+    /// right answer for an ABSENT optional field and the wrong one for a field
+    /// the caller believed it was setting.
+    ///
+    /// Asserted in BOTH directions: the renamed key is refused AND names
+    /// itself, and the correctly-spelled request still creates the game. A
+    /// fence that refused everything would pass the first half.
+    #[tokio::test]
+    async fn an_unknown_key_in_a_new_game_request_is_refused_rather_than_defaulted() {
+        let good = serde_json::json!({
+            "players": 2, "colors": ["Red", "Blue"], "start_seat": 1,
+            "seed": "20260831", "keeps": [1, 1], "name": "fenced",
+        });
+        let mut renamed = good.clone();
+        renamed.as_object_mut().expect("an object").remove("start_seat");
+        renamed["startSeat"] = serde_json::json!(1);
+
+        let (status, body) = post_json("/api/games", renamed).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        let msg = body["error"].as_str().unwrap_or_default();
+        assert!(msg.contains("startSeat"), "the refusal names the key it did not know: {msg}");
+
+        let (status, _) = post_json("/api/games", good).await;
+        assert_eq!(status, StatusCode::CREATED, "the correctly-spelled request still works");
+    }
+
+    /// The same fence on the one MUTATION body. `expect` is what stops a number
+    /// meaning a different move, so a misspelling of it must not be silently
+    /// absent — that is the stale-picker defect wearing a typo.
+    #[tokio::test]
+    async fn an_unknown_key_in_an_input_request_is_refused() {
+        let (status, body) =
+            post_json("/api/games/nope/input", serde_json::json!({ "line": "1", "expects": "options" }))
+                .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(
+            body["error"].as_str().unwrap_or_default().contains("expects"),
+            "names the key: {body}"
+        );
+    }
+
+    /// And on the one QUERY. `?tale=5` for `?tail=5` is a silent full log.
+    #[tokio::test]
+    async fn an_unknown_query_key_is_refused() {
+        let (status, body) = get_json("/api/games/nope/log?tale=5").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(
+            body["error"].as_str().unwrap_or_default().contains("tale"),
+            "names the key: {body}"
+        );
+    }
+
+    /// **Every refusal on this API is the same JSON shape**, including the ones
+    /// the extractor raises before a handler runs.
+    ///
+    /// `axum::Json`'s own rejection is a PLAIN-TEXT body and a 422, and
+    /// `web/src/api.ts` builds its `ApiError` by reading `.error` off the body —
+    /// so an unparseable request reached the player as a bare status code with
+    /// no sentence at all. The two cells below are the two rejections a real
+    /// client produces: broken syntax, and a missing required field.
+    #[tokio::test]
+    async fn a_rejected_body_answers_in_this_apis_own_error_shape() {
+        let (status, body) = raw_post("/api/games", b"{not json".to_vec()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body["error"].is_string(), "syntax error carries a sentence: {body}");
+
+        let (status, body) = post_json("/api/games", serde_json::json!({ "players": 2 })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            body["error"].as_str().unwrap_or_default().contains("colors"),
+            "a missing required field names itself: {body}"
+        );
     }
 
     /// Health names the two keys that actually decide compatibility, and names

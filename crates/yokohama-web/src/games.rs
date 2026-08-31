@@ -67,6 +67,7 @@ impl<'de> Deserialize<'de> for WireSeed {
 
 /// What a client sends to start a game.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NewGame {
     pub players: u8,
     pub colors: Vec<PlayerColor>,
