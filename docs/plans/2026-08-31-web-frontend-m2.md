@@ -122,7 +122,12 @@ and accepted limit of the instrument, stated here rather than discovered again.
   widening a card-index surface would genuinely need. Widen it rather than
   copying it — its doc defends a leak fence.
 - **The client has NO automated test**, and this is the largest hole in the
-  lane. `npx tsc -b --noEmit` is a type check over HAND-WRITTEN types, so it
+  lane. **Recorded forward: the owner ruled an M2.5 on 2026-08-31 to close it
+  BEFORE M3** — *"especially so we can build as we go once we get it up to
+  date"* — which makes it infrastructure for the next milestone rather than a
+  debt pass, since M3 roughly triples the client surface. The harness is not yet
+  chosen; the working note is `docs/temp/webresearch/HANDOVER.md`. The paragraph
+  below stands as M2's record of the state that prompted the ruling. `npx tsc -b --noEmit` is a type check over HAND-WRITTEN types, so it
   proves the client agrees with itself and nothing about whether it agrees with
   the wire; the whole-game gate is entirely server-side. Both defects M2's
   client work turned up — the retreat prompt offering number buttons after
