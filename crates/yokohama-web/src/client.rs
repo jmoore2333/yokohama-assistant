@@ -124,18 +124,39 @@ pub struct ClientState {
     pub warnings: Vec<String>,
 }
 
-/// The seat the browser is playing: the first seat no bot holds.
+/// The seat this payload is built for: **the seat to move**, exactly as the
+/// terminal does it.
 ///
-/// v1 is one human against the shipped bot, so "the human seat" is
-/// well-defined. When two people play, this becomes a routing question — which
-/// is why every payload already carries the seat it was built for rather than
-/// leaving the client to assume.
+/// `screen.rs:608` passes `state.current_player` to `render::dashboard`, so the
+/// CLI's hand panel follows the ACTOR — which is what a single operator driving
+/// a table needs, and this port inherits that model rather than inventing one.
+///
+/// **It used to return the first seat no bot holds, and that was a parity
+/// divergence with teeth.** At 3P or 4P with one bot, seats 0 and 2 are both
+/// human; the frame was built for seat 0 while `PromptState` carried seat 2's
+/// options, because those come from `Repl::option_rows()` and the REPL has only
+/// ever one current player. The screen then showed RED's hand, said "seat 2 is
+/// deciding", and offered seat 2's moves as live buttons — three statements
+/// about three different seats, with the acting seat's hand nowhere.
+///
+/// The bot arm is a real fallback and not defensiveness: `step` pumps bot seats
+/// after every applied move, so a returned payload is normally on a human, but
+/// a payload built mid-pump would otherwise carry a bot's seat. Its hand stays
+/// masked either way — `SeatFacts.hand_hidden` folds `is_bot` in regardless of
+/// the privacy toggle — so this only decides whose panel is shown, never
+/// whether a hidden hand leaks.
 pub fn viewing_seat(repl: &Repl) -> PlayerId {
-    repl.seat_facts()
+    let facts = repl.seat_facts();
+    let acting = repl.session.state().current_player;
+    let is_bot = facts.get(usize::from(acting.0)).is_some_and(|f| f.is_bot);
+    if !is_bot {
+        return acting;
+    }
+    facts
         .iter()
         .position(|f| !f.is_bot)
         .map(|i| PlayerId::new(i as u8))
-        .unwrap_or(PlayerId::new(0))
+        .unwrap_or(acting)
 }
 
 fn rows_from(entries: Vec<yokohama_cli::render::DisplayRow>) -> Vec<OptionRow> {

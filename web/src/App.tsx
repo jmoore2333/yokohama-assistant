@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError } from "./api";
 import { Board } from "./Board";
 import { Dashboard } from "./Dashboard";
@@ -14,6 +14,17 @@ export function App() {
   const [surface, setSurface] = useState<SurfaceName | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The guard against a SECOND request going out while the first is in flight.
+  //
+  // A ref and not the `busy` state, because state is what makes the bug: React
+  // batches, so two clicks in the same tick both read `busy === false` and both
+  // post. Two `/input` posts are then applied in whatever order the server's
+  // per-game mutex takes them, and whichever RESPONSE settles last becomes the
+  // client's truth. Measured on a double-clicked placement toggle: the client
+  // showed "Selected: A03" while the server held an empty selection, and
+  // Confirm then advanced the turn having placed nothing. `busy` still drives
+  // the disabled styling; this decides whether the request happens at all.
+  const inFlight = useRef(false);
 
   useEffect(() => {
     api.labels().then(setLabels).catch(() => setLabels(null));
@@ -25,7 +36,8 @@ export function App() {
 
   const send = useCallback(
     async (line: string) => {
-      if (!state) return;
+      if (!state || inFlight.current) return;
+      inFlight.current = true;
       setBusy(true);
       setError(null);
       try {
@@ -33,6 +45,7 @@ export function App() {
       } catch (e) {
         setError(e instanceof ApiError ? e.message : String(e));
       } finally {
+        inFlight.current = false;
         setBusy(false);
       }
     },
@@ -75,8 +88,22 @@ export function App() {
             </button>
           ))}
         </nav>
+        {/* The payload is built for the seat to move, so the banner names WHO
+            is playing rather than saying "your turn" — at 3P or 4P one operator
+            drives more than one human seat, exactly as the terminal does, and a
+            screen that will not say which seat is a screen you can play the
+            wrong turn on. */}
         <span className="meta turn">
-          {state.over ? "finished" : state.your_turn ? "your turn" : `seat ${state.to_move} thinking`}
+          {state.over ? (
+            "finished"
+          ) : (
+            <>
+              <span className={`seat-${(colors[state.to_move] ?? "").toLowerCase()}`}>
+                {colors[state.to_move] ?? `Seat ${state.to_move}`}
+              </span>
+              {" to move"}
+            </>
+          )}
         </span>
       </header>
 
@@ -104,6 +131,7 @@ export function App() {
             labels={labels}
             colors={colors}
             selected={selected}
+            busy={busy}
             {...(picking
               ? { onTileClick: (area: number) => void send(`A${String(area).padStart(2, "0")}`) }
               : {})}

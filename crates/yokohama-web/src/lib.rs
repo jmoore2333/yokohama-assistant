@@ -431,6 +431,104 @@ mod tests {
         assert_eq!(body["server_version"], env!("CARGO_PKG_VERSION"));
     }
 
+    /// The payload is built for the seat that is ABOUT TO MOVE, so the hand it
+    /// shows and the options it offers are the same seat's.
+    ///
+    /// The regression this pins: `viewing_seat` used to return the first seat
+    /// no bot held, which is seat 0 forever. At 3P with one bot, seats 0 and 2
+    /// are both human, and the payload then described three different seats at
+    /// once — RED's hand panel, "seat 2 is deciding", and seat 2's moves as
+    /// live options — with the acting seat's hand on no panel at all. A 3P
+    /// table is one click away in the client's own setup screen, so this is
+    /// reachable, not theoretical.
+    ///
+    /// Asserted as an IDENTITY across a whole turn rather than at one moment:
+    /// the failure only appears once play has passed seat 0, which is exactly
+    /// the state a single snapshot would miss.
+    #[tokio::test]
+    async fn every_payload_shows_the_hand_of_the_seat_it_offers_moves_for() {
+        let router = app(Arc::new(AppState::in_memory()));
+        let call = |method: &'static str, uri: String, body: Option<serde_json::Value>| {
+            let router = router.clone();
+            async move {
+                let req = Request::builder().method(method).uri(uri);
+                let req = match body {
+                    Some(v) => req
+                        .header("content-type", "application/json")
+                        .body(Body::from(serde_json::to_vec(&v).expect("a body")))
+                        .expect("a request"),
+                    None => req.body(Body::empty()).expect("a request"),
+                };
+                let res = router.oneshot(req).await.expect("the router answers");
+                let bytes =
+                    axum::body::to_bytes(res.into_body(), usize::MAX).await.expect("a body");
+                serde_json::from_slice::<serde_json::Value>(&bytes).expect("JSON")
+            }
+        };
+
+        // 3P with ONE bot, so seats 0 and 2 are both human — the shape that
+        // broke. One bot is what the client's own setup screen sends.
+        let mut state = call(
+            "POST",
+            "/api/games".to_string(),
+            Some(serde_json::json!({
+                "players": 3, "colors": ["Red", "Blue", "Yellow"], "start_seat": 0,
+                "seed": "20260831", "keeps": [1, 1, 1], "bot_seats": [1], "name": "hotseat",
+            })),
+        )
+        .await;
+
+        let mut saw_a_seat_other_than_zero = false;
+        for step in 0..60 {
+            if state["over"].as_bool() == Some(true) {
+                break;
+            }
+            let seat = state["seat"].as_u64().expect("a seat");
+            let to_move = state["to_move"].as_u64().expect("a seat");
+            assert_eq!(seat, to_move, "step {step}: the payload is built for the seat to move: {state}");
+            assert_eq!(
+                state["your_turn"], serde_json::json!(true),
+                "step {step}: a payload built for the acting seat is that seat's turn",
+            );
+            assert_eq!(
+                state["frame"]["decision"]["viewer_is_deciding"], serde_json::json!(true),
+                "step {step}: ...so the decision zone is the viewer's own",
+            );
+            let hand = state["frame"]["dashboard"]
+                .as_array()
+                .expect("panels")
+                .iter()
+                .find_map(|p| p.get("Hand"))
+                .expect("a Hand panel");
+            assert_eq!(
+                hand["seat"].as_u64(), Some(seat),
+                "step {step}: the hand shown belongs to the seat being offered moves: {hand}",
+            );
+            if seat != 0 {
+                saw_a_seat_other_than_zero = true;
+            }
+
+            // Answer whatever is asked, first row or confirm — enough to walk
+            // the turn order past seat 0.
+            let line = match state["prompt"]["kind"].as_str() {
+                Some("options") | Some("pick") => state["prompt"]["rows"][0]["number"]
+                    .as_u64()
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| "confirm".to_string()),
+                Some("retreat") => "0".to_string(),
+                Some("game_over") => break,
+                _ => "confirm".to_string(),
+            };
+            state =
+                call("POST", "/api/games/hotseat/input".to_string(), Some(serde_json::json!({ "line": line })))
+                    .await;
+        }
+        assert!(
+            saw_a_seat_other_than_zero,
+            "the walk never left seat 0, so it never exercised the case that broke",
+        );
+    }
+
     /// The four read-only surfaces answer, and answer with the offer — not with
     /// an empty shell that a client would render as an empty board.
     ///

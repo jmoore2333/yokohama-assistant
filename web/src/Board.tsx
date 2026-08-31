@@ -16,6 +16,7 @@ export function Board({
   colors,
   onTileClick,
   selected,
+  busy,
 }: {
   board: BoardModel;
   art: ArtManifest | null;
@@ -23,6 +24,11 @@ export function Board({
   colors: PlayerColor[];
   onTileClick?: (area: number) => void;
   selected?: number[];
+  /** A request is in flight. The tile is a mutation control like any option
+   *  button and takes the same guard — it was the one that did not, and a
+   *  double-click on a placement toggle could leave the highlight disagreeing
+   *  with the server. */
+  busy?: boolean;
 }) {
   const rows = new Map<number, TileModel[]>();
   for (const tile of board.tiles) {
@@ -51,6 +57,7 @@ export function Board({
               colors={colors}
               onClick={onTileClick}
               isSelected={selected?.includes(t.area) ?? false}
+              busy={busy ?? false}
             />
           ))}
         </div>
@@ -112,6 +119,7 @@ function Tile({
   colors,
   onClick,
   isSelected,
+  busy,
 }: {
   tile: TileModel;
   art: ArtManifest | null;
@@ -119,6 +127,7 @@ function Tile({
   colors: PlayerColor[];
   onClick?: (area: number) => void;
   isSelected: boolean;
+  busy: boolean;
 }) {
   const name = labels?.area_types[tile.area_type] ?? tile.area_type;
   const isCanal = tile.area_type === "Canal";
@@ -181,7 +190,14 @@ function Tile({
 
   if (!onClick || isCanal) return <div className={className}>{body}</div>;
   return (
-    <button type="button" className={className} onClick={() => onClick(tile.area)}>
+    <button
+      type="button"
+      className={className}
+      disabled={busy}
+      aria-pressed={isSelected}
+      aria-label={`${id} ${name}${isSelected ? " — selected" : ""}`}
+      onClick={() => onClick(tile.area)}
+    >
       {body}
     </button>
   );

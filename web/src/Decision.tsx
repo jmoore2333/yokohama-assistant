@@ -209,8 +209,12 @@ function asking(state: ClientState, labels: Labels | null): string {
     case "reveal":
       return "A card reveal is pending (live mode).";
     default:
+      // `your_turn` is now true whenever a human seat is to move, because the
+      // payload is built for the acting seat. The distinction that remains is
+      // WHICH seat, which matters at 3P and 4P where one operator drives
+      // several.
       return state.your_turn
-        ? `Your turn — ${phase}.`
+        ? `Seat ${state.seat} — ${phase}.`
         : `Seat ${state.to_move} is deciding — ${phase}.`;
   }
 }

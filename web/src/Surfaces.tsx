@@ -7,7 +7,7 @@
 // watching for, and a payload that carried all four would pay for them on every
 // move.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, ApiError } from "./api";
 import type {
   ActionYield,
@@ -70,9 +70,32 @@ export function Surface({
 
   const data = loaded?.of === name ? loaded.data : null;
 
+  // Escape closes it, and opening it moves focus into it.
+  //
+  // The panel is `position: fixed` over the whole board, so without this a
+  // keyboard user who opens it is left with focus on the nav button behind it
+  // and no way out but Tab — forward through every remaining nav control and,
+  // during a placement prompt, all eighteen board tiles now hidden underneath.
+  const panel = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    panel.current?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
   const meta = SURFACES.find((s) => s.key === name);
   return (
-    <div className="surface" role="dialog" aria-label={meta?.label}>
+    <div
+      className="surface"
+      role="dialog"
+      aria-modal="true"
+      aria-label={meta?.label}
+      ref={panel}
+      tabIndex={-1}
+    >
       <header>
         <h2>{meta?.label}</h2>
         <span className="meta">{meta?.blurb}</span>
@@ -97,11 +120,29 @@ export function Surface({
 }
 
 function Ports({ panel, art }: { panel: PortsPanel; art: ArtManifest | null }) {
+  // The zone gates are FOLDED FROM THE SLOTS, never typed as prose.
+  //
+  // `min_power` is on the wire and the server derives it from the engine's own
+  // `port_accessible_zones`, so a re-pricing moves the per-slot chip below with
+  // it. A sentence that said "LOW needs power 2, MID 3, HIGH 4" would not move,
+  // and the lede would then contradict the chip printed directly under it. The
+  // CLI composes the identical sentence the same way, for the same reason.
+  const gates = new Map<string, number>();
+  for (const b of panel.boards) {
+    for (const s of b.slots) {
+      const seen = gates.get(s.zone);
+      if (seen === undefined || s.min_power < seen) gates.set(s.zone, s.min_power);
+    }
+  }
+  const words = [...gates.entries()]
+    .sort((a, b) => a[1] - b[1])
+    .map(([zone, power]) => `${zone.toUpperCase()} needs power ${power}`)
+    .join(", ");
   return (
     <>
       <p className="lede">
-        Take ONE card. LOW needs power 2, MID 3, HIGH 4 &mdash; a card in a zone you cannot reach
-        is not an offer to you at all. {panel.deck_remaining} cards left in the deck.
+        Take ONE card{words ? `. ${words}` : ""} &mdash; a card in a zone you cannot reach is not
+        an offer to you at all. {panel.deck_remaining} cards left in the deck.
       </p>
       {panel.boards.map((b) => (
         <section key={String(b.board_b)}>
