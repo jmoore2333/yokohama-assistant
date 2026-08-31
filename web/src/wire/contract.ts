@@ -300,7 +300,7 @@ const LABS = ["boards", "deck_remaining"] as const;
 const AREAS = ["rows"] as const;
 const LOG = ["total", "entries"] as const;
 const LABELS = [
-  "area_types", "phases", "phase_chain", "tech_effects", "achievements",
+  "area_types", "phases", "phase_chain", "tech_effects", "achievements", "features",
 ] as const;
 const HEALTH = ["server_version", "semantics_rev", "rules_hash"] as const;
 const PREVIEW = ["seed", "deals"] as const;
@@ -321,7 +321,7 @@ const PROVENANCE = [
   "contestant", "controller_version", "evaluator_version", "index", "seat",
   "decision_seed", "forced", "recorded_version", "current_version",
 ] as const;
-const RANKED = ["text", "value", "margin"] as const;
+const RANKED = ["text", "value", "margin", "chosen"] as const;
 const REFUSAL_ROW = ["kind", "message"] as const;
 
 // The compile-time half. A list that is not exactly `keyof T` fails HERE, with

@@ -7,6 +7,8 @@ import type {
   LogPanel,
   PortsPanel,
   Preview,
+  SuggestResponse,
+  WhyResponse,
 } from "./types";
 
 /** A refusal from the server, carrying the sentence it refused with. */
@@ -70,4 +72,24 @@ export const api = {
   labs: (game: string) => call<LabsPanel>("GET", `/api/games/${id(game)}/labs`),
   areas: (game: string) => call<AreasPanel>("GET", `/api/games/${id(game)}/areas`),
   log: (game: string) => call<LogPanel>("GET", `/api/games/${id(game)}/log`),
+
+  /** What the production bot would play on this seat's own view.
+   *
+   *  Runs a real search, and is the only pair of calls on this API that does.
+   *  It applies, records and saves NOTHING — so a refusal here (a bot is to
+   *  move; the game is over) arrives as a 200 with `refusal` set, not as an
+   *  error, and the panel renders the sentence. */
+  suggest: (game: string) => call<SuggestResponse>("GET", `/api/games/${id(game)}/suggest`),
+
+  /** A bot move, reconstructed by replay. `event` is the log's printed 0-based
+   *  index; omitted means the most recent bot move.
+   *
+   *  Same refusal shape as `suggest`, and twelve typed reasons rather than one:
+   *  the move was a human's, the seat played a sampled rung, the record does not
+   *  replay, the reconstruction did not equal what was recorded. */
+  why: (game: string, event?: number) =>
+    call<WhyResponse>(
+      "GET",
+      `/api/games/${id(game)}/why${event === undefined ? "" : `?event=${event}`}`,
+    ),
 };

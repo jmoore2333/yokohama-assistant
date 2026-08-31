@@ -215,6 +215,13 @@ pub struct Labels {
     pub phase_chain: Vec<String>,
     pub tech_effects: std::collections::BTreeMap<String, String>,
     pub achievements: std::collections::BTreeMap<String, String>,
+    /// The evaluator's 34 features, in words (M3).
+    ///
+    /// Keyed by `Feature::name()`, the stable snake_case token the payload
+    /// itself carries — so the wire keeps the identity and this map carries the
+    /// presentation, exactly as every other entry here does. Authored in
+    /// `explain::feature_labels`, never in `yokohama-core`.
+    pub features: std::collections::BTreeMap<String, String>,
 }
 
 fn key_of<T: Serialize>(v: &T) -> String {
@@ -253,6 +260,7 @@ async fn labels(State(state): State<Arc<AppState>>) -> Json<Labels> {
         phase_chain: PHASE_CHAIN.iter().map(|p| describe::phase_chain_name(*p).to_string()).collect(),
         tech_effects,
         achievements,
+        features: crate::explain::feature_labels(),
     })
 }
 
@@ -883,6 +891,17 @@ mod tests {
             "the ranking is best first"
         );
         assert!(ok["stream_seed"].is_string(), "a u64 is a STRING on this wire");
+
+        // **Exactly one row is the chosen move, and it is not necessarily row
+        // 0.** Ties at the top are broken by a keyed draw — `tied_at_top`
+        // exists to say so — so a client that took row 0 as the answer would
+        // list the played move among the ones it beat. Measured on the
+        // committed fixture: two candidates tie and the chosen one is row 1.
+        let chosen: Vec<&serde_json::Value> =
+            ranking.iter().filter(|r| r["chosen"] == serde_json::Value::Bool(true)).collect();
+        assert_eq!(chosen.len(), 1, "exactly one candidate is the one that was played");
+        assert_eq!(chosen[0]["text"], ok["text"], "and it is the move the payload names");
+        assert_eq!(chosen[0]["margin"], 0, "the chosen move is always a maximiser");
         assert!(
             ok["explanation"]["nonzero"].as_u64().expect("a count") <= 34,
             "the nonzero count is a count of the terms present"

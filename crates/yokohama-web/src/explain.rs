@@ -137,21 +137,41 @@ impl Terminal {
 /// `margin` is `value − best`, so **0 means tied** — the sense
 /// `suggest::RUNNER_UPS_LABEL` already states in the terminal, kept identical
 /// here so the two surfaces cannot mean different things by the same word.
+///
+/// **`chosen` is not a convenience, and it is not `index == 0`.** The ranking is
+/// sorted best-first, but the agent's pick is *one of the maximisers* — ties are
+/// broken by a keyed draw, never by "whichever the generator listed first",
+/// which is exactly what `Suggestion::tied_at_top` exists to report. Measured on
+/// the committed fixture: two candidates tie at 78 and the chosen one is row
+/// **1**. A client that dropped row 0 to get the runner-ups would therefore list
+/// the move the bot actually played as something it beat, and hide a real
+/// runner-up. So the server marks it, rather than leaving the browser to infer
+/// identity from a display string.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Ranked {
     pub text: String,
     pub value: i64,
     pub margin: i64,
+    pub chosen: bool,
 }
 
-fn rank_all(ranking: &[RootScore], state: &GameState, rules: &Rules) -> Vec<Ranked> {
+fn rank_all(ranking: &[RootScore], chosen: &Move, state: &GameState, rules: &Rules) -> Vec<Ranked> {
     let best = ranking.first().map_or(0, |r| r.value);
+    // `Move` is `PartialEq`, so identity is compared as identity. Comparing the
+    // WORDS would be a display string doing a type's job, and two distinct
+    // candidates are not guaranteed to word differently.
+    let mut marked = false;
     ranking
         .iter()
-        .map(|r| Ranked {
-            text: yokohama_cli::describe::describe_move(&r.mv, state, rules),
-            value: r.value,
-            margin: r.value - best,
+        .map(|r| {
+            let is_chosen = !marked && &r.mv == chosen;
+            marked |= is_chosen;
+            Ranked {
+                text: yokohama_cli::describe::describe_move(&r.mv, state, rules),
+                value: r.value,
+                margin: r.value - best,
+                chosen: is_chosen,
+            }
         })
         .collect()
 }
@@ -235,7 +255,7 @@ impl Suggest {
             text: yokohama_cli::describe::describe_move(&s.mv, state, rules),
             explanation: Explanation::of(&s.explanation),
             continuation: word_line(&s.continuation, state, rules),
-            ranking: rank_all(&s.ranking, state, rules),
+            ranking: rank_all(&s.ranking, &s.mv, state, rules),
             stream_seed: s.stream_seed.to_string(),
             search_hit_ply_cap: s.search_hit_ply_cap,
             tied_at_top: s.tied_at_top(),
@@ -308,7 +328,7 @@ impl Why {
                 continuation: word_line(&e.continuation, &a.state, rules),
                 counters: e.stats.as_ref().map(counters),
                 search_hit_ply_cap: e.hit_ply_cap,
-                ranking: rank_all(&e.ranking, &a.state, rules),
+                ranking: rank_all(&e.ranking, &a.mv, &a.state, rules),
             }),
             refusal: None,
         }
@@ -478,6 +498,76 @@ impl SuggestResponse {
     }
 }
 
+
+/// A feature's snake_case token, in words a player can read.
+///
+/// **Authored HERE, and deliberately not in `yokohama-core`.** `Feature::name()`
+/// returns the stable token and its doc says report columns, explanation
+/// rendering and the probe all come from there "so none of them is hand-typed";
+/// a `Feature::label()` beside it would be a core edit on a crate this lane
+/// keeps byte-identical to master, and a wording change would move a file the
+/// evaluator's own tests read. Wording is presentation, and presentation is the
+/// web layer's — which is where every other enum→string map on this API already
+/// lives.
+///
+/// **The token stays the identity on the wire.** These words are served from
+/// `/api/labels` beside them, never in place of them: the snake_case name is
+/// the cross-reference against `eval_probe`, the scenario suite and every
+/// recorded figure, and a reader comparing this screen with a recorded number
+/// needs to be able to grep for it.
+///
+/// The list is EXHAUSTIVE over `Feature::ALL` and a test says so, so a
+/// thirty-fifth feature cannot reach the browser as a bare token.
+pub fn feature_labels() -> std::collections::BTreeMap<String, String> {
+    yokohama_core::game::eval::Feature::ALL
+        .iter()
+        .map(|f| (f.name().to_string(), words_for(f.name()).to_string()))
+        .collect()
+}
+
+fn words_for(name: &str) -> &'static str {
+    match name {
+        "victory_points" => "Victory points",
+        "country_bonus_now" => "Country-set bonus, if the game ended now",
+        "tech_bonus_now" => "Technology majority, if the game ended now",
+        "church_bonus_now" => "Church majority, if the game ended now",
+        "customs_bonus_now" => "Customs majority, if the game ended now",
+        "assistants_in_hand_core" => "Assistants in hand (the working core)",
+        "assistants_in_hand_excess" => "Assistants in hand beyond what a turn can spend",
+        "assistants_in_warehouse" => "Assistants in the warehouse",
+        "assistants_on_board" => "Assistants on the board",
+        "shophouses_built" => "Shophouses built",
+        "trading_houses_built" => "Trading houses built",
+        "five_power_tokens" => "5-Power tokens taken",
+        "imported_goods" => "Imported goods",
+        "achievement_progress_sum" => "Progress toward the achievements",
+        "mercenaries_total" => "Mercenaries held",
+        "hand_size" => "Order cards in hand",
+        "production_access" => "Areas whose production this seat can reach",
+        "track_access" => "Church and customs spaces this seat can reach",
+        "assistant_areas_distinct" => "Distinct areas holding an assistant",
+        "president_local_access" => "What the President's own area offers",
+        "bank_access" => "Reach to the Bank",
+        "employment_agency_access" => "Reach to the Employment Agency",
+        "president_reachable_areas" => "Areas the President can reach",
+        "money_stock" => "Yen",
+        "trade_goods_stock" => "Trade goods held",
+        "building_tokens_ready" => "Building tokens ready to place",
+        "held_order_value" => "Value of the orders in hand",
+        "order_matched_goods" => "Goods that match an order in hand",
+        "executable_orders" => "Orders that could be filled now",
+        "flag_icon_marginal" => "The next flag icon's marginal worth",
+        "held_order_icons" => "Icons the orders in hand ask for",
+        "lab_takeable" => "Technologies this seat could take",
+        "port_takeable" => "Port cards this seat could take",
+        "matched_production_access" => "Production this seat can reach that an order wants",
+        // No `_` fallback to a prettified token: a feature added to the engine
+        // and not to this list should be caught by the test below, not shipped
+        // as a guess. `Feature::ALL` is the closed set the test walks.
+        other => panic!("feature {other:?} has no wording — add it to `words_for`"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -561,6 +651,47 @@ mod tests {
         assert_eq!(kinds.len(), all.len(), "two suggest refusals share a tag");
         for r in all {
             assert!(r.message().len() > 20, "{:?} says nothing useful", r.kind());
+        }
+    }
+
+    /// Every feature the evaluator has can be WORDED, and the panic arm proves
+    /// the list is closed rather than defaulted.
+    ///
+    /// **The fence is the `panic!` arm in `words_for`, not this test.** A
+    /// `_ => prettify(token)` fallback would let a thirty-fifth feature reach
+    /// the browser looking like a label while nobody had chosen its words —
+    /// the same silent-fallback shape the M2.5 record names for the four
+    /// uncovered queued-choice heads. Here the set is closed and knowable, so
+    /// it is closed, and this test is what walks it.
+    ///
+    /// What this test deliberately does NOT assert is whether the wording is
+    /// GOOD. An earlier draft tried: it rejected any label equal to the
+    /// underscore-stripped token, on the theory that such a label had been
+    /// prettified rather than chosen. It failed on `imported_goods` →
+    /// "Imported goods", which is simply the right answer. A test that cannot
+    /// tell a good label from a lazy one should not pretend to — the mechanical
+    /// property (every feature has words, chosen by a human, or the build
+    /// panics) is the one worth pinning.
+    #[test]
+    fn every_feature_the_evaluator_scores_has_words() {
+        let labels = feature_labels();
+        assert_eq!(
+            labels.len(),
+            yokohama_core::game::eval::Feature::ALL.len(),
+            "one wording per feature, no duplicates by token"
+        );
+        assert_eq!(labels.len(), 34, "the evaluator's feature vector is 34 wide");
+        for (token, words) in &labels {
+            assert!(!words.is_empty(), "{token} has no wording");
+            assert_ne!(words, token, "{token} was not worded, only echoed");
+            // Not `is_uppercase`: "5-Power tokens taken" starts with a digit and
+            // is correctly worded. What is being ruled out is a token that was
+            // lower-cased and passed off as prose.
+            assert!(
+                !words.chars().next().is_some_and(char::is_lowercase),
+                "{token}'s wording reads as a label: {words:?}"
+            );
+
         }
     }
 

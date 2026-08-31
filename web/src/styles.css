@@ -426,3 +426,116 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
 .option .price { color: var(--fg-faint); margin-left: auto; font-size: 10.5px; }
 .option .price.costs { color: var(--yen); }
 .option .price + .more { margin-left: 0.6rem; }
+
+/* ---- the explanation surface (M3) ---------------------------------------
+ *
+ * A DIVERGING bar chart: one row per feature, sorted by |contribution|, bars
+ * growing from a centre zero line — right helps this seat, left hurts it.
+ *
+ * The pair was VALIDATED, not chosen by eye. Against this panel's surface
+ * (#14181d) blue/orange separates at ΔE 23.0 under protanopia and 29.8 in
+ * normal vision, and both sit inside the dark-mode lightness band. The house
+ * --green/--red would have been the classic mistake: the one pair a
+ * red-green-colourblind reader cannot separate, on a chart whose entire
+ * meaning is which side of zero a row falls on.
+ *
+ * Colour is never the only encoding anyway. Every row sits on its own side of
+ * the zero line AND carries its signed number in a monospace column, so the
+ * chart reads in greyscale, in forced-colors mode, and to a reader who sees no
+ * difference between the two hues at all. */
+:root {
+  --helps: #3d86e0;
+  --hurts: #e06a44;
+}
+
+.explain section { margin-bottom: 1.1rem; }
+.explain .headline {
+  font-family: var(--display); font-size: 1.15rem; margin: 0.2rem 0;
+}
+.explain .meta { color: var(--fg-faint); font-size: 11px; display: block; margin: 0.15rem 0 0.5rem; }
+.explain .warn {
+  color: var(--warn); font-size: 12px; border-left: 2px solid var(--warn);
+  padding-left: 0.6rem; margin: 0.6rem 0;
+}
+.explain .provenance { border-top: 1px solid var(--line); padding-top: 0.6rem; }
+.explain code { font-family: var(--mono); font-size: 10px; color: var(--fg-faint); }
+
+.axis-legend {
+  display: grid; grid-template-columns: 1fr auto 1fr; gap: 0.5rem;
+  font-size: 10px; margin: 0 0 0.35rem; letter-spacing: 0.04em;
+}
+.axis-legend .hurts { text-align: right; color: var(--hurts); }
+.axis-legend .helps { color: var(--helps); }
+.axis-legend .muted { text-align: center; width: 1rem; }
+
+/* NO gap between rows, so the per-row zero segments join into one continuous
+ * spine. The breathing room moves onto the name cell instead. */
+.bars { display: flex; flex-direction: column; }
+.bar-row {
+  display: grid;
+  grid-template-columns: minmax(9rem, 1.1fr) minmax(8rem, 2fr) auto 4.5rem;
+  align-items: stretch; gap: 0.6rem;
+}
+.bar-row:hover { background: var(--bg-sunken); }
+.bar-name {
+  font-size: 12px; display: flex; flex-direction: column; line-height: 1.25;
+  padding: 2px 0;
+}
+.bar-track { display: grid; grid-template-columns: 1fr 1px 1fr; align-items: center; }
+.bar-half { display: flex; align-items: center; height: 100%; }
+.bar-half.left { justify-content: flex-end; }
+/* **The chart's spine.** Every bar is anchored to it, so which side a row falls
+ * on is readable before its colour is — which is what makes the chart survive
+ * greyscale, forced-colors, and a reader who cannot separate the two hues. It
+ * spans the FULL row height and the rows are flush, so the segments read as one
+ * line rather than as a dashed one. An earlier draft drew it at `--line-bright`
+ * inside a 10px track with a 2px row gap: on screen there was no visible zero
+ * at all, and a diverging chart without its zero is just two colours. */
+.bar-zero { background: var(--fg-faint); height: 100%; }
+.bar {
+  height: 10px; display: block;
+  /* Rounded at the DATA end only, square against the zero line — the mark's
+   * length is the measurement, and a rounded root would add pixels to it. */
+}
+.bar.helps { background: var(--helps); border-radius: 0 3px 3px 0; }
+.bar.hurts { background: var(--hurts); border-radius: 3px 0 0 3px; }
+.bar-terms { font-family: var(--mono); font-size: 10px; color: var(--fg-faint); white-space: nowrap; align-self: center; }
+.bar-value { font-family: var(--mono); font-size: 12px; text-align: right; align-self: center; }
+.bar-value.helps { color: var(--helps); }
+.bar-value.hurts { color: var(--hurts); }
+.bar-value.nil { color: var(--fg-faint); }
+
+.explanation .total {
+  display: flex; justify-content: space-between; align-items: baseline;
+  gap: 1rem; margin: 0.6rem 0 0.4rem; padding-top: 0.5rem;
+  border-top: 1px solid var(--line-bright);
+  font-size: 12px; letter-spacing: 0.06em;
+}
+.explanation .total .num { font-family: var(--mono); font-size: 1.05rem; color: var(--fg); }
+
+.standing { display: flex; gap: 1.6rem; margin: 0.6rem 0; }
+.standing dt { font-size: 10px; color: var(--fg-faint); letter-spacing: 0.05em; }
+.standing dd { margin: 0; font-family: var(--mono); font-size: 1.05rem; }
+
+.line { margin: 0.2rem 0; padding-left: 1.4rem; font-size: 12px; }
+.line li { margin: 0.15rem 0; }
+.line li:first-child { color: var(--fg); }
+.line li + li { color: var(--fg-dim); }
+
+.runner-ups { list-style: none; margin: 0.2rem 0; padding: 0; font-size: 12px; }
+.runner-ups li {
+  display: grid; grid-template-columns: 3.5rem 1fr; gap: 0.6rem;
+  padding: 1px 0; border-top: 1px solid var(--line);
+}
+
+.counters { display: flex; flex-wrap: wrap; gap: 0.1rem 0.9rem; align-items: baseline; margin: 0.2rem 0; }
+.counters > span:first-child { min-width: 6rem; }
+.counters b { font-family: var(--mono); font-weight: 500; color: var(--fg-dim); margin-left: 0.3rem; }
+
+.refusal { border-left: 2px solid var(--fg-faint); padding-left: 0.8rem; }
+/* `pre-line`, because the CLI's refusal wording carries deliberate breaks and
+ * HTML would collapse them. The `mismatch` arm is the one that needs it: it
+ * names the reconstructed move and the recorded move on their own lines, and
+ * run together into one paragraph they read as a single confusing sentence.
+ * The words are the CLI's verbatim; this keeps the shape it wrote them in. */
+.refusal p { margin: 0.3rem 0 0; color: var(--fg-dim); max-width: 62ch; white-space: pre-line; }

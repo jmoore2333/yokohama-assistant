@@ -19,16 +19,35 @@ import type {
   LogPanel,
   PlayerColor,
   PortsPanel,
+  SuggestResponse,
+  WhyResponse,
 } from "./types";
 import { OrderCardView, Pawns, TechCardView } from "./Cards";
+import { SuggestView, WhyView } from "./Explain";
 
-export type SurfaceName = "ports" | "labs" | "areas" | "log";
+export type SurfaceName = "ports" | "labs" | "areas" | "log" | "suggest" | "why";
 
-export const SURFACES: { key: SurfaceName; label: string; blurb: string }[] = [
-  { key: "ports", label: "Port offer", blurb: "the cards on display, the zone each sits in, and the action power that zone takes" },
-  { key: "labs", label: "Laboratory offer", blurb: "the technologies on display, what each does, and the industry it costs in its slot" },
-  { key: "areas", label: "Areas", blurb: "what every area's action pays at power 1–5" },
-  { key: "log", label: "Log", blurb: "what has happened, each line worded as it read when it applied" },
+/** Each surface carries its OWN loader.
+ *
+ *  It used to be indexed dispatch — `api[name](game)` — which works exactly as
+ *  long as every surface is `(game) => Promise<T>` and no longer. M3's `why`
+ *  takes an optional event index, so the registry carries a thunk instead. One
+ *  panel shell for all six rather than a second one beside it: the two
+ *  explanation surfaces are the same thing as the four read-only ones from the
+ *  panel's point of view (fetch, draw, close on Escape), and a parallel
+ *  component would mean two dialects of the same dialog. */
+export const SURFACES: {
+  key: SurfaceName;
+  label: string;
+  blurb: string;
+  load: (game: string) => Promise<unknown>;
+}[] = [
+  { key: "ports", label: "Port offer", blurb: "the cards on display, the zone each sits in, and the action power that zone takes", load: (g) => api.ports(g) },
+  { key: "labs", label: "Laboratory offer", blurb: "the technologies on display, what each does, and the industry it costs in its slot", load: (g) => api.labs(g) },
+  { key: "areas", label: "Areas", blurb: "what every area's action pays at power 1–5", load: (g) => api.areas(g) },
+  { key: "log", label: "Log", blurb: "what has happened, each line worded as it read when it applied", load: (g) => api.log(g) },
+  { key: "suggest", label: "Suggest", blurb: "what the bot would play on your seat, and the arithmetic behind it", load: (g) => api.suggest(g) },
+  { key: "why", label: "Why", blurb: "the account of the last move a bot played, reconstructed by replay", load: (g) => api.why(g) },
 ];
 
 export function Surface({
@@ -60,7 +79,10 @@ export function Surface({
   useEffect(() => {
     let live = true;
     setError(null);
-    api[name](game)
+    const entry = SURFACES.find((s) => s.key === name);
+    if (!entry) return;
+    entry
+      .load(game)
       .then((d) => live && setLoaded({ of: name, data: d }))
       .catch((e) => live && setError(e instanceof ApiError ? e.message : String(e)));
     return () => {
@@ -114,6 +136,10 @@ export function Surface({
           <Areas panel={data as AreasPanel} labels={labels} colors={colors} />
         )}
         {data != null && name === "log" && <Log panel={data as LogPanel} />}
+        {data != null && name === "suggest" && (
+          <SuggestView data={data as SuggestResponse} labels={labels} />
+        )}
+        {data != null && name === "why" && <WhyView data={data as WhyResponse} labels={labels} />}
       </div>
     </div>
   );

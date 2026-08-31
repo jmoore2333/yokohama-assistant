@@ -341,6 +341,11 @@ export interface Labels {
   phase_chain: string[];
   tech_effects: Record<string, string>;
   achievements: Record<string, string>;
+  /** The evaluator's 34 features in words, keyed by the stable snake_case
+   *  token the explanation payload carries. The token stays the identity — it
+   *  is what greps against `eval_probe` and every recorded figure; this is
+   *  presentation only. */
+  features: Record<string, string>;
 }
 
 /** `GET /api/health` — the two compatibility keys the ENGINE uses, not the
@@ -503,6 +508,10 @@ export interface Ranked {
   text: string;
   value: number;
   margin: number;
+  /** The candidate that was actually played. **Not `index === 0`**: the ranking
+   *  is sorted best-first but the pick is one of the MAXIMISERS, and ties are
+   *  broken by a keyed draw. Filter on this to get the runner-ups. */
+  chosen: boolean;
 }
 
 /** One search counter. `name` is the engine's own — carried verbatim so this
