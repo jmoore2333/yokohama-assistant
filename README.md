@@ -411,9 +411,10 @@ otherwise never run) + `cargo clippy --workspace --all-targets -- -D warnings`, 
 **On `web-frontend` the browser CLIENT adds three more per-edit commands, from `web/`** (M2.5,
 2026-08-31 — before it, "the suites are green" was not a claim about the browser at all):
 `npm run typecheck` (both TS projects, and the committed wire corpus against the hand-written
-client types), `npm test` (118 vitest component tests over jsdom, every payload of them
-server-emitted), and `npm run e2e` (7 Playwright tests driving real Chromium against the real
-release binary, including a whole 2P game clicked through to a winner). The last needs
+client types), `npm test` (194 vitest component tests over jsdom, every payload of them
+server-emitted), and `npm run e2e` (11 Playwright tests driving real Chromium against the real
+release binary, including a whole 2P game clicked through to a winner and the explanation
+chart's real geometry). The last needs
 `npx playwright install chromium` once; absence is a loud refusal naming that command, and
 `YOKOHAMA_WEB_E2E_OPTIONAL=1` turns it into a skip that says out loud it tested nothing.
 Pre-merge: all **fifteen** release gates below, measured as ONE uninterrupted sequence at every
