@@ -987,6 +987,17 @@ pub struct DecisionModel {
     /// it: a capped list and a complete one are the same three rows on screen,
     /// and a truncation nobody is told about reads as "those were all of them".
     pub not_offered_suppressed: usize,
+    /// Whether the reader of this zone is the seat that is deciding.
+    ///
+    /// Carried rather than inferred, because the alternative — comparing
+    /// [`Self::seat`] against your own — makes an OBSERVER's empty option list
+    /// indistinguishable from an actor's legitimately empty one (`Recovery` and
+    /// `TurnEnd` both enumerate zero moves). A consumer that renders "no options"
+    /// two different ways needs to know which it is holding.
+    ///
+    /// `false` only ever arrives via [`build_decision_for`]; [`build_decision`]
+    /// is the acting seat's own zone by definition and always sets `true`.
+    pub viewer_is_deciding: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -2465,7 +2476,38 @@ pub fn build_decision(state: &GameState, rules: &Rules, legal: &[Move]) -> Decis
             .collect(),
         not_offered,
         not_offered_suppressed,
+        viewer_is_deciding: true,
     }
+}
+
+/// [`build_decision`], scoped to whoever is READING the zone.
+///
+/// The option list is derived from the acting seat's legal moves, and those are
+/// derived from that seat's hand: a `FulfillOrder` option names a card the
+/// reader may not be entitled to see, and the shape of a Placement list narrows
+/// what is affordable. So an observer is handed the PUBLIC half of the zone —
+/// whose turn it is, where the turn stands in the phase chain, and what is being
+/// decided — with an empty option list, rather than a redacted one.
+///
+/// The near-miss rows go with the options rather than staying behind. They read
+/// only public state (an assistant count, the president's start area, the
+/// Canal), so they would be safe to keep; they are dropped because they are
+/// commentary ON a list the reader is not being shown, and a lone "not offered"
+/// row beside no offers reads as a bug.
+///
+/// This is the seam a multi-seat API needs and the CLI never did: one operator
+/// at one screen is always the acting seat, which is why [`build_decision`] —
+/// unchanged, and still what the terminal calls — assumes it.
+pub fn build_decision_for(
+    state: &GameState,
+    rules: &Rules,
+    legal: &[Move],
+    viewer: PlayerId,
+) -> DecisionModel {
+    if viewer == state.current_player {
+        return build_decision(state, rules, legal);
+    }
+    DecisionModel { viewer_is_deciding: false, ..build_decision(state, rules, &[]) }
 }
 
 /// A phase's position in [`PHASE_CHAIN`]. Exhaustive on purpose (see the
@@ -2635,7 +2677,10 @@ pub fn build_dashboard(
 }
 
 /// A whole frame: the board, the dashboard in display order, and the decision
-/// zone. `seat` is the seat whose own hand the dashboard shows.
+/// zone. `seat` is the seat whose own hand the dashboard shows — and, since it
+/// is the reader, the seat the decision zone is scoped to as well
+/// ([`build_decision_for`]). A frame built for an observer therefore carries the
+/// board and the public dashboard, and no option list.
 pub fn build_frame(
     state: &GameState,
     rules: &Rules,
@@ -2648,7 +2693,7 @@ pub fn build_frame(
         title,
         board: build_board(state, rules, legal),
         dashboard: build_dashboard(state, rules, seats, seat),
-        decision: build_decision(state, rules, legal),
+        decision: build_decision_for(state, rules, legal, seat),
     }
 }
 
@@ -3789,5 +3834,88 @@ mod tests {
             );
         }
         assert!(json.contains("\"card_count\":1"), "the COUNT still crosses: {json}");
+    }
+
+    /// An observer must not be handed the acting seat's option list. The list
+    /// is derived from that seat's legal moves and those from its HAND, so a
+    /// `FulfillOrder` row names a card the reader may not be entitled to see.
+    #[test]
+    fn an_observers_decision_zone_carries_the_public_half_and_no_options() {
+        let (state, rules) = state_np(2);
+        let legal = get_legal_moves(&state, &rules);
+        assert!(!legal.is_empty(), "the fixture must have something to withhold");
+
+        let actor = state.current_player;
+        let observer = PlayerId::new(if actor.0 == 0 { 1 } else { 0 });
+        let zone = build_decision_for(&state, &rules, &legal, observer);
+
+        assert!(zone.options.is_empty(), "an observer sees no options");
+        assert!(zone.not_offered.is_empty(), "and no commentary on a list it cannot see");
+        assert_eq!(zone.not_offered_suppressed, 0);
+        assert!(!zone.viewer_is_deciding, "and is told that is why");
+
+        // The public half survives: an observer still sees whose turn it is and
+        // where the turn stands, which is what the physical table shows them.
+        let acting = build_decision(&state, &rules, &legal);
+        assert_eq!(zone.seat, actor, "the zone still names who is deciding");
+        assert_eq!(zone.turn_number, acting.turn_number);
+        assert_eq!(zone.phase_chain, acting.phase_chain);
+        assert_eq!(zone.current_phase, acting.current_phase);
+        assert_eq!(zone.deciding, acting.deciding);
+    }
+
+    /// Scoping must be inert for the seat that is actually deciding — the CLI
+    /// path and the API path have to agree move for move, or the numbers a
+    /// client sends back mean something else than `pick_option` expects.
+    #[test]
+    fn scoping_the_zone_to_the_acting_seat_changes_nothing() {
+        for players in [2u8, 3, 4] {
+            let (state, rules) = state_np(players);
+            let legal = get_legal_moves(&state, &rules);
+            assert_eq!(
+                build_decision_for(&state, &rules, &legal, state.current_player),
+                build_decision(&state, &rules, &legal),
+                "{players}P: the actor's own zone is the unscoped one",
+            );
+        }
+    }
+
+    /// The frame carries the scoping, so an API that serves whole frames cannot
+    /// forget it. `build_frame`'s `seat` is the reader on both halves: the hand
+    /// it unmasks and the options it offers.
+    #[test]
+    fn the_frame_scopes_its_decision_zone_to_the_viewing_seat() {
+        let (state, rules) = state_np(2);
+        let legal = get_legal_moves(&state, &rules);
+        let actor = state.current_player;
+        let observer = PlayerId::new(if actor.0 == 0 { 1 } else { 0 });
+        let title = TitleModel { mode: TitleMode::Sim, seed: 1, autosaved: false };
+
+        let seen = build_frame(&state, &rules, &SeatFacts::all_open(2), actor, &legal, title);
+        assert_eq!(seen.decision.options.len(), legal.len(), "the actor gets its list");
+        assert!(seen.decision.viewer_is_deciding);
+
+        let unseen = build_frame(&state, &rules, &SeatFacts::all_open(2), observer, &legal, title);
+        assert!(unseen.decision.options.is_empty(), "the observer does not");
+        assert!(!unseen.decision.viewer_is_deciding);
+        // The board is public and must NOT be withheld — only the option list is.
+        assert_eq!(unseen.board, seen.board, "the board is the same table for both");
+    }
+
+    /// The withholding has to survive serialization, since that is the form the
+    /// reader actually receives. An observer's JSON must not name a move.
+    #[test]
+    fn an_observers_zone_names_no_move_across_the_wire() {
+        let (state, rules) = state_np(2);
+        let legal = get_legal_moves(&state, &rules);
+        let actor = state.current_player;
+        let observer = PlayerId::new(if actor.0 == 0 { 1 } else { 0 });
+
+        let json = serde_json::to_string(&build_decision_for(&state, &rules, &legal, observer))
+            .expect("a zone serializes");
+        assert!(json.contains("\"options\":[]"), "the option list crosses empty: {json}");
+
+        let acting = serde_json::to_string(&build_decision(&state, &rules, &legal)).unwrap();
+        assert!(acting.len() > json.len(), "the actor's zone is the larger document");
     }
 }
