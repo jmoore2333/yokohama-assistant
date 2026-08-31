@@ -121,6 +121,31 @@ and accepted limit of the instrument, stated here rather than discovered again.
 - **`Repl::index_placements`** (`repl.rs:1706`, `pub(crate)`) is the one
   widening a card-index surface would genuinely need. Widen it rather than
   copying it — its doc defends a leak fence.
+- **The client has NO automated test**, and this is the largest hole in the
+  lane. `npx tsc -b --noEmit` is a type check over HAND-WRITTEN types, so it
+  proves the client agrees with itself and nothing about whether it agrees with
+  the wire; the whole-game gate is entirely server-side. Both defects M2's
+  client work turned up — the retreat prompt offering number buttons after
+  every area was answered, and the surface switch rendering one payload through
+  another's branch — were found by CLICKING, and neither would have failed any
+  command in this repo. Closing it means either a component-test dependency
+  (vitest + Testing Library) or a headless browser walk in CI, and both are
+  decisions rather than tasks. **Until then, "the suites are green" is not a
+  claim about the browser.**
+
+## 6a. What was checked by hand, so the next reader does not re-check it
+
+Path traversal on `/art/**` and the SPA fallback, against a running server:
+un-normalized `..` segments answer `400 bad path` (the guard is structural —
+every component that is not `Component::Normal` refuses the request, so there is
+nothing to encode around), and percent-encoded `..%2f` answers `404 no such art`
+because axum does not decode `%2f` into a separator. A client-normalised
+`/art/../../../etc/passwd` reaches the server as `/etc/passwd`, misses both
+fences, and returns `index.html` — the SPA fallback, not the file.
+
+The input fence, over real HTTP: `save /tmp/PWNED`, `view`, `orders` and `quit`
+all answer `400` with the sentence that explains them, and no file appears;
+`1`, `confirm`, `a 1 2` and `privacy` answer `200`.
 
 ## 7. Hosting — recorded now, acted on later (owner, 2026-08-31)
 
