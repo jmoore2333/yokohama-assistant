@@ -271,6 +271,79 @@ async fn input(
     Ok(Json(ClientState::of(&id, &repl, messages)))
 }
 
+// ---------------------------------------------------------------------------
+// The read-only surfaces
+// ---------------------------------------------------------------------------
+//
+// Four `GET`s over four `screen_model` builders that were already `pub`, tested
+// and reachable from nowhere. They are the home for the words `grammar` fences
+// off the mutation endpoint: `ports`, `labs`, `areas` and `log` used to reach a
+// browser only as terminal art through `Repl::step`, which also opened a sticky
+// overlay that changed what the next number meant. As routes they are what they
+// always were — a projection of state, computing nothing, changing nothing.
+//
+// Each takes the game's lock briefly and drops it. None mutates, so none
+// persists; a `GET` that wrote would be a `GET` that surprised a proxy.
+
+/// A handler that reads one game and projects it.
+///
+/// The three lock-and-project routes differ only in which builder they call, so
+/// the borrow, the not-found and the lock live once. A fourth copy of this
+/// wiring is a fourth chance to forget the `map_err`.
+macro_rules! surface {
+    ($name:ident, $model:ty, $build:expr) => {
+        async fn $name(
+            State(state): State<Arc<AppState>>,
+            Path(id): Path<String>,
+        ) -> ApiResult<$model> {
+            let handle = state.games.handle(&id).map_err(ApiError::not_found)?;
+            let repl = handle.lock().expect("a game");
+            let f: fn(&yokohama_core::GameState, &Rules) -> $model = $build;
+            Ok(Json(f(repl.session.state(), repl.session.rules())))
+        }
+    };
+}
+
+surface!(ports, yokohama_cli::screen_model::PortsPanel, yokohama_cli::screen_model::build_ports);
+surface!(labs, yokohama_cli::screen_model::LabsPanel, yokohama_cli::screen_model::build_labs);
+surface!(areas, yokohama_cli::screen_model::AreasPanel, yokohama_cli::screen_model::build_areas);
+
+/// How much of the log a request gets when it does not say.
+///
+/// **The whole thing.** The CLI tails it because a terminal has 24 lines to
+/// spend; a browser has a scrollbar, and truncating by default would make the
+/// most common request the one that quietly hides the move you are looking for.
+/// `?tail=N` trims for a caller that wants a summary, and `LogPanel::total`
+/// stays truthful either way, so a client can always say how many it is not
+/// showing.
+#[derive(Debug, Clone, Deserialize)]
+pub struct LogQuery {
+    #[serde(default)]
+    pub tail: Option<usize>,
+}
+
+/// `GET /api/games/{id}/log` — the move trail, worded as it read when it applied.
+///
+/// The text comes from `Session::event_description`, which describes an event
+/// against the state it applied IN and caches the result. Re-describing now
+/// would re-price a trading-house take at today's progression and re-address a
+/// movement fee to today's president owners — a log that rewrites its own
+/// history as the game moves. This route therefore reads the cache and never
+/// builds a description.
+async fn log(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    axum::extract::Query(q): axum::extract::Query<LogQuery>,
+) -> ApiResult<yokohama_cli::screen_model::LogPanel> {
+    let handle = state.games.handle(&id).map_err(ApiError::not_found)?;
+    let repl = handle.lock().expect("a game");
+    let total = repl.session.record().events.len();
+    let first = q.tail.map_or(0, |n| total.saturating_sub(n));
+    let described: Vec<(usize, String)> =
+        (first..total).map(|i| (i, repl.session.event_description(i).to_string())).collect();
+    Ok(Json(yokohama_cli::screen_model::build_log(total, described)))
+}
+
 /// The art manifest, or an honest 404.
 ///
 /// **A checkout with no cropped art is a supported state**, not a broken one:
@@ -316,6 +389,10 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/api/games/preview", post(preview_game))
         .route("/api/games/{id}", get(get_game).delete(delete_game))
         .route("/api/games/{id}/input", post(input))
+        .route("/api/games/{id}/ports", get(ports))
+        .route("/api/games/{id}/labs", get(labs))
+        .route("/api/games/{id}/areas", get(areas))
+        .route("/api/games/{id}/log", get(log))
         .with_state(state)
         .fallback(fallback)
 }
@@ -352,6 +429,185 @@ mod tests {
         assert_eq!(body["semantics_rev"], SEMANTICS_REV);
         assert_eq!(body["rules_hash"], Rules::standard().content_hash());
         assert_eq!(body["server_version"], env!("CARGO_PKG_VERSION"));
+    }
+
+    /// The four read-only surfaces answer, and answer with the offer — not with
+    /// an empty shell that a client would render as an empty board.
+    ///
+    /// Asserted on CONTENT, not on a 200: every one of these builders returns a
+    /// well-formed empty structure when handed nothing, so a status check alone
+    /// would pass a route that had lost its state. The Port board is six slots
+    /// with a real zone gate, the Lab board six with its surcharges, the areas
+    /// reference one card per tile, and the log the opening's own events.
+    #[tokio::test]
+    async fn the_read_only_surfaces_carry_the_offer_the_terminal_shows() {
+        let router = app(Arc::new(AppState::in_memory()));
+        let call = |method: &'static str, uri: String, body: Option<serde_json::Value>| {
+            let router = router.clone();
+            async move {
+                let req = Request::builder().method(method).uri(uri);
+                let req = match body {
+                    Some(v) => req
+                        .header("content-type", "application/json")
+                        .body(Body::from(serde_json::to_vec(&v).expect("a body")))
+                        .expect("a request"),
+                    None => req.body(Body::empty()).expect("a request"),
+                };
+                let res = router.oneshot(req).await.expect("the router answers");
+                let status = res.status();
+                let bytes =
+                    axum::body::to_bytes(res.into_body(), usize::MAX).await.expect("a body");
+                (status, serde_json::from_slice::<serde_json::Value>(&bytes).expect("JSON"))
+            }
+        };
+
+        let (status, _) = call(
+            "POST",
+            "/api/games".to_string(),
+            Some(serde_json::json!({
+                "players": 2, "colors": ["Red", "Blue"], "start_seat": 0,
+                "seed": "20260831", "keeps": [1, 1], "bot_seats": [1], "name": "surfaces",
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+
+        let (status, ports) = call("GET", "/api/games/surfaces/ports".into(), None).await;
+        assert_eq!(status, StatusCode::OK, "{ports}");
+        let board = &ports["boards"][0];
+        assert_eq!(board["slots"].as_array().map(Vec::len), Some(6), "a Port board is six slots");
+        assert!(
+            board["slots"].as_array().unwrap().iter().any(|s| s["card"].is_number()),
+            "the opening Port offer is dealt, not empty: {ports}",
+        );
+        // The zone gate is the engine's, and it is what makes a HIGH card not
+        // an offer to a player who cannot reach it.
+        let powers: Vec<u64> = board["slots"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|s| s["min_power"].as_u64())
+            .collect();
+        assert!(powers.contains(&2) && powers.contains(&3) && powers.contains(&4), "{powers:?}");
+        assert!(ports["deck_remaining"].as_u64().is_some_and(|n| n > 0), "{ports}");
+
+        let (status, labs) = call("GET", "/api/games/surfaces/labs".into(), None).await;
+        assert_eq!(status, StatusCode::OK, "{labs}");
+        let slots = labs["boards"][0]["slots"].as_array().expect("six lab slots").clone();
+        assert_eq!(slots.len(), 6);
+        assert_eq!(
+            slots.iter().filter_map(|s| s["surcharge"].as_u64()).collect::<Vec<_>>(),
+            vec![0, 0, 1, 1, 2, 2],
+            "the printed position surcharges ride with the slots: {labs}",
+        );
+
+        let (status, areas) = call("GET", "/api/games/surfaces/areas".into(), None).await;
+        assert_eq!(status, StatusCode::OK, "{areas}");
+        let tiles: usize =
+            areas["rows"].as_array().expect("rows").iter().map(|r| r.as_array().unwrap().len()).sum();
+        assert_eq!(tiles, 10, "a 2P board is ten tiles and the reference covers all of them");
+
+        let (status, log) = call("GET", "/api/games/surfaces/log".into(), None).await;
+        assert_eq!(status, StatusCode::OK, "{log}");
+        let total = log["total"].as_u64().expect("a total");
+        assert_eq!(
+            log["entries"].as_array().map(Vec::len).unwrap_or(0) as u64,
+            total,
+            "no tail asked for means no tail taken: {log}",
+        );
+
+        // A game with a bot to move has already played; `?tail=` trims and
+        // `total` stays truthful, which is what lets a client say how many it
+        // is not showing.
+        let (_, after) = call(
+            "POST",
+            "/api/games/surfaces/input".into(),
+            Some(serde_json::json!({ "line": "1" })),
+        )
+        .await;
+        assert!(after["end_triggers"].as_str().is_some_and(|s| s.starts_with("end triggers:")));
+        let (_, trimmed) = call("GET", "/api/games/surfaces/log?tail=1".into(), None).await;
+        assert_eq!(trimmed["entries"].as_array().map(Vec::len), Some(1), "{trimmed}");
+        assert!(
+            trimmed["total"].as_u64().unwrap() >= 1,
+            "the total counts every event, not the tail: {trimmed}",
+        );
+    }
+
+    /// A seat's-worth of the hidden set rides on this: the seed a client is
+    /// shown must be the seed it can send back.
+    ///
+    /// The value here is `0xFEDC_BA98_7654_3210` — past 2^53, so a JSON number
+    /// would round it, and past `Number.MAX_SAFE_INTEGER` by enough that the
+    /// rounding lands on a DIFFERENT seed and therefore a different deal. The
+    /// test walks the real flow: preview, read the seed back off the wire, send
+    /// exactly that value to create the game, and require the game's own seed to
+    /// be the one asked for. A rounding bug shows up as an inequality, not as a
+    /// subtly different board nobody notices.
+    #[tokio::test]
+    async fn a_seed_survives_the_preview_round_trip_past_the_double_limit() {
+        const SEED: u64 = 0xFEDC_BA98_7654_3210;
+        // The premise, stated rather than assumed: through a double — which is
+        // every JSON number a browser parses — this seed is NOT this seed.
+        assert_ne!(
+            SEED,
+            SEED as f64 as u64,
+            "a seed that survived an f64 would make this test vacuous",
+        );
+
+        let router = app(Arc::new(AppState::in_memory()));
+        let post = |uri: &'static str, body: serde_json::Value| {
+            let router = router.clone();
+            async move {
+                let res = router
+                    .oneshot(
+                        Request::builder()
+                            .method("POST")
+                            .uri(uri)
+                            .header("content-type", "application/json")
+                            .body(Body::from(serde_json::to_vec(&body).expect("a body")))
+                            .expect("a request"),
+                    )
+                    .await
+                    .expect("the router answers");
+                let status = res.status();
+                let bytes =
+                    axum::body::to_bytes(res.into_body(), usize::MAX).await.expect("a body");
+                (status, serde_json::from_slice::<serde_json::Value>(&bytes).expect("JSON"))
+            }
+        };
+
+        let base = serde_json::json!({
+            "players": 2, "colors": ["Red", "Blue"], "start_seat": 0,
+            "keeps": [1, 1], "bot_seats": [1],
+        });
+        let mut req = base.clone();
+        req["seed"] = serde_json::json!(SEED.to_string());
+
+        let (status, preview) = post("/api/games/preview", req.clone()).await;
+        assert_eq!(status, StatusCode::OK, "{preview}");
+        assert_eq!(
+            preview["seed"],
+            serde_json::json!(SEED.to_string()),
+            "the seed comes back as a string, exactly",
+        );
+        // The dealt ids a player is looking at when they choose.
+        let previewed = preview["deals"].clone();
+
+        // What the client sends back is the string it was given, verbatim.
+        let mut create = req;
+        create["seed"] = preview["seed"].clone();
+        create["name"] = serde_json::json!("bigseed");
+        let (status, game) = post("/api/games", create).await;
+        assert_eq!(status, StatusCode::CREATED, "{game}");
+        assert_eq!(game["seed"], serde_json::json!(SEED.to_string()), "{}", game["seed"]);
+
+        // And the game really was dealt from it: the same seed previews the
+        // same deal, which is the property a rounded seed breaks.
+        let mut again = base;
+        again["seed"] = serde_json::json!(SEED.to_string());
+        let (_, preview2) = post("/api/games/preview", again).await;
+        assert_eq!(preview2["deals"], previewed, "the deal is a function of the seed");
     }
 
     /// The fence is on the ROUTE, not merely in the predicate.

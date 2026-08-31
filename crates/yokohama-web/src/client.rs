@@ -74,6 +74,15 @@ pub struct ClientState {
     pub id: String,
     /// `"sim"` or `"live"`.
     pub mode: &'static str,
+    /// The setup seed, as a STRING.
+    ///
+    /// **Read this and not `frame.title.seed`.** That field is a `u64` and
+    /// serializes as a JSON number, which a browser cannot hold: `JSON.parse`
+    /// rounds anything past 2^53, and a real seed is around 1.8e19. It stays a
+    /// number because `screen_model` is the CLI's model and this port does not
+    /// move it; this field is the web layer's lossless answer. See
+    /// [`crate::games::WireSeed`].
+    pub seed: crate::games::WireSeed,
     /// The seat this payload was built FOR — whose hand is unmasked and whose
     /// decision zone carries options. Not necessarily the seat to move.
     pub seat: PlayerId,
@@ -86,6 +95,30 @@ pub struct ClientState {
     /// What the last input produced: the delta summary, or a refusal.
     pub messages: Vec<String>,
     pub over: bool,
+    /// The end-trigger strip, worded by the CLI's own `render::end_trigger_line`.
+    ///
+    /// **A rendered string on purpose, and the one place this crate serves
+    /// one.** Every end-game trigger's proximity in a line — `end triggers:
+    /// deck 5 · church 4/4 · customs 1/4 · shophouses 2/8 · trade houses 1/4 ·
+    /// FINAL ROUND`. Three of those numbers are in the frame already
+    /// (`trigger_at`, `church_filled`, `customs_filled`) and two are added
+    /// below, but the THRESHOLDS 8 and 4 are literals inside the engine's
+    /// `end_game.rs` with no name to import, so a client composing this itself
+    /// would be writing two rules constants into a stylesheet. Calling the
+    /// CLI's renderer instead means the browser and the terminal cannot
+    /// disagree about how close the game is to ending, which is the whole point
+    /// of the parity work. The line is plain by construction — its own doc says
+    /// so — and this process never initialises the ANSI layer.
+    pub end_triggers: String,
+    /// Cards left in the order deck. In no frame model, and one of the two
+    /// facts the end-trigger strip needs that a frame cannot supply.
+    ///
+    /// A public count of a hidden pile, and legitimately so: the physical
+    /// deck's HEIGHT is on the table for everyone. Identities stay in
+    /// `GameState` and reach no model.
+    pub deck_remaining: usize,
+    /// Whether a trigger has already fired, so the last round is running.
+    pub end_game_triggered: bool,
     pub scores: Option<Vec<ScoreRow>>,
     /// Provenance drift noticed when the game was loaded.
     pub warnings: Vec<String>,
@@ -193,6 +226,7 @@ impl ClientState {
                 TrackingMode::Simulation => "sim",
                 TrackingMode::Live => "live",
             },
+            seed: crate::games::WireSeed(session.record().seed),
             seat,
             to_move: state.current_player,
             your_turn: !over && state.current_player == seat,
@@ -200,6 +234,9 @@ impl ClientState {
             prompt: prompt_of(repl),
             messages,
             over,
+            end_triggers: yokohama_cli::render::end_trigger_line(state),
+            deck_remaining: state.order_deck.len(),
+            end_game_triggered: state.end_game_triggered,
             scores: over.then(|| {
                 session
                     .final_scores()

@@ -20,6 +20,51 @@ use yokohama_core::{
 
 use crate::store::{is_safe_id, GameId, SessionStore};
 
+/// A `u64` that crosses the wire as a STRING.
+///
+/// **Not fussiness — a correctness bug.** A JavaScript `number` is an IEEE
+/// double and cannot hold a `u64`. [`draw_seed`] draws over the FULL range, so
+/// a real game's seed is around 1.8e19, and `JSON.parse` rounds it silently:
+/// the browser was already displaying `5856483359458926000`, whose last four
+/// digits are not in the seed.
+///
+/// The setup flow makes that worse than a display bug, because it ROUND-TRIPS
+/// the value: `/api/games/preview` draws a seed and deals from it, the client
+/// shows the deal and sends the seed back to `POST /api/games`, and a rounded
+/// seed starts a DIFFERENT GAME than the one the player looked at. The cards
+/// they chose between are not the cards they get.
+///
+/// Deserialization accepts a string or a number, so a small literal from `curl`
+/// or a test still works and nothing that was correct becomes an error.
+/// Serialization always emits a string, so nothing a client reads can be lossy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WireSeed(pub u64);
+
+impl Serialize for WireSeed {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.0.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for WireSeed {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Either {
+            Text(String),
+            Number(u64),
+        }
+        match Either::deserialize(d)? {
+            Either::Number(n) => Ok(WireSeed(n)),
+            Either::Text(t) => t
+                .trim()
+                .parse::<u64>()
+                .map(WireSeed)
+                .map_err(|e| serde::de::Error::custom(format!("{t:?} is not a u64 seed: {e}"))),
+        }
+    }
+}
+
 /// What a client sends to start a game.
 #[derive(Debug, Clone, Deserialize)]
 pub struct NewGame {
@@ -28,9 +73,10 @@ pub struct NewGame {
     #[serde(default)]
     pub start_seat: u8,
     /// Omit to have the server draw one. **Omitting is the right default** —
-    /// see [`draw_seed`].
+    /// see [`draw_seed`]. A string or a number; see [`WireSeed`] for why the
+    /// answer always comes back as a string.
     #[serde(default)]
-    pub seed: Option<u64>,
+    pub seed: Option<WireSeed>,
     /// Which dealt card each seat keeps, `1` or `2`, as the cards are numbered
     /// on screen.
     pub keeps: Vec<u8>,
@@ -49,7 +95,7 @@ pub struct Deal {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Preview {
-    pub seed: u64,
+    pub seed: WireSeed,
     pub deals: Vec<Deal>,
 }
 
@@ -126,10 +172,10 @@ fn config_of(req: &NewGame) -> Result<(GameConfig, Vec<StartingOrderChoice>, Bot
 /// The deal a seed produces, without starting anything.
 pub fn preview(req: &NewGame, rules: &Rules) -> Result<Preview, String> {
     let (config, _, _) = config_of(req)?;
-    let seed = req.seed.unwrap_or_else(draw_seed);
+    let seed = req.seed.map_or_else(draw_seed, |s| s.0);
     let pending = new_game(config, rules, seed).map_err(|e| e.to_string())?;
     Ok(Preview {
-        seed,
+        seed: WireSeed(seed),
         deals: pending
             .deals
             .iter()
@@ -166,7 +212,7 @@ impl Games {
     /// "created" can always find it again.
     pub fn create(&self, req: &NewGame) -> Result<(GameId, Arc<Mutex<Repl>>), String> {
         let (config, choices, bots) = config_of(req)?;
-        let seed = req.seed.unwrap_or_else(draw_seed);
+        let seed = req.seed.map_or_else(draw_seed, |s| s.0);
 
         let id = match &req.name {
             Some(name) if !is_safe_id(name) => {
