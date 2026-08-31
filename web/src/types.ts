@@ -287,15 +287,24 @@ export interface FrameModel {
   decision: DecisionModel;
 }
 
-export interface OptionRow { number: number; words: string; opens_picker: boolean }
+export interface OptionRow {
+  number: number;
+  words: string;
+  opens_picker: boolean;
+  /** What this row costs. `null` means the move cannot carry a fee at all; a
+   *  `total` of 0 means FREE, which is not the same thing — every President
+   *  move carries a zero fee when it is free, and the terminal prints `free`
+   *  there because a player comparing destinations needs a price, not a gap. */
+  fee: FeeModel | null;
+}
 
 /** INTERNALLY tagged — the one exception on the wire. */
 export type PromptState =
   | { kind: "options"; rows: OptionRow[] }
   | { kind: "pick"; title: string; rows: OptionRow[] }
   | { kind: "retreat"; area: AreaId; area_label: string; max: number; answered: number[]; remaining: number }
-  | { kind: "place_a"; selected: AreaId[]; max_areas: number }
-  | { kind: "place_b"; areas: AreaId[]; selected: AreaId | null }
+  | { kind: "place_a"; selected: AreaId[]; max_areas: number; fee: FeeModel | null }
+  | { kind: "place_b"; areas: AreaId[]; selected: AreaId | null; fee: FeeModel | null }
   | { kind: "reveal" }
   | { kind: "game_over" }
   /** The session is locked after a driver or engine fault. Nothing this client

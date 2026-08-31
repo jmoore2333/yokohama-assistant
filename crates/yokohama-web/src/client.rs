@@ -15,13 +15,28 @@ use yokohama_core::{AreaId, PlayerId};
 pub struct OptionRow {
     /// What to send back. 1-based (`screen_model::NUMBER_BASE`).
     pub number: usize,
-    /// The entry in plain words, from the CLI's own renderer — fees, route
-    /// counts and previews included, so a client never prices anything itself.
+    /// The entry in plain words, from the CLI's own renderer.
     pub words: String,
     /// True when choosing this opens a further question (a route family, the
     /// retreat family, an Option A/B placement) instead of applying a move.
     /// The client can say "…" rather than implying the turn is about to end.
     pub opens_picker: bool,
+    /// **What this row COSTS**, priced by `screen_model::option_fee`.
+    ///
+    /// `words` is `describe::describe_move`'s, and for a President move that is
+    /// a bare "Place President from hand in Copper Mine (A00)" with no price on
+    /// it — the terminal's decision zone does not use those words for this move
+    /// kind, it re-words the row from `OptionModel::fee`
+    /// (`decision_render::move_row`). Without this the browser's rows were
+    /// identical in shape whether they cost a yen or nothing, so a player
+    /// comparing destinations could not see which one charged them.
+    ///
+    /// `None` means the move cannot carry a fee at all. A `Some` whose `total`
+    /// is 0 means FREE and is not the same thing: `option_fee` returns a zero
+    /// fee for every President move, free or not, and the terminal prints
+    /// `— free` there because a player choosing between routes is comparing
+    /// prices and an absent price reads as an unknown one.
+    pub fee: Option<screen_model::FeeModel>,
 }
 
 /// What the game is asking for right now.
@@ -51,9 +66,23 @@ pub enum PromptState {
         remaining: usize,
     },
     /// Placement Option A: toggle up to `max_areas` areas, then `confirm`.
-    PlaceA { selected: Vec<AreaId>, max_areas: usize },
+    ///
+    /// `fee` is what the CURRENT selection would cost, live as it changes —
+    /// 1 yen per assistant placed, to each president owner in that area.
+    /// Without it the browser showed only the ids it had toggled, and a player
+    /// pressed Confirm and paid a yen that no surface had stated. The terminal
+    /// recomputes this on every redraw (`Repl::sub_prompt_text`).
+    PlaceA { selected: Vec<AreaId>, max_areas: usize, fee: Option<screen_model::FeeModel> },
     /// Placement Option B: pick one area for two assistants, then `confirm`.
-    PlaceB { areas: Vec<AreaId>, selected: Option<AreaId> },
+    ///
+    /// Option B places TWO assistants in one area, so its fee is two yen per
+    /// president owner there, not one — which is exactly the kind of thing a
+    /// player should not have to remember while choosing.
+    PlaceB {
+        areas: Vec<AreaId>,
+        selected: Option<AreaId>,
+        fee: Option<screen_model::FeeModel>,
+    },
     /// A live-mode card reveal. v1 does not create live games, so this is here
     /// to be reported honestly rather than rendered.
     Reveal,
@@ -190,13 +219,20 @@ pub fn viewing_seat(repl: &Repl) -> PlayerId {
         .unwrap_or(acting)
 }
 
-fn rows_from(entries: Vec<yokohama_cli::render::DisplayRow>) -> Vec<OptionRow> {
+fn rows_from(
+    entries: Vec<yokohama_cli::render::DisplayRow>,
+    state: &yokohama_core::GameState,
+    rules: &yokohama_core::Rules,
+) -> Vec<OptionRow> {
     entries
         .into_iter()
         .enumerate()
         .map(|(i, row)| OptionRow {
             number: screen_model::menu_number(i),
             opens_picker: row.mv.is_none(),
+            // Priced by the CLI's own function, never by a rule restated here.
+            // A row that opens a picker has no single move and so no price yet.
+            fee: row.mv.as_ref().and_then(|mv| screen_model::option_fee(state, rules, mv)),
             words: row.words,
         })
         .collect()
@@ -219,7 +255,9 @@ fn prompt_of(repl: &Repl) -> PromptState {
     let state = repl.session.state();
     let rules = repl.session.rules();
     match &repl.sub {
-        SubPrompt::None => PromptState::Options { rows: rows_from(repl.option_rows()) },
+        SubPrompt::None => {
+            PromptState::Options { rows: rows_from(repl.option_rows(), state, rules) }
+        }
         SubPrompt::Pick { title, moves } => PromptState::Pick {
             title: title.clone(),
             rows: moves
@@ -229,6 +267,7 @@ fn prompt_of(repl: &Repl) -> PromptState {
                     number: screen_model::menu_number(i),
                     words: describe::describe_move(mv, state, rules),
                     opens_picker: false,
+                    fee: screen_model::option_fee(state, rules, mv),
                 })
                 .collect(),
         },
@@ -245,12 +284,19 @@ fn prompt_of(repl: &Repl) -> PromptState {
                 remaining: areas.len().saturating_sub(collected.len()),
             }
         }
-        SubPrompt::PlaceA { selected, max_areas } => {
-            PromptState::PlaceA { selected: selected.clone(), max_areas: *max_areas }
-        }
-        SubPrompt::PlaceB { areas, selected } => {
-            PromptState::PlaceB { areas: areas.clone(), selected: *selected }
-        }
+        SubPrompt::PlaceA { selected, max_areas } => PromptState::PlaceA {
+            fee: screen_model::placement_fee(state, selected),
+            selected: selected.clone(),
+            max_areas: *max_areas,
+        },
+        SubPrompt::PlaceB { areas, selected } => PromptState::PlaceB {
+            // Option B is two assistants in ONE area, which `placement_fee`
+            // prices by REPEATING the area — the same shape the engine's own
+            // `PlaceTwoSameArea` fee takes.
+            fee: selected.map(|a| vec![a, a]).and_then(|two| screen_model::placement_fee(state, &two)),
+            areas: areas.clone(),
+            selected: *selected,
+        },
         SubPrompt::Reveal { .. } => PromptState::Reveal,
     }
 }

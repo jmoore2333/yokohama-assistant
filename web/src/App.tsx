@@ -153,7 +153,13 @@ export function App() {
         />
       )}
 
-      <Decision state={state} labels={labels} busy={busy} onSend={(l) => void send(l)} />
+      <Decision
+        state={state}
+        labels={labels}
+        colors={colors}
+        busy={busy}
+        onSend={(l) => void send(l)}
+      />
       {error && (
         <div className="decision">
           <div className="error">{error}</div>

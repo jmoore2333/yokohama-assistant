@@ -1,4 +1,29 @@
-import type { ClientState, Deciding, Labels, NotOfferedReason, PendingChoice } from "./types";
+import type {
+  ClientState,
+  Deciding,
+  FeeModel,
+  Labels,
+  NotOfferedReason,
+  PendingChoice,
+  PlayerColor,
+} from "./types";
+
+/** A price, in the CLI's own words (`decision_render::fee_words`).
+ *
+ *  `null` and a zero total both read "free": `option_fee` returns a zero fee
+ *  for every President move whether it costs anything or not, and the terminal
+ *  prints `free` rather than nothing because a player comparing destinations is
+ *  comparing prices, and an absent price reads as an unknown one. */
+function feeWords(fee: FeeModel | null, colors: PlayerColor[]): string {
+  if (!fee || fee.total === 0) return "free";
+  const parts = fee.to_players.map(([seat, amount]) =>
+    `${amount} to ${colors[seat] ?? `seat ${seat}`}`,
+  );
+  if (fee.canal_tolls > 0) {
+    parts.push(`${fee.canal_tolls} canal toll${fee.canal_tolls === 1 ? "" : "s"}`);
+  }
+  return `pay ¥${fee.total} (${parts.join(", ")})`;
+}
 
 /** What a QUEUED CHOICE is asking, in the CLI's own words.
  *
@@ -58,11 +83,13 @@ const NOT_OFFERED: Record<NotOfferedReason, string> = {
 export function Decision({
   state,
   labels,
+  colors,
   busy,
   onSend,
 }: {
   state: ClientState;
   labels: Labels | null;
+  colors: PlayerColor[];
   busy: boolean;
   onSend: (line: string) => void;
 }) {
@@ -114,6 +141,14 @@ export function Decision({
             >
               <span className="num">{row.number}</span>
               <span>{row.words}</span>
+              {/* A price on every row that can carry one, free INCLUDED — the
+                  terminal states it either way so that two rows differing only
+                  in cost cannot look identical. */}
+              {row.fee && (
+                <span className={`price ${row.fee.total > 0 ? "costs" : ""}`}>
+                  {feeWords(row.fee, colors)}
+                </span>
+              )}
               {row.opens_picker && <span className="more">opens a choice &rarr;</span>}
             </button>
           ))}
@@ -164,6 +199,14 @@ export function Decision({
               ? "none"
               : prompt.selected.map((a) => `A${String(a).padStart(2, "0")}`).join(", ")}
           </div>
+          {/* The live price of the CURRENT selection. The terminal recomputes
+              this on every redraw; without it a player pressed Confirm and paid
+              a yen no surface had stated. */}
+          {prompt.selected.length > 0 && (
+            <div className={prompt.fee && prompt.fee.total > 0 ? "warn" : ""}>
+              This placement is {feeWords(prompt.fee, colors)}.
+            </div>
+          )}
         </div>
       )}
 
@@ -173,6 +216,14 @@ export function Decision({
             Option B &mdash; click one area on the board for two assistants, then confirm.
             {prompt.selected != null && ` Selected A${String(prompt.selected).padStart(2, "0")}.`}
           </div>
+          {/* Two assistants in one area, so the fee is two yen per president
+              owner there rather than one — not something to make a player
+              remember mid-choice. */}
+          {prompt.selected != null && (
+            <div className={prompt.fee && prompt.fee.total > 0 ? "warn" : ""}>
+              This placement is {feeWords(prompt.fee, colors)}.
+            </div>
+          )}
         </div>
       )}
 

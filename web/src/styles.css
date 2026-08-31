@@ -419,3 +419,10 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
  * "none" rather than "not shown here", and imports are what the Customs track
  * and one church faith payment type are counted in. */
 .chip.zero { opacity: 0.4; }
+
+/* A row's price. Stated even when free, because two rows that differ only in
+ * cost must not look identical — the terminal prints `free` for the same
+ * reason. */
+.option .price { color: var(--fg-faint); margin-left: auto; font-size: 10.5px; }
+.option .price.costs { color: var(--yen); }
+.option .price + .more { margin-left: 0.6rem; }
