@@ -116,6 +116,12 @@ export function Decision({
           nothing. The three lines the REPL would still take under lockdown are
           all refused by the API's grammar fence, which is why there is no
           "try anyway" button here. */}
+      {prompt.kind === "watching" && (
+        <div className="messages">
+          <div>Waiting on seat {prompt.to_move}. Nothing here is yours to answer.</div>
+        </div>
+      )}
+
       {prompt.kind === "locked" && (
         <div className="messages">
           <div className="warn">
@@ -318,6 +324,8 @@ function asking(state: ClientState, labels: Labels | null): string {
       return "A card reveal is pending (live mode).";
     case "locked":
       return "This game is locked.";
+    case "watching":
+      return `Seat ${state.prompt.to_move} is deciding.`;
     default:
       // `your_turn` is now true whenever a human seat is to move, because the
       // payload is built for the acting seat. The distinction that remains is

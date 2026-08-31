@@ -199,6 +199,23 @@ pub struct Games {
     deleted: Mutex<std::collections::HashSet<GameId>>,
 }
 
+/// How many `Repl`s stay resident.
+///
+/// **A handle is a cache, never the record** — this module's own first
+/// paragraph — so dropping one costs a replay and loses nothing. The map used
+/// to grow forever and shrink only on `DELETE`: measured at ~27.6 KB retained
+/// per game across 200 creates, with nothing in the API able to reclaim one.
+/// Each entry also owns a full `Rules` clone, which is why the figure is not
+/// small.
+///
+/// 64 is chosen for the shape of the deployment rather than from a benchmark:
+/// this is one operator's server behind Cloudflare Access, so the working set
+/// is a handful of games, and a bound two orders of magnitude above that costs
+/// nothing while turning unbounded growth into a fixed ceiling. An eviction is
+/// invisible to a client — the next request rebuilds through
+/// `Session::from_record`, which is the same path a slept container takes.
+const MAX_RESIDENT: usize = 64;
+
 impl Games {
     pub fn new(rules: Arc<Rules>, store: Arc<dyn SessionStore>) -> Self {
         Self {
@@ -250,7 +267,11 @@ impl Games {
             bring_alive(&mut r);
             self.persist(&id, &r)?;
         }
-        self.live.lock().expect("games lock").insert(id.clone(), Arc::clone(&handle));
+        {
+            let mut live = self.live.lock().expect("games lock");
+            live.insert(id.clone(), Arc::clone(&handle));
+            evict_down_to(&mut live, &id);
+        }
         Ok((id, handle))
     }
 
@@ -277,7 +298,9 @@ impl Games {
         // Another request may have rebuilt the same game while this one was
         // replaying. Keep whichever landed first, so one game is never two
         // handles applying moves to two divergent records.
-        Ok(Arc::clone(live.entry(id.to_string()).or_insert(handle)))
+        let kept = Arc::clone(live.entry(id.to_string()).or_insert(handle));
+        evict_down_to(&mut live, id);
+        Ok(kept)
     }
 
     /// Write `repl`'s record through. Called after every mutation.
@@ -330,6 +353,26 @@ impl Games {
         self.live.lock().expect("games lock").remove(id);
         self.deleted.lock().expect("games lock").insert(id.to_string());
         Ok(())
+    }
+}
+
+/// Drop resident handles until the map is within [`MAX_RESIDENT`], never
+/// dropping `keep`.
+///
+/// Eviction order is arbitrary rather than least-recently-used: an LRU needs a
+/// clock or a counter on every read, and the property that matters here is only
+/// that the map is BOUNDED. A handle is a cache; the record is the truth, and
+/// an evicted game rebuilds on its next request through the same path a slept
+/// container takes.
+fn evict_down_to(live: &mut HashMap<GameId, Arc<Mutex<Repl>>>, keep: &str) {
+    while live.len() > MAX_RESIDENT {
+        let victim = live.keys().find(|k| k.as_str() != keep).cloned();
+        match victim {
+            Some(k) => {
+                live.remove(&k);
+            }
+            None => break,
+        }
     }
 }
 

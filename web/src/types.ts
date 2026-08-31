@@ -310,7 +310,10 @@ export type PromptState =
   /** The session is locked after a driver or engine fault. Nothing this client
    *  can send is accepted, and the three lines that would be are refused by the
    *  API's own grammar fence. */
-  | { kind: "locked"; reason: string };
+  | { kind: "locked"; reason: string }
+  /** Someone else is to move; this payload carries no answerable list. The
+   *  frame's decision zone is scoped the same way, so the two agree. */
+  | { kind: "watching"; to_move: PlayerId };
 
 export interface ClientState {
   id: string;

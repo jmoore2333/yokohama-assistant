@@ -88,6 +88,23 @@ pub enum PromptState {
     Reveal,
     /// Nothing is being decided.
     GameOver,
+    /// Someone else is to move and this payload is not theirs.
+    ///
+    /// **The prompt has to be scoped or the frame's scoping is a formality.**
+    /// `ClientState::of` builds the decision zone through
+    /// `build_decision_for`, whose doc says an observer must not receive the
+    /// acting seat's options because "a `FulfillOrder` option names a card the
+    /// reader may not be entitled to see" — and then the sibling `prompt` field
+    /// was built from `repl.option_rows()`, which is always the CURRENT
+    /// player's grouped list. The frame said `options: []` and
+    /// `viewer_is_deciding: false` while the prompt beside it carried the
+    /// actor's entries.
+    ///
+    /// Reachable through the bot-fallback arm of [`viewing_seat`]: when the
+    /// actor is a bot the payload is built for a human, and the bot's hand is
+    /// masked unconditionally — so without this the client would hold an option
+    /// list derived from a hand the same payload hides.
+    Watching { to_move: PlayerId },
     /// The session is locked after a driver or engine fault and accepts no
     /// gameplay at all.
     ///
@@ -180,6 +197,7 @@ impl PromptState {
             PromptState::Reveal => "reveal",
             PromptState::GameOver => "game_over",
             PromptState::Locked { .. } => "locked",
+            PromptState::Watching { .. } => "watching",
         }
     }
 }
@@ -241,6 +259,16 @@ fn rows_from(
 /// The current prompt's tag, without building the whole prompt.
 pub fn prompt_kind(repl: &Repl) -> &'static str {
     prompt_of(repl).kind()
+}
+
+fn prompt_of_seat(repl: &Repl, seat: PlayerId) -> PromptState {
+    let acting = repl.session.state().current_player;
+    // The one scoping rule, applied before anything is read: a payload built
+    // for a seat that is not the actor carries no answerable list at all.
+    if !repl.session.is_over() && repl.session.record().lockdown.is_none() && seat != acting {
+        return PromptState::Watching { to_move: acting };
+    }
+    prompt_of(repl)
 }
 
 fn prompt_of(repl: &Repl) -> PromptState {
@@ -339,7 +367,7 @@ impl ClientState {
             to_move: state.current_player,
             your_turn: !over && state.current_player == seat,
             frame,
-            prompt: prompt_of(repl),
+            prompt: prompt_of_seat(repl, seat),
             messages,
             over,
             end_triggers: yokohama_cli::render::end_trigger_line(state),

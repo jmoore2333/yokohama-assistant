@@ -362,8 +362,26 @@ async fn input(
 // overlay that changed what the next number meant. As routes they are what they
 // always were — a projection of state, computing nothing, changing nothing.
 //
-// Each takes the game's lock briefly and drops it. None mutates, so none
-// persists; a `GET` that wrote would be a `GET` that surprised a proxy.
+// Each takes the game's lock briefly and drops it, and none of them applies
+// anything itself.
+//
+// **They are not, however, side-effect free, and an earlier version of this
+// comment claimed they were.** All four begin with `Games::handle`, which on a
+// cache miss rebuilds from the record and then runs `bring_alive` — the pump a
+// game with a bot to move is OWED — and persists if that pump played. So a
+// `GET` can advance a bot's turn and write the store.
+//
+// That is kept rather than fixed, and the reasoning is worth stating because
+// the obvious fix is wrong: a read-only rebuild that skipped the pump would
+// cache an un-pumped handle, and the next `input` would apply a human move to a
+// state the bot had not yet moved in. The pump is a correctness requirement of
+// the rebuild, not a side effect of the route.
+//
+// What bounds the harm: the pump is deterministic and owed — it plays the move
+// that was going to be played, from a seed already in the record — so nothing
+// an attacker supplies changes what happens, and the same GET twice is
+// idempotent. It is recorded here so the next reader does not trust a sentence
+// over the code.
 
 /// A handler that reads one game and projects it.
 ///
