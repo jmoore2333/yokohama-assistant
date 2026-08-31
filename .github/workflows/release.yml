@@ -30,6 +30,17 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-musl
+      # `rust-toolchain.toml` has pinned the compiler at an exact version since
+      # f9ca6d4 (2026-08-11, `stable` -> `1.97.1`), so every cargo invocation
+      # below runs under THAT toolchain -- not the `stable` the action above
+      # just installed. The action's `targets:` therefore attaches the musl std
+      # to the wrong toolchain and the cross build dies with
+      # `error[E0463]: can't find crate for \`core\``. Attaching the target here,
+      # inside the checkout, makes rustup resolve the pin itself -- so the
+      # version stays single-sourced in rust-toolchain.toml and is never
+      # restated in this file, where it would drift.
+      - name: Attach the musl target to the pinned toolchain
+        run: rustup target add x86_64-unknown-linux-musl
       - name: Install static-linking toolchain
         run: sudo apt-get update && sudo apt-get install --yes musl-tools
       - name: Test the CLI
