@@ -69,12 +69,18 @@ pub struct Terminal {
 ///
 /// Two consequences, both load-bearing and neither negotiable:
 ///
-/// 1. **Every one of the 34 terms is here, including the zero-product ones.**
-///    `Explanation` guarantees one term per feature always, and the identity
-///    only holds over all of them. Dropping the zeros server-side would shrink
-///    the payload and make the sum unverifiable by the reader — the one thing
-///    this surface must not do. The client collapses them behind a disclosure
-///    and prints the count, as the terminal dims them and prints "N of 34".
+/// 1. **Every one of the 34 terms is here, including the zero-product ones** —
+///    but NOT because the sum needs them. An earlier version of this doc said
+///    "the identity only holds over all of them", and a reviewer did the
+///    arithmetic: a zero-product term contributes zero, so the sum over the
+///    carrying terms alone is the same number. Measured on both fixtures.
+///
+///    The real reason is `Explanation`'s own, and it is about the READER:
+///    reporting one term per feature always lets a reader "see that a term
+///    contributed nothing rather than wonder whether it was computed", and it
+///    is what makes the client's "8 of 34" a count of something it is showing
+///    rather than of something it was told. A payload that shipped only the
+///    carrying terms could still foot; it could not be audited.
 /// 2. **A terminal explanation is a DIFFERENT PICTURE, not an empty one.** On a
 ///    finished game `explain` reports every term at `weight == 0` and
 ///    `product == 0` — reporting an interpolated weight there would be a lie
@@ -91,9 +97,21 @@ pub struct Explanation {
     /// this and the table — except on a terminal view, where the reported
     /// weights are 0 by the rule above and this is informational only.
     pub progress_ppm: u32,
-    /// How many of `terms` carry a nonzero product. Computed here rather than in
-    /// the browser because the CLI's summary line already states it and the two
-    /// must not be able to disagree.
+    /// How many of `terms` carry a nonzero product — **feature terms only**.
+    ///
+    /// An earlier version of this doc said the count was computed here "because
+    /// the CLI's summary line already states it and the two must not be able to
+    /// disagree". That was wrong, and a review measured the disagreement: the
+    /// terminal counts STORY ROWS, and on a finished game it deliberately pushes
+    /// the `final standing` row through the same counter (`suggest.rs:783-806`,
+    /// with a comment saying a count over feature terms alone "would read 0 of
+    /// 34 over a table whose whole content sits in the row it skipped"). So the
+    /// terminal reads `1 of 35` there and this field reads `0` over 34 terms.
+    ///
+    /// **Both are right about different things**, and the field is defined as
+    /// the narrower one on purpose: it is a fact about `terms`, and a client
+    /// with `terminal` non-null must draw the standing rather than a bar chart
+    /// anyway. What is NOT true is that the two numbers are the same number.
     pub nonzero: usize,
 }
 
@@ -267,14 +285,19 @@ impl Suggest {
 /// attached.
 #[derive(Debug, Clone, Serialize)]
 pub struct Provenance {
-    /// The contestant's name, as `descriptor()` composes it — one display
-    /// form for every contestant, so the browser and the terminal cannot spell
-    /// the same bot differently.
+    /// The contestant, as `Contestant::echo()` composes it — `name@vN` or
+    /// `name@vN{k=v,…}`.
+    ///
+    /// **`echo()` and not `descriptor().0`.** The first draft sent the bare
+    /// name and its doc claimed that was "one display form for every
+    /// contestant, so the browser and the terminal cannot spell the same bot
+    /// differently" — while the CLI's own `why` header prints `echo()`. For the
+    /// production contestant the knobs are constants of the name, so nothing was
+    /// lost in practice; a record resumed from a CLI save with a non-default
+    /// `lookahead-v1` seat would have rendered as an undifferentiated
+    /// `lookahead-v1` in the browser and `lookahead-v1@v2{b=8,cap=200,…}` in the
+    /// terminal. `echo()` is the one composer, so now it cannot.
     pub contestant: String,
-    /// The controller impl version THIS build runs. When `recorded_version`
-    /// differs, the move still reproduced — the account is this build's reading
-    /// of a move an older one played, and the client says so.
-    pub controller_version: u32,
     /// `eval::EVAL_IMPL_VERSION`: a build-wide constant, not a per-contestant
     /// one.
     pub evaluator_version: u32,
@@ -337,14 +360,29 @@ impl Why {
     pub fn refused(r: &Refusal) -> Self {
         Self { ok: None, refusal: Some(RefusalDto::of(r)) }
     }
+
+    /// A locked session. Not one of `why`'s twelve — the lockdown is the
+    /// DRIVER's state rather than a fact about an event — so it carries its own
+    /// tag and the driver's own sentence.
+    pub fn locked(reason: String) -> Self {
+        Self {
+            ok: None,
+            refusal: Some(RefusalDto {
+                kind: "locked",
+                message: format!(
+                    "The session is locked after a driver or engine fault, so there is nothing \
+                     here worth trusting: `why` would re-run the bot's search against the record \
+                     that faulted. ({reason})"
+                ),
+            }),
+        }
+    }
 }
 
 impl Provenance {
     fn of(r: &Reconstruction) -> Self {
-        let (controller, _, _) = r.contestant.descriptor();
         Self {
-            contestant: controller,
-            controller_version: r.current_version,
+            contestant: r.contestant.echo(),
             evaluator_version: yokohama_core::game::eval::EVAL_IMPL_VERSION,
             index: r.index,
             seat: r.seat,
@@ -401,28 +439,75 @@ pub fn kind_of(r: &Refusal) -> &'static str {
     }
 }
 
-/// Every tag `kind_of` can return, as data.
+/// **The one hand-written list of refusals, and the only one.**
 ///
-/// The LOAD-BEARING half of the fence: the `match` above proves every variant
-/// has a tag, and this proves the corpus can be checked against the full set.
-/// The two are pinned to each other by
-/// `every_refusal_tag_is_produced_by_exactly_one_variant`, so neither can go
-/// stale while the other moves — which is precisely how the M2.5 review's
-/// vacuous guard failed.
-pub const REFUSAL_KINDS: [&str; 12] = [
-    "live_mode",
-    "no_bot_move_yet",
-    "out_of_range",
-    "not_a_move",
-    "human_seat",
-    "rung",
-    "diagnostic",
-    "unknown_controller",
-    "mismatch",
-    "reconstruction",
-    "unaccounted",
-    "replay",
-];
+/// An adversarial review of this milestone found the fence it replaces was
+/// weaker than its own doc claimed. That doc described a three-link chain — a
+/// 13th variant fails to compile in [`kind_of`]; adding an arm there but not the
+/// corpus fails the fixture test; adding it to the corpus but not to the tag
+/// list fails a third — and the MIDDLE LINK did not exist. There were THREE
+/// hand-written lists (the tag array, the test's constructed samples, and the
+/// fixture builder's own vec), all agreeing with each other and none pinned to
+/// the enum, so a 13th variant plus a one-line `kind_of` arm reached the wire
+/// with all 54 tests green. That is exactly the shape M2.5's review had found
+/// and this had claimed to fix.
+///
+/// **What is true now, stated precisely rather than optimistically:**
+///
+/// 1. A new `Refusal` variant is a COMPILE ERROR in [`kind_of`] — a `match`
+///    with no `_` arm, mutation-proven. That link is real and always was.
+/// 2. Everything downstream — `REFUSAL_KINDS`, the committed corpus, the
+///    client's coverage test — now derives from THIS FUNCTION, so they cannot
+///    disagree with each other and there is one place to edit rather than three.
+/// 3. **The residual hole, named:** a variant added to `Refusal` AND to
+///    `kind_of` but NOT to the list below still reaches the wire untagged by
+///    any fixture. Plain Rust cannot close it — there is no stable way to
+///    enumerate an enum's variants — so closing it would mean a derive
+///    dependency (`strum`) on `yokohama-cli`, which is a dependency decision and
+///    not a test change. Until then the guard is that link 1 forces a reader to
+///    open this file, and this comment is what they find when they do.
+///
+/// The field values are placeholders and are deliberately obvious as such: what
+/// this list pins is the SHAPE and the SET, not any particular message.
+pub fn refusal_samples() -> Vec<Refusal> {
+    use yokohama_cli::why::Mismatch;
+    let seat = PlayerId::new(1);
+    vec![
+        Refusal::LiveMode,
+        Refusal::NoBotMoveYet,
+        Refusal::OutOfRange { asked: 99, events: 12 },
+        Refusal::NotAMove { index: 3, kind: "a setup event" },
+        Refusal::HumanSeat { index: 4, seat },
+        Refusal::Rung { index: 5, seat, rung: "family-weighted".to_string() },
+        Refusal::Diagnostic { index: 6, seat, why: "a controller this driver will not run".into() },
+        Refusal::UnknownController {
+            index: 7,
+            seat,
+            controller: "not-a-contestant".to_string(),
+            why: "no such controller".to_string(),
+        },
+        Refusal::Mismatch(Box::new(Mismatch {
+            index: 8,
+            seat,
+            controller: "lookahead".to_string(),
+            reconstructed: "MovePresident { .. }".to_string(),
+            recorded: "place 1 assistant in Area 3".to_string(),
+            recorded_version: Some(1),
+            current_version: 2,
+        })),
+        Refusal::Reconstruction { index: 9, seat, why: "the sampler refused the view".to_string() },
+        Refusal::Unaccounted { index: 10, contestant: "greedy-v1".to_string() },
+        Refusal::Replay { index: 11, message: "the record does not replay".to_string() },
+    ]
+}
+
+/// Every tag `kind_of` can return, DERIVED from [`refusal_samples`] rather than
+/// restated beside it. See that function for what this fence does and does not
+/// catch.
+pub fn refusal_kinds() -> Vec<&'static str> {
+    refusal_samples().iter().map(kind_of).collect()
+}
+
 
 /// `suggest`'s own refusals, which do NOT live in `suggest.rs`.
 ///
@@ -431,8 +516,25 @@ pub const REFUSAL_KINDS: [&str; 12] = [
 /// called `suggest::suggest` directly would inherit NONE of them and would
 /// happily search a live game, which the module doc forbids. They are restated
 /// here rather than reached because the alternative is widening a
-/// rendering-adjacent function that returns a rendered `StepOutput`; the
-/// conditions are one line each and every one is asserted by a test.
+/// rendering-adjacent function that returns a rendered `StepOutput`.
+///
+/// **How much of this is REACHABLE through this API, measured rather than
+/// assumed** (an earlier version of this doc claimed "every one is asserted by a
+/// test", and a review found that only the enum was walked — no route test
+/// constructed any of these states):
+///
+/// - `GameOver` and `Locked` are reachable and are now pinned by route tests.
+/// - `BotSeat` never fires at rest: `create` and `input` both pump bot seats
+///   before returning, so a bot is never the seat to move when a request is
+///   answered. It is kept because a HALTED pump (the `PUMP_MOVE_CAP` arm) can
+///   leave one, and because a handler that assumed otherwise would advise a bot
+///   against the player.
+/// - `LiveMode` cannot be reached through this API at all — `Session::new_sim`
+///   is the only constructor `games.rs` calls, and `TrackingMode::Live` is
+///   derived from a record's setup observations, so only a live-tracked CLI save
+///   dropped into the store directory could produce one. It is kept because
+///   that IS a way in, and because the module doc it enforces is the standing
+///   3.2 scope rather than a property of this crate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SuggestRefusal {
     LiveMode,
@@ -451,16 +553,27 @@ impl SuggestRefusal {
         }
     }
 
-    /// The same four refusals the terminal gives, UNWRAPPED.
+    /// The four refusals the terminal gives — **and what this does to each, one
+    /// by one, because an earlier version of this doc claimed all four were the
+    /// CLI's words merely unwrapped and a reviewer found three were not.**
     ///
-    /// The CLI's are hand-wrapped to a view body — a 215-column paragraph would
-    /// size the composed frame to itself — and carrying those embedded newlines
-    /// into a browser would be shipping a terminal's line-breaks to a layout
-    /// engine. So the sentences say the same thing in the same order and the
-    /// wrapping is the reader's. **This is the one place M3 re-words rather than
-    /// reuses**, and it is deliberate: `Refusal`'s twelve are carried verbatim
-    /// because `guide_sync` pins them, while these four live inside
-    /// `repl::suggest_cmd`'s rendered output and have no such pin.
+    /// - `GameOver` — the CLI's line, BYTE-IDENTICAL (`repl.rs`'s
+    ///   `suggest_cmd`). Nothing was done to it.
+    /// - `LiveMode` — the CLI's words UNWRAPPED. This one really is
+    ///   hand-wrapped to a view body (a 215-column paragraph would size the
+    ///   composed frame to itself), and carrying a terminal's newlines into a
+    ///   layout engine would be shipping the wrong thing.
+    /// - `BotSeat` — **AUTHORED.** The CLI names the seat number; this drops it
+    ///   (the payload already carries the seat) and adds a pointer to `why`,
+    ///   which is the answer a player who asked wants and which the terminal has
+    ///   no room for.
+    /// - `Locked` — **AUTHORED.** The CLI's line ends "only save/log/quit",
+    ///   which is a list of terminal commands and means nothing in a browser.
+    ///
+    /// **These four are the one place M3 re-words at all**, and the licence is
+    /// specific: they live inside `repl::suggest_cmd`'s rendered output and no
+    /// `guide_sync` cell pins them. `Refusal`'s twelve are carried verbatim,
+    /// because those strings ARE pinned to the tester guide.
     pub fn message(self) -> &'static str {
         match self {
             Self::LiveMode => {
@@ -572,58 +685,30 @@ fn words_for(name: &str) -> &'static str {
 mod tests {
     use super::*;
 
-    /// The tag list and the `match` are pinned TO EACH OTHER, so neither can go
-    /// stale while the other moves.
+    /// The sample set is complete, distinct, and each sample really is the
+    /// variant its tag names.
     ///
-    /// This is the cell M2.5's review would have wanted and did not find: there,
-    /// the "a new variant is a compile error" claim rested on two hand-written
-    /// lists, a reviewer added a tenth variant, and all three tests passed. Here
-    /// the count is load-bearing and `kind_of` has no `_` arm, so a thirteenth
-    /// variant cannot reach the wire without failing to compile.
+    /// **This test no longer claims to pin the list to the ENUM**, because it
+    /// cannot and the previous version's doc said it could. What it pins is
+    /// that the ONE hand-written list is internally sound: twelve samples,
+    /// twelve distinct tags, no variant sampled twice. `refusal_samples`' doc
+    /// names the residual hole.
     #[test]
-    fn every_refusal_tag_is_produced_by_exactly_one_variant() {
-        let produced = [
-            kind_of(&Refusal::LiveMode),
-            kind_of(&Refusal::NoBotMoveYet),
-            kind_of(&Refusal::OutOfRange { asked: 0, events: 0 }),
-            kind_of(&Refusal::NotAMove { index: 0, kind: "x" }),
-            kind_of(&Refusal::HumanSeat { index: 0, seat: PlayerId::new(0) }),
-            kind_of(&Refusal::Rung { index: 0, seat: PlayerId::new(0), rung: String::new() }),
-            kind_of(&Refusal::Diagnostic { index: 0, seat: PlayerId::new(0), why: String::new() }),
-            kind_of(&Refusal::UnknownController {
-                index: 0,
-                seat: PlayerId::new(0),
-                controller: String::new(),
-                why: String::new(),
-            }),
-            kind_of(&Refusal::Mismatch(Box::new(yokohama_cli::why::Mismatch {
-                index: 0,
-                seat: PlayerId::new(0),
-                controller: String::new(),
-                reconstructed: String::new(),
-                recorded: String::new(),
-                recorded_version: None,
-                current_version: 0,
-            }))),
-            kind_of(&Refusal::Reconstruction {
-                index: 0,
-                seat: PlayerId::new(0),
-                why: String::new(),
-            }),
-            kind_of(&Refusal::Unaccounted { index: 0, contestant: String::new() }),
-            kind_of(&Refusal::Replay { index: 0, message: String::new() }),
-        ];
+    fn the_refusal_samples_are_complete_distinct_and_correctly_tagged() {
+        let samples = refusal_samples();
+        assert_eq!(samples.len(), 12, "twelve variants, twelve samples");
 
-        let mut sorted = produced.to_vec();
-        sorted.sort_unstable();
-        sorted.dedup();
-        assert_eq!(sorted.len(), produced.len(), "two variants share a tag: {produced:?}");
+        let mut tags = refusal_kinds();
+        let count = tags.len();
+        tags.sort_unstable();
+        tags.dedup();
+        assert_eq!(tags.len(), count, "two samples share a tag: {:?}", refusal_kinds());
 
-        let mut declared = REFUSAL_KINDS.to_vec();
-        declared.sort_unstable();
-        let mut actual = produced.to_vec();
-        actual.sort_unstable();
-        assert_eq!(actual, declared, "REFUSAL_KINDS is not what kind_of produces");
+        // Anti-vacuity: every sample must word itself through the CLI's own
+        // `Display`, so a placeholder that failed to construct is visible.
+        for r in &samples {
+            assert!(r.to_string().len() > 20, "{} says nothing: {r:?}", kind_of(r));
+        }
     }
 
     /// A refusal is worded by the CLI, not here.

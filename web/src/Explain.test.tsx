@@ -12,7 +12,6 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import { ExplanationView, SuggestView, WhyView } from "./Explain";
 import { wire } from "./wire/contract";
-import type { Explanation } from "./types";
 
 const labels = wire.labels;
 
@@ -92,23 +91,22 @@ describe("the chart adds up, and says so on screen", () => {
 
   it("draws a FINISHED game as a standing, not as thirty-four empty bars", () => {
     // On a terminal explanation every product is 0 by design and the whole
-    // score is the standing, so bars would render empty under a nonzero total.
-    // Built from a server-emitted explanation with its terminal half set, which
-    // is the one shape the corpus cannot reach: this API's games do not run to
-    // a bot-vs-bot finish inside a fixture walk.
-    const base = wire.why.ok!.explanation;
-    const terminal: Explanation = {
-      ...base,
-      terms: base.terms.map((t) => ({ ...t, weight: 0, product: 0 })),
-      terminal: { rank: 1, seats: 2, viewer_total: 82, best_other_total: 81, value: 1000 },
-      total: 1000,
-      nonzero: 0,
-    };
-    render(<ExplanationView e={terminal} labels={labels} />);
+    // score is the standing, so bars would render 34 empty rows under a nonzero
+    // total.
+    //
+    // **The payload is server-emitted.** The first draft of this cell HAND-BUILT
+    // the terminal object — the one thing `contract.ts` §3 forbids — and a
+    // review proved the cost: renaming all five of `Terminal`'s wire fields left
+    // this test, the typecheck and every other cell green, because a
+    // hand-authored object keeps satisfying the unchanged local type. There is
+    // a real fixture now, from a finished bot-vs-bot game.
+    const e = wire.explanationTerminal;
+    render(<ExplanationView e={e} labels={labels} />);
     expect(screen.queryAllByRole("listitem")).toHaveLength(0);
-    expect(screen.getByText("1 of 2")).toBeInTheDocument();
-    expect(screen.getByText("82")).toBeInTheDocument();
-    expect(screen.getByText("1000")).toBeInTheDocument();
+    expect(screen.getByText(`${e.terminal!.rank} of ${e.terminal!.seats}`)).toBeInTheDocument();
+    expect(screen.getByText(String(e.terminal!.viewer_total))).toBeInTheDocument();
+    expect(screen.getByText(String(e.terminal!.best_other_total))).toBeInTheDocument();
+    expect(screen.getByText(String(e.total))).toBeInTheDocument();
   });
 });
 

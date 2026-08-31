@@ -11,11 +11,13 @@
 //
 //     total === sum(terms[].product) + (terminal ? terminal.value : 0)
 //
-// The identity holds only over ALL 34 features, so the payload carries the
-// zero-product ones and this component keeps them in the footing. It COLLAPSES
-// them — a screen of 26 empty rows buries the eight that decided the move — but
-// collapsing is not dropping: the total below the fold is the true total, and
-// the count of what is hidden is printed.
+// The payload carries all 34 features, zero-product ones included — NOT because
+// the sum needs them (a zero term contributes zero; an earlier version of this
+// comment said otherwise and a reviewer did the arithmetic) but because "8 of
+// 34" is only a claim a reader can check if all 34 are there. This component
+// COLLAPSES them — a screen of 26 empty rows buries the eight that decided the
+// move — and collapsing is not dropping: the total below the fold is the true
+// total, the count of what is hidden is printed, and one click brings them back.
 
 import { useState } from "react";
 import type {
@@ -384,10 +386,17 @@ export function WhyView({ data, labels }: { data: WhyResponse; labels: Labels | 
       </section>
       <Continuation line={w.continuation} />
       <RunnerUps ranking={w.ranking} />
+      {w.search_hit_ply_cap && (
+        <p className="warn">
+          The ply guard stopped some continuation inside this search — not necessarily the
+          one above. The counter carries no identity, so which line it stopped is not
+          recorded.
+        </p>
+      )}
       {w.counters && <Counters counters={w.counters} />}
       <p className="meta provenance">
-        Reconstructed by replay under this build: <code>{p.contestant}</code> at controller
-        v{p.current_version}, evaluator impl {p.evaluator_version}, from decision seed{" "}
+        Reconstructed by replay under this build: <code>{p.contestant}</code>, evaluator impl{" "}
+        {p.evaluator_version}, from decision seed{" "}
         <code>{p.decision_seed}</code> — the key the bot's own pump derived. Event {p.index}.
         A reconstruction that did not equal the recorded move would have refused instead of
         showing you this.

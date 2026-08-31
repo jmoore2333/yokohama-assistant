@@ -16,17 +16,17 @@
 
 import { useEffect, useState } from "react";
 import { api, ApiError } from "./api";
-import { achievementArt } from "./art";
-import { OrderCardView, TechCardView } from "./Cards";
+import { AchievementCardView, OrderCardView, SiteCardView, TechCardView } from "./Cards";
 import type {
-  AchievementModel,
   ArtManifest,
+  CardLocation,
   IndexCard,
   IndexGroup,
   IndexModel,
   Labels,
   Outcome,
   PlayerColor,
+  SpaceReward,
 } from "./types";
 
 /** The group heading. `key` is serde's externally-tagged enum — `{Country: …}`
@@ -44,66 +44,102 @@ function groupLabel(key: unknown, labels: Labels | null): string {
   return "";
 }
 
-/** Where a card is, when the index is tracking it. `null` is NOT "nowhere": the
- *  index deliberately carries no other seat's hand. */
-function locationWords(location: unknown, colors: PlayerColor[]): string | null {
-  if (location === null || location === undefined) return null;
+/** Where a card is, in the CLI's own words.
+ *
+ *  **Exhaustive over all eight `CardLocation` variants, with a `never` check
+ *  rather than a fallback.** The first draft handled five and fell through to
+ *  `String(tag)`, which printed the literal Rust tag `OnArea` under ten of the
+ *  twenty-four site cards — a silent wrong answer with a payload behind it in
+ *  the committed corpus. A fallback that renders a tag as prose is not an
+ *  honest last resort; it is a defect that cannot fail a test. Now a ninth
+ *  variant is a COMPILE ERROR here.
+ *
+ *  The wording MIRRORS `describe::card_location` (crates/yokohama-cli/src/
+ *  describe.rs:88) word for word, and a divergence between the two is a defect
+ *  rather than a style choice — the terminal and the browser must not describe
+ *  the same card differently. */
+function locationWords(location: CardLocation | null, colors: PlayerColor[]): string | null {
+  if (location === null) return null;
   if (location === "OwnHand") return "in your hand";
   if (location === "ThisReveal") return "in this reveal";
-  if (typeof location === "object") {
-    const [tag, value] = Object.entries(location as Record<string, unknown>)[0] ?? [];
-    const inner = (value ?? {}) as Record<string, unknown>;
-    if (tag === "OwnedBy") return `owned by ${colors[Number(inner.seat)] ?? `seat ${inner.seat}`}`;
-    if (tag === "PortSlot") return `port ${inner.board_b ? "B" : "A"}, slot ${Number(inner.slot) + 1}`;
-    if (tag === "LabSlot") return `lab ${inner.board_b ? "B" : "A"}, slot ${Number(inner.slot) + 1}`;
-    return String(tag);
+  const seatName = (seat: number) => colors[seat] ?? `Seat ${seat}`;
+  if ("Deal" in location) return `Seat ${location.Deal.seat}'s deal`;
+  if ("PortSlot" in location) {
+    return `Port ${location.PortSlot.board_b ? "B" : "A"} slot ${location.PortSlot.slot + 1}`;
   }
-  return null;
+  if ("LabSlot" in location) {
+    return `Laboratory ${location.LabSlot.board_b ? "B" : "A"} slot ${location.LabSlot.slot + 1}`;
+  }
+  if ("OwnedBy" in location) return `owned by ${seatName(location.OwnedBy.seat)}`;
+  if ("OnArea" in location) return `on area A${String(location.OnArea.area).padStart(2, "0")}`;
+  if ("AchievementSlot" in location) {
+    return `category ${location.AchievementSlot.category} in play`;
+  }
+  // A ninth variant lands HERE as a type error, which is the point.
+  const unreachable: never = location;
+  return unreachable;
 }
 
-/** An achievement in play, with **how close every seat is to it**.
+/** **Where every physical copy of a TITLE is.**
  *
- *  The progress vector is in the payload and the first draft of this component
- *  dropped it — while the nav blurb beside it promised "how close every seat
- *  is". That is the M2.5 lesson repeating: a milestone's own sentence claiming
- *  something the screen does not do. `current >= needed` is "ready by the
- *  numbers" and not "claimable" (a claim also needs an assistant in hand), so
- *  the row says READY rather than anything stronger. */
-function Goal({
-  a,
-  art,
-  labels,
+ *  The index is over titles, not cards: ten of the twenty titles circulate as
+ *  two identical copies so that two players can each own one. The nav blurb
+ *  promises "who owns which copy", and the first draft showed only the card's
+ *  single `location` — which is the FIRST copy's — so a title owned by both
+ *  seats read as owned by one.
+ *
+ *  The terminal cannot fit this: `card_render::copy_note` renders the same fact
+ *  as `= owned by Red +1 more`, because one interior line is what a card-sized
+ *  cell has. A browser has the room, so it says which copy is where.
+ *
+ *  `copies` is every printed copy and `placed` only the ones the index has
+ *  located, so the difference is the number still in the deck — a real fact and
+ *  not an absence. */
+function Copies({
+  copies,
+  placed,
   colors,
 }: {
-  a: AchievementModel;
-  art: ArtManifest | null;
-  labels: Labels | null;
+  copies: number[];
+  placed: [number, CardLocation][];
   colors: PlayerColor[];
 }) {
-  const url = achievementArt(art, a.achievement_type);
+  const unseen = copies.length - placed.length;
   return (
-    <div className="index-goal">
-      {url && <img src={url} alt="" loading="lazy" />}
-      <b>{labels?.achievements?.[a.achievement_type] ?? a.achievement_type}</b>
-      <span className="meta">
-        {a.first_place_vp} VP first, then {a.subsequent_vp}
-      </span>
-      <ul className="goal-progress">
-        {a.progress.map(([seat, current, needed]) => (
-          <li key={seat} className={current >= needed ? "ready" : undefined}>
-            <span>{colors[seat] ?? `seat ${seat}`}</span>
-            <span className="num">
-              {current}/{needed}
-            </span>
-          </li>
-        ))}
-      </ul>
-      {a.claimed_by.length > 0 && (
-        <span className="meta">
-          claimed by {a.claimed_by.map((s) => colors[s] ?? `seat ${s}`).join(", ")}
-        </span>
+    <ul className="copies">
+      {placed.map(([id, at]) => (
+        <li key={id}>
+          <code>T{String(id).padStart(2, "0")}</code>
+          <span>{locationWords(at, colors)}</span>
+        </li>
+      ))}
+      {unseen > 0 && (
+        <li className="muted">
+          <code>{unseen === copies.length ? "—" : `+${unseen}`}</code>
+          <span>{unseen === 1 ? "1 copy in the deck" : `${unseen} copies in the deck`}</span>
+        </li>
       )}
-    </div>
+    </ul>
+  );
+}
+
+/** One printed space on a building-site card, as the reward it pays.
+ *
+ *  Without this every one of the twenty-four site cards rendered identically —
+ *  the panel showed a count of spaces and no reward at all, while its nav blurb
+ *  promised "what every space pays". The chip vocabulary is the house one the
+ *  card faces already use. */
+function SpaceChip({ reward }: { reward: SpaceReward }) {
+  const paid = (Object.entries(reward) as [string, number][]).filter(([, n]) => n > 0);
+  if (paid.length === 0) return <span className="chip dim">—</span>;
+  return (
+    <>
+      {paid.map(([kind, n]) => (
+        <span className={`chip ${kind}`} key={kind}>
+          {n} {kind === "vp" ? "VP" : kind.replace(/_/g, " ")}
+        </span>
+      ))}
+    </>
   );
 }
 
@@ -120,26 +156,51 @@ function Card({
 }) {
   const where = locationWords(card.location, colors);
   const face = card.face;
+  // **The existing card views, not new ones.** `Cards.tsx` already draws every
+  // one of these faces with its art, its chips and — for an achievement — the
+  // per-seat progress bar whose doc states the rule the browser must not round
+  // off ("`current >= needed` is 'ready by the numbers', NOT 'claimable'"). The
+  // first draft of this file hand-rolled a goal and a site cell, and a review
+  // found what that cost: no achievement art, no progress at all while the nav
+  // blurb promised "how close every seat is", every site card rendering
+  // identically because the space rewards were dropped, and the site number off
+  // by one against every other surface in the project.
   const body =
     "Order" in face ? (
       <OrderCardView card={face.Order.printed} id={face.Order.id} art={art} size="sm" />
     ) : "Tech" in face ? (
-      <TechCardView card={face.Tech.printed} art={art} labels={labels} />
+      <>
+        <TechCardView card={face.Tech.printed} art={art} labels={labels} />
+        <Copies copies={face.Tech.copies} placed={face.Tech.placed} colors={colors} />
+      </>
     ) : "Achievement" in face ? (
-      <Goal a={face.Achievement} art={art} labels={labels} colors={colors} />
+      <AchievementCardView model={face.Achievement} art={art} labels={labels} colors={colors} />
     ) : (
-      <div className="index-site">
-        <b>Site {face.Site.index + 1}</b>
-        <span className="meta">
-          {face.Site.site.spaces.length} spaces · trading house {face.Site.site.trading_house_reward} VP
-        </span>
-      </div>
+      <SiteCardView art={art} index={face.Site.index}>
+        <div className="chips">
+          {/* **The number, always.** `SiteCardView` prints `Site n` only in its
+              art-less blank, so with the art present the panel showed no site
+              identifier at all — worse than the off-by-one it replaced, because
+              a card index a player cannot use to identify a card is not an
+              index. 0-BASED, as the board tile, the CLI's tile, its capture
+              name and its own site-index card all print it. */}
+          <span className="chip site-id">Site {face.Site.index}</span>
+          <span className="chip">trading house {face.Site.site.trading_house_reward} VP</span>
+          {face.Site.site.spaces.map((sp, i) => (
+            <SpaceChip key={i} reward={sp} />
+          ))}
+        </div>
+      </SiteCardView>
     );
 
+  // A tech's `location` is its FIRST copy's, and `Copies` above says where all
+  // of them are — so repeating it here would state one copy's whereabouts twice
+  // and the other's nowhere.
+  const showWhere = where !== null && !("Tech" in face);
   return (
     <li className={where ? "index-card placed" : "index-card"}>
       {body}
-      {where && <span className="meta">{where}</span>}
+      {showWhere && <span className="meta">{where}</span>}
     </li>
   );
 }
@@ -192,7 +253,17 @@ export function IndexView({
   // The filter is a ROUND TRIP, deliberately. Narrowing in the browser would be
   // a second implementation of a grammar the CLI owns, and the two would
   // disagree on the first ambiguous prefix a player typed.
+  //
+  // **The unfiltered case is skipped**, because `first` already IS that answer:
+  // the panel shell fetched it before this component mounted, and refetching it
+  // fired the identical GET twice on every open — a full card index, twice, for
+  // nothing.
   useEffect(() => {
+    if (term.trim() === "") {
+      setModel(first);
+      setError(null);
+      return;
+    }
     let live = true;
     setError(null);
     const t = setTimeout(() => {
@@ -205,7 +276,7 @@ export function IndexView({
       live = false;
       clearTimeout(t);
     };
-  }, [term, game, kind]);
+  }, [term, game, kind, first]);
 
   return (
     <div className="index">
@@ -220,19 +291,27 @@ export function IndexView({
           />
         </label>
         <span className="meta">
-          showing {model.shown} of {model.total}
+          {error ? `${model.total} cards, none shown` : `showing ${model.shown} of ${model.total}`}
         </span>
       </p>
+      {/* **A refused filter clears the list rather than leaving the last one
+          under it.** The count line and the cards below are the ANSWER to a
+          filter; leaving the previous answer beside a refusal says the screen
+          is showing something it is not, which is the same class of defect as a
+          number that means a different move. */}
       {error && <div className="error">{error}</div>}
-      {model.shown === 0 && !error && <p className="muted">Nothing matches that.</p>}
-      {model.groups.map((g, i) => (
+      {!error && model.shown === 0 && <p className="muted">Nothing matches that.</p>}
+      {/* Orders are the only kind whose face is a small thumbnail; the other
+          three carry prose, chips or a progress table and need a cell wide
+          enough not to wrap every word. */}
+      {!error && model.groups.map((g, i) => (
         <Group
           key={i}
           group={g}
           art={art}
           labels={labels}
           colors={colors}
-          wide={kind === "goals" || kind === "sites"}
+          wide={kind !== "orders"}
         />
       ))}
     </div>

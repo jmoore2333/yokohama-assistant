@@ -53,6 +53,9 @@ import type {
   ArtManifest,
   ApiErrorBody,
   ClientState,
+  Counter,
+  IndexCard,
+  IndexGroup,
   DecisionModel,
   Breakdown,
   Explanation,
@@ -75,6 +78,7 @@ import type {
   SuggestOk,
   SuggestResponse,
   Term,
+  Terminal,
   TileModel,
   TracksPanel,
   WhyOk,
@@ -110,6 +114,7 @@ import preview from "./preview.json";
 import refused from "./refused.json";
 import retreat from "./retreat.json";
 import retreatAnswered from "./retreat_answered.json";
+import explanationTerminal from "./explanation_terminal.json";
 import indexFiltered from "./index_filtered.json";
 import indexGoals from "./index_goals.json";
 import indexOrders from "./index_orders.json";
@@ -189,6 +194,14 @@ const _indexFiltered: Widen<IndexModel> = indexFiltered;
 const _result: Widen<Outcome> = result;
 const _placing: Widen<Placing>[] = result.standings;
 
+// **The TERMINAL branch, which nothing reached until a review proved it.**
+// `terminal` is `null` in both search payloads, so `Widen<Explanation>` is
+// satisfied without the union ever descending into `Widen<Terminal>` — renaming
+// all five of its wire fields left the whole net green. This fixture is a real
+// terminal explanation from a finished game, so the branch is now entered.
+const _terminal: Widen<Explanation> = explanationTerminal;
+const _terminalStanding: Widen<Terminal> = explanationTerminal.terminal;
+
 // The two envelopes are `ok | null` unions, so `Widen<SuggestResponse>` is
 // satisfied by `{ok: null, refusal: {...}}` — which means the assignments above
 // check NOTHING about a granted payload's fields. Exactly the `PromptState`
@@ -252,6 +265,7 @@ void [
   _suggest, _why, _whyRefused, _whyRefusals,
   _suggestOk, _whyOk, _whyProvenance, _whyRanked, _suggestTerm, _refusedRow,
   _indexOrders, _indexTechs, _indexGoals, _indexSites, _indexFiltered, _result, _placing,
+  _terminal, _terminalStanding,
 ];
 
 // ## §2. The key sets, so a field the SERVER adds is not silently unknown
@@ -336,7 +350,7 @@ const WHY_OK = [
 const EXPLANATION = ["terms", "terminal", "total", "progress_ppm", "nonzero"] as const;
 const TERM = ["feature", "viewer_value", "opponent_value", "weight", "product"] as const;
 const PROVENANCE = [
-  "contestant", "controller_version", "evaluator_version", "index", "seat",
+  "contestant", "evaluator_version", "index", "seat",
   "decision_seed", "forced", "recorded_version", "current_version",
 ] as const;
 const RANKED = ["text", "value", "margin", "chosen"] as const;
@@ -347,6 +361,10 @@ const PLACING = ["seat", "rank", "breakdown", "margin", "won"] as const;
 const BREAKDOWN = [
   "base_vp", "church", "customs", "technology", "country", "remainder", "total",
 ] as const;
+const TERMINAL = ["rank", "seats", "viewer_total", "best_other_total", "value"] as const;
+const COUNTER = ["name", "value", "group"] as const;
+const INDEX_GROUP = ["key", "cards"] as const;
+const INDEX_CARD = ["face", "location", "selection"] as const;
 
 // The compile-time half. A list that is not exactly `keyof T` fails HERE, with
 // the offending key names in the message.
@@ -378,8 +396,13 @@ const _ix: KeysOf<IndexModel, typeof INDEX> = INDEX;
 const _oc: KeysOf<Outcome, typeof OUTCOME> = OUTCOME;
 const _pc: KeysOf<Placing, typeof PLACING> = PLACING;
 const _bd: KeysOf<Breakdown, typeof BREAKDOWN> = BREAKDOWN;
+const _tl: KeysOf<Terminal, typeof TERMINAL> = TERMINAL;
+const _ct: KeysOf<Counter, typeof COUNTER> = COUNTER;
+const _ig: KeysOf<IndexGroup, typeof INDEX_GROUP> = INDEX_GROUP;
+const _ic: KeysOf<IndexCard, typeof INDEX_CARD> = INDEX_CARD;
 void [_cs, _fr, _de, _or, _pl, _ti, _tr, _po, _la, _ar, _lo, _lb, _he, _pv, _er,
-      _sr, _so, _wr, _wo, _ex, _tm, _pr, _rk, _rf, _ix, _oc, _pc, _bd];
+      _sr, _so, _wr, _wo, _ex, _tm, _pr, _rk, _rf, _ix, _oc, _pc, _bd,
+      _tl, _ct, _ig, _ic];
 
 /** The key lists, for the runtime half in `contract.test.ts`. */
 export const KEYS = {
@@ -411,6 +434,10 @@ export const KEYS = {
   outcome: OUTCOME,
   placing: PLACING,
   breakdown: BREAKDOWN,
+  terminal: TERMINAL,
+  counter: COUNTER,
+  indexGroup: INDEX_GROUP,
+  indexCard: INDEX_CARD,
 } as const;
 
 // ## §3. The fixtures, typed, for every other test to render
@@ -471,6 +498,7 @@ export const wire = {
   indexSites: as<IndexModel>(indexSites),
   indexFiltered: as<IndexModel>(indexFiltered),
   result: as<Outcome>(result),
+  explanationTerminal: as<Explanation>(explanationTerminal),
 } as const;
 
 /** The queued-choice heads the corpus DOES carry.

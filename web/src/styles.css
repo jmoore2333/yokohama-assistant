@@ -561,17 +561,9 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
  * inferred from `selection`: `screen_model` numbers dimmed cards on purpose, so
  * the two are different facts. */
 .index-card.placed { opacity: 0.55; }
-.index-goal, .index-site {
-  display: flex; flex-direction: column; gap: 0.2rem;
-  background: var(--bg-sunken); border: 1px solid var(--line);
-  border-radius: var(--radius); padding: 0.4rem;
-}
-.index-goal img { width: 100%; aspect-ratio: var(--card-aspect); object-fit: cover; border-radius: 2px; }
-.goal-progress { list-style: none; margin: 0.15rem 0 0; padding: 0; font-size: 10px; }
-.goal-progress li { display: flex; justify-content: space-between; gap: 0.5rem; color: var(--fg-faint); }
-/* "Ready by the numbers", which is NOT "claimable": a claim also needs an
- * assistant in hand, and the model says so. */
-.goal-progress li.ready { color: var(--reachable); }
+/* The goal and site cells reuse `Cards.tsx`'s own card faces now, so the
+ * hand-rolled `.index-goal` / `.index-site` / `.goal-progress` rules that stood
+ * here are gone rather than left as dead selectors. */
 
 table.outcome { width: 100%; border-collapse: collapse; font-size: 12px; }
 table.outcome th, table.outcome td { padding: 0.3rem 0.5rem; border-top: 1px solid var(--line); }
@@ -582,3 +574,16 @@ table.outcome .total { color: var(--fg); font-size: 13px; }
  * points and be separated by the engine's own tie-break. */
 table.outcome tr.won td { background: color-mix(in srgb, var(--vp) 12%, transparent); }
 table.outcome tr.won td:first-child::after { content: " ★"; color: var(--vp); }
+.copies { list-style: none; margin: 0.2rem 0 0; padding: 0; font-size: 10px; }
+.copies li { display: flex; gap: 0.4rem; color: var(--fg-dim); }
+.copies code { color: var(--fg-faint); }
+.chip.dim { color: var(--fg-faint); }
+
+/* **Card faces inside an index fill their grid cell.**
+ *
+ * `.card-face` is a fixed `width` sized for the dashboard, and the index lays
+ * its cards out on a grid — so a tech card (which has no `sm` variant) rendered
+ * WIDER than its cell and overlapped its neighbour, with the caption of one card
+ * running across the art of the next. Measured in a browser at 1440px before
+ * this rule existed. Inside `.index-cards` the cell is the authority. */
+.index-cards .card-face { width: 100%; }

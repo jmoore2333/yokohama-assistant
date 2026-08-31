@@ -82,6 +82,22 @@ describe("the payload roots carry exactly the fields the client declares", () =>
     ["why.provenance", wire.why.ok!.provenance, KEYS.provenance],
     ["why_refused", wire.whyRefused, KEYS.whyResponse],
     ["why_refused.refusal", wire.whyRefused.refusal, KEYS.refusalRow],
+    // **Six of these had a compile-time list and no runtime half**, which a
+    // review found by adding `__server_added_a_field` to six committed payloads
+    // and watching the typecheck and all 173 cells stay green. The compile-time
+    // half checks the client's type against itself; only this comparison can
+    // see a field the SERVER added — the exact direction three of M2's fields
+    // arrived in.
+    ["suggest.term", wire.suggest.ok!.explanation.terms[0], KEYS.term],
+    ["suggest.ranked", wire.suggest.ok!.ranking[0], KEYS.ranked],
+    ["why.counter", wire.why.ok!.counters![0], KEYS.counter],
+    ["explanation_terminal", wire.explanationTerminal, KEYS.explanation],
+    ["explanation_terminal.terminal", wire.explanationTerminal.terminal, KEYS.terminal],
+    ["index_orders", wire.indexOrders, KEYS.index],
+    ["index_orders.group", wire.indexOrders.groups[0], KEYS.indexGroup],
+    ["index_orders.card", wire.indexOrders.groups[0]!.cards[0], KEYS.indexCard],
+    ["result.placing", wire.result.standings[0], KEYS.placing],
+    ["result.breakdown", wire.result.standings[0]!.breakdown, KEYS.breakdown],
   ] as const)("%s", (_name, payload, list) => {
     expect(keys(payload)).toEqual(listed(list));
   });
@@ -220,6 +236,10 @@ describe("the explanation foots", () => {
   const explanations = [
     ["suggest", wire.suggest.ok!.explanation],
     ["why", wire.why.ok!.explanation],
+    // A FINISHED game's explanation. The identity is the same one, and it is
+    // the half that only holds if `terminal.value` is included — which is why
+    // this row matters more than the two above it.
+    ["explanation_terminal", wire.explanationTerminal],
   ] as const;
 
   it.each(explanations)("%s: sum(product) + terminal === total", (_name, e) => {
@@ -234,6 +254,23 @@ describe("the explanation foots", () => {
     expect(e.terms).toHaveLength(34);
     expect(new Set(e.terms.map((t) => t.feature)).size).toBe(34);
     expect(e.nonzero).toBe(e.terms.filter((t) => t.product !== 0).length);
+  });
+
+  it("a terminal explanation reports every weight and product as ZERO", () => {
+    // Not an accident of this position: on a finished game the positional
+    // vector does not govern, and reporting an interpolated weight there would
+    // be a lie about what the evaluator used. The whole score is the standing.
+    const e = wire.explanationTerminal;
+    expect(e.terminal).not.toBeNull();
+    expect(e.nonzero).toBe(0);
+    for (const t of e.terms) {
+      expect(t.weight).toBe(0);
+      expect(t.product).toBe(0);
+    }
+    expect(e.total).toBe(e.terminal!.value);
+    // And the raw values stay populated, so a terminal explanation is still
+    // readable rather than a block of zeros.
+    expect(e.terms.some((t) => t.viewer_value !== 0)).toBe(true);
   });
 
   it.each(explanations)("%s: product is weight x (you - best opponent)", (_name, e) => {

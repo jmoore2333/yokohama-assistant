@@ -4,6 +4,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { IndexView, OutcomeView } from "./Index";
+import { SURFACES } from "./Surfaces";
 import { wire } from "./wire/contract";
 import type { PlayerColor } from "./types";
 
@@ -44,24 +45,117 @@ describe("an index is a view, and it says how much of the population it shows", 
     }
   });
 
-  it("shows how close every seat is, which the nav blurb promises", () => {
-    // **The first draft did not, and the blurb beside it said it did.** That is
-    // the M2.5 lesson in miniature: a claim a milestone makes about itself that
-    // the screen does not keep. `current >= needed` is "ready by the numbers"
-    // and not "claimable" — a claim also needs an assistant in hand — so the row
-    // is marked, never relabelled.
-    index("goals", wire.indexGoals);
+  it("shows how close EVERY seat is, counted per card, which the nav blurb promises", () => {
+    // **The first draft did not show it at all, and the blurb said it did** —
+    // the M2.5 lesson in miniature. The second draft showed it but the TEST
+    // could not tell: it asserted each `current/needed` string appeared
+    // somewhere on screen, and in this fixture seat 1's strings are all
+    // duplicated by some seat-0 row, so rendering one seat satisfied it.
+    // A reviewer proved that by slicing the progress list to one entry and
+    // watching all ten cells pass.
+    //
+    // So this counts ROWS PER CARD instead. `current >= needed` is "ready by
+    // the numbers" and NOT "claimable" — a claim also needs an assistant in
+    // hand — which is why the bar fills and nothing says "claim this".
+    const { container } = index("goals", wire.indexGoals);
+    const cards = container.querySelectorAll("li.index-card");
     const goals = wire.indexGoals.groups.flatMap((g) => g.cards);
+    expect(cards).toHaveLength(goals.length);
     expect(goals.length).toBeGreaterThan(0);
-    for (const c of goals) {
+
+    goals.forEach((c, i) => {
       const face = c.face;
       if (!("Achievement" in face)) throw new Error("the goals index carries achievements");
-      expect(face.Achievement.progress.length).toBeGreaterThan(0);
-      for (const [seat, current, needed] of face.Achievement.progress) {
+      const rows = cards[i]!.querySelectorAll(".progress-row");
+      expect(rows, `goal ${i} shows one row per seat`).toHaveLength(
+        face.Achievement.progress.length,
+      );
+      face.Achievement.progress.forEach(([seat, current, needed], j) => {
         void seat;
-        expect(screen.getAllByText(`${current}/${needed}`).length).toBeGreaterThan(0);
+        expect(rows[j]!.querySelector(".num")!.textContent).toBe(`${current}/${needed}`);
+      });
+    });
+  });
+
+  it("words every location the corpus carries, and never prints a raw Rust tag", () => {
+    // **The defect this replaces.** `locationWords` handled five of eight
+    // `CardLocation` variants and fell through to `String(tag)`, so ten of the
+    // twenty-four site cards captioned themselves with the literal word
+    // `OnArea` — where the terminal prints `on area A03`. `types.ts` ended in a
+    // permissive `Record<string, unknown>` arm, so neither the typecheck nor
+    // the contract could see the missing variant. The arm is gone, the switch is
+    // exhaustive with a `never` check, and this walks the whole corpus.
+    const tags = new Set<string>();
+    for (const [kind, model] of [
+      ["orders", wire.indexOrders],
+      ["techs", wire.indexTechs],
+      ["goals", wire.indexGoals],
+      ["sites", wire.indexSites],
+    ] as const) {
+      const { container, unmount } = index(kind, model);
+      for (const g of model.groups) {
+        for (const c of g.cards) {
+          if (c.location && typeof c.location === "object") {
+            tags.add(Object.keys(c.location)[0]!);
+          } else if (typeof c.location === "string") {
+            tags.add(c.location);
+          }
+        }
       }
+      // No caption anywhere is a bare serde tag.
+      const text = container.textContent ?? "";
+      for (const tag of ["OnArea", "OwnedBy", "PortSlot", "LabSlot", "AchievementSlot", "Deal"]) {
+        expect(text.includes(tag), `${kind} prints the raw tag ${tag}`).toBe(false);
+      }
+      unmount();
     }
+    // Anti-vacuity: the corpus must actually CARRY located cards, or the loop
+    // above proves nothing.
+    expect(tags.size).toBeGreaterThan(0);
+    expect(tags.has("OnArea")).toBe(true);
+  });
+
+  it("says where EVERY copy of a technology title is, which the nav blurb promises", () => {
+    // Ten of the twenty titles circulate as two copies. The first draft showed
+    // only the card's single `location` — the FIRST copy's — so a title owned by
+    // both seats read as owned by one.
+    const { container } = index("techs", wire.indexTechs);
+    const cards = container.querySelectorAll("li.index-card");
+    const titles = wire.indexTechs.groups.flatMap((g) => g.cards);
+    let doubled = 0;
+    titles.forEach((c, i) => {
+      const face = c.face;
+      if (!("Tech" in face)) throw new Error("the techs index carries techs");
+      if (face.Tech.placed.length > 1) doubled += 1;
+      const rows = cards[i]!.querySelectorAll(".copies li");
+      const unseen = face.Tech.copies.length - face.Tech.placed.length;
+      expect(rows.length, `title ${i} lists every copy it can`).toBe(
+        face.Tech.placed.length + (unseen > 0 ? 1 : 0),
+      );
+    });
+    expect(doubled, "the fixture must contain a title held by two seats").toBeGreaterThan(0);
+  });
+
+  it("shows what every space on a site card pays, which the nav blurb promises", () => {
+    // The first draft printed a COUNT of spaces and no reward, so all 24 site
+    // cards rendered identically.
+    const { container } = index("sites", wire.indexSites);
+    const cards = container.querySelectorAll("li.index-card");
+    const sites = wire.indexSites.groups.flatMap((g) => g.cards);
+    sites.forEach((c, i) => {
+      const face = c.face;
+      if (!("Site" in face)) throw new Error("the sites index carries sites");
+      const chips = cards[i]!.querySelectorAll(".chip");
+      // One trading-house chip plus at least one per paying space.
+      expect(chips.length, `site ${i} shows its rewards`).toBeGreaterThan(1);
+    });
+    // And the number on the card is the 0-BASED registry index every other
+    // surface prints — a player who clicks a board tile reading `Site 2` must
+    // land on the card labelled `Site 2`.
+    const first = sites[0]!.face;
+    if (!("Site" in first)) throw new Error("sites");
+    expect(container.textContent).toContain(`Site ${first.Site.index}`);
+    expect(first.Site.index).toBe(0);
   });
 
   it("sends the filter to the SERVER rather than narrowing in the browser", async () => {
@@ -85,6 +179,35 @@ describe("an index is a view, and it says how much of the population it shows", 
     const url = String(fetchMock.mock.calls.at(-1)?.[0]);
     expect(url).toContain("/index/orders");
     expect(url).toContain("filter=copper");
+  });
+});
+
+describe("every nav blurb describes what its panel actually does", () => {
+  // **The M2.5 lesson, made mechanical for the one thing that can be.** Three of
+  // these blurbs were wrong at once: goals promised "how close every seat is"
+  // over a panel that showed no progress, and both card indexes named an
+  // ORDERING ("by printed corner index", "by gear cost") that the server does
+  // not group by — it groups by country. A blurb is a claim, and the review that
+  // found the first one is the reason the other two were looked for.
+  it.each([
+    ["orders", wire.indexOrders],
+    ["techs", wire.indexTechs],
+    ["goals", wire.indexGoals],
+    ["sites", wire.indexSites],
+  ] as const)("%s: the blurb does not name an ordering the payload contradicts", (kind, model) => {
+    const blurb = SURFACES.find((s) => s.key === kind)!.blurb;
+    const tags = new Set(
+      model.groups.map((g) =>
+        g.key && typeof g.key === "object" ? Object.keys(g.key)[0] : String(g.key),
+      ),
+    );
+    if (tags.has("Country")) {
+      expect(blurb, `${kind} groups by country and must say so`).toContain("country");
+      expect(blurb).not.toContain("by gear cost");
+    }
+    // And the count it names is the population the payload reports.
+    const stated = blurb.match(/\b(\d+)\b/);
+    if (stated) expect(Number(stated[1])).toBe(model.total);
   });
 });
 

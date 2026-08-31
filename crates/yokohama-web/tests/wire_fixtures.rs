@@ -622,6 +622,46 @@ fn constructed() -> Vec<(String, Value)> {
     let why = serde_json::to_value(yokohama_web::explain::Why::granted(&account, &rules))
         .expect("a serializable account");
 
+    // **A TERMINAL explanation, which is a different picture and not an empty
+    // one — and which nothing checked until a review proved it.**
+    //
+    // `Explanation.terminal` is `null` in both payloads above, so every check
+    // in the net skipped straight over the branch: `Widen<Explanation>` is
+    // satisfied by `null` without ever reaching `Widen<Terminal>`, a field that
+    // serializes to `null` contributes no bytes for the golden to compare, and
+    // the client's own test for the branch HAND-AUTHORED its payload — the one
+    // thing `contract.ts` forbids. Renaming all five wire fields of `Terminal`
+    // left 54 Rust tests, the typecheck and 173 vitest cells green.
+    //
+    // It is not a hypothetical branch: `DecisionExplanation.explanation` is the
+    // explanation of the LEAF the search reached, so a continuation that ends
+    // the game reaches a terminal leaf and a real `suggest` near the end of a
+    // real game emits one. This plays the pumped game OUT — both seats are
+    // bots, so repeated pumps finish it — and explains the finished position
+    // through the engine's own entry point.
+    let mut finished = played;
+    for _ in 0..200 {
+        if finished.session.is_over() {
+            break;
+        }
+        finished.pump_bots();
+    }
+    assert!(finished.session.is_over(), "the both-bot pump must reach a finished game");
+    let state = finished.session.state();
+    let view = yokohama_core::game::observe(state, state.players[0].id).expect("a seat's view");
+    assert!(
+        yokohama_core::game::eval::view_is_terminal(&view),
+        "a finished game's view is terminal, or this fixture is not the branch it claims"
+    );
+    let core_terminal = yokohama_core::game::eval::explain(
+        &view,
+        &rules,
+        &yokohama_core::game::eval::WeightTable::V4_STEP9_DRAFT1,
+    );
+    assert!(core_terminal.terminal.is_some(), "and its explanation carries a standing");
+    let terminal = serde_json::to_value(yokohama_web::explain::Explanation::of(&core_terminal))
+        .expect("a serializable terminal explanation");
+
     // A refusal, reached ORGANICALLY: a game with no bot has no bot move to
     // explain, and the browser renders that sentence rather than a status code.
     let no_bots = build(vec![None, None]);
@@ -645,6 +685,7 @@ fn constructed() -> Vec<(String, Value)> {
         ("locked".to_string(), locked),
         ("why".to_string(), why),
         ("why_refused".to_string(), why_refused),
+        ("explanation_terminal".to_string(), terminal),
         ("why_refusals".to_string(), every_refusal_payload()),
     ]
 }
@@ -654,48 +695,17 @@ fn constructed() -> Vec<(String, Value)> {
 /// M2.5's lesson, applied to the surface M3 adds: a branch the client renders
 /// and nobody has ever seen is exactly the shape of the two defects M2 found by
 /// clicking. The prompts needed a NAMED EXEMPTION (`reveal`, live-mode only)
-/// because a fixture for it cannot be reached; these need none. `Refusal` is a
-/// plain enum, so every variant is CONSTRUCTED here and worded by the CLI's own
-/// `Display` — the same words `guide_sync` pins — and the coverage claim is
-/// therefore complete rather than complete-minus-a-list.
+/// because a fixture for it cannot be reached; these need none, because
+/// `Refusal` is a plain enum and every variant is constructible.
 ///
-/// The field values are placeholders and are deliberately obvious as such. What
-/// this fixture pins is the SHAPE and the SET: twelve `{kind, message}` rows,
-/// one per variant, checked against `REFUSAL_KINDS` by the test below.
+/// **The samples are `explain::refusal_samples()`' and are not restated here.**
+/// An adversarial review found three hand-written lists agreeing with each other
+/// and none pinned to the enum — this file's own vec was the third. There is one
+/// now, in `explain.rs`, and its doc states exactly what the fence catches and
+/// what it does not.
 fn every_refusal_payload() -> Value {
-    use yokohama_cli::why::{Mismatch, Refusal};
-    use yokohama_core::PlayerId;
-    use yokohama_web::explain::RefusalDto;
-
-    let seat = PlayerId::new(1);
-    let all = vec![
-        Refusal::LiveMode,
-        Refusal::NoBotMoveYet,
-        Refusal::OutOfRange { asked: 99, events: 12 },
-        Refusal::NotAMove { index: 3, kind: "a setup event" },
-        Refusal::HumanSeat { index: 4, seat },
-        Refusal::Rung { index: 5, seat, rung: "family-weighted".to_string() },
-        Refusal::Diagnostic { index: 6, seat, why: "a controller this driver will not run".into() },
-        Refusal::UnknownController {
-            index: 7,
-            seat,
-            controller: "not-a-contestant".to_string(),
-            why: "no such controller".to_string(),
-        },
-        Refusal::Mismatch(Box::new(Mismatch {
-            index: 8,
-            seat,
-            controller: "lookahead".to_string(),
-            reconstructed: "MovePresident { .. }".to_string(),
-            recorded: "place 1 assistant in Area 3".to_string(),
-            recorded_version: Some(1),
-            current_version: 2,
-        })),
-        Refusal::Reconstruction { index: 9, seat, why: "the sampler refused the view".to_string() },
-        Refusal::Unaccounted { index: 10, contestant: "greedy-v1".to_string() },
-        Refusal::Replay { index: 11, message: "the record does not replay".to_string() },
-    ];
-    let rows: Vec<RefusalDto> = all.iter().map(RefusalDto::of).collect();
+    use yokohama_web::explain::{refusal_samples, RefusalDto};
+    let rows: Vec<RefusalDto> = refusal_samples().iter().map(RefusalDto::of).collect();
     serde_json::to_value(rows).expect("serializable refusals")
 }
 
@@ -916,20 +926,20 @@ fn every_prompt_the_client_can_be_shown_has_a_fixture() {
 ///
 /// The sibling test above needs one, because `reveal` genuinely cannot be
 /// reached by an API that creates no live games. This one needs none:
-/// `why::Refusal` is a plain enum, so `every_refusal_payload` constructs all
-/// twelve and words each with the CLI's own `Display`. A coverage claim with an
-/// empty exemption list is worth strictly more than one with entries, so it is
-/// asserted to STAY empty — an implementer who finds a variant they cannot
-/// construct should be made to say so here rather than quietly shrink the file.
+/// `why::Refusal` is a plain enum, so `explain::refusal_samples()` constructs
+/// all twelve and words each with the CLI's own `Display`. A coverage claim
+/// with an empty exemption list is worth strictly more than one with entries,
+/// so it is asserted to STAY empty.
 ///
-/// Pinned in BOTH directions against `explain::REFUSAL_KINDS`, which is itself
-/// pinned to the enum by a `match` with no `_` arm
-/// (`explain::tests::every_refusal_tag_is_produced_by_exactly_one_variant`).
-/// So the chain is: a thirteenth variant fails to COMPILE in `kind_of`; if
-/// someone adds an arm there and forgets the corpus, this fails; and if someone
-/// adds it here and not to `REFUSAL_KINDS`, that test fails. **That is the fence
-/// M2.5's review found missing on `PromptState`** — there, both lists were
-/// hand-written, a tenth variant was added, and all three tests passed.
+/// **What this catches, stated precisely.** The corpus on disk is compared
+/// against what `refusal_samples()` produces TODAY, so a sample removed, added
+/// or re-tagged without regenerating fails here. What it does NOT catch is a
+/// variant added to `Refusal` and to `explain::kind_of` but never sampled —
+/// `refusal_samples()`' own doc names that hole and why plain Rust cannot close
+/// it. An earlier version of this comment claimed a three-link chain that
+/// closed it; a reviewer added a thirteenth variant plus a one-line `kind_of`
+/// arm and every test here stayed green. The claim was wrong, not the code, and
+/// this is the corrected claim.
 #[test]
 fn every_why_refusal_the_client_can_be_shown_has_a_payload() {
     assert!(
@@ -960,11 +970,11 @@ fn every_why_refusal_the_client_can_be_shown_has_a_payload() {
     assert_eq!(present, unique, "a refusal kind appears twice in the corpus");
 
     let mut declared: Vec<String> =
-        yokohama_web::explain::REFUSAL_KINDS.iter().map(|s| s.to_string()).collect();
+        yokohama_web::explain::refusal_kinds().iter().map(|s| s.to_string()).collect();
     declared.sort();
     assert_eq!(
         present, declared,
-        "the refusal corpus and `explain::REFUSAL_KINDS` disagree. Every variant the browser can \
+        "the refusal corpus and `explain::refusal_samples()` disagree. Every variant the browser can \
          be handed needs a payload behind it — a branch with no payload is a branch nobody has \
          seen, which is exactly how M2's two client defects shipped.",
     );

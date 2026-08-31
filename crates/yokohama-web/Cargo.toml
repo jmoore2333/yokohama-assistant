@@ -23,9 +23,19 @@ authors.workspace = true
 # `screen.rs` or `style.rs` is reachable, which is the fence that matters: no
 # ANSI, no column widths, no box drawing.
 #
-# `suggest` and `why` are NOT consumed. They are M3's surfaces and both need
-# DTOs for engine types that have no `Serialize`; `why` is `pub(crate)` and not
-# reachable from here at all today.
+# M3 added three more, and this paragraph is the fence's written half so it
+# moves with them: `suggest` and `why` (the two search surfaces — `why` was
+# `pub(crate)` and was widened for exactly this consumer, and its own doc says
+# so), and `card_prompt`, for `parse_filter` alone. The rule that governs all
+# three is the same one above: they are the parts of the CLI that were never
+# about a terminal. `why::account_parts` is the honesty gate and is REACHED
+# rather than reimplemented; `parse_filter` is the one card-entry grammar in
+# this project and the web does not get a second one.
+#
+# What is still NOT consumed is the line that matters, and it is the one
+# unchanged: nothing in `*_render.rs`, `screen.rs` or `style.rs`. The engine
+# types those surfaces return have no `Serialize`, so `explain.rs` and
+# `outcome.rs` mirror them here — never by deriving in `yokohama-core`.
 yokohama-core = { path = "../yokohama-core" }
 yokohama-cli = { path = "../yokohama-cli" }
 serde.workspace = true

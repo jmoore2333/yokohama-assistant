@@ -332,8 +332,7 @@
       "total": 343
     },
     "provenance": {
-      "contestant": "v4-step9-draft1",
-      "controller_version": 2,
+      "contestant": "v4-step9-draft1@v2{b=4,eval_impl=3,k=1,m=8,weights=6957643967275421640}",
       "current_version": 2,
       "decision_seed": "0x7f91d4d701f56a34",
       "evaluator_version": 3,

@@ -62,10 +62,10 @@ export const SURFACES: {
   { key: "log", label: "Log", blurb: "what has happened, each line worded as it read when it applied", load: (g) => api.log(g) },
   { key: "suggest", label: "Suggest", blurb: "what the bot would play on your seat, and the arithmetic behind it", load: (g) => api.suggest(g) },
   { key: "why", label: "Why", blurb: "the account of the last move a bot played, reconstructed by replay", load: (g) => api.why(g) },
-  { key: "orders", label: "Orders", blurb: "all 36 order cards by printed corner index, and where each one is", load: (g) => api.index(g, "orders") },
-  { key: "techs", label: "Technologies", blurb: "all 20 titles by gear cost, and who owns which copy", load: (g) => api.index(g, "techs") },
+  { key: "orders", label: "Orders", blurb: "all 36 order cards, grouped by country and labelled by printed corner index, and where each one is", load: (g) => api.index(g, "orders") },
+  { key: "techs", label: "Technologies", blurb: "all 20 technology titles, grouped by country, with the gear each costs and where every copy is", load: (g) => api.index(g, "techs") },
   { key: "goals", label: "Goals", blurb: "the achievements in play, what each pays, and how close every seat is", load: (g) => api.index(g, "goals") },
-  { key: "sites", label: "Site cards", blurb: "the 24 printed building sites and what each space pays", load: (g) => api.index(g, "sites") },
+  { key: "sites", label: "Site cards", blurb: "the 24 printed building sites, what each space pays, and which are already on the board", load: (g) => api.index(g, "sites") },
   { key: "result", label: "Final score", blurb: "the finished game, ranked, with every category the engine scored", load: (g) => api.result(g) },
 ];
 

@@ -484,9 +484,10 @@ export interface Terminal {
  *
  *      total === sum(terms[].product) + (terminal ? terminal.value : 0)
  *
- *  `terms` carries ALL 34 features, zero-product ones included, because the
- *  identity only holds over all of them — so a reader can add the column up.
- *  Do not filter server data out of the sum.
+ *  `terms` carries ALL 34 features, zero-product ones included — not because
+ *  the sum needs them (a zero term contributes zero) but because a reader can
+ *  only trust "8 of 34" if all 34 are there. Do not filter server data out of
+ *  the sum, and do not treat the count as a caption.
  *
  *  When `terminal` is non-null every product is 0 by design (reporting an
  *  interpolated weight on a finished game would be a lie about what the
@@ -529,8 +530,9 @@ export interface Counter {
  *  — the account is this build's reading of a move an older one played, and the
  *  client says so. */
 export interface Provenance {
+  /** `name@vN` or `name@vN{k=v,…}` — `Contestant::echo()`, the ONE display form,
+   *  so the browser and the terminal cannot spell the same bot differently. */
   contestant: string;
-  controller_version: number;
   evaluator_version: number;
   /** The log's printed 0-based event index. */
   index: number;
@@ -598,19 +600,30 @@ export interface WhyResponse {
 
 /** Where a card physically is, when the index knows.
  *
- *  Externally tagged, as serde writes a Rust enum: `"OwnedBy"` carries a seat,
- *  `"PortSlot"` a board and a slot. `null` means the index is not tracking it —
- *  **which is not the same as "nowhere"**: `Repl::index_placements` deliberately
- *  carries no other seat's hand, because in a live game an opponent's starting
- *  order is hidden and an index that dimmed it with "in Seat 1's hand" would
- *  leak the one card the observation boundary exists to protect. */
+ *  Externally tagged, as serde writes a Rust enum. **All EIGHT variants of
+ *  `screen_model::CardLocation` are declared, and there is no permissive
+ *  catch-all arm.** The first draft declared five and ended in
+ *  `| Record<string, unknown>`, and a review showed what that cost: the
+ *  catch-all makes every object assignable, so `Widen<CardLocation>` accepted
+ *  `{"TotalGarbage": {...}}` and the literal string `"utter nonsense"` without
+ *  complaint — and it was already swallowing a real miss. `OnArea` was missing,
+ *  ten of the twenty-four site cards carry it, and the browser printed the raw
+ *  Rust tag `OnArea` where the terminal prints `on area A03`.
+ *
+ *  `null` means the index is not tracking it — **which is not the same as
+ *  "nowhere"**: `Repl::index_placements` deliberately carries no other seat's
+ *  hand, because in a live game an opponent's starting order is hidden and an
+ *  index that dimmed it with "in Seat 1's hand" would leak the one card the
+ *  observation boundary exists to protect. */
 export type CardLocation =
   | "OwnHand"
   | "ThisReveal"
-  | { OwnedBy: { seat: PlayerId } }
+  | { Deal: { seat: PlayerId } }
   | { PortSlot: { board_b: boolean; slot: number } }
   | { LabSlot: { board_b: boolean; slot: number } }
-  | Record<string, unknown>;
+  | { OwnedBy: { seat: PlayerId } }
+  | { OnArea: { area: AreaId } }
+  | { AchievementSlot: { category: AchievementCategory } };
 
 /** The printed building site behind a site-index card — the raw registry card,
  *  not a board site: `build_site_index` reads `rules.building_sites`, so the

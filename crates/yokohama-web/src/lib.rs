@@ -594,6 +594,19 @@ async fn why(
     let handle = state.games.handle(&id).map_err(ApiError::not_found)?;
     let (mode, record, bots) = {
         let repl = handle.lock().expect("a game");
+        // **The lockdown gate fences COMPUTATION, not projection**, and this is
+        // the rule the three route families follow. M2 already settled that a
+        // read-only GET serves a locked session — `ports`/`labs`/`areas`/`log`
+        // do, and `ClientState` reports the lockdown as its prompt rather than
+        // refusing. But `why` is not a projection: it re-runs the same `decide`
+        // path against a record the driver has declared faulty, and answering
+        // with an authoritative account of a search over a suspect record is
+        // exactly what a lockdown exists to stop. `suggest` refuses for the same
+        // reason; the card indexes and the final score do not, because they read
+        // the state rather than an opinion about it.
+        if let Some(reason) = repl.session.record().lockdown.clone() {
+            return Ok(Json(explain::Why::locked(reason)));
+        }
         (repl.session.mode, repl.session.record().clone(), repl.bots().clone())
     };
     Ok(Json(
@@ -991,9 +1004,15 @@ mod tests {
         assert_eq!(chosen.len(), 1, "exactly one candidate is the one that was played");
         assert_eq!(chosen[0]["text"], ok["text"], "and it is the move the payload names");
         assert_eq!(chosen[0]["margin"], 0, "the chosen move is always a maximiser");
-        assert!(
-            ok["explanation"]["nonzero"].as_u64().expect("a count") <= 34,
-            "the nonzero count is a count of the terms present"
+        // `nonzero` is the COUNT of terms carrying a product, re-derived here
+        // from the terms themselves. An earlier version asserted `<= 34`, which
+        // is true of every value a `usize` over a 34-element vector can hold —
+        // a reviewer set the server's count to a constant 0 and every lib test
+        // stayed green.
+        assert_eq!(
+            ok["explanation"]["nonzero"].as_u64().expect("a count"),
+            terms.iter().filter(|t| t["product"].as_i64() != Some(0)).count() as u64,
+            "the nonzero count is a count of the terms that carry one"
         );
     }
 
@@ -1099,6 +1118,56 @@ mod tests {
         let counters = ok["counters"].as_array().expect("a searching contestant reports counters");
         assert_eq!(counters.len(), 15, "the whole counter surface, not a chosen two of it");
         assert!(counters.iter().all(|c| c["group"] != "ungrouped"), "{counters:?}");
+    }
+
+    /// **A locked session refuses a SEARCH and still serves a PROJECTION.**
+    ///
+    /// The rule the three route families follow, pinned in both directions
+    /// because a gate applied to one of three siblings is the shape a reviewer
+    /// found: `suggest` and `why` re-run the bot against a record the driver has
+    /// declared faulty, so both refuse; the card indexes and the final score
+    /// read the state rather than an opinion about it, so they answer — which is
+    /// what M2 already settled for `ports`/`labs`/`areas`/`log`.
+    ///
+    /// The lockdown is stamped through the DURABLE record and then served from a
+    /// fresh `AppState`, because that is how a real driver fault reaches a later
+    /// process: `Repl::new` restores it on load.
+    ///
+    /// Of `suggest`'s four guards this pins `Locked`. `GameOver` is reachable
+    /// but costs a whole played game to reach, `BotSeat` never fires at rest
+    /// (both mutating paths pump bot seats before returning) and `LiveMode` is
+    /// unreachable through this API entirely — all three stated in
+    /// `SuggestRefusal`'s doc rather than claimed as tested.
+    #[tokio::test]
+    async fn a_locked_session_refuses_the_searches_and_still_serves_the_views() {
+        let store = Arc::new(MemStore::default());
+        let router = app(Arc::new(AppState::with_store(store.clone())));
+        a_game(&router, "faulted", &[]).await;
+
+        let stored = store.read("faulted").expect("a stored game");
+        let mut record: serde_json::Value = serde_json::from_str(&stored).expect("a record");
+        record["lockdown"] = serde_json::json!("invariant violation applying that move");
+        store
+            .write("faulted", &serde_json::to_string(&record).expect("a record"))
+            .expect("a stored lockdown");
+        let router = app(Arc::new(AppState::with_store(store)));
+
+        let (status, state) = call(&router, "GET", "/api/games/faulted", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(state["prompt"]["kind"], "locked", "the projection still answers: {state}");
+
+        let (status, s) = call(&router, "GET", "/api/games/faulted/suggest", None).await;
+        assert_eq!(status, StatusCode::OK, "a refusal is the answer, not an error");
+        assert_eq!(s["refusal"]["kind"], "locked", "{s}");
+
+        let (status, w) = call(&router, "GET", "/api/games/faulted/why", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(w["refusal"]["kind"], "locked", "{w}");
+        assert!(w["ok"].is_null(), "and no account is served beside it");
+
+        let (status, ix) = call(&router, "GET", "/api/games/faulted/index/orders", None).await;
+        assert_eq!(status, StatusCode::OK, "an index is a projection: {ix}");
+        assert_eq!(ix["total"], 36);
     }
 
     /// **The four card indexes are the CLI's own, served as VIEWS.**
