@@ -116,10 +116,25 @@ BACKS = {
 # two `*_vp()` methods say. Each 3x2 sheet holds four faces and two backs, so
 # the two right-hand cells of row 2 are skipped.
 #
-# The faces were identified by reading the printed condition on each cell:
-# a number and the icon it counts. `Prod3Comm2` and `Prod2Comm3` are the pair
-# that needs care -- they differ only in which number sits over the yellow
-# (production) icon and which over the red (commercial) one.
+# The faces were identified by reading the printed condition on each cell: a
+# number and the icon it counts.
+#
+# CATEGORY C IS THE ONE THAT CAN BE GOT BACKWARDS, and the first reading of it
+# here WAS backwards. Those four cards name production and commercial only by
+# two coloured badges, and the intuitive guess -- yellow for the production
+# areas -- is wrong. The badges were resolved against the AREA TILE art
+# instead, where the same two icons appear in the top-left corner of every
+# tile, and they partition the engine's own predicates exactly:
+#
+#   YELLOW pen-nib     Port, Dock, Laboratory, Research Center, Bank, Church,
+#                      Customs, Employment Agency, Chinatown  == is_commercial()
+#   RED post           Silk Mill, Tea Plantation, Copper Mine, Fishing Ground
+#                                                             == is_production()
+#   neither            Canal
+#
+# So yellow is COMMERCIAL. The two mixed cards print commercial on the left and
+# production on the right -- the reverse of the engine's own (production,
+# commercial) tuple order, which is exactly why the mistake is easy to make.
 ACHIEVEMENTS = {
     # sheet          (row, col)  AchievementType serde name
     "achievement_A": {(1, 1): "Tea7", (1, 2): "Copper5", (1, 3): "Silk6", (2, 1): "Seafood7"},
@@ -130,10 +145,10 @@ ACHIEVEMENTS = {
         (2, 1): "Money10",
     },
     "achievement_C": {
-        (1, 1): "Prod3Comm2",
-        (1, 2): "Production4",
-        (1, 3): "Prod2Comm3",
-        (2, 1): "Commercial4",
+        (1, 1): "Prod2Comm3",  # 3 over yellow (commercial), 2 over red
+        (1, 2): "Commercial4",  # 4 over yellow only
+        (1, 3): "Prod3Comm2",  # 2 over yellow, 3 over red (production)
+        (2, 1): "Production4",  # 4 over red only
     },
 }
 
@@ -199,24 +214,29 @@ def slug(title: str) -> str:
 def cell_box(size: tuple[int, int], cols: int, rows: int, r: int, c: int):
     """The pixel box of 1-based cell (r, c).
 
-    TWO RULES, and each fixes a different sheet.
+    Uniform floor-sized cells at floor origins — `(c-1) * (w // cols)`. Three
+    sheets do not divide evenly (3996/5 = 799.2, 2128/3 = 709.33, 1594/3 =
+    531.33), and the tempting reading is that the cells are fractional. THEY
+    ARE NOT: the extra pixel is a black padding stripe on the far edge, and the
+    cells are exactly 530x799 and 709x531 throughout.
 
-    The ORIGIN is `round(i * extent / count)`, not `i * cell`: three sheets do
-    not divide evenly (3996/5 = 799.2, 2128/3 = 709.33, 1594/3 = 531.33) and a
-    fixed step would walk four pixels off the last row.
+    MEASURED, not assumed. A mean-absolute-difference scan along each axis puts
+    the seam gradient at the floor index every time and one pixel away from the
+    rounded one wherever the two differ:
 
-    The SIZE is the floor, identical for every cell, clamped to stay on the
-    sheet. Taking `round(i+1) - round(i)` instead makes neighbouring cells 709
-    and 710 wide on the same sheet, and the emitted art then carries two
-    different aspect ratios for what is one physical tile — which is what
-    `art.rs`'s aspect test found. One pixel of the sheet's slop is dropped;
-    every cell is the same shape, which is the property the client lays out on.
+        order 8x5   row seam 3   floor idx 2396 -> 3.9   round idx 2397 -> 1.0
+        order 8x5   row seam 4   floor idx 3195 -> 45.8  round idx 3196 -> 4.2
+        base 3x4    col seam 2   floor idx 1417 -> 67.3  round idx 1418 -> 11.1
+        3plus 2x3   row seam 2   floor idx 1061 -> 38.0  round idx 1062 -> 8.9
+
+    with the far edge reading 164-238 in every case — the step into the black
+    stripe. Rounded origins therefore shift the last row or column one pixel
+    late AND pull the stripe into the crop. TTS's own `NumWidth`/`NumHeight`
+    and the 709x531 deck-back file corroborate the cell size independently.
     """
     w, h = size
     cw, ch = w // cols, h // rows
-    x0 = min(round((c - 1) * w / cols), w - cw)
-    y0 = min(round((r - 1) * h / rows), h - ch)
-    return (x0, y0, x0 + cw, y0 + ch)
+    return ((c - 1) * cw, (r - 1) * ch, c * cw, r * ch)
 
 
 class Emitter:
