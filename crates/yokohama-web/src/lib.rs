@@ -27,6 +27,7 @@ pub mod art;
 pub mod assets;
 pub mod client;
 pub mod games;
+pub mod grammar;
 pub mod store;
 
 use std::sync::Arc;
@@ -226,8 +227,8 @@ async fn delete_game(
 #[derive(Debug, Clone, Deserialize)]
 pub struct Input {
     /// An option's `number`, or a sub-prompt token (`confirm`, `cancel`, an
-    /// area id, a count). The grammar is the CLI's, which is what makes this
-    /// endpoint complete: anything the terminal can express, a client can send.
+    /// area id, a count). The grammar is the CLI's — but only the GAMEPLAY part
+    /// of it; see [`crate::grammar`] for the fence and why it exists.
     pub line: String,
 }
 
@@ -240,11 +241,22 @@ pub struct Input {
 /// reimplementation of it, and the two would drift; the client's typed
 /// affordances come from `PromptState` telling it what to send, not from the
 /// server growing a verb per interaction.
+///
+/// **The line is fenced before it gets there.** `step` is the terminal's front
+/// door and answers to more than the game — it writes files, and it opens
+/// sticky overlays in which a number stops meaning a move. [`crate::grammar`]
+/// carries the allowlist and the reasoning; the fence is here, at the boundary,
+/// rather than inside `grammar` calling `step`, so that reading this handler
+/// shows both that a line is checked and that a checked line goes through
+/// untouched.
 async fn input(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     Json(req): Json<Input>,
 ) -> ApiResult<ClientState> {
+    if !grammar::is_gameplay_line(&req.line) {
+        return Err(ApiError::bad_request(grammar::refusal(&req.line)));
+    }
     let handle = state.games.handle(&id).map_err(ApiError::not_found)?;
     let mut repl = handle.lock().expect("a game");
 
@@ -340,6 +352,61 @@ mod tests {
         assert_eq!(body["semantics_rev"], SEMANTICS_REV);
         assert_eq!(body["rules_hash"], Rules::standard().content_hash());
         assert_eq!(body["server_version"], env!("CARGO_PKG_VERSION"));
+    }
+
+    /// The fence is on the ROUTE, not merely in the predicate.
+    ///
+    /// `grammar`'s own tests prove the allowlist decides correctly; this proves
+    /// the handler asks it, before touching the game, and that the file the
+    /// line named does not appear. A predicate nothing calls is not a fence.
+    #[tokio::test]
+    async fn the_mutation_endpoint_refuses_a_line_that_would_write_a_file() {
+        let target = std::env::temp_dir().join("yokohama-web-must-never-exist.json");
+        let _ = std::fs::remove_file(&target);
+
+        let router = app(Arc::new(AppState::in_memory()));
+        let post = |uri: String, body: serde_json::Value| {
+            let router = router.clone();
+            async move {
+                let res = router
+                    .oneshot(
+                        Request::builder()
+                            .method("POST")
+                            .uri(uri)
+                            .header("content-type", "application/json")
+                            .body(Body::from(serde_json::to_vec(&body).expect("a body")))
+                            .expect("a request"),
+                    )
+                    .await
+                    .expect("the router answers");
+                let status = res.status();
+                let bytes =
+                    axum::body::to_bytes(res.into_body(), usize::MAX).await.expect("a body");
+                (status, serde_json::from_slice::<serde_json::Value>(&bytes).expect("JSON"))
+            }
+        };
+
+        let (status, _) = post(
+            "/api/games".to_string(),
+            serde_json::json!({
+                "players": 2, "colors": ["Red", "Blue"], "start_seat": 0,
+                "seed": 20260831u64, "keeps": [1, 1], "bot_seats": [1], "name": "fence",
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+
+        let (status, body) = post(
+            "/api/games/fence/input".to_string(),
+            serde_json::json!({ "line": format!("save {}", target.display()) }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(
+            body["error"].as_str().is_some_and(|e| e.contains("writes a file on the server")),
+            "the refusal explains itself: {body}",
+        );
+        assert!(!target.exists(), "the refused line must not have written {}", target.display());
     }
 
     /// An unknown API path answers as the API, not as the client.
