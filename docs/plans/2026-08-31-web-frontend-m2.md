@@ -122,7 +122,38 @@ and accepted limit of the instrument, stated here rather than discovered again.
   widening a card-index surface would genuinely need. Widen it rather than
   copying it — its doc defends a leak fence.
 
-## 7. What did not move
+## 7. Hosting — recorded now, acted on later (owner, 2026-08-31)
+
+**Not a task.** The owner's words: *"plenty of work before worrying about the
+hosting to get it at parity and polished locally, but just so it's
+documented."* Nothing in this milestone deploys anything, and the constraints
+below are the only part that binds today.
+
+**The custom domain is `yokohama.moore.nyc`.** Published through Cloudflare
+Workers on that hostname, the deployment **picks up the existing Access rule by
+itself** — there is no separate authentication step to build, and none should be
+built. That is the whole reason the identity story in this crate is "read a
+configurable header, never a body or a query parameter": Access injects it, and
+the server's job is to trust the header the proxy sets and nothing else.
+
+Two things that follow, and that the code already honours:
+
+- **Nothing may exist only in memory.** Both hosted shapes under consideration
+  (a Cloudflare Container behind the Worker, or a Modal `@modal.web_server`)
+  sleep when idle and lose their disk. Every game is already persisted as its
+  `GameRecord` after every applied move and rebuilt via `Session::from_record`,
+  so a sleeping container loses nothing.
+- **Storage is behind a trait.** `store::SessionStore` is byte-shaped rather
+  than path-shaped, so a Modal Volume is a mount path and an object store is a
+  second implementation rather than a refactor.
+
+Note for whoever does this: `yokohama.moore.nyc` currently fronts the ttyd
+terminal deployment, which lives deliberately outside this repo. Whether the
+browser client takes that hostname, a path under it, or a sibling is a decision
+for that day — this file records the domain and the Access behaviour, not the
+routing.
+
+## 8. What did not move
 
 `crates/yokohama-core` is byte-identical to master and `SEMANTICS_REV` is 7.
 The CLI's nine `assert_capture` goldens and 18 `guide_sync` tests are unchanged.
