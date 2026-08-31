@@ -49,6 +49,110 @@ margin. A `why` that cannot reproduce the recorded move refuses, naming both mov
 **`suggest`** is the same machinery pointed at *your* seat before you move; both apply nothing
 and record nothing.
 
+#### What the V4 bump bought, in one decision
+
+That screenshot is the **previous** evaluator thinking — sixteen features, which was the entire
+vocabulary it had. Here is the **shipped V4 bot** answering the same kind of question, a
+three-area placement, in one of the owner's own games. Same command, same tables, no image
+needed — this is the driver's real plain-text output, reproducible from the saved record:
+
+```console
+$ printf 'why 146\nquit\n' | yokohama-cli game.json
+─ Why ──────────────────────────────────
+Seat 1 (Blue) · v4-step9-draft1@v2{b=4,eval_impl=3,k=1,m=8,weights=6957643967275421640} · event 146
+This move was reconstructed by replay under THIS build's consts — evaluator impl
+3, v4-step9-draft1 impl v2 — from decision seed 0x60bd1d0c935a80a1, the key the
+bot's own pump derived from the recorded stream seed and the event count.
+Search cost: root_candidates 186 · nodes 1837 · handles 1837 · route_dfs_nodes
+186 · forced_nodes 1630 · leaves 783 · scored 4328 · root_scored 186 · max_line
+6 · free_extension_steps 0
+Budget and guards: budget_binds 0 · budget_starved 0 · placement_cap_binds 0 ·
+ply_cap_hits 0 · free_cap_hits 0
+The move it played:
+  Place 1 assistant in each of: Fishing Ground (A01), Bank (A04), Employment Agency (A09)
+
+The line it searched, 6 move(s) to the hand-over (the move above is step 1):
+  1. Place 1 assistant in each of: Fishing Ground (A01), Bank (A04), Employment Agen…
+  2. Move President to Employment Agency (A09) — free
+  3. Employment Agency: take 1 assistant (free)
+  4. Skip the 5-Power token
+  5. Skip the building
+  6. End additional-action phase
+
+Score at that point: 628   ·   stage 750000/1000000 ppm (0 = opening, 1000000 = end trigger)
+  feature                        you   best opp   weight     product
+▶ victory_points                  42         26       30         480
+▶ country_bonus_now                2          4       35         -70
+▶ tech_bonus_now                   5          0       18          90
+▶ church_bonus_now                 6          0        5          30
+  customs_bonus_now                0          0       15           0
+  assistants_in_hand_core          2          2       23           0
+▶ assistants_in_hand_excess        0          5        7         -35
+▶ assistants_in_warehouse         10          9      -10         -10
+▶ assistants_on_board              5          3        9          18
+  shophouses_built                 2          2       18           0
+  trading_houses_built             0          0       22           0
+▶ five_power_tokens                2          3       12         -12
+▶ imported_goods                   0          2        7         -14
+  achievement_progress_sum         6          6        3           0
+  mercenaries_total                0          0        3           0
+▶ hand_size                        0          1       -1           1
+▶ production_access                7          0       10          70
+▶ track_access                     0          2        1          -2
+▶ assistant_areas_distinct         4          3       -4          -4
+▶ president_local_access           1          0       -1          -1
+▶ bank_access                      3          2       15          15
+  employment_agency_access         0          0        1           0
+▶ president_reachable_areas        4          0        4          16
+▶ money_stock                      6          2       16          64
+  trade_goods_stock               12         12       11           0
+  building_tokens_ready            0          0        0           0
+  held_order_value                 0         12        0           0
+▶ order_matched_goods              0          4        1          -4
+  executable_orders                0          0        0           0
+  flag_icon_marginal               2          4        0           0
+  held_order_icons                 0          1        0           0
+▶ lab_takeable                     0          4        1          -4
+  port_takeable                    0          0        1           0
+  matched_production_access        0          0        0           0
+  TOTAL                                                          628
+  19 of 34 rows carry a nonzero product — they are this move's whole story.
+
+Runner-ups (margin against the suggestion, so 0 means tied) — 186 candidate(s) ranked:
+          -5  Place 1 assistant in each of: Fishing Ground (A01), Tea Plantation (A02), Emplo…
+          -6  Place 1 assistant in each of: Fishing Ground (A01), Tea Plantation (A02), Bank …
+          -6  Place 1 assistant in each of: Fishing Ground (A01), Silk Mill (A07), Employment…
+This is the bot's arithmetic, not advice: each row is (your value − the best
+opponent's) × the weight for this stage, summed. It read ONE guess at the hidden
+cards, and its weights were never tuned on human play.
+```
+
+Both are the same shape of decision — a one-assistant-in-each-of-three-areas placement, six
+moves to the hand-over — which is what makes them worth putting side by side. Read that way, the
+difference is legible without knowing the plan:
+
+- **The table is 16 rows in the screenshot and 34 here** (it says so itself: *12 of 16 rows carry
+  a nonzero product* there, *19 of 34* here). Those extra eighteen are the V4 "sighted" features,
+  appended after the incumbent sixteen (`Feature::INCUMBENT_COUNT = 16` in `game/eval.rs`), and
+  they are what the older evaluator was structurally unable to see: where assistants actually sit
+  and what that reaches (`production_access`, `bank_access`, `president_reachable_areas`,
+  `assistant_areas_distinct`), and what the economy affords both seats (`money_stock`,
+  `order_matched_goods`, `lab_takeable`, `port_takeable`).
+- **The older table ties; this one separates.** The screenshot ends with *four candidates tied at
+  the top* — the search could not tell them apart, so a keyed draw picked one. Here the top
+  choice beats its nearest rival by 5 with the next two at −6, out of **186** ranked candidates.
+- **The new rows are carrying real weight.** Of this move's 628 points, the incumbent sixteen
+  contribute 478 and the eighteen sighted features contribute **150** — with `production_access`
+  alone worth +70 against an opponent sitting at 0.
+
+What that does **not** establish is a strength claim. These are two different positions from two
+different games, at different stages of the game (the screenshot is at the end trigger, this one
+three-quarters in), so the weights themselves differ and no row-by-row comparison is being made —
+they are here to show the *shape* of the change, not to measure it. The measurement is
+the pre-registered confirmatory field in the status section below — θ̂ 0.691 against the
+previously shipped evaluator — and even that is a head-to-head result, not the project's
+"plays to win" bar, which stays unclaimed.
+
 The driver is loud about the one moment a game can be lost by missing: the **end trigger**.
 
 ![The end-trigger banner at the moment it fires: the strip along the top reads church 4/4 and
