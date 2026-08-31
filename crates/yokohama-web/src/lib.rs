@@ -23,11 +23,53 @@
 //!    records that the public board is an injective fingerprint of the setup
 //!    seed, so a sequential or timestamp seed would hand over the hidden set.
 
+pub mod client;
+pub mod games;
+pub mod store;
+
 use std::sync::Arc;
 
-use axum::{routing::get, Json, Router};
-use serde::Serialize;
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use axum::{
+    routing::{get, post},
+    Json, Router,
+};
+use serde::{Deserialize, Serialize};
 use yokohama_core::{Rules, SEMANTICS_REV};
+
+use crate::client::ClientState;
+use crate::games::{Games, NewGame};
+use crate::store::{FsStore, MemStore, SessionStore};
+
+/// A refused request, as the client sees it.
+///
+/// One shape for every failure — `{"error": "..."}` with a status — because a
+/// client that has to guess which of several error shapes it received will get
+/// it wrong on the path it exercises least. The messages come from the engine
+/// and the session layer, which already refuse in sentences.
+pub struct ApiError {
+    pub status: StatusCode,
+    pub message: String,
+}
+
+impl ApiError {
+    pub fn bad_request(message: impl Into<String>) -> Self {
+        Self { status: StatusCode::BAD_REQUEST, message: message.into() }
+    }
+    pub fn not_found(message: impl Into<String>) -> Self {
+        Self { status: StatusCode::NOT_FOUND, message: message.into() }
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        (self.status, Json(serde_json::json!({ "error": self.message }))).into_response()
+    }
+}
+
+type ApiResult<T> = Result<Json<T>, ApiError>;
 
 /// Everything a handler may reach.
 ///
@@ -36,11 +78,23 @@ use yokohama_core::{Rules, SEMANTICS_REV};
 /// the CLI's `main` uses.
 pub struct AppState {
     pub rules: Arc<Rules>,
+    pub games: Games,
 }
 
 impl AppState {
+    /// Backed by a directory on disk.
     pub fn new() -> Self {
-        Self { rules: Arc::new(Rules::standard()) }
+        Self::with_store(Arc::new(FsStore::new(store::default_dir())))
+    }
+
+    /// Backed by memory — tests, and any run that must leave no trace.
+    pub fn in_memory() -> Self {
+        Self::with_store(Arc::new(MemStore::default()))
+    }
+
+    pub fn with_store(store: Arc<dyn SessionStore>) -> Self {
+        let rules = Arc::new(Rules::standard());
+        Self { rules: Arc::clone(&rules), games: Games::new(rules, store) }
     }
 }
 
@@ -65,7 +119,7 @@ pub struct Health {
     pub rules_hash: String,
 }
 
-async fn health(axum::extract::State(state): axum::extract::State<Arc<AppState>>) -> Json<Health> {
+async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
     Json(Health {
         server_version: env!("CARGO_PKG_VERSION"),
         semantics_rev: SEMANTICS_REV,
@@ -73,10 +127,147 @@ async fn health(axum::extract::State(state): axum::extract::State<Arc<AppState>>
     })
 }
 
+/// Every static enum the wire carries, in words.
+///
+/// The models are typed and never worded — `screen_model`'s own contract — so a
+/// client needs the wording layer's answers once, and these never change during
+/// a game. Built from DATA rather than a hand-kept variant list: the tile set,
+/// the phase chain, the registries and the achievement registry are what the
+/// engine itself enumerates, so a new variant appears here without anyone
+/// remembering to add it.
+#[derive(Debug, Clone, Serialize)]
+pub struct Labels {
+    pub area_types: std::collections::BTreeMap<String, String>,
+    pub phases: std::collections::BTreeMap<String, String>,
+    pub phase_chain: Vec<String>,
+    pub tech_effects: std::collections::BTreeMap<String, String>,
+    pub achievements: std::collections::BTreeMap<String, String>,
+}
+
+fn key_of<T: Serialize>(v: &T) -> String {
+    match serde_json::to_value(v) {
+        Ok(serde_json::Value::String(s)) => s,
+        other => format!("{other:?}"),
+    }
+}
+
+async fn labels(State(state): State<Arc<AppState>>) -> Json<Labels> {
+    use yokohama_cli::describe;
+    use yokohama_cli::screen_model::{achievement_registry, PHASE_CHAIN};
+
+    let mut area_types = std::collections::BTreeMap::new();
+    for t in yokohama_core::full_tile_set() {
+        area_types.insert(key_of(&t), describe::area_type_name(t).to_string());
+    }
+    let mut phases = std::collections::BTreeMap::new();
+    for p in PHASE_CHAIN {
+        phases.insert(key_of(&p), describe::phase_name(p).to_string());
+    }
+    let mut tech_effects = std::collections::BTreeMap::new();
+    for card in state.rules.techs.iter_sorted_by_id() {
+        tech_effects
+            .insert(key_of(&card.effect), describe::tech_effect_text(card.effect).to_string());
+    }
+    let mut achievements = std::collections::BTreeMap::new();
+    for a in achievement_registry() {
+        achievements
+            .insert(key_of(&a.achievement_type), describe::achievement_desc(a.achievement_type));
+    }
+
+    Json(Labels {
+        area_types,
+        phases,
+        phase_chain: PHASE_CHAIN.iter().map(|p| describe::phase_chain_name(*p).to_string()).collect(),
+        tech_effects,
+        achievements,
+    })
+}
+
+async fn preview_game(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<NewGame>,
+) -> ApiResult<games::Preview> {
+    games::preview(&req, &state.rules).map(Json).map_err(ApiError::bad_request)
+}
+
+async fn list_games(State(state): State<Arc<AppState>>) -> ApiResult<Vec<String>> {
+    state.games.list().map(Json).map_err(ApiError::bad_request)
+}
+
+async fn create_game(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<NewGame>,
+) -> Result<(StatusCode, Json<ClientState>), ApiError> {
+    let (id, handle) = state.games.create(&req).map_err(ApiError::bad_request)?;
+    let repl = handle.lock().expect("a fresh game");
+    Ok((StatusCode::CREATED, Json(ClientState::of(&id, &repl, Vec::new()))))
+}
+
+async fn get_game(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> ApiResult<ClientState> {
+    let handle = state.games.handle(&id).map_err(ApiError::not_found)?;
+    let repl = handle.lock().expect("a game");
+    Ok(Json(ClientState::of(&id, &repl, Vec::new())))
+}
+
+async fn delete_game(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    state.games.delete(&id).map_err(ApiError::not_found)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// What the client sends to act.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Input {
+    /// An option's `number`, or a sub-prompt token (`confirm`, `cancel`, an
+    /// area id, a count). The grammar is the CLI's, which is what makes this
+    /// endpoint complete: anything the terminal can express, a client can send.
+    pub line: String,
+}
+
+/// The one mutation.
+///
+/// Deliberately a single endpoint over `Repl::step`, not a family of typed
+/// verbs. `step` already IS the state machine — it validates against the
+/// engine's legal list, opens and closes sub-pickers, and pumps any bot seats
+/// that are owed a move afterwards. A second dispatcher here would be a
+/// reimplementation of it, and the two would drift; the client's typed
+/// affordances come from `PromptState` telling it what to send, not from the
+/// server growing a verb per interaction.
+async fn input(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(req): Json<Input>,
+) -> ApiResult<ClientState> {
+    let handle = state.games.handle(&id).map_err(ApiError::not_found)?;
+    let mut repl = handle.lock().expect("a game");
+
+    let before = repl.session.record().events.len();
+    let out = repl.step(&req.line);
+    if repl.session.record().events.len() != before {
+        state.games.persist(&id, &repl).map_err(ApiError::bad_request)?;
+    }
+
+    let messages: Vec<String> =
+        out.text.lines().map(str::trim_end).filter(|l| !l.is_empty()).map(str::to_string).collect();
+    Ok(Json(ClientState::of(&id, &repl, messages)))
+}
+
 /// The router, built over a shared state so tests can drive it through
 /// `tower::ServiceExt::oneshot` without binding a port.
 pub fn app(state: Arc<AppState>) -> Router {
-    Router::new().route("/api/health", get(health)).with_state(state)
+    Router::new()
+        .route("/api/health", get(health))
+        .route("/api/labels", get(labels))
+        .route("/api/games", get(list_games).post(create_game))
+        .route("/api/games/preview", post(preview_game))
+        .route("/api/games/{id}", get(get_game).delete(delete_game))
+        .route("/api/games/{id}/input", post(input))
+        .with_state(state)
 }
 
 #[cfg(test)]
@@ -87,7 +278,7 @@ mod tests {
     use tower::ServiceExt;
 
     async fn get_json(uri: &str) -> (StatusCode, serde_json::Value) {
-        let res = app(Arc::new(AppState::new()))
+        let res = app(Arc::new(AppState::in_memory()))
             .oneshot(Request::builder().uri(uri).body(Body::empty()).expect("a GET"))
             .await
             .expect("the router answers");

@@ -197,7 +197,25 @@ impl Session {
     pub fn load(path: &std::path::Path, rules: Rules) -> Result<Session, String> {
         let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
         let record: GameRecord = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+        let mut session = Session::from_record(record, rules)?;
+        session.save_path = Some(path.to_path_buf());
+        Ok(session)
+    }
 
+    /// [`Session::load`]'s record half, with no filesystem in it.
+    ///
+    /// Every refusal, every warning and the whole rebuild live here; `load` is
+    /// the two lines that read a file and the one that remembers where it came
+    /// from. The split exists because a save is not necessarily a FILE: a
+    /// server holds its games wherever its storage lives (a directory today, an
+    /// object store when this runs in a container that sleeps), and it must not
+    /// have to stage bytes through a temporary path to resume one — nor
+    /// reimplement the refusals, which are the reason resuming is safe at all.
+    ///
+    /// `save_path` is `None`, because a record has no path. A caller that has
+    /// one sets it; a caller that autosaves elsewhere leaves it, and autosave
+    /// becomes the no-op it is documented to be.
+    pub fn from_record(record: GameRecord, rules: Rules) -> Result<Session, String> {
         // Semantics provenance is a REFUSAL, and it runs before anything
         // else touches the record (I-1, final whole-branch review). `load`
         // does not deserialize a state -- it REBUILDS one from seed +
@@ -364,7 +382,7 @@ impl Session {
             record,
             state,
             mode,
-            save_path: Some(path.to_path_buf()),
+            save_path: None,
             checkpoint: None,
             event_descriptions,
             load_warnings,

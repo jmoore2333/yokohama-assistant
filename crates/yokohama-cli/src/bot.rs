@@ -350,7 +350,7 @@ impl BotSeats {
 /// safe as the const moves is
 /// `the_provisional_default_bot_is_a_contestant_this_driver_runs`, and
 /// [`decide`]'s diagnostic arm names that pin for the same reason.
-pub(crate) const PROVISIONAL_DEFAULT_BOT: Contestant = Contestant::PRODUCTION;
+pub const PROVISIONAL_DEFAULT_BOT: Contestant = Contestant::PRODUCTION;
 
 /// Which contestants this driver will run as a bot seat, and why the rest are
 /// refused BY NAME (design §1.2).

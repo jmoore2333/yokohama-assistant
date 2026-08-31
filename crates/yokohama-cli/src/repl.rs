@@ -40,7 +40,7 @@ pub struct Repl {
     /// `pending` is `None`), and committing out of one never draws a card or
     /// claims a token (President moves / retreats touch neither deck), so
     /// `commit` never parks a fresh `Pending` behind a sub-prompt.
-    pub(crate) sub: SubPrompt,
+    pub sub: SubPrompt,
     /// Set true once the FIRST `board` render of a session has printed the
     /// wide-board width note (S3), so it prints exactly once. Lives on the
     /// REPL rather than in `render` because that layer is a pure formatter --
@@ -187,7 +187,7 @@ enum PromptOption {
 /// An in-progress Movement sub-prompt. Both variants are ENTRY HELPERS: whatever
 /// they assemble is exact-matched against `session.legal()` before `commit`, so
 /// neither can construct-and-apply anything the engine didn't offer.
-pub(crate) enum SubPrompt {
+pub enum SubPrompt {
     None,
     /// A numbered pick over a captured slice of the legal list (route labels,
     /// assistant-move destinations, Telegram-bonus variants): a numeric
@@ -670,6 +670,47 @@ impl Repl {
     /// Takes the legal list rather than fetching one, so a single `prompt()`
     /// costs exactly one enumeration where the entries, the `◈` marks and the
     /// near-miss rows all read the same list.
+    /// Per-seat presentation policy as the models want it, folded once.
+    ///
+    /// Reads [`Self::seat_display`] rather than re-deriving the rule, because
+    /// the rule — a bot's hand is masked whatever `privacy` says — lives there
+    /// and must live in exactly one place. Mirrors `render::dashboard_inputs`'
+    /// own fold; `seat_facts_agree_with_the_seat_display` pins the two.
+    pub fn seat_facts(&self) -> Vec<crate::screen_model::SeatFacts> {
+        let seats = self.seat_display();
+        self.session
+            .state()
+            .players
+            .iter()
+            .map(|p| crate::screen_model::SeatFacts {
+                is_bot: seats.is_bot(p.id),
+                hand_hidden: seats.hides_hand(p.id),
+            })
+            .collect()
+    }
+
+    /// The numbered entries of the MAIN prompt, as data, for a caller that
+    /// draws them itself.
+    ///
+    /// **This is the list a number means.** `pick_option` indexes THESE
+    /// entries, and outside `AdditionalAction`/`AreaAction`/etc. they are not
+    /// one-per-legal-move: Movement collapses to one entry per destination with
+    /// the whole retreat family folded into one row, Placement collapses to
+    /// Option A / Option B / place-none, and a queued `AssistantMove` groups by
+    /// source. A consumer that numbered `DecisionModel::options` instead —
+    /// which IS one per legal move — would send back a number meaning a
+    /// different move, and in the Movement phase it would usually still be a
+    /// legal one. That is the failure this accessor exists to prevent.
+    ///
+    /// Empty while a sub-prompt is open: the numbers then belong to the
+    /// sub-prompt, and [`Repl::sub`] says which.
+    pub fn option_rows(&self) -> Vec<render::DisplayRow> {
+        if !matches!(self.sub, SubPrompt::None) {
+            return Vec::new();
+        }
+        self.display_rows(&self.session.legal())
+    }
+
     fn display_rows(&self, legal: &[Move]) -> Vec<render::DisplayRow> {
         let state = self.session.state();
         let rules = self.session.rules();
