@@ -515,7 +515,7 @@ fn identity_drift_warnings(i: usize, seat: &SeatProvenance, contestant: Contesta
 /// longer does. Producing the parts HERE rather than at that seam is the
 /// design's own point (§1.3): one `decide` serves both callers, so `why` cannot
 /// reconstruct a decision by a path the pump did not take.
-pub(crate) struct Decision {
+pub struct Decision {
     /// The move the contestant chose.
     pub mv: Move,
     /// `None` for a [`RolloutPolicy`] rung, which draws its move from a
@@ -528,7 +528,7 @@ pub(crate) struct Decision {
 /// `suggest`'s [`Suggestion`](crate::suggest::Suggestion) parts, minus the
 /// press-specific ones. [`crate::why`] turns exactly these into that same
 /// screen (design §2.4: one renderer, a parameterized header).
-pub(crate) struct DecisionExplanation {
+pub struct DecisionExplanation {
     /// `eval::explain` at the state the value was READ at: the hand-off for a
     /// search, the one-ply successor for greedy.
     pub explanation: Explanation,

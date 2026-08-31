@@ -663,6 +663,23 @@ impl Repl {
         )
     }
 
+    /// Who plays each seat, as this driver reconciled it.
+    ///
+    /// An ACCESSOR rather than a public field, and it exists because the one
+    /// alternative is not equivalent: a caller holding only a `Repl` could
+    /// rebuild the same value with `BotSeats::from_provenance(record.run…)`,
+    /// but that re-runs seed reconciliation and re-emits the identity-drift
+    /// warnings [`Repl::new`] already consumed — so a second reader would print
+    /// a warning the operator answered once, or swallow one the operator never
+    /// saw. Read the reconciled value; do not re-derive it.
+    ///
+    /// [`crate::why::account_parts`] is the caller this was widened for: the
+    /// honesty gate takes `&BotSeats`, and a consumer that draws its own table
+    /// must reach the gate rather than reimplement it.
+    pub fn bots(&self) -> &crate::bot::BotSeats {
+        &self.bots
+    }
+
     /// The display entries as the zone consumes them: the collapsed families
     /// keep their own summaries, every direct entry carries its `Move` so the
     /// zone can price it and mark it.
@@ -1703,7 +1720,7 @@ impl Repl {
     /// order is hidden, and an index that dimmed it with "in Seat 1's hand"
     /// would leak the one card the whole observation boundary exists to
     /// protect.
-    pub(crate) fn index_placements(&self) -> Vec<(CardRef, CardLocation)> {
+    pub fn index_placements(&self) -> Vec<(CardRef, CardLocation)> {
         let state = self.session.state();
         let mut placed = Vec::new();
         for (board_b, board) in

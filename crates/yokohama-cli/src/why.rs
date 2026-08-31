@@ -146,7 +146,7 @@ fn refusal_width(record: &GameRecord) -> usize {
 /// defect). Hand-wrapping cannot buy that here, because every arm below
 /// interpolates something whose length it does not control.
 #[derive(Debug)]
-pub(crate) enum Refusal {
+pub enum Refusal {
     LiveMode,
     NoBotMoveYet,
     OutOfRange { asked: usize, events: usize },
@@ -164,20 +164,20 @@ pub(crate) enum Refusal {
 /// The mismatch refusal's parts, boxed so the one heavy variant does not size
 /// the whole enum (clippy's `large_enum_variant`, and it is the rarest arm).
 #[derive(Debug)]
-pub(crate) struct Mismatch {
-    pub(crate) index: usize,
-    pub(crate) seat: PlayerId,
-    pub(crate) controller: String,
+pub struct Mismatch {
+    pub index: usize,
+    pub seat: PlayerId,
+    pub controller: String,
     /// `Debug`, not a description: the reconstructed move need not be legal in
     /// the TRUE position (it was chosen inside a sampled world), and naming a
     /// move against a state that does not admit it is how a formatter gets to
     /// index something that is not there — `SuggestError::Inconsistent`'s own
     /// reasoning, at the one other site with the same exposure.
-    pub(crate) reconstructed: String,
+    pub reconstructed: String,
     /// The recorded move in words, which is always safe: it applied here.
-    pub(crate) recorded: String,
-    pub(crate) recorded_version: Option<u32>,
-    pub(crate) current_version: u32,
+    pub recorded: String,
+    pub recorded_version: Option<u32>,
+    pub current_version: u32,
 }
 
 /// Every arm is written as PROSE — one logical line per paragraph, with a `\n`
@@ -389,7 +389,7 @@ fn account(
 /// Every refusal in this module is raised here, so the two surfaces cannot
 /// disagree about what is explainable: the screen is this function's output
 /// with words on it, and nothing else consults the record.
-pub(crate) fn account_parts(
+pub fn account_parts(
     mode: TrackingMode,
     record: &GameRecord,
     rules: &Rules,
@@ -545,16 +545,16 @@ fn counter_lines(rows: &[(&str, u64)]) -> Vec<String> {
 /// [`WhyAccount`]: a consumer that renders its own screen still has to say
 /// which contestant, at which event, under which key, or it is showing
 /// arithmetic with no claim attached to it.
-pub(crate) struct Reconstruction {
-    pub(crate) contestant: Contestant,
-    pub(crate) index: usize,
-    pub(crate) seat: PlayerId,
-    pub(crate) decision_seed: u64,
-    pub(crate) recorded_version: Option<u32>,
-    pub(crate) current_version: u32,
+pub struct Reconstruction {
+    pub contestant: Contestant,
+    pub index: usize,
+    pub seat: PlayerId,
+    pub decision_seed: u64,
+    pub recorded_version: Option<u32>,
+    pub current_version: u32,
     /// The engine's legal list held exactly one move at the decision state —
     /// see [`FORCED_LEAD`].
-    pub(crate) forced: bool,
+    pub forced: bool,
 }
 
 /// A successful reconstruction, BEFORE any of it is worded.
@@ -567,15 +567,15 @@ pub(crate) struct Reconstruction {
 /// Everything after it is prose at 80 columns. A consumer that draws its own
 /// table wants the first half and none of the second, and it must not
 /// reimplement the first half: the refusals ARE the honesty gate.
-pub(crate) struct WhyAccount {
-    pub(crate) reconstruction: Reconstruction,
+pub struct WhyAccount {
+    pub reconstruction: Reconstruction,
     /// The reconstructed move, already proven equal to the recorded one.
-    pub(crate) mv: Move,
-    pub(crate) explain: bot::DecisionExplanation,
+    pub mv: Move,
+    pub explain: bot::DecisionExplanation,
     /// The state the mover decided in. Carried because the words for a move,
     /// and for every move of the continuation, are computed against the
     /// position they were chosen at — not against the position now.
-    pub(crate) state: GameState,
+    pub state: GameState,
 }
 
 /// The screen: `why`'s own header over `suggest`'s body (design §2.4 — the
