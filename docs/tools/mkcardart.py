@@ -204,6 +204,52 @@ TOKENS = {
     "yen_3": "tokens/3_yen.jpg",
 }
 
+# --- the six 5-Power faces, keyed by the wire's own value ------------------
+#
+# `FivePowerEffect` is a newtype enum, so a face is a (variant, payload) PAIR
+# and the key spells both: `Copper_2`, not `Copper`. There is exactly one
+# printed face per pair -- `canonical_five_power_tokens()` (board_gen.rs:409)
+# draws from 10x ImportedGoods(1), 2x Copper(2), 2x Silk(2), 2x Seafood(3),
+# 2x Tea(3), 2x Money(3) -- and that 10/2/2/2/2/2 multiset is a byte-for-byte
+# match to the mod's own "5-Power Tokens" bag, which is what identifies the
+# images independently of reading them.
+#
+# TWO OF THE SIX WERE NEVER COPIED into `organized/` -- Copper(2) and Tea(3)
+# live only under the raw `images/` cache, named by their Steam UGC URL. They
+# are pulled from there rather than staged into `organized/`, because writing
+# into `tts-assets/` is what this file must not do.
+#
+# The `_xN` suffixes on the `organized/` filenames are WRONG and mean nothing:
+# `5power_1_import_x3` is really x10 and `5power_3_fish_x1` is really x2. Pool
+# counts come from `board_gen.rs`, never from a filename.
+IMAGES = "../images"  # relative to SHEETS, i.e. tts-assets/images
+FIVE_POWER = {
+    "ImportedGoods_1": "tokens/5power_1_import_x3.jpg",
+    "Silk_2": "tokens/5power_2_silk_x2.jpg",
+    "Seafood_3": "tokens/5power_3_fish_x1.jpg",
+    "Money_3": "tokens/5power_3_yen_x2.jpg",
+    "Copper_2": f"{IMAGES}/httpssteamusercontentaakamaihdnetugc77510270910271810759BF1FEFE5A928E62AB0B2D702AFE1CAC3FFAA8A.jpg",
+    "Tea_3": f"{IMAGES}/httpssteamusercontentaakamaihdnetugc7751027091027229840C162AB1DDBBB3756AC88A51C41A8946D7566282.jpg",
+}
+FIVE_POWER_BACK = f"{IMAGES}/httpssteamusercontentaakamaihdnetugc775102709102718536DA2EB632A014209CAAD809D2EB9753336886E009.jpg"
+
+# --- the ten mercenary flags, five countries ------------------------------
+#
+# Keyed by the `Country` serde name, which is what `Move::UseMercenary` and
+# `MercenarySupply` carry. The per-country multiset 3/2/2/2/1 in the mod is an
+# exact match to `Country::mercenary_supply()` (ids.rs), which identifies them
+# without reading the art; the art then confirms it -- each is a flag medallion
+# under its kanji, and the shared back is the red 済 ("done") that the
+# flip-face-down-after-use rule needs.
+MERCENARIES = {
+    "English": f"{IMAGES}/httpssteamusercontentaakamaihdnetugc775102709102733073C669047DB7F92369F306FF40CA55285456EC36A9.jpg",
+    "American": f"{IMAGES}/httpssteamusercontentaakamaihdnetugc77510270910273628489C46072973036ECDA8732823E40DD6790ED070D.jpg",
+    "French": f"{IMAGES}/httpssteamusercontentaakamaihdnetugc775102709102731371E8C7B9C3F44572C091C0CB5303B389464A22B820.jpg",
+    "German": f"{IMAGES}/httpssteamusercontentaakamaihdnetugc775102709102733973448B1AF2767E272DBE37E2FA23106001587C0454.jpg",
+    "Dutch": f"{IMAGES}/httpssteamusercontentaakamaihdnetugc77510270910273533621BF66463232830E99EEDB25B6736F2D8ADE7FA3.jpg",
+}
+MERCENARY_BACK = f"{IMAGES}/httpssteamusercontentaakamaihdnetugc77510270910273187836B1D497B7CECCD2DAF88A27BED5FBBE124513D8.jpg"
+
 
 def slug(title: str) -> str:
     """A filename for a printed title. The MANIFEST keys on the title itself --
@@ -350,6 +396,22 @@ def main() -> None:
     for key, rel in TOKENS.items():
         tokens[key] = em.emit(load_sheet(rel), 128, f"tokens/{key}.webp")
     manifest["tokens"] = tokens
+
+    five_power = {}
+    for key, rel in FIVE_POWER.items():
+        five_power[key] = em.emit(load_sheet(rel), 128, f"five-power/{key}.webp")
+    manifest["five_power"] = five_power
+    manifest["backs"]["five_power_back"] = em.emit(
+        load_sheet(FIVE_POWER_BACK), 128, "backs/five_power_back.webp"
+    )
+
+    mercenaries = {}
+    for key, rel in MERCENARIES.items():
+        mercenaries[key] = em.emit(load_sheet(rel), 128, f"mercenaries/{key}.webp")
+    manifest["mercenaries"] = mercenaries
+    manifest["backs"]["mercenary_back"] = em.emit(
+        load_sheet(MERCENARY_BACK), 128, "backs/mercenary_back.webp"
+    )
 
     if not check_only:
         (OUT / "manifest.json").write_text(json.dumps(manifest, indent=1, sort_keys=True) + "\n")

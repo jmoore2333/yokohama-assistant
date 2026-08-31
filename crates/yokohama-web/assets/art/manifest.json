@@ -165,6 +165,16 @@
    "h": 330,
    "w": 440
   },
+  "five_power_back": {
+   "file": "backs/five_power_back.webp",
+   "h": 128,
+   "w": 128
+  },
+  "mercenary_back": {
+   "file": "backs/mercenary_back.webp",
+   "h": 128,
+   "w": 128
+  },
   "order_back": {
    "file": "backs/order_back.webp",
    "h": 543,
@@ -179,6 +189,65 @@
    "file": "backs/tech_back.webp",
    "h": 543,
    "w": 360
+  }
+ },
+ "five_power": {
+  "Copper_2": {
+   "file": "five-power/Copper_2.webp",
+   "h": 128,
+   "w": 128
+  },
+  "ImportedGoods_1": {
+   "file": "five-power/ImportedGoods_1.webp",
+   "h": 128,
+   "w": 128
+  },
+  "Money_3": {
+   "file": "five-power/Money_3.webp",
+   "h": 128,
+   "w": 128
+  },
+  "Seafood_3": {
+   "file": "five-power/Seafood_3.webp",
+   "h": 128,
+   "w": 128
+  },
+  "Silk_2": {
+   "file": "five-power/Silk_2.webp",
+   "h": 128,
+   "w": 128
+  },
+  "Tea_3": {
+   "file": "five-power/Tea_3.webp",
+   "h": 128,
+   "w": 128
+  }
+ },
+ "mercenaries": {
+  "American": {
+   "file": "mercenaries/American.webp",
+   "h": 128,
+   "w": 128
+  },
+  "Dutch": {
+   "file": "mercenaries/Dutch.webp",
+   "h": 128,
+   "w": 128
+  },
+  "English": {
+   "file": "mercenaries/English.webp",
+   "h": 128,
+   "w": 128
+  },
+  "French": {
+   "file": "mercenaries/French.webp",
+   "h": 128,
+   "w": 128
+  },
+  "German": {
+   "file": "mercenaries/German.webp",
+   "h": 128,
+   "w": 128
   }
  },
  "orders": {

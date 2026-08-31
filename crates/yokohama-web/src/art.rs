@@ -66,6 +66,14 @@ pub struct ArtManifest {
     pub achievements: BTreeMap<String, ArtEntry>,
     #[serde(default)]
     pub areas: BTreeMap<String, ArtEntry>,
+    /// Keyed `"<variant>_<payload>"` — `"Copper_2"`, `"ImportedGoods_1"`. A
+    /// 5-Power face is a (variant, count) PAIR and the key spells both, because
+    /// `Copper(2)` and a hypothetical `Copper(3)` would be different pictures.
+    #[serde(default)]
+    pub five_power: BTreeMap<String, ArtEntry>,
+    /// Keyed by the `Country` serde name.
+    #[serde(default)]
+    pub mercenaries: BTreeMap<String, ArtEntry>,
     #[serde(default)]
     pub backs: BTreeMap<String, ArtEntry>,
     #[serde(default)]
@@ -137,6 +145,18 @@ mod tests {
         (dir, manifest)
     }
 
+    /// `{"Copper": 2}` -> `"Copper_2"`. Derived from the SERIALIZED form so it
+    /// cannot drift from the wire the client reads.
+    fn five_power_key(effect: &yokohama_core::FivePowerEffect) -> String {
+        match serde_json::to_value(effect) {
+            Ok(serde_json::Value::Object(map)) if map.len() == 1 => {
+                let (k, v) = map.into_iter().next().expect("one entry");
+                format!("{k}_{v}")
+            }
+            other => panic!("expected a single-key newtype variant, got {other:?}"),
+        }
+    }
+
     fn key_of<T: Serialize>(v: &T) -> String {
         match serde_json::to_value(v) {
             Ok(serde_json::Value::String(s)) => s,
@@ -184,6 +204,22 @@ mod tests {
                 missing.push(format!("area {key}"));
             }
         }
+        // The 5-Power pool is the engine's own bag, so a re-priced face (a
+        // `Tea(3)` that became a `Tea(4)`) shows up here as a missing picture
+        // rather than as a tile that quietly draws the wrong number.
+        for key in
+            yokohama_core::canonical_five_power_tokens().iter().map(five_power_key).collect::<BTreeSet<String>>()
+        {
+            if !m.five_power.contains_key(&key) {
+                missing.push(format!("five-power {key}"));
+            }
+        }
+        for c in yokohama_core::Country::ALL {
+            let key = key_of(&c);
+            if !m.mercenaries.contains_key(&key) {
+                missing.push(format!("mercenary {key}"));
+            }
+        }
         assert!(missing.is_empty(), "art is missing for: {missing:?}");
     }
 
@@ -206,6 +242,10 @@ mod tests {
         let achievements: BTreeSet<String> =
             achievement_registry().iter().map(|a| key_of(&a.achievement_type)).collect();
         let areas: BTreeSet<String> = full_tile_set().iter().map(key_of).collect();
+        let five_power: BTreeSet<String> =
+            yokohama_core::canonical_five_power_tokens().iter().map(five_power_key).collect();
+        let mercenaries: BTreeSet<String> =
+            yokohama_core::Country::ALL.iter().map(key_of).collect();
 
         let mut extra: Vec<String> = Vec::new();
         for (family, have, want) in [
@@ -214,6 +254,8 @@ mod tests {
             ("site", &m.sites, &sites),
             ("achievement", &m.achievements, &achievements),
             ("area", &m.areas, &areas),
+            ("five-power", &m.five_power, &five_power),
+            ("mercenary", &m.mercenaries, &mercenaries),
         ] {
             for key in have.keys() {
                 if !want.contains(key) {
@@ -234,8 +276,17 @@ mod tests {
     fn every_entry_resolves_to_a_file_on_disk() {
         let (dir, m) = committed();
         let mut bad: Vec<String> = Vec::new();
-        let families: [&BTreeMap<String, ArtEntry>; 7] =
-            [&m.orders, &m.techs, &m.sites, &m.achievements, &m.areas, &m.backs, &m.tokens];
+        let families: [&BTreeMap<String, ArtEntry>; 9] = [
+            &m.orders,
+            &m.techs,
+            &m.sites,
+            &m.achievements,
+            &m.areas,
+            &m.five_power,
+            &m.mercenaries,
+            &m.backs,
+            &m.tokens,
+        ];
         let mut seen = 0usize;
         for family in families {
             for entry in family.values() {
