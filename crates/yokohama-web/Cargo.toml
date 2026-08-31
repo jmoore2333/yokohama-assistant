@@ -11,8 +11,21 @@ authors.workspace = true
 # terminal: `session` (atomic apply/undo/save with the legal-list gate and the
 # invariant guard), `screen_model` (the typed frame, which its own module doc
 # calls "the seam a later API or GUI layer can consume without a terminal"),
-# `describe` (the wording layer), `bot`, `suggest` and `why`. Nothing in
-# `*_render.rs` or `screen.rs` is reachable from here, by design.
+# `describe` (the wording layer), `repl` (the state machine and its option
+# rows), `bot`, and three items from `render`.
+#
+# THE `render` DEPENDENCY IS REAL AND WORTH NAMING, because an earlier version
+# of this comment denied it. `render::DisplayRow` is the shape `option_rows`
+# returns, and `render::end_trigger_line` is the one rendered STRING this crate
+# serves — deliberately, because the strip's 8 and 4 thresholds are bare
+# literals in the engine with no name to import, so composing it here would
+# write two rules constants into a web layer. Nothing in `*_render.rs`,
+# `screen.rs` or `style.rs` is reachable, which is the fence that matters: no
+# ANSI, no column widths, no box drawing.
+#
+# `suggest` and `why` are NOT consumed. They are M3's surfaces and both need
+# DTOs for engine types that have no `Serialize`; `why` is `pub(crate)` and not
+# reachable from here at all today.
 yokohama-core = { path = "../yokohama-core" }
 yokohama-cli = { path = "../yokohama-cli" }
 serde.workspace = true

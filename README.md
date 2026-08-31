@@ -404,7 +404,8 @@ recommendation for your seat), `why` / `why <n>` (a bot move, replayed and accou
 Full tester guide: **[HTML](docs/cli-guide.html)** or [Markdown](docs/cli-guide.md).
 
 **Gates.** Per-edit (debug): the six crate suites (`yokohama-core`, its `eval_probe` example
-target, `yokohama-cli`, `yokohama-oracle`, `yokohama-difftest`, `yokohama-bridge`) + the four
+target, `yokohama-cli`, `yokohama-oracle`, `yokohama-difftest`, `yokohama-bridge`) — plus a
+seventh, `yokohama-web`, on branch `web-frontend` only, where the browser lane lives — + the four
 `bridge/tests/*.js` node suites (the browser half has no cargo coverage and would otherwise
 never run) + `cargo clippy --workspace --all-targets -- -D warnings`, all zero-warning.
 Pre-merge: all **fifteen** release gates below, measured as ONE uninterrupted sequence at every
