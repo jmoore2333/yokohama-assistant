@@ -200,6 +200,17 @@ function Space({
   );
 }
 
+/** `★3–14` — what the cheapest and dearest space on a track pay.
+ *
+ *  The CLI's `panel_render::vp_range`, restated: an empty track is `★—`, a
+ *  uniform one is a single figure, and only a real spread prints a dash. */
+function vpRange(vps: number[]): string {
+  if (vps.length === 0) return "★—";
+  const lo = Math.min(...vps);
+  const hi = Math.max(...vps);
+  return lo === hi ? `★${lo}` : `★${lo}–${hi}`;
+}
+
 /** The five mercenary countries in the engine's own `Country::ALL` order, with
  *  the supply field each maps to. Spelled as pairs rather than iterated over
  *  the object so the ORDER is the engine's and not the JSON's. */
@@ -222,10 +233,13 @@ function Tracks({
 }) {
   const m = tracks.mercenary_supply;
   const mercTotal = m.english + m.american + m.french + m.german + m.dutch;
-  // The two summary figures the CLI prints beside each track: the top space's
-  // reward, which is what the race is for.
-  const church = tracks.church[tracks.church.length - 1];
-  const customs = tracks.customs[tracks.customs.length - 1];
+  // The summary figure the CLI prints beside each track: what the CHEAPEST and
+  // DEAREST space on it pay. A range, not the top — the top alone would hide
+  // that the church starts at 3 and the customs at 4, which is half of what a
+  // player is weighing. Computed from the spaces the model carries, exactly as
+  // `panel_render::vp_range` does, so a rules correction to a printed reward
+  // moves both surfaces together.
+  const churchMv = tracks.church.some((s) => s.movement_rider > 0);
   return (
     <section className="panel">
       <h2>
@@ -234,12 +248,10 @@ function Tracks({
 
       <div className="tile-row muted">
         Church faith &middot; {tracks.church_filled}/{tracks.trigger_at}
-        {church && (
-          <span className="chip vp">
-            top ★{church.vp}
-            {church.movement_rider > 0 ? ` +${church.movement_rider}mv` : ""}
-          </span>
-        )}
+        <span className="chip vp">
+          {vpRange(tracks.church.map((s) => s.vp))}
+          {churchMv ? " +mv" : ""}
+        </span>
       </div>
       <div className="track">
         {tracks.church.map((s) => (
@@ -256,7 +268,7 @@ function Tracks({
 
       <div className="tile-row muted" style={{ marginTop: "0.5rem" }}>
         Customs &middot; {tracks.customs_filled}/{tracks.trigger_at}
-        {customs && <span className="chip vp">top ★{customs.vp}</span>}
+        <span className="chip vp">{vpRange(tracks.customs.map((s) => s.vp))}</span>
       </div>
       <div className="track">
         {tracks.customs.map((s) => (
