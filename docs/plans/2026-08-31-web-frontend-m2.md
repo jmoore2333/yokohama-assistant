@@ -190,3 +190,18 @@ The CLI's nine `assert_capture` goldens and 18 `guide_sync` tests are unchanged.
 No `*_render.rs`, `screen.rs`, `style.rs` SGR table, `HELP_TEXT`, `describe`
 constant arm or `cli-guide.{md,html}` byte moved — the port stayed additive, and
 those tests are how that is known rather than believed.
+
+---
+
+## 9. Recorded forward (2026-08-31, after this file's phase closed)
+
+**§6's last bullet — "The client has NO automated test" — is CLOSED.** M2.5
+landed all three of the shapes it named: the wire-payload contract, vitest
+component tests, and a headless browser walk. The sentence in §6 that says "the
+suites are green" is not a claim about the browser was true when written and is
+no longer true; the record is `docs/plans/2026-08-31-web-frontend-m2.5.md`, and
+its §5 states what the harness still does NOT cover.
+
+Per this repo's convention a dated artifact is a frozen phase record and is
+never edited after its phase closes — so §6 stands as written, and this pointer
+is the correction.

@@ -406,8 +406,16 @@ Full tester guide: **[HTML](docs/cli-guide.html)** or [Markdown](docs/cli-guide.
 **Gates.** Per-edit (debug): the six crate suites (`yokohama-core`, its `eval_probe` example
 target, `yokohama-cli`, `yokohama-oracle`, `yokohama-difftest`, `yokohama-bridge`) — plus a
 seventh, `yokohama-web`, on branch `web-frontend` only, where the browser lane lives — + the four
-`bridge/tests/*.js` node suites (the browser half has no cargo coverage and would otherwise
-never run) + `cargo clippy --workspace --all-targets -- -D warnings`, all zero-warning.
+`bridge/tests/*.js` node suites (the BGA bridge's browser half has no cargo coverage and would
+otherwise never run) + `cargo clippy --workspace --all-targets -- -D warnings`, all zero-warning.
+**On `web-frontend` the browser CLIENT adds three more per-edit commands, from `web/`** (M2.5,
+2026-08-31 — before it, "the suites are green" was not a claim about the browser at all):
+`npm run typecheck` (both TS projects, and the committed wire corpus against the hand-written
+client types), `npm test` (118 vitest component tests over jsdom, every payload of them
+server-emitted), and `npm run e2e` (7 Playwright tests driving real Chromium against the real
+release binary, including a whole 2P game clicked through to a winner). The last needs
+`npx playwright install chromium` once; absence is a loud refusal naming that command, and
+`YOKOHAMA_WEB_E2E_OPTIONAL=1` turns it into a skip that says out loud it tested nothing.
 Pre-merge: all **fifteen** release gates below, measured as ONE uninterrupted sequence at every
 close — a sum of per-command times from separate sessions is not a measured total. **Wall
 figures are per-machine since 2026-08-11** (two workstations whose profiles INVERT by gate
