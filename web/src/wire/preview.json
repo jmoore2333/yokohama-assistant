@@ -1,0 +1,103 @@
+{
+  "deals": [
+    {
+      "cards": [
+        {
+          "country": "English",
+          "id": 27,
+          "requirements": {
+            "copper": 2,
+            "seafood": 2,
+            "silk": 0,
+            "tea": 0
+          },
+          "rewards": {
+            "any_trade_good": 0,
+            "copper": 0,
+            "imported_goods": 0,
+            "money": 2,
+            "movement": 0,
+            "seafood": 0,
+            "silk": 0,
+            "tea": 0,
+            "victory_points": 1,
+            "warehouse_tokens": 1
+          }
+        },
+        {
+          "country": "French",
+          "id": 5,
+          "requirements": {
+            "copper": 1,
+            "seafood": 0,
+            "silk": 0,
+            "tea": 2
+          },
+          "rewards": {
+            "any_trade_good": 0,
+            "copper": 0,
+            "imported_goods": 1,
+            "money": 0,
+            "movement": 0,
+            "seafood": 0,
+            "silk": 0,
+            "tea": 0,
+            "victory_points": 1,
+            "warehouse_tokens": 0
+          }
+        }
+      ],
+      "seat": 0
+    },
+    {
+      "cards": [
+        {
+          "country": "French",
+          "id": 23,
+          "requirements": {
+            "copper": 1,
+            "seafood": 0,
+            "silk": 2,
+            "tea": 3
+          },
+          "rewards": {
+            "any_trade_good": 0,
+            "copper": 0,
+            "imported_goods": 1,
+            "money": 0,
+            "movement": 0,
+            "seafood": 0,
+            "silk": 0,
+            "tea": 0,
+            "victory_points": 9,
+            "warehouse_tokens": 0
+          }
+        },
+        {
+          "country": "English",
+          "id": 32,
+          "requirements": {
+            "copper": 2,
+            "seafood": 1,
+            "silk": 0,
+            "tea": 1
+          },
+          "rewards": {
+            "any_trade_good": 0,
+            "copper": 0,
+            "imported_goods": 1,
+            "money": 0,
+            "movement": 0,
+            "seafood": 0,
+            "silk": 0,
+            "tea": 0,
+            "victory_points": 5,
+            "warehouse_tokens": 0
+          }
+        }
+      ],
+      "seat": 1
+    }
+  ],
+  "seed": "20260831"
+}

@@ -1,0 +1,4149 @@
+{
+  "entries": [
+    {
+      "index": 0,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 1,
+      "text": "Red: Place 2 assistants in Customs (A09)"
+    },
+    {
+      "index": 2,
+      "text": "Red: Place President from hand in Customs (A09)"
+    },
+    {
+      "index": 3,
+      "text": "Red: Take the area action, declining all optional parts"
+    },
+    {
+      "index": 4,
+      "text": "Red: Skip the 5-Power token"
+    },
+    {
+      "index": 5,
+      "text": "Red: Skip the building"
+    },
+    {
+      "index": 6,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 7,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 8,
+      "text": "Blue: Place no assistants"
+    },
+    {
+      "index": 9,
+      "text": "Blue: Return President to hand (recover no assistants)"
+    },
+    {
+      "index": 10,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 11,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 12,
+      "text": "Red: Place no assistants"
+    },
+    {
+      "index": 13,
+      "text": "Red: Return President to hand (recover no assistants)"
+    },
+    {
+      "index": 14,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 15,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 16,
+      "text": "Blue: Place 1 assistant in each of: Tea Plantation (A00), Church (A01)"
+    },
+    {
+      "index": 17,
+      "text": "Blue: Place President from hand in Church (A01)"
+    },
+    {
+      "index": 18,
+      "text": "Blue: Church: pay copper, silk, tea, seafood, 2 yen -> faith 7 (power 2 + 5 kinds)"
+    },
+    {
+      "index": 19,
+      "text": "Blue: Place on Church faith 4 (3vp 1move)"
+    },
+    {
+      "index": 20,
+      "text": "Blue: Move an assistant from hand to Copper Mine (A03) (reward move)"
+    },
+    {
+      "index": 21,
+      "text": "Blue: Skip the 5-Power token"
+    },
+    {
+      "index": 22,
+      "text": "Blue: Skip the building"
+    },
+    {
+      "index": 23,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 24,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 25,
+      "text": "Red: Place 1 assistant in each of: Tea Plantation (A00), Church (A01) — fee 1 yen (1 to Blue)"
+    },
+    {
+      "index": 26,
+      "text": "Red: Return President to hand, recovering 1 assistant (A00 x1)"
+    },
+    {
+      "index": 27,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 28,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 29,
+      "text": "Blue: Place no assistants"
+    },
+    {
+      "index": 30,
+      "text": "Blue: Return President to hand, recovering 1 assistant (A00 x1)"
+    },
+    {
+      "index": 31,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 32,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 33,
+      "text": "Red: Place no assistants"
+    },
+    {
+      "index": 34,
+      "text": "Red: Return President to hand, recovering 1 assistant (A01 x1)"
+    },
+    {
+      "index": 35,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 36,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 37,
+      "text": "Blue: Place 1 assistant in each of: Tea Plantation (A00), Church (A01)"
+    },
+    {
+      "index": 38,
+      "text": "Blue: Return President to hand, recovering 1 assistant (A00 x1)"
+    },
+    {
+      "index": 39,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 40,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 41,
+      "text": "Red: Place 1 assistant in each of: Bank (A07), Silk Mill (A08)"
+    },
+    {
+      "index": 42,
+      "text": "Red: Place President from hand in Silk Mill (A08)"
+    },
+    {
+      "index": 43,
+      "text": "Red: Produce silk (power 2 -> +1 silk, next +2 at power 3)"
+    },
+    {
+      "index": 44,
+      "text": "Red: Skip the 5-Power token"
+    },
+    {
+      "index": 45,
+      "text": "Red: Skip the building"
+    },
+    {
+      "index": 46,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 47,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 48,
+      "text": "Blue: Place 2 assistants in Laboratory A (A06)"
+    },
+    {
+      "index": 49,
+      "text": "Blue: Place President from hand in Laboratory A (A06)"
+    },
+    {
+      "index": 50,
+      "text": "Blue: Laboratory: acquire Ball"
+    },
+    {
+      "index": 51,
+      "text": "Blue: Skip the 5-Power token"
+    },
+    {
+      "index": 52,
+      "text": "Blue: Skip the building"
+    },
+    {
+      "index": 53,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 54,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 55,
+      "text": "Red: Place 2 assistants in Copper Mine (A03)"
+    },
+    {
+      "index": 56,
+      "text": "Red: Move President to Bank (A07) — free"
+    },
+    {
+      "index": 57,
+      "text": "Red: Take money at the Bank (power 2 -> +2 yen, next +3 at power 3)"
+    },
+    {
+      "index": 58,
+      "text": "Red: Skip the 5-Power token"
+    },
+    {
+      "index": 59,
+      "text": "Red: Skip the building"
+    },
+    {
+      "index": 60,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 61,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 62,
+      "text": "Blue: Place no assistants"
+    },
+    {
+      "index": 63,
+      "text": "Blue: Return President to hand, recovering 1 assistant (A01 x1)"
+    },
+    {
+      "index": 64,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 65,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 66,
+      "text": "Red: Place no assistants"
+    },
+    {
+      "index": 67,
+      "text": "Red: Return President to hand, recovering 1 assistant (A03 x1)"
+    },
+    {
+      "index": 68,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 69,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 70,
+      "text": "Blue: Place no assistants"
+    },
+    {
+      "index": 71,
+      "text": "Blue: Return President to hand, recovering 1 assistant (A03 x1)"
+    },
+    {
+      "index": 72,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 73,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 74,
+      "text": "Red: Place 1 assistant in each of: Port A (A02), Copper Mine (A03)"
+    },
+    {
+      "index": 75,
+      "text": "Red: Place President from hand in Copper Mine (A03)"
+    },
+    {
+      "index": 76,
+      "text": "Red: Produce copper (power 3 -> +1 copper, next +2 at power 4)"
+    },
+    {
+      "index": 77,
+      "text": "Red: Skip the 5-Power token"
+    },
+    {
+      "index": 78,
+      "text": "Red: Skip the building"
+    },
+    {
+      "index": 79,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 80,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 81,
+      "text": "Blue: Place 2 assistants in Fishing Ground (A05)"
+    },
+    {
+      "index": 82,
+      "text": "Blue: Place President from hand in Fishing Ground (A05)"
+    },
+    {
+      "index": 83,
+      "text": "Blue: Produce seafood (power 3 -> +3 seafood, next +4 at power 4)"
+    },
+    {
+      "index": 84,
+      "text": "Blue: Skip the 5-Power token"
+    },
+    {
+      "index": 85,
+      "text": "Blue: Skip the building"
+    },
+    {
+      "index": 86,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 87,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 88,
+      "text": "Red: Place 1 assistant in each of: Copper Mine (A03), Fishing Ground (A05) — fee 1 yen (1 to Blue)"
+    },
+    {
+      "index": 89,
+      "text": "Red: Move President to Port A (A02) — free"
+    },
+    {
+      "index": 90,
+      "text": "Red: Port: take O34, O19, paying 2 yen"
+    },
+    {
+      "index": 91,
+      "text": "Red: Skip the 5-Power token"
+    },
+    {
+      "index": 92,
+      "text": "Red: Skip the building"
+    },
+    {
+      "index": 93,
+      "text": "Red: Fulfill O19 [Netherlands]  needs 1 copper + 1 silk + 1 tea + 1 fish  ->  8 VP"
+    },
+    {
+      "index": 94,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 95,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 96,
+      "text": "Blue: Place 1 assistant in each of: Port A (A02), Fishing Ground (A05) — fee 1 yen (1 to Red)"
+    },
+    {
+      "index": 97,
+      "text": "Blue: Return President to hand, recovering 1 assistant (A05 x1)"
+    },
+    {
+      "index": 98,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 99,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 100,
+      "text": "Red: Place no assistants"
+    },
+    {
+      "index": 101,
+      "text": "Red: Return President to hand, recovering 2 assistants (A03 x1, A05 x1)"
+    },
+    {
+      "index": 102,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 103,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 104,
+      "text": "Blue: Place 1 assistant in each of: Tea Plantation (A00), Church (A01)"
+    },
+    {
+      "index": 105,
+      "text": "Blue: Return President to hand, recovering 2 assistants (A00 x1, A01 x1)"
+    },
+    {
+      "index": 106,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 107,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 108,
+      "text": "Red: Place 2 assistants in Copper Mine (A03)"
+    },
+    {
+      "index": 109,
+      "text": "Red: Place President from hand in Copper Mine (A03)"
+    },
+    {
+      "index": 110,
+      "text": "Red: Produce copper (power 3 -> +1 copper, next +2 at power 4)"
+    },
+    {
+      "index": 111,
+      "text": "Red: Skip the 5-Power token"
+    },
+    {
+      "index": 112,
+      "text": "Red: Skip the building"
+    },
+    {
+      "index": 113,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 114,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 115,
+      "text": "Blue: Place 1 assistant in each of: Tea Plantation (A00), Copper Mine (A03) — fee 1 yen (1 to Red)"
+    },
+    {
+      "index": 116,
+      "text": "Blue: Place President from hand in Port A (A02)"
+    },
+    {
+      "index": 117,
+      "text": "Blue: Port: take O12"
+    },
+    {
+      "index": 118,
+      "text": "Blue: Skip the 5-Power token"
+    },
+    {
+      "index": 119,
+      "text": "Blue: Skip the building"
+    },
+    {
+      "index": 120,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 121,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 122,
+      "text": "Red: Place 2 assistants in Bank (A07)"
+    },
+    {
+      "index": 123,
+      "text": "Red: Return President to hand, recovering 2 assistants (A07 x2)"
+    },
+    {
+      "index": 124,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 125,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 126,
+      "text": "Blue: Place no assistants"
+    },
+    {
+      "index": 127,
+      "text": "Blue: Return President to hand, recovering 2 assistants (A00 x1, A03 x1)"
+    },
+    {
+      "index": 128,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 129,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 130,
+      "text": "Red: Place 1 assistant in each of: Employment Agency (A04), Fishing Ground (A05)"
+    },
+    {
+      "index": 131,
+      "text": "Red: Place President from hand in Fishing Ground (A05)"
+    },
+    {
+      "index": 132,
+      "text": "Red: Produce seafood (power 2 -> +2 seafood, next +3 at power 3)"
+    },
+    {
+      "index": 133,
+      "text": "Red: Skip the 5-Power token"
+    },
+    {
+      "index": 134,
+      "text": "Red: Skip the building"
+    },
+    {
+      "index": 135,
+      "text": "Red: Fulfill O27 [Britain]  needs 2 copper + 2 fish  ->  1 VP + 2 yen + 1 warehouse"
+    },
+    {
+      "index": 136,
+      "text": "Red: Take a trading house from the warehouse (4 yen)"
+    },
+    {
+      "index": 137,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 138,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 139,
+      "text": "Blue: Place 2 assistants in Port A (A02)"
+    },
+    {
+      "index": 140,
+      "text": "Blue: Return President to hand (recover no assistants)"
+    },
+    {
+      "index": 141,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 142,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 143,
+      "text": "Red: Place 2 assistants in Port A (A02)"
+    },
+    {
+      "index": 144,
+      "text": "Red: Move President to Port A (A02) — free"
+    },
+    {
+      "index": 145,
+      "text": "Red: Take the area action, declining all optional parts"
+    },
+    {
+      "index": 146,
+      "text": "Red: Skip the 5-Power token"
+    },
+    {
+      "index": 147,
+      "text": "Red: Skip the building"
+    },
+    {
+      "index": 148,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 149,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 150,
+      "text": "Blue: Place 2 assistants in Silk Mill (A08)"
+    },
+    {
+      "index": 151,
+      "text": "Blue: Return President to hand, recovering 2 assistants (A02 x2)"
+    },
+    {
+      "index": 152,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 153,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 154,
+      "text": "Red: Place 2 assistants in Tea Plantation (A00)"
+    },
+    {
+      "index": 155,
+      "text": "Red: Return President to hand, recovering 2 assistants (A00 x2)"
+    },
+    {
+      "index": 156,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 157,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 158,
+      "text": "Blue: Place 2 assistants in Fishing Ground (A05)"
+    },
+    {
+      "index": 159,
+      "text": "Blue: Place President from hand in Fishing Ground (A05)"
+    },
+    {
+      "index": 160,
+      "text": "Blue: Produce seafood (power 3 -> +3 seafood, next +4 at power 4)"
+    },
+    {
+      "index": 161,
+      "text": "Blue: Skip the 5-Power token"
+    },
+    {
+      "index": 162,
+      "text": "Blue: Skip the building"
+    },
+    {
+      "index": 163,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 164,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 165,
+      "text": "Red: Place 1 assistant in each of: Tea Plantation (A00), Fishing Ground (A05) — fee 1 yen (1 to Blue)"
+    },
+    {
+      "index": 166,
+      "text": "Red: Place President from hand in Employment Agency (A04)"
+    },
+    {
+      "index": 167,
+      "text": "Red: Take the area action, declining all optional parts"
+    },
+    {
+      "index": 168,
+      "text": "Red: Skip the 5-Power token"
+    },
+    {
+      "index": 169,
+      "text": "Red: Skip the building"
+    },
+    {
+      "index": 170,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 171,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 172,
+      "text": "Blue: Place 1 assistant in each of: Employment Agency (A04), Fishing Ground (A05) — fee 1 yen (1 to Red)"
+    },
+    {
+      "index": 173,
+      "text": "Blue: Move President to Silk Mill (A08) — free"
+    },
+    {
+      "index": 174,
+      "text": "Blue: Produce silk (power 3 -> +2 silk, next +3 at power 4)"
+    },
+    {
+      "index": 175,
+      "text": "Blue: Skip the 5-Power token"
+    },
+    {
+      "index": 176,
+      "text": "Blue: Skip the building"
+    },
+    {
+      "index": 177,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 178,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 179,
+      "text": "Red: Place 2 assistants in Employment Agency (A04)"
+    },
+    {
+      "index": 180,
+      "text": "Red: Move President to Tea Plantation (A00) — free"
+    },
+    {
+      "index": 181,
+      "text": "Red: Produce tea (power 2 -> +2 tea, next +3 at power 3)"
+    },
+    {
+      "index": 182,
+      "text": "Red: Skip the 5-Power token"
+    },
+    {
+      "index": 183,
+      "text": "Red: Skip the building"
+    },
+    {
+      "index": 184,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 185,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 186,
+      "text": "Blue: Place 1 assistant in each of: Tea Plantation (A00), Silk Mill (A08) — fee 1 yen (1 to Red)"
+    },
+    {
+      "index": 187,
+      "text": "Blue: Return President to hand, recovering 3 assistants (A00 x1, A04 x1, A08 x1)"
+    },
+    {
+      "index": 188,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 189,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 190,
+      "text": "Red: Place no assistants"
+    },
+    {
+      "index": 191,
+      "text": "Red: Move President to Employment Agency (A04) — free"
+    },
+    {
+      "index": 192,
+      "text": "Red: Take the area action, declining all optional parts"
+    },
+    {
+      "index": 193,
+      "text": "Red: Skip the 5-Power token"
+    },
+    {
+      "index": 194,
+      "text": "Red: Skip the building"
+    },
+    {
+      "index": 195,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 196,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 197,
+      "text": "Blue: Place 2 assistants in Bank (A07)"
+    },
+    {
+      "index": 198,
+      "text": "Blue: Return President to hand, recovering 1 assistant (A05 x1)"
+    },
+    {
+      "index": 199,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 200,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 201,
+      "text": "Red: Place no assistants"
+    },
+    {
+      "index": 202,
+      "text": "Red: Return President to hand (recover no assistants)"
+    },
+    {
+      "index": 203,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 204,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 205,
+      "text": "Blue: Place 1 assistant in each of: Tea Plantation (A00), Church (A01)"
+    },
+    {
+      "index": 206,
+      "text": "Blue: Return President to hand, recovering 2 assistants (A07 x2)"
+    },
+    {
+      "index": 207,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 208,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 209,
+      "text": "Red: Place no assistants"
+    },
+    {
+      "index": 210,
+      "text": "Red: Place President from hand in Fishing Ground (A05)"
+    },
+    {
+      "index": 211,
+      "text": "Red: Produce seafood (power 2 -> +2 seafood, next +3 at power 3)"
+    },
+    {
+      "index": 212,
+      "text": "Red: Skip the 5-Power token"
+    },
+    {
+      "index": 213,
+      "text": "Red: Skip the building"
+    },
+    {
+      "index": 214,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 215,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 216,
+      "text": "Blue: Place 1 assistant in each of: Fishing Ground (A05), Bank (A07) — fee 1 yen (1 to Red)"
+    },
+    {
+      "index": 217,
+      "text": "Blue: Place President from hand in Bank (A07)"
+    },
+    {
+      "index": 218,
+      "text": "Blue: Take money at the Bank (power 2 -> +2 yen, next +3 at power 3)"
+    },
+    {
+      "index": 219,
+      "text": "Blue: Skip the 5-Power token"
+    },
+    {
+      "index": 220,
+      "text": "Blue: Skip the building"
+    },
+    {
+      "index": 221,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 222,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 223,
+      "text": "Red: Place 2 assistants in Tea Plantation (A00)"
+    },
+    {
+      "index": 224,
+      "text": "Red: Return President to hand, recovering 1 assistant (A00 x1)"
+    },
+    {
+      "index": 225,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 226,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 227,
+      "text": "Blue: Place 1 assistant in each of: Tea Plantation (A00), Bank (A07)"
+    },
+    {
+      "index": 228,
+      "text": "Blue: Move President to Church (A01) — free"
+    },
+    {
+      "index": 229,
+      "text": "Blue: Take the area action, declining all optional parts"
+    },
+    {
+      "index": 230,
+      "text": "Blue: Skip the 5-Power token"
+    },
+    {
+      "index": 231,
+      "text": "Blue: Skip the building"
+    },
+    {
+      "index": 232,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 233,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 234,
+      "text": "Red: Place 1 assistant in each of: Tea Plantation (A00), Church (A01) — fee 1 yen (1 to Blue)"
+    },
+    {
+      "index": 235,
+      "text": "Red: Place President from hand in Tea Plantation (A00)"
+    },
+    {
+      "index": 236,
+      "text": "Red: Produce tea (power 3 -> +3 tea, next +4 at power 4)"
+    },
+    {
+      "index": 237,
+      "text": "Red: Skip the 5-Power token"
+    },
+    {
+      "index": 238,
+      "text": "Red: Skip the building"
+    },
+    {
+      "index": 239,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 240,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 241,
+      "text": "Blue: Place 1 assistant in each of: Tea Plantation (A00), Church (A01) — fee 1 yen (1 to Red)"
+    },
+    {
+      "index": 242,
+      "text": "Blue: Move President to Fishing Ground (A05) — free"
+    },
+    {
+      "index": 243,
+      "text": "Blue: Produce seafood (power 2 -> +2 seafood, next +3 at power 3)"
+    },
+    {
+      "index": 244,
+      "text": "Blue: Skip the 5-Power token"
+    },
+    {
+      "index": 245,
+      "text": "Blue: Skip the building"
+    },
+    {
+      "index": 246,
+      "text": "Blue: Claim achievement: Own 7 Seafood"
+    },
+    {
+      "index": 247,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 248,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 249,
+      "text": "Red: Place no assistants"
+    },
+    {
+      "index": 250,
+      "text": "Red: Move President to Church (A01) — free"
+    },
+    {
+      "index": 251,
+      "text": "Red: Church: pay silk, tea, 2 yen -> faith 5 (power 2 + 3 kinds)"
+    },
+    {
+      "index": 252,
+      "text": "Red: Decline the assistant move"
+    },
+    {
+      "index": 253,
+      "text": "Red: Skip the 5-Power token"
+    },
+    {
+      "index": 254,
+      "text": "Red: Skip the building"
+    },
+    {
+      "index": 255,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 256,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 257,
+      "text": "Blue: Place no assistants"
+    },
+    {
+      "index": 258,
+      "text": "Blue: Return President to hand, recovering 2 assistants (A00 x1, A07 x1)"
+    },
+    {
+      "index": 259,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 260,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 261,
+      "text": "Red: Place 1 assistant in each of: Tea Plantation (A00), Church (A01)"
+    },
+    {
+      "index": 262,
+      "text": "Red: Move President to Tea Plantation (A00) — free"
+    },
+    {
+      "index": 263,
+      "text": "Red: Produce tea (power 2 -> +2 tea, next +3 at power 3)"
+    },
+    {
+      "index": 264,
+      "text": "Red: Skip the 5-Power token"
+    },
+    {
+      "index": 265,
+      "text": "Red: Skip the building"
+    },
+    {
+      "index": 266,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 267,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 268,
+      "text": "Blue: Place no assistants"
+    },
+    {
+      "index": 269,
+      "text": "Blue: Return President to hand (recover no assistants)"
+    },
+    {
+      "index": 270,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 271,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 272,
+      "text": "Red: Place 1 assistant in each of: Church (A01), Port A (A02)"
+    },
+    {
+      "index": 273,
+      "text": "Red: Move President to Port A (A02) — free"
+    },
+    {
+      "index": 274,
+      "text": "Red: Port: take O04"
+    },
+    {
+      "index": 275,
+      "text": "Red: Skip the 5-Power token"
+    },
+    {
+      "index": 276,
+      "text": "Red: Skip the building"
+    },
+    {
+      "index": 277,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 278,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 279,
+      "text": "Blue: Place no assistants"
+    },
+    {
+      "index": 280,
+      "text": "Blue: Place President from hand in Tea Plantation (A00)"
+    },
+    {
+      "index": 281,
+      "text": "Blue: Produce tea (power 3 -> +3 tea, next +4 at power 4)"
+    },
+    {
+      "index": 282,
+      "text": "Blue: Skip the 5-Power token"
+    },
+    {
+      "index": 283,
+      "text": "Blue: Skip the building"
+    },
+    {
+      "index": 284,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 285,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 286,
+      "text": "Red: Place no assistants"
+    },
+    {
+      "index": 287,
+      "text": "Red: Move President to Church (A01) — free"
+    },
+    {
+      "index": 288,
+      "text": "Red: Take the area action, declining all optional parts"
+    },
+    {
+      "index": 289,
+      "text": "Red: Skip the 5-Power token"
+    },
+    {
+      "index": 290,
+      "text": "Red: Skip the building"
+    },
+    {
+      "index": 291,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 292,
+      "text": "Blue: Fulfill O12 [America]  needs 2 silk + 1 tea + 3 fish  ->  9 VP + 1 yen, +2 VP (Ball)"
+    },
+    {
+      "index": 293,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 294,
+      "text": "Blue: Place 2 assistants in Church (A01) — fee 2 yen (2 to Red)"
+    },
+    {
+      "index": 295,
+      "text": "Blue: Return President to hand, recovering 2 assistants (A01 x2)"
+    },
+    {
+      "index": 296,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 297,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 298,
+      "text": "Red: Place no assistants"
+    },
+    {
+      "index": 299,
+      "text": "Red: Return President to hand (recover no assistants)"
+    },
+    {
+      "index": 300,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 301,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 302,
+      "text": "Blue: Place 1 assistant in each of: Silk Mill (A08), Customs (A09)"
+    },
+    {
+      "index": 303,
+      "text": "Blue: Place President from hand in Customs (A09)"
+    },
+    {
+      "index": 304,
+      "text": "Blue: Take the area action, declining all optional parts"
+    },
+    {
+      "index": 305,
+      "text": "Blue: Skip the 5-Power token"
+    },
+    {
+      "index": 306,
+      "text": "Blue: Skip the building"
+    },
+    {
+      "index": 307,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 308,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 309,
+      "text": "Red: Place no assistants"
+    },
+    {
+      "index": 310,
+      "text": "Red: Return President to hand (recover no assistants)"
+    },
+    {
+      "index": 311,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 312,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 313,
+      "text": "Blue: Place 2 assistants in Silk Mill (A08)"
+    },
+    {
+      "index": 314,
+      "text": "Blue: Move President to Silk Mill (A08) — free"
+    },
+    {
+      "index": 315,
+      "text": "Blue: Produce silk (power 4 -> +3 silk, next +4 at power 5)"
+    },
+    {
+      "index": 316,
+      "text": "Blue: Skip the 5-Power token"
+    },
+    {
+      "index": 317,
+      "text": "Blue: Skip the building"
+    },
+    {
+      "index": 318,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 319,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 320,
+      "text": "Red: Place 2 assistants in Silk Mill (A08) — fee 2 yen (2 to Blue)"
+    },
+    {
+      "index": 321,
+      "text": "Red: Return President to hand, recovering 1 assistant (A08 x1)"
+    },
+    {
+      "index": 322,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 323,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 324,
+      "text": "Blue: Place no assistants"
+    },
+    {
+      "index": 325,
+      "text": "Blue: Return President to hand (recover no assistants)"
+    },
+    {
+      "index": 326,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 327,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 328,
+      "text": "Red: Place no assistants"
+    },
+    {
+      "index": 329,
+      "text": "Red: Return President to hand, recovering 1 assistant (A08 x1)"
+    },
+    {
+      "index": 330,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 331,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 332,
+      "text": "Blue: Place 1 assistant in each of: Tea Plantation (A00), Customs (A09)"
+    },
+    {
+      "index": 333,
+      "text": "Blue: Place President from hand in Customs (A09)"
+    },
+    {
+      "index": 334,
+      "text": "Blue: Take the area action, declining all optional parts"
+    },
+    {
+      "index": 335,
+      "text": "Blue: Skip the 5-Power token"
+    },
+    {
+      "index": 336,
+      "text": "Blue: Skip the building"
+    },
+    {
+      "index": 337,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 338,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 339,
+      "text": "Red: Place no assistants"
+    },
+    {
+      "index": 340,
+      "text": "Red: Return President to hand (recover no assistants)"
+    },
+    {
+      "index": 341,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 342,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 343,
+      "text": "Blue: Place 1 assistant in each of: Tea Plantation (A00), Customs (A09)"
+    },
+    {
+      "index": 344,
+      "text": "Blue: Return President to hand, recovering 1 assistant (A09 x1)"
+    },
+    {
+      "index": 345,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 346,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 347,
+      "text": "Red: Place 1 assistant in each of: Tea Plantation (A00), Church (A01)"
+    },
+    {
+      "index": 348,
+      "text": "Red: Place President from hand in Tea Plantation (A00)"
+    },
+    {
+      "index": 349,
+      "text": "Red: Produce tea (power 2 -> +2 tea, next +3 at power 3)"
+    },
+    {
+      "index": 350,
+      "text": "Red: Skip the 5-Power token"
+    },
+    {
+      "index": 351,
+      "text": "Red: Skip the building"
+    },
+    {
+      "index": 352,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 353,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 354,
+      "text": "Blue: Place 1 assistant in each of: Church (A01), Port A (A02)"
+    },
+    {
+      "index": 355,
+      "text": "Blue: Place President from hand in Port A (A02)"
+    },
+    {
+      "index": 356,
+      "text": "Blue: Port: take O18, O26, paying 2 yen"
+    },
+    {
+      "index": 357,
+      "text": "Blue: Skip the 5-Power token"
+    },
+    {
+      "index": 358,
+      "text": "Blue: Skip the building"
+    },
+    {
+      "index": 359,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 360,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 361,
+      "text": "Red: Place no assistants"
+    },
+    {
+      "index": 362,
+      "text": "Red: Return President to hand (recover no assistants)"
+    },
+    {
+      "index": 363,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 364,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 365,
+      "text": "Blue: Place 1 assistant in each of: Tea Plantation (A00), Port A (A02)"
+    },
+    {
+      "index": 366,
+      "text": "Blue: Return President to hand, recovering 1 assistant (A02 x1)"
+    },
+    {
+      "index": 367,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 368,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 369,
+      "text": "Red: Place 1 assistant in each of: Tea Plantation (A00), Church (A01)"
+    },
+    {
+      "index": 370,
+      "text": "Red: Return President to hand, recovering 3 assistants (A00 x1, A01 x2)"
+    },
+    {
+      "index": 371,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 372,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 373,
+      "text": "Blue: Place no assistants"
+    },
+    {
+      "index": 374,
+      "text": "Blue: Place President from hand in Tea Plantation (A00)"
+    },
+    {
+      "index": 375,
+      "text": "Blue: Produce tea (power 4 -> +4 tea, next +5 at power 5)"
+    },
+    {
+      "index": 376,
+      "text": "Blue: Skip the 5-Power token"
+    },
+    {
+      "index": 377,
+      "text": "Blue: Build a Shophouse (space 3: -)"
+    },
+    {
+      "index": 378,
+      "text": "Blue: Fulfill O26 [France]  needs 3 tea + 1 fish  ->  1 VP + 2 yen, +2 VP (Ball)"
+    },
+    {
+      "index": 379,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 380,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 381,
+      "text": "Red: Place no assistants"
+    },
+    {
+      "index": 382,
+      "text": "Red: Return President to hand (recover no assistants)"
+    },
+    {
+      "index": 383,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 384,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 385,
+      "text": "Blue: Place no assistants"
+    },
+    {
+      "index": 386,
+      "text": "Blue: Move President to Church (A01) — free"
+    },
+    {
+      "index": 387,
+      "text": "Blue: Church: pay silk, tea, seafood, 2 yen -> faith 7 (power 3 + 4 kinds)"
+    },
+    {
+      "index": 388,
+      "text": "Blue: Decline the assistant move"
+    },
+    {
+      "index": 389,
+      "text": "Blue: Move an assistant from hand to Silk Mill (A08) (reward move)"
+    },
+    {
+      "index": 390,
+      "text": "Blue: Skip the 5-Power token"
+    },
+    {
+      "index": 391,
+      "text": "Blue: Skip the building"
+    },
+    {
+      "index": 392,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 393,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 394,
+      "text": "Red: Place 1 assistant in each of: Church (A01), Employment Agency (A04) — fee 1 yen (1 to Blue)"
+    },
+    {
+      "index": 395,
+      "text": "Red: Place President from hand in Employment Agency (A04)"
+    },
+    {
+      "index": 396,
+      "text": "Red: Take the area action, declining all optional parts"
+    },
+    {
+      "index": 397,
+      "text": "Red: Skip the 5-Power token"
+    },
+    {
+      "index": 398,
+      "text": "Red: Skip the building"
+    },
+    {
+      "index": 399,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 400,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 401,
+      "text": "Blue: Place no assistants"
+    },
+    {
+      "index": 402,
+      "text": "Blue: Return President to hand, recovering 1 assistant (A08 x1)"
+    },
+    {
+      "index": 403,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 404,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 405,
+      "text": "Red: Place 1 assistant in each of: Fishing Ground (A05), Laboratory A (A06)"
+    },
+    {
+      "index": 406,
+      "text": "Red: Move President to Laboratory A (A06) — free"
+    },
+    {
+      "index": 407,
+      "text": "Red: Take the area action, declining all optional parts"
+    },
+    {
+      "index": 408,
+      "text": "Red: Skip the 5-Power token"
+    },
+    {
+      "index": 409,
+      "text": "Red: Skip the building"
+    },
+    {
+      "index": 410,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 411,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 412,
+      "text": "Blue: Place 2 assistants in Employment Agency (A04)"
+    },
+    {
+      "index": 413,
+      "text": "Blue: Place President from hand in Employment Agency (A04)"
+    },
+    {
+      "index": 414,
+      "text": "Blue: Employment Agency: take 1 shophouse — cost 2 yen"
+    },
+    {
+      "index": 415,
+      "text": "Blue: Skip the 5-Power token"
+    },
+    {
+      "index": 416,
+      "text": "Blue: Skip the building"
+    },
+    {
+      "index": 417,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 418,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 419,
+      "text": "Red: Place 2 assistants in Church (A01)"
+    },
+    {
+      "index": 420,
+      "text": "Red: Move President to Fishing Ground (A05) — free"
+    },
+    {
+      "index": 421,
+      "text": "Red: Produce seafood (power 2 -> +2 seafood, next +3 at power 3)"
+    },
+    {
+      "index": 422,
+      "text": "Red: Skip the 5-Power token"
+    },
+    {
+      "index": 423,
+      "text": "Red: Skip the building"
+    },
+    {
+      "index": 424,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 425,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 426,
+      "text": "Blue: Place no assistants"
+    },
+    {
+      "index": 427,
+      "text": "Blue: Return President to hand (recover no assistants)"
+    },
+    {
+      "index": 428,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 429,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 430,
+      "text": "Red: Place 2 assistants in Customs (A09)"
+    },
+    {
+      "index": 431,
+      "text": "Red: Move President to Church (A01) — free"
+    },
+    {
+      "index": 432,
+      "text": "Red: Take the area action, declining all optional parts"
+    },
+    {
+      "index": 433,
+      "text": "Red: Skip the 5-Power token"
+    },
+    {
+      "index": 434,
+      "text": "Red: Skip the building"
+    },
+    {
+      "index": 435,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 436,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 437,
+      "text": "Blue: Place no assistants"
+    },
+    {
+      "index": 438,
+      "text": "Blue: Return President to hand (recover no assistants)"
+    },
+    {
+      "index": 439,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 440,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 441,
+      "text": "Red: Place 2 assistants in Tea Plantation (A00)"
+    },
+    {
+      "index": 442,
+      "text": "Red: Return President to hand, recovering 3 assistants (A00 x2, A09 x1)"
+    },
+    {
+      "index": 443,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 444,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 445,
+      "text": "Blue: Place 2 assistants in Port A (A02)"
+    },
+    {
+      "index": 446,
+      "text": "Blue: Place President from hand in Port A (A02)"
+    },
+    {
+      "index": 447,
+      "text": "Blue: Port: take O17"
+    },
+    {
+      "index": 448,
+      "text": "Blue: Skip the 5-Power token"
+    },
+    {
+      "index": 449,
+      "text": "Blue: Skip the building"
+    },
+    {
+      "index": 450,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 451,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 452,
+      "text": "Red: Place 2 assistants in Bank (A07)"
+    },
+    {
+      "index": 453,
+      "text": "Red: Place President from hand in Customs (A09)"
+    },
+    {
+      "index": 454,
+      "text": "Red: Take the area action, declining all optional parts"
+    },
+    {
+      "index": 455,
+      "text": "Red: Skip the 5-Power token"
+    },
+    {
+      "index": 456,
+      "text": "Red: Skip the building"
+    },
+    {
+      "index": 457,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 458,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 459,
+      "text": "Blue: Place 2 assistants in Bank (A07)"
+    },
+    {
+      "index": 460,
+      "text": "Blue: Return President to hand (recover no assistants)"
+    },
+    {
+      "index": 461,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 462,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 463,
+      "text": "Red: Place 1 assistant in each of: Tea Plantation (A00), Customs (A09)"
+    },
+    {
+      "index": 464,
+      "text": "Red: Return President to hand, recovering 1 assistant (A07 x1)"
+    },
+    {
+      "index": 465,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 466,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 467,
+      "text": "Blue: Place no assistants"
+    },
+    {
+      "index": 468,
+      "text": "Blue: Place President from hand in Bank (A07)"
+    },
+    {
+      "index": 469,
+      "text": "Blue: Take money at the Bank (power 3 -> +3 yen, next +4 at power 4)"
+    },
+    {
+      "index": 470,
+      "text": "Blue: Skip the 5-Power token"
+    },
+    {
+      "index": 471,
+      "text": "Blue: Skip the building"
+    },
+    {
+      "index": 472,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 473,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 474,
+      "text": "Red: Place no assistants"
+    },
+    {
+      "index": 475,
+      "text": "Red: Place President from hand in Tea Plantation (A00)"
+    },
+    {
+      "index": 476,
+      "text": "Red: Produce tea (power 2 -> +2 tea, next +3 at power 3)"
+    },
+    {
+      "index": 477,
+      "text": "Red: Skip the 5-Power token"
+    },
+    {
+      "index": 478,
+      "text": "Red: Skip the building"
+    },
+    {
+      "index": 479,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 480,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 481,
+      "text": "Blue: Place 2 assistants in Church (A01)"
+    },
+    {
+      "index": 482,
+      "text": "Blue: Return President to hand (recover no assistants)"
+    },
+    {
+      "index": 483,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 484,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 485,
+      "text": "Red: Place no assistants"
+    },
+    {
+      "index": 486,
+      "text": "Red: Return President to hand, recovering 1 assistant (A09 x1)"
+    },
+    {
+      "index": 487,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 488,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 489,
+      "text": "Blue: Place no assistants"
+    },
+    {
+      "index": 490,
+      "text": "Blue: Place President from hand in Church (A01)"
+    },
+    {
+      "index": 491,
+      "text": "Blue: Take the area action, declining all optional parts"
+    },
+    {
+      "index": 492,
+      "text": "Blue: Skip the 5-Power token"
+    },
+    {
+      "index": 493,
+      "text": "Blue: Skip the building"
+    },
+    {
+      "index": 494,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 495,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 496,
+      "text": "Red: Place no assistants"
+    },
+    {
+      "index": 497,
+      "text": "Red: Place President from hand in Bank (A07)"
+    },
+    {
+      "index": 498,
+      "text": "Red: Take money at the Bank (power 2 -> +2 yen, next +3 at power 3)"
+    },
+    {
+      "index": 499,
+      "text": "Red: Skip the 5-Power token"
+    },
+    {
+      "index": 500,
+      "text": "Red: Skip the building"
+    },
+    {
+      "index": 501,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 502,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 503,
+      "text": "Blue: Place 2 assistants in Port A (A02)"
+    },
+    {
+      "index": 504,
+      "text": "Blue: Move President to Port A (A02) — free"
+    },
+    {
+      "index": 505,
+      "text": "Blue: Take the area action, declining all optional parts"
+    },
+    {
+      "index": 506,
+      "text": "Blue: Skip the 5-Power token"
+    },
+    {
+      "index": 507,
+      "text": "Blue: Skip the building"
+    },
+    {
+      "index": 508,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 509,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 510,
+      "text": "Red: Place no assistants"
+    },
+    {
+      "index": 511,
+      "text": "Red: Return President to hand (recover no assistants)"
+    },
+    {
+      "index": 512,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 513,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 514,
+      "text": "Blue: Place 1 assistant in each of: Port A (A02), Fishing Ground (A05)"
+    },
+    {
+      "index": 515,
+      "text": "Blue: Move President to Fishing Ground (A05) — free"
+    },
+    {
+      "index": 516,
+      "text": "Blue: Produce seafood (power 2 -> +2 seafood, next +3 at power 3)"
+    },
+    {
+      "index": 517,
+      "text": "Blue: Skip the 5-Power token"
+    },
+    {
+      "index": 518,
+      "text": "Blue: Skip the building"
+    },
+    {
+      "index": 519,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 520,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 521,
+      "text": "Red: Place 1 assistant in each of: Tea Plantation (A00), Fishing Ground (A05) — fee 1 yen (1 to Blue)"
+    },
+    {
+      "index": 522,
+      "text": "Red: Return President to hand, recovering 2 assistants (A00 x1, A05 x1)"
+    },
+    {
+      "index": 523,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 524,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 525,
+      "text": "Blue: Place 2 assistants in Tea Plantation (A00)"
+    },
+    {
+      "index": 526,
+      "text": "Blue: Move President to Port A (A02) — free"
+    },
+    {
+      "index": 527,
+      "text": "Blue: Take the area action, declining all optional parts"
+    },
+    {
+      "index": 528,
+      "text": "Blue: Skip the 5-Power token"
+    },
+    {
+      "index": 529,
+      "text": "Blue: Skip the building"
+    },
+    {
+      "index": 530,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 531,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 532,
+      "text": "Red: Place no assistants"
+    },
+    {
+      "index": 533,
+      "text": "Red: Return President to hand (recover no assistants)"
+    },
+    {
+      "index": 534,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 535,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 536,
+      "text": "Blue: Place no assistants"
+    },
+    {
+      "index": 537,
+      "text": "Blue: Return President to hand, recovering 2 assistants (A00 x2)"
+    },
+    {
+      "index": 538,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 539,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 540,
+      "text": "Red: Place 2 assistants in Customs (A09)"
+    },
+    {
+      "index": 541,
+      "text": "Red: Place President from hand in Customs (A09)"
+    },
+    {
+      "index": 542,
+      "text": "Red: Take the area action, declining all optional parts"
+    },
+    {
+      "index": 543,
+      "text": "Red: Skip the 5-Power token"
+    },
+    {
+      "index": 544,
+      "text": "Red: Skip the building"
+    },
+    {
+      "index": 545,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 546,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 547,
+      "text": "Blue: Place 2 assistants in Copper Mine (A03)"
+    },
+    {
+      "index": 548,
+      "text": "Blue: Return President to hand, recovering 2 assistants (A03 x2)"
+    },
+    {
+      "index": 549,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 550,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 551,
+      "text": "Red: Place 2 assistants in Silk Mill (A08)"
+    },
+    {
+      "index": 552,
+      "text": "Red: Move President to Silk Mill (A08) — free"
+    },
+    {
+      "index": 553,
+      "text": "Red: Produce silk (power 3 -> +2 silk, next +3 at power 4)"
+    },
+    {
+      "index": 554,
+      "text": "Red: Skip the 5-Power token"
+    },
+    {
+      "index": 555,
+      "text": "Red: Skip the building"
+    },
+    {
+      "index": 556,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 557,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 558,
+      "text": "Blue: Place no assistants"
+    },
+    {
+      "index": 559,
+      "text": "Blue: Return President to hand (recover no assistants)"
+    },
+    {
+      "index": 560,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 561,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 562,
+      "text": "Red: Place no assistants"
+    },
+    {
+      "index": 563,
+      "text": "Red: Return President to hand (recover no assistants)"
+    },
+    {
+      "index": 564,
+      "text": "Red: Fulfill O04 [Germany]  needs 2 silk + 1 tea + 1 fish  ->  5 VP + 1 warehouse"
+    },
+    {
+      "index": 565,
+      "text": "Red: Decline the warehouse take"
+    },
+    {
+      "index": 566,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 567,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 568,
+      "text": "Blue: Place no assistants"
+    },
+    {
+      "index": 569,
+      "text": "Blue: Return President to hand (recover no assistants)"
+    },
+    {
+      "index": 570,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 571,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 572,
+      "text": "Red: Place no assistants"
+    },
+    {
+      "index": 573,
+      "text": "Red: Return President to hand (recover no assistants)"
+    },
+    {
+      "index": 574,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 575,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 576,
+      "text": "Blue: Place 1 assistant in each of: Tea Plantation (A00), Church (A01)"
+    },
+    {
+      "index": 577,
+      "text": "Blue: Place President from hand in Church (A01)"
+    },
+    {
+      "index": 578,
+      "text": "Blue: Take the area action, declining all optional parts"
+    },
+    {
+      "index": 579,
+      "text": "Blue: Skip the 5-Power token"
+    },
+    {
+      "index": 580,
+      "text": "Blue: Skip the building"
+    },
+    {
+      "index": 581,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 582,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 583,
+      "text": "Red: Place 2 assistants in Bank (A07)"
+    },
+    {
+      "index": 584,
+      "text": "Red: Return President to hand (recover no assistants)"
+    },
+    {
+      "index": 585,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 586,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 587,
+      "text": "Blue: Place 1 assistant in each of: Church (A01), Fishing Ground (A05)"
+    },
+    {
+      "index": 588,
+      "text": "Blue: Move President to Tea Plantation (A00) — free"
+    },
+    {
+      "index": 589,
+      "text": "Blue: Produce tea (power 3 -> +3 tea, next +4 at power 4)"
+    },
+    {
+      "index": 590,
+      "text": "Blue: Skip the 5-Power token"
+    },
+    {
+      "index": 591,
+      "text": "Blue: Skip the building"
+    },
+    {
+      "index": 592,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 593,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 594,
+      "text": "Red: Place 2 assistants in Church (A01)"
+    },
+    {
+      "index": 595,
+      "text": "Red: Place President from hand in Church (A01)"
+    },
+    {
+      "index": 596,
+      "text": "Red: Take the area action, declining all optional parts"
+    },
+    {
+      "index": 597,
+      "text": "Red: Skip the 5-Power token"
+    },
+    {
+      "index": 598,
+      "text": "Red: Skip the building"
+    },
+    {
+      "index": 599,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 600,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 601,
+      "text": "Blue: Place no assistants"
+    },
+    {
+      "index": 602,
+      "text": "Blue: Return President to hand, recovering 1 assistant (A05 x1)"
+    },
+    {
+      "index": 603,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 604,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 605,
+      "text": "Red: Place no assistants"
+    },
+    {
+      "index": 606,
+      "text": "Red: Return President to hand, recovering 1 assistant (A07 x1)"
+    },
+    {
+      "index": 607,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 608,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 609,
+      "text": "Blue: Place 2 assistants in Copper Mine (A03)"
+    },
+    {
+      "index": 610,
+      "text": "Blue: Place President from hand in Copper Mine (A03)"
+    },
+    {
+      "index": 611,
+      "text": "Blue: Produce copper (power 3 -> +1 copper, next +2 at power 4)"
+    },
+    {
+      "index": 612,
+      "text": "Blue: Skip the 5-Power token"
+    },
+    {
+      "index": 613,
+      "text": "Blue: Skip the building"
+    },
+    {
+      "index": 614,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 615,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 616,
+      "text": "Red: Place 1 assistant in each of: Tea Plantation (A00), Copper Mine (A03) — fee 1 yen (1 to Blue)"
+    },
+    {
+      "index": 617,
+      "text": "Red: Place President from hand in Tea Plantation (A00)"
+    },
+    {
+      "index": 618,
+      "text": "Red: Produce tea (power 2 -> +2 tea, next +3 at power 3)"
+    },
+    {
+      "index": 619,
+      "text": "Red: Skip the 5-Power token"
+    },
+    {
+      "index": 620,
+      "text": "Red: Skip the building"
+    },
+    {
+      "index": 621,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 622,
+      "text": "Blue: Fulfill O17 [Germany]  needs 1 copper + 2 silk + 2 fish  ->  8 VP + 1 yen, +2 VP (Ball)"
+    },
+    {
+      "index": 623,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 624,
+      "text": "Blue: Place no assistants"
+    },
+    {
+      "index": 625,
+      "text": "Blue: Return President to hand (recover no assistants)"
+    },
+    {
+      "index": 626,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 627,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 628,
+      "text": "Red: Place 1 assistant in each of: Tea Plantation (A00), Customs (A09)"
+    },
+    {
+      "index": 629,
+      "text": "Red: Return President to hand, recovering 2 assistants (A00 x1, A09 x1)"
+    },
+    {
+      "index": 630,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 631,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 632,
+      "text": "Blue: Place 2 assistants in Fishing Ground (A05)"
+    },
+    {
+      "index": 633,
+      "text": "Blue: Return President to hand (recover no assistants)"
+    },
+    {
+      "index": 634,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 635,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 636,
+      "text": "Red: Place no assistants"
+    },
+    {
+      "index": 637,
+      "text": "Red: Place President from hand in Copper Mine (A03)"
+    },
+    {
+      "index": 638,
+      "text": "Red: Produce copper (power 2 -> +0 copper, next +1 at power 3)"
+    },
+    {
+      "index": 639,
+      "text": "Red: Skip the 5-Power token"
+    },
+    {
+      "index": 640,
+      "text": "Red: Skip the building"
+    },
+    {
+      "index": 641,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 642,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 643,
+      "text": "Blue: Place 1 assistant in each of: Tea Plantation (A00), Copper Mine (A03) — fee 1 yen (1 to Red)"
+    },
+    {
+      "index": 644,
+      "text": "Blue: Place President from hand in Church (A01)"
+    },
+    {
+      "index": 645,
+      "text": "Blue: Take the area action, declining all optional parts"
+    },
+    {
+      "index": 646,
+      "text": "Blue: Skip the 5-Power token"
+    },
+    {
+      "index": 647,
+      "text": "Blue: Skip the building"
+    },
+    {
+      "index": 648,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 649,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 650,
+      "text": "Red: Place 2 assistants in Bank (A07)"
+    },
+    {
+      "index": 651,
+      "text": "Red: Return President to hand, recovering 2 assistants (A07 x2)"
+    },
+    {
+      "index": 652,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 653,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 654,
+      "text": "Blue: Place 1 assistant in each of: Church (A01)"
+    },
+    {
+      "index": 655,
+      "text": "Blue: Move President to Tea Plantation (A00) — free"
+    },
+    {
+      "index": 656,
+      "text": "Blue: Produce tea (power 3 -> +3 tea, next +4 at power 4)"
+    },
+    {
+      "index": 657,
+      "text": "Blue: Skip the 5-Power token"
+    },
+    {
+      "index": 658,
+      "text": "Blue: Skip the building"
+    },
+    {
+      "index": 659,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 660,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 661,
+      "text": "Red: Place no assistants"
+    },
+    {
+      "index": 662,
+      "text": "Red: Return President to hand, recovering 1 assistant (A07 x1)"
+    },
+    {
+      "index": 663,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 664,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 665,
+      "text": "Blue: Place 1 assistant in each of: Tea Plantation (A00)"
+    },
+    {
+      "index": 666,
+      "text": "Blue: Move President to Fishing Ground (A05) — free"
+    },
+    {
+      "index": 667,
+      "text": "Blue: Produce seafood (power 3 -> +3 seafood, next +4 at power 4)"
+    },
+    {
+      "index": 668,
+      "text": "Blue: Skip the 5-Power token"
+    },
+    {
+      "index": 669,
+      "text": "Blue: Skip the building"
+    },
+    {
+      "index": 670,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 671,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 672,
+      "text": "Red: Place 2 assistants in Copper Mine (A03)"
+    },
+    {
+      "index": 673,
+      "text": "Red: Return President to hand (recover no assistants)"
+    },
+    {
+      "index": 674,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 675,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 676,
+      "text": "Blue: Place 2 assistants in Customs (A09)"
+    },
+    {
+      "index": 677,
+      "text": "Blue: Move President to Church (A01) — free"
+    },
+    {
+      "index": 678,
+      "text": "Blue: Take the area action, declining all optional parts"
+    },
+    {
+      "index": 679,
+      "text": "Blue: Skip the 5-Power token"
+    },
+    {
+      "index": 680,
+      "text": "Blue: Skip the building"
+    },
+    {
+      "index": 681,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 682,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 683,
+      "text": "Red: Place no assistants"
+    },
+    {
+      "index": 684,
+      "text": "Red: Return President to hand, recovering 2 assistants (A03 x2)"
+    },
+    {
+      "index": 685,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 686,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 687,
+      "text": "Blue: Place 1 assistant in each of: Church (A01)"
+    },
+    {
+      "index": 688,
+      "text": "Blue: Move President to Tea Plantation (A00) — free"
+    },
+    {
+      "index": 689,
+      "text": "Blue: Produce tea (power 3 -> +3 tea, next +4 at power 4)"
+    },
+    {
+      "index": 690,
+      "text": "Blue: Skip the 5-Power token"
+    },
+    {
+      "index": 691,
+      "text": "Blue: Skip the building"
+    },
+    {
+      "index": 692,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 693,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 694,
+      "text": "Red: Place 1 assistant in each of: Church (A01), Port A (A02)"
+    },
+    {
+      "index": 695,
+      "text": "Red: Place President from hand in Church (A01)"
+    },
+    {
+      "index": 696,
+      "text": "Red: Take the area action, declining all optional parts"
+    },
+    {
+      "index": 697,
+      "text": "Red: Skip the 5-Power token"
+    },
+    {
+      "index": 698,
+      "text": "Red: Skip the building"
+    },
+    {
+      "index": 699,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 700,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 701,
+      "text": "Blue: Place no assistants"
+    },
+    {
+      "index": 702,
+      "text": "Blue: Return President to hand (recover no assistants)"
+    },
+    {
+      "index": 703,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 704,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 705,
+      "text": "Red: Place 2 assistants in Fishing Ground (A05)"
+    },
+    {
+      "index": 706,
+      "text": "Red: Move President to Port A (A02) — free"
+    },
+    {
+      "index": 707,
+      "text": "Red: Port: take O28"
+    },
+    {
+      "index": 708,
+      "text": "Red: Skip the 5-Power token"
+    },
+    {
+      "index": 709,
+      "text": "Red: Skip the building"
+    },
+    {
+      "index": 710,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 711,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 712,
+      "text": "Blue: Place 1 assistant in each of: Port A (A02) — fee 1 yen (1 to Red)"
+    },
+    {
+      "index": 713,
+      "text": "Blue: Place President from hand in Customs (A09)"
+    },
+    {
+      "index": 714,
+      "text": "Blue: Take the area action, declining all optional parts"
+    },
+    {
+      "index": 715,
+      "text": "Blue: Skip the 5-Power token"
+    },
+    {
+      "index": 716,
+      "text": "Blue: Skip the building"
+    },
+    {
+      "index": 717,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 718,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 719,
+      "text": "Red: Place 1 assistant in each of: Port A (A02), Customs (A09) — fee 1 yen (1 to Blue)"
+    },
+    {
+      "index": 720,
+      "text": "Red: Move President to Fishing Ground (A05) — free"
+    },
+    {
+      "index": 721,
+      "text": "Red: Produce seafood (power 3 -> +3 seafood, next +4 at power 4)"
+    },
+    {
+      "index": 722,
+      "text": "Red: Skip the 5-Power token"
+    },
+    {
+      "index": 723,
+      "text": "Red: Skip the building"
+    },
+    {
+      "index": 724,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 725,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 726,
+      "text": "Blue: Place no assistants"
+    },
+    {
+      "index": 727,
+      "text": "Blue: Return President to hand, recovering 1 assistant (A03 x1)"
+    },
+    {
+      "index": 728,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 729,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 730,
+      "text": "Red: Place 2 assistants in Port A (A02)"
+    },
+    {
+      "index": 731,
+      "text": "Red: Return President to hand, recovering 2 assistants (A02 x1, A09 x1)"
+    },
+    {
+      "index": 732,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 733,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 734,
+      "text": "Blue: Place 2 assistants in Copper Mine (A03)"
+    },
+    {
+      "index": 735,
+      "text": "Blue: Place President from hand in Port A (A02)"
+    },
+    {
+      "index": 736,
+      "text": "Blue: Port: take O11"
+    },
+    {
+      "index": 737,
+      "text": "Blue: Skip the 5-Power token"
+    },
+    {
+      "index": 738,
+      "text": "Blue: Skip the building"
+    },
+    {
+      "index": 739,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 740,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 741,
+      "text": "Red: Place no assistants"
+    },
+    {
+      "index": 742,
+      "text": "Red: Return President to hand, recovering 2 assistants (A02 x2)"
+    },
+    {
+      "index": 743,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 744,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 745,
+      "text": "Blue: Place 2 assistants in Copper Mine (A03)"
+    },
+    {
+      "index": 746,
+      "text": "Blue: Return President to hand (recover no assistants)"
+    },
+    {
+      "index": 747,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 748,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 749,
+      "text": "Red: Place 1 assistant in each of: Copper Mine (A03), Employment Agency (A04)"
+    },
+    {
+      "index": 750,
+      "text": "Red: Place President from hand in Employment Agency (A04)"
+    },
+    {
+      "index": 751,
+      "text": "Red: Employment Agency: take 1 assistant (free)"
+    },
+    {
+      "index": 752,
+      "text": "Red: Skip the 5-Power token"
+    },
+    {
+      "index": 753,
+      "text": "Red: Skip the building"
+    },
+    {
+      "index": 754,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 755,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 756,
+      "text": "Blue: Place no assistants"
+    },
+    {
+      "index": 757,
+      "text": "Blue: Place President from hand in Copper Mine (A03)"
+    },
+    {
+      "index": 758,
+      "text": "Blue: Produce copper (power 5 -> +3 copper)"
+    },
+    {
+      "index": 759,
+      "text": "Blue: Take the 5-Power token"
+    },
+    {
+      "index": 760,
+      "text": "Blue: Skip the building"
+    },
+    {
+      "index": 761,
+      "text": "Blue: Fulfill O18 [America]  needs 2 copper + 3 fish  ->  6 VP + 1 import, +2 VP (Ball)"
+    },
+    {
+      "index": 762,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 763,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 764,
+      "text": "Red: Place no assistants"
+    },
+    {
+      "index": 765,
+      "text": "Red: Return President to hand, recovering 1 assistant (A03 x1)"
+    },
+    {
+      "index": 766,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 767,
+      "text": "Blue: Use a America mercenary at Church (A01)"
+    },
+    {
+      "index": 768,
+      "text": "Blue: Take the area action, declining all optional parts"
+    },
+    {
+      "index": 769,
+      "text": "Blue: Skip the 5-Power token"
+    },
+    {
+      "index": 770,
+      "text": "Blue: Skip the building"
+    },
+    {
+      "index": 771,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 772,
+      "text": "Blue: Place no assistants"
+    },
+    {
+      "index": 773,
+      "text": "Blue: Return President to hand (recover no assistants)"
+    },
+    {
+      "index": 774,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 775,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 776,
+      "text": "Red: Place 2 assistants in Silk Mill (A08)"
+    },
+    {
+      "index": 777,
+      "text": "Red: Place President from hand in Silk Mill (A08)"
+    },
+    {
+      "index": 778,
+      "text": "Red: Produce silk (power 3 -> +2 silk, next +3 at power 4)"
+    },
+    {
+      "index": 779,
+      "text": "Red: Skip the 5-Power token"
+    },
+    {
+      "index": 780,
+      "text": "Red: Skip the building"
+    },
+    {
+      "index": 781,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 782,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 783,
+      "text": "Blue: Place 1 assistant in each of: Tea Plantation (A00), Silk Mill (A08) — fee 1 yen (1 to Red)"
+    },
+    {
+      "index": 784,
+      "text": "Blue: Place President from hand in Tea Plantation (A00)"
+    },
+    {
+      "index": 785,
+      "text": "Blue: Produce tea (power 3 -> +3 tea, next +4 at power 4)"
+    },
+    {
+      "index": 786,
+      "text": "Blue: Skip the 5-Power token"
+    },
+    {
+      "index": 787,
+      "text": "Blue: Skip the building"
+    },
+    {
+      "index": 788,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 789,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 790,
+      "text": "Red: Place 1 assistant in each of: Tea Plantation (A00), Silk Mill (A08) — fee 1 yen (1 to Blue)"
+    },
+    {
+      "index": 791,
+      "text": "Red: Return President to hand (recover no assistants)"
+    },
+    {
+      "index": 792,
+      "text": "Red: Fulfill O28 [America]  needs 1 silk + 4 fish  ->  3 VP + 1 import + 1 warehouse"
+    },
+    {
+      "index": 793,
+      "text": "Red: Take an assistant from the warehouse (free)"
+    },
+    {
+      "index": 794,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 795,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 796,
+      "text": "Blue: Place 2 assistants in Silk Mill (A08)"
+    },
+    {
+      "index": 797,
+      "text": "Blue: Return President to hand (recover no assistants)"
+    },
+    {
+      "index": 798,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 799,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 800,
+      "text": "Red: Place no assistants"
+    },
+    {
+      "index": 801,
+      "text": "Red: Return President to hand, recovering 1 assistant (A08 x1)"
+    },
+    {
+      "index": 802,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 803,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 804,
+      "text": "Blue: Place 2 assistants in Copper Mine (A03)"
+    },
+    {
+      "index": 805,
+      "text": "Blue: Place President from hand in Copper Mine (A03)"
+    },
+    {
+      "index": 806,
+      "text": "Blue: Produce copper (power 3 -> +1 copper, next +2 at power 4)"
+    },
+    {
+      "index": 807,
+      "text": "Blue: Skip the 5-Power token"
+    },
+    {
+      "index": 808,
+      "text": "Blue: Skip the building"
+    },
+    {
+      "index": 809,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 810,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 811,
+      "text": "Red: Place 1 assistant in each of: Copper Mine (A03), Silk Mill (A08) — fee 1 yen (1 to Blue)"
+    },
+    {
+      "index": 812,
+      "text": "Red: Return President to hand, recovering 2 assistants (A03 x1, A08 x1)"
+    },
+    {
+      "index": 813,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 814,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 815,
+      "text": "Blue: Place 2 assistants in Fishing Ground (A05)"
+    },
+    {
+      "index": 816,
+      "text": "Blue: Return President to hand, recovering 2 assistants (A05 x1, A08 x1)"
+    },
+    {
+      "index": 817,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 818,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 819,
+      "text": "Red: Place 1 assistant in each of: Port A (A02), Copper Mine (A03)"
+    },
+    {
+      "index": 820,
+      "text": "Red: Place President from hand in Port A (A02)"
+    },
+    {
+      "index": 821,
+      "text": "Red: Take the area action, declining all optional parts"
+    },
+    {
+      "index": 822,
+      "text": "Red: Skip the 5-Power token"
+    },
+    {
+      "index": 823,
+      "text": "Red: Skip the building"
+    },
+    {
+      "index": 824,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 825,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 826,
+      "text": "Blue: Place 2 assistants in Bank (A07)"
+    },
+    {
+      "index": 827,
+      "text": "Blue: Place President from hand in Silk Mill (A08)"
+    },
+    {
+      "index": 828,
+      "text": "Blue: Produce silk (power 3 -> +2 silk, next +3 at power 4)"
+    },
+    {
+      "index": 829,
+      "text": "Blue: Skip the 5-Power token"
+    },
+    {
+      "index": 830,
+      "text": "Blue: Skip the building"
+    },
+    {
+      "index": 831,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 832,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 833,
+      "text": "Red: Place 2 assistants in Tea Plantation (A00)"
+    },
+    {
+      "index": 834,
+      "text": "Red: Return President to hand (recover no assistants)"
+    },
+    {
+      "index": 835,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 836,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 837,
+      "text": "Blue: Place 1 assistant in each of: Tea Plantation (A00), Silk Mill (A08)"
+    },
+    {
+      "index": 838,
+      "text": "Blue: Return President to hand, recovering 3 assistants (A00 x1, A07 x1, A08 x1)"
+    },
+    {
+      "index": 839,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 840,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 841,
+      "text": "Red: Place no assistants"
+    },
+    {
+      "index": 842,
+      "text": "Red: Place President from hand in Copper Mine (A03)"
+    },
+    {
+      "index": 843,
+      "text": "Red: Produce copper (power 2 -> +0 copper, next +1 at power 3)"
+    },
+    {
+      "index": 844,
+      "text": "Red: Skip the 5-Power token"
+    },
+    {
+      "index": 845,
+      "text": "Red: Skip the building"
+    },
+    {
+      "index": 846,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 847,
+      "text": "Blue: Fulfill O23 [France]  needs 1 copper + 2 silk + 3 tea  ->  9 VP + 1 import, +2 VP (Ball)"
+    },
+    {
+      "index": 848,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 849,
+      "text": "Blue: Place 1 assistant in each of: Church (A01), Copper Mine (A03) — fee 1 yen (1 to Red)"
+    },
+    {
+      "index": 850,
+      "text": "Blue: Place President from hand in Bank (A07)"
+    },
+    {
+      "index": 851,
+      "text": "Blue: Take money at the Bank (power 2 -> +2 yen, next +3 at power 3)"
+    },
+    {
+      "index": 852,
+      "text": "Blue: Skip the 5-Power token"
+    },
+    {
+      "index": 853,
+      "text": "Blue: Skip the building"
+    },
+    {
+      "index": 854,
+      "text": "Blue: Use a France mercenary at Copper Mine (A03)"
+    },
+    {
+      "index": 855,
+      "text": "Blue: Produce copper (power 1 -> +0 copper, next +1 at power 3)"
+    },
+    {
+      "index": 856,
+      "text": "Blue: Skip the 5-Power token"
+    },
+    {
+      "index": 857,
+      "text": "Blue: Skip the building"
+    },
+    {
+      "index": 858,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 859,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 860,
+      "text": "Red: Place 1 assistant in each of: Copper Mine (A03), Bank (A07) — fee 1 yen (1 to Blue)"
+    },
+    {
+      "index": 861,
+      "text": "Red: Return President to hand, recovering 1 assistant (A03 x1)"
+    },
+    {
+      "index": 862,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 863,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 864,
+      "text": "Blue: Place 2 assistants in Silk Mill (A08)"
+    },
+    {
+      "index": 865,
+      "text": "Blue: Move President to Church (A01) — free"
+    },
+    {
+      "index": 866,
+      "text": "Blue: Take the area action, declining all optional parts"
+    },
+    {
+      "index": 867,
+      "text": "Blue: Skip the 5-Power token"
+    },
+    {
+      "index": 868,
+      "text": "Blue: Skip the building"
+    },
+    {
+      "index": 869,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 870,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 871,
+      "text": "Red: Place no assistants"
+    },
+    {
+      "index": 872,
+      "text": "Red: Place President from hand in Tea Plantation (A00)"
+    },
+    {
+      "index": 873,
+      "text": "Red: Produce tea (power 4 -> +4 tea, next +5 at power 5)"
+    },
+    {
+      "index": 874,
+      "text": "Red: Skip the 5-Power token"
+    },
+    {
+      "index": 875,
+      "text": "Red: Build a Shophouse (space 2: 4vp)"
+    },
+    {
+      "index": 876,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 877,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 878,
+      "text": "Blue: Place 2 assistants in Silk Mill (A08)"
+    },
+    {
+      "index": 879,
+      "text": "Blue: Return President to hand, recovering 4 assistants (A05 x1, A08 x3)"
+    },
+    {
+      "index": 880,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 881,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 882,
+      "text": "Red: Place 1 assistant in each of: Tea Plantation (A00), Employment Agency (A04)"
+    },
+    {
+      "index": 883,
+      "text": "Red: Move President to Bank (A07) — free"
+    },
+    {
+      "index": 884,
+      "text": "Red: Take money at the Bank (power 2 -> +2 yen, next +3 at power 3)"
+    },
+    {
+      "index": 885,
+      "text": "Red: Skip the 5-Power token"
+    },
+    {
+      "index": 886,
+      "text": "Red: Skip the building"
+    },
+    {
+      "index": 887,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 888,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 889,
+      "text": "Blue: Place 2 assistants in Tea Plantation (A00)"
+    },
+    {
+      "index": 890,
+      "text": "Blue: Place President from hand in Tea Plantation (A00)"
+    },
+    {
+      "index": 891,
+      "text": "Blue: Produce tea (power 4 -> +4 tea, next +5 at power 5)"
+    },
+    {
+      "index": 892,
+      "text": "Blue: Skip the 5-Power token"
+    },
+    {
+      "index": 893,
+      "text": "Blue: Skip the building"
+    },
+    {
+      "index": 894,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 895,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 896,
+      "text": "Red: Place 2 assistants in Port A (A02)"
+    },
+    {
+      "index": 897,
+      "text": "Red: Move President to Employment Agency (A04) — free"
+    },
+    {
+      "index": 898,
+      "text": "Red: Employment Agency: take 1 shophouse — cost 2 yen"
+    },
+    {
+      "index": 899,
+      "text": "Red: Skip the 5-Power token"
+    },
+    {
+      "index": 900,
+      "text": "Red: Skip the building"
+    },
+    {
+      "index": 901,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 902,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 903,
+      "text": "Blue: Place 1 assistant in each of: Tea Plantation (A00), Employment Agency (A04) — fee 1 yen (1 to Red)"
+    },
+    {
+      "index": 904,
+      "text": "Blue: Return President to hand, recovering 2 assistants (A00 x1, A08 x1)"
+    },
+    {
+      "index": 905,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 906,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 907,
+      "text": "Red: Place 1 assistant in each of: Tea Plantation (A00), Employment Agency (A04)"
+    },
+    {
+      "index": 908,
+      "text": "Red: Return President to hand, recovering 3 assistants (A00 x1, A02 x1, A04 x1)"
+    },
+    {
+      "index": 909,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 910,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 911,
+      "text": "Blue: Place 1 assistant in each of: Tea Plantation (A00), Church (A01)"
+    },
+    {
+      "index": 912,
+      "text": "Blue: Return President to hand, recovering 1 assistant (A00 x1)"
+    },
+    {
+      "index": 913,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 914,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 915,
+      "text": "Red: Place 1 assistant in each of: Fishing Ground (A05), Laboratory A (A06)"
+    },
+    {
+      "index": 916,
+      "text": "Red: Place President from hand in Port A (A02)"
+    },
+    {
+      "index": 917,
+      "text": "Red: Take the area action, declining all optional parts"
+    },
+    {
+      "index": 918,
+      "text": "Red: Skip the 5-Power token"
+    },
+    {
+      "index": 919,
+      "text": "Red: Skip the building"
+    },
+    {
+      "index": 920,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 921,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 922,
+      "text": "Blue: Place 2 assistants in Customs (A09)"
+    },
+    {
+      "index": 923,
+      "text": "Blue: Place President from hand in Customs (A09)"
+    },
+    {
+      "index": 924,
+      "text": "Blue: Customs: pay 2 imported goods -> space 3 (+10 VP)"
+    },
+    {
+      "index": 925,
+      "text": "Blue: Take an assistant from the warehouse (free)"
+    },
+    {
+      "index": 926,
+      "text": "Blue: Skip the 5-Power token"
+    },
+    {
+      "index": 927,
+      "text": "Blue: Skip the building"
+    },
+    {
+      "index": 928,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 929,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 930,
+      "text": "Red: Place 2 assistants in Fishing Ground (A05)"
+    },
+    {
+      "index": 931,
+      "text": "Red: Move President to Laboratory A (A06) — free"
+    },
+    {
+      "index": 932,
+      "text": "Red: Laboratory: acquire Ball, slot fee: 1 imported good"
+    },
+    {
+      "index": 933,
+      "text": "Red: Skip the 5-Power token"
+    },
+    {
+      "index": 934,
+      "text": "Red: Skip the building"
+    },
+    {
+      "index": 935,
+      "text": "Red: Use a Britain mercenary at Fishing Ground (A05)"
+    },
+    {
+      "index": 936,
+      "text": "Red: Produce seafood (power 3 -> +3 seafood, next +4 at power 4)"
+    },
+    {
+      "index": 937,
+      "text": "Red: Skip the 5-Power token"
+    },
+    {
+      "index": 938,
+      "text": "Red: Skip the building"
+    },
+    {
+      "index": 939,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 940,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 941,
+      "text": "Blue: Place 2 assistants in Employment Agency (A04)"
+    },
+    {
+      "index": 942,
+      "text": "Blue: Return President to hand (recover no assistants)"
+    },
+    {
+      "index": 943,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 944,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 945,
+      "text": "Red: Place 1 assistant in each of: Tea Plantation (A00), Laboratory A (A06)"
+    },
+    {
+      "index": 946,
+      "text": "Red: Return President to hand (recover no assistants)"
+    },
+    {
+      "index": 947,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 948,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 949,
+      "text": "Blue: Place 1 assistant in each of: Tea Plantation (A00)"
+    },
+    {
+      "index": 950,
+      "text": "Blue: Place President from hand in Tea Plantation (A00)"
+    },
+    {
+      "index": 951,
+      "text": "Blue: Produce tea (power 3 -> +3 tea, next +4 at power 4)"
+    },
+    {
+      "index": 952,
+      "text": "Blue: Skip the 5-Power token"
+    },
+    {
+      "index": 953,
+      "text": "Blue: Skip the building"
+    },
+    {
+      "index": 954,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 955,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 956,
+      "text": "Red: Place 1 assistant in each of: Tea Plantation (A00), Copper Mine (A03) — fee 1 yen (1 to Blue)"
+    },
+    {
+      "index": 957,
+      "text": "Red: Place President from hand in Copper Mine (A03)"
+    },
+    {
+      "index": 958,
+      "text": "Red: Produce copper (power 2 -> +0 copper, next +1 at power 3)"
+    },
+    {
+      "index": 959,
+      "text": "Red: Skip the 5-Power token"
+    },
+    {
+      "index": 960,
+      "text": "Red: Skip the building"
+    },
+    {
+      "index": 961,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 962,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 963,
+      "text": "Blue: Place no assistants"
+    },
+    {
+      "index": 964,
+      "text": "Blue: Move President to Church (A01) — free"
+    },
+    {
+      "index": 965,
+      "text": "Blue: Take the area action, declining all optional parts"
+    },
+    {
+      "index": 966,
+      "text": "Blue: Skip the 5-Power token"
+    },
+    {
+      "index": 967,
+      "text": "Blue: Skip the building"
+    },
+    {
+      "index": 968,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 969,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 970,
+      "text": "Red: Place 2 assistants in Tea Plantation (A00)"
+    },
+    {
+      "index": 971,
+      "text": "Red: Return President to hand, recovering 1 assistant (A00 x1)"
+    },
+    {
+      "index": 972,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 973,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 974,
+      "text": "Blue: Place 1 assistant in each of: Church (A01), Bank (A07)"
+    },
+    {
+      "index": 975,
+      "text": "Blue: Move President to Employment Agency (A04) — free"
+    },
+    {
+      "index": 976,
+      "text": "Blue: Employment Agency: take 2 assistants (free)"
+    },
+    {
+      "index": 977,
+      "text": "Blue: Skip the 5-Power token"
+    },
+    {
+      "index": 978,
+      "text": "Blue: Build a Shophouse (space 4: 2silk)"
+    },
+    {
+      "index": 979,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 980,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 981,
+      "text": "Red: Place 2 assistants in Tea Plantation (A00)"
+    },
+    {
+      "index": 982,
+      "text": "Red: Place President from hand in Laboratory A (A06)"
+    },
+    {
+      "index": 983,
+      "text": "Red: Take the area action, declining all optional parts"
+    },
+    {
+      "index": 984,
+      "text": "Red: Skip the 5-Power token"
+    },
+    {
+      "index": 985,
+      "text": "Red: Skip the building"
+    },
+    {
+      "index": 986,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 987,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 988,
+      "text": "Blue: Place no assistants"
+    },
+    {
+      "index": 989,
+      "text": "Blue: Return President to hand (recover no assistants)"
+    },
+    {
+      "index": 990,
+      "text": "Blue: Fulfill O11 [Netherlands]  needs 1 silk + 1 tea + 1 fish  ->  5 VP, +2 VP (Ball)"
+    },
+    {
+      "index": 991,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 992,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 993,
+      "text": "Red: Place no assistants"
+    },
+    {
+      "index": 994,
+      "text": "Red: Return President to hand, recovering 5 assistants (A00 x5)"
+    },
+    {
+      "index": 995,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 996,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 997,
+      "text": "Blue: Place 2 assistants in Fishing Ground (A05)"
+    },
+    {
+      "index": 998,
+      "text": "Blue: Place President from hand in Church (A01)"
+    },
+    {
+      "index": 999,
+      "text": "Blue: Take the area action, declining all optional parts"
+    },
+    {
+      "index": 1000,
+      "text": "Blue: Skip the 5-Power token"
+    },
+    {
+      "index": 1001,
+      "text": "Blue: Skip the building"
+    },
+    {
+      "index": 1002,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 1003,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 1004,
+      "text": "Red: Place 2 assistants in Customs (A09)"
+    },
+    {
+      "index": 1005,
+      "text": "Red: Place President from hand in Tea Plantation (A00)"
+    },
+    {
+      "index": 1006,
+      "text": "Red: Produce tea (power 3 -> +3 tea, next +4 at power 4)"
+    },
+    {
+      "index": 1007,
+      "text": "Red: Skip the 5-Power token"
+    },
+    {
+      "index": 1008,
+      "text": "Red: Skip the building"
+    },
+    {
+      "index": 1009,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 1010,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 1011,
+      "text": "Blue: Place no assistants"
+    },
+    {
+      "index": 1012,
+      "text": "Blue: Move President to Fishing Ground (A05) — free"
+    },
+    {
+      "index": 1013,
+      "text": "Blue: Produce seafood (power 3 -> +3 seafood, next +4 at power 4)"
+    },
+    {
+      "index": 1014,
+      "text": "Blue: Skip the 5-Power token"
+    },
+    {
+      "index": 1015,
+      "text": "Blue: Skip the building"
+    },
+    {
+      "index": 1016,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 1017,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 1018,
+      "text": "Red: Place no assistants"
+    },
+    {
+      "index": 1019,
+      "text": "Red: Return President to hand (recover no assistants)"
+    },
+    {
+      "index": 1020,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 1021,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 1022,
+      "text": "Blue: Place 2 assistants in Port A (A02)"
+    },
+    {
+      "index": 1023,
+      "text": "Blue: Move President to Port A (A02) — free"
+    },
+    {
+      "index": 1024,
+      "text": "Blue: Port: take O36, O14, paying 2 yen"
+    },
+    {
+      "index": 1025,
+      "text": "Blue: Skip the 5-Power token"
+    },
+    {
+      "index": 1026,
+      "text": "Blue: Skip the building"
+    },
+    {
+      "index": 1027,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 1028,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 1029,
+      "text": "Red: Place 2 assistants in Silk Mill (A08)"
+    },
+    {
+      "index": 1030,
+      "text": "Red: Return President to hand, recovering 3 assistants (A08 x2, A09 x1)"
+    },
+    {
+      "index": 1031,
+      "text": "Red: End additional-action phase"
+    },
+    {
+      "index": 1032,
+      "text": "Blue: End additional-action phase"
+    },
+    {
+      "index": 1033,
+      "text": "Blue: Place no assistants"
+    },
+    {
+      "index": 1034,
+      "text": "Blue: Return President to hand (recover no assistants)"
+    },
+    {
+      "index": 1035,
+      "text": "Blue: End additional-action phase"
+    }
+  ],
+  "total": 1036
+}

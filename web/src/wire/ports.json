@@ -1,0 +1,178 @@
+{
+  "boards": [
+    {
+      "board_b": false,
+      "slots": [
+        {
+          "card": 34,
+          "min_power": 2,
+          "printed": {
+            "country": "French",
+            "id": 34,
+            "requirements": {
+              "copper": 2,
+              "seafood": 0,
+              "silk": 0,
+              "tea": 3
+            },
+            "rewards": {
+              "any_trade_good": 0,
+              "copper": 0,
+              "imported_goods": 1,
+              "money": 0,
+              "movement": 0,
+              "seafood": 0,
+              "silk": 0,
+              "tea": 0,
+              "victory_points": 9,
+              "warehouse_tokens": 0
+            }
+          },
+          "slot": 0,
+          "zone": "Low"
+        },
+        {
+          "card": 19,
+          "min_power": 2,
+          "printed": {
+            "country": "Dutch",
+            "id": 19,
+            "requirements": {
+              "copper": 1,
+              "seafood": 1,
+              "silk": 1,
+              "tea": 1
+            },
+            "rewards": {
+              "any_trade_good": 0,
+              "copper": 0,
+              "imported_goods": 0,
+              "money": 0,
+              "movement": 0,
+              "seafood": 0,
+              "silk": 0,
+              "tea": 0,
+              "victory_points": 8,
+              "warehouse_tokens": 0
+            }
+          },
+          "slot": 1,
+          "zone": "Low"
+        },
+        {
+          "card": 12,
+          "min_power": 3,
+          "printed": {
+            "country": "American",
+            "id": 12,
+            "requirements": {
+              "copper": 0,
+              "seafood": 3,
+              "silk": 2,
+              "tea": 1
+            },
+            "rewards": {
+              "any_trade_good": 0,
+              "copper": 0,
+              "imported_goods": 0,
+              "money": 1,
+              "movement": 0,
+              "seafood": 0,
+              "silk": 0,
+              "tea": 0,
+              "victory_points": 9,
+              "warehouse_tokens": 0
+            }
+          },
+          "slot": 2,
+          "zone": "Mid"
+        },
+        {
+          "card": 4,
+          "min_power": 3,
+          "printed": {
+            "country": "German",
+            "id": 4,
+            "requirements": {
+              "copper": 0,
+              "seafood": 1,
+              "silk": 2,
+              "tea": 1
+            },
+            "rewards": {
+              "any_trade_good": 0,
+              "copper": 0,
+              "imported_goods": 0,
+              "money": 0,
+              "movement": 0,
+              "seafood": 0,
+              "silk": 0,
+              "tea": 0,
+              "victory_points": 5,
+              "warehouse_tokens": 1
+            }
+          },
+          "slot": 3,
+          "zone": "Mid"
+        },
+        {
+          "card": 18,
+          "min_power": 4,
+          "printed": {
+            "country": "American",
+            "id": 18,
+            "requirements": {
+              "copper": 2,
+              "seafood": 3,
+              "silk": 0,
+              "tea": 0
+            },
+            "rewards": {
+              "any_trade_good": 0,
+              "copper": 0,
+              "imported_goods": 1,
+              "money": 0,
+              "movement": 0,
+              "seafood": 0,
+              "silk": 0,
+              "tea": 0,
+              "victory_points": 6,
+              "warehouse_tokens": 0
+            }
+          },
+          "slot": 4,
+          "zone": "High"
+        },
+        {
+          "card": 26,
+          "min_power": 4,
+          "printed": {
+            "country": "French",
+            "id": 26,
+            "requirements": {
+              "copper": 0,
+              "seafood": 1,
+              "silk": 0,
+              "tea": 3
+            },
+            "rewards": {
+              "any_trade_good": 0,
+              "copper": 0,
+              "imported_goods": 0,
+              "money": 2,
+              "movement": 0,
+              "seafood": 0,
+              "silk": 0,
+              "tea": 0,
+              "victory_points": 1,
+              "warehouse_tokens": 0
+            }
+          },
+          "slot": 5,
+          "zone": "High"
+        }
+      ]
+    }
+  ],
+  "deck_remaining": 10
+}

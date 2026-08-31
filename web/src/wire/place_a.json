@@ -1,0 +1,3579 @@
+{
+  "deck_remaining": 10,
+  "end_game_triggered": false,
+  "end_triggers": "end triggers: deck 10 · church 0/4 · customs 0/4 · shophouses 0/8 · trade houses 0/4",
+  "frame": {
+    "board": {
+      "player_count": 2,
+      "tiles": [
+        {
+          "area": 0,
+          "area_type": "TeaPlantation",
+          "assistants": [
+            [
+              0,
+              0
+            ],
+            [
+              1,
+              0
+            ]
+          ],
+          "canal_crossings": [],
+          "grid_position": [
+            0,
+            0
+          ],
+          "has_station": false,
+          "presidents": [],
+          "reachable": false,
+          "site": {
+            "index": 22,
+            "slots": [
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 1,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 4,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 0,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 3,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              }
+            ],
+            "trading_house_owner": null,
+            "trading_house_vp": 9
+          },
+          "token": {
+            "Tea": 3
+          }
+        },
+        {
+          "area": 1,
+          "area_type": "Church",
+          "assistants": [
+            [
+              0,
+              0
+            ],
+            [
+              1,
+              0
+            ]
+          ],
+          "canal_crossings": [],
+          "grid_position": [
+            0,
+            1
+          ],
+          "has_station": false,
+          "presidents": [],
+          "reachable": false,
+          "site": {
+            "index": 7,
+            "slots": [
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 1,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 2,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 0,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 0,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 1,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 0,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              }
+            ],
+            "trading_house_owner": null,
+            "trading_house_vp": 6
+          },
+          "token": {
+            "ImportedGoods": 1
+          }
+        },
+        {
+          "area": 2,
+          "area_type": "PortA",
+          "assistants": [
+            [
+              0,
+              0
+            ],
+            [
+              1,
+              0
+            ]
+          ],
+          "canal_crossings": [],
+          "grid_position": [
+            0,
+            2
+          ],
+          "has_station": false,
+          "presidents": [],
+          "reachable": false,
+          "site": {
+            "index": 10,
+            "slots": [
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 1,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 0,
+                  "warehouse_tokens": 2,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 0,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 2,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 0,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              }
+            ],
+            "trading_house_owner": null,
+            "trading_house_vp": 7
+          },
+          "token": {
+            "ImportedGoods": 1
+          }
+        },
+        {
+          "area": 3,
+          "area_type": "CopperMine",
+          "assistants": [
+            [
+              0,
+              0
+            ],
+            [
+              1,
+              0
+            ]
+          ],
+          "canal_crossings": [],
+          "grid_position": [
+            0,
+            3
+          ],
+          "has_station": false,
+          "presidents": [],
+          "reachable": false,
+          "site": {
+            "index": 2,
+            "slots": [
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 1,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 4,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 0,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 2,
+                  "vp": 0,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              }
+            ],
+            "trading_house_owner": null,
+            "trading_house_vp": 7
+          },
+          "token": {
+            "Money": 3
+          }
+        },
+        {
+          "area": 4,
+          "area_type": "EmploymentAgency",
+          "assistants": [
+            [
+              0,
+              0
+            ],
+            [
+              1,
+              0
+            ]
+          ],
+          "canal_crossings": [],
+          "grid_position": [
+            1,
+            0
+          ],
+          "has_station": false,
+          "presidents": [],
+          "reachable": false,
+          "site": {
+            "index": 5,
+            "slots": [
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 1,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 2,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 0,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 0,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 2,
+                  "tea": 0,
+                  "vp": 0,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              }
+            ],
+            "trading_house_owner": null,
+            "trading_house_vp": 9
+          },
+          "token": {
+            "ImportedGoods": 1
+          }
+        },
+        {
+          "area": 5,
+          "area_type": "FishingGround",
+          "assistants": [
+            [
+              0,
+              0
+            ],
+            [
+              1,
+              0
+            ]
+          ],
+          "canal_crossings": [],
+          "grid_position": [
+            1,
+            1
+          ],
+          "has_station": false,
+          "presidents": [],
+          "reachable": false,
+          "site": {
+            "index": 14,
+            "slots": [
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 1,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 3,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 0,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 0,
+                  "warehouse_tokens": 2,
+                  "yen": 0
+                }
+              }
+            ],
+            "trading_house_owner": null,
+            "trading_house_vp": 8
+          },
+          "token": {
+            "Seafood": 3
+          }
+        },
+        {
+          "area": 6,
+          "area_type": "LaboratoryA",
+          "assistants": [
+            [
+              0,
+              0
+            ],
+            [
+              1,
+              0
+            ]
+          ],
+          "canal_crossings": [],
+          "grid_position": [
+            1,
+            2
+          ],
+          "has_station": false,
+          "presidents": [],
+          "reachable": false,
+          "site": {
+            "index": 18,
+            "slots": [
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 1,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 4,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 0,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 0,
+                  "warehouse_tokens": 0,
+                  "yen": 2
+                }
+              }
+            ],
+            "trading_house_owner": null,
+            "trading_house_vp": 9
+          },
+          "token": {
+            "Silk": 2
+          }
+        },
+        {
+          "area": 7,
+          "area_type": "Bank",
+          "assistants": [
+            [
+              0,
+              0
+            ],
+            [
+              1,
+              0
+            ]
+          ],
+          "canal_crossings": [],
+          "grid_position": [
+            2,
+            0
+          ],
+          "has_station": false,
+          "presidents": [],
+          "reachable": false,
+          "site": {
+            "index": 19,
+            "slots": [
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 1,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 4,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 0,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 0,
+                  "warehouse_tokens": 0,
+                  "yen": 2
+                }
+              }
+            ],
+            "trading_house_owner": null,
+            "trading_house_vp": 6
+          },
+          "token": {
+            "Tea": 3
+          }
+        },
+        {
+          "area": 8,
+          "area_type": "SilkMill",
+          "assistants": [
+            [
+              0,
+              0
+            ],
+            [
+              1,
+              0
+            ]
+          ],
+          "canal_crossings": [],
+          "grid_position": [
+            2,
+            1
+          ],
+          "has_station": false,
+          "presidents": [],
+          "reachable": false,
+          "site": {
+            "index": 17,
+            "slots": [
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 1,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 2,
+                  "warehouse_tokens": 0,
+                  "yen": 1
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 0,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 2,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              }
+            ],
+            "trading_house_owner": null,
+            "trading_house_vp": 8
+          },
+          "token": {
+            "Money": 3
+          }
+        },
+        {
+          "area": 9,
+          "area_type": "Customs",
+          "assistants": [
+            [
+              0,
+              0
+            ],
+            [
+              1,
+              0
+            ]
+          ],
+          "canal_crossings": [],
+          "grid_position": [
+            3,
+            0
+          ],
+          "has_station": false,
+          "presidents": [],
+          "reachable": false,
+          "site": {
+            "index": 23,
+            "slots": [
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 1,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 3,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 0,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 2,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              }
+            ],
+            "trading_house_owner": null,
+            "trading_house_vp": 6
+          },
+          "token": {
+            "ImportedGoods": 1
+          }
+        }
+      ]
+    },
+    "dashboard": [
+      {
+        "Players": {
+          "players": [
+            {
+              "assistants": {
+                "in_hand": 8,
+                "in_warehouse": 12,
+                "on_achievements": 0,
+                "on_board": 0,
+                "on_church": 0,
+                "on_customs": 0
+              },
+              "color": "Red",
+              "five_power_tokens": 0,
+              "goods": {
+                "copper": 1,
+                "imports": 0,
+                "seafood": 1,
+                "silk": 1,
+                "tea": 1
+              },
+              "hand_hidden": false,
+              "is_bot": false,
+              "is_current": false,
+              "mercenaries_unused": 0,
+              "mercenaries_used": 0,
+              "money": 3,
+              "orders_filled": [],
+              "orders_in_hand": 1,
+              "president": "InHand",
+              "seat": 0,
+              "shophouses": {
+                "built": 0,
+                "in_hand": 2,
+                "in_warehouse": 6
+              },
+              "technologies": [],
+              "trading_houses": {
+                "built": 0,
+                "in_hand": 0,
+                "in_warehouse": 4,
+                "next_take_cost": 4
+              },
+              "victory_points": 0
+            },
+            {
+              "assistants": {
+                "in_hand": 8,
+                "in_warehouse": 12,
+                "on_achievements": 0,
+                "on_board": 0,
+                "on_church": 0,
+                "on_customs": 0
+              },
+              "color": "Blue",
+              "five_power_tokens": 0,
+              "goods": {
+                "copper": 1,
+                "imports": 0,
+                "seafood": 1,
+                "silk": 1,
+                "tea": 1
+              },
+              "hand_hidden": false,
+              "is_bot": false,
+              "is_current": true,
+              "mercenaries_unused": 0,
+              "mercenaries_used": 0,
+              "money": 4,
+              "orders_filled": [],
+              "orders_in_hand": 1,
+              "president": "InHand",
+              "seat": 1,
+              "shophouses": {
+                "built": 0,
+                "in_hand": 2,
+                "in_warehouse": 6
+              },
+              "technologies": [],
+              "trading_houses": {
+                "built": 0,
+                "in_hand": 0,
+                "in_warehouse": 4,
+                "next_take_cost": 4
+              },
+              "victory_points": 0
+            }
+          ]
+        }
+      },
+      {
+        "Tracks": {
+          "church": [
+            {
+              "faith": 4,
+              "movement_rider": 1,
+              "occupant": null,
+              "vp": 3
+            },
+            {
+              "faith": 5,
+              "movement_rider": 1,
+              "occupant": null,
+              "vp": 4
+            },
+            {
+              "faith": 6,
+              "movement_rider": 2,
+              "occupant": null,
+              "vp": 5
+            },
+            {
+              "faith": 7,
+              "movement_rider": 2,
+              "occupant": 255,
+              "vp": 6
+            },
+            {
+              "faith": 8,
+              "movement_rider": 2,
+              "occupant": null,
+              "vp": 7
+            },
+            {
+              "faith": 9,
+              "movement_rider": 2,
+              "occupant": null,
+              "vp": 8
+            },
+            {
+              "faith": 10,
+              "movement_rider": 3,
+              "occupant": null,
+              "vp": 11
+            },
+            {
+              "faith": 11,
+              "movement_rider": 3,
+              "occupant": null,
+              "vp": 14
+            }
+          ],
+          "church_filled": 0,
+          "customs": [
+            {
+              "import_cost": 1,
+              "occupant": null,
+              "space": 1,
+              "vp": 5,
+              "warehouse_rider": 2,
+              "yen_rider": 0
+            },
+            {
+              "import_cost": 1,
+              "occupant": null,
+              "space": 2,
+              "vp": 4,
+              "warehouse_rider": 0,
+              "yen_rider": 2
+            },
+            {
+              "import_cost": 2,
+              "occupant": null,
+              "space": 3,
+              "vp": 10,
+              "warehouse_rider": 1,
+              "yen_rider": 0
+            },
+            {
+              "import_cost": 2,
+              "occupant": 255,
+              "space": 4,
+              "vp": 9,
+              "warehouse_rider": 0,
+              "yen_rider": 1
+            },
+            {
+              "import_cost": 3,
+              "occupant": null,
+              "space": 5,
+              "vp": 16,
+              "warehouse_rider": 0,
+              "yen_rider": 0
+            },
+            {
+              "import_cost": 3,
+              "occupant": null,
+              "space": 6,
+              "vp": 15,
+              "warehouse_rider": 0,
+              "yen_rider": 0
+            },
+            {
+              "import_cost": 4,
+              "occupant": null,
+              "space": 7,
+              "vp": 22,
+              "warehouse_rider": 0,
+              "yen_rider": 0
+            }
+          ],
+          "customs_filled": 0,
+          "mercenary_supply": {
+            "american": 2,
+            "dutch": 1,
+            "english": 3,
+            "french": 2,
+            "german": 2
+          },
+          "station": null,
+          "trigger_at": 4
+        }
+      },
+      {
+        "Achievements": {
+          "cards": [
+            {
+              "achievement_type": "Seafood7",
+              "category": "A",
+              "claimed_by": [],
+              "first_place_vp": 8,
+              "progress": [
+                [
+                  0,
+                  1,
+                  7
+                ],
+                [
+                  1,
+                  1,
+                  7
+                ]
+              ],
+              "subsequent_vp": 6
+            },
+            {
+              "achievement_type": "Technologies4",
+              "category": "B",
+              "claimed_by": [],
+              "first_place_vp": 9,
+              "progress": [
+                [
+                  0,
+                  0,
+                  4
+                ],
+                [
+                  1,
+                  0,
+                  4
+                ]
+              ],
+              "subsequent_vp": 7
+            },
+            {
+              "achievement_type": "Commercial4",
+              "category": "C",
+              "claimed_by": [],
+              "first_place_vp": 10,
+              "progress": [
+                [
+                  0,
+                  0,
+                  4
+                ],
+                [
+                  1,
+                  0,
+                  4
+                ]
+              ],
+              "subsequent_vp": 8
+            }
+          ]
+        }
+      },
+      {
+        "Hand": {
+          "card_count": 1,
+          "cards": [
+            {
+              "id": 23,
+              "is_starting_order": true,
+              "printed": {
+                "country": "French",
+                "id": 23,
+                "requirements": {
+                  "copper": 1,
+                  "seafood": 0,
+                  "silk": 2,
+                  "tea": 3
+                },
+                "rewards": {
+                  "any_trade_good": 0,
+                  "copper": 0,
+                  "imported_goods": 1,
+                  "money": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "victory_points": 9,
+                  "warehouse_tokens": 0
+                }
+              }
+            }
+          ],
+          "hidden": false,
+          "seat": 1
+        }
+      }
+    ],
+    "decision": {
+      "current_phase": 1,
+      "deciding": {
+        "Phase": "Placement"
+      },
+      "not_offered": [],
+      "not_offered_suppressed": 0,
+      "options": [
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": []
+            }
+          },
+          "number": 1
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                0
+              ]
+            }
+          },
+          "number": 2
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                1
+              ]
+            }
+          },
+          "number": 3
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                2
+              ]
+            }
+          },
+          "number": 4
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                3
+              ]
+            }
+          },
+          "number": 5
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                4
+              ]
+            }
+          },
+          "number": 6
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                5
+              ]
+            }
+          },
+          "number": 7
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                6
+              ]
+            }
+          },
+          "number": 8
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                7
+              ]
+            }
+          },
+          "number": 9
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                8
+              ]
+            }
+          },
+          "number": 10
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                9
+              ]
+            }
+          },
+          "number": 11
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                0,
+                1
+              ]
+            }
+          },
+          "number": 12
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                0,
+                2
+              ]
+            }
+          },
+          "number": 13
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                0,
+                3
+              ]
+            }
+          },
+          "number": 14
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                0,
+                4
+              ]
+            }
+          },
+          "number": 15
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                0,
+                5
+              ]
+            }
+          },
+          "number": 16
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                0,
+                6
+              ]
+            }
+          },
+          "number": 17
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                0,
+                7
+              ]
+            }
+          },
+          "number": 18
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                0,
+                8
+              ]
+            }
+          },
+          "number": 19
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                0,
+                9
+              ]
+            }
+          },
+          "number": 20
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                1,
+                2
+              ]
+            }
+          },
+          "number": 21
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                1,
+                3
+              ]
+            }
+          },
+          "number": 22
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                1,
+                4
+              ]
+            }
+          },
+          "number": 23
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                1,
+                5
+              ]
+            }
+          },
+          "number": 24
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                1,
+                6
+              ]
+            }
+          },
+          "number": 25
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                1,
+                7
+              ]
+            }
+          },
+          "number": 26
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                1,
+                8
+              ]
+            }
+          },
+          "number": 27
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                1,
+                9
+              ]
+            }
+          },
+          "number": 28
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                2,
+                3
+              ]
+            }
+          },
+          "number": 29
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                2,
+                4
+              ]
+            }
+          },
+          "number": 30
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                2,
+                5
+              ]
+            }
+          },
+          "number": 31
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                2,
+                6
+              ]
+            }
+          },
+          "number": 32
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                2,
+                7
+              ]
+            }
+          },
+          "number": 33
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                2,
+                8
+              ]
+            }
+          },
+          "number": 34
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                2,
+                9
+              ]
+            }
+          },
+          "number": 35
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                3,
+                4
+              ]
+            }
+          },
+          "number": 36
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                3,
+                5
+              ]
+            }
+          },
+          "number": 37
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                3,
+                6
+              ]
+            }
+          },
+          "number": 38
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                3,
+                7
+              ]
+            }
+          },
+          "number": 39
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                3,
+                8
+              ]
+            }
+          },
+          "number": 40
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                3,
+                9
+              ]
+            }
+          },
+          "number": 41
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                4,
+                5
+              ]
+            }
+          },
+          "number": 42
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                4,
+                6
+              ]
+            }
+          },
+          "number": 43
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                4,
+                7
+              ]
+            }
+          },
+          "number": 44
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                4,
+                8
+              ]
+            }
+          },
+          "number": 45
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                4,
+                9
+              ]
+            }
+          },
+          "number": 46
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                5,
+                6
+              ]
+            }
+          },
+          "number": 47
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                5,
+                7
+              ]
+            }
+          },
+          "number": 48
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                5,
+                8
+              ]
+            }
+          },
+          "number": 49
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                5,
+                9
+              ]
+            }
+          },
+          "number": 50
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                6,
+                7
+              ]
+            }
+          },
+          "number": 51
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                6,
+                8
+              ]
+            }
+          },
+          "number": 52
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                6,
+                9
+              ]
+            }
+          },
+          "number": 53
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                7,
+                8
+              ]
+            }
+          },
+          "number": 54
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                7,
+                9
+              ]
+            }
+          },
+          "number": 55
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                8,
+                9
+              ]
+            }
+          },
+          "number": 56
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                0,
+                1,
+                2
+              ]
+            }
+          },
+          "number": 57
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                0,
+                1,
+                3
+              ]
+            }
+          },
+          "number": 58
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                0,
+                1,
+                4
+              ]
+            }
+          },
+          "number": 59
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                0,
+                1,
+                5
+              ]
+            }
+          },
+          "number": 60
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                0,
+                1,
+                6
+              ]
+            }
+          },
+          "number": 61
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                0,
+                1,
+                7
+              ]
+            }
+          },
+          "number": 62
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                0,
+                1,
+                8
+              ]
+            }
+          },
+          "number": 63
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                0,
+                1,
+                9
+              ]
+            }
+          },
+          "number": 64
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                0,
+                2,
+                3
+              ]
+            }
+          },
+          "number": 65
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                0,
+                2,
+                4
+              ]
+            }
+          },
+          "number": 66
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                0,
+                2,
+                5
+              ]
+            }
+          },
+          "number": 67
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                0,
+                2,
+                6
+              ]
+            }
+          },
+          "number": 68
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                0,
+                2,
+                7
+              ]
+            }
+          },
+          "number": 69
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                0,
+                2,
+                8
+              ]
+            }
+          },
+          "number": 70
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                0,
+                2,
+                9
+              ]
+            }
+          },
+          "number": 71
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                0,
+                3,
+                4
+              ]
+            }
+          },
+          "number": 72
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                0,
+                3,
+                5
+              ]
+            }
+          },
+          "number": 73
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                0,
+                3,
+                6
+              ]
+            }
+          },
+          "number": 74
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                0,
+                3,
+                7
+              ]
+            }
+          },
+          "number": 75
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                0,
+                3,
+                8
+              ]
+            }
+          },
+          "number": 76
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                0,
+                3,
+                9
+              ]
+            }
+          },
+          "number": 77
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                0,
+                4,
+                5
+              ]
+            }
+          },
+          "number": 78
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                0,
+                4,
+                6
+              ]
+            }
+          },
+          "number": 79
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                0,
+                4,
+                7
+              ]
+            }
+          },
+          "number": 80
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                0,
+                4,
+                8
+              ]
+            }
+          },
+          "number": 81
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                0,
+                4,
+                9
+              ]
+            }
+          },
+          "number": 82
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                0,
+                5,
+                6
+              ]
+            }
+          },
+          "number": 83
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                0,
+                5,
+                7
+              ]
+            }
+          },
+          "number": 84
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                0,
+                5,
+                8
+              ]
+            }
+          },
+          "number": 85
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                0,
+                5,
+                9
+              ]
+            }
+          },
+          "number": 86
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                0,
+                6,
+                7
+              ]
+            }
+          },
+          "number": 87
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                0,
+                6,
+                8
+              ]
+            }
+          },
+          "number": 88
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                0,
+                6,
+                9
+              ]
+            }
+          },
+          "number": 89
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                0,
+                7,
+                8
+              ]
+            }
+          },
+          "number": 90
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                0,
+                7,
+                9
+              ]
+            }
+          },
+          "number": 91
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                0,
+                8,
+                9
+              ]
+            }
+          },
+          "number": 92
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                1,
+                2,
+                3
+              ]
+            }
+          },
+          "number": 93
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                1,
+                2,
+                4
+              ]
+            }
+          },
+          "number": 94
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                1,
+                2,
+                5
+              ]
+            }
+          },
+          "number": 95
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                1,
+                2,
+                6
+              ]
+            }
+          },
+          "number": 96
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                1,
+                2,
+                7
+              ]
+            }
+          },
+          "number": 97
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                1,
+                2,
+                8
+              ]
+            }
+          },
+          "number": 98
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                1,
+                2,
+                9
+              ]
+            }
+          },
+          "number": 99
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                1,
+                3,
+                4
+              ]
+            }
+          },
+          "number": 100
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                1,
+                3,
+                5
+              ]
+            }
+          },
+          "number": 101
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                1,
+                3,
+                6
+              ]
+            }
+          },
+          "number": 102
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                1,
+                3,
+                7
+              ]
+            }
+          },
+          "number": 103
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                1,
+                3,
+                8
+              ]
+            }
+          },
+          "number": 104
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                1,
+                3,
+                9
+              ]
+            }
+          },
+          "number": 105
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                1,
+                4,
+                5
+              ]
+            }
+          },
+          "number": 106
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                1,
+                4,
+                6
+              ]
+            }
+          },
+          "number": 107
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                1,
+                4,
+                7
+              ]
+            }
+          },
+          "number": 108
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                1,
+                4,
+                8
+              ]
+            }
+          },
+          "number": 109
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                1,
+                4,
+                9
+              ]
+            }
+          },
+          "number": 110
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                1,
+                5,
+                6
+              ]
+            }
+          },
+          "number": 111
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                1,
+                5,
+                7
+              ]
+            }
+          },
+          "number": 112
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                1,
+                5,
+                8
+              ]
+            }
+          },
+          "number": 113
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                1,
+                5,
+                9
+              ]
+            }
+          },
+          "number": 114
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                1,
+                6,
+                7
+              ]
+            }
+          },
+          "number": 115
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                1,
+                6,
+                8
+              ]
+            }
+          },
+          "number": 116
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                1,
+                6,
+                9
+              ]
+            }
+          },
+          "number": 117
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                1,
+                7,
+                8
+              ]
+            }
+          },
+          "number": 118
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                1,
+                7,
+                9
+              ]
+            }
+          },
+          "number": 119
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                1,
+                8,
+                9
+              ]
+            }
+          },
+          "number": 120
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                2,
+                3,
+                4
+              ]
+            }
+          },
+          "number": 121
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                2,
+                3,
+                5
+              ]
+            }
+          },
+          "number": 122
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                2,
+                3,
+                6
+              ]
+            }
+          },
+          "number": 123
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                2,
+                3,
+                7
+              ]
+            }
+          },
+          "number": 124
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                2,
+                3,
+                8
+              ]
+            }
+          },
+          "number": 125
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                2,
+                3,
+                9
+              ]
+            }
+          },
+          "number": 126
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                2,
+                4,
+                5
+              ]
+            }
+          },
+          "number": 127
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                2,
+                4,
+                6
+              ]
+            }
+          },
+          "number": 128
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                2,
+                4,
+                7
+              ]
+            }
+          },
+          "number": 129
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                2,
+                4,
+                8
+              ]
+            }
+          },
+          "number": 130
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                2,
+                4,
+                9
+              ]
+            }
+          },
+          "number": 131
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                2,
+                5,
+                6
+              ]
+            }
+          },
+          "number": 132
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                2,
+                5,
+                7
+              ]
+            }
+          },
+          "number": 133
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                2,
+                5,
+                8
+              ]
+            }
+          },
+          "number": 134
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                2,
+                5,
+                9
+              ]
+            }
+          },
+          "number": 135
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                2,
+                6,
+                7
+              ]
+            }
+          },
+          "number": 136
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                2,
+                6,
+                8
+              ]
+            }
+          },
+          "number": 137
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                2,
+                6,
+                9
+              ]
+            }
+          },
+          "number": 138
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                2,
+                7,
+                8
+              ]
+            }
+          },
+          "number": 139
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                2,
+                7,
+                9
+              ]
+            }
+          },
+          "number": 140
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                2,
+                8,
+                9
+              ]
+            }
+          },
+          "number": 141
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                3,
+                4,
+                5
+              ]
+            }
+          },
+          "number": 142
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                3,
+                4,
+                6
+              ]
+            }
+          },
+          "number": 143
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                3,
+                4,
+                7
+              ]
+            }
+          },
+          "number": 144
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                3,
+                4,
+                8
+              ]
+            }
+          },
+          "number": 145
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                3,
+                4,
+                9
+              ]
+            }
+          },
+          "number": 146
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                3,
+                5,
+                6
+              ]
+            }
+          },
+          "number": 147
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                3,
+                5,
+                7
+              ]
+            }
+          },
+          "number": 148
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                3,
+                5,
+                8
+              ]
+            }
+          },
+          "number": 149
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                3,
+                5,
+                9
+              ]
+            }
+          },
+          "number": 150
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                3,
+                6,
+                7
+              ]
+            }
+          },
+          "number": 151
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                3,
+                6,
+                8
+              ]
+            }
+          },
+          "number": 152
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                3,
+                6,
+                9
+              ]
+            }
+          },
+          "number": 153
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                3,
+                7,
+                8
+              ]
+            }
+          },
+          "number": 154
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                3,
+                7,
+                9
+              ]
+            }
+          },
+          "number": 155
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                3,
+                8,
+                9
+              ]
+            }
+          },
+          "number": 156
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                4,
+                5,
+                6
+              ]
+            }
+          },
+          "number": 157
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                4,
+                5,
+                7
+              ]
+            }
+          },
+          "number": 158
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                4,
+                5,
+                8
+              ]
+            }
+          },
+          "number": 159
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                4,
+                5,
+                9
+              ]
+            }
+          },
+          "number": 160
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                4,
+                6,
+                7
+              ]
+            }
+          },
+          "number": 161
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                4,
+                6,
+                8
+              ]
+            }
+          },
+          "number": 162
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                4,
+                6,
+                9
+              ]
+            }
+          },
+          "number": 163
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                4,
+                7,
+                8
+              ]
+            }
+          },
+          "number": 164
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                4,
+                7,
+                9
+              ]
+            }
+          },
+          "number": 165
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                4,
+                8,
+                9
+              ]
+            }
+          },
+          "number": 166
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                5,
+                6,
+                7
+              ]
+            }
+          },
+          "number": 167
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                5,
+                6,
+                8
+              ]
+            }
+          },
+          "number": 168
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                5,
+                6,
+                9
+              ]
+            }
+          },
+          "number": 169
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                5,
+                7,
+                8
+              ]
+            }
+          },
+          "number": 170
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                5,
+                7,
+                9
+              ]
+            }
+          },
+          "number": 171
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                5,
+                8,
+                9
+              ]
+            }
+          },
+          "number": 172
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                6,
+                7,
+                8
+              ]
+            }
+          },
+          "number": 173
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                6,
+                7,
+                9
+              ]
+            }
+          },
+          "number": 174
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                6,
+                8,
+                9
+              ]
+            }
+          },
+          "number": 175
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceThreeAreas": {
+              "placements": [
+                7,
+                8,
+                9
+              ]
+            }
+          },
+          "number": 176
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceTwoSameArea": {
+              "adjacent_bonus": null,
+              "area": 0
+            }
+          },
+          "number": 177
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceTwoSameArea": {
+              "adjacent_bonus": null,
+              "area": 1
+            }
+          },
+          "number": 178
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceTwoSameArea": {
+              "adjacent_bonus": null,
+              "area": 2
+            }
+          },
+          "number": 179
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceTwoSameArea": {
+              "adjacent_bonus": null,
+              "area": 3
+            }
+          },
+          "number": 180
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceTwoSameArea": {
+              "adjacent_bonus": null,
+              "area": 4
+            }
+          },
+          "number": 181
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceTwoSameArea": {
+              "adjacent_bonus": null,
+              "area": 5
+            }
+          },
+          "number": 182
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceTwoSameArea": {
+              "adjacent_bonus": null,
+              "area": 6
+            }
+          },
+          "number": 183
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceTwoSameArea": {
+              "adjacent_bonus": null,
+              "area": 7
+            }
+          },
+          "number": 184
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceTwoSameArea": {
+              "adjacent_bonus": null,
+              "area": 8
+            }
+          },
+          "number": 185
+        },
+        {
+          "fee": null,
+          "mv": {
+            "PlaceTwoSameArea": {
+              "adjacent_bonus": null,
+              "area": 9
+            }
+          },
+          "number": 186
+        }
+      ],
+      "phase_chain": [
+        "AdditionalActionFirst",
+        "Placement",
+        "Movement",
+        "AreaAction",
+        "FivePowerBonus",
+        "Building",
+        "Recovery",
+        "AdditionalActionSecond",
+        "TurnEnd"
+      ],
+      "seat": 1,
+      "turn_number": 4,
+      "viewer_is_deciding": true
+    },
+    "title": {
+      "autosaved": true,
+      "mode": "Sim",
+      "seed": 20260831
+    }
+  },
+  "id": "wire",
+  "messages": [
+    "Option A — toggle areas by id off the board, then 'confirm'.",
+    "Option A — place 1 assistant each in up to 3 areas (toggle by id):",
+    "  Tea Plantation (A00)      Church (A01)              Port A (A02)",
+    "  Copper Mine (A03)         Employment Agency (A04)   Fishing Ground (A05)",
+    "  Laboratory A (A06)        Bank (A07)                Silk Mill (A08)",
+    "  Customs (A09)",
+    "Selected: (none — confirm places no assistants)",
+    "  -> legal — Place no assistants",
+    "> type an area id to toggle, 'confirm' to place, or 'cancel'"
+  ],
+  "mode": "sim",
+  "over": false,
+  "prompt": {
+    "fee": null,
+    "kind": "place_a",
+    "max_areas": 3,
+    "selected": []
+  },
+  "scores": null,
+  "seat": 1,
+  "seed": "20260831",
+  "to_move": 1,
+  "warnings": [],
+  "your_turn": true
+}

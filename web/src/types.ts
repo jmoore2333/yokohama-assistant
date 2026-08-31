@@ -343,6 +343,23 @@ export interface Labels {
   achievements: Record<string, string>;
 }
 
+/** `GET /api/health` — the two compatibility keys the ENGINE uses, not the
+ *  server version. A client that caches card art or option shapes checks
+ *  these: a save stops resuming across a `semantics_rev` bump by design, and
+ *  `rules_hash` moves whenever card, site, token or board data does. */
+export interface Health {
+  server_version: string;
+  semantics_rev: number;
+  rules_hash: string;
+}
+
+/** Every refusal on this API, in one shape. `api.ts` reads `error` off it and
+ *  throws an `ApiError` carrying the sentence — so a second error shape would
+ *  be reported to the player as a bare status code. */
+export interface ApiErrorBody {
+  error: string;
+}
+
 export interface Preview {
   seed: string;
   deals: { seat: PlayerId; cards: OrderCard[] }[];
