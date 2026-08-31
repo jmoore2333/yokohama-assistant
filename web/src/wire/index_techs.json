@@ -1,0 +1,529 @@
+{
+  "filter": null,
+  "groups": [
+    {
+      "cards": [
+        {
+          "face": {
+            "Tech": {
+              "copies": [
+                11,
+                12
+              ],
+              "placed": [
+                [
+                  11,
+                  {
+                    "OwnedBy": {
+                      "seat": 0
+                    }
+                  }
+                ],
+                [
+                  12,
+                  {
+                    "OwnedBy": {
+                      "seat": 1
+                    }
+                  }
+                ]
+              ],
+              "printed": {
+                "country": "English",
+                "effect": "Ball",
+                "id": 11,
+                "industry_cost": 3,
+                "name": "Ball"
+              }
+            }
+          },
+          "location": {
+            "OwnedBy": {
+              "seat": 0
+            }
+          },
+          "selection": null
+        },
+        {
+          "face": {
+            "Tech": {
+              "copies": [
+                15
+              ],
+              "placed": [],
+              "printed": {
+                "country": "English",
+                "effect": "Station",
+                "id": 15,
+                "industry_cost": 4,
+                "name": "Station"
+              }
+            }
+          },
+          "location": null,
+          "selection": null
+        },
+        {
+          "face": {
+            "Tech": {
+              "copies": [
+                16,
+                17
+              ],
+              "placed": [],
+              "printed": {
+                "country": "English",
+                "effect": "University",
+                "id": 16,
+                "industry_cost": 3,
+                "name": "University"
+              }
+            }
+          },
+          "location": null,
+          "selection": null
+        },
+        {
+          "face": {
+            "Tech": {
+              "copies": [
+                20,
+                21
+              ],
+              "placed": [],
+              "printed": {
+                "country": "English",
+                "effect": "PostalSystem",
+                "id": 20,
+                "industry_cost": 3,
+                "name": "Postal System"
+              }
+            }
+          },
+          "location": null,
+          "selection": null
+        },
+        {
+          "face": {
+            "Tech": {
+              "copies": [
+                25
+              ],
+              "placed": [],
+              "printed": {
+                "country": "English",
+                "effect": "SpinningMill",
+                "id": 25,
+                "industry_cost": 4,
+                "name": "Textile Mill"
+              }
+            }
+          },
+          "location": null,
+          "selection": null
+        },
+        {
+          "face": {
+            "Tech": {
+              "copies": [
+                27
+              ],
+              "placed": [
+                [
+                  27,
+                  {
+                    "LabSlot": {
+                      "board_b": false,
+                      "slot": 3
+                    }
+                  }
+                ]
+              ],
+              "printed": {
+                "country": "English",
+                "effect": "Stagecoach",
+                "id": 27,
+                "industry_cost": 3,
+                "name": "Stagecoach"
+              }
+            }
+          },
+          "location": {
+            "LabSlot": {
+              "board_b": false,
+              "slot": 3
+            }
+          },
+          "selection": null
+        }
+      ],
+      "key": {
+        "Country": "English"
+      }
+    },
+    {
+      "cards": [
+        {
+          "face": {
+            "Tech": {
+              "copies": [
+                1,
+                2
+              ],
+              "placed": [],
+              "printed": {
+                "country": "American",
+                "effect": "LanguageSchool",
+                "id": 1,
+                "industry_cost": 3,
+                "name": "Language School"
+              }
+            }
+          },
+          "location": null,
+          "selection": null
+        },
+        {
+          "face": {
+            "Tech": {
+              "copies": [
+                3,
+                4
+              ],
+              "placed": [
+                [
+                  3,
+                  {
+                    "LabSlot": {
+                      "board_b": false,
+                      "slot": 1
+                    }
+                  }
+                ],
+                [
+                  4,
+                  {
+                    "LabSlot": {
+                      "board_b": false,
+                      "slot": 0
+                    }
+                  }
+                ]
+              ],
+              "printed": {
+                "country": "American",
+                "effect": "Telegram",
+                "id": 3,
+                "industry_cost": 6,
+                "name": "Telegram"
+              }
+            }
+          },
+          "location": {
+            "LabSlot": {
+              "board_b": false,
+              "slot": 1
+            }
+          },
+          "selection": null
+        },
+        {
+          "face": {
+            "Tech": {
+              "copies": [
+                5,
+                6
+              ],
+              "placed": [],
+              "printed": {
+                "country": "American",
+                "effect": "Telephone",
+                "id": 5,
+                "industry_cost": 6,
+                "name": "Telephone"
+              }
+            }
+          },
+          "location": null,
+          "selection": null
+        },
+        {
+          "face": {
+            "Tech": {
+              "copies": [
+                28
+              ],
+              "placed": [],
+              "printed": {
+                "country": "American",
+                "effect": "Tram",
+                "id": 28,
+                "industry_cost": 5,
+                "name": "Tram"
+              }
+            }
+          },
+          "location": null,
+          "selection": null
+        }
+      ],
+      "key": {
+        "Country": "American"
+      }
+    },
+    {
+      "cards": [
+        {
+          "face": {
+            "Tech": {
+              "copies": [
+                13,
+                14
+              ],
+              "placed": [],
+              "printed": {
+                "country": "French",
+                "effect": "Gaslight",
+                "id": 13,
+                "industry_cost": 3,
+                "name": "Gaslight"
+              }
+            }
+          },
+          "location": null,
+          "selection": null
+        },
+        {
+          "face": {
+            "Tech": {
+              "copies": [
+                22
+              ],
+              "placed": [
+                [
+                  22,
+                  {
+                    "LabSlot": {
+                      "board_b": false,
+                      "slot": 4
+                    }
+                  }
+                ]
+              ],
+              "printed": {
+                "country": "French",
+                "effect": "Winery",
+                "id": 22,
+                "industry_cost": 3,
+                "name": "Winery"
+              }
+            }
+          },
+          "location": {
+            "LabSlot": {
+              "board_b": false,
+              "slot": 4
+            }
+          },
+          "selection": null
+        },
+        {
+          "face": {
+            "Tech": {
+              "copies": [
+                23
+              ],
+              "placed": [],
+              "printed": {
+                "country": "French",
+                "effect": "ElectricalLight",
+                "id": 23,
+                "industry_cost": 4,
+                "name": "Electrical Light"
+              }
+            }
+          },
+          "location": null,
+          "selection": null
+        },
+        {
+          "face": {
+            "Tech": {
+              "copies": [
+                26
+              ],
+              "placed": [],
+              "printed": {
+                "country": "French",
+                "effect": "PatentSystem",
+                "id": 26,
+                "industry_cost": 3,
+                "name": "Patent System"
+              }
+            }
+          },
+          "location": null,
+          "selection": null
+        }
+      ],
+      "key": {
+        "Country": "French"
+      }
+    },
+    {
+      "cards": [
+        {
+          "face": {
+            "Tech": {
+              "copies": [
+                9,
+                10
+              ],
+              "placed": [
+                [
+                  10,
+                  {
+                    "LabSlot": {
+                      "board_b": false,
+                      "slot": 5
+                    }
+                  }
+                ]
+              ],
+              "printed": {
+                "country": "German",
+                "effect": "Exposition",
+                "id": 9,
+                "industry_cost": 5,
+                "name": "Exposition"
+              }
+            }
+          },
+          "location": null,
+          "selection": null
+        },
+        {
+          "face": {
+            "Tech": {
+              "copies": [
+                24
+              ],
+              "placed": [],
+              "printed": {
+                "country": "German",
+                "effect": "MiningTechnology",
+                "id": 24,
+                "industry_cost": 3,
+                "name": "Mining Technology"
+              }
+            }
+          },
+          "location": null,
+          "selection": null
+        },
+        {
+          "face": {
+            "Tech": {
+              "copies": [
+                29
+              ],
+              "placed": [],
+              "printed": {
+                "country": "German",
+                "effect": "Brickyard",
+                "id": 29,
+                "industry_cost": 3,
+                "name": "Brickyard"
+              }
+            }
+          },
+          "location": null,
+          "selection": null
+        }
+      ],
+      "key": {
+        "Country": "German"
+      }
+    },
+    {
+      "cards": [
+        {
+          "face": {
+            "Tech": {
+              "copies": [
+                7,
+                8
+              ],
+              "placed": [],
+              "printed": {
+                "country": "Dutch",
+                "effect": "Newspaper",
+                "id": 7,
+                "industry_cost": 5,
+                "name": "Newspaper"
+              }
+            }
+          },
+          "location": null,
+          "selection": null
+        },
+        {
+          "face": {
+            "Tech": {
+              "copies": [
+                18,
+                19
+              ],
+              "placed": [
+                [
+                  19,
+                  {
+                    "LabSlot": {
+                      "board_b": false,
+                      "slot": 2
+                    }
+                  }
+                ]
+              ],
+              "printed": {
+                "country": "Dutch",
+                "effect": "LetterPressPrinting",
+                "id": 18,
+                "industry_cost": 3,
+                "name": "Letterpress Printing"
+              }
+            }
+          },
+          "location": null,
+          "selection": null
+        },
+        {
+          "face": {
+            "Tech": {
+              "copies": [
+                30
+              ],
+              "placed": [],
+              "printed": {
+                "country": "Dutch",
+                "effect": "SystemOfStock",
+                "id": 30,
+                "industry_cost": 3,
+                "name": "Stock Market"
+              }
+            }
+          },
+          "location": null,
+          "selection": null
+        }
+      ],
+      "key": {
+        "Country": "Dutch"
+      }
+    }
+  ],
+  "kind": "Techs",
+  "shown": 20,
+  "target": null,
+  "total": 20
+}

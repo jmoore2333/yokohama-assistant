@@ -539,3 +539,46 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
  * run together into one paragraph they read as a single confusing sentence.
  * The words are the CLI's verbatim; this keeps the shape it wrote them in. */
 .refusal p { margin: 0.3rem 0 0; color: var(--fg-dim); max-width: 62ch; white-space: pre-line; }
+
+/* ---- the card indexes and the final score (M3) --------------------------- */
+.index-head { display: flex; align-items: baseline; gap: 1rem; margin: 0 0 0.6rem; }
+.index-head label { display: flex; align-items: baseline; gap: 0.4rem; font-size: 11px; color: var(--fg-faint); }
+.index-head input {
+  font-family: var(--mono); font-size: 12px; background: var(--bg-sunken);
+  color: var(--fg); border: 1px solid var(--line-bright); border-radius: var(--radius);
+  padding: 0.2rem 0.4rem; width: 14rem;
+}
+.index-cards {
+  list-style: none; margin: 0 0 0.5rem; padding: 0;
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(7.5rem, 1fr)); gap: 0.5rem;
+  align-items: start;
+}
+/* Goals and sites carry prose and a progress table rather than a card face, so
+ * they get a cell wide enough not to wrap every word. */
+.index-cards.wide { grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr)); }
+.index-card { display: flex; flex-direction: column; gap: 0.2rem; font-size: 11px; }
+/* A card the index knows the whereabouts of reads as SPOKEN FOR. Dimming is not
+ * inferred from `selection`: `screen_model` numbers dimmed cards on purpose, so
+ * the two are different facts. */
+.index-card.placed { opacity: 0.55; }
+.index-goal, .index-site {
+  display: flex; flex-direction: column; gap: 0.2rem;
+  background: var(--bg-sunken); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 0.4rem;
+}
+.index-goal img { width: 100%; aspect-ratio: var(--card-aspect); object-fit: cover; border-radius: 2px; }
+.goal-progress { list-style: none; margin: 0.15rem 0 0; padding: 0; font-size: 10px; }
+.goal-progress li { display: flex; justify-content: space-between; gap: 0.5rem; color: var(--fg-faint); }
+/* "Ready by the numbers", which is NOT "claimable": a claim also needs an
+ * assistant in hand, and the model says so. */
+.goal-progress li.ready { color: var(--reachable); }
+
+table.outcome { width: 100%; border-collapse: collapse; font-size: 12px; }
+table.outcome th, table.outcome td { padding: 0.3rem 0.5rem; border-top: 1px solid var(--line); }
+table.outcome th { font-size: 10px; color: var(--fg-faint); letter-spacing: 0.05em; font-weight: 500; }
+table.outcome .num { font-family: var(--mono); text-align: right; }
+table.outcome .total { color: var(--fg); font-size: 13px; }
+/* The winner is marked, never inferred from a margin: two seats can tie on
+ * points and be separated by the engine's own tie-break. */
+table.outcome tr.won td { background: color-mix(in srgb, var(--vp) 12%, transparent); }
+table.outcome tr.won td:first-child::after { content: " ★"; color: var(--vp); }

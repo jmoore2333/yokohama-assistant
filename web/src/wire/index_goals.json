@@ -1,0 +1,107 @@
+{
+  "filter": null,
+  "groups": [
+    {
+      "cards": [
+        {
+          "face": {
+            "Achievement": {
+              "achievement_type": "Seafood7",
+              "category": "A",
+              "claimed_by": [
+                1
+              ],
+              "first_place_vp": 8,
+              "progress": [
+                [
+                  0,
+                  5,
+                  7
+                ],
+                [
+                  1,
+                  5,
+                  7
+                ]
+              ],
+              "subsequent_vp": 6
+            }
+          },
+          "location": null,
+          "selection": null
+        }
+      ],
+      "key": {
+        "Category": "A"
+      }
+    },
+    {
+      "cards": [
+        {
+          "face": {
+            "Achievement": {
+              "achievement_type": "Technologies4",
+              "category": "B",
+              "claimed_by": [],
+              "first_place_vp": 9,
+              "progress": [
+                [
+                  0,
+                  1,
+                  4
+                ],
+                [
+                  1,
+                  1,
+                  4
+                ]
+              ],
+              "subsequent_vp": 7
+            }
+          },
+          "location": null,
+          "selection": null
+        }
+      ],
+      "key": {
+        "Category": "B"
+      }
+    },
+    {
+      "cards": [
+        {
+          "face": {
+            "Achievement": {
+              "achievement_type": "Commercial4",
+              "category": "C",
+              "claimed_by": [],
+              "first_place_vp": 10,
+              "progress": [
+                [
+                  0,
+                  0,
+                  4
+                ],
+                [
+                  1,
+                  1,
+                  4
+                ]
+              ],
+              "subsequent_vp": 8
+            }
+          },
+          "location": null,
+          "selection": null
+        }
+      ],
+      "key": {
+        "Category": "C"
+      }
+    }
+  ],
+  "kind": "Achievements",
+  "shown": 3,
+  "target": null,
+  "total": 3
+}

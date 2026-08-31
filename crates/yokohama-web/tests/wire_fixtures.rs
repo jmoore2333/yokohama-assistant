@@ -491,6 +491,34 @@ async fn walk() -> Vec<(String, Value)> {
     // The log, read AFTER the game is over, so it carries real entries.
     out.push(("log".to_string(), api.get("/api/games/wire/log").await));
 
+    // **The final score, which only a FINISHED game has.** The walk plays to a
+    // winner, so this is the one place in the corpus it can come from — and the
+    // reason `result` is a 409 while a game is still running rather than an
+    // empty payload it could have been faked from.
+    out.push(("result".to_string(), api.get("/api/games/wire/result").await));
+
+    // One card index per kind, plus a FILTERED one.
+    //
+    // Four rather than one because the four kinds group and word their rows
+    // differently — an orders index groups by the goods a card wants, a tech
+    // index by gear cost — so a corpus with one of them leaves three client
+    // branches with no payload. The filtered pair is the same first-sighting
+    // rule the prompt shapes follow: `shown < total` is a branch the client
+    // renders differently ("36 of 36" against "7 of 36") and one payload per
+    // kind never reaches it.
+    for kind in ["orders", "techs", "goals", "sites"] {
+        out.push((
+            format!("index_{kind}"),
+            api.get(&format!("/api/games/wire/index/{kind}")).await,
+        ));
+    }
+    let filtered = api.get("/api/games/wire/index/orders?filter=copper").await;
+    assert!(
+        filtered["shown"].as_u64() < filtered["total"].as_u64(),
+        "the filtered fixture must actually be narrower, or it is a second copy of the first"
+    );
+    out.push(("index_filtered".to_string(), filtered));
+
     // The one error shape. Every refusal on this API is `{"error": "..."}`
     // with a status, and a client that has to guess between shapes gets the
     // path it exercises least wrong.

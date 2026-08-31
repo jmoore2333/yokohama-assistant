@@ -19,13 +19,27 @@ import type {
   LogPanel,
   PlayerColor,
   PortsPanel,
+  IndexModel,
+  Outcome,
   SuggestResponse,
   WhyResponse,
 } from "./types";
 import { OrderCardView, Pawns, TechCardView } from "./Cards";
 import { SuggestView, WhyView } from "./Explain";
+import { IndexView, OutcomeView } from "./Index";
 
-export type SurfaceName = "ports" | "labs" | "areas" | "log" | "suggest" | "why";
+export type SurfaceName =
+  | "ports"
+  | "labs"
+  | "areas"
+  | "log"
+  | "suggest"
+  | "why"
+  | "orders"
+  | "techs"
+  | "goals"
+  | "sites"
+  | "result";
 
 /** Each surface carries its OWN loader.
  *
@@ -48,7 +62,22 @@ export const SURFACES: {
   { key: "log", label: "Log", blurb: "what has happened, each line worded as it read when it applied", load: (g) => api.log(g) },
   { key: "suggest", label: "Suggest", blurb: "what the bot would play on your seat, and the arithmetic behind it", load: (g) => api.suggest(g) },
   { key: "why", label: "Why", blurb: "the account of the last move a bot played, reconstructed by replay", load: (g) => api.why(g) },
+  { key: "orders", label: "Orders", blurb: "all 36 order cards by printed corner index, and where each one is", load: (g) => api.index(g, "orders") },
+  { key: "techs", label: "Technologies", blurb: "all 20 titles by gear cost, and who owns which copy", load: (g) => api.index(g, "techs") },
+  { key: "goals", label: "Goals", blurb: "the achievements in play, what each pays, and how close every seat is", load: (g) => api.index(g, "goals") },
+  { key: "sites", label: "Site cards", blurb: "the 24 printed building sites and what each space pays", load: (g) => api.index(g, "sites") },
+  { key: "result", label: "Final score", blurb: "the finished game, ranked, with every category the engine scored", load: (g) => api.result(g) },
 ];
+
+/** The four surfaces that are card INDEXES, and the kind each asks the server
+ *  for. Kept beside the registry rather than inferred from the key, so a new
+ *  surface cannot become an index by being named like one. */
+export const INDEX_KINDS: Partial<Record<SurfaceName, string>> = {
+  orders: "orders",
+  techs: "techs",
+  goals: "goals",
+  sites: "sites",
+};
 
 export function Surface({
   name,
@@ -140,6 +169,19 @@ export function Surface({
           <SuggestView data={data as SuggestResponse} labels={labels} />
         )}
         {data != null && name === "why" && <WhyView data={data as WhyResponse} labels={labels} />}
+        {data != null && INDEX_KINDS[name] && (
+          <IndexView
+            first={data as IndexModel}
+            kind={INDEX_KINDS[name]!}
+            game={game}
+            art={art}
+            labels={labels}
+            colors={colors}
+          />
+        )}
+        {data != null && name === "result" && (
+          <OutcomeView outcome={data as Outcome} colors={colors} />
+        )}
       </div>
     </div>
   );

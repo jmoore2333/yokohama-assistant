@@ -1,0 +1,35 @@
+{
+  "standings": [
+    {
+      "breakdown": {
+        "base_vp": 76,
+        "church": 6,
+        "country": 14,
+        "customs": 4,
+        "remainder": 12,
+        "technology": 0,
+        "total": 112
+      },
+      "margin": 66,
+      "rank": 1,
+      "seat": 1,
+      "won": true
+    },
+    {
+      "breakdown": {
+        "base_vp": 25,
+        "church": 0,
+        "country": 8,
+        "customs": 0,
+        "remainder": 8,
+        "technology": 5,
+        "total": 46
+      },
+      "margin": -66,
+      "rank": 2,
+      "seat": 0,
+      "won": false
+    }
+  ],
+  "winner": 1
+}

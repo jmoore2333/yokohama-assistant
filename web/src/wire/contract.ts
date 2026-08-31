@@ -54,13 +54,17 @@ import type {
   ApiErrorBody,
   ClientState,
   DecisionModel,
+  Breakdown,
   Explanation,
   FrameModel,
   Health,
+  IndexModel,
   Labels,
   LabsPanel,
   LogPanel,
   OptionRow,
+  Outcome,
+  Placing,
   PlayerModel,
   PortsPanel,
   Preview,
@@ -106,6 +110,12 @@ import preview from "./preview.json";
 import refused from "./refused.json";
 import retreat from "./retreat.json";
 import retreatAnswered from "./retreat_answered.json";
+import indexFiltered from "./index_filtered.json";
+import indexGoals from "./index_goals.json";
+import indexOrders from "./index_orders.json";
+import indexSites from "./index_sites.json";
+import indexTechs from "./index_techs.json";
+import result from "./result.json";
 import suggest from "./suggest.json";
 import why from "./why.json";
 import whyRefusals from "./why_refusals.json";
@@ -171,6 +181,13 @@ const _suggest: Widen<SuggestResponse> = suggest;
 const _why: Widen<WhyResponse> = why;
 const _whyRefused: Widen<WhyResponse> = whyRefused;
 const _whyRefusals: Widen<RefusalRow[]> = whyRefusals;
+const _indexOrders: Widen<IndexModel> = indexOrders;
+const _indexTechs: Widen<IndexModel> = indexTechs;
+const _indexGoals: Widen<IndexModel> = indexGoals;
+const _indexSites: Widen<IndexModel> = indexSites;
+const _indexFiltered: Widen<IndexModel> = indexFiltered;
+const _result: Widen<Outcome> = result;
+const _placing: Widen<Placing>[] = result.standings;
 
 // The two envelopes are `ok | null` unions, so `Widen<SuggestResponse>` is
 // satisfied by `{ok: null, refusal: {...}}` — which means the assignments above
@@ -234,6 +251,7 @@ void [
   _choiceAssistantMove, _choiceChurchSpace, _choiceWarehouseTake,
   _suggest, _why, _whyRefused, _whyRefusals,
   _suggestOk, _whyOk, _whyProvenance, _whyRanked, _suggestTerm, _refusedRow,
+  _indexOrders, _indexTechs, _indexGoals, _indexSites, _indexFiltered, _result, _placing,
 ];
 
 // ## §2. The key sets, so a field the SERVER adds is not silently unknown
@@ -323,6 +341,12 @@ const PROVENANCE = [
 ] as const;
 const RANKED = ["text", "value", "margin", "chosen"] as const;
 const REFUSAL_ROW = ["kind", "message"] as const;
+const INDEX = ["kind", "total", "shown", "target", "filter", "groups"] as const;
+const OUTCOME = ["standings", "winner"] as const;
+const PLACING = ["seat", "rank", "breakdown", "margin", "won"] as const;
+const BREAKDOWN = [
+  "base_vp", "church", "customs", "technology", "country", "remainder", "total",
+] as const;
 
 // The compile-time half. A list that is not exactly `keyof T` fails HERE, with
 // the offending key names in the message.
@@ -350,8 +374,12 @@ const _tm: KeysOf<Term, typeof TERM> = TERM;
 const _pr: KeysOf<Provenance, typeof PROVENANCE> = PROVENANCE;
 const _rk: KeysOf<Ranked, typeof RANKED> = RANKED;
 const _rf: KeysOf<RefusalRow, typeof REFUSAL_ROW> = REFUSAL_ROW;
+const _ix: KeysOf<IndexModel, typeof INDEX> = INDEX;
+const _oc: KeysOf<Outcome, typeof OUTCOME> = OUTCOME;
+const _pc: KeysOf<Placing, typeof PLACING> = PLACING;
+const _bd: KeysOf<Breakdown, typeof BREAKDOWN> = BREAKDOWN;
 void [_cs, _fr, _de, _or, _pl, _ti, _tr, _po, _la, _ar, _lo, _lb, _he, _pv, _er,
-      _sr, _so, _wr, _wo, _ex, _tm, _pr, _rk, _rf];
+      _sr, _so, _wr, _wo, _ex, _tm, _pr, _rk, _rf, _ix, _oc, _pc, _bd];
 
 /** The key lists, for the runtime half in `contract.test.ts`. */
 export const KEYS = {
@@ -379,6 +407,10 @@ export const KEYS = {
   provenance: PROVENANCE,
   ranked: RANKED,
   refusalRow: REFUSAL_ROW,
+  index: INDEX,
+  outcome: OUTCOME,
+  placing: PLACING,
+  breakdown: BREAKDOWN,
 } as const;
 
 // ## §3. The fixtures, typed, for every other test to render
@@ -433,6 +465,12 @@ export const wire = {
   why: as<WhyResponse>(why),
   whyRefused: as<WhyResponse>(whyRefused),
   whyRefusals: as<RefusalRow[]>(whyRefusals),
+  indexOrders: as<IndexModel>(indexOrders),
+  indexTechs: as<IndexModel>(indexTechs),
+  indexGoals: as<IndexModel>(indexGoals),
+  indexSites: as<IndexModel>(indexSites),
+  indexFiltered: as<IndexModel>(indexFiltered),
+  result: as<Outcome>(result),
 } as const;
 
 /** The queued-choice heads the corpus DOES carry.

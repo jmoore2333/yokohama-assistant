@@ -7,6 +7,8 @@ import type {
   LogPanel,
   PortsPanel,
   Preview,
+  IndexModel,
+  Outcome,
   SuggestResponse,
   WhyResponse,
 } from "./types";
@@ -92,4 +94,16 @@ export const api = {
       "GET",
       `/api/games/${id(game)}/why${event === undefined ? "" : `?event=${event}`}`,
     ),
+
+  /** A card index, as a VIEW: `kind` is one of orders/techs/goals/sites, and
+   *  `filter` is the CLI's own grammar — an unparseable term is a 400 carrying
+   *  the CLI's refusal, which names what it would have accepted. */
+  index: (game: string, kind: string, filter?: string) =>
+    call<IndexModel>(
+      "GET",
+      `/api/games/${id(game)}/index/${kind}${filter ? `?filter=${encodeURIComponent(filter)}` : ""}`,
+    ),
+
+  /** The final score. A 409 while the game is still running. */
+  result: (game: string) => call<Outcome>("GET", `/api/games/${id(game)}/result`),
 };

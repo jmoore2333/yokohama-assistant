@@ -593,3 +593,111 @@ export interface WhyResponse {
   ok: WhyOk | null;
   refusal: RefusalRow | null;
 }
+
+// ---- the card indexes and the final score (M3) ----------------------------
+
+/** Where a card physically is, when the index knows.
+ *
+ *  Externally tagged, as serde writes a Rust enum: `"OwnedBy"` carries a seat,
+ *  `"PortSlot"` a board and a slot. `null` means the index is not tracking it —
+ *  **which is not the same as "nowhere"**: `Repl::index_placements` deliberately
+ *  carries no other seat's hand, because in a live game an opponent's starting
+ *  order is hidden and an index that dimmed it with "in Seat 1's hand" would
+ *  leak the one card the observation boundary exists to protect. */
+export type CardLocation =
+  | "OwnHand"
+  | "ThisReveal"
+  | { OwnedBy: { seat: PlayerId } }
+  | { PortSlot: { board_b: boolean; slot: number } }
+  | { LabSlot: { board_b: boolean; slot: number } }
+  | Record<string, unknown>;
+
+/** The printed building site behind a site-index card — the raw registry card,
+ *  not a board site: `build_site_index` reads `rules.building_sites`, so the
+ *  built/owned fields are always empty even mid-game. */
+export interface BuildingSiteCard {
+  spaces: SpaceReward[];
+  shophouses_built: (PlayerId | null)[];
+  trading_house_owner: PlayerId | null;
+  /** VP, a bare number — NOT a `SpaceReward`. The first draft of this type said
+   *  `SpaceReward` and `contract.ts` rejected it against the committed payload
+   *  on the first typecheck, which is the whole reason the corpus exists. */
+  trading_house_reward: number;
+}
+
+/** One card's face. Externally tagged; exactly one key is present. */
+export type CardFace =
+  | { Order: { id: number; printed: OrderCard } }
+  | {
+      Tech: {
+        printed: TechCard;
+        /** Every physical copy of this TITLE. Ten of the twenty titles
+         *  circulate as two identical cards, so the index is over titles. */
+        copies: number[];
+        placed: [number, CardLocation][];
+      };
+    }
+  | { Achievement: AchievementModel }
+  | { Site: { index: number; site: BuildingSiteCard } };
+
+export interface IndexCard {
+  face: CardFace;
+  location: CardLocation | null;
+  /** The number that would pick this card during a capture. **Always `null` on
+   *  this API**: the web serves an index as a VIEW and has no card capture, so
+   *  nothing here is numbered. */
+  selection: number | null;
+}
+
+export interface IndexGroup {
+  /** How the rows are grouped — by `{Country}` for orders and techs, by
+   *  `{Category}` for goals, and the single `"All"` for sites. */
+  key: unknown;
+  cards: IndexCard[];
+}
+
+export type IndexKind = "Orders" | "Techs" | "Achievements" | "Sites";
+
+export interface IndexModel {
+  kind: IndexKind;
+  /** The whole population — the "all 36" the title states. For techs that is
+   *  TITLES, not the thirty physical cards. */
+  total: number;
+  /** What this screen shows; equal to `total` unfiltered. */
+  shown: number;
+  /** What is being recorded. Always `null` here — see `IndexCard.selection`. */
+  target: unknown | null;
+  filter: unknown | null;
+  groups: IndexGroup[];
+}
+
+/** One seat's score, category by category — the engine's own field names.
+ *  Several carry decision-log rulings behind them (church 6/3, customs 8/4, the
+ *  technology majority the 2P dummy competes in), so the client shows the parts
+ *  and never re-adds a total from parts it picked. */
+export interface Breakdown {
+  base_vp: number;
+  church: number;
+  customs: number;
+  technology: number;
+  country: number;
+  remainder: number;
+  total: number;
+}
+
+export interface Placing {
+  seat: PlayerId;
+  rank: number;
+  breakdown: Breakdown;
+  /** Against the best OTHER seat. **A margin of 0 is not a win** — two seats can
+   *  tie on points and be separated by the engine's tie-break, so read `won`. */
+  margin: number;
+  won: boolean;
+}
+
+/** `GET /api/games/{id}/result`. A 409 while the game is still running. */
+export interface Outcome {
+  /** Rank order, so `standings[0]` is first place. */
+  standings: Placing[];
+  winner: PlayerId;
+}

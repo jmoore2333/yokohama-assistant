@@ -38,6 +38,7 @@ pub mod client;
 pub mod explain;
 pub mod games;
 pub mod grammar;
+pub mod outcome;
 pub mod store;
 
 use std::sync::Arc;
@@ -603,6 +604,92 @@ async fn why(
     ))
 }
 
+/// `GET /api/games/{id}/index/{kind}` — a card index, as a VIEW.
+///
+/// The four indexes are the CLI's canonical identification mechanism, and this
+/// serves the same model the terminal draws: `screen_model::build_index` over
+/// `Repl::index_placements`, which is why that function was widened rather than
+/// copied — its doc defends a leak fence (no other seat's hand, because in a
+/// live game an opponent's starting order is hidden and an index that dimmed it
+/// with "in Seat 1's hand" would leak the one card the observation boundary
+/// exists to protect).
+///
+/// **`target` is always `None` here, and that is the whole difference between
+/// an index the terminal opens and an index this API serves.** In the CLI an
+/// index can be open INSIDE a card capture, and then its cards carry selection
+/// numbers that answer that capture. This API has no capture — the web's input
+/// grammar refuses `?`/`index`/`orders`/`techs` precisely so that a digit never
+/// silently changes meaning — so the index is a read-only view and its cards
+/// carry no numbers.
+///
+/// The filter is parsed by the CLI's own `card_prompt::parse_filter`. There is
+/// exactly ONE card-entry grammar in this project and the web does not get a
+/// second one: a second parser would answer an ambiguous prefix differently from
+/// the terminal on the first `f s` a player typed.
+async fn card_index(
+    State(state): State<Arc<AppState>>,
+    Path((id, kind)): Path<(String, String)>,
+    QueryArgs(q): QueryArgs<IndexQuery>,
+) -> ApiResult<yokohama_cli::screen_model::IndexModel> {
+    use yokohama_cli::screen_model::IndexKind;
+    let kind = match kind.as_str() {
+        "orders" => IndexKind::Orders,
+        "techs" => IndexKind::Techs,
+        "goals" => IndexKind::Achievements,
+        "sites" => IndexKind::Sites,
+        other => {
+            return Err(ApiError::bad_request(format!(
+                "no card index named {other:?} — the four are orders, techs, goals and sites"
+            )))
+        }
+    };
+    let filter = match q.filter.as_deref() {
+        None => None,
+        Some(term) => yokohama_cli::card_prompt::parse_filter(term, kind)
+            .map_err(ApiError::bad_request)?,
+    };
+    let handle = state.games.handle(&id).map_err(ApiError::not_found)?;
+    let repl = handle.lock().expect("a game");
+    Ok(Json(yokohama_cli::screen_model::build_index(
+        kind,
+        repl.session.rules(),
+        &repl.index_placements(),
+        &yokohama_cli::screen_model::build_achievements(repl.session.state()).cards,
+        None,
+        filter,
+    )))
+}
+
+/// Narrows an index. The grammar is the CLI's; an unparseable term is a 400
+/// carrying the CLI's own refusal, which names what it would have accepted.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IndexQuery {
+    #[serde(default)]
+    pub filter: Option<String>,
+}
+
+/// `GET /api/games/{id}/result` — the finished game, ranked, with every seat's
+/// score broken into the categories the engine scored it in.
+///
+/// **A 409 while the game is still running**, not an empty payload: asking for
+/// the result of an unfinished game is a client mistake, and `final_result`
+/// would answer with a standing nobody has earned.
+async fn result(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> ApiResult<outcome::Outcome> {
+    let handle = state.games.handle(&id).map_err(ApiError::not_found)?;
+    let repl = handle.lock().expect("a game");
+    if !repl.session.is_over() {
+        return Err(ApiError {
+            status: StatusCode::CONFLICT,
+            message: "the game is not over — there is no final score yet".to_string(),
+        });
+    }
+    Ok(Json(outcome::Outcome::of(&repl.session.final_result())))
+}
+
 /// Which event `why` should account for. Absent means the most recent bot move.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -684,6 +771,8 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/api/games/{id}/log", get(log))
         .route("/api/games/{id}/suggest", get(suggest))
         .route("/api/games/{id}/why", get(why))
+        .route("/api/games/{id}/index/{kind}", get(card_index))
+        .route("/api/games/{id}/result", get(result))
         .with_state(state)
         .fallback(fallback)
 }
@@ -1010,6 +1099,76 @@ mod tests {
         let counters = ok["counters"].as_array().expect("a searching contestant reports counters");
         assert_eq!(counters.len(), 15, "the whole counter surface, not a chosen two of it");
         assert!(counters.iter().all(|c| c["group"] != "ungrouped"), "{counters:?}");
+    }
+
+    /// **The four card indexes are the CLI's own, served as VIEWS.**
+    ///
+    /// `target: None` is the load-bearing difference: in the terminal an index
+    /// can be open inside a card capture and its cards then carry selection
+    /// numbers. This API has no capture — the input grammar refuses `?`, `index`
+    /// and the registry words precisely so a digit cannot silently change
+    /// meaning — so an index here is read-only and numbers nothing.
+    #[tokio::test]
+    async fn the_four_card_indexes_are_served_as_views_and_a_fifth_is_refused() {
+        let router = live_router();
+        a_game(&router, "indexed", &[]).await;
+        for (kind, least) in [("orders", 36), ("techs", 20), ("goals", 3), ("sites", 24)] {
+            let (status, body) =
+                call(&router, "GET", &format!("/api/games/indexed/index/{kind}"), None).await;
+            assert_eq!(status, StatusCode::OK, "{kind}: {body}");
+            assert_eq!(body["total"], least, "{kind} is over its whole population");
+            assert_eq!(body["shown"], least, "and unfiltered it shows all of it");
+            assert!(body["target"].is_null(), "{kind} is a view, so it numbers nothing");
+            assert!(!body["groups"].as_array().expect("groups").is_empty(), "{kind} has groups");
+        }
+        let (status, body) = call(&router, "GET", "/api/games/indexed/index/nope", None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            body["error"].as_str().unwrap_or_default().contains("orders, techs, goals and sites"),
+            "the refusal names what it would have taken: {body}"
+        );
+    }
+
+    /// The filter is the CLI's own grammar, refusals included.
+    ///
+    /// A second parser in this crate would answer an ambiguous prefix
+    /// differently from the terminal on the first `f s` a player typed — which
+    /// is the exact defect `card_prompt`'s "prefixes refuse ambiguity rather
+    /// than resolving it" rule exists to close. So the refusal here IS the
+    /// CLI's, and a narrowed index really is narrower.
+    #[tokio::test]
+    async fn an_index_filter_narrows_it_and_an_ambiguous_one_is_refused_not_guessed() {
+        let router = live_router();
+        a_game(&router, "filtered", &[]).await;
+        let (_, all) = call(&router, "GET", "/api/games/filtered/index/orders", None).await;
+
+        let (status, narrowed) =
+            call(&router, "GET", "/api/games/filtered/index/orders?filter=copper", None).await;
+        assert_eq!(status, StatusCode::OK, "{narrowed}");
+        assert_eq!(narrowed["total"], all["total"], "the population is unchanged");
+        assert!(
+            narrowed["shown"].as_u64().unwrap() < all["shown"].as_u64().unwrap(),
+            "a filter shows fewer: {} vs {}",
+            narrowed["shown"],
+            all["shown"]
+        );
+        assert!(!narrowed["filter"].is_null(), "and the payload says what narrowed it");
+
+        let (status, bad) =
+            call(&router, "GET", "/api/games/filtered/index/orders?filter=zzzz", None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
+        assert!(bad["error"].is_string(), "carrying the CLI's own sentence: {bad}");
+    }
+
+    /// The final score is a 409 until there IS one — not an empty payload and
+    /// not a standing nobody has earned.
+    #[tokio::test]
+    async fn the_result_is_refused_while_the_game_is_still_running() {
+        let router = live_router();
+        a_game(&router, "unfinished", &[]).await;
+        let (status, body) = call(&router, "GET", "/api/games/unfinished/result", None).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert!(body["error"].as_str().unwrap_or_default().contains("not over"));
     }
 
     /// Health names the two keys that actually decide compatibility, and names
