@@ -5,10 +5,10 @@ A Rust engine, live-game CLI tracker, and verification stack for the board game 
 
 > [!IMPORTANT]
 > **Testing the CLI? Start with the [HTML CLI guide](docs/cli-guide.html).** Ready-to-run
-> builds for Apple Silicon macOS, Ubuntu x86_64, and (new in v0.3.3) Windows x86_64 are on the
+> builds for Apple Silicon macOS, Ubuntu x86_64, and Windows x86_64 are on the
 > [Releases page](https://github.com/jmoore2333/yokohama-assistant/releases) — current release
-> **v0.3.3**, the first full (non-pre) release; each download also includes an offline copy of
-> the guide.
+> **v0.5.0**, cut from the Phase-3.5c V4 close and the first release whose default bot is the
+> sighted evaluator `v4-step9-draft1`; each download also includes an offline copy of the guide.
 
 **Priority order:** 1) engine-validated move-by-move tracking of live games via CLI →
 2) a computer player → 3) computer vision / AR assist (deferred; the original 2025 AR-first
@@ -25,8 +25,10 @@ ROUND, and the message zone greets the reloaded save with GAME OVER — the Chur
 filled](docs/images/cli-frame-b4.png)
 
 One of the owner's own finished 2-player games, reloaded — real terminal output (v2 frontend,
-200×50). The bot plays **`lookahead-v1`** — the production-intent search over the frozen
-evaluator-v2 weights — from the same masked view of the game a seated player gets: its Orders
+200×50). The bot in this capture plays **`lookahead-v1`** over the frozen evaluator-v2 weights,
+which was the production default on the day it was taken; **since v0.5.0 the wizard's default seat
+is the sighted `v4-step9-draft1`** instead, and the machinery shown below explains either one
+identically. It decides from the same masked view of the game a seated player gets: its Orders
 line prints `0 in hand (hidden) · 2 filled (O04, O33)`, because which cards a seat has *filled*
 is public and what it still holds is not. Every decision it makes can be interrogated after the
 fact:
@@ -90,7 +92,7 @@ That link is a hosted copy, so it opens and renders in a browser. The source of 
 repo — GitHub shows `.html` as source rather than rendering it, so read that one by opening the
 file locally.
 
-## Status (2026-08-19)
+## Status (2026-08-30)
 
 The engine plays complete, rules-correct games at 2–4 players and has been verified
 **differentially**: an independently-authored rules oracle — written from the rulebook and
@@ -183,16 +185,58 @@ recorded BGA-parity divergences).
   as bad play measured as genuinely dead, no candidate winning in any replication, where
   indifference is the correct answer rather than a defect.
 
-**Since then, Phases B and C are merged (2026-08-18)** — the driven-fixture harness with the
-owner's two recorded diagnostic games and their evidence triage (PR #23), then the four driven
-strategic families frozen, run, and routed (PR #24). Next, per the 2026-08-18 owner rulings: the
-V3 evaluator mini-cycle (exactly two candidate terms), then the e113 placement-representation
-cycle. The CLI is tester-ready; start with the linked HTML guide and report any table/CLI mismatch.
+**Phase C followed** (PR #24, 2026-08-18): the four driven strategic families frozen, run, and
+routed. Two evaluator cycles have since run on top of that harness:
 
-Releases track completed phases (**v0.3.3** ↔ Phase 3.3; the first with a Windows build — a
-post-3.5 release cut is pending the strength checkpoint). Saves and self-play records are
-compatibility-keyed to the game-semantics revision (`SEMANTICS_REV`, currently 7), not the
-release version (PR #14), so they survive release cuts — though a save stops resuming across a
+- **The V3 mini-cycle closed NULL** (PR #27, 2026-08-19). Both ruled candidates washed at their
+  pre-registered gates — terminal-margin at L2, `achievement_race_proximity` at L3. The probe
+  instruments and the evidence merged; **no behaviour changed.** A cycle that measures its two
+  candidates and ships neither is the process working rather than failing.
+- **V4 — the sighted-evaluator milestone — PASSED AND SHIPPED** (PR #30, merged 2026-08-30;
+  record of record
+  [`docs/plans/2026-08-30-phase3.5c-v4-close.md`](docs/plans/2026-08-30-phase3.5c-v4-close.md)).
+  The candidate `v4-step9-draft1` is an evaluator whose leaf can finally *see* — spatial/action
+  affordance and order/economic opportunity, computed for both seats — where its predecessor
+  scored positionally blind. In the one pre-registered confirmatory field, on the one attempt the
+  freeze allowed, it cleared **jointly**: θ̂ **0.691** [0.667, 0.715] against `v2-padded` (the
+  shipped behaviour) and **0.885** [0.867, 0.902] against `v2-refit-padded` (the refit control),
+  with a healthy self-null (0.498 over 647 read units). The escrowed driven-family blocks were
+  then re-read as a **regression guard an arena win cannot overrule** — GREEN: three non-blocking
+  VOIDs, zero failed admitted roots, one clean 0/20 exhibit per guard. The fifteen-gate release
+  roster ran as one uninterrupted sequence, 15/15. It ships **as itself**: `Contestant::PRODUCTION`
+  *is* the confirmed named identity — the CLI's default bot seat and `suggest`'s advisor — with
+  `lookahead-v1` and `greedy-v1` grandfathered byte-identically at the V2 table, so every figure
+  ever recorded against those names stays comparable. **The bar is not claimed.**
+
+**Where the work stands right now — the owner gate.** The milestone's close puts two decisions
+side by side, and as of 2026-08-30 **both are deliberately on HOLD**, waiting on one cheap thing:
+the owed `why`-scribed diagnostic game against the new default bot at the merge head, played by
+the owner and deliberately revisiting placement-heavy and end-timing positions. That scribe log
+then informs both rulings at once — the cadence's whole point being that watching the shipped
+player actually play costs less than either wrong turn.
+
+- **D3 — the opponent-reply depth re-ask.** Whether to open the bounded cross-handoff diagnostic
+  inside the shallow search. It was deliberately sequenced *after* the representation work,
+  because a negative measured over a still-blind leaf would have been confounded rather than
+  clearance. The leaf can now see, so the answer will finally be interpretable either way.
+- **W6 — the knob-screening GO/WAIT.** Capability-conditioned by owner ruling (2026-08-20):
+  screening waits for a version with a reasonable chance of playing to win. An identity that
+  beats the previously shipped bot at θ̂ 0.691 is the kind of version that ruling was waiting
+  for — but it is the owner's call, **never an automatic arrow**.
+
+Until those are ruled, the **exact bounded-tree adjudicator** is the one dispatchable lane. Two
+further items are carried in the open rather than buried: **OD-6's roster-target restatement** is
+ripe — the roster read 492.17s on the M5, its first crossing of the stated ≤420s target,
+dominated by `evaluator_gate` at 268.3s (wall figures are per-machine and stay tagged beside
+their own baselines) — and a **V5 shelf item**, a produce-and-hoard self-play trait that now
+carries three printed mechanical exhibits instead of an inference.
+
+The CLI is tester-ready; start with the linked HTML guide and report any table/CLI mismatch.
+
+Releases track completed phases (**v0.5.0** ↔ the V4 close — the current build, whose default bot
+is the sighted evaluator; **v0.3.3** ↔ Phase 3.3 was the previous full cut). Saves and self-play
+records are compatibility-keyed to the game-semantics revision (`SEMANTICS_REV`, currently 7), not
+the release version (PR #14), so they survive release cuts — though a save stops resuming across a
 semantics bump by design, and rev-6-and-earlier saves no longer resume.
 
 ## Workspace crates
@@ -200,7 +244,7 @@ semantics bump by design, and rev-6-and-earlier saves no longer resume.
 | Crate | What it is |
 |---|---|
 | `yokohama-core` | The engine: serde-serializable `GameState` (history-free, cheap to clone for search), pure `get_legal_moves` / checked `apply_move`, seeded setup, `GameRecord` save/replay stamped with `rules_hash`, `semantics_rev`, and a terminal-state digest verified by `replay_strict` — plus the Phase-3 player stack: the honest observation boundary (`PlayerView`/`observe`/`BeliefSampler`), the factored action families (`DecisionHandle`), the arena (contestants, paired cells, corpus emission), evaluator v1 (`game/eval.rs`), and the Greedy/Lookahead search rungs |
-| `yokohama-cli` | The game driver: setup wizard → REPL; simulated games and live-table tracking (reconciliation, desync tripwire), save/load/undo, TTY-colored board, a persistent dashboard whose per-seat **Orders line** names the cards each seat has filled, an **`areas`** reference printing every area's payout ladder from the engine's own reward functions, a bordered **end-trigger banner** that fires once on the transition and states the two-phase end rule, the BGA `import`/`--follow` pipeline, and **human-vs-bot play** in sim mode (any seat mix with ≥1 human; a bot seat is a `Contestant` — the wizard default plays `lookahead-v1`, honest by construction: the agent sees only its seat's view) plus the explanation pair: **`suggest`** — the same search analyzes YOUR seat's view and explains its recommended move term by term — and **`why` / `why <n>`** — any bot move replayed to its exact decision point and accounted for with the same tables, refusing (never guessing) when the reconstruction does not match the record |
+| `yokohama-cli` | The game driver: setup wizard → REPL; simulated games and live-table tracking (reconciliation, desync tripwire), save/load/undo, TTY-colored board, a persistent dashboard whose per-seat **Orders line** names the cards each seat has filled, an **`areas`** reference printing every area's payout ladder from the engine's own reward functions, a bordered **end-trigger banner** that fires once on the transition and states the two-phase end rule, the BGA `import`/`--follow` pipeline, and **human-vs-bot play** in sim mode (any seat mix with ≥1 human; a bot seat is a `Contestant` — the wizard default plays the confirmed production identity `v4-step9-draft1`, honest by construction: the agent sees only its seat's view) plus the explanation pair: **`suggest`** — the same search analyzes YOUR seat's view and explains its recommended move term by term — and **`why` / `why <n>`** — any bot move replayed to its exact decision point and accounted for with the same tables, refusing (never guessing) when the reconstruction does not match the record |
 | `yokohama-oracle` | The independent referee: legal-move enumeration, final scoring + tie-break, and a prune-free route reference, authored from the rules sources under an audited independence rule (types-only dependency on the engine) |
 | `yokohama-difftest` | The harness comparing engine vs oracle: per-decision-point sweeps under two policies, terminal scoring comparison, three-way route-pruning check, self-contained divergence artifacts + `repro` tool |
 | `yokohama-bridge` | The BGA capture relay (Phase 3.5b): a localhost-only HTTP sink that appends what the read-only browser extension in `bridge/` observes to `bridge-captures/<table>.ndjson`, plus the feed pre-processor (typed NDJSON reader, payload-identity dedupe, structural supersession collapse for takebacks). Depends on NO engine crate and knows no rules — translating captures into engine moves is `yokohama-cli`'s `import`, deliberately on the other side of that boundary |
@@ -210,11 +254,11 @@ semantics bump by design, and rev-6-and-earlier saves no longer resume.
 
 Download the archive for your system from
 [GitHub Releases](https://github.com/jmoore2333/yokohama-assistant/releases) — current release
-**v0.3.3**:
+**v0.5.0**:
 
 - `macos-apple-silicon` is optimized for Apple Silicon Macs (M1 or newer).
 - `ubuntu-x86_64` is a static binary for 64-bit Ubuntu Linux.
-- `windows-x86_64` is a 64-bit Windows build (new in v0.3.3).
+- `windows-x86_64` is a 64-bit Windows build.
 
 Extract the archive, open a terminal in the extracted directory, and run:
 
