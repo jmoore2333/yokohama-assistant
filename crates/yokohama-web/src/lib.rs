@@ -23,6 +23,7 @@
 //!    records that the public board is an injective fingerprint of the setup
 //!    seed, so a sequential or timestamp seed would hand over the hidden set.
 
+pub mod art;
 pub mod assets;
 pub mod client;
 pub mod games;
@@ -258,6 +259,19 @@ async fn input(
     Ok(Json(ClientState::of(&id, &repl, messages)))
 }
 
+/// The art manifest, or an honest 404.
+///
+/// **A checkout with no cropped art is a supported state**, not a broken one:
+/// the client falls back to drawing what it drew before there was any art. So
+/// the absence answers as a refusal with the sentence that explains it — which
+/// names the regeneration command, because the one thing a reader needs here is
+/// how to make it stop being absent.
+async fn art_manifest() -> Result<Json<art::ArtManifest>, ApiError> {
+    art::load(&art::art_dir()).map(Json).map_err(|e| {
+        ApiError::not_found(format!("{e} — run `python3 docs/tools/mkcardart.py` from the repo root"))
+    })
+}
+
 /// Everything no route claimed.
 ///
 /// **`/api/*` never falls through to the client.** A mistyped endpoint has to
@@ -265,11 +279,16 @@ async fn input(
 /// serving `index.html` there produces the failure every SPA developer has
 /// debugged at least once: the browser reports a syntax error at `<!doctype`,
 /// the console blames the client, and the real fault (a wrong path) appears
-/// nowhere in the message. Everything else is the client, with the SPA
-/// fallback `assets::serve` describes.
+/// nowhere in the message. `/art/*` is fenced for the same reason and a second
+/// one: a missing picture answering with HTML is a broken image whose message
+/// blames the decoder. Everything else is the client, with the SPA fallback
+/// `assets::serve` describes.
 async fn fallback(uri: axum::http::Uri) -> Response {
     if uri.path().starts_with("/api/") {
         return ApiError::not_found(format!("no such endpoint: {}", uri.path())).into_response();
+    }
+    if uri.path().starts_with("/art/") {
+        return art::serve(uri).await;
     }
     assets::serve(uri).await
 }
@@ -280,6 +299,7 @@ pub fn app(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/health", get(health))
         .route("/api/labels", get(labels))
+        .route("/api/art", get(art_manifest))
         .route("/api/games", get(list_games).post(create_game))
         .route("/api/games/preview", post(preview_game))
         .route("/api/games/{id}", get(get_game).delete(delete_game))

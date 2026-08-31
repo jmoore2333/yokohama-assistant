@@ -45,7 +45,7 @@ pub fn resolve(root: &Path, uri_path: &str) -> Option<PathBuf> {
     Some(out)
 }
 
-fn content_type(path: &Path) -> &'static str {
+pub fn content_type(path: &Path) -> &'static str {
     match path.extension().and_then(|e| e.to_str()) {
         Some("html") => "text/html; charset=utf-8",
         Some("js") | Some("mjs") => "text/javascript; charset=utf-8",

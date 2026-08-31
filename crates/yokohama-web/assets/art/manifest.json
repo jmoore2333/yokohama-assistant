@@ -1,0 +1,640 @@
+{
+ "achievements": {
+  "Commercial4": {
+   "file": "achievements/Commercial4.webp",
+   "h": 543,
+   "w": 360
+  },
+  "Copper5": {
+   "file": "achievements/Copper5.webp",
+   "h": 543,
+   "w": 360
+  },
+  "Money10": {
+   "file": "achievements/Money10.webp",
+   "h": 543,
+   "w": 360
+  },
+  "Orders5": {
+   "file": "achievements/Orders5.webp",
+   "h": 543,
+   "w": 360
+  },
+  "Prod2Comm3": {
+   "file": "achievements/Prod2Comm3.webp",
+   "h": 543,
+   "w": 360
+  },
+  "Prod3Comm2": {
+   "file": "achievements/Prod3Comm2.webp",
+   "h": 543,
+   "w": 360
+  },
+  "Production4": {
+   "file": "achievements/Production4.webp",
+   "h": 543,
+   "w": 360
+  },
+  "Seafood7": {
+   "file": "achievements/Seafood7.webp",
+   "h": 543,
+   "w": 360
+  },
+  "Silk6": {
+   "file": "achievements/Silk6.webp",
+   "h": 543,
+   "w": 360
+  },
+  "Tea7": {
+   "file": "achievements/Tea7.webp",
+   "h": 543,
+   "w": 360
+  },
+  "Technologies4": {
+   "file": "achievements/Technologies4.webp",
+   "h": 543,
+   "w": 360
+  },
+  "Tokens5": {
+   "file": "achievements/Tokens5.webp",
+   "h": 543,
+   "w": 360
+  }
+ },
+ "area_duplicates": [
+  {
+   "area_type": "FishingGround",
+   "col": 2,
+   "row": 2,
+   "sheet": "3plus"
+  },
+  {
+   "area_type": "CopperMine",
+   "col": 1,
+   "row": 1,
+   "sheet": "4p"
+  },
+  {
+   "area_type": "SilkMill",
+   "col": 1,
+   "row": 2,
+   "sheet": "4p"
+  },
+  {
+   "area_type": "TeaPlantation",
+   "col": 2,
+   "row": 2,
+   "sheet": "4p"
+  }
+ ],
+ "areas": {
+  "Bank": {
+   "file": "areas/Bank.webp",
+   "h": 330,
+   "w": 440
+  },
+  "Canal": {
+   "file": "areas/Canal.webp",
+   "h": 330,
+   "w": 440
+  },
+  "Chinatown": {
+   "file": "areas/Chinatown.webp",
+   "h": 330,
+   "w": 440
+  },
+  "Church": {
+   "file": "areas/Church.webp",
+   "h": 330,
+   "w": 440
+  },
+  "CopperMine": {
+   "file": "areas/CopperMine.webp",
+   "h": 330,
+   "w": 440
+  },
+  "Customs": {
+   "file": "areas/Customs.webp",
+   "h": 330,
+   "w": 440
+  },
+  "EmploymentAgency": {
+   "file": "areas/EmploymentAgency.webp",
+   "h": 330,
+   "w": 440
+  },
+  "FishingGround": {
+   "file": "areas/FishingGround.webp",
+   "h": 330,
+   "w": 440
+  },
+  "LaboratoryA": {
+   "file": "areas/LaboratoryA.webp",
+   "h": 330,
+   "w": 440
+  },
+  "LaboratoryB": {
+   "file": "areas/LaboratoryB.webp",
+   "h": 330,
+   "w": 440
+  },
+  "PortA": {
+   "file": "areas/PortA.webp",
+   "h": 330,
+   "w": 440
+  },
+  "PortB": {
+   "file": "areas/PortB.webp",
+   "h": 330,
+   "w": 440
+  },
+  "SilkMill": {
+   "file": "areas/SilkMill.webp",
+   "h": 330,
+   "w": 440
+  },
+  "TeaPlantation": {
+   "file": "areas/TeaPlantation.webp",
+   "h": 330,
+   "w": 440
+  }
+ },
+ "backs": {
+  "area_back": {
+   "file": "backs/area_back.webp",
+   "h": 330,
+   "w": 440
+  },
+  "order_back": {
+   "file": "backs/order_back.webp",
+   "h": 543,
+   "w": 360
+  },
+  "site_back": {
+   "file": "backs/site_back.webp",
+   "h": 543,
+   "w": 360
+  },
+  "tech_back": {
+   "file": "backs/tech_back.webp",
+   "h": 543,
+   "w": 360
+  }
+ },
+ "orders": {
+  "1": {
+   "file": "orders/O01.webp",
+   "h": 543,
+   "w": 360
+  },
+  "10": {
+   "file": "orders/O10.webp",
+   "h": 543,
+   "w": 360
+  },
+  "11": {
+   "file": "orders/O11.webp",
+   "h": 543,
+   "w": 360
+  },
+  "12": {
+   "file": "orders/O12.webp",
+   "h": 543,
+   "w": 360
+  },
+  "13": {
+   "file": "orders/O13.webp",
+   "h": 543,
+   "w": 360
+  },
+  "14": {
+   "file": "orders/O14.webp",
+   "h": 543,
+   "w": 360
+  },
+  "15": {
+   "file": "orders/O15.webp",
+   "h": 543,
+   "w": 360
+  },
+  "16": {
+   "file": "orders/O16.webp",
+   "h": 543,
+   "w": 360
+  },
+  "17": {
+   "file": "orders/O17.webp",
+   "h": 543,
+   "w": 360
+  },
+  "18": {
+   "file": "orders/O18.webp",
+   "h": 543,
+   "w": 360
+  },
+  "19": {
+   "file": "orders/O19.webp",
+   "h": 543,
+   "w": 360
+  },
+  "2": {
+   "file": "orders/O02.webp",
+   "h": 543,
+   "w": 360
+  },
+  "20": {
+   "file": "orders/O20.webp",
+   "h": 543,
+   "w": 360
+  },
+  "21": {
+   "file": "orders/O21.webp",
+   "h": 543,
+   "w": 360
+  },
+  "22": {
+   "file": "orders/O22.webp",
+   "h": 543,
+   "w": 360
+  },
+  "23": {
+   "file": "orders/O23.webp",
+   "h": 543,
+   "w": 360
+  },
+  "24": {
+   "file": "orders/O24.webp",
+   "h": 543,
+   "w": 360
+  },
+  "25": {
+   "file": "orders/O25.webp",
+   "h": 543,
+   "w": 360
+  },
+  "26": {
+   "file": "orders/O26.webp",
+   "h": 543,
+   "w": 360
+  },
+  "27": {
+   "file": "orders/O27.webp",
+   "h": 543,
+   "w": 360
+  },
+  "28": {
+   "file": "orders/O28.webp",
+   "h": 543,
+   "w": 360
+  },
+  "29": {
+   "file": "orders/O29.webp",
+   "h": 543,
+   "w": 360
+  },
+  "3": {
+   "file": "orders/O03.webp",
+   "h": 543,
+   "w": 360
+  },
+  "30": {
+   "file": "orders/O30.webp",
+   "h": 543,
+   "w": 360
+  },
+  "31": {
+   "file": "orders/O31.webp",
+   "h": 543,
+   "w": 360
+  },
+  "32": {
+   "file": "orders/O32.webp",
+   "h": 543,
+   "w": 360
+  },
+  "33": {
+   "file": "orders/O33.webp",
+   "h": 543,
+   "w": 360
+  },
+  "34": {
+   "file": "orders/O34.webp",
+   "h": 543,
+   "w": 360
+  },
+  "35": {
+   "file": "orders/O35.webp",
+   "h": 543,
+   "w": 360
+  },
+  "36": {
+   "file": "orders/O36.webp",
+   "h": 543,
+   "w": 360
+  },
+  "4": {
+   "file": "orders/O04.webp",
+   "h": 543,
+   "w": 360
+  },
+  "5": {
+   "file": "orders/O05.webp",
+   "h": 543,
+   "w": 360
+  },
+  "6": {
+   "file": "orders/O06.webp",
+   "h": 543,
+   "w": 360
+  },
+  "7": {
+   "file": "orders/O07.webp",
+   "h": 543,
+   "w": 360
+  },
+  "8": {
+   "file": "orders/O08.webp",
+   "h": 543,
+   "w": 360
+  },
+  "9": {
+   "file": "orders/O09.webp",
+   "h": 543,
+   "w": 360
+  }
+ },
+ "provenance": {
+  "card_width": 360,
+  "generator": "docs/tools/mkcardart.py",
+  "positions": "analysis-1/yokohama-kb/0{7,8,9}-*.yaml",
+  "sheets": "tts-assets/organized/",
+  "tile_width": 440,
+  "webp_quality": 82
+ },
+ "sites": {
+  "0": {
+   "file": "sites/S00.webp",
+   "h": 543,
+   "w": 360
+  },
+  "1": {
+   "file": "sites/S01.webp",
+   "h": 543,
+   "w": 360
+  },
+  "10": {
+   "file": "sites/S10.webp",
+   "h": 543,
+   "w": 360
+  },
+  "11": {
+   "file": "sites/S11.webp",
+   "h": 543,
+   "w": 360
+  },
+  "12": {
+   "file": "sites/S12.webp",
+   "h": 543,
+   "w": 360
+  },
+  "13": {
+   "file": "sites/S13.webp",
+   "h": 543,
+   "w": 360
+  },
+  "14": {
+   "file": "sites/S14.webp",
+   "h": 543,
+   "w": 360
+  },
+  "15": {
+   "file": "sites/S15.webp",
+   "h": 543,
+   "w": 360
+  },
+  "16": {
+   "file": "sites/S16.webp",
+   "h": 543,
+   "w": 360
+  },
+  "17": {
+   "file": "sites/S17.webp",
+   "h": 543,
+   "w": 360
+  },
+  "18": {
+   "file": "sites/S18.webp",
+   "h": 543,
+   "w": 360
+  },
+  "19": {
+   "file": "sites/S19.webp",
+   "h": 543,
+   "w": 360
+  },
+  "2": {
+   "file": "sites/S02.webp",
+   "h": 543,
+   "w": 360
+  },
+  "20": {
+   "file": "sites/S20.webp",
+   "h": 543,
+   "w": 360
+  },
+  "21": {
+   "file": "sites/S21.webp",
+   "h": 543,
+   "w": 360
+  },
+  "22": {
+   "file": "sites/S22.webp",
+   "h": 543,
+   "w": 360
+  },
+  "23": {
+   "file": "sites/S23.webp",
+   "h": 543,
+   "w": 360
+  },
+  "3": {
+   "file": "sites/S03.webp",
+   "h": 543,
+   "w": 360
+  },
+  "4": {
+   "file": "sites/S04.webp",
+   "h": 543,
+   "w": 360
+  },
+  "5": {
+   "file": "sites/S05.webp",
+   "h": 543,
+   "w": 360
+  },
+  "6": {
+   "file": "sites/S06.webp",
+   "h": 543,
+   "w": 360
+  },
+  "7": {
+   "file": "sites/S07.webp",
+   "h": 543,
+   "w": 360
+  },
+  "8": {
+   "file": "sites/S08.webp",
+   "h": 543,
+   "w": 360
+  },
+  "9": {
+   "file": "sites/S09.webp",
+   "h": 543,
+   "w": 360
+  }
+ },
+ "techs": {
+  "Ball": {
+   "file": "techs/ball.webp",
+   "h": 543,
+   "w": 360
+  },
+  "Brickyard": {
+   "file": "techs/brickyard.webp",
+   "h": 543,
+   "w": 360
+  },
+  "Electrical Light": {
+   "file": "techs/electrical-light.webp",
+   "h": 543,
+   "w": 360
+  },
+  "Exposition": {
+   "file": "techs/exposition.webp",
+   "h": 543,
+   "w": 360
+  },
+  "Gaslight": {
+   "file": "techs/gaslight.webp",
+   "h": 543,
+   "w": 360
+  },
+  "Language School": {
+   "file": "techs/language-school.webp",
+   "h": 543,
+   "w": 360
+  },
+  "Letterpress Printing": {
+   "file": "techs/letterpress-printing.webp",
+   "h": 543,
+   "w": 360
+  },
+  "Mining Technology": {
+   "file": "techs/mining-technology.webp",
+   "h": 543,
+   "w": 360
+  },
+  "Newspaper": {
+   "file": "techs/newspaper.webp",
+   "h": 543,
+   "w": 360
+  },
+  "Patent System": {
+   "file": "techs/patent-system.webp",
+   "h": 543,
+   "w": 360
+  },
+  "Postal System": {
+   "file": "techs/postal-system.webp",
+   "h": 543,
+   "w": 360
+  },
+  "Stagecoach": {
+   "file": "techs/stagecoach.webp",
+   "h": 543,
+   "w": 360
+  },
+  "Station": {
+   "file": "techs/station.webp",
+   "h": 543,
+   "w": 360
+  },
+  "Stock Market": {
+   "file": "techs/stock-market.webp",
+   "h": 543,
+   "w": 360
+  },
+  "Telegram": {
+   "file": "techs/telegram.webp",
+   "h": 543,
+   "w": 360
+  },
+  "Telephone": {
+   "file": "techs/telephone.webp",
+   "h": 543,
+   "w": 360
+  },
+  "Textile Mill": {
+   "file": "techs/textile-mill.webp",
+   "h": 543,
+   "w": 360
+  },
+  "Tram": {
+   "file": "techs/tram.webp",
+   "h": 543,
+   "w": 360
+  },
+  "University": {
+   "file": "techs/university.webp",
+   "h": 543,
+   "w": 360
+  },
+  "Winery": {
+   "file": "techs/winery.webp",
+   "h": 543,
+   "w": 360
+  }
+ },
+ "tokens": {
+  "good_copper": {
+   "file": "tokens/good_copper.webp",
+   "h": 128,
+   "w": 128
+  },
+  "good_imports": {
+   "file": "tokens/good_imports.webp",
+   "h": 128,
+   "w": 128
+  },
+  "good_seafood": {
+   "file": "tokens/good_seafood.webp",
+   "h": 128,
+   "w": 128
+  },
+  "good_silk": {
+   "file": "tokens/good_silk.webp",
+   "h": 128,
+   "w": 128
+  },
+  "good_tea": {
+   "file": "tokens/good_tea.webp",
+   "h": 128,
+   "w": 128
+  },
+  "station": {
+   "file": "tokens/station.webp",
+   "h": 128,
+   "w": 128
+  },
+  "yen_1": {
+   "file": "tokens/yen_1.webp",
+   "h": 128,
+   "w": 128
+  },
+  "yen_3": {
+   "file": "tokens/yen_3.webp",
+   "h": 128,
+   "w": 128
+  }
+ }
+}
