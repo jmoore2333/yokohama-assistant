@@ -1,28 +1,43 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api, ApiError, type NewGameRequest } from "./api";
-import type { ClientState, Preview } from "./types";
+import { OrderCardView } from "./Cards";
+import type { ArtManifest, ClientState, Preview } from "./types";
 
 const COLORS = ["Red", "Blue", "Yellow", "Green"] as const;
 
-/** Setup: the sim tail of the CLI's wizard, in two steps.
+/** Setup: the sim tail of the CLI's wizard, in two steps, plus the saved games.
  *
  * The deal preview is a real request rather than a guess — `new_game` is
- * deterministic from the seed, so the cards shown here ARE the cards dealt. */
-export function NewGame({ onStarted }: { onStarted: (state: ClientState) => void }) {
+ * deterministic from the seed, so the cards shown here ARE the cards dealt.
+ * The seed is carried as a STRING throughout: it is a `u64`, a JS number cannot
+ * hold one, and this screen round-trips it from preview to create. Rounding it
+ * would deal a different game than the one on screen. */
+export function NewGame({
+  art,
+  onStarted,
+}: {
+  art: ArtManifest | null;
+  onStarted: (state: ClientState) => void;
+}) {
   const [players, setPlayers] = useState(2);
   const [seedText, setSeedText] = useState("");
   const [botSeat, setBotSeat] = useState(1);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [keeps, setKeeps] = useState<number[]>([]);
+  const [saved, setSaved] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    api.list().then(setSaved).catch(() => setSaved([]));
+  }, []);
 
   const colors = COLORS.slice(0, players);
   const base = (): NewGameRequest => ({
     players,
     colors: [...colors],
     start_seat: 0,
-    ...(seedText.trim() ? { seed: Number(seedText.trim()) } : {}),
+    ...(seedText.trim() ? { seed: seedText.trim() } : {}),
     keeps: Array.from({ length: players }, () => 1),
     bot_seats: [botSeat],
   });
@@ -71,6 +86,7 @@ export function NewGame({ onStarted }: { onStarted: (state: ClientState) => void
         <input
           id="seed"
           value={seedText}
+          inputMode="numeric"
           placeholder="blank — the server draws one"
           onChange={(e) => {
             setSeedText(e.target.value);
@@ -123,29 +139,13 @@ export function NewGame({ onStarted }: { onStarted: (state: ClientState) => void
                 {deal.cards.map((card, idx) => (
                   <button
                     type="button"
-                    className={`card ${keeps[deal.seat] === idx + 1 ? "chosen" : ""}`}
+                    className={`deal-pick ${keeps[deal.seat] === idx + 1 ? "chosen" : ""}`}
                     key={card.id}
                     onClick={() =>
                       setKeeps((k) => k.map((v, i) => (i === deal.seat ? idx + 1 : v)))
                     }
                   >
-                    <div className="country">{card.country}</div>
-                    <div className="tile-row muted">
-                      O{String(card.id).padStart(2, "0")} &middot; needs{" "}
-                      {Object.entries(card.requirements)
-                        .filter(([, v]) => (v ?? 0) > 0)
-                        .map(([k, v]) => `${v} ${k}`)
-                        .join(" + ") || "nothing"}
-                    </div>
-                    <div className="stat-row">
-                      {Object.entries(card.rewards)
-                        .filter(([, v]) => v > 0)
-                        .map(([k, v]) => (
-                          <span className="chip" key={k}>
-                            {v} {k}
-                          </span>
-                        ))}
-                    </div>
+                    <OrderCardView art={art} card={card} id={card.id} />
                   </button>
                 ))}
               </div>
@@ -158,6 +158,7 @@ export function NewGame({ onStarted }: { onStarted: (state: ClientState) => void
               disabled={busy}
               onClick={() =>
                 run(async () => {
+                  // The seed sent back is the STRING the server gave, verbatim.
                   const req = { ...base(), seed: preview.seed, keeps };
                   onStarted(await api.create(req));
                 })
@@ -171,6 +172,45 @@ export function NewGame({ onStarted }: { onStarted: (state: ClientState) => void
           </div>
         </>
       )}
+
+      {/* Every game is persisted as its `GameRecord` after every applied move,
+          and a game whose handle is gone is rebuilt from that record — so
+          resuming one is a `GET`, not a restore. */}
+      <section className="saved">
+        <h3>Saved games</h3>
+        {saved.length === 0 ? (
+          <p className="muted">none yet — a game appears here as soon as it starts.</p>
+        ) : (
+          <ul>
+            {saved.map((name) => (
+              <li key={name}>
+                <button
+                  type="button"
+                  className="ghost"
+                  disabled={busy}
+                  onClick={() => run(async () => onStarted(await api.get(name)))}
+                >
+                  {name}
+                </button>
+                <button
+                  type="button"
+                  className="ghost danger"
+                  disabled={busy}
+                  title={`delete ${name}`}
+                  onClick={() =>
+                    run(async () => {
+                      await api.remove(name);
+                      setSaved(await api.list());
+                    })
+                  }
+                >
+                  delete
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
 
       {error && <div className="error">{error}</div>}
     </div>

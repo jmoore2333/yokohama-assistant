@@ -1,7 +1,6 @@
-import type { BoardModel, Labels, PlayerColor, TileModel } from "./types";
-
-const seatClass = (c: PlayerColor | undefined) =>
-  c ? `seat-${c.toLowerCase()}` : "";
+import type { ArtManifest, BoardModel, Labels, PlayerColor, SiteModel, TileModel } from "./types";
+import { areaArt, fivePowerArt, fivePowerWords } from "./art";
+import { Pawns, seatClass } from "./Cards";
 
 /** The staggered pyramid, drawn from `grid_position` and nothing else.
  *
@@ -12,12 +11,14 @@ const seatClass = (c: PlayerColor | undefined) =>
  * was built for. */
 export function Board({
   board,
+  art,
   labels,
   colors,
   onTileClick,
   selected,
 }: {
   board: BoardModel;
+  art: ArtManifest | null;
   labels: Labels | null;
   colors: PlayerColor[];
   onTileClick?: (area: number) => void;
@@ -45,6 +46,7 @@ export function Board({
             <Tile
               key={t.area}
               tile={t}
+              art={art}
               labels={labels}
               colors={colors}
               onClick={onTileClick}
@@ -53,18 +55,66 @@ export function Board({
           ))}
         </div>
       ))}
+      <Legend />
+    </div>
+  );
+}
+
+/** The site-slot strip: the four printed spaces, who built on each, and the
+ *  trading-house VP.
+ *
+ *  This is the CLI's `sites ★1 ★2¥1 — ★2  │ T8` line, and it is the densest
+ *  thing on a tile for a reason — it is what a player is reading when they
+ *  decide where to build. A BLANK space prints as `—` rather than as nothing,
+ *  because a card with three rewards and a card with four are different cards
+ *  and a gap that is not drawn cannot be counted. */
+function SiteSlots({ site, colors }: { site: SiteModel; colors: PlayerColor[] }) {
+  return (
+    <div className="site-strip" title="the four shophouse spaces, then the trading-house VP">
+      {site.slots.map((slot, i) => {
+        const r = slot.reward;
+        const parts: string[] = [];
+        if (r.vp) parts.push(`★${r.vp}`);
+        if (r.yen) parts.push(`¥${r.yen}`);
+        if (r.seafood) parts.push(`f${r.seafood}`);
+        if (r.tea) parts.push(`t${r.tea}`);
+        if (r.silk) parts.push(`s${r.silk}`);
+        if (r.copper) parts.push(`c${r.copper}`);
+        if (r.any_good) parts.push(`*${r.any_good}`);
+        if (r.movement) parts.push(`m${r.movement}`);
+        if (r.warehouse_tokens) parts.push(`w${r.warehouse_tokens}`);
+        const built = slot.built_by;
+        return (
+          <span
+            className={`slot ${built != null ? `built ${seatClass(colors[built])}` : ""}`}
+            key={i}
+          >
+            {built != null && <span className="built-mark">&#8962;</span>}
+            {parts.length === 0 ? "—" : parts.join("")}
+          </span>
+        );
+      })}
+      <span
+        className={`slot th ${site.trading_house_owner != null ? `built ${seatClass(colors[site.trading_house_owner])}` : ""}`}
+        title="trading-house space"
+      >
+        {site.trading_house_owner != null && <span className="built-mark">&#8962;</span>}T
+        {site.trading_house_vp}
+      </span>
     </div>
   );
 }
 
 function Tile({
   tile,
+  art,
   labels,
   colors,
   onClick,
   isSelected,
 }: {
   tile: TileModel;
+  art: ArtManifest | null;
   labels: Labels | null;
   colors: PlayerColor[];
   onClick?: (area: number) => void;
@@ -73,44 +123,49 @@ function Tile({
   const name = labels?.area_types[tile.area_type] ?? tile.area_type;
   const isCanal = tile.area_type === "Canal";
   const id = `A${String(tile.area).padStart(2, "0")}`;
-  const occupants = tile.assistants.filter(([, n]) => n > 0);
+  const face = areaArt(art, tile.area_type);
+  const tokenSrc = fivePowerArt(art, tile.token);
 
   const body = (
     <>
-      <div className="tile-head">
-        <span className="tile-id">{id}</span>
-        <span className="tile-name">{name}</span>
+      {face && <img className="tile-art" src={face} alt="" loading="lazy" />}
+      <div className="tile-body">
+        <div className="tile-head">
+          <span className="tile-id">{id}</span>
+          <span className="tile-name">{name}</span>
+          {tile.reachable && (
+            <span className="reach" title="a Movement destination the engine offers">
+              &#9672;
+            </span>
+          )}
+        </div>
+        {isCanal ? (
+          <div className="tile-row muted">crossing only &middot; 1 yen to the bank</div>
+        ) : (
+          <>
+            <div className="tile-row pawns">
+              <Pawns
+                presidents={tile.presidents}
+                assistants={tile.assistants}
+                hasStation={tile.has_station}
+                colors={colors}
+              />
+            </div>
+            <div className="tile-row token-row">
+              {tile.token ? (
+                <span className="five-power" title="5-Power bonus token">
+                  {tokenSrc && <img src={tokenSrc} alt="" loading="lazy" />}
+                  {fivePowerWords(tile.token)}
+                </span>
+              ) : (
+                <span className="muted">5-Power taken</span>
+              )}
+              {tile.site?.index != null && <span className="chip site-id">Site {tile.site.index}</span>}
+            </div>
+            {tile.site && <SiteSlots site={tile.site} colors={colors} />}
+          </>
+        )}
       </div>
-      {isCanal ? (
-        <div className="tile-row muted">crossing only · 1 yen to the bank</div>
-      ) : (
-        <>
-          <div className="tile-row">
-            {tile.presidents.length === 0 && occupants.length === 0 ? (
-              <span className="tile-row muted">no pawns</span>
-            ) : (
-              <>
-                {tile.presidents.map((seat) => (
-                  <span key={`p${seat}`} className={`pawn ${seatClass(colors[seat])}`} title="President">
-                    &#9650;
-                  </span>
-                ))}
-                {occupants.map(([seat, n]) => (
-                  <span key={`a${seat}`} className={`pawn ${seatClass(colors[seat])}`} title="assistants">
-                    &#9679;{n}
-                  </span>
-                ))}
-              </>
-            )}
-            {tile.has_station && <span className="chip">St</span>}
-          </div>
-          <div className="tile-row muted">
-            {tile.site?.index != null && <span className="chip">Site {tile.site.index}</span>}
-            {tile.site && <span className="chip vp">TH {tile.site.trading_house_vp}</span>}
-            {tile.token != null && <span className="chip yen">5&#8209;Power</span>}
-          </div>
-        </>
-      )}
     </>
   );
 
@@ -118,7 +173,8 @@ function Tile({
     "tile",
     tile.reachable ? "reachable" : "",
     isCanal ? "canal" : "",
-    isSelected ? "reachable" : "",
+    isSelected ? "selected" : "",
+    face ? "has-art" : "",
   ]
     .filter(Boolean)
     .join(" ");
@@ -128,5 +184,30 @@ function Tile({
     <button type="button" className={className} onClick={() => onClick(tile.area)}>
       {body}
     </button>
+  );
+}
+
+/** What the marks mean.
+ *
+ *  The CLI prints this under every board, and it is not decoration: `★n` and
+ *  `f2` and `⌂` are a private alphabet, and a surface that uses one without
+ *  saying so is a surface you have to already know. Worded from the terminal's
+ *  own legend so the two teach the same thing. */
+function Legend() {
+  return (
+    <details className="legend">
+      <summary>marks</summary>
+      <div>
+        <b>&#9650;</b> president (owner colour) &middot; <b>&#9679;n</b> assistants &middot;{" "}
+        <b>&#9672;</b> a Movement destination the engine offers &middot; <b>St</b> Station (+1
+        Power for everyone)
+      </div>
+      <div>
+        site slots: <b>&#8962;</b> built (owner colour) &middot; <b>★n</b> VP &middot; <b>¥n</b>{" "}
+        yen &middot; <b>f/t/s/c n</b> goods &middot; <b>*n</b> any good &middot; <b>mn</b> movement
+        &middot; <b>wn</b> from warehouse &middot; <b>Tn</b> trading-house VP &middot; <b>—</b> a
+        blank space
+      </div>
+    </details>
   );
 }
