@@ -437,3 +437,150 @@ export interface ArtManifest {
   backs: Record<string, ArtEntry>;
   tokens: Record<string, ArtEntry>;
 }
+
+// ---- the explanation surface (M3) ----------------------------------------
+//
+// `GET /api/games/{id}/suggest` and `GET /api/games/{id}/why`. Both answer 200
+// with exactly one of `ok` / `refusal` non-null: a refusal is the ANSWER (the
+// last move was a human's; the game is over), not a client error, and the
+// browser renders the sentence.
+//
+// Every number here is `i64` on the server and arrives as a JSON number. That
+// is safe and the seed is not, because a contribution is bounded by the weight
+// table while a seed is drawn over the full `u64`.
+
+/** One feature's contribution, as `eval::explain` computed it.
+ *
+ *  `feature` is the STABLE snake_case token (`Feature::name()`), not a display
+ *  string — the same key the arena report and `eval_probe` use. Wording comes
+ *  from `/api/labels`. `product` is `weight × (viewer_value − opponent_value)`
+ *  and is carried rather than recomputed here: re-multiplying in the browser
+ *  would be a second implementation of the identity this surface exists to show. */
+export interface Term {
+  feature: string;
+  viewer_value: number;
+  opponent_value: number;
+  weight: number;
+  product: number;
+}
+
+/** A finished game's re-derived standing, and then the whole of `total`. */
+export interface Terminal {
+  rank: number;
+  seats: number;
+  viewer_total: number;
+  best_other_total: number;
+  value: number;
+}
+
+/** A score, term by term.
+ *
+ *  **THE IDENTITY THE CHART MUST FOOT:**
+ *
+ *      total === sum(terms[].product) + (terminal ? terminal.value : 0)
+ *
+ *  `terms` carries ALL 34 features, zero-product ones included, because the
+ *  identity only holds over all of them — so a reader can add the column up.
+ *  Do not filter server data out of the sum.
+ *
+ *  When `terminal` is non-null every product is 0 by design (reporting an
+ *  interpolated weight on a finished game would be a lie about what the
+ *  evaluator used), so a bar chart renders EMPTY against a nonzero total. Draw
+ *  the standing instead. */
+export interface Explanation {
+  terms: Term[];
+  terminal: Terminal | null;
+  total: number;
+  progress_ppm: number;
+  /** How many of `terms` carry a nonzero product — the terminal prints the same
+   *  count, so the two surfaces cannot disagree about it. */
+  nonzero: number;
+}
+
+/** One root candidate, worded and priced. `margin` is `value − best`, so **0
+ *  means tied** — the sense the terminal's runner-up label already states. */
+export interface Ranked {
+  text: string;
+  value: number;
+  margin: number;
+}
+
+/** One search counter. `name` is the engine's own — carried verbatim so this
+ *  screen's output can be grepped with the arena report's vocabulary.
+ *  `group` is `"work" | "limit" | "ungrouped"`. */
+export interface Counter {
+  name: string;
+  value: number;
+  group: string;
+}
+
+/** What a `why` reconstruction CLAIMS. Arithmetic with no claim attached to it
+ *  is arithmetic about nothing, so this is not decoration. When
+ *  `recorded_version` differs from `current_version` the move still reproduced
+ *  — the account is this build's reading of a move an older one played, and the
+ *  client says so. */
+export interface Provenance {
+  contestant: string;
+  controller_version: number;
+  evaluator_version: number;
+  /** The log's printed 0-based event index. */
+  index: number;
+  seat: PlayerId;
+  /** The key the bot's own pump decided under, hex, as a string. */
+  decision_seed: string;
+  /** The engine offered exactly one move here. */
+  forced: boolean;
+  recorded_version: number | null;
+  current_version: number;
+}
+
+/** A typed refusal. `message` is the CLI's own sentence, never re-authored.
+ *  `kind` is one of the twelve `why` tags, or one of `suggest`'s four
+ *  (`live_mode`, `game_over`, `bot_seat`, `locked`, plus `search` for an agent
+ *  error surfaced verbatim). */
+export interface RefusalRow {
+  kind: string;
+  message: string;
+}
+
+export interface SuggestOk {
+  seat: PlayerId;
+  /** The chosen move, worded by the server. The client never constructs a move
+   *  and never prices one. */
+  text: string;
+  explanation: Explanation;
+  /** The principal continuation, root move first — so step 1 repeats `text`. */
+  continuation: string[];
+  /** EVERY root candidate, best first. Not truncated: showing more than three
+   *  runner-ups is one of the things a terminal genuinely cannot do, so the
+   *  presentation decision is the client's rather than the server's. */
+  ranking: Ranked[];
+  /** A `u64` as a STRING, like every other seed on this wire. */
+  stream_seed: string;
+  /** The ply guard stopped SOME continuation in this search — not necessarily
+   *  the one in `continuation`. The counter carries no identity. */
+  search_hit_ply_cap: boolean;
+  tied_at_top: number;
+}
+
+export interface SuggestResponse {
+  ok: SuggestOk | null;
+  refusal: RefusalRow | null;
+}
+
+export interface WhyOk {
+  provenance: Provenance;
+  text: string;
+  explanation: Explanation;
+  continuation: string[];
+  /** `null` for a greedy contestant, which searches no line at all — a
+   *  different fact from a block of zeros, so it is not flattened to one. */
+  counters: Counter[] | null;
+  search_hit_ply_cap: boolean;
+  ranking: Ranked[];
+}
+
+export interface WhyResponse {
+  ok: WhyOk | null;
+  refusal: RefusalRow | null;
+}

@@ -1,0 +1,1461 @@
+{
+  "ok": {
+    "continuation": [
+      "Place 1 assistant in each of: Tea Plantation (A00), Laboratory A (A06), Bank (A07)",
+      "Move President to Laboratory A (A06) — free",
+      "Laboratory: acquire Ball, slot fee: 2 yen",
+      "Skip the 5-Power token",
+      "Skip the building",
+      "End additional-action phase"
+    ],
+    "counters": [
+      {
+        "group": "work",
+        "name": "root_candidates",
+        "value": 222
+      },
+      {
+        "group": "work",
+        "name": "nodes",
+        "value": 1885
+      },
+      {
+        "group": "work",
+        "name": "handles",
+        "value": 1885
+      },
+      {
+        "group": "work",
+        "name": "route_dfs_nodes",
+        "value": 222
+      },
+      {
+        "group": "work",
+        "name": "forced_nodes",
+        "value": 1614
+      },
+      {
+        "group": "work",
+        "name": "leaves",
+        "value": 991
+      },
+      {
+        "group": "work",
+        "name": "scored",
+        "value": 4437
+      },
+      {
+        "group": "work",
+        "name": "root_scored",
+        "value": 222
+      },
+      {
+        "group": "limit",
+        "name": "budget_binds",
+        "value": 0
+      },
+      {
+        "group": "limit",
+        "name": "budget_starved",
+        "value": 0
+      },
+      {
+        "group": "limit",
+        "name": "placement_cap_binds",
+        "value": 0
+      },
+      {
+        "group": "work",
+        "name": "max_line",
+        "value": 6
+      },
+      {
+        "group": "limit",
+        "name": "ply_cap_hits",
+        "value": 0
+      },
+      {
+        "group": "work",
+        "name": "free_extension_steps",
+        "value": 0
+      },
+      {
+        "group": "limit",
+        "name": "free_cap_hits",
+        "value": 0
+      }
+    ],
+    "explanation": {
+      "nonzero": 15,
+      "progress_ppm": 750000,
+      "terminal": null,
+      "terms": [
+        {
+          "feature": "victory_points",
+          "opponent_value": 19,
+          "product": 30,
+          "viewer_value": 20,
+          "weight": 30
+        },
+        {
+          "feature": "country_bonus_now",
+          "opponent_value": 2,
+          "product": 0,
+          "viewer_value": 2,
+          "weight": 35
+        },
+        {
+          "feature": "tech_bonus_now",
+          "opponent_value": 0,
+          "product": 180,
+          "viewer_value": 10,
+          "weight": 18
+        },
+        {
+          "feature": "church_bonus_now",
+          "opponent_value": 6,
+          "product": -30,
+          "viewer_value": 0,
+          "weight": 5
+        },
+        {
+          "feature": "customs_bonus_now",
+          "opponent_value": 0,
+          "product": 0,
+          "viewer_value": 0,
+          "weight": 15
+        },
+        {
+          "feature": "assistants_in_hand_core",
+          "opponent_value": 2,
+          "product": 0,
+          "viewer_value": 2,
+          "weight": 23
+        },
+        {
+          "feature": "assistants_in_hand_excess",
+          "opponent_value": 1,
+          "product": -7,
+          "viewer_value": 0,
+          "weight": 7
+        },
+        {
+          "feature": "assistants_in_warehouse",
+          "opponent_value": 12,
+          "product": 0,
+          "viewer_value": 12,
+          "weight": -10
+        },
+        {
+          "feature": "assistants_on_board",
+          "opponent_value": 3,
+          "product": 9,
+          "viewer_value": 4,
+          "weight": 9
+        },
+        {
+          "feature": "shophouses_built",
+          "opponent_value": 2,
+          "product": 0,
+          "viewer_value": 2,
+          "weight": 18
+        },
+        {
+          "feature": "trading_houses_built",
+          "opponent_value": 0,
+          "product": 0,
+          "viewer_value": 0,
+          "weight": 22
+        },
+        {
+          "feature": "five_power_tokens",
+          "opponent_value": 0,
+          "product": 24,
+          "viewer_value": 2,
+          "weight": 12
+        },
+        {
+          "feature": "imported_goods",
+          "opponent_value": 0,
+          "product": 0,
+          "viewer_value": 0,
+          "weight": 7
+        },
+        {
+          "feature": "achievement_progress_sum",
+          "opponent_value": 9,
+          "product": -18,
+          "viewer_value": 3,
+          "weight": 3
+        },
+        {
+          "feature": "mercenaries_total",
+          "opponent_value": 1,
+          "product": -3,
+          "viewer_value": 0,
+          "weight": 3
+        },
+        {
+          "feature": "hand_size",
+          "opponent_value": 1,
+          "product": 0,
+          "viewer_value": 1,
+          "weight": -1
+        },
+        {
+          "feature": "production_access",
+          "opponent_value": 4,
+          "product": 20,
+          "viewer_value": 6,
+          "weight": 10
+        },
+        {
+          "feature": "track_access",
+          "opponent_value": 0,
+          "product": 0,
+          "viewer_value": 0,
+          "weight": 1
+        },
+        {
+          "feature": "assistant_areas_distinct",
+          "opponent_value": 3,
+          "product": 0,
+          "viewer_value": 3,
+          "weight": -4
+        },
+        {
+          "feature": "president_local_access",
+          "opponent_value": 2,
+          "product": 1,
+          "viewer_value": 1,
+          "weight": -1
+        },
+        {
+          "feature": "bank_access",
+          "opponent_value": 2,
+          "product": 15,
+          "viewer_value": 3,
+          "weight": 15
+        },
+        {
+          "feature": "employment_agency_access",
+          "opponent_value": 0,
+          "product": 0,
+          "viewer_value": 0,
+          "weight": 1
+        },
+        {
+          "feature": "president_reachable_areas",
+          "opponent_value": 2,
+          "product": -4,
+          "viewer_value": 1,
+          "weight": 4
+        },
+        {
+          "feature": "money_stock",
+          "opponent_value": 0,
+          "product": 80,
+          "viewer_value": 5,
+          "weight": 16
+        },
+        {
+          "feature": "trade_goods_stock",
+          "opponent_value": 8,
+          "product": 44,
+          "viewer_value": 12,
+          "weight": 11
+        },
+        {
+          "feature": "building_tokens_ready",
+          "opponent_value": 0,
+          "product": 0,
+          "viewer_value": 0,
+          "weight": 0
+        },
+        {
+          "feature": "held_order_value",
+          "opponent_value": 12,
+          "product": 0,
+          "viewer_value": 20,
+          "weight": 0
+        },
+        {
+          "feature": "order_matched_goods",
+          "opponent_value": 0,
+          "product": 2,
+          "viewer_value": 2,
+          "weight": 1
+        },
+        {
+          "feature": "executable_orders",
+          "opponent_value": 0,
+          "product": 0,
+          "viewer_value": 0,
+          "weight": 0
+        },
+        {
+          "feature": "flag_icon_marginal",
+          "opponent_value": 2,
+          "product": 0,
+          "viewer_value": 2,
+          "weight": 0
+        },
+        {
+          "feature": "held_order_icons",
+          "opponent_value": 0,
+          "product": 0,
+          "viewer_value": 0,
+          "weight": 0
+        },
+        {
+          "feature": "lab_takeable",
+          "opponent_value": 0,
+          "product": 0,
+          "viewer_value": 0,
+          "weight": 1
+        },
+        {
+          "feature": "port_takeable",
+          "opponent_value": 0,
+          "product": 0,
+          "viewer_value": 0,
+          "weight": 1
+        },
+        {
+          "feature": "matched_production_access",
+          "opponent_value": 0,
+          "product": 0,
+          "viewer_value": 3,
+          "weight": 0
+        }
+      ],
+      "total": 343
+    },
+    "provenance": {
+      "contestant": "v4-step9-draft1",
+      "controller_version": 2,
+      "current_version": 2,
+      "decision_seed": "0x7f91d4d701f56a34",
+      "evaluator_version": 3,
+      "forced": false,
+      "index": 105,
+      "recorded_version": 2,
+      "seat": 1
+    },
+    "ranking": [
+      {
+        "margin": 0,
+        "text": "Place 1 assistant in each of: Tea Plantation (A00), Laboratory A (A06), Bank (A07)",
+        "value": 343
+      },
+      {
+        "margin": -1,
+        "text": "Place 1 assistant in each of: Laboratory A (A06), Bank (A07), Silk Mill (A08)",
+        "value": 342
+      },
+      {
+        "margin": -4,
+        "text": "Place 1 assistant in each of: Church (A01), Laboratory A (A06), Bank (A07)",
+        "value": 339
+      },
+      {
+        "margin": -6,
+        "text": "Place 1 assistant in each of: Port A (A02), Laboratory A (A06), Bank (A07)",
+        "value": 337
+      },
+      {
+        "margin": -8,
+        "text": "Place 1 assistant in each of: Laboratory A (A06), Bank (A07), Customs (A09)",
+        "value": 335
+      },
+      {
+        "margin": -12,
+        "text": "Place 1 assistant in each of: Laboratory A (A06), Bank (A07)",
+        "value": 331
+      },
+      {
+        "margin": -16,
+        "text": "Place 2 assistants in Laboratory A (A06) and 1 in Silk Mill (A08) (Telegram)",
+        "value": 327
+      },
+      {
+        "margin": -21,
+        "text": "Place 2 assistants in Laboratory A (A06) and 1 in Port A (A02) (Telegram)",
+        "value": 322
+      },
+      {
+        "margin": -26,
+        "text": "Place 2 assistants in Laboratory A (A06) and 1 in Copper Mine (A03) (Telegram)",
+        "value": 317
+      },
+      {
+        "margin": -27,
+        "text": "Place 2 assistants in Laboratory A (A06)",
+        "value": 316
+      },
+      {
+        "margin": -37,
+        "text": "Place 2 assistants in Silk Mill (A08) and 1 in Laboratory A (A06) (Telegram)",
+        "value": 306
+      },
+      {
+        "margin": -39,
+        "text": "Place 1 assistant in each of: Tea Plantation (A00), Church (A01), Laboratory A (A06)",
+        "value": 304
+      },
+      {
+        "margin": -40,
+        "text": "Place 1 assistant in each of: Tea Plantation (A00), Employment Agency (A04), Laboratory A (A06)",
+        "value": 303
+      },
+      {
+        "margin": -40,
+        "text": "Place 1 assistant in each of: Church (A01), Laboratory A (A06), Silk Mill (A08)",
+        "value": 303
+      },
+      {
+        "margin": -41,
+        "text": "Place 1 assistant in each of: Employment Agency (A04), Laboratory A (A06), Silk Mill (A08)",
+        "value": 302
+      },
+      {
+        "margin": -42,
+        "text": "Place 1 assistant in each of: Port A (A02), Laboratory A (A06), Silk Mill (A08)",
+        "value": 301
+      },
+      {
+        "margin": -44,
+        "text": "Place 1 assistant in each of: Laboratory A (A06), Silk Mill (A08), Customs (A09)",
+        "value": 299
+      },
+      {
+        "margin": -46,
+        "text": "Place 1 assistant in each of: Port A (A02), Employment Agency (A04), Laboratory A (A06)",
+        "value": 297
+      },
+      {
+        "margin": -47,
+        "text": "Place 1 assistant in each of: Tea Plantation (A00), Laboratory A (A06)",
+        "value": 296
+      },
+      {
+        "margin": -48,
+        "text": "Place 1 assistant in each of: Laboratory A (A06), Silk Mill (A08)",
+        "value": 295
+      },
+      {
+        "margin": -48,
+        "text": "Place 1 assistant in each of: Church (A01), Employment Agency (A04), Laboratory A (A06)",
+        "value": 295
+      },
+      {
+        "margin": -50,
+        "text": "Place 1 assistant in each of: Church (A01), Copper Mine (A03), Laboratory A (A06)",
+        "value": 293
+      },
+      {
+        "margin": -51,
+        "text": "Place 1 assistant in each of: Church (A01), Laboratory A (A06)",
+        "value": 292
+      },
+      {
+        "margin": -51,
+        "text": "Place 1 assistant in each of: Church (A01), Laboratory A (A06), Customs (A09)",
+        "value": 292
+      },
+      {
+        "margin": -51,
+        "text": "Place 1 assistant in each of: Copper Mine (A03), Employment Agency (A04), Laboratory A (A06)",
+        "value": 292
+      },
+      {
+        "margin": -52,
+        "text": "Place 1 assistant in each of: Employment Agency (A04), Laboratory A (A06)",
+        "value": 291
+      },
+      {
+        "margin": -52,
+        "text": "Place 1 assistant in each of: Employment Agency (A04), Laboratory A (A06), Customs (A09)",
+        "value": 291
+      },
+      {
+        "margin": -53,
+        "text": "Place 1 assistant in each of: Port A (A02), Laboratory A (A06)",
+        "value": 290
+      },
+      {
+        "margin": -58,
+        "text": "Place 1 assistant in each of: Copper Mine (A03), Laboratory A (A06)",
+        "value": 285
+      },
+      {
+        "margin": -59,
+        "text": "Place 1 assistant in each of: Laboratory A (A06)",
+        "value": 284
+      },
+      {
+        "margin": -68,
+        "text": "Place 1 assistant in each of: Tea Plantation (A00), Fishing Ground (A05), Laboratory A (A06) — fee 1 yen (1 to Red)",
+        "value": 275
+      },
+      {
+        "margin": -72,
+        "text": "Place 1 assistant in each of: Church (A01), Fishing Ground (A05), Laboratory A (A06) — fee 1 yen (1 to Red)",
+        "value": 271
+      },
+      {
+        "margin": -73,
+        "text": "Place 1 assistant in each of: Employment Agency (A04), Fishing Ground (A05), Laboratory A (A06) — fee 1 yen (1 to Red)",
+        "value": 270
+      },
+      {
+        "margin": -74,
+        "text": "Place 1 assistant in each of: Port A (A02), Fishing Ground (A05), Laboratory A (A06) — fee 1 yen (1 to Red)",
+        "value": 269
+      },
+      {
+        "margin": -80,
+        "text": "Place 1 assistant in each of: Fishing Ground (A05), Laboratory A (A06) — fee 1 yen (1 to Red)",
+        "value": 263
+      },
+      {
+        "margin": -101,
+        "text": "Place 2 assistants in Fishing Ground (A05) and 1 in Laboratory A (A06) (Telegram) — fee 2 yen (2 to Red)",
+        "value": 242
+      },
+      {
+        "margin": -287,
+        "text": "Place 2 assistants in Employment Agency (A04) and 1 in Bank (A07) (Telegram)",
+        "value": 56
+      },
+      {
+        "margin": -291,
+        "text": "Place 2 assistants in Bank (A07) and 1 in Silk Mill (A08) (Telegram)",
+        "value": 52
+      },
+      {
+        "margin": -293,
+        "text": "Place 1 assistant in each of: Tea Plantation (A00), Employment Agency (A04), Bank (A07)",
+        "value": 50
+      },
+      {
+        "margin": -295,
+        "text": "Place 1 assistant in each of: Tea Plantation (A00), Bank (A07), Silk Mill (A08)",
+        "value": 48
+      },
+      {
+        "margin": -296,
+        "text": "Place 2 assistants in Bank (A07) and 1 in Employment Agency (A04) (Telegram)",
+        "value": 47
+      },
+      {
+        "margin": -296,
+        "text": "Place 2 assistants in Silk Mill (A08) and 1 in Bank (A07) (Telegram)",
+        "value": 47
+      },
+      {
+        "margin": -298,
+        "text": "Place 1 assistant in each of: Tea Plantation (A00), Church (A01), Bank (A07)",
+        "value": 45
+      },
+      {
+        "margin": -299,
+        "text": "Place 1 assistant in each of: Tea Plantation (A00), Port A (A02), Bank (A07)",
+        "value": 44
+      },
+      {
+        "margin": -299,
+        "text": "Place 1 assistant in each of: Church (A01), Bank (A07), Silk Mill (A08)",
+        "value": 44
+      },
+      {
+        "margin": -299,
+        "text": "Place 2 assistants in Bank (A07) and 1 in Customs (A09) (Telegram)",
+        "value": 44
+      },
+      {
+        "margin": -300,
+        "text": "Place 1 assistant in each of: Port A (A02), Bank (A07), Silk Mill (A08)",
+        "value": 43
+      },
+      {
+        "margin": -301,
+        "text": "Place 1 assistant in each of: Employment Agency (A04), Bank (A07), Silk Mill (A08)",
+        "value": 42
+      },
+      {
+        "margin": -302,
+        "text": "Place 2 assistants in Bank (A07)",
+        "value": 41
+      },
+      {
+        "margin": -303,
+        "text": "Place 1 assistant in each of: Tea Plantation (A00), Bank (A07), Customs (A09)",
+        "value": 40
+      },
+      {
+        "margin": -303,
+        "text": "Place 1 assistant in each of: Church (A01), Port A (A02), Bank (A07)",
+        "value": 40
+      },
+      {
+        "margin": -304,
+        "text": "Place 1 assistant in each of: Employment Agency (A04), Bank (A07)",
+        "value": 39
+      },
+      {
+        "margin": -304,
+        "text": "Place 1 assistant in each of: Port A (A02), Employment Agency (A04), Bank (A07)",
+        "value": 39
+      },
+      {
+        "margin": -304,
+        "text": "Place 1 assistant in each of: Bank (A07), Silk Mill (A08), Customs (A09)",
+        "value": 39
+      },
+      {
+        "margin": -305,
+        "text": "Place 1 assistant in each of: Employment Agency (A04), Laboratory A (A06), Bank (A07)",
+        "value": 38
+      },
+      {
+        "margin": -306,
+        "text": "Place 1 assistant in each of: Tea Plantation (A00), Bank (A07)",
+        "value": 37
+      },
+      {
+        "margin": -307,
+        "text": "Place 1 assistant in each of: Bank (A07), Silk Mill (A08)",
+        "value": 36
+      },
+      {
+        "margin": -307,
+        "text": "Place 1 assistant in each of: Church (A01), Bank (A07), Customs (A09)",
+        "value": 36
+      },
+      {
+        "margin": -308,
+        "text": "Place 1 assistant in each of: Tea Plantation (A00), Copper Mine (A03), Bank (A07)",
+        "value": 35
+      },
+      {
+        "margin": -308,
+        "text": "Place 1 assistant in each of: Church (A01), Employment Agency (A04), Bank (A07)",
+        "value": 35
+      },
+      {
+        "margin": -308,
+        "text": "Place 1 assistant in each of: Port A (A02), Bank (A07), Customs (A09)",
+        "value": 35
+      },
+      {
+        "margin": -309,
+        "text": "Place 1 assistant in each of: Port A (A02), Copper Mine (A03), Bank (A07)",
+        "value": 34
+      },
+      {
+        "margin": -309,
+        "text": "Place 1 assistant in each of: Copper Mine (A03), Laboratory A (A06), Bank (A07)",
+        "value": 34
+      },
+      {
+        "margin": -309,
+        "text": "Place 1 assistant in each of: Copper Mine (A03), Bank (A07), Silk Mill (A08)",
+        "value": 34
+      },
+      {
+        "margin": -309,
+        "text": "Place 1 assistant in each of: Employment Agency (A04), Bank (A07), Customs (A09)",
+        "value": 34
+      },
+      {
+        "margin": -310,
+        "text": "Place 1 assistant in each of: Church (A01), Bank (A07)",
+        "value": 33
+      },
+      {
+        "margin": -311,
+        "text": "Place 1 assistant in each of: Port A (A02), Bank (A07)",
+        "value": 32
+      },
+      {
+        "margin": -312,
+        "text": "Place 1 assistant in each of: Church (A01), Copper Mine (A03), Bank (A07)",
+        "value": 31
+      },
+      {
+        "margin": -313,
+        "text": "Place 2 assistants in Customs (A09) and 1 in Bank (A07) (Telegram)",
+        "value": 30
+      },
+      {
+        "margin": -314,
+        "text": "Place 1 assistant in each of: Copper Mine (A03), Employment Agency (A04), Bank (A07)",
+        "value": 29
+      },
+      {
+        "margin": -315,
+        "text": "Place 1 assistant in each of: Bank (A07), Customs (A09)",
+        "value": 28
+      },
+      {
+        "margin": -317,
+        "text": "Place 1 assistant in each of: Copper Mine (A03), Bank (A07), Customs (A09)",
+        "value": 26
+      },
+      {
+        "margin": -318,
+        "text": "Place 1 assistant in each of: Bank (A07)",
+        "value": 25
+      },
+      {
+        "margin": -318,
+        "text": "Place 1 assistant in each of: Copper Mine (A03), Bank (A07)",
+        "value": 25
+      },
+      {
+        "margin": -323,
+        "text": "Place 2 assistants in Bank (A07) and 1 in Fishing Ground (A05) (Telegram) — fee 1 yen (1 to Red)",
+        "value": 20
+      },
+      {
+        "margin": -325,
+        "text": "Place 1 assistant in each of: Employment Agency (A04), Fishing Ground (A05), Bank (A07) — fee 1 yen (1 to Red)",
+        "value": 18
+      },
+      {
+        "margin": -327,
+        "text": "Place 1 assistant in each of: Tea Plantation (A00), Fishing Ground (A05), Bank (A07) — fee 1 yen (1 to Red)",
+        "value": 16
+      },
+      {
+        "margin": -328,
+        "text": "Place 1 assistant in each of: Fishing Ground (A05), Bank (A07), Silk Mill (A08) — fee 1 yen (1 to Red)",
+        "value": 15
+      },
+      {
+        "margin": -331,
+        "text": "Place 1 assistant in each of: Church (A01), Fishing Ground (A05), Bank (A07) — fee 1 yen (1 to Red)",
+        "value": 12
+      },
+      {
+        "margin": -332,
+        "text": "Place 1 assistant in each of: Port A (A02), Fishing Ground (A05), Bank (A07) — fee 1 yen (1 to Red)",
+        "value": 11
+      },
+      {
+        "margin": -334,
+        "text": "Place 1 assistant in each of: Fishing Ground (A05), Laboratory A (A06), Bank (A07) — fee 1 yen (1 to Red)",
+        "value": 9
+      },
+      {
+        "margin": -336,
+        "text": "Place 1 assistant in each of: Fishing Ground (A05), Bank (A07), Customs (A09) — fee 1 yen (1 to Red)",
+        "value": 7
+      },
+      {
+        "margin": -339,
+        "text": "Place 1 assistant in each of: Fishing Ground (A05), Bank (A07) — fee 1 yen (1 to Red)",
+        "value": 4
+      },
+      {
+        "margin": -341,
+        "text": "Place 1 assistant in each of: Copper Mine (A03), Fishing Ground (A05), Bank (A07) — fee 1 yen (1 to Red)",
+        "value": 2
+      },
+      {
+        "margin": -343,
+        "text": "Place 1 assistant in each of: Tea Plantation (A00), Silk Mill (A08)",
+        "value": 0
+      },
+      {
+        "margin": -343,
+        "text": "Place 1 assistant in each of: Tea Plantation (A00), Church (A01), Silk Mill (A08)",
+        "value": 0
+      },
+      {
+        "margin": -343,
+        "text": "Place 1 assistant in each of: Tea Plantation (A00), Port A (A02), Silk Mill (A08)",
+        "value": 0
+      },
+      {
+        "margin": -343,
+        "text": "Place 1 assistant in each of: Tea Plantation (A00), Laboratory A (A06), Silk Mill (A08)",
+        "value": 0
+      },
+      {
+        "margin": -343,
+        "text": "Place 1 assistant in each of: Tea Plantation (A00), Silk Mill (A08), Customs (A09)",
+        "value": 0
+      },
+      {
+        "margin": -344,
+        "text": "Place 2 assistants in Tea Plantation (A00)",
+        "value": -1
+      },
+      {
+        "margin": -344,
+        "text": "Place 2 assistants in Tea Plantation (A00) and 1 in Church (A01) (Telegram)",
+        "value": -1
+      },
+      {
+        "margin": -344,
+        "text": "Place 2 assistants in Silk Mill (A08)",
+        "value": -1
+      },
+      {
+        "margin": -347,
+        "text": "Place 2 assistants in Silk Mill (A08) and 1 in Customs (A09) (Telegram)",
+        "value": -4
+      },
+      {
+        "margin": -348,
+        "text": "Place 1 assistant in each of: Tea Plantation (A00), Port A (A02)",
+        "value": -5
+      },
+      {
+        "margin": -348,
+        "text": "Place 1 assistant in each of: Port A (A02), Silk Mill (A08)",
+        "value": -5
+      },
+      {
+        "margin": -348,
+        "text": "Place 1 assistant in each of: Tea Plantation (A00), Port A (A02), Customs (A09)",
+        "value": -5
+      },
+      {
+        "margin": -348,
+        "text": "Place 1 assistant in each of: Port A (A02), Copper Mine (A03), Silk Mill (A08)",
+        "value": -5
+      },
+      {
+        "margin": -350,
+        "text": "Place 1 assistant in each of: Tea Plantation (A00), Port A (A02), Laboratory A (A06)",
+        "value": -7
+      },
+      {
+        "margin": -351,
+        "text": "Place 1 assistant in each of: Tea Plantation (A00), Customs (A09)",
+        "value": -8
+      },
+      {
+        "margin": -351,
+        "text": "Place 1 assistant in each of: Tea Plantation (A00), Copper Mine (A03), Customs (A09)",
+        "value": -8
+      },
+      {
+        "margin": -351,
+        "text": "Place 1 assistant in each of: Tea Plantation (A00), Laboratory A (A06), Customs (A09)",
+        "value": -8
+      },
+      {
+        "margin": -351,
+        "text": "Place 1 assistant in each of: Port A (A02), Silk Mill (A08), Customs (A09)",
+        "value": -8
+      },
+      {
+        "margin": -351,
+        "text": "Place 1 assistant in each of: Employment Agency (A04), Silk Mill (A08), Customs (A09)",
+        "value": -8
+      },
+      {
+        "margin": -352,
+        "text": "Place 1 assistant in each of: Church (A01), Silk Mill (A08)",
+        "value": -9
+      },
+      {
+        "margin": -352,
+        "text": "Place 1 assistant in each of: Silk Mill (A08), Customs (A09)",
+        "value": -9
+      },
+      {
+        "margin": -352,
+        "text": "Place 1 assistant in each of: Church (A01), Employment Agency (A04), Silk Mill (A08)",
+        "value": -9
+      },
+      {
+        "margin": -352,
+        "text": "Place 1 assistant in each of: Church (A01), Silk Mill (A08), Customs (A09)",
+        "value": -9
+      },
+      {
+        "margin": -352,
+        "text": "Place 1 assistant in each of: Copper Mine (A03), Silk Mill (A08), Customs (A09)",
+        "value": -9
+      },
+      {
+        "margin": -353,
+        "text": "Place 1 assistant in each of: Tea Plantation (A00), Church (A01)",
+        "value": -10
+      },
+      {
+        "margin": -353,
+        "text": "Place 1 assistant in each of: Tea Plantation (A00), Copper Mine (A03)",
+        "value": -10
+      },
+      {
+        "margin": -353,
+        "text": "Place 1 assistant in each of: Copper Mine (A03), Silk Mill (A08)",
+        "value": -10
+      },
+      {
+        "margin": -353,
+        "text": "Place 1 assistant in each of: Employment Agency (A04), Silk Mill (A08)",
+        "value": -10
+      },
+      {
+        "margin": -353,
+        "text": "Place 1 assistant in each of: Tea Plantation (A00), Church (A01), Customs (A09)",
+        "value": -10
+      },
+      {
+        "margin": -353,
+        "text": "Place 1 assistant in each of: Tea Plantation (A00), Port A (A02), Copper Mine (A03)",
+        "value": -10
+      },
+      {
+        "margin": -353,
+        "text": "Place 1 assistant in each of: Tea Plantation (A00), Copper Mine (A03), Silk Mill (A08)",
+        "value": -10
+      },
+      {
+        "margin": -353,
+        "text": "Place 1 assistant in each of: Church (A01), Copper Mine (A03), Silk Mill (A08)",
+        "value": -10
+      },
+      {
+        "margin": -353,
+        "text": "Place 1 assistant in each of: Copper Mine (A03), Laboratory A (A06), Silk Mill (A08)",
+        "value": -10
+      },
+      {
+        "margin": -353,
+        "text": "Place 2 assistants in Port A (A02)",
+        "value": -10
+      },
+      {
+        "margin": -353,
+        "text": "Place 2 assistants in Copper Mine (A03)",
+        "value": -10
+      },
+      {
+        "margin": -353,
+        "text": "Place 2 assistants in Copper Mine (A03) and 1 in Port A (A02) (Telegram)",
+        "value": -10
+      },
+      {
+        "margin": -353,
+        "text": "Place 2 assistants in Copper Mine (A03) and 1 in Laboratory A (A06) (Telegram)",
+        "value": -10
+      },
+      {
+        "margin": -354,
+        "text": "Place 1 assistant in each of: Tea Plantation (A00), Employment Agency (A04)",
+        "value": -11
+      },
+      {
+        "margin": -354,
+        "text": "Place 1 assistant in each of: Tea Plantation (A00), Copper Mine (A03), Employment Agency (A04)",
+        "value": -11
+      },
+      {
+        "margin": -354,
+        "text": "Place 2 assistants in Employment Agency (A04) and 1 in Tea Plantation (A00) (Telegram)",
+        "value": -11
+      },
+      {
+        "margin": -355,
+        "text": "Place 1 assistant in each of: Tea Plantation (A00)",
+        "value": -12
+      },
+      {
+        "margin": -355,
+        "text": "Place 1 assistant in each of: Silk Mill (A08)",
+        "value": -12
+      },
+      {
+        "margin": -355,
+        "text": "Place 1 assistant in each of: Tea Plantation (A00), Church (A01), Copper Mine (A03)",
+        "value": -12
+      },
+      {
+        "margin": -355,
+        "text": "Place 1 assistant in each of: Tea Plantation (A00), Church (A01), Employment Agency (A04)",
+        "value": -12
+      },
+      {
+        "margin": -355,
+        "text": "Place 1 assistant in each of: Tea Plantation (A00), Port A (A02), Employment Agency (A04)",
+        "value": -12
+      },
+      {
+        "margin": -355,
+        "text": "Place 1 assistant in each of: Tea Plantation (A00), Employment Agency (A04), Silk Mill (A08)",
+        "value": -12
+      },
+      {
+        "margin": -355,
+        "text": "Place 2 assistants in Tea Plantation (A00) and 1 in Employment Agency (A04) (Telegram)",
+        "value": -12
+      },
+      {
+        "margin": -355,
+        "text": "Place 2 assistants in Church (A01) and 1 in Tea Plantation (A00) (Telegram)",
+        "value": -12
+      },
+      {
+        "margin": -355,
+        "text": "Place 2 assistants in Customs (A09) and 1 in Silk Mill (A08) (Telegram)",
+        "value": -12
+      },
+      {
+        "margin": -356,
+        "text": "Place 1 assistant in each of: Port A (A02), Customs (A09)",
+        "value": -13
+      },
+      {
+        "margin": -356,
+        "text": "Place 1 assistant in each of: Church (A01), Port A (A02), Customs (A09)",
+        "value": -13
+      },
+      {
+        "margin": -356,
+        "text": "Place 1 assistant in each of: Port A (A02), Copper Mine (A03), Customs (A09)",
+        "value": -13
+      },
+      {
+        "margin": -356,
+        "text": "Place 1 assistant in each of: Port A (A02), Laboratory A (A06), Customs (A09)",
+        "value": -13
+      },
+      {
+        "margin": -358,
+        "text": "Place 1 assistant in each of: Church (A01), Port A (A02)",
+        "value": -15
+      },
+      {
+        "margin": -358,
+        "text": "Place 1 assistant in each of: Port A (A02), Employment Agency (A04)",
+        "value": -15
+      },
+      {
+        "margin": -358,
+        "text": "Place 1 assistant in each of: Laboratory A (A06), Customs (A09)",
+        "value": -15
+      },
+      {
+        "margin": -358,
+        "text": "Place 1 assistant in each of: Tea Plantation (A00), Church (A01), Port A (A02)",
+        "value": -15
+      },
+      {
+        "margin": -358,
+        "text": "Place 1 assistant in each of: Tea Plantation (A00), Employment Agency (A04), Customs (A09)",
+        "value": -15
+      },
+      {
+        "margin": -358,
+        "text": "Place 1 assistant in each of: Church (A01), Port A (A02), Employment Agency (A04)",
+        "value": -15
+      },
+      {
+        "margin": -358,
+        "text": "Place 1 assistant in each of: Church (A01), Port A (A02), Laboratory A (A06)",
+        "value": -15
+      },
+      {
+        "margin": -359,
+        "text": "Place 1 assistant in each of: Port A (A02), Copper Mine (A03)",
+        "value": -16
+      },
+      {
+        "margin": -359,
+        "text": "Place 1 assistant in each of: Church (A01), Port A (A02), Copper Mine (A03)",
+        "value": -16
+      },
+      {
+        "margin": -359,
+        "text": "Place 1 assistant in each of: Port A (A02), Copper Mine (A03), Employment Agency (A04)",
+        "value": -16
+      },
+      {
+        "margin": -359,
+        "text": "Place 1 assistant in each of: Port A (A02), Copper Mine (A03), Laboratory A (A06)",
+        "value": -16
+      },
+      {
+        "margin": -360,
+        "text": "Place 1 assistant in each of: Port A (A02)",
+        "value": -17
+      },
+      {
+        "margin": -360,
+        "text": "Place 1 assistant in each of: Church (A01), Customs (A09)",
+        "value": -17
+      },
+      {
+        "margin": -360,
+        "text": "Place 1 assistant in each of: Copper Mine (A03), Customs (A09)",
+        "value": -17
+      },
+      {
+        "margin": -360,
+        "text": "Place 1 assistant in each of: Church (A01), Copper Mine (A03), Customs (A09)",
+        "value": -17
+      },
+      {
+        "margin": -360,
+        "text": "Place 1 assistant in each of: Copper Mine (A03), Employment Agency (A04), Customs (A09)",
+        "value": -17
+      },
+      {
+        "margin": -360,
+        "text": "Place 2 assistants in Port A (A02) and 1 in Copper Mine (A03) (Telegram)",
+        "value": -17
+      },
+      {
+        "margin": -360,
+        "text": "Place 2 assistants in Port A (A02) and 1 in Laboratory A (A06) (Telegram)",
+        "value": -17
+      },
+      {
+        "margin": -360,
+        "text": "Place 2 assistants in Fishing Ground (A05) and 1 in Bank (A07) (Telegram) — fee 2 yen (2 to Red)",
+        "value": -17
+      },
+      {
+        "margin": -360,
+        "text": "Place 2 assistants in Customs (A09)",
+        "value": -17
+      },
+      {
+        "margin": -361,
+        "text": "Place 1 assistant in each of: Employment Agency (A04), Customs (A09)",
+        "value": -18
+      },
+      {
+        "margin": -361,
+        "text": "Place 1 assistant in each of: Tea Plantation (A00), Copper Mine (A03), Laboratory A (A06)",
+        "value": -18
+      },
+      {
+        "margin": -361,
+        "text": "Place 1 assistant in each of: Church (A01), Employment Agency (A04), Customs (A09)",
+        "value": -18
+      },
+      {
+        "margin": -362,
+        "text": "Place 1 assistant in each of: Customs (A09)",
+        "value": -19
+      },
+      {
+        "margin": -362,
+        "text": "Place 1 assistant in each of: Church (A01), Copper Mine (A03)",
+        "value": -19
+      },
+      {
+        "margin": -362,
+        "text": "Place 1 assistant in each of: Church (A01), Employment Agency (A04)",
+        "value": -19
+      },
+      {
+        "margin": -362,
+        "text": "Place 1 assistant in each of: Church (A01), Port A (A02), Silk Mill (A08)",
+        "value": -19
+      },
+      {
+        "margin": -362,
+        "text": "Place 1 assistant in each of: Church (A01), Copper Mine (A03), Employment Agency (A04)",
+        "value": -19
+      },
+      {
+        "margin": -362,
+        "text": "Place 1 assistant in each of: Port A (A02), Employment Agency (A04), Silk Mill (A08)",
+        "value": -19
+      },
+      {
+        "margin": -362,
+        "text": "Place 1 assistant in each of: Copper Mine (A03), Laboratory A (A06), Customs (A09)",
+        "value": -19
+      },
+      {
+        "margin": -362,
+        "text": "Place 2 assistants in Church (A01)",
+        "value": -19
+      },
+      {
+        "margin": -362,
+        "text": "Place 2 assistants in Church (A01) and 1 in Port A (A02) (Telegram)",
+        "value": -19
+      },
+      {
+        "margin": -362,
+        "text": "Place 2 assistants in Church (A01) and 1 in Employment Agency (A04) (Telegram)",
+        "value": -19
+      },
+      {
+        "margin": -363,
+        "text": "Place 1 assistant in each of: Copper Mine (A03), Employment Agency (A04)",
+        "value": -20
+      },
+      {
+        "margin": -363,
+        "text": "Place 2 assistants in Employment Agency (A04)",
+        "value": -20
+      },
+      {
+        "margin": -364,
+        "text": "Place 1 assistant in each of: Church (A01)",
+        "value": -21
+      },
+      {
+        "margin": -364,
+        "text": "Place 1 assistant in each of: Copper Mine (A03)",
+        "value": -21
+      },
+      {
+        "margin": -365,
+        "text": "Place 1 assistant in each of: Employment Agency (A04)",
+        "value": -22
+      },
+      {
+        "margin": -366,
+        "text": "Place no assistants",
+        "value": -23
+      },
+      {
+        "margin": -366,
+        "text": "Place 1 assistant in each of: Port A (A02), Employment Agency (A04), Customs (A09)",
+        "value": -23
+      },
+      {
+        "margin": -366,
+        "text": "Place 2 assistants in Port A (A02) and 1 in Church (A01) (Telegram)",
+        "value": -23
+      },
+      {
+        "margin": -366,
+        "text": "Place 2 assistants in Employment Agency (A04) and 1 in Church (A01) (Telegram)",
+        "value": -23
+      },
+      {
+        "margin": -367,
+        "text": "Place 1 assistant in each of: Copper Mine (A03), Employment Agency (A04), Silk Mill (A08)",
+        "value": -24
+      },
+      {
+        "margin": -375,
+        "text": "Place 1 assistant in each of: Tea Plantation (A00), Fishing Ground (A05) — fee 1 yen (1 to Red)",
+        "value": -32
+      },
+      {
+        "margin": -375,
+        "text": "Place 1 assistant in each of: Tea Plantation (A00), Port A (A02), Fishing Ground (A05) — fee 1 yen (1 to Red)",
+        "value": -32
+      },
+      {
+        "margin": -375,
+        "text": "Place 1 assistant in each of: Tea Plantation (A00), Copper Mine (A03), Fishing Ground (A05) — fee 1 yen (1 to Red)",
+        "value": -32
+      },
+      {
+        "margin": -375,
+        "text": "Place 1 assistant in each of: Tea Plantation (A00), Employment Agency (A04), Fishing Ground (A05) — fee 1 yen (1 to Red)",
+        "value": -32
+      },
+      {
+        "margin": -376,
+        "text": "Place 1 assistant in each of: Fishing Ground (A05), Silk Mill (A08) — fee 1 yen (1 to Red)",
+        "value": -33
+      },
+      {
+        "margin": -376,
+        "text": "Place 1 assistant in each of: Fishing Ground (A05), Silk Mill (A08), Customs (A09) — fee 1 yen (1 to Red)",
+        "value": -33
+      },
+      {
+        "margin": -380,
+        "text": "Place 1 assistant in each of: Tea Plantation (A00), Fishing Ground (A05), Silk Mill (A08) — fee 1 yen (1 to Red)",
+        "value": -37
+      },
+      {
+        "margin": -381,
+        "text": "Place 1 assistant in each of: Port A (A02), Fishing Ground (A05) — fee 1 yen (1 to Red)",
+        "value": -38
+      },
+      {
+        "margin": -381,
+        "text": "Place 1 assistant in each of: Port A (A02), Employment Agency (A04), Fishing Ground (A05) — fee 1 yen (1 to Red)",
+        "value": -38
+      },
+      {
+        "margin": -381,
+        "text": "Place 1 assistant in each of: Port A (A02), Fishing Ground (A05), Silk Mill (A08) — fee 1 yen (1 to Red)",
+        "value": -38
+      },
+      {
+        "margin": -381,
+        "text": "Place 2 assistants in Silk Mill (A08) and 1 in Fishing Ground (A05) (Telegram) — fee 1 yen (1 to Red)",
+        "value": -38
+      },
+      {
+        "margin": -382,
+        "text": "Place 1 assistant in each of: Fishing Ground (A05), Customs (A09) — fee 1 yen (1 to Red)",
+        "value": -39
+      },
+      {
+        "margin": -382,
+        "text": "Place 1 assistant in each of: Tea Plantation (A00), Fishing Ground (A05), Customs (A09) — fee 1 yen (1 to Red)",
+        "value": -39
+      },
+      {
+        "margin": -383,
+        "text": "Place 1 assistant in each of: Copper Mine (A03), Fishing Ground (A05), Laboratory A (A06) — fee 1 yen (1 to Red)",
+        "value": -40
+      },
+      {
+        "margin": -383,
+        "text": "Place 1 assistant in each of: Fishing Ground (A05), Laboratory A (A06), Silk Mill (A08) — fee 1 yen (1 to Red)",
+        "value": -40
+      },
+      {
+        "margin": -383,
+        "text": "Place 1 assistant in each of: Fishing Ground (A05), Laboratory A (A06), Customs (A09) — fee 1 yen (1 to Red)",
+        "value": -40
+      },
+      {
+        "margin": -384,
+        "text": "Place 1 assistant in each of: Copper Mine (A03), Fishing Ground (A05) — fee 1 yen (1 to Red)",
+        "value": -41
+      },
+      {
+        "margin": -384,
+        "text": "Place 1 assistant in each of: Church (A01), Fishing Ground (A05), Silk Mill (A08) — fee 1 yen (1 to Red)",
+        "value": -41
+      },
+      {
+        "margin": -384,
+        "text": "Place 1 assistant in each of: Copper Mine (A03), Employment Agency (A04), Fishing Ground (A05) — fee 1 yen (1 to Red)",
+        "value": -41
+      },
+      {
+        "margin": -385,
+        "text": "Place 1 assistant in each of: Church (A01), Fishing Ground (A05) — fee 1 yen (1 to Red)",
+        "value": -42
+      },
+      {
+        "margin": -385,
+        "text": "Place 1 assistant in each of: Tea Plantation (A00), Church (A01), Fishing Ground (A05) — fee 1 yen (1 to Red)",
+        "value": -42
+      },
+      {
+        "margin": -385,
+        "text": "Place 1 assistant in each of: Church (A01), Port A (A02), Fishing Ground (A05) — fee 1 yen (1 to Red)",
+        "value": -42
+      },
+      {
+        "margin": -385,
+        "text": "Place 2 assistants in Port A (A02) and 1 in Fishing Ground (A05) (Telegram) — fee 1 yen (1 to Red)",
+        "value": -42
+      },
+      {
+        "margin": -386,
+        "text": "Place 1 assistant in each of: Fishing Ground (A05) — fee 1 yen (1 to Red)",
+        "value": -43
+      },
+      {
+        "margin": -386,
+        "text": "Place 1 assistant in each of: Employment Agency (A04), Fishing Ground (A05) — fee 1 yen (1 to Red)",
+        "value": -43
+      },
+      {
+        "margin": -386,
+        "text": "Place 1 assistant in each of: Church (A01), Employment Agency (A04), Fishing Ground (A05) — fee 1 yen (1 to Red)",
+        "value": -43
+      },
+      {
+        "margin": -386,
+        "text": "Place 1 assistant in each of: Church (A01), Fishing Ground (A05), Customs (A09) — fee 1 yen (1 to Red)",
+        "value": -43
+      },
+      {
+        "margin": -386,
+        "text": "Place 1 assistant in each of: Port A (A02), Fishing Ground (A05), Customs (A09) — fee 1 yen (1 to Red)",
+        "value": -43
+      },
+      {
+        "margin": -386,
+        "text": "Place 1 assistant in each of: Employment Agency (A04), Fishing Ground (A05), Silk Mill (A08) — fee 1 yen (1 to Red)",
+        "value": -43
+      },
+      {
+        "margin": -386,
+        "text": "Place 1 assistant in each of: Employment Agency (A04), Fishing Ground (A05), Customs (A09) — fee 1 yen (1 to Red)",
+        "value": -43
+      },
+      {
+        "margin": -386,
+        "text": "Place 2 assistants in Employment Agency (A04) and 1 in Fishing Ground (A05) (Telegram) — fee 1 yen (1 to Red)",
+        "value": -43
+      },
+      {
+        "margin": -387,
+        "text": "Place 1 assistant in each of: Copper Mine (A03), Fishing Ground (A05), Silk Mill (A08) — fee 1 yen (1 to Red)",
+        "value": -44
+      },
+      {
+        "margin": -393,
+        "text": "Place 2 assistants in Laboratory A (A06) and 1 in Fishing Ground (A05) (Telegram) — fee 1 yen (1 to Red)",
+        "value": -50
+      },
+      {
+        "margin": -394,
+        "text": "Place 1 assistant in each of: Copper Mine (A03), Fishing Ground (A05), Customs (A09) — fee 1 yen (1 to Red)",
+        "value": -51
+      },
+      {
+        "margin": -394,
+        "text": "Place 2 assistants in Church (A01) and 1 in Fishing Ground (A05) (Telegram) — fee 1 yen (1 to Red)",
+        "value": -51
+      },
+      {
+        "margin": -396,
+        "text": "Place 1 assistant in each of: Church (A01), Copper Mine (A03), Fishing Ground (A05) — fee 1 yen (1 to Red)",
+        "value": -53
+      },
+      {
+        "margin": -396,
+        "text": "Place 1 assistant in each of: Port A (A02), Copper Mine (A03), Fishing Ground (A05) — fee 1 yen (1 to Red)",
+        "value": -53
+      },
+      {
+        "margin": -406,
+        "text": "Place 2 assistants in Fishing Ground (A05) — fee 2 yen (2 to Red)",
+        "value": -63
+      },
+      {
+        "margin": -406,
+        "text": "Place 2 assistants in Fishing Ground (A05) and 1 in Employment Agency (A04) (Telegram) — fee 2 yen (2 to Red)",
+        "value": -63
+      },
+      {
+        "margin": -408,
+        "text": "Place 2 assistants in Fishing Ground (A05) and 1 in Silk Mill (A08) (Telegram) — fee 2 yen (2 to Red)",
+        "value": -65
+      },
+      {
+        "margin": -413,
+        "text": "Place 2 assistants in Fishing Ground (A05) and 1 in Port A (A02) (Telegram) — fee 2 yen (2 to Red)",
+        "value": -70
+      },
+      {
+        "margin": -422,
+        "text": "Place 2 assistants in Fishing Ground (A05) and 1 in Church (A01) (Telegram) — fee 2 yen (2 to Red)",
+        "value": -79
+      }
+    ],
+    "search_hit_ply_cap": false,
+    "text": "Place 1 assistant in each of: Tea Plantation (A00), Laboratory A (A06), Bank (A07)"
+  },
+  "refusal": null
+}

@@ -244,6 +244,21 @@ async fn walk() -> Vec<(String, Value)> {
         let rows = state["prompt"]["rows"].as_array().cloned().unwrap_or_default();
         if kind == "options" && rows.len() >= 3 {
             capture(&mut out, &mut seen, "options_many", &state);
+            // `suggest` from the REAL ROUTER, at a position with something to
+            // choose between. Captured under the same condition as
+            // `options_many` and for the same reason: taken at the opening it
+            // answers "End additional-action phase" with a one-row ranking, and
+            // the runner-up table, the margin column and the multi-step
+            // continuation all go to the browser with no payload behind them.
+            //
+            // This game has no bot, so the search is keyed by the record
+            // identity, the seat and the move count — all three fixed by
+            // `SETUP_SEED` and the walk — and the answer is the same answer
+            // every run.
+            if !seen.iter().any(|s| s == "suggest") {
+                let s = api.get("/api/games/wire/suggest").await;
+                capture(&mut out, &mut seen, "suggest", &s);
+            }
         }
         if kind == "options" && rows.iter().any(|r| r["fee"] != Value::Null) {
             capture(&mut out, &mut seen, "options_priced", &state);
@@ -526,7 +541,134 @@ fn constructed() -> Vec<(String, Value)> {
     let locked = serde_json::to_value(ClientState::of("wire", &locked, Vec::new()))
         .expect("a serializable payload");
 
-    vec![("watching".to_string(), watching), ("locked".to_string(), locked)]
+    // ---- M3: the explanation surface ----------------------------------------
+    //
+    // These are built HERE and not in the walk, for the reason the `watching`
+    // fixture is: `Games::create` draws its bot seed from OS entropy, so a
+    // golden over a router-created bot game would churn on every run. With a
+    // fixed `BOT_SEED` and a fixed `SETUP_SEED` the account below is the same
+    // account every time, which is what a committed payload has to be.
+
+    let rules = Rules::standard();
+
+    // `why` over a move a bot actually played, at a position where the bot
+    // ACTUALLY CHOSE something.
+    //
+    // **The first draft of this fixture was degenerate, in exactly the way
+    // `options_many` exists to prevent.** One pump from the opening produced
+    // `forced: true`, `root_candidates: 1`, a one-step continuation and a
+    // one-row ranking — so the runner-up table, the margin column and the
+    // multi-step line had no payload behind them, and a client could render all
+    // three wrong without failing anything. The M2.5 record states this rule as
+    // "a corpus of one payload per kind is a corpus in which every main prompt
+    // is the one-row 'end the additional-action phase'"; it applies here too.
+    //
+    // So: BOTH seats are bots and the pump runs once. That is bounded and
+    // deterministic without a policy to write — `pump_bots` stops itself at
+    // `PUMP_MOVE_CAP` moves across consecutive bot seats — and it leaves a
+    // record full of real bot decisions. The scan then takes the first one from
+    // the MIDDLE of the game that is genuinely a choice.
+    let mut played = build(vec![Some(PROVISIONAL_DEFAULT_BOT), Some(PROVISIONAL_DEFAULT_BOT)]);
+    played.pump_bots();
+    let bots =
+        BotSeats::new(vec![Some(PROVISIONAL_DEFAULT_BOT), Some(PROVISIONAL_DEFAULT_BOT)], BOT_SEED);
+    let record = played.session.record().clone();
+    let mode = played.session.mode;
+
+    // From the middle rather than the start: an opening explanation is mostly
+    // zero terms at `progress_ppm: 0`, and the chart this payload exists to
+    // draw is a chart of a position someone had to think about.
+    let mut account = None;
+    for index in (record.events.len() / 2)..record.events.len() {
+        if let Ok(a) = yokohama_cli::why::account_parts(mode, &record, &rules, &bots, Some(index)) {
+            if !a.reconstruction.forced && a.explain.ranking.len() >= 3 {
+                account = Some(a);
+                break;
+            }
+        }
+    }
+    let account = account.expect(
+        "no bot move in the second half of the pumped game was a real choice with three or more \
+         candidates — the fixture would be degenerate, so this refuses rather than committing it",
+    );
+    let why = serde_json::to_value(yokohama_web::explain::Why::granted(&account, &rules))
+        .expect("a serializable account");
+
+    // A refusal, reached ORGANICALLY: a game with no bot has no bot move to
+    // explain, and the browser renders that sentence rather than a status code.
+    let no_bots = build(vec![None, None]);
+    // A `match` rather than `expect_err`: `WhyAccount` carries a `GameState` and
+    // deliberately derives no `Debug`, which `expect_err` would require.
+    let refusal = match yokohama_cli::why::account_parts(
+        no_bots.session.mode,
+        no_bots.session.record(),
+        &rules,
+        &BotSeats::new(vec![None, None], BOT_SEED),
+        None,
+    ) {
+        Err(r) => r,
+        Ok(_) => panic!("a game with no bot seat has no bot move to account for"),
+    };
+    let why_refused = serde_json::to_value(yokohama_web::explain::Why::refused(&refusal))
+        .expect("a serializable refusal");
+
+    vec![
+        ("watching".to_string(), watching),
+        ("locked".to_string(), locked),
+        ("why".to_string(), why),
+        ("why_refused".to_string(), why_refused),
+        ("why_refusals".to_string(), every_refusal_payload()),
+    ]
+}
+
+/// **Every refusal `why` can raise, as the browser would receive it.**
+///
+/// M2.5's lesson, applied to the surface M3 adds: a branch the client renders
+/// and nobody has ever seen is exactly the shape of the two defects M2 found by
+/// clicking. The prompts needed a NAMED EXEMPTION (`reveal`, live-mode only)
+/// because a fixture for it cannot be reached; these need none. `Refusal` is a
+/// plain enum, so every variant is CONSTRUCTED here and worded by the CLI's own
+/// `Display` — the same words `guide_sync` pins — and the coverage claim is
+/// therefore complete rather than complete-minus-a-list.
+///
+/// The field values are placeholders and are deliberately obvious as such. What
+/// this fixture pins is the SHAPE and the SET: twelve `{kind, message}` rows,
+/// one per variant, checked against `REFUSAL_KINDS` by the test below.
+fn every_refusal_payload() -> Value {
+    use yokohama_cli::why::{Mismatch, Refusal};
+    use yokohama_core::PlayerId;
+    use yokohama_web::explain::RefusalDto;
+
+    let seat = PlayerId::new(1);
+    let all = vec![
+        Refusal::LiveMode,
+        Refusal::NoBotMoveYet,
+        Refusal::OutOfRange { asked: 99, events: 12 },
+        Refusal::NotAMove { index: 3, kind: "a setup event" },
+        Refusal::HumanSeat { index: 4, seat },
+        Refusal::Rung { index: 5, seat, rung: "family-weighted".to_string() },
+        Refusal::Diagnostic { index: 6, seat, why: "a controller this driver will not run".into() },
+        Refusal::UnknownController {
+            index: 7,
+            seat,
+            controller: "not-a-contestant".to_string(),
+            why: "no such controller".to_string(),
+        },
+        Refusal::Mismatch(Box::new(Mismatch {
+            index: 8,
+            seat,
+            controller: "lookahead".to_string(),
+            reconstructed: "MovePresident { .. }".to_string(),
+            recorded: "place 1 assistant in Area 3".to_string(),
+            recorded_version: Some(1),
+            current_version: 2,
+        })),
+        Refusal::Reconstruction { index: 9, seat, why: "the sampler refused the view".to_string() },
+        Refusal::Unaccounted { index: 10, contestant: "greedy-v1".to_string() },
+        Refusal::Replay { index: 11, message: "the record does not replay".to_string() },
+    ];
+    let rows: Vec<RefusalDto> = all.iter().map(RefusalDto::of).collect();
+    serde_json::to_value(rows).expect("serializable refusals")
 }
 
 /// The whole committed corpus, in one place, so the two tests below cannot
@@ -739,4 +881,74 @@ fn every_prompt_the_client_can_be_shown_has_a_fixture() {
          walk in `wire_fixtures.rs` or add the tag to EXEMPT with the reason it cannot be \
          reached.",
     );
+}
+
+/// **Every `why` refusal the browser can be handed has a payload — with NO
+/// exemption list, and that is the point.**
+///
+/// The sibling test above needs one, because `reveal` genuinely cannot be
+/// reached by an API that creates no live games. This one needs none:
+/// `why::Refusal` is a plain enum, so `every_refusal_payload` constructs all
+/// twelve and words each with the CLI's own `Display`. A coverage claim with an
+/// empty exemption list is worth strictly more than one with entries, so it is
+/// asserted to STAY empty — an implementer who finds a variant they cannot
+/// construct should be made to say so here rather than quietly shrink the file.
+///
+/// Pinned in BOTH directions against `explain::REFUSAL_KINDS`, which is itself
+/// pinned to the enum by a `match` with no `_` arm
+/// (`explain::tests::every_refusal_tag_is_produced_by_exactly_one_variant`).
+/// So the chain is: a thirteenth variant fails to COMPILE in `kind_of`; if
+/// someone adds an arm there and forgets the corpus, this fails; and if someone
+/// adds it here and not to `REFUSAL_KINDS`, that test fails. **That is the fence
+/// M2.5's review found missing on `PromptState`** — there, both lists were
+/// hand-written, a tenth variant was added, and all three tests passed.
+#[test]
+fn every_why_refusal_the_client_can_be_shown_has_a_payload() {
+    assert!(
+        std::env::var_os("UPDATE_WIRE_FIXTURES").is_none(),
+        "regeneration run — re-run WITHOUT UPDATE_WIRE_FIXTURES to check the corpus",
+    );
+
+    let path = wire_dir().join("why_refusals.json");
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!(
+            "{}: {e} — generate the corpus first with \
+             `UPDATE_WIRE_FIXTURES=1 cargo test -p yokohama-web --test wire_fixtures`",
+            path.display()
+        )
+    });
+    let rows: Vec<Value> = serde_json::from_str(&text).expect("an array of refusals");
+
+    let mut present: Vec<String> = rows
+        .iter()
+        .map(|r| r["kind"].as_str().expect("every refusal is tagged").to_string())
+        .collect();
+    present.sort();
+    let unique = {
+        let mut u = present.clone();
+        u.dedup();
+        u
+    };
+    assert_eq!(present, unique, "a refusal kind appears twice in the corpus");
+
+    let mut declared: Vec<String> =
+        yokohama_web::explain::REFUSAL_KINDS.iter().map(|s| s.to_string()).collect();
+    declared.sort();
+    assert_eq!(
+        present, declared,
+        "the refusal corpus and `explain::REFUSAL_KINDS` disagree. Every variant the browser can \
+         be handed needs a payload behind it — a branch with no payload is a branch nobody has \
+         seen, which is exactly how M2's two client defects shipped.",
+    );
+
+    // Anti-vacuity: a corpus of twelve empty sentences would satisfy the set
+    // check above and prove nothing about what a reader is shown.
+    for row in &rows {
+        let message = row["message"].as_str().expect("every refusal carries a sentence");
+        assert!(
+            message.len() > 20,
+            "{} says nothing a player could act on: {message:?}",
+            row["kind"]
+        );
+    }
 }

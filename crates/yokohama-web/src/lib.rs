@@ -6,8 +6,17 @@
 //! every word it serves is `yokohama_cli::describe`'s; every move it applies
 //! goes through `yokohama_cli::session::Session`, which owns the legal-list
 //! gate and the invariant guard. This crate routes, scopes and serializes. If
-//! it ever computes something about the game, that is a bug: the duplicate
-//! would drift from the terminal, and the two would disagree about a rule.
+//! it ever computes something about the game STATE, that is a bug: the
+//! duplicate would drift from the terminal, and the two would disagree about a
+//! rule.
+//!
+//! **The one exception, named rather than quietly taken (M3):** `/suggest` and
+//! `/why` run a real search. They read an OPINION about a state and never
+//! advance one — nothing is applied, recorded or autosaved — and both call the
+//! CLI's own entry points, so neither is a second implementation of anything.
+//! They are also the only two handlers that DROP the per-game lock before doing
+//! their work, because holding it across a multi-second search would block
+//! every other request for that game.
 //!
 //! **The three properties it must not lose**, each of which the engine already
 //! guarantees and this layer can only throw away:
@@ -26,6 +35,7 @@
 pub mod art;
 pub mod assets;
 pub mod client;
+pub mod explain;
 pub mod games;
 pub mod grammar;
 pub mod store;
@@ -482,6 +492,117 @@ pub struct LogQuery {
     pub tail: Option<usize>,
 }
 
+/// `GET /api/games/{id}/suggest` — what the production contestant would play on
+/// the viewing seat's own view.
+///
+/// **The first route in this crate that COMPUTES something**, which is why the
+/// module doc's "if it ever computes something about the game, that is a bug"
+/// carries its one exception: this reads an OPINION about a state and never
+/// advances one. It applies nothing, records nothing and autosaves nothing —
+/// `suggest`'s contract in the terminal, kept exactly — so GET is honest about
+/// the effect, and it is idempotent in the strong sense the CLI already
+/// guarantees: byte-identical on repeat, keyed by game identity, seat and move
+/// count.
+///
+/// **A refusal is a 200, not a 4xx.** Being asked to advise on a bot's seat is
+/// an ANSWER; only a missing game (404) or a malformed request (400) is an
+/// error. The four conditions are `repl::suggest_cmd`'s own, restated because
+/// they live in the terminal's command wrapper rather than in `suggest.rs` — a
+/// handler that called `suggest::suggest` directly would inherit none of them
+/// and would happily search a live game, which the module doc forbids.
+///
+/// **The lock is dropped before the search runs.** Every other handler holds the
+/// per-game `Mutex<Repl>` across its whole body, which is right for a projection
+/// and wrong for a multi-second search: it would block every request for this
+/// game, including the poll that draws the board. `GameState` is history-free
+/// and cheap to clone for exactly this reason.
+async fn suggest(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> ApiResult<explain::SuggestResponse> {
+    use explain::SuggestRefusal as R;
+    let handle = state.games.handle(&id).map_err(ApiError::not_found)?;
+
+    let read = {
+        let repl = handle.lock().expect("a game");
+        let refuse = if repl.session.record().lockdown.is_some() {
+            Some(R::Locked)
+        } else if matches!(repl.session.mode, yokohama_cli::session::TrackingMode::Live) {
+            Some(R::LiveMode)
+        } else if repl.session.is_over() {
+            Some(R::GameOver)
+        } else if repl.bots().is_bot(repl.session.state().current_player) {
+            Some(R::BotSeat)
+        } else {
+            None
+        };
+        match refuse {
+            Some(r) => Err(r),
+            None => {
+                let seat = repl.session.state().current_player;
+                Ok((
+                    seat,
+                    repl.session.state().clone(),
+                    yokohama_cli::suggest::stream_seed(repl.session.record(), seat),
+                ))
+            }
+        }
+    };
+
+    let (seat, game, seed) = match read {
+        Err(r) => return Ok(Json(explain::SuggestResponse::refused(r.kind(), r.message()))),
+        Ok(parts) => parts,
+    };
+
+    Ok(Json(match yokohama_cli::suggest::suggest(&game, &state.rules, seat, seed) {
+        Ok(s) => explain::SuggestResponse::granted(explain::Suggest::of(&s, &game, &state.rules)),
+        // The agent's own errors are surfaced VERBATIM rather than swallowed —
+        // `SuggestError::Inconsistent` describes itself as a bug worth
+        // reporting, and a generic "no suggestion" would throw that away.
+        Err(e) => explain::SuggestResponse::refused("search", e.to_string()),
+    }))
+}
+
+/// `GET /api/games/{id}/why[?event=n]` — a bot move, reconstructed by replay.
+///
+/// `event` is the log's printed 0-based index; omitted means the most recent bot
+/// move, which is what bare `why` does in the terminal.
+///
+/// **The refusals are `why::account_parts`', and not one of them is re-derived
+/// here.** That function's own doc is the instruction: *"it must not
+/// reimplement the first half: the refusals ARE the honesty gate."* A
+/// reconstruction that does not equal the recorded move refuses, naming both
+/// moves and both versions — and that refusal reaches the browser as data,
+/// because a branch nobody has ever seen is where defects live.
+///
+/// Same lock discipline as `suggest`, for the same reason: the reconstruction
+/// runs the same `decide` path the pump ran.
+async fn why(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    QueryArgs(q): QueryArgs<WhyQuery>,
+) -> ApiResult<explain::Why> {
+    let handle = state.games.handle(&id).map_err(ApiError::not_found)?;
+    let (mode, record, bots) = {
+        let repl = handle.lock().expect("a game");
+        (repl.session.mode, repl.session.record().clone(), repl.bots().clone())
+    };
+    Ok(Json(
+        match yokohama_cli::why::account_parts(mode, &record, &state.rules, &bots, q.event) {
+            Ok(account) => explain::Why::granted(&account, &state.rules),
+            Err(refusal) => explain::Why::refused(&refusal),
+        },
+    ))
+}
+
+/// Which event `why` should account for. Absent means the most recent bot move.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WhyQuery {
+    #[serde(default)]
+    pub event: Option<usize>,
+}
+
 /// `GET /api/games/{id}/log` — the move trail, worded as it read when it applied.
 ///
 /// The text comes from `Session::event_description`, which describes an event
@@ -553,6 +674,8 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/api/games/{id}/labs", get(labs))
         .route("/api/games/{id}/areas", get(areas))
         .route("/api/games/{id}/log", get(log))
+        .route("/api/games/{id}/suggest", get(suggest))
+        .route("/api/games/{id}/why", get(why))
         .with_state(state)
         .fallback(fallback)
 }
@@ -679,6 +802,195 @@ mod tests {
             body["error"].as_str().unwrap_or_default().contains("colors"),
             "a missing required field names itself: {body}"
         );
+    }
+
+    /// A router that OUTLIVES one call, so a test can create a game and then
+    /// ask it something. `get_json`/`post_json` each build their own
+    /// `AppState::in_memory`, which is right for a one-shot and useless here.
+    fn live_router() -> Router {
+        app(Arc::new(AppState::in_memory()))
+    }
+
+    async fn call(
+        router: &Router,
+        method: &str,
+        uri: &str,
+        body: Option<serde_json::Value>,
+    ) -> (StatusCode, serde_json::Value) {
+        let req = Request::builder().method(method).uri(uri);
+        let req = match body {
+            Some(b) => req
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&b).expect("a body"))),
+            None => req.body(Body::empty()),
+        }
+        .expect("a request");
+        let res = router.clone().oneshot(req).await.expect("the router answers");
+        let status = res.status();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.expect("a body");
+        (status, serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null))
+    }
+
+    /// Start a 2P game and return the router it lives in.
+    async fn a_game(router: &Router, name: &str, bots: &[u8]) -> serde_json::Value {
+        let (status, state) = call(
+            router,
+            "POST",
+            "/api/games",
+            Some(serde_json::json!({
+                "players": 2, "colors": ["Red", "Blue"], "start_seat": 0,
+                "seed": "20260831", "keeps": [1, 1], "bot_seats": bots, "name": name,
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{state}");
+        state
+    }
+
+    /// **The explanation FOOTS, and that is the whole claim of the `why` screen.**
+    ///
+    /// `Explanation`'s own documented identity is
+    /// `total == sum(terms.product) + terminal.value`, and it holds only over
+    /// ALL 34 terms — which is why the payload carries the zero-product ones
+    /// rather than shrinking itself. A chart the reader cannot foot is a picture
+    /// rather than an explanation, so the sum is asserted here and re-asserted
+    /// on every committed fixture.
+    #[tokio::test]
+    async fn suggest_carries_the_bots_own_arithmetic_and_the_sum_foots() {
+        let router = live_router();
+        a_game(&router, "advises", &[]).await;
+        let (status, body) = call(&router, "GET", "/api/games/advises/suggest", None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body["refusal"].is_null(), "a human seat is to move: {body}");
+        let ok = &body["ok"];
+
+        let terms = ok["explanation"]["terms"].as_array().expect("terms");
+        assert_eq!(terms.len(), 34, "every feature is reported, including the zero ones");
+        let sum: i64 = terms.iter().map(|t| t["product"].as_i64().expect("i64")).sum();
+        let terminal = ok["explanation"]["terminal"]["value"].as_i64().unwrap_or(0);
+        assert_eq!(
+            sum + terminal,
+            ok["explanation"]["total"].as_i64().expect("a total"),
+            "the exact-sum identity holds on the wire"
+        );
+
+        assert!(!ok["text"].as_str().unwrap_or_default().is_empty(), "the move is worded");
+        let ranking = ok["ranking"].as_array().expect("a ranking");
+        assert!(!ranking.is_empty(), "a search reports its candidates");
+        assert_eq!(ranking[0]["margin"], 0, "the best candidate's margin against itself is 0");
+        assert!(
+            ranking.windows(2).all(|w| w[0]["value"].as_i64() >= w[1]["value"].as_i64()),
+            "the ranking is best first"
+        );
+        assert!(ok["stream_seed"].is_string(), "a u64 is a STRING on this wire");
+        assert!(
+            ok["explanation"]["nonzero"].as_u64().expect("a count") <= 34,
+            "the nonzero count is a count of the terms present"
+        );
+    }
+
+    /// A `suggest` press changes NOTHING — it applies, records and autosaves
+    /// nothing, which is the terminal's own contract and what makes GET honest
+    /// about the effect. Both halves are asserted: the state is unmoved, and two
+    /// presses agree, which is the idempotence the CLI guarantees by keying the
+    /// stream to the game identity, the seat and the move count.
+    #[tokio::test]
+    async fn a_suggest_press_moves_nothing_and_repeats_itself() {
+        let router = live_router();
+        a_game(&router, "inert", &[]).await;
+        let (_, before) = call(&router, "GET", "/api/games/inert", None).await;
+        let (_, first) = call(&router, "GET", "/api/games/inert/suggest", None).await;
+        let (_, second) = call(&router, "GET", "/api/games/inert/suggest", None).await;
+        let (_, after) = call(&router, "GET", "/api/games/inert", None).await;
+        assert_eq!(first, second, "the same press answers the same way");
+        assert_eq!(before, after, "nothing was applied, recorded or autosaved");
+    }
+
+    /// **A refusal is the ANSWER, so it is a 200 carrying data** — not a 4xx and
+    /// not an empty body. A bot-free game has no bot move to account for, and
+    /// the browser renders that sentence rather than a status code.
+    #[tokio::test]
+    async fn why_refuses_a_game_with_no_bot_move_and_says_so_as_data() {
+        let router = live_router();
+        a_game(&router, "nobots", &[]).await;
+        let (status, body) = call(&router, "GET", "/api/games/nobots/why", None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body["ok"].is_null());
+        assert_eq!(body["refusal"]["kind"], "no_bot_move_yet");
+        assert!(
+            body["refusal"]["message"].as_str().unwrap_or_default().contains("bot"),
+            "the CLI's own sentence: {body}"
+        );
+    }
+
+    /// The refusals `why` raises are the GATE's, and three different ones are
+    /// reachable from one real game — which is what makes them worth serving as
+    /// typed data instead of one catch-all.
+    #[tokio::test]
+    async fn why_raises_the_gates_own_refusals_by_their_own_names() {
+        let router = live_router();
+        a_game(&router, "gated", &[1]).await;
+
+        let (_, out) = call(&router, "GET", "/api/games/gated/why?event=99999", None).await;
+        assert_eq!(out["refusal"]["kind"], "out_of_range", "{out}");
+
+        // Play the human's opening move, so there IS an event 0 and it is a
+        // human's. `why` accounts for BOT moves; being asked about a human's is
+        // a refusal with its own name rather than a silent empty answer.
+        let (status, _) = call(
+            &router,
+            "POST",
+            "/api/games/gated/input",
+            Some(serde_json::json!({ "line": "1", "expect": "options" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (_, human) = call(&router, "GET", "/api/games/gated/why?event=0", None).await;
+        assert_eq!(
+            human["refusal"]["kind"], "human_seat",
+            "event 0 is now the human's own move: {human}"
+        );
+
+        // And the query itself is fenced, like every other request on this API.
+        let (status, bad) = call(&router, "GET", "/api/games/gated/why?evnt=3", None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
+        assert!(bad["error"].as_str().unwrap_or_default().contains("evnt"));
+    }
+
+    /// **`why` accounts for a move a bot actually played, and says under what.**
+    ///
+    /// The provenance is not decoration: an account with no claim attached is
+    /// arithmetic about nothing. The reconstruction is `account_parts`' — this
+    /// crate re-derives no part of the honesty gate, so a move that did not
+    /// reproduce would have refused before reaching here.
+    #[tokio::test]
+    async fn why_accounts_for_a_bot_move_under_a_named_claim() {
+        let router = live_router();
+        // Seat 0 is the bot AND the start seat, so `create`'s `pump_bots` plays
+        // a whole bot turn before anything else happens.
+        a_game(&router, "explains", &[0]).await;
+        let (status, body) = call(&router, "GET", "/api/games/explains/why", None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body["refusal"].is_null(), "a bot moved: {body}");
+        let ok = &body["ok"];
+
+        let p = &ok["provenance"];
+        assert!(!p["contestant"].as_str().unwrap_or_default().is_empty(), "names the contestant");
+        assert_eq!(p["seat"], 0);
+        assert!(
+            p["decision_seed"].as_str().unwrap_or_default().starts_with("0x"),
+            "the pump's own key, as a string: {p}"
+        );
+        assert!(p["evaluator_version"].as_u64().is_some());
+
+        let terms = ok["explanation"]["terms"].as_array().expect("terms");
+        let sum: i64 = terms.iter().map(|t| t["product"].as_i64().expect("i64")).sum();
+        let terminal = ok["explanation"]["terminal"]["value"].as_i64().unwrap_or(0);
+        assert_eq!(sum + terminal, ok["explanation"]["total"].as_i64().expect("a total"));
+
+        let counters = ok["counters"].as_array().expect("a searching contestant reports counters");
+        assert_eq!(counters.len(), 15, "the whole counter surface, not a chosen two of it");
+        assert!(counters.iter().all(|c| c["group"] != "ungrouped"), "{counters:?}");
     }
 
     /// Health names the two keys that actually decide compatibility, and names

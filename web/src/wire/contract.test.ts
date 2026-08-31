@@ -74,6 +74,14 @@ describe("the payload roots carry exactly the fields the client declares", () =>
     ["health", wire.health, KEYS.health],
     ["preview", wire.preview, KEYS.preview],
     ["error", wire.error, KEYS.apiError],
+    ["suggest", wire.suggest, KEYS.suggestResponse],
+    ["suggest.ok", wire.suggest.ok, KEYS.suggestOk],
+    ["suggest.explanation", wire.suggest.ok!.explanation, KEYS.explanation],
+    ["why", wire.why, KEYS.whyResponse],
+    ["why.ok", wire.why.ok, KEYS.whyOk],
+    ["why.provenance", wire.why.ok!.provenance, KEYS.provenance],
+    ["why_refused", wire.whyRefused, KEYS.whyResponse],
+    ["why_refused.refusal", wire.whyRefused.refusal, KEYS.refusalRow],
   ] as const)("%s", (_name, payload, list) => {
     expect(keys(payload)).toEqual(listed(list));
   });
@@ -202,5 +210,87 @@ describe("what the corpus itself has to be true of", () => {
         expect(entry.h).toBeGreaterThan(0);
       }
     }
+  });
+});
+
+// The explanation surface's own invariant. Not a shape check — a shape check
+// would pass on a payload whose numbers do not add up, which is the one thing
+// this surface cannot afford.
+describe("the explanation foots", () => {
+  const explanations = [
+    ["suggest", wire.suggest.ok!.explanation],
+    ["why", wire.why.ok!.explanation],
+  ] as const;
+
+  it.each(explanations)("%s: sum(product) + terminal === total", (_name, e) => {
+    const sum = e.terms.reduce((acc, t) => acc + t.product, 0);
+    expect(sum + (e.terminal ? e.terminal.value : 0)).toBe(e.total);
+  });
+
+  it.each(explanations)("%s: every feature is reported, zeros included", (_name, e) => {
+    // The identity above holds only over ALL the terms, so a payload that
+    // dropped the zero-product ones server-side would be unverifiable by the
+    // reader. 34 is `Feature::COUNT`.
+    expect(e.terms).toHaveLength(34);
+    expect(new Set(e.terms.map((t) => t.feature)).size).toBe(34);
+    expect(e.nonzero).toBe(e.terms.filter((t) => t.product !== 0).length);
+  });
+
+  it.each(explanations)("%s: product is weight x (you - best opponent)", (_name, e) => {
+    // The client must never recompute this — but it must be able to trust it,
+    // and this is where that trust is earned rather than assumed.
+    //
+    // The `+ 0` is not decoration. An `i64` has no signed zero and JavaScript
+    // does: a zero weight times a negative difference is `-0` here, the wire
+    // carries `0`, and `toBe` is `Object.is`, which tells them apart. Adding
+    // zero normalises `-0` to `0` and changes nothing else. This is exactly the
+    // class of difference this file exists to catch, so it is written down
+    // rather than papered over with a looser matcher.
+    for (const t of e.terms) {
+      expect(t.product).toBe(t.weight * (t.viewer_value - t.opponent_value) + 0);
+    }
+  });
+
+  it("the fixtures are not degenerate, because a degenerate one proves nothing", () => {
+    // The first draft of both was a forced move with a one-row ranking, so the
+    // runner-up table, the margin column and the multi-step continuation all
+    // had no payload behind them. Asserted so a future reseed cannot quietly
+    // reintroduce that.
+    expect(wire.suggest.ok!.ranking.length).toBeGreaterThan(2);
+    expect(wire.why.ok!.ranking.length).toBeGreaterThan(2);
+    expect(wire.why.ok!.provenance.forced).toBe(false);
+    expect(wire.suggest.ok!.continuation.length).toBeGreaterThan(1);
+    expect(wire.why.ok!.explanation.nonzero).toBeGreaterThan(1);
+  });
+
+  it("the ranking is best first and the leader's margin against itself is zero", () => {
+    for (const ok of [wire.suggest.ok!, wire.why.ok!]) {
+      expect(ok.ranking[0]!.margin).toBe(0);
+      const values = ok.ranking.map((r) => r.value);
+      expect([...values].sort((a, b) => b - a)).toEqual(values);
+      for (const r of ok.ranking) expect(r.margin).toBe(r.value - ok.ranking[0]!.value);
+    }
+  });
+});
+
+describe("every why refusal the client can be shown has a payload", () => {
+  it("twelve of them, each tagged once and each carrying a sentence", () => {
+    // The server side pins this against `explain::REFUSAL_KINDS`, which a
+    // `match` with no `_` arm pins to the enum. This is the client's half: the
+    // browser renders `message`, so a refusal with an empty one is a blank
+    // screen where an explanation should be.
+    expect(wire.whyRefusals).toHaveLength(12);
+    const kinds = wire.whyRefusals.map((r) => r.kind);
+    expect(new Set(kinds).size).toBe(12);
+    for (const r of wire.whyRefusals) {
+      expect(r.kind).toMatch(/^[a-z_]+$/);
+      expect(r.message.length).toBeGreaterThan(20);
+    }
+  });
+
+  it("a refused response carries a refusal and no account", () => {
+    expect(wire.whyRefused.ok).toBeNull();
+    expect(wire.whyRefused.refusal).not.toBeNull();
+    expect(wire.whyRefused.refusal!.kind).toBe("no_bot_move_yet");
   });
 });

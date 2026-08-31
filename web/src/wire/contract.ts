@@ -54,6 +54,7 @@ import type {
   ApiErrorBody,
   ClientState,
   DecisionModel,
+  Explanation,
   FrameModel,
   Health,
   Labels,
@@ -64,8 +65,16 @@ import type {
   PortsPanel,
   Preview,
   PromptState,
+  Provenance,
+  Ranked,
+  RefusalRow,
+  SuggestOk,
+  SuggestResponse,
+  Term,
   TileModel,
   TracksPanel,
+  WhyOk,
+  WhyResponse,
 } from "../types";
 
 import areas from "./areas.json";
@@ -97,6 +106,10 @@ import preview from "./preview.json";
 import refused from "./refused.json";
 import retreat from "./retreat.json";
 import retreatAnswered from "./retreat_answered.json";
+import suggest from "./suggest.json";
+import why from "./why.json";
+import whyRefusals from "./why_refusals.json";
+import whyRefused from "./why_refused.json";
 import watching from "./watching.json";
 
 /** The declared type, widened exactly as importing it from JSON would widen it.
@@ -154,6 +167,25 @@ const _areas: Widen<AreasPanel> = areas;
 const _areas4p: Widen<AreasPanel> = areas4p;
 const _log: Widen<LogPanel> = log;
 const _artManifest: Widen<ArtManifest> = artManifest;
+const _suggest: Widen<SuggestResponse> = suggest;
+const _why: Widen<WhyResponse> = why;
+const _whyRefused: Widen<WhyResponse> = whyRefused;
+const _whyRefusals: Widen<RefusalRow[]> = whyRefusals;
+
+// The two envelopes are `ok | null` unions, so `Widen<SuggestResponse>` is
+// satisfied by `{ok: null, refusal: {...}}` — which means the assignments above
+// check NOTHING about a granted payload's fields. Exactly the `PromptState`
+// defect from M2.5's review, in a different union. So the granted halves are
+// asserted against their own members, the way §1b does it for prompts.
+const _suggestOk: Widen<SuggestOk> = suggest.ok;
+const _whyOk: Widen<WhyOk> = why.ok;
+const _whyProvenance: Widen<Provenance> = why.ok.provenance;
+// The ARRAYS rather than an element: `noUncheckedIndexedAccess` types `a[0]` as
+// `T | undefined`, and an assertion that tolerates `undefined` checks nothing
+// about the element. Checking the array checks every element's shape.
+const _whyRanked: Widen<Ranked>[] = why.ok.ranking;
+const _suggestTerm: Widen<Term>[] = suggest.ok.explanation.terms;
+const _refusedRow: Widen<RefusalRow> = whyRefused.refusal;
 
 // ## §1b. The prompt, per member
 //
@@ -200,6 +232,8 @@ void [
   _gameOver, _watching, _hiddenHand, _locked, _refused, _labels, _preview, _health, _error,
   _ports, _labs, _areas, _areas4p, _log, _artManifest, _feeNonzero,
   _choiceAssistantMove, _choiceChurchSpace, _choiceWarehouseTake,
+  _suggest, _why, _whyRefused, _whyRefusals,
+  _suggestOk, _whyOk, _whyProvenance, _whyRanked, _suggestTerm, _refusedRow,
 ];
 
 // ## §2. The key sets, so a field the SERVER adds is not silently unknown
@@ -271,6 +305,24 @@ const LABELS = [
 const HEALTH = ["server_version", "semantics_rev", "rules_hash"] as const;
 const PREVIEW = ["seed", "deals"] as const;
 const API_ERROR = ["error"] as const;
+const SUGGEST_RESPONSE = ["ok", "refusal"] as const;
+const SUGGEST_OK = [
+  "seat", "text", "explanation", "continuation", "ranking", "stream_seed",
+  "search_hit_ply_cap", "tied_at_top",
+] as const;
+const WHY_RESPONSE = ["ok", "refusal"] as const;
+const WHY_OK = [
+  "provenance", "text", "explanation", "continuation", "counters",
+  "search_hit_ply_cap", "ranking",
+] as const;
+const EXPLANATION = ["terms", "terminal", "total", "progress_ppm", "nonzero"] as const;
+const TERM = ["feature", "viewer_value", "opponent_value", "weight", "product"] as const;
+const PROVENANCE = [
+  "contestant", "controller_version", "evaluator_version", "index", "seat",
+  "decision_seed", "forced", "recorded_version", "current_version",
+] as const;
+const RANKED = ["text", "value", "margin"] as const;
+const REFUSAL_ROW = ["kind", "message"] as const;
 
 // The compile-time half. A list that is not exactly `keyof T` fails HERE, with
 // the offending key names in the message.
@@ -289,7 +341,17 @@ const _lb: KeysOf<Labels, typeof LABELS> = LABELS;
 const _he: KeysOf<Health, typeof HEALTH> = HEALTH;
 const _pv: KeysOf<Preview, typeof PREVIEW> = PREVIEW;
 const _er: KeysOf<ApiErrorBody, typeof API_ERROR> = API_ERROR;
-void [_cs, _fr, _de, _or, _pl, _ti, _tr, _po, _la, _ar, _lo, _lb, _he, _pv, _er];
+const _sr: KeysOf<SuggestResponse, typeof SUGGEST_RESPONSE> = SUGGEST_RESPONSE;
+const _so: KeysOf<SuggestOk, typeof SUGGEST_OK> = SUGGEST_OK;
+const _wr: KeysOf<WhyResponse, typeof WHY_RESPONSE> = WHY_RESPONSE;
+const _wo: KeysOf<WhyOk, typeof WHY_OK> = WHY_OK;
+const _ex: KeysOf<Explanation, typeof EXPLANATION> = EXPLANATION;
+const _tm: KeysOf<Term, typeof TERM> = TERM;
+const _pr: KeysOf<Provenance, typeof PROVENANCE> = PROVENANCE;
+const _rk: KeysOf<Ranked, typeof RANKED> = RANKED;
+const _rf: KeysOf<RefusalRow, typeof REFUSAL_ROW> = REFUSAL_ROW;
+void [_cs, _fr, _de, _or, _pl, _ti, _tr, _po, _la, _ar, _lo, _lb, _he, _pv, _er,
+      _sr, _so, _wr, _wo, _ex, _tm, _pr, _rk, _rf];
 
 /** The key lists, for the runtime half in `contract.test.ts`. */
 export const KEYS = {
@@ -308,6 +370,15 @@ export const KEYS = {
   health: HEALTH,
   preview: PREVIEW,
   apiError: API_ERROR,
+  suggestResponse: SUGGEST_RESPONSE,
+  suggestOk: SUGGEST_OK,
+  whyResponse: WHY_RESPONSE,
+  whyOk: WHY_OK,
+  explanation: EXPLANATION,
+  term: TERM,
+  provenance: PROVENANCE,
+  ranked: RANKED,
+  refusalRow: REFUSAL_ROW,
 } as const;
 
 // ## §3. The fixtures, typed, for every other test to render
@@ -358,6 +429,10 @@ export const wire = {
   areas4p: as<AreasPanel>(areas4p),
   log: as<LogPanel>(log),
   artManifest: as<ArtManifest>(artManifest),
+  suggest: as<SuggestResponse>(suggest),
+  why: as<WhyResponse>(why),
+  whyRefused: as<WhyResponse>(whyRefused),
+  whyRefusals: as<RefusalRow[]>(whyRefusals),
 } as const;
 
 /** The queued-choice heads the corpus DOES carry.
