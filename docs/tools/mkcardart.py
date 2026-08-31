@@ -2,7 +2,7 @@
 """Crop the TTS sprite sheets into per-card art for the web client.
 
     python3 docs/tools/mkcardart.py              # from the repo root
-    python3 docs/tools/mkcardart.py --check      # verify, write nothing
+    python3 docs/tools/mkcardart.py --check      # compare, write nothing (exit 1 on drift)
 
 Reads the sheets under `tts-assets/organized/` and writes one WebP per card,
 plus `manifest.json`, into `crates/yokohama-web/assets/art/`. **It never writes
@@ -39,11 +39,11 @@ defaulted:
   achievements  the `AchievementType` serde name.
   area tiles    the `AreaType` serde name.
 
-CROP GEOMETRY. Every card sheet shares one 530x799 cell -- 4240/8, 3196/4 and
-2650/5 are exact. The two 5-row sheets are the exception worth naming: 3996/5 =
-799.2, so a row's top edge is `round(r * H / rows)` rather than `r * 799`, and
-the last row would otherwise drift four pixels. The area sheets divide as
-709x531 with the same rounding treatment on the odd axis.
+CROP GEOMETRY. Every card sheet shares one 530x799 cell and every area sheet one
+709x531 cell, uniformly -- see `cell_box`, which carries the seam measurements.
+Three sheets do not divide evenly and the tempting reading is that their cells
+are fractional; they are not, and the extra pixel is a black padding stripe on
+the far edge.
 
 The `position: "row,col"` fields in `analysis-1/yokohama-kb/0{7,8,9}-*.yaml` are
 the coordinates, 1-based from the top-left. `gen-data` drops them as
@@ -54,9 +54,16 @@ REQUIREMENTS: Pillow and PyYAML. Both are used only here; nothing in the
 workspace's Rust build or test path touches either.
 
 WHAT ENFORCES THE OUTPUT is not this script. `crates/yokohama-web/src/art.rs`
-carries the tests: every engine identifier resolves to a manifest entry, every
-manifest entry resolves to a file on disk, and no entry names an identifier the
-engine does not have. Running this and not running those proves nothing.
+carries the tests: every engine identifier resolves, nothing names an identifier
+the engine lacks, every entry is a non-empty file, every key names the file its
+own name derives and no file is named twice, and the emitted aspect matches the
+sheet cell. Running this and not running those proves nothing.
+
+AND THEY STILL DO NOT PROVE THE PICTURE IS RIGHT. They prove the manifest is a
+bijection onto the names this script builds -- a permutation is caught, a
+mis-IDENTIFIED cell is not. Two mapping errors in this file's own history needed
+someone to look at the images: the crop origin, and yellow being COMMERCIAL
+rather than production on the category-C achievements. Regenerate, then look.
 """
 from __future__ import annotations
 
@@ -280,6 +287,13 @@ def cell_box(size: tuple[int, int], cols: int, rows: int, r: int, c: int):
     late AND pull the stripe into the crop. TTS's own `NumWidth`/`NumHeight`
     and the 709x531 deck-back file corroborate the cell size independently.
     """
+    # PIL's `crop` PADS an out-of-bounds box with zeros rather than raising, so
+    # a position the sheet does not have emits a solid BLACK card at exactly the
+    # right size and aspect -- which every test downstream accepts. `position`
+    # is read by nothing else in the workspace (`gen-data` drops it as
+    # "traceability only"), so this is its only validation anywhere.
+    if not 1 <= r <= rows or not 1 <= c <= cols:
+        sys.exit(f"cell ({r},{c}) is outside a {cols}x{rows} sheet -- check the KB YAML's position")
     w, h = size
     cw, ch = w // cols, h // rows
     return ((c - 1) * cw, (r - 1) * ch, c * cw, r * ch)
@@ -413,12 +427,44 @@ def main() -> None:
         load_sheet(MERCENARY_BACK), 128, "backs/mercenary_back.webp"
     )
 
-    if not check_only:
-        (OUT / "manifest.json").write_text(json.dumps(manifest, indent=1, sort_keys=True) + "\n")
+    rendered = json.dumps(manifest, indent=1, sort_keys=True) + "\n"
+    if check_only:
+        # `--check` COMPARES; it used to only decline to write, which made it a
+        # mode that could never go red. It answers the two questions the mode
+        # exists for: is the committed manifest the one this input produces (a
+        # KB `position` edit moves it), and is every file it names on disk (a
+        # missing or half-copied tree). It does NOT compare pixels -- WebP
+        # encoding is not stable across Pillow versions, so a byte compare of
+        # the images would fail for reasons that are not drift. Say so rather
+        # than imply more.
+        drift = []
+        committed = OUT / "manifest.json"
+        if not committed.exists():
+            drift.append(f"{committed.relative_to(ROOT)} is missing")
+        elif committed.read_text() != rendered:
+            drift.append(f"{committed.relative_to(ROOT)} is not what this input produces")
+        for family, entries in manifest.items():
+            if not isinstance(entries, dict) or family == "provenance":
+                continue
+            for key, entry in entries.items():
+                path = OUT / entry["file"]
+                if not path.exists():
+                    drift.append(f"{family}/{key}: {entry['file']} is missing")
+                elif path.stat().st_size == 0:
+                    drift.append(f"{family}/{key}: {entry['file']} is empty")
+        if drift:
+            for d in drift[:20]:
+                print(f"  DRIFT {d}")
+            if len(drift) > 20:
+                print(f"  ...and {len(drift) - 20} more")
+            sys.exit(f"{len(drift)} problem(s) -- re-run without --check")
+        print(f"art is current: manifest matches, {sum(len(v) for k, v in manifest.items() if isinstance(v, dict) and k != 'provenance')} files present")
+        return
 
-    verb = "would write" if check_only else "wrote"
+    (OUT / "manifest.json").write_text(rendered)
+
     print(
-        f"{verb} {em.written or sum(len(v) for k, v in manifest.items() if isinstance(v, dict) and k != 'provenance')} "
+        f"wrote {em.written or sum(len(v) for k, v in manifest.items() if isinstance(v, dict) and k != 'provenance')} "
         f"images ({em.bytes / 1024:.0f} KiB) to {OUT.relative_to(ROOT)}"
     )
     print(

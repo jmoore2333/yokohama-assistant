@@ -303,6 +303,91 @@ mod tests {
         assert!(seen >= 110, "only {seen} entries — a truncated manifest would pass every other check");
     }
 
+    /// A key names the file its own name derives, and no two keys name one file.
+    ///
+    /// **This is the test that catches a PERMUTATION**, and it exists because
+    /// the other four demonstrably do not. Measured against the committed
+    /// manifest with three deliberate mutations: swapping `orders."1"` and
+    /// `orders."2"`, rotating all 36 order files by one, and pointing every
+    /// order/tech/site/achievement entry at `orders/O01.webp` — **all three pass
+    /// the other four tests**, because those compare KEY SETS and ask only
+    /// whether each named file exists and is non-empty. A player would see
+    /// order 2's requirements drawn on order 1's card and nothing would go red.
+    ///
+    /// It is cheap on purpose: a string comparison per entry and one set, no
+    /// image decoded, no dependency. It cannot prove the PICTURE is right — only
+    /// looking does that, and two mapping errors in this milestone needed
+    /// exactly that — but it does prove the manifest is a bijection onto the
+    /// names the generator builds, which is the half a machine can check.
+    ///
+    /// The injectivity half is not redundant with the naming half: a `slug()`
+    /// collision between two tech titles would overwrite one file, and both
+    /// entries would then name a file that legitimately derives from one of
+    /// them.
+    #[test]
+    fn every_key_names_the_file_it_derives_and_no_file_is_named_twice() {
+        let (_, m) = committed();
+
+        /// `mkcardart.py`'s `slug`: lowercase, every run of non-alphanumerics
+        /// to one dash, trimmed. Restated rather than imported because the
+        /// generator is Python — and restating it is the point, since the two
+        /// disagreeing is itself the failure this catches.
+        fn slug(title: &str) -> String {
+            let mut out = String::new();
+            let mut dash = false;
+            for c in title.chars() {
+                if c.is_ascii_alphanumeric() {
+                    out.extend(c.to_lowercase());
+                    dash = false;
+                } else if !dash {
+                    out.push('-');
+                    dash = true;
+                }
+            }
+            out.trim_matches('-').to_string()
+        }
+
+        let mut wrong: Vec<String> = Vec::new();
+        let mut check = |dir: &str, entries: &BTreeMap<String, ArtEntry>, name: &dyn Fn(&str) -> String| {
+            for (key, entry) in entries {
+                let want = format!("{dir}/{}.webp", name(key));
+                if entry.file != want {
+                    wrong.push(format!("{dir} key {key:?} names {:?}, not {want:?}", entry.file));
+                }
+            }
+        };
+        let two_digit = |k: &str| k.parse::<u32>().map_or_else(|_| k.to_string(), |n| format!("{n:02}"));
+        check("orders", &m.orders, &|k| format!("O{}", two_digit(k)));
+        check("sites", &m.sites, &|k| format!("S{}", two_digit(k)));
+        check("techs", &m.techs, &|k| slug(k));
+        check("achievements", &m.achievements, &|k| k.to_string());
+        check("areas", &m.areas, &|k| k.to_string());
+        check("five-power", &m.five_power, &|k| k.to_string());
+        check("mercenaries", &m.mercenaries, &|k| k.to_string());
+        check("backs", &m.backs, &|k| k.to_string());
+        check("tokens", &m.tokens, &|k| k.to_string());
+        assert!(wrong.is_empty(), "keys and filenames disagree: {wrong:#?}");
+
+        let mut seen: BTreeMap<&str, usize> = BTreeMap::new();
+        for family in [
+            &m.orders,
+            &m.techs,
+            &m.sites,
+            &m.achievements,
+            &m.areas,
+            &m.five_power,
+            &m.mercenaries,
+            &m.backs,
+            &m.tokens,
+        ] {
+            for entry in family.values() {
+                *seen.entry(entry.file.as_str()).or_default() += 1;
+            }
+        }
+        let shared: Vec<_> = seen.iter().filter(|(_, n)| **n > 1).collect();
+        assert!(shared.is_empty(), "these files are named by more than one key: {shared:?}");
+    }
+
     /// Art keeps its source aspect ratio.
     ///
     /// Every card cell on every sheet is 530x799 and every area cell 709x531;
