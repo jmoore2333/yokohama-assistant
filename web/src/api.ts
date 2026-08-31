@@ -56,9 +56,15 @@ export const api = {
   remove: (game: string) => call<null>("DELETE", `/api/games/${id(game)}`),
   /** The one mutation: an option's `number`, or a sub-prompt token. The server
    *  fences this to gameplay lines; anything else comes back as a refusal that
-   *  says what to send instead. */
-  input: (game: string, line: string) =>
-    call<ClientState>("POST", `/api/games/${id(game)}/input`, { line }),
+   *  says what to send instead.
+   *
+   *  `expect` is the `prompt.kind` this client was looking at. The server
+   *  refuses with a 409 if it is asking something else — which is what a
+   *  restart looks like from here, since an open picker lives only in the
+   *  server's memory and a stale area id would otherwise be read as an option
+   *  number. */
+  input: (game: string, line: string, expect?: string) =>
+    call<ClientState>("POST", `/api/games/${id(game)}/input`, { line, expect }),
 
   ports: (game: string) => call<PortsPanel>("GET", `/api/games/${id(game)}/ports`),
   labs: (game: string) => call<LabsPanel>("GET", `/api/games/${id(game)}/labs`),

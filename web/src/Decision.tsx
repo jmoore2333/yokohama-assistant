@@ -49,6 +49,22 @@ export function Decision({
 
       <div className="asking">{asking(state, labels)}</div>
 
+      {/* A locked session accepts nothing this client can send, so it offers
+          nothing. The three lines the REPL would still take under lockdown are
+          all refused by the API's grammar fence, which is why there is no
+          "try anyway" button here. */}
+      {prompt.kind === "locked" && (
+        <div className="messages">
+          <div className="warn">
+            This game is LOCKED after a driver or engine fault and cannot be played on.
+          </div>
+          <div className="warn">{prompt.reason}</div>
+          <div>
+            The record is intact on the server. Nothing further can be applied to it.
+          </div>
+        </div>
+      )}
+
       {(prompt.kind === "options" || prompt.kind === "pick") && (
         <div className="options">
           {prompt.rows.length === 0 && <div className="messages">Nothing to answer here.</div>}
@@ -208,6 +224,8 @@ function asking(state: ClientState, labels: Labels | null): string {
       return "Placement — Option B.";
     case "reveal":
       return "A card reveal is pending (live mode).";
+    case "locked":
+      return "This game is locked.";
     default:
       // `your_turn` is now true whenever a human seat is to move, because the
       // payload is built for the acting seat. The distinction that remains is

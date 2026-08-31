@@ -41,7 +41,7 @@ export function App() {
       setBusy(true);
       setError(null);
       try {
-        setState(await api.input(state.id, line));
+        setState(await api.input(state.id, line, state.prompt.kind));
       } catch (e) {
         setError(e instanceof ApiError ? e.message : String(e));
       } finally {

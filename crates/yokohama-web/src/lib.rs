@@ -230,6 +230,24 @@ pub struct Input {
     /// area id, a count). The grammar is the CLI's — but only the GAMEPLAY part
     /// of it; see [`crate::grammar`] for the fence and why it exists.
     pub line: String,
+    /// The `prompt.kind` the client was looking at when it chose this line.
+    ///
+    /// **This is what stops a number meaning a different move.** In-flight
+    /// sub-prompt state lives only in the resident `Repl` — `SubPrompt` is not
+    /// in the `GameRecord` and does not belong there — so a game evicted or a
+    /// process restarted rebuilds with `SubPrompt::None`. The client, which
+    /// never re-fetches, keeps sending area ids from an open placement picker,
+    /// and `pick_option` reads them against the MAIN option list. Measured
+    /// across two processes over one store: a client holding
+    /// `{"kind":"place_a","selected":[3,7]}` clicked area 3, and the rebuilt
+    /// `Repl` applied option 3 — "Place no assistants" — spending the turn's
+    /// placement on nothing the player chose.
+    ///
+    /// Optional, so `curl` and the integration test stay terse; when present it
+    /// is checked, and a mismatch is a refusal that names both prompts instead
+    /// of a move nobody asked for.
+    #[serde(default)]
+    pub expect: Option<String>,
 }
 
 /// The one mutation.
@@ -260,7 +278,21 @@ async fn input(
     let handle = state.games.handle(&id).map_err(ApiError::not_found)?;
     let mut repl = handle.lock().expect("a game");
 
+    if let Some(expected) = &req.expect {
+        let actual = crate::client::prompt_kind(&repl);
+        if expected != actual {
+            return Err(ApiError {
+                status: StatusCode::CONFLICT,
+                message: format!(
+                    "this game is asking {actual:?}, not {expected:?} — the prompt moved on \
+                     (a restart drops an open picker). Re-read the game and answer what it asks.",
+                ),
+            });
+        }
+    }
+
     let before = repl.session.record().events.len();
+    let locked_before = repl.session.is_locked();
     let out = repl.step(&req.line);
 
     // A FAILED SAVE IS NOT A FAILED MOVE, and must not be reported as one.
@@ -272,8 +304,18 @@ async fn input(
     // very next GET showed the move applied, with the durable record still one
     // event behind. So the applied state is returned, and the failure is said
     // OUT LOUD as a warning: the move happened, and it is not saved.
+    // A LOCKDOWN MUST BE WRITTEN THROUGH even though it adds no event.
+    //
+    // `Repl::step` engages one AFTER an apply has failed, so `events.len()` is
+    // unchanged and an event-count gate skips the write. `Session::lock_down`
+    // tries to persist itself via `autosave`, but that is a no-op here —
+    // `from_record` and `new_sim` both leave `save_path` as `None`, so this
+    // layer is the only writer. Without this the container sleeps, the game is
+    // rebuilt from a record with no `lockdown`, `Repl::new` restores
+    // `locked = false`, and a desynced game is handed back playable with the
+    // fault's reason lost from the record it was deliberately written into.
     let mut warnings = Vec::new();
-    if repl.session.record().events.len() != before {
+    if repl.session.record().events.len() != before || repl.session.is_locked() != locked_before {
         if let Err(e) = state.games.persist(&id, &repl) {
             warnings.push(format!("APPLIED BUT NOT SAVED — {e}"));
         }
@@ -444,6 +486,80 @@ mod tests {
         assert_eq!(body["semantics_rev"], SEMANTICS_REV);
         assert_eq!(body["rules_hash"], Rules::standard().content_hash());
         assert_eq!(body["server_version"], env!("CARGO_PKG_VERSION"));
+    }
+
+    /// An answer to a prompt the game is no longer asking is REFUSED, not
+    /// applied against whatever it is asking instead.
+    ///
+    /// The failure this closes: `SubPrompt` lives only in the resident `Repl`,
+    /// so a restart or an eviction rebuilds with `SubPrompt::None` while the
+    /// client — which never re-fetches — keeps sending area ids from an open
+    /// placement picker. Measured across two processes over one store: a client
+    /// holding `place_a` with areas 3 and 7 selected clicked area 3, and the
+    /// rebuilt `Repl` applied option 3, "Place no assistants", spending the
+    /// turn's placement on nothing the player chose.
+    ///
+    /// Both directions are asserted: the stale answer is a 409 that names both
+    /// prompts, and the CORRECT tag still goes through — a guard that refused
+    /// everything would pass the first half of this test and make the game
+    /// unplayable.
+    #[tokio::test]
+    async fn an_answer_to_a_prompt_the_game_is_no_longer_asking_is_refused() {
+        let router = app(Arc::new(AppState::in_memory()));
+        let call = |uri: String, body: serde_json::Value| {
+            let router = router.clone();
+            async move {
+                let res = router
+                    .oneshot(
+                        Request::builder()
+                            .method("POST")
+                            .uri(uri)
+                            .header("content-type", "application/json")
+                            .body(Body::from(serde_json::to_vec(&body).expect("a body")))
+                            .expect("a request"),
+                    )
+                    .await
+                    .expect("the router answers");
+                let status = res.status();
+                let bytes =
+                    axum::body::to_bytes(res.into_body(), usize::MAX).await.expect("a body");
+                (status, serde_json::from_slice::<serde_json::Value>(&bytes).expect("JSON"))
+            }
+        };
+
+        let (status, state) = call(
+            "/api/games".to_string(),
+            serde_json::json!({
+                "players": 2, "colors": ["Red", "Blue"], "start_seat": 0,
+                "seed": "20260831", "keeps": [1, 1], "bot_seats": [1], "name": "expects",
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(state["prompt"]["kind"], "options", "the opening asks for an option");
+
+        // The shape a dropped picker produces: the client believes a placement
+        // picker is open and sends an area id; the server is back on the main
+        // list, where that id would be an option NUMBER.
+        let (status, body) = call(
+            "/api/games/expects/input".to_string(),
+            serde_json::json!({ "line": "3", "expect": "place_a" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        let msg = body["error"].as_str().unwrap_or_default();
+        assert!(msg.contains("place_a") && msg.contains("options"), "names both prompts: {msg}");
+
+        // Nothing was applied by the refusal.
+        let (_, unchanged) = call(
+            "/api/games/expects/input".to_string(),
+            serde_json::json!({ "line": "1", "expect": "options" }),
+        )
+        .await;
+        assert_eq!(
+            unchanged["frame"]["decision"]["turn_number"], serde_json::json!(1),
+            "the correct tag goes through and the game advances normally",
+        );
     }
 
     /// The payload is built for the seat that is ABOUT TO MOVE, so the hand it

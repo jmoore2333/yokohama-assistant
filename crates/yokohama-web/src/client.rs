@@ -59,6 +59,18 @@ pub enum PromptState {
     Reveal,
     /// Nothing is being decided.
     GameOver,
+    /// The session is locked after a driver or engine fault and accepts no
+    /// gameplay at all.
+    ///
+    /// **It used to report a live `Options` prompt.** `Repl::step` under
+    /// lockdown accepts only `save`/`log`/`quit` — every one of which
+    /// `grammar` refuses — so every command that could work was fenced off and
+    /// every command the client could send was dead, while the payload
+    /// carried numbered rows and `your_turn: true`. Measured: a record with a
+    /// `lockdown` field answered `prompt.kind: "options"` with one row, and
+    /// posting that row returned 200 with the locked refusal buried in
+    /// `messages` and the same live prompt returned, forever.
+    Locked { reason: String },
 }
 
 /// One seat's final score.
@@ -124,6 +136,25 @@ pub struct ClientState {
     pub warnings: Vec<String>,
 }
 
+impl PromptState {
+    /// The tag a client echoes back to say which prompt it was answering.
+    ///
+    /// The same string serde puts in `kind`, restated here so the client has a
+    /// value to send rather than having to parse its own payload back.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            PromptState::Options { .. } => "options",
+            PromptState::Pick { .. } => "pick",
+            PromptState::Retreat { .. } => "retreat",
+            PromptState::PlaceA { .. } => "place_a",
+            PromptState::PlaceB { .. } => "place_b",
+            PromptState::Reveal => "reveal",
+            PromptState::GameOver => "game_over",
+            PromptState::Locked { .. } => "locked",
+        }
+    }
+}
+
 /// The seat this payload is built for: **the seat to move**, exactly as the
 /// terminal does it.
 ///
@@ -171,7 +202,17 @@ fn rows_from(entries: Vec<yokohama_cli::render::DisplayRow>) -> Vec<OptionRow> {
         .collect()
 }
 
+/// The current prompt's tag, without building the whole prompt.
+pub fn prompt_kind(repl: &Repl) -> &'static str {
+    prompt_of(repl).kind()
+}
+
 fn prompt_of(repl: &Repl) -> PromptState {
+    // Read from the RECORD, which is where `Session::lock_down` puts it and
+    // therefore what survives a rebuild — not from a flag this layer cannot see.
+    if let Some(reason) = repl.session.record().lockdown.clone() {
+        return PromptState::Locked { reason };
+    }
     if repl.session.is_over() {
         return PromptState::GameOver;
     }

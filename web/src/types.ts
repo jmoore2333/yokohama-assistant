@@ -297,7 +297,11 @@ export type PromptState =
   | { kind: "place_a"; selected: AreaId[]; max_areas: number }
   | { kind: "place_b"; areas: AreaId[]; selected: AreaId | null }
   | { kind: "reveal" }
-  | { kind: "game_over" };
+  | { kind: "game_over" }
+  /** The session is locked after a driver or engine fault. Nothing this client
+   *  can send is accepted, and the three lines that would be are refused by the
+   *  API's own grammar fence. */
+  | { kind: "locked"; reason: string };
 
 export interface ClientState {
   id: string;
