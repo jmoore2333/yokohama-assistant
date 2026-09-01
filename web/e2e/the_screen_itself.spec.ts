@@ -47,6 +47,91 @@ test("every picture the client draws actually loads", async ({ page }) => {
   expect(watch.failures).toEqual([]);
 });
 
+// ---- the art: the two rules that were deleted, and the box that must stay ----
+//
+// These are the only assertions in the repository that can see a CSS change to
+// the tile, and they exist because the guard M3.5 was told it already had does
+// not guard this: "every picture the client draws actually loads" asserts
+// `naturalWidth !== 0` and `images.length > 10`, both of which a re-veiled or
+// unreserved tile passes.
+//
+// Each cell reads a COMPUTED value that is literally one of the two rules the
+// milestone removed, so neither is a magic number and neither goes stale when
+// the design legitimately changes something else.
+
+test("the tile art is not veiled and carries no scrim", async ({ page }) => {
+  const watch = watchForBreakage(page);
+  await startGame(page);
+  await page.waitForSelector(".tile-art");
+
+  const read = await page.evaluate(() => {
+    const art = document.querySelector(".tile-art");
+    const body = document.querySelector(".tile-body");
+    if (!art || !body) return null;
+    return {
+      artOpacity: getComputedStyle(art).opacity,
+      bodyBackgroundImage: getComputedStyle(body).backgroundImage,
+    };
+  });
+
+  expect(read, "a tile must draw art and a caption to be measured").not.toBeNull();
+  // The printed power ladder reached the viewer at a mean transmittance of 0.100
+  // under `--art-veil: 0.82` plus a six-stop scrim. It is the only on-board
+  // carrier of what an Area Action pays at each power.
+  expect(read!.artOpacity, "the art is dimmed again — the ladder is the cost").toBe("1");
+  expect(
+    read!.bodyBackgroundImage,
+    "a scrim is back on the caption; anchored to the text it also covers the ladder",
+  ).toBe("none");
+
+  expect(watch.failures).toEqual([]);
+});
+
+test("a tile reserves its picture's box before the picture arrives", async ({ page }) => {
+  const watch = watchForBreakage(page);
+
+  // Hold every area image at the network so the box is measured EMPTY first.
+  // The `aspect-ratio` moved from `.tile` to `.tile-art-box` when the caption
+  // came out from under the picture, and the failure mode that swap invites is
+  // silent: the art loads, every existing assertion passes, and the whole board
+  // jumps a hundred pixels the moment it lands.
+  let release: (() => void) | null = null;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/art/areas/*", async (route) => {
+    await held;
+    await route.continue();
+  });
+
+  await startGame(page);
+  await page.waitForSelector(".tile-art-box");
+  const before = await page.evaluate(
+    () => document.querySelector(".board")!.getBoundingClientRect().height,
+  );
+
+  // Release the parked handlers; do NOT `unroute`, which disposes them while
+  // they are still awaiting and fails the requests it was meant to let through.
+  release!();
+  await page.waitForFunction(
+    () => [...document.querySelectorAll<HTMLImageElement>(".tile-art")].every((i) => i.complete),
+    null,
+    { timeout: 15_000 },
+  );
+  const after = await page.evaluate(
+    () => document.querySelector(".board")!.getBoundingClientRect().height,
+  );
+
+  // Anti-vacuity: a board of zero height does not jump either.
+  expect(before, "the board must have drawn its reserved boxes").toBeGreaterThan(100);
+  expect(
+    Math.abs(after - before),
+    `the board jumped ${Math.round(after - before)}px when the art landed`,
+  ).toBeLessThanOrEqual(1);
+
+  expect(watch.failures).toEqual([]);
+});
+
 test("a surface panel takes focus, and Escape gets you out of it", async ({ page }) => {
   const watch = watchForBreakage(page);
   await startGame(page);

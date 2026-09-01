@@ -89,6 +89,86 @@ describe("the staggered pyramid", () => {
   });
 });
 
+// ---- M3.5: the board carries the rules information a move is chosen on ----
+//
+// The three cells below are the milestone's thesis in test form: what influences
+// the next move should be legible ON THE BOARD. jsdom has no layout, so none of
+// them asserts a pixel — each asserts the DECLARATION that produces the pixel,
+// which is also the thing a regression would delete.
+
+describe("the tile width scales to the board", () => {
+  // The board's widest row IS its width: `players + 2` tiles at 14rem is
+  // 915/1146/1376px against a 992px column at 1440, so a 4P board carried 384px
+  // off screen behind `overflow-x: auto` with no scrollbar drawn.
+  //
+  // Keyed on the REALIZED widest row and never on `board.player_count`: that
+  // field has no other consumer in this client, and reading it here would make
+  // this file the first place to assume the pyramid's shape — against its own
+  // module doc. The widest row is the term the width actually depends on, and
+  // it is already computed to lay the rows out.
+  it.each([
+    ["2P", wire.options, COLORS, 4, "14rem"] as const,
+    ["4P", wire.options4p, COLORS_4, 6, "10rem"] as const,
+  ])("%s: a widest row of %s tiles asks for %s", (_n, state, colors, widest, expected) => {
+    const { container } = show(state, { colors });
+    const rows = [...container.querySelectorAll(".board-row")];
+    const realized = Math.max(...rows.map((r) => r.querySelectorAll(".tile").length));
+    expect(realized, "the fixture must have the widest row this cell is about").toBe(widest);
+
+    const board = container.querySelector<HTMLElement>(".board")!;
+    expect(board.style.getPropertyValue("--tile-w")).toBe(expected);
+  });
+
+  // Anti-vacuity for the pair above: the two fixtures must actually DISAGREE.
+  // A ladder that returned one constant would satisfy both rows if they were
+  // ever loosened, and this is the cell that would still fail.
+  it("gives boards of different widths different tiles", () => {
+    const read = (state: ClientState, colors: PlayerColor[]) =>
+      show(state, { colors })
+        .container.querySelector<HTMLElement>(".board")!
+        .style.getPropertyValue("--tile-w");
+    expect(read(wire.options, COLORS)).not.toBe(read(wire.options4p, COLORS_4));
+  });
+});
+
+describe("the 5-Power token sits in its printed slot", () => {
+  // The tokens are shuffled face-down and placed FACE-UP on each Area Board's
+  // 5-space (`01-rules-reference.md:680`), so the face is public from setup and
+  // the board has always been served it. Drawing it where the physical token
+  // sits is what lets a player scan eighteen tiles for "is the bonus still
+  // there" without opening a panel.
+  it("draws the token face on the art while it is still there", () => {
+    const tile = wire.options4p.frame.board.tiles.find((t) => t.token !== null);
+    expect(tile, "the 4P fixture must carry an untaken token").toBeDefined();
+    const { container } = show(wire.options4p, { colors: COLORS_4 });
+    const id = `A${String(tile!.area).padStart(2, "0")}`;
+    const el = [...container.querySelectorAll<HTMLElement>(".tile")].find((t) =>
+      t.textContent?.startsWith(id),
+    )!;
+    expect(el.querySelector(".token-slot img")).not.toBeNull();
+  });
+
+  // "Taken" needs no mark of its own: the printed frame with its red 5 showing
+  // IS the empty slot, exactly as on the table. The words stay for the channel
+  // that cannot see the picture — and they are what carries WHICH good, which
+  // the art does not resolve at a 4P tile's 160px.
+  it("draws nothing in the slot once it is taken, and still says so", () => {
+    const taken = {
+      ...wire.options4p,
+      frame: {
+        ...wire.options4p.frame,
+        board: {
+          ...wire.options4p.frame.board,
+          tiles: wire.options4p.frame.board.tiles.map((t) => ({ ...t, token: null })),
+        },
+      },
+    };
+    const { container } = show(taken, { colors: COLORS_4 });
+    expect(container.querySelectorAll(".token-slot img")).toHaveLength(0);
+    expect(screen.getAllByText("5-Power taken").length).toBeGreaterThan(0);
+  });
+});
+
 describe("a tile as an input", () => {
   it("reports its selection to a screen reader", async () => {
     const area = wire.options.frame.board.tiles[0]!.area;

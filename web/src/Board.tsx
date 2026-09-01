@@ -1,6 +1,38 @@
+import type { CSSProperties } from "react";
 import type { ArtManifest, BoardModel, Labels, PlayerColor, SiteModel, TileModel } from "./types";
 import { areaArt, fivePowerArt, fivePowerWords } from "./art";
 import { Pawns, seatClass } from "./Cards";
+
+/** How wide a tile may be, so that the whole board fits its column at 1440.
+ *
+ *  **Keyed on the REALIZED widest row, never on `board.player_count`.** The two
+ *  give the same three answers on every board the engine generates, and the
+ *  widest row is the term the width actually depends on: the board's min-content
+ *  width is `n · tile + (n−1) · gap` for the widest row `n`. Reading
+ *  `player_count` would also make this file the first thing in the client to
+ *  assume the pyramid's shape, against this module's own doc below.
+ *
+ *  The arithmetic, at 1440 with a 992px board column (`1440 − 40 padding − 24
+ *  gap − 384 rail`): 6 tiles at 10rem is `6×160 + 5×6.4 = 992`, 5 at 12rem is
+ *  `985.6`, 4 at 14rem is `915.2`. Before this the board carried 384px (4P) and
+ *  154px (3P) outside its column behind `overflow-x: auto`, and `.board` drew no
+ *  scrollbar — so on overlay-scrollbar platforms a Movement destination in the
+ *  last column was invisible and undiscoverable.
+ *
+ *  **The 4P fit is exact and its margin is 0.047px** — Chromium resolves the
+ *  0.4rem gap to 6.390625px, so the row is 991.953 against 992. One pixel of
+ *  viewport loss, or a classic 15px scrollbar, re-breaks it. That is why the
+ *  guard in `Board.test.tsx` asserts THIS LADDER and not the pixel, and why the
+ *  browser walk records the board's residual scroll rather than gating it: a
+ *  pixel assertion here would be green on one machine and red on another.
+ *  Nothing from 1201 to 1439 is fixed by this at all — the row layout holds
+ *  across that whole band and 4P still clips 239px at 1201. */
+function tileWidth(ordered: [number, TileModel[]][]): string {
+  const widest = Math.max(0, ...ordered.map(([, list]) => list.length));
+  if (widest >= 6) return "10rem";
+  if (widest >= 5) return "12rem";
+  return "14rem";
+}
 
 /** The staggered pyramid, drawn from `grid_position` and nothing else.
  *
@@ -41,7 +73,7 @@ export function Board({
   for (const [, list] of ordered) list.sort((a, b) => a.grid_position[1] - b.grid_position[1]);
 
   return (
-    <div className="board">
+    <div className="board" style={{ "--tile-w": tileWidth(ordered) } as CSSProperties}>
       {ordered.map(([r, tiles]) => (
         <div
           className="board-row"
@@ -143,7 +175,49 @@ function Tile({
 
   const body = (
     <>
-      {face && <img className="tile-art" src={face} alt="" loading="lazy" />}
+      {/* **The picture, then the caption — not text over a dimmed picture.**
+          The printed power ladder 1–5 and its per-rung yields run across the
+          bottom of every area art, and they are the facts a Movement
+          destination and an Area Action get chosen on. Under the old veil
+          (`--art-veil: 0.82` as a whole-image opacity, plus a full-bleed
+          six-stop scrim) they reached the viewer at a mean transmittance of
+          0.100 — measured white-vs-black in real Chromium — and the board
+          carried them NOWHERE else: the only surface that draws the ladder is
+          the Areas panel, which covers 98.8% of the board it is explaining.
+
+          The alternative considered and REJECTED on measurement was two scrims
+          anchored to the text bands. It cannot work, for a structural reason
+          rather than a tuning one: the printed ladder occupies y 0.630–0.910 of
+          the tile and this client's own lower text block occupies y
+          0.607–0.956. They are the same 35% of the tile, so a scrim on the text
+          is a scrim on the ladder — constructed and measured at 0.087, WORSE
+          than the veil it would replace.
+
+          This is the pattern `Cards.tsx` already chose and defends in its own
+          words, applied to the one surface that did not get it. */}
+      {face && (
+        <div className="tile-art-box">
+          <img className="tile-art" src={face} alt="" loading="lazy" />
+          {/* The 5-Power token, where the physical one sits.
+              `01-rules-reference.md:680`: the tokens are shuffled face-down and
+              then placed FACE-UP on each Area Board's 5-space, "so its effect is
+              public information from the start" — so there is no masking
+              question here and never was; the wire has always carried
+              `tile.token` on every tile.
+              The slot rect in `styles.css` is MEASURED, not guessed: each of the
+              thirteen non-Canal arts minus its own box blur, then averaged, so a
+              line printed on every card survives and every illustration cancels.
+              An absent token needs no mark of its own — the printed frame with
+              its red 5 showing IS the empty slot, exactly as on the table — and
+              the words below carry WHICH good, which the picture does not
+              resolve at a 4P tile's 160px. */}
+          {tokenSrc && (
+            <span className="token-slot">
+              <img src={tokenSrc} alt="" loading="lazy" />
+            </span>
+          )}
+        </div>
+      )}
       <div className="tile-body">
         <div className="tile-head">
           <span className="tile-id">{id}</span>

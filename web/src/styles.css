@@ -53,11 +53,6 @@
    * reserves the box from these so a slow image never reflows the board. */
   --card-aspect: 530 / 799;
   --tile-aspect: 709 / 531;
-  /* How far the tile art is pushed behind its own text. High enough that the
-   * tile is recognisable as its own place at a glance — which is the entire
-   * reason for having art — and the contrast the overlay needs comes from a
-   * scrim under the TEXT rather than from dimming the picture. */
-  --art-veil: 0.82;
 }
 
 @media (prefers-color-scheme: light) {
@@ -133,7 +128,20 @@ h1, h2, h3 { font-family: var(--display); font-weight: 500; margin: 0; }
 }
 
 /* ---- board ------------------------------------------------------------- */
-.board { display: flex; flex-direction: column; gap: 0.4rem; overflow-x: auto; padding-bottom: 0.4rem; }
+/* The tile ladder makes the board fit its column at 1440 and NOWHERE ELSE: the
+ * row layout holds from 1201 to 1439 with a column of `viewport − 448`, so 4P
+ * still carries 239px off screen at 1201 and 642px at 390. That clipping is by
+ * design — no phone is 992px wide — but until now it had NO AFFORDANCE at all:
+ * `.board` styled no scrollbar, so on macOS overlay scrollbars a Movement
+ * destination in the last column was not merely off screen, it was
+ * undiscoverable. A thin visible track is the difference between "scroll for
+ * the rest of the board" and "the board ends here". */
+.board {
+  display: flex; flex-direction: column; gap: 0.4rem;
+  overflow-x: auto; padding-bottom: 0.4rem;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-bright) transparent;
+}
 .board-row { display: flex; gap: 0.4rem; }
 
 .tile {
@@ -150,30 +158,69 @@ button.tile { cursor: pointer; }
 button.tile:hover { transform: translateY(-1px); border-color: var(--line-bright); }
 button.tile:focus-visible { outline: 2px solid var(--vp); outline-offset: 1px; }
 
-/* The art fills the tile and sits behind everything, veiled so the overlay
- * keeps its contrast. `aspect-ratio` on the tile keeps the box stable before
- * the image arrives. */
-.tile.has-art { aspect-ratio: var(--tile-aspect); }
-.tile-art {
-  position: absolute; inset: 0; width: 100%; height: 100%;
-  object-fit: cover; opacity: var(--art-veil);
+/* **The picture is a picture, and the caption sits under it.**
+ *
+ * The `aspect-ratio` moved from `.tile` to this box, which is what keeps the
+ * layout from jumping when a lazy image lands: the box reserves its height from
+ * the ratio before the `<img>` has any intrinsic size (measured at 0.00px of
+ * jump with the art blocked). Putting it on `.tile` instead would now fix the
+ * whole tile — picture AND caption — to the picture's ratio and crop the words.
+ *
+ * Nothing dims the art any more and nothing is drawn on top of it except the
+ * 5-Power token in its own printed slot. The veil and the six-stop scrim this
+ * replaced took the printed power ladder to a mean transmittance of 0.100; the
+ * reasoning and the rejected alternative are in `Board.tsx`. */
+.tile-art-box {
+  position: relative;
+  aspect-ratio: var(--tile-aspect);
+  overflow: hidden;
+  border-bottom: 1px solid var(--line);
 }
-/* The scrim is heavy where the text is and near-absent across the middle, so
- * the tile reads as a picture with a caption rather than as a dark rectangle. */
+.tile-art { display: block; width: 100%; height: 100%; object-fit: cover; }
+
+/* The 5-Power token's printed home on the area art — the "5-space" the rulebook
+ * places it on at setup (`01-rules-reference.md:680`).
+ *
+ * **The rect is measured, not chosen.** Each of the thirteen non-Canal area arts
+ * minus its own 7px box blur, averaged: a line printed on every card survives
+ * that and every illustration cancels. The frame's four edges came out at
+ * x 0.816 / 0.941 and y 0.588 / 0.721 with ridge strengths +14.2 / +12.7 /
+ * +13.3 / +13.7 — so left 81.6%, top 58.8%, width 12.5%, height 13.3%. (The
+ * verticals at 0.984–0.993 are the card's own outer border, not this frame.)
+ *
+ * The token is square and sized off the box's SHORTER side, which is its
+ * height, so it sits inside the frame instead of spilling across rung 4. */
+.token-slot {
+  position: absolute;
+  left: 81.6%; top: 58.8%; width: 12.5%; height: 13.3%;
+  display: grid; place-items: center;
+  pointer-events: none;
+}
+/* **Sized off the slot's WIDTH, deliberately, and the 76% is arithmetic.**
+ *
+ * The obvious spelling — `height: 95%` against the shorter side — does not work
+ * and fails SILENTLY in the worst direction: the percentage does not resolve
+ * here, the image falls back to its intrinsic 128px, and a 16px slot renders a
+ * 122px token straight across the tile. Measured, not reasoned about.
+ *
+ * A percentage width against an absolutely-positioned box always resolves, so
+ * the whole size is expressed on that axis. The box's aspect is 709/531, so its
+ * height is 0.749 of its width; the slot is 12.5% wide and 13.3% tall, i.e.
+ * `0.133 × 0.749 = 9.96%` of the box's WIDTH. A token at 0.95 of the slot's
+ * shorter side is therefore `9.46%` of the box width, which is `76%` of the
+ * slot's own width. `max-height` is the belt: if any of that arithmetic ever
+ * drifts, the token is clipped to its frame instead of covering the ladder. */
+.token-slot img {
+  width: 76%; height: auto; max-height: 100%; aspect-ratio: 1;
+  object-fit: contain;
+  border-radius: 2px;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.45);
+}
+
 .tile-body {
   position: relative;
   display: flex; flex-direction: column; gap: 0.15rem;
   padding: 0.4rem 0.5rem;
-  height: 100%;
-  background: linear-gradient(
-    to bottom,
-    rgb(9 11 14 / 0.88) 0,
-    rgb(9 11 14 / 0.6) 2.1rem,
-    rgb(9 11 14 / 0.12) 3.4rem,
-    rgb(9 11 14 / 0.12) 45%,
-    rgb(9 11 14 / 0.82) 66%,
-    rgb(9 11 14 / 0.94) 100%
-  );
   text-shadow: 0 1px 3px rgb(0 0 0 / 0.9);
 }
 .tile.reachable { border-color: var(--reachable); box-shadow: inset 0 0 0 1px rgb(105 194 95 / 0.35); }
@@ -190,7 +237,10 @@ button.tile:focus-visible { outline: 2px solid var(--vp); outline-offset: 1px; }
 .tile-head .reach { color: var(--reachable); margin-left: auto; }
 .tile-row { display: flex; align-items: center; gap: 0.35rem; font-size: 11px; min-height: 1.15rem; flex-wrap: wrap; }
 .tile-row.muted { color: var(--fg-faint); }
-.tile-row.pawns { margin-top: auto; }
+/* `margin-top: auto` used to push the pawn row to the bottom of a tile whose
+ * body was stretched to `height: 100%`. The caption is content-height now, so
+ * that rule had nothing to push against — an inert rule is worse than none,
+ * because the next reader assumes it does something. */
 .token-row { gap: 0.3rem; }
 
 .five-power { display: inline-flex; align-items: center; gap: 0.25rem; color: var(--yen); }
