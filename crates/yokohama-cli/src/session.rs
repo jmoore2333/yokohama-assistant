@@ -404,15 +404,31 @@ impl Session {
     /// bytes can still be sitting in the OS page cache (not yet on disk)
     /// when `rename` runs, so a crash/power-loss right after a "successful"
     /// save could still rename a not-yet-durable file onto `path`.
-    pub fn save(&self, path: &std::path::Path) -> Result<(), String> {
-        use std::io::Write;
-        // Stamp the digest of the state-after-last-event on a clone (`save`
-        // is `&self`; the clone is cheaper than the JSON serialization that
-        // follows). Makes every tester/live-gate save strict-verifiable end
-        // to end — Phase-2.9 close-out follow-up (a).
+    /// The record as it must be WRITTEN: the terminal digest stamped from the
+    /// state its events fold to.
+    ///
+    /// **Single-sourced deliberately.** There are two writers of this file
+    /// format — `save` here, and `yokohama-web`'s `Games::persist` — and the
+    /// digest is stamped at write time rather than held on the record, so a
+    /// writer that serializes `self.record` directly silently omits it. That
+    /// is not a cosmetic omission: `from_record` guards the provenance refusal
+    /// on `if let Some(expected_digest)`, so a record written without one
+    /// DISABLES the check rather than failing it, and a record written *with*
+    /// a stale one is refused forever. Both halves were live defects. One
+    /// function, so a field added here reaches every writer.
+    pub fn to_record_json(&self) -> Result<String, String> {
+        // Stamp on a clone (`to_record_json` is `&self`; the clone is cheaper
+        // than the JSON serialization that follows). Makes every tester/
+        // live-gate save strict-verifiable end to end — Phase-2.9 close-out
+        // follow-up (a).
         let mut record = self.record.clone();
         record.stamp_terminal_digest(&self.state);
-        let text = serde_json::to_string_pretty(&record).map_err(|e| e.to_string())?;
+        serde_json::to_string_pretty(&record).map_err(|e| e.to_string())
+    }
+
+    pub fn save(&self, path: &std::path::Path) -> Result<(), String> {
+        use std::io::Write;
+        let text = self.to_record_json()?;
         let mut tmp = path.as_os_str().to_os_string();
         tmp.push(".tmp");
         let tmp = std::path::PathBuf::from(tmp);

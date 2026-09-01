@@ -338,8 +338,13 @@ impl Games {
                 }
             }
         }
-        let json =
-            serde_json::to_string_pretty(repl.session.record()).map_err(|e| e.to_string())?;
+        // `Session::to_record_json`, never `to_string_pretty(record())`: the
+        // terminal digest is stamped at WRITE time, so serializing the record
+        // directly here wrote a record with no digest (disabling the engine's
+        // provenance refusal on every game this server owns) and rewrote a
+        // CLI-written save's digest-for-state-N onto a state-N+1 record, which
+        // the next cold rebuild refused forever.
+        let json = repl.session.to_record_json()?;
         self.store.write(id, &json)
     }
 
@@ -407,6 +412,101 @@ mod tests {
             bot_seats: vec![1],
             name: Some(name.to_string()),
         }
+    }
+
+    /// A record this server writes carries the terminal digest, so the
+    /// engine's own provenance refusal is ARMED on a web game exactly as it is
+    /// on a CLI save.
+    ///
+    /// `Session::from_record` guards on `if let Some(expected_digest)`
+    /// (`session.rs`), so a record written without one disables the check
+    /// silently rather than failing it. Its doc states what is lost: editing
+    /// `seed` alone in an otherwise clean save "replays with zero errors,
+    /// passes `check_invariants` ... and resumes the game on tiles that are not
+    /// the ones on the table. The digest is the only field that can see that."
+    ///
+    /// Asserting the FIELD would be a weaker test than it looks — a digest
+    /// stamped from the wrong state is still `Some`. So this tampers with the
+    /// seed and requires the refusal to fire.
+    #[test]
+    fn a_persisted_record_arms_the_provenance_refusal_against_an_edited_seed() {
+        let store = Arc::new(MemStore::default());
+        let games =
+            Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn SessionStore>);
+        let (id, _handle) = games.create(&req("digest")).expect("a game");
+
+        let stored = store.read(&id).expect("the record");
+        let record: GameRecord = serde_json::from_str(&stored).expect("a record");
+        assert!(
+            record.terminal_digest.is_some(),
+            "a web-written record carries a digest, or the refusal below can never run",
+        );
+
+        // Edit the seed the way the refusal exists to catch, and re-read it
+        // through the same path a slept container takes.
+        let mut tampered: serde_json::Value =
+            serde_json::from_str(&stored).expect("the record as json");
+        let seed = tampered["seed"].as_u64().expect("a seed");
+        tampered["seed"] = serde_json::Value::from(seed ^ 1);
+        store.write(&id, &tampered.to_string()).expect("the tampered write");
+
+        let fresh =
+            Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn SessionStore>);
+        // `Repl` is not `Debug`, so match rather than `expect_err`.
+        let err = match fresh.handle(&id) {
+            Ok(_) => panic!("an edited record must be refused, not loaded"),
+            Err(e) => e,
+        };
+        assert!(
+            err.contains("digest"),
+            "the refusal names the digest rather than some other failure: {err}",
+        );
+    }
+
+    /// A save that CARRIES a digest survives a move made through this server.
+    ///
+    /// The destructive half of the same defect, and the one that needs a COLD
+    /// rebuild to reproduce: `from_record` keeps the parsed record
+    /// (`session.rs`), so a game loaded from a stamped save holds
+    /// `terminal_digest: Some(digest of state N)` in memory. A `persist` that
+    /// re-serialized that record wrote N+1 events still claiming state N, and
+    /// the next cold rebuild refused it — a permanent 404 on an intact record
+    /// the server itself had just written.
+    ///
+    /// Every CLI writer stamps (interactive `save`, autosave, `import --out`,
+    /// `--follow --out`), so "a save that carries a digest" is every save a
+    /// tester would drop into this store.
+    #[test]
+    fn a_save_that_carries_a_digest_survives_a_move_made_through_this_server() {
+        let store = Arc::new(MemStore::default());
+        let rules = Arc::new(Rules::standard());
+        let games = Games::new(Arc::clone(&rules), Arc::clone(&store) as Arc<dyn SessionStore>);
+        let (id, _handle) = games.create(&req("fromcli")).expect("a game");
+
+        // COLD rebuild, so the resident session's record is the STAMPED one
+        // off the store rather than the `None`-digest record `create` built.
+        let cold = Games::new(Arc::clone(&rules), Arc::clone(&store) as Arc<dyn SessionStore>);
+        let handle = cold.handle(&id).expect("the stored game loads");
+        {
+            let mut repl = handle.lock().expect("the handle");
+            assert!(
+                repl.session.record().terminal_digest.is_some(),
+                "the premise: a rebuilt session carries the digest it was loaded with",
+            );
+            let before = repl.session.record().events.len();
+            let _ = repl.step("");
+            assert!(
+                repl.session.record().events.len() > before,
+                "the premise: the step applied a move, so the digest is now stale",
+            );
+            cold.persist(&id, &repl).expect("the write");
+        }
+
+        let fresh = Games::new(Arc::clone(&rules), Arc::clone(&store) as Arc<dyn SessionStore>);
+        assert!(
+            fresh.handle(&id).is_ok(),
+            "the record this server just wrote must still load",
+        );
     }
 
     /// A game DELETED while a move was in flight does not come back.
