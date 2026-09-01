@@ -821,3 +821,57 @@ table.outcome tr.won td:first-child::after { content: " ★"; color: var(--vp); 
   box-shadow: 0 12px 32px rgb(0 0 0 / 0.5);
 }
 .cards-menu > div button { text-align: left; white-space: nowrap; }
+
+/* ---- the tracks surface (M3.5 / F5) ------------------------------------ */
+/* The Dashboard's strip keeps every space's points and rider in a `title=`
+ * attribute, which is invisible on touch, to a screen reader, and to any
+ * assertion. This is the surface that says them. */
+table.track-table { width: 100%; border-collapse: collapse; font-size: 12px; margin: 0.3rem 0 1rem; }
+table.track-table th {
+  text-align: left; font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--fg-faint); font-weight: 700; padding: 0.25rem 0.5rem;
+  border-bottom: 1px solid var(--line);
+}
+table.track-table td { padding: 0.25rem 0.5rem; border-bottom: 1px solid var(--line); }
+table.track-table tr.taken td { background: rgb(95 168 255 / 0.06); }
+table.track-table .power { color: var(--vp); font-weight: 700; width: 3rem; }
+table.track-table .occ { font-weight: 700; }
+table.track-table .occ.dummy { color: var(--fg-faint); font-weight: 400; font-style: italic; }
+
+/* ---- the building-site cards (M3.5 / F5) ------------------------------- */
+/* The printed card with what is BUILT drawn on it, at rects measured off the
+ * art rather than guessed: each of the 24 site webps minus its own 9px box
+ * blur, averaged, leaves the printed rules and cancels every card's content.
+ * The vertical gutter lands at x 0.486–0.500 and the horizontals at
+ * y 0.344–0.354 and y 0.641–0.650. */
+.site-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr)); gap: 0.8rem;
+}
+.site-card { margin: 0; display: flex; flex-direction: column; gap: 0.3rem; }
+.site-face {
+  position: relative; aspect-ratio: 360 / 543;
+  border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden;
+  background: var(--bg-sunken);
+}
+.site-face img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.site-card figcaption { font-size: 11px; color: var(--fg-dim); }
+
+/* The four printed spaces and the trading-house band, as measured. An unbuilt
+ * space draws NOTHING — the printed card then reads exactly as it does on the
+ * table, which is the point of showing the card at all. */
+.site-space, .site-trading-house {
+  position: absolute; display: grid; place-items: center;
+  border-radius: 3px; pointer-events: none;
+}
+.site-space.slot-0 { left: 2%;  top: 2%;    width: 46%; height: 32%; }  /* TL */
+.site-space.slot-1 { left: 52%; top: 2%;    width: 46%; height: 32%; }  /* TR */
+.site-space.slot-2 { left: 2%;  top: 36.5%; width: 46%; height: 27%; }  /* ML */
+.site-space.slot-3 { left: 52%; top: 36.5%; width: 46%; height: 27%; }  /* MR */
+.site-trading-house { left: 2%; top: 66%; width: 96%; height: 32%; }
+.site-space.built, .site-trading-house.built {
+  background: rgb(9 11 14 / 0.62);
+  box-shadow: inset 0 0 0 2px currentColor;
+}
+.site-space .built-mark, .site-trading-house .built-mark {
+  font-size: 1.4rem; color: currentColor; text-shadow: 0 1px 3px #000;
+}

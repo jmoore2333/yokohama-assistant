@@ -21,10 +21,12 @@ import type {
   PortsPanel,
   IndexModel,
   Outcome,
+  TracksPanel,
   SuggestResponse,
   WhyResponse,
 } from "./types";
-import { OrderCardView, Pawns, TechCardView } from "./Cards";
+import { siteArt } from "./art";
+import { OrderCardView, Pawns, seatClass, TechCardView } from "./Cards";
 import { SuggestView, WhyView } from "./Explain";
 import { IndexView, OutcomeView } from "./Index";
 
@@ -32,6 +34,8 @@ export type SurfaceName =
   | "ports"
   | "labs"
   | "areas"
+  | "tracks"
+  | "buildings"
   | "log"
   | "suggest"
   | "why"
@@ -50,6 +54,10 @@ export type SurfaceName =
  *  explanation surfaces are the same thing as the four read-only ones from the
  *  panel's point of view (fetch, draw, close on Escape), and a parallel
  *  component would mean two dialects of the same dialog. */
+/** A surface whose data the client already holds. `Surface` renders on
+ *  `data != null`, so a loader still has to resolve SOMETHING. */
+const NOTHING_TO_FETCH = Symbol("already on the frame");
+
 export const SURFACES: {
   key: SurfaceName;
   label: string;
@@ -59,6 +67,12 @@ export const SURFACES: {
   { key: "ports", label: "Port offer", blurb: "the cards on display, the zone each sits in, and the action power that zone takes", load: (g) => api.ports(g) },
   { key: "labs", label: "Laboratory offer", blurb: "the technologies on display, what each does, and the industry it costs in its slot", load: (g) => api.labs(g) },
   { key: "areas", label: "Areas", blurb: "what every area's action pays at power 1–5", load: (g) => api.areas(g) },
+  // **Nothing to fetch.** The tracks are already on every frame — `App` hands
+  // the panel down — so this loader resolves a sentinel rather than asking the
+  // server for a copy of something the client is holding. A route would have
+  // been a second source for one model.
+  { key: "tracks", label: "Tracks", blurb: "every Church and Customs space, what it pays, its rider, and who is standing on it", load: () => Promise.resolve(NOTHING_TO_FETCH) },
+  { key: "buildings", label: "Building sites", blurb: "each area's building-site card — what every space pays, and where shophouses and the trading house are built", load: (g) => api.areas(g) },
   { key: "log", label: "Log", blurb: "what has happened, each line worded as it read when it applied", load: (g) => api.log(g) },
   { key: "suggest", label: "Suggest", blurb: "what the bot would play on your seat, and the arithmetic behind it", load: (g) => api.suggest(g) },
   { key: "why", label: "Why", blurb: "the account of the last move a bot played, reconstructed by replay", load: (g) => api.why(g) },
@@ -112,6 +126,7 @@ export function Surface({
   art,
   labels,
   colors,
+  tracks,
   onClose,
 }: {
   name: SurfaceName;
@@ -119,6 +134,8 @@ export function Surface({
   art: ArtManifest | null;
   labels: Labels | null;
   colors: PlayerColor[];
+  /** The Church and Customs tracks, already on every frame. */
+  tracks?: TracksPanel | null;
   onClose: () => void;
 }) {
   // The payload is stored WITH the surface it was fetched for, and only
@@ -257,6 +274,10 @@ export function Surface({
         )}
         {data != null && name === "areas" && (
           <Areas panel={data as AreasPanel} labels={labels} colors={colors} />
+        )}
+        {data != null && name === "tracks" && <Tracks panel={tracks ?? null} colors={colors} />}
+        {data != null && name === "buildings" && (
+          <BuildingSites panel={data as AreasPanel} art={art} colors={colors} />
         )}
         {data != null && name === "log" && <Log panel={data as LogPanel} />}
         {data != null && name === "suggest" && (
@@ -459,5 +480,182 @@ function Log({ panel }: { panel: LogPanel }) {
         ))}
       </ol>
     </>
+  );
+}
+
+/** The Church and Customs tracks, every space spelled out.
+ *
+ *  **This exists because the Dashboard's version is a tooltip.**
+ *  `Dashboard.tsx:286` and `:303` carry each space's VP and its rider in a
+ *  `title=` attribute and nothing else, which is invisible on a touch screen,
+ *  invisible to a screen reader, and invisible to any assertion — while the CLI
+ *  prints them. The Dashboard keeps its compact strip, which is right for a rail
+ *  you glance at; this is the surface you read.
+ *
+ *  It also gives the Areas panel's `companion: "Tracks"` pointer somewhere to
+ *  point. Every board carries exactly one Church and one Customs
+ *  (`screen_model.rs:826` maps both to `Tracks`), so before this there were two
+ *  dead pointers on every board at every player count. */
+function Tracks({ panel, colors }: { panel: TracksPanel | null; colors: PlayerColor[] }) {
+  if (!panel) return <div className="muted">The tracks are not on this frame.</div>;
+  const who = (occupant: number | null) => {
+    if (occupant == null) return null;
+    // The 2P dummy is a real scoring occupant and is never a seat: it competes
+    // in both majorities. Marked, never coloured — the same rule the board's
+    // own `.space.dummy` follows.
+    if (occupant >= colors.length) return <span className="occ dummy">dummy</span>;
+    return <span className={`occ ${seatClass(colors[occupant])}`}>{colors[occupant]}</span>;
+  };
+  return (
+    <>
+      <h3>Church &mdash; faith 4 to 11</h3>
+      <p className="lede">
+        {panel.church_filled} of {panel.church.length} spaces taken by a real pawn.
+      </p>
+      <table className="track-table">
+        <thead>
+          <tr><th>Faith</th><th>Points</th><th>Rider</th><th>Standing on it</th></tr>
+        </thead>
+        <tbody>
+          {panel.church.map((s) => (
+            <tr key={s.faith} className={s.occupant != null ? "taken" : ""}>
+              <td className="power">{s.faith}</td>
+              <td>&#9733;{s.vp} VP</td>
+              <td>{s.movement_rider > 0 ? `move ${s.movement_rider} assistant(s)` : <span className="muted">&mdash;</span>}</td>
+              <td>{who(s.occupant) ?? <span className="muted">empty</span>}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      <h3>Customs &mdash; spaces 1 to 7</h3>
+      <p className="lede">
+        {panel.customs_filled} of {panel.customs.length} spaces taken by a real pawn.
+      </p>
+      <table className="track-table">
+        <thead>
+          <tr><th>Space</th><th>Costs</th><th>Points</th><th>Rider</th><th>Standing on it</th></tr>
+        </thead>
+        <tbody>
+          {panel.customs.map((s) => (
+            <tr key={s.space} className={s.occupant != null ? "taken" : ""}>
+              <td className="power">{s.space}</td>
+              <td>{s.import_cost} imported good(s)</td>
+              <td>&#9733;{s.vp} VP</td>
+              <td>
+                {s.warehouse_rider > 0 || s.yen_rider > 0 ? (
+                  [
+                    s.warehouse_rider > 0 ? `${s.warehouse_rider} warehouse token(s)` : null,
+                    s.yen_rider > 0 ? `¥${s.yen_rider}` : null,
+                  ]
+                    .filter(Boolean)
+                    .join(" + ")
+                ) : (
+                  <span className="muted">&mdash;</span>
+                )}
+              </td>
+              <td>{who(s.occupant) ?? <span className="muted">empty</span>}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="lede">
+        The game ends when {panel.trigger_at} pawns stand on the two tracks and the achievements
+        together.
+      </p>
+    </>
+  );
+}
+
+/** Each area's BUILDING-SITE card: the printed picture, with what is built drawn
+ *  on it.
+ *
+ *  **It reads the AREAS frame and must never read `/index/sites`.**
+ *  `build_site_index` clones the pristine registry card
+ *  (`screen_model.rs:1796`), so the index's `shophouses_built` is
+ *  `[null,null,null,null]` on all 24 faces and its `trading_house_owner` is null
+ *  — forever, mid-game included. An overlay built against it draws a board on
+ *  which nothing is ever built. `types.ts` carries that caveat in prose and it
+ *  was steered past once already, so this component takes `SiteModel` from the
+ *  live frame and there is no path here to the other one.
+ *
+ *  **The overlay rects are MEASURED.** Each of the 24 site arts minus its own
+ *  9px box blur, averaged, so the printed rule survives and every card's own
+ *  content cancels: the vertical gutter sits at x 0.486–0.500 (ridge +15.7) and
+ *  the two horizontal gutters at y 0.344–0.354 (+20.1) and y 0.641–0.650
+ *  (+21.0). The four spaces are TL/TR/ML/MR in `slots` order, which is
+ *  `types/board.rs:127-128`'s own order, and the trading house is the band
+ *  below. */
+function BuildingSites({
+  panel,
+  art,
+  colors,
+}: {
+  panel: AreasPanel;
+  art: ArtManifest | null;
+  colors: PlayerColor[];
+}) {
+  const cards = panel.rows.flat().filter((c) => c.tile.site !== null);
+  if (cards.length === 0) return <div className="muted">This board has no building sites.</div>;
+  return (
+    <>
+      <p className="lede">
+        One card per area. A space in a seat&rsquo;s colour is already built on; the band across the
+        bottom is the trading house.
+      </p>
+      <div className="site-grid">
+        {cards.map((card) => (
+          <SiteCard key={card.tile.area} card={card} art={art} colors={colors} />
+        ))}
+      </div>
+    </>
+  );
+}
+
+function SiteCard({
+  card,
+  art,
+  colors,
+}: {
+  card: AreaCard;
+  art: ArtManifest | null;
+  colors: PlayerColor[];
+}) {
+  const site = card.tile.site!;
+  const face = siteArt(art, site.index);
+  const id = `A${String(card.tile.area).padStart(2, "0")}`;
+  const th = site.trading_house_owner;
+  return (
+    <figure className="site-card">
+      <div className="site-face">
+        {face ? (
+          <img src={face} alt="" loading="lazy" />
+        ) : (
+          <div className="card-blank">Site {site.index}</div>
+        )}
+        {/* One overlay box per printed space, at the measured rects. A space
+            nobody has built on draws nothing at all, so the printed card reads
+            exactly as it does on the table. */}
+        {site.slots.map((slot, i) => (
+          <span
+            key={i}
+            className={`site-space slot-${i} ${
+              slot.built_by != null ? `built ${seatClass(colors[slot.built_by])}` : ""
+            }`}
+          >
+            {slot.built_by != null && <span className="built-mark">&#8962;</span>}
+          </span>
+        ))}
+        <span
+          className={`site-trading-house ${th != null ? `built ${seatClass(colors[th])}` : ""}`}
+        >
+          {th != null && <span className="built-mark">&#8962;</span>}
+        </span>
+      </div>
+      <figcaption>
+        <span className="tile-id">{id}</span> <b>Site {site.index}</b>
+        <span className="muted"> &middot; trading house &#9733;{site.trading_house_vp}</span>
+      </figcaption>
+    </figure>
   );
 }
