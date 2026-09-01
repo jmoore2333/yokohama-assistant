@@ -411,12 +411,15 @@ otherwise never run) + `cargo clippy --workspace --all-targets -- -D warnings`, 
 **On `web-frontend` the browser CLIENT adds three more per-edit commands, from `web/`** (M2.5,
 2026-08-31 — before it, "the suites are green" was not a claim about the browser at all):
 `npm run typecheck` (both TS projects, and the committed wire corpus against the hand-written
-client types), `npm test` (194 vitest component tests over jsdom, every payload of them
-server-emitted), and `npm run e2e` (11 Playwright tests driving real Chromium against the real
-release binary, including a whole 2P game clicked through to a winner and the explanation
-chart's real geometry). The last needs
-`npx playwright install chromium` once; absence is a loud refusal naming that command, and
-`YOKOHAMA_WEB_E2E_OPTIONAL=1` turns it into a skip that says out loud it tested nothing.
+client types), `npm test` (195 vitest component tests over jsdom, every payload of them
+server-emitted), and `npm run e2e` (14 Playwright tests — 13 driving real Chromium against the
+real release binary, including a whole 2P game clicked through to a winner, the explanation
+chart's real geometry, and the page's real width at four viewports per seat count; the
+fourteenth needs no browser and is what keeps the escape hatch below honest). The browser ones
+need `npx playwright install chromium` once; absence is a loud refusal naming that command, and
+`YOKOHAMA_WEB_E2E_OPTIONAL=1` turns it into a skip that says out loud it tested nothing — a
+convention that broke once when a new spec shipped without its skip line, and is now read off
+the spec directory at run time rather than remembered.
 Pre-merge: all **fifteen** release gates below, measured as ONE uninterrupted sequence at every
 close — a sum of per-command times from separate sessions is not a measured total. **Wall
 figures are per-machine since 2026-08-11** (two workstations whose profiles INVERT by gate
@@ -460,6 +463,11 @@ building sites re-modeled to their positional space rewards). Jeremy's physical 
 layouts, and canal geometry — and every owner ruling since is recorded in
 [`guidingpath.md`](guidingpath.md)'s decision log. The engine's registries are generated from
 the YAML by `gen-data`; a `rules_hash` stamps every saved game with the data that produced it.
+
+The code in this repository is Apache-2.0 (`LICENSE`, `NOTICE`), but the game's own material is
+not the owner's to relicense: [`ASSETS.md`](ASSETS.md) names the three excluded paths —
+`tts-assets/`, `crates/yokohama-web/assets/art/`, and the rulebook PDF — and says what a fork
+has to do about them.
 
 ## Where truth lives
 

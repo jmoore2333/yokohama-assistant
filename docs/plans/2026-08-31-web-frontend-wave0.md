@@ -189,12 +189,20 @@ since one `filter-repo` pass removes both.
 | `npm test` | 194 | **195** |
 | `npm run e2e` | 11 | **14** (13 browser + 1 structural) |
 | `cargo test -p yokohama-cli` | 849 + 2 | **849 + 2** — unmoved |
-| `yokohama-core` | 1577 + 29 | **unmoved, byte-identical to master** |
+| `yokohama-core` | 1577 + 29 *(as documented)* | **1576 + 29 across 21 binaries**, doc-test 1, aggregate 1577 — byte-identical to master |
 | wire corpus | 41 | **41** |
 
 `cargo clippy --workspace --all-targets -D warnings` clean; `npm run typecheck`
 clean over both TS projects. The fifteen-gate roster is untouched and nothing
 here is `#[ignore]`d.
+
+**The core figure moved on paper, not in the suite.** CLAUDE.md carried
+"1577 + 29 … aggregate 1578" and the measured per-binary sum is **1576 + 29**
+across 21 binaries, with the doc-test making cargo's aggregate **1577** — a
+pre-existing off-by-one in the V4-close reading, not a lane effect, at a HEAD
+where `crates/yokohama-core` is byte-identical to master. Recorded here because
+the first draft of this table repeated the wrong number from the document it
+was meant to be checking, which is the failure mode this whole wave is about.
 
 ## 6. Owed, and explicitly not done
 

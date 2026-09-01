@@ -4,6 +4,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
+# `cargo package` would bundle `assets/art/` — third-party, no license grant, see ASSETS.md.
+publish = false
 
 [dependencies]
 # The engine, and the CLI's library half. `yokohama-cli` is a lib as well as a

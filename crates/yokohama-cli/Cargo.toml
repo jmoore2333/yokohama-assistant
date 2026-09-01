@@ -21,7 +21,8 @@ rand.workspace = true
 rand_chacha.workspace = true
 # Phase-3.5a T9, spec §0.9: THE one new dependency, and it is the CLI crate's
 # alone -- core/oracle/difftest/gen-data keep the dependency lists they had.
-# MIT, matching this workspace's own license. See `src/input.rs` for the seam.
+# MIT; this workspace is Apache-2.0 (see `LICENSE`), and MIT is compatible with
+# it in this direction. See `src/input.rs` for the seam.
 #
 # `default-features = false` is load-bearing twice over, not tidiness:
 #   * it drops `with-file-history`, and THAT is what makes rustyline's

@@ -995,11 +995,19 @@ mod tests {
     /// **The explanation FOOTS, and that is the whole claim of the `why` screen.**
     ///
     /// `Explanation`'s own documented identity is
-    /// `total == sum(terms.product) + terminal.value`, and it holds only over
-    /// ALL 34 terms — which is why the payload carries the zero-product ones
-    /// rather than shrinking itself. A chart the reader cannot foot is a picture
-    /// rather than an explanation, so the sum is asserted here and re-asserted
-    /// on every committed fixture.
+    /// `total == sum(terms.product) + terminal.value`. A chart the reader cannot
+    /// foot is a picture rather than an explanation, so the sum is asserted here
+    /// and re-asserted on every committed fixture.
+    ///
+    /// **What this doc used to say and should not have:** that the identity
+    /// "holds only over ALL 34 terms — which is why the payload carries the
+    /// zero-product ones". It does not. A zero product contributes zero, so the
+    /// carrying terms alone foot — measured on `web/src/wire/suggest.json`: 34
+    /// terms, 8 nonzero, both sums 78 == `total`. The real reason all 34 ship is
+    /// `Explanation`'s, and it is about the READER rather than the arithmetic:
+    /// a term reported at zero can be SEEN to have contributed nothing, where an
+    /// absent one leaves you wondering whether it was computed. That is what
+    /// makes the client's "8 of 34" a count of something it is showing.
     #[tokio::test]
     async fn suggest_carries_the_bots_own_arithmetic_and_the_sum_foots() {
         let router = live_router();
