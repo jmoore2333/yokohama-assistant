@@ -957,6 +957,41 @@ mod tests {
         state
     }
 
+    /// **The only destructive route in the product, which nothing exercised.**
+    ///
+    /// `DELETE /api/games/{id}` permanently removes a game, and no test at any
+    /// level issued one — not a route test, not a component cell, not the
+    /// browser walk. `Games::delete`'s store-level behaviour is covered
+    /// (`games.rs`), but the ROUTE was not: repointing `api.remove` at another
+    /// path, or returning 204 without calling `state.games.delete`, left every
+    /// suite green. On a lane whose CI runs only `cargo test -p yokohama-core`,
+    /// that is a delete button nothing anywhere checks.
+    #[tokio::test]
+    async fn a_deleted_game_is_gone_from_the_list_and_from_the_store() {
+        let router = app(Arc::new(AppState::in_memory()));
+        a_game(&router, "doomed", &[]).await;
+        a_game(&router, "kept", &[]).await;
+
+        let (_, before) = call(&router, "GET", "/api/games", None).await;
+        assert_eq!(before, serde_json::json!(["doomed", "kept"]), "the premise: both are stored");
+
+        let (status, _) = call(&router, "DELETE", "/api/games/doomed", None).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
+        // Gone from the list, gone from the store, and the OTHER game survives —
+        // without that last clause a handler that deleted everything would pass.
+        let (_, after) = call(&router, "GET", "/api/games", None).await;
+        assert_eq!(after, serde_json::json!(["kept"]), "only the named game went");
+        let (status, _) = call(&router, "GET", "/api/games/doomed", None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "the record is really gone");
+        let (status, _) = call(&router, "GET", "/api/games/kept", None).await;
+        assert_eq!(status, StatusCode::OK, "and its neighbour is untouched");
+
+        // Deleting what is not there is a 404, not a silent success.
+        let (status, _) = call(&router, "DELETE", "/api/games/doomed", None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "a second delete says so");
+    }
+
     /// **The explanation FOOTS, and that is the whole claim of the `why` screen.**
     ///
     /// `Explanation`'s own documented identity is
