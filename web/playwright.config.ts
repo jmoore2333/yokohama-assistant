@@ -70,9 +70,20 @@ if (!haveBrowser) {
 // exists for, the operator's only remaining move was to drop the command from
 // the gate list, which is the silent skip the whole design was avoiding.
 //
-// Every spec now carries `test.skip(!haveBrowser, …)` instead, so the reporter
-// prints seven SKIPPED tests with the reason attached and the run exits 0. A
-// skip you can count is not a skip you can miss.
+// Every BROWSER spec carries `test.skip(!haveBrowser, …)` instead, so the
+// reporter prints one SKIPPED test per browser test — eleven at this writing,
+// a reading rather than a contract — with the reason attached, and the run
+// exits 0. A skip you can count is not a skip you can miss.
+//
+// **And the convention is enforced rather than remembered.** It was written
+// down here once and then broken anyway: M3 added a third spec without the
+// line, and the opt-out went back to `4 failed, 7 skipped` — while this comment
+// (which said "seven" of what were by then eleven tests) and two other tracked
+// documents went on describing behaviour the suite no longer had.
+// `e2e/every_spec_can_skip.spec.ts` now reads the spec directory AT RUN TIME
+// and names any file missing the guard. It declares no browser fixture, so it
+// is the one spec that runs — and therefore checks — in the very configuration
+// this paragraph is about.
 /** A single scratch games directory for the walk, emptied before it starts.
  *  The server persists every applied move as its `GameRecord`, and a walk must
  *  not write into whatever the operator is actually playing. */

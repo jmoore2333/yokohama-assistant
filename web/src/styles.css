@@ -115,6 +115,20 @@ h1, h2, h3 { font-family: var(--display); font-weight: 500; margin: 0; }
 
 @media (max-width: 1200px) {
   .stage { flex-direction: column; }
+  /* **Both children state their width, and neither statement is redundant.**
+   *
+   * `.stage` keeps `align-items: flex-start` from the rule above, and in a
+   * COLUMN flex container `align-items` governs the CROSS axis — which is the
+   * WIDTH. So `flex-start` means fit-content, and the board's fit-content is
+   * its widest row: six 14rem tiles, 1376px, at 4P. Neither of the two things
+   * that look like they cover it does: `min-width: 0` caps the AUTOMATIC
+   * MINIMUM and not fit-content, and `.board`'s own `overflow-x: auto` cannot
+   * engage inside a column that has already been sized to its content — it
+   * reduces nothing intrinsic. The document then overflows: measured at
+   * 390x844 on a 4P game, `.board-col` computed to 1376px and `html` to 1006px
+   * of horizontal overflow. Stating the width is the fix, and it is the same
+   * fix the rail on the next line already had for the identical symptom. */
+  .board-col { width: 100%; }
   .rail { flex: 1 1 auto; width: 100%; }
 }
 

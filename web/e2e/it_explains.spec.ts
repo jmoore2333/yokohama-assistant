@@ -15,7 +15,13 @@
 // hundred candidate rows does not overflow sideways.
 
 import { expect, test } from "@playwright/test";
+import { haveBrowser } from "../playwright.config";
 import { watchForBreakage } from "./harness";
+
+// No browser, and `YOKOHAMA_WEB_E2E_OPTIONAL=1`: SKIP, visibly. The reporter
+// then says how many tests did not run, which is the difference between a skip
+// and a silent absence.
+test.skip(!haveBrowser, "no Chromium — YOKOHAMA_WEB_E2E_OPTIONAL=1; this run tested NOTHING");
 
 /** Seat 0 is the bot AND the start seat, so `create`'s pump plays a whole bot
  *  turn before anything is on screen. The setup seed is fixed; the BOT seed is
@@ -34,6 +40,28 @@ async function aGameWithABot(request: import("@playwright/test").APIRequestConte
     },
   });
   expect(res.status(), await res.text()).toBe(201);
+}
+
+/**
+ * Answer the one forced move `create`'s pump leaves in front of the human.
+ *
+ * The opening additional-action decision has exactly one legal move at turn 1 —
+ * nobody owns a technology yet — so a panel opened on it ranks a field of ONE.
+ * A test that wants a wide field has to move past it first. That the decision is
+ * forced is CHECKED here rather than assumed, so if it ever stops being forced
+ * this says so instead of silently answering something else.
+ */
+async function pastTheForcedOpening(
+  request: import("@playwright/test").APIRequestContext,
+  game: string,
+) {
+  const state = await (await request.get(`/api/games/${game}`)).json();
+  expect(state.prompt?.kind, "the pump leaves an option list").toBe("options");
+  expect(state.prompt.rows.length, "…with exactly one move in it").toBe(1);
+  const res = await request.post(`/api/games/${game}/input`, {
+    data: { line: String(state.prompt.rows[0].number), expect: state.prompt.kind },
+  });
+  expect(res.status(), await res.text()).toBe(200);
 }
 
 async function openPanel(page: import("@playwright/test").Page, game: string, label: string) {
@@ -148,9 +176,23 @@ test("suggest answers for the human seat, and the panel is escapable", async ({ 
   await aGameWithABot(request, "advises");
   await openPanel(page, "advises", "Suggest");
 
-  // Either an account or a refusal — both are answers, and both must draw.
-  const drew = (await page.locator(".bar-row").count()) > 0 || (await page.locator(".refusal").count()) > 0;
-  expect(drew, "the suggest panel drew something").toBe(true);
+  // **A refusal is the WRONG answer here, so it is not an accepted one.**
+  // `aGameWithABot` puts the bot on seat 0 AND makes it the start seat, so
+  // `create`'s pump has already played the bot's turn and the HUMAN is to move
+  // — which is exactly the seat `suggest` answers for. The first draft accepted
+  // "an account OR a refusal, either is an answer", and that clause holds
+  // whatever the server says: make `suggest` return `SuggestRefusal::BotSeat`
+  // unconditionally and it stays green while the panel this test is named after
+  // never draws. So say which answer this position must give, and fail naming
+  // the refusal that came instead — the shape the `why` cell above already uses.
+  const refusal = page.locator(".refusal code");
+  if (await refusal.count()) {
+    throw new Error(`suggest refused on the HUMAN seat: ${await refusal.innerText()}`);
+  }
+  expect(
+    await page.locator(".bar-row").count(),
+    "the suggest panel drew its account",
+  ).toBeGreaterThan(0);
 
   // Real focus, which jsdom cannot have: the panel is `position: fixed` over
   // the whole board, so a keyboard user who opens it and cannot leave it is
@@ -165,10 +207,38 @@ test("a panel holding two hundred candidates still does not scroll sideways", as
   request,
 }) => {
   await aGameWithABot(request, "wide");
+  // **The opening decision is FORCED, which is the wrong place to ask this.**
+  // Measured while fixing the assertion below: at the state this test used to
+  // open the panel on, `suggest`'s ranking held ONE candidate, so `RunnerUps`
+  // rendered nothing at all — no list, no disclosure — and the overflow check
+  // ran over a panel with no candidates in it, under the name "two hundred
+  // candidates". One move on, the seat is in Placement and the engine offers
+  // ~186. The figure moves with the bot's own entropy, so nothing below asserts
+  // it; the disclosure's own label is what the row count is checked against.
+  await pastTheForcedOpening(request, "wide");
   await openPanel(page, "wide", "Suggest");
 
+  // **The wide case has to actually BE wide.** `if (await more.count()) await
+  // more.click()` was a clause that could silently never run: delete the
+  // disclosure and the count is 0, the click is skipped, and the overflow check
+  // below runs over the six collapsed rows — a page nothing here is about,
+  // passing under the name "two hundred candidates". A refusal did the same
+  // thing, with no rows at all. `Surfaces.test.tsx` records this exact shape
+  // ("the first draft wrapped that assertion in `if (actionless.length > 0)`,
+  // which is a clause that silently never ran"), so it is asserted here rather
+  // than guarded: the button EXISTS, and the click puts every candidate the
+  // button counted on screen.
   const more = page.getByRole("button", { name: /Show all \d+ candidates/ });
-  if (await more.count()) await more.click();
+  expect(await more.count(), "the disclosure this test exists to open").toBe(1);
+  const label = await more.innerText();
+  const promised = Number(/Show all (\d+) candidates/.exec(label)?.[1]);
+  expect(promised, `the disclosure names how many it is hiding: ${label}`).toBeGreaterThan(0);
+  await more.click();
+  await expect(more).toHaveCount(0);
+  expect(
+    await page.locator(".runner-ups li").count(),
+    `every one of the ${promised} candidates the button named is on screen`,
+  ).toBe(promised);
 
   for (const width of [1440, 1024]) {
     await page.setViewportSize({ width, height: 900 });

@@ -4,7 +4,7 @@
 // every assertion in this file is one the component suite structurally cannot
 // make. Each is also a defect class this lane has already met once.
 
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { haveBrowser } from "../playwright.config";
 import { act, deadEnd, readScreen, rng, startGame, watchForBreakage } from "./harness";
 
@@ -104,48 +104,206 @@ test("all four read-only surfaces open, draw, and close", async ({ page }) => {
   expect(watch.failures).toEqual([]);
 });
 
-test("the page never scrolls sideways, at a laptop width or a phone's", async ({ page }) => {
-  const page_game = await startGame(page);
-  // Play a few moves first: an empty opening board is the narrowest the screen
-  // ever is, so measuring only there measures the easy case.
-  const pick = rng(0x5749_4454); // "WIDT"
-  let moves = 0;
-  for (let i = 0; i < 12; i += 1) {
-    const screen = await readScreen(page);
-    if (screen.over) break;
-    if ((await act(page, screen, pick)) === null) throw await deadEnd(page, page_game, moves);
-    moves += 1;
-  }
-  expect(moves, "the preamble must actually put something on the board").toBeGreaterThan(5);
+// ---- horizontal overflow: what is measured, and what is merely recorded ----
+//
+// What a player experiences is the PAGE scrolling sideways; what causes it is
+// ONE element wider than the window. Those are two different measurements, and
+// the first one on its own is nearly blind here — the cell this replaced took
+// only a `documentElement` delta, at 1440 and 1024, on a 2P game, and could not
+// see either half of the defect it was written to catch:
+//
+//   * `.board` is `overflow-x: auto`, so ANY amount of board too wide for its
+//     column is absorbed there and never reaches `documentElement`. The board
+//     is the widest thing on the screen — the one element most likely to be
+//     wrong is precisely the one a page delta cannot feel. Measured at 1440: a
+//     4P board carries 384px outside its column — 28% of it off screen, behind
+//     an overlay scrollbar — and the delta the old cell asserted on read 0.
+//   * 1024 is BELOW the 1200px breakpoint, so it measured the COLUMN layout —
+//     and a 2P board (915px) clears 1024 with room to spare, while 3P (1146px)
+//     and 4P (1376px) were never measured at any width. The column arm shipped
+//     with `align-items: flex-start` sizing `.board-col` to fit-content, which
+//     is 1006px of document overflow at 390x844, recorded in three documents as
+//     an accepted phone limitation and green in this file the whole time.
+//
+// So the read below returns the OFFENDING ELEMENTS — the outermost boxes whose
+// right edge is past the window, each with its selector, its width and its
+// scroll/client pair — beside the page delta, from one round trip. A failure
+// then says `div.board-col is 1376px wide in a 390px window`, which is the bug,
+// rather than `overflow: 1006`, which is a trip to the devtools.
+//
+// The two claims are deliberately of different strength:
+//   (a) THE PAGE MUST NEVER SCROLL SIDEWAYS — at any of these widths, at any
+//       player count. ASSERTED.
+//   (b) `.board` MAY scroll inside its own column. That is its design: no
+//       phone is 1376px wide. RECORDED, not gated. The one thing asserted
+//       about it is that the overflow stays REACHABLE — `overflow-x: auto`,
+//       never a silent `hidden` clip, which would satisfy (a) by hiding a
+//       third of the board with no scrollbar and no clue.
+//
+// The widths bracket the 1200px breakpoint from BOTH sides — 1201 is the
+// narrowest row layout, 1024 the widest column one — because a breakpoint is
+// where layout bugs live and the old cell measured only one side of it. The
+// player counts are all three because the board's width IS the player count:
+// the widest row is `players + 2` tiles of 14rem (915px · 1146px · 1376px), so
+// a 2P-only cell tests the narrowest board that exists.
 
-  // **The asserted widths are DESKTOP widths, and that is a scope statement
-  // rather than an oversight.** This client is a desktop surface: the board is
-  // a staggered pyramid of up to six tiles across, each carrying a site strip
-  // that is the densest thing on the screen, and no phone layout was ever
-  // designed or asked for. Asserting 390px would be asserting a requirement
-  // nobody set.
-  //
-  // MEASURED at 390 x 844 on the run that added this file: 545px of horizontal
-  // overflow. Recorded, not asserted — so that whoever takes up a phone layout
-  // starts from a number rather than from a discovery.
-  for (const size of [
-    { width: 1440, height: 900 },
-    { width: 1024, height: 768 },
-  ]) {
-    await page.setViewportSize(size);
-    const overflow = await page.evaluate(
-      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+/** One offending box, named well enough to fix without opening devtools. */
+interface Box {
+  selector: string;
+  width: number;
+  right: number;
+  scrollWidth: number;
+  clientWidth: number;
+  overflowX: string;
+}
+
+interface OverflowRead {
+  /** The page delta — what a player feels as a sideways scrollbar. */
+  docScrollWidth: number;
+  docClientWidth: number;
+  /** The outermost boxes sticking out past the window: the CAUSE of that delta. */
+  spills: Box[];
+  /** The board's own scroller, which is allowed to have work to do. */
+  board: Box | null;
+  /** Anti-vacuity: the pyramid's widest row, in tiles. */
+  widestRow: number;
+}
+
+/** Everything the layout question needs, in ONE round trip. */
+async function readOverflow(page: Page): Promise<OverflowRead> {
+  return page.evaluate(() => {
+    const doc = document.documentElement;
+    const viewport = doc.clientWidth;
+
+    // A path short enough to read in a failure line and specific enough to grep
+    // the stylesheet for.
+    const selectorOf = (el: Element): string => {
+      const hop = (n: Element) => {
+        const cls = [...n.classList].join(".");
+        return `${n.tagName.toLowerCase()}${n.id ? `#${n.id}` : ""}${cls ? `.${cls}` : ""}`;
+      };
+      const parts: string[] = [];
+      for (let n: Element | null = el; n && parts.length < 3; n = n.parentElement) {
+        parts.unshift(hop(n));
+      }
+      return parts.join(" > ");
+    };
+
+    const box = (el: Element): Box => {
+      const r = el.getBoundingClientRect();
+      return {
+        selector: selectorOf(el),
+        width: Math.round(r.width),
+        right: Math.round(r.right),
+        scrollWidth: el.scrollWidth,
+        clientWidth: el.clientWidth,
+        overflowX: getComputedStyle(el).overflowX,
+      };
+    };
+
+    // 1px of slack: `clientWidth` is an integer and a border box is not, so an
+    // exact compare reports fractional rounding as a defect.
+    const past = (el: Element) => Math.round(el.getBoundingClientRect().right) > viewport + 1;
+
+    const spills = [...document.querySelectorAll("*")]
+      .filter((el) => el.getClientRects().length > 0 && past(el))
+      // OUTERMOST only. Every descendant of an over-wide column is over-wide
+      // too, and a list of forty of them buries the one that is the cause.
+      .filter((el) => !el.parentElement || !past(el.parentElement))
+      .map(box)
+      .sort((a, b) => b.width - a.width)
+      .slice(0, 5);
+
+    const board = document.querySelector(".board");
+    const rows = [...document.querySelectorAll(".board-row")].map(
+      (row) => row.querySelectorAll(".tile").length,
     );
-    expect(overflow, `horizontal overflow at ${size.width}px`).toBeLessThanOrEqual(0);
-  }
 
-  await page.setViewportSize({ width: 390, height: 844 });
-  const phone = await page.evaluate(
-    () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
-  );
-  // eslint-disable-next-line no-console
-  console.log(`horizontal overflow at 390px (recorded, not gated): ${phone}px`);
-});
+    return {
+      docScrollWidth: doc.scrollWidth,
+      docClientWidth: viewport,
+      spills,
+      board: board ? box(board) : null,
+      widestRow: rows.length > 0 ? Math.max(...rows) : 0,
+    };
+  });
+}
+
+/** The failure line: WHAT overflowed, not merely by how much. */
+function blame(read: OverflowRead): string {
+  if (read.spills.length === 0) {
+    return "and nothing sticks out of the window — look for a margin, a `position: absolute`, or a scroll anchor";
+  }
+  return read.spills
+    .map(
+      (s) =>
+        `${s.selector} is ${s.width}px wide (right edge ${s.right} vs window ${read.docClientWidth}, ` +
+        `content ${s.scrollWidth} in ${s.clientWidth}, overflow-x: ${s.overflowX})`,
+    )
+    .join("; ");
+}
+
+for (const players of [2, 3, 4] as const) {
+  test(`nothing pushes the page sideways at ${players} players, phone to desktop`, async ({
+    page,
+  }) => {
+    const watch = watchForBreakage(page);
+    const game = await startGame(page, { players });
+
+    // Play first: an empty opening board is the narrowest the screen ever is,
+    // and the rail only fills up once there is something to report.
+    const pick = rng(0x5749_4454 + players); // "WIDT", per seat count
+    let moves = 0;
+    for (let i = 0; i < 12; i += 1) {
+      const screen = await readScreen(page);
+      if (screen.over) break;
+      if ((await act(page, screen, pick)) === null) throw await deadEnd(page, game, moves);
+      moves += 1;
+    }
+    expect(moves, "the preamble must actually put something on the board").toBeGreaterThan(5);
+
+    for (const width of [390, 1024, 1201, 1440]) {
+      await page.setViewportSize({ width, height: 844 });
+      // Read the layout AFTER it has been done: a resize and a measurement in
+      // the same tick can be answered from the pre-resize box.
+      await page.evaluate(
+        () => new Promise((resolve) => requestAnimationFrame(() => resolve(null))),
+      );
+      const read = await readOverflow(page);
+
+      // Anti-vacuity: a screen that drew no board has no overflow either, which
+      // is exactly the failure a width assertion cannot feel. The pyramid's
+      // widest row is `players + 2` tiles (`board_gen`'s row lengths: 4/3/2/1,
+      // 5/4/3/2, 6/5/4/3), and that row IS the board's min-content width.
+      expect(read.widestRow, `the board did not draw at ${width}px`).toBe(players + 2);
+
+      // (a) The claim.
+      expect(
+        read.docScrollWidth - read.docClientWidth,
+        `the page scrolls sideways at ${width}px with ${players} players: ${blame(read)}`,
+      ).toBeLessThanOrEqual(0);
+
+      // (b) The board's own scroller may have work to do — but the work must be
+      // reachable.
+      const board = read.board;
+      expect(board, "the board element must exist to be measured").not.toBeNull();
+      const inside = board ? board.scrollWidth - board.clientWidth : 0;
+      if (board && inside > 0) {
+        expect(
+          board.overflowX,
+          `the board hides ${inside}px of itself at ${width}px instead of scrolling it`,
+        ).toMatch(/auto|scroll/);
+      }
+      // eslint-disable-next-line no-console
+      console.log(
+        `${players}P at ${width}px: page overflow ${read.docScrollWidth - read.docClientWidth}px ` +
+          `(gated) · board scrolls ${inside}px inside its column (recorded)`,
+      );
+    }
+
+    expect(watch.failures).toEqual([]);
+  });
+}
 
 test("a four-player table draws four seats and the Canal", async ({ page }) => {
   const watch = watchForBreakage(page);
