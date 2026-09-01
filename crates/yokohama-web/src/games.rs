@@ -194,6 +194,13 @@ pub struct Games {
     rules: Arc<Rules>,
     store: Arc<dyn SessionStore>,
     live: Mutex<HashMap<GameId, Arc<Mutex<Repl>>>>,
+    /// What this process last successfully LEFT IN THE STORE, per id — a digest
+    /// of the exact JSON written (or, on a cold rebuild, of the JSON read).
+    ///
+    /// **This is what makes the write a compare-and-swap rather than a
+    /// monotonicity heuristic**, and the difference is a working undo. See
+    /// [`Games::persist`].
+    written: Mutex<HashMap<GameId, u64>>,
     /// Serializes `create` against itself, and nothing else.
     ///
     /// `create` is check-then-write across a slow middle (`Session::new_sim`
@@ -236,6 +243,7 @@ impl Games {
             rules,
             store,
             live: Mutex::new(HashMap::new()),
+            written: Mutex::new(HashMap::new()),
             create_lock: Mutex::new(()),
             deleted: Mutex::new(std::collections::HashSet::new()),
         }
@@ -327,6 +335,11 @@ impl Games {
             return Ok(Arc::clone(h));
         }
         let json = self.store.read(id)?;
+        // The base for `persist`'s compare-and-swap: what we found in the store
+        // is what we may overwrite until someone else changes it. Recorded
+        // BEFORE `live` is taken — nothing may take `written` while holding
+        // `live`.
+        self.written.lock().expect("games lock").insert(id.to_string(), digest(&json));
         let record: GameRecord = serde_json::from_str(&json).map_err(|e| e.to_string())?;
         let session = Session::from_record(record, (*self.rules).clone())?;
         let mut repl = Repl::new(session);
@@ -372,6 +385,11 @@ impl Games {
         if self.deleted.lock().expect("games lock").contains(id) {
             return Err(self.conflict(id, format!("{id:?} was deleted while this move was in flight")));
         }
+        // Held across the read, the compare AND the write, so the swap is atomic
+        // within this process. Nothing takes this lock while holding `live`, so
+        // the `conflict` helper below (which does take `live`) cannot deadlock.
+        let mut written = self.written.lock().expect("games lock");
+
         let record = repl.session.record();
         let events = record.events.len();
         if let Ok(stored) = self.store.read(id) {
@@ -396,14 +414,56 @@ impl Games {
                         ),
                     ));
                 }
-                if on_disk.events.len() > events {
-                    return Err(self.conflict(
-                        id,
-                        format!(
-                            "{id:?} has advanced past this handle ({} stored vs {events} here) — refusing to write backwards",
-                            on_disk.events.len(),
-                        ),
-                    ));
+                // **COMPARE-AND-SWAP, not monotonicity.** The old guard asked
+                // "does the store hold MORE events than I do?", which is true
+                // of two opposite situations it could not tell apart: a stale
+                // handle about to erase a move another writer already
+                // acknowledged (refuse), and a live handle that just shortened
+                // its OWN log because the player pressed Undo (write it).
+                // `Session::undo` pops events — a record is a seed plus an
+                // event log — so undo and staleness look identical to a length
+                // comparison, and undo lost. The client was told "Undid last
+                // entry.", the write was refused into a `warnings` line, and the
+                // next request rebuilt from the store with the move back.
+                //
+                // The right question is whether the store is still what THIS
+                // process last left there. That permits an undo, and it is
+                // STRICTLY STRONGER than the length test rather than merely
+                // more permissive: two divergent lines that reach the SAME
+                // length differ in content and not in count, so a length
+                // comparison waved them through and this does not.
+                //
+                // It detects a conflict; it does not prevent one. Nothing
+                // serializes read-then-write across processes — `FsStore::write`
+                // is atomic per file (temp + rename) but the store has no lock.
+                // That is unchanged, and was never true of the old guard either.
+                match written.get(id) {
+                    // Ours to overwrite, shorter or longer.
+                    Some(&base) if base == digest(&stored) => {}
+                    Some(_) => {
+                        return Err(self.conflict(
+                            id,
+                            format!(
+                                "{id:?} changed under this handle since it last wrote ({} stored) — \
+                                 refusing to overwrite another writer's record",
+                                on_disk.events.len(),
+                            ),
+                        ));
+                    }
+                    // No base: this process has neither read nor written this
+                    // id, so it cannot know whose record is on disk. Fall back
+                    // to the old conservative test rather than assuming.
+                    None => {
+                        if on_disk.events.len() > events {
+                            return Err(self.conflict(
+                                id,
+                                format!(
+                                    "{id:?} has advanced past this handle ({} stored vs {events} here) — refusing to write backwards",
+                                    on_disk.events.len(),
+                                ),
+                            ));
+                        }
+                    }
                 }
             }
         }
@@ -414,7 +474,9 @@ impl Games {
         // CLI-written save's digest-for-state-N onto a state-N+1 record, which
         // the next cold rebuild refused forever.
         let json = repl.session.to_record_json()?;
-        self.store.write(id, &json)
+        self.store.write(id, &json)?;
+        written.insert(id.to_string(), digest(&json));
+        Ok(())
     }
 
     /// Refuse a write AND drop the handle that attempted it.
@@ -446,10 +508,24 @@ impl Games {
     /// and re-creating a deleted name works exactly as before.
     pub fn delete(&self, id: &str) -> Result<(), String> {
         self.store.delete(id)?;
+        self.written.lock().expect("games lock").remove(id);
         self.live.lock().expect("games lock").remove(id);
         self.deleted.lock().expect("games lock").insert(id.to_string());
         Ok(())
     }
+}
+
+/// A digest of the exact bytes in the store, for [`Games::persist`]'s
+/// compare-and-swap.
+///
+/// In-process only and never persisted, so a hasher with no stability guarantee
+/// across builds is exactly right: the only comparison is between two values
+/// computed by the same running process.
+fn digest(json: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    json.hash(&mut h);
+    h.finish()
 }
 
 /// Drop resident handles until the map is within [`MAX_RESIDENT`], never
@@ -794,6 +870,135 @@ mod tests {
         assert_eq!(games.list().expect("a list"), vec!["drace".to_string()]);
     }
 
+    /// How many events the STORE holds for `id`.
+    fn stored_events(store: &MemStore, id: &str) -> usize {
+        let json = store.read(id).expect("a stored record");
+        serde_json::from_str::<GameRecord>(&json).expect("a record").events.len()
+    }
+
+    /// **An undo reaches the store.**
+    ///
+    /// `Session::undo` POPS events — a record is a seed plus an event log, so
+    /// undoing shortens the log. `persist`'s guard used to ask only "does the
+    /// stored record hold more events than mine?", which is true of BOTH a
+    /// stale handle about to erase another writer's move (the thing to refuse)
+    /// and a live handle that just shortened its own log (an undo). It could
+    /// not tell them apart, so it refused both: the client was told
+    /// "Undid last entry.", the write was refused as a `warnings` line, and the
+    /// next request rebuilt from the store with the undone move back.
+    ///
+    /// The guard now asks the right question — **is the store still what THIS
+    /// handle last left there?** — so an undo is ours to write and a stale
+    /// handle's write is not.
+    #[test]
+    fn an_undo_reaches_the_store() {
+        let store = Arc::new(MemStore::default());
+        let games =
+            Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn SessionStore>);
+        let (id, handle) = games.create(&req("undo")).expect("a game");
+
+        {
+            let mut repl = handle.lock().expect("the handle");
+            // Drive the way the client does: a numbered option, then `confirm`
+            // when that option opened a picker. `step("1")` alone stalls inside
+            // a placement sub-prompt, and `step("")` only applies a FORCED sole
+            // option — both leave the record at one event, which is what the
+            // premise assertion below exists to catch.
+            for _ in 0..40 {
+                let before = repl.session.record().events.len();
+                repl.step("1");
+                if repl.session.record().events.len() == before {
+                    repl.step("confirm");
+                }
+                games.persist(&id, &repl).expect("a persist");
+                if repl.session.record().events.len() >= 4 {
+                    break;
+                }
+            }
+        }
+        let before = stored_events(&store, &id);
+        assert!(before >= 4, "the premise: there is something to undo ({before} events)");
+
+        {
+            let mut repl = handle.lock().expect("the handle");
+            repl.step("undo");
+            assert!(
+                repl.session.record().events.len() < before,
+                "the premise: `undo` shortened the handle's own log",
+            );
+            games.persist(&id, &repl).expect("the undo is written through");
+        }
+
+        let after = stored_events(&store, &id);
+        assert!(after < before, "the store shortened too: {before} -> {after}");
+
+        // And it SURVIVES a cold rebuild, which is the whole point — the record
+        // is the truth, and a rebuild replays it.
+        let fresh =
+            Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn SessionStore>);
+        let rebuilt = fresh.handle(&id).expect("the stored game loads");
+        assert_eq!(
+            rebuilt.lock().expect("the handle").session.record().events.len(),
+            after,
+            "the rebuilt game is the undone one, not the one before the undo",
+        );
+    }
+
+    /// **A divergent write of the SAME LENGTH is refused — which the length
+    /// guard could not see at all.**
+    ///
+    /// This is what makes the new question strictly stronger rather than merely
+    /// more permissive. `on_disk.events.len() > events` is false when the counts
+    /// match, however different the contents, so a length comparison waved this
+    /// straight through and one writer silently overwrote the other. Comparing
+    /// against what this process last LEFT there catches it, because someone
+    /// else's record of the same length is still not our record.
+    #[test]
+    fn a_divergent_write_of_the_same_length_is_refused() {
+        let store = Arc::new(MemStore::default());
+        let games =
+            Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn SessionStore>);
+        let (id, handle) = games.create(&req("fork")).expect("a game");
+        {
+            let mut repl = handle.lock().expect("the handle");
+            repl.step("1");
+            games.persist(&id, &repl).expect("a persist");
+        }
+        let mine = stored_events(&store, &id);
+
+        // Another writer replaces the record with a DIFFERENT one of the same
+        // length — the shape a length comparison is blind to. Built by hand for
+        // the same reason the stale-handle cell builds its ahead-record: the
+        // divergence has to be exact, not incidental.
+        let mut theirs: GameRecord =
+            serde_json::from_str(&store.read(&id).expect("stored")).expect("a record");
+        let last = theirs.events.pop().expect("at least one event");
+        theirs.events.push(last.clone());
+        theirs.events.push(last);
+        theirs.events.pop();
+        theirs.lockdown = Some("a different writer was here".to_string());
+        let theirs_json = serde_json::to_string(&theirs).expect("json");
+        store.write(&id, &theirs_json).expect("their write");
+        assert_eq!(stored_events(&store, &id), mine, "the premise: the SAME length");
+
+        let repl = handle.lock().expect("the handle");
+        assert_eq!(
+            repl.session.record().events.len(),
+            mine,
+            "the premise: this handle is not behind by any COUNT",
+        );
+        let err = match games.persist(&id, &repl) {
+            Ok(()) => panic!("a divergent write of equal length overwrote another writer"),
+            Err(e) => e,
+        };
+        assert!(err.contains("changed"), "the refusal names the conflict: {err}");
+        assert_eq!(
+            store.read(&id).expect("stored"),
+            theirs_json,
+            "their record survived byte for byte",
+        );
+    }
+
     /// A handle that has fallen behind the store cannot write the store
     /// backwards.
     ///
@@ -829,7 +1034,13 @@ mod tests {
         assert!(repl.session.record().events.len() < ahead_len, "the premise: this handle is behind");
 
         let err = games.persist(&id, &repl).expect_err("a backwards write is refused");
-        assert!(err.contains("advanced past"), "the refusal says why: {err}");
+        // The refusal's WORDING moved when the guard became a compare-and-swap
+        // — this handle is now refused for having been overtaken rather than
+        // for being shorter — so assert the property and accept either reason.
+        assert!(
+            err.contains("advanced past") || err.contains("changed under"),
+            "the refusal says why: {err}",
+        );
 
         let after: GameRecord =
             serde_json::from_str(&store.read(&id).expect("stored")).expect("a record");
