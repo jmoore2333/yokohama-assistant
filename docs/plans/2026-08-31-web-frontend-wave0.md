@@ -192,6 +192,12 @@ since one `filter-repo` pass removes both.
 | `yokohama-core` | 1577 + 29 *(as documented)* | **1576 + 29 across 21 binaries**, doc-test 1, aggregate 1577 — byte-identical to master |
 | wire corpus | 41 | **41** |
 
+> **The `yokohama-web` row is SUPERSEDED — see "Follow-on (2026-09-01)" at the end
+> of this document.** A follow-on fix (`af706de`) added two cells, so that suite
+> reads **65** (59 lib + 1 gate + 5 `wire_fixtures`) at the follow-on head. Every
+> other row in this table was re-measured there and is unmoved. The wave-head
+> figures above are left as they were recorded; this document is a frozen record.
+
 `cargo clippy --workspace --all-targets -D warnings` clean; `npm run typecheck`
 clean over both TS projects. The fifteen-gate roster is untouched and nothing
 here is `#[ignore]`d.
@@ -248,3 +254,85 @@ position, and a sweep of every position ≈ **17 ms** of server CPU. Even the
 1,036-event committed fixture sweeps in ~0.7 s. **No checkpoint ladder is
 needed** — debounce plus plain `state_at` is honest, and that is a whole
 subsystem out of M4.
+
+
+---
+
+## Follow-on (2026-09-01) — undo reaches the store
+
+**Not part of Wave 0.** Recorded here because this document's §5 counts moved and
+because the fix rests directly on Wave 0's A1 (the terminal digest, stamped at
+write time). Commit `af706de`, one file: `crates/yokohama-web/src/games.rs`.
+
+**The defect.** A `GameRecord` is a seed plus an event log, and `Session::undo`
+POPS events — so an undo makes the log SHORTER. `Games::persist`'s guard asked
+only *"does the stored record hold more events than mine?"*, which is true of two
+opposite situations it cannot tell apart: a stale handle about to erase a move
+another writer already acknowledged (refuse), and a live handle that just
+shortened its own log because the player pressed Undo (write it). Undo lost. The
+client was told "Undid last entry.", the write was refused into a `warnings`
+line, and the next request rebuilt from the store with the move back. Reproduced
+over HTTP before the fix, and again after it: **47 events → undo → no warnings →
+46 on the next request.**
+
+**The fix.** `Games` records a digest of the exact JSON it last wrote — or read,
+on a cold rebuild — and `persist` compares against that, holding the lock across
+the read, the compare and the write so the swap is atomic within the process.
+
+**Three things stated at their real size, none of them overstated:**
+
+1. **Strictly STRONGER than the length test, not merely more permissive.** Two
+   divergent lines that reach the SAME length differ in content, not in count, so
+   `on_disk.events.len() > events` waved them through and one writer silently
+   overwrote the other. `a_divergent_write_of_the_same_length_is_refused` is that
+   case, and the old guard could not have held it.
+2. **It DETECTS a cross-process conflict; it does not PREVENT one.** Nothing
+   serializes read-then-write across processes — `FsStore::write` is atomic per
+   file (temp + rename) but the store has no lock. That was equally true of the
+   old guard, and is unchanged.
+3. **It works only because Wave 0 made the terminal digest stamp at WRITE time**
+   (`Session::to_record_json`, §1 A1): a shortened record carries the digest of
+   the shortened state by construction.
+
+Where this process has NO base for an id — it has neither read nor written it, so
+it cannot know whose record is on disk — `persist` falls back to the old length
+test rather than assuming.
+
+**Mutation-proven both ways, which prices the alternative that was proposed and
+not taken.** *Accept-anything* ("just write whatever is in memory") passes undo
+but FAILS the stale-handle cell AND the same-length divergence cell.
+*Never-record-a-base* falls back to the length guard and FAILS undo AND the
+divergence.
+
+**Blast radius — verified, not asserted.** Contained entirely in `yokohama-web`:
+`games.rs:477` is the ONLY production write to the store (every other
+`store.write` in the crate is inside a `#[cfg(test)]` module), the guard computes
+nothing about the game, and the record FORMAT is unchanged. `git diff
+master..HEAD -- crates/yokohama-core` is **empty**, `SEMANTICS_REV` is still
+**7**, `rules_hash` unmoved.
+
+### Counts at the follow-on head
+
+Each re-derived by running the command, not copied from any document.
+
+| | wave head (§5) | follow-on head |
+|---|---|---|
+| `cargo test -p yokohama-web` | 63 | **65** (59 lib + 1 gate + 5 `wire_fixtures`) |
+| `npm test` | 195 | **195** — unmoved |
+| `npm run e2e` | 14 | **14** — unmoved |
+| `cargo test -p yokohama-cli` | 849 + 2 | **849 + 2** — unmoved |
+| `yokohama-core` | 1576 + 29 across 21 binaries, aggregate 1577 | **unmoved**, byte-identical to master |
+| wire corpus | 41 | **41** — unmoved |
+
+The two added cells are `an_undo_reaches_the_store` and
+`a_divergent_write_of_the_same_length_is_refused`; a third,
+`a_stale_handle_cannot_erase_a_move_another_writer_already_stored`, was kept with
+its refusal WORDING widened, because this handle is now refused for having been
+overtaken rather than for being shorter.
+
+`cargo test -p yokohama-cli` needs `YOKOHAMA_BGA_CORPUS_OPTIONAL=1` in a clone
+without the two gitignored bridge captures; with it the 9 corpus-gated
+`bga_import` tests skip quietly and still report as passed.
+
+**The fifteen-gate roster is untouched, nothing here is `#[ignore]`d, and this
+lane still claims no gate.**

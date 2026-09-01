@@ -56,8 +56,25 @@ Corrections are recorded forward, never edited in — so the list is here:
   lane existed**: `yokohama-core` is **1576 + 29** across 21 binaries with the
   doc-test making cargo's aggregate 1577 — the documented 1577+doc/1578 was one
   high.
+- **Known-defect (a) — §I §4.7's "undo through the web is never durable" — was
+  TRUE when written and is now CLOSED**, by `af706de` (2026-09-01), which
+  replaced `Games::persist`'s monotonicity guard with a compare-and-swap against
+  a digest of what the process last left in the store. The finding stands as a
+  correct one; what no longer holds is its present tense. So §II's references to
+  it — the §II synthesis item 2 ("a live correctness bug in the surface M4 sits
+  on"), the open question at §II's [2], the eviction generalization at [A6]'s
+  *"(a) loses one undo, this loses the rest of the game"*, and the `autosaved`
+  finding's list of reachable false states — all describe the **pre-fix** state.
+  The fix's own record is `2026-08-31-web-frontend-wave0.md` §"Follow-on
+  (2026-09-01)"; the hazard's post-fix reading is `-m4-prep.md` §6.4b.
 - Route, test and fixture counts elsewhere in §II are as of the M3 head and moved
   during the wave. The wave record's table is the current reading.
+- **Every `file:line` below is as of the M3 head and many have DRIFTED.** The wave
+  and its follow-on added lines to the files they fixed — `crates/yokohama-web/src/games.rs`
+  alone moved by a few hundred — so roughly three dozen citations here point at
+  the right file and the wrong line. The FILE and the SYMBOL are still good;
+  open the symbol, not the number. The M3.5 and M4 prep documents carry
+  re-verified citations and are the ones to trust for position.
 
 ---
 

@@ -97,7 +97,7 @@ the function that renders them."*
 
 For `/at/{k}` that is fine, and the reason is not obvious enough to leave
 implied: **a game can only be resident because it already passed those gates.**
-`Games::handle` (`games.rs:325`) builds every non-resident game through
+`Games::handle` (`games.rs:333`) builds every non-resident game through
 `Session::from_record` (`session.rs:218`), which refuses a missing or mismatched
 `semantics_rev` (`:238-260`) and a terminal-digest mismatch (`:365-378`), and
 returns `engine_version`/`rules_hash` drift as `load_warnings` (`:281-291`).
@@ -380,8 +380,9 @@ mis-state:**
 - **The 545px phone overflow is fixed**, not an accepted limitation:
   `web/src/styles.css:131` is `.board-col { width: 100% }` inside the
   `@media (max-width: 1200px)` block.
-- **`Games::persist` now evicts on conflict** (`games.rs:436-439`), which changes
-  the undo hazard's shape — §6.4.
+- **`Games::persist` now evicts on conflict** (`games.rs:498-501`), which changed
+  the undo hazard's shape — and, as of `af706de` (2026-09-01), the guard itself is
+  a compare-and-swap and the undo hazard is CLOSED. See §6.4b.
 
 ---
 
@@ -543,11 +544,11 @@ the frame draws, the account says "locked". **STANDS.**
 The recon's §4.6/§4.7 described a world that no longer exists. Re-read from
 `games.rs` at this head, and re-measured:
 
-**(a) A read still pumps and writes.** `Games::handle` (`games.rs:325-350`) on a
+**(a) A read still pumps and writes.** `Games::handle` (`games.rs:333-363`) on a
 cache miss rebuilds, runs `bring_alive`, and persists if the pump played:
 
 ```rust
-// crates/yokohama-web/src/games.rs:337-341
+// crates/yokohama-web/src/games.rs:350-354
 let before = repl.session.record().events.len();
 bring_alive(&mut repl);
 if repl.session.record().events.len() != before {
@@ -560,40 +561,67 @@ is kept rather than fixed (*"a read-only rebuild that skipped the pump would cac
 an un-pumped handle, and the next `input` would apply a human move to a state the
 bot had not yet moved in"*). `/at/{k}` routed through `handle` inherits it. The
 alternative — reading the `GameRecord` straight from `Games::store()`
-(`games.rs:244`), which is `pub` — avoids both the pump and the lock, at the cost
+(`games.rs:252`), which is `pub` — avoids both the pump and the lock, at the cost
 of reading a record that may lag the handle. **STANDS as a genuine fork; §9.Q2.**
 
-**(b) The undo hole is still open, and its shape is different.** Wave 0 added
-`Games::conflict` (`games.rs:436-439`), which **evicts** the handle whose write was
-refused. Its own test doc names the residue: *"Known defect (a) — the undo hole —
-loses ONE move this way; this loses the rest of the session"*
-(`games.rs:662-663`).
+**(b) The undo hole is CLOSED** — commit `af706de`, 2026-09-01, after this
+document was first written. The paragraphs below are kept in the order the
+hazard was actually resolved: what it was, then what closed it, then what M4 may
+now assume.
 
-**Measured at this head**, driving the real release binary over HTTP: a 2P game
-played to 87 stored events, then one `undo`:
+**THE BEFORE STATE — no longer reproducible at this head.** Wave 0 had added
+`Games::conflict`, which **evicts** the handle whose write was refused; its own
+test doc named the residue: *"Known defect (a) — the undo hole — loses ONE move
+this way; this loses the rest of the session"*. Measured then against the real
+release binary over HTTP, a 2P game played to 87 stored events, then one `undo`:
 
 ```
+# PRE-FIX TRANSCRIPT (before af706de) — kept as the BEFORE state, not current behaviour
 log total before undo: 87
 undo warnings: ['APPLIED BUT NOT SAVED — "undo2" has advanced past this handle
                  (87 stored vs 86 here) — refusing to write backwards']
 log total AFTER undo (next request): 87
 ```
 
-So: `Session::undo` shortens `events`; `Games::persist` refuses the backwards
-write (`games.rs:400-408`); `input` reports the applied state plus an honest
-warning (`lib.rs:398-401`); `conflict` evicts the handle; **the very next request
-rebuilds from the store and the undone move is back.** The client is told
-"Undid your last move" and it un-undoes itself one request later.
+`Session::undo` shortened `events`; `Games::persist` refused the backwards write;
+`input` reported the applied state plus an honest warning; `conflict` evicted the
+handle; the very next request rebuilt from the store and the undone move was
+back. The client was told "Undid your last move" and it un-undid itself one
+request later.
 
-**[CORRECTION to recon §4.7]**, which said the stale handle *"stayed resident and
-answered every later request"* and that the undone move *"silently resurrects"*
-only on eviction or restart. Post-Wave-0 the resurrection is **immediate and
-every time**, and the handle does not linger. That is a better defect — bounded,
-visible, one move — but it is still a defect, and it is still untested: `grep -rn
-undo crates/yokohama-web/tests web/src/*.test.tsx web/e2e` finds nothing.
+**WHAT CLOSED IT.** `persist`'s guard was a monotonicity test — *"does the store
+hold MORE events than I do?"* — which is true of a stale handle about to erase
+another writer's move (refuse) AND of a live handle that just shortened its own
+log (write it), and could not tell them apart. It is now a **compare-and-swap**
+against a digest of the exact JSON this process last wrote (or read, on a cold
+rebuild), taken under a lock held across the read, the compare and the write.
+Same measurement after the fix: **47 events → undo → no warnings → 46 on the next
+request**, and the shortened record survives a cold rebuild.
 
-**Why M4 cares:** the scrubber is the feature that makes the record visible, and
-the first thing a person does after scrubbing back is press Undo. §9.Q3.
+Two things about that fix M4 should not overstate. It is **strictly stronger**
+than the length test, not merely more permissive — two divergent lines of the
+SAME length differ in content and not in count, which the length test waved
+straight through. And it **detects** a cross-process conflict rather than
+**preventing** one: nothing serializes read-then-write across processes, and
+`FsStore::write` is atomic per file (temp + rename) but the store has no lock.
+That limit is unchanged from before.
+
+**[CORRECTION to recon §4.7]** stands as history and is now doubly superseded.
+§4.7 said the stale handle *"stayed resident and answered every later request"*
+and that the undone move *"silently resurrects"* only on eviction or restart;
+post-Wave-0 the resurrection was immediate and every time; post-`af706de` there
+is no resurrection. The "still untested" clause is also gone: `undo` now has
+`an_undo_reaches_the_store` in `games.rs`, which asserts the store shortened AND
+that a cold rebuild replays the undone record.
+
+**What M4 may now assume:** *a shortened record is a legitimate, persisted
+state.* A scrubber may treat `events.len()` as free to decrease between requests
+without that meaning corruption, a lost write, or a stale handle; the durable
+record and the resident handle agree across an undo, so the §9.Q2 fork is no
+longer forced by an undo window. What a scrubber must NOT assume is monotonic
+growth of the event index — an index captured before an undo can point past the
+end of the record afterwards, and that is now an ordinary, expected transition
+rather than the symptom of a bug.
 
 ### 6.5 `RecordedEvent` variants that are not moves
 
@@ -637,8 +665,8 @@ reflexively.** This is the one hazard in this section where the recon's advice
 
 ### 6.8 Cache pressure
 
-`MAX_RESIDENT = 64` (`games.rs:231`) with deliberately arbitrary, non-LRU
-eviction (`games.rs:463-476`, whose doc explains why: *"the property that matters
+`MAX_RESIDENT = 64` (`games.rs:238`) with deliberately arbitrary, non-LRU
+eviction (`games.rs:531-549`, whose doc explains why: *"the property that matters
 here is only that the map is BOUNDED"*). §3.2 removes the reason M4 would have
 added a second unbounded map. Nothing to do. **DISSOLVED.**
 
@@ -845,20 +873,23 @@ owner may hate it.
 ### Q2 — Does `/at/{k}` read the resident handle, or the durable record?
 
 **Impact chain:** the handle is the truth the player is playing, and reading it
-through `Games::handle` can pump a bot and write the store (§6.4a, `games.rs:337-341`).
-The store is genuinely read-only and lock-free (`games.rs:244`), but disagrees with
-the handle for the whole undo window (§6.4b, measured). This decides whether M4
-must fix the undo defect first.
+through `Games::handle` can pump a bot and write the store (§6.4a, `games.rs:350-354`).
+The store is genuinely read-only and lock-free (`games.rs:252`). It USED to
+disagree with the handle for the whole undo window, which is what made this
+question urgent; as of `af706de` an undo is written through (§6.4b), so the two
+agree across an undo and **the fork is now a design preference, not a forced
+choice**. The remaining difference is §6.4a's pump-and-write on a cache miss.
 
-### Q3 — Is the undo hole M4's to fix?
+### Q3 — Is the undo hole M4's to fix? — **ANSWERED, and not by M4**
 
-**Impact chain:** the scrubber is the feature that makes the record visible, and
-the first instinct after scrubbing back is to press Undo. Today (measured, §6.4b)
-undo applies in memory, warns honestly, evicts its own handle, and reverts on the
-next request. Options: fix it in M4 (it is arguably M4's own UX), fix it as a
-Wave-0-style follow-on before M4, or ship M4 with the scrubber deliberately
-read-only and the undo behaviour documented as-is. **A "play from here" branch is
-not on the table either way** — `Session::undo` (`session.rs:683-727`) truncates
+**CLOSED 2026-09-01 by `af706de`**, which is the second of the three options this
+question listed: a Wave-0-style follow-on landed BEFORE M4, so M4 inherits a
+working undo and owes this nothing. The question is kept for its impact chain,
+which still holds — the scrubber is the feature that makes the record visible,
+and the first instinct after scrubbing back is to press Undo. What was true when
+this was written (undo applied in memory, warned honestly, evicted its own
+handle, and reverted on the next request) is the §6.4b BEFORE state and is no
+longer reproducible. **A "play from here" branch is not on the table either way** — `Session::undo` (`session.rs:683-727`) truncates
 with no tombstone and no redo, and the lane's own plan scopes v1 as *replay
 browsing, not branching*.
 
@@ -906,6 +937,15 @@ against them.**
 | A14 | wire corpus | 41 files |
 
 A12–A14 reproduce `wave0.md` §5 exactly. A1–A11 are new.
+
+**Two rows are SUPERSEDED by `af706de` (2026-09-01)** and are left standing
+because this table is a dated reading at `513484d`, not a current one. **A11** is
+the §6.4b BEFORE state: undo now persists, and the same measurement reads
+47 events → undo → no warnings → 46 on the next request. **A12** is now **65**
+(59 lib + 1 gate + 5 `wire_fixtures`), the two added cells being
+`an_undo_reaches_the_store` and
+`a_divergent_write_of_the_same_length_is_refused`. A13 and A14 were re-measured
+at the follow-on head and are unmoved.
 
 Instrument for A4–A6: a throwaway crate in the session scratchpad depending on
 `yokohama-core` by path, calling `state_at` directly. Records for A1–A6 emitted by

@@ -364,7 +364,7 @@ impl Games {
 
     /// Write `repl`'s record through. Called after every mutation.
     ///
-    /// **Two guards, and each closes a measured way to lose a move.**
+    /// **THREE guards, and each closes a measured way to lose a move.**
     ///
     /// A game DELETED while this request was in flight is not resurrected. The
     /// window is the whole of `Repl::step`, bot pump included — measured at
@@ -372,15 +372,20 @@ impl Games {
     /// `DELETE` answered 204, the file went, the in-flight input finished, and
     /// `FsStore::write` re-created the parent directory and the record.
     ///
-    /// A record that has ALREADY MOVED PAST this handle is not overwritten. The
-    /// `live` map caches a handle forever and nothing invalidates it against
-    /// the store, so with two processes over one store — the arrangement
-    /// `SessionStore` exists for — a stale handle could publish a record with
-    /// FEWER events than the one on disk, erasing a move another writer had
-    /// already applied and acknowledged. This is a monotonicity guard, not a
-    /// compare-and-swap: it refuses a write that would go backwards, which is
-    /// the shape of the loss, and does not pretend to serialize two writers
-    /// that are both moving forwards.
+    /// A record that is a DIFFERENT GAME under the same id is not overwritten —
+    /// identity by seed, checked first, because a name is not a game.
+    ///
+    /// And a record that is NOT WHAT THIS PROCESS LAST LEFT THERE is not
+    /// overwritten. That is a **compare-and-swap**, and this paragraph used to
+    /// say the opposite of the body below it: *"This is a monotonicity guard,
+    /// not a compare-and-swap: it refuses a write that would go backwards."*
+    /// It was a monotonicity guard, the swap replaced it, and the doc was left
+    /// behind — the exact defect this lane has shipped for three consecutive
+    /// milestones, in the function whose fix introduced it. Recorded rather
+    /// than quietly deleted, because the next reader's instinct should be to
+    /// distrust a paragraph that has stopped matching its code.
+    ///
+    /// The arm-by-arm reasoning, and the honest limits, are inline below.
     pub fn persist(&self, id: &str, repl: &Repl) -> Result<(), String> {
         if self.deleted.lock().expect("games lock").contains(id) {
             return Err(self.conflict(id, format!("{id:?} was deleted while this move was in flight")));
