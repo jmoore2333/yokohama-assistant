@@ -534,3 +534,58 @@ saying so is better than a silent carry.
 | wire corpus | **41** `.json` (43 entries — `contract.ts` and its test) | — |
 
 The prep document's `63` was true one commit earlier; `af706de` added two.
+
+---
+
+## 6. The close (2026-09-01) — what shipped, and where the spec was wrong
+
+Six commits, `acc9e50..2d0bcf8`. Written after the fact against the tree, not
+against §3.
+
+### 6.1 Every item, and its verdict
+
+| Item | Shipped | Where the spec was wrong |
+|---|---|---|
+| **W1** the pinned deck | YES | §3.1 was right that it is not "one rule and one class" and wrong about which child yields. It named the clamp on the OPTIONS but did not foresee that `.options` is OVERLOADED — the `retreat` arm reuses the class for a message and count buttons — nor that letting the answer list absorb the deck's shrink squeezes it to a height of **exactly 0** under a bot's commentary. Both were found by the browser walk, four failing specs each time |
+| **W4** the tile ladder | YES | As specified, including keying on the widest row |
+| **W5** the art | YES | §3.3's step 3 cited `:163-177`; `:177` is the `text-shadow` candidate (a) keeps. Deleted `:167-176` |
+| **W2** the drawer | YES, with the sub-1201 floor | The floor was specified. Two LATENT bugs the drawer exposed were not: `.surface-body` never actually scrolled (no `min-height: 0`, so `.surface`'s `overflow: hidden` clipped it), and a `<dialog>` takes `height: fit-content` from the UA sheet, which beats a top/bottom inset pair — the panel computed to 855px in a 720px viewport |
+| **W3** the a11y floor | YES, via `<dialog>` | As specified. The contrast token was measured at 3.09–3.42:1 here, not the audit's 2.97 |
+| **W7** the nav | YES | **Its justification did not survive.** The spec kept the review's argument — that grouping lets you switch surfaces with a panel open — and `showModal()` makes the whole page inert, on purpose. It earns its place on banner height alone (93 → 56px at 1440). The e2e cell was re-aimed rather than deleted |
+| **W6** parity | YES, all nine rows | The vocabulary row was bigger than "~8 lines": it needed a shared vocabulary AND a cross-language fixture |
+| **W8** game-over | YES, via `/result` | As specified |
+| **W9** rail art | HALF, deliberately | The unstack half measures 0px and was NOT shipped. §3.9 said so |
+| **F5** tracks + building sites | YES | The overlay rects §3.10 declined to launder were re-measured and the carried ones turned out to be right |
+| **§3.10a** the token in its slot | YES | The rect was measured. Sizing it with `height: 95%` fails SILENTLY — a 16px slot rendered a 122px token |
+| **§3.11** the tail | YES, plus the 409 and `api.ts` | — |
+| **F4** CI | YES | — |
+
+### 6.2 The two vacuous guards, and why they are the close's real lesson
+
+Both were caught by mutation, neither by reading, and both are the shape this
+lane keeps shipping:
+
+- **The 409 cell counted `GET /api/games/{id}` absolutely**, and `renderApp`
+  already performs one to reach the board — so it passed with the entire re-read
+  deleted. Counts a delta now.
+- **The near-miss cell early-returned**, because no committed fixture reaches a
+  near-miss row (verified over all 42). It constructs the state now.
+
+**The general form: a guard is worth what its mutation proof says and nothing
+more.** That is also why the CI job carries a paragraph on what it cannot see,
+and why the tile-fit is RECORDED rather than asserted.
+
+### 6.3 What is still owed
+
+- **The layout half is checked by hand, on one machine.** F4 put the component
+  and contract half in CI by ruling; the browser walk stays local. The seven new
+  browser cells are the only assertions in the repository that can see a CSS
+  change, and nothing runs them automatically.
+- **1201–1439 still clips** 83–239px at 3P/4P (§2.3). Closing it means moving
+  the breakpoint.
+- **The 4P fit clears by 0.047px** and is a property of overlay scrollbars.
+- **`repl.rs:1505` and `:3469` are still unstyled refusals** — they carry no bang
+  and match no pattern. Closing that means a typed refusal on the wire.
+- **Cache headers and graceful shutdown** stay owed, as §3.12 said they would.
+- **The privacy toggle** — the third Tier-B row — is untouched; F5 closed the
+  other two.
