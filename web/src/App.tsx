@@ -113,16 +113,6 @@ export function App() {
         {state.end_triggers}
       </div>
 
-      {state.warnings.length > 0 && (
-        <div className="decision">
-          {state.warnings.map((w, i) => (
-            <div className="warn" key={i}>
-              {w}
-            </div>
-          ))}
-        </div>
-      )}
-
       <div className="stage">
         <div className="board-col">
           <Board
@@ -153,18 +143,44 @@ export function App() {
         />
       )}
 
-      <Decision
-        state={state}
-        labels={labels}
-        colors={colors}
-        busy={busy}
-        onSend={(l) => void send(l)}
-      />
-      {error && (
-        <div className="decision">
-          <div className="error">{error}</div>
-        </div>
-      )}
+      {/* **The answer bar, pinned — and it is ONE bar, deliberately.**
+          Measured at 4P before this: the decision zone began at y=2006 on a
+          2179px page, 1,106px below the fold, so every move ended in a scroll.
+          `.stage` is `max(board, rail)` and the rail runs 2.1–2.5× the board's
+          height, so nothing done to the board shortens the page — pinning is
+          what makes the page's height stop mattering.
+
+          The three blocks share a container because pinning them separately is
+          a measured defect, not a tidiness question. At one `bottom: 0` and one
+          z-index they land on the SAME edge, and the error strip is last in the
+          DOM: hit-tested, `elementFromPoint` on "Apply the only option" and on
+          "Undo" returned `div.error`. Pinning only the middle block instead
+          left the error strip at y=2237 — a permanently visible answer bar and
+          no visible reason the click did nothing. One container, and neither
+          failure is reachable. */}
+      <div className="deck">
+        {state.warnings.length > 0 && (
+          <div className="decision">
+            {state.warnings.map((w, i) => (
+              <div className="warn" key={i}>
+                {w}
+              </div>
+            ))}
+          </div>
+        )}
+        <Decision
+          state={state}
+          labels={labels}
+          colors={colors}
+          busy={busy}
+          onSend={(l) => void send(l)}
+        />
+        {error && (
+          <div className="decision">
+            <div className="error">{error}</div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

@@ -47,6 +47,172 @@ test("every picture the client draws actually loads", async ({ page }) => {
   expect(watch.failures).toEqual([]);
 });
 
+// ---- the answer bar stays on screen, wherever the page is scrolled ----
+//
+// Two offsets, not one, and that is the whole assertion: a zone that happens to
+// sit at the bottom of a short page satisfies a single read at scrollY 0 and
+// tells you nothing. Pinned means "the same place at every offset".
+//
+// The numbers deliberately NOT asserted: the zone's viewport top (727px at 900,
+// but that is `innerHeight − zoneHeight`, two design figures), its height, and
+// the page height. Each is a choice the design is allowed to change. What must
+// hold under any redesign is that the bar is against the bottom edge and fully
+// on screen, which is what is written below.
+
+test("the answer bar is pinned to the bottom at every scroll offset", async ({ page }) => {
+  const watch = watchForBreakage(page);
+  // 4P: the worst case, and the one measured at 1,106px below the fold before
+  // the deck existed.
+  const game = await startGame(page, { players: 4 });
+
+  // **Play, and check the deck after EVERY move — not once at the end.**
+  //
+  // The squeeze this is really about is transient: the applied-move commentary
+  // grows when the bot has just played and shrinks again on the next prompt, so
+  // a single read taken whenever the loop happens to stop is a coin flip. Both
+  // the floor and the hit test are therefore evaluated at every step, and the
+  // worst case seen is what gets asserted and recorded — with an anti-vacuity
+  // check that the run actually reached a state where the commentary was
+  // competing for space at all.
+  const probe = () =>
+    page.evaluate(() => {
+      const list = document.querySelector(".decision .options.scrolls");
+      const msgs = document.querySelector(".decision > .messages");
+      const commentary = msgs ? Math.round(msgs.getBoundingClientRect().height) : 0;
+      if (!list) return { commentary, rows: 0, height: Infinity, reached: true };
+      const first = list.querySelector(".option");
+      let reached = true;
+      if (first) {
+        const b = first.getBoundingClientRect();
+        const hit = document.elementFromPoint(b.x + b.width / 2, b.y + b.height / 2);
+        reached = first.contains(hit);
+      }
+      return {
+        commentary,
+        rows: list.querySelectorAll(".option").length,
+        height: Math.round(list.getBoundingClientRect().height),
+        reached,
+      };
+    });
+
+  const pick = rng(0x5049_4e00); // "PIN"
+  let worstList = Infinity;
+  let mostCommentary = 0;
+  let covered: string | null = null;
+  for (let i = 0; i < 30; i += 1) {
+    const screenNow = await readScreen(page);
+    if (screenNow.over) break;
+    if ((await act(page, screenNow, pick)) === null) throw await deadEnd(page, game, i);
+    const p = await probe();
+    mostCommentary = Math.max(mostCommentary, p.commentary);
+    if (p.rows > 0) {
+      worstList = Math.min(worstList, p.height);
+      if (!p.reached) covered = `move ${i}: the first answer row was covered (list ${p.height}px, commentary ${p.commentary}px)`;
+    }
+  }
+
+  // The floor, at the worst moment the run actually produced.
+  expect(covered, covered ?? "").toBeNull();
+  if (worstList !== Infinity) {
+    expect(
+      worstList,
+      `the answer list was squeezed to ${worstList}px (commentary peaked at ${mostCommentary}px)`,
+    ).toBeGreaterThanOrEqual(30);
+  }
+  // Anti-vacuity: if the commentary never grew, the squeeze was never on and the
+  // floor above proved nothing. Say so rather than reporting a green run.
+  // eslint-disable-next-line no-console
+  console.log(
+    `deck under pressure: commentary peaked at ${mostCommentary}px, ` +
+      `answer list bottomed out at ${worstList === Infinity ? "n/a" : `${worstList}px`} (recorded)`,
+  );
+  expect(
+    mostCommentary,
+    "this run never produced applied-move commentary, so the squeeze was never exercised",
+  ).toBeGreaterThan(0);
+
+  const read = async (y: number) => {
+    await page.evaluate((to) => window.scrollTo(0, to), y);
+    await page.evaluate(
+      () => new Promise((resolve) => requestAnimationFrame(() => resolve(null))),
+    );
+    return page.evaluate(() => {
+      const deck = document.querySelector(".deck")!;
+      const r = deck.getBoundingClientRect();
+      return {
+        scrollY: Math.round(window.scrollY),
+        top: Math.round(r.top),
+        bottom: Math.round(r.bottom),
+        innerHeight: window.innerHeight,
+        // Every control the player can press, and whether the click would
+        // actually reach it — the defect that made this a deck and not a rule.
+        reachable: [...deck.querySelectorAll<HTMLElement>("button")]
+          .filter((b) => b.offsetParent !== null)
+          .map((b) => {
+            const br = b.getBoundingClientRect();
+            const hit = document.elementFromPoint(br.x + br.width / 2, br.y + br.height / 2);
+            return { name: (b.textContent ?? "").trim().slice(0, 24), reached: b.contains(hit) };
+          }),
+      };
+    });
+  };
+
+  const bottomOfPage = await page.evaluate(() => document.body.scrollHeight);
+  for (const y of [0, 400, bottomOfPage]) {
+    const r = await read(y);
+    expect(
+      Math.abs(r.bottom - r.innerHeight),
+      `the deck is not against the bottom edge at scrollY ${r.scrollY} (bottom ${r.bottom} vs ${r.innerHeight})`,
+    ).toBeLessThanOrEqual(1);
+    expect(r.top, `the deck runs off the top of the viewport at scrollY ${r.scrollY}`).toBeGreaterThanOrEqual(0);
+
+    // Anti-vacuity, and the real defect: a deck with no pressable control is
+    // "pinned" by any geometric reading and useless to a player.
+    expect(r.reachable.length, `no control in the deck at scrollY ${r.scrollY}`).toBeGreaterThan(0);
+    const buried = r.reachable.filter((c) => !c.reached).map((c) => c.name);
+    expect(buried, `controls in the deck are covered at scrollY ${r.scrollY}`).toEqual([]);
+  }
+
+  // **The answer list must never be the thing that gets squeezed to nothing.**
+  //
+  // This is the second defect the deck had, and it is the subtler one. The deck
+  // is capped, so something inside it yields; the first version let the ANSWER
+  // LIST yield, and against a bot seat the applied-move commentary reached
+  // sixteen lines and 312px, clamped the list to a height of exactly 0, and made
+  // the first option unclickable — its 34px box still had a centre, and the
+  // centre landed on `.controls`. A player would have met that on move six.
+  //
+  // Asserted as a FLOOR and a hit test, not as a height: how tall the list is
+  // depends on the prompt and on the viewport, but "at least one row, and you
+  // can actually press it" holds under any redesign.
+  expect(watch.failures).toEqual([]);
+});
+
+test("only the option list scrolls inside the deck", async ({ page }) => {
+  const watch = watchForBreakage(page);
+  await startGame(page);
+  await page.waitForSelector(".decision .options");
+
+  const read = await page.evaluate(() => {
+    const options = document.querySelector(".decision .options.scrolls");
+    const deck = document.querySelector(".deck");
+    if (!options || !deck) return null;
+    return {
+      optionsOverflowY: getComputedStyle(options).overflowY,
+      deckPosition: getComputedStyle(deck).position,
+    };
+  });
+
+  expect(read, "the opening prompt must offer options to be measured").not.toBeNull();
+  // The two declarations the deck depends on, and nothing else. The component
+  // suite cannot see either — the stylesheet is imported by `main.tsx` alone and
+  // jsdom has no layout engine — so this is the only place they are checked.
+  expect(read!.deckPosition, "the deck stopped being pinned").toBe("sticky");
+  expect(read!.optionsOverflowY, "the option list stopped being the scroller").toBe("auto");
+
+  expect(watch.failures).toEqual([]);
+});
+
 // ---- the art: the two rules that were deleted, and the box that must stay ----
 //
 // These are the only assertions in the repository that can see a CSS change to

@@ -373,15 +373,75 @@ button.tile:focus-visible { outline: 2px solid var(--vp); outline-offset: 1px; }
 .space.dummy { border-style: dashed; color: var(--fg-faint); background: transparent; }
 
 /* ---- decision ---------------------------------------------------------- */
+
+/* **The pinned deck.** Warnings, the prompt and any error, held together at the
+ * bottom of the viewport so that answering never costs a scroll. See
+ * `App.tsx`'s comment for why the three share a container rather than each
+ * taking its own sticky rule — the short version is that separately they pin to
+ * the same edge and the error strip swallows Confirm and Undo.
+ *
+ * `max-height` plus a column flex is what keeps a long prompt honest: real
+ * prompts driven through this API measured 146, 201 and 562 option rows, whose
+ * natural heights are 5,721 / 7,827 / 21,646px. The deck refuses to grow past
+ * 62% of the viewport and hands the shortfall to `.options`, which is the only
+ * child allowed to scroll — so the phase chain, the question and every control
+ * stay on screen at 562 rows exactly as at three. Clamping the deck as a block
+ * instead would put Confirm at internal offset 22,088 with nothing saying so. */
+.deck {
+  position: sticky; bottom: 0; z-index: 10;
+  display: flex; flex-direction: column; min-height: 0;
+  max-height: 62vh;
+  background: var(--bg-sunken);
+  box-shadow: 0 -8px 20px rgb(0 0 0 / 0.35);
+}
+/* The deck's own children must be allowed to shrink, or `min-height: auto` on a
+ * flex item silently defeats every clamp above. */
+.deck > * { min-height: 0; }
+
 .decision {
   border-top: 1px solid var(--line); background: var(--bg-sunken);
   padding: 0.9rem 1.25rem 1.4rem;
+  display: flex; flex-direction: column; min-height: 0;
 }
 .chain { display: flex; flex-wrap: wrap; gap: 0.45rem; font-size: 10px; color: var(--fg-faint); letter-spacing: 0.08em; text-transform: uppercase; }
 .chain .lit { color: var(--fg); background: var(--line); padding: 0 0.35rem; border-radius: 3px; }
 .asking { font-family: var(--display); font-size: 1.05rem; margin: 0.5rem 0 0.6rem; }
 
 .options { display: flex; flex-direction: column; gap: 0.25rem; max-width: 62rem; }
+
+/* **Who gives up space first, when the deck runs out of it.**
+ *
+ * The deck is capped, so something inside it has to yield, and WHICH thing is
+ * the whole design. Two failures were measured getting this wrong, both of them
+ * silent to the component suite:
+ *
+ *  1. Scrolling every `.options` — `Decision.tsx`'s `retreat` arm reuses that
+ *     class as a plain wrapper around a message and a row of count buttons, so
+ *     the counts ended up inside the clip. Hence `.scrolls`, marked at the one
+ *     site that is really a list of answers.
+ *  2. Letting the ANSWER LIST absorb all the shrinkage. Against a bot seat the
+ *     applied-move deltas reach sixteen lines and 312px; the deck clamped at
+ *     446px and `.options` was squeezed to a height of exactly 0. The row's box
+ *     is still 34px tall, so its centre fell through onto `.controls` and the
+ *     first option became unclickable — four failing browser specs, and a real
+ *     player would have met it on their sixth move.
+ *
+ * So the order is stated rather than left to flex defaults: the controls, the
+ * question and the phase chain never shrink; the answer list shrinks to a floor
+ * of about two rows and then scrolls; the running commentary yields first and
+ * scrolls within its own cap. The answer is what the deck is FOR. */
+.decision > * { flex: 0 0 auto; }
+.options.scrolls {
+  flex: 1 1 auto;
+  min-height: 4.5rem;
+  overflow-y: auto;
+  scrollbar-width: thin; scrollbar-color: var(--line-bright) transparent;
+}
+.decision > .messages, .decision > .near-miss {
+  flex: 0 1 auto; min-height: 0; max-height: 7rem;
+  overflow-y: auto;
+  scrollbar-width: thin; scrollbar-color: var(--line-bright) transparent;
+}
 .option {
   display: flex; align-items: baseline; gap: 0.6rem; width: 100%;
   background: var(--bg-raised); color: var(--fg);

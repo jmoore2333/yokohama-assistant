@@ -134,8 +134,16 @@ export function Decision({
         </div>
       )}
 
+      {/* `scrolls` marks THE ONE box the deck is allowed to clip.
+          `.options` is overloaded — the `retreat` arm below reuses it as a plain
+          wrapper around a message and a row of count buttons — so scrolling
+          every `.options` puts those counts inside the clip. Measured as
+          `<div class="controls"> intercepts pointer events`, four failing
+          browser specs. The answer rows are the only thing that may be
+          off-screen inside the deck, because they are the only thing you can
+          reach by scrolling to it. */}
       {(prompt.kind === "options" || prompt.kind === "pick") && (
-        <div className="options">
+        <div className="options scrolls">
           {prompt.rows.length === 0 && <div className="messages">Nothing to answer here.</div>}
           {prompt.rows.map((row) => (
             <button

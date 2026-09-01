@@ -186,3 +186,116 @@ describe("art", () => {
     expect(document.querySelectorAll("img").length).toBeGreaterThan(0);
   });
 });
+
+// ---- M3.5: the answer bar is pinned, and it is ONE bar ----
+//
+// Measured before this: at 4P the decision zone began at y=2006 on a 2179px
+// page — 1,106px below the fold — so answering a prompt meant scrolling to it
+// after every move. `.stage` is `max(board, rail)` and the rail is 2.1–2.5× the
+// board's height, so no realistic change to the board shortens the page; the
+// pin is what makes the page's height stop mattering.
+//
+// The reason this is a DECK and not a sticky rule on the decision zone is a
+// measured defect in the obvious version. `App` renders `className="decision"`
+// three times — the warnings strip, the decision itself, the error strip — and
+// pinning them independently at one `bottom: 0` puts them on the SAME edge at
+// the same z-index. The error strip is last in the DOM, so it paints over the
+// bottom of the decision zone: hit-tested, `elementFromPoint` on "Apply the
+// only option" and on "Undo" returned `div.error`. Scoping the rule to the
+// decision alone then hides the error strip below the fold instead — the player
+// gets a permanently visible answer bar and no visible reason their click did
+// nothing. One container pins all three together and neither can happen.
+
+describe("the decision deck", () => {
+  /** The one state the naive fix breaks: warnings AND an error AND a prompt. */
+  const withWarnings = {
+    ...wire.optionsMany,
+    warnings: ["APPLIED BUT NOT SAVED: the move is in memory only."],
+  };
+
+  it("holds the warnings, the prompt and the error in one pinned container", async () => {
+    await renderApp(withWarnings, (call) =>
+      call.path.endsWith("/input")
+        ? { status: 409, body: { error: "Re-read the game and answer what it asks." } }
+        : undefined,
+    );
+
+    // The warning is on screen before anything is clicked.
+    expect(screen.getByText(/APPLIED BUT NOT SAVED/)).toBeInTheDocument();
+
+    // Provoke the error strip, so all three blocks exist at once.
+    const state = withWarnings;
+    if (state.prompt.kind !== "options") throw new Error("fixture moved");
+    await userEvent.setup().click(
+      screen.getByRole("button", {
+        name: new RegExp(
+          state.prompt.rows[0]!.words.slice(0, 20).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+        ),
+      }),
+    );
+    await waitFor(() => expect(screen.getByText(/Re-read the game/)).toBeInTheDocument());
+
+    const deck = document.querySelectorAll(".deck");
+    expect(deck, "the three blocks pin as one, or they pin over each other").toHaveLength(1);
+
+    const blocks = [...document.querySelectorAll(".decision")];
+    expect(blocks, "warnings, the prompt, and the error").toHaveLength(3);
+    for (const b of blocks) {
+      expect(deck[0]!.contains(b), `a .decision escaped the deck: ${b.className}`).toBe(true);
+    }
+  });
+
+  // The clamp goes on the OPTIONS and not on the deck, and that is the whole
+  // point of it. Real prompts driven through this API measured 146, 201 and 562
+  // option rows — natural heights of 5,721 / 7,827 / 21,646px. With the zone
+  // clamped as a block, Confirm and Undo sit at internal scroll offset 22,088
+  // inside a 405px box with nothing on the page saying so. With only the list
+  // scrolling, every control stays on screen at 562 rows exactly as at three.
+  // **The invariant, stated at the width the defect actually had.**
+  //
+  // The first version of this cell asserted only that `.controls` is not inside
+  // `.options`, read on an `options` fixture — and passed while the client was
+  // broken. `.options` is OVERLOADED: it is the answer list for `options` and
+  // `pick`, and on a `retreat` prompt it is a plain wrapper holding a message
+  // and a `.controls` of count buttons. Turning every `.options` into a clipped
+  // scroller therefore put the retreat counts inside the clip, and the browser
+  // walk found it as `<div class="controls"> intercepts pointer events` — four
+  // failing specs, none of them the one this cell was written for.
+  //
+  // So the claim is now made over EVERY prompt the corpus carries, and it is the
+  // claim that actually matters: nothing you can press is inside the box that
+  // clips, except the answer rows themselves.
+  it.each([
+    ["options", wire.options],
+    ["many options", wire.optionsMany],
+    ["a pick", wire.pick],
+    ["a retreat", wire.retreat],
+    ["a retreat, answered", wire.retreatAnswered],
+  ])("keeps every pressable control out of the scroller: %s", async (_name, state) => {
+    await renderApp(state);
+    const scrollers = [...document.querySelectorAll<HTMLElement>(".decision .scrolls")];
+    for (const box of scrollers) {
+      const inside = [...box.querySelectorAll("button")].filter(
+        (b) => !b.classList.contains("option"),
+      );
+      expect(
+        inside.map((b) => (b.textContent ?? "").trim()),
+        "a control other than an answer row is inside the clipped list",
+      ).toEqual([]);
+    }
+  });
+
+  // Anti-vacuity for the row above: a client that marks NOTHING as scrollable
+  // satisfies it trivially, and that is the state this milestone started from.
+  // `pick` is the corpus's longest prompt at ten rows — `optionsMany` is named
+  // for its two hundred ranked CANDIDATES, not for its three answer rows.
+  it("marks the answer list as the thing that scrolls", async () => {
+    await renderApp(wire.pick);
+    const box = document.querySelector(".decision .options.scrolls");
+    expect(box, "the answer list must be the element that scrolls").not.toBeNull();
+    expect(
+      box!.querySelectorAll(".option").length,
+      "the corpus's longest prompt must actually carry rows",
+    ).toBeGreaterThan(5);
+  });
+});
