@@ -1,10 +1,10 @@
 // Setup: the deal, and the seed that must survive the round trip.
 
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { NewGame } from "./NewGame";
-import { stubApi, type ApiCall, type Reply } from "./test/harness";
+import { gate, stubApi, type ApiCall, type Reply } from "./test/harness";
 import { wire } from "./wire/contract";
 
 /** A seed at the top of the `u64` range — the shape `draw_seed` actually
@@ -18,6 +18,47 @@ function show(handler: (call: ApiCall) => Reply) {
   render(<NewGame art={wire.artManifest} onStarted={onStarted} />);
   return { onStarted, stub, user: userEvent.setup() };
 }
+
+describe("a double-clicked Start", () => {
+  // **The second site of the guard `App` already documents**, and the one with
+  // the worse consequence. `run()` gated on the `busy` STATE, and state is what
+  // makes the bug: React batches, so two clicks in the same tick both read
+  // `busy === false` and both post. Two `POST /api/games` are then two
+  // DIFFERENT games — the server draws a fresh bot seed per request, so with a
+  // bot on the start seat each plays its own opening — and before the server
+  // learned to serialize creates, the loser's record landed on disk while the
+  // client was handed the winner's.
+  it("posts create exactly once", async () => {
+    const held = gate<unknown>();
+    const { stub, user } = show((call) => {
+      if (call.method === "GET" && call.path.endsWith("/api/games")) return [];
+      if (call.path.endsWith("/api/games/preview")) return wire.preview;
+      if (call.method === "POST" && call.path.endsWith("/api/games")) return held.promise;
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+
+    await user.click(screen.getByRole("button", { name: "Deal" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Start" })).toBeInTheDocument());
+
+    // BOTH clicks inside ONE `act`, so no render happens between them — the
+    // case the ref exists for. Two `user.click`s would each flush, the button
+    // would already be `disabled`, and the cell would pass with the guard
+    // removed, which is not a test of the guard. `App.test.tsx` records the
+    // same reasoning for the same mistake.
+    const start = screen.getByRole("button", { name: "Start" });
+    act(() => {
+      fireEvent.click(start);
+      fireEvent.click(start);
+    });
+
+    const creates = () =>
+      stub.matching("POST", "/api/games").filter((c) => !c.path.endsWith("preview"));
+    expect(creates()).toHaveLength(1);
+
+    held.resolve(wire.options);
+    await waitFor(() => expect(creates()).toHaveLength(1));
+  });
+});
 
 describe("the seed", () => {
   // **The defect, exactly.** The setup flow ROUND-TRIPS the seed: preview draws

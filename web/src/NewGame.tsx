@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, ApiError, type NewGameRequest } from "./api";
 import { OrderCardView } from "./Cards";
 import type { ArtManifest, ClientState, Preview } from "./types";
@@ -42,7 +42,23 @@ export function NewGame({
     bot_seats: [botSeat],
   });
 
+  // The same guard, and the same reasoning, as `App`'s `inFlight` — read its
+  // comment; this is the second site and it was missing.
+  //
+  // `busy` STATE could not hold it: React batches, so two clicks in the same
+  // tick both read `busy === false` and both post. On `App` that costs a
+  // desynced picker. Here it posts `POST /api/games` twice, and the two games
+  // are genuinely different — the server draws a fresh bot seed per request, so
+  // with a bot on the start seat each plays a different opening. The server
+  // now serializes creates and refuses the second by name, but a client that
+  // sends a request it knows it should not is the wrong half to leave broken:
+  // before that fix the loser's record landed on disk and the client was
+  // silently switched onto the other game.
+  const inFlight = useRef(false);
+
   const run = async (fn: () => Promise<void>) => {
+    if (inFlight.current) return;
+    inFlight.current = true;
     setBusy(true);
     setError(null);
     try {
@@ -50,6 +66,7 @@ export function NewGame({
     } catch (e) {
       setError(e instanceof ApiError ? e.message : String(e));
     } finally {
+      inFlight.current = false;
       setBusy(false);
     }
   };

@@ -194,6 +194,19 @@ pub struct Games {
     rules: Arc<Rules>,
     store: Arc<dyn SessionStore>,
     live: Mutex<HashMap<GameId, Arc<Mutex<Repl>>>>,
+    /// Serializes `create` against itself, and nothing else.
+    ///
+    /// `create` is check-then-write across a slow middle (`Session::new_sim`
+    /// plus the opening bot pump), so without this two requests both read
+    /// "absent" and both went on to build, write and insert. Held across the
+    /// WHOLE of `create` — the `exists` check, the build, the write and the
+    /// insert — because any shorter hold leaves the same window somewhere else.
+    ///
+    /// A dedicated lock rather than holding `live`: `live` is taken by every
+    /// `handle`, and blocking ordinary reads for the length of a game setup to
+    /// serialize an operation a user performs by hand is the wrong trade. Two
+    /// creates now queue; a create and a read do not.
+    create_lock: Mutex<()>,
     /// Ids deleted since this process started, so a request that was already
     /// holding a handle cannot write the record back after `DELETE` removed it.
     /// Cleared by `create`, so a name can be reused.
@@ -223,6 +236,7 @@ impl Games {
             rules,
             store,
             live: Mutex::new(HashMap::new()),
+            create_lock: Mutex::new(()),
             deleted: Mutex::new(std::collections::HashSet::new()),
         }
     }
@@ -238,6 +252,13 @@ impl Games {
     /// Start a game and persist it before returning, so a client that is told
     /// "created" can always find it again.
     pub fn create(&self, req: &NewGame) -> Result<(GameId, Arc<Mutex<Repl>>), String> {
+        // Held for the whole function. `exists` -> build -> `persist` ->
+        // `insert` is check-then-write across a slow middle, and two requests
+        // that both read "absent" both went on to write a DIFFERENT game
+        // (`config_of` draws a fresh bot seed per request) — the loser's record
+        // landed on disk, the winner's insert was clobbered, and the client
+        // told 201 was silently switched onto the other game.
+        let _serialized = self.create_lock.lock().expect("games lock");
         let (config, choices, bots) = config_of(req)?;
         let seed = req.seed.map_or_else(draw_seed, |s| s.0);
 
@@ -268,12 +289,29 @@ impl Games {
             bring_alive(&mut r);
             self.persist(&id, &r)?;
         }
-        {
+        // `entry().or_insert()`, never `insert()` — the same rule `handle`
+        // follows forty lines below, and for the same reason: one game must
+        // never be two handles applying moves to two divergent records. The
+        // create lock makes a colliding CREATE impossible, but a concurrent
+        // `handle(&id)` can still have rebuilt this id off the store between
+        // the `persist` above and this line, so keep whichever landed first
+        // and hand the caller THAT one.
+        //
+        // **NO TEST COVERS THIS LINE**, and the distinction is worth the
+        // sentence: `two_creates_of_one_name_cannot_both_succeed` is
+        // mutation-proven against removing the create lock, and passes with
+        // this reverted to `insert()`. It is defence in depth against the
+        // create-versus-rebuild window, which no cell drives — reaching it
+        // needs a store that can be parked mid-`persist`. Written down rather
+        // than implied, because a comment that reads like a covered invariant
+        // is how this lane has three times shipped a fence nothing held.
+        let kept = {
             let mut live = self.live.lock().expect("games lock");
-            live.insert(id.clone(), Arc::clone(&handle));
+            let kept = Arc::clone(live.entry(id.clone()).or_insert(handle));
             evict_down_to(&mut live, &id);
-        }
-        Ok((id, handle))
+            kept
+        };
+        Ok((id, kept))
     }
 
     /// The live handle for `id`, rebuilt from the store if it is not resident.
@@ -325,15 +363,39 @@ impl Games {
     /// that are both moving forwards.
     pub fn persist(&self, id: &str, repl: &Repl) -> Result<(), String> {
         if self.deleted.lock().expect("games lock").contains(id) {
-            return Err(format!("{id:?} was deleted while this move was in flight"));
+            return Err(self.conflict(id, format!("{id:?} was deleted while this move was in flight")));
         }
-        let events = repl.session.record().events.len();
+        let record = repl.session.record();
+        let events = record.events.len();
         if let Ok(stored) = self.store.read(id) {
             if let Ok(on_disk) = serde_json::from_str::<GameRecord>(&stored) {
+                // IDENTITY BEFORE LENGTH — a name is not a game.
+                //
+                // The tombstone's own bound is "`create`, which clears the id",
+                // and `create` clears it on ATTEMPT, before the new record
+                // exists. So delete-then-recreate inside an in-flight `step`
+                // left the doomed handle facing a record it passed both other
+                // guards against: no tombstone (cleared), and FEWER events than
+                // it holds (a fresh game), so the deleted game overwrote the new
+                // one. Comparing the seed makes the two games distinguishable,
+                // which a name plus a length never was.
+                if on_disk.seed != record.seed {
+                    return Err(self.conflict(
+                        id,
+                        format!(
+                            "{id:?} now holds a different game (stored seed {}, this handle's {}) — \
+                             refusing to write one game's events over another's",
+                            on_disk.seed, record.seed,
+                        ),
+                    ));
+                }
                 if on_disk.events.len() > events {
-                    return Err(format!(
-                        "{id:?} has advanced past this handle ({} stored vs {events} here) — refusing to write backwards",
-                        on_disk.events.len(),
+                    return Err(self.conflict(
+                        id,
+                        format!(
+                            "{id:?} has advanced past this handle ({} stored vs {events} here) — refusing to write backwards",
+                            on_disk.events.len(),
+                        ),
                     ));
                 }
             }
@@ -346,6 +408,27 @@ impl Games {
         // the next cold rebuild refused forever.
         let json = repl.session.to_record_json()?;
         self.store.write(id, &json)
+    }
+
+    /// Refuse a write AND drop the handle that attempted it.
+    ///
+    /// **A refused write means the handle is wrong, so keeping it resident is
+    /// what turns one lost move into a lost session.** `live` is never
+    /// invalidated against the store, so without this the same stale `Repl`
+    /// answers every later request: each move applies to it, each returns 200
+    /// with a `warnings` line, and each write is refused — the player goes on
+    /// playing a game that ended at the last write anyone accepted. Evicting
+    /// sends the next request through `Session::from_record`, which is the
+    /// durable truth.
+    ///
+    /// Only CONFLICTS come through here — deleted, superseded, or a different
+    /// game under the id. An I/O failure does NOT evict: there the handle is
+    /// right and the disk is not, and `input`'s 200-plus-`warnings` answer for
+    /// that case is a measured decision (see its comment) that this leaves
+    /// alone.
+    fn conflict(&self, id: &str, why: String) -> String {
+        self.live.lock().expect("games lock").remove(id);
+        why
     }
 
     /// Delete, and remember that we did.
@@ -507,6 +590,174 @@ mod tests {
             fresh.handle(&id).is_ok(),
             "the record this server just wrote must still load",
         );
+    }
+
+    /// A name is not a game: an in-flight write cannot land on a record that
+    /// is a DIFFERENT game under the same id.
+    ///
+    /// The delete tombstone defeats itself, and its own doc names the bound
+    /// that breaks: "It is bounded by `create`, which clears the id." `create`
+    /// clears it on ATTEMPT, before the new record exists. So:
+    /// (1) an `input` takes the lock and runs `Repl::step` (0.16-0.30 s);
+    /// (2) `DELETE` removes the file and tombstones the id;
+    /// (3) `create` reuses the name, CLEARING the tombstone, and persists a new
+    ///     game with fewer events;
+    /// (4) the in-flight write finds no tombstone and passes the monotonicity
+    ///     check, so the DELETED game overwrites the new one.
+    ///
+    /// Two guards, each with its own test, and their interaction is the hole.
+    /// The fix is to compare identity rather than a name plus a length.
+    #[test]
+    fn an_in_flight_write_cannot_land_on_a_different_game_that_took_the_name() {
+        let store = Arc::new(MemStore::default());
+        let rules = Arc::new(Rules::standard());
+        let games = Games::new(Arc::clone(&rules), Arc::clone(&store) as Arc<dyn SessionStore>);
+
+        let (id, handle) = games.create(&req("reused")).expect("a game");
+        let repl = handle.lock().expect("the handle");
+        let doomed_seed = repl.session.record().seed;
+
+        games.delete(&id).expect("a delete");
+
+        // The name comes back as a DIFFERENT game — a different seed is what
+        // makes it a different board, deal and box.
+        let mut second = req("reused");
+        second.seed = Some(WireSeed(20_260_901));
+        games.create(&second).expect("the name is reusable");
+        let after_create = store.read(&id).expect("the new record");
+
+        let err = match games.persist(&id, &repl) {
+            Ok(()) => panic!("the in-flight write landed on someone else's game"),
+            Err(e) => e,
+        };
+        assert!(
+            err.contains("different game"),
+            "the refusal says the id holds another game: {err}",
+        );
+
+        let now: GameRecord =
+            serde_json::from_str(&store.read(&id).expect("the record")).expect("a record");
+        assert_ne!(now.seed, doomed_seed, "the deleted game did not come back");
+        assert_eq!(
+            store.read(&id).expect("the record"),
+            after_create,
+            "the stored record is byte-identical to what `create` wrote",
+        );
+    }
+
+    /// A handle whose write was REFUSED is dropped, so the next request
+    /// rebuilds from the store instead of playing on a game nobody can save.
+    ///
+    /// Without this, a refusal is permanent and silent: `live` caches the
+    /// handle forever, every later move applies to it, each answers 200 with a
+    /// `warnings` string, and `persist` refuses every one of them. The player
+    /// keeps playing a game that ended at the last successful write. Known
+    /// defect (a) — the undo hole — loses ONE move this way; this loses the
+    /// rest of the session.
+    ///
+    /// A refusal is a CONFLICT (deleted, superseded, or a different game),
+    /// never an I/O failure — an unwritable store means the handle is right and
+    /// the disk is not, and `input`'s documented 200-plus-warning behaviour for
+    /// that case is deliberate and unchanged.
+    #[test]
+    fn a_handle_whose_write_was_refused_is_not_left_resident() {
+        let store = Arc::new(MemStore::default());
+        let rules = Arc::new(Rules::standard());
+        let games = Games::new(Arc::clone(&rules), Arc::clone(&store) as Arc<dyn SessionStore>);
+        let (id, handle) = games.create(&req("stale")).expect("a game");
+
+        // Someone else moves the stored game past this handle.
+        {
+            let other = Games::new(Arc::clone(&rules), Arc::clone(&store) as Arc<dyn SessionStore>);
+            let h = other.handle(&id).expect("the same game");
+            let mut r = h.lock().expect("the handle");
+            let _ = r.step("");
+            other.persist(&id, &r).expect("the other writer's move");
+        }
+
+        let repl = handle.lock().expect("the stale handle");
+        assert!(games.persist(&id, &repl).is_err(), "the backwards write is refused");
+        drop(repl);
+
+        // The refused handle must be gone, so the next request replays the
+        // store rather than continuing the divergent line.
+        let rebuilt = games.handle(&id).expect("a rebuild");
+        assert!(
+            !Arc::ptr_eq(&rebuilt, &handle),
+            "the refused handle was evicted, so this is a fresh one off the store",
+        );
+    }
+
+    /// Two creates of one name cannot both succeed.
+    ///
+    /// `create` was check-then-write with nothing held across it: `exists` ->
+    /// (slow) `Session::new_sim` -> `persist` -> `live.insert`. Two requests
+    /// both read "absent", both built, and both wrote — and the two games are
+    /// genuinely DIFFERENT, because `config_of` draws a fresh bot seed per
+    /// request, so with a bot at the start seat `bring_alive` plays a different
+    /// opening. `persist`'s guard was read-then-write and length-only, so
+    /// A.read(absent) -> B.read(absent) -> A.write(12) -> B.write(9) left B on
+    /// disk and A's twelve-event game nowhere. The final `live.insert` then
+    /// CLOBBERED, so the client holding A was silently switched onto B.
+    ///
+    /// **The realistic reproduction is one user and one browser**: `NewGame`'s
+    /// submit guard read a `busy` STATE rather than a ref, which `App`'s own
+    /// comment already records as insufficient — "React batches, so two clicks
+    /// in the same tick both read `busy === false` and both post."
+    ///
+    /// Rounds, because the window is real but small; the mutation proof for
+    /// this cell is to remove the create lock and watch it fail.
+    #[test]
+    fn two_creates_of_one_name_cannot_both_succeed() {
+        for round in 0..40 {
+            let store = Arc::new(MemStore::default());
+            let games = Arc::new(Games::new(
+                Arc::new(Rules::standard()),
+                Arc::clone(&store) as Arc<dyn SessionStore>,
+            ));
+            let name = format!("dup{round}");
+            let barrier = Arc::new(std::sync::Barrier::new(2));
+
+            let threads: Vec<_> = (0..2)
+                .map(|_| {
+                    let games = Arc::clone(&games);
+                    let barrier = Arc::clone(&barrier);
+                    let name = name.clone();
+                    std::thread::spawn(move || {
+                        barrier.wait();
+                        // The seed is left to the server on both, exactly as a
+                        // double-clicked Start sends it, so a winner and a
+                        // loser are distinguishable by what landed.
+                        let mut r = req(&name);
+                        r.seed = None;
+                        games.create(&r).map(|(id, handle)| {
+                            (id, handle.lock().expect("a handle").session.record().seed)
+                        })
+                    })
+                })
+                .collect();
+
+            let outcomes: Vec<_> = threads.into_iter().map(|t| t.join().expect("no panic")).collect();
+            let winners: Vec<_> = outcomes.iter().filter_map(|o| o.as_ref().ok()).collect();
+            assert_eq!(
+                winners.len(),
+                1,
+                "round {round}: exactly one create may take the name, got {}",
+                winners.len(),
+            );
+
+            // The record on disk is the winner's game, and the resident handle
+            // is the same one the winner was handed.
+            let stored: GameRecord =
+                serde_json::from_str(&store.read(&name).expect("the record")).expect("a record");
+            assert_eq!(stored.seed, winners[0].1, "round {round}: the stored game is the winner's");
+            let resident = games.handle(&name).expect("the resident handle");
+            assert_eq!(
+                resident.lock().expect("a handle").session.record().seed,
+                winners[0].1,
+                "round {round}: the client that was told 201 is not switched onto another game",
+            );
+        }
     }
 
     /// A game DELETED while a move was in flight does not come back.
