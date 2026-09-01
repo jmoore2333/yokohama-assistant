@@ -173,7 +173,49 @@ pub struct Ranked {
     pub chosen: bool,
 }
 
-fn rank_all(ranking: &[RootScore], chosen: &Move, state: &GameState, rules: &Rules) -> Vec<Ranked> {
+/// Whose hand the ranking's candidates are drawn from, and therefore whether
+/// their wording may name the cards in it.
+///
+/// **The root candidate list is a list of moves a seat COULD have made, and at
+/// an AdditionalAction node that enumerates its hand.** `Move::FulfillOrder`'s
+/// only generator reads `p.order_cards_in_hand` (`game/legal_moves.rs`), and
+/// `describe_move` words it as the printed card — country, requirements,
+/// rewards. So a ranking served whole is a readout of the mover's hand.
+///
+/// The distinction is not "is it a bot", it is WHOSE hand:
+/// - `suggest` runs on YOUR seat's view and ranks YOUR moves. Your own hand is
+///   already on your own screen; there is nothing to hide.
+/// - `why` accounts for a move ANOTHER seat made. `build_dashboard` serves that
+///   seat's hand as `cards: Vec::new()`, so one route hid it by construction
+///   while a sibling route listed its contents — measured at 222 rows on the
+///   committed fixture.
+///
+/// **The move that was PLAYED is never redacted**, in either mode: it happened,
+/// so it is public, and the card it names has left the hand. Only the roads not
+/// taken are hidden, which is exactly the information the mask exists to keep.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HandVisibility {
+    /// The ranking is the viewer's own; word every candidate.
+    Own,
+    /// The ranking belongs to another seat; word the unplayed candidates
+    /// without naming cards still in that seat's hand.
+    Masked,
+}
+
+/// What an unplayed candidate says when its wording would name a hidden card.
+///
+/// Deliberately keeps the ROW — its value and margin are the shape of the
+/// bot's preference, which is the whole point of the panel and reveals nothing
+/// about which card it is. Only the identity goes.
+const MASKED_FULFILL: &str = "Fulfill an order from hand";
+
+fn rank_all(
+    ranking: &[RootScore],
+    chosen: &Move,
+    state: &GameState,
+    rules: &Rules,
+    hand: HandVisibility,
+) -> Vec<Ranked> {
     let best = ranking.first().map_or(0, |r| r.value);
     // `Move` is `PartialEq`, so identity is compared as identity. Comparing the
     // WORDS would be a display string doing a type's job, and two distinct
@@ -184,8 +226,18 @@ fn rank_all(ranking: &[RootScore], chosen: &Move, state: &GameState, rules: &Rul
         .map(|r| {
             let is_chosen = !marked && &r.mv == chosen;
             marked |= is_chosen;
+            // `FulfillOrder` is the ONLY `Move` variant that carries an
+            // `OrderCardId` (`types/moves.rs`) and the only `describe_move` arm
+            // that reads `rules.orders` — so this match is the whole surface,
+            // not a sample of it.
+            let hides_a_card =
+                hand == HandVisibility::Masked && !is_chosen && matches!(r.mv, Move::FulfillOrder { .. });
             Ranked {
-                text: yokohama_cli::describe::describe_move(&r.mv, state, rules),
+                text: if hides_a_card {
+                    MASKED_FULFILL.to_string()
+                } else {
+                    yokohama_cli::describe::describe_move(&r.mv, state, rules)
+                },
                 value: r.value,
                 margin: r.value - best,
                 chosen: is_chosen,
@@ -273,7 +325,9 @@ impl Suggest {
             text: yokohama_cli::describe::describe_move(&s.mv, state, rules),
             explanation: Explanation::of(&s.explanation),
             continuation: word_line(&s.continuation, state, rules),
-            ranking: rank_all(&s.ranking, &s.mv, state, rules),
+            // `suggest` runs on YOUR seat's view and ranks YOUR moves, so the
+            // candidates enumerate a hand already on your own screen.
+            ranking: rank_all(&s.ranking, &s.mv, state, rules, HandVisibility::Own),
             stream_seed: s.stream_seed.to_string(),
             search_hit_ply_cap: s.search_hit_ply_cap,
             tied_at_top: s.tied_at_top(),
@@ -351,7 +405,9 @@ impl Why {
                 continuation: word_line(&e.continuation, &a.state, rules),
                 counters: e.stats.as_ref().map(counters),
                 search_hit_ply_cap: e.hit_ply_cap,
-                ranking: rank_all(&e.ranking, &a.mv, &a.state, rules),
+                // `why` accounts for a move ANOTHER seat made, and the same
+                // server serves that seat's hand as `cards: Vec::new()`.
+                ranking: rank_all(&e.ranking, &a.mv, &a.state, rules, HandVisibility::Masked),
             }),
             refusal: None,
         }
@@ -684,6 +740,81 @@ fn words_for(name: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A real 2P state, so `describe_move` has orders to word.
+    fn a_state() -> (yokohama_core::GameState, Rules) {
+        let rules = Rules::standard();
+        let games = crate::games::Games::new(
+            std::sync::Arc::new(rules.clone()),
+            std::sync::Arc::new(crate::store::MemStore::default())
+                as std::sync::Arc<dyn crate::store::SessionStore>,
+        );
+        let (_, handle) = games
+            .create(&crate::games::NewGame {
+                players: 2,
+                colors: vec![yokohama_core::PlayerColor::Red, yokohama_core::PlayerColor::Blue],
+                start_seat: 0,
+                seed: Some(crate::games::WireSeed(20_260_831)),
+                keeps: vec![1, 1],
+                bot_seats: vec![],
+                name: Some("rank".to_string()),
+            })
+            .expect("a game");
+        let repl = handle.lock().expect("the handle");
+        (repl.session.state().clone(), rules)
+    }
+
+    /// **`why`'s unplayed candidates do not name cards in the mover's hand;
+    /// `suggest`'s do, and the move that was PLAYED always does.**
+    ///
+    /// `Move::FulfillOrder` is the only variant carrying an `OrderCardId`
+    /// (`types/moves.rs`) and the only `describe_move` arm that reads
+    /// `rules.orders`, so this covers the whole surface rather than a sample of
+    /// it. The generator for those moves reads `p.order_cards_in_hand`, so a
+    /// ranking served whole is a readout of the hand the same server masks in
+    /// `build_hand`.
+    ///
+    /// **Constructed rather than taken from the corpus, and that is a finding
+    /// in itself**: the committed `why` fixture's 222 candidates are all
+    /// `Place ...`, because the walk captures a Placement decision. The row
+    /// count is real; it is not evidence of this leak, and a fence anchored to
+    /// it would have passed while proving nothing. `rank_all` is a pure wording
+    /// function, so the candidates here are built directly rather than reached
+    /// through a game that happens to offer them.
+    #[test]
+    fn only_the_played_fulfill_is_worded_when_the_hand_is_another_seats() {
+        let (state, rules) = a_state();
+        // Sorted by the printed corner index, so the pair is the same pair on
+        // every run rather than whatever the registry's iteration order is.
+        let mut ids: Vec<_> = rules.orders.iter().map(|c| c.id).collect();
+        ids.sort_unstable_by_key(|id| id.0);
+        let (order, other) = (ids[0], ids[1]);
+        let played = Move::FulfillOrder { order_id: order };
+        let ranking = vec![
+            RootScore { mv: played.clone(), value: 10 },
+            RootScore { mv: Move::FulfillOrder { order_id: other }, value: 4 },
+        ];
+
+        let masked = rank_all(&ranking, &played, &state, &rules, HandVisibility::Masked);
+        assert!(masked[0].chosen, "the played move is row 0 here");
+        assert_ne!(
+            masked[0].text, MASKED_FULFILL,
+            "the PLAYED move is public — it happened, and the card has left the hand",
+        );
+        assert_eq!(masked[1].text, MASKED_FULFILL, "the road not taken names no card");
+        // The ROW survives: its value and margin are the shape of the bot's
+        // preference and say nothing about which card it is. Dropping rows
+        // would have been the other way to close this, and it is not this one.
+        assert_eq!(masked[1].value, 4);
+        assert_eq!(masked[1].margin, -6);
+
+        let own = rank_all(&ranking, &played, &state, &rules, HandVisibility::Own);
+        assert_ne!(
+            own[1].text, MASKED_FULFILL,
+            "`suggest` ranks YOUR moves from YOUR view — your own hand is already on your screen",
+        );
+        assert_ne!(own[1].text, masked[1].text, "the two modes must actually differ");
+    }
 
     /// The sample set is complete, distinct, and each sample really is the
     /// variant its tag names.

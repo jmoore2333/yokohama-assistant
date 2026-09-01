@@ -62,18 +62,38 @@ export async function startGame(page: Page, opts: { players?: number } = {}): Pr
   if (opts.players && opts.players !== 2) {
     await page.getByLabel("Players").selectOption(String(opts.players));
   }
+  // **Both facts come off the RESPONSES, not off the banner.**
+  //
+  // This used to read `header .meta` and split it on `·`, taking the seed from
+  // position 1 and the id from position 2. That is a test parsing a display
+  // string for machine-readable facts, and it broke the moment the banner
+  // stopped printing the seed — silently, into `id === "saved"`, because the
+  // fields shifted by one and every segment is still a non-empty string. The
+  // walk then spent fifteen seconds waiting to click a saved game called
+  // "saved".
+  //
+  // The seed no longer reaches any play payload at all (it regenerates the
+  // whole hidden set), so `preview` is now the only place it is served — which
+  // is fine, and better: this captures each value from the request that
+  // actually carries it. The seed stays in the handle because a failed walk is
+  // only reproducible if its failure message names the game it walked.
+  const previewed = page.waitForResponse(
+    (r) => r.url().includes("/api/games/preview") && r.request().method() === "POST",
+  );
   await page.getByRole("button", { name: "Deal" }).click();
+  const seed = String(((await (await previewed).json()) as { seed: string }).seed);
+
   await expect(page.getByRole("button", { name: "Start" })).toBeVisible();
+  const created = page.waitForResponse(
+    (r) =>
+      /\/api\/games$/.test(new URL(r.url()).pathname) && r.request().method() === "POST",
+  );
   await page.getByRole("button", { name: "Start" }).click();
+  const id = String(((await (await created).json()) as { id: string }).id);
   await expect(page.getByRole("heading", { name: "Yokohama" })).toBeVisible();
 
-  // `sim · seed <n> · <id>[ · saved]`. The server draws the seed, so neither
-  // half is knowable in advance and both belong in any failure message.
-  const meta = await page.locator("header .meta").first().innerText();
-  const [, seed, id] = meta.split("·").map((s) => s.trim());
-  const cleanSeed = seed?.replace(/^seed\s+/, "");
-  if (!id || !cleanSeed) throw new Error(`the banner did not name the game: ${meta}`);
-  return { id, seed: cleanSeed };
+  if (!id || !seed) throw new Error(`the server did not name the game: id=${id} seed=${seed}`);
+  return { id, seed };
 }
 
 /**
