@@ -569,7 +569,7 @@ fn title_model(repl: &Repl) -> TitleModel {
             TrackingMode::Simulation => TitleMode::Sim,
             TrackingMode::Live => TitleMode::Live,
         },
-        seed: repl.session.state().config.setup_seed,
+        seed: Some(repl.session.state().config.setup_seed),
         autosaved: repl.session.save_path.is_some(),
     }
 }

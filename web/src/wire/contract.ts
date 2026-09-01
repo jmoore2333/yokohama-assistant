@@ -303,7 +303,7 @@ type KeysOf<T, K extends readonly string[]> = [
   : ["this list is missing keys the type has:", Exclude<keyof T & string, K[number]>];
 
 const CLIENT_STATE = [
-  "id", "mode", "seed", "seat", "to_move", "your_turn", "frame", "prompt",
+  "id", "mode", "seat", "to_move", "your_turn", "frame", "prompt",
   "messages", "over", "end_triggers", "deck_remaining", "end_game_triggered",
   "scores", "warnings",
 ] as const;

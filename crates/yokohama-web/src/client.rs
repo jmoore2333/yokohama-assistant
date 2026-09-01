@@ -132,15 +132,6 @@ pub struct ClientState {
     pub id: String,
     /// `"sim"` or `"live"`.
     pub mode: &'static str,
-    /// The setup seed, as a STRING.
-    ///
-    /// **Read this and not `frame.title.seed`.** That field is a `u64` and
-    /// serializes as a JSON number, which a browser cannot hold: `JSON.parse`
-    /// rounds anything past 2^53, and a real seed is around 1.8e19. It stays a
-    /// number because `screen_model` is the CLI's model and this port does not
-    /// move it; this field is the web layer's lossless answer. See
-    /// [`crate::games::WireSeed`].
-    pub seed: crate::games::WireSeed,
     /// The seat this payload was built FOR — whose hand is unmasked and whose
     /// decision zone carries options. Not necessarily the seat to move.
     pub seat: PlayerId,
@@ -349,7 +340,16 @@ impl ClientState {
                     TrackingMode::Simulation => TitleMode::Sim,
                     TrackingMode::Live => TitleMode::Live,
                 },
-                seed: session.record().seed,
+                // **`None`, and this is the whole of A6's fix on this side.**
+                // The setup seed is hidden-set member #1 (`observe.rs`): it
+                // regenerates the deck, the box, the board and every deal, so a
+                // payload carrying it hands the entire hidden set to whoever
+                // holds the payload. The CLI passes `Some` because it is one
+                // operator reading their own title strip; a frame served over
+                // HTTP declines. The seed still reaches the client exactly once
+                // where the flow genuinely needs it — `POST /api/games/preview`,
+                // which round-trips it back to `create`.
+                seed: None,
                 // This server persists after every applied move, so the answer
                 // is unconditionally yes -- it is not the CLI's `save_path`.
                 autosaved: true,
@@ -362,7 +362,6 @@ impl ClientState {
                 TrackingMode::Simulation => "sim",
                 TrackingMode::Live => "live",
             },
-            seed: crate::games::WireSeed(session.record().seed),
             seat,
             to_move: state.current_player,
             your_turn: !over && state.current_player == seat,

@@ -727,6 +727,68 @@ async fn corpus() -> Vec<(String, Value)> {
     all
 }
 
+/// **No payload spells the setup seed, except the one whose job is to.**
+///
+/// The seed is the FIRST member of the engine's hidden set (`game/observe.rs`):
+/// it regenerates the order deck, the tech deck, the boxed pile, the board AND
+/// every deal. `games::draw_seed`'s own doc states the threat model — the public
+/// board is an injective fingerprint of the seed, so small seeds are
+/// "brute-forceable in milliseconds, recovering the entire hidden set". Serving
+/// the value removes the need to brute-force anything: `new_game(config, rules,
+/// seed)` reproduces the whole hidden set directly, which narrows an opponent's
+/// kept starting order from thirty-six cards to two.
+///
+/// It was on 21 of 41 committed payloads, twice over — as `ClientState.seed`
+/// and again as `frame.title.seed` — and rendered by one line of one title
+/// strip. Parity with the CLI while one operator plays one bot; a total break
+/// of the hidden-information model on the FIRST FRAME the moment there is a
+/// second human or a spectator, which `06-decisions-and-open-questions.md`
+/// records as the stated future.
+///
+/// **This is the fence, and it is deliberately mechanism-independent.** The fix
+/// is typed — `TitleModel::seed` is an `Option` the web passes `None` — but a
+/// future field, a debug route or a renamed key could publish the number again
+/// without touching that type. So this searches the SERIALIZED TEXT of every
+/// committed payload for the value itself, in the two spellings JSON can hold
+/// it in. `preview` is the single exemption and needs no list of its own: the
+/// setup flow round-trips the seed from preview back into `create`, so a
+/// preview that did not carry it could not deal the game the player chose.
+#[tokio::test]
+async fn no_committed_payload_carries_the_setup_seed_except_the_preview() {
+    let decimal = SETUP_SEED.to_string();
+    let mut offenders: Vec<String> = Vec::new();
+
+    for (name, value) in corpus().await {
+        if name.starts_with("preview") {
+            // The exemption, asserted rather than assumed: if `preview` ever
+            // STOPS carrying the seed, this test is silently guarding nothing
+            // and the round trip is broken anyway.
+            assert!(
+                serde_json::to_string(&value).expect("serializable").contains(&decimal),
+                "preview must carry the seed it round-trips — {name} does not",
+            );
+            continue;
+        }
+        let text = serde_json::to_string(&value).expect("serializable");
+        // As a JSON number and as a JSON string: `WireSeed` serializes to a
+        // string, `TitleModel` used to serialize to a number, and a fence that
+        // knew only one spelling would have missed the other.
+        if text.contains(&decimal) {
+            offenders.push(name);
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "the setup seed reaches the client in {} payload(s): {}\n\
+         The seed regenerates every deal, both decks, the boxed pile and the board. \
+         If a new field genuinely needs it, it needs an owner decision first, not an \
+         exemption here.",
+        offenders.len(),
+        offenders.join(", "),
+    );
+}
+
 /// **The gate: what the server emits is what the client type-checks against.**
 #[tokio::test]
 async fn the_committed_wire_fixtures_are_what_the_server_emits() {

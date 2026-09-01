@@ -1593,14 +1593,43 @@ mod tests {
         create["name"] = serde_json::json!("bigseed");
         let (status, game) = post("/api/games", create).await;
         assert_eq!(status, StatusCode::CREATED, "{game}");
-        assert_eq!(game["seed"], serde_json::json!(SEED.to_string()), "{}", game["seed"]);
+        // The created game does NOT echo the seed back. It used to, and that
+        // was the leak: the setup seed regenerates both decks, the boxed pile,
+        // the board and every deal, so a play payload carrying it publishes the
+        // whole hidden set. `preview` is the one surface that keeps it, because
+        // the flow round-trips the value from there into this call.
+        assert_eq!(game["seed"], serde_json::Value::Null, "a play payload carries no seed");
+        assert_eq!(
+            game["frame"]["title"]["seed"],
+            serde_json::Value::Null,
+            "and neither does the frame's title",
+        );
 
         // And the game really was dealt from it: the same seed previews the
         // same deal, which is the property a rounded seed breaks.
-        let mut again = base;
+        let mut again = base.clone();
         again["seed"] = serde_json::json!(SEED.to_string());
         let (_, preview2) = post("/api/games/preview", again).await;
         assert_eq!(preview2["deals"], previewed, "the deal is a function of the seed");
+
+        // **The discrimination the assertion above cannot make on its own.**
+        // Equal-seeds-deal-equally holds just as well on a server that rounds,
+        // because it would round both the same way. `SEED` and `SEED ^ 1` differ
+        // in the LAST BIT and collide as `f64` — so if any step of this path put
+        // the value through a double, these two deal identically. They must not.
+        let neighbour = SEED ^ 1;
+        assert_eq!(
+            neighbour as f64 as u64, SEED as f64 as u64,
+            "the premise: these two seeds are indistinguishable once rounded",
+        );
+        let mut adjacent = base;
+        adjacent["seed"] = serde_json::json!(neighbour.to_string());
+        let (_, preview3) = post("/api/games/preview", adjacent).await;
+        assert_ne!(
+            preview3["deals"], previewed,
+            "a one-bit change in the seed must change the deal — equal here means the \
+             full u64 did not survive the round trip",
+        );
     }
 
     /// The fence is on the ROUTE, not merely in the predicate.

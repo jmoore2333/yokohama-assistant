@@ -173,16 +173,29 @@ describe("what the corpus itself has to be true of", () => {
     expect(JSON.stringify(wire.hiddenHand)).not.toContain('"is_starting_order"');
   });
 
-  // The seed is what a rounded JSON number would silently corrupt, and the
-  // setup flow round-trips it from preview to create. A STRING on the wire, and
-  // `frame.title.seed` — the CLI model's `u64` — is the field not to read.
-  it("the seed is a string, and the frame's number is the one not to read", () => {
+  // **No play payload carries the setup seed; `preview` does, and must.**
+  //
+  // The seed regenerates both decks, the boxed pile, the board and every deal —
+  // hidden-set member #1 in `game/observe.rs` — so a frame carrying it hands the
+  // whole hidden set to whoever holds the frame. It used to ride on every
+  // payload twice, as `ClientState.seed` and again as `frame.title.seed`.
+  //
+  // The server has its own fence over the same corpus
+  // (`no_committed_payload_carries_the_setup_seed_except_the_preview`). This is
+  // the client's half and is deliberately not the same check: that one searches
+  // for the VALUE, this one asserts the SHAPE the client is allowed to see, so
+  // a payload that carried a seed under some other key would fail there and a
+  // client that started reading one would fail here.
+  //
+  // `preview` keeps it, and keeps it as a STRING: the setup flow round-trips
+  // the value from preview into create, and a `u64` through a JS number rounds
+  // silently — dealing a different game than the one whose cards were chosen.
+  it("no play payload carries a seed, and preview's is a string", () => {
     for (const state of EVERY_STATE) {
-      expect(typeof state.seed).toBe("string");
-      expect(state.seed).toMatch(/^\d+$/);
+      expect(JSON.stringify(state)).not.toContain('"seed"');
     }
     expect(typeof wire.preview.seed).toBe("string");
-    expect(typeof wire.options.frame.title.seed).toBe("number");
+    expect(wire.preview.seed).toMatch(/^\d+$/);
   });
 
   // A payload that is not the actor's carries no answerable list, in BOTH

@@ -99,17 +99,22 @@ describe("what goes on the wire", () => {
 });
 
 describe("the seed on screen", () => {
-  // A `u64` does not fit a JS number and the setup flow ROUND-TRIPS the value,
-  // so a rounded seed starts a different game than the one whose cards the
-  // player chose between. `ClientState.seed` is the string to read;
-  // `frame.title.seed` is `screen_model`'s number and is not safe here.
-  it("is the lossless string, never the frame's rounded number", async () => {
+  // **Inverted, deliberately.** This cell used to assert that the banner
+  // printed the lossless string rather than the frame's rounded number. Both
+  // fields are gone: the setup seed regenerates both decks, the boxed pile, the
+  // board and every deal, so serving it published the whole hidden set to
+  // whoever held the payload, and the banner was the ONE line that rendered it.
+  //
+  // The coverage is not dropped, it is turned around — the corpus fence
+  // (`contract.test.ts`) proves no play payload carries the value; this proves
+  // the screen does not print one, which is the half a client could reintroduce
+  // on its own by deriving it from something else.
+  it("is not printed, because no play payload carries one", async () => {
     await renderApp(wire.options);
-    expect(screen.getByText(new RegExp(`seed ${wire.options.seed}`))).toBeInTheDocument();
-    // The two agree at this small fixture seed, which is what makes the
-    // assertion above insufficient on its own: assert the FIELD, not the value.
-    expect(typeof wire.options.seed).toBe("string");
-    expect(typeof wire.options.frame.title.seed).toBe("number");
+    expect(screen.queryByText(/seed/i)).not.toBeInTheDocument();
+    // The banner is still there and still names the game — the assertion above
+    // would pass on a blank page without this.
+    expect(screen.getByText(new RegExp(wire.options.id))).toBeInTheDocument();
   });
 });
 
@@ -133,7 +138,10 @@ describe("a refusal", () => {
       expect(screen.getByText(/this game is asking/)).toBeInTheDocument(),
     );
     // Still playable: the refusal did not replace the game with an error page.
-    expect(screen.getByText(/seed /)).toBeInTheDocument();
+    // The end-trigger strip is the marker, not the seed — no play payload
+    // carries a seed any more, and the strip exists only while a game is on
+    // screen, which is exactly the property being asserted.
+    expect(screen.getByText(/end triggers:/)).toBeInTheDocument();
   });
 });
 

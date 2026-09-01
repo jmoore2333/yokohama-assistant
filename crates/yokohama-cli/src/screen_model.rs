@@ -1019,7 +1019,21 @@ pub enum TitleMode {
 pub struct TitleModel {
     pub mode: TitleMode,
     /// The game's identity seed; the renderer abbreviates it for display.
-    pub seed: u64,
+    ///
+    /// **`None` means the frame declines to carry it, and that is a wire
+    /// decision, not a missing value.** The setup seed is the first member of
+    /// the engine's hidden set (`observe.rs`) — it regenerates the deck, the
+    /// box, the board and every deal — so a frame crossing a network publishes
+    /// the whole hidden set to anyone holding it. The terminal always passes
+    /// `Some`: it is one operator looking at their own game, and the title
+    /// strip prints an abbreviation of it. `yokohama-web` passes `None`.
+    ///
+    /// Optional rather than removed, because the CLI genuinely renders it, and
+    /// `skip_serializing` alone would have broken
+    /// `every_wire_surface_round_trips_through_json_unchanged` — a field that
+    /// cannot round-trip is not a wire field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u64>,
     /// Whether autosave has a live target (the strip prints "autosaved").
     pub autosaved: bool,
 }
@@ -3351,7 +3365,7 @@ mod tests {
         let (state, rules) = state_np(2);
         let legal = get_legal_moves(&state, &rules);
         let frame = build_frame(&state, &rules, &SeatFacts::all_open(2), PlayerId::new(0), &legal,
-            TitleModel { mode: TitleMode::Sim, seed: 1, autosaved: false });
+            TitleModel { mode: TitleMode::Sim, seed: Some(1), autosaved: false });
 
         assert_eq!(frame.board.tiles.len(), state.board_layout.areas.len());
         assert_eq!(frame.decision.options.len(), legal.len());
@@ -3371,7 +3385,7 @@ mod tests {
         let (state, rules) = state_np(2);
         let seats = vec![SeatFacts { is_bot: false, hand_hidden: true }; 2];
         let frame = build_frame(&state, &rules, &seats, PlayerId::new(0), &[],
-            TitleModel { mode: TitleMode::Sim, seed: 1, autosaved: false });
+            TitleModel { mode: TitleMode::Sim, seed: Some(1), autosaved: false });
         let Some(Panel::Hand(hand)) = frame.dashboard.last() else {
             panic!("the hand panel closes the dashboard");
         };
@@ -3791,7 +3805,7 @@ mod tests {
                 &SeatFacts::all_open(2),
                 PlayerId::new(0),
                 &legal,
-                TitleModel { mode: TitleMode::Sim, seed: 1, autosaved: false },
+                TitleModel { mode: TitleMode::Sim, seed: Some(1), autosaved: false },
             ),
         );
         round_trip("PortsPanel", &build_ports(&state, &rules));
@@ -3889,7 +3903,7 @@ mod tests {
         let legal = get_legal_moves(&state, &rules);
         let actor = state.current_player;
         let observer = PlayerId::new(if actor.0 == 0 { 1 } else { 0 });
-        let title = TitleModel { mode: TitleMode::Sim, seed: 1, autosaved: false };
+        let title = TitleModel { mode: TitleMode::Sim, seed: Some(1), autosaved: false };
 
         let seen = build_frame(&state, &rules, &SeatFacts::all_open(2), actor, &legal, title);
         assert_eq!(seen.decision.options.len(), legal.len(), "the actor gets its list");

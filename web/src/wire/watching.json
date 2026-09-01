@@ -1226,8 +1226,7 @@
     },
     "title": {
       "autosaved": true,
-      "mode": "Sim",
-      "seed": 20260831
+      "mode": "Sim"
     }
   },
   "id": "wire",
@@ -1240,7 +1239,6 @@
   },
   "scores": null,
   "seat": 1,
-  "seed": "20260831",
   "to_move": 0,
   "warnings": [],
   "your_turn": false

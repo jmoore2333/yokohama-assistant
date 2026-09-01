@@ -73,7 +73,7 @@ export function App() {
       <header className="banner">
         <h1>Yokohama</h1>
         <span className="meta">
-          {state.mode} &middot; seed {state.seed} &middot; {state.id}
+          {state.mode} &middot; {state.id}
           {state.frame.title.autosaved ? " · saved" : ""}
         </span>
         <nav className="views">

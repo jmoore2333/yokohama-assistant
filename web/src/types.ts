@@ -279,9 +279,12 @@ export interface DecisionModel {
 }
 
 export interface FrameModel {
-  /** `seed` here is a `u64` in a JSON number and is NOT SAFE to read — use
-   *  `ClientState.seed`. */
-  title: { mode: "Sim" | "Live"; seed: number; autosaved: boolean };
+  /** No `seed`. The server passes `TitleModel::seed: None` on every frame it
+   *  serves — the setup seed regenerates both decks, the boxed pile, the board
+   *  and every deal, so a payload carrying it hands over the whole hidden set.
+   *  The one place the seed legitimately reaches this client is `Preview`,
+   *  which round-trips it back into `create`. */
+  title: { mode: "Sim" | "Live"; autosaved: boolean };
   board: BoardModel;
   dashboard: Panel[];
   decision: DecisionModel;
@@ -318,8 +321,6 @@ export type PromptState =
 export interface ClientState {
   id: string;
   mode: "sim" | "live";
-  /** The setup seed, as a decimal STRING. A `u64` does not fit a JS number. */
-  seed: string;
   seat: PlayerId;
   to_move: PlayerId;
   your_turn: boolean;

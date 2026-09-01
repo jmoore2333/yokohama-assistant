@@ -129,6 +129,10 @@ export async function renderApp(
   const { default: userEvent } = await import("@testing-library/user-event");
   await userEvent.setup().click(open);
   // The banner only exists once a game is loaded, so finding it is the wait.
-  await view.findByText(new RegExp(`seed ${state.seed}`));
+  // The end-trigger strip rather than the seed: the seed is no longer served on
+  // a play payload (it regenerates the whole hidden set), and the strip is the
+  // other thing that exists only once a game is on screen. Unambiguous, unlike
+  // the id, which is also the name of the button just clicked.
+  await view.findByText(/end triggers:/);
   return stub;
 }

@@ -267,7 +267,14 @@ impl Games {
                 return Err(format!("{name:?} is not a usable game name"))
             }
             Some(name) => name.clone(),
-            None => format!("sim-{seed:016x}"),
+            // An INDEPENDENT draw, never `seed`. A default id of
+            // `sim-{seed:016x}` published the setup seed — hidden-set member #1
+            // — in the id itself, so `GET /api/games` handed out every game's
+            // hidden set to anyone who could list. Dropping the seed from the
+            // payloads (see `client.rs`) is undone if the id still spells it.
+            // A second draw from the same OS entropy is independent of the
+            // first and identifies the game without describing it.
+            None => format!("sim-{:016x}", draw_seed()),
         };
         // `exists`, not `read(...).is_ok()`. The latter reads EVERY failure as
         // absence, so a stored game whose file was momentarily unreadable was
