@@ -91,6 +91,7 @@ import choiceChurchSpace from "./choice_ChurchSpace.json";
 import choiceWarehouseTake from "./choice_WarehouseTake.json";
 import areas4p from "./areas_4p.json";
 import artManifest from "./art_manifest.json";
+import siteSpaceWords from "./site_space_words.json";
 import error from "./error.json";
 import feeNonzero from "./fee_nonzero.json";
 import gameOver from "./game_over.json";
@@ -488,6 +489,12 @@ export const wire = {
   areas4p: as<AreasPanel>(areas4p),
   log: as<LogPanel>(log),
   artManifest: as<ArtManifest>(artManifest),
+  /** Not a payload any route serves: the TERMINAL's own words for every printed
+   *  building-site space, frozen so `Cards.spaceWords` cannot drift from
+   *  `card_render::space_reward_words`. See that fixture's doc in
+   *  `wire_fixtures.rs` — the client has to word these itself, and had 55 of the
+   *  96 wrong. */
+  siteSpaceWords: siteSpaceWords as { cards: { index: number; spaces: string[] }[] },
   suggest: as<SuggestResponse>(suggest),
   why: as<WhyResponse>(why),
   whyRefused: as<WhyResponse>(whyRefused),

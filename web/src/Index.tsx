@@ -16,7 +16,7 @@
 
 import { useEffect, useState } from "react";
 import { api, ApiError } from "./api";
-import { AchievementCardView, OrderCardView, SiteCardView, TechCardView } from "./Cards";
+import { AchievementCardView, OrderCardView, SiteCardView, TechCardView, spaceRewardTokens } from "./Cards";
 import type {
   ArtManifest,
   CardLocation,
@@ -130,13 +130,17 @@ function Copies({
  *  promised "what every space pays". The chip vocabulary is the house one the
  *  card faces already use. */
 function SpaceChip({ reward }: { reward: SpaceReward }) {
-  const paid = (Object.entries(reward) as [string, number][]).filter(([, n]) => n > 0);
-  if (paid.length === 0) return <span className="chip dim">—</span>;
+  // The words are `Cards.tsx`'s `spaceRewardTokens`, which is the TERMINAL's
+  // vocabulary. This function used to invent its own — `${n} ${kind.replace(/_/g,
+  // " ")}` — and disagreed with `card_render::space_reward_tokens` on 55 of the
+  // 96 printed spaces, including two that misstate a rule. See that function's
+  // doc; the whole point is that there is one vocabulary and it is not this
+  // file's.
   return (
     <>
-      {paid.map(([kind, n]) => (
-        <span className={`chip ${kind}`} key={kind}>
-          {n} {kind === "vp" ? "VP" : kind.replace(/_/g, " ")}
+      {spaceRewardTokens(reward).map((t, i) => (
+        <span className={`chip ${t.kind}`} key={`${t.kind}-${i}`}>
+          {t.word}
         </span>
       ))}
     </>

@@ -25,8 +25,15 @@ import type {
   SuggestResponse,
   WhyResponse,
 } from "./types";
-import { siteArt } from "./art";
-import { OrderCardView, Pawns, seatClass, TechCardView } from "./Cards";
+import { fivePowerWords, siteArt } from "./art";
+import {
+  OrderCardView,
+  Pawns,
+  seatClass,
+  SPACE_POSITIONS,
+  spaceWords,
+  TechCardView,
+} from "./Cards";
 import { SuggestView, WhyView } from "./Explain";
 import { IndexView, OutcomeView } from "./Index";
 
@@ -422,9 +429,18 @@ function Areas({
   labels: Labels | null;
   colors: PlayerColor[];
 }) {
+  // **The rows are ROWS, and flattening them threw away the board.**
+  // The payload carries `[4,3,2,1]` at 2P and `[6,5,4,3]` at 4P — the staggered
+  // pyramid's own shape — and `.flat()` handed the grid one long list, so the
+  // panel could not tell you which areas sit beside each other. Grouping is what
+  // makes this readable as a board rather than as an alphabetical index.
   return (
-    <div className="area-grid">
-      {panel.rows.flat().map((card: AreaCard) => (
+    <div className="area-rows">
+      {panel.rows.map((row, r) => (
+        <div className="area-row" key={r}>
+          <div className="label">row {r + 1}</div>
+          <div className="area-grid">
+      {row.map((card: AreaCard) => (
         <section className="area-card" key={card.tile.area}>
           <h3>
             <span className="tile-id">A{String(card.tile.area).padStart(2, "0")}</span>{" "}
@@ -452,6 +468,65 @@ function Areas({
               </tbody>
             </table>
           )}
+          {/* The 5-Power token, which the CLI names on this surface and this
+              panel did not carry at all. Three states, the CLI's own three
+              (`view_render.rs:1078-1094`): the face, "already taken", and the
+              Canal, which never had one. */}
+          {card.ladder.length > 0 && (
+            <div className="tile-row token-row">
+              {card.tile.token ? (
+                <span className="five-power">5-Power: {fivePowerWords(card.tile.token)}</span>
+              ) : (
+                <span className="muted">5-Power already taken</span>
+              )}
+            </div>
+          )}
+
+          {/* What the building site pays, and who has built on it. The words
+              come from the same `spaceWords` the site index uses, so the two
+              surfaces cannot describe one printed space differently. */}
+          {card.tile.site && (
+            <div className="area-site">
+              <div className="label">
+                Site {card.tile.site.index} &middot; trading house &#9733;
+                {card.tile.site.trading_house_vp}
+                {card.tile.site.trading_house_owner != null && (
+                  <span className={`occ ${seatClass(colors[card.tile.site.trading_house_owner])}`}>
+                    {" "}
+                    built by {colors[card.tile.site.trading_house_owner]}
+                  </span>
+                )}
+              </div>
+              <ul className="site-words">
+                {card.tile.site.slots.map((slot, i) => (
+                  <li key={i}>
+                    <span className="muted">{SPACE_POSITIONS[i]}</span> {spaceWords(slot.reward)}
+                    {slot.built_by != null && (
+                      <span className={`occ ${seatClass(colors[slot.built_by])}`}>
+                        {" "}
+                        &#8962; {colors[slot.built_by]}
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* The tolled Canal crossings. The Canal joins ANY of its neighbours
+              to any other, and a pair NOT already joined by a free brick-offset
+              edge costs 1 yen to the BANK. Declared on the wire since M2
+              (`types.ts:99`) and rendered nowhere until now. */}
+          {card.tile.canal_crossings.length > 0 && (
+            <div className="muted">
+              canal crossing to{" "}
+              {card.tile.canal_crossings
+                .map((a) => `A${String(a).padStart(2, "0")}`)
+                .join(", ")}{" "}
+              &mdash; 1 yen each, to the bank
+            </div>
+          )}
+
           {/* A POINTER, never a duplicate: the offer on a Port board and the
               occupied spaces of a track are surfaces of their own, and a second
               copy here would be a second copy to keep true. */}
@@ -459,6 +534,9 @@ function Areas({
             <div className="muted">detail lives on the {card.companion.toLowerCase()} surface</div>
           )}
         </section>
+      ))}
+          </div>
+        </div>
       ))}
     </div>
   );

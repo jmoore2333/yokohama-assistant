@@ -5,8 +5,9 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { IndexView, OutcomeView } from "./Index";
 import { SURFACES } from "./Surfaces";
+import { spaceWords } from "./Cards";
 import { wire } from "./wire/contract";
-import type { PlayerColor } from "./types";
+import type { PlayerColor, SpaceReward } from "./types";
 
 const COLORS: PlayerColor[] = ["Red", "Blue"];
 
@@ -236,5 +237,52 @@ describe("the final score shows the parts, not just the total", () => {
     const [first, second] = wire.result.standings;
     expect(first!.margin).toBe(-second!.margin);
     expect(first!.margin).toBeGreaterThan(0);
+  });
+});
+
+// ---- M3.5: one vocabulary for a printed space, and it is the terminal's ----
+
+describe("the printed spaces read as the terminal reads them", () => {
+  // **The client cannot import a Rust function, so the two are frozen together
+  // instead.** `wire_fixtures.rs` emits `card_render::space_reward_words` for
+  // all 24 cards and refuses when the server's output is not what is committed;
+  // this asserts the client's own wording against that. Neither side can be
+  // re-worded while both believe they agree.
+  //
+  // What it caught: `Index.tsx` built the words from serde field names, and
+  // disagreed on 55 of the 96 printed spaces. Two of those state a rule wrongly
+  // rather than reading oddly — `movement` is the ASSISTANT-move icon, and was
+  // rendered as "movement"; `warehouse_tokens` is a number of TAKES, and was
+  // rendered as "warehouse tokens".
+  it("words all 96 spaces exactly as the CLI does", () => {
+    const expected = wire.siteSpaceWords.cards;
+    const faces = wire.indexSites.groups
+      .flatMap((g) => g.cards)
+      .flatMap((c) => ("Site" in c.face ? [{ index: c.face.Site.index, site: c.face.Site.site }] : []));
+    expect(faces, "the index must carry all 24 printed sites").toHaveLength(expected.length);
+
+    let compared = 0;
+    for (const { index, site } of faces) {
+      const row = expected.find((e) => e.index === index);
+      expect(row, `no terminal wording for site ${index}`).toBeDefined();
+      site.spaces.forEach((space: SpaceReward, i: number) => {
+        expect(spaceWords(space), `site ${index}, space ${i}`).toBe(row!.spaces[i]);
+        compared += 1;
+      });
+    }
+    // Anti-vacuity: an empty corpus agrees with everything.
+    expect(compared, "every printed space must actually be compared").toBe(96);
+  });
+
+  // The two the old vocabulary got wrong are named, so a future edit that
+  // reverts them fails with the reason rather than with a diff.
+  it("calls a movement icon an assistant move, and a warehouse icon a take", () => {
+    const all = wire.siteSpaceWords.cards.flatMap((c) => c.spaces);
+    expect(all.some((w) => /assistant move/.test(w)), "the corpus must contain one").toBe(true);
+    expect(all.some((w) => /warehouse take/.test(w)), "the corpus must contain one").toBe(true);
+    // `SpaceReward.movement` is the ASSISTANT-move icon (`types/board.rs:109-111`),
+    // so the bare word "movement" on a space reads as President movement.
+    expect(all.some((w) => /\bmovement\b/.test(w))).toBe(false);
+    expect(all.some((w) => /warehouse tokens/.test(w))).toBe(false);
   });
 });

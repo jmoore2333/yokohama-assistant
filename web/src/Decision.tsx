@@ -1,3 +1,4 @@
+import { seatClass } from "./Cards";
 import type {
   ClientState,
   Deciding,
@@ -100,8 +101,15 @@ export function Decision({
   return (
     <div className="decision">
       <div className="chain">
+        {/* The seat's COLOUR, as the terminal prints it (`TURN 1 · BLUE's
+            turn`). A bare seat number is the one thing on this screen a player
+            has to translate, and at 3P or 4P one operator drives several seats.
+            The banner already colours it; the decision zone did not. */}
         <span>
-          Turn {d.turn_number} &middot; seat {d.seat}
+          Turn {d.turn_number} &middot;{" "}
+          <span className={seatClass(colors[d.seat])}>
+            {colors[d.seat] ?? `seat ${d.seat}`}
+          </span>
         </span>
         {chain.map((name, i) => (
           <span key={name + i} className={i === d.current_phase ? "lit" : ""}>
@@ -255,9 +263,15 @@ export function Decision({
 
       {(d.not_offered.length > 0 || d.not_offered_suppressed > 0) && (
         <div className="near-miss">
+          {/* The area's NAME, not only its id. `decision_render.rs:352`
+              resolves `area_name(board, row.area)` and prints the name; this
+              printed `A07` and left the player to find it on the board. The
+              board is already in scope, so it is a lookup rather than a
+              payload change. */}
           {d.not_offered.map((n) => (
             <div key={n.area}>
-              not offered: <b>A{String(n.area).padStart(2, "0")}</b> &mdash;{" "}
+              not offered: <b>A{String(n.area).padStart(2, "0")}</b>{" "}
+              {areaName(state, labels, n.area)} &mdash;{" "}
               {NOT_OFFERED[n.reason] ?? n.reason}
             </div>
           ))}
@@ -269,14 +283,30 @@ export function Decision({
         </div>
       )}
 
+      {/* **Confirm is offered only where the engine will take it.**
+          `repl::step_pick` has arms for `cancel`, a digit, `more` and `list`,
+          and a catch-all at `:2132` answering "! finish or cancel this prompt
+          first" — there is NO `confirm` arm, so the button on a pick could only
+          ever refuse. `step_retreat` gates it too: `confirming` is
+          `collected_len >= areas_len` (`:2334`), so confirming with areas still
+          to answer is refused the same way. Cancel is always live. */}
       {(prompt.kind === "place_a" ||
         prompt.kind === "place_b" ||
         prompt.kind === "pick" ||
         prompt.kind === "retreat") && (
         <div className="controls">
-          <button type="button" className="primary" disabled={busy} onClick={() => onSend("confirm")}>
-            Confirm
-          </button>
+          {(prompt.kind === "place_a" ||
+            prompt.kind === "place_b" ||
+            (prompt.kind === "retreat" && prompt.remaining === 0)) && (
+            <button
+              type="button"
+              className="primary"
+              disabled={busy}
+              onClick={() => onSend("confirm")}
+            >
+              Confirm
+            </button>
+          )}
           <button type="button" className="ghost" disabled={busy} onClick={() => onSend("cancel")}>
             Cancel
           </button>
@@ -334,6 +364,13 @@ export function Decision({
  *     properly means a typed refusal on the wire, not a longer regex. */
 function isRefusal(message: string): boolean {
   return message.trimStart().startsWith("!") || /illegal|refus|cannot|not legal|out of range/i.test(message);
+}
+
+/** An area's printed name, from the board already on the frame. */
+function areaName(state: ClientState, labels: Labels | null, area: number): string {
+  const tile = state.frame.board.tiles.find((t) => t.area === area);
+  if (!tile) return "";
+  return labels?.area_types[tile.area_type] ?? tile.area_type;
 }
 
 function asking(state: ClientState, labels: Labels | null): string {

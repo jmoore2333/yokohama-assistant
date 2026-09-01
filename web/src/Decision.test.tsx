@@ -3,7 +3,7 @@
 // Every state below comes from `src/wire/` — the server emitted it and
 // `wire_fixtures.rs` refuses to let it drift. Nothing here builds a payload.
 
-import { render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { Decision } from "./Decision";
@@ -284,3 +284,73 @@ describe("what the game is asking", () => {
 function escape(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
+
+// ---- M3.5: parity rows, and a button that could only ever refuse ----
+
+describe("what the decision zone names", () => {
+  // The terminal prints `TURN 1 · BLUE's turn`. A bare seat number is the one
+  // thing on this screen a player has to translate, and at 3P or 4P one operator
+  // drives several seats.
+  it("names the seat by colour, not by number", () => {
+    show(wire.options);
+    const chain = document.querySelector(".chain")!.textContent ?? "";
+    expect(chain).toMatch(/Red|Blue|Yellow|Green/);
+    expect(chain, "a bare seat number is what this replaced").not.toMatch(/seat \d/);
+  });
+
+  // `decision_render.rs:352` resolves `area_name(board, row.area)`; the client
+  // printed `A07` and left the player to find it on the board — which is already
+  // on the frame, so this was a lookup rather than a payload change.
+  it("names a not-offered area, not just its id", () => {
+    // **Constructed, and the reason is recorded.** No committed fixture reaches
+    // a near-miss row — verified over all 41 — so a cell that only rendered a
+    // fixture would take an early return and prove nothing, which is the exact
+    // "clause that silently never ran" shape this suite has been burned by
+    // twice. The SHAPE still comes from the wire; one field is set.
+    const withNearMiss = wire.options;
+    const target = withNearMiss.frame.board.tiles.find((t) => t.area_type !== "Canal")!;
+    const state = {
+      ...withNearMiss,
+      frame: {
+        ...withNearMiss.frame,
+        decision: {
+          ...withNearMiss.frame.decision,
+          not_offered: [{ area: target.area, reason: "NoAssistantThere" as const }],
+          not_offered_suppressed: 0,
+        },
+      },
+    };
+    show(state);
+    const row = document.querySelector(".near-miss")!.textContent ?? "";
+    const name = wire.labels.area_types[target.area_type] ?? target.area_type;
+    expect(row, "the near-miss row still prints only an id").toContain(name);
+    // And it keeps the id, which is this project's canonical identification key.
+    expect(row).toContain(`A${String(target.area).padStart(2, "0")}`);
+  });
+});
+
+describe("Confirm is offered only where it is answerable", () => {
+  // `repl::step_pick` has arms for cancel / a digit / more / list and a
+  // catch-all answering "! finish or cancel this prompt first". There is no
+  // `confirm` arm at all, so the button could only ever refuse — and the refusal
+  // would then be announced by the live region added in the same milestone.
+  it("is absent on a pick", () => {
+    show(wire.pick);
+    expect(screen.queryByRole("button", { name: "Confirm" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeInTheDocument();
+  });
+
+  // `step_retreat` gates it: `confirming` is `collected_len >= areas_len`.
+  it("is absent on a retreat with areas still to answer, and present once they are", () => {
+    if (wire.retreat.prompt.kind !== "retreat") throw new Error("fixture moved");
+    expect(wire.retreat.prompt.remaining, "the fixture must have areas left").toBeGreaterThan(0);
+    show(wire.retreat);
+    expect(screen.queryByRole("button", { name: "Confirm" })).toBeNull();
+
+    if (wire.retreatAnswered.prompt.kind !== "retreat") throw new Error("fixture moved");
+    expect(wire.retreatAnswered.prompt.remaining, "the answered fixture must be done").toBe(0);
+    cleanup();
+    show(wire.retreatAnswered);
+    expect(screen.getByRole("button", { name: "Confirm" })).toBeInTheDocument();
+  });
+});

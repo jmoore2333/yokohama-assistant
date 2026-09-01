@@ -48,6 +48,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use serde_json::{json, Value};
 use tower::ServiceExt;
+use yokohama_core::Rules;
 use yokohama_web::{app, AppState};
 
 /// The setup seed every gameplay fixture is dealt from. Fixed, and small on
@@ -721,10 +722,50 @@ async fn corpus() -> Vec<(String, Value)> {
         )
         .expect("a serializable manifest"),
     ));
+    all.push(("site_space_words".to_string(), site_space_words()));
     // Sorted, so the file set is a set and its order is not an accident of the
     // walk. (The names, not the payloads — payload key order is serde's.)
     all.sort_by(|a, b| a.0.cmp(&b.0));
     all
+}
+
+/// **The terminal's own words for every printed building-site space.**
+///
+/// Not a payload any route serves — a CONTRACT, frozen the same way the payloads
+/// are, because the client has to word these itself and had been getting them
+/// wrong.
+///
+/// `Index.tsx` used to build the words from the serde field names
+/// (`${n} ${kind.replace(/_/g, " ")}`), which disagreed with
+/// `card_render::space_reward_words` on **55 of the 96 printed spaces**. Two of
+/// those disagreements state a rule wrongly rather than merely reading oddly:
+/// `movement` is the ASSISTANT-move icon (`types/board.rs:109-111`) and rendered
+/// as "movement", which reads as President movement; and `warehouse_tokens` is a
+/// number of TAKES from the warehouse, not a number of tokens in it.
+///
+/// The client cannot import a Rust function, so the two are held together by
+/// this fixture instead: the terminal emits its words here, and
+/// `Cards.spaceWords` is asserted against them in `Index.test.tsx`. Neither side
+/// can be re-worded while both believe they agree — which is the same shape as
+/// the rest of this file, applied to a string the client has to compute.
+fn site_space_words() -> Value {
+    let rules = Rules::standard();
+    let cards: Vec<Value> = rules
+        .building_sites
+        .iter()
+        .enumerate()
+        .map(|(index, site)| {
+            serde_json::json!({
+                "index": index,
+                "spaces": site
+                    .spaces
+                    .iter()
+                    .map(yokohama_cli::card_render::space_reward_words)
+                    .collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    serde_json::json!({ "cards": cards })
 }
 
 /// **No payload spells the setup seed, except the one whose job is to.**
