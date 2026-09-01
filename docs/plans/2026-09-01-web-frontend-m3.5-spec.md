@@ -59,10 +59,13 @@ building-site cards** — a 2×2 grid of reward spaces over a trading-house band
 carrying a VP star. *"They are what maps to the options for building."*
 
 That is the card the **F5** per-area surface renders, so the request is answered
-in M3.5 and not deferred. **F6's deferral applies only to the per-seat 5-Power
-TOKEN strip**, which is a different object (a 128×128 token face saying what a
-seat gained at 5 Power) and is the half that genuinely needs `state_at`
-machinery. The two rulings are consistent and neither is re-opened.
+in M3.5 and not deferred.
+
+**This section is superseded in part by §1.2 and is kept for the record.** It was
+written believing F6's deferral still applied to a per-seat 5-Power TOKEN strip.
+The owner then corrected the premise: that strip is not wanted at all, and the
+token FACE belongs on the board tile. §1.2 is the ruling; this paragraph is what
+it replaced.
 
 ### 1.2 The owner's clarification on F6 — it SHRANK, and moved forward
 
