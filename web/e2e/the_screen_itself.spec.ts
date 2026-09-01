@@ -579,3 +579,165 @@ test("a four-player table draws four seats and the Canal", async ({ page }) => {
 
   expect(watch.failures).toEqual([]);
 });
+
+// ---- the panel: contained focus, a readable board beside it, a usable nav ----
+
+test("focus cannot leave an open panel", async ({ page }) => {
+  const watch = watchForBreakage(page);
+  await startGame(page, { players: 4 });
+
+  await page.getByRole("button", { name: "Areas", exact: true }).click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+
+  // **Twelve presses, because six was enough to escape the old panel.**
+  // Measured before this: the sixth Tab from the open panel landed on a nav
+  // `button.ghost` labelled "Port offer" with `closest('.surface') === null`,
+  // while the panel asserted `aria-modal="true"`. A claim of containment the DOM
+  // does not have is worse than no claim, because a screen reader believes it.
+  const walk: string[] = [];
+  for (let i = 0; i < 12; i += 1) {
+    await page.keyboard.press("Tab");
+    walk.push(
+      await page.evaluate(() => {
+        const a = document.activeElement;
+        if (!a || a === document.body) return "<body>";
+        const inside = a.closest("dialog.surface") !== null;
+        const name = (a.getAttribute("aria-label") ?? a.textContent ?? "").trim().slice(0, 24);
+        return `${inside ? "in" : "OUT"}:${a.tagName.toLowerCase()}:${name}`;
+      }),
+    );
+  }
+  const escaped = walk.filter((w) => w.startsWith("OUT"));
+  expect(escaped, `focus left the panel: ${walk.join(" → ")}`).toEqual([]);
+
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toBeHidden();
+
+  expect(watch.failures).toEqual([]);
+});
+
+test("every panel fits its drawer, and the board stays readable beside it", async ({ page }) => {
+  const watch = watchForBreakage(page);
+  // 1440 and 900 bracket the 1201 breakpoint from both sides. Below it the panel
+  // is deliberately NOT a drawer: `min(44rem, 55vw)` shrinks faster than the old
+  // modal, and measured, three panels clip inside it at 1024 and 900 while none
+  // clips in the modal. There is also no board to sit beside there — the stage
+  // has already gone to a column.
+  for (const width of [1440, 900]) {
+    await page.setViewportSize({ width, height: 900 });
+    await startGame(page, { players: 4 });
+
+    for (const label of ["Port offer", "Laboratory offer", "Areas", "Log", "Orders", "Goals"]) {
+      if (["Orders", "Goals"].includes(label)) {
+        await page.locator(".cards-menu > summary").click();
+      }
+      await page.getByRole("button", { name: label, exact: true }).click();
+      const read = await page.evaluate(() => {
+        const body = document.querySelector(".surface .surface-body");
+        if (!body) return null;
+        const br = body.getBoundingClientRect();
+        const spills = [...body.querySelectorAll("*")]
+          .filter((e) => {
+            const r = e.getBoundingClientRect();
+            return r.width > 0 && Math.round(r.right) > Math.round(br.right) + 1;
+          })
+          .map((e) => `${e.tagName.toLowerCase()}.${[...e.classList].join(".")}`);
+        return { overflow: body.scrollWidth - body.clientWidth, spills: [...new Set(spills)] };
+      });
+      expect(read, `${label} did not draw a body at ${width}px`).not.toBeNull();
+      // A CONTAINMENT relation, not a width. How wide the drawer is and how many
+      // columns a grid lands on are design choices; "nothing sticks out of it"
+      // has to hold under any of them.
+      expect(
+        read!.overflow,
+        `${label} overflows its panel by ${read!.overflow}px at ${width}px`,
+      ).toBeLessThanOrEqual(0);
+      expect(
+        read!.spills,
+        `${label} has content past the panel's right edge at ${width}px`,
+      ).toEqual([]);
+      await page.keyboard.press("Escape");
+    }
+  }
+
+  expect(watch.failures).toEqual([]);
+});
+
+test("a panel really is modal, and the banner is one row again", async ({ page }) => {
+  const watch = watchForBreakage(page);
+
+  // **This cell had to change its mind, and the reason is worth keeping.**
+  //
+  // It was written to assert what the review promised the nav grouping would
+  // buy: that you can switch from Areas to Site cards without pressing Escape,
+  // because eleven buttons wrapped the banner to a second row that sat under the
+  // open panel. Measured, the grouping DOES fix the geometry — banner 93 → 56 at
+  // 1440, nav bottom edge 43px against the panel's 48px top at 1440, 1280 AND
+  // 1024, where before it was 88/88/125.
+  //
+  // But the accessibility fix landed first and supersedes it: `showModal()` puts
+  // the panel in the top layer with a backdrop over the whole viewport, so
+  // NOTHING outside the dialog is clickable — that is what modal means, and it
+  // is the containment the panel spent three milestones claiming without having.
+  // So the nav is inert while a panel is open by design, not by defect, and the
+  // grouping now earns its place on the banner's height alone.
+  //
+  // Asserting the property that is actually true, rather than quietly deleting
+  // the cell, because "the nav is usable while a panel is open" is exactly the
+  // kind of sentence this lane has shipped four times without checking.
+  for (const width of [1440, 1280, 1024]) {
+    await page.setViewportSize({ width, height: 900 });
+    await startGame(page);
+
+    // One row: the banner does not wrap, at any laptop width.
+    const oneRow = await page.evaluate(() => {
+      const banner = document.querySelector("header.banner")!.getBoundingClientRect();
+      const nav = document.querySelector("nav.views")!.getBoundingClientRect();
+      return { banner: Math.round(banner.height), navBottom: Math.round(nav.bottom) };
+    });
+    expect(
+      oneRow.navBottom,
+      `the banner wrapped at ${width}px (nav bottom ${oneRow.navBottom})`,
+    ).toBeLessThan(60);
+
+    await page.getByRole("button", { name: "Areas", exact: true }).click();
+    await expect(page.getByRole("dialog")).toBeVisible();
+
+    // The background is inert — the modality the panel now actually has.
+    const reachableOutside = await page.evaluate(() => {
+      const nav = document.querySelector("nav.views")!;
+      const b = nav.querySelector<HTMLElement>("button")!;
+      const r = b.getBoundingClientRect();
+      const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+      return b.contains(hit);
+    });
+    expect(reachableOutside, "the panel claims to be modal but the page is still live").toBe(false);
+
+    // And the board is still READABLE behind it, which is why the backdrop is
+    // nearly clear and why the panel is a drawer rather than a full-width sheet.
+    const cover = await page.evaluate(() => {
+      const s = document.querySelector(".surface")!.getBoundingClientRect();
+      const b = document.querySelector(".board")!.getBoundingClientRect();
+      const overlap = Math.max(0, Math.min(b.right, s.right) - Math.max(b.left, s.left));
+      return { covered: Math.round(overlap), board: Math.round(b.width) };
+    });
+    if (width > 1200) {
+      expect(
+        cover.covered / cover.board,
+        `the drawer covers ${cover.covered} of ${cover.board}px of board at ${width}px`,
+      ).toBeLessThan(0.5);
+    }
+
+    // Escape, and the page is live again.
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("dialog")).toBeHidden();
+    const liveAgain = await page.evaluate(() => {
+      const b = document.querySelector<HTMLElement>("nav.views button")!;
+      const r = b.getBoundingClientRect();
+      return b.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2));
+    });
+    expect(liveAgain, "the page did not come back after the panel closed").toBe(true);
+  }
+
+  expect(watch.failures).toEqual([]);
+});

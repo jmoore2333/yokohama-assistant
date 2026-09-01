@@ -79,6 +79,33 @@ export const INDEX_KINDS: Partial<Record<SurfaceName, string>> = {
   sites: "sites",
 };
 
+/** The surfaces that live behind the banner's `Cards` disclosure.
+ *
+ *  **`INDEX_KINDS` alone is the wrong list, and this is the correction.** The
+ *  review proposed deriving the group from it "rather than writing a third
+ *  list", which sounds right and ships a four-item disclosure: `result` is NOT
+ *  an index — it renders through its own `name === "result"` arm — so Final
+ *  score would have stayed inline, which is not what the grouping is for.
+ *  Derived from `INDEX_KINDS` PLUS the one named exception, so a new index still
+ *  joins automatically and the exception is visible rather than implied.
+ *
+ *  The nav is grouped so the banner stays ONE ROW: eleven buttons wrapped it to
+ *  a second row below 1280, and measured, grouping takes it from 93 to 56px at
+ *  1440 and from 174 to 93 at 1024, with the nav's bottom edge at 43px rather
+ *  than 88/88/125.
+ *
+ *  **Not because it lets you switch surfaces with a panel open** — that was the
+ *  review's argument and `showModal()` superseded it, since a modal dialog makes
+ *  the whole page outside it inert on purpose.
+ *
+ *  **900px is NOT fixed and no claim is made about it.** The review's
+ *  "un-buries the nav at 1280, 1201, 1024 and 900" is false at the last one:
+ *  measured, the banner still wraps there and the nav's bottom edge is 88px. */
+export const CARD_SURFACES: SurfaceName[] = [
+  ...(Object.keys(INDEX_KINDS) as SurfaceName[]),
+  "result",
+];
+
 export function Surface({
   name,
   game,
@@ -121,33 +148,100 @@ export function Surface({
 
   const data = loaded?.of === name ? loaded.data : null;
 
-  // Escape closes it, and opening it moves focus into it.
+  // **A real `<dialog>`, opened modally — because the old panel only SAID it
+  // was modal.**
   //
-  // The panel is `position: fixed` over the whole board, so without this a
-  // keyboard user who opens it is left with focus on the nav button behind it
-  // and no way out but Tab — forward through every remaining nav control and,
-  // during a placement prompt, all eighteen board tiles now hidden underneath.
-  const panel = useRef<HTMLDivElement>(null);
+  // It carried `role="dialog" aria-modal="true"` over a `<div>` and moved focus
+  // into itself, and that was all. Measured in real Chromium: six Tab presses
+  // from the open panel land on a nav `button.ghost` outside it, and the
+  // accessibility tree still reports the background controls as
+  // `ignored=false`. An assertion of containment that the DOM does not have is
+  // worse than no assertion, because a screen reader believes it.
+  //
+  // The fix proposed in review was `inert` on `.stage`, and it does not work:
+  // `nav.views` and all three `.decision` blocks are SIBLINGS of `.stage`, not
+  // descendants, so setting it removes the board tiles and the legend and
+  // nothing else — measured, the tab walk then escapes at press 2 instead of
+  // press 6, strictly worse. `showModal()` is what closes both channels at once,
+  // and it is the browser's job rather than this client's: focus is contained,
+  // Escape is handled natively, and the background leaves the accessibility
+  // tree. The backdrop is styled nearly clear (`styles.css`) so the board stays
+  // READABLE beside the panel, which is the whole point of the drawer — it is
+  // not clickable while a panel is open, and that is what "modal" means.
+  const panel = useRef<HTMLDialogElement>(null);
   useEffect(() => {
-    panel.current?.focus();
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+    const el = panel.current;
+    if (!el) return;
+    // `showModal` on an already-open dialog throws, and this effect re-runs
+    // whenever the surface changes.
+    //
+    // The `typeof` guard is for JSDOM, which renders `<dialog>` but implements
+    // neither `showModal` nor the top layer. Stated rather than left implicit,
+    // because it means the component suite CANNOT check the modality — it can
+    // only check that the element is a `<dialog>`, which is what
+    // `Surfaces.test.tsx` asserts. The containment itself is checked in the
+    // browser walk, by tabbing.
+    if (typeof el.showModal === "function") {
+      if (!el.open) el.showModal();
+    } else {
+      // JSDOM. A `<dialog>` without `open` is `display: none`, so without this
+      // every existing component test would query an empty body and fail for a
+      // reason that has nothing to do with what it is testing. This is a
+      // non-modal open: the content renders, and the modality is exactly the
+      // part the component suite was never able to check anyway.
+      el.open = true;
+    }
+    el.focus();
+  }, [name]);
+
+  // **The dependency is `[name]`, and neither `[onClose]` nor `[]` is right.**
+  //
+  // `[onClose]` was the bug: `App` passes a fresh arrow on every render, so any
+  // state change re-ran the effect and dragged focus back into the panel
+  // mid-interaction — reproduced by blurring to `<body>` and firing a
+  // programmatic click that moves no focus of its own.
+  //
+  // `[]` is the tempting correction and is also wrong: `<Surface>` is NOT
+  // remounted when you switch panels — same component, new `name` — so the
+  // effect would never re-run and switching from Areas to Log would leave a
+  // keyboard user behind on the nav button. `[name]` is the one that is true of
+  // both cases, and `Surfaces.test.tsx` holds each half.
+  useEffect(() => {
+    const el = panel.current;
+    if (!el) return;
+    // **Escape is caught on the ELEMENT, and the native close is suppressed.**
+    //
+    // A `<dialog>` closes itself on Escape and raises `cancel`, which would take
+    // the panel off screen while `App` still believed a surface was open — the
+    // nav button would stay lit and the next press would do nothing. Preventing
+    // the default on the keydown stops that AND stops `cancel` from firing, so
+    // exactly one path runs and React stays the owner of the open state.
+    //
+    // The listener is on the dialog rather than on `window` because focus is
+    // inside it (that is what `showModal` guarantees), and a window listener
+    // would also fire for a second surface's keystrokes. `cancel` is still
+    // handled for the routes that do not pass through a keydown at all.
+    const close = (e: Event) => {
+      e.preventDefault();
+      onClose();
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") close(e);
+    };
+    el.addEventListener("keydown", onKey);
+    el.addEventListener("cancel", close);
+    return () => {
+      el.removeEventListener("keydown", onKey);
+      el.removeEventListener("cancel", close);
+    };
   }, [onClose]);
 
   const meta = SURFACES.find((s) => s.key === name);
   return (
-    <div
-      className="surface"
-      role="dialog"
-      aria-modal="true"
-      aria-label={meta?.label}
-      ref={panel}
-      tabIndex={-1}
-    >
-      <header>
+    <dialog className="surface" aria-label={meta?.label} ref={panel} tabIndex={-1}>
+      {/* Not a landmark: a bare <header> here is a second `banner` for the
+          page, and a screen reader that offers two is offering a wrong one. */}
+      <header role="presentation">
         <h2>{meta?.label}</h2>
         <span className="meta">{meta?.blurb}</span>
         <button type="button" className="ghost" onClick={onClose}>
@@ -183,7 +277,7 @@ export function Surface({
           <OutcomeView outcome={data as Outcome} colors={colors} />
         )}
       </div>
-    </div>
+    </dialog>
   );
 }
 

@@ -6,12 +6,20 @@
  * reachable, chrome, dim, warn. Colour is never decorative here; every hue
  * means one thing, which is what lets a player read the board at a glance.
  *
- * The card art is the only imagery. It sits UNDER the numbers rather than
- * beside them: a tile at 15rem cannot render a printed power ladder legibly, so
- * the art carries identity and mood and the overlay carries every fact a
- * decision is made on. That is also why the art is dimmed — a background that
- * competes with the text it is behind is a background that has to be read
- * around.
+ * The card art is the only imagery, and since M3.5 it sits BESIDE the numbers
+ * rather than under them.
+ *
+ * This comment used to say the opposite, and the sentence it argued from was
+ * measured false: "a tile at 15rem cannot render a printed power ladder
+ * legibly". At a 10rem tile — two sizes SMALLER — a printed rung numeral renders
+ * 7.90px of cap height, which is 0.34px TALLER than the site-strip digits this
+ * same design already draws on the same tile and treats as readable. So the veil
+ * it justified was buying nothing and costing the one surface that carries what
+ * an Area Action pays at each power: measured mean transmittance over the
+ * printed ladder, 0.100.
+ *
+ * Recorded rather than quietly deleted, because a stylesheet that explains a
+ * rule with a false premise is how the rule survives three milestones.
  */
 
 :root {
@@ -25,7 +33,13 @@
 
   --fg: #e8ecf2;
   --fg-dim: #8b97a6;
-  --fg-faint: #5c6773;
+  /* Raised from #5c6773 at M3.5. That value measured 3.31 / 3.09 / 3.42 : 1
+   * against the three grounds — below WCAG AA's 4.5:1 for body text — and it is
+   * the colour of `.tile-id`, which carries the area id, this project's
+   * canonical identification key, and of all four rail headings. #7b8795 clears
+   * AA on every ground (4.87:1 at worst) and stays clearly dimmer than
+   * `--fg-dim` at 6.01:1, so the three-step hierarchy is intact. */
+  --fg-faint: #7b8795;
 
   --red: #ff5f56;
   --blue: #6f9bff;
@@ -403,6 +417,17 @@ button.tile:focus-visible { outline: 2px solid var(--vp); outline-offset: 1px; }
   padding: 0.9rem 1.25rem 1.4rem;
   display: flex; flex-direction: column; min-height: 0;
 }
+/* **Mounted always, costing nothing while empty.**
+ *
+ * The warnings and error blocks are live regions now, and a live region has to
+ * be in the accessibility tree BEFORE its text arrives or the change has
+ * nothing to announce against. So they are never unmounted and never
+ * `display: none` — which would take them out of the tree and put the problem
+ * back — they simply have no border, no padding and therefore no height until
+ * they hold something. */
+.decision.notices { padding: 0; border-top: 0; }
+.decision.notices:not(:empty) { padding: 0.9rem 1.25rem; border-top: 1px solid var(--line); }
+.messages:empty { display: none; }
 .chain { display: flex; flex-wrap: wrap; gap: 0.45rem; font-size: 10px; color: var(--fg-faint); letter-spacing: 0.08em; text-transform: uppercase; }
 .chain .lit { color: var(--fg); background: var(--line); padding: 0 0.35rem; border-radius: 3px; }
 .asking { font-family: var(--display); font-size: 1.05rem; margin: 0.5rem 0 0.6rem; }
@@ -471,12 +496,61 @@ button.ghost.danger:hover { color: var(--warn); border-color: var(--warn); }
 .messages div.warn, .warn { color: var(--warn); }
 
 /* ---- the read-only surfaces -------------------------------------------- */
+/* **A right-hand drawer above 1201px, the full-width panel below it.**
+ *
+ * The panel used to measure 1376×804 at 1440×900 and cover 980 of the board's
+ * 992px — 98.8% of the thing it was explaining. You could not read what an area
+ * pays at power 4 while looking at the area. As a 704px drawer it covers 308px
+ * and the board stays readable beside it; measured across all eleven surfaces at
+ * 1440 and 1280, every one of them contains cleanly.
+ *
+ * **The breakpoint is not decoration.** `min(44rem, 55vw)` shrinks FASTER than
+ * the old modal did, so below 1201 the drawer is a regression the modal never
+ * had: measured, `suggest` and `why` clip a `bar-name > code` by 6px at 1024 and
+ * 900, and `table.outcome` escapes its body by 19px at 900 (min-content 496.5
+ * against a 461px content box). Under 1201 the board is stacked above the rail
+ * anyway and there is no board to sit beside, so the drawer buys nothing there
+ * and costs three panels. Full width below, drawer above.
+ *
+ * `<dialog>` renders in the TOP LAYER, so `z-index` is meaningless here and the
+ * `.deck`'s own `z-index: 10` cannot fight it — which is why the deck takes a
+ * matching right inset while a surface is open rather than a stacking rule. */
 .surface {
-  position: fixed; inset: 3rem 2rem; z-index: 20;
+  position: fixed; inset: 3rem 2rem;
+  /* `width`/`height: auto` are NOT redundant with the insets: a `<dialog>` gets
+   * `width: fit-content; height: fit-content` from the UA stylesheet, and
+   * `fit-content` beats a top/bottom pair. Measured without this at 1280x720:
+   * the panel computed to 855px tall and ran to y=903 — 183px BELOW the fold —
+   * so its body never scrolled and the `why` panel's "Show all 185 candidates"
+   * button was unreachable. It failed as "element is outside of the viewport",
+   * which names the symptom and not the cause. */
+  width: auto; height: auto;
+  margin: 0; padding: 0; max-width: none; max-height: none;
   background: var(--bg-raised); border: 1px solid var(--line-bright);
+  color: var(--fg);
   border-radius: 6px; box-shadow: 0 24px 64px rgb(0 0 0 / 0.6);
   display: flex; flex-direction: column; overflow: hidden;
 }
+/* Not open means not shown — a `<dialog>` is `display: none` until it is, and
+ * the flex above would otherwise override that. */
+.surface:not([open]) { display: none; }
+
+/* Nearly clear on purpose. `showModal` makes the background inert, which is
+ * correct — these are read-only reference surfaces and nothing behind them is
+ * answerable — but the board must stay LEGIBLE beside the drawer, which is the
+ * entire reason for making it a drawer. A conventional dim would undo that. */
+.surface::backdrop { background: rgb(4 6 9 / 0.35); }
+
+@media (min-width: 1201px) {
+  .surface { inset: 3rem 2rem 3rem auto; width: min(44rem, 55vw); }
+  /* Keep the answer bar clear of the drawer. Measured without this: the longest
+   * option label in the corpus ends 4px short of the drawer's edge at 1440 and
+   * runs 156px underneath it at 1280. */
+  .app:has(.surface[open]) .deck { padding-right: min(44rem, 55vw); }
+}
+/* `role="presentation"` on the panel's header in `Surfaces.tsx`: a bare
+ * `<header>` inside a dialog is a SECOND `banner` landmark, and a screen reader
+ * offering two "banner" destinations on one page is offering a wrong one. */
 .surface header {
   display: flex; align-items: baseline; gap: 1rem;
   padding: 0.7rem 1rem; border-bottom: 1px solid var(--line); background: var(--bg-sunken);
@@ -484,7 +558,19 @@ button.ghost.danger:hover { color: var(--warn); border-color: var(--warn); }
 .surface header h2 { font-size: 1rem; }
 .surface header .meta { color: var(--fg-faint); font-size: 11px; }
 .surface header button { margin-left: auto; }
-.surface-body { padding: 1rem; overflow: auto; }
+/* `min-height: 0` is what makes this actually SCROLL rather than be clipped.
+ *
+ * A flex child's default `min-height: auto` refuses to shrink below its content,
+ * so the body grew to its full height and `.surface`'s `overflow: hidden` cut it
+ * off — no scrollbar, no way to reach the bottom. It was latent for two
+ * milestones because a 1376px-wide panel wrapped its content short enough to
+ * fit; the 704px drawer is what surfaced it, on the `why` panel's 185 ranked
+ * candidates. */
+.surface-body {
+  padding: 1rem;
+  overflow: auto; min-height: 0; flex: 1 1 auto;
+  scrollbar-width: thin; scrollbar-color: var(--line-bright) transparent;
+}
 .surface-body h3 { font-size: 0.95rem; margin: 0.9rem 0 0.4rem; }
 .surface-body .lede { color: var(--fg-dim); margin-top: 0; }
 .slot-cell { display: flex; flex-direction: column; gap: 0.25rem; }
@@ -711,3 +797,27 @@ table.outcome tr.won td:first-child::after { content: " ★"; color: var(--vp); 
  * running across the art of the next. Measured in a browser at 1440px before
  * this rule existed. Inside `.index-cards` the cell is the authority. */
 .index-cards .card-face { width: 100%; }
+
+/* ---- the banner's card disclosure (M3.5 W7) ---------------------------- */
+/* Five card-reference surfaces behind one control, so the banner stays on one
+ * row at every laptop width. The panel is `position: fixed` with its top at
+ * 3rem, and a wrapped banner's second row reaches 88px at 1280 and 125px at
+ * 1024 — i.e. underneath it — so before this you had to close a panel to switch
+ * to another one. */
+.cards-menu { position: relative; }
+.cards-menu > summary {
+  list-style: none; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 0.3rem;
+}
+.cards-menu > summary::-webkit-details-marker { display: none; }
+.cards-menu > summary::after { content: "▾"; font-size: 9px; opacity: 0.7; }
+.cards-menu[open] > summary { color: var(--fg); border-color: var(--vp); }
+.cards-menu > div {
+  position: absolute; top: calc(100% + 0.35rem); right: 0; z-index: 30;
+  display: flex; flex-direction: column; gap: 0.25rem;
+  padding: 0.35rem;
+  background: var(--bg-raised);
+  border: 1px solid var(--line-bright); border-radius: var(--radius);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.5);
+}
+.cards-menu > div button { text-align: left; white-space: nowrap; }

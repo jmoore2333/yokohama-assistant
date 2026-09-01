@@ -4,7 +4,7 @@ import { Board } from "./Board";
 import { Dashboard } from "./Dashboard";
 import { Decision } from "./Decision";
 import { NewGame } from "./NewGame";
-import { Surface, SURFACES, type SurfaceName } from "./Surfaces";
+import { CARD_SURFACES, Surface, SURFACES, type SurfaceName } from "./Surfaces";
 import type { ArtManifest, ClientState, Labels, PlayerColor } from "./types";
 
 export function App() {
@@ -76,8 +76,26 @@ export function App() {
           {state.mode} &middot; {state.id}
           {state.frame.title.autosaved ? " · saved" : ""}
         </span>
+        {/* Four surfaces inline, the five card references behind a disclosure,
+            so the banner stays ONE ROW at every laptop width: measured 93 → 56px
+            at 1440 and 174 → 93 at 1024, with the nav's bottom edge at 43px
+            instead of 88/88/125 at 1440/1280/1024.
+
+            **The benefit is the banner's height, and not what the review said
+            it was.** Its argument was that the wrapped second row sat under an
+            open panel, so you could not switch surfaces without pressing Escape
+            first. That is true of the old panel and no longer reachable: the
+            panel is a real `<dialog>` opened with `showModal()` now, so the
+            whole page outside it is inert while it is open — which is what
+            modality means, and is the containment the panel spent three
+            milestones asserting without having. Escape then switch, by design.
+            Written down because the tempting sentence is the review's, and it
+            stopped being true one commit earlier.
+
+            The `<details>` pattern is the one `Board.tsx`'s legend already uses,
+            rather than a second disclosure idiom. */}
         <nav className="views">
-          {SURFACES.map((s) => (
+          {SURFACES.filter((s) => !CARD_SURFACES.includes(s.key)).map((s) => (
             <button
               type="button"
               key={s.key}
@@ -87,6 +105,21 @@ export function App() {
               {s.label}
             </button>
           ))}
+          <details className="cards-menu" open={CARD_SURFACES.includes(surface as SurfaceName)}>
+            <summary className="ghost">Cards</summary>
+            <div>
+              {SURFACES.filter((s) => CARD_SURFACES.includes(s.key)).map((s) => (
+                <button
+                  type="button"
+                  key={s.key}
+                  className={`ghost ${surface === s.key ? "on" : ""}`}
+                  onClick={() => setSurface(surface === s.key ? null : s.key)}
+                >
+                  {s.label}
+                </button>
+              ))}
+            </div>
+          </details>
         </nav>
         {/* The payload is built for the seat to move, so the banner names WHO
             is playing rather than saying "your turn" — at 3P or 4P one operator
@@ -108,12 +141,28 @@ export function App() {
       </header>
 
       {/* How close the game is to ending, in the CLI's own words. Without it a
-          player cannot see the game ending, which is not a polish issue. */}
-      <div className={`end-strip ${state.end_game_triggered ? "final" : ""}`}>
+          player cannot see the game ending, which is not a polish issue.
+
+          `role="status"` here and on the three blocks in the deck below. The
+          page had ZERO live regions before this — `grep -rn 'aria-live|role=
+          "alert"|role="status"' web/src` returned nothing — so every applied-move
+          delta, every engine refusal and the game beginning to end were
+          announced to no assistive technology at all.
+
+          And the containers are mounted whether or not they have anything in
+          them, which is the half that is easy to get wrong: a live region
+          inserted into the DOM at the same instant as its text is unreliably
+          announced, because there was no region to observe when the text
+          arrived. They collapse to zero height while empty (`styles.css`)
+          rather than being removed. */}
+      <div
+        className={`end-strip ${state.end_game_triggered ? "final" : ""}`}
+        role="status"
+      >
         {state.end_triggers}
       </div>
 
-      <div className="stage">
+      <main className="stage">
         <div className="board-col">
           <Board
             board={state.frame.board}
@@ -130,7 +179,7 @@ export function App() {
         <aside className="rail">
           <Dashboard panels={state.frame.dashboard} art={art} labels={labels} colors={colors} />
         </aside>
-      </div>
+      </main>
 
       {surface && (
         <Surface
@@ -159,15 +208,13 @@ export function App() {
           no visible reason the click did nothing. One container, and neither
           failure is reachable. */}
       <div className="deck">
-        {state.warnings.length > 0 && (
-          <div className="decision">
-            {state.warnings.map((w, i) => (
-              <div className="warn" key={i}>
-                {w}
-              </div>
-            ))}
-          </div>
-        )}
+        <div className="decision notices" role="status">
+          {state.warnings.map((w, i) => (
+            <div className="warn" key={i}>
+              {w}
+            </div>
+          ))}
+        </div>
         <Decision
           state={state}
           labels={labels}
@@ -175,11 +222,12 @@ export function App() {
           busy={busy}
           onSend={(l) => void send(l)}
         />
-        {error && (
-          <div className="decision">
-            <div className="error">{error}</div>
-          </div>
-        )}
+        {/* `role="alert"` and not `status`: this is the one channel that is
+            always a REFUSAL of something the player just did, and it is
+            assertive for the same reason the terminal prints it immediately. */}
+        <div className="decision notices" role="alert">
+          {error && <div className="error">{error}</div>}
+        </div>
       </div>
     </div>
   );

@@ -161,3 +161,87 @@ describe("what each surface says", () => {
     expect(screen.getAllByText("never an action area")).toHaveLength(actionless.length);
   });
 });
+
+// ---- M3.5: the panel is a real dialog, and it stops stealing focus ----
+//
+// The panel has asserted `aria-modal="true"` since M2 without ever being modal.
+// Measured in real Chromium: six Tab presses from the open panel land on a nav
+// `button.ghost` outside it, and Chrome's accessibility tree still reports the
+// background controls as `ignored=false`.
+//
+// The fix the prep document proposed for this — `inert` on `.stage` — was
+// measured NOT to work, and it is worth writing down why, because the sentence
+// reads plausibly: `nav.views` and all three `.decision` blocks are SIBLINGS of
+// `.stage`, not descendants. Setting it removes the board tiles and the legend
+// and nothing else, and the tab walk then escapes at press 2 instead of press 6
+// — strictly worse. `<dialog>` + `showModal()` was the option measured to close
+// both channels at once: the tab order is contained AND the background leaves
+// the accessibility tree, which no hand-rolled attribute can do.
+
+describe("the surface is a real dialog", () => {
+  it("is a <dialog>, so the browser owns the modality it claims", () => {
+    const { view } = show("areas");
+    const panel = view.container.querySelector(".surface");
+    expect(panel, "the panel must render").not.toBeNull();
+    // jsdom implements `showModal` but not focus containment, so this asserts
+    // the ELEMENT — which is what makes the containment the browser's job
+    // rather than an attribute this client asserts about itself. The tab order
+    // itself is asserted in the browser walk, where it means something.
+    expect(panel!.tagName, "a div cannot be modal, whatever it says it is").toBe("DIALOG");
+  });
+
+  // **The focus yank, and why the obvious fix is the wrong one.**
+  //
+  // `App.tsx` passed `onClose={() => setSurface(null)}` — a fresh identity on
+  // every render — into an effect whose dependency list was `[onClose]` and
+  // whose body focused the panel. Any state change in `App` therefore re-ran it
+  // and dragged focus back to the panel mid-interaction; measured by blurring to
+  // `<body>` and firing a programmatic click that moves no focus of its own.
+  //
+  // The tempting fix is `[]`. That is WRONG here and this cell is what says so:
+  // `<Surface>` is not remounted when you switch panels — same component, new
+  // `name` — so with `[]` the effect never re-runs and switching from Areas to
+  // Log leaves focus behind on the nav button. The dependency is `[name]`.
+  it("takes focus when the surface CHANGES, not on every parent render", async () => {
+    stubApi((call) => {
+      if (call.path.endsWith("/areas")) return wire.areas;
+      if (call.path.endsWith("/log")) return wire.log;
+      throw new Error(`unexpected ${call.path}`);
+    });
+
+    // A fresh `onClose` identity on every render, exactly as `App` supplies it.
+    const rerenderWith = (name: "areas" | "log") => (
+      <Surface
+        name={name}
+        game="wire"
+        art={wire.artManifest}
+        labels={wire.labels}
+        colors={COLORS}
+        onClose={() => undefined}
+      />
+    );
+
+    const view = render(rerenderWith("areas"));
+    const panel = view.container.querySelector<HTMLElement>(".surface")!;
+    await waitFor(() => expect(document.activeElement).toBe(panel));
+
+    // Move focus off the panel, then re-render with the SAME surface and a new
+    // `onClose` identity — the parent-render case. Focus must stay put.
+    (document.activeElement as HTMLElement).blur();
+    view.rerender(rerenderWith("areas"));
+    expect(
+      document.activeElement,
+      "a parent render dragged focus back into the panel",
+    ).not.toBe(panel);
+
+    // Now change the surface. Focus must follow, or a keyboard user who
+    // switches panels is left behind on the nav.
+    view.rerender(rerenderWith("log"));
+    await waitFor(() =>
+      expect(
+        view.container.querySelector<HTMLElement>(".surface"),
+        "switching surfaces left focus outside the panel",
+      ).toBe(document.activeElement),
+    );
+  });
+});
