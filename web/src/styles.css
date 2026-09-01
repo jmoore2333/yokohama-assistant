@@ -332,7 +332,24 @@ button.tile:focus-visible { outline: 2px solid var(--vp); outline-offset: 1px; }
   border-radius: 2px; display: block; background: #000;
 }
 .panel .card-face.achievement { width: 100%; flex-direction: row; align-items: flex-start; gap: 0.5rem; }
-.panel .card-face.achievement img { width: 5.2rem; flex: 0 0 5.2rem; }
+/* 5.2rem → 3.4rem. Measured page-height saving: −130px at 2P, −100 at 3P, −50
+ * at 4P. The rail is the term that sets the page height (`.stage` is
+ * `max(board, rail)` and the rail runs 2.1–2.5× the board), so this is the only
+ * cheap lever on it — and with the deck pinned it is tidiness rather than
+ * budget.
+ *
+ * **The other half of this item was NOT shipped, because it measures zero.** The
+ * review proposed also dropping `flex-direction: column` from
+ * `.panel .card-strip` "so two hand cards sit per row": split-tested, that buys
+ * 0px at every player count. The achievement strip's children are `width: 100%`
+ * so a row-wrapping strip still puts one per line, and the hand holds one card
+ * at turn 1. The whole delta is this rule. A rule that does nothing is worse
+ * than no rule, because the next reader assumes it does something.
+ *
+ * There is also a FLOOR the review does not name: at 3P and 4P the strip is
+ * already caption-bound at 3.4rem (caption 92/109px against 82px of art), so
+ * shrinking further recovers nothing. */
+.panel .card-face.achievement img { width: 3.4rem; flex: 0 0 3.4rem; }
 .panel .card-face.achievement .card-blank { width: 5.2rem; flex: 0 0 5.2rem; }
 .panel .card-face.achievement figcaption { flex: 1 1 auto; min-width: 0; }
 .panel .card-strip { flex-direction: column; }
@@ -874,4 +891,13 @@ table.track-table .occ.dummy { color: var(--fg-faint); font-weight: 400; font-st
 }
 .site-space .built-mark, .site-trading-house .built-mark {
   font-size: 1.4rem; color: currentColor; text-shadow: 0 1px 3px #000;
+}
+
+/* A panel shape this client does not know. Rendered as its own JSON rather than
+ * silently dropped — see `Dashboard.tsx`'s comment. */
+pre.raw-panel {
+  margin: 0; padding: 0.5rem; overflow-x: auto;
+  background: var(--bg-sunken); border: 1px solid var(--line); border-radius: var(--radius);
+  font-size: 10.5px; color: var(--fg-dim);
+  scrollbar-width: thin; scrollbar-color: var(--line-bright) transparent;
 }

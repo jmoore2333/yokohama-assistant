@@ -23,13 +23,38 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await res.text();
-  const parsed: unknown = text ? JSON.parse(text) : null;
+
+  // **The status is read BEFORE the body is parsed, and the parse cannot throw
+  // over it.** This used to be an unguarded `JSON.parse` above the `res.ok`
+  // check, so any non-JSON response became a `SyntaxError` and the status code —
+  // the one actionable fact — was discarded. The documented deployment is behind
+  // Cloudflare Access, where an expired session answers with an HTML
+  // interstitial: the player saw "Unexpected token '<'" and nothing about being
+  // logged out. A 502 from a proxy has the same shape.
+  let parsed: unknown = null;
+  let parseFailed = false;
+  if (text) {
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      parseFailed = true;
+    }
+  }
+
   if (!res.ok) {
     const message =
-      parsed && typeof parsed === "object" && "error" in parsed
+      !parseFailed && parsed && typeof parsed === "object" && "error" in parsed
         ? String((parsed as { error: unknown }).error)
         : `${res.status} ${res.statusText}`;
     throw new ApiError(message);
+  }
+  if (parseFailed) {
+    // A 2xx that is not JSON is this API answering with something it does not
+    // serve — an interstitial, a proxy page. Say that, rather than a parser's
+    // complaint about the first character of it.
+    throw new ApiError(
+      `${res.status} ${res.statusText}: the server answered with something that is not JSON`,
+    );
   }
   return parsed as T;
 }

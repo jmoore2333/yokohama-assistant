@@ -1,6 +1,8 @@
 import { seatClass } from "./Cards";
+import { OutcomeView } from "./Index";
 import type {
   ClientState,
+  Outcome,
   Deciding,
   FeeModel,
   Labels,
@@ -86,12 +88,15 @@ export function Decision({
   labels,
   colors,
   busy,
+  outcome,
   onSend,
 }: {
   state: ClientState;
   labels: Labels | null;
   colors: PlayerColor[];
   busy: boolean;
+  /** The ranked breakdown from `/result`, once the game is over. */
+  outcome?: Outcome | null;
   onSend: (line: string) => void;
 }) {
   const d = state.frame.decision;
@@ -249,17 +254,39 @@ export function Decision({
         </div>
       )}
 
-      {prompt.kind === "game_over" && state.scores && (
-        <div className="options">
-          {state.scores.map((s) => (
-            <div className="option" key={s.seat}>
-              <span className="num">{s.seat}</span>
-              <span>seat {s.seat}</span>
-              <span className="more">{s.total} VP</span>
+      {/* **The finished game, ranked, with the categories the engine scored.**
+          It printed `seat 0` and `46 VP` and nothing else — no colour, no winner
+          mark, no breakdown — while the terminal prints `WINNER: <colour>` and a
+          per-seat line of base + church + customs + tech + country + remainder.
+          `state.scores` cannot supply that: it is `{seat, total}[]` in SEAT
+          order with no rank and no `won`, so a winner mark taken from it would
+          have to be inferred from the margin, and a margin of 0 is not a win —
+          two seats can tie on points and be split by the engine's tie-break.
+          `App` fetches `/result`, which carries `Placing.won` and the
+          breakdown, and this renders it through the SAME `OutcomeView` the
+          Final score surface uses rather than a second table that could
+          disagree with it. Until it arrives the compact standing still shows,
+          so the block is never empty. */}
+      {prompt.kind === "game_over" &&
+        (outcome ? (
+          <OutcomeView outcome={outcome} colors={colors} />
+        ) : (
+          state.scores && (
+            <div className="options">
+              {[...state.scores]
+                .sort((a, b) => b.total - a.total)
+                .map((s) => (
+                  <div className="option" key={s.seat}>
+                    <span className="num">{s.seat}</span>
+                    <span className={seatClass(colors[s.seat])}>
+                      {colors[s.seat] ?? `seat ${s.seat}`}
+                    </span>
+                    <span className="more">{s.total} VP</span>
+                  </div>
+                ))}
             </div>
-          ))}
-        </div>
-      )}
+          )
+        ))}
 
       {(d.not_offered.length > 0 || d.not_offered_suppressed > 0) && (
         <div className="near-miss">

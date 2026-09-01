@@ -5,7 +5,7 @@ import { Dashboard } from "./Dashboard";
 import { Decision } from "./Decision";
 import { NewGame } from "./NewGame";
 import { CARD_SURFACES, Surface, SURFACES, type SurfaceName } from "./Surfaces";
-import type { ArtManifest, ClientState, Labels, PlayerColor } from "./types";
+import type { ArtManifest, ClientState, Labels, Outcome, PlayerColor } from "./types";
 
 export function App() {
   const [labels, setLabels] = useState<Labels | null>(null);
@@ -14,6 +14,7 @@ export function App() {
   const [surface, setSurface] = useState<SurfaceName | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [outcome, setOutcome] = useState<Outcome | null>(null);
   // The guard against a SECOND request going out while the first is in flight.
   //
   // A ref and not the `busy` state, because state is what makes the bug: React
@@ -25,6 +26,28 @@ export function App() {
   // Confirm then advanced the turn having placed nothing. `busy` still drives
   // the disabled styling; this decides whether the request happens at all.
   const inFlight = useRef(false);
+
+  // **The final standing comes from `/result`, because `scores` cannot carry
+  // it.** `ClientState.scores` is `{seat, total}[]` in SEAT order with no rank
+  // and no `won`, so from it alone the inline block could print a colour and a
+  // sorted list and would have to INFER a winner from the margin — which is the
+  // exact inference `Index.test.tsx` exists to forbid, since two seats can tie
+  // on points and be separated by the engine's own tie-break. `/result` carries
+  // `Placing.won` and the per-category breakdown the terminal prints.
+  useEffect(() => {
+    if (!state?.over) {
+      setOutcome(null);
+      return;
+    }
+    let live = true;
+    api
+      .result(state.id)
+      .then((o) => live && setOutcome(o))
+      .catch(() => live && setOutcome(null));
+    return () => {
+      live = false;
+    };
+  }, [state?.over, state?.id]);
 
   useEffect(() => {
     api.labels().then(setLabels).catch(() => setLabels(null));
@@ -44,6 +67,28 @@ export function App() {
         setState(await api.input(state.id, line, state.prompt.kind));
       } catch (e) {
         setError(e instanceof ApiError ? e.message : String(e));
+        // **Re-read the game, because the server just told us to and this
+        // client had no way to.**
+        //
+        // `api.get` had exactly one call site — the setup screen — so once a
+        // game was running there was no re-read path at all. The catch branch
+        // never called `setState`, so `prompt.kind` stayed stale and every
+        // subsequent click re-sent the same `expect` for the same 409, while
+        // the server's own message read "Re-read the game and answer what it
+        // asks." The only escape was a page reload back into setup.
+        //
+        // M3.5 makes that worse rather than neutral: with the answer bar pinned,
+        // the player now stares at a permanently visible row of buttons every
+        // one of which refuses. So the refusal is shown AND the truth is
+        // fetched — the message stays on screen beside a screen that now agrees
+        // with the server.
+        try {
+          setState(await api.get(state.id));
+        } catch {
+          // The re-read failed too. Keep the original refusal on screen: it is
+          // the more useful of the two, and a second error would replace the
+          // sentence that explains what happened with one about this recovery.
+        }
       } finally {
         inFlight.current = false;
         setBusy(false);
@@ -225,6 +270,7 @@ export function App() {
           labels={labels}
           colors={colors}
           busy={busy}
+          outcome={outcome}
           onSend={(l) => void send(l)}
         />
         {/* `role="alert"` and not `status`: this is the one channel that is

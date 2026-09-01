@@ -299,3 +299,83 @@ describe("the decision deck", () => {
     ).toBeGreaterThan(5);
   });
 });
+
+// ---- M3.5: the dead ends this milestone would otherwise have made worse ----
+
+describe("a refused move", () => {
+  // **The 409 dead end.** `api.get` had exactly one call site — the setup
+  // screen — so once a game was running there was no re-read path at all. The
+  // catch branch never called `setState`, so `prompt.kind` stayed stale and
+  // every subsequent click re-sent the same `expect` for the same 409, while the
+  // server's own message read "Re-read the game and answer what it asks." The
+  // only escape was a page reload back into setup.
+  //
+  // M3.5 makes it worse rather than neutral: with the answer bar pinned, the
+  // player stares at a permanently visible row of buttons every one of which
+  // refuses.
+  it("re-reads the game, and keeps the refusal on screen", async () => {
+    const stub = await renderApp(wire.optionsMany, (call) =>
+      call.path.endsWith("/input")
+        ? { status: 409, body: { error: "Re-read the game and answer what it asks." } }
+        : undefined,
+    );
+
+    const state = wire.optionsMany;
+    if (state.prompt.kind !== "options") throw new Error("fixture moved");
+
+    // **Counted as a DELTA, because the setup screen already did one.**
+    // `renderApp` loads the game through `GET /api/games/{id}` to get onto the
+    // board at all, so an absolute count is >= 1 before anything is clicked —
+    // and the first version of this cell asserted exactly that and passed with
+    // the whole re-read deleted. Measured, not assumed.
+    const before = stub.matching("GET", `/api/games/${state.id}`).length;
+    expect(before, "the setup load is what makes an absolute count vacuous").toBeGreaterThan(0);
+
+    await userEvent.setup().click(
+      screen.getByRole("button", {
+        name: new RegExp(
+          state.prompt.rows[0]!.words.slice(0, 20).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+        ),
+      }),
+    );
+
+    // The refusal is shown — it is the sentence that explains what happened.
+    await waitFor(() => expect(screen.getByText(/Re-read the game/)).toBeInTheDocument());
+    // AND the truth was fetched, so the screen now agrees with the server.
+    await waitFor(() =>
+      expect(
+        stub.matching("GET", `/api/games/${state.id}`).length,
+        "the client never re-read the game the server told it to re-read",
+      ).toBeGreaterThan(before),
+    );
+  });
+});
+
+describe("the finished game", () => {
+  // `state.scores` is `{seat, total}[]` in SEAT order with no rank and no `won`,
+  // so the inline block could only print a colour and a sorted list — a winner
+  // mark taken from it would have to be inferred from the margin, and a margin
+  // of 0 is not a win. `/result` carries `Placing.won` and the breakdown.
+  it("fetches the ranked breakdown and draws the winner", async () => {
+    const stub = await renderApp(wire.gameOver, (call) =>
+      call.path.endsWith("/result") ? wire.result : undefined,
+    );
+    await waitFor(() =>
+      expect(stub.matching("GET", "/result").length, "the result was never asked for").toBe(1),
+    );
+    // The same `OutcomeView` the Final score surface draws — never a second
+    // table that could disagree with it.
+    await waitFor(() =>
+      expect(document.querySelector("table.outcome tr.won")).not.toBeNull(),
+    );
+  });
+
+  it("still shows a standing before /result answers, so the block is never empty", async () => {
+    await renderApp(wire.gameOver, (call) =>
+      call.path.endsWith("/result") ? { status: 409, body: { error: "still running" } } : undefined,
+    );
+    await waitFor(() =>
+      expect(document.querySelectorAll(".decision .option").length).toBeGreaterThan(0),
+    );
+  });
+});

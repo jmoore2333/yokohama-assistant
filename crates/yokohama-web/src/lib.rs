@@ -427,6 +427,17 @@ async fn input(
     let messages: Vec<String> =
         body.lines().map(str::trim_end).filter(|l| !l.is_empty()).map(str::to_string).collect();
     let mut client = ClientState::of(&id, &repl, messages);
+    // **The banner must not say "saved" on the payload that says it is not.**
+    //
+    // `TitleModel::autosaved` is a literal `true` in `client.rs` — correct as a
+    // statement about this server, which persists after every applied move — but
+    // when THIS write failed the payload carried both "· saved" in the banner and
+    // "APPLIED BUT NOT SAVED" three inches below it, on the same screen. The
+    // warning is the true one; the banner is corrected to agree with it here,
+    // where the write's outcome is actually known.
+    if !warnings.is_empty() {
+        client.frame.title.autosaved = false;
+    }
     client.warnings.extend(warnings);
     Ok(Json(client))
 }

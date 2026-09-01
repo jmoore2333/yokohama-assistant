@@ -43,7 +43,25 @@ export function Dashboard({
             />
           );
         if ("Hand" in panel) return <Hand key={i} hand={panel.Hand} art={art} colors={colors} />;
-        return null;
+        // **A panel this file does not know renders as itself, not as nothing.**
+        //
+        // `return null` meant a fifth `screen_model::Panel` variant — or a rename
+        // of one of the four — made a whole panel VANISH from the rail with no
+        // message, no console output and no failing test: the money, the goods
+        // or a track would simply stop being on screen. The pattern is
+        // `Surfaces.tsx`'s `yieldWords`, which ends `return JSON.stringify(y)`
+        // for the same reason and says so — a new shape should render as its own
+        // JSON rather than silently as nothing.
+        return (
+          <section className="panel" key={i}>
+            <h2>Unknown panel</h2>
+            <p className="muted">
+              This client does not know how to draw this panel yet. Its contents are below so
+              nothing is lost.
+            </p>
+            <pre className="raw-panel">{JSON.stringify(panel, null, 1)}</pre>
+          </section>
+        );
       })}
     </>
   );

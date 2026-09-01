@@ -59,11 +59,24 @@ test("a whole two-player game plays through to a winner", async ({ page }) => {
   // than required: neither is guaranteed to arise in a given random game, and a
   // required-but-occasional cell is a flake wearing a coverage badge.
 
-  // A finished game scores both seats, on the screen and not only on the wire.
-  const scores = page.locator(".options .option");
-  await expect(scores).toHaveCount(2);
-  for (const text of await scores.allInnerTexts()) {
-    expect(text).toMatch(/\d+ VP/);
+  // **A finished game shows the RANKED standing, not two bare rows.**
+  //
+  // This cell used to assert `.options .option` twice over, which described the
+  // block M3.5 replaced: `seat 0` and `46 VP` and nothing else, while the
+  // terminal prints `WINNER: <colour>` and a per-seat line of base + church +
+  // customs + tech + country + remainder. `App` fetches `/result` when the game
+  // ends and the same `OutcomeView` the Final score surface uses draws it, so
+  // the two cannot disagree.
+  //
+  // The assertion is stronger than the one it replaces in the way that matters:
+  // a winner is MARKED, and the mark comes from `Placing.won` on the wire rather
+  // than from comparing totals — two seats can tie on points and be split by the
+  // engine's own tie-break, so a margin of 0 is not a win.
+  const standing = page.locator("table.outcome tbody tr");
+  await expect(standing).toHaveCount(2);
+  await expect(page.locator("table.outcome tr.won")).toHaveCount(1);
+  for (const text of await standing.allInnerTexts()) {
+    expect(text).toMatch(/\d+/);
   }
 
   expect(watch.failures, "the page reported no errors while a whole game was played").toEqual([]);

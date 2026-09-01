@@ -9,3 +9,38 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test -p yokohama-core
+
+  # **The browser client, which nothing here could make red until M3.5.**
+  #
+  # `cargo test -p yokohama-core` was the whole of CI while the web lane added
+  # roughly 78,800 lines, so a client change could not fail a check anywhere.
+  # This job is the owner's ruling on M3.5's fork 4 — `npm test` and the
+  # typecheck, and deliberately NOT the Playwright walk, which wants a release
+  # build and a Chromium download.
+  #
+  # **What it does and does not catch, stated because the gap is the point.**
+  # It catches the component half and the wire contract — `contract.ts`
+  # type-checks all 42 committed payloads against the hand-written `types.ts`,
+  # so neither side can be renamed while both believe they agree. It catches NO
+  # layout regression at all: `styles.css` is imported by `main.tsx` alone and
+  # vitest runs jsdom, which has no layout engine. Mutation-tested during M3.5:
+  # `.tile{width:20rem}`, a 600px banner, a 1200px push-down, a rail fixed over
+  # the board, 1px tiles and fully transparent text are all invisible to
+  # everything runnable here. The browser walk is what sees those, and it stays
+  # local by ruling — so a layout claim from this lane is still checked by hand,
+  # on one machine, and that is now written down rather than implied.
+  web-client:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
