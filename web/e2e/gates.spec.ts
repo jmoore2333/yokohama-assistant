@@ -57,7 +57,11 @@ for (const players of [2, 4] as const) {
     }
     await page.setViewportSize({ width: 1710, height: 869 });
     await page.evaluate(() => window.scrollTo(0, 0));
-    await page.locator(".tile").first().hover();
+    // `.board .tile`, the same element the line above asserted visible: a bare
+    // `.tile` is also a drawer's tile and a popover's, so the two reads could
+    // name different elements and the picture would be of whichever came first
+    // in the document.
+    await page.locator(".board .tile").first().hover();
     await expect(page.getByRole("tooltip")).toBeVisible();
     await page.screenshot({ path: `${OUT}/v1-${players}p-popover.png` });
   });
@@ -147,7 +151,7 @@ async function scrollTable(page: Page, to: "top" | "sections" | "bottom") {
 }
 
 for (const players of [2, 4] as const) {
-  test(`V2 — the table at ${players}P: all sections, offers only, a drawer, a replay, the menu`, async ({ page }) => {
+  test(`V2 — the table at ${players}P: all sections, the bottom anchor, offers only, a drawer, a replay, the menu`, async ({ page }) => {
     mkdirSync(OUT, { recursive: true });
     await page.setViewportSize({ width: 1710, height: 869 });
     // The server draws the seed, so every run photographs a different game.
@@ -218,7 +222,12 @@ for (const players of [2, 4] as const) {
     });
     expect(cut, "the buildings strip is whole in the bottom-anchored frame").toBe(false);
     await park(page);
-    await page.screenshot({ path: `${OUT}/v2-${players}p-bottom-2560x1440.png` });
+    // The viewport is whatever the loop above left, which is the LAST entry in
+    // `VIEWPORTS`; the file name says so by reading it rather than by repeating
+    // it, so a new last viewport renames the picture instead of mislabelling
+    // it.
+    const [lastW, lastH] = VIEWPORTS[VIEWPORTS.length - 1]!;
+    await page.screenshot({ path: `${OUT}/v2-${players}p-bottom-${lastW}x${lastH}.png` });
 
     await page.setViewportSize({ width: 1710, height: 869 });
     await toggle("Tracks", "Goals", "Building sites");
@@ -280,7 +289,11 @@ for (const players of [2, 4] as const) {
     // legitimately empty and prints "no other saved game" — an emptiness
     // assertion here would pass only because a previous run happened to leave a
     // file behind, and would fail on a clean machine.
+    // Both, because either alone passes on the other: `GameMenu` REPLACES the
+    // "loading…" line with an error when the list refuses, so a count of zero
+    // is also what a failed fetch looks like.
     await expect(menu.getByText("loading…")).toHaveCount(0);
+    await expect(menu.locator(".error")).toHaveCount(0);
     const rows = await menu.locator("button.ghost").count();
     test.info().annotations.push({
       type: "menu",

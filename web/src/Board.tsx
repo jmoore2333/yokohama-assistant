@@ -39,8 +39,15 @@ import { TilePopover, type Anchor } from "./TilePopover";
  *  guard in `Board.test.tsx` asserts THIS LADDER and not the pixel, and why the
  *  browser walk records the board's residual scroll rather than gating it: a
  *  pixel assertion here would be green on one machine and red on another.
- *  Nothing from 1201 to 1439 is fixed by this at all — the row layout holds
- *  across that whole band and 4P still clips 239px at 1201. */
+ *
+ *  **This ladder is the SUB-1201 arm only, since W3.** At 1201px and above the
+ *  fit rule in `styles.css` owns the tile width and this value is overridden;
+ *  the sentence that used to stand here — that nothing between 1201 and 1439
+ *  is fixed by the ladder, and 4P clips 239px at 1201 — described the layout
+ *  before that rule existed. What happens at 1201x900 4P now is the fit rule
+ *  hitting its floor: measured, the tile is 160px (10rem), the board is 992px
+ *  inside an 817px table, `.table` scrolls 191px sideways and the page itself
+ *  overflows by 0. */
 function tileWidth(ordered: [number, TileModel[]][]): string {
   const widest = Math.max(0, ...ordered.map(([, list]) => list.length));
   if (widest >= 6) return "10rem";
@@ -50,11 +57,12 @@ function tileWidth(ordered: [number, TileModel[]][]): string {
 
 /** The id badge's box: the rect's `width` becomes a `min-width`, and the rect's
  *  horizontal CENTRE becomes the anchor (see the badge's own comment below). */
+const idBadgePct = pct(ID_BADGE);
 const idBadgeStyle: CSSProperties = {
   left: `${((ID_BADGE.left + ID_BADGE.width / 2) * 100).toFixed(2)}%`,
-  top: pct(ID_BADGE).top,
-  height: pct(ID_BADGE).height,
-  minWidth: pct(ID_BADGE).width,
+  top: idBadgePct.top,
+  height: idBadgePct.height,
+  minWidth: idBadgePct.width,
 };
 
 /** The staggered pyramid, drawn from `grid_position` and nothing else.
@@ -96,10 +104,22 @@ export function Board({
   for (const [, list] of ordered) list.sort((a, b) => a.grid_position[1] - b.grid_position[1]);
 
   // The popover's whole state: which tile, and where it is. One at a time.
-  const [pop, setPop] = useState<{ area: number; anchor: Anchor } | null>(null);
+  const [pop, setPop] = useState<{ area: number; anchor: Anchor; rightEdge?: number } | null>(
+    null,
+  );
   const show = (area: number, el: HTMLElement) => {
     const r = el.getBoundingClientRect();
-    setPop({ area, anchor: { left: r.left, top: r.top, right: r.right, bottom: r.bottom } });
+    // The table's right edge, read from the same rect API as the anchor: the
+    // popover flips left against IT rather than against the viewport, so it
+    // cannot lie over the pinned answer bar beside the table. `closest` is
+    // `null` wherever the board is rendered without a `.table` (a component
+    // test), and the flip falls back to the viewport there.
+    const table = el.closest(".table");
+    setPop({
+      area,
+      anchor: { left: r.left, top: r.top, right: r.right, bottom: r.bottom },
+      ...(table ? { rightEdge: table.getBoundingClientRect().right } : {}),
+    });
   };
   const hide = () => setPop(null);
   const popTile = pop ? board.tiles.find((t) => t.area === pop.area) : undefined;
@@ -136,7 +156,9 @@ export function Board({
         {
           "--tile-ladder": tileWidth(ordered),
           "--n": Math.max(1, ...ordered.map(([, list]) => list.length)),
-          "--rows": ordered.length,
+          // Floored for the same reason `--n` is: both are divisors in the fit
+          // rule's `calc()`, and a board with no rows would divide by zero.
+          "--rows": Math.max(1, ordered.length),
         } as CSSProperties
       }
     >
@@ -164,7 +186,14 @@ export function Board({
         </div>
       ))}
       {pop && popTile && (
-        <TilePopover tile={popTile} art={art} labels={labels} colors={colors} anchor={pop.anchor} />
+        <TilePopover
+          tile={popTile}
+          art={art}
+          labels={labels}
+          colors={colors}
+          anchor={pop.anchor}
+          rightEdge={pop.rightEdge}
+        />
       )}
       <Legend />
     </div>

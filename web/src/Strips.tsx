@@ -122,7 +122,11 @@ function SiteCard({ card, art, colors }: { card: AreaCard; art: ArtManifest | nu
     <figure className="site-card">
       <SiteFace art={art} site={site} colors={colors} />
       <figcaption>
-        <span className="tile-id-words">{id}</span> <b>Site {site.index}</b>
+        {/* `index` is null where no printed card matches the tile's spaces —
+            `SiteFace` guards it and this caption did not, so the strip printed
+            "Site null" at the reader. Same guard, same words as the face. */}
+        <span className="tile-id-words">{id}</span>{" "}
+        <b>{site.index == null ? "site" : `Site ${site.index}`}</b>
         <span className="muted"> &middot; trading house &#9733;{site.trading_house_vp}</span>
       </figcaption>
     </figure>

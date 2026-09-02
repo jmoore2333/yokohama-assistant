@@ -44,9 +44,10 @@ export function Help() {
       <p>
         The <strong>table</strong> fills the left: the area tiles laid out as the staggered
         pyramid the real board makes, each one the printed tile with any building-site card and
-        pieces on it and the 5-Power token in its printed slot &mdash; the Canal, at three and
-        four players, has none of the three, because nothing is ever built, placed or awarded
-        there. Under the pyramid sit whichever boards you have switched on: the port and the
+        pieces on it and, until a player takes it, the 5-Power token in its printed slot &mdash;
+        a spent tile shows the empty slot and says &ldquo;5-Power taken&rdquo;. The Canal, at
+        three and four players, has none of the three, because nothing is ever built, placed or
+        awarded there. Under the pyramid sit whichever boards you have switched on: the port and the
         laboratory, six card slots to a board, the church and customs tracks, the goals in play,
         and the building sites at full size. They sit side by side only on a very wide screen
         &mdash; at 1710px across they stack, at 2560px they do not &mdash; so on a laptop the

@@ -1095,8 +1095,12 @@ test("scrubbing walks the board backwards and puts it back exactly", async ({ pa
   // the same string at every scrub position. This cell caught that by failing;
   // its second half (`.toBe(live)` after "Back to live") would have passed
   // forever while comparing one constant to another. So it reads what the
-  // screen now says instead: each tile's pieces by their accessible name, and
-  // how many printed spaces are built on.
+  // screen now says instead: each tile's pieces by their accessible name, how
+  // many printed spaces are built on, and whether the 5-Power token is still in
+  // its slot. The token is the third thing a replayed position can differ in —
+  // taking one is a move — and reading it is cheap; without it a scrub across
+  // the turn a token was taken would compare equal on the two halves that did
+  // not change.
   const boardState = () =>
     page.evaluate(() =>
       [...document.querySelectorAll(".tile")]
@@ -1104,7 +1108,8 @@ test("scrubbing walks the board backwards and puts it back exactly", async ({ pa
           const id = t.querySelector(".tile-id")?.textContent ?? "?";
           const pieces = t.querySelector(".pieces")?.getAttribute("aria-label") ?? "";
           const built = t.querySelectorAll(".site-space.built, .site-trading-house.built").length;
-          return `${id}[${pieces}]${built}`;
+          const token = t.querySelector(".token-slot img") ? "5P" : "--";
+          return `${id}[${pieces}]${built}${token}`;
         })
         .join(" "),
     );

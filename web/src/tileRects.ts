@@ -41,8 +41,11 @@ export interface Rect {
   height: number;
 }
 
-export const PRINTED: Record<string, Rect> = rects.printed;
-export const OVERLAYS: Record<string, Rect> = rects.overlays;
+// No `Record<string, Rect>` annotation on either: it WIDENS the JSON import's
+// key literals to `string`, and those literals are what let `SITE_CARD` and the
+// three below be named rather than looked up. The shape is checked by the uses.
+export const PRINTED = rects.printed;
+export const OVERLAYS = rects.overlays;
 export const SITE_CARD: Rect = rects.overlays.site_card;
 export const PIECES: Rect = rects.overlays.pieces;
 export const ID_BADGE: Rect = rects.overlays.id_badge;

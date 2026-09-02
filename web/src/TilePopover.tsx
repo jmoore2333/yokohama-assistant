@@ -7,6 +7,13 @@
 // never takes focus, never sits in the tab order, and `pointer-events: none`
 // so leaving the tile closes it. Positioned from the tile's rect in JS rather
 // than with CSS anchor positioning, which Safari does not have.
+//
+// **`position: fixed` here is NOT re-parented by `.table`'s `container-type:
+// size`, and that was measured rather than reasoned about** (final review):
+// in Chromium 151 a fixed child of the size container stays at its viewport
+// coordinates (a child at `top: 100` renders at 100, and `.table`'s
+// `scrollWidth` is unmoved). So the popover is positioned against the viewport
+// and kept inside the table by the arithmetic below, never by containment.
 
 import type { ArtManifest, Labels, PlayerColor, TileModel } from "./types";
 import { areaArt, fivePowerWords } from "./art";
@@ -30,15 +37,27 @@ export interface Anchor {
  *  1710x869 with the art loaded: 352 x 433.875, of which the art is 250.1 and
  *  the site card 127.3. Rounded UP, so the estimate errs inside the viewport.
  *  The width stays the conservative 368 the flip was written against; it only
- *  makes the flip to the left side happen a little early, never late. */
+ *  makes the flip to the left side happen a little early, never late.
+ *
+ *  **`rightEdge` is the TABLE's right edge, and the flip is taken against it.**
+ *  Against the viewport's, a right-column tile put the popover over the pinned
+ *  answer bar: measured on the top-right tile at 1710x869, the popover spanned
+ *  x 1122–1474 while `.table` ended at 1230, so it lay across the deck's own
+ *  options while the pointer rested on the tile. It is one rule and not a
+ *  breakpoint: below 1201px `.table` is `width: 100%` in the column stack with
+ *  no padding of its own and `body` has no margin, so its right edge IS the
+ *  viewport's and this term changes nothing there (spec R8). */
 export function popoverPosition(
   anchor: Anchor,
   viewport: { width: number; height: number },
   size = { width: 368, height: 434 },
+  rightEdge = viewport.width,
 ): { left: number; top: number } {
   const gap = 8;
+  // Never outside the viewport either, whatever the caller measured.
+  const rightBound = Math.min(rightEdge, viewport.width);
   const left =
-    anchor.right + gap + size.width <= viewport.width
+    anchor.right + gap + size.width <= rightBound
       ? anchor.right + gap
       : Math.max(gap, anchor.left - gap - size.width);
   const top = Math.max(gap, Math.min(anchor.top, viewport.height - size.height - gap));
@@ -51,12 +70,17 @@ export function TilePopover({
   labels,
   colors,
   anchor,
+  rightEdge,
 }: {
   tile: TileModel;
   art: ArtManifest | null;
   labels: Labels | null;
   colors: PlayerColor[];
   anchor: Anchor;
+  /** The table's right edge, measured when the popover was opened. Absent
+   *  where there is no `.table` around the board (a component test), and the
+   *  flip then falls back to the viewport. */
+  rightEdge?: number | undefined;
 }) {
   const name = labels?.area_types[tile.area_type] ?? tile.area_type;
   const id = `A${String(tile.area).padStart(2, "0")}`;
@@ -65,7 +89,7 @@ export function TilePopover({
     typeof window === "undefined"
       ? { width: 1440, height: 900 }
       : { width: window.innerWidth, height: window.innerHeight };
-  const pos = popoverPosition(anchor, viewport);
+  const pos = popoverPosition(anchor, viewport, undefined, rightEdge);
   const pieces = piecesWords(tile.presidents, tile.assistants, tile.has_station, colors);
   return (
     <div className="tile-pop" role="tooltip" id={`pop-${id}`} style={{ left: pos.left, top: pos.top }}>

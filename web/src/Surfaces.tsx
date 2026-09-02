@@ -37,7 +37,7 @@ import {
 } from "./Cards";
 import { SuggestView, WhyView } from "./Explain";
 import { IndexView, OutcomeView } from "./Index";
-import { SECTION_LABELS, type SectionKey } from "./sections";
+import { SECTION_KEYS, SECTION_LABELS, type SectionKey } from "./sections";
 
 export type SurfaceName =
   | "areas"
@@ -448,8 +448,7 @@ function Areas({
               holds both halves), so this is a lookup and never a second list. */}
           {card.companion && (
             <div className="muted">
-              detail lives in the {SECTION_LABELS[card.companion.toLowerCase() as SectionKey]} section
-              of the table
+              detail lives in the {sectionWord(card.companion)} section of the table
             </div>
           )}
         </section>
@@ -459,6 +458,20 @@ function Areas({
       ))}
     </div>
   );
+}
+
+/** The table section a companion tag points at, by the heading it wears.
+ *
+ *  A tag OUTSIDE the registry falls back to its own word rather than to
+ *  `undefined`: the three the wire declares are pinned by `Strips.test.tsx` and
+ *  `Surfaces.test.tsx`, so this is robustness and not a second list — but a
+ *  fourth tag on the server would otherwise print "detail lives in the
+ *  undefined section of the table". */
+function sectionWord(companion: string): string {
+  const key = companion.toLowerCase();
+  return (SECTION_KEYS as readonly string[]).includes(key)
+    ? SECTION_LABELS[key as SectionKey]
+    : companion;
 }
 
 function Log({

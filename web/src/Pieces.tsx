@@ -49,6 +49,13 @@ export function piecesWords(
   ].join(" · ");
 }
 
+/** How many cubes a seat's stack draws before it becomes one cube and a count.
+ *
+ *  One constant because the number is stated three times — the glyph-width sum
+ *  the band's CSS is given, the cubes rendered, and the count beside them —
+ *  and two of the three drifting apart is a row that overflows its band. */
+const CUBES_DRAWN = 3;
+
 export function Pieces({
   presidents,
   assistants,
@@ -71,10 +78,21 @@ export function Pieces({
   // count), one for the Station.
   const glyphs =
     presidents.length +
-    assistants.filter(([, k]) => k > 0).reduce((s, [, k]) => s + (k > 3 ? 2 : k), 0) +
+    assistants
+      .filter(([, k]) => k > 0)
+      .reduce((s, [, k]) => s + (k > CUBES_DRAWN ? 2 : k), 0) +
     (hasStation ? 1 : 0);
   return (
-    <div className="pieces" role="img" aria-label={words} style={{ "--piece-n": glyphs } as CSSProperties}>
+    // `title` carries the same words as the accessible name: the caption W4b
+    // deleted was also the hover text, and a mouse user lost the only reading
+    // of the pieces there was. `role="img"` keeps it one object either way.
+    <div
+      className="pieces"
+      role="img"
+      aria-label={words}
+      title={words}
+      style={{ "--piece-n": glyphs } as CSSProperties}
+    >
       {presidents.map((seat) => (
         <span key={`p${seat}`} className={`piece-group ${seatClass(colors[seat])}`}>
           <PresidentIcon />
@@ -84,10 +102,10 @@ export function Pieces({
         .filter(([, n]) => n > 0)
         .map(([seat, n]) => (
           <span key={`a${seat}`} className={`piece-group ${seatClass(colors[seat])}`}>
-            {Array.from({ length: n > 3 ? 1 : n }, (_, i) => (
+            {Array.from({ length: n > CUBES_DRAWN ? 1 : n }, (_, i) => (
               <CubeIcon key={i} />
             ))}
-            {n > 3 && <span className="piece-n">{n}</span>}
+            {n > CUBES_DRAWN && <span className="piece-n">{n}</span>}
           </span>
         ))}
       {hasStation &&

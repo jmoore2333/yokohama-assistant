@@ -49,9 +49,9 @@ const SHOTS = "public/help";
  *  designed and gated against (`e2e/gates.spec.ts` shoots the same cell), and a
  *  help panel photographed at a width nobody uses documents a layout nobody
  *  sees. `deviceScaleFactor` is deliberately left at 1 here where the gates
- *  spec sets 2: these four files ship in `dist/` and in `README.md`, so their
- *  bytes are a cost the repository pays forever, and the gates are the place
- *  that pays for pixel density. */
+ *  spec sets 2: these five files (R-T14d added the strips picture) ship in
+ *  `dist/` and in `README.md`, so their bytes are a cost the repository pays
+ *  forever, and the gates are the place that pays for pixel density. */
 const VIEWPORT = { width: 1710, height: 869 };
 
 /** Play real moves so the shots show a game in progress rather than a setup. */

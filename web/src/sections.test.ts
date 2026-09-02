@@ -1,7 +1,7 @@
 // Which sections the table draws, and where that choice is kept.
 
 import { describe, expect, it } from "vitest";
-import { DEFAULT_SECTIONS, loadSections, saveSections, SECTION_KEYS } from "./sections";
+import { DEFAULT_SECTIONS, loadSections, saveSections, SECTION_KEYS, SECTION_LABELS } from "./sections";
 
 function fakeStorage(initial?: string, throwing = false): Storage {
   let value = initial;
@@ -37,7 +37,13 @@ describe("the enabled sections", () => {
     expect(loadSections(fakeStorage('{"a":1}'))).toEqual(DEFAULT_SECTIONS);
     expect(() => saveSections(["ports"], fakeStorage(undefined, true))).not.toThrow();
   });
-  it("name every key", () => {
-    for (const k of SECTION_KEYS) expect(typeof k).toBe("string");
+  // **A label for every key and no more.** The cell here before this asserted
+  // that every key was a `string`, over a `const` tuple of string literals —
+  // true by the type, unfailable by construction. What can actually go wrong is
+  // a key added to the registry with no label, which renders `undefined` as a
+  // section heading and as a Boards toggle.
+  it("label every key, and label nothing else", () => {
+    expect(Object.keys(SECTION_LABELS).sort()).toEqual([...SECTION_KEYS].sort());
+    for (const k of SECTION_KEYS) expect(SECTION_LABELS[k]).toBeTruthy();
   });
 });

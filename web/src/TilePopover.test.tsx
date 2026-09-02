@@ -22,6 +22,34 @@ describe("where the popover goes", () => {
   it("stays inside the viewport at the bottom", () => {
     expect(popoverPosition({ left: 100, top: 800, right: 340, bottom: 980 }, { width: 1710, height: 869 }).top).toBe(869 - 434 - 8);
   });
+
+  // **The flip is taken against the TABLE's right edge, not the viewport's.**
+  // Measured on the top-right tile at 1710x869 before this: the popover spanned
+  // x 1122–1474 while `.table` ended at 1230, so it lay over the pinned answer
+  // bar's options. The anchor below is that tile — room to the right of it in
+  // the WINDOW, none inside the table.
+  it("flips left when the table ends before the viewport does", () => {
+    const viewport = { width: 1710, height: 869 };
+    const anchor = { left: 970, top: 200, right: 1114, bottom: 380 };
+    const size = { width: 368, height: 434 };
+    // Against the viewport (the old rule, and the fallback where there is no
+    // table): right of the tile.
+    expect(popoverPosition(anchor, viewport, size).left).toBe(1122);
+    // Against the table's own edge: left of it, and clear of the deck.
+    expect(popoverPosition(anchor, viewport, size, 1230).left).toBe(anchor.left - 8 - 368);
+  });
+
+  // **And below 1201px nothing moves** (spec R8). There `.table` is
+  // `width: 100%` in the column stack with no padding of its own, so its right
+  // edge IS the viewport's — the same number goes in, and the same position
+  // comes out.
+  it("is unchanged where the table spans the whole width", () => {
+    const viewport = { width: 1024, height: 800 };
+    const anchor = { left: 100, top: 200, right: 340, bottom: 380 };
+    expect(popoverPosition(anchor, viewport, undefined, viewport.width)).toEqual(
+      popoverPosition(anchor, viewport),
+    );
+  });
 });
 
 describe("the popover on a tile", () => {

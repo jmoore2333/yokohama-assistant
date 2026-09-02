@@ -215,15 +215,20 @@ h1, h2, h3 { font-family: var(--display); font-weight: 500; margin: 0; }
 
 /* ---- board ------------------------------------------------------------- */
 /* **Below 1201 the tile is `Board.tsx`'s ladder** (M5 W3 made this the sub-1201
- * arm; the ≥1201 rule below is the other one). The ladder makes the board fit
- * its column at 1440 and NOWHERE ELSE: the row layout holds from 1201 to 1439
- * with a column of `viewport − 448`, so 4P still carries 239px off screen at
- * 1201 and 642px at 390. That clipping is by design — no phone is 992px wide —
- * but until now it had NO AFFORDANCE at all: `.board` styled no scrollbar, so
- * on macOS overlay scrollbars a Movement destination in the last column was not
- * merely off screen, it was undiscoverable. A thin visible track is the
- * difference between "scroll for the rest of the board" and "the board ends
- * here". */
+ * arm; the ≥1201 rule below is the other one, and it owns every width from
+ * 1201 up). The ladder fits the board to a full-width column at 1440 and
+ * NOWHERE ELSE, so the narrow end still clips: 642px off screen at 390. That
+ * clipping is by design — no phone is 992px wide — but until now it had NO
+ * AFFORDANCE at all: `.board` styled no scrollbar, so on macOS overlay
+ * scrollbars a Movement destination in the last column was not merely off
+ * screen, it was undiscoverable. A thin visible track is the difference
+ * between "scroll for the rest of the board" and "the board ends here".
+ *
+ * What used to stand here — that the row layout holds from 1201 to 1439 and 4P
+ * clips 239px at 1201 — described the layout BEFORE the fit rule below. At
+ * 1201x900 4P that rule now hits its 10rem floor: measured, the tile is 160px,
+ * the board 992px inside an 817px table, `.table` scrolls 191px sideways, and
+ * the page itself overflows by 0. */
 .board {
   --tile-w: var(--tile-ladder);
   display: flex; flex-direction: column; gap: 0.4rem;
@@ -246,10 +251,15 @@ h1, h2, h3 { font-family: var(--display); font-weight: 500; margin: 0; }
    *
    * **It sizes the PYRAMID to the table, not the table's whole content**
    * (controller ruling R-T8a). The marks legend and this element's own
-   * `padding-bottom` sit below the rows, and Task 12's sections will too, so
-   * `.table` scrolling under a fitted pyramid is the design (owner ruling R2):
-   * measured at 1710x869, four rows in view at every player count with the
-   * table scrolling 40px at 2P and 9px at 3P below them. Where even the rows
+   * `padding-bottom` sit below the rows, and the sections joined them at W5b,
+   * so `.table` scrolling under a fitted pyramid is the design (owner ruling
+   * R2). The 40px at 2P and 9px at 3P this comment used to quote were read
+   * BEFORE the sections were on the table; with the default four sections on it
+   * is now 1.3k–1.8k px at 1440x900 and 1.4k–2.0k px at 1710x869 across
+   * 2P/3P/4P, with four rows still in view at every one of them. The figure
+   * MOVES with the game — the server draws the seed, so the sections hold
+   * different offers — and `the_table.spec.ts` prints the exact one for the
+   * game it played, every run. Where even the rows
    * cannot fit — a short viewport, where the height term falls under the 10rem
    * floor — the floor wins and the table scrolls the pyramid itself, which is
    * the legibility floor doing its job rather than the rule failing. */
@@ -394,7 +404,9 @@ button.tile:focus-visible { outline: 2px solid var(--vp); outline-offset: 1px; }
  * a 4P crowd (4 presidents + 4 assistant groups + the Station = 9 items) spent
  * twice the budget. With n glyph widths in G items, and h = `--piece-h`:
  *
- *     glyphs      ≤ 0.8·h each (the pawn is the widest), so ≤ 0.8·n·h
+ *     glyphs      ≤ 0.8·h each (the STATION is the widest: its rule below sets
+                 height 0.8·h on a square token, against the pawn's 20:28
+                 viewBox at 0.71·h and the cube's 0.72·h), so ≤ 0.8·n·h
  *     inner gaps  = 0.05·h·(n − G)  ≤ 0.05·n·h    (within a group)
  *     outer gaps  = 0.10·h·(G − 1)  <  0.10·n·h   (G ≤ n)
  *     total       < 0.95·n·h ≤ W                  by the divisor below
@@ -504,23 +516,27 @@ button.tile:focus-visible { outline: 2px solid var(--vp); outline-offset: 1px; }
 .card-face.site img, .card-face.site .card-blank,
 .card-face.achievement img, .card-face.achievement .card-blank { aspect-ratio: var(--wide-card-aspect); }
 .panel .card-face.achievement { width: 100%; flex-direction: row; align-items: flex-start; gap: 0.5rem; }
-/* 5.2rem → 3.4rem. Measured page-height saving: −130px at 2P, −100 at 3P, −50
- * at 4P. The rail is the term that sets the page height (`.stage` is
- * `max(board, rail)` and the rail runs 2.1–2.5× the board), so this is the only
- * cheap lever on it — and with the deck pinned it is tidiness rather than
- * budget.
+/* **These four rules style a panel the app no longer renders, and they are kept
+ * deliberately.** W5b moved the goals onto the table as `GoalsStrip`, and the
+ * app's one side-column render asks for `only={["Players", "Hand"]}`
+ * (`App.tsx`) — so nothing a player sees reaches them today. `Dashboard` is
+ * still the general panel renderer, its `Achievements` arm is still what a
+ * server sending that panel gets (and what the Dashboard cells render, since
+ * they pass no `only`), and deleting the rules would leave that arm unstyled
+ * rather than deleting it. So: dormant, not dead.
  *
- * **The other half of this item was NOT shipped, because it measures zero.** The
- * review proposed also dropping `flex-direction: column` from
- * `.panel .card-strip` "so two hand cards sit per row": split-tested, that buys
- * 0px at every player count. The achievement strip's children are `width: 100%`
- * so a row-wrapping strip still puts one per line, and the hand holds one card
- * at turn 1. The whole delta is this rule. A rule that does nothing is worse
- * than no rule, because the next reader assumes it does something.
- *
- * There is also a FLOOR the review does not name: at 3P and 4P the strip is
- * already caption-bound at 3.4rem (caption 92/109px against 82px of art), so
- * shrinking further recovers nothing. */
+ * The measurement they were written for is HISTORY, and the comment that stood
+ * here read as current. It argued 5.2rem → 3.4rem for a page-height saving of
+ * −130/−100/−50px at 2P/3P/4P, on the reasoning that the RAIL set the page
+ * height (`.stage` was `max(board, rail)`). There is no rail and no `.stage`:
+ * M3.5 pinned the deck and M5's grid gave the side column its own scroll, so
+ * the page height stopped being a budget at all. Kept as the record of why the
+ * width is 3.4rem, marked as the past. Two further readings from that work,
+ * unchanged in kind: dropping `flex-direction: column` from `.panel
+ * .card-strip` bought 0px at every player count (the children are
+ * `width: 100%`, so a wrapping strip still puts one per line) and was not
+ * shipped, and at 3P/4P the strip is caption-bound at 3.4rem (caption 92/109px
+ * against 82px of art), so shrinking recovers nothing. */
 .panel .card-face.achievement img { width: 3.4rem; flex: 0 0 3.4rem; }
 .panel .card-face.achievement .card-blank { width: 5.2rem; flex: 0 0 5.2rem; }
 .panel .card-face.achievement figcaption { flex: 1 1 auto; min-width: 0; }

@@ -213,12 +213,12 @@ moves it is offering](web/public/help/screen.png)
 The left is a **table**: the pyramid of area tiles, each one the printed tile with any
 building-site card and pieces on it (the Canal, at three and four players, carries neither), and
 under the pyramid whichever boards you have switched on from the banner's `Boards` menu — the
-port, the laboratory, the church and customs tracks, the goals, the building sites. The right is a **side column** with the **answer
-bar pinned at its top**, so whatever the game is asking is always on screen; under it sit the
-last move, every seat's dashboard and your hand. While a placement picker is open the table
-itself becomes the input surface, and the fee your current selection would cost is printed
-before you commit to it. Below 1201px the same parts stack, with the answer bar pinned along the
-bottom edge instead.
+port, the laboratory, the church and customs tracks, the goals, the building sites. The right is
+a **side column** with the **answer bar pinned at its top**, so whatever the game is asking is
+always on screen; under it sit the last move, every seat's dashboard and your hand. While a
+placement picker is open the table itself becomes the input surface, and the fee your current
+selection would cost is printed before you commit to it. Below 1201px the same parts stack, with
+the answer bar pinned along the bottom edge instead.
 
 **The replay track (M4).** Open the log and the whole move trail is there, each line worded as it
 read when it applied — with a track above it that walks the game. Drag it, step with the arrows,

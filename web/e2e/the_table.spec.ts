@@ -13,10 +13,12 @@ test.skip(!haveBrowser, "no Chromium — YOKOHAMA_WEB_E2E_OPTIONAL=1; this run t
  *  three fit their four rows, so all three take the same branch below and the
  *  `else` was reached by nothing — a half-tested conditional. 1440x600 is a
  *  short laptop viewport where the table is ~516px tall and the height term
- *  works out at ~9.7rem, UNDER the 10rem legibility floor: the floor wins, the
- *  pyramid is taller than the table, and the table has to scroll it. That is
- *  the rule behaving correctly at a size it cannot satisfy, and it is the only
- *  one of the four that exercises the other half of the cell. */
+ *  works out UNDER the 10rem legibility floor at every player count (~9.7rem
+ *  at 2P, less at 3P and 4P, where the same height is divided by wider rows):
+ *  the floor wins, the pyramid is taller than the table, and the table has to
+ *  scroll it. That is the rule behaving correctly at a size it cannot satisfy,
+ *  and it is the only one of the four that exercises the other half of the
+ *  cell. */
 const VIEWPORTS = [
   [1440, 900],
   [1710, 869],
@@ -54,11 +56,16 @@ for (const players of [2, 3, 4] as const) {
       await settle(page);
       const read = await page.evaluate(() => {
         const table = document.querySelector(".table")!;
-        const rows = [...document.querySelectorAll(".board-row")];
+        // Scoped to the board inside the table being measured: `.board-row` is
+        // not unique to it (a drawer's board would match too), and a
+        // document-wide read would mix another board's rows into `widest`,
+        // `rows` and `bottoms` — the three terms the rule is checked against.
+        const board = table.querySelector(".board")!;
+        const rows = [...board.querySelectorAll(".board-row")];
         return {
           tableW: table.clientWidth,
           tableH: table.clientHeight,
-          tileW: document.querySelector(".tile")!.getBoundingClientRect().width,
+          tileW: board.querySelector(".tile")!.getBoundingClientRect().width,
           widest: Math.max(...rows.map((r) => r.children.length)),
           rows: rows.length,
           bottoms: rows.map((r) => Math.round(r.getBoundingClientRect().bottom)),
@@ -86,13 +93,18 @@ for (const players of [2, 3, 4] as const) {
         // is the design — but the figure belongs in the record, because it is
         // how far the owner has to scroll to reach what is under the board.
         branch =
-          `rows in view · the legend and anything under the pyramid scroll by ` +
-          `${read.scrollH - read.tableH}px — recorded`;
+          `rows in view · the legend and the sections under the pyramid scroll ` +
+          `by ${read.scrollH - read.tableH}px VERTICALLY — recorded`;
       } else {
         expect(read.scrollH, `${players}P at ${w}x${h}: the rule cannot fit, so the table must scroll`).toBeGreaterThan(read.tableH);
+        // "gated" names the ASSERTION just above, and the overflow it is about
+        // is the PYRAMID's — a different quantity from the branch above, where
+        // the same scroll is the legend and the sections below a pyramid that
+        // fits. The two lines print the same arithmetic about different things,
+        // which is why each says which.
         branch =
           `the rule cannot fit its rows, so the table scrolls the pyramid ` +
-          `(${read.scrollH} > ${read.tableH}) — gated`;
+          `itself (${read.scrollH} > ${read.tableH}) — gated`;
       }
       console.log(`${players}P at ${w}x${h}: tile ${(read.tileW / 16).toFixed(2)}rem (rule ${(want / 16).toFixed(2)}rem) · ${branch}`);
     }
@@ -173,13 +185,23 @@ test("an enabled section re-fetches once after a move, collapses while replaying
   // its own reply. Asserting `+1` would therefore be asserting which affordance
   // the seeded walk happened to take. This counts the posts instead and asserts
   // the RELATION, which is what the spec actually says.
+  //
+  // **Counted on the RESPONSE, and only where it succeeded.** These are named
+  // for state-changing responses, and a request is not one: a refused `/input`
+  // is a 4xx that changes nothing and triggers no refetch, so counting the post
+  // would leave the relation below off by one on exactly the move worth
+  // catching. `/ports` stays on the request side — it is what the client ASKED
+  // for that this cell is about.
   const inputPosts: string[] = [];
   const reReads: string[] = [];
   page.on("request", (r) => {
+    if (/\/ports$/.test(new URL(r.url()).pathname)) portRequests.push(r.url());
+  });
+  page.on("response", (r) => {
+    if (!r.ok()) return;
     const path = new URL(r.url()).pathname;
-    if (/\/ports$/.test(path)) portRequests.push(r.url());
-    if (/\/input$/.test(path) && r.method() === "POST") inputPosts.push(r.url());
-    if (/^\/api\/games\/[^/]+$/.test(path) && r.method() === "GET") reReads.push(r.url());
+    if (/\/input$/.test(path) && r.request().method() === "POST") inputPosts.push(r.url());
+    if (/^\/api\/games\/[^/]+$/.test(path) && r.request().method() === "GET") reReads.push(r.url());
   });
   // Building sites is off by default; turn it on and see it fetched once.
   await page.locator(".boards-menu > summary").click();
@@ -225,6 +247,9 @@ test("an enabled section re-fetches once after a move, collapses while replaying
 });
 
 test("the port and laboratory strips sit side by side at 2560 and stack at 1710", async ({ page }) => {
+  // Every other cell in this file declares one; without it a console error or a
+  // 4xx during the two viewport changes goes unrecorded.
+  const watch = watchForBreakage(page);
   await startGame(page, { players: 2 });
   const tops = () =>
     page.evaluate(() => ({
@@ -238,4 +263,5 @@ test("the port and laboratory strips sit side by side at 2560 and stack at 1710"
   await settle(page);
   const t = await tops();
   expect(t.lab, "not stacked at 1710").toBeGreaterThan(t.port);
+  expect(watch.failures).toEqual([]);
 });

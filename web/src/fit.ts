@@ -34,11 +34,14 @@ export function tileWidthFor(
  *
  *  **A claim about the PYRAMID, never about `.table`'s scroll** (controller
  *  ruling R-T8a). `.table` holds more than the pyramid — the marks legend and
- *  `.board`'s own `padding-bottom` sit under it today, and Task 12's sections
- *  will sit under it tomorrow — so the table scrolling is the design (owner
- *  ruling R2) and not a failure of this rule. Measured on the owner's screen at
- *  1710x869 with `.table` 785px tall: all four rows in view at every player
- *  count, while the table's own `scrollHeight` runs 825 at 2P and 794 at 3P.
+ *  `.board`'s own `padding-bottom` sit under it, and W5b put the sections there
+ *  too — so the table scrolling is the design (owner ruling R2) and not a
+ *  failure of this rule. On the owner's screen at 1710x869, all four rows are
+ *  in view at every player count while the table scrolls roughly 1.4k–2.0k px
+ *  below them (2P through 4P) with the default four sections on — a figure that
+ *  moves with the game, since the server draws the seed; `the_table.spec.ts`
+ *  prints the exact one every run. The 825/794 `scrollHeight` figures this
+ *  comment used to quote were read before the sections existed.
  *  What this function answers, and all it answers, is whether the ROWS fit —
  *  which is what spec §3.3 claims and what the browser cell branches on.
  *

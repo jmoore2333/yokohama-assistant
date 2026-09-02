@@ -209,17 +209,23 @@ program.
 
 ### 3.4 What it costs on the wire — MEASURED
 
-Every metered host bills egress, so the payload is worth stating too. Measured
-against the built client at HEAD:
+Every metered host bills egress, so the payload is worth stating too. The three
+first-paint rows are read off `web/dist/assets/` after `npm run build`, at the
+head that ships; they were last re-read at the M5 fix wave, and the figures they
+replaced were two waves old.
+
+**MB is 10⁶ bytes and MiB is 2²⁰ throughout this table** — the distinction is
+not pedantry here, because `du -sk` reads KiB and the rows below came from both
+tools:
 
 | | Bytes |
 |---|---|
 | `index.html` | 719 |
-| `assets/index-*.js` | 259,187 |
-| `assets/index-*.css` | 23,324 |
-| **First paint, total** | **283,230 (277 KiB)** |
-| Card art at `/art` | 7.7 MB across 132 files, fetched per area actually rendered |
-| Help screenshots | 4.0 MB across 5 files (M5 W7: re-shot at 1710×869, a fifth picture added), and only if the panel is opened |
+| `assets/index-*.js` | 268,982 |
+| `assets/index-*.css` | 27,368 |
+| **First paint, total** | **297,069 (0.30 MB / 290 KiB)** |
+| Card art at `/art` | 7,552 KiB across 132 files = 7.7 MB (7.4 MiB), fetched per area actually rendered |
+| Help screenshots | 4,199,746 B across 5 files = 4.2 MB (4.0 MiB) (M5 W7: re-shot at 1710×869, a fifth picture added), and only if the panel is opened |
 
 Re-measured at M5 (W0, then W0b): the crops are now cut at source width (709px
 tiles, 530px cards, 799px landscape achievements, and the 24 site cards turned
@@ -230,8 +236,11 @@ step from the 7.3 MB this section first printed is mostly a UNIT correction:
 `du -sk` reads KiB, and 7,552 KiB is 7.4 MiB but 7.7 MB.
 
 So a session that opens help and renders every area in the product pulls about
-**12.0 MB** (7.7 art + 4.0 help + 0.3 first paint; it was about 10 before W7 re-shot
-the help at the owner's viewport and added a fifth picture, and about 5 before W0). An ordinary session's art is now fetched at ~57
+**12.2 MB** (7.7 art + 4.2 help + 0.3 first paint; it was about 10 before W7
+re-shot the help at the owner's viewport and added a fifth picture, and about 5
+before W0). The help row is where this sum was previously wrong: 4,199,746 B is
+4.2 MB and 4.0 MiB, and the table printed the MiB figure under an MB heading —
+`ASSETS.md` had it right. An ordinary session's art is now fetched at ~57
 KiB per file instead of ~23 — every file **~2.5x** heavier than before this
 re-cut — so "well under 1 MB" is no longer a safe claim; the true total
 depends on how much of the board and hand a given game actually renders.

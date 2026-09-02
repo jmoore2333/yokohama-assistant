@@ -458,6 +458,16 @@ export function Tracks({
   );
 }
 
+/** The goals panel.
+ *
+ *  **Not on the app's live path since W5b** — the goals are a section of the
+ *  table now (`Strips.tsx`'s `GoalsStrip`), and the side column's one render
+ *  asks for `only={["Players", "Hand"]}`. It stays because `Dashboard` is the
+ *  general panel renderer and `Achievements` is a panel the server sends: the
+ *  arm is what a caller without an `only` gets — which is every cell in
+ *  `Dashboard.test.tsx` — and dropping it from `KNOWN` would print the panel
+ *  as raw JSON instead. Dormant, not dead; `styles.css` says the same of its
+ *  four rules. */
 export function Achievements({
   cards,
   art,
