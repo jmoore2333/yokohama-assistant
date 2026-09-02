@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { Dashboard } from "./Dashboard";
 import { wire } from "./wire/contract";
 import { handOf, playersOf, tracksOf } from "./test/panels";
-import { DUMMY_SEAT, type ClientState, type PlayerColor } from "./types";
+import { DUMMY_SEAT, type ClientState, type Panel, type PlayerColor } from "./types";
 
 const COLORS: PlayerColor[] = ["Red", "Blue"];
 const COLORS_4: PlayerColor[] = ["Red", "Blue", "Yellow", "Green"];
@@ -188,6 +188,34 @@ describe("what the side column shows", () => {
     expect(screen.queryByText(/Tracks/)).toBeNull();
     expect(screen.queryByText(/Achievements/)).toBeNull();
     expect(container.querySelectorAll(".panel").length).toBe(2);
+  });
+  // **`only` must not defeat the unknown-panel fallback.** `wanted` keeps a
+  // panel by NAME, so a fifth `screen_model::Panel` variant — or a rename of one
+  // of the four — would be filtered out of the side column entirely, which is
+  // the exact vanishing the raw-JSON fallback exists to prevent. `only` is set
+  // on the app's ONE live Dashboard render, so the guard would be defeated
+  // precisely where it matters.
+  //
+  // The unknown panel is hand-built, which this suite otherwise never does: a
+  // shape the wire cannot currently produce is the whole point of the cell, and
+  // the committed corpus by construction contains no such shape.
+  it("keeps a panel it does not know, even while drawing only the named ones", () => {
+    const unknown = { Weather: { outlook: "fine" } } as unknown as Panel;
+    const { container } = render(
+      <Dashboard
+        panels={[...wire.options.frame.dashboard, unknown]}
+        art={wire.artManifest}
+        labels={wire.labels}
+        colors={COLORS}
+        only={["Players", "Hand"]}
+      />,
+    );
+    expect(screen.getByText("Unknown panel")).toBeInTheDocument();
+    const raw = container.querySelector(".raw-panel");
+    expect(raw, "the unknown panel was filtered out by `only`").not.toBeNull();
+    expect(raw!.textContent).toContain("Weather");
+    // Still only the panels asked for, plus the one that must never vanish.
+    expect(container.querySelectorAll(".panel").length).toBe(3);
   });
   it("prints every track space's points as text, not only in a tooltip", () => {
     const { container } = show(wire.options);

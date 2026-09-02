@@ -54,7 +54,7 @@ export function LastMove({ messages }: { messages: string[] }) {
           {folded ? "show" : "hide"}
         </button>
       </h2>
-      <div id="last-move-lines" className={`messages ${folded ? "folded" : ""}`} role="status">
+      <div id="last-move-lines" className={`messages${folded ? " folded" : ""}`} role="status">
         {messages.map((m, i) => (
           <div key={i} className={isRefusal(m) ? "warn" : ""}>
             {m}

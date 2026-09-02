@@ -14,7 +14,32 @@ import { DUMMY_SEAT, locked } from "./types";
 import { mercenaryArt } from "./art";
 import { AchievementCardView, OrderCardView, seatClass } from "./Cards";
 
-export type PanelName = "Players" | "Tracks" | "Achievements" | "Hand";
+/** The key of ONE member of a union, distributed.
+ *
+ *  The naked type parameter is load-bearing and is why this is a helper rather
+ *  than written inline: a conditional distributes over a union only when the
+ *  checked type is a bare type PARAMETER, so `Panel extends infer P ? keyof P
+ *  : never` does not distribute at all — it binds `P` to the whole union, and
+ *  `keyof` of a union is the INTERSECTION of its members' keys, which for four
+ *  disjoint single-key objects is `never`. Measured: written that way, this
+ *  compiled, `PanelName` became `never`, and every `only={[…]}` in the repo
+ *  failed with "Type 'string' is not assignable to type 'never'". */
+type NameOf<P> = P extends unknown ? keyof P : never;
+
+/** The name of a panel this file knows how to draw.
+ *
+ *  DERIVED from the `Panel` union rather than spelled again: `Panel` mirrors
+ *  `screen_model::Panel`, so a variant renamed on the server renames this, and
+ *  every `only={[…]}` naming the old word stops compiling. A hand-written union
+ *  would have gone on type-checking while the panel it named no longer existed. */
+export type PanelName = NameOf<Panel>;
+
+/** Every name `Dashboard` has an arm for, as a value.
+ *
+ *  It exists so `only` can be an ALLOWLIST of what to draw without also being a
+ *  denylist of what this client has never heard of — see `wanted`. Typed as
+ *  `PanelName[]`, so it moves with the wire for the same reason. */
+const KNOWN: PanelName[] = ["Players", "Tracks", "Achievements", "Hand"];
 
 export function Dashboard({
   panels,
@@ -31,7 +56,17 @@ export function Dashboard({
    *  Players and Hand (M5 §3.5); Tracks and Goals live on the table. */
   only?: PanelName[];
 }) {
-  const wanted = (p: Panel) => !only || only.some((name) => name in p);
+  // **A panel this file cannot draw is never filtered out.**
+  //
+  // `only` names what to DRAW; it must not double as a list of what may exist.
+  // A fifth `screen_model::Panel` variant — or a rename of one of the four —
+  // matches no name here, and a filter that dropped it would make the panel
+  // VANISH with no message and no failing test: exactly what the raw-JSON
+  // fallback below exists to prevent, defeated on the app's one live render,
+  // which is the only one that passes `only`. So the unknown falls through to
+  // that fallback and shows itself.
+  const wanted = (p: Panel) =>
+    !only || only.some((name) => name in p) || !KNOWN.some((name) => name in p);
   return (
     <>
       {panels.filter(wanted).map((panel, i) => {

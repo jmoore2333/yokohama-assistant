@@ -78,16 +78,19 @@ test("the answer bar is always in view — top of the side column above 1201, bo
   const probe = () =>
     page.evaluate(() => {
       const list = document.querySelector(".decision .options.scrolls");
-      // **What is left inside the deck to compete with the answer list.**
-      // Until W6 this was the applied-move commentary, which moved to the side
-      // column's `Last move` panel — where it cannot squeeze anything, so
-      // reading it there would make this check about the wrong box. The blocks
-      // that remain direct children of `.decision` are the picker instructions
-      // (`place_a`'s selection and live fee, `place_b`'s) and the watching and
-      // locked notices, and those are now the squeeze.
+      // **Prose still inside the deck — recorded beside the list, never gated.**
+      // Until W6 this was the applied-move commentary, and it was the thing that
+      // squeezed the list. It is now in the side column, where it cannot squeeze
+      // anything. What is left as a direct child of `.decision` is the `place_a`
+      // / `place_b` picker instructions and the `watching` / `locked` notices —
+      // and `prompt.kind` is ONE discriminant, so none of those can be on screen
+      // at the same time as an answer list at all. On a screen with a list this
+      // reads 0 by construction. It is kept only because a future prompt kind
+      // that renders both would make it a real figure again, and the reading
+      // says which of the two happened.
       const msgs = document.querySelector(".decision > .messages");
       const commentary = msgs ? Math.round(msgs.getBoundingClientRect().height) : 0;
-      if (!list) return { commentary, rows: 0, height: Infinity, reached: true };
+      if (!list) return { commentary, rows: 0, height: Infinity, clamped: false, clippedBy: 0, reached: true };
       // **Scroll the list to its top before hit-testing its first row.**
       // `.options.scrolls` is a scroll CONTAINER, so once it has been scrolled
       // — which ordinary play does — row 0 sits outside its own clip and
@@ -112,6 +115,13 @@ test("the answer bar is always in view — top of the side column above 1201, bo
         commentary,
         rows: list.querySelectorAll(".option").length,
         height: Math.round(list.getBoundingClientRect().height),
+        // **Was the list actually CLAMPED on this screen?** Its own scroller
+        // overflowing is the evidence that the deck's height budget, not the
+        // list's content, decided how tall it is — which is the pressure the
+        // floor below exists to survive. Without a clamped probe the floor is
+        // a statement about a list that fit.
+        clamped: list.scrollHeight > list.clientHeight,
+        clippedBy: list.scrollHeight - list.clientHeight,
         reached,
       };
     });
@@ -119,16 +129,28 @@ test("the answer bar is always in view — top of the side column above 1201, bo
   const pick = rng(0x5049_4e00); // "PIN"
   let worstList = Infinity;
   let mostCommentary = 0;
+  let clampedProbes = 0;
+  let worstClip = 0;
   let covered: string | null = null;
   for (let i = 0; i < 30; i += 1) {
     const screenNow = await readScreen(page);
     if (screenNow.over) break;
     if ((await act(page, screenNow, pick)) === null) throw await deadEnd(page, game, i);
     const p = await probe();
-    mostCommentary = Math.max(mostCommentary, p.commentary);
+    // **Every figure is folded on the SAME screens the floor is taken on.**
+    // `mostCommentary` used to be folded outside this branch, over probes with
+    // no answer list on them at all, so the old anti-vacuity check and the floor
+    // it claimed to justify were readings of two disjoint sets of screens. A
+    // maximum taken where the thing it is compared against does not exist is not
+    // a measurement of anything.
     if (p.rows > 0) {
       worstList = Math.min(worstList, p.height);
-      if (!p.reached) covered = `move ${i}: the first answer row was covered (list ${p.height}px, commentary ${p.commentary}px)`;
+      mostCommentary = Math.max(mostCommentary, p.commentary);
+      if (p.clamped) {
+        clampedProbes += 1;
+        worstClip = Math.max(worstClip, p.clippedBy);
+      }
+      if (!p.reached) covered = `move ${i}: the first answer row was covered (list ${p.height}px, clipped by ${p.clippedBy}px)`;
     }
   }
 
@@ -144,26 +166,34 @@ test("the answer bar is always in view — top of the side column above 1201, bo
   // Asserted as a FLOOR and a hit test, not as a height: how tall the list is
   // depends on the prompt and on the viewport, but "at least one row, and you
   // can actually press it" holds under any redesign.
+  //
+  // **What applies the pressure changed at W6, and the check has to say so.**
+  // The commentary that used to do the squeezing is in the side column now, and
+  // no prose can share the deck with the answer list any more — `prompt.kind` is
+  // one discriminant and the remaining `.decision > .messages` blocks belong to
+  // the other kinds. What still squeezes the list is the deck's OWN height
+  // budget (45vh, minus the chain, the question and the controls), which is what
+  // clamps it on a long prompt. So the anti-vacuity check is that the list was
+  // really clamped — its scroller overflowing — on at least one probe. That is
+  // what this walk can still establish, and it is what the floor is a floor for.
 
   // The floor, at the worst moment the run actually produced.
   expect(covered, covered ?? "").toBeNull();
   if (worstList !== Infinity) {
     expect(
       worstList,
-      `the answer list was squeezed to ${worstList}px (commentary peaked at ${mostCommentary}px)`,
+      `the answer list was squeezed to ${worstList}px (clipped by up to ${worstClip}px)`,
     ).toBeGreaterThanOrEqual(30);
   }
-  // Anti-vacuity: if nothing inside the deck ever grew beside the answer list,
-  // the squeeze was never on and the floor above proved nothing. Say so rather
-  // than reporting a green run.
   // eslint-disable-next-line no-console
   console.log(
-    `deck under pressure: in-deck prose peaked at ${mostCommentary}px, ` +
-      `answer list bottomed out at ${worstList === Infinity ? "n/a" : `${worstList}px`} (recorded)`,
+    `deck under pressure: answer list bottomed out at ` +
+      `${worstList === Infinity ? "n/a" : `${worstList}px`}, clamped on ${clampedProbes} probe(s), ` +
+      `clipped by up to ${worstClip}px · in-deck prose beside a list peaked at ${mostCommentary}px (all recorded)`,
   );
   expect(
-    mostCommentary,
-    "nothing in this run ever shared the deck with the answer list, so the squeeze was never exercised",
+    clampedProbes,
+    "the answer list was never clamped in this run — nothing squeezed it, so the floor above proved nothing",
   ).toBeGreaterThan(0);
 
   // **Two arms, because the deck has two homes (M5 spec §3.1).** Above 1201 it
