@@ -39,6 +39,15 @@ function tileWidth(ordered: [number, TileModel[]][]): string {
   return "14rem";
 }
 
+/** The id badge's box: the rect's `width` becomes a `min-width`, and the rect's
+ *  horizontal CENTRE becomes the anchor (see the badge's own comment below). */
+const idBadgeStyle: CSSProperties = {
+  left: `${((ID_BADGE.left + ID_BADGE.width / 2) * 100).toFixed(2)}%`,
+  top: pct(ID_BADGE).top,
+  height: pct(ID_BADGE).height,
+  minWidth: pct(ID_BADGE).width,
+};
+
 /** The staggered pyramid, drawn from `grid_position` and nothing else.
  *
  * Row `r` is inset by half a tile, which is exactly the brick offset the
@@ -208,7 +217,18 @@ function Tile({
             />
           </div>
         )}
-        <span className="tile-id" style={pct(ID_BADGE)}>
+        {/* **The rect's width is a FLOOR here, not a ceiling, and that is the
+            whole fix.** The badge's text is a fixed 8.5px while `id_badge.width`
+            is a fraction of `--tile-w`, which drops from 14rem at 2P to 10rem
+            at 4P — so the ground came out at 13.6px holding ~16.3px of "A17",
+            and the last glyph spilled off the dark pill onto the pale print,
+            white on cream and unreadable. (Seen at gate V1; 2P fitted with
+            2.7px to spare, which is why it went unnoticed, and 3P sits on the
+            boundary.) Sizing the ground to its content cannot drift with the
+            tile, where no fixed fraction can be right at every player count.
+            The anchor moves to the rect's own CENTRE so growing the box keeps
+            it centred — derived from the rect, never a written-down 50%. */}
+        <span className="tile-id" style={idBadgeStyle}>
           {id}
         </span>
       </div>

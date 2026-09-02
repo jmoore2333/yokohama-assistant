@@ -253,10 +253,18 @@ button.tile:focus-visible { outline: 2px solid var(--vp); outline-offset: 1px; }
  * default 14rem — so the glyphs overflowed their own dark ground by about
  * 4.7px. That went unseen while the badge sat mid-tile; at W0b's bottom-margin
  * position the overflow runs past the tile's edge and `.tile`'s `overflow:
- * hidden` CUTS THE DIGITS. Measured in Chromium at 1710x900. */
+ * hidden` CUTS THE DIGITS. Measured in Chromium at 1710x900.
+ *
+ * The HORIZONTAL half of the same defect was left standing and gate V1 found
+ * it: `Board.tsx` now anchors the badge at the rect's centre and passes the
+ * rect's width as a `min-width`, so these two rules are what let the ground
+ * grow to hold its text. `translateX(-50%)` re-centres the grown box on that
+ * anchor; the padding keeps the glyphs off the pill's rounded ends. */
 .tile-art-box .tile-id {
   position: absolute; z-index: 3;
+  transform: translateX(-50%);
   display: grid; place-items: center;
+  padding: 0 0.15em;
   font-size: 8.5px; line-height: 1; letter-spacing: 0.04em; color: var(--fg);
   background: rgb(9 11 14 / 0.72); border-radius: 2px;
 }

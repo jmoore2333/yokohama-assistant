@@ -110,7 +110,10 @@ export default defineConfig({
   // has to satisfy. Ignored from the RUN, still checked as a file.
   //
   //     cd web && npm run build && YOKOHAMA_WEB_SHOTS=1 npx playwright test shots.spec.ts
-  testIgnore: process.env.YOKOHAMA_WEB_SHOTS === "1" ? [] : ["**/shots.spec.ts"],
+  testIgnore: [
+    ...(process.env.YOKOHAMA_WEB_SHOTS === "1" ? [] : ["**/shots.spec.ts"]),
+    ...(process.env.YOKOHAMA_WEB_GATES === "1" ? [] : ["**/gates.spec.ts"]),
+  ],
   fullyParallel: false,
   workers: 1,
   // A whole game is hundreds of clicks against a real server. The default 30s
