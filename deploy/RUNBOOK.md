@@ -155,13 +155,35 @@ Recorded on the day: health `{"server_version":"0.5.0","semantics_rev":7,
 `image/png`, create → list → `/at/0` → out-of-range 404, then the smoke game
 deleted.
 
-### 3.3 What to measure on this hardware
+### 3.3 What this costs on the hardware — MEASURED
 
-Ordinary play should be comfortable — most requests are a state clone and a JSON
-encode. **`suggest` and `why` run a real search** and are where an Atom C2538
-will show. Time one and write the figure down beside the machine, as this repo
-does with every other wall figure. That measurement is the input to the Modal
-decision below, and nobody has taken it yet.
+Taken 2026-09-01 against the running container on the NAS (Atom C2538, 4 cores,
+kernel 3.10.108). **Wall figures are per-machine; this machine is the NAS, not
+M5 and not the WSL box.**
+
+| | Reading |
+|---|---|
+| Resident memory, idle | **1.0 MB** (`rss` 1,069,056) |
+| Resident memory, after two bot searches | **1.2 MB** (`rss` 1,191,936) |
+| Total container usage incl. page cache | 9.8 MB idle, 12.0 MB peak |
+| Container image | 19 MB |
+| **`suggest` — a full search, 186 ranked candidates** | **0.45 s / 0.57 s** over two runs, through the tunnel |
+| CPU with nobody playing | ~0 |
+
+**This settles the Modal question, and the answer is no.** The expectation going
+in was that `suggest` and `why` would be where a 2014 Atom showed; half a second
+for a 186-candidate search is comfortable, and the milestone's own e2e walk
+plays whole games against this same binary. **The NAS is sufficient. Modal is a
+solution to a problem this workload does not have** — §4 stays as a documented
+upgrade path and should not be acted on without a reason that is not
+performance.
+
+The memory figure is worth stating plainly because it is easy to disbelieve:
+**a little over one megabyte resident.** A static musl binary with no runtime,
+no garbage collector, no interpreter and no database, whose largest in-memory
+object is one `GameState`. The 12 MB total is mostly page cache for the files it
+serves. Any hosting decision that turns on RAM is not a decision about this
+program.
 
 ---
 
@@ -178,7 +200,8 @@ that a Modal endpoint is world-reachable by default: without
 an Access policy in front would protect nothing, since anyone with the
 `*.modal.run` URL could skip it.
 
-Neither is deployed. The NAS is serving the product today.
+Neither is deployed. The NAS is serving the product today, and §3.3's
+measurement says it should go on doing so.
 
 ---
 
