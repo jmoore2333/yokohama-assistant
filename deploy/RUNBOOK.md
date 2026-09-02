@@ -221,9 +221,9 @@ tools:
 | | Bytes |
 |---|---|
 | `index.html` | 719 |
-| `assets/index-*.js` | 268,982 |
+| `assets/index-*.js` | 269,033 (`index-Ba9C5aPH.js`, the bundle the `0.5.0-m5.1` image ships) |
 | `assets/index-*.css` | 27,368 |
-| **First paint, total** | **297,069 (0.30 MB / 290 KiB)** |
+| **First paint, total** | **297,120 (0.30 MB / 290 KiB)** |
 | Card art at `/art` | 7,552 KiB across 132 files = 7.7 MB (7.4 MiB), fetched per area actually rendered |
 | Help screenshots | 4,199,746 B across 5 files = 4.2 MB (4.0 MiB) (M5 W7: re-shot at 1710×869, a fifth picture added), and only if the panel is opened |
 
@@ -289,6 +289,18 @@ workstation, with the numbers that changed:
   as a 1710×869 image. The old image `yokohama-web:0.5.0` is still on the
   NAS, which is the rollback (§5).
 - **Downtime:** the seconds between `stop` and `start`; nobody was playing.
+
+**Addendum, the same day (19:30Z): `yokohama-web:0.5.0-m5.1`.** The final
+whole-branch review's fix wave (`1e85404`…`ca982ea`: a stale reply for a game
+you have switched away from is dropped, the Game menu waits while a move is in
+flight, deleting a saved game takes two clicks, and the review's minors) was
+redeployed by the same recipe so the live site carries the two safety fixes:
+context 13,879,136 B, image **25,950,515 B** built in ~10 s, the `0.5.0-m5`
+container stopped and removed, the new one created with the same body, same
+address (172.21.0.4), **healthy at 46 s**, and the tunnel serving the wave's
+bundle `index-Ba9C5aPH.js` (which exists only in this build). Three tags now
+sit on the NAS — `0.5.0`, `0.5.0-m5`, `0.5.0-m5.1` — each a rollback point
+(§5). §3.4's first-paint rows above are measured from exactly this build.
 
 ---
 
