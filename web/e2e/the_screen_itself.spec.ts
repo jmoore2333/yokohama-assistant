@@ -229,6 +229,10 @@ test("the answer bar is always in view — top of the side column above 1201, bo
     const r = await readDeck();
     expect(Math.abs(r.bottom - r.innerHeight), `the deck is not against the bottom edge at scrollY ${y}`).toBeLessThanOrEqual(1);
     expect(r.top, `the deck runs off the top of the viewport at scrollY ${y}`).toBeGreaterThanOrEqual(0);
+    // The same floor Arm 1 takes, and Arm 2 needs it for a second reason: a deck
+    // whose every control is outside `.options.scrolls`'s clip reads `[]` here,
+    // and "nothing is covered" over an empty list is not a fact about the screen.
+    expect(r.reachable.length, `no control in the deck at scrollY ${y}`).toBeGreaterThan(0);
     expect(r.reachable.filter((c) => !c.reached).map((c) => c.name), `controls covered at scrollY ${y}`).toEqual([]);
   }
   expect(watch.failures).toEqual([]);
