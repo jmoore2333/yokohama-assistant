@@ -247,11 +247,15 @@ export function SiteCardView({
 
 /** The printed building-site card with what is BUILT drawn on it.
  *
- *  The overlay rects are MEASURED (`styles.css`'s `.site-space.slot-*`): each
- *  of the 24 site arts minus its own 9px box blur, averaged, so the printed
- *  rule survives and every card's own content cancels. An unbuilt space draws
- *  NOTHING, so the printed card reads exactly as it does on the table. Shared by
- *  the building-sites strip and, since M5, by every tile. */
+ *  The face is LANDSCAPE since W0b — the 5x5 sheet stored the cards a quarter
+ *  turn clockwise and the generator now turns them back, so nothing that draws
+ *  this draws it on its side. The overlay rects are MEASURED (`styles.css`'s
+ *  `.site-space.slot-*`): each of the 24 site arts minus its own 9px box blur,
+ *  averaged, so the printed rule survives and every card's own content cancels
+ *  — and REMAPPED at W0b by the same quarter turn, because the KB's TL/TR/ML/MR
+ *  slot names were transcribed in the sheet's sideways frame. An unbuilt space
+ *  draws NOTHING, so the printed card reads exactly as it does on the table.
+ *  Shared by the building-sites strip and, since M5, by every tile. */
 export function SiteFace({
   art,
   site,

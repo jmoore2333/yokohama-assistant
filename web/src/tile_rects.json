@@ -7,7 +7,7 @@
   },
   "overlays": {
     "site_card": { "left": 0.5, "top": 0.032, "width": 0.475, "height": 0.42 },
-    "pieces": { "left": 0.595, "top": 0.462, "width": 0.375, "height": 0.123 },
-    "id_badge": { "left": 0.5, "top": 0.462, "width": 0.085, "height": 0.07 }
+    "pieces": { "left": 0.5, "top": 0.462, "width": 0.47, "height": 0.123 },
+    "id_badge": { "left": 0.4575, "top": 0.915, "width": 0.085, "height": 0.07 }
   }
 }

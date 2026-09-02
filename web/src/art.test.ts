@@ -107,28 +107,47 @@ describe("the 5-Power face", () => {
 });
 
 describe("the manifest's shapes (M5, W0)", () => {
-  // The three achievement sheets store their cards SIDEWAYS; the generator
-  // rotates them a quarter turn counter-clockwise before emitting, so a
-  // landscape entry is the proof the rotation happened and a portrait one is
-  // the old crop drawn on its side in the rail.
-  it("achievements are landscape and every other card is portrait", () => {
+  // The three achievement sheets and the building-site sheet store their cards
+  // SIDEWAYS; the generator rotates them a quarter turn counter-clockwise
+  // before emitting, so a landscape entry is the proof the rotation happened
+  // and a portrait one is the old crop drawn on its side wherever it is drawn
+  // unrotated (the sites drawer, the card index, the tile).
+  it("achievements and sites are landscape; orders and techs are portrait", () => {
     const m = wire.artManifest;
-    for (const [key, e] of Object.entries(m.achievements)) {
-      expect(e.w, `achievements/${key} is ${e.w}x${e.h}, not landscape`).toBeGreaterThan(e.h);
+    for (const [family, entries] of [
+      ["achievements", m.achievements],
+      ["sites", m.sites],
+    ] as const) {
+      for (const [key, e] of Object.entries(entries)) {
+        expect(e.w, `${family}/${key} is ${e.w}x${e.h}, not landscape`).toBeGreaterThan(e.h);
+      }
     }
-    for (const family of [m.orders, m.techs, m.sites]) {
-      for (const [key, e] of Object.entries(family)) {
-        expect(e.h, `${key} is ${e.w}x${e.h}, not portrait`).toBeGreaterThan(e.w);
+    for (const [family, entries] of [
+      ["orders", m.orders],
+      ["techs", m.techs],
+    ] as const) {
+      for (const [key, e] of Object.entries(entries)) {
+        expect(e.h, `${family}/${key} is ${e.w}x${e.h}, not portrait`).toBeGreaterThan(e.w);
       }
     }
   });
 
   // Source widths, so the fit rule's 22rem ceiling is the art's native width on
-  // a 2x display rather than a 1.6x upsample of a 440px crop.
+  // a 2x display rather than a 1.6x upsample of a 440px crop. Every entry, not
+  // the first: one family emitted at two widths would read as current from its
+  // first key alone.
   it("is cut at source width", () => {
     const m = wire.artManifest;
-    expect(Object.values(m.areas)[0]!.w).toBe(709);
-    expect(Object.values(m.orders)[0]!.w).toBe(530);
-    expect(Object.values(m.achievements)[0]!.w).toBe(799);
+    for (const [family, entries, width] of [
+      ["areas", m.areas, 709],
+      ["orders", m.orders, 530],
+      ["techs", m.techs, 530],
+      ["sites", m.sites, 799],
+      ["achievements", m.achievements, 799],
+    ] as const) {
+      for (const [key, e] of Object.entries(entries)) {
+        expect(e.w, `${family}/${key} is cut at ${e.w}`).toBe(width);
+      }
+    }
   });
 });

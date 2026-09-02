@@ -218,16 +218,19 @@ against the built client at HEAD:
 | `assets/index-*.js` | 259,187 |
 | `assets/index-*.css` | 23,324 |
 | **First paint, total** | **283,230 (277 KiB)** |
-| Card art at `/art` | 7.3 MB across 132 files, fetched per area actually rendered |
+| Card art at `/art` | 7.7 MB across 132 files, fetched per area actually rendered |
 | Help screenshots | 1.9 MB, and only if the panel is opened |
 
-Re-measured at M5 (W0): the crops are now cut at source width (709px tiles,
-530px cards, 799px landscape achievements), which took the art from 3.0 MB to
-7.3 MB across the same 132 files; the per-session figures above scale
-accordingly.
+Re-measured at M5 (W0, then W0b): the crops are now cut at source width (709px
+tiles, 530px cards, 799px landscape achievements, and the 24 site cards turned
+landscape at W0b), which took the art from 3.0 MB to 7.7 MB across the same 132
+files; the per-session figures above scale accordingly. W0b itself is worth
+only +28 KiB — the same pixels, re-compressed after the quarter turn — so the
+step from the 7.3 MB this section first printed is mostly a UNIT correction:
+`du -sk` reads KiB, and 7,552 KiB is 7.4 MiB but 7.7 MB.
 
 So a session that opens help and renders every area in the product pulls about
-**9.5 MB**, up from about 5. An ordinary session's art is now fetched at ~57
+**10.0 MB**, up from about 5. An ordinary session's art is now fetched at ~57
 KiB per file instead of ~23 — every file **~2.5x** heavier than before this
 re-cut — so "well under 1 MB" is no longer a safe claim; the true total
 depends on how much of the board and hand a given game actually renders.

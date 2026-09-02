@@ -395,16 +395,18 @@ mod tests {
     /// aspect here means the crop geometry moved, not that a constant was
     /// mistyped. Half a pixel of rounding is allowed and one whole one is not.
     ///
-    /// The ACHIEVEMENTS are the one family stored sideways on their sheets and
-    /// rotated by the generator (M5, `docs/plans/2026-09-01-web-frontend-m5-spec.md`
-    /// §2), so they keep the cell's aspect turned on its side: 799x530.
+    /// The ACHIEVEMENTS and the BUILDING SITES are the two families stored
+    /// sideways on their sheets and rotated by the generator (the achievements
+    /// at M5, `docs/plans/2026-09-01-web-frontend-m5-spec.md` §2; the sites were
+    /// found the same way at W4b and recorded in the M5 close), so both keep the
+    /// cell's aspect turned on its side: 799x530.
     #[test]
     fn emitted_art_keeps_the_sheet_aspect() {
         let (_, m) = committed();
         for (family, entries, (cw, ch)) in [
             ("orders", &m.orders, (530.0, 799.0)),
             ("techs", &m.techs, (530.0, 799.0)),
-            ("sites", &m.sites, (530.0, 799.0)),
+            ("sites", &m.sites, (799.0, 530.0)),
             ("achievements", &m.achievements, (799.0, 530.0)),
             ("areas", &m.areas, (709.0, 531.0)),
         ] {

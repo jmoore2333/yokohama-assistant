@@ -1,4 +1,4 @@
-// The overlay geometry: four rects an area tile draws its pieces in, and the
+// The overlay geometry: three rects an area tile draws its pieces in, and the
 // four printed regions none of them may touch.
 
 import { describe, expect, it } from "vitest";
@@ -28,8 +28,8 @@ describe("the overlay geometry", () => {
     }
   });
 
-  // The site card is a 530x799 portrait card laid on its side, so its box on a
-  // 709x531 tile must be 799:530 or the printed spaces stretch.
+  // The site card is a landscape 799x530 card, so its box on a 709x531 tile
+  // must be 799:530 or the printed spaces stretch.
   it("the site card keeps the printed card's aspect on its side", () => {
     const boxAspect = (SITE_CARD.width * 709) / (SITE_CARD.height * 531);
     expect(Math.abs(boxAspect - 799 / 530)).toBeLessThan(0.02);
@@ -45,6 +45,6 @@ describe("the overlay geometry", () => {
   });
 
   it("renders a rect as inline percentages", () => {
-    expect(pct(ID_BADGE)).toEqual({ left: "50.00%", top: "46.20%", width: "8.50%", height: "7.00%" });
+    expect(pct(ID_BADGE)).toEqual({ left: "45.75%", top: "91.50%", width: "8.50%", height: "7.00%" });
   });
 });

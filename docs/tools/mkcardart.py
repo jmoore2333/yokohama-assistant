@@ -94,12 +94,20 @@ OUT = ROOT / "crates" / "yokohama-web" / "assets" / "art"
 CARD_W = 530
 TILE_W = 709
 # The achievement cards are LANDSCAPE on the table and stored SIDEWAYS on their
-# three sheets — every numeral reads a quarter turn clockwise. Rotated
+# three sheets — the first of the two families that are, the building sites
+# below being the other; every numeral reads a quarter turn clockwise. Rotated
 # counter-clockwise before emit, so the crop is a right-side-up 799x530 face and
 # nothing downstream has to know how the sheet was scanned. PIL's `rotate` is
 # counter-clockwise for a positive angle.
 ACH_W = 799
 ACH_ROTATE_CCW = 90
+# The building-site cards are landscape too — two columns of reward spaces and
+# the trading-house column on the right — and their 5x5 sheet stores them the
+# same quarter turn clockwise (found at M5's W4b: rotated back, the pawn icon
+# stands head-up, the house roof points up, the digits read). Same fix as the
+# achievements, so no client draws a site card on its side.
+SITE_W = 799
+SITE_ROTATE_CCW = 90
 QUALITY = 82
 
 # --- the sheets, and how they divide -------------------------------------
@@ -346,6 +354,8 @@ def main() -> None:
             "tile_width": TILE_W,
             "achievement_width": ACH_W,
             "achievement_rotation_ccw": ACH_ROTATE_CCW,
+            "site_width": SITE_W,
+            "site_rotation_ccw": SITE_ROTATE_CCW,
             "webp_quality": QUALITY,
         }
     }
@@ -381,7 +391,8 @@ def main() -> None:
     for i, card in enumerate(yaml.safe_load((KB / "09-building-sites.yaml").read_text())["building_sites"]):
         r, c = (int(x) for x in card["position"].split(","))
         crop = sheet.crop(cell_box(sheet.size, cols, rows, r, c))
-        sites[str(i)] = em.emit(crop, CARD_W, f"sites/S{i:02d}.webp")
+        face = crop.rotate(SITE_ROTATE_CCW, expand=True)
+        sites[str(i)] = em.emit(face, SITE_W, f"sites/S{i:02d}.webp")
     manifest["sites"] = sites
 
     # --- achievements -----------------------------------------------------

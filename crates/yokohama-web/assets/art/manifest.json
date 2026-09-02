@@ -439,129 +439,131 @@
   "generator": "docs/tools/mkcardart.py",
   "positions": "analysis-1/yokohama-kb/0{7,8,9}-*.yaml",
   "sheets": "tts-assets/organized/",
+  "site_rotation_ccw": 90,
+  "site_width": 799,
   "tile_width": 709,
   "webp_quality": 82
  },
  "sites": {
   "0": {
    "file": "sites/S00.webp",
-   "h": 799,
-   "w": 530
+   "h": 530,
+   "w": 799
   },
   "1": {
    "file": "sites/S01.webp",
-   "h": 799,
-   "w": 530
+   "h": 530,
+   "w": 799
   },
   "10": {
    "file": "sites/S10.webp",
-   "h": 799,
-   "w": 530
+   "h": 530,
+   "w": 799
   },
   "11": {
    "file": "sites/S11.webp",
-   "h": 799,
-   "w": 530
+   "h": 530,
+   "w": 799
   },
   "12": {
    "file": "sites/S12.webp",
-   "h": 799,
-   "w": 530
+   "h": 530,
+   "w": 799
   },
   "13": {
    "file": "sites/S13.webp",
-   "h": 799,
-   "w": 530
+   "h": 530,
+   "w": 799
   },
   "14": {
    "file": "sites/S14.webp",
-   "h": 799,
-   "w": 530
+   "h": 530,
+   "w": 799
   },
   "15": {
    "file": "sites/S15.webp",
-   "h": 799,
-   "w": 530
+   "h": 530,
+   "w": 799
   },
   "16": {
    "file": "sites/S16.webp",
-   "h": 799,
-   "w": 530
+   "h": 530,
+   "w": 799
   },
   "17": {
    "file": "sites/S17.webp",
-   "h": 799,
-   "w": 530
+   "h": 530,
+   "w": 799
   },
   "18": {
    "file": "sites/S18.webp",
-   "h": 799,
-   "w": 530
+   "h": 530,
+   "w": 799
   },
   "19": {
    "file": "sites/S19.webp",
-   "h": 799,
-   "w": 530
+   "h": 530,
+   "w": 799
   },
   "2": {
    "file": "sites/S02.webp",
-   "h": 799,
-   "w": 530
+   "h": 530,
+   "w": 799
   },
   "20": {
    "file": "sites/S20.webp",
-   "h": 799,
-   "w": 530
+   "h": 530,
+   "w": 799
   },
   "21": {
    "file": "sites/S21.webp",
-   "h": 799,
-   "w": 530
+   "h": 530,
+   "w": 799
   },
   "22": {
    "file": "sites/S22.webp",
-   "h": 799,
-   "w": 530
+   "h": 530,
+   "w": 799
   },
   "23": {
    "file": "sites/S23.webp",
-   "h": 799,
-   "w": 530
+   "h": 530,
+   "w": 799
   },
   "3": {
    "file": "sites/S03.webp",
-   "h": 799,
-   "w": 530
+   "h": 530,
+   "w": 799
   },
   "4": {
    "file": "sites/S04.webp",
-   "h": 799,
-   "w": 530
+   "h": 530,
+   "w": 799
   },
   "5": {
    "file": "sites/S05.webp",
-   "h": 799,
-   "w": 530
+   "h": 530,
+   "w": 799
   },
   "6": {
    "file": "sites/S06.webp",
-   "h": 799,
-   "w": 530
+   "h": 530,
+   "w": 799
   },
   "7": {
    "file": "sites/S07.webp",
-   "h": 799,
-   "w": 530
+   "h": 530,
+   "w": 799
   },
   "8": {
    "file": "sites/S08.webp",
-   "h": 799,
-   "w": 530
+   "h": 530,
+   "w": 799
   },
   "9": {
    "file": "sites/S09.webp",
-   "h": 799,
-   "w": 530
+   "h": 530,
+   "w": 799
   }
  },
  "techs": {

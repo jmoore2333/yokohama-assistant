@@ -67,6 +67,9 @@
    * reserves the box from these so a slow image never reflows the board. */
   --card-aspect: 530 / 799;
   --tile-aspect: 709 / 531;
+  /* The achievements and the building sites are LANDSCAPE cards, stored
+   * sideways on their sheets and turned upright by the generator (W0, W0b). */
+  --wide-card-aspect: 799 / 530;
 }
 
 @media (prefers-color-scheme: light) {
@@ -243,36 +246,51 @@ button.tile:focus-visible { outline: 2px solid var(--vp); outline-offset: 1px; }
  * `Surfaces.tsx` prints it inline in the Areas heading and the site-card
  * caption — so absolutely positioning the bare selector would pull both of
  * those out of flow. The base rule above still dresses those two; this one
- * overrides colour and size for the badge on the art. */
+ * overrides colour and size for the badge on the art.
+ *
+ * `line-height: 1` is load-bearing, not tidying. The inherited 1.5 makes the
+ * line box 12.75px inside a rect that is 0.07 of the tile — 8.3px at the
+ * default 14rem — so the glyphs overflowed their own dark ground by about
+ * 4.7px. That went unseen while the badge sat mid-tile; at W0b's bottom-margin
+ * position the overflow runs past the tile's edge and `.tile`'s `overflow:
+ * hidden` CUTS THE DIGITS. Measured in Chromium at 1710x900. */
 .tile-art-box .tile-id {
   position: absolute; z-index: 3;
   display: grid; place-items: center;
-  font-size: 8.5px; letter-spacing: 0.04em; color: var(--fg);
+  font-size: 8.5px; line-height: 1; letter-spacing: 0.04em; color: var(--fg);
   background: rgb(9 11 14 / 0.72); border-radius: 2px;
 }
-/* The site card: a landscape box holding the PORTRAIT face turned a quarter
- * turn. The inner face's width is the box's height (530/799 of its width), it is
- * centred, and the rotation is what lays it flat — so the measured
- * `.site-space` rects inside it turn with it and a built mark lands on the
- * printed space it names. */
+/* The site card fills its landscape box — no rotation since W0b turned the
+ * crops upright — so the remapped `.site-space` rects land on the printed
+ * spaces and the built glyph stands up. */
 .site-on-tile { position: absolute; z-index: 1; }
 .site-on-tile > .site-face {
-  position: absolute; left: 50%; top: 50%;
-  width: calc(100% * 530 / 799);
-  aspect-ratio: 360 / 543;
-  transform: translate(-50%, -50%) rotate(-90deg);
+  position: absolute; inset: 0; aspect-ratio: auto;
   border: 1px solid rgb(0 0 0 / 0.5); border-radius: 2px;
   box-shadow: 0 1px 3px rgb(0 0 0 / 0.5); background: var(--bg-sunken);
 }
-.pieces-band { position: absolute; z-index: 2; display: flex; align-items: center; }
-.pieces { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 3%; width: 100%; height: 100%; }
+/* The row is a size container so the glyph height can follow BOTH its height
+ * and its width: `--piece-n` (Pieces.tsx) is the number of glyph widths standing
+ * in it, 0.8 the widest glyph's width/height, 0.92 the room left after gaps.
+ * Few pieces stand at the row's full height; a 4P crowd shrinks to one row
+ * rather than wrapping onto the ladder (owner ruling R-G3). `overflow: hidden`
+ * is the belt under that rule: before it, `flex-wrap: wrap` and no clip put a
+ * crowded tile's pieces on the printed ladder and over the 5-Power token
+ * silently, since `.tile`'s own clip hides the spill from the page-overflow
+ * gate. Clipping a pixel of drop shadow is the accepted cost; pieces over the
+ * ladder is not. */
+.pieces-band { position: absolute; z-index: 2; display: flex; align-items: center; container-type: size; overflow: hidden; }
+.pieces {
+  display: flex; flex-wrap: nowrap; align-items: flex-end; gap: 2%; width: 100%; height: 100%;
+  --piece-h: min(100cqh, calc(0.92 * 100cqw / (var(--piece-n, 1) * 0.8)));
+}
 .piece-group { display: inline-flex; align-items: flex-end; gap: 1px; height: 100%; }
 /* An inline `<svg>` with a viewBox and no width/height is a replaced element at
  * the CSS default 300x150px — about fourteen times the height of this band — so
  * these three rules are what SIZE the pieces, not what tidies them. */
-.piece { height: 100%; width: auto; filter: drop-shadow(0 1px 1px rgb(0 0 0 / 0.6)); }
-.piece.cube { height: 72%; }
-.piece.station { height: 80%; border-radius: 2px; }
+.piece { height: var(--piece-h); width: auto; filter: drop-shadow(0 1px 1px rgb(0 0 0 / 0.6)); }
+.piece.cube { height: calc(var(--piece-h) * 0.72); }
+.piece.station { height: calc(var(--piece-h) * 0.8); border-radius: 2px; }
 .piece-n { font-size: 9px; font-weight: 700; color: #fff; text-shadow: 0 1px 2px #000; line-height: 1; }
 /* Visually hidden, present to assistive technology. */
 .sr-only {
@@ -350,6 +368,9 @@ button.tile:focus-visible { outline: 2px solid var(--vp); outline-offset: 1px; }
   width: 100%; aspect-ratio: var(--card-aspect); object-fit: cover;
   border-radius: 2px; display: block; background: #000;
 }
+/* The building-site index draws the same landscape face (`Index.tsx` renders
+ * `figure.card-face.site.sm`), so its reserved box turns with the art. */
+.card-face.site img, .card-face.site .card-blank { aspect-ratio: var(--wide-card-aspect); }
 .panel .card-face.achievement { width: 100%; flex-direction: row; align-items: flex-start; gap: 0.5rem; }
 /* 5.2rem → 3.4rem. Measured page-height saving: −130px at 2P, −100 at 3P, −50
  * at 4P. The rail is the term that sets the page height (`.stage` is
@@ -941,25 +962,29 @@ table.track-table .occ.dummy { color: var(--fg-faint); font-weight: 400; font-st
 }
 .site-card { margin: 0; display: flex; flex-direction: column; gap: 0.3rem; }
 .site-face {
-  position: relative; aspect-ratio: 360 / 543;
+  position: relative; aspect-ratio: var(--wide-card-aspect);
   border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden;
   background: var(--bg-sunken);
 }
 .site-face img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .site-card figcaption { font-size: 11px; color: var(--fg-dim); }
 
-/* The four printed spaces and the trading-house band, as measured. An unbuilt
- * space draws NOTHING — the printed card then reads exactly as it does on the
- * table, which is the point of showing the card at all. */
 .site-space, .site-trading-house {
   position: absolute; display: grid; place-items: center;
   border-radius: 3px; pointer-events: none;
 }
-.site-space.slot-0 { left: 2%;  top: 2%;    width: 46%; height: 32%; }  /* TL */
-.site-space.slot-1 { left: 52%; top: 2%;    width: 46%; height: 32%; }  /* TR */
-.site-space.slot-2 { left: 2%;  top: 36.5%; width: 46%; height: 27%; }  /* ML */
-.site-space.slot-3 { left: 52%; top: 36.5%; width: 46%; height: 27%; }  /* MR */
-.site-trading-house { left: 2%; top: 66%; width: 96%; height: 32%; }
+/* The four printed spaces and the trading-house column, as measured at M3.5
+ * and MAPPED at M5's W0b. The KB's slot names TL/TR/ML/MR were transcribed in
+ * the sheet's SIDEWAYS frame (the scan stores the card a quarter turn
+ * clockwise); the physical card is landscape — three columns, two rows:
+ * [TR, MR, house] over [TL, ML, ★VP]. Each rect below is M3.5's measured
+ * portrait-frame rect under the exact counter-clockwise turn
+ * (l, t, w, h) → (t, 1 − l − w, h, w). An unbuilt space draws NOTHING. */
+.site-space.slot-0 { left: 2%;    top: 52%; width: 32%; height: 46%; }  /* TL → bottom-left  */
+.site-space.slot-1 { left: 2%;    top: 2%;  width: 32%; height: 46%; }  /* TR → top-left     */
+.site-space.slot-2 { left: 36.5%; top: 52%; width: 27%; height: 46%; }  /* ML → bottom-middle */
+.site-space.slot-3 { left: 36.5%; top: 2%;  width: 27%; height: 46%; }  /* MR → top-middle    */
+.site-trading-house { left: 66%;  top: 2%;  width: 32%; height: 96%; }  /* the right column   */
 .site-space.built, .site-trading-house.built {
   background: rgb(9 11 14 / 0.62);
   box-shadow: inset 0 0 0 2px currentColor;

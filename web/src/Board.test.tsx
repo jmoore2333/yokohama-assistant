@@ -236,9 +236,11 @@ describe("a historical board", () => {
 
 // ---- M5: the tile is the art, and the pieces sit on it -------------------
 //
-// The caption is gone. What it said in words now rides in `.sr-only` spans and
-// on the pieces' accessible name, and what it said in glyphs is drawn where the
-// physical piece stands. jsdom still has no layout, so these cells assert the
+// The caption is gone. What it said in words rides in `.sr-only` spans and on
+// the pieces' own accessible name on the INERT `<div>`, and in the `aria-label`
+// on the clickable `<button>` (which suppresses both) — see `Board.tsx`'s own
+// paragraph on the split. What it said in glyphs is drawn where the physical
+// piece stands. jsdom still has no layout, so these cells assert the
 // DECLARATIONS — the overlay is present, it carries the rect the shared JSON
 // names, the built marks carry the builder's seat class — which is exactly what
 // a regression would delete.

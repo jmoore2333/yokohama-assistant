@@ -6,6 +6,7 @@
 // fifth seat colour is one CSS rule and not a new picture. Everything the old
 // caption said in words rides on the group's accessible name.
 
+import type { CSSProperties } from "react";
 import type { ArtManifest, PlayerColor, PlayerId } from "./types";
 import { seatClass } from "./Cards";
 import { tokenArt } from "./art";
@@ -64,8 +65,16 @@ export function Pieces({
   const words = piecesWords(presidents, assistants, hasStation, colors);
   if (!words) return null;
   const station = tokenArt(art, "station");
+  // How many glyph widths stand in the row, which is what the band's CSS needs
+  // to shrink them to fit rather than wrap (owner ruling R-G3): one per
+  // president, one per assistant up to three, TWO from four (the cube plus its
+  // count), one for the Station.
+  const n =
+    presidents.length +
+    assistants.filter(([, k]) => k > 0).reduce((s, [, k]) => s + (k > 3 ? 2 : k), 0) +
+    (hasStation ? 1 : 0);
   return (
-    <div className="pieces" role="img" aria-label={words}>
+    <div className="pieces" role="img" aria-label={words} style={{ "--piece-n": n } as CSSProperties}>
       {presidents.map((seat) => (
         <span key={`p${seat}`} className={`piece-group ${seatClass(colors[seat])}`}>
           <PresidentIcon />

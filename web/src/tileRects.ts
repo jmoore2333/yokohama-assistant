@@ -21,8 +21,16 @@
 // real right edge, so it is floored at 0.5. That leaves left=0.5, top≈0.032,
 // right≈0.975, bottom≈0.495 (Laboratory's tower is the tightest art on both
 // of the last two); SITE_CARD is the largest 799:530 box that fits inside it,
-// anchored top-right. PIECES and ID_BADGE then share one row directly under
-// the card, ID_BADGE at its left end.
+// anchored top-right — and it holds a LANDSCAPE 799x530 card, since W0b turned
+// the site crops upright to match the printing.
+//
+// PIECES then takes the FULL width under the card, and its glyphs shrink to fit
+// (owner ruling R-G3, 2026-09-02, on the first tile picture: "three or four
+// assistants from multiple colors is a real probability, especially in games
+// over 2p but even in 2p games"). That displaced ID_BADGE, which now sits in
+// the tile's bottom margin, centred under the ladder — the one unprinted strip
+// left, since bottom-right carries Port and Dock's HIGH ★3 bonus and
+// bottom-left the tiny printed area name.
 
 import rects from "./tile_rects.json";
 

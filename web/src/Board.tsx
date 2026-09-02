@@ -126,12 +126,14 @@ function Tile({
 
   // **The tile is the art, and the pieces sit on it where the physical ones do**
   // (M5 spec §3.2, owner ruling R4). No caption: the printed title IS the name,
-  // the site card lies rotated over the top-right quarter as in the owner's
-  // photograph, the pieces stand in the band below it, the id badge sits at the
-  // left end of the pieces row under the site card, and the 5-Power token sits
-  // in its printed slot. Every rect comes from `tile_rects.json`, never typed
-  // here. What the caption used to say in words now rides in `.sr-only` spans
-  // and on the pieces' accessible name, so nothing a screen reader had is gone.
+  // the site card lies upright over the top-right quarter as in the owner's
+  // photograph (W0b turned the crops, so nothing here rotates it), the pieces
+  // stand in the full-width band below it, the id badge sits in the tile's
+  // bottom margin centred under the ladder, and the 5-Power token sits in its
+  // printed slot. Every rect comes from `tile_rects.json`, never typed here.
+  // What the caption used to say in words is not gone to a screen reader, but
+  // WHERE it rides depends on the element — which is the next paragraph, and it
+  // is not one answer.
   // **The facts the caption used to carry, worded ONCE and spent twice.**
   //
   // On the inert `<div>` a screen reader walks the subtree, so these ride as
@@ -197,8 +199,10 @@ function Tile({
     </>
   );
 
-  // **The prefix is load-bearing and stays first**: the browser harness and four
-  // component cells find a tile by `^A\d\d `.
+  // **The prefix is load-bearing and stays first**: five component cells find a
+  // tile by `^A\d\d ` — `App.test.tsx`'s `tile()` helper, used four times, and
+  // the disabled-board cell in `Board.test.tsx`. NOT the browser harness, which
+  // selects `button.tile:not([disabled])` by CSS and never reads the label.
   const label = [
     `${id} ${name}${isSelected ? " — selected" : ""}`,
     ...(pieces ? [pieces] : []),

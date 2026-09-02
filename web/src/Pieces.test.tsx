@@ -58,4 +58,16 @@ describe("the pieces on a tile", () => {
     const without = render(<Pieces presidents={[]} assistants={[]} hasStation colors={COLORS} art={null} />);
     expect(without.container.querySelector(".chip.station")?.textContent).toBe("St");
   });
+
+  // The band's CSS shrinks the glyphs to fit the row (M5, owner ruling R-G3:
+  // "three or four assistants from multiple colors is a real probability"), and
+  // it needs the glyph count to do it: a pawn per president, a cube per
+  // assistant up to three, a cube plus its count (two widths) from four, the
+  // Station once.
+  it("tell the band how many glyphs stand in it", () => {
+    const n = (el: HTMLElement) => el.querySelector<HTMLElement>(".pieces")!.style.getPropertyValue("--piece-n");
+    expect(n(render(<Pieces presidents={[0]} assistants={[[0, 0], [1, 3]]} hasStation={false} colors={COLORS} art={wire.artManifest} />).container)).toBe("4");
+    expect(n(render(<Pieces presidents={[]} assistants={[[0, 4], [1, 0]]} hasStation={false} colors={COLORS} art={wire.artManifest} />).container)).toBe("2");
+    expect(n(render(<Pieces presidents={[0, 1]} assistants={[[0, 2], [1, 1]]} hasStation colors={COLORS} art={wire.artManifest} />).container)).toBe("6");
+  });
 });
