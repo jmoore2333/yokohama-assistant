@@ -1,7 +1,7 @@
 // The session control in the banner: saved games, new game, no reload.
 
 import { readFileSync } from "node:fs";
-import { screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import { renderApp } from "./test/harness";
@@ -56,5 +56,33 @@ describe("the Game menu", () => {
     for (const f of ["App.tsx", "GameMenu.tsx"]) {
       expect(readFileSync(new URL(`./${f}`, here), "utf8")).not.toMatch(/location\.reload/);
     }
+  });
+
+  // **The same defect the app guards at its two other mutation controls**, in the
+  // one place M5 added: `App`'s `inFlight` and `NewGame`'s carry the reasoning.
+  // React batches, so two clicks in the same tick both read the guard's STATE as
+  // false; the request that answers last wins, and it is not the one clicked
+  // last. `fireEvent` twice inside one `act` is the only shape that reproduces
+  // it — two `userEvent` clicks each flush, and the row is already `disabled`.
+  it("a double-clicked saved game is fetched once", async () => {
+    const other = { ...wire.options4p, id: "sim-other" };
+    const stub = await renderApp(wire.options, (call) => {
+      if (call.method === "GET" && call.path.endsWith("/api/games")) return [wire.options.id, "sim-other"];
+      if (call.method === "GET" && call.path.endsWith("/api/games/sim-other")) return other;
+      return undefined;
+    });
+    await userEvent.setup().click(screen.getByText(new RegExp(wire.options.id)));
+    const row = await screen.findByRole("button", { name: "sim-other" });
+    // The GAME, not its board panels: `matching` is a substring test, and the
+    // switched-to game's `/ports` and `/labs` fetches contain the id too.
+    const gets = () =>
+      stub.calls.filter((c) => c.method === "GET" && c.path.endsWith("/api/games/sim-other"));
+    act(() => {
+      fireEvent.click(row);
+      fireEvent.click(row);
+    });
+    expect(gets()).toHaveLength(1);
+    await waitFor(() => expect(screen.getByText(/sim · sim-other/)).toBeInTheDocument());
+    expect(gets()).toHaveLength(1);
   });
 });

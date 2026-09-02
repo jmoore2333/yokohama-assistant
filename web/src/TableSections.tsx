@@ -60,9 +60,13 @@ export function TableSections({
   const wanted = enabled.join(",");
 
   useEffect(() => {
+    // **Cleared BEFORE the replaying return, not after it.** The other way
+    // round, a refusal from the last fetch stayed on screen under the
+    // collapsed sections for the whole time the player was in the past —
+    // a sentence about a fetch that is no longer being made.
+    setError(null);
     if (replaying) return;
     let live = true;
-    setError(null);
     const said = (e: unknown) => live && setError(e instanceof ApiError ? e.message : String(e));
     if (enabled.includes("ports")) api.ports(game).then((p) => live && setPorts(p)).catch(said);
     if (enabled.includes("labs")) api.labs(game).then((p) => live && setLabs(p)).catch(said);

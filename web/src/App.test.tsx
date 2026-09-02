@@ -419,3 +419,92 @@ describe("the section toggles", () => {
     expect(document.querySelector("details.boards-menu")).not.toHaveAttribute("open");
   });
 });
+
+// ---- the fix wave: a reply for a game you left ------------------------------
+//
+// **Measured against the live client before this cell existed** (final review
+// I1): start game A, start game B, delay `/input` by 3s, click B's first
+// option, then switch to A from the Game menu — the banner read A after 181ms,
+// B's reply landed at 3,104ms, and the client reverted to B. The switch undid
+// itself, and the window is exactly a bot turn's think time.
+//
+// Two fixes, and this cell is about the one the other cannot cover. Disabling
+// the saved-game rows while a request is in flight closes the ordering the
+// review measured; it does NOT close this one, where the SWITCH is what is in
+// flight and the move goes out while the client is still waiting for it. So
+// the reply is checked against the game on screen when it lands.
+describe("a reply for a game you left", () => {
+  it("is dropped, and the game you switched to stays on screen", async () => {
+    // Both games are corpus payloads; only the id is renamed, which is the
+    // pattern `GameMenu.test.tsx` already uses for a second game. A 4P fixture
+    // for the game switched TO, so the board on screen is a fact about which
+    // game is drawn and not only about the banner's text.
+    const other = { ...wire.options4p, id: "sim-other" };
+    const switchGet = gate<unknown>();
+    const reply = gate<unknown>();
+    const stub = await renderApp(wire.optionsMany, (call) => {
+      if (call.method === "GET" && call.path.endsWith("/api/games"))
+        return [wire.optionsMany.id, "sim-other"];
+      if (call.method === "GET" && call.path.endsWith("/api/games/sim-other"))
+        return switchGet.promise;
+      if (call.path.endsWith("/input")) return reply.promise;
+      return undefined;
+    });
+    const user = userEvent.setup();
+
+    // The switch goes out and is HELD, so it is still in flight for the move.
+    await user.click(screen.getByText(new RegExp(wire.optionsMany.id)));
+    await user.click(await screen.findByRole("button", { name: "sim-other" }));
+
+    const state = wire.optionsMany;
+    if (state.prompt.kind !== "options") throw new Error("fixture moved");
+    await user.click(
+      screen.getByRole("button", {
+        name: new RegExp(state.prompt.rows[0]!.words.slice(0, 20).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+      }),
+    );
+    expect(stub.matching("POST", "/input")).toHaveLength(1);
+
+    // The switch lands: the other game is on screen.
+    switchGet.resolve(other);
+    await waitFor(() => expect(screen.getByText(/sim · sim-other/)).toBeInTheDocument());
+
+    // And now the reply to the move made in the game we left.
+    reply.resolve(wire.options);
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    expect(screen.getByText(/sim · sim-other/)).toBeInTheDocument();
+    expect(screen.queryByText(new RegExp(`sim · ${wire.optionsMany.id}$`))).toBeNull();
+    // The board is still the game we switched to. Without this the cell would
+    // pass on a banner that agreed with a board it no longer describes.
+    expect(document.querySelectorAll(".tile")).toHaveLength(other.frame.board.tiles.length);
+  });
+
+  it("cannot be started from the Game menu while a move is in flight", async () => {
+    const held = gate<unknown>();
+    await renderApp(wire.optionsMany, (call) => {
+      if (call.method === "GET" && call.path.endsWith("/api/games"))
+        return [wire.optionsMany.id, "sim-other"];
+      if (call.path.endsWith("/input")) return held.promise;
+      return undefined;
+    });
+    const user = userEvent.setup();
+    await user.click(screen.getByText(new RegExp(wire.optionsMany.id)));
+    const row = await screen.findByRole("button", { name: "sim-other" });
+    expect(row).toBeEnabled();
+
+    const state = wire.optionsMany;
+    if (state.prompt.kind !== "options") throw new Error("fixture moved");
+    await user.click(
+      screen.getByRole("button", {
+        name: new RegExp(state.prompt.rows[0]!.words.slice(0, 20).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+      }),
+    );
+    expect(row).toBeDisabled();
+
+    held.resolve(wire.options);
+    await waitFor(() => expect(row).toBeEnabled());
+  });
+});

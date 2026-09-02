@@ -54,6 +54,25 @@ export function App() {
   // the disabled styling; this decides whether the request happens at all.
   const inFlight = useRef(false);
 
+  // **Which game is on screen, as a ref, because a reply is judged against it
+  // inside a closure that was created before the switch.**
+  //
+  // Measured on the live client (final review I1): with `/input` delayed 3s,
+  // switching games from the menu mid-request showed the new game after 181ms
+  // and then reverted to the old one at 3,104ms when the reply landed — banner,
+  // board and `state.id` — the chosen switch silently undone. A state variable
+  // cannot answer this: `send` closed over the state it was called with, and
+  // reading `state` there reads the game the request belongs to, never the game
+  // the player is now looking at. So the id is kept in a ref that every change
+  // of game updates, and `send` drops anything that no longer matches it.
+  const gameId = useRef<string | null>(null);
+  /** Put a game on screen — the ONE way `state` changes identity, so the ref
+   *  and the state cannot disagree. `null` is the setup screen. */
+  const show = useCallback((s: ClientState | null) => {
+    gameId.current = s?.id ?? null;
+    setState(s);
+  }, []);
+
   // **The final standing comes from `/result`, because `scores` cannot carry
   // it.** `ClientState.scores` is `{seat, total}[]` in SEAT order with no rank
   // and no `won`, so from it alone the inline block could print a colour and a
@@ -87,12 +106,22 @@ export function App() {
   const send = useCallback(
     async (line: string) => {
       if (!state || inFlight.current) return;
+      // The game this request belongs to, read once: `state` is re-created on
+      // every render and the checks below are about the game we posted TO.
+      const game = state.id;
       inFlight.current = true;
       setBusy(true);
       setError(null);
       try {
-        setState(await api.input(state.id, line, state.prompt.kind));
+        const replied = await api.input(game, line, state.prompt.kind);
+        // **A reply for a game you have left is dropped and never applied.**
+        // See `gameId`. Nothing is lost by dropping it: the move was applied
+        // and persisted server-side, and coming back to that game re-reads it.
+        if (replied.id === gameId.current) setState(replied);
       } catch (e) {
+        // The same rule for the refusal: a sentence about a game that is no
+        // longer on screen would sit over a game it does not describe.
+        if (gameId.current !== game) return;
         setError(e instanceof ApiError ? e.message : String(e));
         // **Re-read the game, because the server just told us to and this
         // client had no way to.**
@@ -110,7 +139,8 @@ export function App() {
         // fetched — the message stays on screen beside a screen that now agrees
         // with the server.
         try {
-          setState(await api.get(state.id));
+          const fresh = await api.get(game);
+          if (fresh.id === gameId.current) setState(fresh);
         } catch {
           // The re-read failed too. Keep the original refusal on screen: it is
           // the more useful of the two, and a second error would replace the
@@ -172,7 +202,7 @@ export function App() {
     if (surface !== "log") setScrubK(null);
   }, [surface]);
 
-  if (!state) return <NewGame art={art} onStarted={setState} />;
+  if (!state) return <NewGame art={art} onStarted={show} />;
 
   const players = state.frame.dashboard.find((p) => "Players" in p);
   const colors: PlayerColor[] =
@@ -204,15 +234,21 @@ export function App() {
         <h1>Yokohama</h1>
         <GameMenu
           state={state}
+          busy={busy}
           onSwitch={(s) => {
             setSurface(null);
             setScrubK(null);
-            setState(s);
+            // The refusal on screen was about the game being left, so it goes
+            // with it: a sentence from game A over game B describes nothing
+            // the player can see.
+            setError(null);
+            show(s);
           }}
           onNew={() => {
             setSurface(null);
             setScrubK(null);
-            setState(null);
+            setError(null);
+            show(null);
           }}
         />
         {/* Four surfaces inline, the five card references behind a disclosure,
@@ -367,7 +403,14 @@ export function App() {
               ? { onTileClick: (area: number) => void send(`A${String(area).padStart(2, "0")}`) }
               : {})}
           />
+          {/* **Keyed on the game, so a switch does not paint the last game's
+              boards.** The fetched strips (port, laboratory, building sites)
+              are component state; without the key the previous game's Port
+              offer stays on screen until the new game's fetch lands, under a
+              board that has already changed. Remounting drops that cache and
+              the refusal beside it. */}
           <TableSections
+            key={state.id}
             enabled={enabled}
             game={state.id}
             state={state}
