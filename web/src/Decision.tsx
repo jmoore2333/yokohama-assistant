@@ -352,45 +352,8 @@ export function Decision({
           </button>
         </div>
       )}
-
-      {/* Mounted whether or not there is anything to say — a live region
-          inserted at the same instant as its text is unreliably announced,
-          because there was nothing there to observe the change. It collapses to
-          zero height while empty. */}
-      <div className="messages" role="status">
-        {state.messages.map((m, i) => (
-          <div key={i} className={isRefusal(m) ? "warn" : ""}>
-            {m}
-          </div>
-        ))}
-      </div>
     </div>
   );
-}
-
-/** Does this line REFUSE something the player asked for, or merely report it?
- *
- *  It decides whether a message is coloured as a warning, and — since M3.5 —
- *  what a live region announces as a rejected action rather than an ordinary
- *  applied-move delta. It is a HEURISTIC over prose and says so, because the
- *  server hands the CLI's own words through without a typed refusal flag.
- *
- *  Two corrections over the original `/illegal|refus|cannot|not legal|out of
- *  range/i`:
- *
- *  1. **The REPL's own refusals start with a bang and matched none of it.**
- *     There are eighteen such literals in `repl.rs` — `! finish or cancel this
- *     prompt first`, `! pick a number 1-5, or 'cancel'`, `! A05 is not one of
- *     the eligible areas` — and every one of them rendered as an ordinary
- *     message.
- *  2. **A leading bang is not sufficient either**, which is why this is an OR
- *     and not a replacement. `repl.rs:1505` ("That retreat is not in the legal
- *     list (check areas/counts)") and `repl.rs:3469` ("'99' is not a valid area
- *     id (0-17)") carry no bang and match neither half. They are still missed,
- *     and that is recorded here rather than left as a silent gap: closing it
- *     properly means a typed refusal on the wire, not a longer regex. */
-function isRefusal(message: string): boolean {
-  return message.trimStart().startsWith("!") || /illegal|refus|cannot|not legal|out of range/i.test(message);
 }
 
 /** An area's printed name, from the board already on the frame. */

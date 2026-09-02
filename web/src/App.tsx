@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError } from "./api";
 import { Board } from "./Board";
 import { Dashboard } from "./Dashboard";
+import { LastMove } from "./LastMove";
 import { Decision } from "./Decision";
 import { NewGame } from "./NewGame";
 import { CARD_SURFACES, Surface, SURFACES, type SurfaceName } from "./Surfaces";
@@ -317,7 +318,8 @@ export function App() {
         </div>
       </main>
       <aside className="side">
-        <Dashboard panels={view.frame.dashboard} art={art} labels={labels} colors={colors} />
+        <LastMove messages={state.messages} />
+        <Dashboard panels={view.frame.dashboard} art={art} labels={labels} colors={colors} only={["Players", "Hand"]} />
       </aside>
 
       {surface && (

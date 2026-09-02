@@ -551,12 +551,16 @@ button.tile:focus-visible { outline: 2px solid var(--vp); outline-offset: 1px; }
 .track { display: flex; flex-wrap: wrap; gap: 0.2rem; margin-top: 0.2rem; }
 .space {
   position: relative;
+  display: inline-flex; flex-direction: column; align-items: center; line-height: 1.15;
   min-width: 1.9rem; text-align: center; padding: 0.05rem 0.2rem;
   border: 1px solid var(--line-bright); border-radius: 3px; font-size: 10px;
   color: var(--fg-dim);
 }
 .space.taken { background: var(--line); color: var(--fg); border-color: currentColor; }
 .space .occ { margin-left: 0.15rem; font-size: 9px; }
+/* What the space PAYS, on the space. It was a `title=` attribute and nothing
+ * else, which no touch screen, no screen reader and no assertion can see. */
+.space .sub { font-size: 8.5px; color: var(--vp); }
 /* The 2P dummy is a real occupant and never a seat. Marked, never coloured. */
 .space.dummy { border-style: dashed; color: var(--fg-faint); background: transparent; }
 
@@ -1124,3 +1128,16 @@ pre.raw-panel {
 .tile-pop-row .site-face { width: 12rem; flex: 0 0 12rem; }
 .tile-pop-words { font-size: 11.5px; color: var(--fg-dim); display: flex; flex-direction: column; gap: 0.25rem; }
 .tile-pop-words .reachable-words { color: var(--reachable); }
+
+/* ---- M5: the side column ----------------------------------------------- */
+.last-move h2 { display: flex; align-items: center; }
+.last-move .fold { margin-left: auto; font-size: 10px; padding: 0 0.4rem; letter-spacing: 0; text-transform: none; }
+.last-move .messages { margin-top: 0.3rem; max-height: 9rem; overflow: auto; scrollbar-width: thin; }
+.last-move .messages.folded { max-height: 0; overflow: hidden; margin-top: 0; }
+/* **The empty region keeps its box.** `.messages:empty` is `display: none`,
+ * which is right for the deck's own blocks and wrong here: an element that is
+ * not displayed is not in the accessibility tree either, so the region would
+ * arrive at the same instant as its first line — the exact case `LastMove`'s
+ * comment says is unreliably announced. Empty it has no border, no padding and
+ * no children, so it costs nothing but its margin. */
+.last-move .messages:empty { display: flex; }

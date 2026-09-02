@@ -14,7 +14,7 @@ const COLORS: PlayerColor[] = ["Red", "Blue"];
 
 function show(state: ClientState, busy = false) {
   const onSend = vi.fn();
-  render(
+  const { container } = render(
     <Decision
       state={state}
       labels={wire.labels}
@@ -23,7 +23,7 @@ function show(state: ClientState, busy = false) {
       onSend={onSend}
     />,
   );
-  return { onSend, user: userEvent.setup() };
+  return { onSend, user: userEvent.setup(), container };
 }
 
 describe("the numbered list", () => {
@@ -261,20 +261,14 @@ describe("what the game is asking", () => {
     expect(asking.textContent!.length).toBeGreaterThan(40);
   });
 
-  it("a refusal is shown as a warning rather than folded into the log", () => {
+  // The applied-move lines left the deck for the side column (M5 §3.5); a deck
+  // that still rendered them would take the board's height budget back.
+  it("renders none of the applied-move lines itself", () => {
     const state = wire.refused;
-    const refusals = state.messages.filter((m) =>
-      /illegal|refus|cannot|not legal|out of range/i.test(m),
-    );
-    expect(refusals.length, "the fixture must carry a refusal to warn about").toBeGreaterThan(0);
-    show(state);
-    for (const message of state.messages) {
-      expect(screen.getByText(new RegExp(escape(message)))).toBeInTheDocument();
-    }
-    // The class is the whole point: a refusal folded in with the deltas reads
-    // as something that happened rather than as something that did not.
-    for (const message of refusals) {
-      expect(screen.getByText(new RegExp(escape(message)))).toHaveClass("warn");
+    expect(state.messages.length).toBeGreaterThan(0);
+    const { container } = show(state);
+    for (const m of state.messages) {
+      expect(container.textContent).not.toContain(m);
     }
   });
 });

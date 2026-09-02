@@ -78,6 +78,13 @@ test("the answer bar is always in view — top of the side column above 1201, bo
   const probe = () =>
     page.evaluate(() => {
       const list = document.querySelector(".decision .options.scrolls");
+      // **What is left inside the deck to compete with the answer list.**
+      // Until W6 this was the applied-move commentary, which moved to the side
+      // column's `Last move` panel — where it cannot squeeze anything, so
+      // reading it there would make this check about the wrong box. The blocks
+      // that remain direct children of `.decision` are the picker instructions
+      // (`place_a`'s selection and live fee, `place_b`'s) and the watching and
+      // locked notices, and those are now the squeeze.
       const msgs = document.querySelector(".decision > .messages");
       const commentary = msgs ? Math.round(msgs.getBoundingClientRect().height) : 0;
       if (!list) return { commentary, rows: 0, height: Infinity, reached: true };
@@ -146,16 +153,17 @@ test("the answer bar is always in view — top of the side column above 1201, bo
       `the answer list was squeezed to ${worstList}px (commentary peaked at ${mostCommentary}px)`,
     ).toBeGreaterThanOrEqual(30);
   }
-  // Anti-vacuity: if the commentary never grew, the squeeze was never on and the
-  // floor above proved nothing. Say so rather than reporting a green run.
+  // Anti-vacuity: if nothing inside the deck ever grew beside the answer list,
+  // the squeeze was never on and the floor above proved nothing. Say so rather
+  // than reporting a green run.
   // eslint-disable-next-line no-console
   console.log(
-    `deck under pressure: commentary peaked at ${mostCommentary}px, ` +
+    `deck under pressure: in-deck prose peaked at ${mostCommentary}px, ` +
       `answer list bottomed out at ${worstList === Infinity ? "n/a" : `${worstList}px`} (recorded)`,
   );
   expect(
     mostCommentary,
-    "this run never produced applied-move commentary, so the squeeze was never exercised",
+    "nothing in this run ever shared the deck with the answer list, so the squeeze was never exercised",
   ).toBeGreaterThan(0);
 
   // **Two arms, because the deck has two homes (M5 spec §3.1).** Above 1201 it
@@ -648,14 +656,25 @@ test("a four-player table draws four seats and the Canal", async ({ page }) => {
   for (const colour of ["Red", "Blue", "Yellow", "Green"]) {
     await expect(page.locator(".seat-name", { hasText: colour }).first()).toBeVisible();
   }
-  // The dummy clause is 2P-only: `place_setup_dummies` returns early above two
-  // players, so a browser that teaches a `D` marker here teaches a rule that
-  // cannot apply. The heading is asserted to EXIST first — `not.toContainText`
-  // on a locator that matches nothing passes for the wrong reason.
-  const tracks = page.getByRole("heading", { name: /Tracks/ });
-  await expect(tracks).toBeVisible();
-  await expect(tracks).not.toContainText("dummy");
-  await expect(page.locator(".space.dummy")).toHaveCount(0);
+  // The dummy is 2P-only: `place_setup_dummies` returns early above two players,
+  // so a browser that shows a dummy occupant here is showing a rule that cannot
+  // apply. **Read in the Tracks surface, because W6 took the tracks out of the
+  // side column** — the Dashboard's strip is on no screen at all until the table
+  // carries it, so `.space.dummy` here would have counted 0 elements out of 0
+  // and passed for the wrong reason. The Dashboard heading's own dummy clause
+  // is still covered, in `Dashboard.test.tsx`'s 2P/4P pair.
+  //
+  // The rows are asserted to EXIST first, for the reason this cell has always
+  // given: an absence assertion over a locator that matches nothing is not an
+  // absence, it is a blank screen.
+  await page.getByRole("button", { name: "Tracks", exact: true }).click();
+  const drawer = page.getByRole("dialog");
+  await expect(drawer.getByRole("heading", { name: "Tracks" })).toBeVisible();
+  await expect(drawer.locator(".track-table tbody tr").first()).toBeVisible();
+  const spaces = await drawer.locator(".track-table tbody tr").count();
+  expect(spaces, "the tracks surface listed no spaces").toBeGreaterThan(0);
+  await expect(drawer.locator(".occ.dummy")).toHaveCount(0);
+  await page.keyboard.press("Escape");
 
   expect(watch.failures).toEqual([]);
 });

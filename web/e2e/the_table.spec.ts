@@ -99,3 +99,35 @@ for (const players of [2, 3, 4] as const) {
     expect(watch.failures).toEqual([]);
   });
 }
+
+test("Undo takes the pieces back off the tile", async ({ page }) => {
+  const watch = watchForBreakage(page);
+  await startGame(page, { players: 2 });
+  // Walk to the first placement picker and place on the first eligible tile.
+  const pick = rng(0x554e_444f); // "UNDO"
+  let placed: string | null = null;
+  for (let i = 0; i < 30 && placed === null; i++) {
+    const screen = await readScreen(page);
+    if (screen.over) break;
+    if (screen.tiles > 0 && screen.confirm) {
+      const tile = page.locator("button.tile:not([disabled])").first();
+      placed = (await tile.getAttribute("aria-label"))!.slice(0, 3);
+      await tile.click();
+      await page.getByRole("button", { name: "Confirm" }).click();
+      break;
+    }
+    if ((await act(page, screen, pick)) === null) break;
+  }
+  expect(placed, "never reached a placement picker").not.toBeNull();
+  const piecesOn = () =>
+    page.evaluate((id) => {
+      const tile = [...document.querySelectorAll(".tile")].find(
+        (t) => t.querySelector(".tile-id")?.textContent === id,
+      )!;
+      return tile.querySelector(".pieces")?.getAttribute("aria-label") ?? "";
+    }, placed!);
+  await expect.poll(piecesOn, { message: "the placement put no pieces on the tile" }).toMatch(/assistant/);
+  await page.getByRole("button", { name: "Undo" }).click();
+  await expect.poll(piecesOn, { message: "Undo left the pieces on the tile" }).not.toMatch(/assistant/);
+  expect(watch.failures).toEqual([]);
+});

@@ -178,3 +178,22 @@ describe("four seats", () => {
     }
   });
 });
+
+describe("what the side column shows", () => {
+  it("draws only the panels it is asked for", () => {
+    const { container } = render(
+      <Dashboard panels={wire.options.frame.dashboard} art={wire.artManifest} labels={wire.labels} colors={COLORS} only={["Players", "Hand"]} />,
+    );
+    expect(screen.getByText("Players")).toBeInTheDocument();
+    expect(screen.queryByText(/Tracks/)).toBeNull();
+    expect(screen.queryByText(/Achievements/)).toBeNull();
+    expect(container.querySelectorAll(".panel").length).toBe(2);
+  });
+  it("prints every track space's points as text, not only in a tooltip", () => {
+    const { container } = show(wire.options);
+    const tracks = tracksOf(wire.options);
+    const subs = [...container.querySelectorAll(".space .sub")].map((s) => s.textContent);
+    for (const s of tracks.church) expect(subs).toContain(`★${s.vp}`);
+    for (const s of tracks.customs) expect(subs).toContain(`★${s.vp}`);
+  });
+});

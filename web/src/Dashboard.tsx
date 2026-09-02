@@ -14,20 +14,27 @@ import { DUMMY_SEAT, locked } from "./types";
 import { mercenaryArt } from "./art";
 import { AchievementCardView, OrderCardView, seatClass } from "./Cards";
 
+export type PanelName = "Players" | "Tracks" | "Achievements" | "Hand";
+
 export function Dashboard({
   panels,
   art,
   labels,
   colors,
+  only,
 }: {
   panels: Panel[];
   art: ArtManifest | null;
   labels: Labels | null;
   colors: PlayerColor[];
+  /** Which panels to draw; absent means every one. The side column asks for
+   *  Players and Hand (M5 §3.5); Tracks and Goals live on the table. */
+  only?: PanelName[];
 }) {
+  const wanted = (p: Panel) => !only || only.some((name) => name in p);
   return (
     <>
-      {panels.map((panel, i) => {
+      {panels.filter(wanted).map((panel, i) => {
         if ("Players" in panel)
           return <Players key={i} players={panel.Players.players} labels={labels} />;
         if ("Tracks" in panel)
@@ -214,11 +221,16 @@ function Space({
   occupant,
   colors,
   children,
+  sub,
   title,
 }: {
   occupant: PlayerId | null;
   colors: PlayerColor[];
   children: React.ReactNode;
+  /** What the space PAYS, printed under it. It used to live only in `title=`,
+   *  which is invisible on a touch screen, invisible to a screen reader and
+   *  invisible to any assertion — while the CLI prints it. */
+  sub: string;
   title: string;
 }) {
   const dummy = occupant === DUMMY_SEAT;
@@ -228,6 +240,7 @@ function Space({
   return (
     <span className={cls} title={title}>
       {children}
+      <span className="sub">{sub}</span>
       {dummy && <span className="occ">D</span>}
       {occupant != null && !dummy && <span className="occ">&#9679;</span>}
     </span>
@@ -256,7 +269,7 @@ const MERCENARIES: [string, keyof MercenarySupply, string][] = [
   ["Dutch", "dutch", "Netherlands"],
 ];
 
-function Tracks({
+export function Tracks({
   tracks,
   art,
   colors,
@@ -301,6 +314,7 @@ function Tracks({
             key={s.faith}
             occupant={s.occupant}
             colors={colors}
+            sub={`★${s.vp}`}
             title={`faith ${s.faith} — ★${s.vp}${s.movement_rider ? ` +${s.movement_rider} movement` : ""}`}
           >
             {s.faith}
@@ -318,6 +332,7 @@ function Tracks({
             key={s.space}
             occupant={s.occupant}
             colors={colors}
+            sub={`★${s.vp}`}
             title={`pay ${s.import_cost} imports — ★${s.vp}${s.warehouse_rider ? ` +${s.warehouse_rider} warehouse` : ""}${s.yen_rider ? ` +¥${s.yen_rider}` : ""}`}
           >
             {s.import_cost}
@@ -347,7 +362,7 @@ function Tracks({
   );
 }
 
-function Achievements({
+export function Achievements({
   cards,
   art,
   labels,

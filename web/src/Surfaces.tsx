@@ -651,12 +651,13 @@ function Log({
 
 /** The Church and Customs tracks, every space spelled out.
  *
- *  **This exists because the Dashboard's version is a tooltip.**
- *  `Dashboard.tsx:286` and `:303` carry each space's VP and its rider in a
- *  `title=` attribute and nothing else, which is invisible on a touch screen,
- *  invisible to a screen reader, and invisible to any assertion — while the CLI
- *  prints them. The Dashboard keeps its compact strip, which is right for a rail
- *  you glance at; this is the surface you read.
+ *  **This exists because the Dashboard's version is a strip.**
+ *  Its `Space` carries the VP as text since M5 W6, but the RIDER — the movement
+ *  icon on a church space, the warehouse token and the yen on a customs one —
+ *  is still a `title=` attribute and nothing else, which is invisible on a touch
+ *  screen, invisible to a screen reader, and invisible to any assertion, while
+ *  the CLI prints it. The Dashboard keeps its compact strip, which is right for
+ *  a row you glance at; this is the surface you read.
  *
  *  It also gives the Areas panel's `companion: "Tracks"` pointer somewhere to
  *  point. Every board carries exactly one Church and one Customs
