@@ -219,7 +219,7 @@ against the built client at HEAD:
 | `assets/index-*.css` | 23,324 |
 | **First paint, total** | **283,230 (277 KiB)** |
 | Card art at `/art` | 7.7 MB across 132 files, fetched per area actually rendered |
-| Help screenshots | 1.9 MB, and only if the panel is opened |
+| Help screenshots | 2.0 MB, and only if the panel is opened |
 
 Re-measured at M5 (W0, then W0b): the crops are now cut at source width (709px
 tiles, 530px cards, 799px landscape achievements, and the 24 site cards turned

@@ -69,12 +69,12 @@ export function Pieces({
   // to shrink them to fit rather than wrap (owner ruling R-G3): one per
   // president, one per assistant up to three, TWO from four (the cube plus its
   // count), one for the Station.
-  const n =
+  const glyphs =
     presidents.length +
     assistants.filter(([, k]) => k > 0).reduce((s, [, k]) => s + (k > 3 ? 2 : k), 0) +
     (hasStation ? 1 : 0);
   return (
-    <div className="pieces" role="img" aria-label={words} style={{ "--piece-n": n } as CSSProperties}>
+    <div className="pieces" role="img" aria-label={words} style={{ "--piece-n": glyphs } as CSSProperties}>
       {presidents.map((seat) => (
         <span key={`p${seat}`} className={`piece-group ${seatClass(colors[seat])}`}>
           <PresidentIcon />
