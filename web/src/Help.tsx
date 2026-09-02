@@ -42,52 +42,64 @@ export function Help() {
 
       <h3>The three parts of the screen</h3>
       <p>
-        The <strong>board</strong> fills the left: one tile per area, laid out as the staggered
-        pyramid the real board makes, with each tile carrying its assistants, any president, and
-        the site or token sitting on it. The <strong>rail</strong> down the right is the
-        dashboard &mdash; every seat&rsquo;s goods, money and power, the Church and Customs
-        tracks, the achievements, and your own hand. The <strong>answer deck</strong> is pinned
-        along the bottom and never scrolls away: whatever the game is asking you is always there,
-        however far down the page you are.
+        The <strong>table</strong> fills the left: the area tiles laid out as the staggered
+        pyramid the real board makes, each one the printed tile with its building-site card on
+        it, its pieces standing on it, and the 5-Power token in its printed slot &mdash; and
+        under the pyramid, whichever boards you have switched on: the port and the laboratory,
+        six card slots to a board, the church and customs tracks, the goals in play, and the
+        building sites at full size. On a wide screen they sit side by side; on a laptop the
+        table scrolls. The <strong>side column</strong> on the right holds the{" "}
+        <strong>answer bar</strong> pinned at its top &mdash; whatever the game is asking you is
+        always there &mdash; then what the last move did, every seat&rsquo;s goods, money and
+        pieces, and your own hand. Hover or focus any tile to see it, and any site card on it, at
+        full size.
+      </p>
+      <p>
+        That is the wide screen. Narrow the window past about 1200px and the same three parts
+        stack instead, the table above the column, with the answer bar pinned along the bottom
+        edge rather than at the top of a column.
       </p>
       <Shot
         src="/help/screen.png"
-        alt="The whole client at two players: the staggered pyramid board on the left with its area tiles, the dashboard rail on the right showing both seats, and the pinned answer deck along the bottom carrying the current question."
-        caption="The board, the rail, and the answer deck pinned at the bottom."
+        alt="The client at two players on a 1710 by 869 screen: the staggered pyramid of ten area tiles filling the table on the left, each tile the printed area art with its building-site card upright on its top-right, its pieces on it and an id badge along its bottom edge; on the right the answer bar at the top of the side column, carrying the phase ladder, the seat to move and the numbered moves it is offering, and under it the last move and both seats&rsquo; goods, money and pieces."
+        caption="The first view at two players: the table on the left, the side column on the right, the answer bar pinned at its top. The pyramid is fitted to the table&rsquo;s height here, so the five switched-on boards sit under it and the table scrolls to them."
       />
 
       <h3>Taking a turn</h3>
       <p>
-        The deck lists the moves the engine says are legal, numbered. Press one. Some of them open
-        a further question rather than playing immediately &mdash; choosing where to place
-        assistants, which route to walk, how many to recover &mdash; and the deck becomes that
-        question until you confirm or cancel it. When a choice has exactly one answer the client
-        offers to apply it for you rather than making you find it.
+        The answer bar lists the moves the engine says are legal, numbered. Press one. Some of
+        them open a further question rather than playing immediately &mdash; choosing where to
+        place assistants, which route to walk, how many to recover &mdash; and the bar becomes
+        that question until you confirm or cancel it. When a choice has exactly one answer the
+        client offers to apply it for you rather than making you find it.
       </p>
       <p>
-        While a placement picker is open the <strong>board itself becomes the input</strong>: the
+        While a placement picker is open the <strong>table itself becomes the input</strong>: the
         tiles you can toggle are the ones drawn as buttons, and the running cost of what you have
-        selected is printed before you commit to it. At every other moment the board is a
-        picture and nothing on it is pressable.
+        selected is printed before you commit to it. At every other moment no tile applies a
+        move, and the pyramid is a picture you can read rather than press.
       </p>
       <Shot
         src="/help/placement.png"
-        alt="A placement picker open at Option B: the deck reads &ldquo;Option B &mdash; click one area on the board for two assistants, then confirm&rdquo;, with Confirm and Cancel buttons and the eligible areas listed beneath it &mdash; Port A among them priced &ldquo;fee 2 yen (2 to Blue)&rdquo; &mdash; while the matching tiles on the board are outlined as the ones that can be chosen."
-        caption="A placement picker. The board is the input surface, and every eligible area is priced before you commit to it."
+        alt="A placement picker open at Option B: the answer bar reads &ldquo;Placement &mdash; Option B&rdquo; over the line &ldquo;Option B &mdash; click one area on the board for two assistants, then confirm&rdquo;, with Confirm and Cancel under it; below that the last-move block lists the eligible areas by name and id, naming the fee beside any that would cost one; and on the table every tile that can be chosen is drawn as a button."
+        caption="A placement picker: the table is the input surface. Every eligible area is listed, with the fee named where there is one, and once you pick one the answer bar prices the selection too."
       />
 
       <h3>Looking things up</h3>
       <p>
-        The buttons along the top open read-only reference panels &mdash; the port offer and what
-        each zone costs, the laboratory offer with its surcharges, what every area pays at each
-        power level, the Church and Customs tracks space by space, and the building-site cards.
-        Behind <em>Card reference</em> are the four full indexes: all 36 orders, all 20
-        technologies, the achievements in play, and the 24 printed sites, each saying where every
-        copy currently is.
+        <em>Boards</em> along the top is one menu rather than a row of switches, and its summary
+        counts what is on. Open it and there is a switch for each board that can sit under the
+        pyramid: the port, the laboratory, the tracks, the goals, the building sites. What you
+        switch on stays on in this browser, and Escape closes the menu.
       </p>
       <p>
-        These never change anything. They read the game and close again, and you can open one
-        while a question is waiting for you.
+        The buttons beside it open read-only panels over the game &mdash; what every area pays at
+        each power level, the log, the bot&rsquo;s advice, and this page &mdash; and behind{" "}
+        <em>Cards</em> are the four full indexes: all 36 orders, all 20 technologies, the
+        achievements in play, and the 24 printed sites, each saying where every copy currently
+        is, together with the final score once there is one. A panel reads the game and closes
+        again; the game waits underneath it, and nothing outside the panel answers until you
+        close it.
       </p>
 
       <h3>Asking the bot</h3>
@@ -105,7 +117,7 @@ export function Help() {
       </p>
       <Shot
         src="/help/explain.png"
-        alt="The suggest panel: the recommended move, the continuation it searched, and a term-by-term chart with bars either side of a centre zero line, each row labelled and the totals footing."
+        alt="The Suggest panel open as a drawer over the table: the move it would play under the heading &ldquo;It would play&rdquo;, then a term-by-term chart with a bar either side of a centre zero line for every feature carrying a nonzero product, each row naming its feature, its arithmetic and its product, and a total under them that foots. A button offers the remaining features that contribute nothing, and the heading for the line it searched sits below."
         caption="Suggest: the move, the line, and the arithmetic — helping to the right of the zero line, hurting to the left."
       />
 
@@ -113,9 +125,12 @@ export function Help() {
       <p>
         Open <strong>Log</strong> and you get the whole move trail, each line worded as it read
         when it applied &mdash; and a track above it that walks the game. Drag it, step with the
-        arrows, or press any line to jump to the position that move was decided in. The board
-        behind the panel redraws at that point, full size, outlined to show you are looking at
-        the past.
+        arrows, or press any line to jump to the position that move was decided in. The table
+        beside the panel redraws at that point, full size, outlined to show you are looking at
+        the past. The port, the laboratory and the building sites on it say they are hidden while
+        you are in the past: the position you scrub to has no offer the server can show, so the
+        table does not pretend. The tracks and the goals keep drawing, from that same past
+        position.
       </p>
       <p>
         The track has one more stop than there are moves, because the last stop is{" "}
@@ -125,15 +140,18 @@ export function Help() {
       </p>
       <Shot
         src="/help/replay.png"
-        alt="The log panel open as a drawer on the right with the replay track above the move list, and the full-size board beside it redrawn at an earlier position with a green outline."
-        caption="The replay track lives in the log panel; the board redraws beside it at full size."
+        alt="The Log panel open as a drawer on the right: the replay track across its top with step arrows, a readout of which stop it is at and a &ldquo;Back to live&rdquo; button, the numbered move list under it with the current stop highlighted, and the table beside it redrawn at that earlier position inside a green outline."
+        caption="The replay track lives in the Log panel; the table redraws beside it at full size, outlined to say you are in the past."
       />
 
       <h3>Saving, and coming back</h3>
       <p>
         Every move you make is written to the server as it is applied &mdash; there is no save
         button and nothing to remember. Leave and come back and the game is in the list on the
-        start screen, where it resumes exactly where you left it.
+        start screen, where it resumes exactly where you left it. You do not have to leave to
+        find it: the banner&rsquo;s leftmost control names the game you are in, and opening it
+        lists your other saved games to switch to, with a way back to the start screen for a new
+        one.
       </p>
 
       <h3>If something looks wrong</h3>

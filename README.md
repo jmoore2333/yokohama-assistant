@@ -203,26 +203,34 @@ served over HTTP and drawn in a browser instead of a terminal. It is a *second f
 engine*, never a second engine: the server routes, scopes and serializes and computes nothing
 about the game, so the terminal and the browser cannot disagree about a rule.
 
-![The browser client at two players: the nav bar of reference panels along the top, the
-end-trigger strip beneath it, the staggered pyramid board with its card art filling the left, the
-dashboard rail on the right showing both seats' goods, money, power and tracks, and the pinned
-answer deck along the bottom offering the three numbered Placement
+![The browser client at two players: the banner with the Boards menu and the reference buttons
+along the top, the end-trigger strip beneath it, and the table filling the left with the ten area
+tiles laid out as the staggered pyramid — each one the printed area art carrying its
+building-site card, its pieces and its id badge — beside the side column on the right, whose
+answer bar is pinned at its top offering the three numbered Placement
 options](web/public/help/screen.png)
 
-The board is on the left, the dashboard rail on the right, and the answer deck is **pinned along
-the bottom** — whatever the game is asking is always on screen, however far down the page you
-are. While a placement picker is open the board itself becomes the input surface, and the fee
-your current selection would cost is printed before you commit to it.
+The left is a **table**: the pyramid of area tiles, each one the printed tile with its
+building-site card on it and its pieces standing on it, and under the pyramid whichever boards
+you have switched on from the banner's `Boards` menu — the port, the laboratory, the church and
+customs tracks, the goals, the building sites. The right is a **side column** with the **answer
+bar pinned at its top**, so whatever the game is asking is always on screen; under it sit the
+last move, every seat's dashboard and your hand. While a placement picker is open the table
+itself becomes the input surface, and the fee your current selection would cost is printed
+before you commit to it. Below 1201px the same parts stack, with the answer bar pinned along the
+bottom edge instead.
 
 **The replay track (M4).** Open the log and the whole move trail is there, each line worded as it
 read when it applied — with a track above it that walks the game. Drag it, step with the arrows,
-or press any line to jump to the position that move was decided in. The board redraws beside the
+or press any line to jump to the position that move was decided in. The table redraws beside the
 drawer at full size, and nothing on it is pressable, because a past position is not answerable.
+The port and laboratory offers and the building sites collapse to a line saying they are hidden
+while you are in the past; the tracks and the goals keep drawing, from that same past position.
 
 ![The log panel open as a right-hand drawer: the replay track across the top with step arrows, a
 position readout and a "Back to live" button, the numbered move list below it with the current
-stop highlighted, and the full-size board redrawn beside the drawer at that earlier
-position](web/public/help/replay.png)
+stop highlighted, and the table redrawn beside the drawer at that earlier position inside a green
+outline](web/public/help/replay.png)
 
 The track has one more stop than there are moves, because the last stop is *now* — a real
 position with no move to name. It is a projection over the record the server already holds:
