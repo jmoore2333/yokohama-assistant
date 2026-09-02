@@ -222,10 +222,21 @@ against the built client at HEAD:
 | Help screenshots | 1.9 MB, and only if the panel is opened |
 
 So a session that opens help and renders every area in the product pulls about
-**5 MB**, and an ordinary one stays well under 1 MB. Against the 100–200 GB/month
-egress a free tier typically allows, that is tens of thousands of sessions.
-**Egress is not a constraint on where this can run either** — recorded, like
-§1.1, so the objection does not get raised again from intuition.
+**5 MB**, and an ordinary one stays well under 1 MB.
+
+**Correction — this section first said egress "is not a constraint on where this
+can run," and that was too broad.** It holds against Oracle's Always Free 10 TB
+and Azure's perpetual 100 GB, where the ceiling is tens of thousands of sessions
+and the objection really is dead. It does **not** hold on Google: Compute
+Engine's Always Free e2-micro and Cloud Run each allow **1 GB/month** of North
+American egress, which is roughly 3,700 first paints, or **~200 sessions** if
+each one pulls the whole art set. That is enough for a handful of players and
+nowhere near "not a constraint." Cloudflare in front, caching the static
+assets, is what would make it one again.
+
+Recorded with the correction attached because the generalization is the kind of
+thing that gets repeated: **check the number per provider, and do not carry
+Oracle's 10 TB over to Google's 1 GB.**
 
 ---
 
