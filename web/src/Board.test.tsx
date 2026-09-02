@@ -299,6 +299,32 @@ describe("the tile is the art, and the pieces sit on it (M5)", () => {
     expect(words).toMatch(/5-Power/);
   });
 
+  // **A `<button>` is ONE node to assistive technology, and its `aria-label`
+  // overrides its contents**, so the `.sr-only` spans inside a clickable tile
+  // are never announced — and on an interactive board every non-Canal tile is a
+  // button. The cell above renders through `show` with no `onTileClick`, so it
+  // exercises the inert `<div>` path and structurally cannot see this.
+  it("folds every fact into a clickable tile's accessible name", () => {
+    const { state, id } = withPieces();
+    const t = state.frame.board.tiles.find(
+      (tile) => `A${String(tile.area).padStart(2, "0")}` === id,
+    )!;
+    expect(t.site!.index, "the fixture tile must carry a printed site").not.toBeNull();
+    t.reachable = true;
+    show(state, { onTileClick: vi.fn(), selected: [t.area] });
+
+    const label =
+      screen.getByRole("button", { name: new RegExp(`^${id} `) }).getAttribute("aria-label") ?? "";
+    // The prefix is load-bearing: the browser harness and three other cells
+    // find a tile by it.
+    expect(label).toMatch(new RegExp(`^${id} \\S`));
+    expect(label).toContain("selected");
+    expect(label).toContain("Red president · 2 Blue assistants · Station");
+    expect(label).toMatch(t.token ? /5-Power \S/ : /5-Power taken/);
+    expect(label).toContain(`Site ${t.site!.index}`);
+    expect(label).toContain("a Movement destination the engine offers");
+  });
+
   it("still draws a name when there is no art, and no broken image", () => {
     const { container } = render(
       <Board

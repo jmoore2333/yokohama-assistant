@@ -2,7 +2,7 @@ import type { CSSProperties } from "react";
 import type { ArtManifest, BoardModel, Labels, PlayerColor, TileModel } from "./types";
 import { areaArt, fivePowerArt, fivePowerWords } from "./art";
 import { SiteFace } from "./Cards";
-import { Pieces } from "./Pieces";
+import { Pieces, piecesWords } from "./Pieces";
 import { ID_BADGE, PIECES, pct, SITE_CARD } from "./tileRects";
 
 /** How wide a tile may be, so that the whole board fits its column at 1440.
@@ -132,6 +132,25 @@ function Tile({
   // in its printed slot. Every rect comes from `tile_rects.json`, never typed
   // here. What the caption used to say in words now rides in `.sr-only` spans
   // and on the pieces' accessible name, so nothing a screen reader had is gone.
+  // **The facts the caption used to carry, worded ONCE and spent twice.**
+  //
+  // On the inert `<div>` a screen reader walks the subtree, so these ride as
+  // `.sr-only` spans and `Pieces` announces the pieces under its own
+  // `role="img"` name. On a `<button>` neither happens: a button is a single
+  // node to assistive technology and its `aria-label` overrides its contents,
+  // so every span inside it and every nested name is suppressed. On an
+  // interactive board that is EVERY non-Canal tile — so the same words are
+  // folded into the label there, with the pieces prepended, and nothing a
+  // sighted player can read on the art is missing from what is announced.
+  const pieces = piecesWords(tile.presidents, tile.assistants, tile.has_station, colors);
+  const facts = isCanal
+    ? ["crossing only · 1 yen to the bank"]
+    : [
+        tile.token ? `5-Power ${fivePowerWords(tile.token)}` : "5-Power taken",
+        ...(tile.site?.index != null ? [`Site ${tile.site.index}`] : []),
+        ...(tile.reachable ? ["a Movement destination the engine offers"] : []),
+      ];
+
   const body = (
     <>
       <div className="tile-art-box">
@@ -170,19 +189,21 @@ function Tile({
       <span className="sr-only">
         {id} {name}
       </span>
-      {isCanal ? (
-        <span className="sr-only">crossing only &middot; 1 yen to the bank</span>
-      ) : (
-        <>
-          <span className="sr-only">
-            {tile.token ? `5-Power ${fivePowerWords(tile.token)}` : "5-Power taken"}
-          </span>
-          {tile.site?.index != null && <span className="sr-only">Site {tile.site.index}</span>}
-          {tile.reachable && <span className="sr-only">a Movement destination the engine offers</span>}
-        </>
-      )}
+      {facts.map((f) => (
+        <span className="sr-only" key={f}>
+          {f}
+        </span>
+      ))}
     </>
   );
+
+  // **The prefix is load-bearing and stays first**: the browser harness and four
+  // component cells find a tile by `^A\d\d `.
+  const label = [
+    `${id} ${name}${isSelected ? " — selected" : ""}`,
+    ...(pieces ? [pieces] : []),
+    ...facts,
+  ].join(" · ");
 
   const className = [
     "tile",
@@ -201,7 +222,7 @@ function Tile({
       className={className}
       disabled={busy}
       aria-pressed={isSelected}
-      aria-label={`${id} ${name}${isSelected ? " — selected" : ""}`}
+      aria-label={label}
       onClick={() => onClick(tile.area)}
     >
       {body}
