@@ -407,8 +407,13 @@ waits for the owner; it does not proceed on its own reading.
 `npm test` 222, `npm run e2e` 21 (+2 opt-in shots), `cargo test -p yokohama-web` 65,
 wire corpus 42 (M3.5 close, `guidingpath.md:206`; M4 added cells this document does not
 re-count). Neither `crates/yokohama-core` nor `SEMANTICS_REV` (7) is touched; the
-server is not touched — **M5 is a client-only milestone and its `git diff` against
-`crates/` must be empty.**
+server is not touched — **M5 is a client-only milestone: its `git diff` against
+`crates/yokohama-core` must be empty, and against `crates/yokohama-web` must touch
+nothing but `assets/art/**` (W0's re-cut) and the one achievements row of
+`art.rs`'s `emitted_art_keeps_the_sheet_aspect` (`art.rs:404`), which states the
+sheet aspect W0 rotates.** *(Corrected while writing the plan, 2026-09-01: the first
+wording said "against `crates/`", which W0 makes false — the art tree lives inside
+the web crate.)*
 
 ---
 
