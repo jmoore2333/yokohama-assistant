@@ -4,6 +4,7 @@ import { Board } from "./Board";
 import { Dashboard } from "./Dashboard";
 import { LastMove } from "./LastMove";
 import { Decision } from "./Decision";
+import { GameMenu } from "./GameMenu";
 import { NewGame } from "./NewGame";
 import { CARD_SURFACES, Surface, SURFACES, type SurfaceName } from "./Surfaces";
 import type {
@@ -192,10 +193,19 @@ export function App() {
     <div className="app">
       <header className="banner">
         <h1>Yokohama</h1>
-        <span className="meta">
-          {state.mode} &middot; {state.id}
-          {state.frame.title.autosaved ? " · saved" : ""}
-        </span>
+        <GameMenu
+          state={state}
+          onSwitch={(s) => {
+            setSurface(null);
+            setScrubK(null);
+            setState(s);
+          }}
+          onNew={() => {
+            setSurface(null);
+            setScrubK(null);
+            setState(null);
+          }}
+        />
         {/* Four surfaces inline, the five card references behind a disclosure,
             so the banner stays ONE ROW at every laptop width: measured 93 → 56px
             at 1440 and 174 → 93 at 1024, with the nav's bottom edge at 43px

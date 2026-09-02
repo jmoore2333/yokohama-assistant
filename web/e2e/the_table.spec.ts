@@ -131,3 +131,25 @@ test("Undo takes the pieces back off the tile", async ({ page }) => {
   await expect.poll(piecesOn, { message: "Undo left the pieces on the tile" }).not.toMatch(/assistant/);
   expect(watch.failures).toEqual([]);
 });
+
+test("the Game menu switches between saved games from inside a game", async ({ page }) => {
+  const watch = watchForBreakage(page);
+  const a = await startGame(page, { players: 2 });
+  await playAFew(page, 4, 0x4d45_4e55); // "MENU"
+  await page.goto("/");
+  const b = await startGame(page, { players: 2 });
+  await page.locator(".game-menu > summary").click();
+  await page.getByRole("button", { name: a.id, exact: true }).click();
+  await expect(page.locator(".game-menu > summary")).toContainText(a.id);
+  // **No second click on the summary here, and this cell is the only place the
+  // reason can be checked.** The menu stays OPEN across a switch, and the list
+  // it is showing has already recomputed against the game just loaded, so the
+  // way back is a button already on screen; a second summary click would CLOSE
+  // it. `GameMenu.test.tsx` cannot see either half — jsdom ships no UA
+  // stylesheet for `details`, so a closed menu's buttons are just as findable
+  // there — while Chromium's are `display: none`, and the first draft of this
+  // line waited fifteen seconds for a button that was never going to appear.
+  await page.getByRole("button", { name: b.id, exact: true }).click();
+  await expect(page.locator(".game-menu > summary")).toContainText(b.id);
+  expect(watch.failures).toEqual([]);
+});

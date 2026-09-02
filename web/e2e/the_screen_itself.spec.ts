@@ -768,9 +768,18 @@ test("every panel fits its drawer, and the board stays readable beside it", asyn
     // rendered, so enumerating the nav is the one derivation available here
     // that cannot fall behind it (`e2e/` imports nothing from `src/`, and a
     // React module is not importable into a Playwright spec without a build).
-    await page.locator(".cards-menu > summary").click();
+    //
+    // **Scoped to `.views`, which is what the sentence above already claimed.**
+    // It read the whole `.banner` and was equivalent only while the nav was the
+    // only thing in it holding buttons. W2b put the Game menu in the banner
+    // beside the nav — same `.cards-menu` disclosure idiom, same `ghost`
+    // buttons — so the unscoped reads collected **New game** and every saved
+    // game id as if they were surfaces, and `.cards-menu > summary` resolved to
+    // two elements. The nav is the registry rendered; the Game menu is not a
+    // surface.
+    await page.locator(".views .cards-menu > summary").click();
     const labels = await page.evaluate(() =>
-      [...document.querySelectorAll(".banner button.ghost")]
+      [...document.querySelectorAll(".views button.ghost")]
         .map((b) => (b.textContent ?? "").trim())
         .filter((t) => t.length > 0),
     );
@@ -788,10 +797,10 @@ test("every panel fits its drawer, and the board stays readable beside it", asyn
       // A card-reference surface lives behind the disclosure; opening it when it
       // is already open would close it, so this asks rather than toggles.
       const inMenu = await page
-        .locator(`.cards-menu button.ghost:text-is("${label}")`)
+        .locator(`.views .cards-menu button.ghost:text-is("${label}")`)
         .count();
-      if (inMenu > 0 && !(await page.locator(".cards-menu[open]").count())) {
-        await page.locator(".cards-menu > summary").click();
+      if (inMenu > 0 && !(await page.locator(".views .cards-menu[open]").count())) {
+        await page.locator(".views .cards-menu > summary").click();
       }
       await page.getByRole("button", { name: label, exact: true }).click();
       // **Wait for images, or this assertion is blind to them.** The Help panel
