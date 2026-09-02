@@ -1,0 +1,60 @@
+// Where the pieces sit on an area tile, in fractions of the tile's box.
+//
+// The numbers live in `tile_rects.json`, which is ALSO what
+// `docs/tools/tilerects.py` draws onto every area art for the owner to look at
+// (M5 spec §4.1, gate V0): one file read by the picture and by the code, so the
+// sheet the owner approved and the rects the client draws cannot drift.
+//
+// The PRINTED regions are what an overlay must never cover. Two are measured —
+// the 5-space (M3.5, `styles.css`'s `.token-slot`) and the ladder band (M3.5
+// §2.2, y 0.630–0.910) — and two are read off the contact sheet in the spec's
+// §2: the title band, whose longest title ("Employment Agency") ends at
+// x≈0.49, and the icon blocks, which reach y≈0.57 on Church, Chinatown,
+// Laboratory and Research Center.
+//
+// SITE_CARD is the tiles' own printed top-right panel — not a box we chose,
+// but the pale ground the illustration's silhouette already leaves bare up
+// there for a physical card to sit on. Measured 2026-09-02 (gate V0 owner
+// answer, R-G1): per art, the largest 4-connected HSV-pale region (V>0.784,
+// S<0.18) within x>0.45,y<0.62, intersected across all 13; the intersection's
+// own left edge is a search-window artifact narrower than the icon block's
+// real right edge, so it is floored at 0.5. That leaves left=0.5, top≈0.032,
+// right≈0.975, bottom≈0.495 (Laboratory's tower is the tightest art on both
+// of the last two); SITE_CARD is the largest 799:530 box that fits inside it,
+// anchored top-right. PIECES and ID_BADGE then share one row directly under
+// the card, ID_BADGE at its left end.
+
+import rects from "./tile_rects.json";
+
+export interface Rect {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+export const PRINTED: Record<string, Rect> = rects.printed;
+export const OVERLAYS: Record<string, Rect> = rects.overlays;
+export const SITE_CARD: Rect = rects.overlays.site_card;
+export const PIECES: Rect = rects.overlays.pieces;
+export const ID_BADGE: Rect = rects.overlays.id_badge;
+export const TOKEN_SLOT: Rect = rects.printed.token_slot;
+
+/** Open intervals on both axes: a shared EDGE is not an overlap. */
+export function intersects(a: Rect, b: Rect): boolean {
+  return (
+    a.left < b.left + b.width &&
+    b.left < a.left + a.width &&
+    a.top < b.top + b.height &&
+    b.top < a.top + a.height
+  );
+}
+
+export const inside = (r: Rect): boolean =>
+  r.left >= 0 && r.top >= 0 && r.left + r.width <= 1 && r.top + r.height <= 1;
+
+/** The rect as inline percentages, for an absolutely positioned overlay. */
+export function pct(r: Rect): { left: string; top: string; width: string; height: string } {
+  const p = (n: number) => `${(n * 100).toFixed(2)}%`;
+  return { left: p(r.left), top: p(r.top), width: p(r.width), height: p(r.height) };
+}

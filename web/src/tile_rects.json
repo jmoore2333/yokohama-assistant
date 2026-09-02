@@ -1,0 +1,13 @@
+{
+  "printed": {
+    "token_slot": { "left": 0.816, "top": 0.588, "width": 0.125, "height": 0.133 },
+    "ladder_band": { "left": 0, "top": 0.63, "width": 1, "height": 0.28 },
+    "title_band": { "left": 0, "top": 0, "width": 0.5, "height": 0.14 },
+    "icon_block": { "left": 0, "top": 0.14, "width": 0.5, "height": 0.44 }
+  },
+  "overlays": {
+    "site_card": { "left": 0.5, "top": 0.032, "width": 0.475, "height": 0.42 },
+    "pieces": { "left": 0.595, "top": 0.462, "width": 0.375, "height": 0.123 },
+    "id_badge": { "left": 0.5, "top": 0.462, "width": 0.085, "height": 0.07 }
+  }
+}
