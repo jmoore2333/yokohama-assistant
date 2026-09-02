@@ -86,12 +86,20 @@ SHEETS = ROOT / "tts-assets" / "organized"
 KB = ROOT / "analysis-1" / "yokohama-kb"
 OUT = ROOT / "crates" / "yokohama-web" / "assets" / "art"
 
-# Card art is displayed at most a few hundred CSS pixels wide; 360 is a 2x
-# raster for a 180px card and reads cleanly at 1x on a phone. The height is
-# COMPUTED from the source cell rather than typed, so the 530:799 aspect cannot
-# drift by a typo.
-CARD_W = 360
-TILE_W = 440
+# Source widths, since M5 (spec §3.3): a card cell IS 530x799 and a tile cell IS
+# 709x531 on every sheet (`cell_box`), and emitting narrower than that is an
+# upsample on a 2x display once the fit rule lets a tile reach 22rem. The old
+# 360/440 were a payload choice for a 180px card; `deploy/RUNBOOK.md` §3.4
+# records what the change costs on the wire.
+CARD_W = 530
+TILE_W = 709
+# The achievement cards are LANDSCAPE on the table and stored SIDEWAYS on their
+# three sheets — every numeral reads a quarter turn clockwise. Rotated
+# counter-clockwise before emit, so the crop is a right-side-up 799x530 face and
+# nothing downstream has to know how the sheet was scanned. PIL's `rotate` is
+# counter-clockwise for a positive angle.
+ACH_W = 799
+ACH_ROTATE_CCW = 90
 QUALITY = 82
 
 # --- the sheets, and how they divide -------------------------------------
@@ -336,6 +344,8 @@ def main() -> None:
             "generator": "docs/tools/mkcardart.py",
             "card_width": CARD_W,
             "tile_width": TILE_W,
+            "achievement_width": ACH_W,
+            "achievement_rotation_ccw": ACH_ROTATE_CCW,
             "webp_quality": QUALITY,
         }
     }
@@ -381,7 +391,8 @@ def main() -> None:
         cols, rows = CARD_SHEETS[name][1:]
         for (r, c), ty in cells.items():
             crop = sheet.crop(cell_box(sheet.size, cols, rows, r, c))
-            achievements[ty] = em.emit(crop, CARD_W, f"achievements/{ty}.webp")
+            face = crop.rotate(ACH_ROTATE_CCW, expand=True)
+            achievements[ty] = em.emit(face, ACH_W, f"achievements/{ty}.webp")
     manifest["achievements"] = achievements
 
     # --- area tiles -------------------------------------------------------

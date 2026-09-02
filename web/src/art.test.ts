@@ -105,3 +105,30 @@ describe("the 5-Power face", () => {
     expect(fivePowerWords({ Seafood: 3 })).toBe("3 Seafood");
   });
 });
+
+describe("the manifest's shapes (M5, W0)", () => {
+  // The three achievement sheets store their cards SIDEWAYS; the generator
+  // rotates them a quarter turn counter-clockwise before emitting, so a
+  // landscape entry is the proof the rotation happened and a portrait one is
+  // the old crop drawn on its side in the rail.
+  it("achievements are landscape and every other card is portrait", () => {
+    const m = wire.artManifest;
+    for (const [key, e] of Object.entries(m.achievements)) {
+      expect(e.w, `achievements/${key} is ${e.w}x${e.h}, not landscape`).toBeGreaterThan(e.h);
+    }
+    for (const family of [m.orders, m.techs, m.sites]) {
+      for (const [key, e] of Object.entries(family)) {
+        expect(e.h, `${key} is ${e.w}x${e.h}, not portrait`).toBeGreaterThan(e.w);
+      }
+    }
+  });
+
+  // Source widths, so the fit rule's 22rem ceiling is the art's native width on
+  // a 2x display rather than a 1.6x upsample of a 440px crop.
+  it("is cut at source width", () => {
+    const m = wire.artManifest;
+    expect(Object.values(m.areas)[0]!.w).toBe(709);
+    expect(Object.values(m.orders)[0]!.w).toBe(530);
+    expect(Object.values(m.achievements)[0]!.w).toBe(799);
+  });
+});
