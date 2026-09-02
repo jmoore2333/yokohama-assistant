@@ -86,14 +86,27 @@ export function gate<T>(): { promise: Promise<T>; resolve: (v: T) => void } {
   return { promise, resolve };
 }
 
-/** The two payloads `App` fetches on mount, answered from the corpus.
+/** The payloads `App` fetches to DRAW A SCREEN, answered from the corpus.
  *
  *  A FALLBACK, consulted only after the caller's own handler declines — see
  *  [`renderApp`]. It used to answer first, which silently stole `/api/art` from
- *  any test that wanted to see the 404 branch. */
+ *  any test that wanted to see the 404 branch.
+ *
+ *  **The three board panels joined the two bootstrap routes at W5b**, because
+ *  the sections moved onto the table: `TableSections` fetches `/ports` and
+ *  `/labs` for the DEFAULT enabled set and `/areas` when Building sites is on,
+ *  so every `renderApp` test now asks for them whether or not it is about them.
+ *  Without this the fallback threw `unexpected GET /api/games/wire/labs`, the
+ *  component carried the sentence into an `.error` div, and three cells that
+ *  match on the game id — which the sentence contains — failed with "found
+ *  multiple elements". A test that wants to see one of these refuse still
+ *  supplies its own reply; the caller is asked first. */
 function bootstrapReply(call: ApiCall): Reply | undefined {
   if (call.path.endsWith("/api/labels")) return wire.labels;
   if (call.path.endsWith("/api/art")) return wire.artManifest;
+  if (call.path.endsWith("/ports")) return wire.ports;
+  if (call.path.endsWith("/labs")) return wire.labs;
+  if (call.path.endsWith("/areas")) return wire.areas;
   return undefined;
 }
 

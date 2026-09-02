@@ -6,7 +6,9 @@ import { LastMove } from "./LastMove";
 import { Decision } from "./Decision";
 import { GameMenu } from "./GameMenu";
 import { NewGame } from "./NewGame";
+import { loadSections, saveSections, SECTION_KEYS, SECTION_LABELS, type SectionKey } from "./sections";
 import { CARD_SURFACES, Surface, SURFACES, type SurfaceName } from "./Surfaces";
+import { TableSections } from "./TableSections";
 import type {
   ArtManifest,
   ClientState,
@@ -29,6 +31,17 @@ export function App() {
   // already holds, so nothing here is persisted and nothing is applied.
   const [scrubK, setScrubK] = useState<number | null>(null);
   const [past, setPast] = useState<HistoricalFrame | null>(null);
+  // **Which boards are on the table, and it is a per-BROWSER choice.** The set
+  // is not game state and is deliberately not sent anywhere: `sections.ts`
+  // keeps it in `localStorage`, a storage that throws reads as the default, and
+  // a game opened on another machine opens with the default set.
+  const [enabled, setEnabled] = useState<SectionKey[]>(() => loadSections());
+  const toggleSection = (k: SectionKey) =>
+    setEnabled((e) => {
+      const next = e.includes(k) ? e.filter((x) => x !== k) : [...e, k];
+      saveSections(next);
+      return next;
+    });
   // The guard against a SECOND request going out while the first is in flight.
   //
   // A ref and not the `busy` state, because state is what makes the bug: React
@@ -221,6 +234,39 @@ export function App() {
             The `<details>` pattern is the one `Board.tsx`'s legend already uses,
             rather than a second disclosure idiom. */}
         <nav className="views">
+          {/* **The section toggles, and they are a DISCLOSURE for a measured
+              reason.** Eleven inline buttons wrapped the banner to a second row
+              below 1280 at M3.5, and `the_screen_itself.spec.ts`'s banner cell
+              pins its height to one row at 1440 and 1280; five more buttons
+              would wrap it again. The summary carries the count, so the state
+              is readable with the menu shut.
+
+              **Escape closes it (ruling R-T12a).** An uncontrolled `<details>`
+              ignores Escape — the key is the browser's affordance for a
+              `<select>` and a `<dialog>`, not for a disclosure — so a menu left
+              open sits over the table. Clicking the summary still toggles; this
+              only adds the key. */}
+          <details
+            className="cards-menu boards-menu"
+            onKeyDown={(e) => {
+              if (e.key === "Escape") e.currentTarget.removeAttribute("open");
+            }}
+          >
+            <summary className="ghost">Boards &middot; {enabled.length} on</summary>
+            <div>
+              {SECTION_KEYS.map((k) => (
+                <button
+                  type="button"
+                  key={k}
+                  className={`ghost ${enabled.includes(k) ? "on" : ""}`}
+                  aria-pressed={enabled.includes(k)}
+                  onClick={() => toggleSection(k)}
+                >
+                  {SECTION_LABELS[k]}
+                </button>
+              ))}
+            </div>
+          </details>
           {SURFACES.filter((s) => !CARD_SURFACES.includes(s.key)).map((s) => (
             <button
               type="button"
@@ -320,6 +366,16 @@ export function App() {
             {...(picking && !replaying
               ? { onTileClick: (area: number) => void send(`A${String(area).padStart(2, "0")}`) }
               : {})}
+          />
+          <TableSections
+            enabled={enabled}
+            game={state.id}
+            state={state}
+            replaying={replaying}
+            view={view}
+            art={art}
+            labels={labels}
+            colors={colors}
           />
         </div>
       </main>

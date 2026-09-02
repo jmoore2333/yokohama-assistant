@@ -623,6 +623,15 @@ for (const players of [2, 3, 4] as const) {
     const watch = watchForBreakage(page);
     const game = await startGame(page, { players });
 
+    // **Every section on, so the width gate SEES the strips.** Four are on by
+    // default and Building sites is not, and that fifth is the one strip that is
+    // a grid of many landscape cards rather than a row of six — the shape most
+    // able to push the page sideways. A gate that measured only the default set
+    // would leave it untested at every width and every seat count.
+    await page.locator(".boards-menu > summary").click();
+    await page.getByRole("button", { name: "Building sites" }).click();
+    await page.keyboard.press("Escape");
+
     // Play first: an empty opening board is the narrowest the screen ever is,
     // and the rail only fills up once there is something to report.
     const pick = rng(0x5749_4454 + players); // "WIDT", per seat count
@@ -700,20 +709,13 @@ test("a four-player table draws four seats and the Canal", async ({ page }) => {
 // W6 had already taken the tracks out of the side column, so the Dashboard's
 // strip was on no screen at all and `.space.dummy` would have counted 0 elements
 // out of 0 and passed for the wrong reason. W5a then retired that surface too:
-// the tracks are a section of the table now, and the section does not mount
-// until W5b. So between the two there is no screen anywhere carrying a track,
-// and this half cannot pass. It is a cell of its own rather than a deleted
-// assertion, so the coverage is visible while it is gone and comes back by
-// removing one annotation. The four-seats and Canal half above is unaffected
-// and stays live under its own name.
+// the tracks are a section of the table now — and W5b is what MOUNTS that
+// section, so the annotation this cell carried between the two is gone and the
+// read is live again, against `.table-sec.tracks` rather than the old drawer.
+// Tracks are on by DEFAULT, so nothing has to be toggled to reach them. The
+// four-seats and Canal half above is unaffected and stays live under its own
+// name.
 test("the 2P dummy is on no track at 4P", async ({ page }) => {
-  test.fail(
-    true,
-    "The Tracks DRAWER retired in W5a and the Tracks STRIP mounts in W5b (Task 12), " +
-      "so between the two there is no track on any screen for this read to take. " +
-      "Task 12 removes this annotation and the cell must then pass against " +
-      "`.table-sec.tracks`.",
-  );
   const watch = watchForBreakage(page);
   await startGame(page, { players: 4 });
 
@@ -729,6 +731,12 @@ test("the 2P dummy is on no track at 4P", async ({ page }) => {
   await expect(strip.locator(".space").first()).toBeVisible();
   const spaces = await strip.locator(".space").count();
   expect(spaces, "the tracks strip drew no spaces").toBeGreaterThan(0);
+  // RECORDED, not gated: how many spaces the strip drew is the anti-vacuity
+  // read's own figure, and a bare `> 0` hides whether it fell from fifteen to
+  // one. The church track runs faith 4–11 and the customs board has seven
+  // printed spaces at every seat count.
+  // eslint-disable-next-line no-console
+  console.log(`4P tracks strip: ${spaces} spaces drawn, 0 of them the 2P dummy`);
   await expect(strip.locator(".space.dummy")).toHaveCount(0);
 
   expect(watch.failures).toEqual([]);
@@ -802,9 +810,17 @@ test("every panel fits its drawer, and the board stays readable beside it", asyn
     // game id as if they were surfaces, and `.cards-menu > summary` resolved to
     // two elements. The nav is the registry rendered; the Game menu is not a
     // surface.
-    await page.locator(".views .cards-menu > summary").click();
+    // **And the Boards disclosure is not a surface either (W5b).** Its five
+    // buttons open no drawer at all — each is a pressed TOGGLE over which boards
+    // the table draws — so they are excluded by the one thing that distinguishes
+    // them from a surface button in the DOM: `aria-pressed`. Its `<summary>` is
+    // not a `button.ghost` and never reached this list. The two `.cards-menu`
+    // selectors below are narrowed for the same reason: `boards-menu` carries
+    // that class for its styling, so an unscoped `.views .cards-menu > summary`
+    // now resolves to TWO elements and a click on it is a strict-mode violation.
+    await page.locator(".views .cards-menu:not(.boards-menu) > summary").click();
     const labels = await page.evaluate(() =>
-      [...document.querySelectorAll(".views button.ghost")]
+      [...document.querySelectorAll(".views button.ghost:not([aria-pressed])")]
         .map((b) => (b.textContent ?? "").trim())
         .filter((t) => t.length > 0),
     );
@@ -825,10 +841,13 @@ test("every panel fits its drawer, and the board stays readable beside it", asyn
       // A card-reference surface lives behind the disclosure; opening it when it
       // is already open would close it, so this asks rather than toggles.
       const inMenu = await page
-        .locator(`.views .cards-menu button.ghost:text-is("${label}")`)
+        .locator(`.views .cards-menu:not(.boards-menu) button.ghost:text-is("${label}")`)
         .count();
-      if (inMenu > 0 && !(await page.locator(".views .cards-menu[open]").count())) {
-        await page.locator(".views .cards-menu > summary").click();
+      if (
+        inMenu > 0 &&
+        !(await page.locator(".views .cards-menu:not(.boards-menu)[open]").count())
+      ) {
+        await page.locator(".views .cards-menu:not(.boards-menu) > summary").click();
       }
       await page.getByRole("button", { name: label, exact: true }).click();
       // **Wait for images, or this assertion is blind to them.** The Help panel
@@ -908,7 +927,15 @@ test("a panel really is modal", async ({ page }) => {
     // The background is inert — the modality the panel now actually has.
     const reachableOutside = await page.evaluate(() => {
       const nav = document.querySelector("nav.views")!;
-      const b = nav.querySelector<HTMLElement>("button")!;
+      // **A DIRECT child, since W5b put the Boards disclosure first in the nav.**
+      // The first DESCENDANT button is now a section toggle inside a CLOSED
+      // `<details>` — `display: none`, so `getBoundingClientRect()` is all
+      // zeroes and `elementFromPoint(0, 0)` answers about the top-left corner of
+      // the page. That reads "not reachable" whether the panel is modal or not,
+      // which passes this check vacuously and then FAILS the live-again read
+      // below for the same reason. The surface buttons are the nav's own
+      // children; the disclosures are not buttons at all.
+      const b = nav.querySelector<HTMLElement>(":scope > button")!;
       const r = b.getBoundingClientRect();
       const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
       return b.contains(hit);
@@ -934,7 +961,7 @@ test("a panel really is modal", async ({ page }) => {
     await page.keyboard.press("Escape");
     await expect(page.getByRole("dialog")).toBeHidden();
     const liveAgain = await page.evaluate(() => {
-      const b = document.querySelector<HTMLElement>("nav.views button")!;
+      const b = document.querySelector<HTMLElement>("nav.views > button")!;
       const r = b.getBoundingClientRect();
       return b.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2));
     });

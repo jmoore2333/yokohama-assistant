@@ -379,3 +379,43 @@ describe("the finished game", () => {
     );
   });
 });
+
+// ---- M5 W5b: the sections on the table ------------------------------------
+//
+// The Boards disclosure is the banner's fifth control and the only one whose
+// buttons do not open a panel: each is a pressed TOGGLE over `sections.ts`'s
+// registry, persisted per browser. The fetched sections then follow `state`,
+// which is what makes an enabled Port strip agree with the board beside it.
+describe("the section toggles", () => {
+  it("are pressed for the default set, and a click turns one on and fetches it", async () => {
+    const stub = await renderApp(wire.options, (call) => {
+      if (call.path.endsWith("/ports")) return wire.ports;
+      if (call.path.endsWith("/labs")) return wire.labs;
+      if (call.path.endsWith("/areas")) return wire.areas;
+      return undefined;
+    });
+    const user = userEvent.setup();
+    // Open the disclosure first. jsdom ships no UA stylesheet for `details`, so
+    // Testing Library finds a closed menu's buttons either way; the click keeps
+    // the test honest about the flow a player actually takes.
+    await user.click(screen.getByText(/^Boards/));
+    expect(screen.getByRole("button", { name: "Port" })).toHaveAttribute("aria-pressed", "true");
+    const sites = screen.getByRole("button", { name: "Building sites" });
+    expect(sites).toHaveAttribute("aria-pressed", "false");
+    expect(stub.matching("GET", "/areas")).toHaveLength(0);
+    await user.click(sites);
+    expect(sites).toHaveAttribute("aria-pressed", "true");
+    await waitFor(() => expect(stub.matching("GET", "/areas")).toHaveLength(1));
+    await user.click(sites);
+    expect(sites).toHaveAttribute("aria-pressed", "false");
+
+    // **Escape closes it (ruling R-T12a).** An uncontrolled `<details>` ignores
+    // Escape entirely — the key is the browser's own affordance for a `<select>`
+    // and a `<dialog>`, not for a disclosure — so a menu left open sits over the
+    // table until you click the summary again. Every flow that touches these
+    // toggles presses Escape afterwards (this cell, the two browser cells, the
+    // screenshot generator), which is what made the absence visible.
+    await user.keyboard("{Escape}");
+    expect(document.querySelector("details.boards-menu")).not.toHaveAttribute("open");
+  });
+});

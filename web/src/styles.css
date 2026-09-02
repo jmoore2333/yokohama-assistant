@@ -109,6 +109,21 @@ h1, h2, h3 { font-family: var(--display); font-weight: 500; margin: 0; }
 .banner .turn { margin-left: auto; }
 .views { display: flex; gap: 0.35rem; flex-wrap: wrap; }
 .views button.on { color: var(--fg); border-color: var(--vp); }
+/* **The nav is aligned as a BLOCK, not on a baseline, and that is a fix for a
+ * measured 4px (W5b).** `.banner` is `align-items: baseline`, and a flex
+ * container's baseline is its FIRST item's — so the banner's height depended on
+ * what happened to come first inside the nav. Every item there was a padded,
+ * bordered `button.ghost` until W5b put the Boards `<details>` at the head of
+ * the row; a `<summary>` carries neither (`.ghost` is styled on `button.ghost`
+ * only), its baseline sits ~5px higher inside the same 31px box, and the whole
+ * nav was pushed down to make the baselines meet. Measured at 1440: the nav's
+ * top went 12 → 16 and its bottom 43.09 → 47.09, so the banner read 60.09px
+ * against a 56px one-row box and `the_screen_itself.spec.ts`'s banner cell
+ * failed — with nothing wrapped. The nav is the tallest child and therefore
+ * defines the line either way, so aligning it as a block is visually identical
+ * to the pre-W5b banner and no longer couples the banner's height to which
+ * control is first in the row. */
+.banner > .views { align-self: center; }
 
 /* ---- the end-trigger strip --------------------------------------------- */
 .end-strip {

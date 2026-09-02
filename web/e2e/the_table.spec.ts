@@ -153,3 +153,89 @@ test("the Game menu switches between saved games from inside a game", async ({ p
   await expect(page.locator(".game-menu > summary")).toContainText(b.id);
   expect(watch.failures).toEqual([]);
 });
+
+// ---- M5 W5b: the sections on the table --------------------------------------
+
+test("an enabled section re-fetches once after a move, collapses while replaying, and persists across a reload", async ({ page }) => {
+  const watch = watchForBreakage(page);
+  await page.setViewportSize({ width: 1710, height: 869 });
+  await startGame(page, { players: 2 });
+  const portRequests: string[] = [];
+  // **The two counters are the whole point of this cell (ruling R-T12b).**
+  //
+  // Spec §3.4's rule is "an enabled fetched section re-fetches after every
+  // `setState`", and in `App.tsx` a `setState` of the game comes from exactly
+  // three places: the `/input` reply, the re-read `GET /api/games/{id}` in
+  // `send`'s catch branch, and `create`. So the count that follows from the rule
+  // is one `/ports` per state-changing RESPONSE, not one per "move" — and a move
+  // in `act()`'s sense is not one request: a placement clicks up to three tiles
+  // and then Confirm, and every one of those four is its own `/input` post with
+  // its own reply. Asserting `+1` would therefore be asserting which affordance
+  // the seeded walk happened to take. This counts the posts instead and asserts
+  // the RELATION, which is what the spec actually says.
+  const inputPosts: string[] = [];
+  const reReads: string[] = [];
+  page.on("request", (r) => {
+    const path = new URL(r.url()).pathname;
+    if (/\/ports$/.test(path)) portRequests.push(r.url());
+    if (/\/input$/.test(path) && r.method() === "POST") inputPosts.push(r.url());
+    if (/^\/api\/games\/[^/]+$/.test(path) && r.method() === "GET") reReads.push(r.url());
+  });
+  // Building sites is off by default; turn it on and see it fetched once.
+  await page.locator(".boards-menu > summary").click();
+  await page.getByRole("button", { name: "Building sites" }).click();
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".table-sec.buildings .site-card").first()).toBeVisible();
+  const before = portRequests.length;
+  const postsBefore = inputPosts.length;
+  const readsBefore = reReads.length;
+  await playAFew(page, 1, 0x5245_4652); // "REFR"
+  const stateChanges = () =>
+    inputPosts.length - postsBefore + (reReads.length - readsBefore);
+  await expect
+    .poll(() => stateChanges(), { message: "the walk applied nothing, so nothing could refresh" })
+    .toBeGreaterThan(0);
+  await expect
+    .poll(() => portRequests.length - before, {
+      message: "a move did not refresh the port",
+    })
+    .toBe(stateChanges());
+  // eslint-disable-next-line no-console
+  console.log(
+    `sections refresh: one move made ${stateChanges()} state-changing responses ` +
+      `and ${portRequests.length - before} /ports requests`,
+  );
+
+  await page.getByRole("button", { name: "Log", exact: true }).click();
+  const track = page.getByLabel("Replay position");
+  await track.focus();
+  await page.keyboard.press("ArrowLeft");
+  await expect(page.locator(".table-sec.ports.collapsed")).toBeVisible();
+  await expect(page.locator(".table-sec.tracks")).toBeVisible();
+  await page.getByRole("button", { name: "Back to live" }).click();
+  await expect(page.locator(".table-sec.ports .board-strip")).toBeVisible();
+  await page.keyboard.press("Escape");
+
+  await page.reload();
+  await page.getByRole("button", { name: /^sim-/ }).first().click();
+  await expect(page.locator(".table-sec.buildings")).toBeVisible();
+  await page.locator(".boards-menu > summary").click();
+  await expect(page.getByRole("button", { name: "Building sites" })).toHaveAttribute("aria-pressed", "true");
+  expect(watch.failures).toEqual([]);
+});
+
+test("the port and laboratory strips sit side by side at 2560 and stack at 1710", async ({ page }) => {
+  await startGame(page, { players: 2 });
+  const tops = () =>
+    page.evaluate(() => ({
+      port: document.querySelector(".table-sec.ports")!.getBoundingClientRect().top,
+      lab: document.querySelector(".table-sec.labs")!.getBoundingClientRect().top,
+    }));
+  await page.setViewportSize({ width: 2560, height: 1440 });
+  await settle(page);
+  await expect.poll(async () => (await tops()).port === (await tops()).lab, { message: "not side by side at 2560" }).toBe(true);
+  await page.setViewportSize({ width: 1710, height: 869 });
+  await settle(page);
+  const t = await tops();
+  expect(t.lab, "not stacked at 1710").toBeGreaterThan(t.port);
+});
