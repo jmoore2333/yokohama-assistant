@@ -16,6 +16,7 @@ import type {
   OrderCard,
   PlayerColor,
   PlayerId,
+  SiteModel,
   SpaceReward,
   TechCard,
 } from "./types";
@@ -241,6 +242,48 @@ export function SiteCardView({
       )}
       <figcaption>{children}</figcaption>
     </figure>
+  );
+}
+
+/** The printed building-site card with what is BUILT drawn on it.
+ *
+ *  The overlay rects are MEASURED (`styles.css`'s `.site-space.slot-*`): each
+ *  of the 24 site arts minus its own 9px box blur, averaged, so the printed
+ *  rule survives and every card's own content cancels. An unbuilt space draws
+ *  NOTHING, so the printed card reads exactly as it does on the table. Shared by
+ *  the building-sites strip and, since M5, by every tile. */
+export function SiteFace({
+  art,
+  site,
+  colors,
+}: {
+  art: ArtManifest | null;
+  site: SiteModel;
+  colors: PlayerColor[];
+}) {
+  const face = siteArt(art, site.index);
+  const th = site.trading_house_owner;
+  return (
+    <div className="site-face">
+      {face ? (
+        <img src={face} alt="" loading="lazy" />
+      ) : (
+        <div className="card-blank">{site.index == null ? "site" : `Site ${site.index}`}</div>
+      )}
+      {site.slots.map((slot, i) => (
+        <span
+          key={i}
+          className={`site-space slot-${i} ${
+            slot.built_by != null ? `built ${seatClass(colors[slot.built_by])}` : ""
+          }`}
+        >
+          {slot.built_by != null && <span className="built-mark">&#8962;</span>}
+        </span>
+      ))}
+      <span className={`site-trading-house ${th != null ? `built ${seatClass(colors[th])}` : ""}`}>
+        {th != null && <span className="built-mark">&#8962;</span>}
+      </span>
+    </div>
   );
 }
 

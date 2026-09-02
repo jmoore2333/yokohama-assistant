@@ -26,11 +26,12 @@ import type {
   SuggestResponse,
   WhyResponse,
 } from "./types";
-import { fivePowerWords, siteArt } from "./art";
+import { fivePowerWords } from "./art";
 import {
   OrderCardView,
   Pawns,
   seatClass,
+  SiteFace,
   SPACE_POSITIONS,
   spaceWords,
   TechCardView,
@@ -777,46 +778,12 @@ function BuildingSites({
   );
 }
 
-function SiteCard({
-  card,
-  art,
-  colors,
-}: {
-  card: AreaCard;
-  art: ArtManifest | null;
-  colors: PlayerColor[];
-}) {
+function SiteCard({ card, art, colors }: { card: AreaCard; art: ArtManifest | null; colors: PlayerColor[] }) {
   const site = card.tile.site!;
-  const face = siteArt(art, site.index);
   const id = `A${String(card.tile.area).padStart(2, "0")}`;
-  const th = site.trading_house_owner;
   return (
     <figure className="site-card">
-      <div className="site-face">
-        {face ? (
-          <img src={face} alt="" loading="lazy" />
-        ) : (
-          <div className="card-blank">Site {site.index}</div>
-        )}
-        {/* One overlay box per printed space, at the measured rects. A space
-            nobody has built on draws nothing at all, so the printed card reads
-            exactly as it does on the table. */}
-        {site.slots.map((slot, i) => (
-          <span
-            key={i}
-            className={`site-space slot-${i} ${
-              slot.built_by != null ? `built ${seatClass(colors[slot.built_by])}` : ""
-            }`}
-          >
-            {slot.built_by != null && <span className="built-mark">&#8962;</span>}
-          </span>
-        ))}
-        <span
-          className={`site-trading-house ${th != null ? `built ${seatClass(colors[th])}` : ""}`}
-        >
-          {th != null && <span className="built-mark">&#8962;</span>}
-        </span>
-      </div>
+      <SiteFace art={art} site={site} colors={colors} />
       <figcaption>
         <span className="tile-id">{id}</span> <b>Site {site.index}</b>
         <span className="muted"> &middot; trading house &#9733;{site.trading_house_vp}</span>
