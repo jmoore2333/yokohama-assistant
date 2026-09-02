@@ -1,9 +1,12 @@
+import { useState } from "react";
 import type { CSSProperties } from "react";
+import type React from "react";
 import type { ArtManifest, BoardModel, Labels, PlayerColor, TileModel } from "./types";
 import { areaArt, fivePowerArt, fivePowerWords } from "./art";
 import { SiteFace } from "./Cards";
 import { Pieces, piecesWords } from "./Pieces";
 import { ID_BADGE, PIECES, pct, SITE_CARD } from "./tileRects";
+import { TilePopover, type Anchor } from "./TilePopover";
 
 /** How wide a tile may be, so that the whole board fits its column at 1440.
  *
@@ -74,6 +77,15 @@ export function Board({
   const ordered = [...rows.entries()].sort((a, b) => a[0] - b[0]);
   for (const [, list] of ordered) list.sort((a, b) => a.grid_position[1] - b.grid_position[1]);
 
+  // The popover's whole state: which tile, and where it is. One at a time.
+  const [pop, setPop] = useState<{ area: number; anchor: Anchor } | null>(null);
+  const show = (area: number, el: HTMLElement) => {
+    const r = el.getBoundingClientRect();
+    setPop({ area, anchor: { left: r.left, top: r.top, right: r.right, bottom: r.bottom } });
+  };
+  const hide = () => setPop(null);
+  const popTile = pop ? board.tiles.find((t) => t.area === pop.area) : undefined;
+
   return (
     <div className="board" style={{ "--tile-w": tileWidth(ordered) } as CSSProperties}>
       {ordered.map(([r, tiles]) => (
@@ -92,10 +104,16 @@ export function Board({
               onClick={onTileClick}
               isSelected={selected?.includes(t.area) ?? false}
               busy={busy ?? false}
+              onShow={show}
+              onHide={hide}
+              popOpen={pop?.area === t.area}
             />
           ))}
         </div>
       ))}
+      {pop && popTile && (
+        <TilePopover tile={popTile} art={art} labels={labels} colors={colors} anchor={pop.anchor} />
+      )}
       <Legend />
     </div>
   );
@@ -109,6 +127,9 @@ function Tile({
   onClick,
   isSelected,
   busy,
+  onShow,
+  onHide,
+  popOpen,
 }: {
   tile: TileModel;
   art: ArtManifest | null;
@@ -117,6 +138,9 @@ function Tile({
   onClick?: (area: number) => void;
   isSelected: boolean;
   busy: boolean;
+  onShow: (area: number, el: HTMLElement) => void;
+  onHide: () => void;
+  popOpen: boolean;
 }) {
   const name = labels?.area_types[tile.area_type] ?? tile.area_type;
   const isCanal = tile.area_type === "Canal";
@@ -219,7 +243,23 @@ function Tile({
     .filter(Boolean)
     .join(" ");
 
-  if (!onClick || isCanal) return <div className={className}>{body}</div>;
+  const hoverable = {
+    onMouseEnter: (e: React.MouseEvent<HTMLElement>) => onShow(tile.area, e.currentTarget),
+    onMouseLeave: onHide,
+    onFocus: (e: React.FocusEvent<HTMLElement>) => onShow(tile.area, e.currentTarget),
+    onBlur: onHide,
+    onKeyDown: (e: React.KeyboardEvent<HTMLElement>) => {
+      if (e.key === "Escape") onHide();
+    },
+    ...(popOpen ? { "aria-describedby": `pop-${id}` } : {}),
+  };
+
+  if (!onClick || isCanal)
+    return (
+      <div className={className} tabIndex={0} {...hoverable}>
+        {body}
+      </div>
+    );
   return (
     <button
       type="button"
@@ -228,6 +268,7 @@ function Tile({
       aria-pressed={isSelected}
       aria-label={label}
       onClick={() => onClick(tile.area)}
+      {...hoverable}
     >
       {body}
     </button>
