@@ -217,12 +217,27 @@ h1, h2, h3 { font-family: var(--display); font-weight: 500; margin: 0; }
   scrollbar-color: var(--line-bright) transparent;
 }
 @media (min-width: 1201px) {
-  /* **The fit rule (M5 spec §3.3).** The largest tile that fits the widest row
-   * across the table AND four rows down it, floored at the measured 10rem
-   * legibility floor and capped at 22rem, the art's source width on a 2x
-   * display. `--n` and `--rows` are the REALIZED shape from Board.tsx; cqw/cqh
-   * are `.table`'s. The 2rem is `.table-body`'s padding. `fit.ts` is this same
-   * arithmetic as the test oracle — change one, change the other. */
+  /* **The fit rule (M5 spec §3.3).** The largest tile that fits `var(--n)`
+   * tiles across the table AND `var(--rows)` rows down it, floored at the
+   * measured 10rem legibility floor and capped at 22rem, the art's source width
+   * on a 2x display. Both are the REALIZED shape from Board.tsx, never a
+   * player count: `--n` is the widest row, 4/5/6 at 2P/3P/4P, and `--rows` is
+   * the row count, which `board_gen::row_lengths` makes FOUR at all three
+   * (4/3/2/1 · 5/4/3/2 · 6/5/4/3). So "four rows down" is true of every board
+   * the engine generates today, and writing `var(--rows)` is what keeps that a
+   * measurement rather than an assumption. cqw/cqh are `.table`'s. The 2rem is
+   * `.table-body`'s padding. `fit.ts` is this same arithmetic as the test
+   * oracle — change one, change the other.
+   *
+   * **It sizes the PYRAMID to the table, not the table's whole content**
+   * (controller ruling R-T8a). The marks legend and this element's own
+   * `padding-bottom` sit below the rows, and Task 12's sections will too, so
+   * `.table` scrolling under a fitted pyramid is the design (owner ruling R2):
+   * measured at 1710x869, four rows in view at every player count with the
+   * table scrolling 40px at 2P and 9px at 3P below them. Where even the rows
+   * cannot fit — a short viewport, where the height term falls under the 10rem
+   * floor — the floor wins and the table scrolls the pyramid itself, which is
+   * the legibility floor doing its job rather than the rule failing. */
   .table .board {
     --by-w: calc((100cqw - 2rem - (var(--n) - 1) * 0.4rem) / var(--n));
     --by-h: calc((100cqh - 2rem - (var(--rows) - 1) * 0.4rem) / var(--rows) * 709 / 531);

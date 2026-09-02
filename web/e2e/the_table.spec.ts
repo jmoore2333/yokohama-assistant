@@ -7,10 +7,21 @@ import { act, readScreen, rng, startGame, watchForBreakage } from "./harness";
 
 test.skip(!haveBrowser, "no Chromium — YOKOHAMA_WEB_E2E_OPTIONAL=1; this run tested NOTHING");
 
+/** Four screens, and the fourth is there for the BRANCH the other three miss.
+ *
+ *  1440x900 is the M3.5 reference, 1710x869 the owner's, 2560x1440 the cap. All
+ *  three fit their four rows, so all three take the same branch below and the
+ *  `else` was reached by nothing — a half-tested conditional. 1440x600 is a
+ *  short laptop viewport where the table is ~516px tall and the height term
+ *  works out at ~9.7rem, UNDER the 10rem legibility floor: the floor wins, the
+ *  pyramid is taller than the table, and the table has to scroll it. That is
+ *  the rule behaving correctly at a size it cannot satisfy, and it is the only
+ *  one of the four that exercises the other half of the cell. */
 const VIEWPORTS = [
   [1440, 900],
   [1710, 869],
   [2560, 1440],
+  [1440, 600],
 ] as const;
 
 const settle = (page: Page) =>
@@ -34,7 +45,7 @@ async function playAFew(page: Page, moves: number, seed: number) {
 }
 
 for (const players of [2, 3, 4] as const) {
-  test(`the pyramid is the size the rule says, and fits where it says, at ${players}P`, async ({ page }) => {
+  test(`the pyramid is the size the rule says, and its rows are in view where it says, at ${players}P`, async ({ page }) => {
     const watch = watchForBreakage(page);
     await startGame(page, { players });
     await playAFew(page, 10, players * 1000 + 7);
@@ -60,14 +71,30 @@ for (const players of [2, 3, 4] as const) {
         Math.abs(read.tileW - want),
         `${players}P at ${w}x${h}: rendered ${read.tileW.toFixed(1)}px, the rule says ${want.toFixed(1)}`,
       ).toBeLessThanOrEqual(1);
+      // **The branch is named in the reading, and the branch taken is a fact
+      // about the VIEWPORT, not about the product.** Three of the four fit and
+      // one does not, by construction, so a run in which every line says the
+      // same thing is a run whose `VIEWPORTS` list has drifted.
+      let branch: string;
       if (pyramidFits(want, read.rows, read.tableH)) {
         for (const b of read.bottoms) {
           expect(b, `${players}P at ${w}x${h}: a row's bottom (${b}) is below the viewport (${read.innerH})`).toBeLessThanOrEqual(read.innerH);
         }
+        // RECORDED, never gated (ruling R-T8a). `.table` holds the marks legend
+        // and `.board`'s `padding-bottom` under the pyramid, and Task 12's
+        // sections will join them, so a scrolling table under four fitted rows
+        // is the design — but the figure belongs in the record, because it is
+        // how far the owner has to scroll to reach what is under the board.
+        branch =
+          `rows in view · the legend and anything under the pyramid scroll by ` +
+          `${read.scrollH - read.tableH}px — recorded`;
       } else {
         expect(read.scrollH, `${players}P at ${w}x${h}: the rule cannot fit, so the table must scroll`).toBeGreaterThan(read.tableH);
+        branch =
+          `the rule cannot fit its rows, so the table scrolls the pyramid ` +
+          `(${read.scrollH} > ${read.tableH}) — gated`;
       }
-      console.log(`${players}P at ${w}x${h}: tile ${(read.tileW / 16).toFixed(2)}rem (rule ${(want / 16).toFixed(2)}rem) — recorded`);
+      console.log(`${players}P at ${w}x${h}: tile ${(read.tileW / 16).toFixed(2)}rem (rule ${(want / 16).toFixed(2)}rem) · ${branch}`);
     }
     expect(watch.failures).toEqual([]);
   });

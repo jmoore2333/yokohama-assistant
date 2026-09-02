@@ -30,7 +30,32 @@ export function tileWidthFor(
   return Math.min(CEIL_REM * remPx, Math.max(FLOOR_REM * remPx, Math.min(byW, byH)));
 }
 
-/** Whether `rows` rows of tiles `tileW` wide fit in `tableH`. */
+/** Whether `rows` rows of tiles `tileW` wide are IN VIEW within `tableH`.
+ *
+ *  **A claim about the PYRAMID, never about `.table`'s scroll** (controller
+ *  ruling R-T8a). `.table` holds more than the pyramid — the marks legend and
+ *  `.board`'s own `padding-bottom` sit under it today, and Task 12's sections
+ *  will sit under it tomorrow — so the table scrolling is the design (owner
+ *  ruling R2) and not a failure of this rule. Measured on the owner's screen at
+ *  1710x869 with `.table` 785px tall: all four rows in view at every player
+ *  count, while the table's own `scrollHeight` runs 825 at 2P and 794 at 3P.
+ *  What this function answers, and all it answers, is whether the ROWS fit —
+ *  which is what spec §3.3 claims and what the browser cell branches on.
+ *
+ *  Neither this nor `tileWidthFor` accounts for what is below the pyramid, and
+ *  that is deliberate: adding ~1.4rem to `PAD_REM` for a collapsed legend line
+ *  would shrink every tile by ~0.3rem to buy back nothing the owner asked for.
+ *
+ *  **The `+ 0.5` is a half-pixel tolerance, and it is LOAD-BEARING** — not
+ *  slack anyone added to be safe. The rows are laid out by the browser at
+ *  sub-pixel precision from a tile width the CSS derived with its own rounding,
+ *  so an exact `<=` against a whole-pixel container height decides a tie on
+ *  noise. The cell above proves the case: `pyramidFits(245, 4, 785)` computes
+ *  785.163329 against 785 and is TRUE only because of this term — and it is
+ *  true because those four rows really are in view, measured. Removing the
+ *  term flips that cell and, with it, which branch the browser cell takes on
+ *  the owner's own screen.
+ */
 export function pyramidFits(tileW: number, rows: number, tableH: number, remPx = 16): boolean {
   return (tileW / TILE_RATIO) * rows + (rows - 1) * GAP_REM * remPx + PAD_REM * remPx <= tableH + 0.5;
 }
