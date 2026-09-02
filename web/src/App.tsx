@@ -281,7 +281,7 @@ export function App() {
         {view.end_triggers}
       </div>
 
-      {/* **The stage draws the REPLAY position while you are scrubbing.**
+      {/* **The table draws the REPLAY position while you are scrubbing.**
           The board never goes inside the panel: measured, a 4P board in the
           704px drawer scrolls 322px horizontally and ~205px vertically, and
           shrinking the tile enough to fit drops the printed power ladder to
@@ -293,8 +293,16 @@ export function App() {
           not answerable, so every tile renders as an inert `<div>` rather than
           a button — which is also what makes the panel's modality correct here
           rather than costly: there is nothing behind it to click. */}
-      <main className={`stage ${replaying ? "replaying" : ""}`}>
-        <div className="board-col">
+      {/* **The table and the side column (M5 spec §3.1).** Above 1201px `.app`
+          is a grid: the table is column 1 across rows 3–4 and scrolls on its
+          own; the deck is column 2 row 3, pinned by the grid rather than by
+          `sticky`; the side column is column 2 row 4 and scrolls on its own.
+          Below 1201px nothing here is a grid item — this is the DOM order the
+          M3.5 column stack reads, table then side then the sticky deck, so R8
+          holds by construction. `main` is the one landmark; the board never
+          goes inside a panel (M4 §3.1), and it never has. */}
+      <main className={`table ${replaying ? "replaying" : ""}`}>
+        <div className="table-body">
           <Board
             board={view.frame.board}
             art={art}
@@ -307,15 +315,10 @@ export function App() {
               : {})}
           />
         </div>
-        <aside className="rail">
-          <Dashboard
-            panels={view.frame.dashboard}
-            art={art}
-            labels={labels}
-            colors={colors}
-          />
-        </aside>
       </main>
+      <aside className="side">
+        <Dashboard panels={view.frame.dashboard} art={art} labels={labels} colors={colors} />
+      </aside>
 
       {surface && (
         <Surface
@@ -337,6 +340,11 @@ export function App() {
           `.stage` is `max(board, rail)` and the rail runs 2.1–2.5× the board's
           height, so nothing done to the board shortens the page — pinning is
           what makes the page's height stop mattering.
+
+          **Since M5 it has two homes and only one of them is `sticky`.** Above
+          1201px the grid puts it in column 2 row 3 with `position: static` and
+          nothing scrolls past it; below, this is M3.5's bottom-edge sticky bar,
+          unchanged. The e2e cell asserts both arms.
 
           The three blocks share a container because pinning them separately is
           a measured defect, not a tidiness question. At one `bottom: 0` and one

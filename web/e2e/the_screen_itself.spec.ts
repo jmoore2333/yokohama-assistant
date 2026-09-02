@@ -59,7 +59,7 @@ test("every picture the client draws actually loads", async ({ page }) => {
 // hold under any redesign is that the bar is against the bottom edge and fully
 // on screen, which is what is written below.
 
-test("the answer bar is pinned to the bottom at every scroll offset", async ({ page }) => {
+test("the answer bar is always in view — top of the side column above 1201, bottom edge below", async ({ page }) => {
   const watch = watchForBreakage(page);
   // 4P: the worst case, and the one measured at 1,106px below the fold before
   // the deck existed.
@@ -124,6 +124,19 @@ test("the answer bar is pinned to the bottom at every scroll offset", async ({ p
     }
   }
 
+  // **The answer list must never be the thing that gets squeezed to nothing.**
+  //
+  // This is the second defect the deck had, and it is the subtler one. The deck
+  // is capped, so something inside it yields; the first version let the ANSWER
+  // LIST yield, and against a bot seat the applied-move commentary reached
+  // sixteen lines and 312px, clamped the list to a height of exactly 0, and made
+  // the first option unclickable — its 34px box still had a centre, and the
+  // centre landed on `.controls`. A player would have met that on move six.
+  //
+  // Asserted as a FLOOR and a hit test, not as a height: how tall the list is
+  // depends on the prompt and on the viewport, but "at least one row, and you
+  // can actually press it" holds under any redesign.
+
   // The floor, at the worst moment the run actually produced.
   expect(covered, covered ?? "").toBeNull();
   if (worstList !== Infinity) {
@@ -144,23 +157,44 @@ test("the answer bar is pinned to the bottom at every scroll offset", async ({ p
     "this run never produced applied-move commentary, so the squeeze was never exercised",
   ).toBeGreaterThan(0);
 
-  const read = async (y: number) => {
-    await page.evaluate((to) => window.scrollTo(0, to), y);
-    await page.evaluate(
-      () => new Promise((resolve) => requestAnimationFrame(() => resolve(null))),
-    );
-    return page.evaluate(() => {
+  // **Two arms, because the deck has two homes (M5 spec §3.1).** Above 1201 it
+  // is pinned at the top of the side column by the grid, and the thing that
+  // scrolls is the TABLE; below 1201 it is M3.5's bottom-edge sticky bar and the
+  // thing that scrolls is the page. Each arm scrolls its own scroller and
+  // hit-tests every control at three offsets.
+  const readDeck = () =>
+    page.evaluate(() => {
       const deck = document.querySelector(".deck")!;
       const r = deck.getBoundingClientRect();
+      // **The option list is a scroll CONTAINER, and a hit test has to know it.**
+      // The same correction the probe above carries, for the same reason and now
+      // for a second one: a row scrolled outside `.options.scrolls`'s own clip
+      // still has a box and a centre, and `elementFromPoint` there returns
+      // whatever is painted at that point — so an unclipped read reports
+      // "covered" for a screen where nothing covers anything. It was latent
+      // while the deck ran the full width; at 24rem the option labels wrap to
+      // two and three lines and the list scrolls on ordinary prompts, and the
+      // cell reported two covered rows on a clean tree. So: the list goes back
+      // to its top, every control OUTSIDE it is hit-tested unconditionally, and
+      // a control inside it is hit-tested while the point this test SAMPLES —
+      // the button's centre, which is what `elementFromPoint` reads — is inside
+      // it. A control pushed out of the designed scroller is still tested,
+      // because that is the defect this cell exists for.
+      const list = deck.querySelector(".options.scrolls");
+      if (list) list.scrollTop = 0;
+      const lr = list?.getBoundingClientRect();
       return {
-        scrollY: Math.round(window.scrollY),
         top: Math.round(r.top),
         bottom: Math.round(r.bottom),
         innerHeight: window.innerHeight,
-        // Every control the player can press, and whether the click would
-        // actually reach it — the defect that made this a deck and not a rule.
         reachable: [...deck.querySelectorAll<HTMLElement>("button")]
           .filter((b) => b.offsetParent !== null)
+          .filter((b) => {
+            if (!list || !lr || !list.contains(b)) return true;
+            const br = b.getBoundingClientRect();
+            const centre = br.y + br.height / 2;
+            return centre >= lr.top && centre <= lr.bottom;
+          })
           .map((b) => {
             const br = b.getBoundingClientRect();
             const hit = document.elementFromPoint(br.x + br.width / 2, br.y + br.height / 2);
@@ -168,36 +202,35 @@ test("the answer bar is pinned to the bottom at every scroll offset", async ({ p
           }),
       };
     });
-  };
+  const settle = () =>
+    page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => resolve(null))));
 
-  const bottomOfPage = await page.evaluate(() => document.body.scrollHeight);
-  for (const y of [0, 400, bottomOfPage]) {
-    const r = await read(y);
-    expect(
-      Math.abs(r.bottom - r.innerHeight),
-      `the deck is not against the bottom edge at scrollY ${r.scrollY} (bottom ${r.bottom} vs ${r.innerHeight})`,
-    ).toBeLessThanOrEqual(1);
-    expect(r.top, `the deck runs off the top of the viewport at scrollY ${r.scrollY}`).toBeGreaterThanOrEqual(0);
-
-    // Anti-vacuity, and the real defect: a deck with no pressable control is
-    // "pinned" by any geometric reading and useless to a player.
-    expect(r.reachable.length, `no control in the deck at scrollY ${r.scrollY}`).toBeGreaterThan(0);
-    const buried = r.reachable.filter((c) => !c.reached).map((c) => c.name);
-    expect(buried, `controls in the deck are covered at scrollY ${r.scrollY}`).toEqual([]);
+  // Arm 1: the grid (the default Desktop Chrome viewport is 1280 wide).
+  const tableBottom = await page.evaluate(() => document.querySelector(".table")!.scrollHeight);
+  for (const y of [0, 400, tableBottom]) {
+    await page.evaluate((to) => {
+      document.querySelector(".table")!.scrollTop = to;
+    }, y);
+    await settle();
+    const r = await readDeck();
+    expect(r.top, `the deck runs off the top at table scroll ${y}`).toBeGreaterThanOrEqual(0);
+    expect(r.bottom, `the deck runs below the viewport at table scroll ${y}`).toBeLessThanOrEqual(r.innerHeight);
+    expect(r.reachable.length, `no control in the deck at table scroll ${y}`).toBeGreaterThan(0);
+    expect(r.reachable.filter((c) => !c.reached).map((c) => c.name), `controls covered at table scroll ${y}`).toEqual([]);
   }
 
-  // **The answer list must never be the thing that gets squeezed to nothing.**
-  //
-  // This is the second defect the deck had, and it is the subtler one. The deck
-  // is capped, so something inside it yields; the first version let the ANSWER
-  // LIST yield, and against a bot seat the applied-move commentary reached
-  // sixteen lines and 312px, clamped the list to a height of exactly 0, and made
-  // the first option unclickable — its 34px box still had a centre, and the
-  // centre landed on `.controls`. A player would have met that on move six.
-  //
-  // Asserted as a FLOOR and a hit test, not as a height: how tall the list is
-  // depends on the prompt and on the viewport, but "at least one row, and you
-  // can actually press it" holds under any redesign.
+  // Arm 2: the column stack, exactly M3.5's assertions.
+  await page.setViewportSize({ width: 1024, height: 844 });
+  await settle();
+  const bottomOfPage = await page.evaluate(() => document.body.scrollHeight);
+  for (const y of [0, 400, bottomOfPage]) {
+    await page.evaluate((to) => window.scrollTo(0, to), y);
+    await settle();
+    const r = await readDeck();
+    expect(Math.abs(r.bottom - r.innerHeight), `the deck is not against the bottom edge at scrollY ${y}`).toBeLessThanOrEqual(1);
+    expect(r.top, `the deck runs off the top of the viewport at scrollY ${y}`).toBeGreaterThanOrEqual(0);
+    expect(r.reachable.filter((c) => !c.reached).map((c) => c.name), `controls covered at scrollY ${y}`).toEqual([]);
+  }
   expect(watch.failures).toEqual([]);
 });
 
@@ -206,22 +239,42 @@ test("only the option list scrolls inside the deck", async ({ page }) => {
   await startGame(page);
   await page.waitForSelector(".decision .options");
 
-  const read = await page.evaluate(() => {
-    const options = document.querySelector(".decision .options.scrolls");
-    const deck = document.querySelector(".deck");
-    if (!options || !deck) return null;
-    return {
-      optionsOverflowY: getComputedStyle(options).overflowY,
-      deckPosition: getComputedStyle(deck).position,
-    };
-  });
+  const read = () =>
+    page.evaluate(() => {
+      const options = document.querySelector(".decision .options.scrolls");
+      const deck = document.querySelector(".deck");
+      if (!options || !deck) return null;
+      return {
+        optionsOverflowY: getComputedStyle(options).overflowY,
+        deckPosition: getComputedStyle(deck).position,
+        deckMaxHeight: getComputedStyle(deck).maxHeight,
+        innerHeight: window.innerHeight,
+      };
+    });
 
-  expect(read, "the opening prompt must offer options to be measured").not.toBeNull();
-  // The two declarations the deck depends on, and nothing else. The component
-  // suite cannot see either — the stylesheet is imported by `main.tsx` alone and
-  // jsdom has no layout engine — so this is the only place they are checked.
-  expect(read!.deckPosition, "the deck stopped being pinned").toBe("sticky");
-  expect(read!.optionsOverflowY, "the option list stopped being the scroller").toBe("auto");
+  // **What pins the deck is not the same declaration in both of its homes, so
+  // the cell reads both (M5 spec §3.1).** Above 1201 the grid holds it in
+  // column 2 row 3 and `position` is deliberately `static`; below, it is
+  // M3.5's `sticky` bar against the bottom edge. Read as ONE value it was a
+  // cell that could only ever be right about one of them — and it was right
+  // about the wrong one, silently, because the grid's `.deck` override sits
+  // 400 lines above `.deck`'s own rule and lost the cascade to it until the
+  // child combinator went in. The option list stays the only scroller in both.
+  const grid = await read();
+  expect(grid, "the opening prompt must offer options to be measured").not.toBeNull();
+  expect(grid!.deckPosition, "above 1201 the grid pins the deck, not `sticky`").toBe("static");
+  // 45vh, not the base rule's 62vh: the same cascade, read as a number rather
+  // than trusted. Computed from the viewport it was measured in.
+  expect(
+    Math.round(parseFloat(grid!.deckMaxHeight)),
+    "the grid arm lost its own max-height to the cascade",
+  ).toBe(Math.round(0.45 * grid!.innerHeight));
+  expect(grid!.optionsOverflowY, "the option list stopped being the scroller").toBe("auto");
+
+  await page.setViewportSize({ width: 1024, height: 844 });
+  const stack = await read();
+  expect(stack!.deckPosition, "below 1201 the deck stopped being pinned").toBe("sticky");
+  expect(stack!.optionsOverflowY, "the option list stopped being the scroller").toBe("auto");
 
   expect(watch.failures).toEqual([]);
 });
@@ -727,7 +780,15 @@ test("every panel fits its drawer, and the board stays readable beside it", asyn
   expect(watch.failures).toEqual([]);
 });
 
-test("a panel really is modal, and the banner is one row again", async ({ page }) => {
+// **These were ONE cell, and splitting them is M5 W2's ruling R-T7a.**
+//
+// The two halves had nothing to do with each other beyond both being read at
+// three widths, and keeping them together meant a banner regression could take
+// the modality assertion — which is live, green and mutation-proven — down with
+// it. They are separate cells now: the one below is true today, the one after it
+// is annotated as expected-to-fail with the work that clears it.
+
+test("a panel really is modal", async ({ page }) => {
   const watch = watchForBreakage(page);
 
   // **This cell had to change its mind, and the reason is worth keeping.**
@@ -735,16 +796,13 @@ test("a panel really is modal, and the banner is one row again", async ({ page }
   // It was written to assert what the review promised the nav grouping would
   // buy: that you can switch from Areas to Site cards without pressing Escape,
   // because eleven buttons wrapped the banner to a second row that sat under the
-  // open panel. Measured, the grouping DOES fix the geometry — banner 93 → 56 at
-  // 1440, nav bottom edge 43px against the panel's 48px top at 1440, 1280 AND
-  // 1024, where before it was 88/88/125.
+  // open panel.
   //
   // But the accessibility fix landed first and supersedes it: `showModal()` puts
   // the panel in the top layer with a backdrop over the whole viewport, so
   // NOTHING outside the dialog is clickable — that is what modal means, and it
   // is the containment the panel spent three milestones claiming without having.
-  // So the nav is inert while a panel is open by design, not by defect, and the
-  // grouping now earns its place on the banner's height alone.
+  // So the nav is inert while a panel is open by design, not by defect.
   //
   // Asserting the property that is actually true, rather than quietly deleting
   // the cell, because "the nav is usable while a panel is open" is exactly the
@@ -752,17 +810,6 @@ test("a panel really is modal, and the banner is one row again", async ({ page }
   for (const width of [1440, 1280, 1024]) {
     await page.setViewportSize({ width, height: 900 });
     await startGame(page);
-
-    // One row: the banner does not wrap, at any laptop width.
-    const oneRow = await page.evaluate(() => {
-      const banner = document.querySelector("header.banner")!.getBoundingClientRect();
-      const nav = document.querySelector("nav.views")!.getBoundingClientRect();
-      return { banner: Math.round(banner.height), navBottom: Math.round(nav.bottom) };
-    });
-    expect(
-      oneRow.navBottom,
-      `the banner wrapped at ${width}px (nav bottom ${oneRow.navBottom})`,
-    ).toBeLessThan(60);
 
     await page.getByRole("button", { name: "Areas", exact: true }).click();
     await expect(page.getByRole("dialog")).toBeVisible();
@@ -801,6 +848,96 @@ test("a panel really is modal, and the banner is one row again", async ({ page }
       return b.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2));
     });
     expect(liveAgain, "the page did not come back after the panel closed").toBe(true);
+  }
+
+  expect(watch.failures).toEqual([]);
+});
+
+// **A cell that is EXPECTED TO FAIL, and Playwright fails the run if it passes.**
+//
+// The claim is M3.5's — "the banner is one row again" — and it is the half of the
+// old cell that had stopped being true. What it replaces asserted
+// `nav.getBoundingClientRect().bottom < 60`, a VIEWPORT-relative edge, on a page
+// that `startGame` always left scrolled 258–273px: measured at HEAD, that read
+// returned −230 / −170 / −185 at 1440 / 1280 / 1024, so it was satisfied by the
+// scroll offset at every width and had never tested the banner anywhere. M5 W2's
+// grid gives `.app` a `height: 100vh`, so the page stops scrolling above 1201 and
+// the read is honest for the first time — at 1440 it now reads 43 and at 1280 it
+// reads 88.
+//
+// **The measurement here is the banner's own HEIGHT**, and it is the right one
+// because a `getBoundingClientRect()` height does not change with scroll at all,
+// while any EDGE — `nav.bottom`, with or without `window.scrollY` added back —
+// only becomes scroll-independent on the assumption that the banner sits at the
+// document's top. Height needs no such assumption and is what "one row" means.
+//
+// And the one-row reference is COMPUTED from the page rather than written down:
+// a banner of one row is its own padding plus its border plus its tallest child,
+// so nothing here is a threshold somebody picked. Today, at every width, the four
+// children measure 25 / 17 / 31 / 17px, so that box is 24 + 1 + 31 = 56px against
+// heights of:
+//
+//     1440px → 56px   ONE ROW
+//     1280px → 101px  two rows
+//     1024px → 101px  two rows
+//
+// 1024 is measured and RECORDED, never asserted: the sub-1201 column stack is not
+// what this milestone is about, and the arithmetic below says it stays two rows
+// even after the work that fixes 1280.
+test("the banner is one row at 1440 and 1280", async ({ page }) => {
+  test.fail(
+    true,
+    "The nav wrapped to a second row when M3 and M4 grew it — Suggest, Why and Log — " +
+      "and at 1280 the banner has measured 101px against a one-row box of 56px ever " +
+      "since, with every suite green: the assertion that should have caught it was " +
+      "reading a scroll offset. M5 W2's grid stopped the page scrolling above 1201, so " +
+      "this read is honest for the first time and the regression is visible. The banner " +
+      "needs ~49px back at 1280 (161 title + 20 + 239 meta + 20 + 849 nav against a " +
+      "1240px content box) and three scheduled pieces of M5 supply it: W5a retires four " +
+      "drawer buttons from the nav, W5b puts the section toggles behind the Boards " +
+      "disclosure, and W2b turns the meta span into a compact Game menu. Task 12 removes " +
+      "this annotation, and the cell must then pass at 1440 and 1280.",
+  );
+  const watch = watchForBreakage(page);
+
+  // Every width is measured BEFORE anything is asserted, so the record below is
+  // printed whole even though the run stops at the first width that wrapped.
+  const rows: { width: number; height: number; oneRowBox: number; wrapped: boolean }[] = [];
+  for (const width of [1440, 1280, 1024]) {
+    await page.setViewportSize({ width, height: 900 });
+    await startGame(page);
+    const r = await page.evaluate(() => {
+      const banner = document.querySelector("header.banner");
+      if (!banner) return null;
+      const cs = getComputedStyle(banner);
+      const box =
+        parseFloat(cs.paddingTop) +
+        parseFloat(cs.paddingBottom) +
+        parseFloat(cs.borderTopWidth) +
+        parseFloat(cs.borderBottomWidth) +
+        Math.max(...[...banner.children].map((c) => c.getBoundingClientRect().height));
+      const height = banner.getBoundingClientRect().height;
+      // The same 1px of slack the page-overflow read takes, and for the same
+      // reason: a border box is not an integer and an exact compare reports
+      // fractional rounding as a wrap.
+      return { height: Math.round(height), oneRowBox: Math.round(box), wrapped: height > box + 1 };
+    });
+    expect(r, `the banner did not draw at ${width}px`).not.toBeNull();
+    rows.push({ width, ...r! });
+  }
+
+  // eslint-disable-next-line no-console
+  console.log(
+    "banner rows: " +
+      rows.map((r) => `${r.width}px ${r.height}px in a ${r.oneRowBox}px one-row box`).join(" · "),
+  );
+  expect(rows.length, "a width was skipped, so the record above is short").toBe(3);
+
+  for (const r of rows.filter((row) => row.width >= 1280)) {
+    expect(
+      r.wrapped,
+      `the banner wrapped at ${r.width}px: ${r.height}px against a one-row box of ${r.oneRowBox}px`,
+    ).toBe(false);
   }
 
   expect(watch.failures).toEqual([]);
@@ -875,7 +1012,7 @@ test("scrubbing walks the board backwards and puts it back exactly", async ({ pa
     await page.waitForTimeout(30);
   }
 
-  await expect(page.locator(".stage.replaying")).toBeVisible();
+  await expect(page.locator(".table.replaying")).toBeVisible();
   await expect
     .poll(async () => (await boardState()) !== live, {
       message: "the board never changed, so nothing was actually replayed",
@@ -890,7 +1027,7 @@ test("scrubbing walks the board backwards and puts it back exactly", async ({ pa
   // Back to the present, and the board is what it was. This is the property a
   // read-only projection owes: browsing the past must not change it.
   await page.getByRole("button", { name: "Back to live" }).click();
-  await expect(page.locator(".stage.replaying")).toHaveCount(0);
+  await expect(page.locator(".table.replaying")).toHaveCount(0);
   await expect.poll(boardState).toBe(live);
 
   expect(watch.failures).toEqual([]);
@@ -931,7 +1068,7 @@ test("the replayed board is full size beside the drawer, and nothing on it is pr
   await expect(track).toBeVisible();
   await track.focus();
   await page.keyboard.press("ArrowLeft");
-  await expect(page.locator(".stage.replaying")).toBeVisible();
+  await expect(page.locator(".table.replaying")).toBeVisible();
 
   const read = await page.evaluate(() => {
     const board = document.querySelector(".board") as HTMLElement | null;

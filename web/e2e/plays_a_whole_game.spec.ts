@@ -105,6 +105,17 @@ test("a game survives a reload, because nothing lives only in memory", async ({ 
   // `innerText` renders "TURN 11 · SEAT 0" while `toHaveText` compares
   // `textContent` — "Turn 11 · seat 0" — and the two never match.
   const chainOf = () => page.locator(".decision .chain").first().innerText();
+  // **Settle before snapshotting, or the comparison is against a render that was
+  // already stale.** The loop above does not wait after its LAST `act`, so this
+  // read could take the turn the client was showing before that move's response
+  // landed — and the rebuilt game then legitimately reads later than the
+  // "snapshot" (`TURN 9 · RED` against `TURN 11 · RED`, the human's move plus the
+  // bot's reply). It was a ~1-in-20 race until M5 W2 made `.app` a grid: with two
+  // nested scrollers and a size container the commit costs more, and the window
+  // widened to 7 failures in 35 runs. `readScreen` is this file's own settle —
+  // the same wait every loop iteration already opens with — and it closed it
+  // 20/20. Measured both ways before it went in.
+  await readScreen(page);
   const chain = await chainOf();
 
   // Every applied move is persisted as its `GameRecord`, and a handle that is

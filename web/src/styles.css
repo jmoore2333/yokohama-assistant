@@ -120,29 +120,83 @@ h1, h2, h3 { font-family: var(--display); font-weight: 500; margin: 0; }
 }
 .end-strip.final { color: var(--warn); border-bottom-color: var(--warn); font-weight: 700; }
 
-/* ---- layout ------------------------------------------------------------ */
-.stage { display: flex; gap: 1.5rem; padding: 1.25rem; align-items: flex-start; flex: 1; }
-.board-col { flex: 1 1 auto; min-width: 0; }
-.rail { flex: 0 0 24rem; display: flex; flex-direction: column; gap: 1rem; }
+/* ---- layout: the table and the side column (M5) ------------------------ */
+/* Below 1201 the DOM order is the layout — table, side, then the sticky deck —
+ * which is M3.5's column stack unchanged (spec R8). Above it, the grid. */
+.table-body { padding: 1rem; }
+.side { display: flex; flex-direction: column; gap: 1rem; padding: 1rem; box-sizing: border-box; }
 
 @media (max-width: 1200px) {
-  .stage { flex-direction: column; }
-  /* **Both children state their width, and neither statement is redundant.**
+  /* **Both children state their width, and the measurement that put it there
+   * outlives the container that armed it.**
    *
-   * `.stage` keeps `align-items: flex-start` from the rule above, and in a
-   * COLUMN flex container `align-items` governs the CROSS axis — which is the
-   * WIDTH. So `flex-start` means fit-content, and the board's fit-content is
-   * its widest row: six 14rem tiles, 1376px, at 4P. Neither of the two things
-   * that look like they cover it does: `min-width: 0` caps the AUTOMATIC
-   * MINIMUM and not fit-content, and `.board`'s own `overflow-x: auto` cannot
-   * engage inside a column that has already been sized to its content — it
-   * reduces nothing intrinsic. The document then overflows: measured at
-   * 390x844 on a 4P game, `.board-col` computed to 1376px and `html` to 1006px
-   * of horizontal overflow. Stating the width is the fix, and it is the same
-   * fix the rail on the next line already had for the identical symptom. */
-  .board-col { width: 100%; }
-  .rail { flex: 1 1 auto; width: 100%; }
+   * The old `.stage` kept `align-items: flex-start`, and in a COLUMN flex
+   * container `align-items` governs the CROSS axis — which is the WIDTH. So
+   * `flex-start` meant fit-content, and the board's fit-content is its widest
+   * row: six 14rem tiles, 1376px, at 4P. Neither of the two things that look
+   * like they cover it does: `min-width: 0` caps the AUTOMATIC MINIMUM and not
+   * fit-content, and `.board`'s own `overflow-x: auto` cannot engage inside a
+   * column that has already been sized to its content — it reduces nothing
+   * intrinsic. The document then overflowed: measured at 390x844 on a 4P game,
+   * the board's column computed to 1376px and `html` to 1006px of horizontal
+   * overflow. `.app` is `align-items: stretch` (the default), so the trap is
+   * not armed here — the statement is what keeps it from being re-armed by one
+   * `align-items` on a container two levels up.
+   *
+   * `flex: 1 1 auto` on `.side` is the old `.rail`'s, and it is what puts the
+   * sticky deck against the bottom EDGE rather than under the content on a page
+   * shorter than the viewport: `.stage` carried `flex: 1` and the rail took its
+   * slack. Both are siblings of `.app` now, so the grow moves with the side. */
+  .table, .side { width: 100%; box-sizing: border-box; }
+  .side { flex: 1 1 auto; }
 }
+
+@media (min-width: 1201px) {
+  .app {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) var(--side);
+    grid-template-rows: auto auto auto minmax(0, 1fr);
+    height: 100vh; min-height: 0;
+    /* 24rem is the rail's old width and what keeps a 4P board at the 10rem
+     * floor (992px) inside the table at 1440; the column widens where the
+     * option rows can use it (spec §3.1). */
+    --side: 24rem;
+  }
+  .banner, .end-strip { grid-column: 1 / -1; }
+  .table {
+    grid-column: 1; grid-row: 3 / 5;
+    overflow: auto; min-height: 0;
+    /* The size container the fit rule's cqw/cqh units read (Task 8). */
+    container-type: size;
+    scrollbar-width: thin; scrollbar-color: var(--line-bright) transparent;
+  }
+  /* **`.app > .deck`, and the extra specificity is load-bearing.** `.deck`'s own
+   * rule is 400 lines BELOW this one and carries the same weight, so a bare
+   * `.deck` here loses `position`, `max-height` and `box-shadow` to it on source
+   * order alone — measured: the deck computed `position: sticky` and
+   * `max-height: 62vh` at 1710 with all four declarations written and three of
+   * them dead. The child combinator is what makes the grid's word the last one;
+   * the deck is a direct child of `.app` (`App.tsx`'s one `div.deck`). */
+  .app > .deck {
+    grid-column: 2; grid-row: 3;
+    position: static; max-height: 45vh;
+    box-shadow: none; border-left: 1px solid var(--line);
+  }
+  .side {
+    grid-column: 2; grid-row: 4;
+    overflow: auto; min-height: 0;
+    border-left: 1px solid var(--line);
+    scrollbar-width: thin; scrollbar-color: var(--line-bright) transparent;
+  }
+  /* A replayed board is not the live one. A border, never a dim (M4).
+   *
+   * Deliberately not a filter or an opacity either: the board's own legibility
+   * is the entire feature, and M3.5 already refused a conventional dim on the
+   * backdrop for the same reason. */
+  .table.replaying .board { outline: 1px solid var(--reachable); outline-offset: 4px; }
+}
+@media (min-width: 1600px) { .app { --side: 30rem; } }
+@media (min-width: 1900px) { .app { --side: 36rem; } }
 
 /* ---- board ------------------------------------------------------------- */
 /* The tile ladder makes the board fit its column at 1440 and NOWHERE ELSE: the
@@ -631,10 +685,6 @@ button.ghost.danger:hover { color: var(--warn); border-color: var(--warn); }
 
 @media (min-width: 1201px) {
   .surface { inset: 3rem 2rem 3rem auto; width: min(44rem, 55vw); }
-  /* Keep the answer bar clear of the drawer. Measured without this: the longest
-   * option label in the corpus ends 4px short of the drawer's edge at 1440 and
-   * runs 156px underneath it at 1280. */
-  .app:has(.surface[open]) .deck { padding-right: min(44rem, 55vw); }
 }
 /* `role="presentation"` on the panel's header in `Surfaces.tsx`: a bare
  * `<header>` inside a dialog is a SECOND `banner` landmark, and a screen reader
@@ -682,7 +732,7 @@ ol.log .num { color: var(--fg-faint); min-width: 2.5rem; text-align: right; }
  * horizontally and ~205px vertically, and the tile size that would fit it
  * horizontally drops the printed power ladder to ~5.2px cap height against the
  * 7.9px M3.5 measured as legible. So the panel carries the control and the
- * words, and `.stage` behind it draws the position at full size.
+ * words, and `.table` behind it draws the position at full size.
  *
  * `flex-wrap` because this row holds five controls and the drawer is 670px of
  * content box at 1440 and 1280 alike — `min(44rem, 55vw)` clamps to 44rem at
@@ -724,12 +774,6 @@ ol.log li.at .num { color: var(--reachable); }
   border: 1px solid var(--line); border-radius: 4px;
 }
 .shot figcaption { color: var(--fg-dim); font-size: 11.5px; margin-top: 0.35rem; }
-
-/* A replayed board is not the live one, and the page should not pretend
- * otherwise. Deliberately a border and not a filter or an opacity: the board's
- * own legibility is the entire feature, and M3.5 already refused a conventional
- * dim on the backdrop for the same reason. */
-.stage.replaying .board-col { outline: 1px solid var(--reachable); outline-offset: 4px; }
 
 /* ---- setup ------------------------------------------------------------- */
 .setup { max-width: 52rem; margin: 3rem auto; padding: 0 1.25rem; }

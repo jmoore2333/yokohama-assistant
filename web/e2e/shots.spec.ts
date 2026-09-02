@@ -102,7 +102,7 @@ test("the explanation, and the replay track", async ({ page }) => {
   for (let i = 0; i < 6; i++) await page.keyboard.press("ArrowLeft");
   // The whole point of the shot is the board redrawn at an earlier position
   // BESIDE the drawer, so both have to be on screen before it is taken.
-  await expect(page.locator(".stage.replaying")).toBeVisible();
+  await expect(page.locator(".table.replaying")).toBeVisible();
   await expect(page.locator(".surface[open]")).toBeVisible();
   await page.screenshot({ path: `${SHOTS}/replay.png` });
 });
