@@ -219,7 +219,7 @@ against the built client at HEAD:
 | `assets/index-*.css` | 23,324 |
 | **First paint, total** | **283,230 (277 KiB)** |
 | Card art at `/art` | 7.7 MB across 132 files, fetched per area actually rendered |
-| Help screenshots | 2.0 MB, and only if the panel is opened |
+| Help screenshots | 4.0 MB across 5 files (M5 W7: re-shot at 1710×869, a fifth picture added), and only if the panel is opened |
 
 Re-measured at M5 (W0, then W0b): the crops are now cut at source width (709px
 tiles, 530px cards, 799px landscape achievements, and the 24 site cards turned
@@ -230,7 +230,8 @@ step from the 7.3 MB this section first printed is mostly a UNIT correction:
 `du -sk` reads KiB, and 7,552 KiB is 7.4 MiB but 7.7 MB.
 
 So a session that opens help and renders every area in the product pulls about
-**10.0 MB**, up from about 5. An ordinary session's art is now fetched at ~57
+**12.0 MB** (7.7 art + 4.0 help + 0.3 first paint; it was about 10 before W7 re-shot
+the help at the owner's viewport and added a fifth picture, and about 5 before W0). An ordinary session's art is now fetched at ~57
 KiB per file instead of ~23 — every file **~2.5x** heavier than before this
 re-cut — so "well under 1 MB" is no longer a safe claim; the true total
 depends on how much of the board and hand a given game actually renders.
@@ -248,6 +249,37 @@ assets, is what would make it one again.
 Recorded with the correction attached because the generalization is the kind of
 thing that gets repeated: **check the number per provider, and do not carry
 Oracle's 10 TB over to Google's 1 GB.**
+
+---
+
+### 3.5 M5 is live — the second deployment, 2026-09-02 (a record, not a plan)
+
+The same shape as §1–§3, run through the Portainer Docker proxy from the
+workstation, with the numbers that changed:
+
+- **Build:** `web-frontend` at `7d6a503` (Task 14 of the M5 plan; the deploy
+  commit is the one after it). The musl binary is unchanged in kind
+  (`static-pie linked`, 6,089,656 bytes — the server crate did not move in M5
+  beyond `assets/art/**`); `web/dist` carries the M5 client and the five help
+  pictures. Context tarball **13.9 MB** (was 6.7 MB — the source-width art and
+  the re-shot help are the whole difference), fetched by the NAS
+  (192.168.1.173) from `http://192.168.1.16:8899/ctx.tar.gz` in one GET.
+- **Image:** `yokohama-web:0.5.0-m5`, **25.9 MB** (was 19 MB, same reason),
+  built in ~10 s.
+- **Swap:** `POST /containers/{old}/stop` → `DELETE /containers/{old}` →
+  `POST /containers/create?name=yokohama-web` with §3's body plus the two
+  labels the first container carried (`maintainer`, `purpose`) → `start`. The
+  named volume rode across untouched: the setup page listed the saved game
+  that was there before, and opening it read-only showed turn 3 exactly as
+  left. Same address on `cf-internal` (172.21.0.4), so the tunnel's ingress
+  needed nothing. **Healthy on the first probe**, 30 s after start.
+- **Verified through the tunnel, per §3.2:** `https://yokohama.moore.nyc/`
+  serves the M5 table at the owner's 1710×869 (the pyramid of art tiles, the
+  Boards menu, the answer bar pinned at the top of the side column), and
+  `/help/strips.png` — the picture that exists only in this build — answers
+  as a 1710×869 image. The old image `yokohama-web:0.5.0` is still on the
+  NAS, which is the rollback (§5).
+- **Downtime:** the seconds between `stop` and `start`; nobody was playing.
 
 ---
 
@@ -275,6 +307,10 @@ measurement says it should go on doing so.
   `cloudflared-nas`. One file, one restart.
 - **The container:** `docker stop yokohama-web`. The tunnel then 502s that
   hostname until the ingress is pointed back.
+- **The previous build (since M5, 2026-09-02):** `yokohama-web:0.5.0` is still
+  an image on the NAS. Stop and remove the running container and recreate it
+  from that tag with §3's body — the volume is the same, so the games carry
+  over; only the client and help go back.
 - **The store is not rolled back by either.** It is the named volume
   `yokohama-web-data`; the records are the whole state, which is why they
   replay.
