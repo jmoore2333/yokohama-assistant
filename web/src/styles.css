@@ -557,7 +557,10 @@ button.tile:focus-visible { outline: 2px solid var(--vp); outline-offset: 1px; }
   color: var(--fg-dim);
 }
 .space.taken { background: var(--line); color: var(--fg); border-color: currentColor; }
-.space .occ { margin-left: 0.15rem; font-size: 9px; }
+/* The occupant marker sits UNDER the space's own figure, not beside it: the
+ * `margin-left` was an inline nudge from before W6 made `.space` a column,
+ * and it left the dot off centre in every track. */
+.space .occ { font-size: 9px; }
 /* What the space PAYS, on the space. It was a `title=` attribute and nothing
  * else, which no touch screen, no screen reader and no assertion can see. */
 .space .sub { font-size: 8.5px; color: var(--vp); }
@@ -1141,3 +1144,54 @@ pre.raw-panel {
  * comment says is unreliably announced. Empty it has no border, no padding and
  * no children, so it costs nothing but its margin. */
 .last-move .messages:empty { display: flex; }
+
+/* ---- M5: the strips on the table ---------------------------------------- */
+.table-sections {
+  display: flex; flex-wrap: wrap; justify-content: center; gap: 1rem;
+  margin-top: 1rem;
+  /* Cards grow with the room, not with the tile: 12cqw is 9.2rem at the
+   * owner's 1230px table and the 12rem cap by 1600px (spec §3.4, corrected in
+   * the plan — a card keyed to the tile would need Board's shape here). */
+  --card-w: clamp(8rem, 12cqw, 12rem);
+}
+/* **TWO REGIMES, and the second one is what puts two boards side by side.**
+ *
+ * A six-slot strip is `6·cw` of cards plus `5 × 0.5rem` of slot gaps plus
+ * `2 × 0.85rem` of section padding — 6·cw + 2.5rem + 1.7rem. Two of them beside
+ * each other, with the flex row's own 1rem gap, must fit the table's content
+ * box: `2·(6·cw + 4.2rem) + 1rem ≤ 100cqw − 2rem` (the `.table` padding), i.e.
+ * `cw ≤ (100cqw − 13rem) / 12`. At the 8rem floor that needs 100cqw ≥ 109rem,
+ * so the query opens at 108rem and the clamp's own floor holds the last rem —
+ * below it the arm cannot help and the one-per-row rule above stands. The size
+ * container is `.table` (its `container-type: size`), so `cqw` is the table's
+ * width and not the window's. */
+@container (min-width: 108rem) {
+  .table-sections { --card-w: clamp(8rem, (100cqw - 13rem) / 12, 12rem); }
+}
+.table-sec {
+  flex: 0 1 auto; max-width: 100%; box-sizing: border-box;
+  background: var(--bg-raised); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 0.7rem 0.85rem;
+}
+.table-sec > h2 {
+  font-size: 10px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--fg-faint);
+  font-family: var(--mono); font-weight: 500; margin-bottom: 0.5rem;
+  display: flex; align-items: baseline; gap: 0.8rem; flex-wrap: wrap;
+}
+.table-sec > h2 .meta { letter-spacing: 0; text-transform: none; font-size: 10.5px; }
+.board-strip { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+.strip-slot { display: flex; flex-direction: column; gap: 0.25rem; }
+.strip-slot .card-face { width: var(--card-w); }
+.strip-slot .card-blank.empty { width: var(--card-w); box-sizing: border-box; }
+/* The achievements are LANDSCAPE (W0b), so they get the wide box and the wide
+ * aspect — the same `--wide-card-aspect` the site faces read, never a second
+ * literal that could drift from it. */
+.table-sec.achievements .card-face.achievement { width: calc(var(--card-w) * 1.5); }
+.table-sec.achievements .card-face.achievement img { aspect-ratio: var(--wide-card-aspect); }
+/* And so are the site cards, since W0b: the column floor is the LANDSCAPE
+ * width, or `auto-fill` packs a wide card into a portrait track and the row
+ * runs short. */
+.table-sec .site-grid { grid-template-columns: repeat(auto-fill, minmax(calc(var(--card-w) * 1.5), 1fr)); }
+.table-sec.tracks .panel { background: transparent; border: 0; padding: 0; }
+.table-sec.collapsed { color: var(--fg-faint); }
+.tile-id-words { color: var(--fg-faint); font-size: 10px; }

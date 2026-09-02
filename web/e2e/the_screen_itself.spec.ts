@@ -437,7 +437,7 @@ test("a surface panel takes focus, and Escape gets you out of it", async ({ page
   expect(watch.failures).toEqual([]);
 });
 
-test("all four read-only surfaces open, draw, and close", async ({ page }) => {
+test("the drawers that remain open, draw, and close", async ({ page }) => {
   const watch = watchForBreakage(page);
   const game = await startGame(page);
 
@@ -454,7 +454,11 @@ test("all four read-only surfaces open, draw, and close", async ({ page }) => {
   }
   expect(moves, "the preamble must give the log something to show").toBeGreaterThan(3);
 
-  for (const name of ["Port offer", "Laboratory offer", "Areas", "Log"]) {
+  // **Three, not four, and they are the ones that have no BOARD.** W5a retired
+  // the port offer, the laboratory offer, the tracks and the building sites as
+  // drawers — they are boards and they belong on the table (`Strips.tsx`), so a
+  // loop that still opened them would be opening buttons the nav no longer has.
+  for (const name of ["Areas", "Log", "Help"]) {
     await page.getByRole("button", { name, exact: true }).click();
     const dialog = page.getByRole("dialog");
     await expect(dialog).toBeVisible();
@@ -686,25 +690,46 @@ test("a four-player table draws four seats and the Canal", async ({ page }) => {
   for (const colour of ["Red", "Blue", "Yellow", "Green"]) {
     await expect(page.locator(".seat-name", { hasText: colour }).first()).toBeVisible();
   }
+
+  expect(watch.failures).toEqual([]);
+});
+
+// **SPLIT from the cell above, the way W2 split the banner cell (ruling R-T7a).**
+//
+// The dummy read used to ride along here, taken in the Tracks SURFACE — because
+// W6 had already taken the tracks out of the side column, so the Dashboard's
+// strip was on no screen at all and `.space.dummy` would have counted 0 elements
+// out of 0 and passed for the wrong reason. W5a then retired that surface too:
+// the tracks are a section of the table now, and the section does not mount
+// until W5b. So between the two there is no screen anywhere carrying a track,
+// and this half cannot pass. It is a cell of its own rather than a deleted
+// assertion, so the coverage is visible while it is gone and comes back by
+// removing one annotation. The four-seats and Canal half above is unaffected
+// and stays live under its own name.
+test("the 2P dummy is on no track at 4P", async ({ page }) => {
+  test.fail(
+    true,
+    "The Tracks DRAWER retired in W5a and the Tracks STRIP mounts in W5b (Task 12), " +
+      "so between the two there is no track on any screen for this read to take. " +
+      "Task 12 removes this annotation and the cell must then pass against " +
+      "`.table-sec.tracks`.",
+  );
+  const watch = watchForBreakage(page);
+  await startGame(page, { players: 4 });
+
   // The dummy is 2P-only: `place_setup_dummies` returns early above two players,
   // so a browser that shows a dummy occupant here is showing a rule that cannot
-  // apply. **Read in the Tracks surface, because W6 took the tracks out of the
-  // side column** — the Dashboard's strip is on no screen at all until the table
-  // carries it, so `.space.dummy` here would have counted 0 elements out of 0
-  // and passed for the wrong reason. The Dashboard heading's own dummy clause
-  // is still covered, in `Dashboard.test.tsx`'s 2P/4P pair.
+  // apply. The Dashboard heading's own dummy clause is still covered, in
+  // `Dashboard.test.tsx`'s 2P/4P pair.
   //
-  // The rows are asserted to EXIST first, for the reason this cell has always
+  // The spaces are asserted to EXIST first, for the reason this cell has always
   // given: an absence assertion over a locator that matches nothing is not an
   // absence, it is a blank screen.
-  await page.getByRole("button", { name: "Tracks", exact: true }).click();
-  const drawer = page.getByRole("dialog");
-  await expect(drawer.getByRole("heading", { name: "Tracks" })).toBeVisible();
-  await expect(drawer.locator(".track-table tbody tr").first()).toBeVisible();
-  const spaces = await drawer.locator(".track-table tbody tr").count();
-  expect(spaces, "the tracks surface listed no spaces").toBeGreaterThan(0);
-  await expect(drawer.locator(".occ.dummy")).toHaveCount(0);
-  await page.keyboard.press("Escape");
+  const strip = page.locator(".table-sec.tracks");
+  await expect(strip.locator(".space").first()).toBeVisible();
+  const spaces = await strip.locator(".space").count();
+  expect(spaces, "the tracks strip drew no spaces").toBeGreaterThan(0);
+  await expect(strip.locator(".space.dummy")).toHaveCount(0);
 
   expect(watch.failures).toEqual([]);
 });
@@ -786,12 +811,15 @@ test("every panel fits its drawer, and the board stays readable beside it", asyn
     await page.keyboard.press("Escape");
     // Anti-vacuity: a selector that stopped matching would make this loop
     // iterate nothing and the test would pass having measured no panel at all.
-    // 14 at this head, and asserted as an equality-floor rather than "some":
-    // a floor of 13 tolerates exactly the thing this derivation exists to stop —
-    // a surface disappearing from the nav without a test noticing.
-    expect(labels.length, "the banner listed the wrong number of surfaces").toBeGreaterThanOrEqual(
-      14,
-    );
+    // TEN at this head — Areas, Log, Suggest, Why and Help inline, plus the five
+    // behind `Cards` — down from fourteen because W5a retired four drawers to
+    // the table. Asserted as a floor rather than "some": a floor of nine
+    // tolerates exactly the thing this derivation exists to stop — a surface
+    // disappearing from the nav without a test noticing.
+    expect(
+      labels.length,
+      `the nav listed ${labels.length} surfaces, not the 10 the registry holds`,
+    ).toBeGreaterThanOrEqual(10);
 
     for (const label of labels) {
       // A card-reference surface lives behind the disclosure; opening it when it
@@ -916,7 +944,7 @@ test("a panel really is modal", async ({ page }) => {
   expect(watch.failures).toEqual([]);
 });
 
-// **A cell that is EXPECTED TO FAIL, and Playwright fails the run if it passes.**
+// **This WAS a cell expected to fail, and W5a is what cleared it.**
 //
 // The claim is M3.5's — "the banner is one row again" — and it is the half of the
 // old cell that had stopped being true. What it replaces asserted
@@ -936,31 +964,27 @@ test("a panel really is modal", async ({ page }) => {
 //
 // And the one-row reference is COMPUTED from the page rather than written down:
 // a banner of one row is its own padding plus its border plus its tallest child,
-// so nothing here is a threshold somebody picked. Today, at every width, the four
-// children measure 25 / 17 / 31 / 17px, so that box is 24 + 1 + 31 = 56px against
-// heights of:
+// so nothing here is a threshold somebody picked. That box is 24 + 1 + 31 = 56px.
+//
+// **The annotation is gone because the work it named landed, and it landed one
+// task EARLIER than it predicted.** It said the banner needed ~49px back at 1280
+// (161 title + 20 + 239 meta + 20 + 849 nav against a 1240px content box) and
+// named three scheduled pieces of M5 that would supply it — W2b's compact Game
+// menu, W5a retiring four drawer buttons from the nav, and W5b's Boards
+// disclosure — with "Task 12 removes this annotation". W2b shipped first, and
+// W5a's four buttons were then enough on their own: measured at the W5a head,
 //
 //     1440px → 56px   ONE ROW
-//     1280px → 101px  two rows
-//     1024px → 101px  two rows
+//     1280px → 56px   ONE ROW
+//     1024px → 56px   ONE ROW
 //
-// 1024 is measured and RECORDED, never asserted: the sub-1201 column stack is not
-// what this milestone is about, and the arithmetic below says it stays two rows
-// even after the work that fixes 1280.
+// against the recorded pre-W5a figures of 56 / 101 / 101. So the cell asserts
+// what it always claimed, W5b has nothing left to buy here, and 1024 — which
+// this note said would "stay two rows even after the work that fixes 1280" —
+// came along for free. 1024 is still measured and RECORDED rather than asserted:
+// the sub-1201 column stack is not what this milestone is about, and nothing
+// here should start gating it by accident.
 test("the banner is one row at 1440 and 1280", async ({ page }) => {
-  test.fail(
-    true,
-    "The nav wrapped to a second row when M3 and M4 grew it — Suggest, Why and Log — " +
-      "and at 1280 the banner has measured 101px against a one-row box of 56px ever " +
-      "since, with every suite green: the assertion that should have caught it was " +
-      "reading a scroll offset. M5 W2's grid stopped the page scrolling above 1201, so " +
-      "this read is honest for the first time and the regression is visible. The banner " +
-      "needs ~49px back at 1280 (161 title + 20 + 239 meta + 20 + 849 nav against a " +
-      "1240px content box) and three scheduled pieces of M5 supply it: W5a retires four " +
-      "drawer buttons from the nav, W5b puts the section toggles behind the Boards " +
-      "disclosure, and W2b turns the meta span into a compact Game menu. Task 12 removes " +
-      "this annotation, and the cell must then pass at 1440 and 1280.",
-  );
   const watch = watchForBreakage(page);
 
   // Every width is measured BEFORE anything is asserted, so the record below is

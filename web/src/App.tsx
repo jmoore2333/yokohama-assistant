@@ -162,10 +162,6 @@ export function App() {
   if (!state) return <NewGame art={art} onStarted={setState} />;
 
   const players = state.frame.dashboard.find((p) => "Players" in p);
-  // The Church and Customs tracks are already on every frame, so the tracks
-  // SURFACE reads them from here rather than from a route of its own.
-  const tracksPanel = state.frame.dashboard.find((p) => "Tracks" in p);
-  const tracks = tracksPanel && "Tracks" in tracksPanel ? tracksPanel.Tracks : null;
   const colors: PlayerColor[] =
     players && "Players" in players ? players.Players.players.map((p) => p.color) : [];
 
@@ -339,7 +335,6 @@ export function App() {
           art={art}
           labels={labels}
           colors={colors}
-          tracks={tracks}
           scrubK={scrubK}
           onScrub={setScrubK}
           onClose={() => setSurface(null)}

@@ -1,4 +1,9 @@
-// The read-only surfaces: the four `GET`s, and the two ways they went wrong.
+// The read-only surfaces: the drawers that remain, and the two ways they went
+// wrong.
+//
+// The port offer, the laboratory offer, the tracks and the building sites
+// retired as drawers in M5 W5a — they are boards, and they are drawn on the
+// table now. What those four cells asserted lives in `Strips.test.tsx`.
 
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -47,19 +52,22 @@ describe("the payload and the branch it is rendered through", () => {
   // one frame, and `panel.rows.flat()` threw on a `rows` that a `LabsPanel`
   // does not have. Clearing the state inside the effect is one render too late;
   // the state has to carry its own identity, which is what `loaded.of` is.
+  //
+  // The Labs drawer retired in W5a, so the pair is Log→Areas now. It is the
+  // same shape and the same guard: a `LogPanel` has no `rows` either.
   it("a payload is never rendered through another surface's branch", async () => {
     const held = gate<Reply>();
     stubApi((call) => {
-      if (call.path.endsWith("/labs")) return wire.labs;
+      if (call.path.endsWith("/log")) return wire.log;
       if (call.path.endsWith("/areas")) return held.promise;
       throw new Error(`unexpected ${call.path}`);
     });
 
-    const { view } = show("labs");
-    await screen.findByText(/Acquire ONE card/);
+    const { view } = show("log");
+    await screen.findByText(new RegExp(`${wire.log.total} event`));
 
     // Switch. The Areas request is in flight, so the only state in hand is the
-    // Labs payload — which the Areas branch must not be handed.
+    // Log payload — which the Areas branch must not be handed.
     view.rerender(
       <Surface
         name="areas"
@@ -72,7 +80,7 @@ describe("the payload and the branch it is rendered through", () => {
     );
 
     expect(screen.getByText("loading…")).toBeInTheDocument();
-    expect(screen.queryByText(/Acquire ONE card/)).toBeNull();
+    expect(screen.queryByText(new RegExp(`${wire.log.total} event`))).toBeNull();
 
     held.resolve(wire.areas);
     await waitFor(() => expect(screen.queryByText("loading…")).toBeNull());
@@ -82,7 +90,7 @@ describe("the payload and the branch it is rendered through", () => {
 
   it("a refusal is shown as the sentence the server refused with", async () => {
     stubApi(() => ({ status: 404, body: { error: "no such game: wire" } }));
-    show("ports");
+    show("log");
     expect(await screen.findByText("no such game: wire")).toBeInTheDocument();
   });
 });
@@ -93,57 +101,35 @@ describe("the panel as a dialog", () => {
   // and no way out but Tab — forward through every remaining nav control and,
   // during a placement prompt, all eighteen board tiles now hidden underneath.
   it("takes focus when it opens", async () => {
-    stubApi(() => wire.ports);
-    show("ports");
-    await screen.findByText(/Take ONE card/);
+    stubApi(() => wire.log);
+    show("log");
+    await screen.findByText(new RegExp(`${wire.log.total} event`));
     expect(screen.getByRole("dialog")).toHaveFocus();
   });
 
   it("closes on Escape", async () => {
-    stubApi(() => wire.ports);
-    const { onClose, user } = show("ports");
-    await screen.findByText(/Take ONE card/);
+    stubApi(() => wire.log);
+    const { onClose, user } = show("log");
+    await screen.findByText(new RegExp(`${wire.log.total} event`));
     await user.keyboard("{Escape}");
     expect(onClose).toHaveBeenCalled();
   });
 
   it("closes on its own button", async () => {
-    stubApi(() => wire.ports);
-    const { onClose, user } = show("ports");
+    stubApi(() => wire.log);
+    const { onClose, user } = show("log");
     await user.click(await screen.findByRole("button", { name: "Close" }));
     expect(onClose).toHaveBeenCalled();
   });
 
   it("names itself for a screen reader", async () => {
-    stubApi(() => wire.labs);
-    show("labs");
-    expect(screen.getByRole("dialog")).toHaveAccessibleName("Laboratory offer");
+    stubApi(() => wire.areas);
+    show("areas");
+    expect(screen.getByRole("dialog")).toHaveAccessibleName("Areas");
   });
 });
 
 describe("what each surface says", () => {
-  // The zone gates are FOLDED FROM THE SLOTS, never typed as prose: `min_power`
-  // is on the wire and the server derives it from the engine's own
-  // `port_accessible_zones`, so a re-pricing moves the sentence with the chip
-  // printed under it.
-  it("the port offer states each zone's gate from the slots themselves", async () => {
-    stubApi(() => wire.ports);
-    show("ports");
-    await screen.findByText(/Take ONE card/);
-    const gates = new Map<string, number>();
-    for (const board of wire.ports.boards) {
-      for (const slot of board.slots) {
-        const seen = gates.get(slot.zone);
-        if (seen === undefined || slot.min_power < seen) gates.set(slot.zone, slot.min_power);
-      }
-    }
-    expect(gates.size).toBeGreaterThan(0);
-    for (const [zone, power] of gates) {
-      expect(screen.getByText(new RegExp(`${zone.toUpperCase()} needs power ${power}`)))
-        .toBeInTheDocument();
-    }
-  });
-
   // The log is capped by the server only when asked; `total` stays truthful
   // either way so the client can always say how many it is not showing.
   it("the log says how many events there are", async () => {
@@ -260,140 +246,6 @@ describe("the surface is a real dialog", () => {
         "switching surfaces left focus outside the panel",
       ).toBe(document.activeElement),
     );
-  });
-});
-
-// ---- M3.5 / F5: the two surfaces that close the parity claim ----
-//
-// `guidingpath.md:204` records "the audited CLI parity gap closed" as
-// OVERSTATED, and names the two rows still open. These are them.
-
-describe("the tracks surface", () => {
-  // It also fixes a live bug. Every Areas card whose area is the Church or the
-  // Customs carries `companion: "Tracks"` and the panel renders "detail lives on
-  // the tracks surface" — pointing at a surface the registry did not have.
-  // `screen_model.rs:826` maps `Church | Customs => Tracks`, and every board has
-  // exactly one of each, so that was TWO dangling pointers on every board at
-  // every player count, by construction.
-  it("is in the registry, so no companion pointer names a surface that is missing", () => {
-    const keys = new Set(SURFACES.map((s) => s.key));
-    // The pointers the Areas panel can actually render, lower-cased exactly as
-    // `Surfaces.tsx` renders them.
-    for (const companion of ["Ports", "Labs", "Tracks"]) {
-      expect(
-        keys.has(companion.toLowerCase() as (typeof SURFACES)[number]["key"]),
-        `the Areas panel points at a "${companion.toLowerCase()}" surface that does not exist`,
-      ).toBe(true);
-    }
-  });
-
-  it("prints every space's points and rider as text, not as a tooltip", async () => {
-    const tracks = wire.optionsMany.frame.dashboard.find((p) => "Tracks" in p);
-    expect(tracks, "the fixture must carry a Tracks panel").toBeDefined();
-    if (!tracks || !("Tracks" in tracks)) throw new Error("fixture moved");
-
-    stubApi(() => {
-      throw new Error("the tracks surface must fetch NOTHING — it is already on the frame");
-    });
-    const view = render(
-      <Surface
-        name="tracks"
-        game="wire"
-        art={wire.artManifest}
-        labels={wire.labels}
-        colors={COLORS}
-        tracks={tracks.Tracks}
-        onClose={() => undefined}
-      />,
-    );
-    await screen.findByText(/Church/);
-    const text = view.container.textContent ?? "";
-    // The CLI prints per-space VP and riders; the Dashboard has them in `title=`
-    // only, which is invisible on touch, to a screen reader, and to any
-    // assertion. Every church faith number and its VP must be READABLE here.
-    for (const space of tracks.Tracks.church) {
-      expect(text, `faith ${space.faith} is missing from the tracks surface`).toContain(
-        String(space.faith),
-      );
-    }
-    for (const space of tracks.Tracks.customs) {
-      expect(text, `customs space ${space.space} is missing`).toContain(String(space.space));
-    }
-    // Anti-vacuity: digits alone would pass the two loops above on almost any
-    // page. The riders are what the tooltip was hiding.
-    expect(text).toMatch(/faith/i);
-    expect(text).toMatch(/VP|★/);
-  });
-});
-
-describe("the building sites surface", () => {
-  // The owner's cards: one per AREA, showing which spaces pay what and where
-  // shophouses and the trading house are built.
-  //
-  // **It reads the AREAS frame and never `/index/sites`.** The index face is the
-  // pristine registry card — `build_site_index` clones `rules.building_sites` —
-  // so its `shophouses_built` is `[null,null,null,null]` on all 24 faces forever
-  // and its `trading_house_owner` is null forever. An overlay built against it
-  // renders a permanently empty board. `types.ts` already carried that caveat in
-  // prose and the prep document steered at the fields anyway, which is why this
-  // surface takes the live model instead.
-  it("draws one card per area that has a site, from the live frame", async () => {
-    const withSites = wire.areas.rows.flat().filter((c) => c.tile.site !== null);
-    expect(withSites.length, "the fixture must carry sites").toBeGreaterThan(0);
-
-    stubApi((call) => {
-      if (call.path.endsWith("/areas")) return wire.areas;
-      throw new Error(`unexpected ${call.path}`);
-    });
-    const view = render(
-      <Surface
-        name="buildings"
-        game="wire"
-        art={wire.artManifest}
-        labels={wire.labels}
-        colors={COLORS}
-        onClose={() => undefined}
-      />,
-    );
-    await screen.findByText(/One card per area/i);
-    expect(view.container.querySelectorAll(".site-card")).toHaveLength(withSites.length);
-  });
-
-  it("marks a built space in the builder's seat colour, from the LIVE model", async () => {
-    // A site with a shophouse built on its second space and a trading house
-    // owned — the state the INDEX payload can never reach, which is the whole
-    // reason this surface reads the frame.
-    const built = structuredClone(wire.areas) as typeof wire.areas;
-    const first = built.rows.flat().find((c) => c.tile.site !== null)!;
-    first.tile.site!.slots[1]!.built_by = 1;
-    first.tile.site!.trading_house_owner = 0;
-
-    stubApi((call) => {
-      if (call.path.endsWith("/areas")) return built;
-      throw new Error(`unexpected ${call.path}`);
-    });
-    const view = render(
-      <Surface
-        name="buildings"
-        game="wire"
-        art={wire.artManifest}
-        labels={wire.labels}
-        colors={COLORS}
-        onClose={() => undefined}
-      />,
-    );
-    await screen.findByText(/One card per area/i);
-
-    const card = view.container.querySelector(".site-card")!;
-    const marks = card.querySelectorAll(".site-space.built");
-    expect(marks.length, "the built shophouse is not marked").toBe(1);
-    // The seat colour is how a player reads WHOSE it is at a glance, and it is
-    // the same `seatClass` the board tile already uses — never a second palette.
-    expect(marks[0]!.className, "the built mark carries no seat colour").toMatch(/seat-blue/);
-    expect(
-      card.querySelector(".site-trading-house.built")?.className,
-      "the trading house owner is not marked",
-    ).toMatch(/seat-red/);
   });
 });
 
