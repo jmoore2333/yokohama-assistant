@@ -1,7 +1,9 @@
 import type { CSSProperties } from "react";
-import type { ArtManifest, BoardModel, Labels, PlayerColor, SiteModel, TileModel } from "./types";
+import type { ArtManifest, BoardModel, Labels, PlayerColor, TileModel } from "./types";
 import { areaArt, fivePowerArt, fivePowerWords } from "./art";
-import { Pawns, seatClass } from "./Cards";
+import { SiteFace } from "./Cards";
+import { Pieces } from "./Pieces";
+import { ID_BADGE, PIECES, pct, SITE_CARD } from "./tileRects";
 
 /** How wide a tile may be, so that the whole board fits its column at 1440.
  *
@@ -99,57 +101,6 @@ export function Board({
   );
 }
 
-/** The site-slot strip: the four printed spaces, who built on each, and the
- *  trading-house VP.
- *
- *  This is the CLI's `sites ★1 ★2¥1 — ★2  │ T8` line, and it is the densest
- *  thing on a tile for a reason — it is what a player is reading when they
- *  decide where to build. A BLANK space prints as `—` rather than as nothing,
- *  because a card with three rewards and a card with four are different cards
- *  and a gap that is not drawn cannot be counted. */
-function SiteSlots({ site, colors }: { site: SiteModel; colors: PlayerColor[] }) {
-  return (
-    <div className="site-strip" title="the four shophouse spaces, then the trading-house VP">
-      {site.slots.map((slot, i) => {
-        const r = slot.reward;
-        const parts: string[] = [];
-        if (r.vp) parts.push(`★${r.vp}`);
-        if (r.yen) parts.push(`¥${r.yen}`);
-        if (r.seafood) parts.push(`f${r.seafood}`);
-        if (r.tea) parts.push(`t${r.tea}`);
-        if (r.silk) parts.push(`s${r.silk}`);
-        if (r.copper) parts.push(`c${r.copper}`);
-        if (r.any_good) parts.push(`*${r.any_good}`);
-        // The CLI's alphabet, not one of our own. `board_render::push_reward`
-        // prints `movement` as `a` — the YAML's `assistants` icon, which the
-        // engine names `movement` because the icon MOVES an assistant — and
-        // `warehouse_tokens` as the built-house glyph. A browser inventing `m`
-        // and `w` gives a player cross-reading the two surfaces an unknown
-        // token, which is the one thing a shared legend is for.
-        if (r.movement) parts.push(`a${r.movement}`);
-        if (r.warehouse_tokens) parts.push(`\u2302${r.warehouse_tokens}`);
-        const built = slot.built_by;
-        return (
-          <span
-            className={`slot ${built != null ? `built ${seatClass(colors[built])}` : ""}`}
-            key={i}
-          >
-            {built != null && <span className="built-mark">&#8962;</span>}
-            {parts.length === 0 ? "—" : parts.join("")}
-          </span>
-        );
-      })}
-      <span
-        className={`slot th ${site.trading_house_owner != null ? `built ${seatClass(colors[site.trading_house_owner])}` : ""}`}
-        title="trading-house space"
-      >
-        {site.trading_house_owner != null && <span className="built-mark">&#8962;</span>}T
-        {site.trading_house_vp}
-      </span>
-    </div>
-  );
-}
-
 function Tile({
   tile,
   art,
@@ -173,88 +124,63 @@ function Tile({
   const face = areaArt(art, tile.area_type);
   const tokenSrc = fivePowerArt(art, tile.token);
 
+  // **The tile is the art, and the pieces sit on it where the physical ones do**
+  // (M5 spec §3.2, owner ruling R4). No caption: the printed title IS the name,
+  // the site card lies rotated over the top-right quarter as in the owner's
+  // photograph, the pieces stand in the band below it, the id badge sits at the
+  // left end of the pieces row under the site card, and the 5-Power token sits
+  // in its printed slot. Every rect comes from `tile_rects.json`, never typed
+  // here. What the caption used to say in words now rides in `.sr-only` spans
+  // and on the pieces' accessible name, so nothing a screen reader had is gone.
   const body = (
     <>
-      {/* **The picture, then the caption — not text over a dimmed picture.**
-          The printed power ladder 1–5 and its per-rung yields run across the
-          bottom of every area art, and they are the facts a Movement
-          destination and an Area Action get chosen on. Under the old veil
-          (`--art-veil: 0.82` as a whole-image opacity, plus a full-bleed
-          six-stop scrim) they reached the viewer at a mean transmittance of
-          0.100 — measured white-vs-black in real Chromium — and the board
-          carried them NOWHERE else: the only surface that draws the ladder is
-          the Areas panel, which covers 98.8% of the board it is explaining.
-
-          The alternative considered and REJECTED on measurement was two scrims
-          anchored to the text bands. It cannot work, for a structural reason
-          rather than a tuning one: the printed ladder occupies y 0.630–0.910 of
-          the tile and this client's own lower text block occupies y
-          0.607–0.956. They are the same 35% of the tile, so a scrim on the text
-          is a scrim on the ladder — constructed and measured at 0.087, WORSE
-          than the veil it would replace.
-
-          This is the pattern `Cards.tsx` already chose and defends in its own
-          words, applied to the one surface that did not get it. */}
-      {face && (
-        <div className="tile-art-box">
+      <div className="tile-art-box">
+        {face ? (
           <img className="tile-art" src={face} alt="" loading="lazy" />
-          {/* The 5-Power token, where the physical one sits.
-              `01-rules-reference.md:680`: the tokens are shuffled face-down and
-              then placed FACE-UP on each Area Board's 5-space, "so its effect is
-              public information from the start" — so there is no masking
-              question here and never was; the wire has always carried
-              `tile.token` on every tile.
-              The slot rect in `styles.css` is MEASURED, not guessed: each of the
-              thirteen non-Canal arts minus its own box blur, then averaged, so a
-              line printed on every card survives and every illustration cancels.
-              An absent token needs no mark of its own — the printed frame with
-              its red 5 showing IS the empty slot, exactly as on the table — and
-              the words below carry WHICH good, which the picture does not
-              resolve at a 4P tile's 160px. */}
-          {tokenSrc && (
-            <span className="token-slot">
-              <img src={tokenSrc} alt="" loading="lazy" />
-            </span>
-          )}
-        </div>
-      )}
-      <div className="tile-body">
-        <div className="tile-head">
-          <span className="tile-id">{id}</span>
-          <span className="tile-name">{name}</span>
-          {tile.reachable && (
-            <span className="reach" title="a Movement destination the engine offers">
-              &#9672;
-            </span>
-          )}
-        </div>
-        {isCanal ? (
-          <div className="tile-row muted">crossing only &middot; 1 yen to the bank</div>
         ) : (
-          <>
-            <div className="tile-row pawns">
-              <Pawns
-                presidents={tile.presidents}
-                assistants={tile.assistants}
-                hasStation={tile.has_station}
-                colors={colors}
-              />
-            </div>
-            <div className="tile-row token-row">
-              {tile.token ? (
-                <span className="five-power" title="5-Power bonus token">
-                  {tokenSrc && <img src={tokenSrc} alt="" loading="lazy" />}
-                  {fivePowerWords(tile.token)}
-                </span>
-              ) : (
-                <span className="muted">5-Power taken</span>
-              )}
-              {tile.site?.index != null && <span className="chip site-id">Site {tile.site.index}</span>}
-            </div>
-            {tile.site && <SiteSlots site={tile.site} colors={colors} />}
-          </>
+          <div className="tile-art-blank">
+            <span className="tile-name">{name}</span>
+          </div>
         )}
+        {tokenSrc && (
+          <span className="token-slot">
+            <img src={tokenSrc} alt="" loading="lazy" />
+          </span>
+        )}
+        {tile.site && (
+          <div className="site-on-tile" style={pct(SITE_CARD)}>
+            <SiteFace art={art} site={tile.site} colors={colors} />
+          </div>
+        )}
+        {!isCanal && (
+          <div className="pieces-band" style={pct(PIECES)}>
+            <Pieces
+              presidents={tile.presidents}
+              assistants={tile.assistants}
+              hasStation={tile.has_station}
+              colors={colors}
+              art={art}
+            />
+          </div>
+        )}
+        <span className="tile-id" style={pct(ID_BADGE)}>
+          {id}
+        </span>
       </div>
+      <span className="sr-only">
+        {id} {name}
+      </span>
+      {isCanal ? (
+        <span className="sr-only">crossing only &middot; 1 yen to the bank</span>
+      ) : (
+        <>
+          <span className="sr-only">
+            {tile.token ? `5-Power ${fivePowerWords(tile.token)}` : "5-Power taken"}
+          </span>
+          {tile.site?.index != null && <span className="sr-only">Site {tile.site.index}</span>}
+          {tile.reachable && <span className="sr-only">a Movement destination the engine offers</span>}
+        </>
+      )}
     </>
   );
 
@@ -283,26 +209,21 @@ function Tile({
   );
 }
 
-/** What the marks mean.
- *
- *  The CLI prints this under every board, and it is not decoration: `★n` and
- *  `f2` and `⌂` are a private alphabet, and a surface that uses one without
- *  saying so is a surface you have to already know. Worded from the terminal's
- *  own legend so the two teach the same thing. */
+/** What the marks mean. Worded for the pieces, since the tile now draws them
+ *  as pieces rather than as the terminal's glyph alphabet. */
 function Legend() {
   return (
     <details className="legend">
       <summary>marks</summary>
       <div>
-        <b>&#9650;</b> president (owner colour) &middot; <b>&#9679;n</b> assistants &middot;{" "}
-        <b>&#9672;</b> a Movement destination the engine offers &middot; <b>St</b> Station (+1
-        Power for everyone)
+        a pawn is a president and a cube an assistant, each in its owner&rsquo;s colour (a number
+        beside a cube counts a stack) &middot; the small card on a tile is its building site, with a
+        built space in its builder&rsquo;s colour &middot; the token in the printed 5-space is the
+        5-Power bonus, and an empty frame means it is taken
       </div>
       <div>
-        site slots: <b>&#8962;</b> built (owner colour) &middot; <b>★n</b> VP &middot; <b>¥n</b>{" "}
-        yen &middot; <b>f/t/s/c n</b> goods &middot; <b>*n</b> any good &middot; <b>an</b>{" "}
-        assistants &middot; <b>&#8962;n</b> build &middot; <b>Tn</b> trading-house VP &middot;{" "}
-        <b>—</b> a blank space
+        a green border is a Movement destination the engine offers &middot; a blue border is a tile
+        you have selected &middot; the id badge (A00&hellip;) is what every prompt names
       </div>
     </details>
   );

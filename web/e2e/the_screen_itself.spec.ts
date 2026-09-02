@@ -243,24 +243,33 @@ test("the tile art is not veiled and carries no scrim", async ({ page }) => {
   await startGame(page);
   await page.waitForSelector(".tile-art");
 
+  // **Re-aimed at M5's tile, which has no caption left to measure.** The cell
+  // used to read `.tile-body`'s background-image, because the scrim it guards
+  // against was painted on the caption — and a scrim anchored to the text is a
+  // scrim on the ladder, the two occupying the same 35% of the tile. W4b
+  // deleted the caption, so the only place a scrim could now live is the art
+  // box itself, and that is what this reads. The other half is unchanged: the
+  // art is not dimmed.
   const read = await page.evaluate(() => {
     const art = document.querySelector(".tile-art");
-    const body = document.querySelector(".tile-body");
-    if (!art || !body) return null;
+    const box = art?.closest(".tile-art-box");
+    if (!art || !box) return null;
     return {
       artOpacity: getComputedStyle(art).opacity,
-      bodyBackgroundImage: getComputedStyle(body).backgroundImage,
+      boxOpacity: getComputedStyle(box).opacity,
+      boxBackgroundImage: getComputedStyle(box).backgroundImage,
     };
   });
 
-  expect(read, "a tile must draw art and a caption to be measured").not.toBeNull();
+  expect(read, "a tile must draw art in a box to be measured").not.toBeNull();
   // The printed power ladder reached the viewer at a mean transmittance of 0.100
   // under `--art-veil: 0.82` plus a six-stop scrim. It is the only on-board
   // carrier of what an Area Action pays at each power.
   expect(read!.artOpacity, "the art is dimmed again — the ladder is the cost").toBe("1");
+  expect(read!.boxOpacity, "the box dims the art the `.tile-art` opacity does not").toBe("1");
   expect(
-    read!.bodyBackgroundImage,
-    "a scrim is back on the caption; anchored to the text it also covers the ladder",
+    read!.boxBackgroundImage,
+    "a scrim is back over the art, and it covers the ladder with it",
   ).toBe("none");
 
   expect(watch.failures).toEqual([]);
@@ -817,7 +826,28 @@ test("scrubbing walks the board backwards and puts it back exactly", async ({ pa
 
   // The board as it stands now, read off the SCREEN — this is the thing the
   // round trip has to restore.
-  const live = await page.locator(".board").innerText();
+  //
+  // **Not `innerText` any more, and the reason is the whole of this cell's
+  // teeth.** Until M5 the board's text WAS its position: the caption printed the
+  // pawns and the built site slots as glyphs. W4b draws both as pieces on the
+  // art, so the board's remaining text is the id badges and the hidden spans —
+  // the same string at every scrub position. This cell caught that by failing;
+  // its second half (`.toBe(live)` after "Back to live") would have passed
+  // forever while comparing one constant to another. So it reads what the
+  // screen now says instead: each tile's pieces by their accessible name, and
+  // how many printed spaces are built on.
+  const boardState = () =>
+    page.evaluate(() =>
+      [...document.querySelectorAll(".tile")]
+        .map((t) => {
+          const id = t.querySelector(".tile-id")?.textContent ?? "?";
+          const pieces = t.querySelector(".pieces")?.getAttribute("aria-label") ?? "";
+          const built = t.querySelectorAll(".site-space.built, .site-trading-house.built").length;
+          return `${id}[${pieces}]${built}`;
+        })
+        .join(" "),
+    );
+  const live = await boardState();
 
   await page.getByRole("button", { name: "Log", exact: true }).click();
   const track = page.getByLabel("Replay position");
@@ -847,7 +877,7 @@ test("scrubbing walks the board backwards and puts it back exactly", async ({ pa
 
   await expect(page.locator(".stage.replaying")).toBeVisible();
   await expect
-    .poll(async () => (await page.locator(".board").innerText()) !== live, {
+    .poll(async () => (await boardState()) !== live, {
       message: "the board never changed, so nothing was actually replayed",
     })
     .toBe(true);
@@ -861,7 +891,7 @@ test("scrubbing walks the board backwards and puts it back exactly", async ({ pa
   // read-only projection owes: browsing the past must not change it.
   await page.getByRole("button", { name: "Back to live" }).click();
   await expect(page.locator(".stage.replaying")).toHaveCount(0);
-  await expect.poll(async () => page.locator(".board").innerText()).toBe(live);
+  await expect.poll(boardState).toBe(live);
 
   expect(watch.failures).toEqual([]);
 });

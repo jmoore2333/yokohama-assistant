@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { Board } from "./Board";
 import { wire } from "./wire/contract";
+import { SITE_CARD } from "./tileRects";
 import type { ClientState, PlayerColor } from "./types";
 
 const COLORS: PlayerColor[] = ["Red", "Blue"];
@@ -30,6 +31,15 @@ function show(
       {...(opts.onTileClick ? { onTileClick: opts.onTileClick } : {})}
     />,
   );
+}
+
+/** The tile whose id badge reads `id`. */
+function tileOf(container: HTMLElement, id: string): HTMLElement {
+  const tile = [...container.querySelectorAll<HTMLElement>(".tile")].find(
+    (t) => t.querySelector(".tile-id")?.textContent === id,
+  );
+  if (!tile) throw new Error(`no tile ${id}`);
+  return tile;
 }
 
 describe("the Canal", () => {
@@ -142,9 +152,7 @@ describe("the 5-Power token sits in its printed slot", () => {
     expect(tile, "the 4P fixture must carry an untaken token").toBeDefined();
     const { container } = show(wire.options4p, { colors: COLORS_4 });
     const id = `A${String(tile!.area).padStart(2, "0")}`;
-    const el = [...container.querySelectorAll<HTMLElement>(".tile")].find((t) =>
-      t.textContent?.startsWith(id),
-    )!;
+    const el = tileOf(container, id);
     expect(el.querySelector(".token-slot img")).not.toBeNull();
   });
 
@@ -223,5 +231,86 @@ describe("a historical board", () => {
     );
     expect(container.querySelectorAll(".tile").length).toBeGreaterThan(0);
     expect(container.querySelectorAll("button.tile")).toHaveLength(0);
+  });
+});
+
+// ---- M5: the tile is the art, and the pieces sit on it -------------------
+//
+// The caption is gone. What it said in words now rides in `.sr-only` spans and
+// on the pieces' accessible name, and what it said in glyphs is drawn where the
+// physical piece stands. jsdom still has no layout, so these cells assert the
+// DECLARATIONS — the overlay is present, it carries the rect the shared JSON
+// names, the built marks carry the builder's seat class — which is exactly what
+// a regression would delete.
+describe("the tile is the art, and the pieces sit on it (M5)", () => {
+  const withPieces = (): { state: ClientState; id: string } => {
+    const state = structuredClone(wire.options) as ClientState;
+    const t = state.frame.board.tiles.find((tile) => tile.site !== null)!;
+    t.presidents = [0];
+    t.assistants = [
+      [0, 0],
+      [1, 2],
+    ];
+    t.has_station = true;
+    t.site!.slots[0]!.built_by = 1;
+    t.site!.trading_house_owner = 0;
+    return { state, id: `A${String(t.area).padStart(2, "0")}` };
+  };
+
+  it("draws no caption under the art", () => {
+    const { container } = show(wire.options);
+    expect(container.querySelector(".tile-body")).toBeNull();
+    expect(container.querySelector(".site-strip")).toBeNull();
+    expect(screen.queryByText("no pawns")).toBeNull();
+  });
+
+  it("puts the site card on the tile, built spaces in the builder's colour", () => {
+    const { state, id } = withPieces();
+    const tile = tileOf(show(state).container, id);
+    const card = tile.querySelector(".site-on-tile");
+    expect(card, "no site card on the tile").not.toBeNull();
+    // Read back as NUMBERS against the shared rect, because jsdom's CSSOM
+    // re-serializes `50.00%` as `50%` and a string compare would be asserting
+    // the serializer. The point of the cell is that the overlay is placed from
+    // `tile_rects.json` and not from a figure typed into the component.
+    const at = (axis: "left" | "top") => parseFloat((card as HTMLElement).style[axis]);
+    expect(at("left")).toBeCloseTo(SITE_CARD.left * 100, 2);
+    expect(at("top")).toBeCloseTo(SITE_CARD.top * 100, 2);
+    expect(card!.querySelector(".site-space.slot-0.built")?.className).toMatch(/seat-blue/);
+    expect(card!.querySelector(".site-trading-house.built")?.className).toMatch(/seat-red/);
+  });
+
+  it("names the pieces for a screen reader and draws them as pieces", () => {
+    const { state, id } = withPieces();
+    const tile = tileOf(show(state).container, id);
+    expect(tile.querySelector(".pieces")?.getAttribute("aria-label")).toBe(
+      "Red president · 2 Blue assistants · Station",
+    );
+    expect(tile.querySelectorAll(".piece.cube")).toHaveLength(2);
+  });
+
+  it("keeps the id, the site and the token in words the caption used to carry", () => {
+    const { container } = show(wire.options);
+    const t = wire.options.frame.board.tiles.find((tile) => tile.site?.index != null)!;
+    const id = `A${String(t.area).padStart(2, "0")}`;
+    const words = tileOf(container, id).textContent ?? "";
+    expect(words).toContain(id);
+    expect(words).toContain(`Site ${t.site!.index}`);
+    expect(words).toMatch(/5-Power/);
+  });
+
+  it("still draws a name when there is no art, and no broken image", () => {
+    const { container } = render(
+      <Board
+        board={wire.options.frame.board}
+        art={null}
+        labels={wire.labels}
+        colors={COLORS}
+        selected={[]}
+        busy={false}
+      />,
+    );
+    expect(container.querySelector(".tile-art-blank .tile-name")?.textContent).toBeTruthy();
+    expect(container.querySelectorAll("img")).toHaveLength(0);
   });
 });

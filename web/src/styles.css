@@ -172,23 +172,20 @@ button.tile { cursor: pointer; }
 button.tile:hover { transform: translateY(-1px); border-color: var(--line-bright); }
 button.tile:focus-visible { outline: 2px solid var(--vp); outline-offset: 1px; }
 
-/* **The picture is a picture, and the caption sits under it.**
+/* **The tile IS the picture** (M5). The box was the art half of a picture-plus-
+ * caption tile; it is now the whole tile, and every overlay is positioned
+ * inside it. The `aspect-ratio` is what reserves the height before a lazy
+ * `<img>` has any intrinsic size (measured at 0.00px of jump with the art
+ * blocked), and there is no caption left below to be cropped by it — so the
+ * bottom border it drew between the two halves has nothing to divide.
  *
- * The `aspect-ratio` moved from `.tile` to this box, which is what keeps the
- * layout from jumping when a lazy image lands: the box reserves its height from
- * the ratio before the `<img>` has any intrinsic size (measured at 0.00px of
- * jump with the art blocked). Putting it on `.tile` instead would now fix the
- * whole tile — picture AND caption — to the picture's ratio and crop the words.
- *
- * Nothing dims the art any more and nothing is drawn on top of it except the
- * 5-Power token in its own printed slot. The veil and the six-stop scrim this
- * replaced took the printed power ladder to a mean transmittance of 0.100; the
- * reasoning and the rejected alternative are in `Board.tsx`. */
+ * Nothing dims the art. The veil and the six-stop scrim this replaced took the
+ * printed power ladder to a mean transmittance of 0.100; the reasoning and the
+ * rejected alternative are in `Board.tsx`. */
 .tile-art-box {
   position: relative;
   aspect-ratio: var(--tile-aspect);
   overflow: hidden;
-  border-bottom: 1px solid var(--line);
 }
 .tile-art { display: block; width: 100%; height: 100%; object-fit: cover; }
 
@@ -231,50 +228,72 @@ button.tile:focus-visible { outline: 2px solid var(--vp); outline-offset: 1px; }
   box-shadow: 0 1px 2px rgb(0 0 0 / 0.45);
 }
 
-.tile-body {
-  position: relative;
-  display: flex; flex-direction: column; gap: 0.15rem;
-  padding: 0.4rem 0.5rem;
-  text-shadow: 0 1px 3px rgb(0 0 0 / 0.9);
-}
 .tile.reachable { border-color: var(--reachable); box-shadow: inset 0 0 0 1px rgb(105 194 95 / 0.35); }
 .tile.selected { border-color: var(--vp); box-shadow: inset 0 0 0 2px var(--vp); }
 .tile.canal { background: repeating-linear-gradient(135deg, #0f1a1f, #0f1a1f 6px, #111f26 6px, #111f26 12px); }
 
-.tile-head { display: flex; align-items: baseline; gap: 0.4rem; }
 .tile-id { color: var(--fg-faint); font-size: 10px; }
+/* ---- M5: the tile is the art ------------------------------------------- */
+/* The rects are inline (`tile_rects.json` via `pct()`), never here: one source. */
+.tile-art-blank {
+  display: grid; place-items: center; height: 100%;
+  background: var(--bg-raised); color: var(--fg-dim);
+}
+/* The id badge, SCOPED to the board tile. `.tile-id` is a shared class —
+ * `Surfaces.tsx` prints it inline in the Areas heading and the site-card
+ * caption — so absolutely positioning the bare selector would pull both of
+ * those out of flow. The base rule above still dresses those two; this one
+ * overrides colour and size for the badge on the art. */
+.tile-art-box .tile-id {
+  position: absolute; z-index: 3;
+  display: grid; place-items: center;
+  font-size: 8.5px; letter-spacing: 0.04em; color: var(--fg);
+  background: rgb(9 11 14 / 0.72); border-radius: 2px;
+}
+/* The site card: a landscape box holding the PORTRAIT face turned a quarter
+ * turn. The inner face's width is the box's height (530/799 of its width), it is
+ * centred, and the rotation is what lays it flat — so the measured
+ * `.site-space` rects inside it turn with it and a built mark lands on the
+ * printed space it names. */
+.site-on-tile { position: absolute; z-index: 1; }
+.site-on-tile > .site-face {
+  position: absolute; left: 50%; top: 50%;
+  width: calc(100% * 530 / 799);
+  aspect-ratio: 360 / 543;
+  transform: translate(-50%, -50%) rotate(-90deg);
+  border: 1px solid rgb(0 0 0 / 0.5); border-radius: 2px;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.5); background: var(--bg-sunken);
+}
+.pieces-band { position: absolute; z-index: 2; display: flex; align-items: center; }
+.pieces { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 3%; width: 100%; height: 100%; }
+.piece-group { display: inline-flex; align-items: flex-end; gap: 1px; height: 100%; }
+/* An inline `<svg>` with a viewBox and no width/height is a replaced element at
+ * the CSS default 300x150px — about fourteen times the height of this band — so
+ * these three rules are what SIZE the pieces, not what tidies them. */
+.piece { height: 100%; width: auto; filter: drop-shadow(0 1px 1px rgb(0 0 0 / 0.6)); }
+.piece.cube { height: 72%; }
+.piece.station { height: 80%; border-radius: 2px; }
+.piece-n { font-size: 9px; font-weight: 700; color: #fff; text-shadow: 0 1px 2px #000; line-height: 1; }
+/* Visually hidden, present to assistive technology. */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; overflow: hidden;
+  clip: rect(0 0 0 0); white-space: nowrap; border: 0; padding: 0; margin: -1px;
+}
+
 .tile-name {
   font-family: var(--display); font-size: 0.95rem; line-height: 1.2;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   text-shadow: 0 1px 3px #000;
 }
-.tile-head .reach { color: var(--reachable); margin-left: auto; }
 .tile-row { display: flex; align-items: center; gap: 0.35rem; font-size: 11px; min-height: 1.15rem; flex-wrap: wrap; }
 .tile-row.muted { color: var(--fg-faint); }
-/* `margin-top: auto` used to push the pawn row to the bottom of a tile whose
- * body was stretched to `height: 100%`. The caption is content-height now, so
- * that rule had nothing to push against — an inert rule is worse than none,
- * because the next reader assumes it does something. */
+/* These rows were the board tile's caption, which M5 deleted — the tile is the
+ * art now. They are kept because the Areas panel and the Dashboard still lay
+ * their own rows out with them; nothing on the board reads them. */
 .token-row { gap: 0.3rem; }
 
 .five-power { display: inline-flex; align-items: center; gap: 0.25rem; color: var(--yen); }
 .five-power img { width: 1.1rem; height: 1.1rem; border-radius: 2px; }
-
-/* ---- the site-slot strip ----------------------------------------------- */
-.site-strip { display: flex; gap: 0.2rem; flex-wrap: wrap; font-size: 10px; }
-.site-strip .slot {
-  display: inline-flex; align-items: center; gap: 0.1rem;
-  padding: 0 0.25rem; border-radius: 2px;
-  border: 1px solid var(--line-bright); color: var(--vp);
-  background: rgb(9 11 14 / 0.55);
-}
-.site-strip .slot.th { color: var(--yen); }
-.site-strip .slot.built { border-style: solid; border-width: 1px; font-weight: 700; }
-.site-strip .built-mark { font-size: 11px; }
-.site-strip .slot.built.seat-red { border-color: var(--red); color: var(--red); }
-.site-strip .slot.built.seat-blue { border-color: var(--blue); color: var(--blue); }
-.site-strip .slot.built.seat-green { border-color: var(--green); color: var(--green); }
-.site-strip .slot.built.seat-yellow { border-color: var(--yellow); color: var(--yellow); }
 
 .pawn { font-size: 12px; line-height: 1; display: inline-flex; align-items: baseline; }
 .pawn.president { font-size: 13px; }
