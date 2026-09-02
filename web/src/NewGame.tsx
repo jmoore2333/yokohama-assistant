@@ -27,6 +27,8 @@ export function NewGame({
   const [saved, setSaved] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /** The saved game whose `delete` has been clicked once — see the row below. */
+  const [confirming, setConfirming] = useState<string | null>(null);
 
   useEffect(() => {
     api.list().then(setSaved).catch(() => setSaved([]));
@@ -209,20 +211,55 @@ export function NewGame({
                 >
                   {name}
                 </button>
-                <button
-                  type="button"
-                  className="ghost danger"
-                  disabled={busy}
-                  title={`delete ${name}`}
-                  onClick={() =>
-                    run(async () => {
-                      await api.remove(name);
-                      setSaved(await api.list());
-                    })
-                  }
-                >
-                  delete
-                </button>
+                {/* **Two clicks, and the first one asks (final review I2).**
+                    Deleting a record is not undoable — the game is gone — and
+                    M5 put this list one banner menu away from a running game,
+                    so a stray click beside the game you meant to resume used
+                    to remove a different one.
+
+                    A row that asks, rather than `window.confirm`: a native
+                    dialog blocks the browser walk this client is tested with,
+                    and the question belongs where the mistake is made. Both
+                    buttons NAME the game, so the confirmation cannot be about
+                    a row other than the one that opened it. */}
+                {confirming === name ? (
+                  <>
+                    <button
+                      type="button"
+                      className="ghost danger"
+                      disabled={busy}
+                      aria-label={`confirm delete ${name}`}
+                      onClick={() =>
+                        run(async () => {
+                          await api.remove(name);
+                          setConfirming(null);
+                          setSaved(await api.list());
+                        })
+                      }
+                    >
+                      confirm delete
+                    </button>
+                    <button
+                      type="button"
+                      className="ghost"
+                      disabled={busy}
+                      aria-label={`cancel deleting ${name}`}
+                      onClick={() => setConfirming(null)}
+                    >
+                      cancel
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    className="ghost danger"
+                    disabled={busy}
+                    aria-label={`delete ${name}`}
+                    onClick={() => setConfirming(name)}
+                  >
+                    delete
+                  </button>
+                )}
               </li>
             ))}
           </ul>

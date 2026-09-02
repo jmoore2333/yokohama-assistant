@@ -203,3 +203,53 @@ describe("the saved games", () => {
     expect(await screen.findByText(/already exists/)).toBeInTheDocument();
   });
 });
+
+// ---- the fix wave: deleting a saved game (final review I2) ------------------
+//
+// **Data loss with no guard, and M5 moved it one menu away from a running
+// game.** `delete` beside each saved game removed the record on a single
+// click; M5's Game menu put "New game" in the banner, so a player mid-game now
+// lands on this list, where a stray click beside the game they meant to resume
+// removes a different one. There is no undo — the record is gone.
+//
+// A two-step BUTTON and not `window.confirm`: a native dialog blocks the
+// browser walk this repository tests with, and a modal the page cannot see is
+// a modal no cell can assert. The step lives in the row, which is also where
+// the mistake is made.
+describe("deleting a saved game", () => {
+  const twoGames = (call: ApiCall): Reply => {
+    if (call.method === "GET" && call.path.endsWith("/api/games")) return ["wire", "sim-other"];
+    if (call.method === "DELETE") return null;
+    throw new Error(`unexpected ${call.method} ${call.path}`);
+  };
+
+  it("does not delete on the first click", async () => {
+    const { user, stub } = show(twoGames);
+    await user.click(await screen.findByRole("button", { name: "delete wire" }));
+    expect(stub.matching("DELETE", "/api/games/wire")).toHaveLength(0);
+    // The row is now asking, which is what makes the click above a step and
+    // not a no-op.
+    expect(screen.getByRole("button", { name: "confirm delete wire" })).toBeInTheDocument();
+  });
+
+  it("deletes the game the row names when the second click confirms it", async () => {
+    const { user, stub } = show(twoGames);
+    await user.click(await screen.findByRole("button", { name: "delete sim-other" }));
+    await user.click(screen.getByRole("button", { name: "confirm delete sim-other" }));
+    await waitFor(() => expect(stub.matching("DELETE", "/api/games/sim-other")).toHaveLength(1));
+    // The OTHER game's row was never touched — the whole point of naming the
+    // game in the button rather than confirming "a game".
+    expect(stub.matching("DELETE", "/api/games/wire")).toHaveLength(0);
+    // And the list is re-read, so the screen agrees with the store.
+    expect(stub.matching("GET", "/api/games").length).toBeGreaterThan(1);
+  });
+
+  it("puts the row back when the second click cancels", async () => {
+    const { user, stub } = show(twoGames);
+    await user.click(await screen.findByRole("button", { name: "delete wire" }));
+    await user.click(screen.getByRole("button", { name: "cancel deleting wire" }));
+    expect(screen.getByRole("button", { name: "delete wire" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "confirm delete wire" })).toBeNull();
+    expect(stub.matching("DELETE", "/api/games/wire")).toHaveLength(0);
+  });
+});
