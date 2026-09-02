@@ -604,6 +604,62 @@ ol.log { list-style: none; margin: 0; padding: 0; display: flex; flex-direction:
 ol.log li { display: flex; gap: 0.6rem; font-size: 11.5px; padding: 0.1rem 0; border-top: 1px solid var(--line); }
 ol.log .num { color: var(--fg-faint); min-width: 2.5rem; text-align: right; }
 
+/* **The replay track (M4).**
+ *
+ * It lives in the log panel by owner ruling, and the BOARD deliberately does
+ * not: measured at HEAD, a 4P board inside this 704px drawer scrolls 322px
+ * horizontally and ~205px vertically, and the tile size that would fit it
+ * horizontally drops the printed power ladder to ~5.2px cap height against the
+ * 7.9px M3.5 measured as legible. So the panel carries the control and the
+ * words, and `.stage` behind it draws the position at full size.
+ *
+ * `flex-wrap` because this row holds five controls and the drawer is 670px of
+ * content box at 1440 and 1280 alike — `min(44rem, 55vw)` clamps to 44rem at
+ * both. The range takes the slack; nothing else shrinks. */
+.scrub {
+  display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;
+  padding: 0.5rem 0; border-bottom: 1px solid var(--line); margin-bottom: 0.5rem;
+}
+.scrub input[type="range"] { flex: 1 1 12rem; min-width: 8rem; accent-color: var(--vp); }
+.scrub .scrub-at { color: var(--fg-dim); font-size: 11.5px; white-space: nowrap; }
+
+/* The log line is a button so a stop can be reached by keyboard and named by
+ * an accessible role — but it must not LOOK like one, because the log is a
+ * document you read far more often than a control you press. */
+.log-jump {
+  background: none; border: 0; padding: 0; margin: 0; color: inherit;
+  font: inherit; text-align: left; cursor: pointer;
+}
+.log-jump:hover { color: var(--fg); text-decoration: underline; }
+.log-jump:disabled { cursor: default; text-decoration: none; }
+ol.log li.at { background: rgb(105 194 95 / 0.12); }
+ol.log li.at .num { color: var(--reachable); }
+
+/* **The help panel's screenshots, which had NO rule at all.**
+ *
+ * They are 1440x900 PNGs rendered inside a 651px `.surface-body`, and nothing
+ * in this file or in `index.html` constrained them — so each ran 794px past the
+ * panel's right edge and the panel gained a horizontal scroll. The containment
+ * cell that exists to catch exactly that could not see it: `Help.tsx` sets
+ * `loading="lazy"`, so at the instant the cell measures, the images still have
+ * a 0x0 box and contribute nothing to `scrollWidth`. A missing rule plus a
+ * blind assertion is how a 794px overflow ships.
+ *
+ * `figure` also carries a 40px UA side margin, which is why the margin is reset
+ * rather than left to inherit. */
+.shot { margin: 0.8rem 0; }
+.shot img {
+  max-width: 100%; height: auto; display: block;
+  border: 1px solid var(--line); border-radius: 4px;
+}
+.shot figcaption { color: var(--fg-dim); font-size: 11.5px; margin-top: 0.35rem; }
+
+/* A replayed board is not the live one, and the page should not pretend
+ * otherwise. Deliberately a border and not a filter or an opacity: the board's
+ * own legibility is the entire feature, and M3.5 already refused a conventional
+ * dim on the backdrop for the same reason. */
+.stage.replaying .board-col { outline: 1px solid var(--reachable); outline-offset: 4px; }
+
 /* ---- setup ------------------------------------------------------------- */
 .setup { max-width: 52rem; margin: 3rem auto; padding: 0 1.25rem; }
 .setup h2 { font-size: 1.4rem; margin-bottom: 0.3rem; }

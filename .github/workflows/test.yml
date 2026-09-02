@@ -10,6 +10,25 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test -p yokohama-core
 
+  # **The web SERVER, which nothing here could make red until M4.**
+  #
+  # The `web-client` job below type-checks the committed wire corpus against the
+  # client's own types — but the corpus is COMMITTED, so a server-side rename
+  # does not change it and every check stays green. `wire_fixtures` is the only
+  # thing that re-derives the corpus from the real router and compares, and it
+  # runs under `cargo test -p yokohama-web`, which ran in no workflow at all.
+  # Measured before this job existed: renaming a served field shipped green.
+  #
+  # It is a separate job from `test` because it is a separate claim: the engine
+  # crate is byte-identical to master and this one is not, so a failure here
+  # names the lane it came from.
+  web-server:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test -p yokohama-web
+
   # **The browser client, which nothing here could make red until M3.5.**
   #
   # `cargo test -p yokohama-core` was the whole of CI while the web lane added
@@ -19,9 +38,12 @@ jobs:
   # build and a Chromium download.
   #
   # **What it does and does not catch, stated because the gap is the point.**
-  # It catches the component half and the wire contract — `contract.ts`
-  # type-checks all 42 committed payloads against the hand-written `types.ts`,
-  # so neither side can be renamed while both believe they agree. It catches NO
+  # It catches the component half and the CLIENT half of the wire contract —
+  # `contract.ts` type-checks the committed payloads against the hand-written
+  # `types.ts`, so the client cannot be renamed away from the corpus. The other
+  # direction is the `web-server` job above and was NOT covered here: the corpus
+  # is committed, so a server-side rename leaves these files untouched and this
+  # job green. It catches NO
   # layout regression at all: `styles.css` is imported by `main.tsx` alone and
   # vitest runs jsdom, which has no layout engine. Mutation-tested during M3.5:
   # `.tile{width:20rem}`, a 600px banner, a 1200px push-down, a rail fixed over

@@ -96,6 +96,21 @@ function gamesDir(): string {
 
 export default defineConfig({
   testDir: "./e2e",
+  // **The screenshot generator is opt-in, and it is not a test.**
+  //
+  // `shots.spec.ts` WRITES into `web/public/help/`, so leaving it in the default
+  // run would make every `npm run e2e` dirty the working tree — against this
+  // repo's standing rule that a clean `git status` is the steady state — and
+  // would silently re-cut documentation as a side effect of running the suite.
+  //
+  // It stays a `.spec.ts` on purpose rather than being renamed out of the glob:
+  // `every_spec_can_skip.spec.ts` reads this directory at run time and checks
+  // whatever `.spec.ts` files it finds, so a generator hidden behind a different
+  // suffix would escape the browser-absence guard that every other file here
+  // has to satisfy. Ignored from the RUN, still checked as a file.
+  //
+  //     cd web && npm run build && YOKOHAMA_WEB_SHOTS=1 npx playwright test shots.spec.ts
+  testIgnore: process.env.YOKOHAMA_WEB_SHOTS === "1" ? [] : ["**/shots.spec.ts"],
   fullyParallel: false,
   workers: 1,
   // A whole game is hundreds of clicks against a real server. The default 30s

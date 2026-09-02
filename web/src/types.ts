@@ -336,6 +336,46 @@ export interface ClientState {
   warnings: string[];
 }
 
+/** One historical position, from `GET /api/games/{id}/at/{k}` — the M4 replay
+ *  payload.
+ *
+ *  **Deliberately NOT a `ClientState`.** Six of that type's fields are built
+ *  from the LIVE state and would be present-tense lies at a past position, and
+ *  three more have no honest historical value at all. What is missing here is
+ *  the point:
+ *
+ *  - no `your_turn` — it is the one field that is not a function of the game
+ *    state alone (it compares against a seat that lives on the server's REPL),
+ *    and it is meaningless for a position nobody is playing;
+ *  - no `prompt` — an in-flight picker is not in the record and cannot be;
+ *  - no `warnings` — a load-time session fact, not a property of this position;
+ *  - no `messages` — nothing was just applied.
+ *
+ *  `frame` is the ordinary {@link FrameModel}, so `Board` and `Dashboard` draw a
+ *  historical position through exactly the same components. Pass no
+ *  `onTileClick` and every tile is an inert `<div>`, which is what a read-only
+ *  position should be. */
+export interface HistoricalFrame {
+  /** `k` — events APPLIED, not an event index. */
+  index: number;
+  /** The record's length. The track has `total + 1` stops, and the last one is
+   *  the present: a real position with no event to name. */
+  total: number;
+  /** Whose view this is. **Pinned server-side and it does not follow the
+   *  mover** — that is what stops a sweep over every `k` from harvesting every
+   *  seat's whole hand history in one pass. */
+  seat: PlayerId;
+  /** Whose turn it was at `k`. */
+  to_move: PlayerId;
+  frame: FrameModel;
+  over: boolean;
+  /** The end-trigger line as it read AT `k`, worded by the CLI. */
+  end_triggers: string;
+  deck_remaining: number;
+  end_game_triggered: boolean;
+  scores: { seat: PlayerId; total: number }[] | null;
+}
+
 export interface Labels {
   area_types: Record<string, string>;
   phases: Record<string, string>;

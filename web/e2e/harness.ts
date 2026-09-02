@@ -31,14 +31,41 @@ export function rng(seed: number): () => number {
  * art committed, which every checkout does; those are same-origin and still
  * counted.
  */
-export function watchForBreakage(page: Page): { failures: string[] } {
+/**
+ * Collect anything that looks like breakage: a console error, an uncaught
+ * exception, or any 4xx/5xx from our own origin.
+ *
+ * `expected` names refusals the SERVER makes by design, which a caller has to
+ * opt into one at a time. There is exactly one today and it exists because of
+ * M4: the containment cell now derives its surface list from the nav rather
+ * than a hand-written six, which correctly added **Final score** — and
+ * `GET …/result` is a 409 while the game is still running, by contract. Without
+ * this the cell failed three runs in four on a product that was behaving
+ * exactly as specified.
+ *
+ * Deliberately a per-call opt-in and not a global allowlist: a 409 from
+ * `/result` is expected only where a test opens that panel mid-game, and
+ * anywhere else it is still a finding.
+ */
+export function watchForBreakage(
+  page: Page,
+  expected: { status: number; urlIncludes: string }[] = [],
+): { failures: string[] } {
   const failures: string[] = [];
+  const allowed = (status: number, url: string) =>
+    expected.some((e) => e.status === status && url.includes(e.urlIncludes));
   page.on("console", (m: ConsoleMessage) => {
-    if (m.type() === "error") failures.push(`console.error: ${m.text()}`);
+    // Chromium logs its own `Failed to load resource … (409 Conflict)` for the
+    // same response, so an allowed status has to be forgiven in both channels
+    // or the allowlist only half works.
+    if (m.type() !== "error") return;
+    const text = m.text();
+    if (expected.some((e) => text.includes(String(e.status)))) return;
+    failures.push(`console.error: ${text}`);
   });
   page.on("pageerror", (e) => failures.push(`uncaught: ${e.message}`));
   page.on("response", (r) => {
-    if (r.status() >= 400 && r.url().startsWith(BASE_URL)) {
+    if (r.status() >= 400 && r.url().startsWith(BASE_URL) && !allowed(r.status(), r.url())) {
       failures.push(`${r.status()} ${r.url()}`);
     }
   });

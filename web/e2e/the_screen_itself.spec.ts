@@ -80,6 +80,19 @@ test("the answer bar is pinned to the bottom at every scroll offset", async ({ p
       const msgs = document.querySelector(".decision > .messages");
       const commentary = msgs ? Math.round(msgs.getBoundingClientRect().height) : 0;
       if (!list) return { commentary, rows: 0, height: Infinity, reached: true };
+      // **Scroll the list to its top before hit-testing its first row.**
+      // `.options.scrolls` is a scroll CONTAINER, so once it has been scrolled
+      // — which ordinary play does — row 0 sits outside its own clip and
+      // `elementFromPoint` at row 0's centre returns whatever is painted there
+      // instead. The cell then reported "the first answer row was covered" for
+      // a screen where nothing covered anything: measured on a clean tree at
+      // `list 293px, commentary 6px`, i.e. with the commentary occupying six
+      // pixels. Flaky at roughly two runs in three, and pre-existing.
+      //
+      // The question this cell asks is whether the COMMENTARY squeezes the
+      // answer list until its first row is unreachable, so the row has to be in
+      // view for the hit test to be about that at all.
+      list.scrollTop = 0;
       const first = list.querySelector(".option");
       let reached = true;
       if (first) {
@@ -617,7 +630,9 @@ test("focus cannot leave an open panel", async ({ page }) => {
 });
 
 test("every panel fits its drawer, and the board stays readable beside it", async ({ page }) => {
-  const watch = watchForBreakage(page);
+  // `/result` is a 409 by design on a running game, and deriving the surface
+  // list from the nav (correctly) put **Final score** in this loop.
+  const watch = watchForBreakage(page, [{ status: 409, urlIncludes: "/result" }]);
   // 1440 and 900 bracket the 1201 breakpoint from both sides. Below it the panel
   // is deliberately NOT a drawer: `min(44rem, 55vw)` shrinks faster than the old
   // modal, and measured, three panels clip inside it at 1024 and 900 while none
@@ -627,11 +642,51 @@ test("every panel fits its drawer, and the board stays readable beside it", asyn
     await page.setViewportSize({ width, height: 900 });
     await startGame(page, { players: 4 });
 
-    for (const label of ["Port offer", "Laboratory offer", "Areas", "Log", "Orders", "Goals"]) {
-      if (["Orders", "Goals"].includes(label)) {
+    // **Read off the page, not off a list in this file.**
+    //
+    // This cell used to iterate six hard-coded labels while the registry held
+    // thirteen surfaces, so seven were never measured — and the escape had
+    // already fired: `54f0efd` added `tracks` and `buildings` to the registry
+    // and touched nothing in `web/e2e/`, so two whole panels shipped with no
+    // containment assertion and every suite green. The nav IS the registry
+    // rendered, so enumerating the nav is the one derivation available here
+    // that cannot fall behind it (`e2e/` imports nothing from `src/`, and a
+    // React module is not importable into a Playwright spec without a build).
+    await page.locator(".cards-menu > summary").click();
+    const labels = await page.evaluate(() =>
+      [...document.querySelectorAll(".banner button.ghost")]
+        .map((b) => (b.textContent ?? "").trim())
+        .filter((t) => t.length > 0),
+    );
+    await page.keyboard.press("Escape");
+    // Anti-vacuity: a selector that stopped matching would make this loop
+    // iterate nothing and the test would pass having measured no panel at all.
+    // 14 at this head, and asserted as an equality-floor rather than "some":
+    // a floor of 13 tolerates exactly the thing this derivation exists to stop —
+    // a surface disappearing from the nav without a test noticing.
+    expect(labels.length, "the banner listed the wrong number of surfaces").toBeGreaterThanOrEqual(
+      14,
+    );
+
+    for (const label of labels) {
+      // A card-reference surface lives behind the disclosure; opening it when it
+      // is already open would close it, so this asks rather than toggles.
+      const inMenu = await page
+        .locator(`.cards-menu button.ghost:text-is("${label}")`)
+        .count();
+      if (inMenu > 0 && !(await page.locator(".cards-menu[open]").count())) {
         await page.locator(".cards-menu > summary").click();
       }
       await page.getByRole("button", { name: label, exact: true }).click();
+      // **Wait for images, or this assertion is blind to them.** The Help panel
+      // loads its screenshots with `loading="lazy"`, so measured immediately
+      // after the click they still have a 0x0 box and contribute nothing to
+      // `scrollWidth` — a 794px overflow passed this cell exactly that way.
+      await page.evaluate(async () => {
+        const imgs = [...document.querySelectorAll<HTMLImageElement>(".surface-body img")];
+        imgs.forEach((i) => i.removeAttribute("loading"));
+        await Promise.all(imgs.map((i) => (i.complete ? null : i.decode().catch(() => null))));
+      });
       const read = await page.evaluate(() => {
         const body = document.querySelector(".surface .surface-body");
         if (!body) return null;
@@ -738,6 +793,149 @@ test("a panel really is modal, and the banner is one row again", async ({ page }
     });
     expect(liveAgain, "the page did not come back after the panel closed").toBe(true);
   }
+
+  expect(watch.failures).toEqual([]);
+});
+
+// ---- M4: the replay scrubber -----------------------------------------------
+
+/** Play `moves` real moves off the screen, so there is a past to scrub into. */
+async function playAFew(page: Page, moves: number) {
+  const pick = rng(20260901);
+  for (let i = 0; i < moves; i++) {
+    const screen = await readScreen(page);
+    if (screen.over) break;
+    if ((await act(page, screen, pick)) === null) break;
+  }
+}
+
+test("scrubbing walks the board backwards and puts it back exactly", async ({ page }) => {
+  const watch = watchForBreakage(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await startGame(page, { players: 2 });
+  await playAFew(page, 14);
+
+  // The board as it stands now, read off the SCREEN — this is the thing the
+  // round trip has to restore.
+  const live = await page.locator(".board").innerText();
+
+  await page.getByRole("button", { name: "Log", exact: true }).click();
+  const track = page.getByLabel("Replay position");
+  await expect(track).toBeVisible();
+  const total = Number(await track.getAttribute("max"));
+  expect(total, "the walk applied nothing, so there is no past to scrub into").toBeGreaterThan(3);
+
+  // **Count the requests a drag makes.** A scrubber without a debounce fires one
+  // per intermediate value and a cell that only checked the final board would
+  // pass it. The client debounces at 200 ms, so a burst of moves must collapse.
+  const atRequests: string[] = [];
+  page.on("request", (r) => {
+    if (/\/at\/\d+$/.test(new URL(r.url()).pathname)) atRequests.push(r.url());
+  });
+
+  // **Spaced, or this measures the wrong thing.** Eight presses in a tight loop
+  // finish in ~25 ms, and React's effect cleanup collapses the pending fetches
+  // on its own — so the cell passed with the debounce set to 0 ms
+  // (mutation-proven). Spacing them past a frame each means an UNDEBOUNCED
+  // client issues one request per press, while the 200 ms timer still coalesces
+  // them into one or two.
+  await track.focus();
+  for (let i = 0; i < 8; i++) {
+    await page.keyboard.press("ArrowLeft");
+    await page.waitForTimeout(30);
+  }
+
+  await expect(page.locator(".stage.replaying")).toBeVisible();
+  await expect
+    .poll(async () => (await page.locator(".board").innerText()) !== live, {
+      message: "the board never changed, so nothing was actually replayed",
+    })
+    .toBe(true);
+
+  expect(
+    atRequests.length,
+    `eight spaced steps made ${atRequests.length} requests — the debounce is not debouncing`,
+  ).toBeLessThanOrEqual(3);
+
+  // Back to the present, and the board is what it was. This is the property a
+  // read-only projection owes: browsing the past must not change it.
+  await page.getByRole("button", { name: "Back to live" }).click();
+  await expect(page.locator(".stage.replaying")).toHaveCount(0);
+  await expect.poll(async () => page.locator(".board").innerText()).toBe(live);
+
+  expect(watch.failures).toEqual([]);
+});
+
+test("the replayed board is full size beside the drawer, and nothing on it is pressable", async ({
+  page,
+}) => {
+  const watch = watchForBreakage(page);
+  // 1440 only: the drawer exists above 1201px, and below it the panel covers the
+  // board by design (`styles.css`'s `@media (min-width: 1201px)`), so
+  // board-beside-drawer is a claim this spec makes at ONE width and says so.
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await startGame(page, { players: 4 });
+
+  // **Walk to a LIVE placement picker first, or this cell proves nothing.**
+  // `App` only passes `onTileClick` while a picker is open, so at an ordinary
+  // decision the live board already has zero pressable tiles — and the
+  // assertion below then holds whether or not the replay guard exists.
+  // Mutation-proven: with `&& !past` deleted from App.tsx the old version of
+  // this cell still passed.
+  const pick = rng(0x494e_4552); // "INER"
+  let pressableLive = 0;
+  for (let i = 0; i < 40 && pressableLive === 0; i++) {
+    const screen = await readScreen(page);
+    if (screen.over) break;
+    pressableLive = await page.locator("button.tile").count();
+    if (pressableLive > 0) break;
+    if ((await act(page, screen, pick)) === null) break;
+  }
+  expect(
+    pressableLive,
+    "never reached a live placement picker, so a board with no pressable tile proves nothing",
+  ).toBeGreaterThan(0);
+
+  await page.getByRole("button", { name: "Log", exact: true }).click();
+  const track = page.getByLabel("Replay position");
+  await expect(track).toBeVisible();
+  await track.focus();
+  await page.keyboard.press("ArrowLeft");
+  await expect(page.locator(".stage.replaying")).toBeVisible();
+
+  const read = await page.evaluate(() => {
+    const board = document.querySelector(".board") as HTMLElement | null;
+    const panelBody = document.querySelector(".surface .surface-body");
+    if (!board || !panelBody) return null;
+    return {
+      // The board is on the STAGE, not inside the panel. If a future change
+      // moved it in, this is the assertion that would catch it — and it is the
+      // one the containment cell structurally cannot make, because `.board`
+      // carries `overflow-x: auto` and a clipping scroll container contributes
+      // no overflow to its ancestor's `scrollWidth`.
+      insidePanel: panelBody.contains(board),
+      tileW: getComputedStyle(board).getPropertyValue("--tile-w").trim(),
+      tiles: board.querySelectorAll(".tile").length,
+      pressable: board.querySelectorAll("button.tile").length,
+      boardOverflow: board.scrollWidth - board.clientWidth,
+    };
+  });
+
+  expect(read, "no board and no panel body on screen").not.toBeNull();
+  expect(read!.insidePanel, "the board was rendered INSIDE the panel").toBe(false);
+  // The 4P ladder value, unshrunk. A board squeezed to fit a drawer would read
+  // something smaller here, and that is the outcome this host design exists to
+  // avoid.
+  expect(read!.tileW).toBe("10rem");
+  expect(read!.tiles, "a 4P board draws eighteen tiles").toBe(18);
+  expect(read!.boardOverflow, "the full-size board still fits the stage").toBeLessThanOrEqual(0);
+  // A past position is not answerable, so the tiles that WERE buttons a moment
+  // ago are inert `<div>`s now. The `toBeGreaterThan(0)` above is what makes
+  // this a measurement rather than a tautology.
+  expect(
+    read!.pressable,
+    `a historical board offered a pressable tile (the live board had ${pressableLive})`,
+  ).toBe(0);
 
   expect(watch.failures).toEqual([]);
 });

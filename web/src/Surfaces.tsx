@@ -9,6 +9,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { api, ApiError } from "./api";
+import { Help } from "./Help";
 import type {
   ActionYield,
   AreaCard,
@@ -50,7 +51,8 @@ export type SurfaceName =
   | "techs"
   | "goals"
   | "sites"
-  | "result";
+  | "result"
+  | "help";
 
 /** Each surface carries its OWN loader.
  *
@@ -88,6 +90,10 @@ export const SURFACES: {
   { key: "goals", label: "Goals", blurb: "the achievements in play, what each pays, and how close every seat is", load: (g) => api.index(g, "goals") },
   { key: "sites", label: "Site cards", blurb: "the 24 printed building sites, what each space pays, and which are already on the board", load: (g) => api.index(g, "sites") },
   { key: "result", label: "Final score", blurb: "the finished game, ranked, with every category the engine scored", load: (g) => api.result(g) },
+  // Nothing to fetch — the same sentinel `tracks` uses. Help is static prose
+  // and the screenshots are ordinary images the client asks for itself, so a
+  // route for it would be a route that serves a constant.
+  { key: "help", label: "Help", blurb: "how this screen works — the board, the deck, the panels, and the replay track", load: () => Promise.resolve(NOTHING_TO_FETCH) },
 ];
 
 /** The four surfaces that are card INDEXES, and the kind each asks the server
@@ -134,6 +140,8 @@ export function Surface({
   labels,
   colors,
   tracks,
+  scrubK,
+  onScrub,
   onClose,
 }: {
   name: SurfaceName;
@@ -143,6 +151,16 @@ export function Surface({
   colors: PlayerColor[];
   /** The Church and Customs tracks, already on every frame. */
   tracks?: TracksPanel | null;
+  /** The replay position, or `null` for the present.
+   *
+   *  **Props, not a widened loader.** The registry's `load` is
+   *  `(game: string) => Promise<unknown>` and cannot carry a second argument;
+   *  M3.5 met the same wall for `tracks` and answered it with a sentinel loader
+   *  plus a prop rather than by widening the contract for one caller. A scrub
+   *  index is the same shape, and the payload it selects is fetched by `App`,
+   *  which is what has to draw the board it names. */
+  scrubK?: number | null;
+  onScrub?: (k: number | null) => void;
   onClose: () => void;
 }) {
   // The payload is stored WITH the surface it was fetched for, and only
@@ -286,7 +304,10 @@ export function Surface({
         {data != null && name === "buildings" && (
           <BuildingSites panel={data as AreasPanel} art={art} colors={colors} />
         )}
-        {data != null && name === "log" && <Log panel={data as LogPanel} />}
+        {data != null && name === "help" && <Help />}
+        {data != null && name === "log" && (
+          <Log panel={data as LogPanel} k={scrubK ?? null} onScrub={onScrub} />
+        )}
         {data != null && name === "suggest" && (
           <SuggestView data={data as SuggestResponse} labels={labels} />
         )}
@@ -542,18 +563,84 @@ function Areas({
   );
 }
 
-function Log({ panel }: { panel: LogPanel }) {
+function Log({
+  panel,
+  k,
+  onScrub,
+}: {
+  panel: LogPanel;
+  k: number | null;
+  onScrub?: (k: number | null) => void;
+}) {
   const omitted = panel.total - panel.entries.length;
+  // **`total + 1` stops, not `total`.** A replay position counts events
+  // APPLIED, so stop `n` is the position event `n` was decided in and stop
+  // `total` is the present — a real position with no event to name. A track
+  // that ran `0..total` and called it the whole game would be off by one at the
+  // end.
+  const at = k ?? panel.total;
+  const move = (to: number) => onScrub?.(Math.max(0, Math.min(panel.total, to)));
   return (
     <>
       <p className="lede">
         {panel.total} event(s){omitted > 0 ? `, ${omitted} earlier not shown` : ""}.
       </p>
+
+      {onScrub && panel.total > 0 && (
+        <div className="scrub">
+          <button
+            type="button"
+            className="ghost"
+            aria-label="Previous move"
+            onClick={() => move(at - 1)}
+            disabled={at <= 0}
+          >
+            &#9664;
+          </button>
+          <input
+            type="range"
+            min={0}
+            max={panel.total}
+            value={at}
+            aria-label="Replay position"
+            aria-valuetext={at === panel.total ? "now" : `after ${at} of ${panel.total}`}
+            onChange={(e) => move(Number(e.currentTarget.value))}
+          />
+          <button
+            type="button"
+            className="ghost"
+            aria-label="Next move"
+            onClick={() => move(at + 1)}
+            disabled={at >= panel.total}
+          >
+            &#9654;
+          </button>
+          <span className="scrub-at">
+            {at === panel.total ? "now" : `after ${at} of ${panel.total}`}
+          </span>
+          {/* Not at `total`: that stop IS the present, and this row labels it
+              "now" three lines above. Offering "Back to live" there asked the
+              reader to go back to where they already were. */}
+          {k !== null && k < panel.total && (
+            <button type="button" className="ghost" onClick={() => onScrub(null)}>
+              Back to live
+            </button>
+          )}
+        </div>
+      )}
+
       <ol className="log">
         {panel.entries.map((e) => (
-          <li key={e.index}>
+          <li key={e.index} className={k !== null && e.index === k ? "at" : ""}>
             <span className="num">{e.index}</span>
-            <span>{e.text}</span>
+            <button
+              type="button"
+              className="log-jump"
+              onClick={() => move(e.index)}
+              disabled={!onScrub}
+            >
+              {e.text}
+            </button>
           </li>
         ))}
       </ol>

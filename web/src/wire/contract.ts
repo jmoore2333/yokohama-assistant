@@ -61,6 +61,7 @@ import type {
   Explanation,
   FrameModel,
   Health,
+  HistoricalFrame,
   IndexModel,
   Labels,
   LabsPanel,
@@ -101,6 +102,7 @@ import labels from "./labels.json";
 import labs from "./labs.json";
 import locked from "./locked.json";
 import log from "./log.json";
+import atK from "./at_k.json";
 import options from "./options.json";
 import options4p from "./options_4p.json";
 import optionsMany from "./options_many.json";
@@ -182,6 +184,7 @@ const _labs: Widen<LabsPanel> = labs;
 const _areas: Widen<AreasPanel> = areas;
 const _areas4p: Widen<AreasPanel> = areas4p;
 const _log: Widen<LogPanel> = log;
+const _atK: Widen<HistoricalFrame> = atK;
 const _artManifest: Widen<ArtManifest> = artManifest;
 const _suggest: Widen<SuggestResponse> = suggest;
 const _why: Widen<WhyResponse> = why;
@@ -261,7 +264,7 @@ void [
 void [
   _options, _options4p, _optionsMany, _optionsPriced, _pick, _retreat, _retreatAnswered, _placeA, _placeASelected, _placeB, _placeBSelected,
   _gameOver, _watching, _hiddenHand, _locked, _refused, _labels, _preview, _health, _error,
-  _ports, _labs, _areas, _areas4p, _log, _artManifest, _feeNonzero,
+  _ports, _labs, _areas, _areas4p, _log, _atK, _artManifest, _feeNonzero,
   _choiceAssistantMove, _choiceChurchSpace, _choiceWarehouseTake,
   _suggest, _why, _whyRefused, _whyRefusals,
   _suggestOk, _whyOk, _whyProvenance, _whyRanked, _suggestTerm, _refusedRow,
@@ -332,6 +335,13 @@ const PORTS = ["boards", "deck_remaining"] as const;
 const LABS = ["boards", "deck_remaining"] as const;
 const AREAS = ["rows"] as const;
 const LOG = ["total", "entries"] as const;
+// The replay payload. Its shape is defined by what it does NOT carry — see
+// `HistoricalFrame` in `types.ts` — so this list is the fence that keeps a
+// present-tense field from being quietly added back on the server.
+const HISTORICAL_FRAME = [
+  "index", "total", "seat", "to_move", "frame", "over", "end_triggers",
+  "deck_remaining", "end_game_triggered", "scores",
+] as const;
 const LABELS = [
   "area_types", "phases", "phase_chain", "tech_effects", "achievements", "features",
 ] as const;
@@ -400,15 +410,17 @@ const _bd: KeysOf<Breakdown, typeof BREAKDOWN> = BREAKDOWN;
 const _tl: KeysOf<Terminal, typeof TERMINAL> = TERMINAL;
 const _ct: KeysOf<Counter, typeof COUNTER> = COUNTER;
 const _ig: KeysOf<IndexGroup, typeof INDEX_GROUP> = INDEX_GROUP;
+const _hf: KeysOf<HistoricalFrame, typeof HISTORICAL_FRAME> = HISTORICAL_FRAME;
 const _ic: KeysOf<IndexCard, typeof INDEX_CARD> = INDEX_CARD;
 void [_cs, _fr, _de, _or, _pl, _ti, _tr, _po, _la, _ar, _lo, _lb, _he, _pv, _er,
       _sr, _so, _wr, _wo, _ex, _tm, _pr, _rk, _rf, _ix, _oc, _pc, _bd,
-      _tl, _ct, _ig, _ic];
+      _tl, _ct, _ig, _ic, _hf];
 
 /** The key lists, for the runtime half in `contract.test.ts`. */
 export const KEYS = {
   clientState: CLIENT_STATE,
   frame: FRAME,
+  historicalFrame: HISTORICAL_FRAME,
   decision: DECISION,
   optionRow: OPTION_ROW,
   player: PLAYER,
@@ -459,6 +471,7 @@ export const KEYS = {
 const as = <T>(v: unknown): T => v as T;
 
 export const wire = {
+  atK: as<HistoricalFrame>(atK),
   options: as<ClientState>(options),
   optionsMany: as<ClientState>(optionsMany),
   options4p: as<ClientState>(options4p),

@@ -744,6 +744,63 @@ async fn log(
     Ok(Json(yokohama_cli::screen_model::build_log(total, described)))
 }
 
+/// `GET /api/games/{id}/at/{k}` — the position as it stood after `k` events.
+///
+/// **A projection, and therefore it SERVES A LOCKED SESSION.** The rule is the
+/// one stated beside `why` above: the lockdown gate fences COMPUTATION, not
+/// projection. A locked game is precisely the one whose history you want to
+/// read — the lockdown means the driver found a fault, and this route is the
+/// instrument for finding where. So there is no lockdown check here, and adding
+/// one would be the bug.
+///
+/// **`k` counts events APPLIED, not an event index**, so the domain is
+/// `0..=events.len()` INCLUSIVE at both ends: `0` is the post-setup position the
+/// first event was decided in, and `len` is the game as it now stands. The track
+/// a client draws therefore has `len + 1` stops and the last one names no event.
+/// Note the asymmetry with `why`, which addresses an EVENT and so requires
+/// `n < len` — a client that calls both at the same stop gets one avoidable
+/// refusal at the top.
+///
+/// **The range is checked HERE, against a length this handler already holds,
+/// and every error from `state_at` is then a 500.** The alternative — reading
+/// `ReplayError::event_index` to tell past-the-end from a failing event — cannot
+/// be done correctly: `ReplayError` is a struct, not an enum, and its own doc
+/// says the past-the-end convention is shared with `replay_strict`'s
+/// terminal-digest mismatch, so *"a caller branching on `event_index` alone
+/// cannot tell those from a last-event failure — the message text is the
+/// discriminator."* Checking first makes that ambiguity unreachable rather than
+/// navigating it, and it cannot rot.
+///
+/// **Nothing here indexes `event_description`.** That method is a bare `Vec`
+/// index and `k == len` is a legal position with no event at it, so reaching for
+/// a description here would panic on a client-supplied number — under the
+/// per-game mutex, in a crate with no `CatchPanicLayer`, poisoning that game
+/// until it is evicted. The log route already serves the words; this one serves
+/// the position.
+///
+/// **The lock is HELD across the body**, unlike `suggest` and `why`. Those two
+/// drop it because they run a multi-second search; this is a replay measured in
+/// milliseconds, `input` already holds the same mutex across a bot search AND a
+/// store write, and the clone that dropping would require copies every `Move` in
+/// the record. Following `why`'s pattern here would cost more than it saves.
+async fn at_k(
+    State(state): State<Arc<AppState>>,
+    Path((id, k)): Path<(String, usize)>,
+) -> ApiResult<client::HistoricalFrame> {
+    let handle = state.games.handle(&id).map_err(ApiError::not_found)?;
+    let repl = handle.lock().expect("a game");
+    let total = repl.session.record().events.len();
+    if k > total {
+        return Err(ApiError::not_found(format!(
+            "this game has {total} events, so its last position is {total} — there is no position {k}"
+        )));
+    }
+    client::HistoricalFrame::at(&repl, k).map(Json).map_err(|e| ApiError {
+        status: StatusCode::INTERNAL_SERVER_ERROR,
+        message: format!("replaying this game to {k} failed at event {}: {}", e.event_index, e.message),
+    })
+}
+
 /// The art manifest, or an honest 404.
 ///
 /// **A checkout with no cropped art is a supported state**, not a broken one:
@@ -793,6 +850,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/api/games/{id}/labs", get(labs))
         .route("/api/games/{id}/areas", get(areas))
         .route("/api/games/{id}/log", get(log))
+        .route("/api/games/{id}/at/{k}", get(at_k))
         .route("/api/games/{id}/suggest", get(suggest))
         .route("/api/games/{id}/why", get(why))
         .route("/api/games/{id}/index/{kind}", get(card_index))
@@ -1754,6 +1812,410 @@ mod tests {
         assert!(
             body["error"].as_str().is_some_and(|e| e.contains("/api/nope")),
             "the refusal names the path it refused: {body}",
+        );
+    }
+
+    // ---- M4: the replay projection -------------------------------------------
+    //
+    // `GET /api/games/{id}/at/{k}` over `record::state_at`. The cells below are
+    // the spec's guards (`docs/plans/2026-09-01-web-frontend-m4-spec.md` §4).
+
+    /// Walk a game forward, and **actually put assistants on the board**.
+    ///
+    /// **The naive walk is a documented trap and it silently guts these cells.**
+    /// Answering every placement picker with a bare `confirm` places NOTHING —
+    /// `wire_fixtures`' own walk records the same hazard, measured at turn 3,644
+    /// with nothing having happened. An empty board then means the President has
+    /// no legal destination, so at EVERY Movement decision the only legal move
+    /// is `ReturnPresidentToHand` and the board's `reachable` set is empty
+    /// forever. Measured here before this helper was written: 200 events, 50
+    /// Movement decision points, ZERO reachable tiles.
+    ///
+    /// So the placement pickers get a real area, tried against the engine's own
+    /// legality rather than predicted: toggle a board tile, and if the selection
+    /// did not take, try the next one. The engine stays the only authority on
+    /// what is placeable.
+    async fn play(router: &Router, name: &str, moves: usize) {
+        let mut tile_cursor = 0usize;
+        for _ in 0..moves {
+            let (_, state) = call(router, "GET", &format!("/api/games/{name}"), None).await;
+            let kind = state["prompt"]["kind"].as_str().unwrap_or_default().to_string();
+            let line = match kind.as_str() {
+                "game_over" | "locked" | "reveal" | "watching" => break,
+                "retreat" => "0".to_string(),
+                "place_b" => {
+                    // Option B names its own candidates, so no probing is needed.
+                    if state["prompt"]["selected"].is_null() {
+                        match state["prompt"]["areas"][0].as_u64() {
+                            Some(a) => a.to_string(),
+                            None => "cancel".to_string(),
+                        }
+                    } else {
+                        "confirm".to_string()
+                    }
+                }
+                "place_a" => {
+                    // Option A names none, so walk the board and let the engine
+                    // refuse what it will.
+                    let chosen = state["prompt"]["selected"].as_array().is_some_and(|a| !a.is_empty());
+                    if chosen {
+                        "confirm".to_string()
+                    } else {
+                        let tiles = state["frame"]["board"]["tiles"].as_array().cloned().unwrap_or_default();
+                        if tiles.is_empty() {
+                            "cancel".to_string()
+                        } else {
+                            let t = &tiles[tile_cursor % tiles.len()];
+                            tile_cursor += 1;
+                            match t["area"].as_u64() {
+                                Some(a) => a.to_string(),
+                                None => "cancel".to_string(),
+                            }
+                        }
+                    }
+                }
+                _ => state["prompt"]["rows"][0]["number"]
+                    .as_u64()
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| "confirm".to_string()),
+            };
+            let (status, _) = call(
+                router,
+                "POST",
+                &format!("/api/games/{name}/input"),
+                Some(serde_json::json!({ "line": line })),
+            )
+            .await;
+            if status != StatusCode::OK {
+                break;
+            }
+        }
+    }
+
+    async fn total_events(router: &Router, name: &str) -> usize {
+        let (_, log) = call(router, "GET", &format!("/api/games/{name}/log"), None).await;
+        log["total"].as_u64().expect("a log total") as usize
+    }
+
+    /// **The historical path and the live path agree at the top of the record.**
+    ///
+    /// This is the property that proves `/at/{k}` is a projection of the same
+    /// game rather than a second, drifting construction of one. `state_at` at
+    /// `k == events.len()` is documented to be identical to a full replay, so
+    /// the board and the dashboard must match the live payload's byte for byte.
+    /// If they ever diverge, one of the two is building a frame the engine did
+    /// not describe — and the cheapest place to catch that is here.
+    #[tokio::test]
+    async fn the_frame_at_the_last_index_is_the_live_frame() {
+        let router = app(Arc::new(AppState::in_memory()));
+        a_game(&router, "replayed", &[]).await;
+        play(&router, "replayed", 6).await;
+
+        let total = total_events(&router, "replayed").await;
+        assert!(total > 0, "the walk applied nothing, so this cell would compare two empty games");
+
+        let (_, live) = call(&router, "GET", "/api/games/replayed", None).await;
+        let (status, hist) =
+            call(&router, "GET", &format!("/api/games/replayed/at/{total}"), None).await;
+        assert_eq!(status, StatusCode::OK, "{hist}");
+
+        assert_eq!(hist["frame"]["board"], live["frame"]["board"], "the board at k == len");
+        assert_eq!(
+            hist["frame"]["dashboard"], live["frame"]["dashboard"],
+            "the dashboard at k == len",
+        );
+        assert_eq!(hist["index"], total as u64);
+        assert_eq!(hist["total"], total as u64);
+        assert_eq!(hist["to_move"], live["to_move"]);
+        assert_eq!(hist["over"], live["over"]);
+        assert_eq!(hist["deck_remaining"], live["deck_remaining"]);
+        assert_eq!(hist["end_triggers"], live["end_triggers"]);
+        assert_eq!(hist["end_game_triggered"], live["end_game_triggered"]);
+
+        // The narrow DTO's whole point: the fields that would be present-tense
+        // lies are absent by construction, not answered with something.
+        assert!(hist.get("your_turn").is_none(), "your_turn is meaningless at a past position");
+        assert!(hist.get("prompt").is_none(), "a sub-prompt is not in the record");
+        assert!(hist.get("autosaved").is_none(), "both values are false about a past position");
+    }
+
+    /// **`k` is range-checked by the handler, and the refusal names the bound.**
+    ///
+    /// Deliberately NOT derived from `ReplayError::event_index`: that struct
+    /// carries a `usize` and a `String` and its own doc says a caller branching
+    /// on the index cannot tell past-the-end from a last-event failure without
+    /// parsing the message. Checking the range first makes the ambiguity
+    /// unreachable instead of navigating it.
+    ///
+    /// Asserted in BOTH directions, because a route that refused every `k`
+    /// would pass the first half.
+    #[tokio::test]
+    async fn a_k_past_the_end_is_a_404_that_names_the_bound() {
+        let router = app(Arc::new(AppState::in_memory()));
+        a_game(&router, "bounded", &[]).await;
+        play(&router, "bounded", 4).await;
+        let total = total_events(&router, "bounded").await;
+        assert!(total > 0, "an empty record would make the in-range half vacuous");
+
+        let (status, ok) = call(&router, "GET", "/api/games/bounded/at/0", None).await;
+        assert_eq!(status, StatusCode::OK, "k = 0 is in the domain: {ok}");
+
+        let (status, body) =
+            call(&router, "GET", &format!("/api/games/bounded/at/{}", total + 1), None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+        let msg = body["error"].as_str().unwrap_or_default();
+        assert!(
+            msg.contains(&total.to_string()),
+            "the refusal names the bound it enforced: {msg}",
+        );
+    }
+
+    /// **`k == len` is INSIDE the domain, and it is the index that panicked.**
+    ///
+    /// `Session::event_description` is `&self.event_descriptions[i]` — a bare
+    /// `Vec` index — while `state_at` accepts `k` across `0..=len`. So the top
+    /// of the record is a position with no event to name, and any handler that
+    /// reaches for a description there panics. This crate installs no
+    /// `CatchPanicLayer`, and a panic under the per-game mutex poisons it —
+    /// after which every later request for that game hits
+    /// `handle.lock().expect("a game")` and panics AGAIN. In production that is
+    /// a dropped connection, not a JSON error; an earlier draft of this comment
+    /// said "a 500", which no code path here produces.
+    ///
+    /// Under `oneshot` the first panic unwinds into the test body, so this cell
+    /// goes red on the panic itself rather than on its follow-up assertions.
+    /// Those still earn their place: they are what would catch a handler that
+    /// caught the panic and left the game unusable behind a tidy error.
+    #[tokio::test]
+    async fn the_last_index_answers_and_leaves_the_game_usable() {
+        let router = app(Arc::new(AppState::in_memory()));
+        a_game(&router, "unpoisoned", &[]).await;
+        play(&router, "unpoisoned", 5).await;
+        let total = total_events(&router, "unpoisoned").await;
+        assert!(total > 0, "k == len == 0 would not exercise the description path at all");
+
+        let (status, body) =
+            call(&router, "GET", &format!("/api/games/unpoisoned/at/{total}"), None).await;
+        assert_eq!(status, StatusCode::OK, "the top of the record is a position: {body}");
+
+        let (status, live) = call(&router, "GET", "/api/games/unpoisoned", None).await;
+        assert_eq!(status, StatusCode::OK, "the game still answers afterwards: {live}");
+
+        let (status, again) =
+            call(&router, "GET", &format!("/api/games/unpoisoned/at/{total}"), None).await;
+        assert_eq!(status, StatusCode::OK, "and the same request answers twice: {again}");
+    }
+
+    /// **THE VIEWER PIN, executable — the most important cell in this milestone.**
+    ///
+    /// The threat is not that a frame shows a hand; the live route already does,
+    /// for whoever is moving. It is that `/at/{k}` makes the exposure
+    /// HARVESTABLE IN ONE PASS: a follow-the-mover sweep over `0..=len` reads
+    /// every human seat's whole hand history in a second, from a URL, with no
+    /// waiting for a turn to change.
+    ///
+    /// So the assertion is over the UNION ACROSS THE SWEEP, not per frame — a
+    /// per-frame reading would be vacuous, because `build_dashboard` only ever
+    /// builds one hand panel.
+    ///
+    /// Two anti-vacuity guards, because this cell is worthless without them: the
+    /// sweep must actually unmask something, and it must actually cross a seat
+    /// boundary — otherwise a follow-the-mover implementation would pass it too.
+    /// Mutation-proof by pinning the frame to the acting seat and watching it
+    /// fail.
+    #[tokio::test]
+    async fn a_replay_sweep_never_unmasks_more_than_one_seat() {
+        let router = app(Arc::new(AppState::in_memory()));
+        // All-human on purpose: with a bot seat the mask would be doing the work
+        // and the pin would be untested.
+        a_game(&router, "pinned", &[]).await;
+        play(&router, "pinned", 12).await;
+        let total = total_events(&router, "pinned").await;
+        assert!(total >= 2, "too short a record to cross a seat boundary");
+
+        let mut unmasked = std::collections::BTreeSet::new();
+        let mut movers = std::collections::BTreeSet::new();
+        for k in 0..=total {
+            let (status, hist) =
+                call(&router, "GET", &format!("/api/games/pinned/at/{k}"), None).await;
+            assert_eq!(status, StatusCode::OK, "k={k}: {hist}");
+            movers.insert(hist["to_move"].as_u64().expect("a seat to move"));
+            for panel in hist["frame"]["dashboard"].as_array().expect("panels") {
+                let Some(hand) = panel.get("Hand") else { continue };
+                if hand["cards"].as_array().is_some_and(|c| !c.is_empty()) {
+                    unmasked.insert(hand["seat"].as_u64().expect("a seat"));
+                }
+            }
+        }
+
+        assert!(
+            movers.len() >= 2,
+            "the sweep never changed seats, so a follow-the-mover bug would pass it: {movers:?}",
+        );
+        assert!(
+            !unmasked.is_empty(),
+            "the sweep unmasked NOTHING, so it cannot show that it unmasked one seat",
+        );
+        assert_eq!(
+            unmasked.len(),
+            1,
+            "a sweep must not harvest a second seat's hand: {unmasked:?}",
+        );
+    }
+
+    /// **The pin does not move when the turn does — the cell the old one owed.**
+    ///
+    /// The sweep cell above takes its whole sweep at one instant, so it passes
+    /// under a pin that merely tracks the current mover. That is exactly what
+    /// the route used to do, and the security sentence beside it claimed the
+    /// opposite. Measured on the old code: sweep, then eight inputs, then sweep
+    /// again — `pin=1 unmasked={1}` then `pin=0 unmasked={0}`, union `{0, 1}`.
+    /// The fence held for an instant and not for a game.
+    ///
+    /// So this cell spans a turn change deliberately and asserts the pin is the
+    /// SAME integer on both sides of it, and that the union across both sweeps
+    /// is still one seat. Mutation-proof by restoring `viewing_seat(repl)` in
+    /// `HistoricalFrame::at`.
+    #[tokio::test]
+    async fn the_replay_pin_does_not_move_when_the_turn_does() {
+        let router = app(Arc::new(AppState::in_memory()));
+        a_game(&router, "stable", &[]).await;
+        play(&router, "stable", 6).await;
+
+        async fn sweep(router: &Router) -> (std::collections::BTreeSet<u64>, u64) {
+            let total = total_events(router, "stable").await;
+            let mut unmasked = std::collections::BTreeSet::new();
+            let mut pin = u64::MAX;
+            for k in 0..=total {
+                let (status, hist) =
+                    call(router, "GET", &format!("/api/games/stable/at/{k}"), None).await;
+                assert_eq!(status, StatusCode::OK, "k={k}: {hist}");
+                pin = hist["seat"].as_u64().expect("a pinned seat");
+                for panel in hist["frame"]["dashboard"].as_array().expect("panels") {
+                    let Some(hand) = panel.get("Hand") else { continue };
+                    if hand["cards"].as_array().is_some_and(|c| !c.is_empty()) {
+                        unmasked.insert(hand["seat"].as_u64().expect("a seat"));
+                    }
+                }
+            }
+            (unmasked, pin)
+        }
+
+        let (_, live_before) = call(&router, "GET", "/api/games/stable", None).await;
+        let mover_before = live_before["to_move"].as_u64().expect("a mover");
+        let (seen_a, pin_a) = sweep(&router).await;
+
+        // Walk until the LIVE mover actually changes — the transition the old
+        // pin could not survive. Anti-vacuity: if it never changes, this cell
+        // proves nothing and says so rather than passing.
+        let mut moved = false;
+        for _ in 0..12 {
+            play(&router, "stable", 1).await;
+            let (_, now) = call(&router, "GET", "/api/games/stable", None).await;
+            if now["to_move"].as_u64() != Some(mover_before) {
+                moved = true;
+                break;
+            }
+        }
+        assert!(moved, "the live mover never changed, so no turn boundary was crossed");
+
+        let (seen_b, pin_b) = sweep(&router).await;
+
+        assert_eq!(pin_a, pin_b, "the replay pin moved with the turn: {pin_a} then {pin_b}");
+        let union: std::collections::BTreeSet<_> = seen_a.union(&seen_b).copied().collect();
+        assert!(
+            union.len() <= 1,
+            "two sweeps across a turn boundary harvested {union:?} — the pin is per-request, \
+             not per-game",
+        );
+    }
+
+    /// **A projection serves a locked session; the account still refuses.**
+    ///
+    /// The rule is stated in code beside `why`: the lockdown gate fences
+    /// COMPUTATION, not projection. A locked game is exactly the one whose
+    /// history you want to read — the lockdown means the driver found a fault,
+    /// and the scrubber is the instrument for finding where.
+    ///
+    /// One test, both directions, so a route that refused everything cannot pass.
+    #[tokio::test]
+    async fn a_locked_session_serves_the_replay_and_still_refuses_the_account() {
+        let store = Arc::new(MemStore::default());
+        let router = app(Arc::new(AppState::with_store(store.clone())));
+        a_game(&router, "faultedreplay", &[]).await;
+        play(&router, "faultedreplay", 4).await;
+
+        let stored = store.read("faultedreplay").expect("a stored game");
+        let mut record: serde_json::Value = serde_json::from_str(&stored).expect("a record");
+        record["lockdown"] = serde_json::json!("invariant violation applying that move");
+        store
+            .write("faultedreplay", &serde_json::to_string(&record).expect("a record"))
+            .expect("a stored lockdown");
+        let router = app(Arc::new(AppState::with_store(store)));
+
+        let (status, hist) = call(&router, "GET", "/api/games/faultedreplay/at/1", None).await;
+        assert_eq!(status, StatusCode::OK, "a projection serves a locked session: {hist}");
+        // On CONTENT, not on a 200: an empty shell would render as an empty
+        // board and still pass a status check.
+        assert_eq!(
+            hist["frame"]["board"]["tiles"].as_array().map(Vec::len),
+            Some(10),
+            "and it draws the 2P board rather than an empty shell: {hist}",
+        );
+
+        let (status, w) = call(&router, "GET", "/api/games/faultedreplay/why?event=0", None).await;
+        assert_eq!(status, StatusCode::OK, "a refusal is the answer, not an error");
+        assert_eq!(w["refusal"]["kind"], "locked", "the account still gates: {w}");
+    }
+
+    /// **A historical board carries REAL reach marks, and this cell is not
+    /// allowed to be vacuous about it.**
+    ///
+    /// `build_board` derives `tile.reachable` from the legal list it is handed,
+    /// so a route that passed `&[]` would mark every tile unreachable at every
+    /// position, the `◈` would silently vanish, and NOTHING would error. The
+    /// failure mode is silence, so the assertion has to be that something is
+    /// marked — not that the marks are consistent, which an all-false board
+    /// satisfies trivially.
+    ///
+    /// **This is why the cell sweeps instead of picking a position.** Reach
+    /// marks only exist where the phase permits a President move, and the
+    /// committed `at_k.json` fixture — a real mid-game position — has ZERO of
+    /// them. A cell pinned to one hand-chosen index is exactly the vacuous
+    /// shape that already exists at HEAD (`screen_model`'s own reachable pin
+    /// sits at `AdditionalActionFirst`, where no President move can be legal).
+    /// So this walks the record and requires that at least one stop marks
+    /// something.
+    ///
+    /// Mutation-proof by passing an empty legal list to `build_frame` in
+    /// `HistoricalFrame::at`: every stop then marks nothing and this fails.
+    #[tokio::test]
+    async fn a_historical_board_still_marks_where_the_president_can_go() {
+        let router = app(Arc::new(AppState::in_memory()));
+        a_game(&router, "reachable", &[]).await;
+        play(&router, "reachable", 14).await;
+        let total = total_events(&router, "reachable").await;
+        assert!(total > 0, "an empty record has no position to check");
+
+        let mut marked_somewhere = 0usize;
+        let mut positions = 0usize;
+        for k in 0..=total {
+            let (status, hist) =
+                call(&router, "GET", &format!("/api/games/reachable/at/{k}"), None).await;
+            assert_eq!(status, StatusCode::OK, "k={k}: {hist}");
+            let tiles = hist["frame"]["board"]["tiles"].as_array().expect("tiles");
+            assert!(!tiles.is_empty(), "k={k} drew no board at all");
+            positions += 1;
+            if tiles.iter().any(|t| t["reachable"] == serde_json::json!(true)) {
+                marked_somewhere += 1;
+            }
+        }
+
+        assert_eq!(positions, total + 1, "the domain is inclusive at both ends");
+        assert!(
+            marked_somewhere > 0,
+            "no position in {positions} marked a single reachable tile — the historical board is \
+             being built with an empty legal list, and the reach marker is silently gone",
         );
     }
 }

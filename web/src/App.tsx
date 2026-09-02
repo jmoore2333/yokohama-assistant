@@ -5,7 +5,14 @@ import { Dashboard } from "./Dashboard";
 import { Decision } from "./Decision";
 import { NewGame } from "./NewGame";
 import { CARD_SURFACES, Surface, SURFACES, type SurfaceName } from "./Surfaces";
-import type { ArtManifest, ClientState, Labels, Outcome, PlayerColor } from "./types";
+import type {
+  ArtManifest,
+  ClientState,
+  HistoricalFrame,
+  Labels,
+  Outcome,
+  PlayerColor,
+} from "./types";
 
 export function App() {
   const [labels, setLabels] = useState<Labels | null>(null);
@@ -15,6 +22,11 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [outcome, setOutcome] = useState<Outcome | null>(null);
+  // **The replay position, or `null` for "the present".** M4's whole state is
+  // this one integer: the scrubber is a projection over a record the server
+  // already holds, so nothing here is persisted and nothing is applied.
+  const [scrubK, setScrubK] = useState<number | null>(null);
+  const [past, setPast] = useState<HistoricalFrame | null>(null);
   // The guard against a SECOND request going out while the first is in flight.
   //
   // A ref and not the `busy` state, because state is what makes the bug: React
@@ -97,6 +109,54 @@ export function App() {
     [state],
   );
 
+  // **Debounced, because a drag is not a click.**
+  //
+  // The pattern is `Index.tsx`'s: a 200 ms timer plus a `live` flag, so a drag
+  // across forty stops costs one request rather than forty, and a response that
+  // arrives after you have moved on is dropped instead of painting a stale
+  // position. The browser walk counts the requests a drag actually makes — a
+  // cell that only checked the final frame would pass a scrubber firing one
+  // request per pixel.
+  useEffect(() => {
+    if (scrubK === null || !state) {
+      setPast(null);
+      return;
+    }
+    let live = true;
+    const id = state.id;
+    const k = scrubK;
+    const timer = setTimeout(() => {
+      api
+        .at(id, k)
+        .then((p) => {
+          if (!live) return;
+          setPast(p);
+          setError(null);
+        })
+        // **Say so.** Swallowing this put the LIVE board back on screen —
+        // clickable, outline gone — while the track still read "after 500 of
+        // 1036" and offered "Back to live" from a position it was no longer
+        // showing. The server refuses in sentences (a 404 naming the bound, a
+        // replay failure naming the event); carry one.
+        .catch((e) => {
+          if (!live) return;
+          setPast(null);
+          setError(e instanceof ApiError ? e.message : String(e));
+        });
+    }, 200);
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+  }, [scrubK, state?.id]);
+
+  // Leaving the log panel leaves the replay. The scrub track lives in that
+  // panel, so a scrub position with the panel shut would be a board showing a
+  // past nothing on screen explains.
+  useEffect(() => {
+    if (surface !== "log") setScrubK(null);
+  }, [surface]);
+
   if (!state) return <NewGame art={art} onStarted={setState} />;
 
   const players = state.frame.dashboard.find((p) => "Players" in p);
@@ -106,6 +166,16 @@ export function App() {
   const tracks = tracksPanel && "Tracks" in tracksPanel ? tracksPanel.Tracks : null;
   const colors: PlayerColor[] =
     players && "Players" in players ? players.Players.players.map((p) => p.color) : [];
+
+  // **The last stop is the PRESENT, not a past position.** The track's final
+  // stop is `total`, which the panel itself labels "now" — so treating any
+  // non-null `past` as "replaying" outlined the live board, disabled placement
+  // and contradicted the help text, all while the panel said you were at the
+  // present. At that stop the LIVE payload is also the fresher of the two: a
+  // bot may have moved since the snapshot was fetched.
+  const atPresent = past !== null && past.index >= past.total;
+  const replaying = past !== null && !atPresent;
+  const view = replaying ? past : state;
 
   // The board is an input surface only while a placement picker is open — the
   // one place the engine is asking "which areas", rather than "which option".
@@ -180,8 +250,8 @@ export function App() {
             "finished"
           ) : (
             <>
-              <span className={`seat-${(colors[state.to_move] ?? "").toLowerCase()}`}>
-                {colors[state.to_move] ?? `Seat ${state.to_move}`}
+              <span className={`seat-${(colors[view.to_move] ?? "").toLowerCase()}`}>
+                {colors[view.to_move] ?? `Seat ${view.to_move}`}
               </span>
               {" to move"}
             </>
@@ -205,28 +275,45 @@ export function App() {
           arrived. They collapse to zero height while empty (`styles.css`)
           rather than being removed. */}
       <div
-        className={`end-strip ${state.end_game_triggered ? "final" : ""}`}
+        className={`end-strip ${view.end_game_triggered ? "final" : ""}`}
         role="status"
       >
-        {state.end_triggers}
+        {view.end_triggers}
       </div>
 
-      <main className="stage">
+      {/* **The stage draws the REPLAY position while you are scrubbing.**
+          The board never goes inside the panel: measured, a 4P board in the
+          704px drawer scrolls 322px horizontally and ~205px vertically, and
+          shrinking the tile enough to fit drops the printed power ladder to
+          ~5.2px against the 7.9px M3.5 measured as legible. So the panel holds
+          the track and the log, and the full-size board behind it redraws at
+          `k`.
+
+          **No `onTileClick` on a historical board, ever.** A past position is
+          not answerable, so every tile renders as an inert `<div>` rather than
+          a button — which is also what makes the panel's modality correct here
+          rather than costly: there is nothing behind it to click. */}
+      <main className={`stage ${replaying ? "replaying" : ""}`}>
         <div className="board-col">
           <Board
-            board={state.frame.board}
+            board={view.frame.board}
             art={art}
             labels={labels}
             colors={colors}
-            selected={selected}
+            selected={replaying ? [] : selected}
             busy={busy}
-            {...(picking
+            {...(picking && !replaying
               ? { onTileClick: (area: number) => void send(`A${String(area).padStart(2, "0")}`) }
               : {})}
           />
         </div>
         <aside className="rail">
-          <Dashboard panels={state.frame.dashboard} art={art} labels={labels} colors={colors} />
+          <Dashboard
+            panels={view.frame.dashboard}
+            art={art}
+            labels={labels}
+            colors={colors}
+          />
         </aside>
       </main>
 
@@ -238,6 +325,8 @@ export function App() {
           labels={labels}
           colors={colors}
           tracks={tracks}
+          scrubK={scrubK}
+          onScrub={setScrubK}
           onClose={() => setSurface(null)}
         />
       )}

@@ -1,6 +1,6 @@
 // The read-only surfaces: the four `GET`s, and the two ways they went wrong.
 
-import { render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { Surface, SURFACES } from "./Surfaces";
@@ -22,6 +22,23 @@ function show(name: (typeof SURFACES)[number]["key"], onClose = vi.fn()) {
     />,
   );
   return { view, onClose, user: userEvent.setup() };
+}
+
+/** The log surface with the replay track wired, as `App` wires it. */
+function showLog(scrubK: number | null, onScrub = vi.fn()) {
+  const view = render(
+    <Surface
+      name="log"
+      game="wire"
+      art={wire.artManifest}
+      labels={wire.labels}
+      colors={COLORS}
+      scrubK={scrubK}
+      onScrub={onScrub}
+      onClose={vi.fn()}
+    />,
+  );
+  return { view, onScrub, user: userEvent.setup() };
 }
 
 describe("the payload and the branch it is rendered through", () => {
@@ -377,5 +394,120 @@ describe("the building sites surface", () => {
       card.querySelector(".site-trading-house.built")?.className,
       "the trading house owner is not marked",
     ).toMatch(/seat-red/);
+  });
+});
+
+describe("the replay track", () => {
+  // **`total + 1` stops, and the last one is the PRESENT.** A replay position
+  // counts events APPLIED, so stop `n` is the position event `n` was decided in
+  // and stop `total` is the game as it now stands — a real position with no
+  // event to name. A track that ran `0..total` would be off by one at the end,
+  // and one that called the last stop an event would be lying about it.
+  it("runs from 0 to total inclusive, and names the last stop the present", async () => {
+    stubApi(() => wire.log);
+    showLog(null);
+    const track = await screen.findByLabelText("Replay position");
+    expect(track).toHaveAttribute("min", "0");
+    expect(track).toHaveAttribute("max", String(wire.log.total));
+    // Not scrubbing yet, so the control sits at the present and says so.
+    expect(track).toHaveValue(String(wire.log.total));
+    expect(screen.getByText("now")).toBeInTheDocument();
+  });
+
+  it("says which stop it is on once you are somewhere else", async () => {
+    stubApi(() => wire.log);
+    showLog(3);
+    expect(await screen.findByText(`after 3 of ${wire.log.total}`)).toBeInTheDocument();
+  });
+
+  // The step buttons are the keyboard-and-touch path to the same stops the
+  // range gives a mouse, so they are asserted to MOVE, not merely to exist.
+  it("steps one event at a time and cannot walk off either end", async () => {
+    stubApi(() => wire.log);
+    const { onScrub, user } = showLog(0);
+    await screen.findByLabelText("Replay position");
+
+    const back = screen.getByRole("button", { name: "Previous move" });
+    expect(back).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "Next move" }));
+    expect(onScrub).toHaveBeenCalledWith(1);
+  });
+
+  it("stops at the present rather than past it", async () => {
+    stubApi(() => wire.log);
+    showLog(wire.log.total);
+    await screen.findByLabelText("Replay position");
+    expect(screen.getByRole("button", { name: "Next move" })).toBeDisabled();
+  });
+
+  // The log is the index: pressing a line goes to the position that line was
+  // decided in. Asserted through the ROLE, because a div with an onClick is
+  // unreachable by keyboard and invisible to a screen reader.
+  it("a log line is a control that goes to its own position", async () => {
+    stubApi(() => wire.log);
+    const { onScrub, user, view } = showLog(null);
+    // **Not entry 0.** Its index IS 0, so asserting `toHaveBeenCalledWith(0)`
+    // is satisfied by a handler hard-coded to `move(0)` — mutation-proven: the
+    // cell stayed green with `onClick={() => move(0)}`. A line whose index is
+    // not zero is the difference between "goes to its own position" and "goes
+    // to the top".
+    const { container } = view;
+    await screen.findByLabelText("Replay position");
+    const lines = container.querySelectorAll<HTMLButtonElement>(".log-jump");
+    expect(lines.length).toBe(wire.log.entries.length);
+
+    const nth = 7;
+    const target = wire.log.entries[nth]!;
+    expect(target.index).toBe(nth);
+    await user.click(lines[nth]!);
+    expect(onScrub).toHaveBeenCalledWith(target.index);
+
+    // And a second, different line — so a handler returning any single constant
+    // fails whichever constant it picked.
+    const other = wire.log.entries[12]!;
+    await user.click(lines[12]!);
+    expect(onScrub).toHaveBeenLastCalledWith(other.index);
+  });
+
+  it("offers a way back to the present only while you are away from it", async () => {
+    stubApi(() => wire.log);
+    const { user, onScrub } = showLog(2);
+    await user.click(await screen.findByRole("button", { name: "Back to live" }));
+    expect(onScrub).toHaveBeenCalledWith(null);
+
+    cleanup();
+    stubApi(() => wire.log);
+    showLog(null);
+    await screen.findByLabelText("Replay position");
+    expect(screen.queryByRole("button", { name: "Back to live" })).not.toBeInTheDocument();
+
+    // …and not at the last stop either, which this component labels "now".
+    // Offering "Back to live" there asks the reader to return to where they
+    // already are.
+    cleanup();
+    stubApi(() => wire.log);
+    showLog(wire.log.total);
+    await screen.findByText("now");
+    expect(screen.queryByRole("button", { name: "Back to live" })).not.toBeInTheDocument();
+  });
+
+  // **The log still renders without the scrubber.** `onScrub` is optional, and
+  // a surface that threw or drew a dead control without it would break the
+  // panel for every caller that does not scrub.
+  it("renders as a plain log when no scrubber is wired", async () => {
+    stubApi(() => wire.log);
+    render(
+      <Surface
+        name="log"
+        game="wire"
+        art={wire.artManifest}
+        labels={wire.labels}
+        colors={COLORS}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(await screen.findByText(new RegExp(`${wire.log.total} event`))).toBeInTheDocument();
+    expect(screen.queryByLabelText("Replay position")).not.toBeInTheDocument();
   });
 });

@@ -4,6 +4,7 @@ import type {
   ClientState,
   Labels,
   LabsPanel,
+  HistoricalFrame,
   LogPanel,
   PortsPanel,
   Preview,
@@ -99,6 +100,19 @@ export const api = {
   labs: (game: string) => call<LabsPanel>("GET", `/api/games/${id(game)}/labs`),
   areas: (game: string) => call<AreasPanel>("GET", `/api/games/${id(game)}/areas`),
   log: (game: string) => call<LogPanel>("GET", `/api/games/${id(game)}/log`),
+
+  /** The position as it stood after `k` events — the replay projection.
+   *
+   *  **`k` counts events APPLIED, so the domain is `0..=total` inclusive** and
+   *  a track over it has `total + 1` stops. The last stop is the present: a
+   *  real position with no event to name, and the one the server answers with
+   *  a frame equal to the live one. A `k` past the end is a 404 naming the
+   *  bound, not a clamp.
+   *
+   *  The frame is built for ONE pinned seat that does not follow the mover, so
+   *  walking every `k` shows one seat's hands and no other's. */
+  at: (game: string, k: number) =>
+    call<HistoricalFrame>("GET", `/api/games/${id(game)}/at/${k}`),
 
   /** What the production bot would play on this seat's own view.
    *

@@ -491,6 +491,24 @@ impl Session {
         &self.event_descriptions[i]
     }
 
+    /// The same description, CHECKED — `None` where there is no event at `i`.
+    ///
+    /// **This exists because one legal index has no event at it.** A replay
+    /// position is counted in events APPLIED, so the domain of
+    /// `record::state_at` is `0..=events.len()` inclusive: `len` is the game as
+    /// it now stands, a real position with no event to name. The bare indexer
+    /// above panics there, and a panic is a very sharp edge for a number that
+    /// can arrive from a URL — `yokohama-web` installs no `CatchPanicLayer`, and
+    /// a panic taken under its per-game mutex poisons that game's lock until the
+    /// handle is evicted.
+    ///
+    /// So a caller working in the replay domain uses this one and words the
+    /// `None` ("the present"); a caller iterating `0..len`, like `Repl::log_tail`,
+    /// is already inside the array and keeps the bare index.
+    pub fn event_description_at(&self, i: usize) -> Option<&str> {
+        self.event_descriptions.get(i).map(String::as_str)
+    }
+
     pub fn legal(&self) -> Vec<Move> {
         get_legal_moves(&self.state, &self.rules)
     }
@@ -1911,5 +1929,39 @@ mod tests {
             "cached description must keep the HISTORICAL fee recipient: {}",
             s.event_description(idx)
         );
+    }
+
+    /// **One legal replay index has no event at it, and the bare indexer panics
+    /// there.** `record::state_at` counts events APPLIED, so its domain is
+    /// `0..=events.len()` inclusive — `len` is the game as it now stands, a real
+    /// position that no event describes. `yokohama-web`'s `/at/{k}` route takes
+    /// that `k` from a URL, installs no `CatchPanicLayer`, and holds a per-game
+    /// mutex while it works, so a panic there poisons that game's lock until the
+    /// handle is evicted.
+    ///
+    /// Both directions, because a checked accessor that returned `None`
+    /// everywhere would satisfy half of this.
+    #[test]
+    fn the_checked_description_answers_none_exactly_where_the_bare_one_panics() {
+        let (state, rules) = movement_fee_fixture();
+        let mut s = Session::for_test_from_state(state, rules);
+        let mv = s.legal().into_iter().next().expect("a legal move");
+        s.apply(mv, vec![]).unwrap();
+
+        let len = s.record().events.len();
+        assert!(len > 0, "the fixture must apply something, or both halves are vacuous");
+
+        // In range: the checked accessor agrees with the bare one, word for word.
+        for i in 0..len {
+            assert_eq!(
+                s.event_description_at(i),
+                Some(s.event_description(i)),
+                "the two accessors disagree at {i}",
+            );
+        }
+
+        // At the top of the record, and past it: a position, not a description.
+        assert_eq!(s.event_description_at(len), None, "there is no event at k == len");
+        assert_eq!(s.event_description_at(len + 1), None);
     }
 }

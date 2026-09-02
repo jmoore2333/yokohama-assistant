@@ -70,6 +70,7 @@ describe("the payload roots carry exactly the fields the client declares", () =>
     ["labs", wire.labs, KEYS.labs],
     ["areas", wire.areas, KEYS.areas],
     ["log", wire.log, KEYS.log],
+    ["at_k", wire.atK, KEYS.historicalFrame],
     ["labels", wire.labels, KEYS.labels],
     ["health", wire.health, KEYS.health],
     ["preview", wire.preview, KEYS.preview],

@@ -492,6 +492,18 @@ async fn walk() -> Vec<(String, Value)> {
     // The log, read AFTER the game is over, so it carries real entries.
     out.push(("log".to_string(), api.get("/api/games/wire/log").await));
 
+    // **A historical position — the M4 replay payload.**
+    //
+    // Taken at the MIDPOINT of the finished game on purpose. At `k == total`
+    // the payload is the live frame by construction, so a client rendering it
+    // would prove nothing about the replay path; at `k == 0` the board is
+    // empty and every panel is a zero. The midpoint is the only stop that
+    // exercises a real position this game has already left behind — which is
+    // the whole shape the scrubber renders.
+    let total = api.get("/api/games/wire/log").await["total"].as_u64().unwrap_or(0);
+    assert!(total > 2, "a finished game's log carries events; got {total}");
+    out.push(("at_k".to_string(), api.get(&format!("/api/games/wire/at/{}", total / 2)).await));
+
     // **The final score, which only a FINISHED game has.** The walk plays to a
     // winner, so this is the one place in the corpus it can come from — and the
     // reason `result` is a 409 while a game is still running rather than an

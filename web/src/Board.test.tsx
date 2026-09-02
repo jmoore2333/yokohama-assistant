@@ -198,3 +198,30 @@ describe("a tile as an input", () => {
     }
   });
 });
+
+describe("a historical board", () => {
+  // **A past position is not answerable, and the board has to SAY so.**
+  //
+  // `Board` turns a tile into a `<button>` only when it is handed
+  // `onTileClick`, so a replay frame drawn without one is inert by
+  // construction. This is the property that makes the scrubber safe to host
+  // behind a modal panel: there is nothing behind it to press. Asserted over
+  // the whole board rather than one tile, because a single escaping button is
+  // a click that would post an input against a position the game has left.
+  it("renders every tile inert when no click handler is given", () => {
+    // Rendered directly rather than through `show`, which takes a
+    // `ClientState`: the whole point of `HistoricalFrame` is that it is NOT one.
+    const { container } = render(
+      <Board
+        board={wire.atK.frame.board}
+        art={wire.artManifest}
+        labels={wire.labels}
+        colors={COLORS}
+        selected={[]}
+        busy={false}
+      />,
+    );
+    expect(container.querySelectorAll(".tile").length).toBeGreaterThan(0);
+    expect(container.querySelectorAll("button.tile")).toHaveLength(0);
+  });
+});

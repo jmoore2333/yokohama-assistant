@@ -228,6 +228,43 @@ pub fn viewing_seat(repl: &Repl) -> PlayerId {
         .unwrap_or(acting)
 }
 
+/// The seat a REPLAY is built for — stable for the life of the game.
+///
+/// **Deliberately not [`viewing_seat`], and the difference is the whole
+/// security property of `/at/{k}`.** `viewing_seat` returns the ACTING seat
+/// whenever that seat is human, so it re-points every time the turn changes.
+/// A replay route using it would be pinned only within a single instant:
+/// measured on an all-human 2P game, one sweep of `0..=total` returned seat 1's
+/// hands, and after eight more inputs the same sweep returned seat 0's — union
+/// `{0, 1}`. A sweep that merely straddled a turn change got both without
+/// waiting at all. That is a per-REQUEST pin, which is not a fence.
+///
+/// This returns the lowest non-bot seat instead. `SeatFacts::is_bot` is fixed
+/// when the game is created and restored with it, so the answer is the same for
+/// every request against the same game, at every `k`, forever — which is what
+/// makes "walking every position shows one seat's hands and no other's" a true
+/// sentence rather than an aspiration.
+///
+/// **A bot-only table cannot be created** (`games::config_of` refuses one, so at
+/// least one seat is human), and the `unwrap_or` is therefore unreachable rather
+/// than a fallback with meaning; seat 0 is the safe direction if it ever is
+/// reached, because seat 0 exists at every player count.
+///
+/// **What this does NOT buy, stated because the spec once overclaimed it.** It
+/// is not privacy and not authentication. `GET /api/games/{id}/log` is
+/// unauthenticated and defaults to the WHOLE log, and the CLI's event wording
+/// names order cards as they enter and leave a hand — so a game's hand HISTORY
+/// is already legible to anyone holding the id, by a route M4 did not touch.
+/// What the stable pin closes is narrower and still worth having: `/at/{k}`
+/// cannot be used to read a *second* seat's private frame, at any k, ever.
+pub fn replay_seat(repl: &Repl) -> PlayerId {
+    repl.seat_facts()
+        .iter()
+        .position(|f| !f.is_bot)
+        .map(|i| PlayerId::new(i as u8))
+        .unwrap_or(PlayerId::new(0))
+}
+
 fn rows_from(
     entries: Vec<yokohama_cli::render::DisplayRow>,
     state: &yokohama_core::GameState,
@@ -381,5 +418,140 @@ impl ClientState {
             }),
             warnings: session.load_warnings.clone(),
         }
+    }
+}
+
+/// One historical position, projected from the record — the M4 replay payload.
+///
+/// **Why this is a separate, narrower type and not a `ClientState` at `k`.**
+/// Six fields of `ClientState` are built from the LIVE state and would be
+/// present-tense lies if a historical payload inherited them: `over` (a mid-game
+/// board under "GAME OVER"), `scores` (a final tally beside turn 12),
+/// `deck_remaining`, `end_game_triggered`, `end_triggers` and `your_turn`. Every
+/// one of them re-derives correctly from `state_at(record, k, rules)`, so the
+/// point is not that `ClientState` could not be made right — it is that a
+/// separate type makes their provenance a COMPILE-TIME fact instead of a review
+/// item, in a lane whose last three milestones each shipped a false sentence
+/// about themselves.
+///
+/// **Three fields are absent by construction rather than answered:**
+///
+/// - `your_turn` — the one of the six that is NOT a function of `GameState`
+///   alone: it compares against a seat that lives on the `Repl`, not in any
+///   record. It is also meaningless for a position nobody is playing.
+/// - `prompt` — `PromptState` is built from `Repl::sub`, an in-memory
+///   sub-prompt. The record stores only APPLIED moves, so an intra-move picker
+///   state is unrepresentable at any `k`.
+/// - `warnings` — a load-time session fact, not a property of `state_k`.
+///
+/// `frame` nests the EXISTING [`FrameModel`], so `Board` and `Dashboard` render
+/// a historical position through the same components with no new client types,
+/// and the wire contract pays one entry rather than one per nested shape.
+#[derive(Debug, Clone, Serialize)]
+pub struct HistoricalFrame {
+    /// `k` — the number of events APPLIED, not an event index.
+    pub index: usize,
+    /// `record.events.len()`. The track has `total + 1` stops, and at the last
+    /// one there is a state but no event to name.
+    pub total: usize,
+    /// The seat this payload was built FOR — whose hand is unmasked.
+    ///
+    /// **Stable for the life of the game** ([`replay_seat`]): the lowest non-bot
+    /// seat, which is fixed at creation and restored with the game. So a sweep
+    /// over `0..=total` returns that seat's hands and no other seat's, at any
+    /// time, however many turns pass between requests.
+    ///
+    /// An earlier draft of this field used [`viewing_seat`] and claimed the same
+    /// property. It did not hold: `viewing_seat` follows the mover, so the pin
+    /// re-pointed every turn and two sweeps — or one sweep across a turn change
+    /// — harvested both seats. The claim is kept honest here because the code
+    /// changed, not the wording.
+    pub seat: PlayerId,
+    /// Whose turn it was at `k`.
+    pub to_move: PlayerId,
+    pub frame: FrameModel,
+    pub over: bool,
+    /// The end-trigger strip AS IT READ AT `k`, worded by the CLI's own
+    /// renderer — the same call the live payload makes, against `state_k`.
+    pub end_triggers: String,
+    pub deck_remaining: usize,
+    pub end_game_triggered: bool,
+    pub scores: Option<Vec<ScoreRow>>,
+}
+
+impl HistoricalFrame {
+    /// Project `repl`'s record at `k`.
+    ///
+    /// **The caller range-checks `k` first.** This returns `state_at`'s own
+    /// [`yokohama_core::ReplayError`] unchanged, and that error cannot be used
+    /// to tell past-the-end from a failing event: it is a struct carrying a
+    /// `usize` and a `String`, and its own doc says a caller branching on
+    /// `event_index` alone cannot distinguish the two. So the route checks the
+    /// range itself and treats every error from here as a genuine replay
+    /// failure — which makes the ambiguity unreachable instead of navigated.
+    ///
+    /// **No provenance verdict is computed here, deliberately.** `/at/{k}` is a
+    /// projection over a record the server already holds; adding a
+    /// `semantics_rev` or terminal-digest check would make it a second,
+    /// divergent authority on record validity. Checking is
+    /// `Session::from_record`'s job, on the path where a record enters from
+    /// disk.
+    pub fn at(repl: &Repl, k: usize) -> Result<Self, yokohama_core::ReplayError> {
+        let session = &repl.session;
+        let record = session.record();
+        let total = record.events.len();
+        let rules = session.rules();
+        let state = yokohama_core::state_at(record, k, rules)?;
+        let seat = replay_seat(repl);
+
+        // **Paid deliberately, not defensively.** `build_board` derives
+        // `tile.reachable` from the legal list, so a historical board built with
+        // an empty one silently marks every tile unreachable and the `◈` mark
+        // vanishes with NO error. `state_at` already ran one enumeration per
+        // replayed Move event through the checked `apply_move`, so one more is
+        // strictly cheaper than one more event.
+        let legal = yokohama_core::get_legal_moves(&state, rules);
+        let over = yokohama_core::is_game_over(&state);
+
+        let frame = screen_model::build_frame(
+            &state,
+            rules,
+            &repl.seat_facts(),
+            seat,
+            &legal,
+            TitleModel {
+                mode: match session.mode {
+                    TrackingMode::Simulation => TitleMode::Sim,
+                    TrackingMode::Live => TitleMode::Live,
+                },
+                // Hidden-set member #1, exactly as on the live payload.
+                seed: None,
+                // **A session property, not a position property.** The field
+                // means "autosave has a live target", and this server persists
+                // after every applied move — which is as true while you look at
+                // turn 3 as it is at the head. It does not become false by
+                // looking backwards, so this is not the present-tense lie the
+                // six fields above would be.
+                autosaved: true,
+            },
+        );
+
+        Ok(Self {
+            index: k,
+            total,
+            seat,
+            to_move: state.current_player,
+            frame,
+            over,
+            end_triggers: yokohama_cli::render::end_trigger_line(&state),
+            deck_remaining: state.order_deck.len(),
+            end_game_triggered: state.end_game_triggered,
+            scores: over.then(|| {
+                yokohama_core::calculate_final_scores(&state, &rules.orders, &rules.techs)
+                    .into_iter()
+                    .map(|(seat, total)| ScoreRow { seat, total })
+                    .collect()
+            }),
+        })
     }
 }
