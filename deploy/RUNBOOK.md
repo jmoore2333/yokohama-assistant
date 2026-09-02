@@ -61,6 +61,28 @@ carries its own libc and asks the kernel for very little, which is also how this
 repo already ships CLI releases. Result: `ELF 64-bit LSB pie executable,
 x86-64, static-pie linked`, 5.8 MB, and it started first try.
 
+### 1.1 ARM is the same command with a different target — MEASURED
+
+The NAS is x86_64, so that is what is deployed. But most always-free cloud
+compute is ARM (Oracle's Ampere A1, AWS Graviton), and it would be easy to
+assume that is a porting question. It is not:
+
+```bash
+rustup target add aarch64-unknown-linux-musl
+RUSTFLAGS="-C linker=$LLD -C link-self-contained=yes" \
+  cargo build --release --target aarch64-unknown-linux-musl -p yokohama-web
+```
+
+**16.3 seconds, clean, `ELF 64-bit LSB executable, ARM aarch64, statically
+linked`, 5.8 MB** — the same size as the x86_64 build. Nothing else changed.
+This works for the same reason the musl cross-compile works at all: the server's
+dependency tree is axum, tokio and serde with **no C dependencies**, so there is
+no cross-toolchain to source, only a linker to name.
+
+Recorded here because the negative is the useful part: **architecture is not a
+constraint on where this can run**, and a hosting decision should never be made
+on it.
+
 ---
 
 ## 2. Deliver — no registry, no image tarball upload
@@ -184,6 +206,26 @@ no garbage collector, no interpreter and no database, whose largest in-memory
 object is one `GameState`. The 12 MB total is mostly page cache for the files it
 serves. Any hosting decision that turns on RAM is not a decision about this
 program.
+
+### 3.4 What it costs on the wire — MEASURED
+
+Every metered host bills egress, so the payload is worth stating too. Measured
+against the built client at HEAD:
+
+| | Bytes |
+|---|---|
+| `index.html` | 719 |
+| `assets/index-*.js` | 259,187 |
+| `assets/index-*.css` | 23,324 |
+| **First paint, total** | **283,230 (277 KiB)** |
+| Card art at `/art` | 3.0 MB across 132 files, fetched per area actually rendered |
+| Help screenshots | 1.9 MB, and only if the panel is opened |
+
+So a session that opens help and renders every area in the product pulls about
+**5 MB**, and an ordinary one stays well under 1 MB. Against the 100–200 GB/month
+egress a free tier typically allows, that is tens of thousands of sessions.
+**Egress is not a constraint on where this can run either** — recorded, like
+§1.1, so the objection does not get raised again from intuition.
 
 ---
 
