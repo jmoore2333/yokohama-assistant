@@ -6,6 +6,7 @@
 
 import { expect, test, type Page } from "@playwright/test";
 import { haveBrowser } from "../playwright.config";
+import { FLOOR_REM, tileWidthFor } from "../src/fit";
 import { act, deadEnd, readScreen, rng, startGame, watchForBreakage } from "./harness";
 
 // No browser, and `YOKOHAMA_WEB_E2E_OPTIONAL=1`: SKIP, visibly. The reporter
@@ -1077,6 +1078,7 @@ test("the replayed board is full size beside the drawer, and nothing on it is pr
   const read = await page.evaluate(() => {
     const board = document.querySelector(".board") as HTMLElement | null;
     const panelBody = document.querySelector(".surface .surface-body");
+    const table = document.querySelector(".table");
     if (!board || !panelBody) return null;
     return {
       // The board is on the STAGE, not inside the panel. If a future change
@@ -1085,7 +1087,15 @@ test("the replayed board is full size beside the drawer, and nothing on it is pr
       // carries `overflow-x: auto` and a clipping scroll container contributes
       // no overflow to its ancestor's `scrollWidth`.
       insidePanel: panelBody.contains(board),
-      tileW: getComputedStyle(board).getPropertyValue("--tile-w").trim(),
+      // The RENDERED tile, in px, and the container the fit rule reads. Not
+      // `--tile-w`: since M5 W3 that custom property holds an unresolved
+      // `clamp(…)` token stream above 1201px, so a string compare against it
+      // stopped being a measurement of anything the eye can see.
+      tileW: board.querySelector(".tile")!.getBoundingClientRect().width,
+      tableW: table?.clientWidth ?? 0,
+      tableH: table?.clientHeight ?? 0,
+      widest: Math.max(0, ...[...board.querySelectorAll(".board-row")].map((r) => r.children.length)),
+      rows: board.querySelectorAll(".board-row").length,
       tiles: board.querySelectorAll(".tile").length,
       pressable: board.querySelectorAll("button.tile").length,
       boardOverflow: board.scrollWidth - board.clientWidth,
@@ -1094,10 +1104,22 @@ test("the replayed board is full size beside the drawer, and nothing on it is pr
 
   expect(read, "no board and no panel body on screen").not.toBeNull();
   expect(read!.insidePanel, "the board was rendered INSIDE the panel").toBe(false);
-  // The 4P ladder value, unshrunk. A board squeezed to fit a drawer would read
-  // something smaller here, and that is the outcome this host design exists to
-  // avoid.
-  expect(read!.tileW).toBe("10rem");
+  // **Unshrunk, and the fit rule is what "unshrunk" now means.** This asserted
+  // the 4P ladder's literal `"10rem"` until M5 W3 made the tile a `clamp()` over
+  // the table's container units — so it asks the same question of the rendered
+  // pixel instead: the tile beside an OPEN drawer is the size `fit.ts` says for
+  // the table it is actually in, and never below the legibility floor. A board
+  // squeezed to fit the drawer would read something smaller on both counts, and
+  // that is the outcome this host design exists to avoid.
+  const wantTile = tileWidthFor(read!.widest, read!.rows, read!.tableW, read!.tableH);
+  expect(
+    Math.abs(read!.tileW - wantTile),
+    `the replayed tile rendered ${read!.tileW.toFixed(1)}px, the fit rule says ${wantTile.toFixed(1)} ` +
+      `for a ${read!.tableW}x${read!.tableH} table`,
+  ).toBeLessThanOrEqual(1);
+  expect(read!.tileW, "the replayed board was shrunk below the legibility floor").toBeGreaterThanOrEqual(
+    FLOOR_REM * 16,
+  );
   expect(read!.tiles, "a 4P board draws eighteen tiles").toBe(18);
   expect(read!.boardOverflow, "the full-size board still fits the stage").toBeLessThanOrEqual(0);
   // A past position is not answerable, so the tiles that WERE buttons a moment

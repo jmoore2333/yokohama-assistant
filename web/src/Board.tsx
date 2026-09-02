@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { CSSProperties } from "react";
 import type React from "react";
 import type { ArtManifest, BoardModel, Labels, PlayerColor, TileModel } from "./types";
@@ -9,6 +9,15 @@ import { ID_BADGE, PIECES, pct, SITE_CARD } from "./tileRects";
 import { TilePopover, type Anchor } from "./TilePopover";
 
 /** How wide a tile may be, so that the whole board fits its column at 1440.
+ *
+ *  **This is the SUB-1201 arm, and only that (M5 W3).** Above 1201px the table
+ *  is a size container and `styles.css` derives `--tile-w` from the fit rule —
+ *  the largest tile that fits the widest row across AND every row down, floored
+ *  at 10rem and capped at 22rem — so this ladder is set as `--tile-ladder` and
+ *  the stylesheet does not read it. Below 1201 there is no such container: the
+ *  page is M3.5's column stack, the board's height is whatever it needs, and
+ *  the ladder is still what keeps the widest row inside its column. `fit.ts`
+ *  carries the rule's arithmetic as the browser cell's oracle.
  *
  *  **Keyed on the REALIZED widest row, never on `board.player_count`.** The two
  *  give the same three answers on every board the engine generates, and the
@@ -94,9 +103,43 @@ export function Board({
   };
   const hide = () => setPop(null);
   const popTile = pop ? board.tiles.find((t) => t.area === pop.area) : undefined;
+  const popIsOpen = pop !== null;
+
+  // **A hover-opened popover leaves nothing focused, so Escape is handled
+  //  HERE and nowhere else.** Putting it on the tile — where it started —
+  //  meant the key only worked for a popover the keyboard had opened: after
+  //  pointing at a tile the target is the body, the tile's handler never sees
+  //  the key, and the tooltip had no way out but moving the pointer. One
+  //  listener, mounted only while a popover is open, covers both ways in.
+  useEffect(() => {
+    if (!popIsOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setPop(null);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [popIsOpen]);
+
+  // **A tile that goes `disabled` under the pointer never fires `mouseleave`.**
+  // Clicking a tile sets `busy`, which disables every tile button, and Chrome
+  // then suppresses the leave event — so the popover the hover opened stayed
+  // on screen over a board that had already moved on. The request going out is
+  // the moment the hover stopped meaning anything, so that is where it closes.
+  useEffect(() => {
+    if (busy) setPop(null);
+  }, [busy]);
 
   return (
-    <div className="board" style={{ "--tile-w": tileWidth(ordered) } as CSSProperties}>
+    <div
+      className="board"
+      style={
+        {
+          "--tile-ladder": tileWidth(ordered),
+          "--n": Math.max(1, ...ordered.map(([, list]) => list.length)),
+          "--rows": ordered.length,
+        } as CSSProperties
+      }
+    >
       {ordered.map(([r, tiles]) => (
         <div
           className="board-row"
@@ -219,7 +262,9 @@ function Tile({
         )}
         {/* **The rect's width is a FLOOR here, not a ceiling, and that is the
             whole fix.** The badge's text is a fixed 8.5px while `id_badge.width`
-            is a fraction of `--tile-w`, which drops from 14rem at 2P to 10rem
+            is a fraction of `--tile-w`, which is not a constant at all: above
+            1201 the fit rule sizes it anywhere from the 10rem floor to the
+            22rem cap, and below it the ladder drops from 14rem at 2P to 10rem
             at 4P — so the ground came out at 13.6px holding ~16.3px of "A17",
             and the last glyph spilled off the dark pill onto the pale print,
             white on cream and unreadable. (Seen at gate V1; 2P fitted with
@@ -268,9 +313,9 @@ function Tile({
     onMouseLeave: onHide,
     onFocus: (e: React.FocusEvent<HTMLElement>) => onShow(tile.area, e.currentTarget),
     onBlur: onHide,
-    onKeyDown: (e: React.KeyboardEvent<HTMLElement>) => {
-      if (e.key === "Escape") onHide();
-    },
+    // No `onKeyDown` here: Escape closes the popover from a document listener
+    // in `Board`, because a hover-opened one leaves this element unfocused and
+    // a handler on it would never run. One rule, stated once.
     ...(popOpen ? { "aria-describedby": `pop-${id}` } : {}),
   };
 

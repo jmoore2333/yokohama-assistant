@@ -199,19 +199,36 @@ h1, h2, h3 { font-family: var(--display); font-weight: 500; margin: 0; }
 @media (min-width: 1900px) { .app { --side: 36rem; } }
 
 /* ---- board ------------------------------------------------------------- */
-/* The tile ladder makes the board fit its column at 1440 and NOWHERE ELSE: the
- * row layout holds from 1201 to 1439 with a column of `viewport − 448`, so 4P
- * still carries 239px off screen at 1201 and 642px at 390. That clipping is by
- * design — no phone is 992px wide — but until now it had NO AFFORDANCE at all:
- * `.board` styled no scrollbar, so on macOS overlay scrollbars a Movement
- * destination in the last column was not merely off screen, it was
- * undiscoverable. A thin visible track is the difference between "scroll for
- * the rest of the board" and "the board ends here". */
+/* **Below 1201 the tile is `Board.tsx`'s ladder** (M5 W3 made this the sub-1201
+ * arm; the ≥1201 rule below is the other one). The ladder makes the board fit
+ * its column at 1440 and NOWHERE ELSE: the row layout holds from 1201 to 1439
+ * with a column of `viewport − 448`, so 4P still carries 239px off screen at
+ * 1201 and 642px at 390. That clipping is by design — no phone is 992px wide —
+ * but until now it had NO AFFORDANCE at all: `.board` styled no scrollbar, so
+ * on macOS overlay scrollbars a Movement destination in the last column was not
+ * merely off screen, it was undiscoverable. A thin visible track is the
+ * difference between "scroll for the rest of the board" and "the board ends
+ * here". */
 .board {
+  --tile-w: var(--tile-ladder);
   display: flex; flex-direction: column; gap: 0.4rem;
   overflow-x: auto; padding-bottom: 0.4rem;
   scrollbar-width: thin;
   scrollbar-color: var(--line-bright) transparent;
+}
+@media (min-width: 1201px) {
+  /* **The fit rule (M5 spec §3.3).** The largest tile that fits the widest row
+   * across the table AND four rows down it, floored at the measured 10rem
+   * legibility floor and capped at 22rem, the art's source width on a 2x
+   * display. `--n` and `--rows` are the REALIZED shape from Board.tsx; cqw/cqh
+   * are `.table`'s. The 2rem is `.table-body`'s padding. `fit.ts` is this same
+   * arithmetic as the test oracle — change one, change the other. */
+  .table .board {
+    --by-w: calc((100cqw - 2rem - (var(--n) - 1) * 0.4rem) / var(--n));
+    --by-h: calc((100cqh - 2rem - (var(--rows) - 1) * 0.4rem) / var(--rows) * 709 / 531);
+    --tile-w: clamp(10rem, min(var(--by-w), var(--by-h)), 22rem);
+    width: max-content; margin: 0 auto; overflow: visible;
+  }
 }
 .board-row { display: flex; gap: 0.4rem; }
 

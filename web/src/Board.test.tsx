@@ -106,10 +106,17 @@ describe("the staggered pyramid", () => {
 // them asserts a pixel — each asserts the DECLARATION that produces the pixel,
 // which is also the thing a regression would delete.
 
-describe("the tile width scales to the board", () => {
+describe("the tile ladder scales to the board", () => {
   // The board's widest row IS its width: `players + 2` tiles at 14rem is
   // 915/1146/1376px against a 992px column at 1440, so a 4P board carried 384px
   // off screen behind `overflow-x: auto` with no scrollbar drawn.
+  //
+  // **The ladder is the SUB-1201 arm since M5 W3**, and it is read here under
+  // its own name. Above 1201 the stylesheet derives `--tile-w` from the fit
+  // rule over the table's container units, which jsdom has no layout engine to
+  // resolve — so the browser cell in `e2e/the_table.spec.ts` is what checks
+  // that arm, against `fit.ts` as its oracle. What these cells still pin is
+  // the declaration this component makes, which is the ladder.
   //
   // Keyed on the REALIZED widest row and never on `board.player_count`: that
   // field has no other consumer in this client, and reading it here would make
@@ -126,7 +133,7 @@ describe("the tile width scales to the board", () => {
     expect(realized, "the fixture must have the widest row this cell is about").toBe(widest);
 
     const board = container.querySelector<HTMLElement>(".board")!;
-    expect(board.style.getPropertyValue("--tile-w")).toBe(expected);
+    expect(board.style.getPropertyValue("--tile-ladder")).toBe(expected);
   });
 
   // Anti-vacuity for the pair above: the two fixtures must actually DISAGREE.
@@ -136,7 +143,7 @@ describe("the tile width scales to the board", () => {
     const read = (state: ClientState, colors: PlayerColor[]) =>
       show(state, { colors })
         .container.querySelector<HTMLElement>(".board")!
-        .style.getPropertyValue("--tile-w");
+        .style.getPropertyValue("--tile-ladder");
     expect(read(wire.options, COLORS)).not.toBe(read(wire.options4p, COLORS_4));
   });
 });

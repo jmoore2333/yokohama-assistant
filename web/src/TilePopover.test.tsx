@@ -27,10 +27,18 @@ describe("where the popover goes", () => {
 describe("the popover on a tile", () => {
   const first = wire.options.frame.board.tiles.find((t) => t.site !== null)!;
   const id = `A${String(first.area).padStart(2, "0")}`;
-  const show = () =>
-    render(
-      <Board board={wire.options.frame.board} art={wire.artManifest} labels={wire.labels} colors={COLORS} selected={[]} busy={false} />,
-    );
+  const board = (opts: { busy?: boolean; clickable?: boolean } = {}) => (
+    <Board
+      board={wire.options.frame.board}
+      art={wire.artManifest}
+      labels={wire.labels}
+      colors={COLORS}
+      selected={[]}
+      busy={opts.busy ?? false}
+      {...(opts.clickable ? { onTileClick: () => {} } : {})}
+    />
+  );
+  const show = () => render(board());
 
   it("opens on hover and closes when the pointer leaves", async () => {
     const user = userEvent.setup();
@@ -67,5 +75,41 @@ describe("the popover on a tile", () => {
     const tile = container.querySelector<HTMLElement>(".tile")!;
     expect(tile.tagName).toBe("DIV");
     expect(tile.getAttribute("tabindex")).toBe("0");
+  });
+
+  // ---- the two ways a popover used to get STUCK (ruling R-T5-fold) ---------
+  //
+  // Both are about the popover outliving the thing that opened it, and neither
+  // is reachable from the cells above: those open on FOCUS, where the tile is
+  // the event target and its own handlers are enough.
+
+  // A popover opened by HOVER leaves nothing focused, so `keydown` goes to the
+  // body and the tile's own `onKeyDown` — which is what the focus cell above
+  // exercises — never sees the key at all. Escape is the documented way out of
+  // a tooltip for a keyboard user who reached for it after pointing.
+  it("closes on Escape when it was opened by hover, with nothing focused", async () => {
+    const user = userEvent.setup();
+    const { container } = show();
+    const tile = [...container.querySelectorAll<HTMLElement>(".tile")].find((t) => t.querySelector(".tile-id")?.textContent === id)!;
+    await user.hover(tile);
+    expect(screen.getByRole("tooltip")).toBeTruthy();
+    expect(document.activeElement).toBe(document.body);
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("tooltip")).toBeNull();
+  });
+
+  // Clicking a tile sets `busy`, which puts `disabled` on every tile button —
+  // and Chrome does not fire `mouseleave` on an element that became disabled
+  // under the pointer. So the popover the hover opened stayed on screen over a
+  // board that had already moved on. The tile is a button here because that is
+  // the only shape the defect has: an inert `div` never takes `disabled`.
+  it("closes when the board goes busy under the pointer", async () => {
+    const user = userEvent.setup();
+    const { container, rerender } = render(board({ clickable: true }));
+    const tile = [...container.querySelectorAll<HTMLElement>(".tile")].find((t) => t.querySelector(".tile-id")?.textContent === id)!;
+    await user.hover(tile);
+    expect(screen.getByRole("tooltip")).toBeTruthy();
+    rerender(board({ clickable: true, busy: true }));
+    expect(screen.queryByRole("tooltip")).toBeNull();
   });
 });
