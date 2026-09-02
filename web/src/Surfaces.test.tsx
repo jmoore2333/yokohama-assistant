@@ -11,6 +11,7 @@ import { describe, expect, it, vi } from "vitest";
 import { Surface, SURFACES } from "./Surfaces";
 import { gate, stubApi, type Reply } from "./test/harness";
 import { wire } from "./wire/contract";
+import { SECTION_LABELS, type SectionKey } from "./sections";
 import type { PlayerColor } from "./types";
 
 const COLORS: PlayerColor[] = ["Red", "Blue"];
@@ -148,6 +149,30 @@ describe("what each surface says", () => {
     for (const card of cards) {
       expect(card.ladder.length).toBeGreaterThan(0);
     }
+  });
+
+  // **The pointer names the SECTION'S OWN LABEL, and that is the whole bug.**
+  // `companion` is the server's tag, so the raw word gives "the Labs section"
+  // while the section on the table is headed "Laboratory" — a reader sent
+  // looking for a name nothing on screen uses. The expected words are read from
+  // `SECTION_LABELS`, so this cannot become a second list of names; the
+  // registry side of the same claim is `Strips.test.tsx`'s companions cell.
+  it("points at each companion by the label its section is headed with", async () => {
+    const companions = wire.areas.rows.flat().map((c) => c.companion).filter(Boolean);
+    expect(new Set(companions).size, "the fixture must carry more than one companion").toBeGreaterThan(1);
+    stubApi(() => wire.areas);
+    show("areas");
+    await screen.findByText(/A00/);
+    for (const companion of new Set(companions)) {
+      const label = SECTION_LABELS[companion!.toLowerCase() as SectionKey];
+      expect(
+        screen.getAllByText(new RegExp(`detail lives in the ${label} section`)).length,
+        `no card points at the "${label}" section`,
+      ).toBeGreaterThan(0);
+    }
+    // Anti-vacuity: "Labs" and "Laboratory" differ, so the raw word must be
+    // absent — without this the loop passes on a client that prints both.
+    expect(screen.queryByText(/detail lives in the Labs section/)).toBeNull();
   });
 
   // **At 4P, not 2P, and that is the point.** `board_gen`'s 2P tile set has no

@@ -2,7 +2,7 @@
 
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { Dashboard } from "./Dashboard";
+import { Dashboard, riderWords } from "./Dashboard";
 import { wire } from "./wire/contract";
 import { handOf, playersOf, tracksOf } from "./test/panels";
 import { DUMMY_SEAT, type ClientState, type Panel, type PlayerColor } from "./types";
@@ -220,8 +220,82 @@ describe("what the side column shows", () => {
   it("prints every track space's points as text, not only in a tooltip", () => {
     const { container } = show(wire.options);
     const tracks = tracksOf(wire.options);
-    const subs = [...container.querySelectorAll(".space .sub")].map((s) => s.textContent);
-    for (const s of tracks.church) expect(subs).toContain(`★${s.vp}`);
-    for (const s of tracks.customs) expect(subs).toContain(`★${s.vp}`);
+    const subs = [...container.querySelectorAll(".space .sub")].map((s) => s.textContent ?? "");
+    // `includes`, not equality: since the riders joined the line a space that
+    // carries one reads `★3 · +1mv`, and the points are still on it.
+    for (const s of tracks.church) expect(subs.some((t) => t.includes(`★${s.vp}`))).toBe(true);
+    for (const s of tracks.customs) expect(subs.some((t) => t.includes(`★${s.vp}`))).toBe(true);
+  });
+
+  // The mirror of `Strips.test.tsx`'s rider cell. `Tracks` is SHARED — the
+  // table's strip wraps this component — so the property belongs to the
+  // component, and the side column no longer drawing Tracks is not a reason for
+  // the component's own suite to stop checking it.
+  it("prints every track space's rider on the space, not only in a tooltip", () => {
+    const { container } = show(wire.options);
+    const tracks = tracksOf(wire.options);
+    const subs = [...container.querySelectorAll(".space .sub")].map((s) => s.textContent ?? "");
+
+    expect(tracks.church.some((s) => s.movement_rider > 0)).toBe(true);
+    expect(tracks.customs.some((s) => s.warehouse_rider > 0)).toBe(true);
+    expect(tracks.customs.some((s) => s.yen_rider > 0)).toBe(true);
+
+    for (const s of [...tracks.church, ...tracks.customs]) {
+      const want = riderWords(s).short;
+      if (want === "") continue;
+      expect(
+        subs.some((t) => t.includes(`★${s.vp}`) && t.includes(want)),
+        `no space prints ★${s.vp} beside its rider "${want}"`,
+      ).toBe(true);
+    }
+  });
+
+  // **Anti-vacuity on the helper, and it was MEASURED to be needed.** Every
+  // assertion above reads `riderWords` on both sides, so a compact form that
+  // dropped the COUNT — a bare `+mv` on every church space — moves the
+  // expectation with it and passes. Mutation-tested: that change was green
+  // against the two cells above and red only against this one.
+  //
+  // The counts are read off the fixture rather than written down: this church
+  // carries riders of 1, 2 and 3, and this customs carries warehouse riders of
+  // 2 and 1, so distinct sizes must produce distinct words or the space is not
+  // saying what the terminal says.
+  it("keeps the rider's COUNT in the compact form", () => {
+    const tracks = tracksOf(wire.options);
+
+    const mvCounts = new Set(tracks.church.map((s) => s.movement_rider).filter((n) => n > 0));
+    expect(mvCounts.size, "the fixture must carry more than one movement-rider size").toBeGreaterThan(1);
+    const mvWords = new Set(
+      tracks.church.filter((s) => s.movement_rider > 0).map((s) => riderWords(s).short),
+    );
+    expect(mvWords.size, "different movement riders collapsed to the same words").toBe(mvCounts.size);
+
+    // The warehouse rider, on the spaces that carry it ALONE — a space carrying
+    // a yen rider too would differ for that reason instead.
+    const wh = tracks.customs.filter((s) => s.warehouse_rider > 0 && s.yen_rider === 0);
+    const whCounts = new Set(wh.map((s) => s.warehouse_rider));
+    expect(whCounts.size, "the fixture must carry more than one warehouse-rider size").toBeGreaterThan(1);
+    expect(
+      new Set(wh.map((s) => riderWords(s).short)).size,
+      "different warehouse riders collapsed to the same words",
+    ).toBe(whCounts.size);
+  });
+
+  // The tooltip keeps the LONGER words, and they are the terminal's own
+  // (`view_render.rs`: "+N assistant moves", "+N warehouse takes", "+N yen").
+  // Both lengths come from `riderWords`, so this cell is what says the two
+  // cannot drift apart.
+  it("keeps the terminal's longer rider words in the tooltip", () => {
+    const { container } = show(wire.options);
+    const tracks = tracksOf(wire.options);
+    const titles = [...container.querySelectorAll(".space")].map((s) => s.getAttribute("title") ?? "");
+    for (const s of [...tracks.church, ...tracks.customs]) {
+      const long = riderWords(s).long;
+      if (long === "") continue;
+      expect(titles.some((t) => t.includes(long)), `no tooltip carries "${long}"`).toBe(true);
+    }
+    expect(titles.some((t) => t.includes("assistant moves"))).toBe(true);
+    expect(titles.some((t) => t.includes("warehouse take"))).toBe(true);
+    expect(titles.some((t) => t.includes("yen"))).toBe(true);
   });
 });

@@ -984,6 +984,16 @@ test("a panel really is modal", async ({ page }) => {
 // came along for free. 1024 is still measured and RECORDED rather than asserted:
 // the sub-1201 column stack is not what this milestone is about, and nothing
 // here should start gating it by accident.
+//
+// **One limit of the reference, stated so it is not mistaken for more.**
+// `oneRowBox` is the banner's padding and border plus its TALLEST CHILD, and
+// `nav.views` is itself `flex-wrap: wrap` — so a nav that wrapped INTERNALLY
+// would grow that child, the reference would grow with it, and the comparison
+// would not register the wrap. The assertion is still the right one for what it
+// claims, because the regression it exists to catch was the BANNER's own line
+// breaking — `.banner` is `flex-wrap: wrap` too, and at 1280 the nav moved
+// below the title, which is the 101-against-56 reading recorded above. A nav
+// wrapping inside its own box is a different measurement and is not this cell's.
 test("the banner is one row at 1440 and 1280", async ({ page }) => {
   const watch = watchForBreakage(page);
 

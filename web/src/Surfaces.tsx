@@ -37,6 +37,7 @@ import {
 } from "./Cards";
 import { SuggestView, WhyView } from "./Explain";
 import { IndexView, OutcomeView } from "./Index";
+import { SECTION_LABELS, type SectionKey } from "./sections";
 
 export type SurfaceName =
   | "areas"
@@ -436,10 +437,20 @@ function Areas({
           )}
 
           {/* A POINTER, never a duplicate: the offer on a Port board and the
-              occupied spaces of a track are surfaces of their own, and a second
-              copy here would be a second copy to keep true. */}
+              occupied spaces of a track are sections of the table, and a second
+              copy here would be a second copy to keep true.
+
+              **Named by the SECTION's own label, not by the wire's word.**
+              `companion` is the server's tag — `Labs` — and the section it
+              points at is headed "Laboratory", so printing the raw word sent
+              the reader hunting for a section under a name nothing on screen
+              uses. The keys are the same three either way (`Strips.test.tsx`
+              holds both halves), so this is a lookup and never a second list. */}
           {card.companion && (
-            <div className="muted">detail lives in the {card.companion} section of the table</div>
+            <div className="muted">
+              detail lives in the {SECTION_LABELS[card.companion.toLowerCase() as SectionKey]} section
+              of the table
+            </div>
           )}
         </section>
       ))}

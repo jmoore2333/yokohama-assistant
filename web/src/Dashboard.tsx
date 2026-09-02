@@ -1,6 +1,8 @@
 import type {
   AchievementModel,
   ArtManifest,
+  ChurchSpaceModel,
+  CustomsSpaceModel,
   HandPanel,
   Labels,
   MercenarySupply,
@@ -282,6 +284,59 @@ function Space({
   );
 }
 
+/** A track space's rider in the two lengths its two homes have room for. */
+export interface RiderWords {
+  /** For the space itself: compact, and it keeps the count. `""` when the space
+   *  carries no rider — a rider-free space must print nothing, not a dash. */
+  short: string;
+  /** For the `title`, in the terminal's own longer words. */
+  long: string;
+}
+
+/** What a track space's RIDER pays, in TWO lengths from ONE source.
+ *
+ *  **M5 spec §3.4 asks for the VP and the rider printed on every space, and the
+ *  rider was the half that never was.** It lived only in `title=` — invisible
+ *  on a touch screen, invisible to a screen reader, invisible to any assertion
+ *  — while the terminal's own `tracks` view prints it in words
+ *  (`view_render.rs`: `+N assistant moves`, `+N warehouse take(s)`, `+N yen`).
+ *
+ *  Two lengths, because the two places have different room: the space itself is
+ *  a ~2rem box at 8.5px, so it takes the compact form, and the tooltip takes the
+ *  terminal's. They are returned TOGETHER rather than composed at each call
+ *  site — two independently written strings for one fact drift, which is how
+ *  the rider came to be in the tooltip alone in the first place.
+ *
+ *  **The compact form keeps the COUNT.** A bare `+mv` would fit in less room and
+ *  would throw away the difference between faith 4 (one move) and faith 11
+ *  (three) — the very figure the terminal prints and this is here to restore.
+ *  Mutation-tested: dropping the count is invisible to every cell that reads
+ *  this function on both sides, so `Dashboard.test.tsx` carries a cell that
+ *  pins distinct counts to distinct words. The strip's HEADING keeps its coarse
+ *  `+mv` flag — that one is a "this track has riders" summary, and it is not
+ *  the per-space reading. */
+export function riderWords(space: ChurchSpaceModel | CustomsSpaceModel): RiderWords {
+  // The church space is the one with a faith number; the customs space has a
+  // space number and two riders of its own.
+  if ("faith" in space) {
+    const n = space.movement_rider;
+    return n > 0 ? { short: `+${n}mv`, long: `+${n} assistant moves` } : { short: "", long: "" };
+  }
+  const short: string[] = [];
+  const long: string[] = [];
+  // Warehouse first, then yen: the order the engine's own `CustomsTrack::rider`
+  // returns them, and the order the terminal prints them.
+  if (space.warehouse_rider > 0) {
+    short.push(`+${space.warehouse_rider}wh`);
+    long.push(`+${space.warehouse_rider} warehouse take${space.warehouse_rider === 1 ? "" : "s"}`);
+  }
+  if (space.yen_rider > 0) {
+    short.push(`+¥${space.yen_rider}`);
+    long.push(`+${space.yen_rider} yen`);
+  }
+  return { short: short.join(" "), long: long.join(" ") };
+}
+
 /** `★3–14` — what the cheapest and dearest space on a track pay.
  *
  *  The CLI's `panel_render::vp_range`, restated: an empty track is `★—`, a
@@ -344,17 +399,20 @@ export function Tracks({
         </span>
       </div>
       <div className="track">
-        {tracks.church.map((s) => (
-          <Space
-            key={s.faith}
-            occupant={s.occupant}
-            colors={colors}
-            sub={`★${s.vp}`}
-            title={`faith ${s.faith} — ★${s.vp}${s.movement_rider ? ` +${s.movement_rider} movement` : ""}`}
-          >
-            {s.faith}
-          </Space>
-        ))}
+        {tracks.church.map((s) => {
+          const rider = riderWords(s);
+          return (
+            <Space
+              key={s.faith}
+              occupant={s.occupant}
+              colors={colors}
+              sub={`★${s.vp}${rider.short ? ` · ${rider.short}` : ""}`}
+              title={`faith ${s.faith} — ★${s.vp}${rider.long ? ` ${rider.long}` : ""}`}
+            >
+              {s.faith}
+            </Space>
+          );
+        })}
       </div>
 
       <div className="tile-row muted" style={{ marginTop: "0.5rem" }}>
@@ -362,17 +420,20 @@ export function Tracks({
         <span className="chip vp">{vpRange(tracks.customs.map((s) => s.vp))}</span>
       </div>
       <div className="track">
-        {tracks.customs.map((s) => (
-          <Space
-            key={s.space}
-            occupant={s.occupant}
-            colors={colors}
-            sub={`★${s.vp}`}
-            title={`pay ${s.import_cost} imports — ★${s.vp}${s.warehouse_rider ? ` +${s.warehouse_rider} warehouse` : ""}${s.yen_rider ? ` +¥${s.yen_rider}` : ""}`}
-          >
-            {s.import_cost}
-          </Space>
-        ))}
+        {tracks.customs.map((s) => {
+          const rider = riderWords(s);
+          return (
+            <Space
+              key={s.space}
+              occupant={s.occupant}
+              colors={colors}
+              sub={`★${s.vp}${rider.short ? ` · ${rider.short}` : ""}`}
+              title={`pay ${s.import_cost} imports — ★${s.vp}${rider.long ? ` ${rider.long}` : ""}`}
+            >
+              {s.import_cost}
+            </Space>
+          );
+        })}
       </div>
 
       <div className="stat-row" style={{ marginTop: "0.5rem" }}>

@@ -750,7 +750,6 @@ button.ghost.danger:hover { color: var(--warn); border-color: var(--warn); }
 }
 .surface-body h3 { font-size: 0.95rem; margin: 0.9rem 0 0.4rem; }
 .surface-body .lede { color: var(--fg-dim); margin-top: 0; }
-.slot-cell { display: flex; flex-direction: column; gap: 0.25rem; }
 .slot-head { display: flex; gap: 0.25rem; }
 
 .area-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr)); gap: 0.7rem; }
@@ -1159,12 +1158,22 @@ pre.raw-panel {
  * A six-slot strip is `6·cw` of cards plus `5 × 0.5rem` of slot gaps plus
  * `2 × 0.85rem` of section padding — 6·cw + 2.5rem + 1.7rem. Two of them beside
  * each other, with the flex row's own 1rem gap, must fit the table's content
- * box: `2·(6·cw + 4.2rem) + 1rem ≤ 100cqw − 2rem` (the `.table` padding), i.e.
- * `cw ≤ (100cqw − 13rem) / 12`. At the 8rem floor that needs 100cqw ≥ 109rem,
- * so the query opens at 108rem and the clamp's own floor holds the last rem —
- * below it the arm cannot help and the one-per-row rule above stands. The size
- * container is `.table` (its `container-type: size`), so `cqw` is the table's
- * width and not the window's. */
+ * box: `2·(6·cw + 4.2rem) + 1rem ≤ 100cqw − 2rem` (the `.table` padding), and
+ * that solves to `cw ≤ (100cqw − 11.4rem) / 12`. The constant below is 13rem,
+ * NOT 11.4, and the extra ~1.6rem is deliberate slack: two section borders, a
+ * classic scrollbar on the table's own overflow, and sub-pixel rounding. A
+ * strip that overflows by one pixel wraps and loses the whole side-by-side
+ * arrangement, so the arm errs small.
+ *
+ * At the 8rem card floor 13rem needs 100cqw ≥ 109rem, so the query opens at
+ * 108rem and the clamp's own floor holds the last rem — below it the arm cannot
+ * help and the one-per-row rule above stands.
+ *
+ * `cqw` reads `.table`, which is the size container — but ONLY above 1201px,
+ * which is where `container-type: size` is set. Below that there is no query
+ * container up the tree, so this arm cannot fire at all; that width is the
+ * column stack, where one strip per row is the layout anyway. Every measured
+ * figure quoted here is from above 1201. */
 @container (min-width: 108rem) {
   .table-sections { --card-w: clamp(8rem, (100cqw - 13rem) / 12, 12rem); }
 }
@@ -1183,15 +1192,24 @@ pre.raw-panel {
 .strip-slot { display: flex; flex-direction: column; gap: 0.25rem; }
 .strip-slot .card-face { width: var(--card-w); }
 .strip-slot .card-blank.empty { width: var(--card-w); box-sizing: border-box; }
-/* The achievements are LANDSCAPE (W0b), so they get the wide box and the wide
- * aspect — the same `--wide-card-aspect` the site faces read, never a second
- * literal that could drift from it. */
+/* The achievements are LANDSCAPE (W0b), so they get the wide BOX. The WIDTH
+ * only: `.card-face.achievement img` already carries `var(--wide-card-aspect)`
+ * from its base rule, and restating it here would be a second copy of one
+ * number, free to drift from it. */
 .table-sec.achievements .card-face.achievement { width: calc(var(--card-w) * 1.5); }
-.table-sec.achievements .card-face.achievement img { aspect-ratio: var(--wide-card-aspect); }
 /* And so are the site cards, since W0b: the column floor is the LANDSCAPE
  * width, or `auto-fill` packs a wide card into a portrait track and the row
  * runs short. */
 .table-sec .site-grid { grid-template-columns: repeat(auto-fill, minmax(calc(var(--card-w) * 1.5), 1fr)); }
+/* **And the sites section needs a DEFINITE basis, or `auto-fill` counts one.**
+ * Every other strip is sized by its own content, which is what `flex: 0 1 auto`
+ * gives them; a grid of `repeat(auto-fill, minmax(…, 1fr))` inside a
+ * content-sized box has no available width to fill, so it resolves to a SINGLE
+ * track. Measured before this: eight site cards laid out 251 x 1486px, one card
+ * per row, at 1710 and at 2560 alike. A full-row basis gives the grid a width
+ * and it packs columns. The sites are the one strip that is a GRID of many
+ * cards rather than a row of six, so this is the one that needs it. */
+.table-sec.buildings { flex-basis: 100%; }
 .table-sec.tracks .panel { background: transparent; border: 0; padding: 0; }
 .table-sec.collapsed { color: var(--fg-faint); }
 .tile-id-words { color: var(--fg-faint); font-size: 10px; }

@@ -3,7 +3,8 @@
 import { render } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { GoalsStrip, LabStrip, PortStrip, SitesStrip, TracksStrip } from "./Strips";
-import { SECTION_KEYS } from "./sections";
+import { riderWords } from "./Dashboard";
+import { SECTION_KEYS, SECTION_LABELS, type SectionKey } from "./sections";
 import { achievementsOf, tracksOf } from "./test/panels";
 import { wire } from "./wire/contract";
 import type { PlayerColor } from "./types";
@@ -43,6 +44,43 @@ describe("the tracks strip", () => {
     for (const s of tracks.customs) expect(text).toContain(`★${s.vp}`);
     expect(container.querySelector("section.table-sec.tracks")).not.toBeNull();
   });
+
+  // **Spec §3.4 asks for the VP AND THE RIDER on every space, and the rider was
+  // the half that lived only in `title=`** — invisible on a touch screen, to a
+  // screen reader, and to any assertion, while the CLI's own `tracks` view
+  // prints it (`view_render.rs`'s `+N assistant moves` / `+N warehouse takes` /
+  // `+N yen`). This is the cell that says it is on the space.
+  //
+  // The words are read from `riderWords`, not typed here: the strip's compact
+  // form and the tooltip's long one come from that ONE function, and a test
+  // that restated either would be a third copy free to drift from both.
+  it("prints every space's RIDER on the space, not only in its tooltip", () => {
+    const tracks = tracksOf(wire.optionsMany);
+    const { container } = render(<TracksStrip tracks={tracks} art={wire.artManifest} colors={COLORS} />);
+    const subs = [...container.querySelectorAll(".space .sub")].map((s) => s.textContent ?? "");
+
+    // Anti-vacuity, in three parts: this fixture must carry a movement rider,
+    // a warehouse rider AND a yen rider, or the loop below tests one kind and
+    // reads as if it tested all three.
+    expect(tracks.church.some((s) => s.movement_rider > 0)).toBe(true);
+    expect(tracks.customs.some((s) => s.warehouse_rider > 0)).toBe(true);
+    expect(tracks.customs.some((s) => s.yen_rider > 0)).toBe(true);
+
+    const carrying = [...tracks.church, ...tracks.customs].filter((s) => riderWords(s).short !== "");
+    for (const s of carrying) {
+      const want = riderWords(s).short;
+      expect(
+        subs.some((t) => t.includes(`★${s.vp}`) && t.includes(want)),
+        `no space prints ★${s.vp} beside its rider "${want}"`,
+      ).toBe(true);
+    }
+
+    // And a space that carries NO rider prints none — without this the loop
+    // above passes on a strip that stamped the same rider onto every space.
+    const bare = tracks.customs.filter((s) => riderWords(s).short === "");
+    expect(bare.length, "the fixture must also carry a rider-free space").toBeGreaterThan(0);
+    for (const s of bare) expect(subs).toContain(`★${s.vp}`);
+  });
 });
 
 describe("the goals strip", () => {
@@ -81,9 +119,19 @@ describe("the building sites strip", () => {
 // retired in W5a; the pointer now reads "detail lives in the … section of the
 // table", so the list it has to match is the SECTION registry.
 describe("the Areas panel's companions", () => {
-  it("name sections that exist", () => {
-    for (const companion of ["Ports", "Labs", "Tracks"]) {
-      expect(SECTION_KEYS).toContain(companion.toLowerCase());
+  // **The key has to exist AND the label has to be the one on the section's own
+  // heading.** `companion` is the server's word — "Labs" — and the section it
+  // points at is headed "Laboratory", so a pointer that printed the raw word
+  // sent the reader looking for a section by a name nothing on screen uses.
+  it("name sections that exist, and are shown by those sections' own labels", () => {
+    for (const [companion, heading] of [
+      ["Ports", "Port"],
+      ["Labs", "Laboratory"],
+      ["Tracks", "Tracks"],
+    ] as const) {
+      const key = companion.toLowerCase() as SectionKey;
+      expect(SECTION_KEYS).toContain(key);
+      expect(SECTION_LABELS[key]).toBe(heading);
     }
   });
 });
