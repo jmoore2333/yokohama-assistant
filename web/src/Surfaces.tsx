@@ -83,7 +83,7 @@ export const SURFACES: {
   // became a section of the table. Help is static prose and the screenshots are
   // ordinary images the client asks for itself, so a route for it would be a
   // route that serves a constant.
-  { key: "help", label: "Help", blurb: "how this screen works — the board, the deck, the panels, and the replay track", load: () => Promise.resolve(NOTHING_TO_FETCH) },
+  { key: "help", label: "Help", blurb: "how this screen works — the table, the side column with the answer bar at its top, and the panels", load: () => Promise.resolve(NOTHING_TO_FETCH) },
 ];
 
 /** The four surfaces that are card INDEXES, and the kind each asks the server

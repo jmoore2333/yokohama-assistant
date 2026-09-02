@@ -43,12 +43,14 @@ export function Help() {
       <h3>The three parts of the screen</h3>
       <p>
         The <strong>table</strong> fills the left: the area tiles laid out as the staggered
-        pyramid the real board makes, each one the printed tile with its building-site card on
-        it, its pieces standing on it, and the 5-Power token in its printed slot &mdash; and
-        under the pyramid, whichever boards you have switched on: the port and the laboratory,
-        six card slots to a board, the church and customs tracks, the goals in play, and the
-        building sites at full size. On a wide screen they sit side by side; on a laptop the
-        table scrolls. The <strong>side column</strong> on the right holds the{" "}
+        pyramid the real board makes, each one the printed tile with any building-site card and
+        pieces on it and the 5-Power token in its printed slot &mdash; the Canal, at three and
+        four players, has none of the three, because nothing is ever built, placed or awarded
+        there. Under the pyramid sit whichever boards you have switched on: the port and the
+        laboratory, six card slots to a board, the church and customs tracks, the goals in play,
+        and the building sites at full size. They sit side by side only on a very wide screen
+        &mdash; at 1710px across they stack, at 2560px they do not &mdash; so on a laptop the
+        table scrolls down to them. The <strong>side column</strong> on the right holds the{" "}
         <strong>answer bar</strong> pinned at its top &mdash; whatever the game is asking you is
         always there &mdash; then what the last move did, every seat&rsquo;s goods, money and
         pieces, and your own hand. Hover or focus any tile to see it, and any site card on it, at
@@ -63,6 +65,11 @@ export function Help() {
         src="/help/screen.png"
         alt="The client at two players on a 1710 by 869 screen: the staggered pyramid of ten area tiles filling the table on the left, each tile the printed area art with its building-site card upright on its top-right, its pieces on it and an id badge along its bottom edge; on the right the answer bar at the top of the side column, carrying the phase ladder, the seat to move and the numbered moves it is offering, and under it the last move and both seats&rsquo; goods, money and pieces."
         caption="The first view at two players: the table on the left, the side column on the right, the answer bar pinned at its top. The pyramid is fitted to the table&rsquo;s height here, so the five switched-on boards sit under it and the table scrolls to them."
+      />
+      <Shot
+        src="/help/strips.png"
+        alt="The same table scrolled down: the last row of the pyramid across the top of the frame, then the marks legend, then the Port board drawn as the physical one is &mdash; six slots in a row, each holding an order card at full size with its goods and its victory points under it &mdash; and the head of the Laboratory board below that, its six slots labelled with the surcharge each carries. The answer bar and the seats are unchanged on the right."
+        caption="The same screen, scrolled down. This is what is under the pyramid: the boards you switched on, in the shapes the real ones have. The port is first, the laboratory under it, and the tracks, the goals and the building sites below those."
       />
 
       <h3>Taking a turn</h3>
@@ -117,20 +124,21 @@ export function Help() {
       </p>
       <Shot
         src="/help/explain.png"
-        alt="The Suggest panel open as a drawer over the table: the move it would play under the heading &ldquo;It would play&rdquo;, then a term-by-term chart with a bar either side of a centre zero line for every feature carrying a nonzero product, each row naming its feature, its arithmetic and its product, and a total under them that foots. A button offers the remaining features that contribute nothing, and the heading for the line it searched sits below."
-        caption="Suggest: the move, the line, and the arithmetic — helping to the right of the zero line, hurting to the left."
+        alt="The Suggest panel open as a drawer over the table: the move it would play under the heading &ldquo;It would play&rdquo;, then a term-by-term chart with a bar either side of a centre zero line for every feature carrying a nonzero product, each row naming its feature, its arithmetic and its product, and a total under them that foots, over a button offering the remaining features that contribute nothing."
+        caption="Suggest: the move it would play, and the arithmetic behind it — helping to the right of the zero line, hurting to the left. The line it searched follows further down the panel."
       />
 
       <h3>Replaying the game</h3>
       <p>
         Open <strong>Log</strong> and you get the whole move trail, each line worded as it read
         when it applied &mdash; and a track above it that walks the game. Drag it, step with the
-        arrows, or press any line to jump to the position that move was decided in. The table
-        beside the panel redraws at that point, full size, outlined to show you are looking at
-        the past. The port, the laboratory and the building sites on it say they are hidden while
-        you are in the past: the position you scrub to has no offer the server can show, so the
-        table does not pretend. The tracks and the goals keep drawing, from that same past
-        position.
+        arrows, or press any line to jump to the position that move was decided in. On a wide
+        screen the panel is a drawer down the right and the table beside it redraws at that
+        point, full size, outlined to show you are looking at the past; on a narrow one the panel
+        covers the page instead, and there is no outline to see. The port, the laboratory and
+        the building sites on it say they are hidden while you are in the past: the position you
+        scrub to has no offer the server can show, so the table does not pretend. The tracks and
+        the goals keep drawing, from that same past position.
       </p>
       <p>
         The track has one more stop than there are moves, because the last stop is{" "}

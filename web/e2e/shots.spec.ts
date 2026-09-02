@@ -2,8 +2,8 @@
 //
 // **A generator, not a test.** Nothing here asserts a product property; it
 // drives the shipped client in real Chromium against the real release binary
-// and writes `web/public/help/*.png`, which Vite copies into `dist/` and the
-// server serves at `/help/…`. It lives in `e2e/` because that is where the
+// and writes the five `web/public/help/*.png`, which Vite copies into `dist/`
+// and the server serves at `/help/…`. It lives in `e2e/` because that is where the
 // browser and the server already are, and because a screenshot generator that
 // needed its own harness would be a second driver of the same app.
 //
@@ -96,6 +96,37 @@ async function scrollToTop(page: Page): Promise<void> {
   await raf(page);
 }
 
+/** Scroll the table until the pyramid's LAST ROW sits just under the top edge.
+ *
+ *  **Keyed on the last row, not on a pixel offset into the section block.** The
+ *  fitted pyramid's row height is `--tile-w`-dependent and the block's own top
+ *  moves with the game's text wrapping, so "put the sections 140px down" — the
+ *  rule `gates.spec.ts` uses for a shot whose subject is only the sections —
+ *  leaves the bottom row half-cut here. This shot's subject is the JOIN: the
+ *  foot of the pyramid and the head of the first strip in one frame, which is
+ *  what the help's sentence about boards under the pyramid claims exists.
+ *
+ *  Throws naming the missing selector, for the reason `scrollToTop` does. */
+async function scrollToStrips(page: Page): Promise<void> {
+  const missing = await page.evaluate(() => {
+    window.scrollTo(0, 0);
+    const table = document.querySelector(".table") as HTMLElement | null;
+    if (!table) return ".table";
+    // `.board`'s last child is the marks legend, not a row, so the last ROW is
+    // taken from the row list rather than with `:last-child`.
+    const rows = [...document.querySelectorAll<HTMLElement>(".board-row")];
+    const last = rows.at(-1);
+    if (!last) return ".board-row";
+    if (!document.querySelector(".table-sections")) return ".table-sections";
+    const max = table.scrollHeight - table.clientHeight;
+    const delta = last.getBoundingClientRect().top - table.getBoundingClientRect().top - 20;
+    table.scrollTop = Math.max(0, Math.min(max, table.scrollTop + delta));
+    return null;
+  });
+  if (missing) throw new Error(`scrollToStrips: ${missing} is not on the page`);
+  await raf(page);
+}
+
 /** The pointer off the board, and the hover popover with it.
  *
  *  `act()` ends on a click, so the pointer is left resting wherever the last
@@ -166,6 +197,26 @@ test("the whole screen, and a placement picker", async ({ page }) => {
   await expect(page.locator(".deck")).toBeVisible();
   await expect(page.getByRole("button", { name: "Log", exact: true })).toBeVisible();
   await page.screenshot({ path: `${SHOTS}/screen.png` });
+
+  // **The same table, scrolled to what is under the pyramid** (ruling R-T14d).
+  // `screen.png` is the first view and stays unfaked, and at 2P/1710x869 the
+  // fitted pyramid fills the table's height — the browser walk records 1404px
+  // of everything-below-the-pyramid scrolling inside the table — so the help
+  // could tell a reader the boards are down there and show them nothing. This
+  // is the join: the last row of tiles at the top of the frame, the port strip
+  // under it.
+  await scrollToStrips(page);
+  await park(page);
+  await expect(page.locator(".boards-menu > summary")).toHaveText("Boards · 5 on");
+  // Both halves of the join, asserted on CONTENT and not on the wrapper:
+  // `TableSections` renders its "loading…" placeholder under the very same
+  // `table-sec ports` class as the loaded strip, so a check on the section
+  // element passes while the section reads "loading…" — a picture of a spinner
+  // captioned as a picture of the port. `.board-strip` is mounted only by the
+  // loaded branch.
+  await expect(page.locator(".board-row").last().locator(".tile").first()).toBeVisible();
+  await expect(page.locator(".table-sec.ports .board-strip").first()).toBeVisible();
+  await page.screenshot({ path: `${SHOTS}/strips.png` });
 
   // Walk on until a placement picker is open, so the "the board is the input"
   // paragraph has the picture it describes. Bounded, and it says so if it never

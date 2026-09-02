@@ -207,13 +207,13 @@ about the game, so the terminal and the browser cannot disagree about a rule.
 along the top, the end-trigger strip beneath it, and the table filling the left with the ten area
 tiles laid out as the staggered pyramid — each one the printed area art carrying its
 building-site card, its pieces and its id badge — beside the side column on the right, whose
-answer bar is pinned at its top offering the three numbered Placement
-options](web/public/help/screen.png)
+answer bar is pinned at its top carrying the phase ladder, the seat to move and the numbered
+moves it is offering](web/public/help/screen.png)
 
-The left is a **table**: the pyramid of area tiles, each one the printed tile with its
-building-site card on it and its pieces standing on it, and under the pyramid whichever boards
-you have switched on from the banner's `Boards` menu — the port, the laboratory, the church and
-customs tracks, the goals, the building sites. The right is a **side column** with the **answer
+The left is a **table**: the pyramid of area tiles, each one the printed tile with any
+building-site card and pieces on it (the Canal, at three and four players, carries neither), and
+under the pyramid whichever boards you have switched on from the banner's `Boards` menu — the
+port, the laboratory, the church and customs tracks, the goals, the building sites. The right is a **side column** with the **answer
 bar pinned at its top**, so whatever the game is asking is always on screen; under it sit the
 last move, every seat's dashboard and your hand. While a placement picker is open the table
 itself becomes the input surface, and the fee your current selection would cost is printed
@@ -222,8 +222,10 @@ bottom edge instead.
 
 **The replay track (M4).** Open the log and the whole move trail is there, each line worded as it
 read when it applied — with a track above it that walks the game. Drag it, step with the arrows,
-or press any line to jump to the position that move was decided in. The table redraws beside the
-drawer at full size, and nothing on it is pressable, because a past position is not answerable.
+or press any line to jump to the position that move was decided in. Above 1201px the panel is a
+right-hand drawer and the table redraws beside it at full size inside a green outline; below that
+the panel covers the page and there is no outline. Nothing on the redrawn table is pressable,
+because a past position is not answerable.
 The port and laboratory offers and the building sites collapse to a line saying they are hidden
 while you are in the past; the tracks and the goals keep drawing, from that same past position.
 
