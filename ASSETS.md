@@ -16,12 +16,20 @@ in this file.
 | `tts-assets/` | Source sprite sheets and scans — card fronts and backs, area-board tiles, tokens, the rulebook PDF | 118 tracked files, ~60 MB (84 `.jpg`, 28 `.png`, 2 `.pdf`, plus an extraction summary, a mapping JSON and one extraction script) | Extracted 2025-12-07 from the Tabletop Simulator community mod for Yokohama (Steam Workshop id 1840951801); see `tts-assets/EXTRACTION_SUMMARY.md` |
 | `crates/yokohama-web/assets/art/` | Derived crops of the above, cut into per-item images (`orders/`, `techs/`, `sites/`, `areas/`, `tokens/`, `achievements/`, `five-power/`, `mercenaries/`, `backs/`) plus `manifest.json` | 132 tracked files, ~3.0 MB (131 `.webp` + the manifest) | Added 2026-08-31; produced from `tts-assets/` by this repository's own tooling. Being derived does not launder the underlying copyright — these are excluded on exactly the same footing as their source |
 | `analysis-1/00-yokohama-rulebook.pdf` | The published English rulebook, complete | 1 file, ~6.5 MiB | Publisher's rulebook, used as the rules source of record for the engine |
+| `web/public/help/` | Screenshots of the running browser client, used by its in-app Help panel and by `README.md` | 4 `.png`, ~2 MB | Added 2026-09-01; generated from the real application by `web/e2e/shots.spec.ts`. **The layout, typography and every word in them are this repository's own work — the card and tile images inside them are not**, being the `crates/yokohama-web/assets/art/` crops as the browser draws them. A photograph of excluded material is excluded material, so these sit here on the same footing rather than on the code's |
 
 The extraction script (`tts-assets/parse_tts_mod.py`) and the manifest
 (`crates/yokohama-web/assets/art/manifest.json`) are this repository's own
 work and are Apache-2.0 like the rest of the code; they are listed above only
-because they sit inside excluded directories. Everything else in those three
+because they sit inside excluded directories. Everything else in those four
 paths is third-party material.
+
+The screenshot GENERATOR (`web/e2e/shots.spec.ts`) is likewise this
+repository's own work and is Apache-2.0; only its output is carved out. And
+the output is genuinely reproducible without it: the client renders its full
+UI with no art at all when the manifest is absent — a supported state its own
+code documents — so a fork that drops these paths can regenerate art-free
+screenshots rather than losing the help panel.
 
 ## Whose they are
 
@@ -60,8 +68,9 @@ over the same engine state.
 A public release of this project is planned as a separate repository, and
 **these paths are the reason it has not happened yet.** A public split takes
 the code, the docs, and the derived rules data, and leaves `tts-assets/`,
-`crates/yokohama-web/assets/art/`, and the rulebook PDF behind — either dropped
-entirely, or replaced with placeholder art and a rulebook link. Doing that
+`crates/yokohama-web/assets/art/`, `web/public/help/`, and the rulebook PDF
+behind — either dropped entirely, or replaced with placeholder art, a rulebook
+link, and screenshots re-cut with the art layer absent. Doing that
 cleanly means the split repository is a fresh history, not a re-push of this
 one, because these files are tracked from commit 32 onward and a shared history
 would carry them into the public tree regardless of what the tip commit
