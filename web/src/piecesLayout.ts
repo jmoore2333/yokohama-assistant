@@ -2,11 +2,14 @@
 //
 // Every cube is drawn while the row stays legible; a colour with four or more
 // becomes a two-row PILE; a group collapses to one cube and a count only when
-// the band cannot hold the crowd at the floor. The decision is made HERE, as a
-// pure function of the crowd and the band's shape, and the CSS is handed the
-// row's width in units of the glyph height (`--piece-units`) — so the
-// stylesheet's shrink-to-fit rule and this function agree by construction:
-// `h = min(H, W / units)` on both sides.
+// the band cannot hold the crowd at the floor, and only when that collapse
+// NARROWS the row — a four-cube pile costs 1.00 units drawn and 1.13 collapsed,
+// so collapsing it moves the row the wrong way, and a collapse that widens the
+// row can never bring the glyph height up to the floor (ruling R-T1-1). The
+// decision is made HERE, as a pure function of the crowd and the band's shape,
+// and the CSS is handed the row's width in units of the glyph height
+// (`--piece-units`) — so the stylesheet's shrink-to-fit rule and this function
+// agree by construction: `h = min(H, W / units)` on both sides.
 //
 // Every horizontal cost is a multiple of the glyph height h, which is what
 // keeps the fit PROVABLE (styles.css, the `.pieces` block): the row's width is
@@ -78,19 +81,29 @@ export function layoutPieces(crowd: Crowd, aspect: number, floor: number = FLOOR
     ) +
     (crowd.station ? UNIT.station : 0) +
     UNIT.gap * (groups - 1);
+  // What is actually DRAWN as a pile: a collapsed group is one cube and a
+  // count, never a pile. Both returns below use this — including the
+  // floor-missed one, where under R-T1-1 a pile can survive uncollapsed
+  // (a collapse that widens the row is never taken), so reporting no piles
+  // there would price a pile in `units` and then draw it as loose cubes.
+  const drawnPiles = () => piles.filter((i) => !collapsed.includes(i));
   for (;;) {
     const u = units();
     const h = Math.min(1, aspect / u);
     if (h >= floor) {
-      return { h, units: u, piles: piles.filter((i) => !collapsed.includes(i)), collapsed };
+      return { h, units: u, piles: drawnPiles(), collapsed };
     }
-    // The largest group not yet collapsed, ties to the first. None left means
-    // the floor cannot be met and the caller gets the honest h.
+    // The largest group not yet collapsed, ties to the first — among only
+    // those a collapse would NARROW (R-T1-1). None qualifying means the floor
+    // cannot be met and the caller gets the honest h.
     let largest = -1;
     crowd.cubes.forEach((n, i) => {
-      if (!collapsed.includes(i) && (largest < 0 || n > crowd.cubes[largest]!)) largest = i;
+      if (collapsed.includes(i)) return;
+      const pile = piles.includes(i);
+      if (groupWidth(n, pile, true) >= groupWidth(n, pile, false)) return;
+      if (largest < 0 || n > crowd.cubes[largest]!) largest = i;
     });
-    if (largest < 0) return { h, units: u, piles: [], collapsed };
+    if (largest < 0) return { h, units: u, piles: drawnPiles(), collapsed };
     collapsed.push(largest);
   }
 }

@@ -50,6 +50,10 @@ describe("layoutPieces", () => {
     expect(c4.collapsed).toEqual([0]);
     expect(c4.h).toBeGreaterThanOrEqual(FLOOR);
     expect(c4.h).toBeLessThan(0.62);
+    // The glyph height IS the band's aspect over the row's units — the identity
+    // the stylesheet's shrink-to-fit rule restates on its own side. Scaling the
+    // module's `aspect / u` by 0.99 passes every other cell in this file.
+    expect(c4.h).toBeCloseTo(MOCK / c4.units, 12);
     // A collapsed group costs the cube, the inner gap and one digit.
     const singles = 3 * UNIT.cube + 2 * UNIT.inner;
     const collapsed = UNIT.cube + UNIT.inner + UNIT.digit;
@@ -63,6 +67,32 @@ describe("layoutPieces", () => {
     const piles = layoutPieces({ presidents: 4, cubes: [9, 9, 9, 9], station: true }, 2);
     expect(piles.collapsed).toEqual([0, 1, 2, 3]);
     expect(piles.piles).toEqual([]);
+    // The crowd above collapses EVERY group, so it exits through the
+    // floor-missed return and never exercises the filter. This one collapses a
+    // pile while two singles survive and comes back through the floor-MET
+    // return: deleting the module's `.filter(...)` leaves every other cell in
+    // this file green and reads `piles: [0]` here.
+    const mixed = layoutPieces({ presidents: 4, cubes: [9, 3, 3, 3], station: true }, narrow);
+    expect(mixed.collapsed).toEqual([0, 1, 2]);
+    expect(mixed.piles).toEqual([]);
+    expect(mixed.piles.filter((i) => mixed.collapsed.includes(i))).toEqual([]);
+  });
+
+  // R-T1-1: "largest group first" by CUBE COUNT can WIDEN the row. A four-cube
+  // pile costs 1.00 units drawn (two columns of 0.5) and 1.13 collapsed (cube +
+  // inner + one digit), so collapsing it moves the row the wrong way — and a
+  // collapse that widens the row can never bring the height up to the floor.
+  // The plan's largest-first code collapsed index 0 here (units 12.22 -> 12.35,
+  // h 0.5419 -> 0.5362, FURTHER from the floor), then index 1, and returned
+  // `collapsed: [0, 1]`. The rule skips index 0 and collapses index 1 alone.
+  it("never collapses a group that would widen the row", () => {
+    const band = bandAspect({ width: 0.61, height: 0.123 });
+    const wide = layoutPieces({ presidents: 4, cubes: [4, 3, 3, 3], station: true }, band);
+    expect(wide.piles).toEqual([0]);
+    expect(wide.collapsed).toEqual([1]);
+    expect(wide.h).toBeGreaterThanOrEqual(FLOOR);
+    expect(wide.h).toBeCloseTo(band / wide.units, 12);
+    expect(wide.piles.filter((i) => wide.collapsed.includes(i))).toEqual([]);
   });
 
   it("reports the floor missed when no group is left to collapse", () => {
@@ -70,6 +100,20 @@ describe("layoutPieces", () => {
     expect(hopeless.collapsed).toEqual([0, 1, 2, 3]);
     expect(hopeless.h).toBeLessThan(FLOOR);
     expect(hopeless.h).toBeGreaterThan(0);
+  });
+
+  // The same exit, reached with a pile still standing — which only R-T1-1 makes
+  // reachable: before it, no candidate left meant every group had collapsed, so
+  // hardcoding `piles: []` there was right by construction. Now a lone pile can
+  // be the group the rule refuses to collapse, and `units` prices it AS a pile
+  // (1.00, not the 3.03 four loose cubes cost), so the pile has to be reported.
+  it("keeps a pile it could not collapse when the floor is missed", () => {
+    const lone = layoutPieces({ presidents: 0, cubes: [4], station: false }, 0.5);
+    expect(lone.collapsed).toEqual([]);
+    expect(lone.piles).toEqual([0]);
+    expect(lone.units).toBeCloseTo(2 * UNIT.pileColumn, 6);
+    expect(lone.h).toBeLessThan(FLOOR);
+    expect(lone.h).toBeCloseTo(0.5 / lone.units, 12);
   });
 
   // MUTATION PROOF of the floor: the same crowd at the same band does not
