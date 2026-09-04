@@ -221,6 +221,29 @@ describe("the popover on a tile", () => {
     const units = (el: HTMLElement) => el.style.getPropertyValue("--piece-units");
     expect(units(onTile!)).not.toBe("");
     expect(units(inPop!)).toBe(units(onTile!));
+
+    // **And at the same RECT, which none of the above can see.** The counts
+    // come from the crowd and `--piece-units` from `Pieces`' own module
+    // constant, so a band mounted at `SITE_CARD`'s rect — over the site panel,
+    // where the pieces would sit on top of the printed card — satisfies every
+    // assertion so far. The four inline strings are read off BOTH bands and
+    // compared to each other rather than to `pct(PIECES)`: the property is that
+    // the popover places the band where the tile places it, so moving the
+    // tile's rect must not need an edit here. jsdom re-serializes percentages,
+    // and both sides go through the same serializer, so this compares the rects
+    // and not the CSSOM (`Board.test.tsx`'s site-card cell has to parse numbers
+    // for exactly the reason this one does not).
+    const rectOf = (band: HTMLElement) => ({
+      left: band.style.left,
+      top: band.style.top,
+      width: band.style.width,
+      height: band.style.height,
+    });
+    const tileBand = tile.querySelector<HTMLElement>(".pieces-band")!;
+    const popBand = pop.querySelector<HTMLElement>(".tile-pop-art-box .pieces-band")!;
+    // Anti-vacuity: four empty strings compare equal to four empty strings.
+    expect(Object.values(rectOf(tileBand)).every((v) => v.endsWith("%"))).toBe(true);
+    expect(rectOf(popBand)).toEqual(rectOf(tileBand));
   });
 
   // The two ways the band draws nothing, and they are NOT the same thing: an
@@ -229,7 +252,12 @@ describe("the popover on a tile", () => {
   // (nothing ever stands there). The popover makes neither decision itself.
   it("draws no pieces for an empty tile, and no band on the Canal", async () => {
     const user = userEvent.setup();
-    const bare = wire.options.frame.board.tiles.find((t) => t.area_type !== "Canal" && crowd(t) === 0);
+    // `crowd()` does not count the Station, and a Station draws a glyph with no
+    // `.piece-group` of its own — so a Station-only tile would satisfy `crowd(t)
+    // === 0` and then fail this cell loudly. Excluded at the pick.
+    const bare = wire.options.frame.board.tiles.find(
+      (t) => t.area_type !== "Canal" && crowd(t) === 0 && !t.has_station,
+    );
     expect(bare, "the 2P options frame is move 1, so some tile is bare").toBeTruthy();
     const { container } = showBoard(wire.options.frame.board, COLORS);
     const bareTile = tileOf(container, tileId(bare!));

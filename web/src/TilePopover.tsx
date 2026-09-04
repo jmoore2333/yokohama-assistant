@@ -4,9 +4,15 @@
 // printed values need (M5 spec §3.2.2). This is the Areas drawer's row for ONE
 // tile brought to the tile: the art at 22rem so the printed ladder is legible,
 // the site card at 12rem, and the pieces as glyphs on the art AND in words —
-// the words are the accessible name, the glyphs the look-closer view a crowded
-// tile needs (owner ruling R-GA-1 at gate A of M5.5: "when hovering over a card
-// the assistants don't appear while the workshop does"). It is `role="tooltip"`,
+// the glyphs being the SIGHTED look-closer view a crowded tile needs (owner
+// ruling R-GA-1 at gate A of M5.5: "when hovering over a card the assistants
+// don't appear while the workshop does"). The accessible sentence is now
+// carried TWICE while the popover is open — by the band's own `aria-label`
+// (`Pieces` is a `role="img"`) and by the words row, both inside the element
+// the tile names in `aria-describedby` — so a screen reader hears the pieces
+// described twice. That redundancy is accepted rather than fixed: the mount
+// mirrors the board tile's exactly, and specialising `Pieces` for the popover
+// is the drift this task exists to avoid. It is `role="tooltip"`,
 // never takes focus, never sits in the tab order, and `pointer-events: none`
 // so leaving the tile closes it. Positioned from the tile's rect in JS rather
 // than with CSS anchor positioning, which Safari does not have.
