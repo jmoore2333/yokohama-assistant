@@ -1,6 +1,7 @@
 // M5's browser cells: the things about the table that jsdom cannot see.
 
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
+import { mkdirSync } from "node:fs";
 import { haveBrowser } from "../playwright.config";
 import { pyramidFits, tileWidthFor } from "../src/fit";
 import { act, readScreen, rng, startGame, watchForBreakage } from "./harness";
@@ -263,5 +264,92 @@ test("the port and laboratory strips sit side by side at 2560 and stack at 1710"
   await settle(page);
   const t = await tops();
   expect(t.lab, "not stacked at 1710").toBeGreaterThan(t.port);
+  expect(watch.failures).toEqual([]);
+});
+
+// ---- M5.5 A: a pile of four, built on purpose ------------------------------
+
+/** Click the first enabled option row whose words match, or say there is none. */
+async function answer(page: Page, words: RegExp): Promise<boolean> {
+  const rows = page.locator("button.option:not([disabled])").filter({ hasText: words });
+  if ((await rows.count()) === 0) return false;
+  await rows.first().click();
+  return true;
+}
+
+test("four assistants of one colour stand as a pile, not as a cube and a count", async ({ page }) => {
+  const watch = watchForBreakage(page);
+  await page.setViewportSize({ width: 1710, height: 869 });
+  await startGame(page, { players: 2 });
+  // Option B twice into the SAME area, with the President left in hand on
+  // both turns: a President that acts in an area recovers its cubes at the
+  // Recovery step, so the pile forms only if it never goes there. The bot's
+  // turn in between cannot recover another seat's cubes, and its President
+  // parking there at most prices the second placement at two yen.
+  let area: string | null = null;
+  let placements = 0;
+  for (let i = 0; i < 40 && placements < 2; i++) {
+    const screen = await readScreen(page);
+    if (screen.over) throw new Error("the game ended before two placements");
+    if (await answer(page, /Option B/)) {
+      // `count()` does not auto-wait and every tile is `disabled` while the
+      // request is in flight, so the guard below read `offered=[]` against a
+      // zone printing "10 eligible" — the settled screen offers all ten.
+      await expect(page.locator("button.tile").first()).toBeEnabled();
+      const tiles = page.locator("button.tile:not([disabled])");
+      const target: Locator =
+        area === null
+          ? tiles.first()
+          : tiles.filter({ has: page.locator(`.tile-id:text-is("${area}")`) }).first();
+      if (area !== null && (await target.count()) === 0) {
+        throw new Error(`${area} is not offered for the second placement`);
+      }
+      area ??= (await target.locator(".tile-id").innerText()).trim();
+      await target.click();
+      await page.getByRole("button", { name: "Confirm" }).click();
+      placements += 1;
+      continue;
+    }
+    // Two wordings for one move, at two levels: the top-level Movement row is
+    // the GROUPED family (`repl.rs:1353`), which opens a guided per-area count
+    // sub-prompt; "Return President to hand" is the move's own wording
+    // (`describe.rs:904`) and reaches the top level only when there is nothing
+    // recoverable. Answering every area 0 is what leaves the pile standing.
+    if (await answer(page, /Retreat President to hand/)) {
+      for (let g = 0; g < 8; g++) {
+        const sub = await readScreen(page);
+        if (sub.confirm) {
+          await page.getByRole("button", { name: "Confirm" }).click();
+          break;
+        }
+        if (sub.counts === 0) throw new Error("the guided retreat offered no counts");
+        await page.locator(".options .controls button.ghost", { hasText: /^0$/ }).first().click();
+      }
+      continue;
+    }
+    if (await answer(page, /Return President to hand/)) continue;
+    if (screen.only) {
+      await page.getByRole("button", { name: "Apply the only option" }).click();
+      continue;
+    }
+    if (await answer(page, /End additional-action phase|Skip the/)) continue;
+    throw new Error(
+      `no scripted answer for this screen:\n${await page.locator(".decision").first().innerText()}`,
+    );
+  }
+  expect(placements, "two placements were made").toBe(2);
+
+  const tile = page.locator(".board .tile").filter({ has: page.locator(`.tile-id:text-is("${area}")`) });
+  const pile = tile.locator(".piece-group.pile");
+  await expect(pile).toHaveCount(1);
+  await expect(pile.locator(".piece.cube")).toHaveCount(4);
+  await expect(tile.locator(".piece-n")).toHaveCount(0);
+  const cube = await pile.locator(".piece.cube").first().boundingBox();
+  // RECORDED, never gated (spec §5): the height depends on the fit rule's tile
+  // width on this machine at this viewport.
+  console.log(`pile cube at 1710×869, 2P, on ${area}: ${(cube?.height ?? 0).toFixed(1)}px tall`);
+  expect(cube?.height ?? 0).toBeGreaterThan(0);
+  mkdirSync("../docs/temp/web-review/gates", { recursive: true });
+  await page.screenshot({ path: "../docs/temp/web-review/gates/a-pile-1710x869.png" });
   expect(watch.failures).toEqual([]);
 });
