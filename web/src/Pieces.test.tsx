@@ -54,13 +54,17 @@ describe("the pieces on a tile", () => {
     expect(rows[1]!.querySelectorAll(".piece.cube")).toHaveLength(2);
   });
 
-  // The 17-glyph 4P crowd is the one the band cannot hold at the floor: the
-  // rule collapses the largest group, recomputes, and repeats until the glyphs
-  // reach it — and at THIS crowd that takes every colour (measured at HEAD:
-  // h 0.379 / 0.413 / 0.455 / 0.506 against the 0.55 floor, clearing it only on
-  // the fourth, at units 8.96). The decision is `layoutPieces`'s, so the cell
-  // reads its result rather than restating a number: what is proved is that the
-  // component OBEYS the rule, at whatever the rule decides.
+  // The 17-glyph 4P crowd is the one the band cannot hold at the floor. The
+  // rule collapses the largest group, recomputes, and repeats until the glyph
+  // height reaches it — so HOW MANY collapse is a function of the BAND'S WIDTH
+  // and not a constant: against the rect at this commit it takes all four
+  // colours (units 8.96, h 0.569), and against the wider band Task 3 measures
+  // (left ≈ 0.35, aspect ≈ 6.73) it takes two, the other two drawing their
+  // three cubes. So the cell asserts neither number. The decision is
+  // `layoutPieces`'s: the cell reads ITS answer and checks the component drew
+  // that — which colour is a count, which is a pile, and that every other one
+  // is loose cubes — which is obedience to the rule at whatever width the band
+  // ends up, rather than the component re-deciding.
   it("collapse to one cube and a count only where the layout says so", () => {
     const { container } = render(
       <Pieces
@@ -78,6 +82,21 @@ describe("the pieces on a tile", () => {
       expected.collapsed.length + (4 - expected.collapsed.length) * 3,
     );
     expect(container.querySelector(".piece-group.pile")).toBeNull();
+    // The MAPPING, not just the totals: the component draws a group per
+    // president and then one per colour, so the colours are what follows the
+    // four pawns, and each one has to be the shape the layout named for ITS
+    // index. Counting alone cannot see two colours swapping shapes.
+    const all = [...container.querySelectorAll(".piece-group")];
+    expect(all, "four presidents, then four colours").toHaveLength(8);
+    const colours = all.slice(4);
+    const ascending = (a: number[]) => [...a].sort((x, y) => x - y);
+    const indicesWhere = (p: (el: Element) => boolean) => colours.flatMap((el, i) => (p(el) ? [i] : []));
+    expect(indicesWhere((el) => el.querySelector(".piece-n") !== null)).toEqual(ascending(expected.collapsed));
+    expect(indicesWhere((el) => el.classList.contains("pile"))).toEqual(ascending(expected.piles));
+    colours.forEach((el, i) => {
+      if (expected.collapsed.includes(i) || expected.piles.includes(i)) return;
+      expect(el.querySelectorAll(".piece.cube"), `colour ${i} draws its three cubes loose`).toHaveLength(3);
+    });
   });
 
   // An empty tile draws nothing, exactly as the table does — no "no pawns".
