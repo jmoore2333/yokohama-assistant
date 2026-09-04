@@ -106,7 +106,10 @@ describe("the payload roots carry exactly the fields the client declares", () =>
   // Anti-vacuity for the widened replay frame: the position the corpus
   // captured (the game's midpoint) must hold a port that DIFFERS from the
   // opening offer in `ports.json`, or the two fields could be a copy of the
-  // live panels and nothing here would know.
+  // OPENING panels and nothing here would know. What it catches is that
+  // narrower thing, not any copy of the live session — `ports.json` is the
+  // opening capture, and the cell that sees a live copy is the route cell
+  // `the_replay_position_carries_the_offers_at_k`.
   it("at_k carries the port offer of ITS position, not the opening's", () => {
     expect(wire.atK.ports).not.toEqual(wire.ports);
     expect(wire.atK.ports.boards[0]!.slots).toHaveLength(6);

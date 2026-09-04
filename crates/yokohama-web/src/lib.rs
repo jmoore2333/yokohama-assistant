@@ -1842,7 +1842,19 @@ mod tests {
             let kind = state["prompt"]["kind"].as_str().unwrap_or_default().to_string();
             let line = match kind.as_str() {
                 "game_over" | "locked" | "reveal" | "watching" => break,
-                "retreat" => "0".to_string(),
+                // Once every area is answered the sub-prompt is CONFIRMING, and
+                // `step_retreat` accepts nothing but `confirm` there: a count
+                // gets "! finish or cancel this prompt first" and applies
+                // nothing. Answering "0" forever stalled this walk on the very
+                // first retreat — measured at 17 events, with the order deck
+                // still at its opening ten however many moves were asked for.
+                "retreat" => {
+                    if state["prompt"]["remaining"].as_u64() == Some(0) {
+                        "confirm".to_string()
+                    } else {
+                        "0".to_string()
+                    }
+                }
                 "place_b" => {
                     // Option B names its own candidates, so no probing is needed.
                     if state["prompt"]["selected"].is_null() {
@@ -2148,26 +2160,88 @@ mod tests {
 
     /// The replay position carries the port and lab offers AT k — built from
     /// `state_at(k)`, never copied from the live state (M5.5 spec §3.2.1).
+    ///
+    /// **The walk has to reach a position whose port DIFFERS from the live one,
+    /// or this cell cannot see the defect it names.** `PortsPanel::deck_remaining`
+    /// and `HistoricalFrame::deck_remaining` are the SAME expression
+    /// (`state.order_deck.len()`), and a 2P order deck sits at its opening ten
+    /// until a port card is taken — so while nothing has been taken, a `ports`
+    /// built from `session.state()` agrees with the frame beside it at every
+    /// `k`, the port is still full at `k == 0`, and the whole cell passes
+    /// green. Measured: it did, and only the frozen `at_k.json` golden caught
+    /// the swap.
+    ///
+    /// So the walk continues until a card has actually LEFT the port, that
+    /// premise is ASSERTED rather than assumed, and the comparison that carries
+    /// the claim is between the SLOT CARDS at `k == 0` and the live ones.
+    ///
+    /// Mutation-proof by building `ports`/`labs` from `session.state()` in
+    /// `HistoricalFrame::at`.
     #[tokio::test]
     async fn the_replay_position_carries_the_offers_at_k() {
         let router = app(Arc::new(AppState::in_memory()));
         a_game(&router, "offers", &[]).await;
-        play(&router, "offers", 6).await;
+        let (_, opening) = call(&router, "GET", "/api/games/offers/ports", None).await;
+        let opening_deck = opening["deck_remaining"].as_u64().expect("an order-deck count");
+
+        // Walk until the port has actually been drawn from. The cap FAILS the
+        // cell rather than letting it pass on an untaken port.
+        let mut took = false;
+        for _ in 0..12 {
+            play(&router, "offers", 20).await;
+            let (_, now) = call(&router, "GET", "/api/games/offers/ports", None).await;
+            if now["deck_remaining"].as_u64().is_some_and(|d| d < opening_deck) {
+                took = true;
+                break;
+            }
+        }
+        assert!(
+            took,
+            "no port card was ever taken, so every offer in this game is the opening one and \
+             this cell cannot tell a historical panel from a copy of the live one",
+        );
+
         let total = total_events(&router, "offers").await;
-        let (_, at_end) = call(&router, "GET", &format!("/api/games/offers/at/{total}"), None).await;
+        assert!(total > 0, "`play` applied nothing, so this cell proves nothing");
+
         let (_, live_ports) = call(&router, "GET", "/api/games/offers/ports", None).await;
         let (_, live_labs) = call(&router, "GET", "/api/games/offers/labs", None).await;
+        let (_, at_end) = call(&router, "GET", &format!("/api/games/offers/at/{total}"), None).await;
         assert_eq!(at_end["ports"], live_ports, "at k == total the offers are the live ones");
         assert_eq!(at_end["labs"], live_labs);
+
+        let slot_cards = |panel: &serde_json::Value| -> Vec<serde_json::Value> {
+            panel["boards"][0]["slots"]
+                .as_array()
+                .expect("a first port board")
+                .iter()
+                .map(|s| s["card"].clone())
+                .collect()
+        };
+
+        // **The discriminating comparison.** At `k == 0` the port holds the six
+        // cards it was dealt, and the live port no longer does.
         let (_, at_start) = call(&router, "GET", "/api/games/offers/at/0", None).await;
-        let full = at_start["ports"]["boards"][0]["slots"]
-            .as_array()
-            .expect("six slots")
-            .iter()
-            .filter(|s| !s["card"].is_null())
-            .count();
-        assert_eq!(full, 6, "the port is full after setup: {}", at_start["ports"]);
-        // Built from the POSITION: the panel's own deck count is the position's.
+        let dealt = slot_cards(&at_start["ports"]);
+        assert_eq!(dealt.len(), 6, "the port has six slots: {}", at_start["ports"]);
+        assert!(
+            dealt.iter().all(|c| !c.is_null()),
+            "the port is full after setup: {}",
+            at_start["ports"],
+        );
+        assert_ne!(
+            dealt,
+            slot_cards(&live_ports),
+            "the frame at k == 0 is carrying the LIVE port rather than the position's",
+        );
+        // And it is the RIGHT past panel, not merely a different one: byte-equal
+        // to what this game's own opening served.
+        assert_eq!(at_start["ports"], opening, "k == 0 is the opening position");
+
+        // A cheap consistency invariant across the whole domain, and NOT what
+        // proves the sourcing above: both counts are `state.order_deck.len()`,
+        // so this says the panel and the frame around it were built from one
+        // state — whichever state that is.
         for k in 0..=total {
             let (status, h) = call(&router, "GET", &format!("/api/games/offers/at/{k}"), None).await;
             assert_eq!(status, StatusCode::OK, "k={k}");
