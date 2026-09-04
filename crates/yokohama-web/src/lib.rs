@@ -2130,6 +2130,51 @@ mod tests {
         );
     }
 
+    /// The live payload counts its events, so a client that answered from
+    /// `events: n` and receives `events: m > n` knows the reply applied
+    /// `[n, m)` — what the turn playback walks (M5.5 spec §3.2.2).
+    #[tokio::test]
+    async fn the_live_payload_counts_its_events() {
+        let router = app(Arc::new(AppState::in_memory()));
+        a_game(&router, "count", &[]).await;
+        let (_, fresh) = call(&router, "GET", "/api/games/count", None).await;
+        assert_eq!(fresh["events"], serde_json::json!(0), "{fresh}");
+        play(&router, "count", 5).await;
+        let total = total_events(&router, "count").await;
+        assert!(total > 0, "`play` applied nothing, so this cell proves nothing");
+        let (_, later) = call(&router, "GET", "/api/games/count", None).await;
+        assert_eq!(later["events"].as_u64(), Some(total as u64));
+    }
+
+    /// The replay position carries the port and lab offers AT k — built from
+    /// `state_at(k)`, never copied from the live state (M5.5 spec §3.2.1).
+    #[tokio::test]
+    async fn the_replay_position_carries_the_offers_at_k() {
+        let router = app(Arc::new(AppState::in_memory()));
+        a_game(&router, "offers", &[]).await;
+        play(&router, "offers", 6).await;
+        let total = total_events(&router, "offers").await;
+        let (_, at_end) = call(&router, "GET", &format!("/api/games/offers/at/{total}"), None).await;
+        let (_, live_ports) = call(&router, "GET", "/api/games/offers/ports", None).await;
+        let (_, live_labs) = call(&router, "GET", "/api/games/offers/labs", None).await;
+        assert_eq!(at_end["ports"], live_ports, "at k == total the offers are the live ones");
+        assert_eq!(at_end["labs"], live_labs);
+        let (_, at_start) = call(&router, "GET", "/api/games/offers/at/0", None).await;
+        let full = at_start["ports"]["boards"][0]["slots"]
+            .as_array()
+            .expect("six slots")
+            .iter()
+            .filter(|s| !s["card"].is_null())
+            .count();
+        assert_eq!(full, 6, "the port is full after setup: {}", at_start["ports"]);
+        // Built from the POSITION: the panel's own deck count is the position's.
+        for k in 0..=total {
+            let (status, h) = call(&router, "GET", &format!("/api/games/offers/at/{k}"), None).await;
+            assert_eq!(status, StatusCode::OK, "k={k}");
+            assert_eq!(h["ports"]["deck_remaining"], h["deck_remaining"], "k={k}: {}", h["ports"]);
+        }
+    }
+
     /// **A projection serves a locked session; the account still refuses.**
     ///
     /// The rule is stated in code beside `why`: the lockdown gate fences

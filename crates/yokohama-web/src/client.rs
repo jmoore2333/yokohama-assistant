@@ -171,6 +171,14 @@ pub struct ClientState {
     pub scores: Option<Vec<ScoreRow>>,
     /// Provenance drift noticed when the game was loaded.
     pub warnings: Vec<String>,
+    /// The record's length — how many events this game has applied.
+    ///
+    /// A client that answered from a payload carrying `events: n` and gets
+    /// back `events: m > n` knows the reply applied the events `[n, m)`,
+    /// which is exactly the run the turn playback walks (M5.5 spec §3.2.2). A
+    /// count and not an event list: the walk reads the positions from
+    /// `/at/{k}` and the words from `/log`, both of which already exist.
+    pub events: usize,
 }
 
 impl PromptState {
@@ -417,6 +425,7 @@ impl ClientState {
                     .collect()
             }),
             warnings: session.load_warnings.clone(),
+            events: session.record().events.len(),
         }
     }
 }
@@ -477,6 +486,13 @@ pub struct HistoricalFrame {
     pub deck_remaining: usize,
     pub end_game_triggered: bool,
     pub scores: Option<Vec<ScoreRow>>,
+    /// The port and laboratory offers AT `k` — face up at the time, and
+    /// properties of the position, which is the test M4's Q5 applied to keep
+    /// this frame narrow (the fields it dropped were present-tense lies at a
+    /// past position; these are not). The turn playback needs them so a port
+    /// take shows the card leaving (M5.5 spec §3.2.1).
+    pub ports: screen_model::PortsPanel,
+    pub labs: screen_model::LabsPanel,
 }
 
 impl HistoricalFrame {
@@ -552,6 +568,8 @@ impl HistoricalFrame {
                     .map(|(seat, total)| ScoreRow { seat, total })
                     .collect()
             }),
+            ports: screen_model::build_ports(&state, rules),
+            labs: screen_model::build_labs(&state, rules),
         })
     }
 }

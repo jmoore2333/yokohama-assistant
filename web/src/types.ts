@@ -334,6 +334,8 @@ export interface ClientState {
   end_game_triggered: boolean;
   scores: { seat: PlayerId; total: number }[] | null;
   warnings: string[];
+  /** The record's length; see the server's doc. */
+  events: number;
 }
 
 /** One historical position, from `GET /api/games/{id}/at/{k}` — the M4 replay
@@ -374,6 +376,13 @@ export interface HistoricalFrame {
   deck_remaining: number;
   end_game_triggered: boolean;
   scores: { seat: PlayerId; total: number }[] | null;
+  /** The port and laboratory offers AT `k` — face up at the time, and
+   *  properties of the position, which is M4's Q5 applied to keep this frame
+   *  narrow: the fields it dropped were present-tense lies at a past position,
+   *  and these are not. The turn playback needs them so a port take shows the
+   *  card leaving. */
+  ports: PortsPanel;
+  labs: LabsPanel;
 }
 
 export interface Labels {

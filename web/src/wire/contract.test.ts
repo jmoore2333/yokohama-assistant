@@ -102,6 +102,16 @@ describe("the payload roots carry exactly the fields the client declares", () =>
   ] as const)("%s", (_name, payload, list) => {
     expect(keys(payload)).toEqual(listed(list));
   });
+
+  // Anti-vacuity for the widened replay frame: the position the corpus
+  // captured (the game's midpoint) must hold a port that DIFFERS from the
+  // opening offer in `ports.json`, or the two fields could be a copy of the
+  // live panels and nothing here would know.
+  it("at_k carries the port offer of ITS position, not the opening's", () => {
+    expect(wire.atK.ports).not.toEqual(wire.ports);
+    expect(wire.atK.ports.boards[0]!.slots).toHaveLength(6);
+    expect(wire.atK.labs.boards[0]!.slots).toHaveLength(6);
+  });
 });
 
 // `Widen<T>` degrades a tuple to an unbounded array, because TypeScript types a

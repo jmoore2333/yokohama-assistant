@@ -1279,7 +1279,267 @@
     }
   },
   "index": 518,
+  "labs": {
+    "boards": [
+      {
+        "board_b": false,
+        "slots": [
+          {
+            "card": 4,
+            "printed": {
+              "country": "American",
+              "effect": "Telegram",
+              "id": 4,
+              "industry_cost": 6,
+              "name": "Telegram"
+            },
+            "slot": 0,
+            "surcharge": 0
+          },
+          {
+            "card": 11,
+            "printed": {
+              "country": "English",
+              "effect": "Ball",
+              "id": 11,
+              "industry_cost": 3,
+              "name": "Ball"
+            },
+            "slot": 1,
+            "surcharge": 0
+          },
+          {
+            "card": 3,
+            "printed": {
+              "country": "American",
+              "effect": "Telegram",
+              "id": 3,
+              "industry_cost": 6,
+              "name": "Telegram"
+            },
+            "slot": 2,
+            "surcharge": 1
+          },
+          {
+            "card": 19,
+            "printed": {
+              "country": "Dutch",
+              "effect": "LetterPressPrinting",
+              "id": 19,
+              "industry_cost": 3,
+              "name": "Letterpress Printing"
+            },
+            "slot": 3,
+            "surcharge": 1
+          },
+          {
+            "card": 27,
+            "printed": {
+              "country": "English",
+              "effect": "Stagecoach",
+              "id": 27,
+              "industry_cost": 3,
+              "name": "Stagecoach"
+            },
+            "slot": 4,
+            "surcharge": 2
+          },
+          {
+            "card": 22,
+            "printed": {
+              "country": "French",
+              "effect": "Winery",
+              "id": 22,
+              "industry_cost": 3,
+              "name": "Winery"
+            },
+            "slot": 5,
+            "surcharge": 2
+          }
+        ]
+      }
+    ],
+    "deck_remaining": 23
+  },
   "over": false,
+  "ports": {
+    "boards": [
+      {
+        "board_b": false,
+        "slots": [
+          {
+            "card": 28,
+            "min_power": 2,
+            "printed": {
+              "country": "American",
+              "id": 28,
+              "requirements": {
+                "copper": 0,
+                "seafood": 4,
+                "silk": 1,
+                "tea": 0
+              },
+              "rewards": {
+                "any_trade_good": 0,
+                "copper": 0,
+                "imported_goods": 1,
+                "money": 0,
+                "movement": 0,
+                "seafood": 0,
+                "silk": 0,
+                "tea": 0,
+                "victory_points": 3,
+                "warehouse_tokens": 1
+              }
+            },
+            "slot": 0,
+            "zone": "Low"
+          },
+          {
+            "card": 36,
+            "min_power": 2,
+            "printed": {
+              "country": "German",
+              "id": 36,
+              "requirements": {
+                "copper": 0,
+                "seafood": 0,
+                "silk": 4,
+                "tea": 2
+              },
+              "rewards": {
+                "any_trade_good": 0,
+                "copper": 0,
+                "imported_goods": 0,
+                "money": 2,
+                "movement": 0,
+                "seafood": 0,
+                "silk": 0,
+                "tea": 0,
+                "victory_points": 5,
+                "warehouse_tokens": 1
+              }
+            },
+            "slot": 1,
+            "zone": "Low"
+          },
+          {
+            "card": 11,
+            "min_power": 3,
+            "printed": {
+              "country": "Dutch",
+              "id": 11,
+              "requirements": {
+                "copper": 0,
+                "seafood": 1,
+                "silk": 1,
+                "tea": 1
+              },
+              "rewards": {
+                "any_trade_good": 0,
+                "copper": 0,
+                "imported_goods": 0,
+                "money": 0,
+                "movement": 0,
+                "seafood": 0,
+                "silk": 0,
+                "tea": 0,
+                "victory_points": 5,
+                "warehouse_tokens": 0
+              }
+            },
+            "slot": 2,
+            "zone": "Mid"
+          },
+          {
+            "card": 14,
+            "min_power": 3,
+            "printed": {
+              "country": "German",
+              "id": 14,
+              "requirements": {
+                "copper": 1,
+                "seafood": 0,
+                "silk": 2,
+                "tea": 2
+              },
+              "rewards": {
+                "any_trade_good": 0,
+                "copper": 0,
+                "imported_goods": 0,
+                "money": 2,
+                "movement": 0,
+                "seafood": 0,
+                "silk": 0,
+                "tea": 0,
+                "victory_points": 6,
+                "warehouse_tokens": 0
+              }
+            },
+            "slot": 3,
+            "zone": "Mid"
+          },
+          {
+            "card": 8,
+            "min_power": 4,
+            "printed": {
+              "country": "Dutch",
+              "id": 8,
+              "requirements": {
+                "copper": 1,
+                "seafood": 0,
+                "silk": 1,
+                "tea": 1
+              },
+              "rewards": {
+                "any_trade_good": 0,
+                "copper": 0,
+                "imported_goods": 1,
+                "money": 0,
+                "movement": 0,
+                "seafood": 0,
+                "silk": 0,
+                "tea": 0,
+                "victory_points": 3,
+                "warehouse_tokens": 0
+              }
+            },
+            "slot": 4,
+            "zone": "High"
+          },
+          {
+            "card": 6,
+            "min_power": 4,
+            "printed": {
+              "country": "Dutch",
+              "id": 6,
+              "requirements": {
+                "copper": 1,
+                "seafood": 2,
+                "silk": 0,
+                "tea": 1
+              },
+              "rewards": {
+                "any_trade_good": 0,
+                "copper": 0,
+                "imported_goods": 1,
+                "money": 1,
+                "movement": 0,
+                "seafood": 0,
+                "silk": 0,
+                "tea": 0,
+                "victory_points": 2,
+                "warehouse_tokens": 0
+              }
+            },
+            "slot": 5,
+            "zone": "High"
+          }
+        ]
+      }
+    ],
+    "deck_remaining": 3
+  },
   "scores": null,
   "seat": 0,
   "to_move": 1,

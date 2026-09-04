@@ -99,7 +99,8 @@ export const api = {
   ports: (game: string) => call<PortsPanel>("GET", `/api/games/${id(game)}/ports`),
   labs: (game: string) => call<LabsPanel>("GET", `/api/games/${id(game)}/labs`),
   areas: (game: string) => call<AreasPanel>("GET", `/api/games/${id(game)}/areas`),
-  log: (game: string) => call<LogPanel>("GET", `/api/games/${id(game)}/log`),
+  log: (game: string, tail?: number) =>
+    call<LogPanel>("GET", `/api/games/${id(game)}/log${tail === undefined ? "" : `?tail=${tail}`}`),
 
   /** The position as it stood after `k` events — the replay projection.
    *
