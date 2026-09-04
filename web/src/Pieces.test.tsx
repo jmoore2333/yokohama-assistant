@@ -57,14 +57,18 @@ describe("the pieces on a tile", () => {
   // The 17-glyph 4P crowd is the one the band cannot hold at the floor. The
   // rule collapses the largest group, recomputes, and repeats until the glyph
   // height reaches it — so HOW MANY collapse is a function of the BAND'S WIDTH
-  // and not a constant: against the rect at this commit it takes all four
-  // colours (units 8.96, h 0.569), and against the wider band Task 3 measures
-  // (left ≈ 0.35, aspect ≈ 6.73) it takes two, the other two drawing their
-  // three cubes. So the cell asserts neither number. The decision is
-  // `layoutPieces`'s: the cell reads ITS answer and checks the component drew
-  // that — which colour is a count, which is a pile, and that every other one
-  // is loose cubes — which is obedience to the rule at whatever width the band
-  // ends up, rather than the component re-deciding.
+  // and not a constant. Under M5's band (width 0.47, aspect 5.10) it took all
+  // four colours (units 8.96, h 0.569); under the MEASURED band at this commit
+  // (left 0.415, width 0.555, aspect 6.02) it takes three — indices 0, 1, 2 —
+  // at units 10.09, h 0.597, and the fourth draws its three cubes loose. So
+  // the cell asserts neither number, and its guard ("the rule must collapse
+  // something") holds at both. The decision is `layoutPieces`'s: the cell
+  // reads ITS answer and checks the component drew that — which colour is a
+  // count, which is a pile, and that every other one is loose cubes — which is
+  // obedience to the rule at whatever width the band ends up, rather than the
+  // component re-deciding. The mixed case is the one worth having: with three
+  // of four collapsed the mapping assertions below can see two colours swap
+  // shapes, which an all-collapsed row cannot.
   it("collapse to one cube and a count only where the layout says so", () => {
     const { container } = render(
       <Pieces
