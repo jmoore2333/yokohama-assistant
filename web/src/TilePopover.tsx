@@ -3,7 +3,10 @@
 // At the 10rem floor the site card on a tile is ~70px wide, below what its
 // printed values need (M5 spec §3.2.2). This is the Areas drawer's row for ONE
 // tile brought to the tile: the art at 22rem so the printed ladder is legible,
-// the site card at 12rem, and the pieces in words. It is `role="tooltip"`,
+// the site card at 12rem, and the pieces as glyphs on the art AND in words —
+// the words are the accessible name, the glyphs the look-closer view a crowded
+// tile needs (owner ruling R-GA-1 at gate A of M5.5: "when hovering over a card
+// the assistants don't appear while the workshop does"). It is `role="tooltip"`,
 // never takes focus, never sits in the tab order, and `pointer-events: none`
 // so leaving the tile closes it. Positioned from the tile's rect in JS rather
 // than with CSS anchor positioning, which Safari does not have.
@@ -18,7 +21,8 @@
 import type { ArtManifest, Labels, PlayerColor, TileModel } from "./types";
 import { areaArt, fivePowerWords } from "./art";
 import { SiteFace } from "./Cards";
-import { piecesWords } from "./Pieces";
+import { Pieces, piecesWords } from "./Pieces";
+import { PIECES, pct } from "./tileRects";
 
 export interface Anchor {
   left: number;
@@ -96,7 +100,25 @@ export function TilePopover({
       <div className="tile-pop-head">
         <span className="tile-pop-id">{id}</span> <b>{name}</b>
       </div>
-      {face && <img className="tile-pop-art" src={face} alt="" />}
+      {/* The board tile's own mount, mirrored EXACTLY (`Board.tsx`'s
+          `.tile-art-box`): the same props, the same rect, the same Canal
+          exclusion. The popover must never decide anything the tile does not,
+          so there is no second layout rule here and no popover-specific CSS
+          for `.pieces` — the fit proof is one block. */}
+      <div className="tile-pop-art-box">
+        {face && <img className="tile-pop-art" src={face} alt="" />}
+        {tile.area_type !== "Canal" && (
+          <div className="pieces-band" style={pct(PIECES)}>
+            <Pieces
+              presidents={tile.presidents}
+              assistants={tile.assistants}
+              hasStation={tile.has_station}
+              colors={colors}
+              art={art}
+            />
+          </div>
+        )}
+      </div>
       <div className="tile-pop-row">
         {tile.site && <SiteFace art={art} site={tile.site} colors={colors} />}
         <div className="tile-pop-words">

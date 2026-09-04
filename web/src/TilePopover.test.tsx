@@ -4,11 +4,43 @@ import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import { Board } from "./Board";
+import { piecesWords } from "./Pieces";
 import { popoverPosition } from "./TilePopover";
 import { wire } from "./wire/contract";
-import type { PlayerColor } from "./types";
+import type { BoardModel, PlayerColor, TileModel } from "./types";
 
 const COLORS: PlayerColor[] = ["Red", "Blue"];
+const COLORS_4: PlayerColor[] = ["Red", "Blue", "Yellow", "Green"];
+
+/** How many pieces stand on a tile — presidents plus every colour's cubes. The
+ *  Station is deliberately NOT counted: it is a piece in the words and in the
+ *  band, but it makes no `.piece-group`, so a tile carrying only a Station
+ *  would satisfy a crowd test and then compare nothing. */
+const crowd = (t: TileModel): number =>
+  t.presidents.length + t.assistants.reduce((n, [, k]) => n + k, 0);
+
+/** The tile whose id badge reads `id`. */
+function tileOf(container: HTMLElement, id: string): HTMLElement {
+  const tile = [...container.querySelectorAll<HTMLElement>(".tile")].find(
+    (t) => t.querySelector(".tile-id")?.textContent === id,
+  );
+  if (!tile) throw new Error(`no tile ${id}`);
+  return tile;
+}
+
+const tileId = (t: TileModel): string => `A${String(t.area).padStart(2, "0")}`;
+
+const showBoard = (model: BoardModel, colors: PlayerColor[]) =>
+  render(
+    <Board
+      board={model}
+      art={wire.artManifest}
+      labels={wire.labels}
+      colors={colors}
+      selected={[]}
+      busy={false}
+    />,
+  );
 
 describe("where the popover goes", () => {
   it("sits right of the tile when there is room, left when there is not", () => {
@@ -139,5 +171,83 @@ describe("the popover on a tile", () => {
     expect(screen.getByRole("tooltip")).toBeTruthy();
     rerender(board({ clickable: true, busy: true }));
     expect(screen.queryByRole("tooltip")).toBeNull();
+  });
+
+  // ---- the pieces on the enlarged tile (owner ruling R-GA-1, gate A) -------
+  //
+  // The popover calls itself a tile at full size, so it draws what the tile
+  // draws — the same band, at the same rect, from the same component. Every
+  // number below is read off the BOARD tile rather than typed in: a popover
+  // that re-decided the layout (a different crowd, a different pile rule, a
+  // different `--piece-units`) fails here even though both drawings would look
+  // plausible on their own. That is the whole property, and it is not one a
+  // hand-written expectation could hold.
+  it("draws the pieces on the enlarged tile, the same glyphs the board tile shows", async () => {
+    const user = userEvent.setup();
+    // The replay frame, which is mid-game and therefore has pieces on it; the
+    // 2P options frame is move 1 and its board is bare. The fattest tile, so
+    // the comparison has both a pawn and a cube to compare.
+    const model = wire.atK.frame.board;
+    const busiest = [...model.tiles].sort((a, b) => crowd(b) - crowd(a))[0]!;
+    // The precondition, asserted: on a bare board every count below would be
+    // zero and the cell would compare nothing to nothing.
+    expect(crowd(busiest), "the replay corpus has pieces on some tile").toBeGreaterThan(0);
+
+    const { container } = showBoard(model, COLORS);
+    const tile = tileOf(container, tileId(busiest));
+    const onTile = tile.querySelector<HTMLElement>(".pieces-band .pieces");
+    expect(onTile, "the board tile draws its own pieces").not.toBeNull();
+    // Anti-vacuity on both compared counts, not just on the crowd: a tile
+    // carrying only presidents would make the cube compare 0 === 0.
+    expect(onTile!.querySelectorAll(".piece-group").length).toBeGreaterThan(0);
+    expect(onTile!.querySelectorAll(".piece.cube").length).toBeGreaterThan(0);
+
+    await user.hover(tile);
+    const pop = container.querySelector<HTMLElement>('[role="tooltip"]')!;
+    const inPop = pop.querySelector<HTMLElement>(".tile-pop-art-box .pieces-band .pieces");
+    expect(inPop, "the popover's enlarged art carries the band too").not.toBeNull();
+
+    // The accessible name IS the sentence the words row prints, so the glyphs
+    // and the words cannot drift apart.
+    const words = piecesWords(busiest.presidents, busiest.assistants, busiest.has_station, COLORS);
+    expect(inPop!.getAttribute("aria-label")).toBe(words);
+    expect(pop.textContent).toContain(words);
+
+    // What the tile drew, drawn again.
+    expect(inPop!.querySelectorAll(".piece-group")).toHaveLength(onTile!.querySelectorAll(".piece-group").length);
+    expect(inPop!.querySelectorAll(".piece.cube")).toHaveLength(onTile!.querySelectorAll(".piece.cube").length);
+    // The same crowd at the same rect aspect prices the same row, and the band
+    // is handed the same width in glyph heights it is on the tile.
+    const units = (el: HTMLElement) => el.style.getPropertyValue("--piece-units");
+    expect(units(onTile!)).not.toBe("");
+    expect(units(inPop!)).toBe(units(onTile!));
+  });
+
+  // The two ways the band draws nothing, and they are NOT the same thing: an
+  // empty tile has a band that holds no pieces (the component returns null for
+  // no words, exactly as on the board), while the Canal has no band at all
+  // (nothing ever stands there). The popover makes neither decision itself.
+  it("draws no pieces for an empty tile, and no band on the Canal", async () => {
+    const user = userEvent.setup();
+    const bare = wire.options.frame.board.tiles.find((t) => t.area_type !== "Canal" && crowd(t) === 0);
+    expect(bare, "the 2P options frame is move 1, so some tile is bare").toBeTruthy();
+    const { container } = showBoard(wire.options.frame.board, COLORS);
+    const bareTile = tileOf(container, tileId(bare!));
+    await user.hover(bareTile);
+    const pop = container.querySelector<HTMLElement>('[role="tooltip"]')!;
+    expect(pop.querySelector(".tile-pop-art-box .pieces-band"), "the band is the tile's band").not.toBeNull();
+    expect(pop.querySelector(".pieces")).toBeNull();
+    expect(pop.textContent).toContain("no pieces here");
+
+    const model = wire.options4p.frame.board;
+    const canal = model.tiles.find((t) => t.area_type === "Canal");
+    expect(canal, "the 4P corpus carries a Canal").toBeTruthy();
+    const four = showBoard(model, COLORS_4);
+    const canalTile = tileOf(four.container, tileId(canal!));
+    expect(canalTile.querySelector(".pieces-band"), "nor does the board tile draw one there").toBeNull();
+    await user.hover(canalTile);
+    const canalPop = four.container.querySelector<HTMLElement>('[role="tooltip"]');
+    expect(canalPop, "the Canal is still inspectable").not.toBeNull();
+    expect(canalPop!.querySelector(".pieces-band")).toBeNull();
   });
 });

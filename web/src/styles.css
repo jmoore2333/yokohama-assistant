@@ -1147,7 +1147,13 @@ pre.raw-panel {
 }
 .tile-pop-head { display: flex; align-items: baseline; gap: 0.4rem; font-family: var(--display); font-size: 1rem; margin-bottom: 0.4rem; }
 .tile-pop-id { color: var(--fg-faint); font-size: 10px; font-family: var(--mono); }
-.tile-pop-art { display: block; width: 100%; aspect-ratio: var(--tile-aspect); object-fit: cover; border-radius: 3px; }
+/* The enlarged tile is a BOX, not a bare image, because it carries the tile's
+ * own `.pieces-band` — which is `position: absolute` — and the aspect has to
+ * live on whatever the band is positioned against. Same rect, same component,
+ * same `.pieces` rules as the board: nothing here is specialised for the
+ * popover (owner ruling R-GA-1, gate A of M5.5). */
+.tile-pop-art-box { position: relative; width: 100%; aspect-ratio: var(--tile-aspect); }
+.tile-pop-art { display: block; width: 100%; height: 100%; object-fit: cover; border-radius: 3px; }
 .tile-pop-row { display: flex; gap: 0.6rem; margin-top: 0.5rem; align-items: flex-start; }
 .tile-pop-row .site-face { width: 12rem; flex: 0 0 12rem; }
 .tile-pop-words { font-size: 11.5px; color: var(--fg-dim); display: flex; flex-direction: column; gap: 0.25rem; }
