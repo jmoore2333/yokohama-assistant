@@ -3,6 +3,8 @@
 import { render } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { Pieces, piecesWords } from "./Pieces";
+import { bandAspect, layoutPieces } from "./piecesLayout";
+import { PIECES } from "./tileRects";
 import { wire } from "./wire/contract";
 import type { PlayerColor } from "./types";
 
@@ -27,12 +29,55 @@ describe("the pieces on a tile", () => {
     );
   });
 
-  it("draw one cube and a count from four", () => {
+  // From four a colour is a PILE: two rows, the odd cube on the top row, and
+  // no count — the M5.5 rule (spec §3.1.1) that replaces "one cube and a 4".
+  it("draw four as a two-row pile with no count", () => {
     const { container } = render(
       <Pieces presidents={[]} assistants={[[0, 4], [1, 0]]} hasStation={false} colors={COLORS} art={wire.artManifest} />,
     );
-    expect(container.querySelectorAll(".piece.cube")).toHaveLength(1);
-    expect(container.querySelector(".piece-n")?.textContent).toBe("4");
+    const pile = container.querySelector(".piece-group.pile");
+    expect(pile).not.toBeNull();
+    const rows = pile!.querySelectorAll(".pile-row");
+    expect(rows).toHaveLength(2);
+    expect(rows[0]!.querySelectorAll(".piece.cube")).toHaveLength(2);
+    expect(rows[1]!.querySelectorAll(".piece.cube")).toHaveLength(2);
+    expect(container.querySelector(".piece-n")).toBeNull();
+    expect(container.querySelector(".pieces")?.getAttribute("aria-label")).toBe("4 Red assistants");
+  });
+
+  it("put the odd cube on the top row", () => {
+    const { container } = render(
+      <Pieces presidents={[]} assistants={[[0, 5], [1, 0]]} hasStation={false} colors={COLORS} art={wire.artManifest} />,
+    );
+    const rows = container.querySelectorAll(".pile-row");
+    expect(rows[0]!.querySelectorAll(".piece.cube")).toHaveLength(3);
+    expect(rows[1]!.querySelectorAll(".piece.cube")).toHaveLength(2);
+  });
+
+  // The 17-glyph 4P crowd is the one the band cannot hold at the floor: the
+  // rule collapses the largest group, recomputes, and repeats until the glyphs
+  // reach it — and at THIS crowd that takes every colour (measured at HEAD:
+  // h 0.379 / 0.413 / 0.455 / 0.506 against the 0.55 floor, clearing it only on
+  // the fourth, at units 8.96). The decision is `layoutPieces`'s, so the cell
+  // reads its result rather than restating a number: what is proved is that the
+  // component OBEYS the rule, at whatever the rule decides.
+  it("collapse to one cube and a count only where the layout says so", () => {
+    const { container } = render(
+      <Pieces
+        presidents={[0, 1, 2, 3]}
+        assistants={[[0, 3], [1, 3], [2, 3], [3, 3]]}
+        hasStation
+        colors={["Red", "Blue", "Yellow", "Green"]}
+        art={wire.artManifest}
+      />,
+    );
+    const expected = layoutPieces({ presidents: 4, cubes: [3, 3, 3, 3], station: true }, bandAspect(PIECES));
+    expect(expected.collapsed.length, "the rule must collapse something for this cell to mean anything").toBeGreaterThan(0);
+    expect(container.querySelectorAll(".piece-n")).toHaveLength(expected.collapsed.length);
+    expect(container.querySelectorAll(".piece.cube")).toHaveLength(
+      expected.collapsed.length + (4 - expected.collapsed.length) * 3,
+    );
+    expect(container.querySelector(".piece-group.pile")).toBeNull();
   });
 
   // An empty tile draws nothing, exactly as the table does — no "no pawns".
@@ -59,15 +104,17 @@ describe("the pieces on a tile", () => {
     expect(without.container.querySelector(".chip.station")?.textContent).toBe("St");
   });
 
-  // The band's CSS shrinks the glyphs to fit the row (M5, owner ruling R-G3:
-  // "three or four assistants from multiple colors is a real probability"), and
-  // it needs the glyph count to do it: a pawn per president, a cube per
-  // assistant up to three, a cube plus its count (two widths) from four, the
-  // Station once.
-  it("tell the band how many glyphs stand in it", () => {
-    const n = (el: HTMLElement) => el.querySelector<HTMLElement>(".pieces")!.style.getPropertyValue("--piece-n");
-    expect(n(render(<Pieces presidents={[0]} assistants={[[0, 0], [1, 3]]} hasStation={false} colors={COLORS} art={wire.artManifest} />).container)).toBe("4");
-    expect(n(render(<Pieces presidents={[]} assistants={[[0, 4], [1, 0]]} hasStation={false} colors={COLORS} art={wire.artManifest} />).container)).toBe("2");
-    expect(n(render(<Pieces presidents={[0, 1]} assistants={[[0, 2], [1, 1]]} hasStation colors={COLORS} art={wire.artManifest} />).container)).toBe("6");
+  // The band's CSS divides its width by the row's width in glyph heights, and
+  // the number it is given is the layout's own `units`, to three decimals.
+  it("tell the band the row's width in units of the glyph height", () => {
+    const units = (el: HTMLElement) =>
+      el.querySelector<HTMLElement>(".pieces")!.style.getPropertyValue("--piece-units");
+    const aspect = bandAspect(PIECES);
+    const one = render(<Pieces presidents={[0]} assistants={[[0, 0], [1, 3]]} hasStation={false} colors={COLORS} art={wire.artManifest} />);
+    expect(units(one.container)).toBe(layoutPieces({ presidents: 1, cubes: [3], station: false }, aspect).units.toFixed(3));
+    const pile = render(<Pieces presidents={[]} assistants={[[0, 4], [1, 0]]} hasStation={false} colors={COLORS} art={wire.artManifest} />);
+    expect(units(pile.container)).toBe(layoutPieces({ presidents: 0, cubes: [4], station: false }, aspect).units.toFixed(3));
+    const many = render(<Pieces presidents={[0, 1]} assistants={[[0, 2], [1, 1]]} hasStation colors={COLORS} art={wire.artManifest} />);
+    expect(units(many.container)).toBe(layoutPieces({ presidents: 2, cubes: [2, 1], station: true }, aspect).units.toFixed(3));
   });
 });

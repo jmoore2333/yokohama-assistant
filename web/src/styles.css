@@ -388,40 +388,31 @@ button.tile:focus-visible { outline: 2px solid var(--vp); outline-offset: 1px; }
   border: 1px solid rgb(0 0 0 / 0.5); border-radius: 2px;
   box-shadow: 0 1px 3px rgb(0 0 0 / 0.5); background: var(--bg-sunken);
 }
-/* The row is a size container so the glyph height `--piece-h` can follow BOTH
- * its height and its width. `--piece-n` (Pieces.tsx) is the number of glyph
- * WIDTHS standing in it; a 4P crowd shrinks to one row rather than wrapping
- * onto the ladder (owner ruling R-G3), and `overflow: hidden` is the belt:
- * before it, `flex-wrap: wrap` and no clip put a crowded tile's pieces on the
- * printed ladder and over the 5-Power token silently, since `.tile`'s own clip
- * hides the spill from the page-overflow gate. Clipping a pixel of drop shadow
- * is the accepted cost; pieces over the ladder is not.
+/* **THE FIT IS PROVED, NOT TUNED.** `--piece-units` (Pieces.tsx, from
+ * `piecesLayout.ts`) is the row's width in units of the glyph height h — every
+ * glyph, gap, pile column and count digit priced as a multiple of h — so with
+ * h = min(H, W / units) the row is `units × h ≤ W` by definition, at every
+ * crowd and every tile size. The clip on `.pieces-band` stays as a belt (a
+ * pixel of drop shadow), never as the mechanism. The RULE that decides which
+ * colour is a pile, a row of singles or a cube and a count is the pure
+ * function's, and the same `units` it computed is what this block divides by,
+ * which is what keeps the decision and the drawing from disagreeing.
  *
- * **THE FIT IS PROVED, NOT TUNED, and that is why every horizontal cost below
- * is a multiple of `--piece-h` rather than a percentage or a pixel.** The first
- * draft budgeted a flat 8% for gaps, which is wrong in the direction that
- * matters: `gap` is charged between flex ITEMS, so G items cost (G−1) gaps and
- * a 4P crowd (4 presidents + 4 assistant groups + the Station = 9 items) spent
- * twice the budget. With n glyph widths in G items, and h = `--piece-h`:
- *
- *     glyphs      ≤ 0.8·h each (the STATION is the widest: its rule below sets
-                 height 0.8·h on a square token, against the pawn's 20:28
-                 viewBox at 0.71·h and the cube's 0.72·h), so ≤ 0.8·n·h
- *     inner gaps  = 0.05·h·(n − G)  ≤ 0.05·n·h    (within a group)
- *     outer gaps  = 0.10·h·(G − 1)  <  0.10·n·h   (G ≤ n)
- *     total       < 0.95·n·h ≤ W                  by the divisor below
- *
- * so the row fits at every n and every tile size, with the clip left as a belt
- * rather than as the mechanism. `.piece-n`'s font follows h for the same
- * reason — at a fixed 9px the count digits outgrew the cubes they annotate on
- * a small 4P tile. */
+ * Pieces pack to the band's RIGHT edge: a small crowd sits where it always
+ * did, under the site card, and only a large one grows leftwards over the art
+ * (owner ruling R6 of the M5.5 spec). */
 .pieces-band { position: absolute; z-index: 2; display: flex; align-items: center; container-type: size; overflow: hidden; }
 .pieces {
-  display: flex; flex-wrap: nowrap; align-items: flex-end; width: 100%; height: 100%;
-  --piece-h: min(100cqh, calc(100cqw / (var(--piece-n, 1) * 0.95)));
+  display: flex; flex-wrap: nowrap; align-items: flex-end; justify-content: flex-end; width: 100%; height: 100%;
+  --piece-h: min(100cqh, calc(100cqw / var(--piece-units, 1)));
   gap: calc(var(--piece-h) * 0.1);
 }
 .piece-group { display: inline-flex; align-items: flex-end; gap: calc(var(--piece-h) * 0.05); height: 100%; }
+/* A pile: two rows of half-height cubes that touch, the odd cube on top,
+ * right-aligned so the top row's short end faces the open band. */
+.piece-group.pile { flex-direction: column; align-items: flex-end; justify-content: flex-end; gap: 0; }
+.pile-row { display: flex; gap: 0; }
+.pile .piece.cube { height: calc(var(--piece-h) * 0.5); }
 /* An inline `<svg>` with a viewBox and no width/height is a replaced element at
  * the CSS default 300x150px — about fourteen times the height of this band — so
  * these three rules are what SIZE the pieces, not what tidies them. */
