@@ -292,21 +292,28 @@ test("four assistants of one colour stand as a pile, not as a cube and a count",
     const screen = await readScreen(page);
     if (screen.over) throw new Error("the game ended before two placements");
     if (await answer(page, /Option B/)) {
-      // `count()` does not auto-wait and every tile is `disabled` while the
-      // request is in flight, so the guard below read `offered=[]` against a
-      // zone printing "10 eligible" — the settled screen offers all ten.
+      // The picker's tiles are `disabled` while the request is in flight, so
+      // wait for the settled screen before reading tile ids off it.
       await expect(page.locator("button.tile").first()).toBeEnabled();
       const tiles = page.locator("button.tile:not([disabled])");
       const target: Locator =
         area === null
           ? tiles.first()
           : tiles.filter({ has: page.locator(`.tile-id:text-is("${area}")`) }).first();
-      if (area !== null && (await target.count()) === 0) {
-        throw new Error(`${area} is not offered for the second placement`);
-      }
       area ??= (await target.locator(".tile-id").innerText()).trim();
       await target.click();
       await page.getByRole("button", { name: "Confirm" }).click();
+      // The pile assertion must not be satisfiable by cubes that landed
+      // elsewhere, so the applied move is pinned rather than assumed: the
+      // account's own line names the area it fed ("Red: 2 assistants placed in
+      // Customs (A09)" — `render.rs:920`, `web/src/wire/options_priced.json`).
+      // A tile being clickable is no evidence, either: while picking, `disabled`
+      // is `busy` alone (`Board.tsx:361`), so every non-Canal tile is offered.
+      await expect(
+        page.locator(".last-move .messages div").filter({
+          hasText: new RegExp(`placed in .*\\(${area}\\)`),
+        }),
+      ).toHaveCount(1);
       placements += 1;
       continue;
     }
@@ -316,6 +323,9 @@ test("four assistants of one colour stand as a pile, not as a cube and a count",
     // (`describe.rs:904`) and reaches the top level only when there is nothing
     // recoverable. Answering every area 0 is what leaves the pile standing.
     if (await answer(page, /Retreat President to hand/)) {
+      // `g < 8` is generous for this script rather than a general bound: the
+      // sub-prompt asks once per area holding the mover's assistants, and here
+      // that is the one area both Option Bs fed.
       for (let g = 0; g < 8; g++) {
         const sub = await readScreen(page);
         if (sub.confirm) {
@@ -334,7 +344,13 @@ test("four assistants of one colour stand as a pile, not as a cube and a count",
     }
     if (await answer(page, /End additional-action phase|Skip the/)) continue;
     throw new Error(
-      `no scripted answer for this screen:\n${await page.locator(".decision").first().innerText()}`,
+      // `.decision` is on the warnings block too, and `App.tsx:464` renders
+      // that one FIRST — empty unless the server warned, so `.first()` quoted
+      // nothing. `:not(.notices)` is the answer bar (`Decision.tsx:107`).
+      `no scripted answer for this screen:\n${await page
+        .locator(".decision:not(.notices)")
+        .first()
+        .innerText()}`,
     );
   }
   expect(placements, "two placements were made").toBe(2);
