@@ -51,7 +51,14 @@ def icon_ink_right(im, band) -> float | None:
     That is what separates an icon printed on the icon panel from the
     illustration, which is not pale and carries no data — the owner's
     criterion for the band (M5.5 spec R6: the rect may be entered, the ink may
-    not be covered)."""
+    not be covered).
+
+    THE NUMBER IS A CANDIDATE THE EYE MUST CONFIRM, never an answer: a pale
+    illustration ground defeats the run test — on the thirteen area arts nine
+    read illustration as ink this way (PortA's band rows are 55/66 pale sky) —
+    so look at the band on every art before setting a value, and do not try to
+    automate the eye (owner ruling R-T3-1; the reading is the eye's by M5.5
+    spec §3.1.2)."""
     w, h = im.size
     px = im.convert("HSV").load()
     y0, y1 = round(band["top"] * h), round((band["top"] + band["height"]) * h)
