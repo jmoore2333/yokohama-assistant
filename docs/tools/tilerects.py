@@ -37,7 +37,46 @@ def box(draw, r, w, h, colour, width):
     )
 
 
+def is_pale(h: int, s: int, v: int) -> bool:
+    """The pale-ground test the site-card rect was measured with (M5 spec §2)."""
+    return v > 0.784 * 255 and s < 0.18 * 255
+
+
+def icon_ink_right(im, band) -> float | None:
+    """The rightmost printed-icon pixel inside the band's rows, as a fraction of
+    the width, or None when the rows hold no icon.
+
+    Only INK ON THE PALE PANEL counts: a non-pale pixel counts when a pale run
+    of at least 3% of the width lies immediately to its right (inside x < 0.5).
+    That is what separates an icon printed on the icon panel from the
+    illustration, which is not pale and carries no data — the owner's
+    criterion for the band (M5.5 spec R6: the rect may be entered, the ink may
+    not be covered)."""
+    w, h = im.size
+    px = im.convert("HSV").load()
+    y0, y1 = round(band["top"] * h), round((band["top"] + band["height"]) * h)
+    needed = int(0.03 * w)
+    right = None
+    for y in range(y0, y1):
+        run = 0
+        for x in range(int(0.5 * w) - 1, -1, -1):
+            if is_pale(*px[x, y]):
+                run += 1
+                continue
+            if run >= needed:
+                right = x / w if right is None else max(right, x / w)
+                break
+            run = 0
+    return right
+
+
 def main() -> None:
+    ink_mode = "--ink" in sys.argv
+    candidates = []
+    for arg in sys.argv[1:]:
+        if arg.startswith("--candidates="):
+            candidates = [float(c) for c in arg.split("=", 1)[1].split(",")]
+    band = RECTS["overlays"]["pieces"]
     manifest = json.loads((ART / "manifest.json").read_text())
     faces = [(k, ART / e["file"]) for k, e in sorted(manifest["areas"].items()) if k != "Canal"]
     tiles = []
@@ -45,6 +84,12 @@ def main() -> None:
         im = Image.open(path).convert("RGB")
         w, h = im.size
         d = ImageDraw.Draw(im)
+        if ink_mode:
+            edge = icon_ink_right(im, band)
+            print(f"{name:18s} icon ink right edge in the band's rows: {edge if edge is None else f'{edge:.3f}'}")
+        for c in candidates:
+            for yy in range(0, h, 6):
+                d.line([(c * w, yy), (c * w, yy + 3)], fill=(255, 255, 0), width=2)
         for r in RECTS["printed"].values():
             box(d, r, w, h, PRINTED, 2)
         for key, r in RECTS["overlays"].items():

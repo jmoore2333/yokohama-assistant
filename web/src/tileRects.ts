@@ -24,7 +24,8 @@
 // anchored top-right — and it holds a LANDSCAPE 799x530 card, since W0b turned
 // the site crops upright to match the printing.
 //
-// PIECES then takes the FULL width under the card, and its glyphs shrink to fit
+// PIECES then runs from the measured ink edge to the card's right edge, packed
+// right, and its glyphs shrink to fit
 // (owner ruling R-G3, 2026-09-02, on the first tile picture: "three or four
 // assistants from multiple colors is a real probability, especially in games
 // over 2p but even in 2p games"). That displaced ID_BADGE, which now sits in
@@ -50,6 +51,26 @@ export const SITE_CARD: Rect = rects.overlays.site_card;
 export const PIECES: Rect = rects.overlays.pieces;
 export const ID_BADGE: Rect = rects.overlays.id_badge;
 export const TOKEN_SLOT: Rect = rects.printed.token_slot;
+
+/** The rightmost printed-icon ink inside the pieces band's rows, across the
+ *  thirteen arts — `docs/tools/tilerects.py --ink`, measured 2026-09-04
+ *  (Laboratory binds at 0.395); the band's left edge is this plus the margin.
+ *  The band deliberately ENTERS the icon-block rect (M5.5 spec R6): what it
+ *  must not cover is ink, and the illustration is not data.
+ *
+ *  READ THE TOOL'S OUTPUT AT ITS REAL SIZE, because the raw run does not give
+ *  you this number: it prints a larger reading on NINE of the thirteen arts
+ *  (max 0.468, on Customs and both Ports). Its pale-run rule assumes the
+ *  illustration is not pale, and on this art set that is false — PortA's band
+ *  rows are 55/66 pale sky, so its dark shapes register as ink on the panel.
+ *  Printed icons actually reach these rows on exactly FOUR arts, the same four
+ *  the icon-block note above names: Chinatown 0.320, Church 0.379, Laboratory
+ *  0.395, Research Center 0.392. Each was confirmed against a 0.005 gridline
+ *  zoom, and the band was then looked at on all thirteen (the eye is the
+ *  authority the spec's §3.1.2 gives the reading). On the other nine the icon
+ *  block ends above the band's top edge and the rows are pure illustration. */
+export const ICON_INK_RIGHT = 0.395;
+export const BAND_MARGIN = 0.02;
 
 /** Open intervals on both axes: a shared EDGE is not an overlap. */
 export function intersects(a: Rect, b: Rect): boolean {

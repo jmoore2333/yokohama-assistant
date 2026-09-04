@@ -1,9 +1,12 @@
 // The overlay geometry: the three rects an area tile draws its pieces in
-// (`site_card`, `pieces`, `id_badge`) and the four printed regions none of them
-// may touch (`token_slot`, `ladder_band`, `title_band`, `icon_block`).
+// (`site_card`, `pieces`, `id_badge`) and the four printed regions
+// (`token_slot`, `ladder_band`, `title_band`, `icon_block`). Every overlay must
+// stay off every printed region, with ONE measured exception: the pieces band
+// enters the icon block, whose rect reaches y 0.58 while its printed ink stops
+// at 0.395 (M5.5 ruling R6 — the rect may be entered, the ink may not).
 
 import { describe, expect, it } from "vitest";
-import { ID_BADGE, inside, intersects, OVERLAYS, PIECES, pct, PRINTED, SITE_CARD, TOKEN_SLOT } from "./tileRects";
+import { BAND_MARGIN, ICON_INK_RIGHT, ID_BADGE, inside, intersects, OVERLAYS, PIECES, pct, PRINTED, SITE_CARD, TOKEN_SLOT } from "./tileRects";
 
 describe("the overlay geometry", () => {
   it("every overlay lies inside the tile", () => {
@@ -12,12 +15,21 @@ describe("the overlay geometry", () => {
     }
   });
 
-  it("no overlay covers a printed rule", () => {
+  // The pieces band may enter the ICON BLOCK — M5.5's ruling R6, on a measured
+  // ink edge — and nothing else may enter anything.
+  it("no overlay covers a printed rule, except the band over the icon block's bare ground", () => {
     for (const [name, r] of Object.entries(OVERLAYS)) {
       for (const [printed, p] of Object.entries(PRINTED)) {
+        if (name === "pieces" && printed === "icon_block") continue;
         expect(intersects(r, p), `${name} covers the ${printed}`).toBe(false);
       }
     }
+  });
+
+  it("the band starts right of the measured icon ink, by the margin", () => {
+    expect(PIECES.left).toBeGreaterThanOrEqual(ICON_INK_RIGHT + BAND_MARGIN - 1e-9);
+    expect(PIECES.left, "the band was widened past the mock's own 0.30 for nothing").toBeLessThan(0.5);
+    expect(PIECES.left + PIECES.width).toBeCloseTo(0.97, 6);
   });
 
   it("no two overlays cover each other", () => {
