@@ -476,3 +476,48 @@ the web crate.)*
 3. `2026-09-01-web-frontend-m4-spec.md` §1 and §3.1 (the drawer and the scrubber)
 4. **This file** — the authority for M5
 5. `deploy/RUNBOOK.md` for W9
+
+---
+
+## 8. The close (2026-09-04) — what shipped, and where the spec was wrong
+
+**Verdict (owner, 2026-09-04, ruling R9 of the M5.5 spec):** the owner's two rounds of
+play on the deployed client are the V2/V3 verdict this close waited for. Pictures
+accepted; the pieces band's legibility is carried to M5.5 part A; the log box's shape to
+M5.5 part C.
+
+**What shipped:** every W item of §4, with the verdict per item — W0 re-cut (+W0b sites
+turned), W1 rects (moved twice on the owner's V0/V1 answers, R-G1/R-G3), W2 grid, W2b
+Game menu, W3 fit rule, W4 art tile (+4b), W4c popover, W5a strips, W5b sections, W6 side
+column, W7/W8 help — LANDED; deployed as `yokohama-web:0.5.0-m5` then `0.5.0-m5.1` (the
+fix wave), 2026-09-02.
+
+**The fit readings beside §3.3's predictions** (this Mac, headless Chromium, DPR 2): 2P
+15.70 / 15.31 / 22.00 rem at 1440×900 / 1710×869 / 2560×1440; 3P 12.48 / 14.65 / 22.00;
+4P 10.33 / 12.15 / 20.00; 10.00 (the floor) at 1440×600 for every count. §3.3's own
+15.4 rem for 2P at 1710×869 does not follow from its formula, which gives 15.31 — a
+0.09 rem slip in the spec, recorded here, not edited there.
+
+**The payload delta:** the art went from 3.0 MB to 7.7 MB across the same 132 files
+(source-width crops); first paint 297,120 B; help 4,199,746 B across five pictures
+(runbook §3.4).
+
+**Deviations from this spec, decided while planning and executing** — the eleven at the
+end of the plan, plus the ten in the execution handover §4 (Task 4b inserted for the site
+crops' quarter turn; the gates did not stop; opus from Task 3; the aspect test's two rows;
+the rects moved; two `--card-w` regimes; six V2 states; five help pictures; the deploy run
+by the controller; Task 16 deferred to M5.5's Task 0).
+
+**Spec defects recorded forward:** S1–S7 and P1–P3 of the execution handover §6, verbatim
+by reference.
+
+**Counts at the close** (HEAD `b1ccaa4`): `cd web && npm test` **296** in 19 files;
+`npm run e2e` **32** in 5 spec files, plus the two opt-in generators `shots.spec.ts` and
+`gates.spec.ts` that the glob drops; `cargo test -p yokohama-web` **72** (66 lib + 1
+whole-game gate + 5 `wire_fixtures`); wire corpus `web/src/wire/` **43** files; help
+pictures **5**, **4,199,746 B**; card art **132** files, **7,552 KiB**. `crates/` since
+`054e762`: only `assets/art/**` and `art.rs`'s two aspect rows; core against master EMPTY;
+`SEMANTICS_REV` 7.
+
+**Not claimed:** §5 stands. M5 has no gate on the fifteen-gate roster and no roster place;
+the browser walk stays local by ruling.
