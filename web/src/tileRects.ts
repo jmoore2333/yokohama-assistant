@@ -65,7 +65,8 @@ export const TOKEN_SLOT: Rect = rects.printed.token_slot;
  *  same four the icon-block note above names: Chinatown 0.320, Church 0.379,
  *  Laboratory 0.395, Research Center 0.392. LABORATORY BINDS. Each was
  *  confirmed against a 0.005 gridline zoom, and the band was then looked at on
- *  all thirteen arts (owner ruling R-T3-1, 2026-09-04). */
+ *  all thirteen arts (ruled during execution, 2026-09-04, recorded in the M5.5
+ *  close). */
 export const ICON_INK_RIGHT = 0.395;
 export const BAND_MARGIN = 0.02;
 
