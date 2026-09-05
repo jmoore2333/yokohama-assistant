@@ -33,9 +33,10 @@ The counts at the milestone's base `b1ccaa4` matched the plan's expectations exa
 independently re-measured by the task reviewer: vitest 296 in 19 files, e2e 32, `cargo test -p
 yokohama-web` 72, wire corpus 43, help pictures 5 at 4,199,746 B, art 132 files.
 
-**R9's verdict, in the owner's words** (spec §1): the two rounds of play on the deployed M5 client
-are the V2/V3 answer M5's close was waiting for — pictures accepted, the pieces band's legibility
-carried into part A and the log box's shape into part C.
+**R9's verdict, as the spec records it** (`2026-09-04-web-frontend-m5.5-spec.md:146-148`,
+verbatim): *"**R9 — the verdict on M5's pictures.** The owner's two rounds of play are the V2/V3
+verdict M5's close was waiting for: pictures accepted; the pieces band's legibility carried to A;
+the log box's shape carried to C."*
 
 ### Part A — the pieces band (Tasks 1, 2, 3, 4, 4b)
 
@@ -56,26 +57,28 @@ remaining group's collapse reduces the row the loop ends with the honest h and r
 it still has.
 
 **The rect is a measurement, not a choice** (spec §3.1.2), and the measurement needed an eye
-(ruling R-T3-1). `docs/tools/tilerects.py --ink` reports the rightmost ink inside the band's rows;
-on nine of the thirteen area arts it reads *illustration* as ink (Port A's band rows are 55 of 66
-pale sky, so its dark shapes register as ink on the panel). The raw readings and the
-eye-confirmed ones, all thirteen:
+(ruling R-T3-1). `docs/tools/tilerects.py --ink` reports the rightmost ink inside the band's rows,
+and on **eleven** of the thirteen area arts what it reports is illustration rather than printed
+ink (Port A's band rows are 55 of 66 pale sky, so its dark shapes register as ink on the panel);
+on **nine** of those eleven there is no printed ink in the band's rows at all, because the icon
+block ends above the band's top edge. Only Church reads correctly, and Tea Plantation reports
+nothing. The full table, in the four columns `task-3-report.md:21-33` splits it into:
 
-| art | raw `--ink` | eye-confirmed printed ink |
-|---|---|---|
-| Bank | 0.432 | illustration |
-| Chinatown | 0.465 | **0.320** |
-| Church | 0.379 | **0.379** (raw correct) |
-| Copper Mine | 0.451 | illustration |
-| Customs | 0.468 | illustration |
-| Employment Agency | 0.426 | illustration |
-| Fishing Ground | 0.456 | illustration |
-| Laboratory A | 0.463 | **0.395** (a roofline was the raw reading) |
-| Laboratory B | 0.464 | **0.392** |
-| Port A | 0.468 | illustration |
-| Port B | 0.468 | illustration |
-| Silk Mill | 0.460 | illustration |
-| Tea Plantation | None | none |
+| art | raw `--ink` reading | is it printed ink? | printed ink's right edge |
+|---|---|---|---|
+| Bank | 0.432 | no — illustration | none in the band's rows |
+| Chinatown | 0.465 | no — illustration | **0.320** |
+| Church | 0.379 | **yes** | **0.379** |
+| Copper Mine | 0.451 | no — illustration | none |
+| Customs | 0.468 | no — illustration | none |
+| Employment Agency | 0.426 | no — illustration | none |
+| Fishing Ground | 0.456 | no — illustration | none |
+| Laboratory A | 0.463 | no — illustration (a roofline) | **0.395** |
+| Laboratory B | 0.464 | no — illustration | **0.392** |
+| Port A | 0.468 | no — illustration | none |
+| Port B | 0.468 | no — illustration | none |
+| Silk Mill | 0.460 | no — illustration | none |
+| Tea Plantation | None | — | none |
 
 Printed icons reach the band's rows on exactly four arts. **Laboratory A binds at 0.395, so
 L = 0.395 + 0.02 = 0.415**: the band is x 0.415 → 0.97, width 0.555, aspect **6.025**. The spec
@@ -100,9 +103,10 @@ mounts the *same* band the board tile draws, at the same `pct(PIECES)` rect, wit
 excluded and the words row unchanged. The two components' four inline `pct` strings are compared
 to each other, so substituting a different rect fails.
 
-**Gate A pictures** (`docs/temp/web-review/gates/`, sent to the owner 2026-09-04, no stop):
-`a-pile-1710x869.png`, `v1-2p-1710x869.png`, `v1-4p-1710x869.png`, `tile-rects.png`, and
-`v1-2p-2560x1440.png`, which is the frame the owner answered on. Task 4b re-shot
+**Gate A pictures** (sent to the owner 2026-09-04, no stop): `a-pile-1710x869.png`,
+`v1-2p-1710x869.png`, `v1-4p-1710x869.png` and `v1-2p-2560x1440.png` — the last being the frame
+the owner answered on — all in `docs/temp/web-review/gates/`, plus the contact sheet
+`docs/temp/web-review/tile-rects.png`, which the tool writes one level up. Task 4b re-shot
 `v1-4p-popover.png` — the 4P popover showing the Yellow president on the enlarged Copper Mine art
 at 53 px against the board tile's 30 px.
 
@@ -234,7 +238,7 @@ opened read-only where a check wanted one, never played on, and never deleted.
 
 ## 2. The rulings taken during execution
 
-Forty-eight, every one in the ledger with its full reasoning. The cost column is each ruling's own
+Forty-nine, every one in the ledger with its full reasoning. The cost column is each ruling's own
 "costs if wrong" clause, compressed.
 
 | # | scope | what it ruled | cost if wrong |
@@ -287,8 +291,9 @@ Forty-eight, every one in the ledger with its full reasoning. The cost column is
 | R-F10 | fix wave | three residual false comments and one assertion operator are fixed as one commit the controller reads itself | an unreviewed comment |
 | R-F11 | fix wave | the account scrolls **its own box** and never the page — R-F5's mechanism replaced | one effect rewritten twice |
 | R-F12 | fix wave | the five R-F11 residual minors are parked for M6's entry | a folded account that unfolds at the list's end once |
+| R-F13 | the close | above 1201px the walk does not scroll the side column to the lit row: at the owner's 1710×869 a nine-row turn fits, and the table plus the strip's "step k of n" carry the step, so the generalization — scroll the nearest scrollable ancestor that is not the document (`.side` on desktop, `.messages` in the stack) — goes to M6 by way of §7's LEAVE list | a long bot turn's lit row below the side column's fold on desktop |
 
-Three of the forty-eight are the **owner's**, all three taken at a gate on a picture: R-GA-1,
+Three of the forty-nine are the **owner's**, all three taken at a gate on a picture: R-GA-1,
 R-GC-1 and R-GC-2. Two of them inserted tasks the plan did not have (4b and 9b).
 
 ---
@@ -341,35 +346,50 @@ R-GC-1 and R-GC-2. Two of them inserted tasks the plan did not have (4b and 9b).
 17. **The 9rem cap is kept below 1201px** (R-T8-2). Spec §3.2.5 says "the 9rem cap goes"
     unqualified; below 1201px the side column is not the scroller, so dropping it grows the page
     stack without bound — a breach of the milestone's own M5-R8 constraint.
-18. **`data-beat` and `--dwell-ms` live on `div.app`** (R-T9b-1), not the table the plan named: the
+18. **Task 9's five accepted deviations from its own brief**, each judged the smallest fix and
+    accepted at that task's review — two of them shipped product facts:
+    `TableSections` takes a **second boolean `scrubbing`**, distinct from `replaying`
+    (`web/src/TableSections.tsx:51`), because with the brief's single flag a walk costs a second
+    `/ports` per bot turn and the one-refresh-per-response cell fails;
+    the app root carries **`data-busy`** (`web/src/App.tsx:444`) — a product attribute added for
+    the browser harness, whose settle signal was blind on a finished game's button-free deck; the
+    alternative was a sleep, and the race was measured;
+    the harness's **`skip` lookup is scoped to the deck**, because the deck strip's skip and the
+    account's skip are two same-named buttons, both plan-mandated;
+    the brief's claim that **an account row's wording equals the reply's applied-move line is
+    false** (the log's wording is not the delta's, `render.rs:922` against `log.json`), so the pile
+    cell's pin keeps the area id instead;
+    and **two existing e2e assertions moved** — the ones asserting the port and lab strips COLLAPSE
+    while replaying, which part C's own §3.2.1 made false by design.
+19. **`data-beat` and `--dwell-ms` live on `div.app`** (R-T9b-1), not the table the plan named: the
     seat rows and technology chips are in a sibling column, which a table-scoped custom property
     cannot reach.
-19. **Task 11 carries the minimal client `keeps` change** (R-T11-1), so no intermediate commit
+20. **Task 11 carries the minimal client `keeps` change** (R-T11-1), so no intermediate commit
     ships a client every preview and create would 400.
-20. **The set table asserts zero page overflow** at four widths (R-T12-1); spec §4.3's bullet had
+21. **The set table asserts zero page overflow** at four widths (R-T12-1); spec §4.3's bullet had
     no cell in the plan.
-21. **The Boards menu is a shared component on the set table** (R-T12-2) — spec §3.3.3 required it
+22. **The Boards menu is a shared component on the set table** (R-T12-2) — spec §3.3.3 required it
     and the plan's banner JSX omitted it.
-22. **The deal cards drop the reward-chip rows and the deck's cap is 62vh above 1201px**
+23. **The deal cards drop the reward-chip rows and the deck's cap is 62vh above 1201px**
     (R-T12-3), which is what makes spec §3.3.3's "both scores and the mark" true at 1710×869.
-23. **One `useSections()`, hoisted to App** (R-T12-4).
-24. **Spec §3.2.4's "the last step's highlights" is read as the turn's** (R-F1, R-F1a): the union
+24. **One `useSections()`, hoisted to App** (R-T12-4).
+25. **Spec §3.2.4's "the last step's highlights" is read as the turn's** (R-F1, R-F1a): the union
     of `changes` over the run's steps whose mover is the last step's. The literal reading delivers
     nothing on screen, because every bot turn ends with an event that changes nothing.
-25. **The tile is one `<div role="button">` in both states** (R-F2). Inherited from before this
+26. **The tile is one `<div role="button">` in both states** (R-F2). Inherited from before this
     milestone's range and fixed inside it, because the set table and the walk deliver the player to
     exactly that click.
-26. **Spec §3.2.5's "the rows scroll to keep it in view" is delivered inside the account's own
+27. **Spec §3.2.5's "the rows scroll to keep it in view" is delivered inside the account's own
     box** (R-F5, then R-F11). `scrollIntoView` was the first mechanism and it scrolled the *window*
     in the below-1201 stack; the shipped effect writes `scrollTop` on the element carrying the cap
     and does nothing when that element is not a scroller. **Above 1201px, where the cap is
     released, nothing scrolls the lit row into view** — recorded in §8.
-27. **The human's own closing event walks as step 1** (R-F7, LEAVE), so a bot walk opens with a
+28. **The human's own closing event walks as step 1** (R-F7, LEAVE), so a bot walk opens with a
     row in the player's own colour. Spec §3.2.2 walks the whole run; at 400 ms it is a flash.
-28. **The opening-run walk is unreachable from the wizard** (R-F8, LEAVE): the bot-seat select
+29. **The opening-run walk is unreachable from the wizard** (R-F8, LEAVE): the bot-seat select
     excludes seat 0 and `start_seat` is fixed at 0, so spec §3.2.2's last bullet describes an
     API-only shape. The flag is pinned; the walk is not reachable from the screen.
-29. **Spec §4.1's "no other file moves"** is a slip (R-F9): `events` lands in every `ClientState`
+30. **Spec §4.1's "no other file moves"** is a slip (R-F9): `events` lands in every `ClientState`
     fixture, which the plan expected and the corpus diff shows.
 
 ---
@@ -443,6 +463,13 @@ was added, `the_playback.spec.ts`.
 
 `cd web && npm run typecheck` and `cargo clippy --workspace --all-targets -- -D warnings` were both
 re-run at `cc01dab` and are clean.
+
+**Spec §6.4 — the lane memory — is done, and it is not in this repository.**
+`yokohama-web-lane-status.md` and its `MEMORY.md` index line live in the agent's own memory
+directory, not in git; the orchestrating session held that item and reports it updated once at
+this close, as §6.4 asks. Nothing here can be checked out to prove it — this sentence is the
+record that it was owed and answered, so a reader looking for the §6.4 artifact stops looking in
+the repository.
 
 ---
 
