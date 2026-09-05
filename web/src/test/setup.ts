@@ -15,7 +15,13 @@
 // 3. **`IntersectionObserver`/`matchMedia` are absent in jsdom**, and are
 //    stubbed only if something needs them. Nothing does today; when something
 //    does, it is stubbed here rather than in each test.
-// 4. **`localStorage` is an in-memory `Storage`, because Node's is not one.**
+// 4. **`Element.prototype.scrollIntoView` is a no-op, because jsdom has none.**
+//    `TurnAccount` scrolls the walk's lit row into view (spec §3.2.5), and
+//    without this every cell that renders a running walk dies on
+//    "scrollIntoView is not a function". A no-op is the honest stub: jsdom
+//    implements no layout, so there is nothing a real one could do — and the
+//    cell that is ABOUT the scroll installs its own recorder over this one.
+// 5. **`localStorage` is an in-memory `Storage`, because Node's is not one.**
 //    jsdom does not install one under this environment (`window.localStorage`
 //    is `undefined`), so `globalThis.localStorage` resolved to NODE 26's own
 //    getter — which warns `ExperimentalWarning: localStorage is not available
@@ -30,6 +36,8 @@
 import "@testing-library/jest-dom/vitest";
 import { afterEach, beforeEach, vi } from "vitest";
 import { cleanup } from "@testing-library/react";
+
+Element.prototype.scrollIntoView = () => {};
 
 /** The `Storage` interface, in a `Map`. Nothing here persists past the test. */
 function memoryStorage(): Storage {

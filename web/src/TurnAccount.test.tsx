@@ -177,6 +177,82 @@ describe("the turn account with a run", () => {
   });
 });
 
+describe("the account keeps its lit row in view", () => {
+  // **Spec §3.2.5: "the rows scroll to keep it in view".** It did not — the
+  // final review found no `scrollIntoView` anywhere in the client (m4). Above
+  // 1201px a nine-row account fits, which is why it went unnoticed; below it
+  // the box is capped at 9rem (144px measured at 390 for 396px of rows), so
+  // from about step 5 the lit row is inside the scroller's hidden part and the
+  // walk lights something nobody can see.
+  //
+  // jsdom implements no layout and therefore no `scrollIntoView` at all
+  // (`src/test/setup.ts` stubs a no-op for every other cell), so the RECORDER
+  // below is the whole instrument: which element was asked to scroll, and with
+  // what.
+  const record = () => {
+    const seen: { el: Element; opts: unknown }[] = [];
+    const before = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = function (this: Element, opts?: unknown) {
+      seen.push({ el: this, opts });
+    } as typeof Element.prototype.scrollIntoView;
+    return { seen, restore: () => void (Element.prototype.scrollIntoView = before) };
+  };
+
+  const account = (run: ReturnType<typeof botRun> | null, at: number | null) => (
+    <TurnAccount
+      messages={[]}
+      run={run}
+      at={at}
+      playing={at !== null}
+      cadence={2000}
+      labels={wire.labels}
+      colors={COLORS}
+      {...handlers}
+    />
+  );
+
+  it("scrolls the row the walk lit, each time the lit step changes, and nothing else", () => {
+    const run = botRun();
+    const { seen, restore } = record();
+    try {
+      const { container, rerender } = render(account(run, 0));
+      const rows = () => [...container.querySelectorAll("li")];
+      expect(rows(), "the run must put rows in the body").toHaveLength(2);
+      // `block: "nearest"` and not `center`: the row is brought just inside the
+      // scroller, so a walk does not jerk the account on every step.
+      expect(seen.map((s) => s.opts)).toEqual([{ block: "nearest" }]);
+      expect(seen.map((s) => s.el)).toEqual([rows()[0]]);
+
+      rerender(account(run, 1));
+      expect(seen.map((s) => s.el)).toEqual([rows()[0], rows()[1]]);
+
+      // Keyed on the lit STEP, so a re-render that lights the same row again
+      // asks for nothing: an effect that re-ran on every render would fight a
+      // player scrolling the account by hand.
+      rerender(account(run, 1));
+      expect(seen).toHaveLength(2);
+    } finally {
+      restore();
+    }
+  });
+
+  it("scrolls nothing when there is no lit row", () => {
+    const run = botRun();
+    const { seen, restore } = record();
+    try {
+      // A finished walk still shows its run — this is the account after `skip`,
+      // and it must not haul the box around behind the player's back.
+      const { rerender } = render(account(run, null));
+      expect(seen).toHaveLength(0);
+      // And nor must the prose box, which has no rows at all.
+      rerender(account(null, null));
+      expect(seen).toHaveLength(0);
+    } finally {
+      restore();
+    }
+  });
+});
+
 describe("the turn account without a run", () => {
   it("holds every prose line the server sent, refusals as warnings", () => {
     const state = wire.refused;

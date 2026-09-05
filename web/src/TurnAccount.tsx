@@ -15,7 +15,7 @@
 // order while leaving them in the accessibility tree — which is the whole
 // point of folding this way rather than unmounting.
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { seatClass } from "./Cards";
 import { CADENCES, type Cadence } from "./playback";
 import type { Labels, PlayerColor } from "./types";
@@ -74,6 +74,24 @@ export function TurnAccount({
   const last = run?.steps[run.steps.length - 1];
   const walking = run !== null && at !== null;
   const seat = (s: number) => colors[s] ?? `Seat ${s}`;
+
+  // **The lit row is scrolled into view (spec §3.2.5, ruling R-F5).** The box
+  // is capped — 9rem below 1201px, measured at 144px holding 396px of rows at
+  // 390 — so from about the fifth step the walk was lighting a row inside the
+  // scroller's hidden part, and the account said nothing about the step on the
+  // table. Above 1201px a long side column has the same problem.
+  //
+  // `block: "nearest"` rather than `center`: the row is brought just inside the
+  // scroller and a row already in view is not moved at all, so a walk does not
+  // jerk the account on every step. Keyed on the lit step and the run — never
+  // on every render, which would fight a player scrolling by hand — so nothing
+  // moves for an account that is not walking, and nothing but the lit row is
+  // ever asked to scroll.
+  const rows = useRef<(HTMLLIElement | null)[]>([]);
+  useEffect(() => {
+    if (at === null) return;
+    rows.current[at]?.scrollIntoView({ block: "nearest" });
+  }, [at, run]);
   return (
     <section className="panel turn-account">
       <h2>
@@ -128,7 +146,14 @@ export function TurnAccount({
         {run ? (
           <ol className="account">
             {run.steps.map((s, i) => (
-              <li key={s.event} className={i === at ? "at" : ""} aria-current={i === at ? "step" : undefined}>
+              <li
+                key={s.event}
+                ref={(el) => {
+                  rows.current[i] = el;
+                }}
+                className={i === at ? "at" : ""}
+                aria-current={i === at ? "step" : undefined}
+              >
                 <span className="chip phase">{(s.phase && labels?.phases[s.phase]) ?? s.phase ?? ""}</span>
                 <span className={`mover ${seatClass(colors[s.mover])}`}>{seat(s.mover)}</span>
                 <button
