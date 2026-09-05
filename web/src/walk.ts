@@ -18,7 +18,8 @@ export interface Step {
   mover: PlayerId;
   moverIsBot: boolean;
   /** The phase the mover was in when it decided — `null` only on a payload
-   *  whose chain is empty, which no served frame has. */
+   *  whose chain is empty, or whose `current_phase` indexes past the end of
+   *  that chain; neither is true of any frame this server serves. */
   phase: TurnPhase | null;
   before: HistoricalFrame;
   after: HistoricalFrame;

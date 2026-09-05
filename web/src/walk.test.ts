@@ -5,9 +5,18 @@ import { describe, expect, it } from "vitest";
 import { QUICK_DWELL } from "./playback";
 import { buildRun, dwellFor, hasBotStep, walkReducer, type WalkState } from "./walk";
 import { wire } from "./wire/contract";
-import type { HistoricalFrame, LogPanel } from "./types";
+import type { HistoricalFrame, LogPanel, PlayerId } from "./types";
 
 const clone = (f: HistoricalFrame): HistoricalFrame => JSON.parse(JSON.stringify(f));
+
+/** Mark a seat a bot in ONE position's Players panel. Per position, because
+ *  which seat is a bot is read off the position before each event — a helper
+ *  that wrote every frame at once could not tell the two apart. */
+function markBot(f: HistoricalFrame, seat: PlayerId): void {
+  const players = f.frame.dashboard.find((p) => "Players" in p);
+  if (!players || !("Players" in players)) throw new Error("no Players panel");
+  players.Players.players.find((p) => p.seat === seat)!.is_bot = true;
+}
 
 /** Three positions after events 10, 11 and 12 of a game: the first step moves
  *  a cube, the second changes nothing on the table.
@@ -61,9 +70,11 @@ describe("buildRun", () => {
   it("knows a bot's step from the Players panel of the position before it", () => {
     const { frames, log } = fixture();
     expect(hasBotStep(buildRun(10, frames, log))).toBe(false);
-    const players = frames[1]!.frame.dashboard.find((p) => "Players" in p);
-    if (!players || !("Players" in players)) throw new Error("no Players panel");
-    players.Players.players.find((p) => p.seat === 1)!.is_bot = true;
+    // Seat 1 is a bot in BOTH positions, and step 0's mover is seat 0. So a
+    // step that answered "is ANY seat here a bot" rather than "is the MOVER a
+    // bot" would read true for step 0, where the cell wants false.
+    markBot(frames[0]!, 1);
+    markBot(frames[1]!, 1);
     const run = buildRun(10, frames, log);
     expect(run.steps[1]!.moverIsBot).toBe(true);
     expect(run.steps[0]!.moverIsBot).toBe(false);
@@ -77,6 +88,9 @@ describe("buildRun", () => {
     expect(run.steps[1]!.changes.any).toBe(false);
     expect(dwellFor(run.steps[0]!, 3000)).toBe(3000);
     expect(dwellFor(run.steps[1]!, 3000)).toBe(QUICK_DWELL);
+    // A second cadence, so the dwell is read from the ARGUMENT and not from a
+    // constant that happens to equal the only value ever passed.
+    expect(dwellFor(run.steps[0]!, 1000)).toBe(1000);
   });
 });
 
@@ -96,6 +110,7 @@ describe("walkReducer", () => {
     expect(walkReducer(s(2), { type: "forward" }, last)).toBeNull();
   });
   it("jumps within the run, paused, and skip ends it", () => {
+    expect(walkReducer(s(0), { type: "jump", to: 1 }, last)).toEqual(s(1, false));
     expect(walkReducer(s(0), { type: "jump", to: 7 }, last)).toEqual(s(2, false));
     expect(walkReducer(s(2), { type: "jump", to: -3 }, last)).toEqual(s(0, false));
     expect(walkReducer(s(1), { type: "skip" }, last)).toBeNull();

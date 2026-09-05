@@ -44,6 +44,16 @@ describe("the cadence", () => {
     // reading of where the module wrote and not of what it was handed.
     expect(s.getItem("some.other.key")).toBeNull();
   });
+  it("round-trips through the browser's own storage when handed none", () => {
+    // The one cell that executes `browserStorage()` — every other passes a
+    // fake, so the default-argument path was reachable only in a real browser
+    // and exercised by nothing. jsdom's `localStorage` is a real one.
+    localStorage.removeItem(KEY);
+    saveCadence(1000);
+    expect(loadCadence()).toBe(1000);
+    expect(localStorage.getItem(KEY)).toBe("1000");
+    localStorage.removeItem(KEY);
+  });
   it("reads the default when storage throws or holds a value that is not a cadence", () => {
     expect(loadCadence(fakeStorage(undefined, true))).toBe(2000);
     expect(loadCadence(fakeStorage("1500"))).toBe(2000);
