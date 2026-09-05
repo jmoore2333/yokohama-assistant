@@ -1168,11 +1168,24 @@ pre.raw-panel {
 .turn-account h2 select { margin-left: auto; font: inherit; font-size: 10px; background: var(--bg-sunken); color: var(--fg); border: 1px solid var(--line); border-radius: 3px; }
 /* Every button in the header, the fold included — it is a `.ghost` too. */
 .turn-account h2 .ghost { font-size: 10px; padding: 0 0.4rem; letter-spacing: 0; text-transform: none; }
-/* **No `max-height` here any more.** The box was capped at 9rem because it held
- * prose it could not shorten; the account is one row per event and takes the
- * height it needs, and the side column is what scrolls (M5.5 spec §3.2.5). */
-.turn-account .messages { margin-top: 0.3rem; overflow: auto; scrollbar-width: thin; }
+/* **The 9rem cap is the DEFAULT and is lifted only above 1201px (ruling
+ * R-T8-2).** The account is one row per event and wants the height it needs,
+ * with the side column scrolling instead — but `.side` is only a scroller
+ * inside `@media (min-width: 1201px)` (its `overflow: auto` is declared there
+ * and nowhere else, ~:200). BELOW that width `.side` is part of the page
+ * stack, so an uncapped account would trade a 9rem internal scroller for
+ * unbounded page growth, which is the sub-1201 column stack changing — what
+ * M5's R8 says must not happen. So the cap stays here and goes away there. */
+.turn-account .messages { margin-top: 0.3rem; max-height: 9rem; overflow: auto; scrollbar-width: thin; }
 .turn-account .messages.folded { max-height: 0; overflow: hidden; margin-top: 0; }
+@media (min-width: 1201px) {
+  /* The width at which `.side` becomes the scroller (M5.5 spec §3.2.5).
+   * `:not(.folded)` rather than a bare `.messages`: the folded rule wins on
+   * specificity today (three classes against two), but that is an accident of
+   * how the folded rule is written, and a fold that stops folding above 1201px
+   * is not a failure anything here would catch. */
+  .turn-account .messages:not(.folded) { max-height: none; }
+}
 /* **The empty region keeps its box.** `.messages:empty` is `display: none`,
  * which is right for the deck's own blocks and wrong here: an element that is
  * not displayed is not in the accessibility tree either, so the region would

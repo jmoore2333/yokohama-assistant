@@ -35,6 +35,10 @@ function botRun(phase?: number) {
   f1.frame.board.tiles[0]!.assistants[1]![1] += 2;
   const f2 = clone(f1);
   f2.frame.decision.current_phase += 1;
+  // The position AFTER the last step is a NEW turn. Without this the fixture
+  // clones one frame three times, `before` and `after` carry the same
+  // `turn_number`, and the heading cell below cannot tell them apart.
+  f2.frame.decision.turn_number += 1;
   return buildRun(20, [f0, f1, f2], {
     total: 22,
     entries: [
@@ -64,7 +68,14 @@ describe("the turn account with a run", () => {
   it("is headed by the mover's turn, one row per event with its phase and its line", () => {
     const run = botRun();
     show({ run });
-    expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent(/Blue's turn \d+/);
+    // **Not the whole `<h2>`.** The cadence select's option text lives inside it,
+    // so its textContent reads "Blue's turn 921 s2 s3 shide" — and a heading
+    // printing NO number at all still matches /Blue's turn \d+/ through the
+    // select's own "1 s". The seat span is the heading's own words, and the
+    // match is exact: the run's last step is BEFORE turn 92 and AFTER turn 93,
+    // so reading `last.after` here prints 93 and fails.
+    const heading = screen.getByRole("heading", { level: 2 });
+    expect(heading.querySelector("span")!.textContent).toBe("Blue's turn 92");
     const rows = screen.getAllByRole("listitem");
     expect(rows).toHaveLength(2);
     expect(rows[0]).toHaveTextContent(/Place 2 assistants in Tea Plantation/);
@@ -82,6 +93,9 @@ describe("the turn account with a run", () => {
     const rows = screen.getAllByRole("listitem");
     expect(rows[1]).toHaveClass("at");
     expect(rows[0]).not.toHaveClass("at");
+    // Colour alone does not say which step is on the table.
+    expect(rows[1]).toHaveAttribute("aria-current", "step");
+    expect(rows[0]).not.toHaveAttribute("aria-current");
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: "Pause" }));
     await user.click(screen.getByRole("button", { name: "Step forward" }));
@@ -181,7 +195,8 @@ describe("the turn account without a run", () => {
   // with no trailing space left behind by the folded arm: the CSS does not
   // care, but anything reading the className back does.
   it("keeps its live region mounted while empty, and folds without unmounting it", async () => {
-    const { container } = show({});
+    const first = show({});
+    const { container } = first;
     const region = container.querySelector('[role="status"]');
     expect(region).not.toBeNull();
     expect(region!.textContent).toBe("");
@@ -192,5 +207,19 @@ describe("the turn account without a run", () => {
     await user.click(screen.getByRole("button", { name: "show" }));
     expect(container.querySelector(".messages.folded")).toBeNull();
     expect(container.querySelector('[role="status"]')!.className).toBe("messages");
+
+    // **Folding CLIPS, it does not hide** (`max-height: 0; overflow: hidden`),
+    // so a folded account with rows in it would otherwise leave every
+    // `.log-jump` in the tab order: a keyboard user tabbing into controls
+    // nobody can see. Taking them out of the tab order rather than out of the
+    // tree is what keeps the live region announcing (ruling R-T8-1).
+    first.unmount();
+    const withRun = show({ run: botRun() });
+    const jumps = () => [...withRun.container.querySelectorAll(".log-jump")];
+    expect(jumps().length, "the run must put rows in the body").toBe(2);
+    await user.click(screen.getByRole("button", { name: "hide" }));
+    for (const b of jumps()) expect(b).toHaveAttribute("tabindex", "-1");
+    await user.click(screen.getByRole("button", { name: "show" }));
+    for (const b of jumps()) expect(b).toHaveAttribute("tabindex", "0");
   });
 });

@@ -7,6 +7,13 @@
 // The `role="status"` container stays mounted and empty rather than
 // unmounted, because a live region inserted with its text is unreliably
 // announced; folding hides it with `max-height: 0`, which keeps it in the tree.
+//
+// **That is also why the row buttons carry `tabIndex` (ruling R-T8-1).**
+// `max-height: 0; overflow: hidden` CLIPS; it does not hide, so a folded
+// account leaves its `.log-jump` buttons in the tab order and a keyboard user
+// tabs into controls nobody can see. `tabIndex={-1}` takes them out of that
+// order while leaving them in the accessibility tree — which is the whole
+// point of folding this way rather than unmounting.
 
 import { useState } from "react";
 import { seatClass } from "./Cards";
@@ -121,10 +128,15 @@ export function TurnAccount({
         {run ? (
           <ol className="account">
             {run.steps.map((s, i) => (
-              <li key={s.event} className={i === at ? "at" : ""}>
+              <li key={s.event} className={i === at ? "at" : ""} aria-current={i === at ? "step" : undefined}>
                 <span className="chip phase">{(s.phase && labels?.phases[s.phase]) ?? s.phase ?? ""}</span>
                 <span className={`mover ${seatClass(colors[s.mover])}`}>{seat(s.mover)}</span>
-                <button type="button" className="log-jump" onClick={() => onJump(i)}>
+                <button
+                  type="button"
+                  className="log-jump"
+                  tabIndex={folded ? -1 : 0}
+                  onClick={() => onJump(i)}
+                >
                   {s.line}
                 </button>
               </li>
