@@ -4,7 +4,7 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { haveBrowser } from "../playwright.config";
 import { pyramidFits, tileWidthFor } from "../src/fit";
-import { act, readScreen, rng, startGame, watchForBreakage } from "./harness";
+import { act, blame, readOverflow, readScreen, rng, startGame, watchForBreakage } from "./harness";
 
 test.skip(!haveBrowser, "no Chromium — YOKOHAMA_WEB_E2E_OPTIONAL=1; this run tested NOTHING");
 
@@ -393,5 +393,72 @@ test("four assistants of one colour stand as a pile, not as a cube and a count",
   expect(cube?.height ?? 0).toBeGreaterThan(0);
   mkdirSync("../docs/temp/web-review/gates", { recursive: true });
   await page.screenshot({ path: "../docs/temp/web-review/gates/a-pile-1710x869.png" });
+  expect(watch.failures).toEqual([]);
+});
+
+// ---- M5.5 part B: the set table --------------------------------------------
+//
+// The two halves jsdom cannot see. (1) The port strip on the setup screen draws
+// SIX cards from `preview.table` rather than the "loading…" line a fetch with
+// no game to name would leave — the component suite asserts the element, this
+// asserts it against a real server. (2) The card the player pressed is the card
+// that reaches the hand of the game that is then created, which spans the
+// preview's seed, the `keeps` the create carries and the deal the engine makes
+// from them; nothing short of the real round trip can see that join.
+test("the set table shows the port and the bot's kept card before the first choice, and the chosen card lands in hand", async ({ page }) => {
+  const watch = watchForBreakage(page);
+  await page.setViewportSize({ width: 1710, height: 869 });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Deal" }).click();
+  await expect(page.locator(".table-sec.ports .strip-slot .card-face")).toHaveCount(6);
+  await expect(page.locator(".board .tile")).toHaveCount(10);
+  await expect(page.locator(".deal-seat.bot .bot-keeps")).toHaveCount(1);
+  await expect(page.getByRole("button", { name: "Start" })).toBeDisabled();
+
+  // **Inert, and still readable (spec §3.3.3).** `button.tile` is the placement
+  // picker's own marker — `Board` draws a tile as a button only when a caller
+  // hands it an `onTileClick`, which `shots.spec.ts` relies on too — so zero of
+  // them IS what "inert" means here; and the hover popover is what lets a
+  // player read a site card at full size before choosing.
+  await expect(page.locator("button.tile")).toHaveCount(0);
+  await page.locator(".board .tile").first().hover();
+  await expect(page.getByRole("tooltip")).toBeVisible();
+  await page.mouse.move(2, 2);
+  await expect(page.getByRole("tooltip")).toHaveCount(0);
+
+  const pick = page.locator(".deal-seat.human button.deal-pick").nth(1);
+  const chosen = /keep (O\d\d)/.exec((await pick.getAttribute("aria-label"))!)![1]!;
+  await pick.click();
+
+  // **Ruling R-T12-1: the set table does not widen the page either.** Spec §4.3
+  // names the same four widths the M3.5 gate uses, and this screen is a
+  // different layout — a full table with cards in the deck — reached before any
+  // game exists. Measured with the width gate's own instrument (`readOverflow`,
+  // shared from the harness since this cell needed it); the page delta is the
+  // only thing ASSERTED, everything else is recorded.
+  for (const width of [390, 1024, 1201, 1440]) {
+    await page.setViewportSize({ width, height: 844 });
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => resolve(null))));
+    const read = await readOverflow(page);
+    // Anti-vacuity, the gate's own: a set table that drew no board has no
+    // overflow either. 2P's widest row is four tiles.
+    expect(read.widestRow, `the set table drew no board at ${width}px`).toBe(4);
+    expect(
+      read.docScrollWidth - read.docClientWidth,
+      `the set table scrolls the page sideways at ${width}px: ${blame(read)}`,
+    ).toBeLessThanOrEqual(0);
+    // eslint-disable-next-line no-console
+    console.log(
+      `set table at ${width}px: page overflow ${read.docScrollWidth - read.docClientWidth}px ` +
+        `(gated) · board scrolls ${read.board ? read.board.scrollWidth - read.board.clientWidth : 0}px ` +
+        `inside its column (recorded)`,
+    );
+  }
+  await page.setViewportSize({ width: 1710, height: 869 });
+
+  await page.getByRole("button", { name: "Start" }).click();
+  await expect(page.getByRole("heading", { name: "Yokohama" })).toBeVisible();
+  await readScreen(page);
+  await expect(page.locator(".panel", { hasText: /'S HAND|’s hand/i }).first()).toContainText(chosen);
   expect(watch.failures).toEqual([]);
 });

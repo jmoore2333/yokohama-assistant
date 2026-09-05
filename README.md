@@ -201,7 +201,11 @@ file locally.
 **Branch `web-frontend` only.** The same engine, the same words, and the same legal-move gate —
 served over HTTP and drawn in a browser instead of a terminal. It is a *second frontend over one
 engine*, never a second engine: the server routes, scopes and serializes and computes nothing
-about the game, so the terminal and the browser cannot disagree about a rule.
+about the game, so the terminal and the browser cannot disagree about a rule. A game starts on the
+**set table** — the areas with their site cards and tokens, the port, the laboratory and the goals,
+exactly what the rulebook has on the table when the two starting orders are dealt — where you choose
+your first card over the real board rather than off a list, with the built-in bot's Keep score under
+each card and the bot's own card marked.
 
 ![The browser client at two players: the banner with the Boards menu and the reference buttons
 along the top, the end-trigger strip beneath it, and the table filling the left with the ten area
@@ -226,8 +230,7 @@ or press any line to jump to the position that move was decided in. Above 1201px
 right-hand drawer and the table redraws beside it at full size inside a green outline; below that
 the panel covers the page and there is no outline. Nothing on the redrawn table is pressable,
 because a past position is not answerable.
-The port and laboratory offers and the building sites collapse to a line saying they are hidden
-while you are in the past; the tracks and the goals keep drawing, from that same past position.
+The port and the laboratory draw from that same past position; only the building sites collapse.
 
 ![The log panel open as a right-hand drawer: the replay track across the top with step arrows, a
 position readout and a "Back to live" button, the numbered move list below it with the current

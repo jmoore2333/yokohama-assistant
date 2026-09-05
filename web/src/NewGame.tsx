@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { api, ApiError, type NewGameRequest } from "./api";
-import { OrderCardView } from "./Cards";
-import type { ArtManifest, ClientState, Preview } from "./types";
+import { Board } from "./Board";
+import { OrderCardView, seatClass } from "./Cards";
+import { loadSections } from "./sections";
+import { TableSections } from "./TableSections";
+import type { ArtManifest, ClientState, Labels, PlayerColor, Preview } from "./types";
 
 const COLORS = ["Red", "Blue", "Yellow", "Green"] as const;
 
@@ -11,12 +14,27 @@ const COLORS = ["Red", "Blue", "Yellow", "Green"] as const;
  * deterministic from the seed, so the cards shown here ARE the cards dealt.
  * The seed is carried as a STRING throughout: it is a `u64`, a JS number cannot
  * hold one, and this screen round-trips it from preview to create. Rounding it
- * would deal a different game than the one on screen. */
+ * would deal a different game than the one on screen.
+ *
+ * **The second step is the TABLE, not a list of cards (M5.5 §3.3.3).** The
+ * preview carries the position after setup as a `HistoricalFrame`, so the deal
+ * is drawn over the same pyramid, port, laboratory and goals the M5 table draws
+ * during play — through the same `Board` and `TableSections` components, at
+ * `game={null}`, which is exactly the arrangement the rulebook has on the table
+ * at its step 12 when the two cards are drawn. Nothing is created until Start:
+ * the server threw its preview session away.
+ *
+ * **The choice is per HUMAN seat and the bot's is the bot's.** A bot seat shows
+ * its two cards with the one it keeps marked and no button on either — the
+ * client never chooses for the bot, and `keeps` carries `null` there, which the
+ * server refuses a value on by name. */
 export function NewGame({
   art,
+  labels,
   onStarted,
 }: {
   art: ArtManifest | null;
+  labels: Labels | null;
   /** `opening` is true for a game just CREATED and false for one reopened —
    *  the difference between events that have just happened (a bot start seat
    *  has already played by the time `create` replies) and events that are
@@ -27,7 +45,11 @@ export function NewGame({
   const [seedText, setSeedText] = useState("");
   const [botSeat, setBotSeat] = useState(1);
   const [preview, setPreview] = useState<Preview | null>(null);
-  const [keeps, setKeeps] = useState<number[]>([]);
+  /** The card each HUMAN seat has chosen, `1` or `2`, by seat. Empty after a
+   *  deal: Start waits until every human seat is in it. A seat missing from it
+   *  is a seat nobody has answered for, which a `number[]` of ones could not
+   *  say — the old shape started every seat pre-chosen at card 1. */
+  const [chosen, setChosen] = useState<Record<number, 1 | 2>>({});
   const [saved, setSaved] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -38,23 +60,31 @@ export function NewGame({
     api.list().then(setSaved).catch(() => setSaved([]));
   }, []);
 
-  const colors = COLORS.slice(0, players);
+  const colors = COLORS.slice(0, players) as PlayerColor[];
   const base = (): NewGameRequest => ({
     players,
     colors: [...colors],
     start_seat: 0,
     ...(seedText.trim() ? { seed: seedText.trim() } : {}),
-    keeps: forSeats(),
+    keeps: previewKeeps(),
     bot_seats: [botSeat],
   });
 
   /** The `keeps` list the wire takes: a number on a human seat, `null` on the
    *  bot's, whose keep is the bot's own. A value on a bot seat is a 400 naming
-   *  the seat. `chosen` is this screen's per-seat state, which still holds a
-   *  number for every seat; only the bot's entry is dropped on the way out. */
-  const forSeats = (chosen?: number[]): (number | null)[] =>
+   *  the seat, and so is a `null` on a human one.
+   *
+   *  **Two of them, because the two requests mean different things by it.** The
+   *  PREVIEW deals both cards to every seat and keeps neither — it is the deal,
+   *  not the choice — so the field is only there to pass the shape check, and
+   *  every human seat sends `1`. CREATE is where the choice is made and sends
+   *  what the player picked. */
+  const previewKeeps = (): (number | null)[] =>
+    Array.from({ length: players }, (_, seat) => (seat === botSeat ? null : 1));
+
+  const createKeeps = (): (number | null)[] =>
     Array.from({ length: players }, (_, seat) =>
-      seat === botSeat ? null : (chosen?.[seat] ?? 1),
+      seat === botSeat ? null : (chosen[seat] ?? null),
     );
 
   // The same guard, and the same reasoning, as `App`'s `inFlight` — read its
@@ -85,6 +115,153 @@ export function NewGame({
       setBusy(false);
     }
   };
+
+  // **The set table.** Everything below the banner is drawn from
+  // `preview.table`, which is a real position over a session the server has
+  // already thrown away, so this screen creates nothing until Start.
+  if (preview) {
+    const humans = preview.deals.filter((d) => !d.is_bot);
+    const bots = preview.deals.filter((d) => d.is_bot);
+    // Start waits for EVERY human seat: at 3P and 4P one operator drives more
+    // than one of them, exactly as the terminal does, and a Start that fired on
+    // the first choice would send `null` for the rest and be refused by name.
+    const ready = humans.every((d) => chosen[d.seat] !== undefined);
+    const pad = (id: number) => `O${String(id).padStart(2, "0")}`;
+    return (
+      <div className="app setup-table">
+        <header className="banner">
+          <h1>Yokohama</h1>
+          <span className="meta">
+            setting up &middot; seed <code>{preview.seed}</code>
+          </span>
+          <span className="meta turn">choose your card</span>
+        </header>
+        <div className="end-strip" role="status" />
+        <main className="table">
+          <div className="table-body">
+            {/* No `onTileClick`: every tile is an inert `<div>`, the same rule a
+                replay position takes. There is no game to answer yet. */}
+            <Board board={preview.table.frame.board} art={art} labels={labels} colors={colors} />
+            {/* `game={null}` and `state={null}`: nothing is fetched, because
+                there is nothing to fetch from. The port and the laboratory ride
+                on the frame — every `HistoricalFrame` carries them — so they
+                draw from the position rather than reading "loading…", and the
+                one board that has no position-shaped version says so. */}
+            <TableSections
+              enabled={loadSections()}
+              game={null}
+              state={null}
+              replaying={false}
+              scrubbing={false}
+              view={preview.table}
+              art={art}
+              labels={labels}
+              colors={colors}
+            />
+          </div>
+        </main>
+        <aside className="side">
+          {bots.map((d) => (
+            <section className="panel deal-seat bot" data-seat={d.seat} key={d.seat}>
+              <h2>
+                <span className={seatClass(colors[d.seat])}>{colors[d.seat]}</span> &middot; bot,
+                seat {d.seat}
+              </h2>
+              <div className="deal">
+                {d.cards.map((c, i) => (
+                  <div className="deal-card" key={c.card.id}>
+                    <OrderCardView
+                      art={art}
+                      card={c.card}
+                      id={c.card.id}
+                      size="sm"
+                      note={`Keep score ${c.keep_score}`}
+                    />
+                    {d.bot_keep === i + 1 && <div className="bot-keeps">bot keeps this</div>}
+                  </div>
+                ))}
+              </div>
+            </section>
+          ))}
+        </aside>
+        <div className="deck">
+          <div className="decision">
+            <div className="asking">
+              Keep one card per seat. The table is set as the rulebook has it at step 12.
+            </div>
+            {humans.map((d) => (
+              <section className="deal-seat human" data-seat={d.seat} key={d.seat}>
+                <div className="field">
+                  <label>
+                    <span className={seatClass(colors[d.seat])}>{colors[d.seat]}</span> &middot;
+                    seat {d.seat}
+                  </label>
+                </div>
+                <div className="deal">
+                  {d.cards.map((c, i) => (
+                    <button
+                      type="button"
+                      className={`deal-pick ${chosen[d.seat] === i + 1 ? "chosen" : ""}`}
+                      aria-pressed={chosen[d.seat] === i + 1}
+                      aria-label={`keep ${pad(c.card.id)} for seat ${d.seat}`}
+                      key={c.card.id}
+                      onClick={() => setChosen((k) => ({ ...k, [d.seat]: (i + 1) as 1 | 2 }))}
+                    >
+                      <OrderCardView
+                        art={art}
+                        card={c.card}
+                        id={c.card.id}
+                        size="sm"
+                        note={`Keep score ${c.keep_score}`}
+                      />
+                    </button>
+                  ))}
+                </div>
+              </section>
+            ))}
+            {/* The CLI's own `KEEP_SCORE_NOTE` (`wizard.rs:1384`), word for
+                word: the number is the bot's preference from the card's printed
+                economics, and saying so beside it is the difference between a
+                factual number and an implied recommendation. */}
+            <p className="muted keep-hedge">
+              the Keep score is what the built-in bot would prefer, from the card&rsquo;s printed
+              economics alone &mdash; hand-set, unmeasured, and no substitute for your own read
+            </p>
+            <div className="controls">
+              <button
+                type="button"
+                className="primary"
+                disabled={busy || !ready}
+                onClick={() =>
+                  run(async () =>
+                    onStarted(
+                      // The seed sent back is the STRING the server gave, verbatim.
+                      await api.create({ ...base(), seed: preview.seed, keeps: createKeeps() }),
+                      true,
+                    ),
+                  )
+                }
+              >
+                Start
+              </button>
+              <button
+                type="button"
+                className="ghost"
+                disabled={busy}
+                onClick={() => {
+                  setPreview(null);
+                  setChosen({});
+                }}
+              >
+                Re-deal
+              </button>
+            </div>
+            {error && <div className="error">{error}</div>}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="setup">
@@ -140,70 +317,19 @@ export function NewGame({
         </select>
       </div>
 
-      {!preview ? (
-        <button
-          type="button"
-          className="primary"
-          disabled={busy}
-          onClick={() =>
-            run(async () => {
-              const p = await api.preview(base());
-              setPreview(p);
-              setKeeps(Array.from({ length: players }, () => 1));
-            })
-          }
-        >
-          Deal
-        </button>
-      ) : (
-        <>
-          <p className="lede">
-            Seed <code>{preview.seed}</code> &mdash; keep one card per seat.
-          </p>
-          {preview.deals.map((deal) => (
-            <div key={deal.seat}>
-              <div className="field">
-                <label>
-                  Seat {deal.seat} {deal.seat === botSeat ? "(bot)" : "(you)"}
-                </label>
-              </div>
-              <div className="deal">
-                {deal.cards.map((dealt, idx) => (
-                  <button
-                    type="button"
-                    className={`deal-pick ${keeps[deal.seat] === idx + 1 ? "chosen" : ""}`}
-                    key={dealt.card.id}
-                    onClick={() =>
-                      setKeeps((k) => k.map((v, i) => (i === deal.seat ? idx + 1 : v)))
-                    }
-                  >
-                    <OrderCardView art={art} card={dealt.card} id={dealt.card.id} />
-                  </button>
-                ))}
-              </div>
-            </div>
-          ))}
-          <div className="controls">
-            <button
-              type="button"
-              className="primary"
-              disabled={busy}
-              onClick={() =>
-                run(async () => {
-                  // The seed sent back is the STRING the server gave, verbatim.
-                  const req = { ...base(), seed: preview.seed, keeps: forSeats(keeps) };
-                  onStarted(await api.create(req), true);
-                })
-              }
-            >
-              Start
-            </button>
-            <button type="button" className="ghost" disabled={busy} onClick={() => setPreview(null)}>
-              Re-deal
-            </button>
-          </div>
-        </>
-      )}
+      <button
+        type="button"
+        className="primary"
+        disabled={busy}
+        onClick={() =>
+          run(async () => {
+            setPreview(await api.preview(base()));
+            setChosen({});
+          })
+        }
+      >
+        Deal
+      </button>
 
       {/* Every game is persisted as its `GameRecord` after every applied move,
           and a game whose handle is gone is rebuilt from that record — so

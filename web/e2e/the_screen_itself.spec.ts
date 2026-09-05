@@ -7,7 +7,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { haveBrowser } from "../playwright.config";
 import { FLOOR_REM, tileWidthFor } from "../src/fit";
-import { act, deadEnd, readScreen, rng, startGame, watchForBreakage } from "./harness";
+import { act, blame, deadEnd, readOverflow, readScreen, rng, startGame, watchForBreakage } from "./harness";
 
 // No browser, and `YOKOHAMA_WEB_E2E_OPTIONAL=1`: SKIP, visibly. The reporter
 // then says how many tests did not run, which is the difference between a skip
@@ -519,102 +519,6 @@ test("the drawers that remain open, draw, and close", async ({ page }) => {
 // player counts are all three because the board's width IS the player count:
 // the widest row is `players + 2` tiles of 14rem (915px · 1146px · 1376px), so
 // a 2P-only cell tests the narrowest board that exists.
-
-/** One offending box, named well enough to fix without opening devtools. */
-interface Box {
-  selector: string;
-  width: number;
-  right: number;
-  scrollWidth: number;
-  clientWidth: number;
-  overflowX: string;
-}
-
-interface OverflowRead {
-  /** The page delta — what a player feels as a sideways scrollbar. */
-  docScrollWidth: number;
-  docClientWidth: number;
-  /** The outermost boxes sticking out past the window: the CAUSE of that delta. */
-  spills: Box[];
-  /** The board's own scroller, which is allowed to have work to do. */
-  board: Box | null;
-  /** Anti-vacuity: the pyramid's widest row, in tiles. */
-  widestRow: number;
-}
-
-/** Everything the layout question needs, in ONE round trip. */
-async function readOverflow(page: Page): Promise<OverflowRead> {
-  return page.evaluate(() => {
-    const doc = document.documentElement;
-    const viewport = doc.clientWidth;
-
-    // A path short enough to read in a failure line and specific enough to grep
-    // the stylesheet for.
-    const selectorOf = (el: Element): string => {
-      const hop = (n: Element) => {
-        const cls = [...n.classList].join(".");
-        return `${n.tagName.toLowerCase()}${n.id ? `#${n.id}` : ""}${cls ? `.${cls}` : ""}`;
-      };
-      const parts: string[] = [];
-      for (let n: Element | null = el; n && parts.length < 3; n = n.parentElement) {
-        parts.unshift(hop(n));
-      }
-      return parts.join(" > ");
-    };
-
-    const box = (el: Element): Box => {
-      const r = el.getBoundingClientRect();
-      return {
-        selector: selectorOf(el),
-        width: Math.round(r.width),
-        right: Math.round(r.right),
-        scrollWidth: el.scrollWidth,
-        clientWidth: el.clientWidth,
-        overflowX: getComputedStyle(el).overflowX,
-      };
-    };
-
-    // 1px of slack: `clientWidth` is an integer and a border box is not, so an
-    // exact compare reports fractional rounding as a defect.
-    const past = (el: Element) => Math.round(el.getBoundingClientRect().right) > viewport + 1;
-
-    const spills = [...document.querySelectorAll("*")]
-      .filter((el) => el.getClientRects().length > 0 && past(el))
-      // OUTERMOST only. Every descendant of an over-wide column is over-wide
-      // too, and a list of forty of them buries the one that is the cause.
-      .filter((el) => !el.parentElement || !past(el.parentElement))
-      .map(box)
-      .sort((a, b) => b.width - a.width)
-      .slice(0, 5);
-
-    const board = document.querySelector(".board");
-    const rows = [...document.querySelectorAll(".board-row")].map(
-      (row) => row.querySelectorAll(".tile").length,
-    );
-
-    return {
-      docScrollWidth: doc.scrollWidth,
-      docClientWidth: viewport,
-      spills,
-      board: board ? box(board) : null,
-      widestRow: rows.length > 0 ? Math.max(...rows) : 0,
-    };
-  });
-}
-
-/** The failure line: WHAT overflowed, not merely by how much. */
-function blame(read: OverflowRead): string {
-  if (read.spills.length === 0) {
-    return "and nothing sticks out of the window — look for a margin, a `position: absolute`, or a scroll anchor";
-  }
-  return read.spills
-    .map(
-      (s) =>
-        `${s.selector} is ${s.width}px wide (right edge ${s.right} vs window ${read.docClientWidth}, ` +
-        `content ${s.scrollWidth} in ${s.clientWidth}, overflow-x: ${s.overflowX})`,
-    )
-    .join("; ");
-}
 
 for (const players of [2, 3, 4] as const) {
   test(`nothing pushes the page sideways at ${players} players, phone to desktop`, async ({

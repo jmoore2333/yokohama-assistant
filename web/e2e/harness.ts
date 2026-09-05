@@ -111,6 +111,13 @@ export async function startGame(page: Page, opts: { players?: number } = {}): Pr
   const seed = String(((await (await previewed).json()) as { seed: string }).seed);
 
   await expect(page.getByRole("button", { name: "Start" })).toBeVisible();
+
+  // The set table (M5.5): Start waits until every human seat has chosen a
+  // card, and the walk chooses the first one — the bot's is the bot's.
+  for (const seat of await page.locator(".deal-seat.human").all()) {
+    await seat.locator("button.deal-pick").first().click();
+  }
+
   const created = page.waitForResponse(
     (r) =>
       /\/api\/games$/.test(new URL(r.url()).pathname) && r.request().method() === "POST",
@@ -312,4 +319,106 @@ export async function deadEnd(page: Page, game: Game, moves: number): Promise<Er
   return new Error(
     `${why}\n  game ${game.id}, seed ${game.seed}, after ${moves} moves\n\n${zone}`,
   );
+}
+
+// ---- the layout measurement (M3.5's width gate, shared since M5.5) --------
+//
+// Lifted out of `the_screen_itself.spec.ts` verbatim when the set table needed
+// the same reading (M5.5 ruling R-T12-1). A second copy would be a second
+// definition of "does the page scroll sideways", and the two would drift.
+
+/** One offending box, named well enough to fix without opening devtools. */
+export interface Box {
+  selector: string;
+  width: number;
+  right: number;
+  scrollWidth: number;
+  clientWidth: number;
+  overflowX: string;
+}
+
+export interface OverflowRead {
+  /** The page delta — what a player feels as a sideways scrollbar. */
+  docScrollWidth: number;
+  docClientWidth: number;
+  /** The outermost boxes sticking out past the window: the CAUSE of that delta. */
+  spills: Box[];
+  /** The board's own scroller, which is allowed to have work to do. */
+  board: Box | null;
+  /** Anti-vacuity: the pyramid's widest row, in tiles. */
+  widestRow: number;
+}
+
+/** Everything the layout question needs, in ONE round trip. */
+export async function readOverflow(page: Page): Promise<OverflowRead> {
+  return page.evaluate(() => {
+    const doc = document.documentElement;
+    const viewport = doc.clientWidth;
+
+    // A path short enough to read in a failure line and specific enough to grep
+    // the stylesheet for.
+    const selectorOf = (el: Element): string => {
+      const hop = (n: Element) => {
+        const cls = [...n.classList].join(".");
+        return `${n.tagName.toLowerCase()}${n.id ? `#${n.id}` : ""}${cls ? `.${cls}` : ""}`;
+      };
+      const parts: string[] = [];
+      for (let n: Element | null = el; n && parts.length < 3; n = n.parentElement) {
+        parts.unshift(hop(n));
+      }
+      return parts.join(" > ");
+    };
+
+    const box = (el: Element): Box => {
+      const r = el.getBoundingClientRect();
+      return {
+        selector: selectorOf(el),
+        width: Math.round(r.width),
+        right: Math.round(r.right),
+        scrollWidth: el.scrollWidth,
+        clientWidth: el.clientWidth,
+        overflowX: getComputedStyle(el).overflowX,
+      };
+    };
+
+    // 1px of slack: `clientWidth` is an integer and a border box is not, so an
+    // exact compare reports fractional rounding as a defect.
+    const past = (el: Element) => Math.round(el.getBoundingClientRect().right) > viewport + 1;
+
+    const spills = [...document.querySelectorAll("*")]
+      .filter((el) => el.getClientRects().length > 0 && past(el))
+      // OUTERMOST only. Every descendant of an over-wide column is over-wide
+      // too, and a list of forty of them buries the one that is the cause.
+      .filter((el) => !el.parentElement || !past(el.parentElement))
+      .map(box)
+      .sort((a, b) => b.width - a.width)
+      .slice(0, 5);
+
+    const board = document.querySelector(".board");
+    const rows = [...document.querySelectorAll(".board-row")].map(
+      (row) => row.querySelectorAll(".tile").length,
+    );
+
+    return {
+      docScrollWidth: doc.scrollWidth,
+      docClientWidth: viewport,
+      spills,
+      board: board ? box(board) : null,
+      widestRow: rows.length > 0 ? Math.max(...rows) : 0,
+    };
+  });
+}
+
+/** The failure line: WHAT overflowed, not merely by how much. */
+export function blame(read: OverflowRead): string {
+  if (read.spills.length === 0) {
+    return "and nothing sticks out of the window — look for a margin, a `position: absolute`, or a scroll anchor";
+  }
+  return read.spills
+    .map(
+      (s) =>
+        `${s.selector} is ${s.width}px wide (right edge ${s.right} vs window ${read.docClientWidth}, ` +
+        `content ${s.scrollWidth} in ${s.clientWidth}, overflow-x: ${s.overflowX})`,
+    )
+    .join("; ");
 }

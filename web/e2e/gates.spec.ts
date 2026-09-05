@@ -316,6 +316,70 @@ for (const players of [2, 4] as const) {
   });
 }
 
+// The B gate (M5.5 spec §4.3): the set table, before the first choice.
+//
+// The picture the owner is asked to look at is the SECOND setup step — the
+// position the rulebook has on the table when the two cards are drawn, with the
+// deals in the deck and the bot's own card marked. Everything asserted here is
+// there so a blank or half-drawn frame cannot be sent under that caption; the
+// judgement is the owner's.
+test("gate B — the set table before the first choice", async ({ page }) => {
+  mkdirSync(OUT, { recursive: true });
+  await page.setViewportSize({ width: 1710, height: 869 });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Deal" }).click();
+
+  // On CONTENT, not on the wrapper, for `TableSections`' own reason: the
+  // "loading…" placeholder carries the same `table-sec ports` class as the
+  // loaded strip, and a set table has no game to fetch from — so the six cards
+  // are what says the offers came off the preview's frame.
+  await expect(page.locator(".table-sec.ports .strip-slot .card-face")).toHaveCount(6);
+  await expect(page.locator(".table-sec.labs .board-strip")).toBeVisible();
+  await expect(page.locator(".board .tile")).toHaveCount(10);
+  await expect(page.locator(".deal-seat.human button.deal-pick")).toHaveCount(2);
+  await expect(page.locator(".deal-seat.bot .bot-keeps")).toHaveText("bot keeps this");
+  // Before the first choice, which is what this gate is a picture OF.
+  await expect(page.getByRole("button", { name: "Start" })).toBeDisabled();
+  const seed = await page.locator("header.banner code").innerText();
+  test.info().annotations.push({ type: "game", description: `2P set table, seed ${seed}` });
+
+  // **The side column scrolls at this viewport, and the picture says so.**
+  // MEASURED at 2P/1710x869: the deck's own block is 556px and the deal is what
+  // the deck is for, so it takes the height (cap 70vh) and the side column —
+  // holding only the bot's two cards — gets the 251px that are left against a
+  // ~390px panel. No cap makes both whole at 869px. The mark on the bot's card
+  // is half of what this gate is a picture OF, so the column is scrolled to it
+  // and the figures go in the annotation rather than being left to the eye.
+  const scrolled = await page.evaluate(() => {
+    const side = document.querySelector(".side") as HTMLElement | null;
+    const deck = document.querySelector(".deck") as HTMLElement | null;
+    if (!side || !deck) return null;
+    side.scrollTop = side.scrollHeight - side.clientHeight;
+    return {
+      deck: Math.round(deck.getBoundingClientRect().height),
+      deckContent: deck.scrollHeight,
+      side: Math.round(side.clientHeight),
+      sideContent: side.scrollHeight,
+    };
+  });
+  if (!scrolled) throw new Error("gate B: the set table has no .deck / .side to measure");
+  await raf(page);
+  test.info().annotations.push({
+    type: "layout",
+    description:
+      `deck ${scrolled.deck}px holding ${scrolled.deckContent}px · ` +
+      `side ${scrolled.side}px holding ${scrolled.sideContent}px, scrolled to the bot's mark`,
+  });
+  // In the FRAME, not merely in the DOM: `toHaveText` above passes on an
+  // element scrolled out of the window, which is exactly the picture this gate
+  // must not send.
+  await expect(page.locator(".deal-seat.bot .bot-keeps")).toBeInViewport();
+  await expect(page.getByRole("button", { name: "Start" })).toBeInViewport();
+
+  await park(page);
+  await page.screenshot({ path: `${OUT}/b-set-table-1710x869.png` });
+});
+
 // The C gate (M5.5 spec §4.4): the opponent's turn playing out on the table,
 // paused and stepped so a still picture can carry it, and the live prompt it
 // lands on. Six steps at most — a bot turn is usually shorter — each shot

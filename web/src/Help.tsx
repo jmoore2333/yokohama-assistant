@@ -165,6 +165,19 @@ export function Help() {
         caption="The replay track lives in the Log panel; the table redraws beside it at full size, outlined to say you are in the past."
       />
 
+      <h3>Starting a game</h3>
+      <p>
+        The deal happens over the <strong>set table</strong>: the areas with their site cards and
+        tokens, the port, the laboratory and the goals &mdash; exactly what the rulebook has on the
+        table when the two cards are drawn. Your two cards are in the answer bar, each with the
+        built-in bot&rsquo;s <em>Keep score</em> under it, and the bot&rsquo;s own two cards are in
+        the side column with the one it keeps marked &ldquo;bot keeps this&rdquo;. Press the card
+        you want and Start; nothing is created until you do, and <em>Re-deal</em> goes back for
+        another seed. The Keep score is the bot&rsquo;s preference from the card&rsquo;s printed
+        economics alone &mdash; hand-set and unmeasured, so it is a number rather than a
+        recommendation.
+      </p>
+
       <h3>Saving, and coming back</h3>
       <p>
         Every move you make is written to the server as it is applied &mdash; there is no save

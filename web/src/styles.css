@@ -1359,3 +1359,34 @@ ol.account .mover { font-weight: 700; }
  * the way out. It replaces the prompt, so it carries the prompt's own padding. */
 .decision.walking { display: flex; align-items: center; gap: 0.5rem; padding: 0.6rem 0.8rem; font-family: var(--display); font-size: 1.05rem; }
 .decision.walking .ghost { margin-left: auto; }
+
+/* ---- M5.5: the set table ------------------------------------------------
+ *
+ * The second setup step is the M5 table with the deals in the deck, so it
+ * inherits the whole layout and needs only what is new: the two cards of a deal
+ * side by side rather than wrapped, the bot's mark on the card it keeps, and
+ * the CLI's hedge under the picks.
+ *
+ * **The deck's cap is raised here, and it was MEASURED that it had to be.** The
+ * 45vh cap above 1201px is sized for an answer list with a running commentary
+ * under it; this deck holds a card row per human seat, and at 2P/1710x869 the
+ * cap cut the Keep scores, the hedge and the Start button out of the frame —
+ * seen in gate B's own picture, not deduced. A set table has no commentary and
+ * no account to keep on screen, so the deal takes the height and the side
+ * column, which here holds only the bot's two cards, keeps what is left. The
+ * block still scrolls above that: at 4P with three human seats it is taller
+ * than any cap, and the deck's own rule is that the ANSWER stays reachable. */
+.deal-seat .deal { flex-wrap: nowrap; }
+/* **The mark sits UNDER the card, not over it.** Drawn as an absolute badge in
+ * the card's bottom-left corner it covered the kept card's own "Keep score"
+ * line — and spec §3.3.3 asks a bot seat for its two cards, BOTH scores, and
+ * the kept one marked. Seen in gate B's picture. */
+.deal-card { display: flex; flex-direction: column; }
+.bot-keeps {
+  align-self: flex-start; margin-top: 0.25rem;
+  padding: 0.1rem 0.4rem; border-radius: 3px;
+  background: var(--vp); color: #111; font-size: 10px; font-weight: 700;
+}
+.keep-hedge { font-size: 11px; margin: 0.4rem 0; }
+.app.setup-table > .deck { max-height: 70vh; }
+.setup-table .deck > .decision { overflow-y: auto; }

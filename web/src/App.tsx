@@ -323,7 +323,7 @@ export function App() {
     if (surface !== "log") setScrubK(null);
   }, [surface]);
 
-  if (!state) return <NewGame art={art} onStarted={show} />;
+  if (!state) return <NewGame art={art} labels={labels} onStarted={show} />;
 
   const players = state.frame.dashboard.find((p) => "Players" in p);
   const colors: PlayerColor[] =

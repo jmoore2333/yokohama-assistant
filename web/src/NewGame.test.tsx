@@ -15,8 +15,21 @@ const BIG_SEED = "18446744073709551557";
 function show(handler: (call: ApiCall) => Reply) {
   const onStarted = vi.fn();
   const stub = stubApi(handler);
-  render(<NewGame art={wire.artManifest} onStarted={onStarted} />);
+  render(<NewGame art={wire.artManifest} labels={wire.labels} onStarted={onStarted} />);
   return { onStarted, stub, user: userEvent.setup() };
+}
+
+/** Choose the first card for every human seat.
+ *
+ *  Start waits for a choice on EVERY human seat, so a single click is not
+ *  enough on `wire.preview`: that is the bot-free corpus game and BOTH of its
+ *  seats are human. The cells that use this are about what the create request
+ *  carries and not about which card was chosen, so they take the first of each
+ *  seat's two. */
+async function chooseAll(user: ReturnType<typeof userEvent.setup>) {
+  for (const seat of document.querySelectorAll(".deal-seat.human")) {
+    await user.click(seat.querySelector("button.deal-pick")!);
+  }
 }
 
 describe("a double-clicked Start", () => {
@@ -39,6 +52,8 @@ describe("a double-clicked Start", () => {
 
     await user.click(screen.getByRole("button", { name: "Deal" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Start" })).toBeInTheDocument());
+
+    await chooseAll(user);
 
     // BOTH clicks inside ONE `act`, so no render happens between them — the
     // case the ref exists for. Two `user.click`s would each flush, the button
@@ -81,6 +96,7 @@ describe("the seed", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "Start" })).toBeInTheDocument());
     expect(screen.getByText(BIG_SEED)).toBeInTheDocument();
 
+    await chooseAll(user);
     await user.click(screen.getByRole("button", { name: "Start" }));
     await waitFor(() => expect(onStarted).toHaveBeenCalled());
 
@@ -127,6 +143,7 @@ describe("the request the client sends", () => {
     });
     await user.click(screen.getByRole("button", { name: "Deal" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Start" })).toBeInTheDocument());
+    await chooseAll(user);
     await user.click(screen.getByRole("button", { name: "Start" }));
 
     const create = stub
@@ -139,38 +156,99 @@ describe("the request the client sends", () => {
   });
 });
 
-describe("the deal", () => {
-  it("shows every seat's two cards before anyone chooses", async () => {
-    const { user } = show((call) => {
+// The set table (M5.5 spec §3.3.3): the deal happens over the position the
+// rulebook has on the table at step 12, and the choice is per HUMAN seat.
+describe("the set table", () => {
+  const dealt = async (fixture: typeof wire.preview) => {
+    const shown = show((call) => {
       if (call.method === "GET") return [];
-      return wire.preview;
-    });
-    await user.click(screen.getByRole("button", { name: "Deal" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Start" })).toBeInTheDocument());
-    for (const deal of wire.preview.deals) {
-      for (const dealt of deal.cards) {
-        expect(
-          screen.getAllByText(`O${String(dealt.card.id).padStart(2, "0")}`).length,
-        ).toBeGreaterThan(0);
-      }
-    }
-  });
-
-  it("sends one keep per seat, numbered as the cards are on screen", async () => {
-    const { stub, user } = show((call) => {
-      if (call.method === "GET") return [];
-      if (call.path.endsWith("preview")) return wire.preview;
+      if (call.path.endsWith("preview")) return fixture;
       return wire.options;
     });
-    await user.click(screen.getByRole("button", { name: "Deal" }));
+    await shown.user.click(screen.getByRole("button", { name: "Deal" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Start" })).toBeInTheDocument());
-    await user.click(screen.getByRole("button", { name: "Start" }));
+    return shown;
+  };
 
+  it("shows the table the rulebook has set at step 12: the pyramid and the strips, not a list", async () => {
+    await dealt(wire.preview);
+    expect(document.querySelectorAll(".board .tile")).toHaveLength(wire.preview.table.frame.board.tiles.length);
+    // `.board-strip` and not the section wrapper: `TableSections` renders its
+    // "loading…" placeholder under the very same `table-sec ports` class, so a
+    // check on the section passes while the strip says it is still fetching —
+    // and a set table with no game to fetch FROM is exactly where that would
+    // happen. The offers ride on `preview.table`, so they must be drawn.
+    expect(document.querySelector(".table-sec.ports .board-strip")).not.toBeNull();
+    expect(document.querySelector(".table-sec.labs .board-strip")).not.toBeNull();
+    expect(document.querySelector(".table-sec.achievements")).not.toBeNull();
+    expect(screen.getByText(/setting up/)).toBeInTheDocument();
+    expect(screen.getByText(wire.preview.seed)).toBeInTheDocument();
+  });
+
+  it("shows every human seat's two cards with the bot's Keep score and the CLI's hedge, and Start waits for a choice", async () => {
+    const { user } = await dealt(wire.preview);
+    for (const deal of wire.preview.deals) {
+      for (const c of deal.cards) {
+        expect(screen.getByRole("button", { name: `keep O${String(c.card.id).padStart(2, "0")} for seat ${deal.seat}` })).toBeInTheDocument();
+        expect(screen.getAllByText(new RegExp(`Keep score ${c.keep_score}\\b`)).length).toBeGreaterThan(0);
+      }
+    }
+    expect(screen.getByText(/hand-set, unmeasured, and no substitute for your own read/)).toBeInTheDocument();
+    const start = screen.getByRole("button", { name: "Start" });
+    expect(start).toBeDisabled();
+    await user.click(screen.getAllByRole("button", { name: /keep O\d\d for seat 0/ })[1]!);
+    expect(start).toBeDisabled();
+    await user.click(screen.getAllByRole("button", { name: /keep O\d\d for seat 1/ })[0]!);
+    expect(start).toBeEnabled();
+  });
+
+  it("shows the bot's two cards, marks the one it keeps, and offers no choice on them", async () => {
+    await dealt(wire.previewBot);
+    const bot = wire.previewBot.deals.find((d) => d.is_bot)!;
+    expect(bot.bot_keep === 1 || bot.bot_keep === 2, "the fixture's bot seat carries a keep").toBe(true);
+    const seat = document.querySelector(`.deal-seat.bot[data-seat="${bot.seat}"]`)!;
+    expect(seat).not.toBeNull();
+    expect(seat.querySelectorAll("button.deal-pick")).toHaveLength(0);
+    expect(seat.querySelectorAll(".card-face")).toHaveLength(2);
+    expect(seat.querySelector(".bot-keeps")?.textContent).toMatch(/bot keeps this/);
+    const kept = bot.cards[bot.bot_keep! - 1]!.card.id;
+    expect(seat.querySelector(".bot-keeps")?.closest(".deal-card")?.textContent).toContain(`O${String(kept).padStart(2, "0")}`);
+  });
+
+  // **The mark has to READ `bot_keep`, and one fixture can only prove half of
+  // that.** The corpus payload's bot keeps card 1, so a client that marked the
+  // first card unconditionally passes the cell above. This flips that one field
+  // on the committed payload — the derivation `BIG_SEED` already makes in this
+  // file — and asks for the mark on the other card.
+  it("marks the second card when that is the one the bot keeps", async () => {
+    const bot = wire.previewBot.deals.find((d) => d.is_bot)!;
+    await dealt({
+      ...wire.previewBot,
+      deals: wire.previewBot.deals.map((d) => (d.is_bot ? { ...d, bot_keep: 2 as const } : d)),
+    });
+    const seat = document.querySelector(`.deal-seat.bot[data-seat="${bot.seat}"]`)!;
+    expect(seat.querySelector(".bot-keeps")?.closest(".deal-card")?.textContent).toContain(
+      `O${String(bot.cards[1]!.card.id).padStart(2, "0")}`,
+    );
+  });
+
+  it("sends a keep per human seat and null per bot seat, numbered as on screen", async () => {
+    const { stub, user, onStarted } = await dealt(wire.previewBot);
+    await user.click(screen.getAllByRole("button", { name: /keep O\d\d for seat 0/ })[1]!);
+    await user.click(screen.getByRole("button", { name: "Start" }));
+    await waitFor(() => expect(onStarted).toHaveBeenCalledWith(wire.options, true));
     const create = stub.matching("POST", "/api/games").filter((c) => !c.path.endsWith("preview"));
-    await waitFor(() => expect(create.length).toBeGreaterThan(0));
-    const body = create[0]!.body as { keeps: number[]; players: number };
-    expect(body.keeps).toHaveLength(body.players);
-    for (const k of body.keeps) expect([1, 2]).toContain(k);
+    expect((create[0]!.body as { keeps: unknown }).keeps).toEqual([2, null]);
+  });
+
+  it("resumes a saved game as NOT an opening", async () => {
+    const { user, onStarted } = show((call) => {
+      if (call.method === "GET" && call.path.endsWith("/api/games")) return ["wire"];
+      if (call.method === "GET" && call.path.endsWith("/api/games/wire")) return wire.options;
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    await user.click(await screen.findByRole("button", { name: "wire" }));
+    await waitFor(() => expect(onStarted).toHaveBeenCalledWith(wire.options, false));
   });
 });
 
