@@ -35,6 +35,78 @@ describe("the laboratory strip", () => {
   });
 });
 
+// ---- M5.5: what the walk lights on a strip ------------------------------
+//
+// **The mark M19 could delete with the whole vitest suite still green** (final
+// review m3): `litSlot` returning "" for every slot failed nothing, because no
+// component cell named `.strip-slot.changed` and the browser gate RECORDS the
+// count in an annotation rather than gating it.
+//
+// What is really being pinned is a JOIN, and it is the one place in this client
+// where two files have to agree about a string: `diffFrames` writes the key as
+// `<kind>:<board INDEX>:<slot>` — the index into `panel.boards`, never the
+// `board_b` flag — and `Strips` reads it back by mapping the same list the same
+// way. At 2P there is one board and the two readings coincide, so a cell that
+// only counted marks would not see them come apart; naming the LIT SLOT is what
+// makes the position part of the key load-bearing here.
+describe("the walk's marks on a strip", () => {
+  it("marks the port slot the diff names, and no other", () => {
+    const board = wire.ports.boards[0]!;
+    expect(board.slots.length, "the fixture must draw a strip to mark").toBe(6);
+    const lit = board.slots[2]!;
+    const { container } = render(
+      <PortStrip
+        panel={wire.ports}
+        art={wire.artManifest}
+        changed={new Set([`port:0:${lit.slot}`])}
+      />,
+    );
+    const slots = [...container.querySelectorAll(".strip-slot")];
+    expect(slots).toHaveLength(6 * wire.ports.boards.length);
+    expect(container.querySelectorAll(".strip-slot.changed")).toHaveLength(1);
+    expect(slots[2]!.className, "the mark landed on a slot the key does not name").toContain("changed");
+  });
+
+  it("marks the laboratory slot the diff names, and no other", () => {
+    const board = wire.labs.boards[0]!;
+    const lit = board.slots[4]!;
+    const { container } = render(
+      <LabStrip
+        panel={wire.labs}
+        art={wire.artManifest}
+        labels={wire.labels}
+        changed={new Set([`lab:0:${lit.slot}`])}
+      />,
+    );
+    const slots = [...container.querySelectorAll(".strip-slot")];
+    expect(slots).toHaveLength(6 * wire.labs.boards.length);
+    expect(container.querySelectorAll(".strip-slot.changed")).toHaveLength(1);
+    expect(slots[4]!.className).toContain("changed");
+  });
+
+  // The two strips are separate numberings that OVERLAP: a port slot and a lab
+  // slot both have a slot 2. The kind is what keeps a port take from lighting
+  // the laboratory, and this is the cell that says so.
+  it("does not let a port key light a laboratory slot", () => {
+    const lit = wire.labs.boards[0]!.slots[2]!;
+    const { container } = render(
+      <LabStrip
+        panel={wire.labs}
+        art={wire.artManifest}
+        labels={wire.labels}
+        changed={new Set([`port:0:${lit.slot}`])}
+      />,
+    );
+    expect(container.querySelector(".strip-slot.changed")).toBeNull();
+  });
+
+  it("marks nothing when the walk is not running", () => {
+    const { container } = render(<PortStrip panel={wire.ports} art={wire.artManifest} />);
+    expect(container.querySelectorAll(".strip-slot").length).toBeGreaterThan(0);
+    expect(container.querySelector(".strip-slot.changed")).toBeNull();
+  });
+});
+
 describe("the tracks strip", () => {
   it("prints every space with its points as text", () => {
     const tracks = tracksOf(wire.optionsMany);

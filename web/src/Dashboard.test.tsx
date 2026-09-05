@@ -90,6 +90,44 @@ describe("the walk's marks on a seat", () => {
     expect(techChips(container).length).toBeGreaterThan(0);
     expect(container.querySelector(".chip.tech.changed")).toBeNull();
   });
+
+  /** The Players panel with a set of SEAT numbers lit — the row's own mark,
+   *  which is a different prop and a different grain from the chip's above. */
+  const showSeats = (changedSeats?: Set<number>) =>
+    render(
+      <Dashboard
+        panels={wire.atK.frame.dashboard}
+        art={wire.artManifest}
+        labels={wire.labels}
+        colors={COLORS}
+        only={["Players"]}
+        changedSeats={changedSeats}
+      />,
+    );
+
+  // **This is the mark M20 could delete with the whole suite still green**
+  // (final review m3): no `*.test.tsx` named `.seat.changed`, and the e2e gate
+  // RECORDS the count in an annotation rather than gating it. A seat row is
+  // where money, goods and pieces move, so it is the grain that says "this
+  // player's turn did something" when nothing on the board moved at all.
+  it("marks the seat row the diff names, and no other", () => {
+    const seats = seatsAtK();
+    expect(seats.length, "the fixture must seat more than one player").toBeGreaterThan(1);
+    const lit = seats[1]!;
+    const { container } = showSeats(new Set([lit.seat]));
+    const rows = [...container.querySelectorAll(".seat")];
+    expect(rows).toHaveLength(seats.length);
+    expect(container.querySelectorAll(".seat.changed")).toHaveLength(1);
+    // Named by the seat it belongs to, not by its position: a mark keyed on the
+    // row's index would pass a `toHaveLength(1)` while lighting the wrong player.
+    expect(container.querySelector(".seat.changed .seat-name")?.textContent).toBe(lit.color);
+  });
+
+  it("marks no seat row when the walk is not running", () => {
+    const { container } = showSeats(undefined);
+    expect(container.querySelectorAll(".seat").length).toBeGreaterThan(0);
+    expect(container.querySelector(".seat.changed")).toBeNull();
+  });
 });
 
 describe("the walk's marks on the viewer's hand", () => {
