@@ -1271,9 +1271,19 @@ ol.account .mover { font-weight: 700; }
 
 /* ---- M5.5: the walk's highlights --------------------------------------- */
 /* The mover's seat colour, via `.seat-*`'s `color`, so one rule serves four
- * seats and a fifth colour is still one line elsewhere. The tile's outline is
- * INSET, because the tiles sit a 0.4rem gap apart and an outset ring on a
- * 22rem tile crosses into its neighbour. */
+ * seats and a fifth colour is still one line elsewhere. The tile's RESTING
+ * outline is INSET, because the tiles sit a 0.4rem gap apart (both ways —
+ * `.board` and `.board-row` each set it) and an outset ring on a 22rem tile
+ * crosses into its neighbour.
+ *
+ * **The pulse's first frames deliberately overshoot into that gap, and the
+ * arithmetic is bounded rather than incidental.** `outline-offset` moves the
+ * outline's INNER edge, so the start frame — width 9px at offset -3px — spans
+ * from 3px inside the border box to 6px outside it, against a 6.4px gap: it
+ * fills the gap and never reaches a neighbour, leaving 0.4px between two
+ * adjacent lit tiles at their brightest. That overshoot is the point. An
+ * animation kept wholly inside the box would be a stroke thickening inward over
+ * the art, which on a 22rem tile is not a flash a player catches. */
 .tile.changed { outline: 3px solid currentColor; outline-offset: -3px; }
 .seat.changed { background: rgb(105 194 95 / 0.10); }
 /* A card the walk is lighting, wherever it is drawn: in an offer slot the

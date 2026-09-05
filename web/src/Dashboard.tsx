@@ -65,8 +65,10 @@ export function Dashboard({
   /** The technologies the walk is lighting, keyed `<seat>:<techId>` — the card
    *  half of a laboratory take (R-GC-1), marked where it landed rather than in
    *  the slot it left. `diffFrames`' own set; the key carries the SEAT because
-   *  two players may own the same title and the two laboratory boards deal the
-   *  same ids. */
+   *  two players may own the same TITLE — ten of the twenty circulate as two
+   *  physical cards for exactly that reason — so a chip identified by its title
+   *  alone would light on both rows. (The two copies carry DISTINCT ids;
+   *  `TechCardId(18)` and `(19)` are the two Letterpress Printings.) */
   changedTechs?: Set<string>;
   /** The order ids the walk is lighting in the VIEWER's hand (R-GC-2) — a
    *  masked hand carries no identities, so a bot's take marks nothing here. */

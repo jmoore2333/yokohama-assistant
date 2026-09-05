@@ -73,7 +73,11 @@ describe("the walk's marks on a seat", () => {
   });
 
   // The key is SEAT AND ID, not the id alone: two seats may own the same
-  // technology TITLE, and at 3-4P the two laboratory boards deal the same ids.
+  // technology TITLE — ten of the twenty circulate as two physical cards, which
+  // is what makes that legal — so a mark keyed on anything a title shares would
+  // land on both rows. The two copies do carry distinct ids, so this cell asks
+  // the narrower question the key is actually for: does a key naming ANOTHER
+  // seat reach this seat's chip?
   it("leaves the chip unmarked when the set names another seat's copy of it", () => {
     const owner = seatsAtK().find((p) => p.technologies.length > 0)!;
     const other = seatsAtK().find((p) => p.seat !== owner.seat)!;
