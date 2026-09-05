@@ -10,10 +10,16 @@ import type { HistoricalFrame, LogPanel } from "./types";
 const clone = (f: HistoricalFrame): HistoricalFrame => JSON.parse(JSON.stringify(f));
 
 /** Three positions after events 10, 11 and 12 of a game: the first step moves
- *  a cube, the second changes nothing on the table. */
+ *  a cube, the second changes nothing on the table.
+ *
+ *  The MOVER changes between the first two positions (seat 0 was to move at
+ *  event 10, seat 1 at event 11) so that a step reading its mover off the
+ *  position AFTER its event is a different answer, not the same one. The
+ *  corpus frame carries `to_move: 1`, so `f10` has to be moved off it. */
 function fixture(): { frames: HistoricalFrame[]; log: LogPanel } {
   const f10 = clone(wire.atK);
   f10.index = 10;
+  f10.to_move = 0;
   const f11 = clone(f10);
   f11.index = 11;
   f11.frame.board.tiles[2]!.assistants[1]![1] += 1;
@@ -42,6 +48,7 @@ describe("buildRun", () => {
     expect(run.steps).toHaveLength(2);
     expect(run.steps[0]!.event).toBe(10);
     expect(run.steps[0]!.line).toMatch(/Place 1 assistant/);
+    expect(run.steps[0]!.mover).toBe(0);
     expect(run.steps[0]!.mover).toBe(frames[0]!.to_move);
     expect(run.steps[0]!.phase).toBe(
       frames[0]!.frame.decision.phase_chain[frames[0]!.frame.decision.current_phase],
