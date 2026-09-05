@@ -9,7 +9,7 @@ import { describe, expect, it, vi } from "vitest";
 import { TurnAccount, isRefusal } from "./TurnAccount";
 import { buildRun } from "./walk";
 import { wire } from "./wire/contract";
-import type { HistoricalFrame, PlayerColor } from "./types";
+import type { HistoricalFrame, PlayerColor, PlayerId } from "./types";
 
 const COLORS: PlayerColor[] = ["Red", "Blue"];
 const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -21,17 +21,24 @@ const handlers = {
   onJump: noop, onSkip: noop, onReplay: noop,
 };
 
-/** A two-step run by seat 1, whose Players row says it is a bot. `phase` moves
- *  it off the fixture's own `current_phase`, which is the only way to tell a
- *  phase LABEL from the wire key it is looked up by. */
-function botRun(phase?: number) {
+/** A two-step run by seat 1, whose Players row says it is a bot.
+ *
+ *  `phase` moves it off the fixture's own `current_phase`, which is the only
+ *  way to tell a phase LABEL from the wire key it is looked up by. `firstMover`
+ *  makes the run change hands part-way — the ORDINARY shape, since a reply's
+ *  run normally opens with the human's own answer and continues into the bot's
+ *  steps — which is the only way to tell a per-row mover from the run's last
+ *  one. Both default to the single-mover fixture every other cell was written
+ *  against. */
+function botRun({ phase, firstMover = 1 }: { phase?: number; firstMover?: PlayerId } = {}) {
   const f0 = clone(wire.atK);
-  f0.to_move = 1;
+  f0.to_move = firstMover;
   if (phase !== undefined) f0.frame.decision.current_phase = phase;
   const players = f0.frame.dashboard.find((p) => "Players" in p);
   if (!players || !("Players" in players)) throw new Error("no Players panel");
   players.Players.players.find((p) => p.seat === 1)!.is_bot = true;
   const f1 = clone(f0);
+  f1.to_move = 1;
   f1.frame.board.tiles[0]!.assistants[1]![1] += 2;
   const f2 = clone(f1);
   f2.frame.decision.current_phase += 1;
@@ -42,7 +49,7 @@ function botRun(phase?: number) {
   return buildRun(20, [f0, f1, f2], {
     total: 22,
     entries: [
-      { index: 20, text: "Blue: Place 2 assistants in Tea Plantation (A00)" },
+      { index: 20, text: `${firstMover === 1 ? "Blue" : "Red"}: Place 2 assistants in Tea Plantation (A00)` },
       { index: 21, text: "Blue: Return President to hand (recover no assistants)" },
     ],
   });
@@ -65,8 +72,11 @@ function show(over: Partial<Parameters<typeof TurnAccount>[0]>) {
 }
 
 describe("the turn account with a run", () => {
-  it("is headed by the mover's turn, one row per event with its phase and its line", () => {
-    const run = botRun();
+  it("is headed by the mover's turn, one row per event with its phase, mover and line", () => {
+    // The run changes hands: seat 0 (Red) answered, then the bot at seat 1
+    // (Blue) played on. Without that the fixture has ONE mover and a component
+    // marking every row with `last.mover` reads correctly by accident.
+    const run = botRun({ firstMover: 0 });
     show({ run });
     // **Not the whole `<h2>`.** The cadence select's option text lives inside it,
     // so its textContent reads "Blue's turn 921 s2 s3 shide" — and a heading
@@ -81,7 +91,10 @@ describe("the turn account with a run", () => {
     expect(rows[0]).toHaveTextContent(/Place 2 assistants in Tea Plantation/);
     const phaseKey = run.steps[0]!.phase!;
     expect(rows[0]).toHaveTextContent(wire.labels.phases[phaseKey] ?? phaseKey);
-    expect(rows[0]!.querySelector(".mover")?.className).toMatch(/seat-blue/);
+    // Each row's OWN mover, and the heading is the LAST step's.
+    expect(rows[0]!.querySelector(".mover")?.className).toMatch(/seat-red/);
+    expect(rows[0]!.querySelector(".mover")?.textContent).toBe("Red");
+    expect(rows[1]!.querySelector(".mover")?.className).toMatch(/seat-blue/);
   });
 
   it("lights the step on the table and offers the walk's controls while it runs", async () => {
@@ -125,7 +138,7 @@ describe("the turn account with a run", () => {
   // leaves that cell green — measured, not supposed. `AreaAction` labels as
   // "Area action" and is what separates them.
   it("words the phase from the labels, not from the wire's key", () => {
-    const run = botRun(3);
+    const run = botRun({ phase: 3 });
     expect(run.steps[0]!.phase, "phase_chain[3] must be AreaAction").toBe("AreaAction");
     expect(wire.labels.phases.AreaAction, "its label must differ from its key").toBe("Area action");
     show({ run });
