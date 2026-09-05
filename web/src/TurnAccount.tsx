@@ -75,22 +75,41 @@ export function TurnAccount({
   const walking = run !== null && at !== null;
   const seat = (s: number) => colors[s] ?? `Seat ${s}`;
 
-  // **The lit row is scrolled into view (spec §3.2.5, ruling R-F5).** The box
-  // is capped — 9rem below 1201px, measured at 144px holding 396px of rows at
-  // 390 — so from about the fifth step the walk was lighting a row inside the
-  // scroller's hidden part, and the account said nothing about the step on the
-  // table. Above 1201px a long side column has the same problem.
+  // **The lit row is kept in view (spec §3.2.5), and the box below is the ONLY
+  // thing that moves (ruling R-F11).** The account is capped — `.turn-account
+  // .messages` is `max-height: 9rem; overflow: auto` at every width except
+  // inside `@media (min-width: 1201px)`, where the cap is released and `.side`
+  // becomes the scroller instead — so below 1201 the walk was lighting a row
+  // inside this box's hidden part from about its fifth step.
   //
-  // `block: "nearest"` rather than `center`: the row is brought just inside the
-  // scroller and a row already in view is not moved at all, so a walk does not
-  // jerk the account on every step. Keyed on the lit step and the run — never
-  // on every render, which would fight a player scrolling by hand — so nothing
-  // moves for an account that is not walking, and nothing but the lit row is
-  // ever asked to scroll.
+  // **`scrollIntoView` is what this must not use, and the reason is measured.**
+  // It scrolls EVERY scrollable ancestor by specification, and below 1201px the
+  // window is one of them: at 1000x523 the page went from 0 to 1826, 1851 and
+  // 1877 over three steps, dragging the board the walk was highlighting off
+  // screen and parking the lit row at the viewport's bottom edge under the
+  // sticky walk strip. The page is the player's to scroll (M5 spec R8), so this
+  // sets one `scrollTop` and touches nothing else.
+  //
+  // The arithmetic is "nearest" restated: a row already inside the box does not
+  // move it, and a row outside moves it by the least that brings the row's near
+  // edge in. When the cap is released the box is not a scroller
+  // (`scrollHeight === clientHeight`) and this does nothing at all, which is
+  // the ≥1201 arm. Keyed on the lit step and the run — never on every render,
+  // which would fight a player scrolling by hand.
+  const body = useRef<HTMLDivElement | null>(null);
   const rows = useRef<(HTMLLIElement | null)[]>([]);
   useEffect(() => {
     if (at === null) return;
-    rows.current[at]?.scrollIntoView({ block: "nearest" });
+    const box = body.current;
+    const row = rows.current[at];
+    if (!box || !row || box.scrollHeight <= box.clientHeight) return;
+    // `offsetTop` is measured from a shared offset parent — neither the box nor
+    // the list is positioned — so the difference is the row's offset inside the
+    // box, which is the space `scrollTop` is expressed in.
+    const top = row.offsetTop - box.offsetTop;
+    const bottom = top + row.offsetHeight;
+    if (top < box.scrollTop) box.scrollTop = top;
+    else if (bottom > box.scrollTop + box.clientHeight) box.scrollTop = bottom - box.clientHeight;
   }, [at, run]);
   return (
     <section className="panel turn-account">
@@ -142,7 +161,12 @@ export function TurnAccount({
           {folded ? "show" : "hide"}
         </button>
       </h2>
-      <div id="turn-account-body" className={`messages${folded ? " folded" : ""}`} role="status">
+      <div
+        id="turn-account-body"
+        ref={body}
+        className={`messages${folded ? " folded" : ""}`}
+        role="status"
+      >
         {run ? (
           <ol className="account">
             {run.steps.map((s, i) => (

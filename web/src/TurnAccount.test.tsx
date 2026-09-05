@@ -179,23 +179,46 @@ describe("the turn account with a run", () => {
 
 describe("the account keeps its lit row in view", () => {
   // **Spec §3.2.5: "the rows scroll to keep it in view".** It did not — the
-  // final review found no `scrollIntoView` anywhere in the client (m4). Above
+  // final review found no scrolling of any kind in the client (m4). Above
   // 1201px a nine-row account fits, which is why it went unnoticed; below it
-  // the box is capped at 9rem (144px measured at 390 for 396px of rows), so
-  // from about step 5 the lit row is inside the scroller's hidden part and the
-  // walk lights something nobody can see.
+  // the box is capped at 9rem, so from about the fifth step the walk lights a
+  // row inside the scroller's hidden part.
   //
-  // jsdom implements no layout and therefore no `scrollIntoView` at all
-  // (`src/test/setup.ts` stubs a no-op for every other cell), so the RECORDER
-  // below is the whole instrument: which element was asked to scroll, and with
-  // what.
-  const record = () => {
-    const seen: { el: Element; opts: unknown }[] = [];
-    const before = Element.prototype.scrollIntoView;
-    Element.prototype.scrollIntoView = function (this: Element, opts?: unknown) {
-      seen.push({ el: this, opts });
-    } as typeof Element.prototype.scrollIntoView;
-    return { seen, restore: () => void (Element.prototype.scrollIntoView = before) };
+  // **And it must scroll THAT BOX AND NOTHING ELSE (ruling R-F11).** The first
+  // fix used `scrollIntoView({ block: "nearest" })`, which by specification
+  // scrolls EVERY scrollable ancestor — including the window. Measured live at
+  // 1000x523: `window.scrollY` went 0 → 1826 → 1851 → 1877 over three steps,
+  // dragging the board the walk was highlighting off screen and parking the lit
+  // row at the viewport's bottom edge underneath the sticky walk strip. In the
+  // stack the window is an ancestor scroller and the page is the player's to
+  // scroll (M5 spec R8), so the effect moves the account's own `scrollTop`.
+  //
+  // **The cap lives on `.turn-account .messages`** — `max-height: 9rem;
+  // overflow: auto`, at EVERY width except inside `@media (min-width: 1201px)`,
+  // where `.turn-account .messages:not(.folded)` releases it and `.side`
+  // becomes the scroller instead. So the scroller is the `<div id=
+  // "turn-account-body">`, neither the panel around it nor the `<ol>` inside
+  // it, and above 1201px it is not a scroller at all.
+  //
+  // jsdom computes no layout, so every figure a real browser would measure is
+  // stubbed here: `scrollHeight`/`clientHeight` on the box and
+  // `offsetTop`/`offsetHeight` on the rows all read 0 otherwise (measured).
+  // `scrollTop` is NOT stubbed — jsdom stores what is assigned to it, so it is
+  // the one real reading in the cell.
+  const geometry = (
+    container: HTMLElement,
+    g: { clientHeight: number; scrollHeight: number; rows: [top: number, height: number][] },
+  ) => {
+    const box = container.querySelector<HTMLElement>("#turn-account-body");
+    if (!box) throw new Error("no account body to scroll");
+    Object.defineProperty(box, "clientHeight", { configurable: true, get: () => g.clientHeight });
+    Object.defineProperty(box, "scrollHeight", { configurable: true, get: () => g.scrollHeight });
+    [...container.querySelectorAll<HTMLElement>("ol.account li")].forEach((li, i) => {
+      const [top, height] = g.rows[i] ?? [0, 0];
+      Object.defineProperty(li, "offsetTop", { configurable: true, get: () => top });
+      Object.defineProperty(li, "offsetHeight", { configurable: true, get: () => height });
+    });
+    return box;
   };
 
   const account = (run: ReturnType<typeof botRun> | null, at: number | null) => (
@@ -211,53 +234,99 @@ describe("the account keeps its lit row in view", () => {
     />
   );
 
-  it("scrolls the row the walk lit, each time the lit step changes, and nothing else", () => {
+  /** Mount with the run but NO lit step, so the rows exist to be measured
+   *  before any lit step arrives — which is also the order the App renders in,
+   *  the account being on screen before a walk starts. */
+  const mounted = (run: ReturnType<typeof botRun>, g: Parameters<typeof geometry>[1]) => {
+    const r = render(account(run, null));
+    return { ...r, box: geometry(r.container, g) };
+  };
+
+  // Two rows 30 tall in a 40-tall box: row 0 fits, row 1 does not, and going
+  // back to row 0 is the third branch. One fixture, all three.
+  const TALL = { clientHeight: 40, scrollHeight: 100, rows: [[0, 30], [30, 30]] as [number, number][] };
+
+  it("moves its own scroller so the lit row lies inside the box, minimally, both ways", () => {
     const run = botRun();
-    const { seen, restore } = record();
+    const { box, rerender } = mounted(run, TALL);
+    expect(box.scrollTop, "nothing is lit yet, so nothing has moved").toBe(0);
+
+    // Row 0 spans [0, 30] and the box shows [0, 40]: already inside, so
+    // "nearest" moves nothing. An effect that centred instead would move here.
+    rerender(account(run, 0));
+    expect(box.scrollTop, "the lit row was already in view and the box moved anyway").toBe(0);
+
+    // Row 1 spans [30, 60] against a view of [0, 40]: the minimum that brings
+    // its bottom edge in is 20, which shows [20, 60].
+    rerender(account(run, 1));
+    expect(box.scrollTop).toBe(20);
+
+    // Back up: row 0's top at 0 is above the view's 20, so the box comes back
+    // to 0 rather than staying put. `back` in the walk's controls does this.
+    rerender(account(run, 0));
+    expect(box.scrollTop).toBe(0);
+  });
+
+  it("leaves the scroller alone when the account is not a scroller", () => {
+    // Above 1201px `max-height: none` releases the cap, so the box grows to
+    // its content and the page is what scrolls — the player's, not the walk's.
+    const run = botRun();
+    const { box, rerender } = mounted(run, {
+      clientHeight: 100,
+      scrollHeight: 100,
+      rows: [[0, 30], [30, 30]],
+    });
+    box.scrollTop = 7;
+    rerender(account(run, 1));
+    expect(box.scrollTop, "an uncapped account was scrolled by the walk").toBe(7);
+  });
+
+  // **The regression this ruling exists for.** `scrollIntoView` propagates to
+  // every scrollable ancestor by specification, so nothing may call it — and
+  // the window must never be scrolled by any other route either. Both are
+  // spied rather than reasoned about, because "we no longer call it" is a
+  // sentence and this is a check.
+  it("never calls scrollIntoView and never scrolls the window", () => {
+    const intoView = vi.fn();
+    const before = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = intoView as typeof Element.prototype.scrollIntoView;
+    const scrollTo = vi.spyOn(window, "scrollTo").mockImplementation(() => {});
     try {
-      const { container, rerender } = render(account(run, 0));
-      const rows = () => [...container.querySelectorAll("li")];
-      expect(rows(), "the run must put rows in the body").toHaveLength(2);
-      // **`toBe` on the NODES, never `toEqual`.** Vitest compares DOM nodes
-      // structurally: two distinct `<li class="at">row</li>` elements satisfy
-      // `toEqual`, bare and inside arrays (measured), and "the LIT row, not
-      // merely a row like it" is the whole claim this cell makes. The options
-      // are a plain object and compare by value.
-      //
-      // `block: "nearest"` and not `center`: the row is brought just inside the
-      // scroller, so a walk does not jerk the account on every step.
-      expect(seen).toHaveLength(1);
-      expect(seen[0]!.el, "scrolled a row that is not the lit one").toBe(rows()[0]);
-      expect(seen[0]!.opts).toEqual({ block: "nearest" });
-
+      const run = botRun();
+      const { box, container, rerender } = mounted(run, TALL);
+      rerender(account(run, 0));
       rerender(account(run, 1));
-      expect(seen).toHaveLength(2);
-      expect(seen[1]!.el, "scrolled a row that is not the lit one").toBe(rows()[1]);
+      // Anti-vacuity: the account really did scroll on this fixture, so the two
+      // spies are silent about a path that ran rather than one that did not.
+      expect(box.scrollTop, "the fixture must actually scroll the account").toBe(20);
+      expect(intoView).not.toHaveBeenCalled();
+      expect(scrollTo).not.toHaveBeenCalled();
 
-      // Keyed on the lit STEP, so a re-render that lights the same row again
-      // asks for nothing: an effect that re-ran on every render would fight a
-      // player scrolling the account by hand.
-      rerender(account(run, 1));
-      expect(seen).toHaveLength(2);
+      // The other way a lit step arrives: a fresh run landing at step 0.
+      const next = botRun();
+      rerender(account(next, null));
+      const box2 = geometry(container, { clientHeight: 40, scrollHeight: 100, rows: [[70, 30], [100, 30]] });
+      rerender(account(next, 0));
+      expect(box2.scrollTop, "the fresh run's first row must be out of view").toBe(60);
+      expect(intoView).not.toHaveBeenCalled();
+      expect(scrollTo).not.toHaveBeenCalled();
     } finally {
-      restore();
+      Element.prototype.scrollIntoView = before;
+      scrollTo.mockRestore();
     }
   });
 
   it("scrolls nothing when there is no lit row", () => {
     const run = botRun();
-    const { seen, restore } = record();
-    try {
-      // A finished walk still shows its run — this is the account after `skip`,
-      // and it must not haul the box around behind the player's back.
-      const { rerender } = render(account(run, null));
-      expect(seen).toHaveLength(0);
-      // And nor must the prose box, which has no rows at all.
-      rerender(account(null, null));
-      expect(seen).toHaveLength(0);
-    } finally {
-      restore();
-    }
+    const { box, rerender } = mounted(run, TALL);
+    box.scrollTop = 12;
+    // A finished walk still shows its run — this is the account after `skip`,
+    // and it must not haul the box around behind the player's back.
+    rerender(account(run, null));
+    expect(box.scrollTop).toBe(12);
+    // And nor must the prose box, which has no rows at all.
+    rerender(account(null, null));
+    expect(box.scrollTop).toBe(12);
   });
 });
 

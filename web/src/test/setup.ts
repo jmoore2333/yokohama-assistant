@@ -15,12 +15,13 @@
 // 3. **`IntersectionObserver`/`matchMedia` are absent in jsdom**, and are
 //    stubbed only if something needs them. Nothing does today; when something
 //    does, it is stubbed here rather than in each test.
-// 4. **`Element.prototype.scrollIntoView` is a no-op, because jsdom has none.**
-//    `TurnAccount` scrolls the walk's lit row into view (spec §3.2.5), and
-//    without this every cell that renders a running walk dies on
-//    "scrollIntoView is not a function". A no-op is the honest stub: jsdom
-//    implements no layout, so there is nothing a real one could do — and the
-//    cell that is ABOUT the scroll installs its own recorder over this one.
+// 4. **`Element.prototype.scrollIntoView` is a no-op, because jsdom has none —
+//    and NOTHING in this client calls it.** Ruling R-F11 forbids it: it scrolls
+//    every scrollable ancestor by specification, and the account keeping its lit
+//    row in view moves its own `scrollTop` instead. The stub stays because the
+//    cell that pins that spies on this method to prove it is never reached, and
+//    a spy needs something to replace — and because a future caller should fail
+//    that cell rather than die here on a missing function.
 // 5. **`localStorage` is an in-memory `Storage`, because Node's is not one.**
 //    jsdom does not install one under this environment (`window.localStorage`
 //    is `undefined`), so `globalThis.localStorage` resolved to NODE 26's own
