@@ -102,3 +102,47 @@ export function walkReducer(s: WalkState, a: WalkAction, last: number): WalkStat
       return null;
   }
 }
+
+/** The marks a finished turn leaves on the LIVE table (spec §3.2.4, ruling R-F1).
+ *
+ *  **Not the last step's own diff, and the difference is every real turn.** A
+ *  bot's turn closes with "End additional-action phase", whose two frames are
+ *  identical, so the run's final `changes` is empty and holding it wiped the
+ *  board the instant the walk ended — the spec's purpose clause ("the end state
+ *  of the turn is still readable after the walk") delivered for the one run
+ *  shape a served turn never has. Measured live three times at the final
+ *  review, against a component cell that was green because its fixture's cube
+ *  rode the last step.
+ *
+ *  What is held is the UNION over the steps the run's LAST mover played: the
+ *  seat whose turn just finished, everything it did, in that one seat's colour.
+ *  A run of the player's OWN events falls out of the same rule rather than
+ *  needing an arm — its last mover is the player, and the union is over its own
+ *  steps.
+ *
+ *  **Every grain is unioned, `hand` included**, which is five sets and not the
+ *  four a diff of tiles, seats, slots and technologies would name: a port take
+ *  by the run's mover puts a card in the viewer's own hand, and the mark on it
+ *  is one half of that move. `any` is recomputed from the union rather than
+ *  or-ed across the steps, so it stays the statement the field is — whether
+ *  these five sets name anything at all. */
+export function heldChanges(run: Run): Changes | null {
+  const last = run.steps[run.steps.length - 1];
+  if (!last) return null;
+  const mine = run.steps.filter((s) => s.mover === last.mover).map((s) => s.changes);
+  const union = <T,>(pick: (c: Changes) => Set<T>): Set<T> =>
+    new Set(mine.flatMap((c) => [...pick(c)]));
+  const tiles = union((c) => c.tiles);
+  const seats = union((c) => c.seats);
+  const slots = union((c) => c.slots);
+  const techs = union((c) => c.techs);
+  const hand = union((c) => c.hand);
+  return {
+    tiles,
+    seats,
+    slots,
+    techs,
+    hand,
+    any: tiles.size + seats.size + slots.size + techs.size + hand.size > 0,
+  };
+}

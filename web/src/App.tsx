@@ -15,6 +15,7 @@ import {
   buildRun,
   dwellFor,
   hasBotStep,
+  heldChanges,
   walkReducer,
   type Run,
   type WalkAction,
@@ -67,8 +68,9 @@ export function App() {
   // ended. `walk` is the step on the table and whether the timer runs, and
   // `null` is "over" — the live state is what is on screen. `fresh` is true
   // from the moment a run lands until the player's next answer, and is what
-  // keeps the LAST step's highlights on the live table (spec §3.2.4) instead of
-  // clearing them the instant the walk finishes.
+  // keeps the finished turn's highlights on the live table (spec §3.2.4)
+  // instead of clearing them the instant the walk finishes; WHICH marks those
+  // are is `heldChanges`, not the last step's own diff.
   const [run, setRun] = useState<Run | null>(null);
   const [walk, setWalk] = useState<WalkState | null>(null);
   const [fresh, setFresh] = useState(false);
@@ -359,10 +361,18 @@ export function App() {
   const replaying = walking ? stepNow.after.index < stepNow.after.total : scrubbing;
   const view = walking ? stepNow.after : scrubbing ? past : state;
 
-  // **The highlights outlive the walk by one answer (spec §3.2.4).** While it
-  // runs they are the step's own diff; when it ends they are the LAST step's,
-  // held on the live table by `fresh` until the player answers again — so what
-  // the opponent did is still marked on the board you are about to play on.
+  // **The highlights outlive the walk by one answer (spec §3.2.4, ruling
+  // R-F1).** While it runs they are the step's own diff. When it ends — by
+  // ticking out or by `skip` — they are `heldChanges`: the union over the steps
+  // the run's LAST mover played, held on the live table by `fresh` until the
+  // player answers again, so what the opponent did is still marked on the board
+  // you are about to play on.
+  //
+  // **Held is not "the last step's".** Every bot turn this server serves ends
+  // with "End additional-action phase", whose diff is empty, so the last step's
+  // marks are no marks and the promise above was kept for no real turn at all
+  // (final review I1, reproduced live three times). `walk.ts` carries the rule
+  // and the measurement.
   //
   // ONE source for all four reads — the marks, their colour, how long the pulse
   // lasts and which beat it is on — because they are four descriptions of the
@@ -372,12 +382,17 @@ export function App() {
   const lastStep = run?.steps[run.steps.length - 1];
   const shown =
     walk && stepNow
-      ? { step: stepNow, at: walk.at }
+      ? { step: stepNow, at: walk.at, changes: stepNow.changes, mover: stepNow.mover }
       : fresh && run && lastStep
-        ? { step: lastStep, at: run.steps.length - 1 }
+        ? {
+            step: lastStep,
+            at: run.steps.length - 1,
+            changes: heldChanges(run),
+            mover: lastStep.mover,
+          }
         : null;
-  const highlights = shown?.step.changes ?? null;
-  const highlightBy = shown ? colors[shown.step.mover] : undefined;
+  const highlights = shown?.changes ?? null;
+  const highlightBy = shown ? colors[shown.mover] : undefined;
 
   // The board is an input surface only while a placement picker is open — the
   // one place the engine is asking "which areas", rather than "which option".

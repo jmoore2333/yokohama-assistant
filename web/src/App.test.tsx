@@ -763,6 +763,157 @@ describe("the turn playback", () => {
     }
   });
 
+  /** A reply whose LAST step diffs to NOTHING — the shape EVERY real bot turn
+   *  has, and the one shape the R-P4 fixture above deliberately does not.
+   *
+   *  Three events again, but the changing one is in the MIDDLE: the human's own
+   *  answer at 40, the bot's placement at 41, and the bot's "End
+   *  additional-action phase" at 42, whose before and after frames are
+   *  identical. Marks read off the last step alone are therefore empty — which
+   *  is the defect the final review reproduced live three times, while the cell
+   *  above stayed green because its cube rides the run's final step. */
+  function botReplyEndingEmpty() {
+    const before = { ...wire.optionsMany, events: 40 };
+    const replied = { ...wire.optionsMany, events: 43 };
+    const at = (k: number) => {
+      const f = JSON.parse(JSON.stringify(wire.atK)) as typeof wire.atK;
+      f.index = k;
+      f.total = 43;
+      // Position 40 is the human's own; every later one is the bot's, so the
+      // run's LAST step's mover is seat 1 and the held union is taken over its
+      // two steps and not over the human's.
+      f.to_move = k === 40 ? before.to_move : 1;
+      const players = f.frame.dashboard.find((p) => "Players" in p);
+      if (!players || !("Players" in players)) throw new Error("no Players panel");
+      players.Players.players[1]!.is_bot = true;
+      // The cube lands at 42 — the position AFTER event 41 — so the last step
+      // (42 -> 43) compares two identical frames. The SEAT's own counts move
+      // with it, or the diff would name the tile and never the row.
+      if (k >= 42) {
+        f.frame.board.tiles[0]!.assistants[1]![1] += 1;
+        const blue = players.Players.players[1]!;
+        blue.assistants = {
+          ...blue.assistants,
+          in_hand: blue.assistants.in_hand - 1,
+          on_board: blue.assistants.on_board + 1,
+        };
+      }
+      return f;
+    };
+    const log = {
+      total: 43,
+      entries: [
+        { index: 40, text: "Red: End additional-action phase" },
+        { index: 41, text: "Blue: Place 1 assistant in each of: Tea Plantation (A00)" },
+        { index: 42, text: "Blue: End additional-action phase" },
+      ],
+    };
+    return { before, replied, at, log };
+  }
+
+  /** The marks on screen, in the two grains this fixture lights. */
+  const marks = () => ({
+    tiles: [...document.querySelectorAll(".tile.changed")].map(
+      (t) => t.querySelector(".tile-id")?.textContent ?? "?",
+    ),
+    seats: [...document.querySelectorAll(".seat.changed .seat-name")].map((s) => s.textContent),
+  });
+
+  /** Render the empty-ending fixture and run the walk up to its last step. */
+  const walkToTheEmptyStep = async (click: (el: Element) => void) => {
+    click(firstRow());
+    await settle();
+    // Step 1 of 3 is the human's own answer, and it changes nothing.
+    expect(screen.getByText(/is playing · step 1 of 3/)).toBeInTheDocument();
+    expect(marks()).toEqual({ tiles: [], seats: [] });
+    // Step 2 is the placement, and it is the only step of this run that moves
+    // anything at all.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(450);
+    });
+    expect(document.querySelector("ol.account li.at")?.textContent).toMatch(/Place 1 assistant/);
+    expect(marks()).toEqual({ tiles: ["A00"], seats: ["Blue"] });
+    // Step 3 is the bot's "End additional-action phase": its own diff is empty,
+    // and the table goes dark for it while the walk is still running. That is
+    // the step's OWN diff and is correct; what must not happen is the run
+    // ending there with nothing held.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2100);
+    });
+    expect(document.querySelector("ol.account li.at")?.textContent).toMatch(
+      /Blue: End additional-action/,
+    );
+    expect(marks()).toEqual({ tiles: [], seats: [] });
+  };
+
+  // **The turn's marks outlive the walk, and the last step is not what they
+  // are (spec §3.2.4, ruling R-F1).** Every bot turn this server serves ends
+  // with "End additional-action phase", whose diff is empty, so holding the
+  // LAST step's changes cleared every mark the instant the walk finished —
+  // measured live three times at the final review. What is held is the UNION
+  // over the steps the run's last mover played, coloured by that mover, so
+  // what the opponent did is still on the board you are about to play on.
+  it("holds the mover's whole turn on the live table after the walk ticks out", async () => {
+    const { before, replied, at, log } = botReplyEndingEmpty();
+    await renderApp(before, (call) => {
+      if (call.path.endsWith("/input")) return replied;
+      const m = /\/at\/(\d+)$/.exec(call.path);
+      if (m) return at(Number(m[1]));
+      if (call.path.includes("/log")) return log;
+      return undefined;
+    });
+    vi.useFakeTimers();
+    try {
+      const click = (el: Element) => act(() => void fireEvent.click(el));
+      await walkToTheEmptyStep(click);
+
+      // The walk ticks out. The table is the live position again — the live
+      // payload has a piece on no tile — and the marks the turn left are on it.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(450);
+      });
+      expect(screen.queryByText(/is playing/)).toBeNull();
+      expect(boardPieces()).toHaveLength(0);
+      expect(marks()).toEqual({ tiles: ["A00"], seats: ["Blue"] });
+
+      // And they clear at the player's NEXT answer, not before: the reply adds
+      // no event, so the run goes too and the box shows the prose again.
+      click(firstRow());
+      await settle();
+      expect(marks()).toEqual({ tiles: [], seats: [] });
+      expect(document.querySelector("ol.account")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // `skip` is the other way a walk ends, and it ends it from a step that is not
+  // the last one — so a held mark read off "the step we stopped on" would be
+  // right here and wrong above. Both ways hold the same thing.
+  it("holds the same marks when the walk is skipped from the empty last step", async () => {
+    const { before, replied, at, log } = botReplyEndingEmpty();
+    await renderApp(before, (call) => {
+      if (call.path.endsWith("/input")) return replied;
+      const m = /\/at\/(\d+)$/.exec(call.path);
+      if (m) return at(Number(m[1]));
+      if (call.path.includes("/log")) return log;
+      return undefined;
+    });
+    vi.useFakeTimers();
+    try {
+      const click = (el: Element) => act(() => void fireEvent.click(el));
+      await walkToTheEmptyStep(click);
+
+      const deck = within(document.querySelector<HTMLElement>(".decision.walking")!);
+      click(deck.getByRole("button", { name: "skip" }));
+      expect(screen.queryByText(/is playing/)).toBeNull();
+      expect(boardPieces()).toHaveLength(0);
+      expect(marks()).toEqual({ tiles: ["A00"], seats: ["Blue"] });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   // **The switch clears the walk, and the bug it stops is visible.** Without
   // it the account of a turn in the game being left goes on rendering under
   // the new banner, and — because the walk owns `view` — the OLD game's board

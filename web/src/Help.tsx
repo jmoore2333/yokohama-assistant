@@ -65,9 +65,12 @@ export function Help() {
         a take slides every card behind it toward the empty slot, and outlining all of them
         would bury the one that arrived. Nothing ever marks a card in an opponent&rsquo;s hand,
         because you are never shown one; their order take is read from the arrival in the strip
-        and the line that names it. Skip lands you on your prompt, replay runs it again. Under
-        it are every seat&rsquo;s goods, money and pieces, and your own hand. Hover or focus any
-        tile to see it, and any site card on it, at full size.
+        and the line that names it. When the walk ends, the marks the turn left &mdash; all of
+        them, not just its last step&rsquo;s &mdash; stay on the live table until you answer
+        again, so you play on a board that still shows what your opponent did. Skip lands you on
+        your prompt, replay runs it again. Under it are every seat&rsquo;s goods, money and
+        pieces, and your own hand. Hover or focus any tile to see it, and any site card on it,
+        at full size.
       </p>
       <p>
         That is the wide screen. Narrow the window past about 1200px and the same three parts
