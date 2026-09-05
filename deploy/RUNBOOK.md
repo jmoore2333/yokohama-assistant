@@ -302,6 +302,51 @@ bundle `index-Ba9C5aPH.js` (which exists only in this build). Three tags now
 sit on the NAS — `0.5.0`, `0.5.0-m5`, `0.5.0-m5.1` — each a rollback point
 (§5). §3.4's first-paint rows above are measured from exactly this build.
 
+### 3.6 M5.5 is live — the third deployment, 2026-09-05 (a record, not a plan)
+
+The §3.5 recipe again, through the Portainer Docker proxy (environment 2)
+from the workstation, with the numbers that changed:
+
+- **Build:** `web-frontend` at `6d86989` (Task 12's second fix round of the
+  M5.5 plan; the deploy commit is the one after it). The musl binary moved
+  this time — `static-pie linked`, **6,105,720 bytes** (was 6,089,656: the
+  `events` count on the live payload, the offers on the replay frame, and the
+  preview-as-a-position with the bot's argmax keep are the whole difference);
+  `web/dist` carries the M5.5 client (bundle `index-D9enc4gM.js`, 282,553 B)
+  and the five re-shot help pictures. Context tarball **13,899,025 B** (was
+  13,879,136), fetched by the NAS (192.168.1.173) from
+  `http://192.168.1.221:8899/ctx.tar.gz` in one GET — **the workstation's LAN
+  address is no longer the 192.168.1.16 §1 names**; read it from `ifconfig`
+  before serving the context.
+- **Image:** `yokohama-web:0.5.0-m5.5`, **25,993,976 B** (was 25,950,515),
+  built in ~11 s (the NAS fetched the context at 04:25:30 local and the image
+  is stamped 04:25:41).
+- **Swap:** `POST /containers/yokohama-web/stop` → `DELETE` → `POST
+  /containers/create?name=yokohama-web` with §3's body plus the two labels
+  (`maintainer`, `purpose`) → `start` at 08:26:17Z. Same address on
+  `cf-internal` (172.21.0.4), so the tunnel's ingress needed nothing. The named
+  volume rode across untouched. **Healthy on the first probe**, 30 s after
+  start (04:26:47 local).
+- **Verified through the tunnel:** from a bare shell, `curl` answers the Access
+  redirect (302, "Please authenticate via the warp client") — the tunnel up and
+  the origin behind it. From a WARP-enrolled shell (Access authenticates the
+  device silently, so the cookie is no longer the browser's alone) the §3.2
+  trio passes: `/api/health` 200
+  `{"server_version":"0.5.0","semantics_rev":7,"rules_hash":"d85445c479cb1ead"}`,
+  `/` shipping `assets/index-D9enc4gM.js` (which exists only in this build),
+  `/help/screen.png` 200, and `/api/games` listing every save. The container's
+  own log reads `yokohama-web listening on http://0.0.0.0:8080`. On screen
+  (Claude-in-Chrome at 1710×960): Deal → the set table (the pyramid, the port
+  strip's six cards, the bot's two cards with one marked "bot keeps this") →
+  choose → Start → the bot's turn walked as nine steps with the table outlined
+  and the changed tiles lit → `replay` restarted it at step 1 and `skip` ended
+  it. The owner's four saved games were listed before and after;
+  `sim-d7d5918bb4f74a2a` opened read-only and was not played on. The check left
+  one new save (`sim-5c3b4e596bb8cf97`) on the volume — the owner's to delete.
+- **Rollback tags now on the NAS:** `0.5.0`, `0.5.0-m5`, `0.5.0-m5.1`,
+  `0.5.0-m5.5` (§5).
+- **Downtime:** the seconds between `stop` and `start`; nobody was playing.
+
 ---
 
 ## 4. Modal — the upgrade path, not yet deployed
