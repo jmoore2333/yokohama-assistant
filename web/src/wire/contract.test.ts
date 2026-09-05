@@ -74,6 +74,9 @@ describe("the payload roots carry exactly the fields the client declares", () =>
     ["labels", wire.labels, KEYS.labels],
     ["health", wire.health, KEYS.health],
     ["preview", wire.preview, KEYS.preview],
+    ["preview_bot", wire.previewBot, KEYS.preview],
+    ["preview.deal", wire.preview.deals[0], KEYS.deal],
+    ["preview.dealCard", wire.preview.deals[0]!.cards[0], KEYS.dealCard],
     ["error", wire.error, KEYS.apiError],
     ["suggest", wire.suggest, KEYS.suggestResponse],
     ["suggest.ok", wire.suggest.ok, KEYS.suggestOk],
@@ -185,6 +188,19 @@ describe("what the corpus itself has to be true of", () => {
     // Truthful whether masked or not: the height of a hand is public at a table.
     expect(hand!.Hand.card_count).toBeGreaterThan(0);
     expect(JSON.stringify(wire.hiddenHand)).not.toContain('"is_starting_order"');
+  });
+
+  // The bot chooses its own starting order, and the two preview fixtures are
+  // the two sides of that: `preview` is bot-free and every `bot_keep` is null,
+  // `preview_bot` has a bot at seat 1 and carries the card number it keeps.
+  // A server that stopped answering, or answered on a human seat, fails here.
+  it("a bot seat's keep is the bot's own, and a human seat's is nobody's yet", () => {
+    expect(wire.preview.deals.every((d) => d.bot_keep === null)).toBe(true);
+    expect(wire.preview.deals.every((d) => !d.is_bot)).toBe(true);
+    const bot = wire.previewBot.deals[1]!;
+    expect(bot.is_bot).toBe(true);
+    expect([1, 2]).toContain(bot.bot_keep);
+    expect(wire.previewBot.deals[0]!.bot_keep).toBeNull();
   });
 
   // **No play payload carries the setup seed; `preview` does, and must.**

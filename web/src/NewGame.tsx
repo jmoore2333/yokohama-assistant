@@ -44,9 +44,18 @@ export function NewGame({
     colors: [...colors],
     start_seat: 0,
     ...(seedText.trim() ? { seed: seedText.trim() } : {}),
-    keeps: Array.from({ length: players }, () => 1),
+    keeps: forSeats(),
     bot_seats: [botSeat],
   });
+
+  /** The `keeps` list the wire takes: a number on a human seat, `null` on the
+   *  bot's, whose keep is the bot's own. A value on a bot seat is a 400 naming
+   *  the seat. `chosen` is this screen's per-seat state, which still holds a
+   *  number for every seat; only the bot's entry is dropped on the way out. */
+  const forSeats = (chosen?: number[]): (number | null)[] =>
+    Array.from({ length: players }, (_, seat) =>
+      seat === botSeat ? null : (chosen?.[seat] ?? 1),
+    );
 
   // The same guard, and the same reasoning, as `App`'s `inFlight` — read its
   // comment; this is the second site and it was missing.
@@ -159,16 +168,16 @@ export function NewGame({
                 </label>
               </div>
               <div className="deal">
-                {deal.cards.map((card, idx) => (
+                {deal.cards.map((dealt, idx) => (
                   <button
                     type="button"
                     className={`deal-pick ${keeps[deal.seat] === idx + 1 ? "chosen" : ""}`}
-                    key={card.id}
+                    key={dealt.card.id}
                     onClick={() =>
                       setKeeps((k) => k.map((v, i) => (i === deal.seat ? idx + 1 : v)))
                     }
                   >
-                    <OrderCardView art={art} card={card} id={card.id} />
+                    <OrderCardView art={art} card={dealt.card} id={dealt.card.id} />
                   </button>
                 ))}
               </div>
@@ -182,7 +191,7 @@ export function NewGame({
               onClick={() =>
                 run(async () => {
                   // The seed sent back is the STRING the server gave, verbatim.
-                  const req = { ...base(), seed: preview.seed, keeps };
+                  const req = { ...base(), seed: preview.seed, keeps: forSeats(keeps) };
                   onStarted(await api.create(req), true);
                 })
               }

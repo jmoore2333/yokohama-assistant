@@ -415,9 +415,34 @@ export interface ApiErrorBody {
   error: string;
 }
 
+/** One dealt card, beside what the built-in bot would score it at. */
+export interface DealCard {
+  card: OrderCard;
+  /** `greedy::score_starting_order` — the printed economics, hand-set and
+   *  unmeasured by its own doc, so it is shown under the CLI's hedge and never
+   *  as a recommendation the engine stands behind. */
+  keep_score: number;
+}
+
+/** The two cards a seat was dealt. */
+export interface Deal {
+  seat: PlayerId;
+  is_bot: boolean;
+  cards: DealCard[];
+  /** Which card a BOT seat keeps, `1` or `2`; `null` on a human seat, whose
+   *  keep the player makes. The client never chooses for the bot. */
+  bot_keep: number | null;
+}
+
+/** The set table: the position after setup, beside the deals.
+ *
+ *  `table` is a `HistoricalFrame` at `index 0, total 0` over a session the
+ *  server throws away — so this screen draws the real board with the same
+ *  components a replay position uses, and nothing is created until Start. */
 export interface Preview {
   seed: string;
-  deals: { seat: PlayerId; cards: OrderCard[] }[];
+  table: HistoricalFrame;
+  deals: Deal[];
 }
 
 // ---- the read-only surfaces ---------------------------------------------

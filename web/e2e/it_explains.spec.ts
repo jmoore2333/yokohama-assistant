@@ -34,7 +34,9 @@ async function aGameWithABot(request: import("@playwright/test").APIRequestConte
       colors: ["Red", "Blue"],
       start_seat: 0,
       seed: "20260831",
-      keeps: [1, 1],
+      // Seat 0 is the bot: its keep is the bot's own, so the wire carries
+      // `null` there and a number would be refused by name.
+      keeps: [null, 1],
       bot_seats: [0],
       name,
     },

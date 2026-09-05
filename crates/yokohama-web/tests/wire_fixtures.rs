@@ -185,11 +185,24 @@ async fn walk() -> Vec<(String, Value)> {
         api.call("POST", "/api/games/preview", Some(new_game_body())).await;
     assert_eq!(status, StatusCode::OK, "{preview}");
 
+    // A SECOND preview, with a bot at seat 1, so the corpus carries the shape
+    // the set table's bot half has: `is_bot`, a `bot_keep`, and a hand with the
+    // bot's kept card already in it. No `create` beside it — a preview pumps
+    // nothing and draws no bot seed into anything it returns, so unlike the
+    // walk's game it is deterministic with a bot on the table.
+    let mut with_bot = new_game_body();
+    with_bot["bot_seats"] = json!([1]);
+    with_bot["keeps"] = json!([1, null]);
+    with_bot["name"] = json!("wire-bot");
+    let (status, preview_bot) = api.call("POST", "/api/games/preview", Some(with_bot)).await;
+    assert_eq!(status, StatusCode::OK, "{preview_bot}");
+
     let (status, created) = api.call("POST", "/api/games", Some(new_game_body())).await;
     assert_eq!(status, StatusCode::CREATED, "{created}");
 
     let mut out: Vec<(String, Value)> = vec![
         ("preview".to_string(), preview),
+        ("preview_bot".to_string(), preview_bot),
         ("health".to_string(), api.get("/api/health").await),
         ("labels".to_string(), api.get("/api/labels").await),
         ("ports".to_string(), api.get("/api/games/wire/ports").await),
@@ -819,6 +832,16 @@ async fn no_committed_payload_carries_the_setup_seed_except_the_preview() {
             assert!(
                 serde_json::to_string(&value).expect("serializable").contains(&decimal),
                 "preview must carry the seed it round-trips — {name} does not",
+            );
+            // The exemption is the SEED FIELD and nothing else. `preview` now
+            // carries a whole position beside it, and a frame is served
+            // seed-free everywhere else in this API — so the table inside the
+            // one exempt payload is held to the same rule the exemption does
+            // not cover.
+            let table = serde_json::to_string(&value["table"]).expect("serializable");
+            assert!(
+                !table.contains(&decimal),
+                "{name}.table carries the setup seed — the position is served seed-free like every frame",
             );
             continue;
         }

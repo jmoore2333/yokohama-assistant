@@ -102,7 +102,7 @@ async fn a_whole_two_player_game_against_the_bot_plays_through_the_api() {
             "/api/games",
             Some(serde_json::json!({
                 "players": 2, "colors": ["Red", "Blue"], "start_seat": 0,
-                "seed": 20260830u64, "keeps": [1, 1], "bot_seats": [1],
+                "seed": 20260830u64, "keeps": [1, null], "bot_seats": [1],
                 "name": "gate",
             })),
         )

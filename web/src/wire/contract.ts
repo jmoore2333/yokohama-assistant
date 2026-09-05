@@ -54,6 +54,8 @@ import type {
   ApiErrorBody,
   ClientState,
   Counter,
+  Deal,
+  DealCard,
   IndexCard,
   IndexGroup,
   DecisionModel,
@@ -114,6 +116,7 @@ import placeB from "./place_b.json";
 import placeBSelected from "./place_b_selected.json";
 import ports from "./ports.json";
 import preview from "./preview.json";
+import previewBot from "./preview_bot.json";
 import refused from "./refused.json";
 import retreat from "./retreat.json";
 import retreatAnswered from "./retreat_answered.json";
@@ -177,6 +180,7 @@ const _choiceWarehouseTake: Widen<ClientState> = choiceWarehouseTake;
 const _refused: Widen<ClientState> = refused;
 const _labels: Widen<Labels> = labels;
 const _preview: Widen<Preview> = preview;
+const _previewBot: Widen<Preview> = previewBot;
 const _health: Widen<Health> = health;
 const _error: Widen<ApiErrorBody> = error;
 const _ports: Widen<PortsPanel> = ports;
@@ -263,7 +267,7 @@ void [
 // reference keeps the compiler's other rule from deleting the check.
 void [
   _options, _options4p, _optionsMany, _optionsPriced, _pick, _retreat, _retreatAnswered, _placeA, _placeASelected, _placeB, _placeBSelected,
-  _gameOver, _watching, _hiddenHand, _locked, _refused, _labels, _preview, _health, _error,
+  _gameOver, _watching, _hiddenHand, _locked, _refused, _labels, _preview, _previewBot, _health, _error,
   _ports, _labs, _areas, _areas4p, _log, _atK, _artManifest, _feeNonzero,
   _choiceAssistantMove, _choiceChurchSpace, _choiceWarehouseTake,
   _suggest, _why, _whyRefused, _whyRefusals,
@@ -346,7 +350,9 @@ const LABELS = [
   "area_types", "phases", "phase_chain", "tech_effects", "achievements", "features",
 ] as const;
 const HEALTH = ["server_version", "semantics_rev", "rules_hash"] as const;
-const PREVIEW = ["seed", "deals"] as const;
+const PREVIEW = ["seed", "table", "deals"] as const;
+const DEAL = ["seat", "is_bot", "cards", "bot_keep"] as const;
+const DEAL_CARD = ["card", "keep_score"] as const;
 const API_ERROR = ["error"] as const;
 const SUGGEST_RESPONSE = ["ok", "refusal"] as const;
 const SUGGEST_OK = [
@@ -393,6 +399,8 @@ const _lo: KeysOf<LogPanel, typeof LOG> = LOG;
 const _lb: KeysOf<Labels, typeof LABELS> = LABELS;
 const _he: KeysOf<Health, typeof HEALTH> = HEALTH;
 const _pv: KeysOf<Preview, typeof PREVIEW> = PREVIEW;
+const _dl: KeysOf<Deal, typeof DEAL> = DEAL;
+const _dc: KeysOf<DealCard, typeof DEAL_CARD> = DEAL_CARD;
 const _er: KeysOf<ApiErrorBody, typeof API_ERROR> = API_ERROR;
 const _sr: KeysOf<SuggestResponse, typeof SUGGEST_RESPONSE> = SUGGEST_RESPONSE;
 const _so: KeysOf<SuggestOk, typeof SUGGEST_OK> = SUGGEST_OK;
@@ -412,7 +420,7 @@ const _ct: KeysOf<Counter, typeof COUNTER> = COUNTER;
 const _ig: KeysOf<IndexGroup, typeof INDEX_GROUP> = INDEX_GROUP;
 const _hf: KeysOf<HistoricalFrame, typeof HISTORICAL_FRAME> = HISTORICAL_FRAME;
 const _ic: KeysOf<IndexCard, typeof INDEX_CARD> = INDEX_CARD;
-void [_cs, _fr, _de, _or, _pl, _ti, _tr, _po, _la, _ar, _lo, _lb, _he, _pv, _er,
+void [_cs, _fr, _de, _or, _pl, _ti, _tr, _po, _la, _ar, _lo, _lb, _he, _pv, _dl, _dc, _er,
       _sr, _so, _wr, _wo, _ex, _tm, _pr, _rk, _rf, _ix, _oc, _pc, _bd,
       _tl, _ct, _ig, _ic, _hf];
 
@@ -433,6 +441,8 @@ export const KEYS = {
   labels: LABELS,
   health: HEALTH,
   preview: PREVIEW,
+  deal: DEAL,
+  dealCard: DEAL_CARD,
   apiError: API_ERROR,
   suggestResponse: SUGGEST_RESPONSE,
   suggestOk: SUGGEST_OK,
@@ -494,6 +504,7 @@ export const wire = {
   refused: as<ClientState>(refused),
   labels: as<Labels>(labels),
   preview: as<Preview>(preview),
+  previewBot: as<Preview>(previewBot),
   health: as<Health>(health),
   error: as<ApiErrorBody>(error),
   ports: as<PortsPanel>(ports),

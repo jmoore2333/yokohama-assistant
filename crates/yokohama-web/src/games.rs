@@ -13,11 +13,13 @@ use serde::{Deserialize, Serialize};
 use yokohama_cli::bot::{BotSeats, PROVISIONAL_DEFAULT_BOT};
 use yokohama_cli::repl::Repl;
 use yokohama_cli::session::Session;
+use yokohama_core::greedy::score_starting_order;
 use yokohama_core::{
-    new_game, GameConfig, GameRecord, OrderCard, PlayerColor, PlayerId, Rules, SeedSchedule,
-    StartingOrderChoice,
+    new_game, GameConfig, GameRecord, OrderCard, OrderCardId, PlayerColor, PlayerId, Rules,
+    SeedSchedule, StartingOrderChoice,
 };
 
+use crate::client::HistoricalFrame;
 use crate::store::{is_safe_id, GameId, SessionStore};
 
 /// A `u64` that crosses the wire as a STRING.
@@ -78,26 +80,65 @@ pub struct NewGame {
     /// answer always comes back as a string.
     #[serde(default)]
     pub seed: Option<WireSeed>,
-    /// Which dealt card each seat keeps, `1` or `2`, as the cards are numbered
-    /// on screen.
-    pub keeps: Vec<u8>,
+    /// One entry per seat: `1` or `2` for a human seat, as the cards are
+    /// numbered on screen; `null` for a bot seat, whose keep is the bot's
+    /// (M5.5 spec §3.3.2). A value on a bot seat, or `null` on a human one,
+    /// is refused by name — the client never chooses for the bot again.
+    pub keeps: Vec<Option<u8>>,
     #[serde(default)]
     pub bot_seats: Vec<u8>,
     #[serde(default)]
     pub name: Option<String>,
 }
 
+/// One dealt card and what the built-in bot would score it at.
+#[derive(Debug, Clone, Serialize)]
+pub struct DealCard {
+    pub card: OrderCard,
+    /// `score_starting_order` — the printed economics, hand-set and
+    /// unmeasured (its own doc); shown beside the card under the CLI's hedge.
+    pub keep_score: i64,
+}
+
 /// The two cards a seat was dealt, so a client can show them before choosing.
 #[derive(Debug, Clone, Serialize)]
 pub struct Deal {
     pub seat: PlayerId,
-    pub cards: Vec<OrderCard>,
+    pub is_bot: bool,
+    pub cards: Vec<DealCard>,
+    /// The card a bot seat keeps, `1` or `2`; `None` on a human seat.
+    pub bot_keep: Option<u8>,
 }
 
+/// The set table (M5.5 spec §3.3.1): the position after setup, a throwaway
+/// projection over a session that is never persisted, beside the deals.
 #[derive(Debug, Clone, Serialize)]
 pub struct Preview {
     pub seed: WireSeed,
+    pub table: HistoricalFrame,
     pub deals: Vec<Deal>,
+}
+
+/// The bot's Keep: the argmax of [`score_starting_order`] over its two dealt
+/// cards, ties to the first — the rule every evaluator contestant applies in
+/// the arena (`GreedyAgent::choose_starting_order` at `greedy.rs:752`, and
+/// `LookaheadAgent`'s identical arm at `lookahead.rs:2167`), so the web bot
+/// opens exactly as the bot that produced the V4 figures. 1-based, as the wire
+/// numbers the cards.
+///
+/// Those two agents read a PRECOMPUTED `keep_scores` table built over
+/// `rules.orders` in full, so calling the function directly is the same
+/// arithmetic and not a second derivation. `map_or(i64::MIN, …)` mirrors their
+/// missing-card arm: an id the registry does not know loses, and cannot be
+/// dealt in the first place.
+pub fn bot_keep(deal: &[OrderCardId; 2], rules: &Rules) -> u8 {
+    let score =
+        |id: OrderCardId| rules.orders.get(id).map_or(i64::MIN, |c| score_starting_order(c, rules));
+    if score(deal[1]) > score(deal[0]) {
+        2
+    } else {
+        1
+    }
 }
 
 /// A full-width seed from OS entropy.
@@ -115,7 +156,7 @@ pub fn draw_seed() -> u64 {
 
 /// Validate a request the way the wizard validates its answers — same rules,
 /// same refusals, so a game started here is a game the CLI could have started.
-fn config_of(req: &NewGame) -> Result<(GameConfig, Vec<StartingOrderChoice>, BotSeats), String> {
+fn config_of(req: &NewGame) -> Result<(GameConfig, BotSeats), String> {
     if !(2..=4).contains(&req.players) {
         return Err(format!("{} players — the game is 2 to 4", req.players));
     }
@@ -132,18 +173,10 @@ fn config_of(req: &NewGame) -> Result<(GameConfig, Vec<StartingOrderChoice>, Bot
     if usize::from(req.start_seat) >= n {
         return Err(format!("seat {} cannot start a {n}-seat game", req.start_seat));
     }
-    if req.keeps.len() != n {
-        return Err(format!("{} keep choices for {n} seats", req.keeps.len()));
-    }
-    let choices = req
-        .keeps
-        .iter()
-        .map(|&k| match k {
-            1 | 2 => Ok(StartingOrderChoice::Keep(k - 1)),
-            other => Err(format!("keep {other} — the dealt cards are numbered 1 and 2")),
-        })
-        .collect::<Result<Vec<_>, _>>()?;
 
+    // The seats are settled BEFORE the keeps, because which seats are bots is
+    // what makes a keep entry right or wrong. The order of the checks is the
+    // order of the sentences a client reads.
     let mut seats: Vec<Option<yokohama_core::Contestant>> = vec![None; n];
     for &s in &req.bot_seats {
         let idx = usize::from(s);
@@ -164,29 +197,107 @@ fn config_of(req: &NewGame) -> Result<(GameConfig, Vec<StartingOrderChoice>, Bot
         BotSeats::none()
     };
 
+    if req.keeps.len() != n {
+        return Err(format!("{} keep entries for {n} seats", req.keeps.len()));
+    }
+    for (i, keep) in req.keeps.iter().enumerate() {
+        match (bots.is_bot(PlayerId::new(i as u8)), keep) {
+            (true, Some(_)) => {
+                return Err(format!("seat {i} is a bot; its keep is the bot's — send null"))
+            }
+            (false, None) => {
+                return Err(format!("seat {i} is human and needs a keep of 1 or 2"))
+            }
+            (false, Some(k)) if !(1..=2).contains(k) => {
+                return Err(format!("keep {k} — the dealt cards are numbered 1 and 2"))
+            }
+            _ => {}
+        }
+    }
+
     let mut config = GameConfig::for_player_count(req.players);
     config.player_colors = req.colors.clone();
     config.start_player = PlayerId::new(req.start_seat);
-    Ok((config, choices, bots))
+    Ok((config, bots))
 }
 
-/// The deal a seed produces, without starting anything.
+/// Every seat's starting-order choice: the human's as sent, the bot's by
+/// [`bot_keep`] over the deal the seed produced.
+fn choices_of(
+    req: &NewGame,
+    bots: &BotSeats,
+    deals: &[[OrderCardId; 2]],
+    rules: &Rules,
+) -> Vec<StartingOrderChoice> {
+    deals
+        .iter()
+        .enumerate()
+        .map(|(i, deal)| {
+            let seat = PlayerId::new(i as u8);
+            let keep = if bots.is_bot(seat) {
+                bot_keep(deal, rules)
+            } else {
+                req.keeps[i].expect("config_of checked it")
+            };
+            StartingOrderChoice::Keep(keep - 1)
+        })
+        .collect()
+}
+
+/// The deal a seed produces AND the table it sets, without starting anything.
+///
+/// **A throwaway, never a game.** The `Session` built here is dropped when this
+/// function returns: nothing is persisted, nothing joins `Games::live`, and the
+/// id a create would claim is never touched. What the caller gets is a
+/// projection of the position after setup, built through the SAME
+/// [`HistoricalFrame`] the replay route serves, so the client draws the set
+/// table with the components it already has and no second frame type exists.
 pub fn preview(req: &NewGame, rules: &Rules) -> Result<Preview, String> {
-    let (config, _, _) = config_of(req)?;
+    let (config, bots) = config_of(req)?;
     let seed = req.seed.map_or_else(draw_seed, |s| s.0);
-    let pending = new_game(config, rules, seed).map_err(|e| e.to_string())?;
-    Ok(Preview {
-        seed: WireSeed(seed),
-        deals: pending
-            .deals
-            .iter()
-            .enumerate()
-            .map(|(i, cards)| Deal {
-                seat: PlayerId::new(i as u8),
-                cards: cards.iter().filter_map(|id| rules.orders.get(*id).cloned()).collect(),
-            })
-            .collect(),
-    })
+    let pending = new_game(config.clone(), rules, seed).map_err(|e| e.to_string())?;
+    // A human seat previews as `Unknown` — no card in a hand nobody has chosen
+    // from — and a bot seat at its argmax, the card the game will deal it.
+    let choices: Vec<StartingOrderChoice> = pending
+        .deals
+        .iter()
+        .enumerate()
+        .map(|(i, deal)| {
+            if bots.is_bot(PlayerId::new(i as u8)) {
+                StartingOrderChoice::Keep(bot_keep(deal, rules) - 1)
+            } else {
+                StartingOrderChoice::Unknown
+            }
+        })
+        .collect();
+    let mut session = Session::new_sim(config, seed, choices, rules.clone())?;
+    // `Repl::new` reads WHO plays each seat off the record's run seats, so this
+    // is what makes the previewed table's `is_bot` true — the same one line
+    // `create` runs, and the reason no second attachment step is needed here.
+    session.set_run_seats(bots.seat_provenance());
+    let repl = Repl::new(session);
+    let table = HistoricalFrame::at(&repl, 0)
+        .map_err(|e| format!("the setup position did not build: {}", e.message))?;
+    let deals = pending
+        .deals
+        .iter()
+        .enumerate()
+        .map(|(i, deal)| {
+            let seat = PlayerId::new(i as u8);
+            let is_bot = bots.is_bot(seat);
+            Deal {
+                seat,
+                is_bot,
+                cards: deal
+                    .iter()
+                    .filter_map(|id| rules.orders.get(*id).cloned())
+                    .map(|card| DealCard { keep_score: score_starting_order(&card, rules), card })
+                    .collect(),
+                bot_keep: is_bot.then(|| bot_keep(deal, rules)),
+            }
+        })
+        .collect();
+    Ok(Preview { seed: WireSeed(seed), table, deals })
 }
 
 /// Every live game, plus the store behind them.
@@ -267,7 +378,7 @@ impl Games {
         // landed on disk, the winner's insert was clobbered, and the client
         // told 201 was silently switched onto the other game.
         let _serialized = self.create_lock.lock().expect("games lock");
-        let (config, choices, bots) = config_of(req)?;
+        let (config, bots) = config_of(req)?;
         let seed = req.seed.map_or_else(draw_seed, |s| s.0);
 
         let id = match &req.name {
@@ -294,6 +405,12 @@ impl Games {
 
         self.deleted.lock().expect("games lock").remove(&id);
 
+        // The deal is drawn HERE rather than trusted from a preview: a bot seat's
+        // keep is a function of the seed and the rules, so the card this deals
+        // it is the card the preview showed, and a client cannot send a
+        // different one.
+        let pending = new_game(config.clone(), &self.rules, seed).map_err(|e| e.to_string())?;
+        let choices = choices_of(req, &bots, &pending.deals, &self.rules);
         let mut session = Session::new_sim(config, seed, choices, (*self.rules).clone())?;
         session.set_run_seats(bots.seat_provenance());
         let repl = Repl::new(session);
@@ -579,10 +696,157 @@ mod tests {
             colors: vec![PlayerColor::Red, PlayerColor::Blue],
             start_seat: 0,
             seed: Some(WireSeed(20_260_831)),
-            keeps: vec![1, 1],
+            keeps: vec![Some(1), None],
             bot_seats: vec![1],
             name: Some(name.to_string()),
         }
+    }
+
+    /// The same request, named for the cells whose subject is the BOT's seat.
+    fn req_with_bot(name: &str) -> NewGame {
+        req(name)
+    }
+
+    /// One dealt card's Keep score, through core's own function.
+    ///
+    /// The module is NOT globbed to the crate root (`game/mod.rs` lists every
+    /// `pub use x::*` and `greedy` is deliberately namespaced), so the path is
+    /// `yokohama_core::greedy::` and not `yokohama_core::`.
+    fn keep_score(rules: &Rules, id: yokohama_core::OrderCardId) -> i64 {
+        let card = rules.orders.get(id).expect("a dealt card");
+        yokohama_core::greedy::score_starting_order(card, rules)
+    }
+
+    /// The bot keeps the higher-scored of its two cards \u2014 the argmax every
+    /// evaluator contestant applies in the arena
+    /// (`GreedyAgent::choose_starting_order`, `greedy.rs:752`, and
+    /// `LookaheadAgent`'s identical arm), reached through core. The human's keep
+    /// is honoured beside it, and the cell is mutation-proven by the human's
+    /// choice: swapping 1 for 2 moves the human's card and not the bot's.
+    #[test]
+    fn the_bot_keeps_the_higher_scored_card_and_the_human_keeps_theirs() {
+        let rules = Rules::standard();
+        let pending = new_game(GameConfig::for_player_count(2), &rules, 20_260_831).unwrap();
+        let deal = pending.deals[1];
+        assert_ne!(
+            keep_score(&rules, deal[0]),
+            keep_score(&rules, deal[1]),
+            "seed 20260831 deals seat 1 two cards of equal score; pick another seed for this cell",
+        );
+        let expected = if keep_score(&rules, deal[1]) > keep_score(&rules, deal[0]) {
+            deal[1]
+        } else {
+            deal[0]
+        };
+
+        let g = games();
+        let (_, handle) = g.create(&req_with_bot("keep")).unwrap();
+        let r = handle.lock().unwrap();
+        assert_eq!(r.session.state().players[1].order_cards_in_hand, vec![expected]);
+        assert_eq!(r.session.state().players[0].order_cards_in_hand, vec![pending.deals[0][0]]);
+        drop(r);
+
+        let mut two = req_with_bot("keep2");
+        two.keeps = vec![Some(2), None];
+        let (_, handle) = g.create(&two).unwrap();
+        let r = handle.lock().unwrap();
+        assert_eq!(r.session.state().players[0].order_cards_in_hand, vec![pending.deals[0][1]]);
+        assert_eq!(
+            r.session.state().players[1].order_cards_in_hand,
+            vec![expected],
+            "the bot's card does not follow the human's choice",
+        );
+    }
+
+    /// The refusal a `create` gives. `unwrap_err` cannot be used: the Ok half
+    /// carries a `Repl`, which is not `Debug` and must not become `Debug` to
+    /// satisfy a test.
+    fn refused(g: &Games, req: &NewGame) -> String {
+        match g.create(req) {
+            Ok((id, _)) => panic!("expected a refusal; the request created {id:?}"),
+            Err(e) => e,
+        }
+    }
+
+    /// Every way a `keeps` list can disagree with the seats, refused BY NAME.
+    #[test]
+    fn a_keep_on_a_bot_seat_and_a_missing_keep_on_a_human_seat_are_refused_by_name() {
+        let g = games();
+        let mut on_bot = req_with_bot("b");
+        on_bot.keeps = vec![Some(1), Some(1)];
+        let e = refused(&g, &on_bot);
+        assert!(e.contains("seat 1") && e.contains("bot"), "{e}");
+        let mut on_human = req_with_bot("h");
+        on_human.keeps = vec![None, None];
+        let e = refused(&g, &on_human);
+        assert!(e.contains("seat 0"), "{e}");
+        let mut bad = req_with_bot("n");
+        bad.keeps = vec![Some(3), None];
+        let e = refused(&g, &bad);
+        assert!(e.contains("1 and 2"), "{e}");
+        let mut short = req_with_bot("s");
+        short.keeps = vec![Some(1)];
+        let e = refused(&g, &short);
+        assert!(e.contains("2 seats"), "{e}");
+    }
+
+    /// The preview is the position after setup \u2014 a throwaway, never a game \u2014
+    /// with every human hand empty (nothing has been chosen) and the bot's
+    /// kept card in the bot's hand; each dealt card carries its Keep score.
+    #[test]
+    fn the_preview_is_the_position_after_setup() {
+        let rules = Rules::standard();
+        let p = preview(&req_with_bot("p"), &rules).unwrap();
+        assert_eq!(p.table.index, 0);
+        assert_eq!(p.table.total, 0);
+        assert!(
+            p.table.ports.boards[0].slots.iter().all(|s| s.card.is_some()),
+            "the port is full",
+        );
+        let players = p
+            .table
+            .frame
+            .dashboard
+            .iter()
+            .find_map(|panel| match panel {
+                yokohama_cli::screen_model::Panel::Players(pp) => Some(pp),
+                _ => None,
+            })
+            .expect("a Players panel");
+        assert!(players.players[1].is_bot);
+        assert_eq!(players.players[1].orders_in_hand, 1, "the bot's kept card is in its hand");
+        assert_eq!(players.players[0].orders_in_hand, 0, "nothing chosen yet");
+        assert_eq!(p.deals.len(), 2);
+        assert!(!p.deals[0].is_bot && p.deals[0].bot_keep.is_none());
+        assert!(p.deals[1].is_bot);
+        let scores: Vec<i64> = p.deals[1].cards.iter().map(|c| c.keep_score).collect();
+        let argmax = if scores[1] > scores[0] { 2 } else { 1 };
+        assert_eq!(p.deals[1].bot_keep, Some(argmax));
+        for d in &p.deals {
+            for c in &d.cards {
+                assert_eq!(
+                    c.keep_score,
+                    yokohama_core::greedy::score_starting_order(&c.card, &rules),
+                );
+            }
+        }
+        // Nothing was persisted or made resident.
+        let g = games();
+        assert!(g.list().unwrap().is_empty());
+    }
+
+    /// The preview and the created game put the same card in the bot's hand.
+    #[test]
+    fn the_preview_and_the_game_agree_on_the_bots_card() {
+        let rules = Rules::standard();
+        let p = preview(&req_with_bot("agree"), &rules).unwrap();
+        let kept = p.deals[1].cards[usize::from(p.deals[1].bot_keep.unwrap() - 1)].card.id;
+        let g = games();
+        let (_, handle) = g.create(&req_with_bot("agree")).unwrap();
+        assert_eq!(
+            handle.lock().unwrap().session.state().players[1].order_cards_in_hand,
+            vec![kept],
+        );
     }
 
     /// A record this server writes carries the terminal digest, so the

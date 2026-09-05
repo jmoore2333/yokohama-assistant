@@ -148,9 +148,9 @@ describe("the deal", () => {
     await user.click(screen.getByRole("button", { name: "Deal" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Start" })).toBeInTheDocument());
     for (const deal of wire.preview.deals) {
-      for (const card of deal.cards) {
+      for (const dealt of deal.cards) {
         expect(
-          screen.getAllByText(`O${String(card.id).padStart(2, "0")}`).length,
+          screen.getAllByText(`O${String(dealt.card.id).padStart(2, "0")}`).length,
         ).toBeGreaterThan(0);
       }
     }

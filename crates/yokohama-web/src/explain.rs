@@ -755,7 +755,7 @@ mod tests {
                 colors: vec![yokohama_core::PlayerColor::Red, yokohama_core::PlayerColor::Blue],
                 start_seat: 0,
                 seed: Some(crate::games::WireSeed(20_260_831)),
-                keeps: vec![1, 1],
+                keeps: vec![Some(1), Some(1)],
                 bot_seats: vec![],
                 name: Some("rank".to_string()),
             })

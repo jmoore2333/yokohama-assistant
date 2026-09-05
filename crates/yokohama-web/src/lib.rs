@@ -935,6 +935,32 @@ mod tests {
         assert_eq!(status, StatusCode::CREATED, "the correctly-spelled request still works");
     }
 
+    /// The preview route serves the SET TABLE, and refuses a keep on a bot seat.
+    ///
+    /// The two halves are the route's whole contract: a client that draws the
+    /// position after setup needs `table`, and a client that stopped choosing
+    /// for the bot needs the refusal to name the seat rather than to succeed
+    /// with a card the bot did not pick. Asserted through the router, because
+    /// `games::preview`'s own cells prove the projection and not the wiring.
+    #[tokio::test]
+    async fn the_preview_serves_the_set_table_and_refuses_a_keep_on_a_bot_seat() {
+        let body = serde_json::json!({
+            "players": 2, "colors": ["Red", "Blue"], "start_seat": 0, "seed": 20260831,
+            "keeps": [1, null], "bot_seats": [1]
+        });
+        let (status, preview) = post_json("/api/games/preview", body.clone()).await;
+        assert_eq!(status, StatusCode::OK, "{preview}");
+        assert_eq!(preview["table"]["index"], serde_json::json!(0));
+        assert!(preview["deals"][1]["bot_keep"].is_u64(), "{}", preview["deals"][1]);
+        assert!(preview["deals"][0]["bot_keep"].is_null());
+        assert!(preview["deals"][0]["cards"][0]["keep_score"].is_i64());
+        let mut on_bot = body;
+        on_bot["keeps"] = serde_json::json!([1, 1]);
+        let (status, err) = post_json("/api/games/preview", on_bot).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
+        assert!(err["error"].as_str().unwrap_or("").contains("seat 1"), "{err}");
+    }
+
     /// The same fence on the one MUTATION body. `expect` is what stops a number
     /// meaning a different move, so a misspelling of it must not be silently
     /// absent — that is the stale-picker defect wearing a typo.
@@ -1010,6 +1036,22 @@ mod tests {
         (status, serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null))
     }
 
+    /// A 2P `keeps` list: `1` on a human seat, `null` on a bot's, whose keep is
+    /// the bot's own (`games::bot_keep`). A value on a bot seat is a 400.
+    fn keeps_for(bots: &[u8]) -> serde_json::Value {
+        serde_json::Value::Array(
+            (0u8..2)
+                .map(|seat| {
+                    if bots.contains(&seat) {
+                        serde_json::Value::Null
+                    } else {
+                        serde_json::json!(1)
+                    }
+                })
+                .collect(),
+        )
+    }
+
     /// Start a 2P game and return the router it lives in.
     async fn a_game(router: &Router, name: &str, bots: &[u8]) -> serde_json::Value {
         let (status, state) = call(
@@ -1018,7 +1060,7 @@ mod tests {
             "/api/games",
             Some(serde_json::json!({
                 "players": 2, "colors": ["Red", "Blue"], "start_seat": 0,
-                "seed": "20260831", "keeps": [1, 1], "bot_seats": bots, "name": name,
+                "seed": "20260831", "keeps": keeps_for(bots), "bot_seats": bots, "name": name,
             })),
         )
         .await;
@@ -1407,7 +1449,7 @@ mod tests {
             "/api/games".to_string(),
             serde_json::json!({
                 "players": 2, "colors": ["Red", "Blue"], "start_seat": 0,
-                "seed": "20260831", "keeps": [1, 1], "bot_seats": [1], "name": "expects",
+                "seed": "20260831", "keeps": [1, null], "bot_seats": [1], "name": "expects",
             }),
         )
         .await;
@@ -1480,7 +1522,7 @@ mod tests {
             "/api/games".to_string(),
             Some(serde_json::json!({
                 "players": 3, "colors": ["Red", "Blue", "Yellow"], "start_seat": 0,
-                "seed": "20260831", "keeps": [1, 1, 1], "bot_seats": [1], "name": "hotseat",
+                "seed": "20260831", "keeps": [1, null, 1], "bot_seats": [1], "name": "hotseat",
             })),
         )
         .await;
@@ -1571,7 +1613,7 @@ mod tests {
             "/api/games".to_string(),
             Some(serde_json::json!({
                 "players": 2, "colors": ["Red", "Blue"], "start_seat": 0,
-                "seed": "20260831", "keeps": [1, 1], "bot_seats": [1], "name": "surfaces",
+                "seed": "20260831", "keeps": [1, null], "bot_seats": [1], "name": "surfaces",
             })),
         )
         .await;
@@ -1684,7 +1726,7 @@ mod tests {
 
         let base = serde_json::json!({
             "players": 2, "colors": ["Red", "Blue"], "start_seat": 0,
-            "keeps": [1, 1], "bot_seats": [1],
+            "keeps": [1, null], "bot_seats": [1],
         });
         let mut req = base.clone();
         req["seed"] = serde_json::json!(SEED.to_string());
@@ -1780,7 +1822,7 @@ mod tests {
             "/api/games".to_string(),
             serde_json::json!({
                 "players": 2, "colors": ["Red", "Blue"], "start_seat": 0,
-                "seed": 20260831u64, "keeps": [1, 1], "bot_seats": [1], "name": "fence",
+                "seed": 20260831u64, "keeps": [1, null], "bot_seats": [1], "name": "fence",
             }),
         )
         .await;

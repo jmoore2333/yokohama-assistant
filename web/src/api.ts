@@ -67,7 +67,9 @@ export interface NewGameRequest {
   /** A decimal STRING: a `u64` seed does not survive a JS number, and the seed
    *  round-trips through this client on the way from preview to create. */
   seed?: string;
-  keeps: number[];
+  /** One entry per seat: `1` or `2` on a human seat; `null` on a bot seat,
+   *  whose keep is the bot's own. A value on a bot seat is a 400 naming it. */
+  keeps: (number | null)[];
   bot_seats: number[];
   name?: string;
 }
