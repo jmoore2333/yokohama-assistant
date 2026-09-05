@@ -3,7 +3,10 @@
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import { gate, renderApp } from "./test/harness";
+import { render } from "@testing-library/react";
+import { App } from "./App";
+import { loadSections } from "./sections";
+import { gate, renderApp, stubApi } from "./test/harness";
 import { wire } from "./wire/contract";
 
 /** The board tile for one area, as the accessible name renders it. */
@@ -865,5 +868,60 @@ describe("the turn playback", () => {
     await renderApp(wire.optionsMany);
     await userEvent.setup().selectOptions(screen.getByLabelText("Cadence"), "1000");
     expect(localStorage.getItem("yokohama.playback.cadence")).toBe("1000");
+  });
+});
+
+// ---- the fix wave: one sections state (M5.5 ruling R-T12-4) -----------------
+//
+// **The defect the extraction introduced, exactly.** `useSections()` seeds from
+// storage at MOUNT. Calling it in `App` and again in `NewGame` made two
+// independent copies: the set table's menu wrote storage and updated its own,
+// while `App` — which never remounts, `NewGame` being its child — went on
+// holding the array it read at start-up and handed THAT to the game's
+// `TableSections`. So a strip switched off during setup came back the moment
+// the game opened, and stayed until a reload. Both files carried a comment
+// saying the opposite.
+//
+// The cell drives the whole flow rather than the storage, because storage was
+// the half that was already right.
+describe("the boards a player switches during setup", () => {
+  it("stay switched when the game opens", async () => {
+    const stub = stubApi((call) => {
+      if (call.method === "GET" && call.path.endsWith("/api/games")) return [];
+      if (call.path.endsWith("/api/labels")) return wire.labels;
+      if (call.path.endsWith("/api/art")) return wire.artManifest;
+      if (call.path.endsWith("preview")) return wire.previewBot;
+      if (call.method === "POST" && call.path.endsWith("/api/games")) return wire.options;
+      if (call.path.endsWith("/ports")) return wire.ports;
+      if (call.path.endsWith("/labs")) return wire.labs;
+      if (call.path.endsWith("/areas")) return wire.areas;
+      if (/\/at\/\d+$/.test(call.path)) return wire.atK;
+      if (/\/log(\?|$)/.test(call.path)) return wire.log;
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    render(<App />);
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: "Deal" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Start" })).toBeInTheDocument());
+    expect(document.querySelector(".table-sec.ports")).not.toBeNull();
+
+    await user.click(screen.getByText(/^Boards/));
+    await user.click(screen.getByRole("button", { name: "Port" }));
+    expect(document.querySelector(".table-sec.ports")).toBeNull();
+
+    await user.click(screen.getAllByRole("button", { name: /^keep O\d\d for seat 0/ })[0]!);
+    await user.click(screen.getByRole("button", { name: "Start" }));
+    await waitFor(() => expect(screen.getByText(/end triggers:/)).toBeInTheDocument());
+
+    // The claim: the GAME opens with the board the player switched off still
+    // off. The laboratory is asserted present in the same breath, so a cell
+    // that passed because no section rendered at all would fail here.
+    expect(document.querySelector(".table-sec.labs")).not.toBeNull();
+    expect(document.querySelector(".table-sec.ports")).toBeNull();
+    expect(loadSections()).not.toContain("ports");
+    // And the port was never fetched for the game either — the section being
+    // absent is not the same as its request not going out.
+    expect(stub.matching("GET", "/ports")).toHaveLength(0);
   });
 });

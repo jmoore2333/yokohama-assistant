@@ -3,7 +3,9 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
+import { useSections } from "./BoardsMenu";
 import { NewGame } from "./NewGame";
+import type { ClientState } from "./types";
 import { loadSections } from "./sections";
 import { gate, stubApi, type ApiCall, type Reply } from "./test/harness";
 import { wire } from "./wire/contract";
@@ -13,10 +15,28 @@ import { wire } from "./wire/contract";
  *  is 18446744073709552000, whose last four digits are not in the seed. */
 const BIG_SEED = "18446744073709551557";
 
+/** The screen with a parent holding the sections state, which is where it lives
+ *  (R-T12-4: `App` owns it, so the set table and the game agree about which
+ *  boards are on). A cell here can therefore still watch a toggle take effect,
+ *  and `App.test.tsx` carries the end-to-end claim that the choice survives
+ *  Start. */
+function Host({ onStarted }: { onStarted: (s: ClientState, opening: boolean) => void }) {
+  const [sections, onToggleSection] = useSections();
+  return (
+    <NewGame
+      art={wire.artManifest}
+      labels={wire.labels}
+      sections={sections}
+      onToggleSection={onToggleSection}
+      onStarted={onStarted}
+    />
+  );
+}
+
 function show(handler: (call: ApiCall) => Reply) {
   const onStarted = vi.fn();
   const stub = stubApi(handler);
-  render(<NewGame art={wire.artManifest} labels={wire.labels} onStarted={onStarted} />);
+  render(<Host onStarted={onStarted} />);
   return { onStarted, stub, user: userEvent.setup() };
 }
 

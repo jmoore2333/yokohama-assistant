@@ -2,15 +2,21 @@
 //
 // **Extracted rather than copied.** The set table wants the same menu the game
 // banner has — spec §3.3.3 asks for it "so a player can read a site card at
-// full size before choosing" — and the two screens must agree about what is on,
-// because what is switched during setup is what the game opens with. A second
-// copy of the JSX would drift on the next label, and a second copy of the
-// toggle would drift on the next storage rule.
+// full size before choosing". A second copy of the JSX would drift on the next
+// label, and a second copy of the toggle would drift on the next storage rule.
 //
-// **The state hook lives here too, next to the component that renders it.** It
-// is three lines, and those three lines are the whole of "toggle it and
-// remember it" — `sections.ts` owns the storage and stays a React-free module
-// its own cells can drive with a fake `Storage`.
+// **The state hook lives here too, next to the component that renders it** —
+// three lines that are the whole of "toggle it and remember it", while
+// `sections.ts` owns the storage and stays a React-free module its own cells
+// can drive with a fake `Storage`.
+//
+// **CALL IT ONCE PER TREE (R-T12-4).** It seeds from storage at MOUNT, so two
+// callers are two independent copies that agree only until one of them is
+// toggled. `App` calls it and passes the pair down to `NewGame`; that is what
+// makes "a board switched off during setup is still off when the game opens"
+// true, and it was FALSE for one commit when the set table called it itself —
+// storage was written, the set table redrew, and `App`, which never remounts,
+// handed the game the array it had read at start-up.
 
 import { useState } from "react";
 import { loadSections, saveSections, SECTION_KEYS, SECTION_LABELS, type SectionKey } from "./sections";

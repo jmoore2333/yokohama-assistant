@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { api, ApiError, type NewGameRequest } from "./api";
 import { Board } from "./Board";
-import { BoardsMenu, useSections } from "./BoardsMenu";
+import { BoardsMenu } from "./BoardsMenu";
 import { OrderCardView, seatClass } from "./Cards";
 import { TableSections } from "./TableSections";
+import type { SectionKey } from "./sections";
 import type { ArtManifest, ClientState, Labels, PlayerColor, Preview } from "./types";
 
 const COLORS = ["Red", "Blue", "Yellow", "Green"] as const;
@@ -31,10 +32,22 @@ const COLORS = ["Red", "Blue", "Yellow", "Green"] as const;
 export function NewGame({
   art,
   labels,
+  sections,
+  onToggleSection,
   onStarted,
 }: {
   art: ArtManifest | null;
   labels: Labels | null;
+  /** The boards the set table draws, and the toggle behind its Boards menu.
+   *
+   *  **Owned by `App`, not by this screen (R-T12-4).** `useSections()` seeds
+   *  from storage at MOUNT, so a second call here was a second copy: the menu
+   *  wrote storage and updated this screen, while `App` — which never remounts,
+   *  since this component is its child — went on holding what it read at
+   *  start-up and handed THAT to the game's own `TableSections`. A strip
+   *  switched off during setup came back the moment the game opened. */
+  sections: SectionKey[];
+  onToggleSection: (k: SectionKey) => void;
   /** `opening` is true for a game just CREATED and false for one reopened —
    *  the difference between events that have just happened (a bot start seat
    *  has already played by the time `create` replies) and events that are
@@ -50,10 +63,6 @@ export function NewGame({
    *  is a seat nobody has answered for, which a `number[]` of ones could not
    *  say — the old shape started every seat pre-chosen at card 1. */
   const [chosen, setChosen] = useState<Record<number, 1 | 2>>({});
-  /** The boards the set table draws, through the same menu and the same storage
-   *  as the game banner's (R-T12-2) — what is switched here is what the game
-   *  opens with. */
-  const [sections, toggleSection] = useSections();
   const [saved, setSaved] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -143,7 +152,7 @@ export function NewGame({
               switch a board on and read a site card at full size before
               choosing. `nav.views` is the banner's own slot for it. */}
           <nav className="views">
-            <BoardsMenu enabled={sections} onToggle={toggleSection} />
+            <BoardsMenu enabled={sections} onToggle={onToggleSection} />
           </nav>
         </header>
         <div className="end-strip" role="status" />

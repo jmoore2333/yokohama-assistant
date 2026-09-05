@@ -317,7 +317,21 @@ export function App() {
     if (surface !== "log") setScrubK(null);
   }, [surface]);
 
-  if (!state) return <NewGame art={art} labels={labels} onStarted={show} />;
+  // `enabled`/`toggleSection` are THIS component's, deliberately: the set table
+  // and the game must agree about which boards are on, and a second
+  // `useSections()` inside `NewGame` was two copies that stopped agreeing the
+  // moment one of them was toggled (R-T12-4).
+  if (!state) {
+    return (
+      <NewGame
+        art={art}
+        labels={labels}
+        sections={enabled}
+        onToggleSection={toggleSection}
+        onStarted={show}
+      />
+    );
+  }
 
   const players = state.frame.dashboard.find((p) => "Players" in p);
   const colors: PlayerColor[] =
