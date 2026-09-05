@@ -50,6 +50,8 @@ export function Dashboard({
   colors,
   only,
   changedSeats,
+  changedTechs,
+  changedHand,
 }: {
   panels: Panel[];
   art: ArtManifest | null;
@@ -60,6 +62,15 @@ export function Dashboard({
   only?: PanelName[];
   /** The seats the walk is lighting — `diffFrames`' own set (M5.5 §3.2.4). */
   changedSeats?: Set<number>;
+  /** The technologies the walk is lighting, keyed `<seat>:<techId>` — the card
+   *  half of a laboratory take (R-GC-1), marked where it landed rather than in
+   *  the slot it left. `diffFrames`' own set; the key carries the SEAT because
+   *  two players may own the same title and the two laboratory boards deal the
+   *  same ids. */
+  changedTechs?: Set<string>;
+  /** The order ids the walk is lighting in the VIEWER's hand (R-GC-2) — a
+   *  masked hand carries no identities, so a bot's take marks nothing here. */
+  changedHand?: Set<number>;
 }) {
   // **A panel this file cannot draw is never filtered out.**
   //
@@ -77,7 +88,13 @@ export function Dashboard({
       {panels.filter(wanted).map((panel, i) => {
         if ("Players" in panel)
           return (
-            <Players key={i} players={panel.Players.players} labels={labels} changedSeats={changedSeats} />
+            <Players
+              key={i}
+              players={panel.Players.players}
+              labels={labels}
+              changedSeats={changedSeats}
+              changedTechs={changedTechs}
+            />
           );
         if ("Tracks" in panel)
           return <Tracks key={i} tracks={panel.Tracks} art={art} colors={colors} />;
@@ -91,7 +108,10 @@ export function Dashboard({
               colors={colors}
             />
           );
-        if ("Hand" in panel) return <Hand key={i} hand={panel.Hand} art={art} colors={colors} />;
+        if ("Hand" in panel)
+          return (
+            <Hand key={i} hand={panel.Hand} art={art} colors={colors} changedHand={changedHand} />
+          );
         // **A panel this file does not know renders as itself, not as nothing.**
         //
         // `return null` meant a fifth `screen_model::Panel` variant — or a rename
@@ -142,10 +162,12 @@ function Players({
   players,
   labels,
   changedSeats,
+  changedTechs,
 }: {
   players: PlayerModel[];
   labels: Labels | null;
   changedSeats?: Set<number>;
+  changedTechs?: Set<string>;
 }) {
   return (
     <section className="panel">
@@ -244,7 +266,7 @@ function Players({
               ) : (
                 p.technologies.map((t) => (
                   <span
-                    className="chip tech"
+                    className={`chip tech${changedTechs?.has(`${p.seat}:${t.id}`) ? " changed" : ""}`}
                     key={t.id}
                     title={
                       t.printed
@@ -517,10 +539,12 @@ function Hand({
   hand,
   art,
   colors,
+  changedHand,
 }: {
   hand: HandPanel;
   art: ArtManifest | null;
   colors: PlayerColor[];
+  changedHand?: Set<number>;
 }) {
   return (
     <section className="panel">
@@ -543,6 +567,7 @@ function Hand({
               card={c.printed}
               id={c.id}
               note={c.is_starting_order ? "your starting order" : undefined}
+              changed={changedHand?.has(c.id) ?? false}
             />
           ))}
         </div>

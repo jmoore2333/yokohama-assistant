@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { api, ApiError } from "./api";
 import { Board } from "./Board";
 import { seatClass } from "./Cards";
@@ -355,13 +355,21 @@ export function App() {
   // runs they are the step's own diff; when it ends they are the LAST step's,
   // held on the live table by `fresh` until the player answers again — so what
   // the opponent did is still marked on the board you are about to play on.
+  //
+  // ONE source for all four reads — the marks, their colour, how long the pulse
+  // lasts and which beat it is on — because they are four descriptions of the
+  // same thing: WHICH STEP the table is showing. Four parallel ternaries could
+  // drift apart, and the two new ones would drift silently (a pulse timed to a
+  // step whose marks are not the ones on screen looks like nothing at all).
   const lastStep = run?.steps[run.steps.length - 1];
-  const highlights = walking ? stepNow.changes : fresh && lastStep ? lastStep.changes : null;
-  const highlightBy = walking
-    ? colors[stepNow.mover]
-    : fresh && lastStep
-      ? colors[lastStep.mover]
-      : undefined;
+  const shown =
+    walk && stepNow
+      ? { step: stepNow, at: walk.at }
+      : fresh && run && lastStep
+        ? { step: lastStep, at: run.steps.length - 1 }
+        : null;
+  const highlights = shown?.step.changes ?? null;
+  const highlightBy = shown ? colors[shown.step.mover] : undefined;
 
   // The board is an input surface only while a placement picker is open — the
   // one place the engine is asking "which areas", rather than "which option".
@@ -385,7 +393,29 @@ export function App() {
     // Measured: the whole-game cell reached its winner, read "The game is
     // over.", and failed ten seconds afterwards looking for the sentence again.
     // The client's own `busy` covers the WHOLE window, the run fetch included.
-    <div className="app" data-busy={busy ? "1" : undefined}>
+    //
+    // **The pulse's two attributes live HERE, on the one ancestor of both
+    // columns (R-GC-1).** Every highlight pulses for the length of the step's
+    // own dwell, so the CSS needs the duration and a beat to select the
+    // keyframes by — and the four things that light are split across the DOM:
+    // `.tile` and `.strip-slot` are inside `main.table`, `.seat` and the tech
+    // chips are in `aside.side`, its SIBLING. A custom property cannot be read
+    // out of a sibling subtree at all, so a `--dwell-ms` on the table would
+    // leave the side column silently animating the 2000 ms fallback at every
+    // other cadence. `.app` is where `data-busy` already lives for the same
+    // reason: it is the element that contains the whole screen.
+    //
+    // **The BEAT is what makes a pulse re-run.** An element's animation
+    // restarts only when its `animation-name` changes or the element is
+    // re-created, and a tile lit by two consecutive steps is neither — so the
+    // second step would land in silence. `at % 2` picks between two
+    // byte-identical keyframe names, which is the whole mechanism.
+    <div
+      className="app"
+      data-busy={busy ? "1" : undefined}
+      data-beat={shown ? String(shown.at % 2) : undefined}
+      style={shown ? ({ "--dwell-ms": `${dwellFor(shown.step, cadence)}ms` } as CSSProperties) : undefined}
+    >
       <header className="banner">
         <h1>Yokohama</h1>
         <GameMenu
@@ -614,6 +644,8 @@ export function App() {
           colors={colors}
           only={["Players", "Hand"]}
           changedSeats={highlights?.seats}
+          changedTechs={highlights?.techs}
+          changedHand={highlights?.hand}
         />
       </aside>
 

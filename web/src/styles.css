@@ -1276,7 +1276,75 @@ ol.account .mover { font-weight: 700; }
  * 22rem tile crosses into its neighbour. */
 .tile.changed { outline: 3px solid currentColor; outline-offset: -3px; }
 .seat.changed { background: rgb(105 194 95 / 0.10); }
-.strip-slot.changed .card-face { outline: 3px solid var(--vp); outline-offset: 2px; }
+/* A card the walk is lighting, wherever it is drawn: in an offer slot the
+ * wrapper carries the mark, in a hand the card's own root does (R-GC-2). One
+ * stroke either way, because it is one kind of fact. */
+.strip-slot.changed .card-face,
+.card-face.changed { outline: 3px solid var(--vp); outline-offset: 2px; }
+/* The other end of a take (R-GC-1): the card that LEFT the laboratory, marked
+ * in the list it landed in. Same stroke as the slot it came from, so the two
+ * halves of one move read as one mark in two places. */
+.chip.tech.changed { outline: 3px solid var(--vp); outline-offset: 2px; }
+
+/* **And every one of them PULSES for the step's own dwell (R-GC-1).**
+ *
+ * The keyframes END at the resting values above, which is what makes the mark
+ * STAY: `forwards` holds the last frame, and the last frame is the outline the
+ * static rule would have drawn. So a step's mark is bright when it lands, has
+ * settled by the time the next step is due, and stays there until something
+ * replaces it — the pulse is the arrival, not the highlight.
+ *
+ * TWO NAMES PER FAMILY, byte-identical, and the duplication is the mechanism
+ * rather than an oversight: an element's animation restarts only when its
+ * `animation-name` changes or the element is re-created. A tile lit by two
+ * consecutive steps is neither, so with one name the second step lands in
+ * silence. `App` alternates `data-beat` per step and the selectors below pick
+ * the other name. CSS has no way to alias a keyframe, so the body is written
+ * twice; a change to one is a change to both.
+ *
+ * Only `outline-width` and `background-color` are animated — never the colour
+ * or the offset — so ONE pair of keyframes serves four selectors whose resting
+ * strokes differ (`currentColor` inset on a tile, `var(--vp)` outset on a card
+ * and a chip). Animating the colour would have needed a keyframe per family. */
+@keyframes pulse-outline-0 { from { outline-width: 9px; } to { outline-width: 3px; } }
+@keyframes pulse-outline-1 { from { outline-width: 9px; } to { outline-width: 3px; } }
+@keyframes pulse-seat-0 { from { background-color: rgb(105 194 95 / 0.34); } to { background-color: rgb(105 194 95 / 0.10); } }
+@keyframes pulse-seat-1 { from { background-color: rgb(105 194 95 / 0.34); } to { background-color: rgb(105 194 95 / 0.10); } }
+
+/* `--dwell-ms` is the step's own dwell, set by `App` on `.app`: the cadence on
+ * a step that moved something, 400ms on a bookkeeping one. The fallback is the
+ * default cadence, so a mark outside a walk would still settle rather than
+ * hang mid-pulse. */
+.app[data-beat="0"] .tile.changed,
+.app[data-beat="0"] .strip-slot.changed .card-face,
+.app[data-beat="0"] .card-face.changed,
+.app[data-beat="0"] .chip.tech.changed { animation-name: pulse-outline-0; }
+.app[data-beat="1"] .tile.changed,
+.app[data-beat="1"] .strip-slot.changed .card-face,
+.app[data-beat="1"] .card-face.changed,
+.app[data-beat="1"] .chip.tech.changed { animation-name: pulse-outline-1; }
+.app[data-beat="0"] .seat.changed { animation-name: pulse-seat-0; }
+.app[data-beat="1"] .seat.changed { animation-name: pulse-seat-1; }
+.app[data-beat] .tile.changed,
+.app[data-beat] .seat.changed,
+.app[data-beat] .strip-slot.changed .card-face,
+.app[data-beat] .card-face.changed,
+.app[data-beat] .chip.tech.changed {
+  animation-duration: var(--dwell-ms, 2000ms);
+  animation-timing-function: ease-out;
+  animation-iteration-count: 1;
+  animation-fill-mode: forwards;
+}
+/* Motion is the part that can be declined; the MARK is information and stays.
+ * `animation: none` drops every longhand above, and the resting rules — which
+ * are the keyframes' own end state — are what is left. */
+@media (prefers-reduced-motion: reduce) {
+  .app[data-beat] .tile.changed,
+  .app[data-beat] .seat.changed,
+  .app[data-beat] .strip-slot.changed .card-face,
+  .app[data-beat] .card-face.changed,
+  .app[data-beat] .chip.tech.changed { animation: none; }
+}
 /* The deck while the opponent's turn plays out: who is playing, how far in, and
  * the way out. It replaces the prompt, so it carries the prompt's own padding. */
 .decision.walking { display: flex; align-items: center; gap: 0.5rem; padding: 0.6rem 0.8rem; font-family: var(--display); font-size: 1.05rem; }

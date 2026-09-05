@@ -5,7 +5,14 @@ import { describe, expect, it } from "vitest";
 import { Dashboard, riderWords } from "./Dashboard";
 import { wire } from "./wire/contract";
 import { handOf, playersOf, tracksOf } from "./test/panels";
-import { DUMMY_SEAT, type ClientState, type Panel, type PlayerColor } from "./types";
+import {
+  DUMMY_SEAT,
+  type ClientState,
+  type HandPanel,
+  type Panel,
+  type PlayerColor,
+  type PlayerModel,
+} from "./types";
 
 const COLORS: PlayerColor[] = ["Red", "Blue"];
 const COLORS_4: PlayerColor[] = ["Red", "Blue", "Yellow", "Green"];
@@ -20,6 +27,109 @@ function show(state: ClientState, colors: PlayerColor[] = COLORS) {
     />,
   );
 }
+
+describe("the walk's marks on a seat", () => {
+  /** The Players panel alone, with a set of `<seat>:<techId>` keys lit.
+   *
+   *  `wire.atK` is the fixture because it is the one whose seat 1 OWNS a
+   *  technology (`Ball`, id 12) — `wire.options` deals none, and a cell that
+   *  marked a chip no fixture renders would pass while showing nothing. */
+  const showAtK = (changedTechs?: Set<string>) =>
+    render(
+      <Dashboard
+        panels={wire.atK.frame.dashboard}
+        art={wire.artManifest}
+        labels={wire.labels}
+        colors={COLORS}
+        only={["Players"]}
+        changedTechs={changedTechs}
+      />,
+    );
+
+  const techChips = (c: HTMLElement) => [...c.querySelectorAll(".chip.tech")];
+
+  /** `playersOf` in `test/panels` takes a `ClientState`; `atK` is the narrower
+   *  `HistoricalFrame`, which carries the same `frame` and none of the rest. */
+  const seatsAtK = (): PlayerModel[] => {
+    const panel = wire.atK.frame.dashboard.find(
+      (p): p is Extract<Panel, { Players: unknown }> => "Players" in p,
+    );
+    if (!panel) throw new Error("the atK fixture carries no Players panel");
+    return panel.Players.players;
+  };
+
+  it("marks the tech chip whose key the walk lit, and only that one", () => {
+    const owner = seatsAtK().find((p) => p.technologies.length > 0);
+    if (!owner) throw new Error("the fixture carries no seat holding a technology");
+    const id = owner.technologies[0]!.id;
+
+    const { container } = showAtK(new Set([`${owner.seat}:${id}`]));
+    const chips = techChips(container);
+    expect(chips.length, "the panel must draw the tech it is marking").toBeGreaterThan(0);
+    expect(chips.filter((c) => c.classList.contains("changed"))).toHaveLength(1);
+    expect(container.querySelector(".chip.tech.changed")?.textContent).toBe(
+      owner.technologies[0]!.printed?.name ?? `#${id}`,
+    );
+  });
+
+  // The key is SEAT AND ID, not the id alone: two seats may own the same
+  // technology TITLE, and at 3-4P the two laboratory boards deal the same ids.
+  it("leaves the chip unmarked when the set names another seat's copy of it", () => {
+    const owner = seatsAtK().find((p) => p.technologies.length > 0)!;
+    const other = seatsAtK().find((p) => p.seat !== owner.seat)!;
+    const { container } = showAtK(new Set([`${other.seat}:${owner.technologies[0]!.id}`]));
+    expect(container.querySelector(".chip.tech.changed")).toBeNull();
+  });
+
+  it("marks nothing when the walk is not running", () => {
+    const { container } = showAtK(undefined);
+    expect(techChips(container).length).toBeGreaterThan(0);
+    expect(container.querySelector(".chip.tech.changed")).toBeNull();
+  });
+});
+
+describe("the walk's marks on the viewer's hand", () => {
+  /** The Hand panel alone. `wire.atK`'s is seat 0's, FACE UP, holding two
+   *  orders — the fixture the ruling needs, since a masked hand carries no
+   *  identities to mark. */
+  const showHand = (changedHand?: Set<number>) =>
+    render(
+      <Dashboard
+        panels={wire.atK.frame.dashboard}
+        art={wire.artManifest}
+        labels={wire.labels}
+        colors={COLORS}
+        only={["Hand"]}
+        changedHand={changedHand}
+      />,
+    );
+
+  const handAtK = (): HandPanel => {
+    const panel = wire.atK.frame.dashboard.find((p): p is Extract<Panel, { Hand: HandPanel }> => "Hand" in p);
+    if (!panel) throw new Error("the atK fixture carries no Hand panel");
+    return panel.Hand;
+  };
+
+  it("marks the hand card whose id the walk lit, and only that one", () => {
+    const hand = handAtK();
+    expect(hand.hidden).toBe(false);
+    expect(hand.cards.length, "the fixture must deal the viewer more than one card").toBeGreaterThan(1);
+    const arrived = hand.cards[1]!.id;
+
+    const { container } = showHand(new Set([arrived]));
+    const marked = [...container.querySelectorAll(".card-face.order.changed")];
+    expect(container.querySelectorAll(".card-face.order")).toHaveLength(hand.cards.length);
+    expect(marked).toHaveLength(1);
+    // The class is on the CARD'S ROOT, and the id printed on it says which.
+    expect(marked[0]!.querySelector(".card-id")?.textContent).toBe(`O${String(arrived).padStart(2, "0")}`);
+  });
+
+  it("marks no hand card when the walk is not running", () => {
+    const { container } = showHand(undefined);
+    expect(container.querySelectorAll(".card-face.order").length).toBeGreaterThan(0);
+    expect(container.querySelector(".card-face.order.changed")).toBeNull();
+  });
+});
 
 describe("the 2P dummy pawn", () => {
   // `occupant === 255` is `PlayerId::DUMMY`: a real scoring occupant that

@@ -55,8 +55,15 @@ export function Help() {
         <strong>answer bar</strong> pinned at its top &mdash; whatever the game is asking you is
         always there &mdash; then the account of the last turn, which, when the opponent has just
         moved, first plays out on the table one step at a time, at the pace the account&rsquo;s
-        cadence control sets, with the pieces and offers that moved outlined; skip lands you on
-        your prompt, replay runs it again. Under it are every seat&rsquo;s goods, money and
+        cadence control sets. Each step marks what it changed, with an outline that pulses once
+        and then stays until the next step replaces it: the pieces that moved, the seats whose
+        money or goods changed, the card the deck turned over to refill a port or laboratory
+        slot, the technology a take put in someone&rsquo;s list, and an order card that arrived
+        in your own hand. A card that only shifted along a strip is not marked &mdash; a take
+        slides every card behind it, and outlining all of them would hide the one that arrived.
+        Nothing marks a card in an opponent&rsquo;s hand, because you are never shown one: their
+        take lights the slot it came from and the line that names it. Skip lands you on your
+        prompt, replay runs it again. Under it are every seat&rsquo;s goods, money and
         pieces, and your own hand. Hover or focus any tile to see it, and any site card on it, at
         full size.
       </p>

@@ -74,16 +74,22 @@ export function OrderCardView({
   id,
   note,
   size = "md",
+  changed = false,
 }: {
   art: ArtManifest | null;
   card: OrderCard | null;
   id: number;
   note?: string;
   size?: "sm" | "md";
+  /** The walk is lighting this card (M5.5 R-GC-2). The class goes on the card's
+   *  ROOT, which is also the element `.strip-slot.changed .card-face` outlines,
+   *  so one stroke serves a card wherever it is drawn. Default `false`, so the
+   *  index, the setup preview and the offer strips are untouched. */
+  changed?: boolean;
 }) {
   const src = orderArt(art, id);
   return (
-    <figure className={`card-face order ${size}`}>
+    <figure className={`card-face order ${size}${changed ? " changed" : ""}`}>
       {src ? (
         <img src={src} alt="" loading="lazy" />
       ) : (

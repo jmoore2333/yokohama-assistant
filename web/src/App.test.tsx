@@ -520,6 +520,15 @@ describe("the turn playback", () => {
   /** A reply that applied THREE events after the state the app answered from,
    *  the second of them by a bot: the fixtures for the run's positions are
    *  the corpus's `at_k` with one seat marked as a bot and a cube moved. */
+  /** The id of the technology the bot's take puts in seat 1's list at 43.
+   *  Not one the fixture already holds — a repeat would be a second copy of a
+   *  card a player may own only one of, and the diff would be right to ignore
+   *  it. */
+  const TAKEN_TECH = 777;
+  /** The order the bot's take puts in the viewer's hand at 43 — not one the
+   *  fixture already deals, for the same reason. */
+  const TAKEN_ORDER = 31;
+
   function botReply() {
     const before = { ...wire.optionsMany, events: 40 };
     const replied = { ...wire.optionsMany, events: 43 };
@@ -535,6 +544,34 @@ describe("the turn playback", () => {
       // below cross a 400 ms quick dwell and `.tile.changed` is asserted on
       // the step whose own diff names the tile rather than on a later one.
       if (k >= 43) f.frame.board.tiles[0]!.assistants[1]![1] += 1;
+      // **And so does a technology (R-GC-1)**, on the same step: a laboratory
+      // take marks the card where it LANDED, and that lands in the rail, which
+      // is a different component from every other mark on screen. The fixture's
+      // seat 1 already owns one, so the panel draws two chips and only one of
+      // them is the arrival.
+      if (k >= 43) {
+        const seats = players && "Players" in players ? players.Players.players : [];
+        const owner = seats[1]!;
+        const had = owner.technologies[0]!;
+        owner.technologies = [
+          had,
+          { id: TAKEN_TECH, printed: had.printed ? { ...had.printed, id: TAKEN_TECH, name: "Cannery" } : null },
+        ];
+      }
+      // **And an ORDER card lands in the viewer's own hand (R-GC-2)**, which is
+      // a THIRD component again — the Hand panel, whose card is marked on its
+      // root rather than by a wrapper. The fixture's hand is seat 0's and face
+      // up; a masked hand carries no identities and marks nothing by design.
+      if (k >= 43) {
+        const hand = f.frame.dashboard.find((p) => "Hand" in p);
+        if (hand && "Hand" in hand) {
+          hand.Hand.cards = [
+            ...hand.Hand.cards,
+            { ...hand.Hand.cards[0]!, id: TAKEN_ORDER, is_starting_order: false },
+          ];
+          hand.Hand.card_count += 1;
+        }
+      }
       return f;
     };
     const log = {
@@ -582,6 +619,25 @@ describe("the turn playback", () => {
     [...document.querySelectorAll('.board .tile [role="img"]')].map((e) =>
       e.getAttribute("aria-label"),
     );
+  /** The pulse's two attributes, read off the element that carries them.
+   *
+   *  **`.app`, not `main.table`, and the reason is structural**: `.tile` and
+   *  `.strip-slot` are inside the table, but `.seat` and the tech chips are in
+   *  the SIDE column, a sibling of it. A custom property cannot be read out of
+   *  a sibling subtree, so the duration has to live at the one ancestor of
+   *  both — the same element that already carries `data-busy`.
+   *
+   *  jsdom runs no CSS at all, so what these cells pin is the ATTRIBUTES the
+   *  keyframes are selected and timed by; the pulse itself is seen live and in
+   *  the gate's pictures. */
+  const pulse = () => {
+    const app = document.querySelector<HTMLElement>(".app");
+    return {
+      beat: app?.getAttribute("data-beat") ?? null,
+      dwell: app?.style.getPropertyValue("--dwell-ms") || null,
+    };
+  };
+
   /** The tile whose id badge reads `id`, as `Board.test.tsx` finds one. */
   const tileOf = (id: string) =>
     [...document.querySelectorAll<HTMLElement>(".tile")].find(
@@ -631,6 +687,10 @@ describe("the turn playback", () => {
       expect(document.querySelector(".table.replaying")).not.toBeNull();
       expect(document.querySelectorAll("ol.account li")).toHaveLength(3);
       expect(document.querySelector("ol.account li.at")?.textContent).toMatch(/Red: End additional-action/);
+      // **The pulse's beat and its length (R-GC-1).** Step 1 changes nothing on
+      // the table — the two "End additional-action phase" events move no piece —
+      // so it dwells the quick 400 ms and the pulse runs for exactly that.
+      expect(pulse()).toEqual({ beat: "0", dwell: "400ms" });
       // **And the TABLE is drawing the run's frame.** The live payload carries
       // a piece on no tile; every position in the run carries two.
       expect(boardPieces()).toHaveLength(2);
@@ -639,11 +699,34 @@ describe("the turn playback", () => {
         await vi.advanceTimersByTimeAsync(450);
       });
       expect(document.querySelector("ol.account li.at")?.textContent).toMatch(/Blue: End additional-action/);
+      // **The beat ALTERNATES, and that is its whole job**: an element that
+      // stays lit across two steps restarts its animation only when the
+      // animation NAME changes, and the name is chosen by this attribute.
+      expect(pulse()).toEqual({ beat: "1", dwell: "400ms" });
       await act(async () => {
         await vi.advanceTimersByTimeAsync(450);
       });
       expect(document.querySelector("ol.account li.at")?.textContent).toMatch(/Place 1 assistant/);
       expect(document.querySelector(".tile.changed")).not.toBeNull();
+      // **The take's other end reaches the RAIL.** `App` is the only thing
+      // that carries `changes.techs` across from the table's diff to the
+      // Players panel, and without that one prop every other assertion in this
+      // cell still passes — measured.
+      const marked = [...document.querySelectorAll(".chip.tech.changed")];
+      expect(document.querySelectorAll(".chip.tech").length).toBe(2);
+      expect(marked.map((c) => c.textContent)).toEqual(["Cannery"]);
+      // **And the hand card, on a third component again.** One prop each, and
+      // dropping either leaves every other assertion in this cell passing —
+      // measured for both.
+      const handCards = [...document.querySelectorAll(".card-face.order")];
+      expect(handCards.filter((c) => c.classList.contains("changed"))).toHaveLength(1);
+      expect(
+        document.querySelector(".card-face.order.changed")?.querySelector(".card-id")?.textContent,
+      ).toBe(`O${String(TAKEN_ORDER).padStart(2, "0")}`);
+      // The step that MOVES something dwells the cadence — 2000 ms, the
+      // default this browser has no stored choice against — so the pulse is
+      // five times the bookkeeping step's and the marks stay up between.
+      expect(pulse()).toEqual({ beat: "0", dwell: "2000ms" });
       // The step's own `after` frame, read off the tile: the cube this fixture
       // adds at position 43 and nowhere else is ON A00, and the live payload
       // says that tile is empty.
@@ -667,6 +750,11 @@ describe("the turn playback", () => {
       // you on your prompt" means for the table.
       expect(boardPieces()).toHaveLength(0);
       expect(document.querySelector(".tile.changed")).not.toBeNull();
+      // **And the pulse does not re-run under `fresh`.** The marks held on the
+      // live table are the LAST step's, which is the step the walk was on, so
+      // both attributes keep the values they already had — a changed beat here
+      // would restart the animation on a step that already played.
+      expect(pulse()).toEqual({ beat: "0", dwell: "2000ms" });
     } finally {
       vi.useRealTimers();
     }
