@@ -26,7 +26,14 @@ describe("the overlay geometry", () => {
     }
   });
 
-  it("the band starts right of the measured icon ink, by the margin", () => {
+  // **Named for what it can check, which is not the ink** (final review m6).
+  // Mutation M3 set `ICON_INK_RIGHT` to 0 and left this file green 8 of 8, and
+  // it always will: the constant is the eye's reading of the printed art
+  // (ruling R-T3-1) and no assertion in a test runner can re-take it. What the
+  // cell holds is the arithmetic BETWEEN the constant and the band, which is
+  // the half a refit of either would break — and the old name promised the
+  // other half.
+  it("the band starts right of ICON_INK_RIGHT by the margin (the constant is the eye's reading, R-T3-1; this pins the arithmetic, not the ink)", () => {
     expect(PIECES.left).toBeGreaterThanOrEqual(ICON_INK_RIGHT + BAND_MARGIN - 1e-9);
     expect(PIECES.left, "the band was widened past the mock's own 0.30 for nothing").toBeLessThan(0.5);
     expect(PIECES.left + PIECES.width).toBeCloseTo(0.97, 6);

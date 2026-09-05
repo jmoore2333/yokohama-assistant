@@ -65,7 +65,13 @@ export const TOKEN_SLOT: Rect = rects.printed.token_slot;
  *  same four the icon-block note above names: Chinatown 0.320, Church 0.379,
  *  Laboratory 0.395, Research Center 0.392. LABORATORY BINDS. Each was
  *  confirmed against a 0.005 gridline zoom, and the band was then looked at on
- *  all thirteen arts (ruled during execution, recorded in the M5.5 close). */
+ *  all thirteen arts (ruled during execution, recorded in the M5.5 close).
+ *
+ *  **No test pins this number, and none can.** It is the eye's reading, so the
+ *  cell in `tileRects.test.ts` pins the ARITHMETIC between it and the band's
+ *  left edge and not the ink — setting this to 0 leaves that file green, which
+ *  the cell's own name now says (final review m6, ruling R-F6). A re-measure
+ *  is an eye's job against the art, and it moves `PIECES.left` with it. */
 export const ICON_INK_RIGHT = 0.395;
 export const BAND_MARGIN = 0.02;
 
