@@ -347,6 +347,33 @@ from the workstation, with the numbers that changed:
   `0.5.0-m5.5` (§5).
 - **Downtime:** the seconds between `stop` and `start`; nobody was playing.
 
+**Addendum, the same day: `yokohama-web:0.5.0-m5.5.1` (17:07Z), then
+`0.5.0-m5.5.2` (17:31Z).** The final review's fix wave (`e0de465`…`0689fe7`:
+the turn's highlights outlive the walk — the held marks are the union of the
+mover's steps, not the empty last step's; the tile keeps its DOM node when the
+placement picker opens, so the art no longer remounts and goes dark; the walk
+strip is one line; the account scrolls its lit row into view; the seat-row and
+strip-slot highlights pinned by unit cells; the ink-edge cell renamed; the
+comments made true) was redeployed by the same recipe as **`0.5.0-m5.5.1`**:
+the musl binary unchanged (`crates/` did not move), context 13,899,474 B,
+image **25,995,030 B** built in ~10 s, the `0.5.0-m5.5` container stopped and
+removed, the new one created with the same body, same address (172.21.0.4),
+**healthy at 30 s**, the tunnel serving the wave's bundle `index-BdX0BsM6.js`
+13 s after start. The on-screen check of THAT build found the account's
+scroll-into-view scrolling the PAGE in the below-1201 stack (from the board at
+scroll 0 a walk read 1826 → 1851 → 1877 px, the lit row under the sticky
+strip) — fixed as `fb92c17` (the account scrolls only its own box, never the
+page) and redeployed as **`0.5.0-m5.5.2`**: context 13,899,577 B, image
+**25,995,225 B** (~10 s), the same swap, the same address, **healthy at 30 s**
+(13:31:50 local), the tunnel serving `index-CVFCAqs1.js` 18 s after start; on
+screen at a 1000-px viewport the page held at scroll 0 through a nine-step walk
+while the account's box scrolled 0 → 38 px with the lit row inside it. The
+checks left three saves on the volume (`sim-5c3b4e596bb8cf97`,
+`sim-7d949b884ebb2adb`, `sim-fa6b6bb5049a3929`), the owner's to delete. **Six
+tags now sit on the NAS** — `0.5.0`, `0.5.0-m5`, `0.5.0-m5.1`, `0.5.0-m5.5`,
+`0.5.0-m5.5.1`, `0.5.0-m5.5.2` — each a rollback point (§5). The live build is
+`fb92c17`; the milestone's close commit follows it.
+
 ---
 
 ## 4. Modal — the upgrade path, not yet deployed
