@@ -310,7 +310,7 @@ test("four assistants of one colour stand as a pile, not as a cube and a count",
       // A tile being clickable is no evidence, either: while picking, `disabled`
       // is `busy` alone (`Board.tsx:361`), so every non-Canal tile is offered.
       await expect(
-        page.locator(".last-move .messages div").filter({
+        page.locator(".turn-account .messages div").filter({
           hasText: new RegExp(`placed in .*\\(${area}\\)`),
         }),
       ).toHaveCount(1);

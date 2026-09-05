@@ -2,10 +2,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError } from "./api";
 import { Board } from "./Board";
 import { Dashboard } from "./Dashboard";
-import { LastMove } from "./LastMove";
+import { TurnAccount } from "./TurnAccount";
 import { Decision } from "./Decision";
 import { GameMenu } from "./GameMenu";
 import { NewGame } from "./NewGame";
+import { DEFAULT_CADENCE } from "./playback";
 import { loadSections, saveSections, SECTION_KEYS, SECTION_LABELS, type SectionKey } from "./sections";
 import { CARD_SURFACES, Surface, SURFACES, type SurfaceName } from "./Surfaces";
 import { TableSections } from "./TableSections";
@@ -423,7 +424,26 @@ export function App() {
         </div>
       </main>
       <aside className="side">
-        <LastMove messages={state.messages} />
+        {/* Task 9 replaces every no-op: the walk's state, its timer and its
+            jumps are `App`'s, and until they exist `run` is always `null`, so
+            the account renders the reply's prose lines and nothing else. */}
+        <TurnAccount
+          messages={state.messages}
+          run={null}
+          at={null}
+          playing={false}
+          cadence={DEFAULT_CADENCE}
+          labels={labels}
+          colors={colors}
+          onCadence={() => {}}
+          onPlay={() => {}}
+          onPause={() => {}}
+          onBack={() => {}}
+          onForward={() => {}}
+          onJump={() => {}}
+          onSkip={() => {}}
+          onReplay={() => {}}
+        />
         <Dashboard panels={view.frame.dashboard} art={art} labels={labels} colors={colors} only={["Players", "Hand"]} />
       </aside>
 

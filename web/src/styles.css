@@ -1160,17 +1160,31 @@ pre.raw-panel {
 .tile-pop-words .reachable-words { color: var(--reachable); }
 
 /* ---- M5: the side column ----------------------------------------------- */
-.last-move h2 { display: flex; align-items: center; }
-.last-move .fold { margin-left: auto; font-size: 10px; padding: 0 0.4rem; letter-spacing: 0; text-transform: none; }
-.last-move .messages { margin-top: 0.3rem; max-height: 9rem; overflow: auto; scrollbar-width: thin; }
-.last-move .messages.folded { max-height: 0; overflow: hidden; margin-top: 0; }
+/* The header carries the walk's controls beside the heading, so it WRAPS, and
+ * the `margin-left: auto` that used to push the fold button over now sits on
+ * the select: everything after it — the controls and the fold — rides to the
+ * right of the free space as one group instead of the fold alone. */
+.turn-account h2 { display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap; }
+.turn-account h2 select { margin-left: auto; font: inherit; font-size: 10px; background: var(--bg-sunken); color: var(--fg); border: 1px solid var(--line); border-radius: 3px; }
+/* Every button in the header, the fold included — it is a `.ghost` too. */
+.turn-account h2 .ghost { font-size: 10px; padding: 0 0.4rem; letter-spacing: 0; text-transform: none; }
+/* **No `max-height` here any more.** The box was capped at 9rem because it held
+ * prose it could not shorten; the account is one row per event and takes the
+ * height it needs, and the side column is what scrolls (M5.5 spec §3.2.5). */
+.turn-account .messages { margin-top: 0.3rem; overflow: auto; scrollbar-width: thin; }
+.turn-account .messages.folded { max-height: 0; overflow: hidden; margin-top: 0; }
 /* **The empty region keeps its box.** `.messages:empty` is `display: none`,
  * which is right for the deck's own blocks and wrong here: an element that is
  * not displayed is not in the accessibility tree either, so the region would
- * arrive at the same instant as its first line — the exact case `LastMove`'s
- * comment says is unreliably announced. Empty it has no border, no padding and
- * no children, so it costs nothing but its margin. */
-.last-move .messages:empty { display: flex; }
+ * arrive at the same instant as its first line — the exact case the comment at
+ * the top of `TurnAccount.tsx` says is unreliably announced. Empty it has no
+ * border, no padding and no children, so it costs nothing but its margin. */
+.turn-account .messages:empty { display: flex; }
+
+ol.account { list-style: none; margin: 0.3rem 0 0; padding: 0; display: flex; flex-direction: column; gap: 0.15rem; }
+ol.account li { display: grid; grid-template-columns: auto auto 1fr; align-items: baseline; gap: 0.4rem; font-size: 11.5px; padding: 0.15rem 0.2rem; border-top: 1px solid var(--line); }
+ol.account li.at { background: rgb(105 194 95 / 0.12); }
+ol.account .mover { font-weight: 700; }
 
 /* ---- M5: the strips on the table ---------------------------------------- */
 .table-sections {
