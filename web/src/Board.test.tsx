@@ -18,6 +18,8 @@ function show(
     onTileClick?: (area: number) => void;
     selected?: number[];
     busy?: boolean;
+    changed?: Set<number>;
+    changedBy?: PlayerColor;
   } = {},
 ) {
   return render(
@@ -28,6 +30,8 @@ function show(
       colors={opts.colors ?? COLORS}
       selected={opts.selected ?? []}
       busy={opts.busy ?? false}
+      changed={opts.changed}
+      changedBy={opts.changedBy}
       {...(opts.onTileClick ? { onTileClick: opts.onTileClick } : {})}
     />,
   );
@@ -347,5 +351,32 @@ describe("the tile is the art, and the pieces sit on it (M5)", () => {
     );
     expect(container.querySelector(".tile-art-blank .tile-name")?.textContent).toBeTruthy();
     expect(container.querySelectorAll("img")).toHaveLength(0);
+  });
+});
+
+// ---- M5.5 C: what the opponent's turn changed ------------------------------
+
+describe("the walk's highlights", () => {
+  // The set comes from `diffFrames`, which compares two wire frames and knows
+  // no rule; the board's whole job is to draw what it names, in the colour of
+  // the seat that moved. The class carries the colour rather than a written
+  // hex, so the CSS outlines in `currentColor` and a fifth seat colour stays
+  // one line in the palette.
+  it("outlines the tiles the diff names, in the mover's seat class", () => {
+    const { container } = show(wire.options, { changed: new Set([0]), changedBy: "Blue" });
+    const lit = tileOf(container, "A00");
+    expect(lit.className).toContain("changed");
+    expect(lit.className).toContain("seat-blue");
+    // Anti-vacuity, and the half a `className` typo would leave green: a tile
+    // the diff did NOT name carries neither mark.
+    const dark = tileOf(container, "A01");
+    expect(dark.className).not.toContain("changed");
+    expect(dark.className).not.toContain("seat-blue");
+    expect(container.querySelectorAll(".tile.changed")).toHaveLength(1);
+  });
+
+  it("draws no highlight at all when nothing is passed", () => {
+    const { container } = show(wire.options);
+    expect(container.querySelectorAll(".tile.changed")).toHaveLength(0);
   });
 });

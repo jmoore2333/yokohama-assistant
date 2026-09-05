@@ -7,10 +7,26 @@
 // create — on the scrubber's own debounce-and-drop shape: a `live` flag, a
 // stale answer dropped. Tracks and Goals need no fetch; they are on the frame.
 //
-// **Replaying collapses the fetched ones.** `/at/{k}` is a narrow frame (M4
-// Q5): board and dashboard only. The port at position k is not something the
-// server serves, so the section says so rather than showing the live offer
-// under a historical board. Tracks and Goals draw from the historical frame.
+// **The port and the laboratory draw from a position that carries them.**
+// Since M5.5 `/at/{k}` serves the offers as they stood — face up at the time,
+// and properties of the position rather than present-tense lies about it — so
+// a strip beside a historical board is the strip that WAS there, whether the
+// player is scrubbing or the opponent's turn is playing out. Tracks and Goals
+// come off the same frame, as they always did.
+//
+// **The building sites still collapse.** Their board is read from the LIVE
+// game (`/areas`), and there is no position-shaped version of it, so the
+// section says it is hidden rather than showing today's builds under an
+// earlier board.
+//
+// **The fetch is guarded by `scrubbing` and NOT by `replaying`, and the two
+// differ only during a walk.** A walk turns `replaying` on and off again while
+// `state` never moves, and a guard on a value that falls back to false at the
+// end of the walk fires a SECOND `/ports` for one move — the browser cell that
+// pins one refresh per state-changing response counts exactly that — and
+// cancels the first one's response on the way in. Scrubbing keeps M4's rule
+// (no state change happens while you are in the past, so nothing needs
+// re-reading) without either effect.
 
 import { useEffect, useState } from "react";
 import { api, ApiError } from "./api";
@@ -27,28 +43,36 @@ import type {
   PortsPanel,
 } from "./types";
 
-const FETCHED: SectionKey[] = ["ports", "labs", "buildings"];
-
 export function TableSections({
   enabled,
   game,
   state,
   replaying,
+  scrubbing,
   view,
   art,
   labels,
   colors,
+  changedSlots,
 }: {
   enabled: SectionKey[];
-  game: string;
+  /** `null` before a game is on screen — there is nothing to fetch and nothing
+   *  a board could be about. */
+  game: string | null;
   /** The live state — its identity is the refresh key. */
-  state: ClientState;
+  state: ClientState | null;
+  /** What is drawn is not the live position. Collapses the building sites. */
   replaying: boolean;
-  /** What the board is drawing: the live state, or the replay position. */
+  /** The player is in the PAST via the log's track. Skips the fetch — see the
+   *  header note on why this is not `replaying`. */
+  scrubbing: boolean;
+  /** What the board is drawing: the live state, or a historical position. */
   view: ClientState | HistoricalFrame;
   art: ArtManifest | null;
   labels: Labels | null;
   colors: PlayerColor[];
+  /** `port:<board>:<slot>` / `lab:<board>:<slot>` keys the walk is lighting. */
+  changedSlots?: Set<string>;
 }) {
   const [ports, setPorts] = useState<PortsPanel | null>(null);
   const [labs, setLabs] = useState<LabsPanel | null>(null);
@@ -65,7 +89,7 @@ export function TableSections({
     // collapsed sections for the whole time the player was in the past —
     // a sentence about a fetch that is no longer being made.
     setError(null);
-    if (replaying) return;
+    if (game === null || scrubbing) return;
     let live = true;
     const said = (e: unknown) => live && setError(e instanceof ApiError ? e.message : String(e));
     if (enabled.includes("ports")) api.ports(game).then((p) => live && setPorts(p)).catch(said);
@@ -76,12 +100,16 @@ export function TableSections({
     };
     // `wanted` stands in for `enabled` here on purpose (see its comment above);
     // the array itself is rebuilt on every toggle and would refetch everything.
-  }, [game, state, replaying, wanted]);
+  }, [game, state, scrubbing, wanted]);
 
   const tracksPanel = view.frame.dashboard.find((p) => "Tracks" in p);
   const tracks = tracksPanel && "Tracks" in tracksPanel ? tracksPanel.Tracks : null;
   const goalsPanel = view.frame.dashboard.find((p) => "Achievements" in p);
   const goals = goalsPanel && "Achievements" in goalsPanel ? goalsPanel.Achievements.cards : [];
+
+  /** A position that carries its own offers — every `HistoricalFrame` does,
+   *  and no `ClientState` does. */
+  const offers = "ports" in view ? view : null;
 
   const collapsed = (key: SectionKey) => (
     <section className={`table-sec ${key} collapsed`} key={key} aria-label={SECTION_LABELS[key]}>
@@ -95,18 +123,48 @@ export function TableSections({
       <p className="muted">loading&hellip;</p>
     </section>
   );
+  /** No game yet: the setup screen's table (Task 12) draws the boards it can
+   *  and says so about the one it cannot, rather than spinning on a fetch that
+   *  has no game to name. */
+  const unavailable = (key: SectionKey) => (
+    <section className={`table-sec ${key} collapsed`} key={key} aria-label={SECTION_LABELS[key]}>
+      <h2>{SECTION_LABELS[key]}</h2>
+      <p className="muted">available once the game starts</p>
+    </section>
+  );
 
   return (
     <div className="table-sections">
       {SECTION_KEYS.filter((k) => enabled.includes(k)).map((key) => {
-        if (replaying && FETCHED.includes(key)) return collapsed(key);
         switch (key) {
           case "ports":
-            return ports ? <PortStrip key={key} panel={ports} art={art} /> : loading(key);
+            return offers ? (
+              <PortStrip key={key} panel={offers.ports} art={art} changed={changedSlots} />
+            ) : replaying ? (
+              collapsed(key)
+            ) : ports ? (
+              <PortStrip key={key} panel={ports} art={art} changed={changedSlots} />
+            ) : (
+              loading(key)
+            );
           case "labs":
-            return labs ? <LabStrip key={key} panel={labs} art={art} labels={labels} /> : loading(key);
+            return offers ? (
+              <LabStrip key={key} panel={offers.labs} art={art} labels={labels} changed={changedSlots} />
+            ) : replaying ? (
+              collapsed(key)
+            ) : labs ? (
+              <LabStrip key={key} panel={labs} art={art} labels={labels} changed={changedSlots} />
+            ) : (
+              loading(key)
+            );
           case "buildings":
-            return areas ? <SitesStrip key={key} panel={areas} art={art} colors={colors} /> : loading(key);
+            return replaying
+              ? collapsed(key)
+              : game === null
+                ? unavailable(key)
+                : areas
+                  ? <SitesStrip key={key} panel={areas} art={art} colors={colors} />
+                  : loading(key);
           case "tracks":
             return tracks ? <TracksStrip key={key} tracks={tracks} art={art} colors={colors} /> : null;
           case "achievements":

@@ -1,15 +1,25 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError } from "./api";
 import { Board } from "./Board";
+import { seatClass } from "./Cards";
 import { Dashboard } from "./Dashboard";
 import { TurnAccount } from "./TurnAccount";
 import { Decision } from "./Decision";
 import { GameMenu } from "./GameMenu";
 import { NewGame } from "./NewGame";
-import { DEFAULT_CADENCE } from "./playback";
+import { loadCadence, saveCadence, type Cadence } from "./playback";
 import { loadSections, saveSections, SECTION_KEYS, SECTION_LABELS, type SectionKey } from "./sections";
 import { CARD_SURFACES, Surface, SURFACES, type SurfaceName } from "./Surfaces";
 import { TableSections } from "./TableSections";
+import {
+  buildRun,
+  dwellFor,
+  hasBotStep,
+  walkReducer,
+  type Run,
+  type WalkAction,
+  type WalkState,
+} from "./walk";
 import type {
   ArtManifest,
   ClientState,
@@ -18,6 +28,24 @@ import type {
   Outcome,
   PlayerColor,
 } from "./types";
+
+/** The positions `prev..=next` and the log's tail, in parallel.
+ *
+ *  **`prev` is fetched too**, and that is the whole reason this takes a range
+ *  rather than the reply's own count: a step's highlight is a DIFF, so the
+ *  first step needs a full position on the side the reply came from, and the
+ *  live payload is not one — it carries no port and no laboratory.
+ *
+ *  Outside the component because it closes over nothing: `api` is a module and
+ *  `buildRun` is pure, so a hook would only make its identity churn. */
+async function fetchRun(game: string, prev: number, next: number): Promise<Run> {
+  const ks = Array.from({ length: next - prev + 1 }, (_, i) => prev + i);
+  const [frames, log] = await Promise.all([
+    Promise.all(ks.map((k) => api.at(game, k))),
+    api.log(game, next - prev),
+  ]);
+  return buildRun(prev, frames, log);
+}
 
 export function App() {
   const [labels, setLabels] = useState<Labels | null>(null);
@@ -32,6 +60,36 @@ export function App() {
   // already holds, so nothing here is persisted and nothing is applied.
   const [scrubK, setScrubK] = useState<number | null>(null);
   const [past, setPast] = useState<HistoricalFrame | null>(null);
+  // **The last run a reply added, and the walk over it (M5.5 spec §3.2).**
+  //
+  // `run` outlives the walk: the account goes on showing it until the next run
+  // replaces it, which is what makes "replay" mean something after the walk has
+  // ended. `walk` is the step on the table and whether the timer runs, and
+  // `null` is "over" — the live state is what is on screen. `fresh` is true
+  // from the moment a run lands until the player's next answer, and is what
+  // keeps the LAST step's highlights on the live table (spec §3.2.4) instead of
+  // clearing them the instant the walk finishes.
+  const [run, setRun] = useState<Run | null>(null);
+  const [walk, setWalk] = useState<WalkState | null>(null);
+  const [fresh, setFresh] = useState(false);
+  const [cadence, setCadence] = useState<Cadence>(() => loadCadence());
+  const dispatch = useCallback(
+    (a: WalkAction) => setWalk((w) => (w && run ? walkReducer(w, a, run.steps.length - 1) : w)),
+    [run],
+  );
+  // **ONE timer, and `dwellFor` is the whole of the timing rule.** A second
+  // clock anywhere — a per-step `setInterval`, a transition that also advances —
+  // is how a playback ends up at a different step than the one it is lighting.
+  // The effect re-runs on every action because `walk` is a new object each
+  // time, so each step gets its own fresh dwell and the cleanup cancels the
+  // one before it.
+  useEffect(() => {
+    if (!run || !walk || !walk.playing) return;
+    const step = run.steps[walk.at];
+    if (!step) return;
+    const t = setTimeout(() => dispatch({ type: "tick" }), dwellFor(step, cadence));
+    return () => clearTimeout(t);
+  }, [run, walk, cadence, dispatch]);
   // **Which boards are on the table, and it is a per-BROWSER choice.** The set
   // is not game state and is deliberately not sent anywhere: `sections.ts`
   // keeps it in `localStorage`, a storage that throws reads as the default, and
@@ -67,12 +125,69 @@ export function App() {
   // the player is now looking at. So the id is kept in a ref that every change
   // of game updates, and `send` drops anything that no longer matches it.
   const gameId = useRef<string | null>(null);
+  /** A reply landed: if it added events, build the run and start the walk when
+   *  a bot moved.
+   *
+   *  Called INSIDE the busy window, so the deck stays disabled until the walk
+   *  is ready to show rather than offering the next prompt over a table that is
+   *  about to rewind.
+   *
+   *  **A reply that added NOTHING clears the run as well as `fresh` (ruling
+   *  R-P5).** `events` is legitimately non-monotone: a picker step applies no
+   *  event, a refusal none, and an undo POPS them. Leaving the previous run
+   *  standing there would keep an account of an earlier turn on screen in place
+   *  of the prose that answers the click just made. */
+  const landed = useCallback(
+    async (game: string, prev: number, replied: ClientState) => {
+      setFresh(false);
+      if (replied.events <= prev) {
+        setRun(null);
+        setWalk(null);
+        return;
+      }
+      const r = await fetchRun(game, prev, replied.events);
+      // The same rule the reply itself is judged by: a run for a game the
+      // player has left is dropped, never shown over the game they are on.
+      if (gameId.current !== game) return;
+      setRun(r);
+      setFresh(true);
+      setWalk(hasBotStep(r) ? { at: 0, playing: true } : null);
+    },
+    [],
+  );
+
   /** Put a game on screen — the ONE way `state` changes identity, so the ref
-   *  and the state cannot disagree. `null` is the setup screen. */
-  const show = useCallback((s: ClientState | null) => {
-    gameId.current = s?.id ?? null;
-    setState(s);
-  }, []);
+   *  and the state cannot disagree. `null` is the setup screen.
+   *
+   *  The walk goes with the game: a run is an account of a turn in the game
+   *  being left, and rows about it over a different board describe nothing.
+   *
+   *  `opening` is true only for a game just CREATED. A game whose start seat is
+   *  a bot has already played by the time the create replies, and those events
+   *  are a run like any other — the only one whose `prev` is 0. A saved game
+   *  reopened passes false: its events are history, not something that just
+   *  happened. */
+  const show = useCallback(
+    (s: ClientState | null, opening = false) => {
+      gameId.current = s?.id ?? null;
+      setState(s);
+      setRun(null);
+      setWalk(null);
+      setFresh(false);
+      if (opening && s && s.events > 0) {
+        // The busy window is opened by hand here, because this run has no
+        // request of its own to ride inside. It is what the browser harness
+        // waits on before reading a screen — see `data-busy` on the root — and
+        // the refusal goes where every other one goes rather than into an
+        // unhandled rejection.
+        setBusy(true);
+        void landed(s.id, 0, s)
+          .catch((e) => setError(e instanceof ApiError ? e.message : String(e)))
+          .finally(() => setBusy(false));
+      }
+    },
+    [landed],
+  );
 
   // **The final standing comes from `/result`, because `scores` cannot carry
   // it.** `ClientState.scores` is `{seat, total}[]` in SEAT order with no rank
@@ -119,6 +234,11 @@ export function App() {
         // See `gameId`. Nothing is lost by dropping it: the move was applied
         // and persisted server-side, and coming back to that game re-reads it.
         if (replied.id === gameId.current) setState(replied);
+        // The run the reply added, fetched before the busy window closes. It
+        // rides INSIDE the `try` on purpose: a failed fetch of the run reports
+        // through the error strip like any other refusal, and the live state
+        // stays on screen — the move was applied and persisted either way.
+        if (replied.id === gameId.current) await landed(game, state.events, replied);
       } catch (e) {
         // The same rule for the refusal: a sentence about a game that is no
         // longer on screen would sit over a game it does not describe.
@@ -152,7 +272,7 @@ export function App() {
         setBusy(false);
       }
     },
-    [state],
+    [state, landed],
   );
 
   // **Debounced, because a drag is not a click.**
@@ -216,8 +336,32 @@ export function App() {
   // present. At that stop the LIVE payload is also the fresher of the two: a
   // bot may have moved since the snapshot was fetched.
   const atPresent = past !== null && past.index >= past.total;
-  const replaying = past !== null && !atPresent;
-  const view = replaying ? past : state;
+  /** The player is in the PAST via the log's track. */
+  const scrubbing = past !== null && !atPresent;
+
+  // **The walk's step, and what the whole screen reads from while it runs.**
+  //
+  // `replaying` is "what is drawn is not the live position", which is what the
+  // outline says and what withholds the board as an input. On the walk's LAST
+  // step the frame IS the live position — `index === total` — so the outline
+  // comes off one step before the walk ends, deliberately: the table has
+  // arrived, and the strip below is the only thing still saying so.
+  const stepNow = run && walk ? run.steps[walk.at] : undefined;
+  const walking = stepNow !== undefined;
+  const replaying = walking ? stepNow.after.index < stepNow.after.total : scrubbing;
+  const view = walking ? stepNow.after : scrubbing ? past : state;
+
+  // **The highlights outlive the walk by one answer (spec §3.2.4).** While it
+  // runs they are the step's own diff; when it ends they are the LAST step's,
+  // held on the live table by `fresh` until the player answers again — so what
+  // the opponent did is still marked on the board you are about to play on.
+  const lastStep = run?.steps[run.steps.length - 1];
+  const highlights = walking ? stepNow.changes : fresh && lastStep ? lastStep.changes : null;
+  const highlightBy = walking
+    ? colors[stepNow.mover]
+    : fresh && lastStep
+      ? colors[lastStep.mover]
+      : undefined;
 
   // The board is an input surface only while a placement picker is open — the
   // one place the engine is asking "which areas", rather than "which option".
@@ -230,7 +374,18 @@ export function App() {
         : [];
 
   return (
-    <div className="app">
+    // **`data-busy` is the in-flight state, in the DOM, and the browser walk
+    // waits on it.**
+    //
+    // The harness used to wait on `.decision button[disabled]` alone, which is
+    // the same condition for every screen that HAS a control — and the finished
+    // game has none: its deck is a standing, not a prompt. So a read taken
+    // between the reply landing and the run's positions arriving saw a settled
+    // game-over screen, and the walk then replaced the deck a moment later.
+    // Measured: the whole-game cell reached its winner, read "The game is
+    // over.", and failed ten seconds afterwards looking for the sentence again.
+    // The client's own `busy` covers the WHOLE window, the run fetch included.
+    <div className="app" data-busy={busy ? "1" : undefined}>
       <header className="banner">
         <h1>Yokohama</h1>
         <GameMenu
@@ -398,9 +553,11 @@ export function App() {
             art={art}
             labels={labels}
             colors={colors}
-            selected={replaying ? [] : selected}
+            selected={replaying || walking ? [] : selected}
             busy={busy}
-            {...(picking && !replaying
+            changed={highlights?.tiles}
+            changedBy={highlightBy}
+            {...(picking && !replaying && !walking
               ? { onTileClick: (area: number) => void send(`A${String(area).padStart(2, "0")}`) }
               : {})}
           />
@@ -416,35 +573,48 @@ export function App() {
             game={state.id}
             state={state}
             replaying={replaying}
+            scrubbing={scrubbing}
             view={view}
             art={art}
             labels={labels}
             colors={colors}
+            changedSlots={highlights?.slots}
           />
         </div>
       </main>
       <aside className="side">
-        {/* Task 9 replaces every no-op: the walk's state, its timer and its
-            jumps are `App`'s, and until they exist `run` is always `null`, so
-            the account renders the reply's prose lines and nothing else. */}
+        {/* The walk's state, its timer and its jumps are `App`'s; the account
+            is the CONTROL surface over them and holds no clock of its own.
+            With no run it renders the reply's prose lines, which is all this
+            box could ever hold before the walk existed. */}
         <TurnAccount
           messages={state.messages}
-          run={null}
-          at={null}
-          playing={false}
-          cadence={DEFAULT_CADENCE}
+          run={run}
+          at={walk?.at ?? null}
+          playing={walk?.playing ?? false}
+          cadence={cadence}
           labels={labels}
           colors={colors}
-          onCadence={() => {}}
-          onPlay={() => {}}
-          onPause={() => {}}
-          onBack={() => {}}
-          onForward={() => {}}
-          onJump={() => {}}
-          onSkip={() => {}}
-          onReplay={() => {}}
+          onCadence={(c) => {
+            saveCadence(c);
+            setCadence(c);
+          }}
+          onPlay={() => dispatch({ type: "play" })}
+          onPause={() => dispatch({ type: "pause" })}
+          onBack={() => dispatch({ type: "back" })}
+          onForward={() => dispatch({ type: "forward" })}
+          onJump={(i) => setWalk({ at: i, playing: false })}
+          onSkip={() => dispatch({ type: "skip" })}
+          onReplay={() => setWalk({ at: 0, playing: true })}
         />
-        <Dashboard panels={view.frame.dashboard} art={art} labels={labels} colors={colors} only={["Players", "Hand"]} />
+        <Dashboard
+          panels={view.frame.dashboard}
+          art={art}
+          labels={labels}
+          colors={colors}
+          only={["Players", "Hand"]}
+          changedSeats={highlights?.seats}
+        />
       </aside>
 
       {surface && (
@@ -488,14 +658,37 @@ export function App() {
             </div>
           ))}
         </div>
-        <Decision
-          state={state}
-          labels={labels}
-          colors={colors}
-          busy={busy}
-          outcome={outcome}
-          onSend={(l) => void send(l)}
-        />
+        {/* **While the walk runs the deck is the strip, not the prompt.** The
+            prompt underneath is answerable and would be answered — the walk is
+            a picture of what already happened, and a click landing during it
+            would be a move made against a table showing an earlier position.
+            `skip` is the way out and lands on the live prompt at once.
+
+            Driven by the WALK's own flag rather than by `replaying`, which
+            comes off one step early by design (see the view block above). */}
+        {walking ? (
+          <div className="decision walking" role="status">
+            <span className={seatClass(colors[stepNow.mover])}>
+              {colors[stepNow.mover] ?? `Seat ${stepNow.mover}`}
+            </span>
+            {" is playing · step "}
+            {walk!.at + 1}
+            {" of "}
+            {run!.steps.length}
+            <button type="button" className="ghost" onClick={() => dispatch({ type: "skip" })}>
+              skip
+            </button>
+          </div>
+        ) : (
+          <Decision
+            state={state}
+            labels={labels}
+            colors={colors}
+            busy={busy}
+            outcome={outcome}
+            onSend={(l) => void send(l)}
+          />
+        )}
         {/* `role="alert"` and not `status`: this is the one channel that is
             always a REFUSAL of something the player just did, and it is
             assertive for the same reason the terminal prints it immediately. */}

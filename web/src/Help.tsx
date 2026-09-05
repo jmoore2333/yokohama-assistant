@@ -53,7 +53,10 @@ export function Help() {
         &mdash; at 1710px across they stack, at 2560px they do not &mdash; so on a laptop the
         table scrolls down to them. The <strong>side column</strong> on the right holds the{" "}
         <strong>answer bar</strong> pinned at its top &mdash; whatever the game is asking you is
-        always there &mdash; then what the last move did, every seat&rsquo;s goods, money and
+        always there &mdash; then the account of the last turn, which, when the opponent has just
+        moved, first plays out on the table one step at a time, at the pace the account&rsquo;s
+        cadence control sets, with the pieces and offers that moved outlined; skip lands you on
+        your prompt, replay runs it again. Under it are every seat&rsquo;s goods, money and
         pieces, and your own hand. Hover or focus any tile to see it, and any site card on it, at
         full size.
       </p>
@@ -136,10 +139,10 @@ export function Help() {
         arrows, or press any line to jump to the position that move was decided in. On a wide
         screen the panel is a drawer down the right and the table beside it redraws at that
         point, full size, outlined to show you are looking at the past; on a narrow one the panel
-        covers the page instead, and there is no outline to see. The port, the laboratory and
-        the building sites on it say they are hidden while you are in the past: the position you
-        scrub to has no offer the server can show, so the table does not pretend. The tracks and
-        the goals keep drawing, from that same past position.
+        covers the page instead, and there is no outline to see. The port and the laboratory
+        draw from that same past position; the building sites say they are hidden while you are
+        in the past, since their board is read from the live game. The tracks and the goals keep
+        drawing, from that same past position.
       </p>
       <p>
         The track has one more stop than there are moves, because the last stop is{" "}

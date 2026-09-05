@@ -32,10 +32,26 @@ function gateWords(panel: PortsPanel): string {
     .join(", ");
 }
 
-export function PortStrip({ panel, art }: { panel: PortsPanel; art: ArtManifest | null }) {
+/** The slot keys the walk is lighting, in `diffFrames`' own shape.
+ *
+ *  **`<board>` is the ARRAY INDEX, not `board_b`.** The diff builds the key by
+ *  mapping `panel.boards`, so the reader has to index the same list the same
+ *  way; at 2P the two readings coincide and at 3–4P they do not. */
+const litSlot = (changed: Set<string> | undefined, kind: string, board: number, slot: number) =>
+  changed?.has(`${kind}:${board}:${slot}`) ? " changed" : "";
+
+export function PortStrip({
+  panel,
+  art,
+  changed,
+}: {
+  panel: PortsPanel;
+  art: ArtManifest | null;
+  changed?: Set<string>;
+}) {
   return (
     <>
-      {panel.boards.map((b) => (
+      {panel.boards.map((b, i) => (
         <section className="table-sec ports" key={String(b.board_b)} aria-label={`Port ${b.board_b ? "B" : "A"}`}>
           <h2>
             Port {b.board_b ? "B" : "A"}
@@ -45,7 +61,10 @@ export function PortStrip({ panel, art }: { panel: PortsPanel; art: ArtManifest 
           </h2>
           <div className="board-strip">
             {b.slots.map((s) => (
-              <div className={`strip-slot zone-${s.zone.toLowerCase()}`} key={s.slot}>
+              <div
+                className={`strip-slot zone-${s.zone.toLowerCase()}${litSlot(changed, "port", i, s.slot)}`}
+                key={s.slot}
+              >
                 <div className="slot-head">
                   <span className={`chip zone-${s.zone.toLowerCase()}`}>{s.zone}</span>
                   <span className="chip">power {s.min_power}+</span>
@@ -64,10 +83,20 @@ export function PortStrip({ panel, art }: { panel: PortsPanel; art: ArtManifest 
   );
 }
 
-export function LabStrip({ panel, art, labels }: { panel: LabsPanel; art: ArtManifest | null; labels: Labels | null }) {
+export function LabStrip({
+  panel,
+  art,
+  labels,
+  changed,
+}: {
+  panel: LabsPanel;
+  art: ArtManifest | null;
+  labels: Labels | null;
+  changed?: Set<string>;
+}) {
   return (
     <>
-      {panel.boards.map((b) => (
+      {panel.boards.map((b, i) => (
         <section className="table-sec labs" key={String(b.board_b)} aria-label={`Laboratory ${b.board_b ? "B" : "A"}`}>
           <h2>
             Laboratory {b.board_b ? "B" : "A"}
@@ -75,7 +104,7 @@ export function LabStrip({ panel, art, labels }: { panel: LabsPanel; art: ArtMan
           </h2>
           <div className="board-strip">
             {b.slots.map((s) => (
-              <div className="strip-slot" key={s.slot}>
+              <div className={`strip-slot${litSlot(changed, "lab", i, s.slot)}`} key={s.slot}>
                 <div className="slot-head">
                   <span className="chip">slot {s.slot + 1}</span>
                   {s.surcharge > 0 && <span className="chip warn">+{s.surcharge}</span>}

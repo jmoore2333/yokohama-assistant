@@ -182,7 +182,7 @@ describe("the saved games", () => {
       throw new Error(`unexpected ${call.method} ${call.path}`);
     });
     await user.click(await screen.findByRole("button", { name: "wire" }));
-    await waitFor(() => expect(onStarted).toHaveBeenCalledWith(wire.options));
+    await waitFor(() => expect(onStarted).toHaveBeenCalledWith(wire.options, false));
     expect(stub.matching("GET", "/api/games/wire")).toHaveLength(1);
   });
 

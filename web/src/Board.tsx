@@ -3,7 +3,7 @@ import type { CSSProperties } from "react";
 import type React from "react";
 import type { ArtManifest, BoardModel, Labels, PlayerColor, TileModel } from "./types";
 import { areaArt, fivePowerArt, fivePowerWords } from "./art";
-import { SiteFace } from "./Cards";
+import { SiteFace, seatClass } from "./Cards";
 import { Pieces, piecesWords } from "./Pieces";
 import { ID_BADGE, PIECES, pct, SITE_CARD } from "./tileRects";
 import { TilePopover, type Anchor } from "./TilePopover";
@@ -80,6 +80,8 @@ export function Board({
   onTileClick,
   selected,
   busy,
+  changed,
+  changedBy,
 }: {
   board: BoardModel;
   art: ArtManifest | null;
@@ -87,6 +89,11 @@ export function Board({
   colors: PlayerColor[];
   onTileClick?: (area: number) => void;
   selected?: number[];
+  /** The areas the walk is lighting — `diffFrames`' own set, never a rule
+   *  restated here (M5.5 spec §3.2.4). */
+  changed?: Set<number>;
+  /** Whose move changed them; the outline is drawn in that seat's colour. */
+  changedBy?: PlayerColor;
   /** A request is in flight. The tile is a mutation control like any option
    *  button and takes the same guard — it was the one that did not, and a
    *  double-click on a placement toggle could leave the highlight disagreeing
@@ -177,6 +184,8 @@ export function Board({
               colors={colors}
               onClick={onTileClick}
               isSelected={selected?.includes(t.area) ?? false}
+              isChanged={changed?.has(t.area) ?? false}
+              changedBy={changedBy}
               busy={busy ?? false}
               onShow={show}
               onHide={hide}
@@ -207,6 +216,8 @@ function Tile({
   colors,
   onClick,
   isSelected,
+  isChanged,
+  changedBy,
   busy,
   onShow,
   onHide,
@@ -218,6 +229,8 @@ function Tile({
   colors: PlayerColor[];
   onClick?: (area: number) => void;
   isSelected: boolean;
+  isChanged: boolean;
+  changedBy?: PlayerColor;
   busy: boolean;
   onShow: (area: number, el: HTMLElement) => void;
   onHide: () => void;
@@ -327,11 +340,15 @@ function Tile({
     ...facts,
   ].join(" · ");
 
+  // The mover's colour rides as `.seat-*`, whose only property is `color` — so
+  // one CSS rule outlines the tile in `currentColor` and a fifth seat colour
+  // stays one line in the palette rather than a fifth rule here.
   const className = [
     "tile",
     tile.reachable ? "reachable" : "",
     isCanal ? "canal" : "",
     isSelected ? "selected" : "",
+    isChanged ? `changed ${seatClass(changedBy)}` : "",
     face ? "has-art" : "",
   ]
     .filter(Boolean)

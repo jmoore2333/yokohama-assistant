@@ -1,8 +1,8 @@
 // The app shell: what it sends, when it sends it, and what it will not send twice.
 
-import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { gate, renderApp } from "./test/harness";
 import { wire } from "./wire/contract";
 
@@ -506,5 +506,200 @@ describe("a reply for a game you left", () => {
 
     held.resolve(wire.options);
     await waitFor(() => expect(row).toBeEnabled());
+  });
+});
+
+// ---- M5.5 C: the opponent's turn plays out on the table --------------------
+//
+// The run is the events a reply added; the walk is the run on the table, one
+// step at a time, under ONE timer. What these cells drive is `App` — the fetch
+// of the positions, the walk's state, and what the screen says while it runs —
+// because the reducer and the diff have their own cells already and a second
+// statement of them here would pass without the wiring existing.
+describe("the turn playback", () => {
+  /** A reply that applied THREE events after the state the app answered from,
+   *  the second of them by a bot: the fixtures for the run's positions are
+   *  the corpus's `at_k` with one seat marked as a bot and a cube moved. */
+  function botReply() {
+    const before = { ...wire.optionsMany, events: 40 };
+    const replied = { ...wire.optionsMany, events: 43 };
+    const at = (k: number) => {
+      const f = JSON.parse(JSON.stringify(wire.atK)) as typeof wire.atK;
+      f.index = k;
+      f.total = 43;
+      f.to_move = k === 40 ? before.to_move : 1;
+      const players = f.frame.dashboard.find((p) => "Players" in p);
+      if (players && "Players" in players) players.Players.players[1]!.is_bot = true;
+      // **The cube appears at 43 and not at 42 (orchestrator ruling R-P4).**
+      // The diff that carries it then rides the LAST step, so both advances
+      // below cross a 400 ms quick dwell and `.tile.changed` is asserted on
+      // the step whose own diff names the tile rather than on a later one.
+      if (k >= 43) f.frame.board.tiles[0]!.assistants[1]![1] += 1;
+      return f;
+    };
+    const log = {
+      total: 43,
+      entries: [
+        { index: 40, text: "Red: End additional-action phase" },
+        { index: 41, text: "Blue: End additional-action phase" },
+        { index: 42, text: "Blue: Place 1 assistant in each of: Tea Plantation (A00)" },
+      ],
+    };
+    return { before, replied, at, log };
+  }
+
+  /** Let the reply's promise chain settle WITHOUT moving the clock.
+   *
+   *  `waitFor` cannot do this job here, and the reason is measured rather than
+   *  stylistic. `@testing-library/dom` decides a clock is fake by looking for a
+   *  `jest` global; under vitest there is none, so with `vi.useFakeTimers()`
+   *  installed it takes its REAL-timer branch — where its poll `setInterval`
+   *  and its own timeout are both faked and neither ever fires, leaving a
+   *  MutationObserver as the only thing still running. `shouldAdvanceTime`
+   *  fixes the polling and breaks the measurement instead: it races the walk's
+   *  400 ms dwell against however long the poll took, so the step the
+   *  assertions land on depends on the machine. One real macrotask per round
+   *  flushes every pending microtask and advances the fake clock by nothing,
+   *  which is what makes each 450 ms advance below mean exactly one step. */
+  const settle = async (rounds = 10) => {
+    for (let i = 0; i < rounds; i++) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+    }
+  };
+
+  /** The row this fixture's prompt offers first. */
+  const firstRow = () => {
+    const state = wire.optionsMany;
+    if (state.prompt.kind !== "options") throw new Error("fixture moved");
+    return screen.getByRole("button", {
+      name: new RegExp(state.prompt.rows[0]!.words.slice(0, 20).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+    });
+  };
+
+  it("fetches the run's positions, walks it when a bot moved, and skip lands live", async () => {
+    const { before, replied, at, log } = botReply();
+    const stub = await renderApp(before, (call) => {
+      if (call.path.endsWith("/input")) return replied;
+      const m = /\/at\/(\d+)$/.exec(call.path);
+      if (m) return at(Number(m[1]));
+      if (call.path.includes("/log")) return log;
+      return undefined;
+    });
+    // **The clock goes fake only once the game is on screen.** `renderApp`
+    // drives its own `userEvent` with no `advanceTimers`, and user-event awaits
+    // a `setTimeout(0)` between interactions — faked and unfired, that hangs.
+    vi.useFakeTimers();
+    try {
+      // **`fireEvent`, not `userEvent`, for both clicks in this cell**, and the
+      // reason is measured: `user.click` never returns under vitest's fake
+      // clock, `advanceTimers` supplied or not — probed on this fixture, the
+      // row found and the click awaited for the whole 8 s budget. `fireEvent`
+      // dispatches the same event synchronously and needs no timer at all.
+      const click = (el: Element) => act(() => void fireEvent.click(el));
+      click(firstRow());
+      await settle();
+      // Positions 40..=43, in ascending order, and the log's tail of three.
+      expect(stub.matching("GET", "/at/")).toHaveLength(4);
+      expect(stub.matching("GET", "/at/").map((c) => Number(/\/at\/(\d+)$/.exec(c.path)![1]))).toEqual([40, 41, 42, 43]);
+      expect(stub.matching("GET", "/log")[0]!.path).toMatch(/tail=3$/);
+      // The walk is on: the deck says who is playing, the table is outlined,
+      // the account lights step 1 of 3. The mover of step ONE is the player's
+      // own seat — a run is walked whole whenever it contains a bot step — so
+      // the strip is read by its count and not by a colour (ruling R-P4).
+      expect(screen.getByText(/is playing · step 1 of 3/)).toBeInTheDocument();
+      expect(document.querySelector(".table.replaying")).not.toBeNull();
+      expect(document.querySelectorAll("ol.account li")).toHaveLength(3);
+      expect(document.querySelector("ol.account li.at")?.textContent).toMatch(/Red: End additional-action/);
+      // An unchanged frame dwells the short dwell, a changed one the cadence.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(450);
+      });
+      expect(document.querySelector("ol.account li.at")?.textContent).toMatch(/Blue: End additional-action/);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(450);
+      });
+      expect(document.querySelector("ol.account li.at")?.textContent).toMatch(/Place 1 assistant/);
+      expect(document.querySelector(".tile.changed")).not.toBeNull();
+      // Skip: live prompt back, no outline, the account keeps the run and
+      // offers replay. Scoped to the deck strip because the account's header
+      // carries a `skip` of its own while the walk runs (Task 8), and both
+      // dispatch the same action — an unscoped role lookup is ambiguous, not
+      // wrong.
+      const deck = within(document.querySelector<HTMLElement>(".decision.walking")!);
+      click(deck.getByRole("button", { name: "skip" }));
+      expect(screen.queryByText(/is playing/)).toBeNull();
+      expect(document.querySelector(".table.replaying")).toBeNull();
+      expect(screen.getByRole("button", { name: "replay" })).toBeInTheDocument();
+      expect(document.querySelectorAll("ol.account li")).toHaveLength(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not walk a run of the player's own events, and shows the prose when nothing was applied", async () => {
+    const { before, replied, at, log } = botReply();
+    const ownOnly = (k: number) => {
+      const f = at(k);
+      f.to_move = before.to_move;
+      const players = f.frame.dashboard.find((p) => "Players" in p);
+      if (players && "Players" in players) for (const p of players.Players.players) p.is_bot = false;
+      return f;
+    };
+    let reply: unknown = replied;
+    const stub = await renderApp(before, (call) => {
+      if (call.path.endsWith("/input")) return reply;
+      const m = /\/at\/(\d+)$/.exec(call.path);
+      if (m) return ownOnly(Number(m[1]));
+      if (call.path.includes("/log")) return log;
+      return undefined;
+    });
+    const user = userEvent.setup();
+    await user.click(firstRow());
+    await waitFor(() => expect(stub.matching("GET", "/at/")).toHaveLength(4));
+    expect(screen.queryByText(/is playing/)).toBeNull();
+    expect(document.querySelectorAll("ol.account li")).toHaveLength(3);
+    // A reply with the SAME count (a picker step) shows its prose instead.
+    reply = { ...replied, messages: ["Selected: A01", "-> legal — Place 1 assistant in each of: Church (A01)"] };
+    await user.click(firstRow());
+    await waitFor(() => expect(screen.getByText(/Selected: A01/)).toBeInTheDocument());
+    expect(document.querySelector("ol.account")).toBeNull();
+  });
+
+  // **The root's in-flight marker, and the gap it closes.**
+  //
+  // The browser harness reads a screen only once the client is settled, and its
+  // only signal used to be "no disabled control in the deck" — which says
+  // nothing on a screen that has no control. The finished game is exactly that
+  // screen: its deck is a standing. So a read could land after the reply and
+  // before the run's positions arrived, and the walk then replaced the deck a
+  // moment later. Measured on the whole-game browser cell: it reached its
+  // winner, read "The game is over.", and failed ten seconds afterwards
+  // looking for the same sentence.
+  it("marks the root until the RUN has landed, not just until the reply has", async () => {
+    const { before, replied, at, log } = botReply();
+    const heldAt = gate<unknown>();
+    await renderApp(before, (call) => {
+      if (call.path.endsWith("/input")) return replied;
+      if (/\/at\/\d+$/.test(call.path)) return heldAt.promise;
+      if (call.path.includes("/log")) return log;
+      return undefined;
+    });
+    expect(document.querySelector("[data-busy]")).toBeNull();
+    const user = userEvent.setup();
+    await user.click(firstRow());
+    // The reply has landed and the positions have been asked for; the marker is
+    // what says this answer is not finished with.
+    await waitFor(() => expect(document.querySelectorAll("[data-busy]")).toHaveLength(1));
+    expect(document.querySelector(".app[data-busy]")).not.toBeNull();
+    heldAt.resolve(at(40));
+    await waitFor(() => expect(document.querySelector("[data-busy]")).toBeNull());
+  });
+
+  it("keeps the cadence the player chose, through storage", async () => {
+    await renderApp(wire.optionsMany);
+    await userEvent.setup().selectOptions(screen.getByLabelText("Cadence"), "1000");
+    expect(localStorage.getItem("yokohama.playback.cadence")).toBe("1000");
   });
 });

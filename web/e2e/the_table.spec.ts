@@ -45,6 +45,12 @@ async function playAFew(page: Page, moves: number, seed: number) {
     if (screen.over) break;
     if ((await act(page, screen, pick)) === null) break;
   }
+  // **The last move's walk is settled before anything is measured (M5.5).** A
+  // reply that ends the turn plays the bot's, and the walk then holds the table
+  // at an earlier position with the answer bar replaced by its strip.
+  // `readScreen` skips a running walk, so this is the settle; every OTHER call
+  // in the loop above already had it.
+  await readScreen(page);
 }
 
 for (const players of [2, 3, 4] as const) {
@@ -212,6 +218,9 @@ test("an enabled section re-fetches once after a move, collapses while replaying
   const before = portRequests.length;
   const postsBefore = inputPosts.length;
   const readsBefore = reReads.length;
+  // `playAFew` settles the last move's walk (see its own note): the counts
+  // below are read off a still screen, and the replay assertions further down
+  // cannot pass because a WALK rather than the scrub had the table in the past.
   await playAFew(page, 1, 0x5245_4652); // "REFR"
   const stateChanges = () =>
     inputPosts.length - postsBefore + (reReads.length - readsBefore);
@@ -233,7 +242,12 @@ test("an enabled section re-fetches once after a move, collapses while replaying
   const track = page.getByLabel("Replay position");
   await track.focus();
   await page.keyboard.press("ArrowLeft");
-  await expect(page.locator(".table-sec.ports.collapsed")).toBeVisible();
+  // **What collapses is the building sites, and only those (M5.5).** `/at/{k}`
+  // carries the port and the laboratory now, so those two draw the offer that
+  // WAS there; the sites' board is read from the live game and has no
+  // position-shaped version, so it is the one that says it is hidden.
+  await expect(page.locator(".table-sec.buildings.collapsed")).toBeVisible();
+  await expect(page.locator(".table-sec.ports .board-strip")).toBeVisible();
   await expect(page.locator(".table-sec.tracks")).toBeVisible();
   await page.getByRole("button", { name: "Back to live" }).click();
   await expect(page.locator(".table-sec.ports .board-strip")).toBeVisible();
@@ -305,13 +319,25 @@ test("four assistants of one colour stand as a pile, not as a cube and a count",
       await page.getByRole("button", { name: "Confirm" }).click();
       // The pile assertion must not be satisfiable by cubes that landed
       // elsewhere, so the applied move is pinned rather than assumed: the
-      // account's own line names the area it fed ("Red: 2 assistants placed in
-      // Customs (A09)" — `render.rs:920`, `web/src/wire/options_priced.json`).
-      // A tile being clickable is no evidence, either: while picking, `disabled`
-      // is `busy` alone (`Board.tsx:361`), so every non-Canal tile is offered.
+      // account's own row names the area it fed. A tile being clickable is no
+      // evidence, either: while picking, `disabled` is `busy` alone
+      // (`Board.tsx`), so every non-Canal tile is offered.
+      //
+      // **Re-pointed at the run's ROWS (M5.5).** A reply that applies an event
+      // now builds a run, and the account renders it as `ol.account > li`
+      // rather than as the reply's prose `div`s — the old locator would match
+      // nothing here and the pin would assert about a screen that is not on
+      // screen. The WORDING moves with it, and the two are not the same: the
+      // reply's delta reads "Red: 2 assistants placed in Customs (A09)"
+      // (`render.rs:922`) while the log line the row carries reads "Red: Place
+      // 2 assistants in Customs (A09)" (`web/src/wire/log.json`). The area id
+      // is what both have in common and is what this cell is about.
+      //
+      // Still exactly one row: a placement Confirm mid-turn hands the prompt
+      // back to the same seat, so no bot step rides in the same run.
       await expect(
-        page.locator(".turn-account .messages div").filter({
-          hasText: new RegExp(`placed in .*\\(${area}\\)`),
+        page.locator(".turn-account .messages li").filter({
+          hasText: new RegExp(`assistants? in .*\\(${area}\\)`),
         }),
       ).toHaveCount(1);
       placements += 1;

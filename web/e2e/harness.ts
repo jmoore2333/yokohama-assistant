@@ -158,9 +158,33 @@ export async function readScreen(page: Page): Promise<Screen> {
   // `disabled` is the signal rather than a sleep because it is the SAME
   // condition the client renders from, so this cannot drift from what a player
   // can actually press.
-  await page.waitForFunction(() => !document.querySelector(".decision button[disabled]"), null, {
-    timeout: 15_000,
-  });
+  //
+  // **And `data-busy` beside it, because `disabled` is only a signal on a
+  // screen that HAS a control (M5.5).** The finished game's deck is a standing
+  // with no buttons in it, so the disabled test passed the instant the reply
+  // landed — before the turn playback's positions had arrived — and the walk
+  // then replaced the deck. Measured: the whole-game cell read "The game is
+  // over.", left its loop, and failed ten seconds later looking for the same
+  // sentence. `data-busy` is the client's own in-flight state and covers the
+  // whole window, the run fetch included, so a walk that is coming has started
+  // by the time this returns.
+  await page.waitForFunction(
+    () =>
+      !document.querySelector("[data-busy]") &&
+      !document.querySelector(".decision button[disabled]"),
+    null,
+    { timeout: 15_000 },
+  );
+  // **A running walk is skipped here, once, before the screen is read.** The
+  // turn playback (M5.5) replaces the deck with a strip while the opponent's
+  // turn plays out, and a policy reading that strip would report "nothing to
+  // click" about a game that is fine. The one cell that OBSERVES a walk
+  // (`the_playback.spec.ts`) does its watching before it calls this.
+  const skip = page.locator(".decision.walking button", { hasText: "skip" });
+  if (await skip.count()) {
+    await skip.first().click();
+    await page.locator(".decision.walking").waitFor({ state: "detached", timeout: 15_000 });
+  }
   return page.evaluate(() => {
     const many = (sel: string) => document.querySelectorAll(sel).length;
     const named = (name: string) =>

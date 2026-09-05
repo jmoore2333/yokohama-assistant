@@ -17,7 +17,11 @@ export function NewGame({
   onStarted,
 }: {
   art: ArtManifest | null;
-  onStarted: (state: ClientState) => void;
+  /** `opening` is true for a game just CREATED and false for one reopened —
+   *  the difference between events that have just happened (a bot start seat
+   *  has already played by the time `create` replies) and events that are
+   *  history. `App` walks the first and not the second. */
+  onStarted: (state: ClientState, opening: boolean) => void;
 }) {
   const [players, setPlayers] = useState(2);
   const [seedText, setSeedText] = useState("");
@@ -179,7 +183,7 @@ export function NewGame({
                 run(async () => {
                   // The seed sent back is the STRING the server gave, verbatim.
                   const req = { ...base(), seed: preview.seed, keeps };
-                  onStarted(await api.create(req));
+                  onStarted(await api.create(req), true);
                 })
               }
             >
@@ -207,7 +211,7 @@ export function NewGame({
                   type="button"
                   className="ghost"
                   disabled={busy}
-                  onClick={() => run(async () => onStarted(await api.get(name)))}
+                  onClick={() => run(async () => onStarted(await api.get(name), false))}
                 >
                   {name}
                 </button>

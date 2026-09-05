@@ -49,6 +49,7 @@ export function Dashboard({
   labels,
   colors,
   only,
+  changedSeats,
 }: {
   panels: Panel[];
   art: ArtManifest | null;
@@ -57,6 +58,8 @@ export function Dashboard({
   /** Which panels to draw; absent means every one. The side column asks for
    *  Players and Hand (M5 §3.5); Tracks and Goals live on the table. */
   only?: PanelName[];
+  /** The seats the walk is lighting — `diffFrames`' own set (M5.5 §3.2.4). */
+  changedSeats?: Set<number>;
 }) {
   // **A panel this file cannot draw is never filtered out.**
   //
@@ -73,7 +76,9 @@ export function Dashboard({
     <>
       {panels.filter(wanted).map((panel, i) => {
         if ("Players" in panel)
-          return <Players key={i} players={panel.Players.players} labels={labels} />;
+          return (
+            <Players key={i} players={panel.Players.players} labels={labels} changedSeats={changedSeats} />
+          );
         if ("Tracks" in panel)
           return <Tracks key={i} tracks={panel.Tracks} art={art} colors={colors} />;
         if ("Achievements" in panel)
@@ -133,14 +138,25 @@ function President({ p }: { p: PlayerModel }) {
   return <>President at A{String(p.president.OnBoard).padStart(2, "0")}</>;
 }
 
-function Players({ players, labels }: { players: PlayerModel[]; labels: Labels | null }) {
+function Players({
+  players,
+  labels,
+  changedSeats,
+}: {
+  players: PlayerModel[];
+  labels: Labels | null;
+  changedSeats?: Set<number>;
+}) {
   return (
     <section className="panel">
       <h2>Players</h2>
       {players.map((p) => {
         const lock = locked(p.assistants);
         return (
-          <div className={`seat ${p.is_current ? "current" : ""}`} key={p.seat}>
+          <div
+            className={`seat ${p.is_current ? "current" : ""}${changedSeats?.has(p.seat) ? " changed" : ""}`}
+            key={p.seat}
+          >
             <div className="seat-head">
               <span className={`seat-name seat-${p.color.toLowerCase()}`}>{p.color}</span>
               {p.is_bot && <span className="tag">bot</span>}

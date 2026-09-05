@@ -1268,3 +1268,16 @@ ol.account .mover { font-weight: 700; }
 .table-sec.tracks .panel { background: transparent; border: 0; padding: 0; }
 .table-sec.collapsed { color: var(--fg-faint); }
 .tile-id-words { color: var(--fg-faint); font-size: 10px; }
+
+/* ---- M5.5: the walk's highlights --------------------------------------- */
+/* The mover's seat colour, via `.seat-*`'s `color`, so one rule serves four
+ * seats and a fifth colour is still one line elsewhere. The tile's outline is
+ * INSET, because the tiles sit a 0.4rem gap apart and an outset ring on a
+ * 22rem tile crosses into its neighbour. */
+.tile.changed { outline: 3px solid currentColor; outline-offset: -3px; }
+.seat.changed { background: rgb(105 194 95 / 0.10); }
+.strip-slot.changed .card-face { outline: 3px solid var(--vp); outline-offset: 2px; }
+/* The deck while the opponent's turn plays out: who is playing, how far in, and
+ * the way out. It replaces the prompt, so it carries the prompt's own padding. */
+.decision.walking { display: flex; align-items: center; gap: 0.5rem; padding: 0.6rem 0.8rem; font-family: var(--display); font-size: 1.05rem; }
+.decision.walking .ghost { margin-left: auto; }

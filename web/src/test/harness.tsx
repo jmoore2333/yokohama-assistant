@@ -107,6 +107,11 @@ function bootstrapReply(call: ApiCall): Reply | undefined {
   if (call.path.endsWith("/ports")) return wire.ports;
   if (call.path.endsWith("/labs")) return wire.labs;
   if (call.path.endsWith("/areas")) return wire.areas;
+  // The walk's two reads (M5.5): a position and the log's tail. Answered from
+  // the corpus so a cell that is not about the walk does not have to be — a
+  // corpus reply marks no seat as a bot, so no walk starts from it.
+  if (/\/at\/\d+$/.test(call.path)) return wire.atK;
+  if (/\/log(\?|$)/.test(call.path)) return wire.log;
   return undefined;
 }
 

@@ -31,6 +31,13 @@ async function playAFew(page: Page, moves: number, seed: number) {
     if (screen.over) break;
     if ((await act(page, screen, pick)) === null) break;
   }
+  // **The last move's walk is skipped before the camera opens (M5.5).**
+  // `readScreen` is what does it. Without this the shots that follow can be of
+  // a table mid-playback — at an earlier position, outlined, with the answer
+  // bar replaced by the playback strip — which is a picture of the wrong thing
+  // under every caption in this file. Gate C drives its own loop precisely
+  // because it wants that state.
+  await readScreen(page);
 }
 
 const raf = (page: Page) =>
@@ -252,24 +259,28 @@ for (const players of [2, 4] as const) {
     await page.screenshot({ path: `${OUT}/v2-${players}p-drawer.png` });
     await page.keyboard.press("Escape");
 
-    // Tracks and Goals go back on for the replay shot, and that is the whole
-    // point of the picture: `TableSections`' `FETCHED` list is ports/labs/
-    // buildings, so those three collapse to "live offer, hidden while replaying"
-    // while Tracks and Goals keep drawing from the historical frame. Shot with
-    // only the two offers on — where the flow had left it — the replay picture
-    // is two one-line placeholders and no contrast at all.
-    await toggle("Tracks", "Goals");
-    await expect(summary).toHaveText("Boards · 4 on");
+    // Everything goes back on for the replay shot, and that is the whole point
+    // of the picture — but the contrast MOVED at M5.5. `/at/{k}` now carries
+    // the port and the laboratory, so those two draw the offer that WAS there
+    // beside the historical board; the building sites' board is read from the
+    // live game and has no position-shaped version, so they are the one section
+    // that collapses to "live offer, hidden while replaying". Shot with only
+    // the two offers on — where the flow had left it — the replay picture has
+    // no collapsed section in it at all.
+    await toggle("Tracks", "Goals", "Building sites");
+    await expect(summary).toHaveText("Boards · 5 on");
     await page.getByRole("button", { name: "Log", exact: true }).click();
     const track = page.getByLabel("Replay position");
     await track.focus();
     for (let i = 0; i < 4; i++) await page.keyboard.press("ArrowLeft");
     await expect(page.locator(".table.replaying")).toBeVisible();
-    // Both halves of the contrast, asserted: the fetched pair collapsed, and
-    // the frame-drawn pair still drawing.
-    await expect(page.locator(".table-sec.ports.collapsed")).toHaveCount(1);
-    await expect(page.locator(".table-sec.labs.collapsed")).toHaveCount(1);
+    // Both halves of the contrast, asserted: the one fetched board with no
+    // position behind it collapsed, and everything that CAN draw from the
+    // position still drawing.
+    await expect(page.locator(".table-sec.buildings.collapsed")).toHaveCount(1);
     await expect(page.getByText("live offer, hidden while replaying").first()).toBeVisible();
+    await expect(ports.first()).toBeVisible();
+    await expect(labs.first()).toBeVisible();
     await expect(page.locator(".table-sec.tracks:not(.collapsed)")).toHaveCount(1);
     await expect(page.locator(".table-sec.achievements:not(.collapsed)")).toHaveCount(1);
     await scrollTable(page, "sections");
@@ -304,3 +315,91 @@ for (const players of [2, 4] as const) {
     await page.screenshot({ path: `${OUT}/v2-${players}p-menu.png` });
   });
 }
+
+// The C gate (M5.5 spec §4.4): the opponent's turn playing out on the table,
+// paused and stepped so a still picture can carry it, and the live prompt it
+// lands on. Six steps at most — a bot turn is usually shorter — each shot
+// showing the table, the deck's strip and the account's lit row together,
+// which is the only frame in which the three can be checked against each other.
+//
+// **This gate drives its own loop rather than `playAFew`.** `readScreen` SKIPS
+// a running walk (harness, M5.5), which is the right thing everywhere else in
+// this file and is the one thing that would make this gate photograph nothing.
+
+// The title carries the words "gate C" because the documented invocation is
+// `-g "gate C"`; V1 and V2 predate that and are reached by their own tokens.
+test("gate C — the opponent's turn plays out on the table, stepped", async ({ page }) => {
+  mkdirSync(OUT, { recursive: true });
+  await page.setViewportSize({ width: 1710, height: 869 });
+  const game = await startGame(page, { players: 2 });
+  test.info().annotations.push({ type: "game", description: `2P ${game.id} seed ${game.seed}` });
+  // One second a step: the pictures are stills, but a paused walk is reached
+  // through a running one and the slowest cadence would spend the budget.
+  await page.getByLabel("Cadence").selectOption("1000");
+
+  const strip = page.locator(".decision.walking");
+  const pick = rng(0x5354_4550); // "STEP"
+  let found = false;
+  for (let i = 0; i < 40 && !found; i++) {
+    const screen = await readScreen(page);
+    if (screen.over) break;
+    if ((await act(page, screen, pick)) === null) break;
+    // Either the walk has started or the next prompt is up; both are settled
+    // states and neither is a sleep.
+    await page
+      .locator(".decision.walking, .decision button.option:not([disabled]), .decision button.primary:not([disabled])")
+      .first()
+      .waitFor({ timeout: 15_000 });
+    found = (await strip.count()) > 0;
+  }
+  expect(found, "no bot turn to photograph in 40 actions").toBe(true);
+
+  // Paused at once, so the camera is not racing the cadence.
+  await page.getByRole("button", { name: "Pause" }).click();
+  const steps = Number(/of (\d+)/.exec(await strip.innerText())![1]);
+  const shots = Math.min(6, steps);
+  test.info().annotations.push({ type: "walk", description: `${steps} steps, ${shots} photographed` });
+
+  const lit = page.locator("ol.account li.at");
+  for (let n = 1; n <= shots; n++) {
+    // Every picture asserts the three things it claims to show, so a shot of a
+    // finished walk or an empty account cannot be sent under this name.
+    await expect(strip).toContainText(new RegExp(`is playing · step ${n} of ${steps}`));
+    await expect(lit).toHaveCount(1);
+    // What the step changed, RECORDED rather than gated: a bookkeeping event
+    // legitimately changes nothing on the table, and a gate on it would be a
+    // gate on which turn the seeded walk happened to find.
+    const marks = await page.evaluate(() => ({
+      tiles: document.querySelectorAll(".tile.changed").length,
+      seats: document.querySelectorAll(".seat.changed").length,
+      slots: document.querySelectorAll(".strip-slot.changed").length,
+      outlined: document.querySelectorAll(".table.replaying").length,
+    }));
+    // **The camera points at what the step changed.** Above 1201px the table is
+    // its own scroll container and the side column is not, so anchoring at the
+    // sections keeps the deck's strip and the account's lit row in frame while
+    // bringing the port and laboratory into it — which is the only way a lit
+    // SLOT reaches a picture at all. A step that lights a tile keeps the
+    // pyramid; one that lights only a slot would otherwise be a photograph of
+    // ten unchanged tiles.
+    const anchor = marks.slots > 0 && marks.tiles === 0 ? "sections" : "top";
+    await scrollTable(page, anchor);
+    await park(page);
+    test.info().annotations.push({
+      type: "step",
+      description: `step ${n}/${steps} (anchored at the ${anchor}): ${marks.tiles} tiles, ${marks.seats} seats, ${marks.slots} slots lit, table outlined ${marks.outlined}`,
+    });
+    await page.screenshot({ path: `${OUT}/c-step-${n}.png` });
+    if (n < shots) await page.getByRole("button", { name: "Step forward" }).click();
+  }
+
+  // Skipped from the DECK's own button — the account carries a `skip` too while
+  // the walk runs, and an unscoped lookup is ambiguous rather than wrong.
+  await strip.getByRole("button", { name: "skip" }).click();
+  await expect(strip).toHaveCount(0);
+  await expect(page.locator(".table.replaying")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "replay" })).toBeVisible();
+  await scrollTable(page, "top");
+  await park(page);
+  await page.screenshot({ path: `${OUT}/c-live.png` });
+});
