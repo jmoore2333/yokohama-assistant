@@ -182,7 +182,15 @@ export async function readScreen(page: Page): Promise<Screen> {
   // (`the_playback.spec.ts`) does its watching before it calls this.
   const skip = page.locator(".decision.walking button", { hasText: "skip" });
   if (await skip.count()) {
-    await skip.first().click();
+    // **Bounded, and a miss is swallowed.** The walk's last dwell can expire in
+    // the gap between the count and the click, which detaches the strip — and
+    // an unbounded click then waits out the whole 15 s action timeout for a
+    // control whose ABSENCE is the goal. The wait below is what actually holds
+    // the property, so this only has to try.
+    await skip
+      .first()
+      .click({ timeout: 2_000 })
+      .catch(() => {});
     await page.locator(".decision.walking").waitFor({ state: "detached", timeout: 15_000 });
   }
   return page.evaluate(() => {

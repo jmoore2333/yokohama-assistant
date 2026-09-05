@@ -569,6 +569,25 @@ describe("the turn playback", () => {
     }
   };
 
+  /** The pieces the BOARD is drawing, by their accessible names.
+   *
+   *  This is what says WHICH FRAME is on the table, and it is the only thing
+   *  that does: `.table.replaying` is derived from the step's own index and
+   *  `ol.account` from the run, so both survive a `view` that has stopped
+   *  reading the walk. The fixture is built for it — `wire.optionsMany`, the
+   *  LIVE payload here, has a piece on no tile at all, and `wire.atK`, which
+   *  every position is made from, has two. Scoped to `.tile` so an open
+   *  popover (a second `role="img"`, inside `.board`) can never be counted. */
+  const boardPieces = () =>
+    [...document.querySelectorAll('.board .tile [role="img"]')].map((e) =>
+      e.getAttribute("aria-label"),
+    );
+  /** The tile whose id badge reads `id`, as `Board.test.tsx` finds one. */
+  const tileOf = (id: string) =>
+    [...document.querySelectorAll<HTMLElement>(".tile")].find(
+      (t) => t.querySelector(".tile-id")?.textContent === id,
+    );
+
   /** The row this fixture's prompt offers first. */
   const firstRow = () => {
     const state = wire.optionsMany;
@@ -612,6 +631,9 @@ describe("the turn playback", () => {
       expect(document.querySelector(".table.replaying")).not.toBeNull();
       expect(document.querySelectorAll("ol.account li")).toHaveLength(3);
       expect(document.querySelector("ol.account li.at")?.textContent).toMatch(/Red: End additional-action/);
+      // **And the TABLE is drawing the run's frame.** The live payload carries
+      // a piece on no tile; every position in the run carries two.
+      expect(boardPieces()).toHaveLength(2);
       // An unchanged frame dwells the short dwell, a changed one the cadence.
       await act(async () => {
         await vi.advanceTimersByTimeAsync(450);
@@ -622,6 +644,13 @@ describe("the turn playback", () => {
       });
       expect(document.querySelector("ol.account li.at")?.textContent).toMatch(/Place 1 assistant/);
       expect(document.querySelector(".tile.changed")).not.toBeNull();
+      // The step's own `after` frame, read off the tile: the cube this fixture
+      // adds at position 43 and nowhere else is ON A00, and the live payload
+      // says that tile is empty.
+      expect(tileOf("A00")?.querySelector('[role="img"]')?.getAttribute("aria-label")).toBe(
+        "1 Blue assistant",
+      );
+      expect(boardPieces()).toHaveLength(3);
       // Skip: live prompt back, no outline, the account keeps the run and
       // offers replay. Scoped to the deck strip because the account's header
       // carries a `skip` of its own while the walk runs (Task 8), and both
@@ -633,6 +662,53 @@ describe("the turn playback", () => {
       expect(document.querySelector(".table.replaying")).toBeNull();
       expect(screen.getByRole("button", { name: "replay" })).toBeInTheDocument();
       expect(document.querySelectorAll("ol.account li")).toHaveLength(3);
+      // **The board is the LIVE state again.** Only the marks outlive the walk
+      // (`fresh`, spec §3.2.4); the frame does not, which is what "skip lands
+      // you on your prompt" means for the table.
+      expect(boardPieces()).toHaveLength(0);
+      expect(document.querySelector(".tile.changed")).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // **The switch clears the walk, and the bug it stops is visible.** Without
+  // it the account of a turn in the game being left goes on rendering under
+  // the new banner, and — because the walk owns `view` — the OLD game's board
+  // is what the table draws.
+  it("drops the run and the walk when the Game menu switches games", async () => {
+    const { before, replied, at, log } = botReply();
+    const other = { ...wire.options4p, id: "sim-other" };
+    await renderApp(before, (call) => {
+      if (call.method === "GET" && call.path.endsWith("/api/games")) return [before.id, "sim-other"];
+      if (call.method === "GET" && call.path.endsWith("/api/games/sim-other")) return other;
+      if (call.path.endsWith("/input")) return replied;
+      const m = /\/at\/(\d+)$/.exec(call.path);
+      if (m) return at(Number(m[1]));
+      if (call.path.includes("/log")) return log;
+      return undefined;
+    });
+    vi.useFakeTimers();
+    try {
+      const click = (el: Element) => act(() => void fireEvent.click(el));
+      click(firstRow());
+      await settle();
+      // The walk is running, and the table is drawing its frame.
+      expect(screen.getByText(/is playing · step 1 of 3/)).toBeInTheDocument();
+      expect(boardPieces()).toHaveLength(2);
+
+      click(screen.getByText(new RegExp(before.id)));
+      await settle();
+      click(screen.getByRole("button", { name: "sim-other" }));
+      await settle();
+
+      expect(screen.queryByText(/is playing/)).toBeNull();
+      expect(document.querySelector("ol.account")).toBeNull();
+      expect(document.querySelector(".table.replaying")).toBeNull();
+      expect(document.querySelector(".tile.changed")).toBeNull();
+      // And the board is the game switched TO — the assertion the other three
+      // would pass without, since `view` is what the walk actually holds.
+      expect(document.querySelectorAll(".tile")).toHaveLength(other.frame.board.tiles.length);
     } finally {
       vi.useRealTimers();
     }
