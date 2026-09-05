@@ -4,6 +4,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { NewGame } from "./NewGame";
+import { loadSections } from "./sections";
 import { gate, stubApi, type ApiCall, type Reply } from "./test/harness";
 import { wire } from "./wire/contract";
 
@@ -194,6 +195,12 @@ describe("the set table", () => {
       }
     }
     expect(screen.getByText(/hand-set, unmeasured, and no substitute for your own read/)).toBeInTheDocument();
+    // **No chip rows on a deal card (R-T12-3).** The card ART already prints
+    // both the requirements and the rewards, and the two chip rows under it
+    // are what pushed the bot's own deal below the fold at 1710x869. The id,
+    // the country and the Keep score stay.
+    expect(document.querySelectorAll(".deal .chips")).toHaveLength(0);
+    expect(document.querySelectorAll(".deal .card-note")).toHaveLength(4);
     const start = screen.getByRole("button", { name: "Start" });
     expect(start).toBeDisabled();
     await user.click(screen.getAllByRole("button", { name: /keep O\d\d for seat 0/ })[1]!);
@@ -232,6 +239,23 @@ describe("the set table", () => {
     );
   });
 
+  // **R-T12-2.** Spec §3.3.3 asks for the Boards menu here "so a player can read
+  // a site card at full size before choosing". Same component as the game
+  // banner's, same storage: what is switched here is what the game opens with.
+  it("carries the Boards menu, and switching a board off here is remembered", async () => {
+    const { user } = await dealt(wire.preview);
+    expect(document.querySelector(".table-sec.ports .board-strip")).not.toBeNull();
+    await user.click(screen.getByText(/^Boards/));
+    await user.click(screen.getByRole("button", { name: "Port" }));
+    expect(document.querySelector(".table-sec.ports")).toBeNull();
+    // The strip going is not the claim on its own — a component that dropped it
+    // from its own state would pass that. The claim is that the CHOICE survives
+    // this screen, which is what `saveSections` is for.
+    expect(loadSections()).not.toContain("ports");
+    // And the summary counts what is on, with the menu open or shut.
+    expect(screen.getByText(/^Boards/)).toHaveTextContent(`Boards · ${loadSections().length} on`);
+  });
+
   it("sends a keep per human seat and null per bot seat, numbered as on screen", async () => {
     const { stub, user, onStarted } = await dealt(wire.previewBot);
     await user.click(screen.getAllByRole("button", { name: /keep O\d\d for seat 0/ })[1]!);
@@ -239,6 +263,36 @@ describe("the set table", () => {
     await waitFor(() => expect(onStarted).toHaveBeenCalledWith(wire.options, true));
     const create = stub.matching("POST", "/api/games").filter((c) => !c.path.endsWith("preview"));
     expect((create[0]!.body as { keeps: unknown }).keeps).toEqual([2, null]);
+  });
+
+  // **The preview request's own `keeps`, which nothing on this side pinned.**
+  // The server refuses `null` on a human seat and a value on a bot seat with a
+  // 400 naming the seat — so a preview that sent the wrong shape would fail at
+  // the deal with a sentence about a field the player never touched, and only
+  // the server would have caught it. The preview keeps NEITHER card (it is the
+  // deal, not the choice); the field is there to pass the shape check.
+  //
+  // **An all-human `[1, 1]` is not reachable from this screen and is not
+  // asserted**: the wizard always names exactly one bot seat (`bot_seats:
+  // [botSeat]`, and the select cannot be empty), so the shape is always one
+  // `null` among values. What IS worth pinning is that the `null` tracks the
+  // CHOSEN seat rather than sitting at index 1 — hence the second read.
+  it("previews with a value on every human seat and null on the bot's, wherever the bot sits", async () => {
+    const previewKeeps = async (seats?: { players: number; bot: number }) => {
+      const { stub, user } = show((call) => {
+        if (call.method === "GET") return [];
+        return wire.previewBot;
+      });
+      if (seats) {
+        await user.selectOptions(screen.getByLabelText("Players"), String(seats.players));
+        await user.selectOptions(screen.getByLabelText("Bot seat"), String(seats.bot));
+      }
+      await user.click(screen.getByRole("button", { name: "Deal" }));
+      await waitFor(() => expect(stub.matching("POST", "preview")).toHaveLength(1));
+      return (stub.matching("POST", "preview")[0]!.body as { keeps: unknown }).keeps;
+    };
+    expect(await previewKeeps()).toEqual([1, null]);
+    expect(await previewKeeps({ players: 3, bot: 2 })).toEqual([1, 1, null]);
   });
 
   it("resumes a saved game as NOT an opening", async () => {

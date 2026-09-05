@@ -343,41 +343,52 @@ test("gate B — the set table before the first choice", async ({ page }) => {
   const seed = await page.locator("header.banner code").innerText();
   test.info().annotations.push({ type: "game", description: `2P set table, seed ${seed}` });
 
-  // **The side column scrolls at this viewport, and the picture says so.**
-  // MEASURED at 2P/1710x869: the deck's own block is 556px and the deal is what
-  // the deck is for, so it takes the height (cap 70vh) and the side column —
-  // holding only the bot's two cards — gets the 251px that are left against a
-  // ~390px panel. No cap makes both whole at 869px. The mark on the bot's card
-  // is half of what this gate is a picture OF, so the column is scrolled to it
-  // and the figures go in the annotation rather than being left to the eye.
-  const scrolled = await page.evaluate(() => {
-    const side = document.querySelector(".side") as HTMLElement | null;
-    const deck = document.querySelector(".deck") as HTMLElement | null;
-    if (!side || !deck) return null;
-    side.scrollTop = side.scrollHeight - side.clientHeight;
+  // **Both frames are taken at scroll 0 — nothing is scrolled to make the
+  // picture work (R-T12-3).** The deal cards drop their chip rows and the set
+  // table trims its own paddings, so at 1710x869 the deck's block and the bot's
+  // panel both fit under the banner. The figures are recorded, and the two
+  // things the frame is a picture OF are asserted to be IN it: an element
+  // scrolled out of the window still satisfies `toHaveText`, which is exactly
+  // the picture this gate must not send.
+  const layout = await page.evaluate(() => {
+    const q = (x: string) => document.querySelector(x) as HTMLElement | null;
+    const deck = q(".deck"), side = q(".side"), dec = q(".deck > .decision"), bot = q(".deal-seat.bot");
+    if (!deck || !side || !dec || !bot) return null;
     return {
       deck: Math.round(deck.getBoundingClientRect().height),
-      deckContent: deck.scrollHeight,
+      deckContent: dec.scrollHeight,
       side: Math.round(side.clientHeight),
       sideContent: side.scrollHeight,
+      botPanel: Math.round(bot.getBoundingClientRect().height),
     };
   });
-  if (!scrolled) throw new Error("gate B: the set table has no .deck / .side to measure");
-  await raf(page);
+  if (!layout) throw new Error("gate B: the set table has no .deck / .side / bot deal to measure");
   test.info().annotations.push({
     type: "layout",
     description:
-      `deck ${scrolled.deck}px holding ${scrolled.deckContent}px · ` +
-      `side ${scrolled.side}px holding ${scrolled.sideContent}px, scrolled to the bot's mark`,
+      `deck ${layout.deck}px holding ${layout.deckContent}px · side ${layout.side}px holding ` +
+      `${layout.sideContent}px (bot panel ${layout.botPanel}px) — nothing scrolled`,
   });
-  // In the FRAME, not merely in the DOM: `toHaveText` above passes on an
-  // element scrolled out of the window, which is exactly the picture this gate
-  // must not send.
-  await expect(page.locator(".deal-seat.bot .bot-keeps")).toBeInViewport();
-  await expect(page.getByRole("button", { name: "Start" })).toBeInViewport();
+  await expect(page.locator(".deal-seat.bot")).toBeInViewport({ ratio: 1 });
+  await expect(page.locator(".deal-seat.bot .bot-keeps")).toBeInViewport({ ratio: 1 });
+  for (let i = 0; i < 2; i++) {
+    await expect(page.locator(".deal-seat.bot .card-note").nth(i)).toBeInViewport({ ratio: 1 });
+  }
+  await expect(page.getByRole("button", { name: "Start" })).toBeInViewport({ ratio: 1 });
 
   await park(page);
   await page.screenshot({ path: `${OUT}/b-set-table-1710x869.png` });
+
+  // **A second frame, scrolled to the strips.** The help and the README both say
+  // the port and the laboratory are on the set table, and the first frame is
+  // the first view — where the fitted pyramid fills the table and no strip is
+  // in it. This is the one that shows the sentence is true. `.table` is its own
+  // scroller above 1201px, so the side column and the deck do not move.
+  await scrollTable(page, "sections");
+  await expect(page.locator(".table-sec.ports .board-strip")).toBeInViewport();
+  await expect(page.locator(".table-sec.labs .board-strip")).toBeInViewport();
+  await park(page);
+  await page.screenshot({ path: `${OUT}/b-set-table-strips-1710x869.png` });
 });
 
 // The C gate (M5.5 spec §4.4): the opponent's turn playing out on the table,

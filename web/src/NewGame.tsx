@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { api, ApiError, type NewGameRequest } from "./api";
 import { Board } from "./Board";
+import { BoardsMenu, useSections } from "./BoardsMenu";
 import { OrderCardView, seatClass } from "./Cards";
-import { loadSections } from "./sections";
 import { TableSections } from "./TableSections";
 import type { ArtManifest, ClientState, Labels, PlayerColor, Preview } from "./types";
 
@@ -50,6 +50,10 @@ export function NewGame({
    *  is a seat nobody has answered for, which a `number[]` of ones could not
    *  say — the old shape started every seat pre-chosen at card 1. */
   const [chosen, setChosen] = useState<Record<number, 1 | 2>>({});
+  /** The boards the set table draws, through the same menu and the same storage
+   *  as the game banner's (R-T12-2) — what is switched here is what the game
+   *  opens with. */
+  const [sections, toggleSection] = useSections();
   const [saved, setSaved] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -135,6 +139,12 @@ export function NewGame({
             setting up &middot; seed <code>{preview.seed}</code>
           </span>
           <span className="meta turn">choose your card</span>
+          {/* Spec §3.3.3: the same menu the game banner carries, so a player can
+              switch a board on and read a site card at full size before
+              choosing. `nav.views` is the banner's own slot for it. */}
+          <nav className="views">
+            <BoardsMenu enabled={sections} onToggle={toggleSection} />
+          </nav>
         </header>
         <div className="end-strip" role="status" />
         <main className="table">
@@ -148,7 +158,7 @@ export function NewGame({
                 draw from the position rather than reading "loading…", and the
                 one board that has no position-shaped version says so. */}
             <TableSections
-              enabled={loadSections()}
+              enabled={sections}
               game={null}
               state={null}
               replaying={false}
@@ -175,6 +185,7 @@ export function NewGame({
                       card={c.card}
                       id={c.card.id}
                       size="sm"
+                      chips={false}
                       note={`Keep score ${c.keep_score}`}
                     />
                     {d.bot_keep === i + 1 && <div className="bot-keeps">bot keeps this</div>}
@@ -212,6 +223,7 @@ export function NewGame({
                         card={c.card}
                         id={c.card.id}
                         size="sm"
+                        chips={false}
                         note={`Keep score ${c.keep_score}`}
                       />
                     </button>

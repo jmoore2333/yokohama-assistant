@@ -75,12 +75,20 @@ export function OrderCardView({
   note,
   size = "md",
   changed = false,
+  chips = true,
 }: {
   art: ArtManifest | null;
   card: OrderCard | null;
   id: number;
   note?: string;
   size?: "sm" | "md";
+  /** Draw the two chip rows under the art (M5.5 ruling R-T12-3). The card's own
+   *  ART already prints both the requirements and the rewards, so a screen with
+   *  a height budget can drop the transcription and keep the id, the country
+   *  and the note. Default `true`: every existing caller is untouched, and the
+   *  hand, the strips and the four indexes still print them, where the chips
+   *  are what a reader compares across cards without looking at the pictures. */
+  chips?: boolean;
   /** The walk is lighting this card (M5.5 R-GC-2). The class goes on the card's
    *  ROOT, which is also the element `.strip-slot.changed .card-face` outlines,
    *  so one stroke serves a card wherever it is drawn. Default `false`, so the
@@ -100,7 +108,7 @@ export function OrderCardView({
           <span className="card-id">O{String(id).padStart(2, "0")}</span>
           <span>{card?.country ?? ""}</span>
         </div>
-        {card && (
+        {card && chips && (
           <>
             <div className="chips">{requirementChips(card)}</div>
             <div className="chips pays">{rewardChips(card)}</div>

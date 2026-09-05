@@ -426,6 +426,43 @@ test("the set table shows the port and the bot's kept card before the first choi
   await page.mouse.move(2, 2);
   await expect(page.getByRole("tooltip")).toHaveCount(0);
 
+  // **R-T12-3: the bot's whole deal is in the frame at 1710x869, unscrolled.**
+  // The deck's block and the side column share the 808px under the banner, and
+  // with the generic card (two chip rows) and the generic paddings they wanted
+  // 831 — so the bot's own Keep scores and its mark sat below the fold and only
+  // a scrolled camera could photograph them. Asserted in the VIEWPORT rather
+  // than in the DOM, because the DOM had them all along — and at `ratio: 1`,
+  // because the default (any intersection at all) passes on a badge whose top
+  // pixel is showing. **The PANEL is what carries the claim**: the mark sits
+  // under whichever card the bot kept, so how far down the column it falls
+  // depends on that card's own caption — measured, restoring the bot card's
+  // chip rows overflows the column by 38px and BOTH the default assertion and
+  // `ratio: 1` on the mark alone stayed green, while `ratio: 1` on the panel
+  // fails. The mark and the two scores are asserted as well, for the sentence
+  // this cell's name makes.
+  await expect(page.locator(".deal-seat.bot")).toBeInViewport({ ratio: 1 });
+  await expect(page.locator(".deal-seat.bot .bot-keeps")).toBeInViewport({ ratio: 1 });
+  for (let i = 0; i < 2; i++) {
+    await expect(page.locator(".deal-seat.bot .card-note").nth(i)).toBeInViewport({ ratio: 1 });
+  }
+  await expect(page.getByRole("button", { name: "Start" })).toBeInViewport({ ratio: 1 });
+  const budget = await page.evaluate(() => {
+    const q = (x: string) => document.querySelector(x) as HTMLElement;
+    return {
+      deck: Math.round(q(".deck").getBoundingClientRect().height),
+      deckContent: q(".deck > .decision").scrollHeight,
+      side: Math.round(q(".side").clientHeight),
+      sideContent: q(".side").scrollHeight,
+    };
+  });
+  // RECORDED, never gated: the heights are layout- and font-dependent. What is
+  // gated is the property above, which is what a reader of them cares about.
+  // eslint-disable-next-line no-console
+  console.log(
+    `set table at 1710x869: deck ${budget.deck}px holding ${budget.deckContent}px · ` +
+      `side ${budget.side}px holding ${budget.sideContent}px (recorded)`,
+  );
+
   const pick = page.locator(".deal-seat.human button.deal-pick").nth(1);
   const chosen = /keep (O\d\d)/.exec((await pick.getAttribute("aria-label"))!)![1]!;
   await pick.click();
