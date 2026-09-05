@@ -219,7 +219,8 @@ building-site card and pieces on it (the Canal, at three and four players, carri
 under the pyramid whichever boards you have switched on from the banner's `Boards` menu — the
 port, the laboratory, the church and customs tracks, the goals, the building sites. The right is
 a **side column** with the **answer bar pinned at its top**, so whatever the game is asking is
-always on screen; under it sit the last move, every seat's dashboard and your hand. While a
+always on screen; under it sits the account of the turn just played — one row per event, with the
+controls that walk it back out across the table — then every seat's dashboard and your hand. While a
 placement picker is open the table itself becomes the input surface, and the fee your current
 selection would cost is printed before you commit to it. Below 1201px the same parts stack, with
 the answer bar pinned along the bottom edge instead.
