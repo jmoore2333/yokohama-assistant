@@ -1364,8 +1364,20 @@ ol.account .mover { font-weight: 700; }
   .app[data-beat] .chip.tech.changed { animation: none; }
 }
 /* The deck while the opponent's turn plays out: who is playing, how far in, and
- * the way out. It replaces the prompt, so it carries the prompt's own padding. */
-.decision.walking { display: flex; align-items: center; gap: 0.5rem; padding: 0.6rem 0.8rem; font-family: var(--display); font-size: 1.05rem; }
+ * the way out. It replaces the prompt, so it carries the prompt's own padding.
+ *
+ * **`flex-direction` is stated, and that is the whole of ruling R-F3.** This
+ * rule set `display: flex` and inherited `column` from `.decision` above, which
+ * every other deck block wants — so the strip stacked "Blue" / "is playing ·
+ * step 3 of 8" / "skip" at 123.3px tall (measured at 1710x869) where spec
+ * §3.2.2's own words are "Blue is playing · skip". Wrapping is allowed because
+ * a narrow deck has to put the way out somewhere; nothing below 1201px changes,
+ * the strip staying inside the sticky deck as it already did. */
+.decision.walking {
+  display: flex; flex-direction: row; flex-wrap: wrap;
+  align-items: center; gap: 0.5rem; padding: 0.6rem 0.8rem;
+  font-family: var(--display); font-size: 1.05rem;
+}
 .decision.walking .ghost { margin-left: auto; }
 
 /* ---- M5.5: the set table ------------------------------------------------

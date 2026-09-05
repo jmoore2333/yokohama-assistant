@@ -31,6 +31,41 @@ test("a bot turn plays out on the table, every position in order, and ends on th
     observed = true;
     const strip = page.locator(".decision.walking");
     await expect(strip).toContainText(/is playing · step \d+ of \d+/);
+
+    // **The strip is ONE LINE (spec §3.2.2, ruling R-F3).** `.decision.walking`
+    // set `display: flex` and inherited `flex-direction: column` from
+    // `.decision`, so the deck stacked "Blue" / "is playing · step 3 of 8" /
+    // "skip" — 123px of deck where the spec's own words are "Blue is playing ·
+    // skip". jsdom has no layout engine, so this is the only place that can
+    // read it.
+    //
+    // Two readings, and the second is the one a font change cannot fool: the
+    // declared direction, and whether every child actually SHARES a row —
+    // each child's vertical midpoint inside every other child's box. A wrap at
+    // some narrower width is allowed by the ruling and would fail neither, since
+    // this cell states its viewport.
+    const line = await strip.evaluate((el) => {
+      const kids = [...el.children].map((c) => c.getBoundingClientRect());
+      return {
+        direction: getComputedStyle(el).flexDirection,
+        height: el.getBoundingClientRect().height,
+        children: kids.length,
+        oneRow: kids.every((a) =>
+          kids.every((b) => {
+            const mid = a.top + a.height / 2;
+            return mid >= b.top && mid <= b.bottom;
+          }),
+        ),
+      };
+    });
+    // eslint-disable-next-line no-console
+    console.log(
+      `the walk strip at 1710x869: flex-direction ${line.direction}, ${line.children} children on ` +
+        `${line.oneRow ? "one row" : "more than one row"}, ${line.height.toFixed(1)}px tall`,
+    );
+    expect(line.children, "the strip must have children for a row check to mean anything").toBeGreaterThan(1);
+    expect(line.direction).toBe("row");
+    expect(line.oneRow, "the walk strip stacked its parts instead of laying them on one line").toBe(true);
     const steps = Number(/of (\d+)/.exec(await strip.innerText())![1]);
     // eslint-disable-next-line no-console
     console.log(`the turn playback: the observed bot turn walked ${steps} steps`);
