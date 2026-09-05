@@ -240,7 +240,7 @@ opened read-only where a check wanted one, never played on, and never deleted.
 
 ## 2. The rulings taken during execution
 
-Forty-nine, every one in the ledger with its full reasoning. The cost column is each ruling's own
+Fifty, every one in the ledger with its full reasoning. The cost column is each ruling's own
 "costs if wrong" clause, compressed.
 
 | # | scope | what it ruled | cost if wrong |
@@ -294,8 +294,9 @@ Forty-nine, every one in the ledger with its full reasoning. The cost column is 
 | R-F11 | fix wave | the account scrolls **its own box** and never the page — R-F5's mechanism replaced | one effect rewritten twice |
 | R-F12 | fix wave | the five R-F11 residual minors are parked for M6's entry | a folded account that unfolds at the list's end once |
 | R-F13 | the close | above 1201px the walk does not scroll the side column to the lit row: at the owner's 1710×869 a nine-row turn fits, and the table plus the strip's "step k of n" carry the step, so the generalization — scroll the nearest scrollable ancestor that is not the document (`.side` on desktop, `.messages` in the stack) — goes to M6 by way of §7's LEAVE list | a long bot turn's lit row below the side column's fold on desktop |
+| R-F14 | the close | Task 16's round-2 diff is two sentences of documentation, so the controller reads it itself against the close's own table — thirteen rows, count the no-ink rows, and the sentence must state nine of thirteen and eleven of thirteen with no relation between them — instead of a third review seat; the R-F10 precedent for a text-only diff | one sentence unreviewed by a fresh seat |
 
-Three of the forty-nine are the **owner's**, all three taken at a gate on a picture: R-GA-1,
+Three of the fifty are the **owner's**, all three taken at a gate on a picture: R-GA-1,
 R-GC-1 and R-GC-2. Two of them inserted tasks the plan did not have (4b and 9b).
 
 ---
