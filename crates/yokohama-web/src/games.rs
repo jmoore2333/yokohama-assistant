@@ -119,6 +119,35 @@ pub struct Preview {
     pub deals: Vec<Deal>,
 }
 
+/// Why a preview could not be served — and, more to the point, WHOSE fault it
+/// is.
+///
+/// [`preview`] used to return one `String` and the route mapped every one of
+/// them to 400. Three of the four things that can go wrong there are not the
+/// caller's: once [`config_of`] has accepted a request, a `new_game`, a
+/// `Session::new_sim` or a `HistoricalFrame::at` failure is this process
+/// failing to build a position from a request that was fine — and answering
+/// "your request was wrong" sends the client away to fix something that is not
+/// broken. Only the first is a 400.
+#[derive(Debug, Clone)]
+pub enum PreviewError {
+    /// The request cannot start a game: [`config_of`]'s own refusals, which
+    /// name the seat, the numbering or the count. A 400.
+    Request(String),
+    /// The setup, or its projection, failed. Nothing the caller sent is wrong.
+    /// A 500.
+    Server(String),
+}
+
+impl PreviewError {
+    /// The sentence, whichever side it came from.
+    pub fn message(&self) -> &str {
+        match self {
+            Self::Request(m) | Self::Server(m) => m,
+        }
+    }
+}
+
 /// The bot's Keep: the argmax of [`score_starting_order`] over its two dealt
 /// cards, ties to the first — the rule every evaluator contestant applies in
 /// the arena (`GreedyAgent::choose_starting_order` at `greedy.rs:752`, and
@@ -252,10 +281,11 @@ fn choices_of(
 /// projection of the position after setup, built through the SAME
 /// [`HistoricalFrame`] the replay route serves, so the client draws the set
 /// table with the components it already has and no second frame type exists.
-pub fn preview(req: &NewGame, rules: &Rules) -> Result<Preview, String> {
-    let (config, bots) = config_of(req)?;
+pub fn preview(req: &NewGame, rules: &Rules) -> Result<Preview, PreviewError> {
+    let (config, bots) = config_of(req).map_err(PreviewError::Request)?;
     let seed = req.seed.map_or_else(draw_seed, |s| s.0);
-    let pending = new_game(config.clone(), rules, seed).map_err(|e| e.to_string())?;
+    let pending = new_game(config.clone(), rules, seed)
+        .map_err(|e| PreviewError::Server(format!("the setup did not deal: {e}")))?;
     // A human seat previews as `Unknown` — no card in a hand nobody has chosen
     // from — and a bot seat at its argmax, the card the game will deal it.
     let choices: Vec<StartingOrderChoice> = pending
@@ -270,14 +300,16 @@ pub fn preview(req: &NewGame, rules: &Rules) -> Result<Preview, String> {
             }
         })
         .collect();
-    let mut session = Session::new_sim(config, seed, choices, rules.clone())?;
+    let mut session =
+        Session::new_sim(config, seed, choices, rules.clone()).map_err(PreviewError::Server)?;
     // `Repl::new` reads WHO plays each seat off the record's run seats, so this
     // is what makes the previewed table's `is_bot` true — the same one line
     // `create` runs, and the reason no second attachment step is needed here.
     session.set_run_seats(bots.seat_provenance());
     let repl = Repl::new(session);
-    let table = HistoricalFrame::at(&repl, 0)
-        .map_err(|e| format!("the setup position did not build: {}", e.message))?;
+    let table = HistoricalFrame::at(&repl, 0).map_err(|e| {
+        PreviewError::Server(format!("the setup position did not build: {}", e.message))
+    })?;
     let deals = pending
         .deals
         .iter()
@@ -288,6 +320,16 @@ pub fn preview(req: &NewGame, rules: &Rules) -> Result<Preview, String> {
             Deal {
                 seat,
                 is_bot,
+                // **`cards[0]` IS card 1 and `cards[1]` is card 2.** The wire
+                // numbers the dealt cards from 1 because that is how they are
+                // numbered on screen, and `PendingSetup.deals` indexes them
+                // from 0 — so the join between the two is this order, and it is
+                // what the three `- 1` conversions in this module rely on
+                // ([`bot_keep`]'s result, [`choices_of`]'s `Keep(keep - 1)`,
+                // and the human's `req.keeps[i]`). A `filter_map` that dropped
+                // an unknown id would slide the second card into the first
+                // one's place; it cannot fire, because every id here came out
+                // of `new_game` against these same `rules`.
                 cards: deal
                     .iter()
                     .filter_map(|id| rules.orders.get(*id).cloned())
@@ -690,16 +732,33 @@ mod tests {
         Games::new(Arc::new(Rules::standard()), Arc::new(MemStore::default()))
     }
 
-    fn req(name: &str) -> NewGame {
+    /// The corpus seed. **At this seed seat 1's argmax is card 1** (57 against
+    /// 31), which is the same card the old `keeps: [1, 1]` wire sent — so a
+    /// cell that only runs here cannot tell the bot's own Keep from a constant.
+    /// [`ARGMAX_IS_CARD_2`] is what discriminates; this seed stays in use for
+    /// the cells whose subject is not WHICH card.
+    const CORPUS_SEED: u64 = 20_260_831;
+
+    /// A seed where seat 1's argmax is **card 2** (9 against 36), so the bot's
+    /// Keep differs from every constant the old wire could have sent. Each cell
+    /// using it asserts that as a PREMISE rather than trusting this comment: a
+    /// deal that changed would otherwise turn these cells vacuous silently.
+    const ARGMAX_IS_CARD_2: u64 = 20_260_830;
+
+    fn req_seeded(name: &str, seed: u64) -> NewGame {
         NewGame {
             players: 2,
             colors: vec![PlayerColor::Red, PlayerColor::Blue],
             start_seat: 0,
-            seed: Some(WireSeed(20_260_831)),
+            seed: Some(WireSeed(seed)),
             keeps: vec![Some(1), None],
             bot_seats: vec![1],
             name: Some(name.to_string()),
         }
+    }
+
+    fn req(name: &str) -> NewGame {
+        req_seeded(name, CORPUS_SEED)
     }
 
     /// The same request, named for the cells whose subject is the BOT's seat.
@@ -723,30 +782,36 @@ mod tests {
     /// `LookaheadAgent`'s identical arm), reached through core. The human's keep
     /// is honoured beside it, and the cell is mutation-proven by the human's
     /// choice: swapping 1 for 2 moves the human's card and not the bot's.
+    ///
+    /// **At [`ARGMAX_IS_CARD_2`], deliberately.** At the corpus seed the bot's
+    /// argmax IS card 1, which is the card the old `keeps: [1, 1]` wire already
+    /// sent — so a `bot_keep` reduced to the constant `1` would pass there and
+    /// this cell would prove nothing about the feature. The premise is asserted
+    /// below rather than trusted, so a deal that moved says so out loud instead
+    /// of quietly making the cell vacuous again.
     #[test]
     fn the_bot_keeps_the_higher_scored_card_and_the_human_keeps_theirs() {
         let rules = Rules::standard();
-        let pending = new_game(GameConfig::for_player_count(2), &rules, 20_260_831).unwrap();
+        let pending =
+            new_game(GameConfig::for_player_count(2), &rules, ARGMAX_IS_CARD_2).unwrap();
         let deal = pending.deals[1];
-        assert_ne!(
+        assert!(
+            keep_score(&rules, deal[1]) > keep_score(&rules, deal[0]),
+            "the premise: at this seed seat 1's argmax must be card 2 ({} then {}), or a \
+             constant `bot_keep = 1` passes this cell",
             keep_score(&rules, deal[0]),
             keep_score(&rules, deal[1]),
-            "seed 20260831 deals seat 1 two cards of equal score; pick another seed for this cell",
         );
-        let expected = if keep_score(&rules, deal[1]) > keep_score(&rules, deal[0]) {
-            deal[1]
-        } else {
-            deal[0]
-        };
+        let expected = deal[1];
 
         let g = games();
-        let (_, handle) = g.create(&req_with_bot("keep")).unwrap();
+        let (_, handle) = g.create(&req_seeded("keep", ARGMAX_IS_CARD_2)).unwrap();
         let r = handle.lock().unwrap();
         assert_eq!(r.session.state().players[1].order_cards_in_hand, vec![expected]);
         assert_eq!(r.session.state().players[0].order_cards_in_hand, vec![pending.deals[0][0]]);
         drop(r);
 
-        let mut two = req_with_bot("keep2");
+        let mut two = req_seeded("keep2", ARGMAX_IS_CARD_2);
         two.keeps = vec![Some(2), None];
         let (_, handle) = g.create(&two).unwrap();
         let r = handle.lock().unwrap();
@@ -793,6 +858,12 @@ mod tests {
     /// The preview is the position after setup \u2014 a throwaway, never a game \u2014
     /// with every human hand empty (nothing has been chosen) and the bot's
     /// kept card in the bot's hand; each dealt card carries its Keep score.
+    ///
+    /// **At the corpus seed on purpose**, so the projection is asserted against
+    /// the same position the committed fixtures hold. Its `bot_keep` assertion
+    /// is a consistency check between the payload's own scores and its own
+    /// answer, and is therefore blind to a constant Keep \u2014 the two cells above
+    /// are what discriminate that, and they run at [`ARGMAX_IS_CARD_2`].
     #[test]
     fn the_preview_is_the_position_after_setup() {
         let rules = Rules::standard();
@@ -836,13 +907,22 @@ mod tests {
     }
 
     /// The preview and the created game put the same card in the bot's hand.
+    ///
+    /// At [`ARGMAX_IS_CARD_2`] for the reason the argmax cell states, and with
+    /// the same premise asserted: at the corpus seed both sides would agree on
+    /// card 1 whether or not either of them consulted the bot.
     #[test]
     fn the_preview_and_the_game_agree_on_the_bots_card() {
         let rules = Rules::standard();
-        let p = preview(&req_with_bot("agree"), &rules).unwrap();
+        let p = preview(&req_seeded("agree", ARGMAX_IS_CARD_2), &rules).unwrap();
+        assert_eq!(
+            p.deals[1].bot_keep,
+            Some(2),
+            "the premise: this seed's bot keeps card 2, so agreeing on card 1 is not enough",
+        );
         let kept = p.deals[1].cards[usize::from(p.deals[1].bot_keep.unwrap() - 1)].card.id;
         let g = games();
-        let (_, handle) = g.create(&req_with_bot("agree")).unwrap();
+        let (_, handle) = g.create(&req_seeded("agree", ARGMAX_IS_CARD_2)).unwrap();
         assert_eq!(
             handle.lock().unwrap().session.state().players[1].order_cards_in_hand,
             vec![kept],

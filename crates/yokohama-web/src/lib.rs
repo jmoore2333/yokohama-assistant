@@ -77,6 +77,15 @@ impl ApiError {
     pub fn not_found(message: impl Into<String>) -> Self {
         Self { status: StatusCode::NOT_FOUND, message: message.into() }
     }
+    /// This process failed at something the caller asked for correctly.
+    ///
+    /// Rare on purpose: nearly every refusal on this API is the caller's, and a
+    /// 500 tells a client not to change its request. It carries a sentence like
+    /// every other refusal, because the shape is the same one `web/src/api.ts`
+    /// reads `.error` off.
+    pub fn server_error(message: impl Into<String>) -> Self {
+        Self { status: StatusCode::INTERNAL_SERVER_ERROR, message: message.into() }
+    }
 }
 
 impl IntoResponse for ApiError {
@@ -265,11 +274,23 @@ async fn labels(State(state): State<Arc<AppState>>) -> Json<Labels> {
     })
 }
 
+/// The one handler that answers a 500, and the reason it is not all 400s.
+///
+/// `games::preview` now says WHOSE fault a failure is
+/// ([`games::PreviewError`]): a request this API cannot start a game from is
+/// the caller's and stays a 400, while a `new_game`, a `Session::new_sim` or a
+/// `HistoricalFrame::at` failure — every one of them downstream of a request
+/// `config_of` has already accepted — is this process's. Mapping those to 400
+/// told a client its request was wrong and sent it away to fix something that
+/// was not broken.
 async fn preview_game(
     State(state): State<Arc<AppState>>,
     JsonBody(req): JsonBody<NewGame>,
 ) -> ApiResult<games::Preview> {
-    games::preview(&req, &state.rules).map(Json).map_err(ApiError::bad_request)
+    games::preview(&req, &state.rules).map(Json).map_err(|e| match e {
+        games::PreviewError::Request(m) => ApiError::bad_request(m),
+        games::PreviewError::Server(m) => ApiError::server_error(m),
+    })
 }
 
 async fn list_games(State(state): State<Arc<AppState>>) -> ApiResult<Vec<String>> {
@@ -944,14 +965,26 @@ mod tests {
     /// `games::preview`'s own cells prove the projection and not the wiring.
     #[tokio::test]
     async fn the_preview_serves_the_set_table_and_refuses_a_keep_on_a_bot_seat() {
+        // **Seed 20260830, not the corpus seed.** At the corpus seed the bot's
+        // argmax is card 1, which is the card the old wire already sent, so an
+        // `is_u64()` check there passes on a `bot_keep` reduced to a constant.
+        // Here the argmax is card 2, and the premise is asserted from the
+        // payload's own scores so a changed deal is loud rather than vacuous.
         let body = serde_json::json!({
-            "players": 2, "colors": ["Red", "Blue"], "start_seat": 0, "seed": 20260831,
+            "players": 2, "colors": ["Red", "Blue"], "start_seat": 0, "seed": 20260830,
             "keeps": [1, null], "bot_seats": [1]
         });
         let (status, preview) = post_json("/api/games/preview", body.clone()).await;
         assert_eq!(status, StatusCode::OK, "{preview}");
         assert_eq!(preview["table"]["index"], serde_json::json!(0));
-        assert!(preview["deals"][1]["bot_keep"].is_u64(), "{}", preview["deals"][1]);
+        let bot = &preview["deals"][1];
+        let scores: Vec<i64> =
+            bot["cards"].as_array().expect("two cards").iter().map(|c| c["keep_score"].as_i64().expect("a score")).collect();
+        assert!(
+            scores[1] > scores[0],
+            "the premise: this seed's bot must prefer card 2 ({scores:?})",
+        );
+        assert_eq!(bot["bot_keep"], serde_json::json!(2), "{bot}");
         assert!(preview["deals"][0]["bot_keep"].is_null());
         assert!(preview["deals"][0]["cards"][0]["keep_score"].is_i64());
         let mut on_bot = body;
@@ -959,6 +992,37 @@ mod tests {
         let (status, err) = post_json("/api/games/preview", on_bot).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
         assert!(err["error"].as_str().unwrap_or("").contains("seat 1"), "{err}");
+    }
+
+    /// A preview this server cannot BUILD is a 500; a request it will not
+    /// ACCEPT is still a 400.
+    ///
+    /// Both halves on one router, because the direction that matters is the
+    /// discrimination: a handler that answered 500 to everything would pass the
+    /// first assertion. The rules here are `Rules::empty_for_tests()`, which
+    /// `config_of` never looks at and `new_game` cannot deal from — a failure
+    /// downstream of a request that is perfectly well formed, which is exactly
+    /// the case this split exists for.
+    #[tokio::test]
+    async fn a_preview_the_server_cannot_build_is_a_500_and_a_bad_request_is_still_a_400() {
+        let rules = Arc::new(yokohama_core::Rules::empty_for_tests());
+        let router = app(Arc::new(AppState {
+            rules: Arc::clone(&rules),
+            games: Games::new(rules, Arc::new(crate::store::MemStore::default())),
+        }));
+        let good = serde_json::json!({
+            "players": 2, "colors": ["Red", "Blue"], "start_seat": 0, "seed": 20260830,
+            "keeps": [1, null], "bot_seats": [1]
+        });
+        let (status, body) = call(&router, "POST", "/api/games/preview", Some(good.clone())).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+        assert!(body["error"].is_string(), "and it carries a sentence: {body}");
+
+        let mut on_bot = good;
+        on_bot["keeps"] = serde_json::json!([1, 1]);
+        let (status, body) = call(&router, "POST", "/api/games/preview", Some(on_bot)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(body["error"].as_str().unwrap_or("").contains("seat 1"), "{body}");
     }
 
     /// The same fence on the one MUTATION body. `expect` is what stops a number
