@@ -57,12 +57,14 @@ remaining group's collapse reduces the row the loop ends with the honest h and r
 it still has.
 
 **The rect is a measurement, not a choice** (spec §3.1.2), and the measurement needed an eye
-(ruling R-T3-1). `docs/tools/tilerects.py --ink` reports the rightmost ink inside the band's rows,
-and on **eleven** of the thirteen area arts what it reports is illustration rather than printed
-ink (Port A's band rows are 55 of 66 pale sky, so its dark shapes register as ink on the panel);
-on **nine** of those eleven there is no printed ink in the band's rows at all, because the icon
-block ends above the band's top edge. Only Church reads correctly, and Tea Plantation reports
-nothing. The full table, in the four columns `task-3-report.md:21-33` splits it into:
+(ruling R-T3-1). `docs/tools/tilerects.py --ink` reports the rightmost ink inside the band's rows.
+Two counts, both against the thirteen area arts and neither a subset of the other: on **nine of
+the thirteen** the icon block ends above the band's top edge, so there is no printed ink in the
+band's rows at all; on **eleven of the thirteen** the eye's answer differs from the raw reading,
+because what the detector reports there is illustration rather than printed ink (Port A's band
+rows are 55 of 66 pale sky, so its dark shapes register as ink on the panel). Only Church reads
+correctly, and Tea Plantation reports nothing at all. The full table, in the four columns
+`task-3-report.md:21-33` splits it into:
 
 | art | raw `--ink` reading | is it printed ink? | printed ink's right edge |
 |---|---|---|---|
