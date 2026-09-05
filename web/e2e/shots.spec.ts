@@ -160,13 +160,15 @@ test("the whole screen, and a placement picker", async ({ page }) => {
 
   // **The reading that stops the picker check below from being vacuous.**
   //
-  // `placement.png` is selected by "some tile is a `<button>`", and that is
-  // only a picker detector for as long as tiles are NOT buttons the rest of the
-  // time. `Board.tsx` renders a tile as a `<div tabIndex={0}>` unless `App`
-  // hands it an `onTileClick`, which it does only at `place_a`/`place_b` — so
-  // the property holds at HEAD, and it is a property of two files that a third
-  // task could quietly change (the popover, for one, opens on focus from the
-  // inert `<div>`). Read here, before a move is played, where the phase machine
+  // `placement.png` is selected by "some tile carries `role=\"button\"`", and
+  // that is only a picker detector for as long as tiles do NOT carry the role
+  // the rest of the time. Since M5.5's R-F2 the tag says nothing either way —
+  // every tile is a `<div tabIndex={0}>` in both states, because switching the
+  // tag remounted the art — and `Board.tsx` adds the role, the label and the
+  // handlers only when `App` hands it an `onTileClick`, which it does only at
+  // `place_a`/`place_b`. So the property holds at HEAD, and it is a property of
+  // two files that a third task could quietly change (the popover, for one,
+  // opens on focus from a tile with no role at all). Read here, before a move is played, where the phase machine
   // cannot be at a Placement prompt: if this ever reads non-zero the detector
   // has stopped discriminating and the run fails instead of photographing an
   // arbitrary frame under the placement caption.

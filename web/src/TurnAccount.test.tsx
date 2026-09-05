@@ -218,13 +218,21 @@ describe("the account keeps its lit row in view", () => {
       const { container, rerender } = render(account(run, 0));
       const rows = () => [...container.querySelectorAll("li")];
       expect(rows(), "the run must put rows in the body").toHaveLength(2);
+      // **`toBe` on the NODES, never `toEqual`.** Vitest compares DOM nodes
+      // structurally: two distinct `<li class="at">row</li>` elements satisfy
+      // `toEqual`, bare and inside arrays (measured), and "the LIT row, not
+      // merely a row like it" is the whole claim this cell makes. The options
+      // are a plain object and compare by value.
+      //
       // `block: "nearest"` and not `center`: the row is brought just inside the
       // scroller, so a walk does not jerk the account on every step.
-      expect(seen.map((s) => s.opts)).toEqual([{ block: "nearest" }]);
-      expect(seen.map((s) => s.el)).toEqual([rows()[0]]);
+      expect(seen).toHaveLength(1);
+      expect(seen[0]!.el, "scrolled a row that is not the lit one").toBe(rows()[0]);
+      expect(seen[0]!.opts).toEqual({ block: "nearest" });
 
       rerender(account(run, 1));
-      expect(seen.map((s) => s.el)).toEqual([rows()[0], rows()[1]]);
+      expect(seen).toHaveLength(2);
+      expect(seen[1]!.el, "scrolled a row that is not the lit one").toBe(rows()[1]);
 
       // Keyed on the lit STEP, so a re-render that lights the same row again
       // asks for nothing: an effect that re-ran on every render would fight a

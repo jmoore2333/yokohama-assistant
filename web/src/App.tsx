@@ -374,11 +374,17 @@ export function App() {
   // (final review I1, reproduced live three times). `walk.ts` carries the rule
   // and the measurement.
   //
-  // ONE source for all four reads — the marks, their colour, how long the pulse
-  // lasts and which beat it is on — because they are four descriptions of the
-  // same thing: WHICH STEP the table is showing. Four parallel ternaries could
-  // drift apart, and the two new ones would drift silently (a pulse timed to a
-  // step whose marks are not the ones on screen looks like nothing at all).
+  // **ONE source for all four reads, and they stopped being one read.** The
+  // MARKS are the step's own diff while the walk runs and the mover's union
+  // once they are held. The COLOUR, the pulse's BEAT and its DWELL are the
+  // step's on both sides, and that is deliberate rather than left over: the
+  // held marks belong to the turn the walk just played, so a beat that moved at
+  // the tick-out would restart every animation on a step that has already had
+  // its pulse. One object is what keeps the two halves in step — four parallel
+  // ternaries could drift apart, and the pulse's would drift silently, a pulse
+  // timed to a step whose marks are not the ones on screen looking like nothing
+  // at all. The cell ruling R-P4 shaped reads `{ beat: "0", dwell: "2000ms" }`
+  // on both sides of the skip and is what pins it.
   const lastStep = run?.steps[run.steps.length - 1];
   const shown =
     walk && stepNow

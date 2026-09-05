@@ -349,9 +349,10 @@ describe("a historical board", () => {
 // ---- M5: the tile is the art, and the pieces sit on it -------------------
 //
 // The caption is gone. What it said in words rides in `.sr-only` spans and on
-// the pieces' own accessible name on the INERT `<div>`, and in the `aria-label`
-// on the clickable `<button>` (which suppresses both) — see `Board.tsx`'s own
-// paragraph on the split. What it said in glyphs is drawn where the physical
+// the pieces' own accessible name on a tile with NO role, and in the
+// `aria-label` on a tile carrying `role="button"` (which suppresses both) — see
+// `Board.tsx`'s own paragraph on the split. Both states are one `<div>` since
+// M5.5's R-F2, so the split is the role and not the tag it used to be. What it said in glyphs is drawn where the physical
 // piece stands. jsdom still has no layout, so these cells assert the
 // DECLARATIONS — the overlay is present, it carries the rect the shared JSON
 // names, the built marks carry the builder's seat class — which is exactly what
@@ -413,11 +414,12 @@ describe("the tile is the art, and the pieces sit on it (M5)", () => {
     expect(words).toMatch(/5-Power/);
   });
 
-  // **A `<button>` is ONE node to assistive technology, and its `aria-label`
-  // overrides its contents**, so the `.sr-only` spans inside a clickable tile
-  // are never announced — and on an interactive board every non-Canal tile is a
-  // button. The cell above renders through `show` with no `onTileClick`, so it
-  // exercises the inert `<div>` path and structurally cannot see this.
+  // **A tile carrying `role="button"` is ONE node to assistive technology, and
+  // its `aria-label` overrides its contents**, so the `.sr-only` spans inside a
+  // clickable tile are never announced — and on an interactive board every
+  // non-Canal tile carries that role. The cell above renders through `show`
+  // with no `onTileClick`, so its tiles carry no role at all and it
+  // structurally cannot see this.
   it("folds every fact into a clickable tile's accessible name", () => {
     const { state, id } = withPieces();
     const t = state.frame.board.tiles.find(

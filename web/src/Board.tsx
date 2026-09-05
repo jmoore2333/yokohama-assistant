@@ -250,18 +250,20 @@ function Tile({
   // bottom margin centred under the ladder, and the 5-Power token sits in its
   // printed slot. Every rect comes from `tile_rects.json`, never typed here.
   // What the caption used to say in words is not gone to a screen reader, but
-  // WHERE it rides depends on the element — which is the next paragraph, and it
-  // is not one answer.
+  // WHERE it rides depends on the ROLE — which is the next paragraph, and it is
+  // not one answer.
   // **The facts the caption used to carry, worded ONCE and spent twice.**
   //
-  // On the inert `<div>` a screen reader walks the subtree, so these ride as
-  // `.sr-only` spans and `Pieces` announces the pieces under its own
-  // `role="img"` name. On a `<button>` neither happens: a button is a single
-  // node to assistive technology and its `aria-label` overrides its contents,
-  // so every span inside it and every nested name is suppressed. On an
-  // interactive board that is EVERY non-Canal tile — so the same words are
-  // folded into the label there, with the pieces prepended, and nothing a
-  // sighted player can read on the art is missing from what is announced.
+  // The tile is one `<div>` in both states (the element paragraph below says
+  // why), so what decides this is `role` and never a tag. WITHOUT the role a
+  // screen reader walks the subtree, so these ride as `.sr-only` spans and
+  // `Pieces` announces the pieces under its own `role="img"` name. WITH
+  // `role="button"` neither happens: the tile is a single node to assistive
+  // technology and its `aria-label` overrides its contents, so every span
+  // inside it and every nested name is suppressed. On an interactive board
+  // that is EVERY non-Canal tile — so the same words are folded into the label
+  // there, with the pieces prepended, and nothing a sighted player can read on
+  // the art is missing from what is announced.
   const pieces = piecesWords(tile.presidents, tile.assistants, tile.has_station, colors);
   const facts = isCanal
     ? ["crossing only · 1 yen to the bank"]
