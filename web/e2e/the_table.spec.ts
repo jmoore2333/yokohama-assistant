@@ -129,7 +129,7 @@ test("Undo takes the pieces back off the tile", async ({ page }) => {
     const screen = await readScreen(page);
     if (screen.over) break;
     if (screen.tiles > 0 && screen.confirm) {
-      const tile = page.locator("button.tile:not([disabled])").first();
+      const tile = page.locator('.tile[role="button"]:not([aria-disabled="true"])').first();
       placed = (await tile.getAttribute("aria-label"))!.slice(0, 3);
       await tile.click();
       await page.getByRole("button", { name: "Confirm" }).click();
@@ -306,10 +306,12 @@ test("four assistants of one colour stand as a pile, not as a cube and a count",
     const screen = await readScreen(page);
     if (screen.over) throw new Error("the game ended before two placements");
     if (await answer(page, /Option B/)) {
-      // The picker's tiles are `disabled` while the request is in flight, so
-      // wait for the settled screen before reading tile ids off it.
-      await expect(page.locator("button.tile").first()).toBeEnabled();
-      const tiles = page.locator("button.tile:not([disabled])");
+      // The picker's tiles carry `aria-disabled` while the request is in
+      // flight (M5.5 R-F2 — they stopped being `<button disabled>` when the
+      // tag switch was found to remount the art), so wait for the settled
+      // screen before reading tile ids off it.
+      await expect(page.locator('.tile[role="button"]').first()).not.toHaveAttribute("aria-disabled", "true");
+      const tiles = page.locator('.tile[role="button"]:not([aria-disabled="true"])');
       const target: Locator =
         area === null
           ? tiles.first()
@@ -415,12 +417,13 @@ test("the set table shows the port and the bot's kept card before the first choi
   await expect(page.locator(".deal-seat.bot .bot-keeps")).toHaveCount(1);
   await expect(page.getByRole("button", { name: "Start" })).toBeDisabled();
 
-  // **Inert, and still readable (spec §3.3.3).** `button.tile` is the placement
-  // picker's own marker — `Board` draws a tile as a button only when a caller
+  // **Inert, and still readable (spec §3.3.3).** `.tile[role="button"]` is the placement
+  // picker's own marker — `Board` gives a tile that role only when a caller
   // hands it an `onTileClick`, which `shots.spec.ts` relies on too — so zero of
   // them IS what "inert" means here; and the hover popover is what lets a
-  // player read a site card at full size before choosing.
-  await expect(page.locator("button.tile")).toHaveCount(0);
+  // player read a site card at full size before choosing. (The marker was
+  // `button.tile` until M5.5's R-F2 made every tile a `<div>`.)
+  await expect(page.locator('.tile[role="button"]')).toHaveCount(0);
   await page.locator(".board .tile").first().hover();
   await expect(page.getByRole("tooltip")).toBeVisible();
   await page.mouse.move(2, 2);

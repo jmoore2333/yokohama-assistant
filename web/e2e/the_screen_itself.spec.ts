@@ -1077,8 +1077,9 @@ test("the replayed board is full size beside the drawer, and nothing on it is pr
   await startGame(page, { players: 4 });
 
   // **Walk to a LIVE placement picker first, or this cell proves nothing.**
-  // `App` only passes `onTileClick` while a picker is open, so at an ordinary
-  // decision the live board already has zero pressable tiles — and the
+  // `App` only passes `onTileClick` while a picker is open, and only then does
+  // a tile carry `role="button"` (M5.5 R-F2), so at an ordinary decision the
+  // live board already has zero pressable tiles — and the
   // assertion below then holds whether or not the replay guard exists.
   // Mutation-proven: with `&& !past` deleted from App.tsx the old version of
   // this cell still passed.
@@ -1087,7 +1088,7 @@ test("the replayed board is full size beside the drawer, and nothing on it is pr
   for (let i = 0; i < 40 && pressableLive === 0; i++) {
     const screen = await readScreen(page);
     if (screen.over) break;
-    pressableLive = await page.locator("button.tile").count();
+    pressableLive = await page.locator('.tile[role="button"]').count();
     if (pressableLive > 0) break;
     if ((await act(page, screen, pick)) === null) break;
   }
@@ -1125,7 +1126,7 @@ test("the replayed board is full size beside the drawer, and nothing on it is pr
       widest: Math.max(0, ...[...board.querySelectorAll(".board-row")].map((r) => r.children.length)),
       rows: board.querySelectorAll(".board-row").length,
       tiles: board.querySelectorAll(".tile").length,
-      pressable: board.querySelectorAll("button.tile").length,
+      pressable: board.querySelectorAll('.tile[role="button"]').length,
       boardOverflow: board.scrollWidth - board.clientWidth,
     };
   });

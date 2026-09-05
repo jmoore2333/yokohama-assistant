@@ -209,24 +209,125 @@ describe("a tile as an input", () => {
   // The tile is a mutation control like any option row and takes the same
   // guard: it was the one that did not, and a double click on a placement
   // toggle could leave the highlight disagreeing with the server.
-  it("is disabled while a request is in flight", () => {
+  //
+  // **Read as `aria-disabled` since the tile stopped being a `<button>`**
+  // (ruling R-F2): the tag's own `disabled` is what remounted the art, so the
+  // guard is now an attribute, the tab order, and no handler. All three are
+  // asserted, and the last of them is the one a player would feel — which
+  // `toBeDisabled()` never checked at all.
+  it("is disabled while a request is in flight", async () => {
     const onTileClick = vi.fn();
-    show(wire.options, { onTileClick, busy: true });
-    for (const b of screen.getAllByRole("button")) {
-      if (/^A\d\d /.test(b.getAttribute("aria-label") ?? "")) expect(b).toBeDisabled();
+    const { container } = show(wire.options, { onTileClick, busy: true });
+    const tiles = [...container.querySelectorAll<HTMLElement>('.tile[role="button"]')];
+    expect(tiles.length, "the picker must offer tiles, or this proves nothing").toBeGreaterThan(0);
+    for (const t of tiles) {
+      expect(t).toHaveAttribute("aria-disabled", "true");
+      expect(t).toHaveAttribute("tabindex", "-1");
     }
+    await userEvent.setup().click(tiles[0]!);
+    expect(onTileClick).not.toHaveBeenCalled();
+  });
+});
+
+// ---- M5.5 fix wave: the tile keeps its node when the picker opens ---------
+
+describe("the tile's DOM node survives the placement picker", () => {
+  // **Switching the ELEMENT TYPE remounts the art, and that is what the player
+  // sees (final review I2, ruling R-F2).**
+  //
+  // `Board` used to draw a tile as a `<button>` when it was handed
+  // `onTileClick` and as a `<div>` otherwise, so every Option A/B click
+  // replaced all ten tiles and their thirty `<img loading="lazy">` children.
+  // On the live site the pyramid drew as dark boxes for two to four seconds at
+  // exactly the click the set table and the walk lead the player to: `complete`
+  // 0 of 30 at ~1s and 30 of 30 at ~4s, with `transferSize: 0` on every area
+  // art — the images came from cache and the REMOUNT was the whole cost.
+  //
+  // jsdom loads no image, so what this cell can see is not the dark board but
+  // the thing that causes it: whether the nodes are the same nodes.
+  const tree = (onTileClick?: (area: number) => void) => (
+    <Board
+      board={wire.options.frame.board}
+      art={wire.artManifest}
+      labels={wire.labels}
+      colors={COLORS}
+      selected={[]}
+      busy={false}
+      {...(onTileClick ? { onTileClick } : {})}
+    />
+  );
+
+  it("keeps every tile and every image when a click handler appears and goes", () => {
+    const { container, rerender } = render(tree());
+    const nodes = () => ({
+      tiles: [...container.querySelectorAll<HTMLElement>(".tile")],
+      imgs: [...container.querySelectorAll<HTMLImageElement>(".board img")],
+    });
+    const before = nodes();
+    expect(before.tiles.length, "the fixture must draw tiles").toBeGreaterThan(0);
+    // Without art there is nothing to remount and the cell would pass on an
+    // empty board — the one way an identity check goes vacuous.
+    expect(before.imgs.length, "the fixture must draw art").toBeGreaterThan(0);
+
+    rerender(tree(vi.fn()));
+    const picking = nodes();
+    expect(picking.tiles).toHaveLength(before.tiles.length);
+    expect(picking.imgs).toHaveLength(before.imgs.length);
+    before.tiles.forEach((t, i) => {
+      expect(picking.tiles[i]!.isSameNode(t), `tile ${i} was remounted when the picker opened`).toBe(true);
+      expect(t.isConnected, `tile ${i} left the document`).toBe(true);
+    });
+    before.imgs.forEach((img, i) => {
+      expect(picking.imgs[i]!.isSameNode(img), `image ${i} was remounted when the picker opened`).toBe(true);
+      expect(img.isConnected, `image ${i} left the document`).toBe(true);
+    });
+
+    // And back again when the picker closes, which is the other half of the
+    // same click: Confirm takes `onTileClick` away.
+    rerender(tree());
+    const after = nodes();
+    before.tiles.forEach((t, i) => {
+      expect(after.tiles[i]!.isSameNode(t), `tile ${i} was remounted when the picker closed`).toBe(true);
+    });
+    before.imgs.forEach((img, i) => {
+      expect(after.imgs[i]!.isSameNode(img), `image ${i} was remounted when the picker closed`).toBe(true);
+    });
+  });
+
+  // One element in both states means the interactivity is attributes rather
+  // than a tag, so the two things a tag gave for free are pinned here: the
+  // pointer and the keyboard both activate it, and both name the area.
+  it("is activated by a click, by Enter and by Space, and names its area every time", async () => {
+    const onTileClick = vi.fn();
+    const { container } = render(tree(onTileClick));
+    const area = wire.options.frame.board.tiles[2]!.area;
+    const el = tileOf(container, `A${String(area).padStart(2, "0")}`);
+    const user = userEvent.setup();
+
+    await user.click(el);
+    expect(onTileClick).toHaveBeenLastCalledWith(area);
+    el.focus();
+    await user.keyboard("{Enter}");
+    expect(onTileClick).toHaveBeenLastCalledWith(area);
+    await user.keyboard(" ");
+    expect(onTileClick).toHaveBeenLastCalledWith(area);
+    expect(onTileClick).toHaveBeenCalledTimes(3);
   });
 });
 
 describe("a historical board", () => {
   // **A past position is not answerable, and the board has to SAY so.**
   //
-  // `Board` turns a tile into a `<button>` only when it is handed
-  // `onTileClick`, so a replay frame drawn without one is inert by
-  // construction. This is the property that makes the scrubber safe to host
-  // behind a modal panel: there is nothing behind it to press. Asserted over
-  // the whole board rather than one tile, because a single escaping button is
-  // a click that would post an input against a position the game has left.
+  // `Board` gives a tile `role="button"` only when it is handed `onTileClick`,
+  // so a replay frame drawn without one is inert by construction. This is the
+  // property that makes the scrubber safe to host behind a modal panel: there
+  // is nothing behind it to press. Asserted over the whole board rather than
+  // one tile, because a single escaping button is a click that would post an
+  // input against a position the game has left.
+  //
+  // The selector moved from `button.tile` with the element (R-F2). It has to:
+  // every tile is a `<div>` now, so the old one would count zero on any board
+  // at all and this cell would assert nothing.
   it("renders every tile inert when no click handler is given", () => {
     // Rendered directly rather than through `show`, which takes a
     // `ClientState`: the whole point of `HistoricalFrame` is that it is NOT one.
@@ -241,7 +342,7 @@ describe("a historical board", () => {
       />,
     );
     expect(container.querySelectorAll(".tile").length).toBeGreaterThan(0);
-    expect(container.querySelectorAll("button.tile")).toHaveLength(0);
+    expect(container.querySelectorAll('.tile[role="button"]')).toHaveLength(0);
   });
 });
 

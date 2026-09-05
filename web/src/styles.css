@@ -282,9 +282,17 @@ h1, h2, h3 { font-family: var(--display); font-weight: 500; margin: 0; }
   color: inherit; font: inherit; text-align: left;
   transition: border-color 120ms ease, transform 120ms ease;
 }
-button.tile { cursor: pointer; }
-button.tile:hover { transform: translateY(-1px); border-color: var(--line-bright); }
-button.tile:focus-visible { outline: 2px solid var(--vp); outline-offset: 1px; }
+/* The pickable tile, which is a `<div role="button">` and not a `<button>`:
+ * switching the TAG when a picker opened remounted the art and the pyramid drew
+ * as dark boxes for seconds (final review I2, ruling R-F2). The selector is the
+ * role, so the three rules follow the affordance and not the element. */
+.tile[role="button"] { cursor: pointer; }
+.tile[role="button"]:hover { transform: translateY(-1px); border-color: var(--line-bright); }
+.tile[role="button"]:focus-visible { outline: 2px solid var(--vp); outline-offset: 1px; }
+/* A request is in flight: the tile answers nothing, and says so with the
+ * pointer the disabled button used to carry for free. */
+.tile[aria-disabled="true"] { cursor: default; }
+.tile[aria-disabled="true"]:hover { transform: none; border-color: var(--line); }
 
 /* **The tile IS the picture** (M5). The box was the art half of a picture-plus-
  * caption tile; it is now the whole tile, and every overlay is positioned

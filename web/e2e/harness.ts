@@ -210,7 +210,13 @@ export async function readScreen(page: Page): Promise<Screen> {
     return {
       over: document.body.innerText.includes("The game is over."),
       options: many("button.option:not([disabled])"),
-      tiles: many("button.tile:not([disabled])"),
+      // **The pickable tile, and its shape is not a tag** (M5.5 ruling R-F2):
+      // `Board` draws every tile as a `<div>` and marks the answerable ones
+      // `role="button"`, because switching the element type when a picker
+      // opened remounted the art. The in-flight guard rides as `aria-disabled`
+      // for the same reason. This selector is what every walk in this suite
+      // steers by, so it is the one to follow if that shape ever moves again.
+      tiles: many('.tile[role="button"]:not([aria-disabled="true"])'),
       counts: many(".options .controls button.ghost:not([disabled])"),
       confirm: named("Confirm"),
       only: named("Apply the only option"),
@@ -269,7 +275,7 @@ export async function act(
   if (screen.tiles > 0 && screen.confirm) {
     const wanted = 1 + nth(Math.min(3, screen.tiles));
     for (let i = 0; i < wanted; i += 1) {
-      const live = page.locator("button.tile:not([disabled])");
+      const live = page.locator('.tile[role="button"]:not([aria-disabled="true"])');
       const n = await live.count();
       if (n === 0) break;
       await live.nth(nth(n)).click();

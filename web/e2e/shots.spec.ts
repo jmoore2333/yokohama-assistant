@@ -171,8 +171,8 @@ test("the whole screen, and a placement picker", async ({ page }) => {
   // has stopped discriminating and the run fails instead of photographing an
   // arbitrary frame under the placement caption.
   expect(
-    await page.locator("button.tile").count(),
-    "a tile is a button outside a placement picker, so the picker check below detects nothing",
+    await page.locator('.tile[role="button"]').count(),
+    'a tile carries role="button" outside a placement picker, so the picker check below detects nothing',
   ).toBe(0);
 
   await playAFew(page, 9, 0x53_48_4f_54); // "SHOT"
@@ -226,7 +226,7 @@ test("the whole screen, and a placement picker", async ({ page }) => {
   for (let i = 0; i < 40 && !found; i++) {
     const screen = await readScreen(page);
     if (screen.over) break;
-    if ((await page.locator("button.tile").count()) > 0) {
+    if ((await page.locator('.tile[role="button"]').count()) > 0) {
       found = true;
       break;
     }
@@ -235,7 +235,7 @@ test("the whole screen, and a placement picker", async ({ page }) => {
   expect(found, "never reached a placement picker, so placement.png would be a lie").toBe(true);
   await scrollToTop(page);
   await park(page);
-  await expect(page.locator("button.tile").first()).toBeVisible();
+  await expect(page.locator('.tile[role="button"]').first()).toBeVisible();
   // The deck's own words for the picker, so the shot cannot be of a board that
   // merely has buttons on it: Option A and Option B are the only two prompts
   // that put the question on the table, and one of them is on screen. Scoped to

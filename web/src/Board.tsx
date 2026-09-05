@@ -333,7 +333,8 @@ function Tile({
   // **The prefix is load-bearing and stays first**: five component cells find a
   // tile by `^A\d\d ` — `App.test.tsx`'s `tile()` helper, used four times, and
   // the disabled-board cell in `Board.test.tsx`. NOT the browser harness, which
-  // selects `button.tile:not([disabled])` by CSS and never reads the label.
+  // selects `.tile[role="button"]:not([aria-disabled="true"])` by CSS and never
+  // reads the label.
   const label = [
     `${id} ${name}${isSelected ? " — selected" : ""}`,
     ...(pieces ? [pieces] : []),
@@ -365,24 +366,50 @@ function Tile({
     ...(popOpen ? { "aria-describedby": `pop-${id}` } : {}),
   };
 
-  if (!onClick || isCanal)
-    return (
-      <div className={className} tabIndex={0} {...hoverable}>
-        {body}
-      </div>
-    );
+  // **ONE ELEMENT IN BOTH STATES, and the reason is what the player saw.**
+  //
+  // This used to return a `<div>` when it had no `onClick` and a `<button>`
+  // when it had one. React reconciles by element TYPE, so opening a placement
+  // picker replaced all ten tiles and their thirty `<img loading="lazy">`
+  // children — and on the live site the pyramid drew as dark boxes for two to
+  // four seconds at exactly the click the set table and the walk lead the
+  // player to (final review I2: `complete` 0 of 30 at ~1s, 30 of 30 at ~4s,
+  // every area art `transferSize: 0`, so the images were in cache and the
+  // remount was the whole cost). The `<img>` attribute stays `lazy` — the
+  // runbook's first-paint figures rest on it — and the node is what stops
+  // changing.
+  //
+  // **The accessible semantics are the ones the two tags had, kept
+  // deliberately rather than by luck** (ruling R-F2): with no `role`, a screen
+  // reader walks the subtree and reads the `.sr-only` spans and `Pieces`' own
+  // `role="img"` name, exactly as the inert `<div>` did; with `role="button"`
+  // the tile is a single node whose `aria-label` overrides its contents,
+  // exactly as the `<button>` did. What a tag gave for free and an attribute
+  // does not is keyboard activation, so `onKey` supplies it, and `disabled`
+  // becomes `aria-disabled` plus no handler at all — the tile is out of the tab
+  // order while a request is in flight, as the disabled button was.
+  const interactive = onClick !== undefined && !isCanal;
+  const onKey = (e: React.KeyboardEvent<HTMLElement>) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    // Space scrolls the page otherwise, which is what a native button's
+    // default action suppresses.
+    e.preventDefault();
+    onClick?.(tile.area);
+  };
   return (
-    <button
-      type="button"
+    <div
       className={className}
-      disabled={busy}
-      aria-pressed={isSelected}
-      aria-label={label}
-      onClick={() => onClick(tile.area)}
+      role={interactive ? "button" : undefined}
+      tabIndex={interactive && busy ? -1 : 0}
+      aria-label={interactive ? label : undefined}
+      aria-pressed={interactive ? isSelected : undefined}
+      aria-disabled={interactive && busy ? true : undefined}
+      onClick={interactive && !busy ? () => onClick!(tile.area) : undefined}
+      onKeyDown={interactive && !busy ? onKey : undefined}
       {...hoverable}
     >
       {body}
-    </button>
+    </div>
   );
 }
 
