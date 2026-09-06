@@ -123,11 +123,16 @@ export function NewGame({
    *  bot's, whose keep is the bot's own. A value on a bot seat is a 400 naming
    *  the seat, and so is a `null` on a human one.
    *
-   *  **Two of them, because the two requests mean different things by it.** The
-   *  PREVIEW deals both cards to every seat and keeps neither — it is the deal,
-   *  not the choice — so the field is only there to pass the shape check, and
-   *  every human seat sends `1`. CREATE is where the choice is made and sends
-   *  what the player picked. */
+   *  **Two of them, because the two requests mean different things by it.** On
+   *  the PREVIEW the value is inert: no human seat has chosen yet, so `1` goes
+   *  on every human seat only to pass the shape check, and the server ignores
+   *  it — a previewed human hand is empty. It is NOT inert on the bot's seat,
+   *  which the server keeps for by its own argmax either way, so the previewed
+   *  table already shows one order in the bot's hand. CREATE is where the
+   *  choice is made and sends what the player picked.
+   *
+   *  **What comes BACK is a different question, and the answer is R-C1:** the
+   *  response carries each human seat's two cards and nothing of the bot's. */
   const previewKeeps = (): (number | null)[] =>
     Array.from({ length: players }, (_, seat) => (seat === botSeat ? null : 1));
 

@@ -77,6 +77,14 @@ describe("the payload roots carry exactly the fields the client declares", () =>
     ["preview_bot", wire.previewBot, KEYS.preview],
     ["preview.deal", wire.preview.deals[0], KEYS.deal],
     ["preview.dealCard", wire.preview.deals[0]!.cards[0], KEYS.dealCard],
+    // **The BOT's deal, which no row above reaches.** `preview.deal` is the
+    // bot-free fixture's human seat and `preview_bot` is checked only at its
+    // top level, so before this row a field emitted on a bot seat alone — under
+    // any name but the literal `bot_keep` the three absence cells search for —
+    // passed every check in this file. §1's structural typing cannot see it
+    // either: TypeScript does not flag excess properties on a JSON import.
+    // That is precisely the seat R-C1 moved the leak-relevant shape onto.
+    ["preview_bot.deal(bot)", wire.previewBot.deals[1], KEYS.deal],
     ["error", wire.error, KEYS.apiError],
     ["suggest", wire.suggest, KEYS.suggestResponse],
     ["suggest.ok", wire.suggest.ok, KEYS.suggestOk],
