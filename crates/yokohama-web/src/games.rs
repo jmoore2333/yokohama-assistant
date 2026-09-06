@@ -101,13 +101,19 @@ pub struct DealCard {
 }
 
 /// The two cards a seat was dealt, so a client can show them before choosing.
+///
+/// **A seat only ever sees its OWN deal (2026-09-06, R-C1).** On a bot seat
+/// `cards` is EMPTY and there is no keep field on this struct at all — the
+/// client draws two card backs from `is_bot` alone. The bot still keeps by the
+/// same argmax ([`bot_keep`], applied in [`choices_of`] at `create`): the
+/// record knows which card it took, and the player does not.
 #[derive(Debug, Clone, Serialize)]
 pub struct Deal {
     pub seat: PlayerId,
     pub is_bot: bool,
+    /// The seat's two dealt cards, each with its Keep score — and `[]` on a bot
+    /// seat, whose deal is not the reader's to see.
     pub cards: Vec<DealCard>,
-    /// The card a bot seat keeps, `1` or `2`; `None` on a human seat.
-    pub bot_keep: Option<u8>,
 }
 
 /// The set table (M5.5 spec §3.3.1): the position after setup, a throwaway
@@ -320,6 +326,12 @@ pub fn preview(req: &NewGame, rules: &Rules) -> Result<Preview, PreviewError> {
             Deal {
                 seat,
                 is_bot,
+                // **A bot seat sends no cards (R-C1).** Not a filter on the
+                // client's side of the wire but an absence on this one: the
+                // payload cannot leak what it does not carry. The bot's own
+                // keep is computed above, where the previewed table needs it,
+                // and reaches the client only as a card already in a hand.
+                //
                 // **`cards[0]` IS card 1 and `cards[1]` is card 2.** The wire
                 // numbers the dealt cards from 1 because that is how they are
                 // numbered on screen, and `PendingSetup.deals` indexes them
@@ -330,12 +342,17 @@ pub fn preview(req: &NewGame, rules: &Rules) -> Result<Preview, PreviewError> {
                 // an unknown id would slide the second card into the first
                 // one's place; it cannot fire, because every id here came out
                 // of `new_game` against these same `rules`.
-                cards: deal
-                    .iter()
-                    .filter_map(|id| rules.orders.get(*id).cloned())
-                    .map(|card| DealCard { keep_score: score_starting_order(&card, rules), card })
-                    .collect(),
-                bot_keep: is_bot.then(|| bot_keep(deal, rules)),
+                cards: if is_bot {
+                    Vec::new()
+                } else {
+                    deal.iter()
+                        .filter_map(|id| rules.orders.get(*id).cloned())
+                        .map(|card| DealCard {
+                            keep_score: score_starting_order(&card, rules),
+                            card,
+                        })
+                        .collect()
+                },
             }
         })
         .collect();
@@ -860,10 +877,10 @@ mod tests {
     /// kept card in the bot's hand; each dealt card carries its Keep score.
     ///
     /// **At the corpus seed on purpose**, so the projection is asserted against
-    /// the same position the committed fixtures hold. Its `bot_keep` assertion
-    /// is a consistency check between the payload's own scores and its own
-    /// answer, and is therefore blind to a constant Keep \u2014 the two cells above
-    /// are what discriminate that, and they run at [`ARGMAX_IS_CARD_2`].
+    /// the same position the committed fixtures hold. **Which card the bot kept
+    /// is not on this payload and is not asserted here (R-C1)** \u2014 the deal is
+    /// empty on a bot seat; what the projection still says out loud is that the
+    /// bot HAS chosen, which is the hand count below.
     #[test]
     fn the_preview_is_the_position_after_setup() {
         let rules = Rules::standard();
@@ -888,11 +905,10 @@ mod tests {
         assert_eq!(players.players[1].orders_in_hand, 1, "the bot's kept card is in its hand");
         assert_eq!(players.players[0].orders_in_hand, 0, "nothing chosen yet");
         assert_eq!(p.deals.len(), 2);
-        assert!(!p.deals[0].is_bot && p.deals[0].bot_keep.is_none());
+        assert!(!p.deals[0].is_bot);
+        assert_eq!(p.deals[0].cards.len(), 2);
         assert!(p.deals[1].is_bot);
-        let scores: Vec<i64> = p.deals[1].cards.iter().map(|c| c.keep_score).collect();
-        let argmax = if scores[1] > scores[0] { 2 } else { 1 };
-        assert_eq!(p.deals[1].bot_keep, Some(argmax));
+        assert!(p.deals[1].cards.is_empty(), "a bot seat's deal is not on the wire");
         for d in &p.deals {
             for c in &d.cards {
                 assert_eq!(
@@ -906,27 +922,68 @@ mod tests {
         assert!(g.list().unwrap().is_empty());
     }
 
-    /// The preview and the created game put the same card in the bot's hand.
+    /// **Another seat's deal never reaches the wire (2026-09-06, R-C1).** A bot
+    /// seat's `cards` is empty and `bot_keep` is not a field at all, so a
+    /// player reading the payload cannot learn what the bot was dealt or which
+    /// of the two it kept. The record still knows: the kept card is in the
+    /// bot's hand in the game `create` builds, which
+    /// [`the_created_game_holds_the_bots_own_keep_at_both_seeds`] reads.
     ///
-    /// At [`ARGMAX_IS_CARD_2`] for the reason the argmax cell states, and with
-    /// the same premise asserted: at the corpus seed both sides would agree on
-    /// card 1 whether or not either of them consulted the bot.
+    /// **At [`ARGMAX_IS_CARD_2`]** so the seat this cell empties is the seat
+    /// whose Keep is not the constant `1`, and with the human's half asserted
+    /// beside it: a `preview` that emptied EVERY deal would hide the bot's
+    /// cards and take the player's own with them.
     #[test]
-    fn the_preview_and_the_game_agree_on_the_bots_card() {
+    fn a_bot_seats_deal_never_reaches_the_wire() {
         let rules = Rules::standard();
-        let p = preview(&req_seeded("agree", ARGMAX_IS_CARD_2), &rules).unwrap();
-        assert_eq!(
-            p.deals[1].bot_keep,
-            Some(2),
-            "the premise: this seed's bot keeps card 2, so agreeing on card 1 is not enough",
-        );
-        let kept = p.deals[1].cards[usize::from(p.deals[1].bot_keep.unwrap() - 1)].card.id;
+        let p = preview(&req_seeded("hidden", ARGMAX_IS_CARD_2), &rules).unwrap();
+        assert!(p.deals[1].is_bot, "the premise: seat 1 is the bot");
+        assert!(p.deals[1].cards.is_empty(), "a bot seat's cards are not on the wire");
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(!json.contains("bot_keep"), "the payload names the bot's keep");
+        // Anti-vacuity: the human's own deal is untouched, with both Keep
+        // scores, so the withholding is targeted rather than a blank preview.
+        assert!(!p.deals[0].is_bot);
+        assert_eq!(p.deals[0].cards.len(), 2);
+        for c in &p.deals[0].cards {
+            assert_eq!(c.keep_score, yokohama_core::greedy::score_starting_order(&c.card, &rules));
+        }
+    }
+
+    /// The bot's own Keep is what lands in the created game's hand \u2014 read at
+    /// BOTH seeds, where the two answers differ.
+    ///
+    /// **This cell used to read the preview's answer** (`bot_keep`), and the
+    /// deal left the wire in the 2026-09-06 corrections (R-C1). The claim it
+    /// made is still true and is still worth a cell, so it is made where it
+    /// remains observable: the state `create` builds. It runs at BOTH seeds
+    /// because one seed cannot discriminate \u2014 at [`CORPUS_SEED`] the argmax is
+    /// card 1 and at [`ARGMAX_IS_CARD_2`] it is card 2, so a keep reduced to
+    /// either constant fails one of the two halves. Each seed's premise is
+    /// asserted from `score_starting_order` rather than trusted, so a deal that
+    /// moved says so instead of turning the cell vacuous.
+    #[test]
+    fn the_created_game_holds_the_bots_own_keep_at_both_seeds() {
+        let rules = Rules::standard();
         let g = games();
-        let (_, handle) = g.create(&req_seeded("agree", ARGMAX_IS_CARD_2)).unwrap();
-        assert_eq!(
-            handle.lock().unwrap().session.state().players[1].order_cards_in_hand,
-            vec![kept],
-        );
+        for (seed, expected_card) in [(CORPUS_SEED, 1usize), (ARGMAX_IS_CARD_2, 2usize)] {
+            let pending = new_game(GameConfig::for_player_count(2), &rules, seed).unwrap();
+            let deal = pending.deals[1];
+            let (a, b) = (keep_score(&rules, deal[0]), keep_score(&rules, deal[1]));
+            let argmax = if b > a { 2 } else { 1 };
+            assert_eq!(
+                argmax, expected_card,
+                "the premise at seed {seed}: the bot's argmax must be card {expected_card} \
+                 ({a} then {b}), or the pair of seeds no longer discriminates",
+            );
+            let name = format!("agree-{seed}");
+            let (_, handle) = g.create(&req_seeded(&name, seed)).unwrap();
+            assert_eq!(
+                handle.lock().unwrap().session.state().players[1].order_cards_in_hand,
+                vec![deal[expected_card - 1]],
+                "seed {seed}: the bot holds the card it scored highest",
+            );
+        }
     }
 
     /// A record this server writes carries the terminal digest, so the

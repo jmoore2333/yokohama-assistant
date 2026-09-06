@@ -965,11 +965,12 @@ mod tests {
     /// `games::preview`'s own cells prove the projection and not the wiring.
     #[tokio::test]
     async fn the_preview_serves_the_set_table_and_refuses_a_keep_on_a_bot_seat() {
-        // **Seed 20260830, not the corpus seed.** At the corpus seed the bot's
-        // argmax is card 1, which is the card the old wire already sent, so an
-        // `is_u64()` check there passes on a `bot_keep` reduced to a constant.
-        // Here the argmax is card 2, and the premise is asserted from the
-        // payload's own scores so a changed deal is loud rather than vacuous.
+        // **Seed 20260830, not the corpus seed**, kept from the era when this
+        // cell read the bot's own Keep off the payload: there the argmax is
+        // card 2, so a constant could not have passed. The deal left the wire
+        // in the 2026-09-06 corrections (R-C1) and what this route now owes is
+        // the ABSENCE — asserted on the serialized body, which is the only
+        // place a stray field could still appear.
         let body = serde_json::json!({
             "players": 2, "colors": ["Red", "Blue"], "start_seat": 0, "seed": 20260830,
             "keeps": [1, null], "bot_seats": [1]
@@ -978,14 +979,12 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "{preview}");
         assert_eq!(preview["table"]["index"], serde_json::json!(0));
         let bot = &preview["deals"][1];
-        let scores: Vec<i64> =
-            bot["cards"].as_array().expect("two cards").iter().map(|c| c["keep_score"].as_i64().expect("a score")).collect();
-        assert!(
-            scores[1] > scores[0],
-            "the premise: this seed's bot must prefer card 2 ({scores:?})",
-        );
-        assert_eq!(bot["bot_keep"], serde_json::json!(2), "{bot}");
-        assert!(preview["deals"][0]["bot_keep"].is_null());
+        assert_eq!(bot["is_bot"], serde_json::json!(true), "{bot}");
+        assert_eq!(bot["cards"].as_array().expect("an array").len(), 0, "{bot}");
+        assert!(!preview.to_string().contains("bot_keep"), "{preview}");
+        // Anti-vacuity: the reader's OWN deal is whole, so the route withholds
+        // one seat's cards rather than serving an empty set table.
+        assert_eq!(preview["deals"][0]["cards"].as_array().expect("two cards").len(), 2);
         assert!(preview["deals"][0]["cards"][0]["keep_score"].is_i64());
         let mut on_bot = body;
         on_bot["keeps"] = serde_json::json!([1, 1]);

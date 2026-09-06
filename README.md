@@ -205,7 +205,8 @@ about the game, so the terminal and the browser cannot disagree about a rule. A 
 **set table** — the areas with their site cards and tokens, the port, the laboratory and the goals,
 exactly what the rulebook has on the table when the two starting orders are dealt — where you choose
 your first card over the real board rather than off a list, with the built-in bot's Keep score under
-each card and the bot's own card marked.
+each of your own two cards. The bot's two are face down: it keeps one of them, the record knows
+which, and you never see it.
 
 ![The browser client at two players: the banner with the Boards menu and the reference buttons
 along the top, the end-trigger strip beneath it, and the table filling the left with the ten area

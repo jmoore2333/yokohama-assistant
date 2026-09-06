@@ -2,12 +2,45 @@ import { useEffect, useRef, useState } from "react";
 import { api, ApiError, type NewGameRequest } from "./api";
 import { Board } from "./Board";
 import { BoardsMenu } from "./BoardsMenu";
+import { backArt } from "./art";
 import { OrderCardView, seatClass } from "./Cards";
 import { TableSections } from "./TableSections";
 import type { SectionKey } from "./sections";
 import type { ArtManifest, ClientState, Labels, PlayerColor, Preview } from "./types";
 
 const COLORS = ["Red", "Blue", "Yellow", "Green"] as const;
+
+/** Two face-down order cards: a deal this browser was never sent.
+ *
+ *  **The absence is the server's, not this component's** (R-C1). A bot seat's
+ *  `cards` arrives empty and there is no keep field to read, so there is no
+ *  filtering here that a bug could skip — the picture is drawn from `is_bot`
+ *  alone. The art is the manifest's own order back — the key is `order_back`,
+ *  not `order`, because the `backs` family is keyed by FILE stem where the
+ *  other families are keyed by an engine identifier; where the manifest has not
+ *  arrived the typed alternative is drawn, the rule `art.ts` states for every
+ *  family.
+ *
+ *  Small and reusable on purpose: a human seat that has chosen, or is waiting
+ *  its turn, shows the same two backs. */
+function DealBacks({ art }: { art: ArtManifest | null }) {
+  const src = backArt(art, "order_back");
+  return (
+    <div className="deal">
+      {[1, 2].map((n) => (
+        <div className="deal-card" key={n}>
+          <figure className="card-face order sm back">
+            {src ? (
+              <img className="back" src={src} alt="" loading="lazy" />
+            ) : (
+              <div className="card-blank">face down</div>
+            )}
+          </figure>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 /** Setup: the sim tail of the CLI's wizard, in two steps, plus the saved games.
  *
@@ -25,10 +58,13 @@ const COLORS = ["Red", "Blue", "Yellow", "Green"] as const;
  * at its step 12 when the two cards are drawn. Nothing is created until Start:
  * the server threw its preview session away.
  *
- * **The choice is per HUMAN seat and the bot's is the bot's.** A bot seat shows
- * its two cards with the one it keeps marked and no button on either — the
- * client never chooses for the bot, and `keeps` carries `null` there, which the
- * server refuses a value on by name. */
+ * **The choice is per HUMAN seat, and another seat's deal is not yours to see
+ * (the 2026-09-06 corrections, R-C1).** A bot seat shows two card BACKS and the
+ * line that it keeps one of them: the server sends no cards and no keep on a
+ * bot seat, so there is nothing here to filter and nothing to leak. The bot
+ * still keeps its own argmax — the record holds the card, the player does not
+ * see it — and `keeps` carries `null` on that seat, which the server refuses a
+ * value on by name. */
 export function NewGame({
   art,
   labels,
@@ -186,21 +222,8 @@ export function NewGame({
                 <span className={seatClass(colors[d.seat])}>{colors[d.seat]}</span> &middot; bot,
                 seat {d.seat}
               </h2>
-              <div className="deal">
-                {d.cards.map((c, i) => (
-                  <div className="deal-card" key={c.card.id}>
-                    <OrderCardView
-                      art={art}
-                      card={c.card}
-                      id={c.card.id}
-                      size="sm"
-                      chips={false}
-                      note={`Keep score ${c.keep_score}`}
-                    />
-                    {d.bot_keep === i + 1 && <div className="bot-keeps">bot keeps this</div>}
-                  </div>
-                ))}
-              </div>
+              <DealBacks art={art} />
+              <p className="muted deal-unseen">keeps one of its two cards &mdash; unseen</p>
             </section>
           ))}
         </aside>

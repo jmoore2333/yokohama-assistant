@@ -407,14 +407,26 @@ test("four assistants of one colour stand as a pile, not as a cube and a count",
 // that reaches the hand of the game that is then created, which spans the
 // preview's seed, the `keeps` the create carries and the deal the engine makes
 // from them; nothing short of the real round trip can see that join.
-test("the set table shows the port and the bot's kept card before the first choice, and the chosen card lands in hand", async ({ page }) => {
+//
+// **And the bot's own deal is HIDDEN on both sides of that (R-C1).** The
+// component suite reads the absence off a committed fixture; this reads it off
+// what a real server sent a real browser, which is the only reading that can
+// say the payload itself carried nothing.
+test("the set table shows the port and hides the bot's cards before the first choice, and the chosen card lands in hand", async ({ page }) => {
   const watch = watchForBreakage(page);
   await page.setViewportSize({ width: 1710, height: 869 });
   await page.goto("/");
   await page.getByRole("button", { name: "Deal" }).click();
   await expect(page.locator(".table-sec.ports .strip-slot .card-face")).toHaveCount(6);
   await expect(page.locator(".board .tile")).toHaveCount(10);
-  await expect(page.locator(".deal-seat.bot .bot-keeps")).toHaveCount(1);
+  // Two backs and the line under the bot, and no id and no Keep score anywhere
+  // in its panel — against the human seat's own two ids on the same screen, so
+  // this is the bot's deal being withheld and not a deal that failed to draw.
+  await expect(page.locator(".deal-seat.human .card-id")).toHaveCount(2);
+  await expect(page.locator(".deal-seat.bot img.back")).toHaveCount(2);
+  await expect(page.locator(".deal-seat.bot .card-id")).toHaveCount(0);
+  await expect(page.locator(".deal-seat.bot")).not.toContainText("Keep score");
+  await expect(page.locator(".deal-seat.bot")).toContainText("keeps one of its two cards");
   await expect(page.getByRole("button", { name: "Start" })).toBeDisabled();
 
   // **Inert, and still readable (spec §3.3.3).** `.tile[role="button"]` is the placement
@@ -429,24 +441,24 @@ test("the set table shows the port and the bot's kept card before the first choi
   await page.mouse.move(2, 2);
   await expect(page.getByRole("tooltip")).toHaveCount(0);
 
-  // **R-T12-3: the bot's whole deal is in the frame at 1710x869, unscrolled.**
+  // **R-T12-3: the bot's whole panel is in the frame at 1710x869, unscrolled.**
   // The deck's block and the side column share the 808px under the banner, and
   // with the generic card (two chip rows) and the generic paddings they wanted
-  // 831 — so the bot's own Keep scores and its mark sat below the fold and only
-  // a scrolled camera could photograph them. Asserted in the VIEWPORT rather
-  // than in the DOM, because the DOM had them all along — and at `ratio: 1`,
-  // because the default (any intersection at all) passes on a badge whose top
-  // pixel is showing. **The PANEL is what carries the claim**: the mark sits
-  // under whichever card the bot kept, so how far down the column it falls
-  // depends on that card's own caption — measured, restoring the bot card's
-  // chip rows overflows the column by 38px and BOTH the default assertion and
-  // `ratio: 1` on the mark alone stayed green, while `ratio: 1` on the panel
-  // fails. The mark and the two scores are asserted as well, for the sentence
-  // this cell's name makes.
+  // 831 — so the bot's own captions sat below the fold and only a scrolled
+  // camera could photograph them. Asserted in the VIEWPORT rather than in the
+  // DOM, because the DOM had them all along — and at `ratio: 1`, because the
+  // default (any intersection at all) passes on an element whose top pixel is
+  // showing. **The PANEL is what carries the claim**: measured in M5.5,
+  // restoring the bot card's chip rows overflowed the column by 38px while both
+  // the default assertion and `ratio: 1` on a single child stayed green, and
+  // `ratio: 1` on the panel failed. The budget got EASIER in the 2026-09-06
+  // corrections — two backs with no caption where two captioned cards and a
+  // badge stood — and the assertion is kept at its old strength rather than
+  // relaxed to match, so a caption growing back is still caught here.
   await expect(page.locator(".deal-seat.bot")).toBeInViewport({ ratio: 1 });
-  await expect(page.locator(".deal-seat.bot .bot-keeps")).toBeInViewport({ ratio: 1 });
+  await expect(page.locator(".deal-seat.bot .deal-unseen")).toBeInViewport({ ratio: 1 });
   for (let i = 0; i < 2; i++) {
-    await expect(page.locator(".deal-seat.bot .card-note").nth(i)).toBeInViewport({ ratio: 1 });
+    await expect(page.locator(".deal-seat.bot img.back").nth(i)).toBeInViewport({ ratio: 1 });
   }
   await expect(page.getByRole("button", { name: "Start" })).toBeInViewport({ ratio: 1 });
   const budget = await page.evaluate(() => {

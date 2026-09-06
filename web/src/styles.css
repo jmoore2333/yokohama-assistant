@@ -1397,22 +1397,23 @@ ol.account .mover { font-weight: 700; }
  * block still scrolls above that: at 4P with three human seats it is taller
  * than any cap, and the deck's own rule is that the ANSWER stays reachable. */
 .deal-seat .deal { flex-wrap: nowrap; }
-/* **The mark sits UNDER the card, not over it.** Drawn as an absolute badge in
- * the card's bottom-left corner it covered the kept card's own "Keep score"
- * line — and spec §3.3.3 asks a bot seat for its two cards, BOTH scores, and
- * the kept one marked. Seen in gate B's picture. */
+/* A dealt card is a column: the card, and whatever caption sits under it. The
+ * `.bot-keeps` badge this rule was written beside is GONE — the bot's deal left
+ * the wire in the 2026-09-06 corrections (R-C1), so there is no kept card to
+ * mark and no Keep score under it to avoid covering. */
 .deal-card { display: flex; flex-direction: column; }
-.bot-keeps {
-  align-self: flex-start; margin-top: 0.25rem;
-  padding: 0.1rem 0.4rem; border-radius: 3px;
-  background: var(--vp); color: #111; font-size: 10px; font-weight: 700;
-}
-.keep-hedge { font-size: 11px; margin: 0.3rem 0; }
+/* The line under a face-down deal, sized with the hedge rather than as a
+ * generic `<p>`: the set table's height budget (R-T12-3, measured at 1710x869)
+ * is what the bot's panel is competing for. */
+.deal-unseen, .keep-hedge { font-size: 11px; margin: 0.3rem 0; }
 /* **The set table's own height budget (R-T12-3), MEASURED at 1710x869.** Above
  * 1201px the grid gives the deck an `auto` row and the side column the rest, so
  * the two share the 808px under the banner: the deal, the hedge and Start in
  * one, the bot's two cards in the other. With the generic paddings that came to
- * 831px and the bot's own Keep scores fell below the fold. These four rules take
+ * 831px and the bot's own Keep scores fell below the fold — the measurement is
+ * the PAST, taken when a bot seat still showed its cards face up; its two are
+ * backs with no caption since the 2026-09-06 corrections, which only makes the
+ * column's share easier to hold. These four rules take
  * ~39px out of the deck and ~16px out of the column; the deck's cap then binds
  * only at three and four human seats, where no cap fits them and the block
  * scrolls instead. Figures in the task report. */

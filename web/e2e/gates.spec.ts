@@ -320,9 +320,9 @@ for (const players of [2, 4] as const) {
 //
 // The picture the owner is asked to look at is the SECOND setup step — the
 // position the rulebook has on the table when the two cards are drawn, with the
-// deals in the deck and the bot's own card marked. Everything asserted here is
-// there so a blank or half-drawn frame cannot be sent under that caption; the
-// judgement is the owner's.
+// player's own deal in the deck and the bot's two cards face down (R-C1).
+// Everything asserted here is there so a blank or half-drawn frame cannot be
+// sent under that caption; the judgement is the owner's.
 test("gate B — the set table before the first choice", async ({ page }) => {
   mkdirSync(OUT, { recursive: true });
   await page.setViewportSize({ width: 1710, height: 869 });
@@ -337,7 +337,13 @@ test("gate B — the set table before the first choice", async ({ page }) => {
   await expect(page.locator(".table-sec.labs .board-strip")).toBeVisible();
   await expect(page.locator(".board .tile")).toHaveCount(10);
   await expect(page.locator(".deal-seat.human button.deal-pick")).toHaveCount(2);
-  await expect(page.locator(".deal-seat.bot .bot-keeps")).toHaveText("bot keeps this");
+  // **The bot's deal is face down (R-C1).** Two backs and the line, and no card
+  // id anywhere under the bot — paired with the human's own two ids, so the
+  // absence is the bot seat's and not a set table that drew no deal.
+  await expect(page.locator(".deal-seat.human .card-id")).toHaveCount(2);
+  await expect(page.locator(".deal-seat.bot img.back")).toHaveCount(2);
+  await expect(page.locator(".deal-seat.bot .card-id")).toHaveCount(0);
+  await expect(page.locator(".deal-seat.bot")).toContainText("keeps one of its two cards");
   // Before the first choice, which is what this gate is a picture OF.
   await expect(page.getByRole("button", { name: "Start" })).toBeDisabled();
   const seed = await page.locator("header.banner code").innerText();
@@ -370,9 +376,9 @@ test("gate B — the set table before the first choice", async ({ page }) => {
       `${layout.sideContent}px (bot panel ${layout.botPanel}px) — nothing scrolled`,
   });
   await expect(page.locator(".deal-seat.bot")).toBeInViewport({ ratio: 1 });
-  await expect(page.locator(".deal-seat.bot .bot-keeps")).toBeInViewport({ ratio: 1 });
+  await expect(page.locator(".deal-seat.bot .deal-unseen")).toBeInViewport({ ratio: 1 });
   for (let i = 0; i < 2; i++) {
-    await expect(page.locator(".deal-seat.bot .card-note").nth(i)).toBeInViewport({ ratio: 1 });
+    await expect(page.locator(".deal-seat.bot img.back").nth(i)).toBeInViewport({ ratio: 1 });
   }
   await expect(page.getByRole("button", { name: "Start" })).toBeInViewport({ ratio: 1 });
 

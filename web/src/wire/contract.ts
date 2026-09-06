@@ -351,7 +351,7 @@ const LABELS = [
 ] as const;
 const HEALTH = ["server_version", "semantics_rev", "rules_hash"] as const;
 const PREVIEW = ["seed", "table", "deals"] as const;
-const DEAL = ["seat", "is_bot", "cards", "bot_keep"] as const;
+const DEAL = ["seat", "is_bot", "cards"] as const;
 const DEAL_CARD = ["card", "keep_score"] as const;
 const API_ERROR = ["error"] as const;
 const SUGGEST_RESPONSE = ["ok", "refusal"] as const;

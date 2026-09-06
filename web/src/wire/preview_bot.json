@@ -1,7 +1,6 @@
 {
   "deals": [
     {
-      "bot_keep": null,
       "cards": [
         {
           "card": {
@@ -58,59 +57,7 @@
       "seat": 0
     },
     {
-      "bot_keep": 1,
-      "cards": [
-        {
-          "card": {
-            "country": "French",
-            "id": 23,
-            "requirements": {
-              "copper": 1,
-              "seafood": 0,
-              "silk": 2,
-              "tea": 3
-            },
-            "rewards": {
-              "any_trade_good": 0,
-              "copper": 0,
-              "imported_goods": 1,
-              "money": 0,
-              "movement": 0,
-              "seafood": 0,
-              "silk": 0,
-              "tea": 0,
-              "victory_points": 9,
-              "warehouse_tokens": 0
-            }
-          },
-          "keep_score": 57
-        },
-        {
-          "card": {
-            "country": "English",
-            "id": 32,
-            "requirements": {
-              "copper": 2,
-              "seafood": 1,
-              "silk": 0,
-              "tea": 1
-            },
-            "rewards": {
-              "any_trade_good": 0,
-              "copper": 0,
-              "imported_goods": 1,
-              "money": 0,
-              "movement": 0,
-              "seafood": 0,
-              "silk": 0,
-              "tea": 0,
-              "victory_points": 5,
-              "warehouse_tokens": 0
-            }
-          },
-          "keep_score": 31
-        }
-      ],
+      "cards": [],
       "is_bot": true,
       "seat": 1
     }

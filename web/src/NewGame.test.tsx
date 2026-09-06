@@ -229,34 +229,46 @@ describe("the set table", () => {
     expect(start).toBeEnabled();
   });
 
-  it("shows the bot's two cards, marks the one it keeps, and offers no choice on them", async () => {
+  // **The bot's deal is not on this screen (2026-09-06, R-C1).** It is not on
+  // the WIRE either — `contract.test.ts` holds that half — and this is what the
+  // player sees instead: two face-down cards and a line saying the bot keeps
+  // one of them. Nothing here reads a card id, a Keep score or a mark, because
+  // the payload carries none.
+  //
+  // The assertions are stated as ABSENCES on the bot's own section, each paired
+  // with the human section's presence, because a screen that drew no deal at
+  // all satisfies every absence on its own.
+  it("shows the bot's two cards face down, with no id, no score and no mark", async () => {
     await dealt(wire.previewBot);
     const bot = wire.previewBot.deals.find((d) => d.is_bot)!;
-    expect(bot.bot_keep === 1 || bot.bot_keep === 2, "the fixture's bot seat carries a keep").toBe(true);
+    expect(bot.cards, "the fixture's bot seat carries no cards").toHaveLength(0);
     const seat = document.querySelector(`.deal-seat.bot[data-seat="${bot.seat}"]`)!;
     expect(seat).not.toBeNull();
     expect(seat.querySelectorAll("button.deal-pick")).toHaveLength(0);
-    expect(seat.querySelectorAll(".card-face")).toHaveLength(2);
-    expect(seat.querySelector(".bot-keeps")?.textContent).toMatch(/bot keeps this/);
-    const kept = bot.cards[bot.bot_keep! - 1]!.card.id;
-    expect(seat.querySelector(".bot-keeps")?.closest(".deal-card")?.textContent).toContain(`O${String(kept).padStart(2, "0")}`);
+    expect(seat.querySelectorAll(".card-id")).toHaveLength(0);
+    expect(seat.querySelectorAll(".card-note")).toHaveLength(0);
+    expect(seat.querySelectorAll(".bot-keeps")).toHaveLength(0);
+    expect(seat.textContent).not.toMatch(/Keep score/);
+    expect(seat.querySelectorAll("img.back")).toHaveLength(2);
+    expect(seat.textContent).toMatch(/keeps one of its two cards . unseen/);
+    // Anti-vacuity: the human seat on the SAME payload still prints both of its
+    // own card ids, so the absences above are the bot's and not the screen's.
+    const human = wire.previewBot.deals.find((d) => !d.is_bot)!;
+    const mine = document.querySelector(`.deal-seat.human[data-seat="${human.seat}"]`)!;
+    const ids = [...mine.querySelectorAll(".card-id")].map((e) => e.textContent);
+    expect(ids).toEqual(human.cards.map((c) => `O${String(c.card.id).padStart(2, "0")}`));
   });
 
-  // **The mark has to READ `bot_keep`, and one fixture can only prove half of
-  // that.** The corpus payload's bot keeps card 1, so a client that marked the
-  // first card unconditionally passes the cell above. This flips that one field
-  // on the committed payload — the derivation `BIG_SEED` already makes in this
-  // file — and asks for the mark on the other card.
-  it("marks the second card when that is the one the bot keeps", async () => {
-    const bot = wire.previewBot.deals.find((d) => d.is_bot)!;
-    await dealt({
-      ...wire.previewBot,
-      deals: wire.previewBot.deals.map((d) => (d.is_bot ? { ...d, bot_keep: 2 as const } : d)),
-    });
-    const seat = document.querySelector(`.deal-seat.bot[data-seat="${bot.seat}"]`)!;
-    expect(seat.querySelector(".bot-keeps")?.closest(".deal-card")?.textContent).toContain(
-      `O${String(bot.cards[1]!.card.id).padStart(2, "0")}`,
-    );
+  // The backs are the real picture, not a styled placeholder: the manifest's
+  // own `backs/order_back.webp`, the file `art.ts` resolves. A back that 404s
+  // is a broken image on the set table, and jsdom cannot see that — but it can
+  // see the client asking for the wrong file.
+  it("draws the bot's backs from the manifest's order back", async () => {
+    await dealt(wire.previewBot);
+    const backs = [...document.querySelectorAll<HTMLImageElement>(".deal-seat.bot img.back")];
+    expect(backs).toHaveLength(2);
+    expect(backs.every((b) => b.getAttribute("src") === "/art/backs/order_back.webp")).toBe(true);
+    expect(backs.every((b) => b.getAttribute("alt") === "")).toBe(true);
   });
 
   // **R-T12-2.** Spec §3.3.3 asks for the Boards menu here "so a player can read

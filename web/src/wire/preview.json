@@ -1,7 +1,6 @@
 {
   "deals": [
     {
-      "bot_keep": null,
       "cards": [
         {
           "card": {
@@ -58,7 +57,6 @@
       "seat": 0
     },
     {
-      "bot_keep": null,
       "cards": [
         {
           "card": {

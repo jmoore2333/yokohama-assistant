@@ -190,17 +190,22 @@ describe("what the corpus itself has to be true of", () => {
     expect(JSON.stringify(wire.hiddenHand)).not.toContain('"is_starting_order"');
   });
 
-  // The bot chooses its own starting order, and the two preview fixtures are
-  // the two sides of that: `preview` is bot-free and every `bot_keep` is null,
-  // `preview_bot` has a bot at seat 1 and carries the card number it keeps.
-  // A server that stopped answering, or answered on a human seat, fails here.
-  it("a bot seat's keep is the bot's own, and a human seat's is nobody's yet", () => {
-    expect(wire.preview.deals.every((d) => d.bot_keep === null)).toBe(true);
-    expect(wire.preview.deals.every((d) => !d.is_bot)).toBe(true);
+  // **A seat only ever sees its own deal (2026-09-06, R-C1).** The bot still
+  // keeps a card — the argmax it has always kept, now visible only as a card in
+  // its hand — and the wire says nothing about which two it was dealt: `cards`
+  // is empty and there is no keep field to read. The two preview fixtures are
+  // the two sides of that, and the human halves are the anti-vacuity: a server
+  // that emptied EVERY deal would pass a check on the bot's alone.
+  it("a bot seat's deal is not on the wire, and a human seat's is", () => {
     const bot = wire.previewBot.deals[1]!;
     expect(bot.is_bot).toBe(true);
-    expect([1, 2]).toContain(bot.bot_keep);
-    expect(wire.previewBot.deals[0]!.bot_keep).toBeNull();
+    expect(bot.cards.length).toBe(0);
+    expect("bot_keep" in bot).toBe(false);
+    expect(wire.previewBot.deals[0]!.is_bot).toBe(false);
+    expect(wire.previewBot.deals[0]!.cards.length).toBe(2);
+    expect(wire.preview.deals.every((d) => !d.is_bot)).toBe(true);
+    expect(wire.preview.deals.every((d) => d.cards.length === 2)).toBe(true);
+    expect(wire.preview.deals.every((d) => !("bot_keep" in d))).toBe(true);
   });
 
   // **No play payload carries the setup seed; `preview` does, and must.**

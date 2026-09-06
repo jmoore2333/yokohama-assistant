@@ -186,10 +186,11 @@ async fn walk() -> Vec<(String, Value)> {
     assert_eq!(status, StatusCode::OK, "{preview}");
 
     // A SECOND preview, with a bot at seat 1, so the corpus carries the shape
-    // the set table's bot half has: `is_bot`, a `bot_keep`, and a hand with the
-    // bot's kept card already in it. No `create` beside it — a preview pumps
-    // nothing and draws no bot seed into anything it returns, so unlike the
-    // walk's game it is deterministic with a bot on the table.
+    // the set table's bot half has: `is_bot` true, an EMPTY `cards` (R-C1: a
+    // seat only ever sees its own deal), and a hand that already holds the card
+    // the bot kept. No `create` beside it — a preview pumps nothing and draws
+    // no bot seed into anything it returns, so unlike the walk's game it is
+    // deterministic with a bot on the table.
     let mut with_bot = new_game_body();
     with_bot["bot_seats"] = json!([1]);
     with_bot["keeps"] = json!([1, null]);

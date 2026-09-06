@@ -173,8 +173,10 @@ export function Help() {
         The deal happens over the <strong>set table</strong>: the areas with their site cards and
         tokens, the port, the laboratory and the goals &mdash; exactly what the rulebook has on the
         table when the two cards are drawn. Your two cards are in the answer bar, each with the
-        built-in bot&rsquo;s <em>Keep score</em> under it, and the bot&rsquo;s own two cards are in
-        the side column with the one it keeps marked &ldquo;bot keeps this&rdquo;. Press the card
+        built-in bot&rsquo;s <em>Keep score</em> under it, and the bot&rsquo;s own two cards are
+        <strong>face down</strong> in the side column. It keeps one of them by the same reading of
+        the printed economics the Keep score shows you &mdash; the game&rsquo;s record knows which,
+        and you do not see it, any more than you would across a table. Press the card
         you want and Start; nothing is created until you do, and <em>Re-deal</em> goes back to the
         setup form &mdash; where the seed field keeps whatever you typed, so a blank one deals a
         fresh game and a named one deals the same one again. The Keep score is the bot&rsquo;s preference from the card&rsquo;s printed

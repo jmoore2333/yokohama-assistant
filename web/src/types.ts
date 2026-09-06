@@ -424,20 +424,18 @@ export interface DealCard {
   keep_score: number;
 }
 
-/** The two cards a seat was dealt. */
+/** The two cards a seat was dealt \u2014 and NOT the two another seat was dealt.
+ *
+ *  **A bot seat carries an empty `cards` and no keep field at all** (the
+ *  2026-09-06 corrections, R-C1): the bot keeps by its own argmax and the
+ *  record holds the card, but a player reading this payload cannot learn what
+ *  it was dealt or which it took. The client draws two card backs from
+ *  `is_bot`, and it never chooses for the bot \u2014 `keeps` carries `null` there,
+ *  which the server refuses a value on by name. */
 export interface Deal {
   seat: PlayerId;
   is_bot: boolean;
   cards: DealCard[];
-  /** Which card a BOT seat keeps, `1` or `2`; `null` on a human seat, whose
-   *  keep the player makes. The client never chooses for the bot.
-   *
-   *  The literals are load-bearing for a reader and inert for the contract:
-   *  `Widen` in `wire/contract.ts` collapses them to `number`, because
-   *  TypeScript types a JSON import's number as `number` and a mapped form that
-   *  preserved `1 | 2` would reject every real fixture. The RANGE is checked at
-   *  run time in `contract.test.ts` instead. */
-  bot_keep: 1 | 2 | null;
 }
 
 /** The set table: the position after setup, beside the deals.
