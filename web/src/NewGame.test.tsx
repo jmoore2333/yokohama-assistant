@@ -177,8 +177,13 @@ describe("the request the client sends", () => {
   });
 });
 
-// The set table (M5.5 spec §3.3.3): the deal happens over the position the
-// rulebook has on the table at step 12, and the choice is per HUMAN seat.
+// The set table (M5.5 spec §3.3.3, amended by the 2026-09-06 corrections): the
+// deal happens over the position the owner's edition has on the table at its
+// step 9 — the areas, the port and the tracks, with the two orders dealt and
+// the choice taken in secret — and the choice is per HUMAN seat. The
+// technologies (its step 10) and the achievements (its step 11) are not on that
+// table yet, which is what `withholds the laboratory and the goals` below
+// asserts.
 describe("the set table", () => {
   const dealt = async (fixture: typeof wire.preview) => {
     const shown = show((call) => {
@@ -191,7 +196,7 @@ describe("the set table", () => {
     return shown;
   };
 
-  it("shows the table the rulebook has set at step 12: the pyramid and the strips, not a list", async () => {
+  it("shows the table the rulebook has set when the two orders are dealt: the pyramid and the boards, not a list", async () => {
     await dealt(wire.preview);
     expect(document.querySelectorAll(".board .tile")).toHaveLength(wire.preview.table.frame.board.tiles.length);
     // `.board-strip` and not the section wrapper: `TableSections` renders its

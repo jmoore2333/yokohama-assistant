@@ -1274,7 +1274,13 @@ ol.account .mover { font-weight: 700; }
  * cards rather than a row of six, so this is the one that needs it. */
 .table-sec.buildings { flex-basis: 100%; }
 .table-sec.tracks .panel { background: transparent; border: 0; padding: 0; }
-.table-sec.collapsed { color: var(--fg-faint); }
+/* **A section carrying a LINE does not take the row's height.** `.table-sections`
+ * is a wrapping flex row, so its default `align-items: stretch` made the two
+ * withheld boxes (2026-09-06, R-C3) as tall as the port strip beside them to
+ * hold one short sentence. `align-self` is on the `collapsed` shape alone —
+ * the three standing absences, never a strip with cards in it and never the
+ * `loading` moment — so every section with content keeps stretching as it did. */
+.table-sec.collapsed { color: var(--fg-faint); align-self: flex-start; }
 .tile-id-words { color: var(--fg-faint); font-size: 10px; }
 
 /* ---- M5.5: the walk's highlights --------------------------------------- */

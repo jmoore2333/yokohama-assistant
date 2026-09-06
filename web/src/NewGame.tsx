@@ -210,10 +210,15 @@ export function NewGame({
                 replay position takes. There is no game to answer yet. */}
             <Board board={preview.table.frame.board} art={art} labels={labels} colors={colors} />
             {/* `game={null}` and `state={null}`: nothing is fetched, because
-                there is nothing to fetch from. The port and the laboratory ride
-                on the frame — every `HistoricalFrame` carries them — so they
-                draw from the position rather than reading "loading…", and the
-                one board that has no position-shaped version says so. */}
+                there is nothing to fetch from. The PORT rides on the frame —
+                every `HistoricalFrame` carries it — so it draws from the
+                position rather than reading "loading…", and so do the tracks.
+                The other three sections each carry a line instead of a board,
+                for two different reasons: the building sites have no
+                position-shaped version at all ("available once the game
+                starts"), while the laboratory and the goals are WITHHELD by the
+                server until the card is chosen ("revealed once you have chosen
+                your card" — R-C3). */}
             <TableSections
               enabled={sections}
               game={null}

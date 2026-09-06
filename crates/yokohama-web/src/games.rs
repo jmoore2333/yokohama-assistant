@@ -1039,6 +1039,13 @@ mod tests {
         let goals = achievement_names(&started);
         assert_eq!(goals.len(), 3, "the premise: three achievement cards are in play");
 
+        // `all` over an empty vector is TRUE, so the board itself is asserted
+        // first: a withholding that cleared the BOARDS rather than their slots
+        // would otherwise pass this cell while deleting the laboratory.
+        assert!(
+            !p.table.labs.boards.is_empty(),
+            "the laboratory board is still drawn on the set table",
+        );
         assert!(
             p.table.labs.boards.iter().all(|b| b.slots.is_empty()),
             "every laboratory slot is empty on the set table",
@@ -1047,8 +1054,14 @@ mod tests {
             p.table.labs.deck_remaining, started.labs.deck_remaining,
             "the technology deck's COUNT is public and is kept",
         );
+        // The PANEL's absence, not merely an empty card list: `achievement_names`
+        // returns nothing for either, and "no panel" is the claim.
         assert!(
-            achievement_names(&p.table).is_empty(),
+            !p.table
+                .frame
+                .dashboard
+                .iter()
+                .any(|panel| matches!(panel, yokohama_cli::screen_model::Panel::Achievements(_))),
             "the set table carries no Achievements panel",
         );
 

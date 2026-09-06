@@ -442,6 +442,31 @@ test("the set table shows the port, hides the bot's cards and withholds the tech
   );
   await expect(page.locator(".table-sec.achievements .card-face")).toHaveCount(0);
   await expect(page.locator(".table-sec.tracks")).toBeVisible();
+
+  // **A section holding one sentence does not take the row's height.**
+  // `.table-sections` is a wrapping flex row, so before `align-self:
+  // flex-start` on `.table-sec.collapsed` the two withheld boxes stretched to
+  // the height of whatever shared their line — measured here against the TRACKS
+  // panel, which sits between them on this row and is the tall one. The three
+  // figures are printed; what is gated is the property, which is what a reader
+  // of them cares about, and it needs no threshold of its own.
+  const boxes = await page.evaluate(() => {
+    const h = (sel: string) =>
+      Math.round(document.querySelector(sel)!.getBoundingClientRect().height);
+    return {
+      labs: h(".table-sec.labs"),
+      goals: h(".table-sec.achievements"),
+      tracks: h(".table-sec.tracks"),
+    };
+  });
+  // eslint-disable-next-line no-console
+  console.log(
+    `set table withheld boxes at 1710x869: laboratory ${boxes.labs}px · goals ${boxes.goals}px · ` +
+      `tracks ${boxes.tracks}px (the row's tall one) — the two lined boxes are gated below it`,
+  );
+  expect(boxes.labs, "the withheld laboratory stretches to the row").toBeLessThan(boxes.tracks);
+  expect(boxes.goals, "the withheld goals stretch to the row").toBeLessThan(boxes.tracks);
+
   await expect(page.getByRole("button", { name: "Start" })).toBeDisabled();
 
   // **Inert, and still readable (spec §3.3.3).** `.tile[role="button"]` is the placement
@@ -535,6 +560,9 @@ test("the set table shows the port, hides the bot's cards and withholds the tech
   await expect(page.locator(".table-sec.labs")).not.toContainText(
     "revealed once you have chosen your card",
   );
-  await expect(page.locator(".table-sec.achievements .card-face")).not.toHaveCount(0);
+  // Three achievement cards in a game: one each from the A, B and C decks
+  // (the owner's edition's step 11). The exact count, for the reason the six
+  // above are exact — "more than none" would pass on a strip that lost two.
+  await expect(page.locator(".table-sec.achievements .card-face")).toHaveCount(3);
   expect(watch.failures).toEqual([]);
 });

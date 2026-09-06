@@ -111,30 +111,39 @@ export function TableSections({
    *  and no `ClientState` does. */
   const offers = "ports" in view ? view : null;
 
-  const collapsed = (key: SectionKey) => (
-    <section className={`table-sec ${key} collapsed`} key={key} aria-label={SECTION_LABELS[key]}>
+  /** A section that carries one LINE where a board would be.
+   *
+   *  Four things can put a section in this state and they are different
+   *  things — the four wrappers below name them, and each states its own
+   *  reason. What they share is the markup, which is this function: the same
+   *  heading, one muted sentence, and the `collapsed` class for the three that
+   *  are a STANDING absence.
+   *
+   *  `loading` is the one that does not take it, deliberately: it is a moment
+   *  rather than a state, and `collapsed` is what the e2e reads to tell a
+   *  section that is showing a line from one that is showing a board. */
+  const note = (key: SectionKey, line: string, standing = true) => (
+    <section
+      className={`table-sec ${key}${standing ? " collapsed" : ""}`}
+      key={key}
+      aria-label={SECTION_LABELS[key]}
+    >
       <h2>{SECTION_LABELS[key]}</h2>
-      <p className="muted">live offer, hidden while replaying</p>
+      <p className="muted">{line}</p>
     </section>
   );
-  const loading = (key: SectionKey) => (
-    <section className={`table-sec ${key}`} key={key} aria-label={SECTION_LABELS[key]}>
-      <h2>{SECTION_LABELS[key]}</h2>
-      <p className="muted">loading&hellip;</p>
-    </section>
-  );
+  /** Replaying: this board is a LIVE offer and the position on screen is not
+   *  live, so showing it would state the present under a past. */
+  const collapsed = (key: SectionKey) => note(key, "live offer, hidden while replaying");
+  /** The fetch is in flight. A moment, not a state. */
+  const loading = (key: SectionKey) => note(key, "loading…", false);
   /** No game yet, and no way to draw this board: the setup screen's table
    *  (Task 12) draws the boards it can and says so about the one it cannot,
    *  rather than spinning on a fetch that has no game to name. */
-  const unavailable = (key: SectionKey) => (
-    <section className={`table-sec ${key} collapsed`} key={key} aria-label={SECTION_LABELS[key]}>
-      <h2>{SECTION_LABELS[key]}</h2>
-      <p className="muted">available once the game starts</p>
-    </section>
-  );
+  const unavailable = (key: SectionKey) => note(key, "available once the game starts");
   /** Withheld until the first card is chosen (2026-09-06, R-C3) — a DIFFERENT
    *  thing from `unavailable` above, which is a board this screen has no data
-   *  for. The server has the technologies and the achievements and deliberately
+   *  for. The server HAS the technologies and the achievements and deliberately
    *  does not send them: the owner's edition deals the two starting orders and
    *  takes the secret choice at its step 9, and the technologies reach the
    *  Laboratory at step 10 and the achievements the score track at step 11.
@@ -143,12 +152,7 @@ export function TableSections({
    *  wire, `LabStrip` draws six blanks and `GoalsStrip` draws nothing, and both
    *  read as a screen that failed rather than as a table that is not there
    *  yet. */
-  const withheld = (key: SectionKey) => (
-    <section className={`table-sec ${key} collapsed`} key={key} aria-label={SECTION_LABELS[key]}>
-      <h2>{SECTION_LABELS[key]}</h2>
-      <p className="muted">revealed once you have chosen your card</p>
-    </section>
-  );
+  const withheld = (key: SectionKey) => note(key, "revealed once you have chosen your card");
 
   return (
     <div className="table-sections">
