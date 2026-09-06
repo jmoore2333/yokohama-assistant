@@ -1408,13 +1408,19 @@ ol.account .mover { font-weight: 700; }
  * the wire in the 2026-09-06 corrections (R-C1), so there is no kept card to
  * mark and no Keep score under it to avoid covering. */
 .deal-card { display: flex; flex-direction: column; }
-/* **A seat that is not choosing shows a SMALLER pair of backs.** Its two cards
- * are an indication — this seat has answered, or has not been asked yet — with
- * no id and no Keep score to read, so they do not need the reading size the
- * choosing seat's cards need. Measured at 4P/1710x869, where three human seats
- * share the deck: at the full 8rem the block ran 931px inside a 539px window
- * and the ASKING seat's own label sat 28px above the fold on the middle turn,
- * which is the one thing the deck's rule says must stay reachable. */
+/* **A HUMAN seat that is not choosing shows a SMALLER pair of backs.** Its two
+ * cards are an indication — this seat has answered, or has not been asked yet —
+ * with no id and no Keep score to read, so they do not need the reading size the
+ * choosing seat's cards need. The BOT's two keep the full 8rem and are outside
+ * this selector deliberately: they are the only cards in the side column, with
+ * no height to compete for.
+ *
+ * Measured at 4P/1710x869, where three human seats share the deck. At the full
+ * 8rem the block ran 931px inside a 539px window and the ASKING seat's own label
+ * sat 28px ABOVE the fold on the middle turn — the one thing the deck's rule
+ * says must stay reachable. At 4rem the block is 738px and that label is 25px
+ * BELOW the top of the window. Gated since then by the 4P set-table cell in
+ * `the_table.spec.ts`, which prints its own reading. */
 .deal-seat.human:not(.current) .card-face.sm { width: 4rem; }
 /* The line under a face-down deal, sized with the hedge rather than as a
  * generic `<p>`: the set table's height budget (R-T12-3, measured at 1710x869)

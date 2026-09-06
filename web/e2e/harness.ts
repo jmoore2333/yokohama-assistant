@@ -121,8 +121,11 @@ export async function startGame(page: Page, opts: { players?: number } = {}): Pr
   // rather than a loop that happens to find a button — chooses the first of its
   // two, and passes the screen on. The bot's card is the bot's.
   //
-  // The bot-free fixture game has TWO human seats, so every e2e run that starts
-  // a game walks the pass at least once.
+  // **Which walks actually press it.** This form always seats one bot, so a 2P
+  // walk has a SINGLE human seat and never passes the screen on; the pass rides
+  // the 3P and 4P cells, where there are two and three human seats. (There is
+  // no bot-free game in the browser at all — `preview.json`, whose two seats are
+  // both human, is the wire corpus the component suite renders.)
   const humanSeats = await page.locator(".deal-seat.human").all();
   // Anti-vacuity, and it is the whole loop's: `all()` on a selector that
   // matches nothing returns an empty list, and a `for` over it asserts and
@@ -137,7 +140,7 @@ export async function startGame(page: Page, opts: { players?: number } = {}): Pr
     );
   }
   for (const [i, seat] of humanSeats.entries()) {
-    await expect(seat).toHaveClass(/current/);
+    await expect(seat).toHaveClass(/(^|\s)current(\s|$)/);
     await seat.locator("button.deal-pick").first().click();
     if (i < humanSeats.length - 1) {
       await page.getByRole("button", { name: "Next seat" }).click();

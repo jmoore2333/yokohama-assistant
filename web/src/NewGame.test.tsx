@@ -326,9 +326,13 @@ describe("the set table", () => {
     expect(seat(0).querySelectorAll("button.deal-pick")).toHaveLength(0);
     expect(seat(0).querySelectorAll("img.back")).toHaveLength(2);
     expect(seat(0).querySelectorAll(".card-id")).toHaveLength(0);
-    expect(seat(0).textContent).toMatch(/chosen/);
+    expect(seat(0).textContent).toMatch(/seat 0 · chosen/);
     expect(seat(1).className).toMatch(/\bcurrent\b/);
     expect(seat(1).querySelectorAll("button.deal-pick")).toHaveLength(2);
+    // **Focus follows the pass.** "Next seat" unmounts itself on click, so
+    // without this the caret falls to the body and a keyboard player tabs from
+    // the top of the page once per seat.
+    expect(document.activeElement).toBe(seat(1).querySelectorAll("button.deal-pick")[0]);
     expect(nextSeat(), "the last seat has nobody to pass to").toBeNull();
     expect(start()).toBeNull();
 

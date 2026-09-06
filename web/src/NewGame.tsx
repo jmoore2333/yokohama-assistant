@@ -116,6 +116,20 @@ export function NewGame({
    *
    *  Reset wherever `chosen` is reset — a new deal starts at the first seat. */
   const [turn, setTurn] = useState(0);
+  /** The current seat's first pick button, so focus can follow the pass.
+   *
+   *  **"Next seat" unmounts itself**, which drops focus to the body and leaves a
+   *  keyboard player tabbing from the top of the page for every seat, on a
+   *  screen whose whole point is now a sequence. `passing` gates it to the pass
+   *  itself: focusing on MOUNT would take the caret off whatever the player was
+   *  doing the moment a deal arrives. */
+  const firstPick = useRef<HTMLButtonElement | null>(null);
+  const passing = useRef(false);
+  useEffect(() => {
+    if (!passing.current) return;
+    passing.current = false;
+    firstPick.current?.focus();
+  }, [turn]);
   const [saved, setSaved] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -300,6 +314,7 @@ export function NewGame({
                         <button
                           type="button"
                           className={`deal-pick ${chosen[d.seat] === n + 1 ? "chosen" : ""}`}
+                          ref={n === 0 ? firstPick : undefined}
                           aria-pressed={chosen[d.seat] === n + 1}
                           aria-label={`keep ${pad(c.card.id)} for seat ${d.seat}`}
                           key={c.card.id}
@@ -340,7 +355,14 @@ export function NewGame({
                   disabling would leave "Start" on screen under a seat that is
                   still choosing, which reads as the wrong thing to press. */}
               {picked && !lastSeat && (
-                <button type="button" className="primary" onClick={() => setTurn(at + 1)}>
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={() => {
+                    passing.current = true;
+                    setTurn(at + 1);
+                  }}
+                >
                   Next seat
                 </button>
               )}

@@ -398,6 +398,66 @@ test("four assistants of one colour stand as a pile, not as a cube and a count",
   expect(watch.failures).toEqual([]);
 });
 
+// **The asking seat stays reachable when three human seats share the deck.**
+//
+// The 2026-09-06 sequence puts every human seat in the deck at once, and at 4P
+// that is three of them. Measured while the rule was being written: with the
+// non-choosing seats' backs at the reading size (8rem) the block ran 931px
+// inside a 539px window and on the MIDDLE turn the asking seat's own label sat
+// 28px ABOVE the fold — a player scrolling up to find the cards they were just
+// handed. `styles.css`'s `.deal-seat.human:not(.current) .card-face.sm` is the
+// fix; this is what keeps it fixed, because nothing else on the set table is
+// asserted above two players.
+//
+// The MIDDLE turn specifically: it is the worst case, with one seat's backs
+// above the asking seat and another's below. jsdom has no layout, so this claim
+// can only be made here.
+test("at four players the asking seat is in the frame on the middle turn", async ({ page }) => {
+  const watch = watchForBreakage(page);
+  await page.setViewportSize({ width: 1710, height: 869 });
+  await page.goto("/");
+  await page.getByLabel("Players").selectOption("4");
+  await page.getByRole("button", { name: "Deal" }).click();
+  await expect(page.getByRole("button", { name: "Re-deal" })).toBeVisible();
+  // Three human seats and one bot, which is what makes a middle turn exist.
+  await expect(page.locator(".deal-seat.human")).toHaveCount(3);
+
+  await page.locator(".deal-seat.human.current button.deal-pick").first().click();
+  await page.getByRole("button", { name: "Next seat" }).click();
+  const current = page.locator(".deal-seat.human.current");
+  await expect(current).toHaveCount(1);
+
+  // The label AND both buttons, at `ratio: 1`: a seat whose cards are in the
+  // frame while its own heading is not still leaves the player looking for it,
+  // and the default (any intersection) passes on one visible pixel.
+  await expect(current.locator("label")).toBeInViewport({ ratio: 1 });
+  await expect(current.locator("button.deal-pick")).toHaveCount(2);
+  for (let i = 0; i < 2; i++) {
+    await expect(current.locator("button.deal-pick").nth(i)).toBeInViewport({ ratio: 1 });
+  }
+
+  const read = await page.evaluate(() => {
+    const deck = document.querySelector(".deck > .decision") as HTMLElement;
+    const cur = document.querySelector(".deal-seat.human.current") as HTMLElement;
+    const box = deck.getBoundingClientRect();
+    return {
+      window: Math.round(box.height),
+      block: deck.scrollHeight,
+      top: Math.round(cur.getBoundingClientRect().top - box.top),
+    };
+  });
+  // RECORDED, never gated: heights are layout- and font-dependent, and what is
+  // gated is the property above. The figures are here so a future reader can
+  // re-measure against the ones the CSS comment states (931/539/-28 before the
+  // rule, 738/539/+25 after).
+  // eslint-disable-next-line no-console
+  console.log(
+    `4P set table at 1710x869, middle turn: deck window ${read.window}px holding ${read.block}px, ` +
+      `asking seat's top at ${read.top}px (recorded)`,
+  );
+  expect(watch.failures).toEqual([]);
+});
+
 // ---- M5.5 part B: the set table --------------------------------------------
 //
 // The two halves jsdom cannot see. (1) The port strip on the setup screen draws
