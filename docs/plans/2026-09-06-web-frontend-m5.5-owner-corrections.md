@@ -99,7 +99,7 @@ Per task: `cd web && npm run typecheck && npm test && npm run e2e`; when `crates
 
 Written at `97b2cb5` (the runbook addendum), the wave's last commit before this one. The wave ran
 under the SDD shape in `.superpowers/sdd/2026-09-06-web-frontend-m5.5-owner-corrections/`, whose
-`progress.md` is the ledger of record; the four task reports, the seven review documents and the
+`progress.md` is the ledger of record; the five task reports, the seven review documents and the
 two extracts sit beside it (Task 1's own re-review verdict is a ledger row and not a file). **LIVE is `yokohama-web:0.5.0-m5.5.4` from `fb6cec7`.**
 
 ### 5.1 What shipped, task by task
@@ -221,7 +221,8 @@ that is not there. The pass is therefore exercised at 3P and 4P on every e2e run
 
 **Task 4 — the mobile set table** (no commit; §5.5).
 
-**The fix wave** (`fb6cec7`) — the final review's three fix-now items, §5.4.
+**The fix wave** (`fb6cec7`) — the three findings the final review returned for action, one
+Important and two folded Minors, all three closed as ADDRESSED by its scoped re-review (§5.4).
 
 ### 5.2 The counts at the close, beside the M5.5 close's
 
@@ -257,7 +258,8 @@ set) and the withholding fence (`the_preview_withholds_the_laboratory_and_the_ac
 
 **The +12 on the client** are `Help.test.tsx` — a NEW file, 5 cells, the first thing in this lane
 that renders the help panel's prose — plus `NewGame.test.tsx` 18 → 23 and `contract.test.ts`
-83 → 85 assertions. `TableSections.test.tsx` did not move: the withholding is asserted on the
+83 → 85 TESTS as vitest counts them (its `expect(` calls went 80 → 91; the file's cells are
+table-driven, so a row is a test). `TableSections.test.tsx` did not move: the withholding is asserted on the
 screen through `NewGame.test.tsx`, which is where the set table is mounted.
 
 **The +1 on the browser walk** is the 4P fold cell in `the_table.spec.ts`.
