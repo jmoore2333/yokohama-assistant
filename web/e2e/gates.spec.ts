@@ -354,8 +354,11 @@ test("gate B — the set table before the first choice", async ({ page }) => {
   await expect(page.locator(".deal-seat.bot img.back")).toHaveCount(2);
   await expect(page.locator(".deal-seat.bot .card-id")).toHaveCount(0);
   await expect(page.locator(".deal-seat.bot")).toContainText("keeps one of its two cards");
-  // Before the first choice, which is what this gate is a picture OF.
-  await expect(page.getByRole("button", { name: "Start" })).toBeDisabled();
+  // Before the first choice, which is what this gate is a picture OF — and
+  // since R-C2 that means Start is not on the screen at all: the seat that is
+  // asking has its two cards up and nothing to press but a card.
+  await expect(page.getByRole("button", { name: "Start" })).toHaveCount(0);
+  await expect(page.locator(".deal-seat.human.current")).toHaveCount(1);
   const seed = await page.locator("header.banner code").innerText();
   test.info().annotations.push({ type: "game", description: `2P set table, seed ${seed}` });
 
@@ -390,7 +393,10 @@ test("gate B — the set table before the first choice", async ({ page }) => {
   for (let i = 0; i < 2; i++) {
     await expect(page.locator(".deal-seat.bot img.back").nth(i)).toBeInViewport({ ratio: 1 });
   }
-  await expect(page.getByRole("button", { name: "Start" })).toBeInViewport({ ratio: 1 });
+  // The CONTROLS row, not Start: before the first choice Start is not drawn
+  // (R-C2) and Re-deal is what stands there. The claim is unchanged — the
+  // bottom of the deck's block is in the frame without scrolling.
+  await expect(page.locator(".deck .controls")).toBeInViewport({ ratio: 1 });
 
   await park(page);
   await page.screenshot({ path: `${OUT}/b-set-table-1710x869.png` });

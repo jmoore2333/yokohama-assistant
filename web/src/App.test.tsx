@@ -1054,7 +1054,9 @@ describe("the boards a player switches during setup", () => {
     const user = userEvent.setup();
 
     await user.click(screen.getByRole("button", { name: "Deal" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Start" })).toBeInTheDocument());
+    // `Re-deal`, not Start: since R-C2 Start is not drawn until every human seat
+    // has chosen, so waiting for it here would wait for a click below.
+    await waitFor(() => expect(screen.getByRole("button", { name: "Re-deal" })).toBeInTheDocument());
     expect(document.querySelector(".table-sec.ports")).not.toBeNull();
 
     await user.click(screen.getByText(/^Boards/));

@@ -467,7 +467,11 @@ test("the set table shows the port, hides the bot's cards and withholds the tech
   expect(boxes.labs, "the withheld laboratory stretches to the row").toBeLessThan(boxes.tracks);
   expect(boxes.goals, "the withheld goals stretch to the row").toBeLessThan(boxes.tracks);
 
-  await expect(page.getByRole("button", { name: "Start" })).toBeDisabled();
+  // Since R-C2 Start is not drawn until every human seat has chosen, and this
+  // is before the first choice: one seat is asking, and there is nothing to
+  // press but a card.
+  await expect(page.getByRole("button", { name: "Start" })).toHaveCount(0);
+  await expect(page.locator(".deal-seat.human.current")).toHaveCount(1);
 
   // **Inert, and still readable (spec §3.3.3).** `.tile[role="button"]` is the placement
   // picker's own marker — `Board` gives a tile that role only when a caller
@@ -500,7 +504,10 @@ test("the set table shows the port, hides the bot's cards and withholds the tech
   for (let i = 0; i < 2; i++) {
     await expect(page.locator(".deal-seat.bot img.back").nth(i)).toBeInViewport({ ratio: 1 });
   }
-  await expect(page.getByRole("button", { name: "Start" })).toBeInViewport({ ratio: 1 });
+  // The controls row rather than Start, which is not drawn before the choice
+  // (R-C2); the claim — the bottom of the deck's block is in the frame — is the
+  // same one, and Start is asserted in the viewport after the pick below.
+  await expect(page.locator(".deck .controls")).toBeInViewport({ ratio: 1 });
   const budget = await page.evaluate(() => {
     const q = (x: string) => document.querySelector(x) as HTMLElement;
     return {
@@ -521,6 +528,10 @@ test("the set table shows the port, hides the bot's cards and withholds the tech
   const pick = page.locator(".deal-seat.human button.deal-pick").nth(1);
   const chosen = /keep (O\d\d)/.exec((await pick.getAttribute("aria-label"))!)![1]!;
   await pick.click();
+  // The one human seat has answered, so Start is on the screen — and in the
+  // frame, which is the half of R-T12-3's budget the assertion above hands on
+  // to now that Start arrives late.
+  await expect(page.getByRole("button", { name: "Start" })).toBeInViewport({ ratio: 1 });
 
   // **Ruling R-T12-1: the set table does not widen the page either.** Spec §4.3
   // names the same four widths the M3.5 gate uses, and this screen is a

@@ -40,18 +40,33 @@ function show(handler: (call: ApiCall) => Reply) {
   return { onStarted, stub, user: userEvent.setup() };
 }
 
-/** Choose the first card for every human seat.
+/** Walk the whole set-table sequence: choose the first card at every human
+ *  seat, passing the screen on between them.
  *
- *  Start waits for a choice on EVERY human seat, so a single click is not
- *  enough on `wire.preview`: that is the bot-free corpus game and BOTH of its
- *  seats are human. The cells that use this are about what the create request
- *  carries and not about which card was chosen, so they take the first of each
- *  seat's two. */
+ *  Start waits for a choice on EVERY human seat, so one click is not enough on
+ *  `wire.preview`: that is the bot-free corpus game and BOTH of its seats are
+ *  human. Since R-C2 the seats are also taken ONE AT A TIME — only the current
+ *  seat draws buttons — so this presses "Next seat" between them rather than
+ *  clicking two seats' cards in one pass. The cells that use it are about what
+ *  the create request carries and not about which card was chosen, so they take
+ *  the first of each seat's two; the sequence itself has its own cell. */
 async function chooseAll(user: ReturnType<typeof userEvent.setup>) {
-  for (const seat of document.querySelectorAll(".deal-seat.human")) {
-    await user.click(seat.querySelector("button.deal-pick")!);
+  for (;;) {
+    const current = document.querySelector(".deal-seat.human.current");
+    if (!current) break;
+    await user.click(current.querySelector("button.deal-pick")!);
+    const next = screen.queryByRole("button", { name: "Next seat" });
+    if (!next) break;
+    await user.click(next);
   }
 }
+
+/** The set table is on screen. **Not "Start is in the document"**, which is
+ *  what these cells used to wait for: since R-C2 Start is not drawn until every
+ *  human seat has chosen, so waiting for it would wait for a click that has not
+ *  happened. `Re-deal` sits beside it and is there from the first frame. */
+const setTableIsUp = () =>
+  waitFor(() => expect(screen.getByRole("button", { name: "Re-deal" })).toBeInTheDocument());
 
 describe("a double-clicked Start", () => {
   // **The second site of the guard `App` already documents**, and the one with
@@ -72,7 +87,7 @@ describe("a double-clicked Start", () => {
     });
 
     await user.click(screen.getByRole("button", { name: "Deal" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Start" })).toBeInTheDocument());
+    await setTableIsUp();
 
     await chooseAll(user);
 
@@ -114,7 +129,7 @@ describe("the seed", () => {
     });
 
     await user.click(screen.getByRole("button", { name: "Deal" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Start" })).toBeInTheDocument());
+    await setTableIsUp();
     expect(screen.getByText(BIG_SEED)).toBeInTheDocument();
 
     await chooseAll(user);
@@ -163,7 +178,7 @@ describe("the request the client sends", () => {
       return wire.options;
     });
     await user.click(screen.getByRole("button", { name: "Deal" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Start" })).toBeInTheDocument());
+    await setTableIsUp();
     await chooseAll(user);
     await user.click(screen.getByRole("button", { name: "Start" }));
 
@@ -192,7 +207,7 @@ describe("the set table", () => {
       return wire.options;
     });
     await shown.user.click(screen.getByRole("button", { name: "Deal" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Start" })).toBeInTheDocument());
+    await setTableIsUp();
     return shown;
   };
 
@@ -214,13 +229,16 @@ describe("the set table", () => {
     expect(screen.getByText(wire.preview.seed)).toBeInTheDocument();
   });
 
-  it("shows every human seat's two cards with the bot's Keep score and the CLI's hedge, and Start waits for a choice", async () => {
-    const { user } = await dealt(wire.preview);
-    for (const deal of wire.preview.deals) {
-      for (const c of deal.cards) {
-        expect(screen.getByRole("button", { name: `keep O${String(c.card.id).padStart(2, "0")} for seat ${deal.seat}` })).toBeInTheDocument();
-        expect(screen.getAllByText(new RegExp(`Keep score ${c.keep_score}\\b`)).length).toBeGreaterThan(0);
-      }
+  // The CHOOSING seat's two cards, each with its Keep score and the CLI's
+  // hedge under the pair. Since R-C2 that is one seat at a time, so this cell
+  // reads the seat that is asking; the sequence that brings the others up is
+  // the cell below.
+  it("shows the choosing seat's two cards with their Keep scores and the CLI's hedge", async () => {
+    await dealt(wire.preview);
+    const asking = wire.preview.deals[0]!;
+    for (const c of asking.cards) {
+      expect(screen.getByRole("button", { name: `keep O${String(c.card.id).padStart(2, "0")} for seat ${asking.seat}` })).toBeInTheDocument();
+      expect(screen.getAllByText(new RegExp(`Keep score ${c.keep_score}\\b`)).length).toBeGreaterThan(0);
     }
     expect(screen.getByText(/hand-set, unmeasured, and no substitute for your own read/)).toBeInTheDocument();
     // **No chip rows on a deal card (R-T12-3).** The card ART already prints
@@ -228,13 +246,9 @@ describe("the set table", () => {
     // are what pushed the bot's own deal below the fold at 1710x869. The id,
     // the country and the Keep score stay.
     expect(document.querySelectorAll(".deal .chips")).toHaveLength(0);
-    expect(document.querySelectorAll(".deal .card-note")).toHaveLength(4);
-    const start = screen.getByRole("button", { name: "Start" });
-    expect(start).toBeDisabled();
-    await user.click(screen.getAllByRole("button", { name: /keep O\d\d for seat 0/ })[1]!);
-    expect(start).toBeDisabled();
-    await user.click(screen.getAllByRole("button", { name: /keep O\d\d for seat 1/ })[0]!);
-    expect(start).toBeEnabled();
+    // TWO notes, not four: the seat that is not choosing shows backs, which
+    // carry no caption at all (R-C2).
+    expect(document.querySelectorAll(".deal .card-note")).toHaveLength(2);
   });
 
   // **The bot's deal is not on this screen (2026-09-06, R-C1).** It is not on
@@ -265,6 +279,99 @@ describe("the set table", () => {
     const mine = document.querySelector(`.deal-seat.human[data-seat="${human.seat}"]`)!;
     const ids = [...mine.querySelectorAll(".card-id")].map((e) => e.textContent);
     expect(ids).toEqual(human.cards.map((c) => `O${String(c.card.id).padStart(2, "0")}`));
+  });
+
+  // **Human seats choose ONE AT A TIME (2026-09-06, R-C2).** One browser serves
+  // every seat at a hot-seat table, so the payload carries all their cards and
+  // the secrecy is the SEQUENCE: only the seat whose turn it is has its two
+  // cards face up, the seats before and after it show backs, and "Next seat"
+  // passes the screen on. Hot-seat remains hot-seat — the earlier chooser's
+  // cards were on the screen before it was passed — and this is what makes the
+  // pass a real one.
+  //
+  // **Over the committed bot-free preview, which already has two human seats**
+  // (R-C8): no payload is constructed here. Three seats would ride the same
+  // code path — the seat LIST is what varies — and would need a fixture that
+  // does not exist.
+  //
+  // The two picks are DIFFERENT cards (seat 0's second, seat 1's first), so the
+  // `keeps` the create carries cannot be satisfied by a constant.
+  it("takes the human seats one at a time, with the seats that are not choosing face down", async () => {
+    expect(wire.preview.deals.filter((d) => !d.is_bot), "the premise: two human seats")
+      .toHaveLength(2);
+    const { user, stub, onStarted } = await dealt(wire.preview);
+    const seat = (n: number) => document.querySelector(`.deal-seat.human[data-seat="${n}"]`)!;
+    const nextSeat = () => screen.queryByRole("button", { name: "Next seat" });
+    const start = () => screen.queryByRole("button", { name: "Start" });
+
+    // Seat 0 is asking; seat 1 is waiting its turn behind two backs.
+    expect(seat(0).className).toMatch(/\bcurrent\b/);
+    expect(seat(0).querySelectorAll("button.deal-pick")).toHaveLength(2);
+    expect(seat(1).className).toMatch(/\bwaiting\b/);
+    expect(seat(1).querySelectorAll("button.deal-pick")).toHaveLength(0);
+    expect(seat(1).querySelectorAll("img.back")).toHaveLength(2);
+    expect(seat(1).querySelectorAll(".card-id")).toHaveLength(0);
+    expect(seat(1).textContent).toMatch(/chooses after you/);
+    expect(nextSeat(), "nothing to pass on before a card is chosen").toBeNull();
+    expect(start(), "Start waits for every seat").toBeNull();
+
+    // Seat 0 chooses its SECOND card, and the screen offers to pass on.
+    await user.click(seat(0).querySelectorAll("button.deal-pick")[1]!);
+    expect(nextSeat()).not.toBeNull();
+    expect(start(), "one seat of two is not every seat").toBeNull();
+
+    // Passed on: seat 0's cards go face down, seat 1's come up.
+    await user.click(nextSeat()!);
+    expect(seat(0).className).toMatch(/\bchosen\b/);
+    expect(seat(0).querySelectorAll("button.deal-pick")).toHaveLength(0);
+    expect(seat(0).querySelectorAll("img.back")).toHaveLength(2);
+    expect(seat(0).querySelectorAll(".card-id")).toHaveLength(0);
+    expect(seat(0).textContent).toMatch(/chosen/);
+    expect(seat(1).className).toMatch(/\bcurrent\b/);
+    expect(seat(1).querySelectorAll("button.deal-pick")).toHaveLength(2);
+    expect(nextSeat(), "the last seat has nobody to pass to").toBeNull();
+    expect(start()).toBeNull();
+
+    // The last seat chooses, and only then is there a game to start.
+    //
+    // **Start's APPEARANCE is the proof that both picks were recorded**, and it
+    // is not a weaker claim than reading them off the request: `ready` and
+    // `createKeeps` read the same `chosen` map, and `ready` is every human seat
+    // having answered. A component that forgot seat 0's pick when the screen
+    // was passed on would leave Start undrawn here.
+    await user.click(seat(1).querySelectorAll("button.deal-pick")[0]!);
+    expect(start()).not.toBeNull();
+    await user.click(start()!);
+    await waitFor(() => expect(onStarted).toHaveBeenCalled());
+    const create = stub.matching("POST", "/api/games").filter((c) => !c.path.endsWith("preview"));
+    expect(create).toHaveLength(1);
+    const keeps = (create[0]!.body as { keeps: (number | null)[] }).keeps;
+    // The seat this FORM can speak for. `createKeeps` reads the form's bot seat
+    // — the same source the create's own `bot_seats` reads, so the two can
+    // never disagree in the app — and this screen has no "no bot" option at
+    // all: the bot-free payload is a corpus fixture the server generates and
+    // the form cannot request. So under it the second slot nulls, and what is
+    // asserted here is the first: `2`, the SECOND card, which no constant and
+    // no first-card default produces.
+    expect(keeps).toHaveLength(2);
+    expect(keeps[0]).toBe(2);
+  });
+
+  // **At one human seat the flow is unchanged in feel** (R-C2's own clause):
+  // your two cards, then Start. The sequence exists but has one step, so no
+  // "Next seat" is ever drawn — a screen that showed one would be asking a
+  // player to pass the table to a bot.
+  it("asks the single human seat straight away when the other seat is a bot", async () => {
+    const { user } = await dealt(wire.previewBot);
+    const humans = document.querySelectorAll(".deal-seat.human");
+    expect(humans, "the premise: one human seat and one bot").toHaveLength(1);
+    expect(humans[0]!.className).toMatch(/\bcurrent\b/);
+    expect(humans[0]!.querySelectorAll("button.deal-pick")).toHaveLength(2);
+    expect(screen.queryByRole("button", { name: "Next seat" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Start" })).toBeNull();
+    await user.click(humans[0]!.querySelectorAll("button.deal-pick")[0]!);
+    expect(screen.queryByRole("button", { name: "Next seat" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Start" })).not.toBeNull();
   });
 
   // **The technologies and the goals wait for the choice (2026-09-06, R-C3).**

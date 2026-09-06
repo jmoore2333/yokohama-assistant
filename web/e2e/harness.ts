@@ -110,12 +110,38 @@ export async function startGame(page: Page, opts: { players?: number } = {}): Pr
   await page.getByRole("button", { name: "Deal" }).click();
   const seed = String(((await (await previewed).json()) as { seed: string }).seed);
 
-  await expect(page.getByRole("button", { name: "Start" })).toBeVisible();
+  // `Re-deal`, not Start: since R-C2 Start is not DRAWN until every human seat
+  // has chosen, so it cannot be the signal that the set table arrived.
+  await expect(page.getByRole("button", { name: "Re-deal" })).toBeVisible();
 
-  // The set table (M5.5): Start waits until every human seat has chosen a
-  // card, and the walk chooses the first one — the bot's is the bot's.
-  for (const seat of await page.locator(".deal-seat.human").all()) {
+  // The set table (M5.5, sequenced by the 2026-09-06 corrections): the human
+  // seats choose ONE AT A TIME, and only the seat whose turn it is draws
+  // buttons. The walk takes each in order — asserting it is the one being asked
+  // before it presses anything, which is what makes this a walk of the sequence
+  // rather than a loop that happens to find a button — chooses the first of its
+  // two, and passes the screen on. The bot's card is the bot's.
+  //
+  // The bot-free fixture game has TWO human seats, so every e2e run that starts
+  // a game walks the pass at least once.
+  const humanSeats = await page.locator(".deal-seat.human").all();
+  // Anti-vacuity, and it is the whole loop's: `all()` on a selector that
+  // matches nothing returns an empty list, and a `for` over it asserts and
+  // clicks nothing while the walk goes on to press a Start that is not there.
+  // This screen always seats exactly one bot, so the count is players minus 1 —
+  // which is also what says the pass is EXERCISED above two players.
+  const humans = (opts.players ?? 2) - 1;
+  if (humanSeats.length !== humans) {
+    throw new Error(
+      `the set table drew ${humanSeats.length} human seats, expected ${humans} at ` +
+        `${opts.players ?? 2} players`,
+    );
+  }
+  for (const [i, seat] of humanSeats.entries()) {
+    await expect(seat).toHaveClass(/current/);
     await seat.locator("button.deal-pick").first().click();
+    if (i < humanSeats.length - 1) {
+      await page.getByRole("button", { name: "Next seat" }).click();
+    }
   }
 
   const created = page.waitForResponse(

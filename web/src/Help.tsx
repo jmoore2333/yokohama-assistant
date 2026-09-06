@@ -175,7 +175,10 @@ export function Help() {
         where the two cards are dealt and chosen in secret. The technologies and the goals go out
         at the two steps after that one, so they are held back here as well and appear once you
         have chosen. Your two cards are in the answer bar, each with the
-        built-in bot&rsquo;s <em>Keep score</em> under it, and the bot&rsquo;s own two cards are{" "}
+        built-in bot&rsquo;s <em>Keep score</em> under it. With more than one person playing on
+        this screen, each seat chooses <strong>in turn</strong>: only the seat being asked has its
+        cards face up, the others stay face down, and <em>Next seat</em> passes the screen on. The
+        bot&rsquo;s own two cards are{" "}
         <strong>face down</strong> in the side column. It keeps one of them by the same reading of
         the printed economics the Keep score shows you &mdash; the game&rsquo;s record knows which,
         and you do not see it, any more than you would across a table. Press the card

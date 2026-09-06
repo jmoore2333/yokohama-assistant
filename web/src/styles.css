@@ -1408,6 +1408,14 @@ ol.account .mover { font-weight: 700; }
  * the wire in the 2026-09-06 corrections (R-C1), so there is no kept card to
  * mark and no Keep score under it to avoid covering. */
 .deal-card { display: flex; flex-direction: column; }
+/* **A seat that is not choosing shows a SMALLER pair of backs.** Its two cards
+ * are an indication — this seat has answered, or has not been asked yet — with
+ * no id and no Keep score to read, so they do not need the reading size the
+ * choosing seat's cards need. Measured at 4P/1710x869, where three human seats
+ * share the deck: at the full 8rem the block ran 931px inside a 539px window
+ * and the ASKING seat's own label sat 28px above the fold on the middle turn,
+ * which is the one thing the deck's rule says must stay reachable. */
+.deal-seat.human:not(.current) .card-face.sm { width: 4rem; }
 /* The line under a face-down deal, sized with the hedge rather than as a
  * generic `<p>`: the set table's height budget (R-T12-3, measured at 1710x869)
  * is what the bot's panel is competing for. */

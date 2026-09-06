@@ -44,6 +44,18 @@ describe("the help panel's set-table paragraph", () => {
     expect(text).not.toContain("bot keeps this");
   });
 
+  // **R-C2's half.** One browser serves every seat at a hot-seat table, so the
+  // secrecy is the sequence, and the paragraph has to say so — a player who
+  // does not know the screen is passed on will hand it over with their own
+  // cards still up.
+  it("says the human seats choose in turn and the others stay face down", () => {
+    render(<Help />);
+    const text = setTableParagraph().textContent ?? "";
+    expect(text).toContain("each seat chooses in turn");
+    expect(text).toContain("Next seat");
+    expect(text).toMatch(/only the seat being asked has its cards face up/);
+  });
+
   // **R-C3's half of the same paragraph.** What the set table has on it is the
   // owner's edition at the step where the two orders are dealt and chosen in
   // secret: the areas, the port and the tracks. The technologies and the goals
