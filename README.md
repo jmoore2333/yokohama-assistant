@@ -515,15 +515,17 @@ otherwise never run) + `cargo clippy --workspace --all-targets -- -D warnings`, 
 **On `web-frontend` the browser CLIENT adds three more per-edit commands, from `web/`** (M2.5,
 2026-08-31 — before it, "the suites are green" was not a claim about the browser at all):
 `npm run typecheck` (both TS projects, and the committed wire corpus against the hand-written
-client types), `npm test` (**231** vitest component tests over jsdom, every payload of them
-server-emitted), and `npm run e2e` (**23** Playwright tests — 22 driving real Chromium against
-the real release binary, including a whole 2P game clicked through to a winner, the explanation
-chart's real geometry, the page's real width at four viewports per seat count, and the replay
-track walking the board back and returning it unchanged; the twenty-third needs no browser and
-is what keeps the escape hatch below honest). A fifth spec FILE, `shots.spec.ts`, is a
-screenshot GENERATOR rather than a test — it holds two, so enabling it makes 25, not 24 — and it
-is ignored unless `YOKOHAMA_WEB_SHOTS=1` asks for it — it writes the help panel's pictures, so leaving it in the run would re-cut documentation as
-a side effect and dirty the tree. The browser ones
+client types), `npm test` (**393** vitest component tests over jsdom in 24 files, every payload
+of them server-emitted), and `npm run e2e` (**37** Playwright tests in six spec files — 36
+driving real Chromium against the real release binary, including a whole 2P game clicked through
+to a winner, the explanation chart's real geometry, the page's real width at four viewports per
+seat count, the table's fit rule read as the rendered tile width, and the replay track walking
+the board back and returning it unchanged; the thirty-seventh needs no browser and is what keeps
+the escape hatch below honest). Two further spec FILES are GENERATORS rather than tests and are
+dropped from the glob unless their own switch asks for them: `shots.spec.ts`
+(`YOKOHAMA_WEB_SHOTS=1`, two) writes the help panel's pictures, so leaving it in the run would
+re-cut documentation as a side effect and dirty the tree, and `gates.spec.ts`
+(`YOKOHAMA_WEB_GATES=1`, six) shoots the visual gates into a gitignored directory. The browser ones
 need `npx playwright install chromium` once; absence is a loud refusal naming that command, and
 `YOKOHAMA_WEB_E2E_OPTIONAL=1` turns it into a skip that says out loud it tested nothing — a
 convention that broke once when a new spec shipped without its skip line, and is now read off
