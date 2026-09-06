@@ -199,6 +199,29 @@ describe("the request the client sends", () => {
 // technologies (its step 10) and the achievements (its step 11) are not on that
 // table yet, which is what `withholds the laboratory and the goals` below
 // asserts.
+// **The form's own subtitle counts the seats (R-C12).** It read "One human
+// seat against v4-step9-draft1" at every player count, which the set table one
+// click later contradicts: this form seats exactly one bot, so 3P and 4P are
+// two and three human seats choosing in turn.
+describe("the setup form's subtitle", () => {
+  it("says one human seat at two players and counts them above that", async () => {
+    const { user } = show(() => []);
+    const lede = () => document.querySelector("p.lede")!.textContent ?? "";
+    expect(lede()).toMatch(/^One human seat against v4-step9-draft1/);
+    expect(lede()).not.toMatch(/in turn/);
+
+    await user.selectOptions(screen.getByLabelText("Players"), "3");
+    expect(lede()).toMatch(/^Two human seats choosing in turn, against v4-step9-draft1/);
+
+    await user.selectOptions(screen.getByLabelText("Players"), "4");
+    expect(lede()).toMatch(/^Three human seats choosing in turn, against v4-step9-draft1/);
+
+    // Back down, so the cell reads a live derivation and not a one-way latch.
+    await user.selectOptions(screen.getByLabelText("Players"), "2");
+    expect(lede()).toMatch(/^One human seat against/);
+  });
+});
+
 describe("the set table", () => {
   const dealt = async (fixture: typeof wire.preview) => {
     const shown = show((call) => {
@@ -359,6 +382,42 @@ describe("the set table", () => {
     // no first-card default produces.
     expect(keeps).toHaveLength(2);
     expect(keeps[0]).toBe(2);
+  });
+
+  // **A fresh deal starts at the FIRST seat again (R-C9).** `turn` survives a
+  // component that is never unmounted — Re-deal only clears the preview — so
+  // without a reset the next deal opens with the second seat asking and the
+  // first marked "chosen" though it chose nothing, and `ready` can never become
+  // true: Start would never appear at all. The `turn` doc claims the reset;
+  // this is what holds it.
+  //
+  // The walk is the whole round trip, because that is the only way to reach a
+  // second deal: pass once, Re-deal back to the form, Deal again.
+  it("starts a fresh deal at the first seat after a pass and a re-deal", async () => {
+    const { user } = await dealt(wire.preview);
+    const seat = (n: number) => document.querySelector(`.deal-seat.human[data-seat="${n}"]`)!;
+    await user.click(seat(0).querySelectorAll("button.deal-pick")[0]!);
+    await user.click(screen.getByRole("button", { name: "Next seat" }));
+    expect(seat(1).className, "the premise: the pass moved the screen on").toMatch(/\bcurrent\b/);
+
+    await user.click(screen.getByRole("button", { name: "Re-deal" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Deal" })).toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "Deal" }));
+    await setTableIsUp();
+
+    expect(seat(0).className, "a fresh deal asks the first seat").toMatch(/\bcurrent\b/);
+    expect(seat(0).querySelectorAll("button.deal-pick")).toHaveLength(2);
+    expect(seat(1).className).toMatch(/\bwaiting\b/);
+    expect(screen.queryByRole("button", { name: "Next seat" })).toBeNull();
+    // And the sequence still finishes: the choice the first deal recorded is
+    // gone with it, so Start waits for both seats again rather than appearing
+    // one pick early.
+    expect(screen.queryByRole("button", { name: "Start" })).toBeNull();
+    await user.click(seat(0).querySelectorAll("button.deal-pick")[0]!);
+    expect(screen.queryByRole("button", { name: "Start" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Next seat" }));
+    await user.click(seat(1).querySelectorAll("button.deal-pick")[0]!);
+    expect(screen.queryByRole("button", { name: "Start" })).not.toBeNull();
   });
 
   // **At one human seat the flow is unchanged in feel** (R-C2's own clause):

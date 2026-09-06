@@ -976,6 +976,19 @@ mod tests {
         assert!(p.deals[1].cards.is_empty(), "a bot seat's cards are not on the wire");
         let json = serde_json::to_string(&p).unwrap();
         assert!(!json.contains("bot_keep"), "the payload names the bot's keep");
+        // **The KEY SET, not the old field's name (R-C10).** The line above
+        // searches for one literal, so a keep re-added under any other name —
+        // `kept`, `keep_index`, `argmax` — passed every cell in this crate and
+        // was caught only by the committed corpus, which CI does not run. This
+        // reads what the bot's deal actually serializes to and requires it to
+        // be these three keys and nothing else, which is the claim this cell's
+        // own doc makes. The client half of the same fence is
+        // `contract.test.ts`'s `preview_bot.deal(bot)` row.
+        let bot = serde_json::to_value(&p.deals[1]).unwrap();
+        let mut keys: Vec<&str> =
+            bot.as_object().expect("a deal is an object").keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["cards", "is_bot", "seat"], "the bot's deal carries {bot}");
         // Anti-vacuity: the human's own deal is untouched, with both Keep
         // scores, so the withholding is targeted rather than a blank preview.
         assert!(!p.deals[0].is_bot);

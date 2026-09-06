@@ -407,8 +407,21 @@ export function NewGame({
   return (
     <div className="setup">
       <h2>New game</h2>
+      {/* **Count-aware, because this form seats one bot at any player count**
+          and R-C2 made two and three human seats a designed flow one click
+          later. A fixed "One human seat" contradicted the set table it leads
+          to, at 3P and 4P. */}
       <p className="lede">
-        One human seat against <code>v4-step9-draft1</code>, the shipped bot.
+        {players === 2 ? (
+          <>
+            One human seat against <code>v4-step9-draft1</code>, the shipped bot.
+          </>
+        ) : (
+          <>
+            {players === 3 ? "Two" : "Three"} human seats choosing in turn, against{" "}
+            <code>v4-step9-draft1</code>, the shipped bot.
+          </>
+        )}
       </p>
 
       <div className="field">
