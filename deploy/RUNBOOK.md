@@ -374,6 +374,37 @@ tags now sit on the NAS** — `0.5.0`, `0.5.0-m5`, `0.5.0-m5.1`, `0.5.0-m5.5`,
 `0.5.0-m5.5.1`, `0.5.0-m5.5.2` — each a rollback point (§5). The live build is
 `fb92c17`; the milestone's close commit follows it.
 
+**Addendum, 2026-09-06: the owner's first-run corrections — `yokohama-web:0.5.0-m5.5.3`
+(13:07Z), then `0.5.0-m5.5.4` (13:48Z).** The correction wave
+(`docs/plans/2026-09-06-web-frontend-m5.5-owner-corrections.md`: another seat's
+deal never reaches the wire or the screen — the bot's two cards are backs and its
+keep stays in the record; the set table withholds the technologies and the goals
+until the card is chosen, the owner's edition's order; human seats choose one at a
+time with the others' cards face down; the mobile set table diagnosed, not
+changed) went out by the §3.5 recipe as **`0.5.0-m5.5.3`** from `f5cb50e`: the
+musl binary REBUILT this time (`crates/yokohama-web` moved — 6,105,960 B,
+static-pie, 5.5 s incremental), context 13,900,042 B, image **25,996,682 B**
+built in ~15 s, the `0.5.0-m5.5.2` container stopped and removed, the new one
+created with the same body, same address (172.21.0.4), **healthy at 30 s**, the
+tunnel serving `index-B-jx3Iuo.js` 20 s after start. The clean final review
+against that build returned one Important (a test gap — the deal's restart at
+the first seat pinned by nothing) and two folded minors, one of them product
+text (the setup form's subtitle counted one human seat at every player count),
+so the wave's fix commit `fb6cec7` went out as **`0.5.0-m5.5.4`**: binary
+6,105,976 B (a test module moved in `games.rs`; the release build differs by
+its panic-location lines), context 13,900,069 B, image **25,996,894 B** (~15 s),
+the same swap, the same address, **healthy at 30 s** (09:49:13 local), the
+tunnel serving `index-LfoAAWF6.js` 17 s after start. Verified through the
+tunnel from the shell: the preview payload for a 2P and a 3P request carries a
+bot deal of exactly `seat`/`is_bot`/`cards` with `cards: []`, no lab slots and
+no achievements, while the port keeps its six per board; on screen at 1710 wide
+the subtitle counts the seats at 2P/3P/4P, the bot's seat is two backs, the
+laboratory and the goals read their line until the pick. **Eight tags now sit
+on the NAS** — `0.5.0`, `0.5.0-m5`, `0.5.0-m5.1`, `0.5.0-m5.5`, `0.5.0-m5.5.1`,
+`0.5.0-m5.5.2`, `0.5.0-m5.5.3`, `0.5.0-m5.5.4` — each a rollback point (§5).
+The checks' own saves were erased the same day at the owner's word; the owner's
+five remain. The live build is `fb6cec7`; the wave's record commit follows it.
+
 ---
 
 ## 4. Modal — the upgrade path, not yet deployed
