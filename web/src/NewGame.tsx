@@ -52,11 +52,18 @@ function DealBacks({ art }: { art: ArtManifest | null }) {
  *
  * **The second step is the TABLE, not a list of cards (M5.5 §3.3.3).** The
  * preview carries the position after setup as a `HistoricalFrame`, so the deal
- * is drawn over the same pyramid, port, laboratory and goals the M5 table draws
- * during play — through the same `Board` and `TableSections` components, at
- * `game={null}`, which is exactly the arrangement the rulebook has on the table
- * at its step 12 when the two cards are drawn. Nothing is created until Start:
- * the server threw its preview session away.
+ * is drawn over the same pyramid and the same boards the M5 table draws during
+ * play — through the same `Board` and `TableSections` components, at
+ * `game={null}`. Nothing is created until Start: the server threw its preview
+ * session away.
+ *
+ * **What is on that table is the owner's edition at its step 9** (2026-09-06,
+ * R-C3): the areas with their site cards and tokens, the port, and the tracks.
+ * The technologies reach the Laboratory at step 10 and the achievements the
+ * score track at step 11, AFTER the secret choice — so the server sends neither
+ * and `TableSections` draws both as "revealed once you have chosen your card".
+ * The engine is untouched: the same cards are dealt in the same order from the
+ * same seed, and the game this screen starts shows them all.
  *
  * **The choice is per HUMAN seat, and another seat's deal is not yours to see
  * (the 2026-09-06 corrections, R-C1).** A bot seat shows two card BACKS and the
@@ -235,7 +242,8 @@ export function NewGame({
         <div className="deck">
           <div className="decision">
             <div className="asking">
-              Keep one card per seat. The table is set as the rulebook has it at step 12.
+              The table is set: the areas with their site cards and tokens, the port and the
+              tracks. The technologies and the goals are revealed once you have chosen.
             </div>
             {humans.map((d) => (
               <section className="deal-seat human" data-seat={d.seat} key={d.seat}>

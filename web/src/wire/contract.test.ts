@@ -216,6 +216,43 @@ describe("what the corpus itself has to be true of", () => {
     expect(wire.preview.deals.every((d) => !("bot_keep" in d))).toBe(true);
   });
 
+  // **The technologies and the goals are not on the set table (2026-09-06,
+  // R-C3).** Both previews carry the laboratory with every slot emptied and no
+  // `Achievements` panel at all, because the owner's edition deals the two
+  // starting orders and takes the secret choice at its step 9 — before the
+  // technologies reach the Laboratory at step 10 and the achievements the score
+  // track at step 11.
+  //
+  // `deck_remaining` stays: how many cards are left is public arithmetic, and
+  // it is the identities that have not come out yet.
+  //
+  // **`at_k` is the anti-vacuity and it is load-bearing.** A `HistoricalFrame`
+  // whose labs were empty and whose dashboard had no Achievements panel BY TYPE
+  // would satisfy every line above while proving nothing about the preview; the
+  // replay position at k shows both, so what is asserted here is a property of
+  // this payload and not of its shape.
+  it("both previews withhold the laboratory and the goals, and a replay position does not", () => {
+    const hasGoals = (frame: { dashboard: Panel[] }) =>
+      frame.dashboard.some((p) => "Achievements" in p);
+    for (const [name, p] of [
+      ["preview", wire.preview],
+      ["preview_bot", wire.previewBot],
+    ] as const) {
+      expect(p.table.labs.boards.length, `${name}: the laboratory board is still drawn`)
+        .toBeGreaterThan(0);
+      expect(p.table.labs.boards.every((b) => b.slots.length === 0), name).toBe(true);
+      expect(p.table.labs.deck_remaining, `${name}: the deck count is public`).toBeGreaterThan(0);
+      expect(hasGoals(p.table.frame), `${name}: no Achievements panel`).toBe(false);
+      // R-C4: what STAYS. The port is on the table at step 9, and the tracks
+      // are printed board rather than cards.
+      expect(p.table.ports.boards.flatMap((b) => b.slots).filter((s) => s.card !== null).length)
+        .toBe(6);
+      expect(p.table.frame.dashboard.some((d) => "Tracks" in d), name).toBe(true);
+    }
+    expect(wire.atK.labs.boards.some((b) => b.slots.length > 0)).toBe(true);
+    expect(hasGoals(wire.atK.frame)).toBe(true);
+  });
+
   // **No play payload carries the setup seed; `preview` does, and must.**
   //
   // The seed regenerates both decks, the boxed pile, the board and every deal —

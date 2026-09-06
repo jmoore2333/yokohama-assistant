@@ -334,7 +334,17 @@ test("gate B — the set table before the first choice", async ({ page }) => {
   // loaded strip, and a set table has no game to fetch from — so the six cards
   // are what says the offers came off the preview's frame.
   await expect(page.locator(".table-sec.ports .strip-slot .card-face")).toHaveCount(6);
-  await expect(page.locator(".table-sec.labs .board-strip")).toBeVisible();
+  // **The laboratory and the goals are WITHHELD here (R-C3)**, so the section
+  // is present and carries its line rather than a strip: the owner's edition
+  // takes the secret choice at step 9, and the technologies and achievements
+  // reach the table at steps 10 and 11.
+  await expect(page.locator(".table-sec.labs")).toContainText(
+    "revealed once you have chosen your card",
+  );
+  await expect(page.locator(".table-sec.labs .card-face")).toHaveCount(0);
+  await expect(page.locator(".table-sec.achievements")).toContainText(
+    "revealed once you have chosen your card",
+  );
   await expect(page.locator(".board .tile")).toHaveCount(10);
   await expect(page.locator(".deal-seat.human button.deal-pick")).toHaveCount(2);
   // **The bot's deal is face down (R-C1).** Two backs and the line, and no card
@@ -385,14 +395,18 @@ test("gate B — the set table before the first choice", async ({ page }) => {
   await park(page);
   await page.screenshot({ path: `${OUT}/b-set-table-1710x869.png` });
 
-  // **A second frame, scrolled to the strips.** The help and the README both say
-  // the port and the laboratory are on the set table, and the first frame is
-  // the first view — where the fitted pyramid fills the table and no strip is
-  // in it. This is the one that shows the sentence is true. `.table` is its own
-  // scroller above 1201px, so the side column and the deck do not move.
+  // **A second frame, scrolled to the strips.** The help and the README say the
+  // port and the tracks are on the set table and that the technologies and the
+  // goals come out once you have chosen (R-C3/R-C4), and the first frame is the
+  // first view — where the fitted pyramid fills the table and no strip is in
+  // it. This is the one that shows those sentences are true, in both
+  // directions: the port's strip is there, and the laboratory's line is there
+  // instead of a strip. `.table` is its own scroller above 1201px, so the side
+  // column and the deck do not move.
   await scrollTable(page, "sections");
   await expect(page.locator(".table-sec.ports .board-strip")).toBeInViewport();
-  await expect(page.locator(".table-sec.labs .board-strip")).toBeInViewport();
+  await expect(page.locator(".table-sec.labs")).toBeInViewport();
+  await expect(page.locator(".table-sec.labs .board-strip")).toHaveCount(0);
   await park(page);
   await page.screenshot({ path: `${OUT}/b-set-table-strips-1710x869.png` });
 });

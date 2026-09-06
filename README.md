@@ -202,10 +202,11 @@ file locally.
 served over HTTP and drawn in a browser instead of a terminal. It is a *second frontend over one
 engine*, never a second engine: the server routes, scopes and serializes and computes nothing
 about the game, so the terminal and the browser cannot disagree about a rule. A game starts on the
-**set table** — the areas with their site cards and tokens, the port, the laboratory and the goals,
-exactly what the rulebook has on the table when the two starting orders are dealt — where you choose
-your first card over the real board rather than off a list, with the built-in bot's Keep score under
-each of your own two cards. The bot's two are face down: it keeps one of them, the record knows
+**set table** — the areas with their site cards and tokens, the port and the tracks, what the
+rulebook has on the table at the step where the two starting orders are dealt and chosen in secret
+— where you choose your first card over the real board rather than off a list, with the built-in
+bot's Keep score under each of your own two cards. The technologies and the goals go out at the two
+steps after that one, so they are revealed once you have chosen. The bot's two are face down: it keeps one of them, the record knows
 which, and you never see it.
 
 ![The browser client at two players: the banner with the Boards menu and the reference buttons

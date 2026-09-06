@@ -412,7 +412,7 @@ test("four assistants of one colour stand as a pile, not as a cube and a count",
 // component suite reads the absence off a committed fixture; this reads it off
 // what a real server sent a real browser, which is the only reading that can
 // say the payload itself carried nothing.
-test("the set table shows the port and hides the bot's cards before the first choice, and the chosen card lands in hand", async ({ page }) => {
+test("the set table shows the port, hides the bot's cards and withholds the technologies and goals before the first choice, and the chosen card lands in hand", async ({ page }) => {
   const watch = watchForBreakage(page);
   await page.setViewportSize({ width: 1710, height: 869 });
   await page.goto("/");
@@ -427,6 +427,21 @@ test("the set table shows the port and hides the bot's cards before the first ch
   await expect(page.locator(".deal-seat.bot .card-id")).toHaveCount(0);
   await expect(page.locator(".deal-seat.bot")).not.toContainText("Keep score");
   await expect(page.locator(".deal-seat.bot")).toContainText("keeps one of its two cards");
+  // **The technologies and the goals are withheld until the choice (R-C3).**
+  // Against a real server, so this reads what the payload actually carried: the
+  // owner's edition deals the two orders and takes the secret choice at step 9,
+  // and the technologies reach the Laboratory at step 10 and the achievements
+  // the score track at step 11. The port above and the tracks below are R-C4's
+  // half — what stays — and are why a set table that drew nothing fails here.
+  await expect(page.locator(".table-sec.labs")).toContainText(
+    "revealed once you have chosen your card",
+  );
+  await expect(page.locator(".table-sec.labs .card-face")).toHaveCount(0);
+  await expect(page.locator(".table-sec.achievements")).toContainText(
+    "revealed once you have chosen your card",
+  );
+  await expect(page.locator(".table-sec.achievements .card-face")).toHaveCount(0);
+  await expect(page.locator(".table-sec.tracks")).toBeVisible();
   await expect(page.getByRole("button", { name: "Start" })).toBeDisabled();
 
   // **Inert, and still readable (spec §3.3.3).** `.tile[role="button"]` is the placement
@@ -512,5 +527,14 @@ test("the set table shows the port and hides the bot's cards before the first ch
   await expect(page.getByRole("heading", { name: "Yokohama" })).toBeVisible();
   await readScreen(page);
   await expect(page.locator(".panel", { hasText: /'S HAND|’s hand/i }).first()).toContainText(chosen);
+  // **And they come OUT once the card is chosen**, which is the half that makes
+  // the withholding a delay rather than a deletion. Six technologies on the
+  // laboratory and the line gone — asserted against the same server that sent
+  // neither one screen ago.
+  await expect(page.locator(".table-sec.labs .strip-slot .card-face")).toHaveCount(6);
+  await expect(page.locator(".table-sec.labs")).not.toContainText(
+    "revealed once you have chosen your card",
+  );
+  await expect(page.locator(".table-sec.achievements .card-face")).not.toHaveCount(0);
   expect(watch.failures).toEqual([]);
 });

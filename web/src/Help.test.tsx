@@ -43,6 +43,19 @@ describe("the help panel's set-table paragraph", () => {
     expect(text).toContain("Keep score");
     expect(text).not.toContain("bot keeps this");
   });
+
+  // **R-C3's half of the same paragraph.** What the set table has on it is the
+  // owner's edition at the step where the two orders are dealt and chosen in
+  // secret: the areas, the port and the tracks. The technologies and the goals
+  // go out at the two steps after that, so the sentence must not still list
+  // them among what is on the table when the cards are drawn.
+  it("says the technologies and the goals come out after the choice", () => {
+    render(<Help />);
+    const text = setTableParagraph().textContent ?? "";
+    expect(text).toContain("the port and the tracks");
+    expect(text).toContain("once you have chosen");
+    expect(text).not.toContain("the port, the laboratory and the goals");
+  });
 });
 
 describe("the help panel's prose", () => {

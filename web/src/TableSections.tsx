@@ -123,13 +123,30 @@ export function TableSections({
       <p className="muted">loading&hellip;</p>
     </section>
   );
-  /** No game yet: the setup screen's table (Task 12) draws the boards it can
-   *  and says so about the one it cannot, rather than spinning on a fetch that
-   *  has no game to name. */
+  /** No game yet, and no way to draw this board: the setup screen's table
+   *  (Task 12) draws the boards it can and says so about the one it cannot,
+   *  rather than spinning on a fetch that has no game to name. */
   const unavailable = (key: SectionKey) => (
     <section className={`table-sec ${key} collapsed`} key={key} aria-label={SECTION_LABELS[key]}>
       <h2>{SECTION_LABELS[key]}</h2>
       <p className="muted">available once the game starts</p>
+    </section>
+  );
+  /** Withheld until the first card is chosen (2026-09-06, R-C3) — a DIFFERENT
+   *  thing from `unavailable` above, which is a board this screen has no data
+   *  for. The server has the technologies and the achievements and deliberately
+   *  does not send them: the owner's edition deals the two starting orders and
+   *  takes the secret choice at its step 9, and the technologies reach the
+   *  Laboratory at step 10 and the achievements the score track at step 11.
+   *
+   *  Which is why an empty strip would not do. With the slots emptied on the
+   *  wire, `LabStrip` draws six blanks and `GoalsStrip` draws nothing, and both
+   *  read as a screen that failed rather than as a table that is not there
+   *  yet. */
+  const withheld = (key: SectionKey) => (
+    <section className={`table-sec ${key} collapsed`} key={key} aria-label={SECTION_LABELS[key]}>
+      <h2>{SECTION_LABELS[key]}</h2>
+      <p className="muted">revealed once you have chosen your card</p>
     </section>
   );
 
@@ -148,7 +165,11 @@ export function TableSections({
               loading(key)
             );
           case "labs":
-            return offers ? (
+            // R-C3 first: on the set table there is no game, and the wire's own
+            // laboratory is empty by construction.
+            return game === null ? (
+              withheld(key)
+            ) : offers ? (
               <LabStrip key={key} panel={offers.labs} art={art} labels={labels} changed={changedSlots} />
             ) : replaying ? (
               collapsed(key)
@@ -168,7 +189,11 @@ export function TableSections({
           case "tracks":
             return tracks ? <TracksStrip key={key} tracks={tracks} art={art} colors={colors} /> : null;
           case "achievements":
-            return <GoalsStrip key={key} cards={goals} art={art} labels={labels} colors={colors} />;
+            return game === null ? (
+              withheld(key)
+            ) : (
+              <GoalsStrip key={key} cards={goals} art={art} labels={labels} colors={colors} />
+            );
         }
       })}
       {error && <div className="error">{error}</div>}

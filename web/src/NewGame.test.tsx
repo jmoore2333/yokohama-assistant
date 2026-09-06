@@ -200,7 +200,10 @@ describe("the set table", () => {
     // and a set table with no game to fetch FROM is exactly where that would
     // happen. The offers ride on `preview.table`, so they must be drawn.
     expect(document.querySelector(".table-sec.ports .board-strip")).not.toBeNull();
-    expect(document.querySelector(".table-sec.labs .board-strip")).not.toBeNull();
+    // The laboratory and the goals are WITHHELD until the choice (R-C3) and
+    // have their own cell below; the two sections are still on the screen, so
+    // this asserts their presence and leaves what they say to that cell.
+    expect(document.querySelector(".table-sec.labs")).not.toBeNull();
     expect(document.querySelector(".table-sec.achievements")).not.toBeNull();
     expect(screen.getByText(/setting up/)).toBeInTheDocument();
     expect(screen.getByText(wire.preview.seed)).toBeInTheDocument();
@@ -257,6 +260,37 @@ describe("the set table", () => {
     const mine = document.querySelector(`.deal-seat.human[data-seat="${human.seat}"]`)!;
     const ids = [...mine.querySelectorAll(".card-id")].map((e) => e.textContent);
     expect(ids).toEqual(human.cards.map((c) => `O${String(c.card.id).padStart(2, "0")}`));
+  });
+
+  // **The technologies and the goals wait for the choice (2026-09-06, R-C3).**
+  // The owner's edition deals the two starting orders and takes the secret
+  // choice at its step 9; the technologies reach the Laboratory at step 10 and
+  // the achievements the score track at step 11 — so neither is on the table
+  // while the card is being chosen, and this screen says so rather than drawing
+  // an empty strip that reads as a bug.
+  //
+  // **The withholding is the SERVER's** (the fixture carries no lab slots and
+  // no Achievements panel) and the LINE is this screen's, so both halves are
+  // asserted: the payload's shape is the premise, the words are the claim.
+  //
+  // The port and the tracks are the anti-vacuity AND R-C4: they are what stays,
+  // so a set table that drew no sections at all fails here.
+  it("withholds the laboratory and the goals until the card is chosen, and keeps the port and the tracks", async () => {
+    expect(
+      wire.preview.table.labs.boards.every((b) => b.slots.length === 0),
+      "the premise: the fixture's laboratory is already empty",
+    ).toBe(true);
+    await dealt(wire.preview);
+    for (const key of ["labs", "achievements"]) {
+      const sec = document.querySelector(`.table-sec.${key}`)!;
+      expect(sec, `the ${key} section is on the set table`).not.toBeNull();
+      expect(sec.textContent).toContain("revealed once you have chosen your card");
+      expect(sec.querySelectorAll(".card-face"), `${key} draws no cards`).toHaveLength(0);
+    }
+    // R-C4: what stays. Six order cards in the port, and the tracks drawn.
+    expect(document.querySelectorAll(".table-sec.ports .card-face")).toHaveLength(6);
+    expect(document.querySelector(".table-sec.tracks")).not.toBeNull();
+    expect(document.querySelectorAll(".table-sec.tracks .track")!.length).toBeGreaterThan(0);
   });
 
   // The backs are the real picture, not a styled placeholder: the manifest's

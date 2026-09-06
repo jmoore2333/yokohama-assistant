@@ -279,6 +279,40 @@ fn choices_of(
         .collect()
 }
 
+/// Take the technologies and the achievements back off the previewed table.
+///
+/// **The choice comes first in the owner's edition**, which is the Tabletop
+/// Simulator upload in this repository — `tts-assets/pdf/` +
+/// `httpssteamusercontentaakamaihdnetugc753716318425766140` +
+/// `37EE3A37AB39CBA5E73B74B7F97C54556D7C7719.PDF`, its setup steps on **p.5**
+/// (three lines because the filename is one 88-character token). At **step 9**
+/// the order deck is built, the port filled, and each player dealt two orders
+/// to choose between IN SECRET; the technology
+/// cards reach the Laboratory only at **step 10** and the achievements the
+/// score track at **step 11** — so a player choosing a starting order has
+/// neither in front of them, and neither does this screen (2026-09-06, R-C3;
+/// `analysis-1/00-yokohama-rulebook.pdf` orders those three differently and is
+/// the outlier of the two editions in this repository).
+///
+/// **This is a VIEW, not a rule.** Nothing here touches the engine: the seed,
+/// the draw order and the position `new_game` built are exactly what they were,
+/// and `SEMANTICS_REV` does not move — the same cards are dealt, in the same
+/// order, and the game `create` starts from this seed shows them all. What
+/// changes is only when the person looking at the screen is told.
+///
+/// `deck_remaining` is deliberately KEPT on both panels: how many cards are
+/// left is public arithmetic at any table, and it is the identities that have
+/// not come out yet.
+fn withhold_until_the_choice(table: &mut HistoricalFrame) {
+    for board in &mut table.labs.boards {
+        board.slots.clear();
+    }
+    table
+        .frame
+        .dashboard
+        .retain(|panel| !matches!(panel, yokohama_cli::screen_model::Panel::Achievements(_)));
+}
+
 /// The deal a seed produces AND the table it sets, without starting anything.
 ///
 /// **A throwaway, never a game.** The `Session` built here is dropped when this
@@ -313,9 +347,10 @@ pub fn preview(req: &NewGame, rules: &Rules) -> Result<Preview, PreviewError> {
     // `create` runs, and the reason no second attachment step is needed here.
     session.set_run_seats(bots.seat_provenance());
     let repl = Repl::new(session);
-    let table = HistoricalFrame::at(&repl, 0).map_err(|e| {
+    let mut table = HistoricalFrame::at(&repl, 0).map_err(|e| {
         PreviewError::Server(format!("the setup position did not build: {}", e.message))
     })?;
+    withhold_until_the_choice(&mut table);
     let deals = pending
         .deals
         .iter()
@@ -947,6 +982,99 @@ mod tests {
         assert_eq!(p.deals[0].cards.len(), 2);
         for c in &p.deals[0].cards {
             assert_eq!(c.keep_score, yokohama_core::greedy::score_starting_order(&c.card, &rules));
+        }
+    }
+
+    /// The achievement TYPE names on a frame's dashboard, or empty where the
+    /// frame carries no `Achievements` panel at all. Reading them through one
+    /// function keeps "the panel is absent" and "the panel is present with
+    /// these three cards" from being two different shapes of assertion.
+    fn achievement_names(frame: &HistoricalFrame) -> Vec<String> {
+        frame
+            .frame
+            .dashboard
+            .iter()
+            .find_map(|panel| match panel {
+                yokohama_cli::screen_model::Panel::Achievements(a) => Some(a),
+                _ => None,
+            })
+            .map(|a| a.cards.iter().map(|c| format!("{:?}", c.achievement_type)).collect())
+            .unwrap_or_default()
+    }
+
+    /// **The technologies and the goals are withheld until the choice
+    /// (2026-09-06, R-C3).** The previewed table carries the laboratory with
+    /// EMPTY slots and no `Achievements` panel at all, so the player choosing a
+    /// starting order reads the same table the owner's edition has in front of
+    /// them at its step 9 — before the technologies go out at step 10 and the
+    /// achievements at step 11.
+    ///
+    /// **Read against the game the same seed CREATES**, not against a list
+    /// written here: the six technology titles and the three achievement types
+    /// are learned from the created game's own frame and then required to be
+    /// absent from the preview's JSON. A withholding checked against a
+    /// hard-coded list stops discriminating the moment the deal changes.
+    ///
+    /// The anti-vacuity is the port: its six order ids ARE in the preview's
+    /// JSON, so this is a targeted withholding and not a blank table. And
+    /// `deck_remaining` is kept — the count is public arithmetic; it is the
+    /// identities that are not on the table yet.
+    #[test]
+    fn the_preview_withholds_the_laboratory_and_the_achievements() {
+        let rules = Rules::standard();
+        let p = preview(&req_seeded("withheld", ARGMAX_IS_CARD_2), &rules).unwrap();
+
+        // What the SAME seed puts on a real table, read from the game itself.
+        let g = games();
+        let (_, handle) = g.create(&req_seeded("withheld", ARGMAX_IS_CARD_2)).unwrap();
+        let started = HistoricalFrame::at(&handle.lock().unwrap(), 0).unwrap();
+        let titles: Vec<String> = started
+            .labs
+            .boards
+            .iter()
+            .flat_map(|b| b.slots.iter())
+            .filter_map(|s| s.printed.as_ref().map(|c| c.name.clone()))
+            .collect();
+        assert_eq!(titles.len(), 6, "the premise: a 2P laboratory offers six technologies");
+        let goals = achievement_names(&started);
+        assert_eq!(goals.len(), 3, "the premise: three achievement cards are in play");
+
+        assert!(
+            p.table.labs.boards.iter().all(|b| b.slots.is_empty()),
+            "every laboratory slot is empty on the set table",
+        );
+        assert_eq!(
+            p.table.labs.deck_remaining, started.labs.deck_remaining,
+            "the technology deck's COUNT is public and is kept",
+        );
+        assert!(
+            achievement_names(&p.table).is_empty(),
+            "the set table carries no Achievements panel",
+        );
+
+        let json = serde_json::to_string(&p).unwrap();
+        for title in &titles {
+            assert!(!json.contains(title.as_str()), "the preview names the technology {title}");
+        }
+        for name in &goals {
+            assert!(!json.contains(name.as_str()), "the preview names the achievement {name}");
+        }
+        // Anti-vacuity: the port is still on the table, by id.
+        let port_ids: Vec<u8> = started
+            .ports
+            .boards
+            .iter()
+            .flat_map(|b| b.slots.iter())
+            .filter_map(|s| s.card.map(|id| id.0))
+            .collect();
+        assert_eq!(port_ids.len(), 6, "the premise: a 2P port offers six orders");
+        for id in port_ids {
+            assert!(
+                p.table.ports.boards.iter().flat_map(|b| b.slots.iter()).any(|s| s
+                    .card
+                    .is_some_and(|c| c.0 == id)),
+                "the port's order {id} is missing from the set table",
+            );
         }
     }
 

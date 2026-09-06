@@ -171,8 +171,10 @@ export function Help() {
       <h3>Starting a game</h3>
       <p>
         The deal happens over the <strong>set table</strong>: the areas with their site cards and
-        tokens, the port, the laboratory and the goals &mdash; exactly what the rulebook has on the
-        table when the two cards are drawn. Your two cards are in the answer bar, each with the
+        tokens, the port and the tracks &mdash; what the rulebook has on the table at the step
+        where the two cards are dealt and chosen in secret. The technologies and the goals go out
+        at the two steps after that one, so they are held back here as well and appear once you
+        have chosen. Your two cards are in the answer bar, each with the
         built-in bot&rsquo;s <em>Keep score</em> under it, and the bot&rsquo;s own two cards are{" "}
         <strong>face down</strong> in the side column. It keeps one of them by the same reading of
         the printed economics the Keep score shows you &mdash; the game&rsquo;s record knows which,
