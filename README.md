@@ -198,7 +198,8 @@ file locally.
 
 ## The browser client
 
-**Branch `web-frontend` only.** The same engine, the same words, and the same legal-move gate —
+**Merged to master on 2026-09-11** (the `web-frontend` lane: M1–M5.5 and the 2026-09-06 owner
+corrections). The same engine, the same words, and the same legal-move gate —
 served over HTTP and drawn in a browser instead of a terminal. It is a *second frontend over one
 engine*, never a second engine: the server routes, scopes and serializes and computes nothing
 about the game, so the terminal and the browser cannot disagree about a rule. A game starts on the
@@ -259,16 +260,22 @@ the reconstruction does not match the record.
 There is a **Help** panel in the client itself covering all of this, with the same screenshots.
 
 ```bash
-# from the repo root, on branch web-frontend
+# from the repo root
 cd web && npm ci && npm run build && cd ..
 cargo run --release -p yokohama-web        # http://127.0.0.1:8080
 ```
 
 ## Hosting
 
-**Nothing is deployed yet, and this section is the honest statement of what would have to be
-true first.** The intended shape is the client and API behind **Cloudflare Access** on
-`yokohama.moore.nyc`, with a container as the compute layer.
+**Deployed since 2026-09-01: a container on the owner's Synology NAS behind Cloudflare Access at
+`yokohama.moore.nyc`, reached only through the existing cloudflared tunnel.** The eighth build,
+`yokohama-web:0.5.0-m5.5.4`, has been live since 2026-09-06. [`deploy/RUNBOOK.md`](deploy/RUNBOOK.md)
+is the record rather than a plan: §1 the static musl cross-compile on the workstation, §2 delivery
+as a context tarball the NAS fetches through Portainer's Docker proxy (`POST /build?remote=…`),
+§3 the container (network `cf-internal`, the named volume `yokohama-web-data` holding the game
+store, no port published to the LAN), §3.5–§3.6 every deployment so far with its numbers, §5
+rollback (every earlier image tag is still on the NAS). Modal (`deploy/modal_app.py`) with the
+edge Worker in `deploy/worker/` is the upgrade path — measured, and deliberately not deployed.
 
 What the code already does right:
 
@@ -296,8 +303,12 @@ What the code already does right:
   spoofing — the JWT signature has to be verified at the origin. That verification does not
   exist in this crate today.
 
-Until those are closed, run it on `127.0.0.1` and treat the replay route's seat pin as what it
-is: a fence against sweeping a game's history in one pass, not a privacy boundary.
+Until those are closed, the Access application in front of the tunnel is the only door — the
+container publishes no port, a local run stays on `127.0.0.1` — and the replay route's seat pin
+is what it is: a fence against sweeping a game's history in one pass, not a privacy boundary.
+Identity at the origin, the transport for a shared room, and the store are M6's three open
+questions; its entry artifact is
+[`docs/plans/2026-09-06-web-frontend-m6-handover.md`](docs/plans/2026-09-06-web-frontend-m6-handover.md).
 
 ## Status (2026-08-30)
 
@@ -455,7 +466,7 @@ semantics bump by design, and rev-6-and-earlier saves no longer resume.
 | `yokohama-oracle` | The independent referee: legal-move enumeration, final scoring + tie-break, and a prune-free route reference, authored from the rules sources under an audited independence rule (types-only dependency on the engine) |
 | `yokohama-difftest` | The harness comparing engine vs oracle: per-decision-point sweeps under two policies, terminal scoring comparison, three-way route-pruning check, self-contained divergence artifacts + `repro` tool |
 | `yokohama-bridge` | The BGA capture relay (Phase 3.5b): a localhost-only HTTP sink that appends what the read-only browser extension in `bridge/` observes to `bridge-captures/<table>.ndjson`, plus the feed pre-processor (typed NDJSON reader, payload-identity dedupe, structural supersession collapse for takebacks). Depends on NO engine crate and knows no rules — translating captures into engine moves is `yokohama-cli`'s `import`, deliberately on the other side of that boundary |
-| `yokohama-web` | **Branch `web-frontend` only** — the HTTP surface over the engine, with its browser client in `web/`. It routes, scopes and serializes and computes nothing about the game: every model is `screen_model`'s, every word is `describe`'s, every move goes through the same `Session` legal-list gate the terminal uses, so the two frontends cannot disagree about a rule. Read-only projections for the reference panels and the replay track, the two explanation routes that run a real search (`suggest`, `why`), and no play payload anywhere carries the setup seed |
+| `yokohama-web` | **Merged 2026-09-11** — the HTTP surface over the engine, with its browser client in `web/`. It routes, scopes and serializes and computes nothing about the game: every model is `screen_model`'s, every word is `describe`'s, every move goes through the same `Session` legal-list gate the terminal uses, so the two frontends cannot disagree about a rule. Read-only projections for the reference panels and the replay track, the two explanation routes that run a real search (`suggest`, `why`), and no play payload anywhere carries the setup seed |
 | `gen-data` | YAML → Rust generator for the verified card/site data (never hand-edit `game/data.rs`) |
 
 ## Download and run
@@ -509,10 +520,10 @@ Full tester guide: **[HTML](docs/cli-guide.html)** or [Markdown](docs/cli-guide.
 
 **Gates.** Per-edit (debug): the six crate suites (`yokohama-core`, its `eval_probe` example
 target, `yokohama-cli`, `yokohama-oracle`, `yokohama-difftest`, `yokohama-bridge`) — plus a
-seventh, `yokohama-web`, on branch `web-frontend` only, where the browser lane lives — + the four
+seventh, `yokohama-web`, the browser lane (merged to master 2026-09-11) — + the four
 `bridge/tests/*.js` node suites (the BGA bridge's browser half has no cargo coverage and would
 otherwise never run) + `cargo clippy --workspace --all-targets -- -D warnings`, all zero-warning.
-**On `web-frontend` the browser CLIENT adds three more per-edit commands, from `web/`** (M2.5,
+**The browser CLIENT adds three more per-edit commands, from `web/`** (M2.5,
 2026-08-31 — before it, "the suites are green" was not a claim about the browser at all):
 `npm run typecheck` (both TS projects, and the committed wire corpus against the hand-written
 client types), `npm test` (**393** vitest component tests over jsdom in 24 files, every payload
