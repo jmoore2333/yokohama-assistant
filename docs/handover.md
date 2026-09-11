@@ -32,10 +32,13 @@ the findings, then rule D3 and W6 together. Entry: the re-entry handover §2–�
    200×50 floor. If it fails to connect in a session, `/mcp` reconnect or a fresh session.
 2. Saves on disk (gitignored `docs/temp/owner-games/`): `game4-v4.json` is COMPLETE (247 events;
    you won 82–81 per the 2026-08-30 session's record) and UNSCRIBED; `game5-v4.json` is at 40
-   events. Finish game 5, or start a fresh game 6 — either way the games are played on master,
-   whose bot is byte-identical to the V4 merge head's.
-3. Scribe: `why <n>` at every bot event of each finished game (game over is not a refusal); the
-   agent scribes by reconstruct-by-replay on autosave copies while you play, as in Phase B.
+   events. The games are played on master, whose bot is byte-identical to the V4 merge head's.
+3. The shape you chose (2026-09-11): **the CLI game live in Forge** — the agent scribes by
+   reconstruct-by-replay on autosave copies (`why <n>` at every bot event) and never advises,
+   your comments anchored to event indices as you go; finish game 5 or start game 6. **The web
+   game solo from your other desktop** — report the game id, it gets pulled with the Track 3
+   recipe and scribed post hoc against your notes file (`docs/temp/owner-games/notes-<date>.md`,
+   one line per flagged event). Game over is not a `why` refusal, so nothing is lost either way.
 4. Package: a dated findings document on the Phase-B shape
    (`docs/plans/2026-08-17-phase-b-owner-games-handover.md` — event-anchored findings, the
    outcomes, what routes where), plus decision-log rows. Game 1's 82–81 is not in any tracked
