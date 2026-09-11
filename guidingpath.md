@@ -2,7 +2,7 @@
 
 **Created:** 2026-07-16 · **Living document** — update at every phase transition and when a design decision is made.
 
-**This file is the authoritative statement of project state and direction.** Where README.md or agent-handover.md disagree (both carry stale "A1 COMPLETE" claims), this file wins.
+**This file is the authoritative statement of project state and direction.** Where README.md disagrees, this file wins. (The December-2025 `agent-handover.md` was retired on 2026-09-11 — git history keeps it; the owner's one-screen task board is now `docs/handover.md`, a pointer that never outranks this file.)
 
 ---
 
