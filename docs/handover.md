@@ -6,15 +6,19 @@ here names the document that carries it, and it never outranks `guidingpath.md` 
 `CLAUDE.md` (the operating facts), or a dated document in `docs/plans/`. Keep it current at every
 session close: rewrite the stale lines, do not append history (the decision log is for history).
 
-**Updated:** 2026-09-11, at the session that merged the web lane (`abe4eec`) and wrote the AI-lane
-re-entry handover `docs/plans/2026-09-11-ai-lane-reentry-handover.md`.
+**Updated:** 2026-09-11 (second session), after the V4 diagnostic games were played and scribed and
+the owner-games LEDGER artifact was published for the owner's annotation. The previous update was the
+web-lane merge (`abe4eec`) with the AI-lane re-entry handover
+`docs/plans/2026-09-11-ai-lane-reentry-handover.md`.
 
 ## Where things stand
 
 - **The bot:** V4, the sighted evaluator `v4-step9-draft1`, shipped 2026-08-30 as the production
   contestant and released as v0.5.0. The bar ("provably plays to win, two-player") is NOT claimed.
 - **The two owner decisions** that close V4 — the D3 depth re-ask and the W6 knob-screening
-  GO/WAIT — both HOLD until your `why`-scribed diagnostic game is in hand.
+  GO/WAIT — still HOLD. **The games are now PLAYED AND SCRIBED (three of them, 370 bot events
+  reconstructed, zero refusals)**; what is outstanding is YOUR annotation of them in the ledger
+  artifact, then the findings document, then the two rulings together (Track 1).
 - **The web client** merged to master 2026-09-11 and is live at `yokohama.moore.nyc` behind
   Cloudflare Access, `yokohama-web:0.5.0-m5.5.4` on the NAS via Portainer. Nothing about it moves
   the bot. Its next milestone (M6, "the room") is unplanned.
@@ -23,32 +27,68 @@ re-entry handover `docs/plans/2026-09-11-ai-lane-reentry-handover.md`.
 - **Gates at HEAD:** all per-edit suites green (the counts are in `CLAUDE.md`); the fifteen-gate
   release roster last ran at the V4 merge head, 15/15 at 492.17s on the M5.
 
-## Track 1 — V4 close-out: the diagnostic games and the two rulings (AI lane)
+## Track 1 — V4 close-out: the owner annotates the ledger, then the findings doc, then D3 + W6
 
-**Goal:** play the owed game(s) against the shipped bot, scribe every bot move with `why`, package
-the findings, then rule D3 and W6 together. Entry: the re-entry handover §2–§5.
+**State (2026-09-11, second session):** three complete games against the shipped bot, all scribed
+by reconstruct-by-replay (`why <n>` at every bot event on copies of the records, release build):
 
-1. Check Forge is up (`http://127.0.0.1:3141/`) — the recipe is `docs/forge-cli-testing.md`,
-   200×50 floor. If it fails to connect in a session, `/mcp` reconnect or a fresh session.
-2. Saves on disk (gitignored `docs/temp/owner-games/`): `game4-v4.json` is COMPLETE (247 events;
-   you won 82–81 per the 2026-08-30 session's record) and UNSCRIBED; `game5-v4.json` is at 40
-   events. The games are played on master, whose bot is byte-identical to the V4 merge head's.
-3. The shape you chose (2026-09-11): **the CLI game live in Forge** — the agent scribes by
-   reconstruct-by-replay on autosave copies (`why <n>` at every bot event) and never advises,
-   your comments anchored to event indices as you go; finish game 5 or start game 6. **The web
-   game solo from your other desktop** — report the game id, it gets pulled with the Track 3
-   recipe and scribed post hoc against your notes file (`docs/temp/owner-games/notes-<date>.md`,
-   one line per flagged event). Game over is not a `why` refusal, so nothing is lost either way.
-4. Package: a dated findings document on the Phase-B shape
-   (`docs/plans/2026-08-17-phase-b-owner-games-handover.md` — event-anchored findings, the
-   outcomes, what routes where), plus decision-log rows. Game 1's 82–81 is not in any tracked
-   document until this lands.
-5. Rule, together, with the scribe log in hand: **D3** (open the bounded cross-handoff diagnostic
-   inside S1 under its six-clause fence, or leave the lane open-with-evidence) and **W6** (GO opens
-   a new development identity via knob screening on b and m; WAIT keeps the shelf).
-6. Then the ladder as the amendment wrote it: screening → the D1 identity freeze → W7 (the @V1
-   instrument is blocking implementation work first, then the OD-5 pre-registration you sign, then
-   ONE confirmatory battery) → OD-8 acceptance play → OD-11, the bar.
+| game | file (gitignored `docs/temp/owner-games/`) | result | events | bot events / refusals |
+|---|---|---|---|---|
+| Game 4 (CLI, 2026-08-30, you started) | `game4-v4.FINAL.json` · `game4-why.log` | **you 82 – bot 81** | 247 | 119 / 0 |
+| Game 6 (CLI in Forge, 2026-09-11, bot started) | `game6-v4.FINAL.json` · `game6-why.log` | **you 120 – bot 81** | 252 | 127 / 0 |
+| Web game `sim-551da3b64523dbd1` (browser, 2026-09-11, you started) | `web-2026-09-11-sim-551da3b64523dbd1.json` · `web-2026-09-11-why.log` | **you 89 – bot 68** | 243 | 124 / 0 |
+
+`game5-v4.json` (40 events) was abandoned by your choice at the table; `sim-016f847457c957a6`
+(100–56, the first web game) stays an optional exhibit, unscribed. The scribe notes with the
+setup echoes, self-read curves and event-anchored scribe-side reads for all three are
+`docs/temp/owner-games/notes-2026-09-11.md` (its last two sections carry the reviewers'
+corrections to the scribe's own claims — read them before quoting the earlier sections).
+
+**THE LEDGER (where your annotation happens):**
+`https://claude.ai/code/artifact/a57eb6f8-dd20-4266-b50b-1c94c5eb2591` — the three games turn by
+turn: every move with its event index, the bot's own arithmetic for every decision (self-read,
+stage, candidates, ties, nonzero feature rows, runner-ups, searched line), an Opus reviewer's
+commentary on every turn (one reviewer per game, each having read the rules reference and the
+Phase-B findings first), VP and self-read charts, key moments, and per-turn tag + note fields, a
+verdict and a general field per game, and answer fields under the reviewer's questions. **Notes
+save as you type into the artifact's database** (the status line top-right reads "notes saved";
+if it reads "not connected", the note is in that tab only — reload and retry). The page's sources
+and the scribe tooling are parked in `docs/temp/owner-games/ledger/` (README inside).
+
+**Next session, in order:**
+
+1. **Pull your notes from the ledger** (Artifact tool, `action: read_db`, the URL above,
+   `db_op: list`, `collection: notes` → docs `game4`/`game6`/`web`; shape in the ledger README).
+   Every note is anchored to a turn number; the datasets map turns to event ranges.
+2. **Write the findings package on the Phase-B shape** (`docs/plans/2026-08-17-phase-b-owner-games-handover.md`
+   is the precedent): a dated tracked document with event-anchored findings that pair YOUR line
+   with the scribe/reviewer grounding, the three outcomes, the routing per D7's branches; plus
+   decision-log rows for the three outcomes (game 4's 82–81 is in NO tracked document yet).
+   Scribe-side headline findings already on file (notes file + the ledger's reviews): (a) threat
+   blindness is now measurable in the V4 columns — game 6 e109 read +951 with your three
+   fulfillable orders in its table at weight 0 (`held_order_value` is weighted 0 until the end
+   trigger; `executable_orders`/`matched_production_access` 0 always; loading a threat RAISES its
+   read), and the web game's e124–e148 customs landing (+22) was priced only through
+   `imported_goods` w6; (b) game 4 e241 is terminal-exact and the shipped beam (b=4, m=8) had 12
+   lines tied at lose-by-1 while `driven table …:241 --contestant lookahead-v1:b=16,m=32
+   --decision-seed 1013458669601587549` finds "Place 2 in Bank" one VP better (82–82, still lost on
+   the clockwise tie-break) — a search-breadth miss, weights irrelevant; the game-4 reviewer adds
+   that the point was really lost at the Church (2-to-2 rightmost tie-break, a 3-point swing);
+   (c) produce-and-hoard live in game 6 (7 tea held e68→end, one order all game); (d) the web
+   game's final round HAD intent (e214–221) where game 6's last turn was dead; (e) instrument
+   note: the stage proxy jumped 750000→1000000 inside one bot turn (game 6 e217→e219), and the
+   forced turn-start node consistently reads worse than the real root one event later (both
+   reviewers) — those reads are not part of the self-read curve.
+3. **Rule D3 and W6 together** with the package in hand (close doc §3.2: a word suffices on each).
+   The scribe's recommendation, offered 2026-09-11 and NOT a ruling: **D3 YES, W6 WAIT**, with a
+   V5 (weights) cycle entering only through its own pre-registration after the D3 diagnostic read
+   — because two of the three headline findings are representation (weights), the breadth exhibit
+   is a strictly-better-not-winning line, and the close's own sentence is "W6 tunes the
+   THEN-SETTLED table". A GO is a fully defensible reading of "beats the previous bot at 0.69".
+4. Then the ladder as the amendment wrote it (§3 Phases D–F): W6 screening → D1 identity freeze →
+   W7 (the @V1 instrument is blocking implementation work, then the OD-5 pre-registration you
+   sign, then ONE confirmatory battery) → OD-8 acceptance play → OD-11, the bar. A weight change
+   is a DIFFERENT contestant (D1), never a tune.
 
 **You decide:** D3 · W6 · OD-6 (restate the ≤420s roster target — the M5 read 492.17s) · OD-8's
 format (game count, rubric — its inherited "brake behind" line contradicts canon ruling 15).
@@ -101,8 +141,8 @@ what a public README claims. Session shape: brainstorm → spec → plan, in its
 
 ## Owner rulings outstanding (one line each; detail in the re-entry handover §5)
 
-1. D3 depth re-ask — HOLD (Track 1).
-2. W6 GO/WAIT — HOLD (Track 1).
+1. D3 depth re-ask — HOLD; the games are in hand, your ledger annotation is the last input (Track 1).
+2. W6 GO/WAIT — HOLD, ruled together with D3 (Track 1).
 3. OD-6 roster-target restatement — ripe.
 4. OD-8 acceptance format — never set.
 5. CLI branch-4 register (`docs/plans/2026-08-18-cli-branch4-touchup-spec.md` §5): decisions 11,
