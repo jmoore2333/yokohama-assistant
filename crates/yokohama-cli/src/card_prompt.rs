@@ -461,7 +461,7 @@ fn strip_filter_prefix(line: &str) -> Option<&str> {
 /// to answer with seafood because seafood is listed above silk, so the player
 /// got a confident wrong screen instead of a question. One rule for both now,
 /// pinned by `a_prefix_that_names_two_things_is_refused_not_guessed`.
-pub(crate) fn parse_filter(term: &str, kind: IndexKind) -> Result<Option<IndexFilter>, String> {
+pub fn parse_filter(term: &str, kind: IndexKind) -> Result<Option<IndexFilter>, String> {
     // Messages quote what was TYPED; matching is done on the folded form.
     let typed = term.trim();
     let term = typed.to_lowercase();

@@ -146,7 +146,7 @@ fn refusal_width(record: &GameRecord) -> usize {
 /// defect). Hand-wrapping cannot buy that here, because every arm below
 /// interpolates something whose length it does not control.
 #[derive(Debug)]
-enum Refusal {
+pub enum Refusal {
     LiveMode,
     NoBotMoveYet,
     OutOfRange { asked: usize, events: usize },
@@ -164,20 +164,20 @@ enum Refusal {
 /// The mismatch refusal's parts, boxed so the one heavy variant does not size
 /// the whole enum (clippy's `large_enum_variant`, and it is the rarest arm).
 #[derive(Debug)]
-struct Mismatch {
-    index: usize,
-    seat: PlayerId,
-    controller: String,
+pub struct Mismatch {
+    pub index: usize,
+    pub seat: PlayerId,
+    pub controller: String,
     /// `Debug`, not a description: the reconstructed move need not be legal in
     /// the TRUE position (it was chosen inside a sampled world), and naming a
     /// move against a state that does not admit it is how a formatter gets to
     /// index something that is not there — `SuggestError::Inconsistent`'s own
     /// reasoning, at the one other site with the same exposure.
-    reconstructed: String,
+    pub reconstructed: String,
     /// The recorded move in words, which is always safe: it applied here.
-    recorded: String,
-    recorded_version: Option<u32>,
-    current_version: u32,
+    pub recorded: String,
+    pub recorded_version: Option<u32>,
+    pub current_version: u32,
 }
 
 /// Every arm is written as PROSE — one logical line per paragraph, with a `\n`
@@ -380,6 +380,22 @@ fn account(
     bots: &BotSeats,
     arg: Option<usize>,
 ) -> Result<String, Refusal> {
+    let a = account_parts(mode, record, rules, bots, arg)?;
+    Ok(render(a.reconstruction, a.mv, a.explain, &a.state, rules))
+}
+
+/// [`account`] without the wording — see [`WhyAccount`].
+///
+/// Every refusal in this module is raised here, so the two surfaces cannot
+/// disagree about what is explainable: the screen is this function's output
+/// with words on it, and nothing else consults the record.
+pub fn account_parts(
+    mode: TrackingMode,
+    record: &GameRecord,
+    rules: &Rules,
+    bots: &BotSeats,
+    arg: Option<usize>,
+) -> Result<WhyAccount, Refusal> {
     if matches!(mode, TrackingMode::Live) {
         return Err(Refusal::LiveMode);
     }
@@ -445,8 +461,8 @@ fn account(
     // never rendered never pays for the exhaustive enumeration.
     let forced = get_legal_moves(&state, rules).len() == 1;
 
-    Ok(render(
-        Reconstruction {
+    Ok(WhyAccount {
+        reconstruction: Reconstruction {
             contestant,
             index,
             seat,
@@ -455,11 +471,10 @@ fn account(
             current_version,
             forced,
         },
-        decision.mv,
+        mv: decision.mv,
         explain,
-        &state,
-        rules,
-    ))
+        state,
+    })
 }
 
 /// Which grouping line a `counter_rows` name belongs on.
@@ -525,16 +540,42 @@ fn counter_lines(rows: &[(&str, u64)]) -> Vec<String> {
 
 /// What the header says about the reconstruction, as one argument rather than
 /// six positional ones.
-struct Reconstruction {
-    contestant: Contestant,
-    index: usize,
-    seat: PlayerId,
-    decision_seed: u64,
-    recorded_version: Option<u32>,
-    current_version: u32,
+///
+/// Readable rather than private because it is also the PROVENANCE half of
+/// [`WhyAccount`]: a consumer that renders its own screen still has to say
+/// which contestant, at which event, under which key, or it is showing
+/// arithmetic with no claim attached to it.
+pub struct Reconstruction {
+    pub contestant: Contestant,
+    pub index: usize,
+    pub seat: PlayerId,
+    pub decision_seed: u64,
+    pub recorded_version: Option<u32>,
+    pub current_version: u32,
     /// The engine's legal list held exactly one move at the decision state —
     /// see [`FORCED_LEAD`].
-    forced: bool,
+    pub forced: bool,
+}
+
+/// A successful reconstruction, BEFORE any of it is worded.
+///
+/// The split exists because `why`'s account and `why`'s screen are two
+/// different things and only one of them is a terminal's business. Everything
+/// up to here is the honesty work — resolve the event, replay to the decision
+/// state, read the seat's controller, re-derive the pump's own key, run the
+/// same `decide`, and refuse if the result is not the move the record carries.
+/// Everything after it is prose at 80 columns. A consumer that draws its own
+/// table wants the first half and none of the second, and it must not
+/// reimplement the first half: the refusals ARE the honesty gate.
+pub struct WhyAccount {
+    pub reconstruction: Reconstruction,
+    /// The reconstructed move, already proven equal to the recorded one.
+    pub mv: Move,
+    pub explain: bot::DecisionExplanation,
+    /// The state the mover decided in. Carried because the words for a move,
+    /// and for every move of the continuation, are computed against the
+    /// position they were chosen at — not against the position now.
+    pub state: GameState,
 }
 
 /// The screen: `why`'s own header over `suggest`'s body (design §2.4 — the
@@ -1711,6 +1752,75 @@ mod tests {
         assert!(
             crate::repl::HELP_TEXT.lines().any(|l| l.split_whitespace().next() == Some("why")),
             "`why` must be listed in the in-app help",
+        );
+    }
+
+    /// **The split is a split, not a fork.** `account_parts` raises every
+    /// refusal and does every honesty check — resolve the event, replay to the
+    /// decision state, read the seat's controller, re-derive the pump's key,
+    /// re-run `decide`, and refuse unless the result equals the recorded move.
+    /// `account` is that output with words on it. A consumer drawing its own
+    /// table has to be able to rely on the first half without reimplementing
+    /// it, so the parts are pinned to carry what the screen is made of, and the
+    /// screen is pinned to be a pure function of the parts.
+    #[test]
+    fn the_account_parts_are_what_the_screen_is_made_of() {
+        let mut r = bot_repl(4, PROVISIONAL_DEFAULT_BOT);
+        let rules = Rules::standard();
+        let branching = play_to_a_branching_bot_move(&mut r);
+
+        let parts =
+            account_parts(r.session.mode, r.session.record(), &rules, &r.bots, Some(branching))
+                .expect("the fixture's bot move reconstructs");
+
+        // The provenance half — what a consumer must say to make the arithmetic
+        // a claim rather than a table of numbers.
+        assert_eq!(parts.reconstruction.index, branching);
+        assert_eq!(parts.reconstruction.seat, PlayerId::new(1));
+        assert_eq!(parts.reconstruction.decision_seed, r.bots.decision_seed(branching));
+        assert_eq!(parts.reconstruction.contestant, PROVISIONAL_DEFAULT_BOT);
+
+        // The arithmetic half arrives structured, which is the whole point:
+        // nothing here has been through a formatter.
+        assert!(!parts.explain.explanation.terms.is_empty(), "the term table is data");
+
+        // The move is the record's own. That equality IS the honesty gate and
+        // was enforced inside `account_parts`, so asserting it here proves the
+        // gate ran rather than adding a second one.
+        let RecordedEvent::Move(recorded) = &r.session.record().events[branching] else {
+            panic!("fixture: event {branching} is a move");
+        };
+        assert_eq!(&parts.mv, recorded);
+
+        // ...and the screen is that and nothing else.
+        let screen = why(&r.session, &r.bots, Some(branching));
+        assert_eq!(
+            render(parts.reconstruction, parts.mv, parts.explain, &parts.state, &rules),
+            screen,
+            "the rendered parts ARE the screen",
+        );
+    }
+
+    /// A refusal is raised in ONE place. When the parts refuse, the screen
+    /// refuses for the same reason and in the same words — the screen being
+    /// exactly that refusal folded to the reader's measure. Two surfaces that
+    /// each decided what was explainable would eventually disagree, and the
+    /// disagreement would be a bot move explained to a reader it should not
+    /// have been.
+    #[test]
+    fn both_surfaces_refuse_from_the_same_gate() {
+        let r = human_repl(4);
+        let rules = Rules::standard();
+        let record = r.session.record();
+
+        let Err(refusal) = account_parts(r.session.mode, record, &rules, &r.bots, None) else {
+            panic!("a table with no bot seat has nothing to account for");
+        };
+        assert!(matches!(refusal, Refusal::NoBotMoveYet), "{refusal:?}");
+        assert_eq!(
+            why(&r.session, &r.bots, None),
+            suggest::wrap_to(&refusal.to_string(), refusal_width(record)),
+            "the screen is the refusal, folded — not a second sentence about it",
         );
     }
 }

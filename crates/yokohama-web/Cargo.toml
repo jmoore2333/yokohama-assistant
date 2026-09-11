@@ -1,0 +1,72 @@
+[package]
+name = "yokohama-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+# `cargo package` would bundle `assets/art/` — third-party, no license grant, see ASSETS.md.
+publish = false
+
+[dependencies]
+# The engine, and the CLI's library half. `yokohama-cli` is a lib as well as a
+# bin, and this crate consumes exactly the parts of it that were never about a
+# terminal: `session` (atomic apply/undo/save with the legal-list gate and the
+# invariant guard), `screen_model` (the typed frame, which its own module doc
+# calls "the seam a later API or GUI layer can consume without a terminal"),
+# `describe` (the wording layer), `repl` (the state machine and its option
+# rows), `bot`, and three items from `render`.
+#
+# THE `render` DEPENDENCY IS REAL AND WORTH NAMING, because an earlier version
+# of this comment denied it. `render::DisplayRow` is the shape `option_rows`
+# returns, and `render::end_trigger_line` is the one rendered STRING this crate
+# serves — deliberately, because the strip's 8 and 4 thresholds are bare
+# literals in the engine with no name to import, so composing it here would
+# write two rules constants into a web layer. Nothing in `*_render.rs`,
+# `screen.rs` or `style.rs` is reachable, which is the fence that matters: no
+# ANSI, no column widths, no box drawing.
+#
+# M3 added three more, and this paragraph is the fence's written half so it
+# moves with them: `suggest` and `why` (the two search surfaces — `why` was
+# `pub(crate)` and was widened for exactly this consumer, and its own doc says
+# so), and `card_prompt`, for `parse_filter` alone. The rule that governs all
+# three is the same one above: they are the parts of the CLI that were never
+# about a terminal. `why::account_parts` is the honesty gate and is REACHED
+# rather than reimplemented; `parse_filter` is the one card-entry grammar in
+# this project and the web does not get a second one.
+#
+# What is still NOT consumed is the line that matters, and it is the one
+# unchanged: nothing in `*_render.rs`, `screen.rs` or `style.rs`. The engine
+# types those surfaces return have no `Serialize`, so `explain.rs` and
+# `outcome.rs` mirror them here — never by deriving in `yokohama-core`.
+yokohama-core = { path = "../yokohama-core" }
+yokohama-cli = { path = "../yokohama-cli" }
+serde.workspace = true
+serde_json.workspace = true
+
+# THE dependency decision for this crate, owner-ruled 2026-08-30. The workspace
+# had no async runtime and no HTTP framework: `yokohama-bridge` hand-rolls
+# HTTP/1.1 over `std` and says in its own Cargo.toml that no third-party
+# dependency enters it. This crate deviates deliberately, and the reason is
+# specific rather than stylistic:
+#
+#   `crates/yokohama-bridge/src/http.rs:119-123` RECORDS its own
+#   request-smuggling shapes -- a duplicate `Content-Length` is last-wins and
+#   `Transfer-Encoding` is unimplemented -- and states they are harmless ONLY
+#   because nothing sits in front of that listener. This server is designed to
+#   sit behind a Cloudflare Worker and a Modal or Container proxy. Reusing that
+#   parser would turn documented non-issues into real bugs.
+#
+# It also buys keep-alive (the hand-rolled server is `Connection: close`
+# unconditional, so every card image would pay a fresh TCP connection) and a
+# path to SSE if a bot decision ever grows slow enough to want streaming.
+#
+# The blast radius is one leaf crate: `yokohama-core` gains nothing, and no
+# other crate in the workspace depends on this one.
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
+
+[dev-dependencies]
+# Route tests drive the router through `ServiceExt::oneshot` -- no socket, no
+# port, no runtime teardown to get wrong. A test that binds a real port is a
+# test that flakes on a busy machine and cannot run in parallel with itself.
+tower = { version = "0.5", features = ["util"] }

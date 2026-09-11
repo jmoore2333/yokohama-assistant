@@ -1,0 +1,713 @@
+{
+ "achievements": {
+  "Commercial4": {
+   "file": "achievements/Commercial4.webp",
+   "h": 530,
+   "w": 799
+  },
+  "Copper5": {
+   "file": "achievements/Copper5.webp",
+   "h": 530,
+   "w": 799
+  },
+  "Money10": {
+   "file": "achievements/Money10.webp",
+   "h": 530,
+   "w": 799
+  },
+  "Orders5": {
+   "file": "achievements/Orders5.webp",
+   "h": 530,
+   "w": 799
+  },
+  "Prod2Comm3": {
+   "file": "achievements/Prod2Comm3.webp",
+   "h": 530,
+   "w": 799
+  },
+  "Prod3Comm2": {
+   "file": "achievements/Prod3Comm2.webp",
+   "h": 530,
+   "w": 799
+  },
+  "Production4": {
+   "file": "achievements/Production4.webp",
+   "h": 530,
+   "w": 799
+  },
+  "Seafood7": {
+   "file": "achievements/Seafood7.webp",
+   "h": 530,
+   "w": 799
+  },
+  "Silk6": {
+   "file": "achievements/Silk6.webp",
+   "h": 530,
+   "w": 799
+  },
+  "Tea7": {
+   "file": "achievements/Tea7.webp",
+   "h": 530,
+   "w": 799
+  },
+  "Technologies4": {
+   "file": "achievements/Technologies4.webp",
+   "h": 530,
+   "w": 799
+  },
+  "Tokens5": {
+   "file": "achievements/Tokens5.webp",
+   "h": 530,
+   "w": 799
+  }
+ },
+ "area_duplicates": [
+  {
+   "area_type": "FishingGround",
+   "col": 2,
+   "row": 2,
+   "sheet": "3plus"
+  },
+  {
+   "area_type": "CopperMine",
+   "col": 1,
+   "row": 1,
+   "sheet": "4p"
+  },
+  {
+   "area_type": "SilkMill",
+   "col": 1,
+   "row": 2,
+   "sheet": "4p"
+  },
+  {
+   "area_type": "TeaPlantation",
+   "col": 2,
+   "row": 2,
+   "sheet": "4p"
+  }
+ ],
+ "areas": {
+  "Bank": {
+   "file": "areas/Bank.webp",
+   "h": 531,
+   "w": 709
+  },
+  "Canal": {
+   "file": "areas/Canal.webp",
+   "h": 531,
+   "w": 709
+  },
+  "Chinatown": {
+   "file": "areas/Chinatown.webp",
+   "h": 531,
+   "w": 709
+  },
+  "Church": {
+   "file": "areas/Church.webp",
+   "h": 531,
+   "w": 709
+  },
+  "CopperMine": {
+   "file": "areas/CopperMine.webp",
+   "h": 531,
+   "w": 709
+  },
+  "Customs": {
+   "file": "areas/Customs.webp",
+   "h": 531,
+   "w": 709
+  },
+  "EmploymentAgency": {
+   "file": "areas/EmploymentAgency.webp",
+   "h": 531,
+   "w": 709
+  },
+  "FishingGround": {
+   "file": "areas/FishingGround.webp",
+   "h": 531,
+   "w": 709
+  },
+  "LaboratoryA": {
+   "file": "areas/LaboratoryA.webp",
+   "h": 531,
+   "w": 709
+  },
+  "LaboratoryB": {
+   "file": "areas/LaboratoryB.webp",
+   "h": 531,
+   "w": 709
+  },
+  "PortA": {
+   "file": "areas/PortA.webp",
+   "h": 531,
+   "w": 709
+  },
+  "PortB": {
+   "file": "areas/PortB.webp",
+   "h": 531,
+   "w": 709
+  },
+  "SilkMill": {
+   "file": "areas/SilkMill.webp",
+   "h": 531,
+   "w": 709
+  },
+  "TeaPlantation": {
+   "file": "areas/TeaPlantation.webp",
+   "h": 531,
+   "w": 709
+  }
+ },
+ "backs": {
+  "area_back": {
+   "file": "backs/area_back.webp",
+   "h": 531,
+   "w": 709
+  },
+  "five_power_back": {
+   "file": "backs/five_power_back.webp",
+   "h": 128,
+   "w": 128
+  },
+  "mercenary_back": {
+   "file": "backs/mercenary_back.webp",
+   "h": 128,
+   "w": 128
+  },
+  "order_back": {
+   "file": "backs/order_back.webp",
+   "h": 799,
+   "w": 530
+  },
+  "site_back": {
+   "file": "backs/site_back.webp",
+   "h": 799,
+   "w": 530
+  },
+  "tech_back": {
+   "file": "backs/tech_back.webp",
+   "h": 799,
+   "w": 530
+  }
+ },
+ "five_power": {
+  "Copper_2": {
+   "file": "five-power/Copper_2.webp",
+   "h": 128,
+   "w": 128
+  },
+  "ImportedGoods_1": {
+   "file": "five-power/ImportedGoods_1.webp",
+   "h": 128,
+   "w": 128
+  },
+  "Money_3": {
+   "file": "five-power/Money_3.webp",
+   "h": 128,
+   "w": 128
+  },
+  "Seafood_3": {
+   "file": "five-power/Seafood_3.webp",
+   "h": 128,
+   "w": 128
+  },
+  "Silk_2": {
+   "file": "five-power/Silk_2.webp",
+   "h": 128,
+   "w": 128
+  },
+  "Tea_3": {
+   "file": "five-power/Tea_3.webp",
+   "h": 128,
+   "w": 128
+  }
+ },
+ "mercenaries": {
+  "American": {
+   "file": "mercenaries/American.webp",
+   "h": 128,
+   "w": 128
+  },
+  "Dutch": {
+   "file": "mercenaries/Dutch.webp",
+   "h": 128,
+   "w": 128
+  },
+  "English": {
+   "file": "mercenaries/English.webp",
+   "h": 128,
+   "w": 128
+  },
+  "French": {
+   "file": "mercenaries/French.webp",
+   "h": 128,
+   "w": 128
+  },
+  "German": {
+   "file": "mercenaries/German.webp",
+   "h": 128,
+   "w": 128
+  }
+ },
+ "orders": {
+  "1": {
+   "file": "orders/O01.webp",
+   "h": 799,
+   "w": 530
+  },
+  "10": {
+   "file": "orders/O10.webp",
+   "h": 799,
+   "w": 530
+  },
+  "11": {
+   "file": "orders/O11.webp",
+   "h": 799,
+   "w": 530
+  },
+  "12": {
+   "file": "orders/O12.webp",
+   "h": 799,
+   "w": 530
+  },
+  "13": {
+   "file": "orders/O13.webp",
+   "h": 799,
+   "w": 530
+  },
+  "14": {
+   "file": "orders/O14.webp",
+   "h": 799,
+   "w": 530
+  },
+  "15": {
+   "file": "orders/O15.webp",
+   "h": 799,
+   "w": 530
+  },
+  "16": {
+   "file": "orders/O16.webp",
+   "h": 799,
+   "w": 530
+  },
+  "17": {
+   "file": "orders/O17.webp",
+   "h": 799,
+   "w": 530
+  },
+  "18": {
+   "file": "orders/O18.webp",
+   "h": 799,
+   "w": 530
+  },
+  "19": {
+   "file": "orders/O19.webp",
+   "h": 799,
+   "w": 530
+  },
+  "2": {
+   "file": "orders/O02.webp",
+   "h": 799,
+   "w": 530
+  },
+  "20": {
+   "file": "orders/O20.webp",
+   "h": 799,
+   "w": 530
+  },
+  "21": {
+   "file": "orders/O21.webp",
+   "h": 799,
+   "w": 530
+  },
+  "22": {
+   "file": "orders/O22.webp",
+   "h": 799,
+   "w": 530
+  },
+  "23": {
+   "file": "orders/O23.webp",
+   "h": 799,
+   "w": 530
+  },
+  "24": {
+   "file": "orders/O24.webp",
+   "h": 799,
+   "w": 530
+  },
+  "25": {
+   "file": "orders/O25.webp",
+   "h": 799,
+   "w": 530
+  },
+  "26": {
+   "file": "orders/O26.webp",
+   "h": 799,
+   "w": 530
+  },
+  "27": {
+   "file": "orders/O27.webp",
+   "h": 799,
+   "w": 530
+  },
+  "28": {
+   "file": "orders/O28.webp",
+   "h": 799,
+   "w": 530
+  },
+  "29": {
+   "file": "orders/O29.webp",
+   "h": 799,
+   "w": 530
+  },
+  "3": {
+   "file": "orders/O03.webp",
+   "h": 799,
+   "w": 530
+  },
+  "30": {
+   "file": "orders/O30.webp",
+   "h": 799,
+   "w": 530
+  },
+  "31": {
+   "file": "orders/O31.webp",
+   "h": 799,
+   "w": 530
+  },
+  "32": {
+   "file": "orders/O32.webp",
+   "h": 799,
+   "w": 530
+  },
+  "33": {
+   "file": "orders/O33.webp",
+   "h": 799,
+   "w": 530
+  },
+  "34": {
+   "file": "orders/O34.webp",
+   "h": 799,
+   "w": 530
+  },
+  "35": {
+   "file": "orders/O35.webp",
+   "h": 799,
+   "w": 530
+  },
+  "36": {
+   "file": "orders/O36.webp",
+   "h": 799,
+   "w": 530
+  },
+  "4": {
+   "file": "orders/O04.webp",
+   "h": 799,
+   "w": 530
+  },
+  "5": {
+   "file": "orders/O05.webp",
+   "h": 799,
+   "w": 530
+  },
+  "6": {
+   "file": "orders/O06.webp",
+   "h": 799,
+   "w": 530
+  },
+  "7": {
+   "file": "orders/O07.webp",
+   "h": 799,
+   "w": 530
+  },
+  "8": {
+   "file": "orders/O08.webp",
+   "h": 799,
+   "w": 530
+  },
+  "9": {
+   "file": "orders/O09.webp",
+   "h": 799,
+   "w": 530
+  }
+ },
+ "provenance": {
+  "achievement_rotation_ccw": 90,
+  "achievement_width": 799,
+  "card_width": 530,
+  "generator": "docs/tools/mkcardart.py",
+  "positions": "analysis-1/yokohama-kb/0{7,8,9}-*.yaml",
+  "sheets": "tts-assets/organized/",
+  "site_rotation_ccw": 90,
+  "site_width": 799,
+  "tile_width": 709,
+  "webp_quality": 82
+ },
+ "sites": {
+  "0": {
+   "file": "sites/S00.webp",
+   "h": 530,
+   "w": 799
+  },
+  "1": {
+   "file": "sites/S01.webp",
+   "h": 530,
+   "w": 799
+  },
+  "10": {
+   "file": "sites/S10.webp",
+   "h": 530,
+   "w": 799
+  },
+  "11": {
+   "file": "sites/S11.webp",
+   "h": 530,
+   "w": 799
+  },
+  "12": {
+   "file": "sites/S12.webp",
+   "h": 530,
+   "w": 799
+  },
+  "13": {
+   "file": "sites/S13.webp",
+   "h": 530,
+   "w": 799
+  },
+  "14": {
+   "file": "sites/S14.webp",
+   "h": 530,
+   "w": 799
+  },
+  "15": {
+   "file": "sites/S15.webp",
+   "h": 530,
+   "w": 799
+  },
+  "16": {
+   "file": "sites/S16.webp",
+   "h": 530,
+   "w": 799
+  },
+  "17": {
+   "file": "sites/S17.webp",
+   "h": 530,
+   "w": 799
+  },
+  "18": {
+   "file": "sites/S18.webp",
+   "h": 530,
+   "w": 799
+  },
+  "19": {
+   "file": "sites/S19.webp",
+   "h": 530,
+   "w": 799
+  },
+  "2": {
+   "file": "sites/S02.webp",
+   "h": 530,
+   "w": 799
+  },
+  "20": {
+   "file": "sites/S20.webp",
+   "h": 530,
+   "w": 799
+  },
+  "21": {
+   "file": "sites/S21.webp",
+   "h": 530,
+   "w": 799
+  },
+  "22": {
+   "file": "sites/S22.webp",
+   "h": 530,
+   "w": 799
+  },
+  "23": {
+   "file": "sites/S23.webp",
+   "h": 530,
+   "w": 799
+  },
+  "3": {
+   "file": "sites/S03.webp",
+   "h": 530,
+   "w": 799
+  },
+  "4": {
+   "file": "sites/S04.webp",
+   "h": 530,
+   "w": 799
+  },
+  "5": {
+   "file": "sites/S05.webp",
+   "h": 530,
+   "w": 799
+  },
+  "6": {
+   "file": "sites/S06.webp",
+   "h": 530,
+   "w": 799
+  },
+  "7": {
+   "file": "sites/S07.webp",
+   "h": 530,
+   "w": 799
+  },
+  "8": {
+   "file": "sites/S08.webp",
+   "h": 530,
+   "w": 799
+  },
+  "9": {
+   "file": "sites/S09.webp",
+   "h": 530,
+   "w": 799
+  }
+ },
+ "techs": {
+  "Ball": {
+   "file": "techs/ball.webp",
+   "h": 799,
+   "w": 530
+  },
+  "Brickyard": {
+   "file": "techs/brickyard.webp",
+   "h": 799,
+   "w": 530
+  },
+  "Electrical Light": {
+   "file": "techs/electrical-light.webp",
+   "h": 799,
+   "w": 530
+  },
+  "Exposition": {
+   "file": "techs/exposition.webp",
+   "h": 799,
+   "w": 530
+  },
+  "Gaslight": {
+   "file": "techs/gaslight.webp",
+   "h": 799,
+   "w": 530
+  },
+  "Language School": {
+   "file": "techs/language-school.webp",
+   "h": 799,
+   "w": 530
+  },
+  "Letterpress Printing": {
+   "file": "techs/letterpress-printing.webp",
+   "h": 799,
+   "w": 530
+  },
+  "Mining Technology": {
+   "file": "techs/mining-technology.webp",
+   "h": 799,
+   "w": 530
+  },
+  "Newspaper": {
+   "file": "techs/newspaper.webp",
+   "h": 799,
+   "w": 530
+  },
+  "Patent System": {
+   "file": "techs/patent-system.webp",
+   "h": 799,
+   "w": 530
+  },
+  "Postal System": {
+   "file": "techs/postal-system.webp",
+   "h": 799,
+   "w": 530
+  },
+  "Stagecoach": {
+   "file": "techs/stagecoach.webp",
+   "h": 799,
+   "w": 530
+  },
+  "Station": {
+   "file": "techs/station.webp",
+   "h": 799,
+   "w": 530
+  },
+  "Stock Market": {
+   "file": "techs/stock-market.webp",
+   "h": 799,
+   "w": 530
+  },
+  "Telegram": {
+   "file": "techs/telegram.webp",
+   "h": 799,
+   "w": 530
+  },
+  "Telephone": {
+   "file": "techs/telephone.webp",
+   "h": 799,
+   "w": 530
+  },
+  "Textile Mill": {
+   "file": "techs/textile-mill.webp",
+   "h": 799,
+   "w": 530
+  },
+  "Tram": {
+   "file": "techs/tram.webp",
+   "h": 799,
+   "w": 530
+  },
+  "University": {
+   "file": "techs/university.webp",
+   "h": 799,
+   "w": 530
+  },
+  "Winery": {
+   "file": "techs/winery.webp",
+   "h": 799,
+   "w": 530
+  }
+ },
+ "tokens": {
+  "good_copper": {
+   "file": "tokens/good_copper.webp",
+   "h": 128,
+   "w": 128
+  },
+  "good_imports": {
+   "file": "tokens/good_imports.webp",
+   "h": 128,
+   "w": 128
+  },
+  "good_seafood": {
+   "file": "tokens/good_seafood.webp",
+   "h": 128,
+   "w": 128
+  },
+  "good_silk": {
+   "file": "tokens/good_silk.webp",
+   "h": 128,
+   "w": 128
+  },
+  "good_tea": {
+   "file": "tokens/good_tea.webp",
+   "h": 128,
+   "w": 128
+  },
+  "station": {
+   "file": "tokens/station.webp",
+   "h": 128,
+   "w": 128
+  },
+  "yen_1": {
+   "file": "tokens/yen_1.webp",
+   "h": 128,
+   "w": 128
+  },
+  "yen_3": {
+   "file": "tokens/yen_3.webp",
+   "h": 128,
+   "w": 128
+  }
+ }
+}

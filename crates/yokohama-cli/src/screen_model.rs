@@ -4,13 +4,26 @@
 //! **The R9 contract, in one paragraph.** This module describes a frame; it
 //! never draws one. It holds no ANSI, no glyphs, no colors, no column widths
 //! and no prose — only engine values, re-shaped into the groupings a screen is
-//! composed from. Its dependency set is deliberately `yokohama_core` + `std`
-//! and nothing else: not [`crate::style`] (the ANSI authority), not
+//! composed from. Its dependency set is deliberately `yokohama_core`, `std`
+//! and `serde`, and nothing else: not [`crate::style`] (the ANSI authority), not
 //! [`crate::render`] or [`crate::screen`] (the emitters that will consume
 //! these models from T2 on), and not [`crate::describe`] (the WORDING layer,
 //! which reaches `style` transitively). That is what makes this the seam a
 //! later API or GUI layer can consume without a terminal — and it is the
-//! import list a reviewer should check first. The corollary a caller must
+//! import list a reviewer should check first.
+//!
+//! **Why `serde` is inside the fence rather than a breach of it.** The fence
+//! names what this module must not reach: the ANSI authority, the emitters,
+//! and the wording layer. `serde` is none of those — it is the wire format
+//! that REALIZES the "consumable without a terminal" clause above, and it adds
+//! no capability a model could misuse (a derive cannot draw, colour, or word
+//! anything). It arrived with the web API, which serves these models as JSON;
+//! the round trip is asserted over the whole surface by
+//! `every_wire_surface_round_trips_through_json_unchanged`, and the masked-hand
+//! guarantee is asserted THROUGH serialization by
+//! `a_masked_hand_carries_no_card_identity_across_the_wire`, so the privacy
+//! property is a fact about the bytes rather than about a renderer's manners.
+//! The three names above stay excluded, and that is still the list to check. The corollary a caller must
 //! honor: display names live where the words live. A [`TileModel`] carries
 //! `area_type`, not `"Copper Mine"`; a [`DecisionModel`] carries `TurnPhase`
 //! values, not `"Placement"`; wording each of those stays
@@ -34,6 +47,7 @@
 //! **[`NUMBER_BASE`] lives here** — the one constant every numbered surface in
 //! the crate reads, on the reasoning at its declaration.
 
+use serde::{Deserialize, Serialize};
 use yokohama_core::*;
 // The per-power reward functions the AREAS reference computes its ladders from.
 // `actions` is a NAMESPACED module in the engine (`game/mod.rs` deliberately
@@ -114,7 +128,7 @@ pub fn menu_range(len: usize) -> Option<(usize, usize)> {
 /// mask, already folded — the REPL's rule that a bot's hand stays masked
 /// whatever the privacy toggle says is a policy decision, and policy belongs
 /// at the call site, not in the model.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct SeatFacts {
     pub is_bot: bool,
     pub hand_hidden: bool,
@@ -144,14 +158,14 @@ impl SeatFacts {
 
 /// One Shophouse space of a building site: who built there, and the reward
 /// printed under them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SiteSlotModel {
     pub built_by: Option<PlayerId>,
     pub reward: SpaceReward,
 }
 
 /// The building site card on a tile.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SiteModel {
     /// The card's printed index into `Rules::building_sites`, recovered by
     /// matching printed content (the runtime `BuildingSite` on the board is a
@@ -167,7 +181,7 @@ pub struct SiteModel {
 }
 
 /// One board tile.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TileModel {
     pub area: AreaId,
     /// The tile's kind. The DISPLAY NAME is `describe::area_type_name` at
@@ -211,7 +225,7 @@ pub struct TileModel {
 }
 
 /// The board region of a frame.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BoardModel {
     pub player_count: u8,
     /// Every area, in `AreaId` order.
@@ -223,7 +237,7 @@ pub struct BoardModel {
 // ---------------------------------------------------------------------------
 
 /// A player's countable resources.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GoodsModel {
     pub copper: u32,
     pub silk: u32,
@@ -236,7 +250,7 @@ pub struct GoodsModel {
 /// 20 pawns: showing hand/board/warehouse alone invites the table-side
 /// conservation check and then fails it whenever a pawn is locked on a goal or
 /// a track.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AssistantZones {
     pub in_hand: u8,
     /// Summed across every area.
@@ -258,14 +272,14 @@ impl AssistantZones {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShophouseZones {
     pub in_hand: u8,
     pub in_warehouse: u8,
     pub built: u8,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TradingHouseZones {
     pub in_hand: u8,
     pub in_warehouse: u8,
@@ -276,7 +290,7 @@ pub struct TradingHouseZones {
 }
 
 /// One owned Technology.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TechModel {
     pub id: TechCardId,
     /// The printed card from `Rules::techs` (name, country, industry cost,
@@ -287,7 +301,7 @@ pub struct TechModel {
 }
 
 /// One seat's dashboard row.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlayerModel {
     pub seat: PlayerId,
     pub color: PlayerColor,
@@ -322,7 +336,7 @@ pub struct PlayerModel {
     pub hand_hidden: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlayersPanel {
     /// Every seat in `PlayerId` order.
     pub players: Vec<PlayerModel>,
@@ -333,7 +347,7 @@ pub struct PlayersPanel {
 // ---------------------------------------------------------------------------
 
 /// One Church faith space (4-11) with its printed rewards.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChurchSpaceModel {
     pub faith: u8,
     pub vp: u8,
@@ -345,7 +359,7 @@ pub struct ChurchSpaceModel {
 }
 
 /// One Customs space (1-7) with its printed cost and rewards.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CustomsSpaceModel {
     pub space: u8,
     /// Printed imported-goods cost.
@@ -360,7 +374,7 @@ pub struct CustomsSpaceModel {
 
 /// The two management boards plus the board-level shared state that reads
 /// beside them.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TracksPanel {
     /// Faith 4-11, ascending.
     pub church: Vec<ChurchSpaceModel>,
@@ -385,7 +399,7 @@ pub struct TracksPanel {
 
 /// One Achievement card in play. Typed throughout: the condition's WORDING is
 /// `describe::achievement_desc`'s job, not this model's.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AchievementModel {
     pub achievement_type: AchievementType,
     pub category: AchievementCategory,
@@ -404,7 +418,7 @@ pub struct AchievementModel {
     pub progress: Vec<(PlayerId, u32, u32)>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AchievementsPanel {
     pub cards: Vec<AchievementModel>,
 }
@@ -414,7 +428,7 @@ pub struct AchievementsPanel {
 // ---------------------------------------------------------------------------
 
 /// One Order card in a hand.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HandCardModel {
     pub id: OrderCardId,
     /// The printed card from `Rules::orders` (country, requirements,
@@ -426,7 +440,7 @@ pub struct HandCardModel {
 }
 
 /// One seat's own hand, as the dashboard shows it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HandPanel {
     pub seat: PlayerId,
     pub hidden: bool,
@@ -451,7 +465,7 @@ pub struct HandPanel {
 /// MID, 4 adds HIGH — so a card in the HIGH zone is not an offer at all to a
 /// player who cannot get there, and a screen that drew all six alike would be
 /// showing six offers where the table shows two.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PortSlotModel {
     /// 0-based index into the board's own six slots. The DISPLAY number is
     /// [`menu_number`]'s job, at the renderer.
@@ -468,7 +482,7 @@ pub struct PortSlotModel {
 }
 
 /// One Port board and its six slots.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PortBoardModel {
     /// Port B rather than Port A. The renderer words it; this is the identity.
     pub board_b: bool,
@@ -476,7 +490,7 @@ pub struct PortBoardModel {
 }
 
 /// Both Port boards as an offer, plus the shared deck they refill from.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PortsPanel {
     /// Port A, then Port B when the count has one.
     pub boards: Vec<PortBoardModel>,
@@ -491,7 +505,7 @@ pub struct PortsPanel {
 }
 
 /// One Laboratory slot: its position surcharge and the technology on it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LabSlotModel {
     /// 0-based index into the board's own six slots.
     pub slot: usize,
@@ -504,7 +518,7 @@ pub struct LabSlotModel {
 }
 
 /// One Laboratory board and its six slots.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LabBoardModel {
     /// Laboratory B rather than Laboratory A.
     pub board_b: bool,
@@ -512,7 +526,7 @@ pub struct LabBoardModel {
 }
 
 /// Both Laboratory boards as an offer, plus the shared tech deck.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LabsPanel {
     pub boards: Vec<LabBoardModel>,
     /// Cards left in the shared tech deck — see [`PortsPanel::deck_remaining`].
@@ -533,7 +547,7 @@ pub struct LabsPanel {
 /// President owners. This model carries the cached string through and does not
 /// know how to make one — the same discipline [`IndexCard::location`] holds for
 /// the same reason.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LogEntryModel {
     /// The event's index in `GameRecord.events`, which is what `undo` counts in
     /// and what a bug report quotes.
@@ -542,7 +556,7 @@ pub struct LogEntryModel {
 }
 
 /// The move/event trail, as a surface shows it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LogPanel {
     /// Events in the record, INCLUDING the ones this panel does not carry.
     pub total: usize,
@@ -620,7 +634,7 @@ const fn chinatown_exchange_depth(power: u8) -> u8 {
 /// state it (`+2 silk`, `reaches LOW and MID`) are
 /// [`crate::view_render::areas_view`]'s job, exactly as `TileModel` carries an
 /// `AreaType` and not `"Copper Mine"`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ActionYield {
     /// A production area: `amount` of `good`, from that area's own reward
     /// function (`copper_mine_reward` and its three siblings).
@@ -652,7 +666,7 @@ pub enum ActionYield {
 
 /// One rung of a payout ladder: an action power, and what the area's action
 /// pays at it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PowerRung {
     pub power: u8,
     pub pays: ActionYield,
@@ -665,7 +679,7 @@ pub struct PowerRung {
 /// tracks are three surfaces this driver already draws in full; a reference card
 /// that redrew them would be a second copy to keep true, so it names the word
 /// that opens the real one instead.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AreaCompanion {
     Ports,
     Labs,
@@ -678,7 +692,7 @@ pub enum AreaCompanion {
 /// is what makes "matching the live tiles' facts" (spec §2.7 item 4) structural:
 /// the card and the board are built from the same model, so they cannot come to
 /// differ about who stands where.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AreaCard {
     pub tile: TileModel,
     /// One rung per [`LADDER_POWERS`] entry — EMPTY on the Canal, which is
@@ -688,7 +702,7 @@ pub struct AreaCard {
 }
 
 /// Every area of the board, grouped into the board's own rows.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AreasPanel {
     /// Board rows in ascending `grid_position.0`, each row's cards in ascending
     /// column. **No shape is assumed**: this is whatever grouping the data
@@ -828,7 +842,7 @@ pub fn companion_view(area_type: AreaType) -> Option<AreaCompanion> {
 /// One dashboard panel. The frame carries these in display order, so the
 /// per-count arrangement (2P beside the board, 3-4P below it) is a rendering
 /// decision over one ordered list rather than four hard-wired call sites.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Panel {
     Players(PlayersPanel),
     Tracks(TracksPanel),
@@ -858,7 +872,7 @@ pub const PHASE_CHAIN: [TurnPhase; 9] = [
 
 /// What the seat is being asked for. Typed, never worded: T4 owns the
 /// "YOU ARE DECIDING · …" copy for each of these.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Deciding {
     /// The ordinary case: the phase itself is the question.
     Phase(TurnPhase),
@@ -871,7 +885,7 @@ pub enum Deciding {
 
 /// What an option costs, when the engine can price it. Kept to what the engine
 /// itself computes: this model never re-derives a fee.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FeeModel {
     pub total: u32,
     /// `(recipient, yen)` in seat order — the President owners paid.
@@ -881,7 +895,7 @@ pub struct FeeModel {
 }
 
 /// One numbered option.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OptionModel {
     /// The number the prompt SHOWS for this option — global across pages, and
     /// 1-based since T5 ([`NUMBER_BASE`]). The option's position in the
@@ -913,7 +927,7 @@ pub struct OptionModel {
 /// observable fact that explains the absence. An area whose absence has no such
 /// fact behind it gets NO row at all — [`build_not_offered`] is silent rather
 /// than inventive, which is the whole reason this enum is small.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NotOfferedReason {
     /// The President began this turn here, and the rulebook forbids returning
     /// to it in the same turn. Read off `GameState::president_start_area` —
@@ -939,7 +953,7 @@ pub enum NotOfferedReason {
 }
 
 /// A dimmed near-miss row under the offered options.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NotOffered {
     pub area: AreaId,
     pub reason: NotOfferedReason,
@@ -947,7 +961,7 @@ pub struct NotOffered {
 
 /// The decision zone: where the turn is, what is being asked, and what may be
 /// answered.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DecisionModel {
     pub turn_number: u32,
     pub seat: PlayerId,
@@ -973,6 +987,17 @@ pub struct DecisionModel {
     /// it: a capped list and a complete one are the same three rows on screen,
     /// and a truncation nobody is told about reads as "those were all of them".
     pub not_offered_suppressed: usize,
+    /// Whether the reader of this zone is the seat that is deciding.
+    ///
+    /// Carried rather than inferred, because the alternative — comparing
+    /// [`Self::seat`] against your own — makes an OBSERVER's empty option list
+    /// indistinguishable from an actor's legitimately empty one (`Recovery` and
+    /// `TurnEnd` both enumerate zero moves). A consumer that renders "no options"
+    /// two different ways needs to know which it is holding.
+    ///
+    /// `false` only ever arrives via [`build_decision_for`]; [`build_decision`]
+    /// is the acting seat's own zone by definition and always sets `true`.
+    pub viewer_is_deciding: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -984,23 +1009,37 @@ pub struct DecisionModel {
 /// into `Session` — the R9 weld T0-review SF2 named. `TitleMode` mirrors
 /// `session::TrackingMode` as a local two-variant enum so this module's
 /// dependency list stays `yokohama_core` alone; the CALLER maps between them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TitleMode {
     Sim,
     Live,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TitleModel {
     pub mode: TitleMode,
     /// The game's identity seed; the renderer abbreviates it for display.
-    pub seed: u64,
+    ///
+    /// **`None` means the frame declines to carry it, and that is a wire
+    /// decision, not a missing value.** The setup seed is the first member of
+    /// the engine's hidden set (`observe.rs`) — it regenerates the deck, the
+    /// box, the board and every deal — so a frame crossing a network publishes
+    /// the whole hidden set to anyone holding it. The terminal always passes
+    /// `Some`: it is one operator looking at their own game, and the title
+    /// strip prints an abbreviation of it. `yokohama-web` passes `None`.
+    ///
+    /// Optional rather than removed, because the CLI genuinely renders it, and
+    /// `skip_serializing` alone would have broken
+    /// `every_wire_surface_round_trips_through_json_unchanged` — a field that
+    /// cannot round-trip is not a wire field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u64>,
     /// Whether autosave has a live target (the strip prints "autosaved").
     pub autosaved: bool,
 }
 
 /// A whole composed frame.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FrameModel {
     pub title: TitleModel,
     pub board: BoardModel,
@@ -1022,7 +1061,7 @@ pub struct FrameModel {
 /// underneath changes what the cards say, never how the screen works.
 ///
 /// [`CardPrompt`]: crate::card_prompt::CardPrompt
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IndexKind {
     Orders,
     /// Technology TITLES, not physical cards. Ten of the twenty titles
@@ -1051,7 +1090,7 @@ impl IndexKind {
 /// a `u8` the caller has to remember the meaning of. A prompt that asked for a
 /// technology and got back a bare number could not tell a tech id from an order
 /// id, and that is exactly the F4 confusion the one grammar exists to end.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CardRef {
     Order(OrderCardId),
     Tech(TechCardId),
@@ -1097,7 +1136,7 @@ impl CardRef {
 /// `order_cards_in_hand`); a site card is dealt face-up onto its area at setup.
 /// Every one of them is something the person at the table can already see, which
 /// is the test a new variant has to pass to belong here.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CardLocation {
     /// A seat's dealt starting pair (the wizard's own recording context).
     Deal { seat: PlayerId },
@@ -1144,7 +1183,7 @@ pub enum CardLocation {
 /// increments twice, prints `slot 7 of 6`, which is a sentence about a board
 /// that does not exist. `describe::tests::recording_targets_render_positions_in_range`
 /// sweeps every variant at every position so T6/T7's new prompts cannot ship it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RecordingTarget {
     /// A live Port refill: reveal `nth` of `of`, into `slot` of that board.
     PortRefill { board_b: bool, slot: usize, nth: usize, of: usize },
@@ -1225,7 +1264,7 @@ impl RecordingTarget {
 ///
 /// **Typed, never worded**, like every other model here: `collected` holds card
 /// identities and [`crate::decision_render::reveal_zone`] tags them.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RevealModel {
     /// The card this question is asking for.
     pub target: RecordingTarget,
@@ -1247,7 +1286,7 @@ impl RevealModel {
 /// Its own enum rather than [`crate::style::GoodKind`]: that one is the
 /// PALETTE's roster (it carries `Yen`, `Imports` and `Any`, none of which an
 /// order card requires) and it lives in the module this one may not depend on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CardGood {
     Seafood,
     Tea,
@@ -1258,7 +1297,7 @@ pub enum CardGood {
 /// An active index filter, already parsed. `card_prompt::parse_filter` turns
 /// the typed word into one of these, so the model holds no free text and the
 /// renderer words the filter line from a value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IndexFilter {
     /// Cards requiring this good at all.
     Good(CardGood),
@@ -1333,7 +1372,7 @@ impl IndexFilter {
 /// because the four physical cards are genuinely different objects. The renderer
 /// matches on this with no `_` arm, so a registry added to `IndexKind` cannot
 /// reach a screen without someone deciding what its card looks like.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CardFaceModel {
     Order {
         id: OrderCardId,
@@ -1411,7 +1450,7 @@ impl CardFaceModel {
 }
 
 /// One card in an index grid.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IndexCard {
     pub face: CardFaceModel,
     /// The number shown on this card and typed to select it — 1-based like
@@ -1435,7 +1474,7 @@ pub struct IndexCard {
 
 /// How an index groups its cards. Orders group by flag (spec §0.6),
 /// achievements by category, techs by flag, sites not at all.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IndexGroupKey {
     Country(Country),
     Category(AchievementCategory),
@@ -1444,7 +1483,7 @@ pub enum IndexGroupKey {
 }
 
 /// One group of an index grid.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IndexGroup {
     pub key: IndexGroupKey,
     pub cards: Vec<IndexCard>,
@@ -1452,7 +1491,7 @@ pub struct IndexGroup {
 
 /// The full-screen card index (spec §0.6, requirement R8) — "the canonical
 /// identification mechanism".
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IndexModel {
     pub kind: IndexKind,
     /// Cards in the whole population this index is over, filtered or not — the
@@ -1501,7 +1540,7 @@ type FacedCard = (CardFaceModel, Option<CardLocation>);
 ///
 /// **Two registries need two answers, and the difference is whether a SECOND
 /// surface prints the same numbers** (T7 review M2).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 enum SelectionNumbering {
     /// Numbers run `1..shown` over the cards this screen displays. The screen is
     /// the only thing printing them, so a filter compacts them and no number a
@@ -2451,7 +2490,38 @@ pub fn build_decision(state: &GameState, rules: &Rules, legal: &[Move]) -> Decis
             .collect(),
         not_offered,
         not_offered_suppressed,
+        viewer_is_deciding: true,
     }
+}
+
+/// [`build_decision`], scoped to whoever is READING the zone.
+///
+/// The option list is derived from the acting seat's legal moves, and those are
+/// derived from that seat's hand: a `FulfillOrder` option names a card the
+/// reader may not be entitled to see, and the shape of a Placement list narrows
+/// what is affordable. So an observer is handed the PUBLIC half of the zone —
+/// whose turn it is, where the turn stands in the phase chain, and what is being
+/// decided — with an empty option list, rather than a redacted one.
+///
+/// The near-miss rows go with the options rather than staying behind. They read
+/// only public state (an assistant count, the president's start area, the
+/// Canal), so they would be safe to keep; they are dropped because they are
+/// commentary ON a list the reader is not being shown, and a lone "not offered"
+/// row beside no offers reads as a bug.
+///
+/// This is the seam a multi-seat API needs and the CLI never did: one operator
+/// at one screen is always the acting seat, which is why [`build_decision`] —
+/// unchanged, and still what the terminal calls — assumes it.
+pub fn build_decision_for(
+    state: &GameState,
+    rules: &Rules,
+    legal: &[Move],
+    viewer: PlayerId,
+) -> DecisionModel {
+    if viewer == state.current_player {
+        return build_decision(state, rules, legal);
+    }
+    DecisionModel { viewer_is_deciding: false, ..build_decision(state, rules, &[]) }
 }
 
 /// A phase's position in [`PHASE_CHAIN`]. Exhaustive on purpose (see the
@@ -2621,7 +2691,10 @@ pub fn build_dashboard(
 }
 
 /// A whole frame: the board, the dashboard in display order, and the decision
-/// zone. `seat` is the seat whose own hand the dashboard shows.
+/// zone. `seat` is the seat whose own hand the dashboard shows — and, since it
+/// is the reader, the seat the decision zone is scoped to as well
+/// ([`build_decision_for`]). A frame built for an observer therefore carries the
+/// board and the public dashboard, and no option list.
 pub fn build_frame(
     state: &GameState,
     rules: &Rules,
@@ -2634,7 +2707,7 @@ pub fn build_frame(
         title,
         board: build_board(state, rules, legal),
         dashboard: build_dashboard(state, rules, seats, seat),
-        decision: build_decision(state, rules, legal),
+        decision: build_decision_for(state, rules, legal, seat),
     }
 }
 
@@ -3292,7 +3365,7 @@ mod tests {
         let (state, rules) = state_np(2);
         let legal = get_legal_moves(&state, &rules);
         let frame = build_frame(&state, &rules, &SeatFacts::all_open(2), PlayerId::new(0), &legal,
-            TitleModel { mode: TitleMode::Sim, seed: 1, autosaved: false });
+            TitleModel { mode: TitleMode::Sim, seed: Some(1), autosaved: false });
 
         assert_eq!(frame.board.tiles.len(), state.board_layout.areas.len());
         assert_eq!(frame.decision.options.len(), legal.len());
@@ -3312,7 +3385,7 @@ mod tests {
         let (state, rules) = state_np(2);
         let seats = vec![SeatFacts { is_bot: false, hand_hidden: true }; 2];
         let frame = build_frame(&state, &rules, &seats, PlayerId::new(0), &[],
-            TitleModel { mode: TitleMode::Sim, seed: 1, autosaved: false });
+            TitleModel { mode: TitleMode::Sim, seed: Some(1), autosaved: false });
         let Some(Panel::Hand(hand)) = frame.dashboard.last() else {
             panic!("the hand panel closes the dashboard");
         };
@@ -3699,5 +3772,164 @@ mod tests {
         // top, so a fixture that stopped short again would fail here rather
         // than pass a sweep with a hole in it.
         assert_eq!(swept, LADDER_POWERS.to_vec(), "every rung, cap included");
+    }
+
+    /// **The wire contract.** Every model a web API serves must survive a JSON
+    /// round trip byte-for-byte, and that has to be asserted over the WHOLE
+    /// surface rather than the frame alone: the frame carries four dashboard
+    /// panels, but a client also asks for the offers, the areas reference, the
+    /// log and the card index, and each of those is a separate `Serialize`
+    /// derivation that can rot on its own. `PartialEq` on every model is what
+    /// makes this an equality check rather than a smoke test.
+    #[test]
+    fn every_wire_surface_round_trips_through_json_unchanged() {
+        let (state, rules) = state_np(2);
+        let legal = get_legal_moves(&state, &rules);
+
+        fn round_trip<T>(label: &str, value: &T)
+        where
+            T: serde::Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug,
+        {
+            let json = serde_json::to_string(value)
+                .unwrap_or_else(|e| panic!("{label} must serialize: {e}"));
+            let back: T = serde_json::from_str(&json)
+                .unwrap_or_else(|e| panic!("{label} must deserialize: {e}"));
+            assert_eq!(value, &back, "{label} must survive a JSON round trip");
+        }
+
+        round_trip(
+            "FrameModel",
+            &build_frame(
+                &state,
+                &rules,
+                &SeatFacts::all_open(2),
+                PlayerId::new(0),
+                &legal,
+                TitleModel { mode: TitleMode::Sim, seed: Some(1), autosaved: false },
+            ),
+        );
+        round_trip("PortsPanel", &build_ports(&state, &rules));
+        round_trip("LabsPanel", &build_labs(&state, &rules));
+        round_trip("AreasPanel", &build_areas(&state, &rules));
+        round_trip(
+            "LogPanel",
+            &build_log(2, vec![(0, "Red: place".to_string()), (1, "Blue: move".to_string())]),
+        );
+        for kind in IndexKind::ALL {
+            round_trip(
+                "IndexModel",
+                &build_index(kind, &rules, &[], &achievement_registry(), None, None),
+            );
+        }
+        round_trip("RevealModel", &RevealModel {
+            target: RecordingTarget::StartingOrder { seat: PlayerId::new(1) },
+            collected: vec![CardRef::Order(OrderCardId(14))],
+        });
+    }
+
+    /// A masked hand must still be masked on the far side of the wire. The
+    /// model-level mask (`HandPanel::cards` is EMPTY whenever `hidden`) is what
+    /// makes this seam safe for an API, so it is asserted through serialization
+    /// rather than only in memory: a consumer that never reads `hidden` still
+    /// cannot recover the cards from the JSON.
+    #[test]
+    fn a_masked_hand_carries_no_card_identity_across_the_wire() {
+        let (state, rules) = state_np(2);
+        let hidden = build_hand(&state, &rules, PlayerId::new(0), true).expect("a seat 0 hand");
+        let json = serde_json::to_string(&hidden).expect("a hand serializes");
+
+        let open = build_hand(&state, &rules, PlayerId::new(0), false).expect("a seat 0 hand");
+        assert!(!open.cards.is_empty(), "the fixture seat holds a card to leak");
+        for card in &open.cards {
+            let id = format!("{}", card.id.0);
+            assert!(
+                !json.contains(&format!("\"id\":{id}")),
+                "a masked hand must not carry card {id} in its JSON: {json}",
+            );
+        }
+        assert!(json.contains("\"card_count\":1"), "the COUNT still crosses: {json}");
+    }
+
+    /// An observer must not be handed the acting seat's option list. The list
+    /// is derived from that seat's legal moves and those from its HAND, so a
+    /// `FulfillOrder` row names a card the reader may not be entitled to see.
+    #[test]
+    fn an_observers_decision_zone_carries_the_public_half_and_no_options() {
+        let (state, rules) = state_np(2);
+        let legal = get_legal_moves(&state, &rules);
+        assert!(!legal.is_empty(), "the fixture must have something to withhold");
+
+        let actor = state.current_player;
+        let observer = PlayerId::new(if actor.0 == 0 { 1 } else { 0 });
+        let zone = build_decision_for(&state, &rules, &legal, observer);
+
+        assert!(zone.options.is_empty(), "an observer sees no options");
+        assert!(zone.not_offered.is_empty(), "and no commentary on a list it cannot see");
+        assert_eq!(zone.not_offered_suppressed, 0);
+        assert!(!zone.viewer_is_deciding, "and is told that is why");
+
+        // The public half survives: an observer still sees whose turn it is and
+        // where the turn stands, which is what the physical table shows them.
+        let acting = build_decision(&state, &rules, &legal);
+        assert_eq!(zone.seat, actor, "the zone still names who is deciding");
+        assert_eq!(zone.turn_number, acting.turn_number);
+        assert_eq!(zone.phase_chain, acting.phase_chain);
+        assert_eq!(zone.current_phase, acting.current_phase);
+        assert_eq!(zone.deciding, acting.deciding);
+    }
+
+    /// Scoping must be inert for the seat that is actually deciding — the CLI
+    /// path and the API path have to agree move for move, or the numbers a
+    /// client sends back mean something else than `pick_option` expects.
+    #[test]
+    fn scoping_the_zone_to_the_acting_seat_changes_nothing() {
+        for players in [2u8, 3, 4] {
+            let (state, rules) = state_np(players);
+            let legal = get_legal_moves(&state, &rules);
+            assert_eq!(
+                build_decision_for(&state, &rules, &legal, state.current_player),
+                build_decision(&state, &rules, &legal),
+                "{players}P: the actor's own zone is the unscoped one",
+            );
+        }
+    }
+
+    /// The frame carries the scoping, so an API that serves whole frames cannot
+    /// forget it. `build_frame`'s `seat` is the reader on both halves: the hand
+    /// it unmasks and the options it offers.
+    #[test]
+    fn the_frame_scopes_its_decision_zone_to_the_viewing_seat() {
+        let (state, rules) = state_np(2);
+        let legal = get_legal_moves(&state, &rules);
+        let actor = state.current_player;
+        let observer = PlayerId::new(if actor.0 == 0 { 1 } else { 0 });
+        let title = TitleModel { mode: TitleMode::Sim, seed: Some(1), autosaved: false };
+
+        let seen = build_frame(&state, &rules, &SeatFacts::all_open(2), actor, &legal, title);
+        assert_eq!(seen.decision.options.len(), legal.len(), "the actor gets its list");
+        assert!(seen.decision.viewer_is_deciding);
+
+        let unseen = build_frame(&state, &rules, &SeatFacts::all_open(2), observer, &legal, title);
+        assert!(unseen.decision.options.is_empty(), "the observer does not");
+        assert!(!unseen.decision.viewer_is_deciding);
+        // The board is public and must NOT be withheld — only the option list is.
+        assert_eq!(unseen.board, seen.board, "the board is the same table for both");
+    }
+
+    /// The withholding has to survive serialization, since that is the form the
+    /// reader actually receives. An observer's JSON must not name a move.
+    #[test]
+    fn an_observers_zone_names_no_move_across_the_wire() {
+        let (state, rules) = state_np(2);
+        let legal = get_legal_moves(&state, &rules);
+        let actor = state.current_player;
+        let observer = PlayerId::new(if actor.0 == 0 { 1 } else { 0 });
+
+        let json = serde_json::to_string(&build_decision_for(&state, &rules, &legal, observer))
+            .expect("a zone serializes");
+        assert!(json.contains("\"options\":[]"), "the option list crosses empty: {json}");
+
+        let acting = serde_json::to_string(&build_decision(&state, &rules, &legal)).unwrap();
+        assert!(acting.len() > json.len(), "the actor's zone is the larger document");
     }
 }

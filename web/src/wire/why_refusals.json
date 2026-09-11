@@ -1,0 +1,50 @@
+[
+  {
+    "kind": "live_mode",
+    "message": "`why` is simulation-only. A live-tracked game has no bot seats at all — a live save that names one drops it loudly on load, because a bot cannot read a face-down card off your table — so there is no bot decision here to reconstruct. (`suggest` is refused in live mode too, for the neighbouring reason: see guide §4.)"
+  },
+  {
+    "kind": "no_bot_move_yet",
+    "message": "No bot move to explain yet. `why` accounts for a move a BOT seat played, and this game has recorded none — a rung seat's samples do not count, since a rung has no valuation to show. What the bot would play on YOUR seat is `suggest`'s question, asked before you move rather than after."
+  },
+  {
+    "kind": "out_of_range",
+    "message": "There is no event 99 to explain: the log runs 0-11 (12 event(s) recorded). `why <n>` takes the number `log` prints beside each line."
+  },
+  {
+    "kind": "not_a_move",
+    "message": "Event 3 is a setup event, not a move — there was no decision to make, so there is nothing to account for. `log` shows what it recorded."
+  },
+  {
+    "kind": "human_seat",
+    "message": "Event 4 was seat 1's own move, and the record names no bot on that seat. `why` accounts for BOT moves; what the bot would play on YOUR seat is `suggest`'s question, asked before you move rather than after."
+  },
+  {
+    "kind": "rung",
+    "message": "Seat 1 played event 5 as `family-weighted`, a rollout RUNG: it SAMPLED that move from a distribution rather than valuing it, so there is no arithmetic to show. That is a different fact from a score of zero. Rungs are kept so that every save this driver ever wrote still resumes; a bot seat configured today plays a search, which does account for its moves."
+  },
+  {
+    "kind": "diagnostic",
+    "message": "Seat 1 is recorded at event 6 under a controller this driver will not run: a controller this driver will not run. The seat resumed as a HUMAN seat and this driver never ran that search, so there is no decision of its here to reconstruct."
+  },
+  {
+    "kind": "unknown_controller",
+    "message": "Seat 1 is recorded at event 7 under controller \"not-a-contestant\", which this build does not know how to run (no such controller) — so `why` cannot rebuild the decision it would have made. The seat resumed as a HUMAN seat."
+  },
+  {
+    "kind": "mismatch",
+    "message": "`why` cannot account for event 8 honestly. Replaying seat 1's decision under `lookahead` reproduced\n  MovePresident { .. }\nbut the record says the move played was\n  place 1 assistant in Area 3\nThe record stores this controller at version v1 and this build runs v2. Rather than show you the arithmetic for a move that was not played, `why` stops here — this is also how a seat that was downgraded to HUMAN mid-game reads, since its later moves were typed rather than searched. The game is untouched."
+  },
+  {
+    "kind": "reconstruction",
+    "message": "`why` could not re-run seat 1's decision at event 9: the sampler refused the view The game is untouched."
+  },
+  {
+    "kind": "unaccounted",
+    "message": "`greedy-v1` reproduced event 10's move but explained nothing, which is a broken contract in this program rather than something you did. Worth reporting. The game is untouched."
+  },
+  {
+    "kind": "replay",
+    "message": "`why` could not rebuild the position event 11 was decided in: the record does not replay The game is untouched."
+  }
+]

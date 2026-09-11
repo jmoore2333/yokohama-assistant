@@ -1,0 +1,1328 @@
+{
+  "deck_remaining": 7,
+  "end_game_triggered": false,
+  "end_triggers": "end triggers: deck 7 · church 1/4 · customs 0/4 · shophouses 0/8 · trade houses 0/4",
+  "events": 136,
+  "frame": {
+    "board": {
+      "player_count": 2,
+      "tiles": [
+        {
+          "area": 0,
+          "area_type": "TeaPlantation",
+          "assistants": [
+            [
+              0,
+              0
+            ],
+            [
+              1,
+              0
+            ]
+          ],
+          "canal_crossings": [],
+          "grid_position": [
+            0,
+            0
+          ],
+          "has_station": false,
+          "presidents": [],
+          "reachable": false,
+          "site": {
+            "index": 22,
+            "slots": [
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 1,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 4,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 0,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 3,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              }
+            ],
+            "trading_house_owner": null,
+            "trading_house_vp": 9
+          },
+          "token": {
+            "Tea": 3
+          }
+        },
+        {
+          "area": 1,
+          "area_type": "Church",
+          "assistants": [
+            [
+              0,
+              0
+            ],
+            [
+              1,
+              0
+            ]
+          ],
+          "canal_crossings": [],
+          "grid_position": [
+            0,
+            1
+          ],
+          "has_station": false,
+          "presidents": [],
+          "reachable": false,
+          "site": {
+            "index": 7,
+            "slots": [
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 1,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 2,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 0,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 0,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 1,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 0,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              }
+            ],
+            "trading_house_owner": null,
+            "trading_house_vp": 6
+          },
+          "token": {
+            "ImportedGoods": 1
+          }
+        },
+        {
+          "area": 2,
+          "area_type": "PortA",
+          "assistants": [
+            [
+              0,
+              0
+            ],
+            [
+              1,
+              0
+            ]
+          ],
+          "canal_crossings": [],
+          "grid_position": [
+            0,
+            2
+          ],
+          "has_station": false,
+          "presidents": [],
+          "reachable": false,
+          "site": {
+            "index": 10,
+            "slots": [
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 1,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 0,
+                  "warehouse_tokens": 2,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 0,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 2,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 0,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              }
+            ],
+            "trading_house_owner": null,
+            "trading_house_vp": 7
+          },
+          "token": {
+            "ImportedGoods": 1
+          }
+        },
+        {
+          "area": 3,
+          "area_type": "CopperMine",
+          "assistants": [
+            [
+              0,
+              0
+            ],
+            [
+              1,
+              0
+            ]
+          ],
+          "canal_crossings": [],
+          "grid_position": [
+            0,
+            3
+          ],
+          "has_station": false,
+          "presidents": [],
+          "reachable": false,
+          "site": {
+            "index": 2,
+            "slots": [
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 1,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 4,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 0,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 2,
+                  "vp": 0,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              }
+            ],
+            "trading_house_owner": null,
+            "trading_house_vp": 7
+          },
+          "token": {
+            "Money": 3
+          }
+        },
+        {
+          "area": 4,
+          "area_type": "EmploymentAgency",
+          "assistants": [
+            [
+              0,
+              1
+            ],
+            [
+              1,
+              0
+            ]
+          ],
+          "canal_crossings": [],
+          "grid_position": [
+            1,
+            0
+          ],
+          "has_station": false,
+          "presidents": [],
+          "reachable": false,
+          "site": {
+            "index": 5,
+            "slots": [
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 1,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 2,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 0,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 0,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 2,
+                  "tea": 0,
+                  "vp": 0,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              }
+            ],
+            "trading_house_owner": null,
+            "trading_house_vp": 9
+          },
+          "token": {
+            "ImportedGoods": 1
+          }
+        },
+        {
+          "area": 5,
+          "area_type": "FishingGround",
+          "assistants": [
+            [
+              0,
+              0
+            ],
+            [
+              1,
+              0
+            ]
+          ],
+          "canal_crossings": [],
+          "grid_position": [
+            1,
+            1
+          ],
+          "has_station": false,
+          "presidents": [
+            0
+          ],
+          "reachable": false,
+          "site": {
+            "index": 14,
+            "slots": [
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 1,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 3,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 0,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 0,
+                  "warehouse_tokens": 2,
+                  "yen": 0
+                }
+              }
+            ],
+            "trading_house_owner": null,
+            "trading_house_vp": 8
+          },
+          "token": {
+            "Seafood": 3
+          }
+        },
+        {
+          "area": 6,
+          "area_type": "LaboratoryA",
+          "assistants": [
+            [
+              0,
+              0
+            ],
+            [
+              1,
+              0
+            ]
+          ],
+          "canal_crossings": [],
+          "grid_position": [
+            1,
+            2
+          ],
+          "has_station": false,
+          "presidents": [],
+          "reachable": false,
+          "site": {
+            "index": 18,
+            "slots": [
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 1,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 4,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 0,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 0,
+                  "warehouse_tokens": 0,
+                  "yen": 2
+                }
+              }
+            ],
+            "trading_house_owner": null,
+            "trading_house_vp": 9
+          },
+          "token": {
+            "Silk": 2
+          }
+        },
+        {
+          "area": 7,
+          "area_type": "Bank",
+          "assistants": [
+            [
+              0,
+              0
+            ],
+            [
+              1,
+              0
+            ]
+          ],
+          "canal_crossings": [],
+          "grid_position": [
+            2,
+            0
+          ],
+          "has_station": false,
+          "presidents": [],
+          "reachable": false,
+          "site": {
+            "index": 19,
+            "slots": [
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 1,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 4,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 0,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 0,
+                  "warehouse_tokens": 0,
+                  "yen": 2
+                }
+              }
+            ],
+            "trading_house_owner": null,
+            "trading_house_vp": 6
+          },
+          "token": {
+            "Tea": 3
+          }
+        },
+        {
+          "area": 8,
+          "area_type": "SilkMill",
+          "assistants": [
+            [
+              0,
+              0
+            ],
+            [
+              1,
+              0
+            ]
+          ],
+          "canal_crossings": [],
+          "grid_position": [
+            2,
+            1
+          ],
+          "has_station": false,
+          "presidents": [],
+          "reachable": false,
+          "site": {
+            "index": 17,
+            "slots": [
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 1,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 2,
+                  "warehouse_tokens": 0,
+                  "yen": 1
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 0,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 2,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              }
+            ],
+            "trading_house_owner": null,
+            "trading_house_vp": 8
+          },
+          "token": {
+            "Money": 3
+          }
+        },
+        {
+          "area": 9,
+          "area_type": "Customs",
+          "assistants": [
+            [
+              0,
+              0
+            ],
+            [
+              1,
+              0
+            ]
+          ],
+          "canal_crossings": [],
+          "grid_position": [
+            3,
+            0
+          ],
+          "has_station": false,
+          "presidents": [],
+          "reachable": false,
+          "site": {
+            "index": 23,
+            "slots": [
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 1,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 3,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 0,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              },
+              {
+                "built_by": null,
+                "reward": {
+                  "any_good": 0,
+                  "copper": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "vp": 2,
+                  "warehouse_tokens": 0,
+                  "yen": 0
+                }
+              }
+            ],
+            "trading_house_owner": null,
+            "trading_house_vp": 6
+          },
+          "token": {
+            "ImportedGoods": 1
+          }
+        }
+      ]
+    },
+    "dashboard": [
+      {
+        "Players": {
+          "players": [
+            {
+              "assistants": {
+                "in_hand": 7,
+                "in_warehouse": 12,
+                "on_achievements": 0,
+                "on_board": 1,
+                "on_church": 0,
+                "on_customs": 0
+              },
+              "color": "Red",
+              "five_power_tokens": 0,
+              "goods": {
+                "copper": 0,
+                "imports": 0,
+                "seafood": 0,
+                "silk": 1,
+                "tea": 0
+              },
+              "hand_hidden": false,
+              "is_bot": false,
+              "is_current": true,
+              "mercenaries_unused": 0,
+              "mercenaries_used": 0,
+              "money": 5,
+              "orders_filled": [
+                19,
+                27
+              ],
+              "orders_in_hand": 1,
+              "president": {
+                "OnBoard": 5
+              },
+              "seat": 0,
+              "shophouses": {
+                "built": 0,
+                "in_hand": 2,
+                "in_warehouse": 6
+              },
+              "technologies": [],
+              "trading_houses": {
+                "built": 0,
+                "in_hand": 0,
+                "in_warehouse": 4,
+                "next_take_cost": 4
+              },
+              "victory_points": 9
+            },
+            {
+              "assistants": {
+                "in_hand": 7,
+                "in_warehouse": 12,
+                "on_achievements": 0,
+                "on_board": 0,
+                "on_church": 1,
+                "on_customs": 0
+              },
+              "color": "Blue",
+              "five_power_tokens": 0,
+              "goods": {
+                "copper": 0,
+                "imports": 0,
+                "seafood": 3,
+                "silk": 0,
+                "tea": 0
+              },
+              "hand_hidden": false,
+              "is_bot": false,
+              "is_current": false,
+              "mercenaries_unused": 0,
+              "mercenaries_used": 0,
+              "money": 2,
+              "orders_filled": [],
+              "orders_in_hand": 2,
+              "president": "InHand",
+              "seat": 1,
+              "shophouses": {
+                "built": 0,
+                "in_hand": 2,
+                "in_warehouse": 6
+              },
+              "technologies": [
+                {
+                  "id": 12,
+                  "printed": {
+                    "country": "English",
+                    "effect": "Ball",
+                    "id": 12,
+                    "industry_cost": 3,
+                    "name": "Ball"
+                  }
+                }
+              ],
+              "trading_houses": {
+                "built": 0,
+                "in_hand": 0,
+                "in_warehouse": 4,
+                "next_take_cost": 4
+              },
+              "victory_points": 3
+            }
+          ]
+        }
+      },
+      {
+        "Tracks": {
+          "church": [
+            {
+              "faith": 4,
+              "movement_rider": 1,
+              "occupant": 1,
+              "vp": 3
+            },
+            {
+              "faith": 5,
+              "movement_rider": 1,
+              "occupant": null,
+              "vp": 4
+            },
+            {
+              "faith": 6,
+              "movement_rider": 2,
+              "occupant": null,
+              "vp": 5
+            },
+            {
+              "faith": 7,
+              "movement_rider": 2,
+              "occupant": 255,
+              "vp": 6
+            },
+            {
+              "faith": 8,
+              "movement_rider": 2,
+              "occupant": null,
+              "vp": 7
+            },
+            {
+              "faith": 9,
+              "movement_rider": 2,
+              "occupant": null,
+              "vp": 8
+            },
+            {
+              "faith": 10,
+              "movement_rider": 3,
+              "occupant": null,
+              "vp": 11
+            },
+            {
+              "faith": 11,
+              "movement_rider": 3,
+              "occupant": null,
+              "vp": 14
+            }
+          ],
+          "church_filled": 1,
+          "customs": [
+            {
+              "import_cost": 1,
+              "occupant": null,
+              "space": 1,
+              "vp": 5,
+              "warehouse_rider": 2,
+              "yen_rider": 0
+            },
+            {
+              "import_cost": 1,
+              "occupant": null,
+              "space": 2,
+              "vp": 4,
+              "warehouse_rider": 0,
+              "yen_rider": 2
+            },
+            {
+              "import_cost": 2,
+              "occupant": null,
+              "space": 3,
+              "vp": 10,
+              "warehouse_rider": 1,
+              "yen_rider": 0
+            },
+            {
+              "import_cost": 2,
+              "occupant": 255,
+              "space": 4,
+              "vp": 9,
+              "warehouse_rider": 0,
+              "yen_rider": 1
+            },
+            {
+              "import_cost": 3,
+              "occupant": null,
+              "space": 5,
+              "vp": 16,
+              "warehouse_rider": 0,
+              "yen_rider": 0
+            },
+            {
+              "import_cost": 3,
+              "occupant": null,
+              "space": 6,
+              "vp": 15,
+              "warehouse_rider": 0,
+              "yen_rider": 0
+            },
+            {
+              "import_cost": 4,
+              "occupant": null,
+              "space": 7,
+              "vp": 22,
+              "warehouse_rider": 0,
+              "yen_rider": 0
+            }
+          ],
+          "customs_filled": 0,
+          "mercenary_supply": {
+            "american": 2,
+            "dutch": 1,
+            "english": 3,
+            "french": 2,
+            "german": 2
+          },
+          "station": null,
+          "trigger_at": 4
+        }
+      },
+      {
+        "Achievements": {
+          "cards": [
+            {
+              "achievement_type": "Seafood7",
+              "category": "A",
+              "claimed_by": [],
+              "first_place_vp": 8,
+              "progress": [
+                [
+                  0,
+                  0,
+                  7
+                ],
+                [
+                  1,
+                  3,
+                  7
+                ]
+              ],
+              "subsequent_vp": 6
+            },
+            {
+              "achievement_type": "Technologies4",
+              "category": "B",
+              "claimed_by": [],
+              "first_place_vp": 9,
+              "progress": [
+                [
+                  0,
+                  0,
+                  4
+                ],
+                [
+                  1,
+                  1,
+                  4
+                ]
+              ],
+              "subsequent_vp": 7
+            },
+            {
+              "achievement_type": "Commercial4",
+              "category": "C",
+              "claimed_by": [],
+              "first_place_vp": 10,
+              "progress": [
+                [
+                  0,
+                  0,
+                  4
+                ],
+                [
+                  1,
+                  0,
+                  4
+                ]
+              ],
+              "subsequent_vp": 8
+            }
+          ]
+        }
+      },
+      {
+        "Hand": {
+          "card_count": 1,
+          "cards": [
+            {
+              "id": 34,
+              "is_starting_order": false,
+              "printed": {
+                "country": "French",
+                "id": 34,
+                "requirements": {
+                  "copper": 2,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 3
+                },
+                "rewards": {
+                  "any_trade_good": 0,
+                  "copper": 0,
+                  "imported_goods": 1,
+                  "money": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "victory_points": 9,
+                  "warehouse_tokens": 0
+                }
+              }
+            }
+          ],
+          "hidden": false,
+          "seat": 0
+        }
+      }
+    ],
+    "decision": {
+      "current_phase": 7,
+      "deciding": {
+        "Choice": {
+          "head": "WarehouseTake",
+          "queued": 1
+        }
+      },
+      "not_offered": [],
+      "not_offered_suppressed": 0,
+      "options": [
+        {
+          "fee": null,
+          "mv": {
+            "ChooseWarehouseTake": {
+              "item": "Assistant"
+            }
+          },
+          "number": 1
+        },
+        {
+          "fee": null,
+          "mv": {
+            "ChooseWarehouseTake": {
+              "item": "Shophouse"
+            }
+          },
+          "number": 2
+        },
+        {
+          "fee": null,
+          "mv": {
+            "ChooseWarehouseTake": {
+              "item": "TradingHouse"
+            }
+          },
+          "number": 3
+        },
+        {
+          "fee": null,
+          "mv": "DeclineWarehouseTake",
+          "number": 4
+        }
+      ],
+      "phase_chain": [
+        "AdditionalActionFirst",
+        "Placement",
+        "Movement",
+        "AreaAction",
+        "FivePowerBonus",
+        "Building",
+        "Recovery",
+        "AdditionalActionSecond",
+        "TurnEnd"
+      ],
+      "seat": 0,
+      "turn_number": 25,
+      "viewer_is_deciding": true
+    },
+    "title": {
+      "autosaved": true,
+      "mode": "Sim"
+    }
+  },
+  "id": "wire",
+  "messages": [
+    "Red: +2 yen, +1 VP, -2 copper, -2 seafood",
+    "Red: hand -O27"
+  ],
+  "mode": "sim",
+  "over": false,
+  "prompt": {
+    "kind": "options",
+    "rows": [
+      {
+        "fee": null,
+        "number": 1,
+        "opens_picker": false,
+        "words": "Take an assistant from the warehouse (free)"
+      },
+      {
+        "fee": null,
+        "number": 2,
+        "opens_picker": false,
+        "words": "Take a shophouse from the warehouse (2 yen)"
+      },
+      {
+        "fee": null,
+        "number": 3,
+        "opens_picker": false,
+        "words": "Take a trading house from the warehouse (4 yen)"
+      },
+      {
+        "fee": null,
+        "number": 4,
+        "opens_picker": false,
+        "words": "Decline the warehouse take"
+      }
+    ]
+  },
+  "scores": null,
+  "seat": 0,
+  "to_move": 0,
+  "warnings": [],
+  "your_turn": true
+}

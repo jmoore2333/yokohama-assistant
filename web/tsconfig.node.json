@@ -1,0 +1,35 @@
+{
+  // The NODE half of the client tree: the two build configs, the Playwright
+  // config, and the browser walk.
+  //
+  // A second project rather than more `include` in `tsconfig.json`, because the
+  // two halves have different globals. Folding `e2e` into the app config would
+  // put `process` and `node:fs` in scope for every file under `src/`, where
+  // they do not exist at runtime — a client file could then read
+  // `process.env.SOMETHING`, type-check, and be `undefined` in a browser.
+  //
+  // `npm run typecheck` runs BOTH. Before this existed, `vite.config.ts` and
+  // `vitest.config.ts` were checked by nothing at all.
+  "compilerOptions": {
+    "target": "ES2022",
+    // DOM as well as ES2022: a `page.evaluate` callback is SOURCE in this
+    // project and CODE in the browser, so `document` and `window` are real
+    // there. Node's own globals come from `types` below rather than from `lib`,
+    // so the two do not collide.
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedIndexedAccess": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "types": ["node"],
+    "noEmit": true
+  },
+  "include": ["vite.config.ts", "vitest.config.ts", "playwright.config.ts", "e2e"]
+}

@@ -1,0 +1,220 @@
+{
+  "cards": [
+    {
+      "index": 0,
+      "spaces": [
+        "1 VP",
+        "3 VP",
+        "blank",
+        "3 Seafood"
+      ]
+    },
+    {
+      "index": 1,
+      "spaces": [
+        "1 VP",
+        "3 Seafood",
+        "blank",
+        "2 Seafood"
+      ]
+    },
+    {
+      "index": 2,
+      "spaces": [
+        "1 VP",
+        "4 VP",
+        "blank",
+        "2 Tea"
+      ]
+    },
+    {
+      "index": 3,
+      "spaces": [
+        "1 VP",
+        "2 warehouse takes",
+        "blank",
+        "2 Tea"
+      ]
+    },
+    {
+      "index": 4,
+      "spaces": [
+        "1 VP",
+        "2 Silk",
+        "blank",
+        "1 Copper"
+      ]
+    },
+    {
+      "index": 5,
+      "spaces": [
+        "1 VP",
+        "2 Copper",
+        "blank",
+        "2 Silk"
+      ]
+    },
+    {
+      "index": 6,
+      "spaces": [
+        "1 VP",
+        "2 any goods",
+        "blank",
+        "1 any good"
+      ]
+    },
+    {
+      "index": 7,
+      "spaces": [
+        "1 VP",
+        "2 any goods",
+        "blank",
+        "1 any good"
+      ]
+    },
+    {
+      "index": 8,
+      "spaces": [
+        "1 VP",
+        "4 VP",
+        "blank",
+        "2 assistant moves"
+      ]
+    },
+    {
+      "index": 9,
+      "spaces": [
+        "1 VP",
+        "2 warehouse takes",
+        "blank",
+        "2 assistant moves"
+      ]
+    },
+    {
+      "index": 10,
+      "spaces": [
+        "1 VP",
+        "2 warehouse takes",
+        "blank",
+        "2 assistant moves"
+      ]
+    },
+    {
+      "index": 11,
+      "spaces": [
+        "1 VP",
+        "2 warehouse takes",
+        "blank",
+        "2 assistant moves"
+      ]
+    },
+    {
+      "index": 12,
+      "spaces": [
+        "1 VP",
+        "3 VP + 1 yen",
+        "blank",
+        "2 assistant moves"
+      ]
+    },
+    {
+      "index": 13,
+      "spaces": [
+        "1 VP",
+        "3 warehouse takes",
+        "blank",
+        "2 warehouse takes"
+      ]
+    },
+    {
+      "index": 14,
+      "spaces": [
+        "1 VP",
+        "3 VP",
+        "blank",
+        "2 warehouse takes"
+      ]
+    },
+    {
+      "index": 15,
+      "spaces": [
+        "1 VP",
+        "2 VP + 1 yen",
+        "blank",
+        "2 warehouse takes"
+      ]
+    },
+    {
+      "index": 16,
+      "spaces": [
+        "1 VP",
+        "2 VP + 1 yen",
+        "blank",
+        "1 VP + 1 yen"
+      ]
+    },
+    {
+      "index": 17,
+      "spaces": [
+        "1 VP",
+        "2 VP + 1 yen",
+        "blank",
+        "2 VP"
+      ]
+    },
+    {
+      "index": 18,
+      "spaces": [
+        "1 VP",
+        "4 VP",
+        "blank",
+        "2 yen"
+      ]
+    },
+    {
+      "index": 19,
+      "spaces": [
+        "1 VP",
+        "4 VP",
+        "blank",
+        "2 yen"
+      ]
+    },
+    {
+      "index": 20,
+      "spaces": [
+        "1 VP",
+        "3 VP",
+        "blank",
+        "1 VP + 2 yen"
+      ]
+    },
+    {
+      "index": 21,
+      "spaces": [
+        "1 VP",
+        "4 VP",
+        "blank",
+        "1 VP + 2 yen"
+      ]
+    },
+    {
+      "index": 22,
+      "spaces": [
+        "1 VP",
+        "4 VP",
+        "blank",
+        "3 VP"
+      ]
+    },
+    {
+      "index": 23,
+      "spaces": [
+        "1 VP",
+        "3 VP",
+        "blank",
+        "2 VP"
+      ]
+    }
+  ]
+}

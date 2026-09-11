@@ -1,0 +1,1614 @@
+{
+  "filter": null,
+  "groups": [
+    {
+      "cards": [
+        {
+          "face": {
+            "Site": {
+              "index": 0,
+              "site": {
+                "shophouses_built": [
+                  null,
+                  null,
+                  null,
+                  null
+                ],
+                "spaces": [
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 1,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 3,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 0,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 3,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 0,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  }
+                ],
+                "trading_house_owner": null,
+                "trading_house_reward": 7
+              }
+            }
+          },
+          "location": null,
+          "selection": null
+        },
+        {
+          "face": {
+            "Site": {
+              "index": 1,
+              "site": {
+                "shophouses_built": [
+                  null,
+                  null,
+                  null,
+                  null
+                ],
+                "spaces": [
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 1,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 3,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 0,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 0,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 2,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 0,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  }
+                ],
+                "trading_house_owner": null,
+                "trading_house_reward": 7
+              }
+            }
+          },
+          "location": null,
+          "selection": null
+        },
+        {
+          "face": {
+            "Site": {
+              "index": 2,
+              "site": {
+                "shophouses_built": [
+                  null,
+                  null,
+                  null,
+                  null
+                ],
+                "spaces": [
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 1,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 4,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 0,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 2,
+                    "vp": 0,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  }
+                ],
+                "trading_house_owner": null,
+                "trading_house_reward": 7
+              }
+            }
+          },
+          "location": {
+            "OnArea": {
+              "area": 3
+            }
+          },
+          "selection": null
+        },
+        {
+          "face": {
+            "Site": {
+              "index": 3,
+              "site": {
+                "shophouses_built": [
+                  null,
+                  null,
+                  null,
+                  null
+                ],
+                "spaces": [
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 1,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 0,
+                    "warehouse_tokens": 2,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 0,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 2,
+                    "vp": 0,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  }
+                ],
+                "trading_house_owner": null,
+                "trading_house_reward": 8
+              }
+            }
+          },
+          "location": null,
+          "selection": null
+        },
+        {
+          "face": {
+            "Site": {
+              "index": 4,
+              "site": {
+                "shophouses_built": [
+                  null,
+                  null,
+                  null,
+                  null
+                ],
+                "spaces": [
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 1,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 2,
+                    "tea": 0,
+                    "vp": 0,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 0,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 1,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 0,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  }
+                ],
+                "trading_house_owner": null,
+                "trading_house_reward": 9
+              }
+            }
+          },
+          "location": null,
+          "selection": null
+        },
+        {
+          "face": {
+            "Site": {
+              "index": 5,
+              "site": {
+                "shophouses_built": [
+                  null,
+                  null,
+                  null,
+                  null
+                ],
+                "spaces": [
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 1,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 2,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 0,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 0,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 2,
+                    "tea": 0,
+                    "vp": 0,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  }
+                ],
+                "trading_house_owner": null,
+                "trading_house_reward": 9
+              }
+            }
+          },
+          "location": {
+            "OnArea": {
+              "area": 4
+            }
+          },
+          "selection": null
+        },
+        {
+          "face": {
+            "Site": {
+              "index": 6,
+              "site": {
+                "shophouses_built": [
+                  null,
+                  null,
+                  null,
+                  null
+                ],
+                "spaces": [
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 1,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 2,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 0,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 0,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 1,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 0,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  }
+                ],
+                "trading_house_owner": null,
+                "trading_house_reward": 7
+              }
+            }
+          },
+          "location": null,
+          "selection": null
+        },
+        {
+          "face": {
+            "Site": {
+              "index": 7,
+              "site": {
+                "shophouses_built": [
+                  null,
+                  null,
+                  null,
+                  null
+                ],
+                "spaces": [
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 1,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 2,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 0,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 0,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 1,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 0,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  }
+                ],
+                "trading_house_owner": null,
+                "trading_house_reward": 6
+              }
+            }
+          },
+          "location": {
+            "OnArea": {
+              "area": 1
+            }
+          },
+          "selection": null
+        },
+        {
+          "face": {
+            "Site": {
+              "index": 8,
+              "site": {
+                "shophouses_built": [
+                  null,
+                  null,
+                  null,
+                  null
+                ],
+                "spaces": [
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 1,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 4,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 0,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 2,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 0,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  }
+                ],
+                "trading_house_owner": null,
+                "trading_house_reward": 8
+              }
+            }
+          },
+          "location": null,
+          "selection": null
+        },
+        {
+          "face": {
+            "Site": {
+              "index": 9,
+              "site": {
+                "shophouses_built": [
+                  null,
+                  null,
+                  null,
+                  null
+                ],
+                "spaces": [
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 1,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 0,
+                    "warehouse_tokens": 2,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 0,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 2,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 0,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  }
+                ],
+                "trading_house_owner": null,
+                "trading_house_reward": 6
+              }
+            }
+          },
+          "location": null,
+          "selection": null
+        },
+        {
+          "face": {
+            "Site": {
+              "index": 10,
+              "site": {
+                "shophouses_built": [
+                  null,
+                  null,
+                  null,
+                  null
+                ],
+                "spaces": [
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 1,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 0,
+                    "warehouse_tokens": 2,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 0,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 2,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 0,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  }
+                ],
+                "trading_house_owner": null,
+                "trading_house_reward": 7
+              }
+            }
+          },
+          "location": {
+            "OnArea": {
+              "area": 2
+            }
+          },
+          "selection": null
+        },
+        {
+          "face": {
+            "Site": {
+              "index": 11,
+              "site": {
+                "shophouses_built": [
+                  null,
+                  null,
+                  null,
+                  null
+                ],
+                "spaces": [
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 1,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 0,
+                    "warehouse_tokens": 2,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 0,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 2,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 0,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  }
+                ],
+                "trading_house_owner": null,
+                "trading_house_reward": 5
+              }
+            }
+          },
+          "location": null,
+          "selection": null
+        },
+        {
+          "face": {
+            "Site": {
+              "index": 12,
+              "site": {
+                "shophouses_built": [
+                  null,
+                  null,
+                  null,
+                  null
+                ],
+                "spaces": [
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 1,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 3,
+                    "warehouse_tokens": 0,
+                    "yen": 1
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 0,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 2,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 0,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  }
+                ],
+                "trading_house_owner": null,
+                "trading_house_reward": 6
+              }
+            }
+          },
+          "location": null,
+          "selection": null
+        },
+        {
+          "face": {
+            "Site": {
+              "index": 13,
+              "site": {
+                "shophouses_built": [
+                  null,
+                  null,
+                  null,
+                  null
+                ],
+                "spaces": [
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 1,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 0,
+                    "warehouse_tokens": 3,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 0,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 0,
+                    "warehouse_tokens": 2,
+                    "yen": 0
+                  }
+                ],
+                "trading_house_owner": null,
+                "trading_house_reward": 5
+              }
+            }
+          },
+          "location": null,
+          "selection": null
+        },
+        {
+          "face": {
+            "Site": {
+              "index": 14,
+              "site": {
+                "shophouses_built": [
+                  null,
+                  null,
+                  null,
+                  null
+                ],
+                "spaces": [
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 1,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 3,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 0,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 0,
+                    "warehouse_tokens": 2,
+                    "yen": 0
+                  }
+                ],
+                "trading_house_owner": null,
+                "trading_house_reward": 8
+              }
+            }
+          },
+          "location": {
+            "OnArea": {
+              "area": 5
+            }
+          },
+          "selection": null
+        },
+        {
+          "face": {
+            "Site": {
+              "index": 15,
+              "site": {
+                "shophouses_built": [
+                  null,
+                  null,
+                  null,
+                  null
+                ],
+                "spaces": [
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 1,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 2,
+                    "warehouse_tokens": 0,
+                    "yen": 1
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 0,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 0,
+                    "warehouse_tokens": 2,
+                    "yen": 0
+                  }
+                ],
+                "trading_house_owner": null,
+                "trading_house_reward": 8
+              }
+            }
+          },
+          "location": null,
+          "selection": null
+        },
+        {
+          "face": {
+            "Site": {
+              "index": 16,
+              "site": {
+                "shophouses_built": [
+                  null,
+                  null,
+                  null,
+                  null
+                ],
+                "spaces": [
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 1,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 2,
+                    "warehouse_tokens": 0,
+                    "yen": 1
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 0,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 1,
+                    "warehouse_tokens": 0,
+                    "yen": 1
+                  }
+                ],
+                "trading_house_owner": null,
+                "trading_house_reward": 9
+              }
+            }
+          },
+          "location": null,
+          "selection": null
+        },
+        {
+          "face": {
+            "Site": {
+              "index": 17,
+              "site": {
+                "shophouses_built": [
+                  null,
+                  null,
+                  null,
+                  null
+                ],
+                "spaces": [
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 1,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 2,
+                    "warehouse_tokens": 0,
+                    "yen": 1
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 0,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 2,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  }
+                ],
+                "trading_house_owner": null,
+                "trading_house_reward": 8
+              }
+            }
+          },
+          "location": {
+            "OnArea": {
+              "area": 8
+            }
+          },
+          "selection": null
+        },
+        {
+          "face": {
+            "Site": {
+              "index": 18,
+              "site": {
+                "shophouses_built": [
+                  null,
+                  null,
+                  null,
+                  null
+                ],
+                "spaces": [
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 1,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 4,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 0,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 0,
+                    "warehouse_tokens": 0,
+                    "yen": 2
+                  }
+                ],
+                "trading_house_owner": null,
+                "trading_house_reward": 9
+              }
+            }
+          },
+          "location": {
+            "OnArea": {
+              "area": 6
+            }
+          },
+          "selection": null
+        },
+        {
+          "face": {
+            "Site": {
+              "index": 19,
+              "site": {
+                "shophouses_built": [
+                  null,
+                  null,
+                  null,
+                  null
+                ],
+                "spaces": [
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 1,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 4,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 0,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 0,
+                    "warehouse_tokens": 0,
+                    "yen": 2
+                  }
+                ],
+                "trading_house_owner": null,
+                "trading_house_reward": 6
+              }
+            }
+          },
+          "location": {
+            "OnArea": {
+              "area": 7
+            }
+          },
+          "selection": null
+        },
+        {
+          "face": {
+            "Site": {
+              "index": 20,
+              "site": {
+                "shophouses_built": [
+                  null,
+                  null,
+                  null,
+                  null
+                ],
+                "spaces": [
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 1,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 3,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 0,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 1,
+                    "warehouse_tokens": 0,
+                    "yen": 2
+                  }
+                ],
+                "trading_house_owner": null,
+                "trading_house_reward": 5
+              }
+            }
+          },
+          "location": null,
+          "selection": null
+        },
+        {
+          "face": {
+            "Site": {
+              "index": 21,
+              "site": {
+                "shophouses_built": [
+                  null,
+                  null,
+                  null,
+                  null
+                ],
+                "spaces": [
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 1,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 4,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 0,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 1,
+                    "warehouse_tokens": 0,
+                    "yen": 2
+                  }
+                ],
+                "trading_house_owner": null,
+                "trading_house_reward": 5
+              }
+            }
+          },
+          "location": null,
+          "selection": null
+        },
+        {
+          "face": {
+            "Site": {
+              "index": 22,
+              "site": {
+                "shophouses_built": [
+                  null,
+                  null,
+                  null,
+                  null
+                ],
+                "spaces": [
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 1,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 4,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 0,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 3,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  }
+                ],
+                "trading_house_owner": null,
+                "trading_house_reward": 9
+              }
+            }
+          },
+          "location": {
+            "OnArea": {
+              "area": 0
+            }
+          },
+          "selection": null
+        },
+        {
+          "face": {
+            "Site": {
+              "index": 23,
+              "site": {
+                "shophouses_built": [
+                  null,
+                  null,
+                  null,
+                  null
+                ],
+                "spaces": [
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 1,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 3,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 0,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  },
+                  {
+                    "any_good": 0,
+                    "copper": 0,
+                    "movement": 0,
+                    "seafood": 0,
+                    "silk": 0,
+                    "tea": 0,
+                    "vp": 2,
+                    "warehouse_tokens": 0,
+                    "yen": 0
+                  }
+                ],
+                "trading_house_owner": null,
+                "trading_house_reward": 6
+              }
+            }
+          },
+          "location": {
+            "OnArea": {
+              "area": 9
+            }
+          },
+          "selection": null
+        }
+      ],
+      "key": "All"
+    }
+  ],
+  "kind": "Sites",
+  "shown": 24,
+  "target": null,
+  "total": 24
+}

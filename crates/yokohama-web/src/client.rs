@@ -1,0 +1,575 @@
+//! What a browser receives: the frame, plus what it is being asked.
+//!
+//! Everything here is a projection. The frame is `screen_model::build_frame`'s,
+//! the words are `describe`'s, and the numbered entries are the REPL's own —
+//! see [`PromptState`] on why that last one is not negotiable.
+
+use serde::Serialize;
+use yokohama_cli::repl::{Repl, SubPrompt};
+use yokohama_cli::screen_model::{self, FrameModel, TitleMode, TitleModel};
+use yokohama_cli::{describe, session::TrackingMode};
+use yokohama_core::{AreaId, PlayerId};
+
+/// One numbered entry, exactly as the engine-backed list produced it.
+#[derive(Debug, Clone, Serialize)]
+pub struct OptionRow {
+    /// What to send back. 1-based (`screen_model::NUMBER_BASE`).
+    pub number: usize,
+    /// The entry in plain words, from the CLI's own renderer.
+    pub words: String,
+    /// True when choosing this opens a further question (a route family, the
+    /// retreat family, an Option A/B placement) instead of applying a move.
+    /// The client can say "…" rather than implying the turn is about to end.
+    pub opens_picker: bool,
+    /// **What this row COSTS**, priced by `screen_model::option_fee`.
+    ///
+    /// `words` is `describe::describe_move`'s, and for a President move that is
+    /// a bare "Place President from hand in Copper Mine (A00)" with no price on
+    /// it — the terminal's decision zone does not use those words for this move
+    /// kind, it re-words the row from `OptionModel::fee`
+    /// (`decision_render::move_row`). Without this the browser's rows were
+    /// identical in shape whether they cost a yen or nothing, so a player
+    /// comparing destinations could not see which one charged them.
+    ///
+    /// `None` means the move cannot carry a fee at all. A `Some` whose `total`
+    /// is 0 means FREE and is not the same thing: `option_fee` returns a zero
+    /// fee for every President move, free or not, and the terminal prints
+    /// `— free` there because a player choosing between routes is comparing
+    /// prices and an absent price reads as an unknown one.
+    pub fee: Option<screen_model::FeeModel>,
+}
+
+/// What the game is asking for right now.
+///
+/// **The numbers in `Options` are the REPL's grouped entries, not one per legal
+/// move.** Movement collapses to one row per destination with the retreat
+/// family folded into a single row; Placement collapses to Option A / Option B
+/// / place-none; a queued assistant-move groups by source. A client that
+/// numbered `FrameModel::decision::options` — which IS one per legal move —
+/// would send back a number naming a different move, and in Movement it would
+/// usually still be a legal one, so the game would quietly diverge from what
+/// the player clicked. `Repl::option_rows` is the authority and this carries it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PromptState {
+    /// The main decision.
+    Options { rows: Vec<OptionRow> },
+    /// A numbered sub-list opened by an entry above.
+    Pick { title: String, rows: Vec<OptionRow> },
+    /// Guided retreat: how many assistants to recover from one area, asked once
+    /// per occupied area. `0` is a legal answer meaning "none".
+    Retreat {
+        area: AreaId,
+        area_label: String,
+        max: u8,
+        answered: Vec<u8>,
+        remaining: usize,
+    },
+    /// Placement Option A: toggle up to `max_areas` areas, then `confirm`.
+    ///
+    /// `fee` is what the CURRENT selection would cost, live as it changes —
+    /// 1 yen per assistant placed, to each president owner in that area.
+    /// Without it the browser showed only the ids it had toggled, and a player
+    /// pressed Confirm and paid a yen that no surface had stated. The terminal
+    /// recomputes this on every redraw (`Repl::sub_prompt_text`).
+    PlaceA { selected: Vec<AreaId>, max_areas: usize, fee: Option<screen_model::FeeModel> },
+    /// Placement Option B: pick one area for two assistants, then `confirm`.
+    ///
+    /// Option B places TWO assistants in one area, so its fee is two yen per
+    /// president owner there, not one — which is exactly the kind of thing a
+    /// player should not have to remember while choosing.
+    PlaceB {
+        areas: Vec<AreaId>,
+        selected: Option<AreaId>,
+        fee: Option<screen_model::FeeModel>,
+    },
+    /// A live-mode card reveal. v1 does not create live games, so this is here
+    /// to be reported honestly rather than rendered.
+    Reveal,
+    /// Nothing is being decided.
+    GameOver,
+    /// Someone else is to move and this payload is not theirs.
+    ///
+    /// **The prompt has to be scoped or the frame's scoping is a formality.**
+    /// `ClientState::of` builds the decision zone through
+    /// `build_decision_for`, whose doc says an observer must not receive the
+    /// acting seat's options because "a `FulfillOrder` option names a card the
+    /// reader may not be entitled to see" — and then the sibling `prompt` field
+    /// was built from `repl.option_rows()`, which is always the CURRENT
+    /// player's grouped list. The frame said `options: []` and
+    /// `viewer_is_deciding: false` while the prompt beside it carried the
+    /// actor's entries.
+    ///
+    /// Reachable through the bot-fallback arm of [`viewing_seat`]: when the
+    /// actor is a bot the payload is built for a human, and the bot's hand is
+    /// masked unconditionally — so without this the client would hold an option
+    /// list derived from a hand the same payload hides.
+    Watching { to_move: PlayerId },
+    /// The session is locked after a driver or engine fault and accepts no
+    /// gameplay at all.
+    ///
+    /// **It used to report a live `Options` prompt.** `Repl::step` under
+    /// lockdown accepts only `save`/`log`/`quit` — every one of which
+    /// `grammar` refuses — so every command that could work was fenced off and
+    /// every command the client could send was dead, while the payload
+    /// carried numbered rows and `your_turn: true`. Measured: a record with a
+    /// `lockdown` field answered `prompt.kind: "options"` with one row, and
+    /// posting that row returned 200 with the locked refusal buried in
+    /// `messages` and the same live prompt returned, forever.
+    Locked { reason: String },
+}
+
+/// One seat's final score.
+#[derive(Debug, Clone, Serialize)]
+pub struct ScoreRow {
+    pub seat: PlayerId,
+    pub total: u32,
+}
+
+/// The whole payload for one game.
+#[derive(Debug, Clone, Serialize)]
+pub struct ClientState {
+    pub id: String,
+    /// `"sim"` or `"live"`.
+    pub mode: &'static str,
+    /// The seat this payload was built FOR — whose hand is unmasked and whose
+    /// decision zone carries options. Not necessarily the seat to move.
+    pub seat: PlayerId,
+    /// Whose turn it is.
+    pub to_move: PlayerId,
+    /// True when `seat` is the seat to move.
+    pub your_turn: bool,
+    pub frame: FrameModel,
+    pub prompt: PromptState,
+    /// What the last input produced: the delta summary, or a refusal.
+    pub messages: Vec<String>,
+    pub over: bool,
+    /// The end-trigger strip, worded by the CLI's own `render::end_trigger_line`.
+    ///
+    /// **A rendered string on purpose, and the one place this crate serves
+    /// one.** Every end-game trigger's proximity in a line — `end triggers:
+    /// deck 5 · church 4/4 · customs 1/4 · shophouses 2/8 · trade houses 1/4 ·
+    /// FINAL ROUND`. Three of those numbers are in the frame already
+    /// (`trigger_at`, `church_filled`, `customs_filled`) and two are added
+    /// below, but the THRESHOLDS 8 and 4 are literals inside the engine's
+    /// `end_game.rs` with no name to import, so a client composing this itself
+    /// would be writing two rules constants into a stylesheet. Calling the
+    /// CLI's renderer instead means the browser and the terminal cannot
+    /// disagree about how close the game is to ending, which is the whole point
+    /// of the parity work. The line is plain by construction — its own doc says
+    /// so — and this process never initialises the ANSI layer.
+    pub end_triggers: String,
+    /// Cards left in the order deck. In no frame model, and one of the two
+    /// facts the end-trigger strip needs that a frame cannot supply.
+    ///
+    /// A public count of a hidden pile, and legitimately so: the physical
+    /// deck's HEIGHT is on the table for everyone. Identities stay in
+    /// `GameState` and reach no model.
+    pub deck_remaining: usize,
+    /// Whether a trigger has already fired, so the last round is running.
+    pub end_game_triggered: bool,
+    pub scores: Option<Vec<ScoreRow>>,
+    /// Provenance drift noticed when the game was loaded.
+    pub warnings: Vec<String>,
+    /// The record's length — how many events this game has applied.
+    ///
+    /// A client that answered from a payload carrying `events: n` and gets
+    /// back `events: m > n` knows the reply applied the events `[n, m)`,
+    /// which is exactly the run the turn playback walks (M5.5 spec §3.2.2). A
+    /// count and not an event list: the walk reads the positions from
+    /// `/at/{k}` and the words from `/log`, both of which already exist.
+    pub events: usize,
+}
+
+impl PromptState {
+    /// The tag a client echoes back to say which prompt it was answering.
+    ///
+    /// The same string serde puts in `kind`, restated here so the client has a
+    /// value to send rather than having to parse its own payload back.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            PromptState::Options { .. } => "options",
+            PromptState::Pick { .. } => "pick",
+            PromptState::Retreat { .. } => "retreat",
+            PromptState::PlaceA { .. } => "place_a",
+            PromptState::PlaceB { .. } => "place_b",
+            PromptState::Reveal => "reveal",
+            PromptState::GameOver => "game_over",
+            PromptState::Locked { .. } => "locked",
+            PromptState::Watching { .. } => "watching",
+        }
+    }
+}
+
+/// The seat this payload is built for: **the seat to move**, exactly as the
+/// terminal does it.
+///
+/// `screen.rs:608` passes `state.current_player` to `render::dashboard`, so the
+/// CLI's hand panel follows the ACTOR — which is what a single operator driving
+/// a table needs, and this port inherits that model rather than inventing one.
+///
+/// **It used to return the first seat no bot holds, and that was a parity
+/// divergence with teeth.** At 3P or 4P with one bot, seats 0 and 2 are both
+/// human; the frame was built for seat 0 while `PromptState` carried seat 2's
+/// options, because those come from `Repl::option_rows()` and the REPL has only
+/// ever one current player. The screen then showed RED's hand, said "seat 2 is
+/// deciding", and offered seat 2's moves as live buttons — three statements
+/// about three different seats, with the acting seat's hand nowhere.
+///
+/// The bot arm is a real fallback and not defensiveness: `step` pumps bot seats
+/// after every applied move, so a returned payload is normally on a human, but
+/// a payload built mid-pump would otherwise carry a bot's seat. Its hand stays
+/// masked either way — `SeatFacts.hand_hidden` folds `is_bot` in regardless of
+/// the privacy toggle — so this only decides whose panel is shown, never
+/// whether a hidden hand leaks.
+pub fn viewing_seat(repl: &Repl) -> PlayerId {
+    let facts = repl.seat_facts();
+    let acting = repl.session.state().current_player;
+    let is_bot = facts.get(usize::from(acting.0)).is_some_and(|f| f.is_bot);
+    if !is_bot {
+        return acting;
+    }
+    facts
+        .iter()
+        .position(|f| !f.is_bot)
+        .map(|i| PlayerId::new(i as u8))
+        .unwrap_or(acting)
+}
+
+/// The seat a REPLAY is built for — stable for the life of the game.
+///
+/// **Deliberately not [`viewing_seat`], and the difference is the whole
+/// security property of `/at/{k}`.** `viewing_seat` returns the ACTING seat
+/// whenever that seat is human, so it re-points every time the turn changes.
+/// A replay route using it would be pinned only within a single instant:
+/// measured on an all-human 2P game, one sweep of `0..=total` returned seat 1's
+/// hands, and after eight more inputs the same sweep returned seat 0's — union
+/// `{0, 1}`. A sweep that merely straddled a turn change got both without
+/// waiting at all. That is a per-REQUEST pin, which is not a fence.
+///
+/// This returns the lowest non-bot seat instead. `SeatFacts::is_bot` is fixed
+/// when the game is created and restored with it, so the answer is the same for
+/// every request against the same game, at every `k`, forever — which is what
+/// makes "walking every position shows one seat's hands and no other's" a true
+/// sentence rather than an aspiration.
+///
+/// **A bot-only table cannot be created** (`games::config_of` refuses one, so at
+/// least one seat is human), and the `unwrap_or` is therefore unreachable rather
+/// than a fallback with meaning; seat 0 is the safe direction if it ever is
+/// reached, because seat 0 exists at every player count.
+///
+/// **What this does NOT buy, stated because the spec once overclaimed it.** It
+/// is not privacy and not authentication. `GET /api/games/{id}/log` is
+/// unauthenticated and defaults to the WHOLE log, and the CLI's event wording
+/// names order cards as they enter and leave a hand — so a game's hand HISTORY
+/// is already legible to anyone holding the id, by a route M4 did not touch.
+/// What the stable pin closes is narrower and still worth having: `/at/{k}`
+/// cannot be used to read a *second* seat's private frame, at any k, ever.
+pub fn replay_seat(repl: &Repl) -> PlayerId {
+    repl.seat_facts()
+        .iter()
+        .position(|f| !f.is_bot)
+        .map(|i| PlayerId::new(i as u8))
+        .unwrap_or(PlayerId::new(0))
+}
+
+fn rows_from(
+    entries: Vec<yokohama_cli::render::DisplayRow>,
+    state: &yokohama_core::GameState,
+    rules: &yokohama_core::Rules,
+) -> Vec<OptionRow> {
+    entries
+        .into_iter()
+        .enumerate()
+        .map(|(i, row)| OptionRow {
+            number: screen_model::menu_number(i),
+            opens_picker: row.mv.is_none(),
+            // Priced by the CLI's own function, never by a rule restated here.
+            // A row that opens a picker has no single move and so no price yet.
+            fee: row.mv.as_ref().and_then(|mv| screen_model::option_fee(state, rules, mv)),
+            words: row.words,
+        })
+        .collect()
+}
+
+/// The current prompt's tag, without building the whole prompt.
+pub fn prompt_kind(repl: &Repl) -> &'static str {
+    prompt_of(repl).kind()
+}
+
+fn prompt_of_seat(repl: &Repl, seat: PlayerId) -> PromptState {
+    let acting = repl.session.state().current_player;
+    // The one scoping rule, applied before anything is read: a payload built
+    // for a seat that is not the actor carries no answerable list at all.
+    if !repl.session.is_over() && repl.session.record().lockdown.is_none() && seat != acting {
+        return PromptState::Watching { to_move: acting };
+    }
+    prompt_of(repl)
+}
+
+fn prompt_of(repl: &Repl) -> PromptState {
+    // Read from the RECORD, which is where `Session::lock_down` puts it and
+    // therefore what survives a rebuild — not from a flag this layer cannot see.
+    if let Some(reason) = repl.session.record().lockdown.clone() {
+        return PromptState::Locked { reason };
+    }
+    if repl.session.is_over() {
+        return PromptState::GameOver;
+    }
+    let state = repl.session.state();
+    let rules = repl.session.rules();
+    match &repl.sub {
+        SubPrompt::None => {
+            PromptState::Options { rows: rows_from(repl.option_rows(), state, rules) }
+        }
+        SubPrompt::Pick { title, moves } => PromptState::Pick {
+            title: title.clone(),
+            rows: moves
+                .iter()
+                .enumerate()
+                .map(|(i, mv)| OptionRow {
+                    number: screen_model::menu_number(i),
+                    words: describe::describe_move(mv, state, rules),
+                    opens_picker: false,
+                    fee: screen_model::option_fee(state, rules, mv),
+                })
+                .collect(),
+        },
+        SubPrompt::Retreat { areas, collected } => {
+            // The question is always the next unanswered area, and `max` is
+            // read live off that area rather than remembered, exactly as the
+            // REPL reads it.
+            let (area, max) = areas.get(collected.len()).copied().unwrap_or((AreaId::new(0), 0));
+            PromptState::Retreat {
+                area,
+                area_label: describe::area_label(state, area),
+                max,
+                answered: collected.clone(),
+                remaining: areas.len().saturating_sub(collected.len()),
+            }
+        }
+        SubPrompt::PlaceA { selected, max_areas } => PromptState::PlaceA {
+            fee: screen_model::placement_fee(state, selected),
+            selected: selected.clone(),
+            max_areas: *max_areas,
+        },
+        SubPrompt::PlaceB { areas, selected } => PromptState::PlaceB {
+            // Option B is two assistants in ONE area, which `placement_fee`
+            // prices by REPEATING the area — the same shape the engine's own
+            // `PlaceTwoSameArea` fee takes.
+            fee: selected.map(|a| vec![a, a]).and_then(|two| screen_model::placement_fee(state, &two)),
+            areas: areas.clone(),
+            selected: *selected,
+        },
+        SubPrompt::Reveal { .. } => PromptState::Reveal,
+    }
+}
+
+impl ClientState {
+    /// Build the payload for `repl`, carrying `messages` from whatever produced
+    /// this state (an applied move's deltas, or a refusal).
+    pub fn of(id: &str, repl: &Repl, messages: Vec<String>) -> Self {
+        let seat = viewing_seat(repl);
+        let session = &repl.session;
+        let state = session.state();
+        let over = session.is_over();
+
+        let frame = screen_model::build_frame(
+            state,
+            session.rules(),
+            &repl.seat_facts(),
+            seat,
+            &session.legal(),
+            TitleModel {
+                mode: match session.mode {
+                    TrackingMode::Simulation => TitleMode::Sim,
+                    TrackingMode::Live => TitleMode::Live,
+                },
+                // **`None`, and this is the whole of A6's fix on this side.**
+                // The setup seed is hidden-set member #1 (`observe.rs`): it
+                // regenerates the deck, the box, the board and every deal, so a
+                // payload carrying it hands the entire hidden set to whoever
+                // holds the payload. The CLI passes `Some` because it is one
+                // operator reading their own title strip; a frame served over
+                // HTTP declines. The seed still reaches the client exactly once
+                // where the flow genuinely needs it — `POST /api/games/preview`,
+                // which round-trips it back to `create`.
+                seed: None,
+                // This server persists after every applied move, so the answer
+                // is unconditionally yes -- it is not the CLI's `save_path`.
+                autosaved: true,
+            },
+        );
+
+        Self {
+            id: id.to_string(),
+            mode: match session.mode {
+                TrackingMode::Simulation => "sim",
+                TrackingMode::Live => "live",
+            },
+            seat,
+            to_move: state.current_player,
+            your_turn: !over && state.current_player == seat,
+            frame,
+            prompt: prompt_of_seat(repl, seat),
+            messages,
+            over,
+            end_triggers: yokohama_cli::render::end_trigger_line(state),
+            deck_remaining: state.order_deck.len(),
+            end_game_triggered: state.end_game_triggered,
+            scores: over.then(|| {
+                session
+                    .final_scores()
+                    .into_iter()
+                    .map(|(seat, total)| ScoreRow { seat, total })
+                    .collect()
+            }),
+            warnings: session.load_warnings.clone(),
+            events: session.record().events.len(),
+        }
+    }
+}
+
+/// One historical position, projected from the record — the M4 replay payload.
+///
+/// **Why this is a separate, narrower type and not a `ClientState` at `k`.**
+/// Six fields of `ClientState` are built from the LIVE state and would be
+/// present-tense lies if a historical payload inherited them: `over` (a mid-game
+/// board under "GAME OVER"), `scores` (a final tally beside turn 12),
+/// `deck_remaining`, `end_game_triggered`, `end_triggers` and `your_turn`. Every
+/// one of them re-derives correctly from `state_at(record, k, rules)`, so the
+/// point is not that `ClientState` could not be made right — it is that a
+/// separate type makes their provenance a COMPILE-TIME fact instead of a review
+/// item, in a lane whose last three milestones each shipped a false sentence
+/// about themselves.
+///
+/// **Three fields are absent by construction rather than answered:**
+///
+/// - `your_turn` — the one of the six that is NOT a function of `GameState`
+///   alone: it compares against a seat that lives on the `Repl`, not in any
+///   record. It is also meaningless for a position nobody is playing.
+/// - `prompt` — `PromptState` is built from `Repl::sub`, an in-memory
+///   sub-prompt. The record stores only APPLIED moves, so an intra-move picker
+///   state is unrepresentable at any `k`.
+/// - `warnings` — a load-time session fact, not a property of `state_k`.
+///
+/// `frame` nests the EXISTING [`FrameModel`], so `Board` and `Dashboard` render
+/// a historical position through the same components with no new client types,
+/// and the wire contract pays one entry rather than one per nested shape.
+#[derive(Debug, Clone, Serialize)]
+pub struct HistoricalFrame {
+    /// `k` — the number of events APPLIED, not an event index.
+    pub index: usize,
+    /// `record.events.len()`. The track has `total + 1` stops, and at the last
+    /// one there is a state but no event to name.
+    pub total: usize,
+    /// The seat this payload was built FOR — whose hand is unmasked.
+    ///
+    /// **Stable for the life of the game** ([`replay_seat`]): the lowest non-bot
+    /// seat, which is fixed at creation and restored with the game. So a sweep
+    /// over `0..=total` returns that seat's hands and no other seat's, at any
+    /// time, however many turns pass between requests.
+    ///
+    /// An earlier draft of this field used [`viewing_seat`] and claimed the same
+    /// property. It did not hold: `viewing_seat` follows the mover, so the pin
+    /// re-pointed every turn and two sweeps — or one sweep across a turn change
+    /// — harvested both seats. The claim is kept honest here because the code
+    /// changed, not the wording.
+    pub seat: PlayerId,
+    /// Whose turn it was at `k`.
+    pub to_move: PlayerId,
+    pub frame: FrameModel,
+    pub over: bool,
+    /// The end-trigger strip AS IT READ AT `k`, worded by the CLI's own
+    /// renderer — the same call the live payload makes, against `state_k`.
+    pub end_triggers: String,
+    pub deck_remaining: usize,
+    pub end_game_triggered: bool,
+    pub scores: Option<Vec<ScoreRow>>,
+    /// The port and laboratory offers AT `k` — face up at the time, and
+    /// properties of the position, which is the test M4's Q5 applied to keep
+    /// this frame narrow (the fields it dropped were present-tense lies at a
+    /// past position; these are not). The turn playback needs them so a port
+    /// take shows the card leaving (M5.5 spec §3.2.1).
+    pub ports: screen_model::PortsPanel,
+    pub labs: screen_model::LabsPanel,
+}
+
+impl HistoricalFrame {
+    /// Project `repl`'s record at `k`.
+    ///
+    /// **The caller range-checks `k` first.** This returns `state_at`'s own
+    /// [`yokohama_core::ReplayError`] unchanged, and that error cannot be used
+    /// to tell past-the-end from a failing event: it is a struct carrying a
+    /// `usize` and a `String`, and its own doc says a caller branching on
+    /// `event_index` alone cannot distinguish the two. So the route checks the
+    /// range itself and treats every error from here as a genuine replay
+    /// failure — which makes the ambiguity unreachable instead of navigated.
+    ///
+    /// **No provenance verdict is computed here, deliberately.** `/at/{k}` is a
+    /// projection over a record the server already holds; adding a
+    /// `semantics_rev` or terminal-digest check would make it a second,
+    /// divergent authority on record validity. Checking is
+    /// `Session::from_record`'s job, on the path where a record enters from
+    /// disk.
+    pub fn at(repl: &Repl, k: usize) -> Result<Self, yokohama_core::ReplayError> {
+        let session = &repl.session;
+        let record = session.record();
+        let total = record.events.len();
+        let rules = session.rules();
+        let state = yokohama_core::state_at(record, k, rules)?;
+        let seat = replay_seat(repl);
+
+        // **Paid deliberately, not defensively.** `build_board` derives
+        // `tile.reachable` from the legal list, so a historical board built with
+        // an empty one silently marks every tile unreachable and the `◈` mark
+        // vanishes with NO error. `state_at` already ran one enumeration per
+        // replayed Move event through the checked `apply_move`, so one more is
+        // strictly cheaper than one more event.
+        let legal = yokohama_core::get_legal_moves(&state, rules);
+        let over = yokohama_core::is_game_over(&state);
+
+        let frame = screen_model::build_frame(
+            &state,
+            rules,
+            &repl.seat_facts(),
+            seat,
+            &legal,
+            TitleModel {
+                mode: match session.mode {
+                    TrackingMode::Simulation => TitleMode::Sim,
+                    TrackingMode::Live => TitleMode::Live,
+                },
+                // Hidden-set member #1, exactly as on the live payload.
+                seed: None,
+                // **A session property, not a position property.** The field
+                // means "autosave has a live target", and this server persists
+                // after every applied move — which is as true while you look at
+                // turn 3 as it is at the head. It does not become false by
+                // looking backwards, so this is not the present-tense lie the
+                // six fields above would be.
+                autosaved: true,
+            },
+        );
+
+        Ok(Self {
+            index: k,
+            total,
+            seat,
+            to_move: state.current_player,
+            frame,
+            over,
+            end_triggers: yokohama_cli::render::end_trigger_line(&state),
+            deck_remaining: state.order_deck.len(),
+            end_game_triggered: state.end_game_triggered,
+            scores: over.then(|| {
+                yokohama_core::calculate_final_scores(&state, &rules.orders, &rules.techs)
+                    .into_iter()
+                    .map(|(seat, total)| ScoreRow { seat, total })
+                    .collect()
+            }),
+            ports: screen_model::build_ports(&state, rules),
+            labs: screen_model::build_labs(&state, rules),
+        })
+    }
+}

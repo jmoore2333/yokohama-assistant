@@ -1,0 +1,252 @@
+{
+  "nonzero": 0,
+  "progress_ppm": 1000000,
+  "terminal": {
+    "best_other_total": 107,
+    "rank": 2,
+    "seats": 2,
+    "value": -1042000000,
+    "viewer_total": 65
+  },
+  "terms": [
+    {
+      "feature": "victory_points",
+      "opponent_value": 75,
+      "product": 0,
+      "viewer_value": 42,
+      "weight": 0
+    },
+    {
+      "feature": "country_bonus_now",
+      "opponent_value": 12,
+      "product": 0,
+      "viewer_value": 6,
+      "weight": 0
+    },
+    {
+      "feature": "tech_bonus_now",
+      "opponent_value": 10,
+      "product": 0,
+      "viewer_value": 5,
+      "weight": 0
+    },
+    {
+      "feature": "church_bonus_now",
+      "opponent_value": 6,
+      "product": 0,
+      "viewer_value": 3,
+      "weight": 0
+    },
+    {
+      "feature": "customs_bonus_now",
+      "opponent_value": 0,
+      "product": 0,
+      "viewer_value": 0,
+      "weight": 0
+    },
+    {
+      "feature": "assistants_in_hand_core",
+      "opponent_value": 2,
+      "product": 0,
+      "viewer_value": 1,
+      "weight": 0
+    },
+    {
+      "feature": "assistants_in_hand_excess",
+      "opponent_value": 1,
+      "product": 0,
+      "viewer_value": 0,
+      "weight": 0
+    },
+    {
+      "feature": "assistants_in_warehouse",
+      "opponent_value": 9,
+      "product": 0,
+      "viewer_value": 12,
+      "weight": 0
+    },
+    {
+      "feature": "assistants_on_board",
+      "opponent_value": 4,
+      "product": 0,
+      "viewer_value": 3,
+      "weight": 0
+    },
+    {
+      "feature": "shophouses_built",
+      "opponent_value": 2,
+      "product": 0,
+      "viewer_value": 2,
+      "weight": 0
+    },
+    {
+      "feature": "trading_houses_built",
+      "opponent_value": 0,
+      "product": 0,
+      "viewer_value": 0,
+      "weight": 0
+    },
+    {
+      "feature": "five_power_tokens",
+      "opponent_value": 3,
+      "product": 0,
+      "viewer_value": 0,
+      "weight": 0
+    },
+    {
+      "feature": "imported_goods",
+      "opponent_value": 0,
+      "product": 0,
+      "viewer_value": 0,
+      "weight": 0
+    },
+    {
+      "feature": "achievement_progress_sum",
+      "opponent_value": 1,
+      "product": 0,
+      "viewer_value": 1,
+      "weight": 0
+    },
+    {
+      "feature": "mercenaries_total",
+      "opponent_value": 3,
+      "product": 0,
+      "viewer_value": 2,
+      "weight": 0
+    },
+    {
+      "feature": "hand_size",
+      "opponent_value": 1,
+      "product": 0,
+      "viewer_value": 1,
+      "weight": 0
+    },
+    {
+      "feature": "production_access",
+      "opponent_value": 6,
+      "product": 0,
+      "viewer_value": 3,
+      "weight": 0
+    },
+    {
+      "feature": "track_access",
+      "opponent_value": 0,
+      "product": 0,
+      "viewer_value": 0,
+      "weight": 0
+    },
+    {
+      "feature": "assistant_areas_distinct",
+      "opponent_value": 4,
+      "product": 0,
+      "viewer_value": 2,
+      "weight": 0
+    },
+    {
+      "feature": "president_local_access",
+      "opponent_value": 2,
+      "product": 0,
+      "viewer_value": 1,
+      "weight": 0
+    },
+    {
+      "feature": "bank_access",
+      "opponent_value": 0,
+      "product": 0,
+      "viewer_value": 2,
+      "weight": 0
+    },
+    {
+      "feature": "employment_agency_access",
+      "opponent_value": 0,
+      "product": 0,
+      "viewer_value": 0,
+      "weight": 0
+    },
+    {
+      "feature": "president_reachable_areas",
+      "opponent_value": 2,
+      "product": 0,
+      "viewer_value": 0,
+      "weight": 0
+    },
+    {
+      "feature": "money_stock",
+      "opponent_value": 5,
+      "product": 0,
+      "viewer_value": 5,
+      "weight": 0
+    },
+    {
+      "feature": "trade_goods_stock",
+      "opponent_value": 6,
+      "product": 0,
+      "viewer_value": 21,
+      "weight": 0
+    },
+    {
+      "feature": "building_tokens_ready",
+      "opponent_value": 0,
+      "product": 0,
+      "viewer_value": 0,
+      "weight": 0
+    },
+    {
+      "feature": "held_order_value",
+      "opponent_value": 12,
+      "product": 0,
+      "viewer_value": 4,
+      "weight": 0
+    },
+    {
+      "feature": "order_matched_goods",
+      "opponent_value": 0,
+      "product": 0,
+      "viewer_value": 2,
+      "weight": 0
+    },
+    {
+      "feature": "executable_orders",
+      "opponent_value": 0,
+      "product": 0,
+      "viewer_value": 0,
+      "weight": 0
+    },
+    {
+      "feature": "flag_icon_marginal",
+      "opponent_value": 4,
+      "product": 0,
+      "viewer_value": 4,
+      "weight": 0
+    },
+    {
+      "feature": "held_order_icons",
+      "opponent_value": 0,
+      "product": 0,
+      "viewer_value": 1,
+      "weight": 0
+    },
+    {
+      "feature": "lab_takeable",
+      "opponent_value": 0,
+      "product": 0,
+      "viewer_value": 0,
+      "weight": 0
+    },
+    {
+      "feature": "port_takeable",
+      "opponent_value": 0,
+      "product": 0,
+      "viewer_value": 0,
+      "weight": 0
+    },
+    {
+      "feature": "matched_production_access",
+      "opponent_value": 0,
+      "product": 0,
+      "viewer_value": 0,
+      "weight": 0
+    }
+  ],
+  "total": -1042000000
+}

@@ -7,12 +7,13 @@ members = [
     "crates/yokohama-oracle",
     "crates/yokohama-difftest",
     "crates/yokohama-bridge",
+    "crates/yokohama-web",
 ]
 
 [workspace.package]
 version = "0.5.0"
 edition = "2021"
-license = "MIT"
+license = "Apache-2.0"
 authors = ["Jeremy Moore"]
 
 [workspace.dependencies]

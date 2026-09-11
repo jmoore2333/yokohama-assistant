@@ -1,0 +1,69 @@
+# The runtime image, assembled from artifacts built elsewhere.
+#
+# **Why this is separate from the full-build `Dockerfile`.** The target NAS runs
+# DSM 7.4 on kernel **3.10.108** — old enough that a modern-glibc Debian runtime
+# is a genuine risk rather than a theoretical one. So the binary is built
+# `x86_64-unknown-linux-musl` and **statically linked**, which removes the
+# glibc-to-kernel coupling entirely: the program carries its own libc and asks
+# the kernel for very little. That is also how this repository already ships its
+# CLI releases, so it is the project's existing answer rather than a new one.
+#
+# The second reason is delivery. Compiling Rust on an Atom C2538 is not the
+# thing to do, and there is no registry between here and the NAS — so the
+# expensive work happens on a workstation and the NAS receives a context of a
+# few megabytes that it assembles in seconds.
+#
+# Build the inputs first (see RUNBOOK.md), then:
+#
+#     docker build -f deploy/Dockerfile.runtime -t yokohama-web:0.5.0 <ctx>
+#
+# where <ctx> contains: yokohama-web (the static binary), dist/, art/.
+
+FROM alpine:3.21
+
+LABEL org.opencontainers.image.title="yokohama-web"
+LABEL org.opencontainers.image.description="Yokohama engine, HTTP API and browser client"
+LABEL org.opencontainers.image.licenses="Apache-2.0"
+
+# `ca-certificates` is not needed — this server makes no outbound TLS
+# connection, and its dependency tree contains no TLS stack at all (axum, tokio,
+# serde; verified against Cargo.lock). `tini` IS worth the 100kB: it reaps
+# zombies and, more to the point here, forwards SIGTERM to the real process so
+# the server's `with_graceful_shutdown` actually runs on `docker stop`.
+RUN apk add --no-cache tini
+
+RUN adduser -S -u 10001 -h /srv yokohama \
+ && mkdir -p /data/games \
+ && chown -R yokohama /data
+
+WORKDIR /srv
+COPY yokohama-web /usr/local/bin/yokohama-web
+COPY dist/ /srv/web/dist/
+COPY art/  /srv/assets/art/
+
+# **`0.0.0.0` belongs HERE and not in the program.** The binary defaults to
+# loopback deliberately: this API has no authentication of any kind — no
+# session, no header read, and `GET /api/games` lists every game to any caller.
+# Binding wide is a statement that something in front is doing identity. On this
+# deployment that something is the Cloudflare tunnel plus its Access
+# application, and the container is never published to the LAN.
+ENV YOKOHAMA_WEB_HOST=0.0.0.0 \
+    YOKOHAMA_WEB_PORT=8080 \
+    YOKOHAMA_WEB_DIST=/srv/web/dist \
+    YOKOHAMA_WEB_ART=/srv/assets/art \
+    YOKOHAMA_WEB_DIR=/data/games
+
+# The game store. Every applied move is written here as its `GameRecord` and a
+# game is rebuilt from it, so this is the only thing that must outlive the
+# container.
+VOLUME ["/data"]
+
+EXPOSE 8080
+USER yokohama
+STOPSIGNAL SIGTERM
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+  CMD wget -qO- http://127.0.0.1:8080/api/health >/dev/null || exit 1
+
+ENTRYPOINT ["/sbin/tini", "--"]
+CMD ["yokohama-web"]

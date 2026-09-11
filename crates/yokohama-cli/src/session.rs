@@ -197,7 +197,25 @@ impl Session {
     pub fn load(path: &std::path::Path, rules: Rules) -> Result<Session, String> {
         let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
         let record: GameRecord = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+        let mut session = Session::from_record(record, rules)?;
+        session.save_path = Some(path.to_path_buf());
+        Ok(session)
+    }
 
+    /// [`Session::load`]'s record half, with no filesystem in it.
+    ///
+    /// Every refusal, every warning and the whole rebuild live here; `load` is
+    /// the two lines that read a file and the one that remembers where it came
+    /// from. The split exists because a save is not necessarily a FILE: a
+    /// server holds its games wherever its storage lives (a directory today, an
+    /// object store when this runs in a container that sleeps), and it must not
+    /// have to stage bytes through a temporary path to resume one — nor
+    /// reimplement the refusals, which are the reason resuming is safe at all.
+    ///
+    /// `save_path` is `None`, because a record has no path. A caller that has
+    /// one sets it; a caller that autosaves elsewhere leaves it, and autosave
+    /// becomes the no-op it is documented to be.
+    pub fn from_record(record: GameRecord, rules: Rules) -> Result<Session, String> {
         // Semantics provenance is a REFUSAL, and it runs before anything
         // else touches the record (I-1, final whole-branch review). `load`
         // does not deserialize a state -- it REBUILDS one from seed +
@@ -364,7 +382,7 @@ impl Session {
             record,
             state,
             mode,
-            save_path: Some(path.to_path_buf()),
+            save_path: None,
             checkpoint: None,
             event_descriptions,
             load_warnings,
@@ -386,15 +404,31 @@ impl Session {
     /// bytes can still be sitting in the OS page cache (not yet on disk)
     /// when `rename` runs, so a crash/power-loss right after a "successful"
     /// save could still rename a not-yet-durable file onto `path`.
-    pub fn save(&self, path: &std::path::Path) -> Result<(), String> {
-        use std::io::Write;
-        // Stamp the digest of the state-after-last-event on a clone (`save`
-        // is `&self`; the clone is cheaper than the JSON serialization that
-        // follows). Makes every tester/live-gate save strict-verifiable end
-        // to end — Phase-2.9 close-out follow-up (a).
+    /// The record as it must be WRITTEN: the terminal digest stamped from the
+    /// state its events fold to.
+    ///
+    /// **Single-sourced deliberately.** There are two writers of this file
+    /// format — `save` here, and `yokohama-web`'s `Games::persist` — and the
+    /// digest is stamped at write time rather than held on the record, so a
+    /// writer that serializes `self.record` directly silently omits it. That
+    /// is not a cosmetic omission: `from_record` guards the provenance refusal
+    /// on `if let Some(expected_digest)`, so a record written without one
+    /// DISABLES the check rather than failing it, and a record written *with*
+    /// a stale one is refused forever. Both halves were live defects. One
+    /// function, so a field added here reaches every writer.
+    pub fn to_record_json(&self) -> Result<String, String> {
+        // Stamp on a clone (`to_record_json` is `&self`; the clone is cheaper
+        // than the JSON serialization that follows). Makes every tester/
+        // live-gate save strict-verifiable end to end — Phase-2.9 close-out
+        // follow-up (a).
         let mut record = self.record.clone();
         record.stamp_terminal_digest(&self.state);
-        let text = serde_json::to_string_pretty(&record).map_err(|e| e.to_string())?;
+        serde_json::to_string_pretty(&record).map_err(|e| e.to_string())
+    }
+
+    pub fn save(&self, path: &std::path::Path) -> Result<(), String> {
+        use std::io::Write;
+        let text = self.to_record_json()?;
         let mut tmp = path.as_os_str().to_os_string();
         tmp.push(".tmp");
         let tmp = std::path::PathBuf::from(tmp);
@@ -455,6 +489,24 @@ impl Session {
     /// one caller today.
     pub fn event_description(&self, i: usize) -> &str {
         &self.event_descriptions[i]
+    }
+
+    /// The same description, CHECKED — `None` where there is no event at `i`.
+    ///
+    /// **This exists because one legal index has no event at it.** A replay
+    /// position is counted in events APPLIED, so the domain of
+    /// `record::state_at` is `0..=events.len()` inclusive: `len` is the game as
+    /// it now stands, a real position with no event to name. The bare indexer
+    /// above panics there, and a panic is a very sharp edge for a number that
+    /// can arrive from a URL — `yokohama-web` installs no `CatchPanicLayer`, and
+    /// a panic taken under its per-game mutex poisons that game's lock until the
+    /// handle is evicted.
+    ///
+    /// So a caller working in the replay domain uses this one and words the
+    /// `None` ("the present"); a caller iterating `0..len`, like `Repl::log_tail`,
+    /// is already inside the array and keeps the bare index.
+    pub fn event_description_at(&self, i: usize) -> Option<&str> {
+        self.event_descriptions.get(i).map(String::as_str)
     }
 
     pub fn legal(&self) -> Vec<Move> {
@@ -1877,5 +1929,39 @@ mod tests {
             "cached description must keep the HISTORICAL fee recipient: {}",
             s.event_description(idx)
         );
+    }
+
+    /// **One legal replay index has no event at it, and the bare indexer panics
+    /// there.** `record::state_at` counts events APPLIED, so its domain is
+    /// `0..=events.len()` inclusive — `len` is the game as it now stands, a real
+    /// position that no event describes. `yokohama-web`'s `/at/{k}` route takes
+    /// that `k` from a URL, installs no `CatchPanicLayer`, and holds a per-game
+    /// mutex while it works, so a panic there poisons that game's lock until the
+    /// handle is evicted.
+    ///
+    /// Both directions, because a checked accessor that returned `None`
+    /// everywhere would satisfy half of this.
+    #[test]
+    fn the_checked_description_answers_none_exactly_where_the_bare_one_panics() {
+        let (state, rules) = movement_fee_fixture();
+        let mut s = Session::for_test_from_state(state, rules);
+        let mv = s.legal().into_iter().next().expect("a legal move");
+        s.apply(mv, vec![]).unwrap();
+
+        let len = s.record().events.len();
+        assert!(len > 0, "the fixture must apply something, or both halves are vacuous");
+
+        // In range: the checked accessor agrees with the bare one, word for word.
+        for i in 0..len {
+            assert_eq!(
+                s.event_description_at(i),
+                Some(s.event_description(i)),
+                "the two accessors disagree at {i}",
+            );
+        }
+
+        // At the top of the record, and past it: a position, not a description.
+        assert_eq!(s.event_description_at(len), None, "there is no event at k == len");
+        assert_eq!(s.event_description_at(len + 1), None);
     }
 }

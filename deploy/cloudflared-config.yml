@@ -1,0 +1,61 @@
+# bdvc-nas -- locally-managed Cloudflare tunnel for services on this NAS.
+#
+# Locally managed means THIS FILE is the source of truth for ingress. The Zero
+# Trust dashboard will show this tunnel's routes as read-only; do not try to add
+# hostnames there, add them here.
+#
+# ADDING A SERVICE (the whole recipe):
+#   1. put the service's container on the `cf-internal` docker network
+#   2. add an ingress block below, above the catch-all
+#   3. create a proxied CNAME  <name>.moore.nyc -> 6a6c468e-5e1e-4a7c-88a6-4e2fe07da1fc.cfargotunnel.com
+#   4. create a Cloudflare Access application for that hostname
+#   5. `docker restart cloudflared-nas`
+#
+# Steps 3 and 4 are not optional. Ingress alone routes nothing (no DNS) and
+# protects nothing (no Access).
+#
+# Step 1 said `cf-edge` until 2026-09-01 and the deployment never matched it:
+# `cloudflared-nas` joins BOTH `cf-edge` and `cf-internal`, and every service it
+# actually serves sits on `cf-internal`. Corrected to the network that works.
+
+tunnel: 6a6c468e-5e1e-4a7c-88a6-4e2fe07da1fc
+credentials-file: /etc/cloudflared/6a6c468e-5e1e-4a7c-88a6-4e2fe07da1fc.json
+
+# Prometheus/readiness endpoint on the container network only.
+metrics: 0.0.0.0:2000
+
+originRequest:
+  # Origins here are containers a hop away, so a 30s connect timeout only
+  # delays discovering that one is down.
+  connectTimeout: 10s
+  keepAliveTimeout: 90s
+
+ingress:
+  # --- Yokohama: the BROWSER CLIENT ---------------------------------------
+  # The M4 web frontend: the same engine and the same legal-move gate the
+  # terminal uses, drawn in a browser. Took this hostname from ttyd on
+  # 2026-09-01, which is why the terminal moved to the block below.
+  #
+  # PROTECTED BY: the Cloudflare Access application already on this hostname.
+  # That is load-bearing and not decorative -- this origin has NO
+  # authentication of any kind: no session, no header read, and
+  # `GET /api/games` lists every game id to any caller. If Access is ever
+  # removed from this hostname, the game store is public.
+  - hostname: yokohama.moore.nyc
+    service: http://yokohama-web:8080
+
+  # --- Yokohama: the CLI, in a browser terminal ---------------------------
+  # ttyd, WebSocket. Cloudflare closes idle sockets at 100s and ttyd pings
+  # every 30s, so a game left thinking stays connected.
+  #
+  # The image behind this (`yokohama-terminal:0.4.0-beta.1`) is stale and is
+  # due a rebuild from the current CLI -- owner, 2026-09-01.
+  - hostname: yokohama-cli.moore.nyc
+    service: http://yokohama-terminal:7681
+
+  # --- add new services above this line -----------------------------------
+  # - hostname: foo.moore.nyc
+  #   service: http://foo:8080
+
+  # Anything not matched above gets a 404 rather than reaching a service.
+  - service: http_status:404

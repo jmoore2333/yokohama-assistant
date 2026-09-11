@@ -1,0 +1,61 @@
+# The build context is the repo root, and most of the repo has no business in
+# it. Two entries below are not size optimisations but licensing ones.
+
+# Build output. `target/` alone is several GB and would dominate the upload.
+target/
+web/node_modules/
+web/dist/
+web/test-results/
+web/playwright-report/
+web/tsconfig.tsbuildinfo
+
+# **Third-party material that must not enter an image that gets pushed
+# anywhere.** `ASSETS.md` carves these out of the Apache-2.0 grant, and pushing
+# them to a registry is redistribution. `crates/yokohama-web/assets/art/` is the
+# deliberate exception — the running client draws it, so it is COPYed in
+# explicitly by the Dockerfile — and that makes the resulting image itself
+# carved-out material. Do not push this image to a public registry.
+tts-assets/
+analysis-1/
+
+# Captures, corpora and local research. Gitignored or not, none of it is input
+# to a build.
+bridge-captures/
+docs/temp/
+.claude/
+.agents/
+.codex/
+.vscode/
+
+# History and tooling.
+.git/
+.github/
+*.md
+!README.md
+
+# The BGA bridge's browser half and its node suites: a separate product that
+# shares the repo and nothing else.
+bridge/
+
+# **Tests, out of the image build — and this is correctness, not tidiness.**
+# `web/`'s build script is `tsc -b && vite build`, and `tsconfig.json` includes
+# all of `src`, so a type error in any *.test.tsx FAILS THE PRODUCTION IMAGE.
+# Caught the honest way: a stray probe file left in the tree by another process
+# broke this build with three TS6133 unused-variable errors in a file the
+# bundle never imports. The test suites are CI's job and the per-edit gates';
+# an image build should depend on the code it ships and nothing else.
+web/src/**/*.test.ts
+web/src/**/*.test.tsx
+web/src/test/
+web/e2e/
+web/playwright.config.ts
+web/vitest.config.ts
+
+# Rust tests and examples travel with their crates (cargo needs the manifests
+# to agree), so they are NOT excluded here — `cargo build --release -p
+# yokohama-web` simply does not compile them.
+
+# Belt and braces: `**` semantics differ between ignore implementations,
+# so the single-level case is spelled out rather than assumed.
+web/src/*.test.ts
+web/src/*.test.tsx

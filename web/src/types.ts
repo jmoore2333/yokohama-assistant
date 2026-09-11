@@ -1,0 +1,795 @@
+// The wire shapes, hand-written for now.
+//
+// These mirror `yokohama-web`'s `ClientState` and `yokohama-cli`'s
+// `screen_model`. They are hand-written deliberately and TEMPORARILY: the plan
+// rules for generating them with `ts-rs`, but doing so requires `TS` derives on
+// the engine's own types too (a `TileModel` holds an `AreaType`, an
+// `OptionModel` holds a `Move`), which reaches into `yokohama-core`. That is a
+// decision the owner has not been asked yet, so nothing here pretends to be
+// generated.
+//
+// TWO TAGGING CONVENTIONS ARE IN PLAY and mixing them up is the mistake to
+// avoid. Everything built by `screen_model` or `yokohama-core` uses serde's
+// DEFAULT external tagging — a unit variant is a bare string (`"Placement"`), a
+// newtype variant is a single-key object (`{"Copper": 2}`), a struct variant is
+// `{"Choice": {...}}`. `yokohama-web`'s own `PromptState` is the exception: it
+// carries `#[serde(tag = "kind")]`, so it is INTERNALLY tagged and reads
+// `{"kind": "retreat", ...}`.
+//
+// Fields are never omitted. Nothing in the surface carries
+// `skip_serializing_if`, so every field of every struct is present in every
+// payload, zeros included — which is why nothing below is optional unless the
+// Rust side is an `Option`.
+
+export type PlayerId = number;
+export type AreaId = number;
+export type OrderCardId = number;
+export type TechCardId = number;
+
+/** `PlayerId::DUMMY`. The 2P neutral pawn: a real occupant that COMPETES in the
+ *  church and customs majorities, excluded from the end-game pawn count, and
+ *  never a seat. Check for it before indexing anything by seat. */
+export const DUMMY_SEAT = 255;
+export const isDummy = (seat: PlayerId | null): boolean => seat === DUMMY_SEAT;
+
+export type PlayerColor = "Red" | "Blue" | "Yellow" | "Green";
+export type Country = "English" | "American" | "French" | "German" | "Dutch";
+export type PortZone = "Low" | "Mid" | "High";
+
+export type AreaType =
+  | "CopperMine" | "SilkMill" | "TeaPlantation" | "FishingGround"
+  | "Bank" | "PortA" | "PortB" | "LaboratoryA" | "LaboratoryB"
+  | "EmploymentAgency" | "Chinatown" | "Church" | "Customs" | "Canal";
+
+export type TurnPhase =
+  | "AdditionalActionFirst" | "Placement" | "Movement" | "AreaAction"
+  | "FivePowerBonus" | "Building" | "Recovery" | "AdditionalActionSecond" | "TurnEnd";
+
+export type AchievementType =
+  | "Copper5" | "Silk6" | "Tea7" | "Seafood7"
+  | "Money10" | "Tokens5" | "Orders5" | "Technologies4"
+  | "Production4" | "Commercial4" | "Prod3Comm2" | "Prod2Comm3";
+export type AchievementCategory = "A" | "B" | "C";
+
+/** A newtype enum: one key, whose value is the printed amount. `Copper(2)` and
+ *  a re-priced `Copper(3)` are different faces, so the art key spells both. */
+export type FivePowerEffect =
+  | { ImportedGoods: number } | { Copper: number } | { Silk: number }
+  | { Tea: number } | { Seafood: number } | { Money: number };
+
+/** Not an `Option` — a president is always somewhere. */
+export type PresidentLocation = "InHand" | { OnBoard: AreaId };
+
+export interface SpaceReward {
+  vp: number; yen: number; seafood: number; tea: number;
+  silk: number; copper: number; any_good: number;
+  movement: number; warehouse_tokens: number;
+}
+
+export interface SiteSlotModel { built_by: PlayerId | null; reward: SpaceReward }
+
+export interface SiteModel {
+  /** The 0-based index into the printed site registry — the same number the
+   *  CLI's tile prints as `Site n`, and the art join key. `null` when no
+   *  printed card matches, or when more than one does; then there is no art. */
+  index: number | null;
+  /** The four spaces in printed TL, TR, ML, MR order. */
+  slots: SiteSlotModel[];
+  trading_house_vp: number;
+  trading_house_owner: PlayerId | null;
+}
+
+export interface TileModel {
+  area: AreaId;
+  area_type: AreaType;
+  /** `[row, col]` — row 0 is the widest, farthest row. */
+  grid_position: [number, number];
+  /** `null` when the token has been claimed, and on the Canal. */
+  token: FivePowerEffect | null;
+  /** `null` ONLY on the Canal. */
+  site: SiteModel | null;
+  presidents: PlayerId[];
+  has_station: boolean;
+  /** One entry per seat, zeros included. */
+  assistants: [PlayerId, number][];
+  /** The engine offered this tile as a Movement destination. Set only by the
+   *  board builder, which is the one that sees the legal list. */
+  reachable: boolean;
+  /** Symmetric, on the PAIR members — never on the Canal tile itself. */
+  canal_crossings: AreaId[];
+}
+
+export interface BoardModel { player_count: number; tiles: TileModel[] }
+
+export interface GoodsModel {
+  copper: number; silk: number; tea: number; seafood: number; imports: number;
+}
+
+/** `locked()` and `total()` are METHODS in Rust and are not on the wire. */
+export interface AssistantZones {
+  in_hand: number; on_board: number; in_warehouse: number;
+  on_achievements: number; on_church: number; on_customs: number;
+}
+export const locked = (a: AssistantZones): number =>
+  a.on_achievements + a.on_church + a.on_customs;
+export const totalAssistants = (a: AssistantZones): number =>
+  a.in_hand + a.on_board + a.in_warehouse + locked(a);
+
+export type TechEffect =
+  | "Tram" | "Stagecoach" | "PostalSystem" | "Station" | "Gaslight"
+  | "ElectricalLight" | "MiningTechnology" | "SpinningMill" | "Ball"
+  | "LanguageSchool" | "PatentSystem" | "LetterPressPrinting" | "Winery"
+  | "Brickyard" | "SystemOfStock" | "University" | "Newspaper" | "Telegram"
+  | "Telephone" | "Exposition";
+
+export interface TechCard {
+  id: TechCardId;
+  name: string;
+  country: Country;
+  industry_cost: number;
+  /** The key into `Labels.tech_effects`. */
+  effect: TechEffect;
+}
+export interface TechModel { id: TechCardId; printed: TechCard | null }
+
+export interface PlayerModel {
+  seat: PlayerId;
+  color: PlayerColor;
+  money: number;
+  victory_points: number;
+  goods: GoodsModel;
+  assistants: AssistantZones;
+  shophouses: { in_hand: number; in_warehouse: number; built: number };
+  trading_houses: { in_hand: number; in_warehouse: number; built: number; next_take_cost: number };
+  technologies: TechModel[];
+  /** Face-up: 1 VP each at scoring. */
+  mercenaries_unused: number;
+  /** Spent, face-down. */
+  mercenaries_used: number;
+  five_power_tokens: number;
+  president: PresidentLocation;
+  /** A count only; identities live in `HandPanel`. */
+  orders_in_hand: number;
+  /** Public on every seat, in completion order. */
+  orders_filled: OrderCardId[];
+  is_current: boolean;
+  is_bot: boolean;
+  hand_hidden: boolean;
+}
+
+/** `occupant` may be `DUMMY_SEAT`. */
+export interface ChurchSpaceModel {
+  faith: number; vp: number; movement_rider: number; occupant: PlayerId | null;
+}
+export interface CustomsSpaceModel {
+  space: number; import_cost: number; vp: number;
+  warehouse_rider: number; yen_rider: number; occupant: PlayerId | null;
+}
+export interface MercenarySupply {
+  english: number; american: number; french: number; german: number; dutch: number;
+}
+export interface TracksPanel {
+  /** Faith 4..11, ascending. */
+  church: ChurchSpaceModel[];
+  /** REAL pawns; the dummy is excluded. */
+  church_filled: number;
+  /** Spaces 1..7, ascending. */
+  customs: CustomsSpaceModel[];
+  customs_filled: number;
+  /** The end-game pawn threshold for this player count. */
+  trigger_at: number;
+  station: AreaId | null;
+  mercenary_supply: MercenarySupply;
+}
+
+export interface AchievementModel {
+  achievement_type: AchievementType;
+  category: AchievementCategory;
+  first_place_vp: number;
+  subsequent_vp: number;
+  /** In claim order: the FIRST scores `first_place_vp`, every later one
+   *  `subsequent_vp`. More than one player may claim the same card. */
+  claimed_by: PlayerId[];
+  /** `[seat, current, needed]`. `current >= needed` is "ready by the numbers",
+   *  not "claimable" — a claim also needs an assistant in hand. */
+  progress: [PlayerId, number, number][];
+}
+
+export interface TradeGoodRequirement {
+  copper: number; silk: number; tea: number; seafood: number;
+}
+export interface OrderRewards {
+  victory_points: number; money: number; imported_goods: number;
+  copper: number; silk: number; tea: number; seafood: number;
+  movement: number; any_trade_good: number;
+  /** Items moved from the warehouse to hand. */
+  warehouse_tokens: number;
+}
+export interface OrderCard {
+  id: OrderCardId;
+  country: Country;
+  requirements: TradeGoodRequirement;
+  rewards: OrderRewards;
+}
+
+export interface HandCardModel {
+  id: OrderCardId;
+  printed: OrderCard | null;
+  is_starting_order: boolean;
+}
+export interface HandPanel {
+  seat: PlayerId;
+  hidden: boolean;
+  /** EMPTY whenever `hidden` — the mask is a property of the MODEL, so a client
+   *  that ignores the flag still cannot leak identities. */
+  cards: HandCardModel[];
+  /** Truthful whether masked or not. */
+  card_count: number;
+}
+
+/** Externally tagged: exactly one key. `Hand` is ABSENT, not empty, for a seat
+ *  the state does not hold. */
+export type Panel =
+  | { Players: { players: PlayerModel[] } }
+  | { Tracks: TracksPanel }
+  | { Achievements: { cards: AchievementModel[] } }
+  | { Hand: HandPanel };
+
+export type PendingChoice =
+  | "AnyGood" | "WarehouseTake" | "AssistantMove" | "RecoveryLeave" | "StationPlace"
+  | { ChurchSpace: { total_faith: number } }
+  | { CustomsSpace: { cost: number } };
+
+export type Deciding =
+  | { Phase: TurnPhase }
+  | { Choice: { head: PendingChoice; queued: number } }
+  | "GameOver";
+
+export interface FeeModel {
+  total: number;
+  /** `[recipient seat, yen]` — the president owners paid. */
+  to_players: [PlayerId, number][];
+  /** Canal crossings, paid to the BANK rather than to a player. */
+  canal_tolls: number;
+}
+
+/** `fee` is `null` on every move that cannot carry one, and a ZERO fee is still
+ *  an object on President moves — render `total === 0` as free, not unpriced. */
+export interface OptionModel { number: number; mv: unknown; fee: FeeModel | null }
+
+export type NotOfferedReason =
+  | "StartedThereThisTurn" | "CanalIsNeverAStop" | "NoAssistantThere";
+
+export interface DecisionModel {
+  turn_number: number;
+  seat: PlayerId;
+  phase_chain: TurnPhase[];
+  current_phase: number;
+  deciding: Deciding;
+  /** One per LEGAL MOVE — **not** the numbered list. See `PromptState`. */
+  options: OptionModel[];
+  /** Capped at three rows. */
+  not_offered: { area: AreaId; reason: NotOfferedReason }[];
+  /** How many further near-misses the cap cut. Surface it: three rows are
+   *  indistinguishable from three-of-five otherwise. */
+  not_offered_suppressed: number;
+  /** `false` means you are watching; `options` is then empty BY CONSTRUCTION,
+   *  which is what distinguishes it from acting with no legal moves. */
+  viewer_is_deciding: boolean;
+}
+
+export interface FrameModel {
+  /** No `seed`. The server passes `TitleModel::seed: None` on every frame it
+   *  serves — the setup seed regenerates both decks, the boxed pile, the board
+   *  and every deal, so a payload carrying it hands over the whole hidden set.
+   *  The one place the seed legitimately reaches this client is `Preview`,
+   *  which round-trips it back into `create`. */
+  title: { mode: "Sim" | "Live"; autosaved: boolean };
+  board: BoardModel;
+  dashboard: Panel[];
+  decision: DecisionModel;
+}
+
+export interface OptionRow {
+  number: number;
+  words: string;
+  opens_picker: boolean;
+  /** What this row costs. `null` means the move cannot carry a fee at all; a
+   *  `total` of 0 means FREE, which is not the same thing — every President
+   *  move carries a zero fee when it is free, and the terminal prints `free`
+   *  there because a player comparing destinations needs a price, not a gap. */
+  fee: FeeModel | null;
+}
+
+/** INTERNALLY tagged — the one exception on the wire. */
+export type PromptState =
+  | { kind: "options"; rows: OptionRow[] }
+  | { kind: "pick"; title: string; rows: OptionRow[] }
+  | { kind: "retreat"; area: AreaId; area_label: string; max: number; answered: number[]; remaining: number }
+  | { kind: "place_a"; selected: AreaId[]; max_areas: number; fee: FeeModel | null }
+  | { kind: "place_b"; areas: AreaId[]; selected: AreaId | null; fee: FeeModel | null }
+  | { kind: "reveal" }
+  | { kind: "game_over" }
+  /** The session is locked after a driver or engine fault. Nothing this client
+   *  can send is accepted, and the three lines that would be are refused by the
+   *  API's own grammar fence. */
+  | { kind: "locked"; reason: string }
+  /** Someone else is to move; this payload carries no answerable list. The
+   *  frame's decision zone is scoped the same way, so the two agree. */
+  | { kind: "watching"; to_move: PlayerId };
+
+export interface ClientState {
+  id: string;
+  mode: "sim" | "live";
+  seat: PlayerId;
+  to_move: PlayerId;
+  your_turn: boolean;
+  frame: FrameModel;
+  prompt: PromptState;
+  messages: string[];
+  over: boolean;
+  /** The CLI's own end-trigger line, already worded. */
+  end_triggers: string;
+  deck_remaining: number;
+  end_game_triggered: boolean;
+  scores: { seat: PlayerId; total: number }[] | null;
+  warnings: string[];
+  /** The record's length; see the server's doc. */
+  events: number;
+}
+
+/** One historical position, from `GET /api/games/{id}/at/{k}` — the M4 replay
+ *  payload.
+ *
+ *  **Deliberately NOT a `ClientState`.** Six of that type's fields are built
+ *  from the LIVE state and would be present-tense lies at a past position, and
+ *  three more have no honest historical value at all. What is missing here is
+ *  the point:
+ *
+ *  - no `your_turn` — it is the one field that is not a function of the game
+ *    state alone (it compares against a seat that lives on the server's REPL),
+ *    and it is meaningless for a position nobody is playing;
+ *  - no `prompt` — an in-flight picker is not in the record and cannot be;
+ *  - no `warnings` — a load-time session fact, not a property of this position;
+ *  - no `messages` — nothing was just applied.
+ *
+ *  `frame` is the ordinary {@link FrameModel}, so `Board` and `Dashboard` draw a
+ *  historical position through exactly the same components. Pass no
+ *  `onTileClick` and every tile is an inert `<div>`, which is what a read-only
+ *  position should be. */
+export interface HistoricalFrame {
+  /** `k` — events APPLIED, not an event index. */
+  index: number;
+  /** The record's length. The track has `total + 1` stops, and the last one is
+   *  the present: a real position with no event to name. */
+  total: number;
+  /** Whose view this is. **Pinned server-side and it does not follow the
+   *  mover** — that is what stops a sweep over every `k` from harvesting every
+   *  seat's whole hand history in one pass. */
+  seat: PlayerId;
+  /** Whose turn it was at `k`. */
+  to_move: PlayerId;
+  frame: FrameModel;
+  over: boolean;
+  /** The end-trigger line as it read AT `k`, worded by the CLI. */
+  end_triggers: string;
+  deck_remaining: number;
+  end_game_triggered: boolean;
+  scores: { seat: PlayerId; total: number }[] | null;
+  /** The port and laboratory offers AT `k` — face up at the time, and
+   *  properties of the position, which is M4's Q5 applied to keep this frame
+   *  narrow: the fields it dropped were present-tense lies at a past position,
+   *  and these are not. The turn playback needs them so a port take shows the
+   *  card leaving. */
+  ports: PortsPanel;
+  labs: LabsPanel;
+}
+
+export interface Labels {
+  area_types: Record<string, string>;
+  phases: Record<string, string>;
+  phase_chain: string[];
+  tech_effects: Record<string, string>;
+  achievements: Record<string, string>;
+  /** The evaluator's 34 features in words, keyed by the stable snake_case
+   *  token the explanation payload carries. The token stays the identity — it
+   *  is what greps against `eval_probe` and every recorded figure; this is
+   *  presentation only. */
+  features: Record<string, string>;
+}
+
+/** `GET /api/health` — the two compatibility keys the ENGINE uses, not the
+ *  server version. A client that caches card art or option shapes checks
+ *  these: a save stops resuming across a `semantics_rev` bump by design, and
+ *  `rules_hash` moves whenever card, site, token or board data does. */
+export interface Health {
+  server_version: string;
+  semantics_rev: number;
+  rules_hash: string;
+}
+
+/** Every refusal on this API, in one shape. `api.ts` reads `error` off it and
+ *  throws an `ApiError` carrying the sentence — so a second error shape would
+ *  be reported to the player as a bare status code. */
+export interface ApiErrorBody {
+  error: string;
+}
+
+/** One dealt card, beside what the built-in bot would score it at. */
+export interface DealCard {
+  card: OrderCard;
+  /** `greedy::score_starting_order` — the printed economics, hand-set and
+   *  unmeasured by its own doc, so it is shown under the CLI's hedge and never
+   *  as a recommendation the engine stands behind. */
+  keep_score: number;
+}
+
+/** The two cards a seat was dealt \u2014 and NOT the two another seat was dealt.
+ *
+ *  **A bot seat carries an empty `cards` and no keep field at all** (the
+ *  2026-09-06 corrections, R-C1): the bot keeps by its own argmax and the
+ *  record holds the card, but a player reading this payload cannot learn what
+ *  it was dealt or which it took. The client draws two card backs from
+ *  `is_bot`, and it never chooses for the bot \u2014 `keeps` carries `null` there,
+ *  which the server refuses a value on by name. */
+export interface Deal {
+  seat: PlayerId;
+  is_bot: boolean;
+  cards: DealCard[];
+}
+
+/** The set table: the position after setup, beside the deals.
+ *
+ *  `table` is a `HistoricalFrame` at `index 0, total 0` over a session the
+ *  server throws away — so this screen draws the real board with the same
+ *  components a replay position uses, and nothing is created until Start. */
+export interface Preview {
+  seed: string;
+  table: HistoricalFrame;
+  deals: Deal[];
+}
+
+// ---- the read-only surfaces ---------------------------------------------
+
+export interface PortSlotModel {
+  slot: number;
+  zone: PortZone;
+  /** The lowest action power that reaches this zone — the engine's own gate. */
+  min_power: number;
+  card: OrderCardId | null;
+  printed: OrderCard | null;
+}
+export interface PortsPanel {
+  boards: { board_b: boolean; slots: PortSlotModel[] }[];
+  deck_remaining: number;
+}
+
+export interface LabSlotModel {
+  slot: number;
+  /** The printed position surcharge: 0,0,1,1,2,2. */
+  surcharge: number;
+  card: TechCardId | null;
+  printed: TechCard | null;
+}
+export interface LabsPanel {
+  boards: { board_b: boolean; slots: LabSlotModel[] }[];
+  deck_remaining: number;
+}
+
+export type ActionYield =
+  | { Produce: { good: "Copper" | "Silk" | "Tea" | "Seafood"; amount: number } }
+  | { Money: { yen: number } }
+  | { PortTake: { zones: PortZone[]; vp: number } }
+  | { Industry: { value: number } }
+  | { Faith: { from_power: number; with_all_payment_kinds: number } }
+  | { CustomsPayment: { max_imports: number } }
+  | { WarehouseTakes: { items: number } }
+  | { Exchanges: { count: number } };
+
+export interface AreaCard {
+  tile: TileModel;
+  /** One rung per power 1..5 — EMPTY on the Canal. */
+  ladder: { power: number; pays: ActionYield }[];
+  companion: "Ports" | "Labs" | "Tracks" | null;
+}
+export interface AreasPanel { rows: AreaCard[][] }
+
+export interface LogPanel {
+  /** Every event in the record, including ones this panel does not carry. */
+  total: number;
+  entries: { index: number; text: string }[];
+}
+
+// ---- card art ------------------------------------------------------------
+
+export interface ArtEntry { file: string; w: number; h: number }
+
+/** Absent when the server has no cropped art; the client draws without it. */
+export interface ArtManifest {
+  /** Keyed by `OrderCardId` as a decimal string. */
+  orders: Record<string, ArtEntry>;
+  /** Keyed by the printed TITLE. */
+  techs: Record<string, ArtEntry>;
+  /** Keyed by `SiteModel.index` as a decimal string. */
+  sites: Record<string, ArtEntry>;
+  achievements: Record<string, ArtEntry>;
+  areas: Record<string, ArtEntry>;
+  /** Keyed `"<variant>_<payload>"`, e.g. `"Copper_2"`. */
+  five_power: Record<string, ArtEntry>;
+  /** Keyed by `Country`. */
+  mercenaries: Record<string, ArtEntry>;
+  backs: Record<string, ArtEntry>;
+  tokens: Record<string, ArtEntry>;
+}
+
+// ---- the explanation surface (M3) ----------------------------------------
+//
+// `GET /api/games/{id}/suggest` and `GET /api/games/{id}/why`. Both answer 200
+// with exactly one of `ok` / `refusal` non-null: a refusal is the ANSWER (the
+// last move was a human's; the game is over), not a client error, and the
+// browser renders the sentence.
+//
+// Every number here is `i64` on the server and arrives as a JSON number. That
+// is safe and the seed is not, because a contribution is bounded by the weight
+// table while a seed is drawn over the full `u64`.
+
+/** One feature's contribution, as `eval::explain` computed it.
+ *
+ *  `feature` is the STABLE snake_case token (`Feature::name()`), not a display
+ *  string — the same key the arena report and `eval_probe` use. Wording comes
+ *  from `/api/labels`. `product` is `weight × (viewer_value − opponent_value)`
+ *  and is carried rather than recomputed here: re-multiplying in the browser
+ *  would be a second implementation of the identity this surface exists to show. */
+export interface Term {
+  feature: string;
+  viewer_value: number;
+  opponent_value: number;
+  weight: number;
+  product: number;
+}
+
+/** A finished game's re-derived standing, and then the whole of `total`. */
+export interface Terminal {
+  rank: number;
+  seats: number;
+  viewer_total: number;
+  best_other_total: number;
+  value: number;
+}
+
+/** A score, term by term.
+ *
+ *  **THE IDENTITY THE CHART MUST FOOT:**
+ *
+ *      total === sum(terms[].product) + (terminal ? terminal.value : 0)
+ *
+ *  `terms` carries ALL 34 features, zero-product ones included — not because
+ *  the sum needs them (a zero term contributes zero) but because a reader can
+ *  only trust "8 of 34" if all 34 are there. Do not filter server data out of
+ *  the sum, and do not treat the count as a caption.
+ *
+ *  When `terminal` is non-null every product is 0 by design (reporting an
+ *  interpolated weight on a finished game would be a lie about what the
+ *  evaluator used), so a bar chart renders EMPTY against a nonzero total. Draw
+ *  the standing instead. */
+export interface Explanation {
+  terms: Term[];
+  terminal: Terminal | null;
+  total: number;
+  progress_ppm: number;
+  /** How many of `terms` carry a nonzero product — the terminal prints the same
+   *  count, so the two surfaces cannot disagree about it. */
+  nonzero: number;
+}
+
+/** One root candidate, worded and priced. `margin` is `value − best`, so **0
+ *  means tied** — the sense the terminal's runner-up label already states. */
+export interface Ranked {
+  text: string;
+  value: number;
+  margin: number;
+  /** The candidate that was actually played. **Not `index === 0`**: the ranking
+   *  is sorted best-first but the pick is one of the MAXIMISERS, and ties are
+   *  broken by a keyed draw. Filter on this to get the runner-ups. */
+  chosen: boolean;
+}
+
+/** One search counter. `name` is the engine's own — carried verbatim so this
+ *  screen's output can be grepped with the arena report's vocabulary.
+ *  `group` is `"work" | "limit" | "ungrouped"`. */
+export interface Counter {
+  name: string;
+  value: number;
+  group: string;
+}
+
+/** What a `why` reconstruction CLAIMS. Arithmetic with no claim attached to it
+ *  is arithmetic about nothing, so this is not decoration. When
+ *  `recorded_version` differs from `current_version` the move still reproduced
+ *  — the account is this build's reading of a move an older one played, and the
+ *  client says so. */
+export interface Provenance {
+  /** `name@vN` or `name@vN{k=v,…}` — `Contestant::echo()`, the ONE display form,
+   *  so the browser and the terminal cannot spell the same bot differently. */
+  contestant: string;
+  evaluator_version: number;
+  /** The log's printed 0-based event index. */
+  index: number;
+  seat: PlayerId;
+  /** The key the bot's own pump decided under, hex, as a string. */
+  decision_seed: string;
+  /** The engine offered exactly one move here. */
+  forced: boolean;
+  recorded_version: number | null;
+  current_version: number;
+}
+
+/** A typed refusal. `message` is the CLI's own sentence, never re-authored.
+ *  `kind` is one of the twelve `why` tags, or one of `suggest`'s four
+ *  (`live_mode`, `game_over`, `bot_seat`, `locked`, plus `search` for an agent
+ *  error surfaced verbatim). */
+export interface RefusalRow {
+  kind: string;
+  message: string;
+}
+
+export interface SuggestOk {
+  seat: PlayerId;
+  /** The chosen move, worded by the server. The client never constructs a move
+   *  and never prices one. */
+  text: string;
+  explanation: Explanation;
+  /** The principal continuation, root move first — so step 1 repeats `text`. */
+  continuation: string[];
+  /** EVERY root candidate, best first. Not truncated: showing more than three
+   *  runner-ups is one of the things a terminal genuinely cannot do, so the
+   *  presentation decision is the client's rather than the server's. */
+  ranking: Ranked[];
+  /** A `u64` as a STRING, like every other seed on this wire. */
+  stream_seed: string;
+  /** The ply guard stopped SOME continuation in this search — not necessarily
+   *  the one in `continuation`. The counter carries no identity. */
+  search_hit_ply_cap: boolean;
+  tied_at_top: number;
+}
+
+export interface SuggestResponse {
+  ok: SuggestOk | null;
+  refusal: RefusalRow | null;
+}
+
+export interface WhyOk {
+  provenance: Provenance;
+  text: string;
+  explanation: Explanation;
+  continuation: string[];
+  /** `null` for a greedy contestant, which searches no line at all — a
+   *  different fact from a block of zeros, so it is not flattened to one. */
+  counters: Counter[] | null;
+  search_hit_ply_cap: boolean;
+  ranking: Ranked[];
+}
+
+export interface WhyResponse {
+  ok: WhyOk | null;
+  refusal: RefusalRow | null;
+}
+
+// ---- the card indexes and the final score (M3) ----------------------------
+
+/** Where a card physically is, when the index knows.
+ *
+ *  Externally tagged, as serde writes a Rust enum. **All EIGHT variants of
+ *  `screen_model::CardLocation` are declared, and there is no permissive
+ *  catch-all arm.** The first draft declared five and ended in
+ *  `| Record<string, unknown>`, and a review showed what that cost: the
+ *  catch-all makes every object assignable, so `Widen<CardLocation>` accepted
+ *  `{"TotalGarbage": {...}}` and the literal string `"utter nonsense"` without
+ *  complaint — and it was already swallowing a real miss. `OnArea` was missing,
+ *  ten of the twenty-four site cards carry it, and the browser printed the raw
+ *  Rust tag `OnArea` where the terminal prints `on area A03`.
+ *
+ *  `null` means the index is not tracking it — **which is not the same as
+ *  "nowhere"**: `Repl::index_placements` deliberately carries no other seat's
+ *  hand, because in a live game an opponent's starting order is hidden and an
+ *  index that dimmed it with "in Seat 1's hand" would leak the one card the
+ *  observation boundary exists to protect. */
+export type CardLocation =
+  | "OwnHand"
+  | "ThisReveal"
+  | { Deal: { seat: PlayerId } }
+  | { PortSlot: { board_b: boolean; slot: number } }
+  | { LabSlot: { board_b: boolean; slot: number } }
+  | { OwnedBy: { seat: PlayerId } }
+  | { OnArea: { area: AreaId } }
+  | { AchievementSlot: { category: AchievementCategory } };
+
+/** The printed building site behind a site-index card — the raw registry card,
+ *  not a board site: `build_site_index` reads `rules.building_sites`, so the
+ *  built/owned fields are always empty even mid-game. */
+export interface BuildingSiteCard {
+  spaces: SpaceReward[];
+  shophouses_built: (PlayerId | null)[];
+  trading_house_owner: PlayerId | null;
+  /** VP, a bare number — NOT a `SpaceReward`. The first draft of this type said
+   *  `SpaceReward` and `contract.ts` rejected it against the committed payload
+   *  on the first typecheck, which is the whole reason the corpus exists. */
+  trading_house_reward: number;
+}
+
+/** One card's face. Externally tagged; exactly one key is present. */
+export type CardFace =
+  | { Order: { id: number; printed: OrderCard } }
+  | {
+      Tech: {
+        printed: TechCard;
+        /** Every physical copy of this TITLE. Ten of the twenty titles
+         *  circulate as two identical cards, so the index is over titles. */
+        copies: number[];
+        placed: [number, CardLocation][];
+      };
+    }
+  | { Achievement: AchievementModel }
+  | { Site: { index: number; site: BuildingSiteCard } };
+
+export interface IndexCard {
+  face: CardFace;
+  location: CardLocation | null;
+  /** The number that would pick this card during a capture. **Always `null` on
+   *  this API**: the web serves an index as a VIEW and has no card capture, so
+   *  nothing here is numbered. */
+  selection: number | null;
+}
+
+export interface IndexGroup {
+  /** How the rows are grouped — by `{Country}` for orders and techs, by
+   *  `{Category}` for goals, and the single `"All"` for sites. */
+  key: unknown;
+  cards: IndexCard[];
+}
+
+export type IndexKind = "Orders" | "Techs" | "Achievements" | "Sites";
+
+export interface IndexModel {
+  kind: IndexKind;
+  /** The whole population — the "all 36" the title states. For techs that is
+   *  TITLES, not the thirty physical cards. */
+  total: number;
+  /** What this screen shows; equal to `total` unfiltered. */
+  shown: number;
+  /** What is being recorded. Always `null` here — see `IndexCard.selection`. */
+  target: unknown | null;
+  filter: unknown | null;
+  groups: IndexGroup[];
+}
+
+/** One seat's score, category by category — the engine's own field names.
+ *  Several carry decision-log rulings behind them (church 6/3, customs 8/4, the
+ *  technology majority the 2P dummy competes in), so the client shows the parts
+ *  and never re-adds a total from parts it picked. */
+export interface Breakdown {
+  base_vp: number;
+  church: number;
+  customs: number;
+  technology: number;
+  country: number;
+  remainder: number;
+  total: number;
+}
+
+export interface Placing {
+  seat: PlayerId;
+  rank: number;
+  breakdown: Breakdown;
+  /** Against the best OTHER seat. **A margin of 0 is not a win** — two seats can
+   *  tie on points and be separated by the engine's tie-break, so read `won`. */
+  margin: number;
+  won: boolean;
+}
+
+/** `GET /api/games/{id}/result`. A 409 while the game is still running. */
+export interface Outcome {
+  /** Rank order, so `standings[0]` is first place. */
+  standings: Placing[];
+  winner: PlayerId;
+}

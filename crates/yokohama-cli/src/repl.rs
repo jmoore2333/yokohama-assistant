@@ -40,7 +40,7 @@ pub struct Repl {
     /// `pending` is `None`), and committing out of one never draws a card or
     /// claims a token (President moves / retreats touch neither deck), so
     /// `commit` never parks a fresh `Pending` behind a sub-prompt.
-    pub(crate) sub: SubPrompt,
+    pub sub: SubPrompt,
     /// Set true once the FIRST `board` render of a session has printed the
     /// wide-board width note (S3), so it prints exactly once. Lives on the
     /// REPL rather than in `render` because that layer is a pure formatter --
@@ -187,7 +187,7 @@ enum PromptOption {
 /// An in-progress Movement sub-prompt. Both variants are ENTRY HELPERS: whatever
 /// they assemble is exact-matched against `session.legal()` before `commit`, so
 /// neither can construct-and-apply anything the engine didn't offer.
-pub(crate) enum SubPrompt {
+pub enum SubPrompt {
     None,
     /// A numbered pick over a captured slice of the legal list (route labels,
     /// assistant-move destinations, Telegram-bonus variants): a numeric
@@ -663,10 +663,68 @@ impl Repl {
         )
     }
 
+    /// Who plays each seat, as this driver reconciled it.
+    ///
+    /// An ACCESSOR rather than a public field, and it exists because the one
+    /// alternative is not equivalent: a caller holding only a `Repl` could
+    /// rebuild the same value with `BotSeats::from_provenance(record.run…)`,
+    /// but that re-runs seed reconciliation and re-emits the identity-drift
+    /// warnings [`Repl::new`] already consumed — so a second reader would print
+    /// a warning the operator answered once, or swallow one the operator never
+    /// saw. Read the reconciled value; do not re-derive it.
+    ///
+    /// [`crate::why::account_parts`] is the caller this was widened for: the
+    /// honesty gate takes `&BotSeats`, and a consumer that draws its own table
+    /// must reach the gate rather than reimplement it.
+    pub fn bots(&self) -> &crate::bot::BotSeats {
+        &self.bots
+    }
+
     /// The display entries as the zone consumes them: the collapsed families
     /// keep their own summaries, every direct entry carries its `Move` so the
     /// zone can price it and mark it.
     ///
+    /// Per-seat presentation policy as the models want it, folded once.
+    ///
+    /// Reads [`Self::seat_display`] rather than re-deriving the rule, because
+    /// the rule — a bot's hand is masked whatever `privacy` says — lives there
+    /// and must live in exactly one place. Mirrors `render::dashboard_inputs`'
+    /// own fold; `seat_facts_agree_with_the_seat_display` pins the two.
+    pub fn seat_facts(&self) -> Vec<crate::screen_model::SeatFacts> {
+        let seats = self.seat_display();
+        self.session
+            .state()
+            .players
+            .iter()
+            .map(|p| crate::screen_model::SeatFacts {
+                is_bot: seats.is_bot(p.id),
+                hand_hidden: seats.hides_hand(p.id),
+            })
+            .collect()
+    }
+
+    /// The numbered entries of the MAIN prompt, as data, for a caller that
+    /// draws them itself.
+    ///
+    /// **This is the list a number means.** `pick_option` indexes THESE
+    /// entries, and outside `AdditionalAction`/`AreaAction`/etc. they are not
+    /// one-per-legal-move: Movement collapses to one entry per destination with
+    /// the whole retreat family folded into one row, Placement collapses to
+    /// Option A / Option B / place-none, and a queued `AssistantMove` groups by
+    /// source. A consumer that numbered `DecisionModel::options` instead —
+    /// which IS one per legal move — would send back a number meaning a
+    /// different move, and in the Movement phase it would usually still be a
+    /// legal one. That is the failure this accessor exists to prevent.
+    ///
+    /// Empty while a sub-prompt is open: the numbers then belong to the
+    /// sub-prompt, and [`Repl::sub`] says which.
+    pub fn option_rows(&self) -> Vec<render::DisplayRow> {
+        if !matches!(self.sub, SubPrompt::None) {
+            return Vec::new();
+        }
+        self.display_rows(&self.session.legal())
+    }
+
     /// Takes the legal list rather than fetching one, so a single `prompt()`
     /// costs exactly one enumeration where the entries, the `◈` marks and the
     /// near-miss rows all read the same list.
@@ -1662,7 +1720,7 @@ impl Repl {
     /// order is hidden, and an index that dimmed it with "in Seat 1's hand"
     /// would leak the one card the whole observation boundary exists to
     /// protect.
-    pub(crate) fn index_placements(&self) -> Vec<(CardRef, CardLocation)> {
+    pub fn index_placements(&self) -> Vec<(CardRef, CardLocation)> {
         let state = self.session.state();
         let mut placed = Vec::new();
         for (board_b, board) in
@@ -3570,6 +3628,52 @@ mod tests {
             .iter()
             .position(|o| r.render_option(o, state, rules).contains(needle))
             .map(menu_number)
+    }
+
+    /// `seat_facts` and `render::dashboard_inputs` are the same fold, and this
+    /// is what says so.
+    ///
+    /// The two are byte-identical copies of one rule — a seat's `is_bot` and
+    /// its effective hand mask, both read off `seat_display` — living in two
+    /// modules because `screen_model` may not depend on the renderer.
+    /// `seat_facts`' own doc claimed a pin by this name and there was none, so
+    /// a change to the masking rule could move one copy and not the other, and
+    /// the guard a reviewer would go looking for was a sentence.
+    ///
+    /// Asserted across every combination that changes the answer: the privacy
+    /// toggle, a bot seat, and both together. A single default-state comparison
+    /// would pass while the two disagreed about exactly the case masking exists
+    /// for — a bot's hand, which stays hidden whatever `privacy` says.
+    #[test]
+    fn seat_facts_agree_with_the_seat_display() {
+        for bots in [false, true] {
+            for privacy in [false, true] {
+                let mut repl = repl_np(2, 9);
+                if bots {
+                    repl.bots = crate::bot::BotSeats::new(
+                        vec![None, Some(yokohama_core::Contestant::PRODUCTION)],
+                        7,
+                    );
+                }
+                repl.privacy = privacy;
+
+                let facts = repl.seat_facts();
+                let seats = repl.seat_display();
+                let players = repl.session.state().players.clone();
+                assert_eq!(facts.len(), players.len(), "one fact per seat");
+                for (p, fact) in players.iter().zip(&facts) {
+                    assert_eq!(
+                        (fact.is_bot, fact.hand_hidden),
+                        (seats.is_bot(p.id), seats.hides_hand(p.id)),
+                        "seat {} disagrees at privacy={privacy} bots={bots}",
+                        p.id.0,
+                    );
+                }
+                if bots {
+                    assert!(facts[1].hand_hidden, "a bot's hand is hidden whatever privacy says");
+                }
+            }
+        }
     }
 
     /// A REPL over a fresh `n`-player simulation (n in 2..=4). Used for the

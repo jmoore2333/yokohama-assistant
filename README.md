@@ -196,6 +196,109 @@ That link is a hosted copy, so it opens and renders in a browser. The source of 
 repo — GitHub shows `.html` as source rather than rendering it, so read that one by opening the
 file locally.
 
+## The browser client
+
+**Branch `web-frontend` only.** The same engine, the same words, and the same legal-move gate —
+served over HTTP and drawn in a browser instead of a terminal. It is a *second frontend over one
+engine*, never a second engine: the server routes, scopes and serializes and computes nothing
+about the game, so the terminal and the browser cannot disagree about a rule. A game starts on the
+**set table** — the areas with their site cards and tokens, the port and the tracks, what the
+rulebook has on the table at the step where the two starting orders are dealt and chosen in
+secret — where you choose your first card over the real board rather than off a list, with the
+built-in bot's Keep score under each of your own two cards. The technologies and the goals go out
+at the two steps after that one, so they are revealed once you have chosen, and the bot's own two
+are face down: it keeps one of them, the record knows which, and you never see it.
+
+![The browser client at two players: the banner with the Boards menu and the reference buttons
+along the top, the end-trigger strip beneath it, and the table filling the left with the ten area
+tiles laid out as the staggered pyramid — each one the printed area art carrying its
+building-site card, its pieces and its id badge — beside the side column on the right, whose
+answer bar is pinned at its top carrying the phase ladder, the seat to move and the numbered
+moves it is offering](web/public/help/screen.png)
+
+The left is a **table**: the pyramid of area tiles, each one the printed tile with any
+building-site card and pieces on it (the Canal, at three and four players, carries neither), and
+under the pyramid whichever boards you have switched on from the banner's `Boards` menu — the
+port, the laboratory, the church and customs tracks, the goals, the building sites. The right is
+a **side column** with the **answer bar pinned at its top**, so whatever the game is asking is
+always on screen; under it sits the account of the turn just played — one row per event, with the
+controls that walk it back out across the table — then every seat's dashboard and your hand. While a
+placement picker is open the table itself becomes the input surface, and the fee your current
+selection would cost is printed before you commit to it. Below 1201px the same parts stack, with
+the answer bar pinned along the bottom edge instead.
+
+**The replay track (M4).** Open the log and the whole move trail is there, each line worded as it
+read when it applied — with a track above it that walks the game. Drag it, step with the arrows,
+or press any line to jump to the position that move was decided in. Above 1201px the panel is a
+right-hand drawer and the table redraws beside it at full size inside a green outline; below that
+the panel covers the page and there is no outline. Nothing on the redrawn table is pressable,
+because a past position is not answerable.
+The port and the laboratory draw from that same past position; only the building sites collapse.
+
+![The log panel open as a right-hand drawer: the replay track across the top with step arrows, a
+position readout and a "Back to live" button, the numbered move list below it with the current
+stop highlighted, and the table redrawn beside the drawer at that earlier position inside a green
+outline](web/public/help/replay.png)
+
+The track has one more stop than there are moves, because the last stop is *now* — a real
+position with no move to name. It is a projection over the record the server already holds:
+browsing the past applies nothing, records nothing, and changes nothing.
+
+**It serves one seat at a time, and the replay route pins that seat.** The live payload shows
+whoever is moving — the hot-seat model the CLI is built on, one operator at one screen. The
+replay route deliberately does *not* follow the mover: walking every position returns one seat's
+hands and no other's, so the history cannot be harvested in a single pass. That is a fence
+against a sweep, and **not** authentication — see [Hosting](#hosting) below.
+
+**Asking the bot.** `Suggest` runs the production bot on your seat and shows the move, the line
+it searched, and the arithmetic term by term. `Why` does the same for a move a bot already
+played, by replaying the game to that point and re-running the bot's own decision — so the
+account is a reconstruction the engine can vouch for, and it refuses rather than guessing when
+the reconstruction does not match the record.
+
+There is a **Help** panel in the client itself covering all of this, with the same screenshots.
+
+```bash
+# from the repo root, on branch web-frontend
+cd web && npm ci && npm run build && cd ..
+cargo run --release -p yokohama-web        # http://127.0.0.1:8080
+```
+
+## Hosting
+
+**Nothing is deployed yet, and this section is the honest statement of what would have to be
+true first.** The intended shape is the client and API behind **Cloudflare Access** on
+`yokohama.moore.nyc`, with a container as the compute layer.
+
+What the code already does right:
+
+- **Nothing exists only in memory.** Every applied move is persisted as its `GameRecord` and an
+  absent handle is rebuilt from the store, so a container that sleeps and loses its disk cache
+  loses no acknowledged move. Storage is behind a byte-shaped trait, so a mounted volume is a
+  path and an object store is a second implementation rather than a refactor.
+- **It drains on the way out.** `SIGTERM` and `Ctrl-C` stop new connections and let in-flight
+  requests finish, so a scale-to-zero cannot kill a `POST` between applying a move and storing
+  it.
+- **The bind address is explicit.** `YOKOHAMA_WEB_HOST` (default `127.0.0.1`) and
+  `YOKOHAMA_WEB_PORT` (default `8080`); a container needs `0.0.0.0` and that is a deployment's
+  decision to make, not a default to inherit.
+
+**What is NOT true yet, stated plainly because the gap is the point:**
+
+- **This API has no authentication of any kind.** No header is read, no session exists, no route
+  is scoped to a person. `GET /api/games` returns every game id to any caller, so a game id is
+  not even a secret — the id space is enumerable in one request.
+- **So the identity gate has to be the proxy, and it has to be in front of everything.** An
+  origin reachable without going through Access is an origin with no access control at all.
+- **Trusting an injected header is not enough.** Cloudflare sends
+  `Cf-Access-Authenticated-User-Email` alongside a signed `Cf-Access-Jwt-Assertion`, and
+  Cloudflare's own guidance is that validating the convenience header alone does not prevent
+  spoofing — the JWT signature has to be verified at the origin. That verification does not
+  exist in this crate today.
+
+Until those are closed, run it on `127.0.0.1` and treat the replay route's seat pin as what it
+is: a fence against sweeping a game's history in one pass, not a privacy boundary.
+
 ## Status (2026-08-30)
 
 The engine plays complete, rules-correct games at 2–4 players and has been verified
@@ -352,6 +455,7 @@ semantics bump by design, and rev-6-and-earlier saves no longer resume.
 | `yokohama-oracle` | The independent referee: legal-move enumeration, final scoring + tie-break, and a prune-free route reference, authored from the rules sources under an audited independence rule (types-only dependency on the engine) |
 | `yokohama-difftest` | The harness comparing engine vs oracle: per-decision-point sweeps under two policies, terminal scoring comparison, three-way route-pruning check, self-contained divergence artifacts + `repro` tool |
 | `yokohama-bridge` | The BGA capture relay (Phase 3.5b): a localhost-only HTTP sink that appends what the read-only browser extension in `bridge/` observes to `bridge-captures/<table>.ndjson`, plus the feed pre-processor (typed NDJSON reader, payload-identity dedupe, structural supersession collapse for takebacks). Depends on NO engine crate and knows no rules — translating captures into engine moves is `yokohama-cli`'s `import`, deliberately on the other side of that boundary |
+| `yokohama-web` | **Branch `web-frontend` only** — the HTTP surface over the engine, with its browser client in `web/`. It routes, scopes and serializes and computes nothing about the game: every model is `screen_model`'s, every word is `describe`'s, every move goes through the same `Session` legal-list gate the terminal uses, so the two frontends cannot disagree about a rule. Read-only projections for the reference panels and the replay track, the two explanation routes that run a real search (`suggest`, `why`), and no play payload anywhere carries the setup seed |
 | `gen-data` | YAML → Rust generator for the verified card/site data (never hand-edit `game/data.rs`) |
 
 ## Download and run
@@ -404,9 +508,28 @@ recommendation for your seat), `why` / `why <n>` (a bot move, replayed and accou
 Full tester guide: **[HTML](docs/cli-guide.html)** or [Markdown](docs/cli-guide.md).
 
 **Gates.** Per-edit (debug): the six crate suites (`yokohama-core`, its `eval_probe` example
-target, `yokohama-cli`, `yokohama-oracle`, `yokohama-difftest`, `yokohama-bridge`) + the four
-`bridge/tests/*.js` node suites (the browser half has no cargo coverage and would otherwise
-never run) + `cargo clippy --workspace --all-targets -- -D warnings`, all zero-warning.
+target, `yokohama-cli`, `yokohama-oracle`, `yokohama-difftest`, `yokohama-bridge`) — plus a
+seventh, `yokohama-web`, on branch `web-frontend` only, where the browser lane lives — + the four
+`bridge/tests/*.js` node suites (the BGA bridge's browser half has no cargo coverage and would
+otherwise never run) + `cargo clippy --workspace --all-targets -- -D warnings`, all zero-warning.
+**On `web-frontend` the browser CLIENT adds three more per-edit commands, from `web/`** (M2.5,
+2026-08-31 — before it, "the suites are green" was not a claim about the browser at all):
+`npm run typecheck` (both TS projects, and the committed wire corpus against the hand-written
+client types), `npm test` (**393** vitest component tests over jsdom in 24 files, every payload
+of them server-emitted), and `npm run e2e` (**37** Playwright tests in six spec files — 36
+driving real Chromium against the real release binary, including a whole 2P game clicked through
+to a winner, the explanation chart's real geometry, the page's real width at four viewports per
+seat count, the table's fit rule read as the rendered tile width, and the replay track walking
+the board back and returning it unchanged; the thirty-seventh needs no browser and is what keeps
+the escape hatch below honest). Two further spec FILES are GENERATORS rather than tests and are
+dropped from the glob unless their own switch asks for them: `shots.spec.ts`
+(`YOKOHAMA_WEB_SHOTS=1`, two) writes the help panel's pictures, so leaving it in the run would
+re-cut documentation as a side effect and dirty the tree, and `gates.spec.ts`
+(`YOKOHAMA_WEB_GATES=1`, six) shoots the visual gates into a gitignored directory. The browser ones
+need `npx playwright install chromium` once; absence is a loud refusal naming that command, and
+`YOKOHAMA_WEB_E2E_OPTIONAL=1` turns it into a skip that says out loud it tested nothing — a
+convention that broke once when a new spec shipped without its skip line, and is now read off
+the spec directory at run time rather than remembered.
 Pre-merge: all **fifteen** release gates below, measured as ONE uninterrupted sequence at every
 close — a sum of per-command times from separate sessions is not a measured total. **Wall
 figures are per-machine since 2026-08-11** (two workstations whose profiles INVERT by gate
@@ -450,6 +573,11 @@ building sites re-modeled to their positional space rewards). Jeremy's physical 
 layouts, and canal geometry — and every owner ruling since is recorded in
 [`guidingpath.md`](guidingpath.md)'s decision log. The engine's registries are generated from
 the YAML by `gen-data`; a `rules_hash` stamps every saved game with the data that produced it.
+
+The code in this repository is Apache-2.0 (`LICENSE`, `NOTICE`), but the game's own material is
+not the owner's to relicense: [`ASSETS.md`](ASSETS.md) names the four excluded paths —
+`tts-assets/`, `crates/yokohama-web/assets/art/`, `web/public/help/`, and the rulebook PDF — and
+says what a fork has to do about them.
 
 ## Where truth lives
 

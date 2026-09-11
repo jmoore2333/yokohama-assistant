@@ -1,0 +1,436 @@
+import { useEffect, useState } from "react";
+import type { CSSProperties } from "react";
+import type React from "react";
+import type { ArtManifest, BoardModel, Labels, PlayerColor, TileModel } from "./types";
+import { areaArt, fivePowerArt, fivePowerWords } from "./art";
+import { SiteFace, seatClass } from "./Cards";
+import { Pieces, piecesWords } from "./Pieces";
+import { ID_BADGE, PIECES, pct, SITE_CARD } from "./tileRects";
+import { TilePopover, type Anchor } from "./TilePopover";
+
+/** How wide a tile may be, so that the whole board fits its column at 1440.
+ *
+ *  **This is the SUB-1201 arm, and only that (M5 W3).** Above 1201px the table
+ *  is a size container and `styles.css` derives `--tile-w` from the fit rule —
+ *  the largest tile that fits the widest row across AND every row down, floored
+ *  at 10rem and capped at 22rem — so this ladder is set as `--tile-ladder` and
+ *  the stylesheet does not read it. Below 1201 there is no such container: the
+ *  page is M3.5's column stack, the board's height is whatever it needs, and
+ *  the ladder is still what keeps the widest row inside its column. `fit.ts`
+ *  carries the rule's arithmetic as the browser cell's oracle.
+ *
+ *  **Keyed on the REALIZED widest row, never on `board.player_count`.** The two
+ *  give the same three answers on every board the engine generates, and the
+ *  widest row is the term the width actually depends on: the board's min-content
+ *  width is `n · tile + (n−1) · gap` for the widest row `n`. Reading
+ *  `player_count` would also make this file the first thing in the client to
+ *  assume the pyramid's shape, against this module's own doc below.
+ *
+ *  The arithmetic, at 1440 with a 992px board column (`1440 − 40 padding − 24
+ *  gap − 384 rail`): 6 tiles at 10rem is `6×160 + 5×6.4 = 992`, 5 at 12rem is
+ *  `985.6`, 4 at 14rem is `915.2`. Before this the board carried 384px (4P) and
+ *  154px (3P) outside its column behind `overflow-x: auto`, and `.board` drew no
+ *  scrollbar — so on overlay-scrollbar platforms a Movement destination in the
+ *  last column was invisible and undiscoverable.
+ *
+ *  **The 4P fit is exact and its margin is 0.047px** — Chromium resolves the
+ *  0.4rem gap to 6.390625px, so the row is 991.953 against 992. One pixel of
+ *  viewport loss, or a classic 15px scrollbar, re-breaks it. That is why the
+ *  guard in `Board.test.tsx` asserts THIS LADDER and not the pixel, and why the
+ *  browser walk records the board's residual scroll rather than gating it: a
+ *  pixel assertion here would be green on one machine and red on another.
+ *
+ *  **This ladder is the SUB-1201 arm only, since W3.** At 1201px and above the
+ *  fit rule in `styles.css` owns the tile width and this value is overridden;
+ *  the sentence that used to stand here — that nothing between 1201 and 1439
+ *  is fixed by the ladder, and 4P clips 239px at 1201 — described the layout
+ *  before that rule existed. What happens at 1201x900 4P now is the fit rule
+ *  hitting its floor: measured, the tile is 160px (10rem), the board is 992px
+ *  inside an 817px table, `.table` scrolls 191px sideways and the page itself
+ *  overflows by 0. */
+function tileWidth(ordered: [number, TileModel[]][]): string {
+  const widest = Math.max(0, ...ordered.map(([, list]) => list.length));
+  if (widest >= 6) return "10rem";
+  if (widest >= 5) return "12rem";
+  return "14rem";
+}
+
+/** The id badge's box: the rect's `width` becomes a `min-width`, and the rect's
+ *  horizontal CENTRE becomes the anchor (see the badge's own comment below). */
+const idBadgePct = pct(ID_BADGE);
+const idBadgeStyle: CSSProperties = {
+  left: `${((ID_BADGE.left + ID_BADGE.width / 2) * 100).toFixed(2)}%`,
+  top: idBadgePct.top,
+  height: idBadgePct.height,
+  minWidth: idBadgePct.width,
+};
+
+/** The staggered pyramid, drawn from `grid_position` and nothing else.
+ *
+ * Row `r` is inset by half a tile, which is exactly the brick offset the
+ * engine's adjacency encodes: row `r+1`'s cell `j` sits in the notch between
+ * row `r`'s cells `j` and `j+1`. Nothing here assumes a pyramid — any geometry
+ * the engine hands over renders, which is the same property the CLI's renderer
+ * was built for. */
+export function Board({
+  board,
+  art,
+  labels,
+  colors,
+  onTileClick,
+  selected,
+  busy,
+  changed,
+  changedBy,
+}: {
+  board: BoardModel;
+  art: ArtManifest | null;
+  labels: Labels | null;
+  colors: PlayerColor[];
+  onTileClick?: (area: number) => void;
+  selected?: number[];
+  /** The areas the walk is lighting — `diffFrames`' own set, never a rule
+   *  restated here (M5.5 spec §3.2.4). */
+  changed?: Set<number>;
+  /** Whose move changed them; the outline is drawn in that seat's colour. */
+  changedBy?: PlayerColor;
+  /** A request is in flight. The tile is a mutation control like any option
+   *  button and takes the same guard — it was the one that did not, and a
+   *  double-click on a placement toggle could leave the highlight disagreeing
+   *  with the server. */
+  busy?: boolean;
+}) {
+  const rows = new Map<number, TileModel[]>();
+  for (const tile of board.tiles) {
+    const r = tile.grid_position[0];
+    const list = rows.get(r) ?? [];
+    list.push(tile);
+    rows.set(r, list);
+  }
+  const ordered = [...rows.entries()].sort((a, b) => a[0] - b[0]);
+  for (const [, list] of ordered) list.sort((a, b) => a.grid_position[1] - b.grid_position[1]);
+
+  // The popover's whole state: which tile, and where it is. One at a time.
+  const [pop, setPop] = useState<{ area: number; anchor: Anchor; rightEdge?: number } | null>(
+    null,
+  );
+  const show = (area: number, el: HTMLElement) => {
+    const r = el.getBoundingClientRect();
+    // The table's right edge, read from the same rect API as the anchor: the
+    // popover flips left against IT rather than against the viewport, so it
+    // cannot lie over the pinned answer bar beside the table. `closest` is
+    // `null` wherever the board is rendered without a `.table` (a component
+    // test), and the flip falls back to the viewport there.
+    const table = el.closest(".table");
+    setPop({
+      area,
+      anchor: { left: r.left, top: r.top, right: r.right, bottom: r.bottom },
+      ...(table ? { rightEdge: table.getBoundingClientRect().right } : {}),
+    });
+  };
+  const hide = () => setPop(null);
+  const popTile = pop ? board.tiles.find((t) => t.area === pop.area) : undefined;
+  const popIsOpen = pop !== null;
+
+  // **A hover-opened popover leaves nothing focused, so Escape is handled
+  //  HERE and nowhere else.** Putting it on the tile — where it started —
+  //  meant the key only worked for a popover the keyboard had opened: after
+  //  pointing at a tile the target is the body, the tile's handler never sees
+  //  the key, and the tooltip had no way out but moving the pointer. One
+  //  listener, mounted only while a popover is open, covers both ways in.
+  useEffect(() => {
+    if (!popIsOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setPop(null);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [popIsOpen]);
+
+  // **A tile that goes `disabled` under the pointer never fires `mouseleave`.**
+  // Clicking a tile sets `busy`, which disables every tile button, and Chrome
+  // then suppresses the leave event — so the popover the hover opened stayed
+  // on screen over a board that had already moved on. The request going out is
+  // the moment the hover stopped meaning anything, so that is where it closes.
+  useEffect(() => {
+    if (busy) setPop(null);
+  }, [busy]);
+
+  return (
+    <div
+      className="board"
+      style={
+        {
+          "--tile-ladder": tileWidth(ordered),
+          "--n": Math.max(1, ...ordered.map(([, list]) => list.length)),
+          // Floored for the same reason `--n` is: both are divisors in the fit
+          // rule's `calc()`, and a board with no rows would divide by zero.
+          "--rows": Math.max(1, ordered.length),
+        } as CSSProperties
+      }
+    >
+      {ordered.map(([r, tiles]) => (
+        <div
+          className="board-row"
+          key={r}
+          style={{ marginLeft: `calc((var(--tile-w) + 0.4rem) * ${r} / 2)` }}
+        >
+          {tiles.map((t) => (
+            <Tile
+              key={t.area}
+              tile={t}
+              art={art}
+              labels={labels}
+              colors={colors}
+              onClick={onTileClick}
+              isSelected={selected?.includes(t.area) ?? false}
+              isChanged={changed?.has(t.area) ?? false}
+              changedBy={changedBy}
+              busy={busy ?? false}
+              onShow={show}
+              onHide={hide}
+              popOpen={pop?.area === t.area}
+            />
+          ))}
+        </div>
+      ))}
+      {pop && popTile && (
+        <TilePopover
+          tile={popTile}
+          art={art}
+          labels={labels}
+          colors={colors}
+          anchor={pop.anchor}
+          rightEdge={pop.rightEdge}
+        />
+      )}
+      <Legend />
+    </div>
+  );
+}
+
+function Tile({
+  tile,
+  art,
+  labels,
+  colors,
+  onClick,
+  isSelected,
+  isChanged,
+  changedBy,
+  busy,
+  onShow,
+  onHide,
+  popOpen,
+}: {
+  tile: TileModel;
+  art: ArtManifest | null;
+  labels: Labels | null;
+  colors: PlayerColor[];
+  onClick?: (area: number) => void;
+  isSelected: boolean;
+  isChanged: boolean;
+  changedBy?: PlayerColor;
+  busy: boolean;
+  onShow: (area: number, el: HTMLElement) => void;
+  onHide: () => void;
+  popOpen: boolean;
+}) {
+  const name = labels?.area_types[tile.area_type] ?? tile.area_type;
+  const isCanal = tile.area_type === "Canal";
+  const id = `A${String(tile.area).padStart(2, "0")}`;
+  const face = areaArt(art, tile.area_type);
+  const tokenSrc = fivePowerArt(art, tile.token);
+
+  // **The tile is the art, and the pieces sit on it where the physical ones do**
+  // (M5 spec §3.2, owner ruling R4). No caption: the printed title IS the name,
+  // the site card lies upright over the top-right quarter as in the owner's
+  // photograph (W0b turned the crops, so nothing here rotates it), the pieces
+  // stand in the full-width band below it, the id badge sits in the tile's
+  // bottom margin centred under the ladder, and the 5-Power token sits in its
+  // printed slot. Every rect comes from `tile_rects.json`, never typed here.
+  // What the caption used to say in words is not gone to a screen reader, but
+  // WHERE it rides depends on the ROLE — which is the next paragraph, and it is
+  // not one answer.
+  // **The facts the caption used to carry, worded ONCE and spent twice.**
+  //
+  // The tile is one `<div>` in both states (the element paragraph below says
+  // why), so what decides this is `role` and never a tag. WITHOUT the role a
+  // screen reader walks the subtree, so these ride as `.sr-only` spans and
+  // `Pieces` announces the pieces under its own `role="img"` name. WITH
+  // `role="button"` neither happens: the tile is a single node to assistive
+  // technology and its `aria-label` overrides its contents, so every span
+  // inside it and every nested name is suppressed. On an interactive board
+  // that is EVERY non-Canal tile — so the same words are folded into the label
+  // there, with the pieces prepended, and nothing a sighted player can read on
+  // the art is missing from what is announced.
+  const pieces = piecesWords(tile.presidents, tile.assistants, tile.has_station, colors);
+  const facts = isCanal
+    ? ["crossing only · 1 yen to the bank"]
+    : [
+        tile.token ? `5-Power ${fivePowerWords(tile.token)}` : "5-Power taken",
+        ...(tile.site?.index != null ? [`Site ${tile.site.index}`] : []),
+        ...(tile.reachable ? ["a Movement destination the engine offers"] : []),
+      ];
+
+  const body = (
+    <>
+      <div className="tile-art-box">
+        {face ? (
+          <img className="tile-art" src={face} alt="" loading="lazy" />
+        ) : (
+          <div className="tile-art-blank">
+            <span className="tile-name">{name}</span>
+          </div>
+        )}
+        {tokenSrc && (
+          <span className="token-slot">
+            <img src={tokenSrc} alt="" loading="lazy" />
+          </span>
+        )}
+        {tile.site && (
+          <div className="site-on-tile" style={pct(SITE_CARD)}>
+            <SiteFace art={art} site={tile.site} colors={colors} />
+          </div>
+        )}
+        {!isCanal && (
+          <div className="pieces-band" style={pct(PIECES)}>
+            <Pieces
+              presidents={tile.presidents}
+              assistants={tile.assistants}
+              hasStation={tile.has_station}
+              colors={colors}
+              art={art}
+            />
+          </div>
+        )}
+        {/* **The rect's width is a FLOOR here, not a ceiling, and that is the
+            whole fix.** The badge's text is a fixed 8.5px while `id_badge.width`
+            is a fraction of `--tile-w`, which is not a constant at all: above
+            1201 the fit rule sizes it anywhere from the 10rem floor to the
+            22rem cap, and below it the ladder drops from 14rem at 2P to 10rem
+            at 4P — so the ground came out at 13.6px holding ~16.3px of "A17",
+            and the last glyph spilled off the dark pill onto the pale print,
+            white on cream and unreadable. (Seen at gate V1; 2P fitted with
+            2.7px to spare, which is why it went unnoticed, and 3P sits on the
+            boundary.) Sizing the ground to its content cannot drift with the
+            tile, where no fixed fraction can be right at every player count.
+            The anchor moves to the rect's own CENTRE so growing the box keeps
+            it centred — derived from the rect, never a written-down 50%. */}
+        <span className="tile-id" style={idBadgeStyle}>
+          {id}
+        </span>
+      </div>
+      <span className="sr-only">
+        {id} {name}
+      </span>
+      {facts.map((f) => (
+        <span className="sr-only" key={f}>
+          {f}
+        </span>
+      ))}
+    </>
+  );
+
+  // **The prefix is load-bearing and stays first**: five component cells find a
+  // tile by `^A\d\d ` — `App.test.tsx`'s `tile()` helper, used four times, and
+  // the disabled-board cell in `Board.test.tsx`. NOT the browser harness, which
+  // selects `.tile[role="button"]:not([aria-disabled="true"])` by CSS and never
+  // reads the label.
+  const label = [
+    `${id} ${name}${isSelected ? " — selected" : ""}`,
+    ...(pieces ? [pieces] : []),
+    ...facts,
+  ].join(" · ");
+
+  // The mover's colour rides as `.seat-*`, whose only property is `color` — so
+  // one CSS rule outlines the tile in `currentColor` and a fifth seat colour
+  // stays one line in the palette rather than a fifth rule here.
+  const className = [
+    "tile",
+    tile.reachable ? "reachable" : "",
+    isCanal ? "canal" : "",
+    isSelected ? "selected" : "",
+    isChanged ? `changed ${seatClass(changedBy)}` : "",
+    face ? "has-art" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  const hoverable = {
+    onMouseEnter: (e: React.MouseEvent<HTMLElement>) => onShow(tile.area, e.currentTarget),
+    onMouseLeave: onHide,
+    onFocus: (e: React.FocusEvent<HTMLElement>) => onShow(tile.area, e.currentTarget),
+    onBlur: onHide,
+    // No `onKeyDown` here: Escape closes the popover from a document listener
+    // in `Board`, because a hover-opened one leaves this element unfocused and
+    // a handler on it would never run. One rule, stated once.
+    ...(popOpen ? { "aria-describedby": `pop-${id}` } : {}),
+  };
+
+  // **ONE ELEMENT IN BOTH STATES, and the reason is what the player saw.**
+  //
+  // This used to return a `<div>` when it had no `onClick` and a `<button>`
+  // when it had one. React reconciles by element TYPE, so opening a placement
+  // picker replaced all ten tiles and their thirty `<img loading="lazy">`
+  // children — and on the live site the pyramid drew as dark boxes for two to
+  // four seconds at exactly the click the set table and the walk lead the
+  // player to (final review I2: `complete` 0 of 30 at ~1s, 30 of 30 at ~4s,
+  // every area art `transferSize: 0`, so the images were in cache and the
+  // remount was the whole cost). The `<img>` attribute stays `lazy` — the
+  // runbook's first-paint figures rest on it — and the node is what stops
+  // changing.
+  //
+  // **The accessible semantics are the ones the two tags had, kept
+  // deliberately rather than by luck** (ruling R-F2): with no `role`, a screen
+  // reader walks the subtree and reads the `.sr-only` spans and `Pieces`' own
+  // `role="img"` name, exactly as the inert `<div>` did; with `role="button"`
+  // the tile is a single node whose `aria-label` overrides its contents,
+  // exactly as the `<button>` did. What a tag gave for free and an attribute
+  // does not is keyboard activation, so `onKey` supplies it, and `disabled`
+  // becomes `aria-disabled` plus no handler at all — the tile is out of the tab
+  // order while a request is in flight, as the disabled button was.
+  const interactive = onClick !== undefined && !isCanal;
+  const onKey = (e: React.KeyboardEvent<HTMLElement>) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    // Space scrolls the page otherwise, which is what a native button's
+    // default action suppresses.
+    e.preventDefault();
+    onClick?.(tile.area);
+  };
+  return (
+    <div
+      className={className}
+      role={interactive ? "button" : undefined}
+      tabIndex={interactive && busy ? -1 : 0}
+      aria-label={interactive ? label : undefined}
+      aria-pressed={interactive ? isSelected : undefined}
+      aria-disabled={interactive && busy ? true : undefined}
+      onClick={interactive && !busy ? () => onClick!(tile.area) : undefined}
+      onKeyDown={interactive && !busy ? onKey : undefined}
+      {...hoverable}
+    >
+      {body}
+    </div>
+  );
+}
+
+/** What the marks mean. Worded for the pieces, since the tile now draws them
+ *  as pieces rather than as the terminal's glyph alphabet. */
+function Legend() {
+  return (
+    <details className="legend">
+      <summary>marks</summary>
+      <div>
+        a pawn is a president and a cube an assistant, each in its owner&rsquo;s colour (a number
+        beside a cube counts a stack) &middot; the small card on a tile is its building site, with a
+        built space in its builder&rsquo;s colour &middot; the token in the printed 5-space is the
+        5-Power bonus, and an empty frame means it is taken
+      </div>
+      <div>
+        a green border is a Movement destination the engine offers &middot; a blue border is a tile
+        you have selected &middot; the id badge (A00&hellip;) is what every prompt names
+      </div>
+    </details>
+  );
+}

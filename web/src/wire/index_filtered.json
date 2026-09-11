@@ -1,0 +1,717 @@
+{
+  "filter": {
+    "Good": "Copper"
+  },
+  "groups": [
+    {
+      "cards": [
+        {
+          "face": {
+            "Order": {
+              "id": 3,
+              "printed": {
+                "country": "English",
+                "id": 3,
+                "requirements": {
+                  "copper": 2,
+                  "seafood": 1,
+                  "silk": 0,
+                  "tea": 0
+                },
+                "rewards": {
+                  "any_trade_good": 0,
+                  "copper": 0,
+                  "imported_goods": 0,
+                  "money": 1,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "victory_points": 4,
+                  "warehouse_tokens": 0
+                }
+              }
+            }
+          },
+          "location": null,
+          "selection": null
+        },
+        {
+          "face": {
+            "Order": {
+              "id": 10,
+              "printed": {
+                "country": "English",
+                "id": 10,
+                "requirements": {
+                  "copper": 2,
+                  "seafood": 1,
+                  "silk": 0,
+                  "tea": 1
+                },
+                "rewards": {
+                  "any_trade_good": 0,
+                  "copper": 0,
+                  "imported_goods": 0,
+                  "money": 0,
+                  "movement": 2,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "victory_points": 4,
+                  "warehouse_tokens": 0
+                }
+              }
+            }
+          },
+          "location": null,
+          "selection": null
+        },
+        {
+          "face": {
+            "Order": {
+              "id": 13,
+              "printed": {
+                "country": "English",
+                "id": 13,
+                "requirements": {
+                  "copper": 2,
+                  "seafood": 2,
+                  "silk": 1,
+                  "tea": 0
+                },
+                "rewards": {
+                  "any_trade_good": 0,
+                  "copper": 0,
+                  "imported_goods": 1,
+                  "money": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "victory_points": 8,
+                  "warehouse_tokens": 0
+                }
+              }
+            }
+          },
+          "location": {
+            "PortSlot": {
+              "board_b": false,
+              "slot": 2
+            }
+          },
+          "selection": null
+        },
+        {
+          "face": {
+            "Order": {
+              "id": 15,
+              "printed": {
+                "country": "English",
+                "id": 15,
+                "requirements": {
+                  "copper": 3,
+                  "seafood": 0,
+                  "silk": 1,
+                  "tea": 1
+                },
+                "rewards": {
+                  "any_trade_good": 0,
+                  "copper": 0,
+                  "imported_goods": 1,
+                  "money": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "victory_points": 9,
+                  "warehouse_tokens": 0
+                }
+              }
+            }
+          },
+          "location": null,
+          "selection": null
+        },
+        {
+          "face": {
+            "Order": {
+              "id": 20,
+              "printed": {
+                "country": "English",
+                "id": 20,
+                "requirements": {
+                  "copper": 2,
+                  "seafood": 0,
+                  "silk": 1,
+                  "tea": 2
+                },
+                "rewards": {
+                  "any_trade_good": 0,
+                  "copper": 0,
+                  "imported_goods": 1,
+                  "money": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "victory_points": 8,
+                  "warehouse_tokens": 0
+                }
+              }
+            }
+          },
+          "location": null,
+          "selection": null
+        },
+        {
+          "face": {
+            "Order": {
+              "id": 24,
+              "printed": {
+                "country": "English",
+                "id": 24,
+                "requirements": {
+                  "copper": 3,
+                  "seafood": 2,
+                  "silk": 1,
+                  "tea": 0
+                },
+                "rewards": {
+                  "any_trade_good": 0,
+                  "copper": 0,
+                  "imported_goods": 1,
+                  "money": 2,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "victory_points": 7,
+                  "warehouse_tokens": 0
+                }
+              }
+            }
+          },
+          "location": null,
+          "selection": null
+        },
+        {
+          "face": {
+            "Order": {
+              "id": 27,
+              "printed": {
+                "country": "English",
+                "id": 27,
+                "requirements": {
+                  "copper": 2,
+                  "seafood": 2,
+                  "silk": 0,
+                  "tea": 0
+                },
+                "rewards": {
+                  "any_trade_good": 0,
+                  "copper": 0,
+                  "imported_goods": 0,
+                  "money": 2,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "victory_points": 1,
+                  "warehouse_tokens": 1
+                }
+              }
+            }
+          },
+          "location": null,
+          "selection": null
+        },
+        {
+          "face": {
+            "Order": {
+              "id": 32,
+              "printed": {
+                "country": "English",
+                "id": 32,
+                "requirements": {
+                  "copper": 2,
+                  "seafood": 1,
+                  "silk": 0,
+                  "tea": 1
+                },
+                "rewards": {
+                  "any_trade_good": 0,
+                  "copper": 0,
+                  "imported_goods": 1,
+                  "money": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "victory_points": 5,
+                  "warehouse_tokens": 0
+                }
+              }
+            }
+          },
+          "location": null,
+          "selection": null
+        }
+      ],
+      "key": {
+        "Country": "English"
+      }
+    },
+    {
+      "cards": [
+        {
+          "face": {
+            "Order": {
+              "id": 16,
+              "printed": {
+                "country": "American",
+                "id": 16,
+                "requirements": {
+                  "copper": 1,
+                  "seafood": 3,
+                  "silk": 0,
+                  "tea": 2
+                },
+                "rewards": {
+                  "any_trade_good": 0,
+                  "copper": 0,
+                  "imported_goods": 1,
+                  "money": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "victory_points": 8,
+                  "warehouse_tokens": 0
+                }
+              }
+            }
+          },
+          "location": {
+            "PortSlot": {
+              "board_b": false,
+              "slot": 5
+            }
+          },
+          "selection": null
+        },
+        {
+          "face": {
+            "Order": {
+              "id": 18,
+              "printed": {
+                "country": "American",
+                "id": 18,
+                "requirements": {
+                  "copper": 2,
+                  "seafood": 3,
+                  "silk": 0,
+                  "tea": 0
+                },
+                "rewards": {
+                  "any_trade_good": 0,
+                  "copper": 0,
+                  "imported_goods": 1,
+                  "money": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "victory_points": 6,
+                  "warehouse_tokens": 0
+                }
+              }
+            }
+          },
+          "location": null,
+          "selection": null
+        },
+        {
+          "face": {
+            "Order": {
+              "id": 22,
+              "printed": {
+                "country": "American",
+                "id": 22,
+                "requirements": {
+                  "copper": 1,
+                  "seafood": 4,
+                  "silk": 0,
+                  "tea": 0
+                },
+                "rewards": {
+                  "any_trade_good": 0,
+                  "copper": 0,
+                  "imported_goods": 0,
+                  "money": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "victory_points": 8,
+                  "warehouse_tokens": 0
+                }
+              }
+            }
+          },
+          "location": null,
+          "selection": null
+        },
+        {
+          "face": {
+            "Order": {
+              "id": 31,
+              "printed": {
+                "country": "American",
+                "id": 31,
+                "requirements": {
+                  "copper": 1,
+                  "seafood": 3,
+                  "silk": 0,
+                  "tea": 0
+                },
+                "rewards": {
+                  "any_trade_good": 0,
+                  "copper": 0,
+                  "imported_goods": 0,
+                  "money": 0,
+                  "movement": 2,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "victory_points": 2,
+                  "warehouse_tokens": 0
+                }
+              }
+            }
+          },
+          "location": null,
+          "selection": null
+        }
+      ],
+      "key": {
+        "Country": "American"
+      }
+    },
+    {
+      "cards": [
+        {
+          "face": {
+            "Order": {
+              "id": 5,
+              "printed": {
+                "country": "French",
+                "id": 5,
+                "requirements": {
+                  "copper": 1,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 2
+                },
+                "rewards": {
+                  "any_trade_good": 0,
+                  "copper": 0,
+                  "imported_goods": 1,
+                  "money": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "victory_points": 1,
+                  "warehouse_tokens": 0
+                }
+              }
+            }
+          },
+          "location": null,
+          "selection": null
+        },
+        {
+          "face": {
+            "Order": {
+              "id": 7,
+              "printed": {
+                "country": "French",
+                "id": 7,
+                "requirements": {
+                  "copper": 1,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 3
+                },
+                "rewards": {
+                  "any_trade_good": 0,
+                  "copper": 0,
+                  "imported_goods": 1,
+                  "money": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "victory_points": 3,
+                  "warehouse_tokens": 0
+                }
+              }
+            }
+          },
+          "location": null,
+          "selection": null
+        },
+        {
+          "face": {
+            "Order": {
+              "id": 23,
+              "printed": {
+                "country": "French",
+                "id": 23,
+                "requirements": {
+                  "copper": 1,
+                  "seafood": 0,
+                  "silk": 2,
+                  "tea": 3
+                },
+                "rewards": {
+                  "any_trade_good": 0,
+                  "copper": 0,
+                  "imported_goods": 1,
+                  "money": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "victory_points": 9,
+                  "warehouse_tokens": 0
+                }
+              }
+            }
+          },
+          "location": null,
+          "selection": null
+        },
+        {
+          "face": {
+            "Order": {
+              "id": 34,
+              "printed": {
+                "country": "French",
+                "id": 34,
+                "requirements": {
+                  "copper": 2,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 3
+                },
+                "rewards": {
+                  "any_trade_good": 0,
+                  "copper": 0,
+                  "imported_goods": 1,
+                  "money": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "victory_points": 9,
+                  "warehouse_tokens": 0
+                }
+              }
+            }
+          },
+          "location": null,
+          "selection": null
+        }
+      ],
+      "key": {
+        "Country": "French"
+      }
+    },
+    {
+      "cards": [
+        {
+          "face": {
+            "Order": {
+              "id": 14,
+              "printed": {
+                "country": "German",
+                "id": 14,
+                "requirements": {
+                  "copper": 1,
+                  "seafood": 0,
+                  "silk": 2,
+                  "tea": 2
+                },
+                "rewards": {
+                  "any_trade_good": 0,
+                  "copper": 0,
+                  "imported_goods": 0,
+                  "money": 2,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "victory_points": 6,
+                  "warehouse_tokens": 0
+                }
+              }
+            }
+          },
+          "location": "OwnHand",
+          "selection": null
+        },
+        {
+          "face": {
+            "Order": {
+              "id": 17,
+              "printed": {
+                "country": "German",
+                "id": 17,
+                "requirements": {
+                  "copper": 1,
+                  "seafood": 2,
+                  "silk": 2,
+                  "tea": 0
+                },
+                "rewards": {
+                  "any_trade_good": 0,
+                  "copper": 0,
+                  "imported_goods": 0,
+                  "money": 1,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "victory_points": 8,
+                  "warehouse_tokens": 0
+                }
+              }
+            }
+          },
+          "location": null,
+          "selection": null
+        }
+      ],
+      "key": {
+        "Country": "German"
+      }
+    },
+    {
+      "cards": [
+        {
+          "face": {
+            "Order": {
+              "id": 6,
+              "printed": {
+                "country": "Dutch",
+                "id": 6,
+                "requirements": {
+                  "copper": 1,
+                  "seafood": 2,
+                  "silk": 0,
+                  "tea": 1
+                },
+                "rewards": {
+                  "any_trade_good": 0,
+                  "copper": 0,
+                  "imported_goods": 1,
+                  "money": 1,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "victory_points": 2,
+                  "warehouse_tokens": 0
+                }
+              }
+            }
+          },
+          "location": {
+            "PortSlot": {
+              "board_b": false,
+              "slot": 1
+            }
+          },
+          "selection": null
+        },
+        {
+          "face": {
+            "Order": {
+              "id": 8,
+              "printed": {
+                "country": "Dutch",
+                "id": 8,
+                "requirements": {
+                  "copper": 1,
+                  "seafood": 0,
+                  "silk": 1,
+                  "tea": 1
+                },
+                "rewards": {
+                  "any_trade_good": 0,
+                  "copper": 0,
+                  "imported_goods": 1,
+                  "money": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "victory_points": 3,
+                  "warehouse_tokens": 0
+                }
+              }
+            }
+          },
+          "location": {
+            "PortSlot": {
+              "board_b": false,
+              "slot": 0
+            }
+          },
+          "selection": null
+        },
+        {
+          "face": {
+            "Order": {
+              "id": 19,
+              "printed": {
+                "country": "Dutch",
+                "id": 19,
+                "requirements": {
+                  "copper": 1,
+                  "seafood": 1,
+                  "silk": 1,
+                  "tea": 1
+                },
+                "rewards": {
+                  "any_trade_good": 0,
+                  "copper": 0,
+                  "imported_goods": 0,
+                  "money": 0,
+                  "movement": 0,
+                  "seafood": 0,
+                  "silk": 0,
+                  "tea": 0,
+                  "victory_points": 8,
+                  "warehouse_tokens": 0
+                }
+              }
+            }
+          },
+          "location": null,
+          "selection": null
+        }
+      ],
+      "key": {
+        "Country": "Dutch"
+      }
+    }
+  ],
+  "kind": "Orders",
+  "shown": 21,
+  "target": null,
+  "total": 36
+}

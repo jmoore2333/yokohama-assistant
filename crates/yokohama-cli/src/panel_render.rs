@@ -294,7 +294,12 @@ pub fn title_strip(title: &TitleModel, width: usize) -> String {
         TitleMode::Live => "live tracking",
         TitleMode::Sim => "simulation",
     });
-    sep(&mut facts).raw(&format!("seed {}", abbreviated_seed(title.seed)));
+    // A frame that declines to carry its seed prints no seed. The terminal
+    // always passes `Some` (see `TitleModel::seed`), so this arm is unreachable
+    // from the CLI and the nine capture goldens are unmoved by construction.
+    if let Some(seed) = title.seed {
+        sep(&mut facts).raw(&format!("seed {}", abbreviated_seed(seed)));
+    }
     if title.autosaved {
         sep(&mut facts).raw("autosaved");
     }
@@ -2187,14 +2192,14 @@ mod tests {
     /// centred over the frame it heads.
     #[test]
     fn the_title_strip_states_mode_seed_and_autosave() {
-        let live = TitleModel { mode: TitleMode::Live, seed: 1234, autosaved: true };
+        let live = TitleModel { mode: TitleMode::Live, seed: Some(1234), autosaved: true };
         let text = strip_ansi(&title_strip(&live, 100));
         assert!(text.contains("Y O K O H A M A"), "{text}");
         assert!(text.contains("live tracking"), "{text}");
         assert!(text.contains("seed 1234"), "{text}");
         assert!(text.contains("autosaved"), "{text}");
 
-        let sim = TitleModel { mode: TitleMode::Sim, seed: 1234, autosaved: false };
+        let sim = TitleModel { mode: TitleMode::Sim, seed: Some(1234), autosaved: false };
         let sim_text = strip_ansi(&title_strip(&sim, 100));
         assert!(sim_text.contains("simulation"), "{sim_text}");
         assert!(!sim_text.contains("autosaved"), "a session with no save target says nothing: {sim_text}");
@@ -2221,7 +2226,7 @@ mod tests {
     /// plain twin does rather than drifting left by the length of its escapes.
     #[test]
     fn the_title_strip_centres_on_visible_width() {
-        let title = TitleModel { mode: TitleMode::Sim, seed: 7, autosaved: false };
+        let title = TitleModel { mode: TitleMode::Sim, seed: Some(7), autosaved: false };
         let plain = title_strip(&title, 120);
         crate::style::force(true);
         let painted = title_strip(&title, 120);

@@ -1,0 +1,1448 @@
+/* Yokohama — an instrument, not a game portal.
+ *
+ * The palette is inherited rather than invented: the good/VP/yen tones are
+ * `mockgen.py`'s terminal→web map (the one the CLI's colours were reviewed
+ * under), and the semantic roles are `style::Tone`'s — player, good, VP, yen,
+ * reachable, chrome, dim, warn. Colour is never decorative here; every hue
+ * means one thing, which is what lets a player read the board at a glance.
+ *
+ * The card art is the only imagery, and since M3.5 it sits BESIDE the numbers
+ * rather than under them.
+ *
+ * This comment used to say the opposite, and the sentence it argued from was
+ * measured false: "a tile at 15rem cannot render a printed power ladder
+ * legibly". At a 10rem tile — two sizes SMALLER — a printed rung numeral renders
+ * 7.90px of cap height, which is 0.34px TALLER than the site-strip digits this
+ * same design already draws on the same tile and treats as readable. So the veil
+ * it justified was buying nothing and costing the one surface that carries what
+ * an Area Action pays at each power: measured mean transmittance over the
+ * printed ladder, 0.100.
+ *
+ * Recorded rather than quietly deleted, because a stylesheet that explains a
+ * rule with a false premise is how the rule survives three milestones.
+ */
+
+:root {
+  color-scheme: dark;
+
+  --bg: #0d1013;
+  --bg-raised: #14181d;
+  --bg-sunken: #090b0e;
+  --line: #232a32;
+  --line-bright: #33404d;
+
+  --fg: #e8ecf2;
+  --fg-dim: #8b97a6;
+  /* Raised from #5c6773 at M3.5. That value measured 3.31 / 3.09 / 3.42 : 1
+   * against the three grounds — below WCAG AA's 4.5:1 for body text — and it is
+   * the colour of `.tile-id`, which carries the area id, this project's
+   * canonical identification key, and of all four rail headings. #7b8795 clears
+   * AA on every ground (4.87:1 at worst) and stays clearly dimmer than
+   * `--fg-dim` at 6.01:1, so the three-step hierarchy is intact. */
+  --fg-faint: #7b8795;
+
+  --red: #ff5f56;
+  --blue: #6f9bff;
+  --green: #69c25f;
+  --yellow: #f2c14e;
+
+  --copper: #d78742;
+  --silk: #e8ecf2;
+  --tea: #69c25f;
+  --seafood: #5fd7e8;
+  --imports: #d7af5f;
+  --vp: #5fa8ff;
+  --yen: #ffd75f;
+
+  --reachable: #69c25f;
+  --warn: #ff8f6b;
+
+  --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --display: "Fraunces", Georgia, "Times New Roman", serif;
+
+  --tile-w: 14rem;
+  --radius: 4px;
+
+  /* Every card sheet cell is 530x799; every area tile 709x531. The client
+   * reserves the box from these so a slow image never reflows the board. */
+  --card-aspect: 530 / 799;
+  --tile-aspect: 709 / 531;
+  /* The achievements and the building sites are LANDSCAPE cards, stored
+   * sideways on their sheets and turned upright by the generator (W0, W0b). */
+  --wide-card-aspect: 799 / 530;
+}
+
+@media (prefers-color-scheme: light) {
+  /* The instrument stays dark on purpose — a board read for an hour at a time
+   * is easier on a low-luminance ground — but the chrome lifts so it does not
+   * read as "broken dark mode" beside a light OS. */
+  :root { --bg: #101418; --bg-raised: #171c22; }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3 { font-family: var(--display); font-weight: 500; margin: 0; }
+
+.app { display: flex; flex-direction: column; min-height: 100vh; }
+.muted, .label { color: var(--fg-faint); }
+.label { text-transform: uppercase; letter-spacing: 0.1em; font-size: 10px; }
+
+/* ---- banner ------------------------------------------------------------ */
+.banner {
+  display: flex; align-items: baseline; gap: 1.25rem; flex-wrap: wrap;
+  padding: 0.75rem 1.25rem;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-sunken);
+}
+.banner h1 { font-size: 1.05rem; letter-spacing: 0.42em; text-transform: uppercase; }
+.banner .meta { color: var(--fg-faint); font-size: 11px; letter-spacing: 0.04em; }
+.banner .turn { margin-left: auto; }
+.views { display: flex; gap: 0.35rem; flex-wrap: wrap; }
+.views button.on { color: var(--fg); border-color: var(--vp); }
+/* **The nav is aligned as a BLOCK, not on a baseline, and that is a fix for a
+ * measured 4px (W5b).** `.banner` is `align-items: baseline`, and a flex
+ * container's baseline is its FIRST item's — so the banner's height depended on
+ * what happened to come first inside the nav. Every item there was a padded,
+ * bordered `button.ghost` until W5b put the Boards `<details>` at the head of
+ * the row; a `<summary>` carries neither (`.ghost` is styled on `button.ghost`
+ * only), its baseline sits ~5px higher inside the same 31px box, and the whole
+ * nav was pushed down to make the baselines meet. Measured at 1440: the nav's
+ * top went 12 → 16 and its bottom 43.09 → 47.09, so the banner read 60.09px
+ * against a 56px one-row box and `the_screen_itself.spec.ts`'s banner cell
+ * failed — with nothing wrapped. The nav is the tallest child and therefore
+ * defines the line either way, so aligning it as a block is visually identical
+ * to the pre-W5b banner and no longer couples the banner's height to which
+ * control is first in the row. */
+.banner > .views { align-self: center; }
+
+/* ---- the end-trigger strip --------------------------------------------- */
+.end-strip {
+  padding: 0.3rem 1.25rem;
+  background: var(--bg-sunken);
+  border-bottom: 1px solid var(--line);
+  color: var(--fg-dim);
+  font-size: 11.5px; letter-spacing: 0.02em;
+}
+.end-strip.final { color: var(--warn); border-bottom-color: var(--warn); font-weight: 700; }
+
+/* ---- layout: the table and the side column (M5) ------------------------ */
+/* Below 1201 the DOM order is the layout — table, side, then the sticky deck —
+ * which is M3.5's column stack unchanged (spec R8). Above it, the grid. */
+.table-body { padding: 1rem; }
+.side { display: flex; flex-direction: column; gap: 1rem; padding: 1rem; box-sizing: border-box; }
+
+@media (max-width: 1200px) {
+  /* **Both children state their width, and the measurement that put it there
+   * outlives the container that armed it.**
+   *
+   * The old `.stage` kept `align-items: flex-start`, and in a COLUMN flex
+   * container `align-items` governs the CROSS axis — which is the WIDTH. So
+   * `flex-start` meant fit-content, and the board's fit-content is its widest
+   * row: six 14rem tiles, 1376px, at 4P. Neither of the two things that look
+   * like they cover it does: `min-width: 0` caps the AUTOMATIC MINIMUM and not
+   * fit-content, and `.board`'s own `overflow-x: auto` cannot engage inside a
+   * column that has already been sized to its content — it reduces nothing
+   * intrinsic. The document then overflowed: measured at 390x844 on a 4P game,
+   * the board's column computed to 1376px and `html` to 1006px of horizontal
+   * overflow. `.app` is `align-items: stretch` (the default), so the trap is
+   * not armed here — the statement is what keeps it from being re-armed by one
+   * `align-items` on a container two levels up.
+   *
+   * `flex: 1 1 auto` on `.side` is the old `.rail`'s, and it is what puts the
+   * sticky deck against the bottom EDGE rather than under the content on a page
+   * shorter than the viewport: `.stage` carried `flex: 1` and the rail took its
+   * slack. Both are siblings of `.app` now, so the grow moves with the side. */
+  .table, .side { width: 100%; box-sizing: border-box; }
+  .side { flex: 1 1 auto; }
+}
+
+@media (min-width: 1201px) {
+  .app {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) var(--side);
+    grid-template-rows: auto auto auto minmax(0, 1fr);
+    height: 100vh; min-height: 0;
+    /* 24rem is the rail's old width and what keeps a 4P board at the 10rem
+     * floor (992px) inside the table at 1440; the column widens where the
+     * option rows can use it (spec §3.1). */
+    --side: 24rem;
+  }
+  .banner, .end-strip { grid-column: 1 / -1; }
+  .table {
+    grid-column: 1; grid-row: 3 / 5;
+    overflow: auto; min-height: 0;
+    /* The size container the fit rule's cqw/cqh units read (Task 8). */
+    container-type: size;
+    scrollbar-width: thin; scrollbar-color: var(--line-bright) transparent;
+  }
+  /* **`.app > .deck`, and the extra specificity is load-bearing.** `.deck`'s own
+   * rule is 400 lines BELOW this one and carries the same weight, so a bare
+   * `.deck` here loses `position`, `max-height` and `box-shadow` to it on source
+   * order alone — measured: the deck computed `position: sticky` and
+   * `max-height: 62vh` at 1710 with all four declarations written and three of
+   * them dead. The child combinator is what makes the grid's word the last one;
+   * the deck is a direct child of `.app` (`App.tsx`'s one `div.deck`). */
+  .app > .deck {
+    grid-column: 2; grid-row: 3;
+    position: static; max-height: 45vh;
+    box-shadow: none; border-left: 1px solid var(--line);
+  }
+  .side {
+    grid-column: 2; grid-row: 4;
+    overflow: auto; min-height: 0;
+    border-left: 1px solid var(--line);
+    scrollbar-width: thin; scrollbar-color: var(--line-bright) transparent;
+  }
+  /* A replayed board is not the live one. A border, never a dim (M4).
+   *
+   * Deliberately not a filter or an opacity either: the board's own legibility
+   * is the entire feature, and M3.5 already refused a conventional dim on the
+   * backdrop for the same reason. */
+  .table.replaying .board { outline: 1px solid var(--reachable); outline-offset: 4px; }
+}
+@media (min-width: 1600px) { .app { --side: 30rem; } }
+@media (min-width: 1900px) { .app { --side: 36rem; } }
+
+/* ---- board ------------------------------------------------------------- */
+/* **Below 1201 the tile is `Board.tsx`'s ladder** (M5 W3 made this the sub-1201
+ * arm; the ≥1201 rule below is the other one, and it owns every width from
+ * 1201 up). The ladder fits the board to a full-width column at 1440 and
+ * NOWHERE ELSE, so the narrow end still clips: 642px off screen at 390. That
+ * clipping is by design — no phone is 992px wide — but until now it had NO
+ * AFFORDANCE at all: `.board` styled no scrollbar, so on macOS overlay
+ * scrollbars a Movement destination in the last column was not merely off
+ * screen, it was undiscoverable. A thin visible track is the difference
+ * between "scroll for the rest of the board" and "the board ends here".
+ *
+ * What used to stand here — that the row layout holds from 1201 to 1439 and 4P
+ * clips 239px at 1201 — described the layout BEFORE the fit rule below. At
+ * 1201x900 4P that rule now hits its 10rem floor: measured, the tile is 160px,
+ * the board 992px inside an 817px table, `.table` scrolls 191px sideways, and
+ * the page itself overflows by 0. */
+.board {
+  --tile-w: var(--tile-ladder);
+  display: flex; flex-direction: column; gap: 0.4rem;
+  overflow-x: auto; padding-bottom: 0.4rem;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-bright) transparent;
+}
+@media (min-width: 1201px) {
+  /* **The fit rule (M5 spec §3.3).** The largest tile that fits `var(--n)`
+   * tiles across the table AND `var(--rows)` rows down it, floored at the
+   * measured 10rem legibility floor and capped at 22rem, the art's source width
+   * on a 2x display. Both are the REALIZED shape from Board.tsx, never a
+   * player count: `--n` is the widest row, 4/5/6 at 2P/3P/4P, and `--rows` is
+   * the row count, which `board_gen::row_lengths` makes FOUR at all three
+   * (4/3/2/1 · 5/4/3/2 · 6/5/4/3). So "four rows down" is true of every board
+   * the engine generates today, and writing `var(--rows)` is what keeps that a
+   * measurement rather than an assumption. cqw/cqh are `.table`'s. The 2rem is
+   * `.table-body`'s padding. `fit.ts` is this same arithmetic as the test
+   * oracle — change one, change the other.
+   *
+   * **It sizes the PYRAMID to the table, not the table's whole content**
+   * (controller ruling R-T8a). The marks legend and this element's own
+   * `padding-bottom` sit below the rows, and the sections joined them at W5b,
+   * so `.table` scrolling under a fitted pyramid is the design (owner ruling
+   * R2). The 40px at 2P and 9px at 3P this comment used to quote were read
+   * BEFORE the sections were on the table; with the default four sections on it
+   * is now 1.3k–1.8k px at 1440x900 and 1.4k–2.0k px at 1710x869 across
+   * 2P/3P/4P, with four rows still in view at every one of them. The figure
+   * MOVES with the game — the server draws the seed, so the sections hold
+   * different offers — and `the_table.spec.ts` prints the exact one for the
+   * game it played, every run. Where even the rows
+   * cannot fit — a short viewport, where the height term falls under the 10rem
+   * floor — the floor wins and the table scrolls the pyramid itself, which is
+   * the legibility floor doing its job rather than the rule failing. */
+  .table .board {
+    --by-w: calc((100cqw - 2rem - (var(--n) - 1) * 0.4rem) / var(--n));
+    --by-h: calc((100cqh - 2rem - (var(--rows) - 1) * 0.4rem) / var(--rows) * 709 / 531);
+    --tile-w: clamp(10rem, min(var(--by-w), var(--by-h)), 22rem);
+    width: max-content; margin: 0 auto; overflow: visible;
+  }
+}
+.board-row { display: flex; gap: 0.4rem; }
+
+.tile {
+  position: relative; overflow: hidden;
+  width: var(--tile-w); flex: 0 0 var(--tile-w);
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0; margin: 0;
+  color: inherit; font: inherit; text-align: left;
+  transition: border-color 120ms ease, transform 120ms ease;
+}
+/* The pickable tile, which is a `<div role="button">` and not a `<button>`:
+ * switching the TAG when a picker opened remounted the art and the pyramid drew
+ * as dark boxes for seconds (final review I2, ruling R-F2). The selector is the
+ * role, so the three rules follow the affordance and not the element. */
+.tile[role="button"] { cursor: pointer; }
+.tile[role="button"]:hover { transform: translateY(-1px); border-color: var(--line-bright); }
+.tile[role="button"]:focus-visible { outline: 2px solid var(--vp); outline-offset: 1px; }
+/* A request is in flight: the tile answers nothing, and says so with the
+ * pointer the disabled button used to carry for free. */
+.tile[aria-disabled="true"] { cursor: default; }
+.tile[aria-disabled="true"]:hover { transform: none; border-color: var(--line); }
+
+/* **The tile IS the picture** (M5). The box was the art half of a picture-plus-
+ * caption tile; it is now the whole tile, and every overlay is positioned
+ * inside it. The `aspect-ratio` is what reserves the height before a lazy
+ * `<img>` has any intrinsic size (measured at 0.00px of jump with the art
+ * blocked), and there is no caption left below to be cropped by it — so the
+ * bottom border it drew between the two halves has nothing to divide.
+ *
+ * Nothing dims the art. The veil and the six-stop scrim this replaced took the
+ * printed power ladder to a mean transmittance of 0.100; the reasoning and the
+ * rejected alternative are in `Board.tsx`. */
+.tile-art-box {
+  position: relative;
+  aspect-ratio: var(--tile-aspect);
+  overflow: hidden;
+}
+.tile-art { display: block; width: 100%; height: 100%; object-fit: cover; }
+
+/* The 5-Power token's printed home on the area art — the "5-space" the rulebook
+ * places it on at setup (`01-rules-reference.md:680`).
+ *
+ * **The rect is measured, not chosen.** Each of the thirteen non-Canal area arts
+ * minus its own 7px box blur, averaged: a line printed on every card survives
+ * that and every illustration cancels. The frame's four edges came out at
+ * x 0.816 / 0.941 and y 0.588 / 0.721 with ridge strengths +14.2 / +12.7 /
+ * +13.3 / +13.7 — so left 81.6%, top 58.8%, width 12.5%, height 13.3%. (The
+ * verticals at 0.984–0.993 are the card's own outer border, not this frame.)
+ *
+ * The token is square and sized off the box's SHORTER side, which is its
+ * height, so it sits inside the frame instead of spilling across rung 4. */
+.token-slot {
+  position: absolute;
+  left: 81.6%; top: 58.8%; width: 12.5%; height: 13.3%;
+  display: grid; place-items: center;
+  pointer-events: none;
+}
+/* **Sized off the slot's WIDTH, deliberately, and the 76% is arithmetic.**
+ *
+ * The obvious spelling — `height: 95%` against the shorter side — does not work
+ * and fails SILENTLY in the worst direction: the percentage does not resolve
+ * here, the image falls back to its intrinsic 128px, and a 16px slot renders a
+ * 122px token straight across the tile. Measured, not reasoned about.
+ *
+ * A percentage width against an absolutely-positioned box always resolves, so
+ * the whole size is expressed on that axis. The box's aspect is 709/531, so its
+ * height is 0.749 of its width; the slot is 12.5% wide and 13.3% tall, i.e.
+ * `0.133 × 0.749 = 9.96%` of the box's WIDTH. A token at 0.95 of the slot's
+ * shorter side is therefore `9.46%` of the box width, which is `76%` of the
+ * slot's own width. `max-height` is the belt: if any of that arithmetic ever
+ * drifts, the token is clipped to its frame instead of covering the ladder. */
+.token-slot img {
+  width: 76%; height: auto; max-height: 100%; aspect-ratio: 1;
+  object-fit: contain;
+  border-radius: 2px;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.45);
+}
+
+.tile.reachable { border-color: var(--reachable); box-shadow: inset 0 0 0 1px rgb(105 194 95 / 0.35); }
+.tile.selected { border-color: var(--vp); box-shadow: inset 0 0 0 2px var(--vp); }
+.tile.canal { background: repeating-linear-gradient(135deg, #0f1a1f, #0f1a1f 6px, #111f26 6px, #111f26 12px); }
+
+.tile-id { color: var(--fg-faint); font-size: 10px; }
+/* ---- M5: the tile is the art ------------------------------------------- */
+/* The rects are inline (`tile_rects.json` via `pct()`), never here: one source. */
+.tile-art-blank {
+  display: grid; place-items: center; height: 100%;
+  background: var(--bg-raised); color: var(--fg-dim);
+}
+/* The id badge, SCOPED to the board tile. `.tile-id` is a shared class —
+ * `Surfaces.tsx` prints it inline in the Areas heading and the site-card
+ * caption — so absolutely positioning the bare selector would pull both of
+ * those out of flow. The base rule above still dresses those two; this one
+ * overrides colour and size for the badge on the art.
+ *
+ * `line-height: 1` is load-bearing, not tidying. The inherited 1.5 makes the
+ * line box 12.75px inside a rect that is 0.07 of the tile — 8.3px at the
+ * default 14rem — so the glyphs overflowed their own dark ground by about
+ * 4.7px. That went unseen while the badge sat mid-tile; at W0b's bottom-margin
+ * position the overflow runs past the tile's edge and `.tile`'s `overflow:
+ * hidden` CUTS THE DIGITS. Measured in Chromium at 1710x900.
+ *
+ * The HORIZONTAL half of the same defect was left standing and gate V1 found
+ * it: `Board.tsx` now anchors the badge at the rect's centre and passes the
+ * rect's width as a `min-width`, so these two rules are what let the ground
+ * grow to hold its text. `translateX(-50%)` re-centres the grown box on that
+ * anchor; the padding keeps the glyphs off the pill's rounded ends. */
+.tile-art-box .tile-id {
+  position: absolute; z-index: 3;
+  transform: translateX(-50%);
+  display: grid; place-items: center;
+  padding: 0 0.15em;
+  font-size: 8.5px; line-height: 1; letter-spacing: 0.04em; color: var(--fg);
+  background: rgb(9 11 14 / 0.72); border-radius: 2px;
+}
+/* The site card fills its landscape box — no rotation since W0b turned the
+ * crops upright — so the remapped `.site-space` rects land on the printed
+ * spaces and the built glyph stands up. */
+.site-on-tile { position: absolute; z-index: 1; }
+.site-on-tile > .site-face {
+  position: absolute; inset: 0; aspect-ratio: auto;
+  border: 1px solid rgb(0 0 0 / 0.5); border-radius: 2px;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.5); background: var(--bg-sunken);
+}
+/* **THE FIT IS PROVED, NOT TUNED.** `--piece-units` (Pieces.tsx, from
+ * `piecesLayout.ts`) is the row's width in units of the glyph height h — every
+ * glyph, gap, pile column and count digit priced as a multiple of h — so with
+ * h = min(H, W / units) the row is `units × h ≤ W` by definition, at every
+ * crowd and every tile size. The clip on `.pieces-band` stays as a belt (a
+ * pixel of drop shadow), never as the mechanism. The RULE that decides which
+ * colour is a pile, a row of singles or a cube and a count is the pure
+ * function's, and the same `units` it computed is what this block divides by,
+ * which is what keeps the decision and the drawing from disagreeing.
+ *
+ * Pieces pack to the band's RIGHT edge: a small crowd sits where it always
+ * did, under the site card, and only a large one grows leftwards over the art
+ * (owner ruling R6 of the M5.5 spec). */
+.pieces-band { position: absolute; z-index: 2; display: flex; align-items: center; container-type: size; overflow: hidden; }
+.pieces {
+  display: flex; flex-wrap: nowrap; align-items: flex-end; justify-content: flex-end; width: 100%; height: 100%;
+  --piece-h: min(100cqh, calc(100cqw / var(--piece-units, 1)));
+  gap: calc(var(--piece-h) * 0.1);
+}
+.piece-group { display: inline-flex; align-items: flex-end; gap: calc(var(--piece-h) * 0.05); height: 100%; }
+/* A pile: two rows of half-height cubes that touch, the odd cube on top,
+ * right-aligned so the top row's short end faces the open band. */
+.piece-group.pile { flex-direction: column; align-items: flex-end; justify-content: flex-end; gap: 0; }
+.pile-row { display: flex; gap: 0; }
+.pile .piece.cube { height: calc(var(--piece-h) * 0.5); }
+/* An inline `<svg>` with a viewBox and no width/height is a replaced element at
+ * the CSS default 300x150px — about fourteen times the height of this band — so
+ * these three rules are what SIZE the pieces, not what tidies them. */
+.piece { height: var(--piece-h); width: auto; filter: drop-shadow(0 1px 1px rgb(0 0 0 / 0.6)); }
+.piece.cube { height: calc(var(--piece-h) * 0.72); }
+.piece.station { height: calc(var(--piece-h) * 0.8); border-radius: 2px; }
+.piece-n { font-size: calc(var(--piece-h) * 0.6); font-weight: 700; color: #fff; text-shadow: 0 1px 2px #000; line-height: 1; }
+/* Visually hidden, present to assistive technology. */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; overflow: hidden;
+  clip: rect(0 0 0 0); white-space: nowrap; border: 0; padding: 0; margin: -1px;
+}
+
+.tile-name {
+  font-family: var(--display); font-size: 0.95rem; line-height: 1.2;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  text-shadow: 0 1px 3px #000;
+}
+.tile-row { display: flex; align-items: center; gap: 0.35rem; font-size: 11px; min-height: 1.15rem; flex-wrap: wrap; }
+.tile-row.muted { color: var(--fg-faint); }
+/* These rows were the board tile's caption, which M5 deleted — the tile is the
+ * art now. They are kept because the Areas panel and the Dashboard still lay
+ * their own rows out with them; nothing on the board reads them. */
+.token-row { gap: 0.3rem; }
+
+.five-power { display: inline-flex; align-items: center; gap: 0.25rem; color: var(--yen); }
+.five-power img { width: 1.1rem; height: 1.1rem; border-radius: 2px; }
+
+.pawn { font-size: 12px; line-height: 1; display: inline-flex; align-items: baseline; }
+.pawn.president { font-size: 13px; }
+.pawn-n { font-size: 10px; margin-left: 1px; }
+.seat-red { color: var(--red); }
+.seat-blue { color: var(--blue); }
+.seat-green { color: var(--green); }
+.seat-yellow { color: var(--yellow); }
+
+.legend { margin-top: 0.6rem; color: var(--fg-faint); font-size: 10.5px; }
+.legend summary { cursor: pointer; letter-spacing: 0.12em; text-transform: uppercase; }
+.legend div { margin-top: 0.3rem; }
+.legend b { color: var(--fg-dim); }
+
+/* ---- chips -------------------------------------------------------------- */
+.chip {
+  display: inline-flex; align-items: center; gap: 0.15rem;
+  padding: 0 0.3rem; border-radius: 3px; font-size: 10px;
+  border: 1px solid var(--line-bright); color: var(--fg-dim);
+  white-space: nowrap;
+}
+.chip.vp { color: var(--vp); border-color: color-mix(in oklab, var(--vp) 40%, transparent); }
+.chip.yen { color: var(--yen); border-color: color-mix(in oklab, var(--yen) 40%, transparent); }
+.chip.copper { color: var(--copper); }
+.chip.silk { color: var(--silk); }
+.chip.tea { color: var(--tea); }
+.chip.seafood { color: var(--seafood); }
+.chip.imports { color: var(--imports); }
+.chip.wild {
+  background: linear-gradient(135deg, #e8c8f0 25%, #f3d3c4 25% 50%, #d7ecd0 50% 75%, #f2f0ea 75%);
+  color: #10151c; border-color: transparent; font-weight: 700;
+}
+.chip.locked { color: var(--warn); border-color: color-mix(in oklab, var(--warn) 40%, transparent); }
+.chip.station { color: var(--yellow); border-color: color-mix(in oklab, var(--yellow) 45%, transparent); }
+.chip.gear { color: var(--fg); border-color: var(--fg-faint); font-weight: 700; }
+.chip.tech, .chip.order { color: var(--fg-dim); }
+.chip.claimed { font-weight: 700; }
+.chip.muted { color: var(--fg-faint); border-color: var(--line); }
+.chip.warn { color: var(--warn); border-color: color-mix(in oklab, var(--warn) 45%, transparent); }
+.chip.zone-low { color: var(--seafood); }
+.chip.zone-mid { color: var(--yen); }
+.chip.zone-high { color: var(--warn); }
+.chips { display: flex; flex-wrap: wrap; gap: 0.2rem; margin-top: 0.15rem; }
+.chips.pays { opacity: 0.95; }
+
+/* ---- card faces --------------------------------------------------------- */
+.card-face {
+  margin: 0; display: flex; flex-direction: column; gap: 0.3rem;
+  background: var(--bg-sunken); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 0.4rem; width: 11rem;
+}
+.card-face.sm { width: 8rem; }
+.card-face img {
+  width: 100%; aspect-ratio: var(--card-aspect); object-fit: cover;
+  border-radius: 2px; display: block; background: #000;
+}
+/* The two LANDSCAPE families need the box `.card-face img` reserves to turn with
+ * them, or `object-fit: cover` centre-crops the art into a portrait hole. The
+ * sites are W0b's; the ACHIEVEMENTS are W0's own gap — landscape since that
+ * commit and cropped ever since in the Goals index (`Index.tsx`) and the rail's
+ * Achievements panel (`Dashboard.tsx`), which no test can see because jsdom has
+ * no layout. `.panel .card-face.achievement img` keeps its 3.4rem WIDTH; that
+ * is now ~2.25rem tall instead of ~5.1rem, which is the intent of the row
+ * layout rather than a cost. */
+.card-face.site img, .card-face.site .card-blank,
+.card-face.achievement img, .card-face.achievement .card-blank { aspect-ratio: var(--wide-card-aspect); }
+.panel .card-face.achievement { width: 100%; flex-direction: row; align-items: flex-start; gap: 0.5rem; }
+/* **These four rules style a panel the app no longer renders, and they are kept
+ * deliberately.** W5b moved the goals onto the table as `GoalsStrip`, and the
+ * app's one side-column render asks for `only={["Players", "Hand"]}`
+ * (`App.tsx`) — so nothing a player sees reaches them today. `Dashboard` is
+ * still the general panel renderer, its `Achievements` arm is still what a
+ * server sending that panel gets (and what the Dashboard cells render, since
+ * they pass no `only`), and deleting the rules would leave that arm unstyled
+ * rather than deleting it. So: dormant, not dead.
+ *
+ * The measurement they were written for is HISTORY, and the comment that stood
+ * here read as current. It argued 5.2rem → 3.4rem for a page-height saving of
+ * −130/−100/−50px at 2P/3P/4P, on the reasoning that the RAIL set the page
+ * height (`.stage` was `max(board, rail)`). There is no rail and no `.stage`:
+ * M3.5 pinned the deck and M5's grid gave the side column its own scroll, so
+ * the page height stopped being a budget at all. Kept as the record of why the
+ * width is 3.4rem, marked as the past. Two further readings from that work,
+ * unchanged in kind: dropping `flex-direction: column` from `.panel
+ * .card-strip` bought 0px at every player count (the children are
+ * `width: 100%`, so a wrapping strip still puts one per line) and was not
+ * shipped, and at 3P/4P the strip is caption-bound at 3.4rem (caption 92/109px
+ * against 82px of art), so shrinking recovers nothing. */
+.panel .card-face.achievement img { width: 3.4rem; flex: 0 0 3.4rem; }
+.panel .card-face.achievement .card-blank { width: 5.2rem; flex: 0 0 5.2rem; }
+.panel .card-face.achievement figcaption { flex: 1 1 auto; min-width: 0; }
+.panel .card-strip { flex-direction: column; }
+.card-blank {
+  width: 100%; aspect-ratio: var(--card-aspect);
+  display: flex; align-items: center; justify-content: center;
+  border: 1px dashed var(--line-bright); border-radius: 2px;
+  color: var(--fg-faint); font-size: 11px; text-align: center; padding: 0.3rem;
+}
+.card-blank.empty { aspect-ratio: var(--card-aspect); }
+.card-face figcaption { display: flex; flex-direction: column; gap: 0.15rem; }
+.card-title { display: flex; align-items: baseline; gap: 0.3rem; font-size: 11.5px; }
+.card-title .card-id { color: var(--fg-faint); font-size: 10px; }
+.card-note { color: var(--fg-faint); font-size: 10px; line-height: 1.35; }
+.card-strip { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+
+.progress-rows { display: flex; flex-direction: column; gap: 0.1rem; margin-top: 0.15rem; }
+.progress-row { display: flex; align-items: center; gap: 0.25rem; font-size: 10px; }
+.progress-row .dot { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: currentColor; flex: 0 0 auto; }
+.progress-row .bar { flex: 1 1 auto; height: 0.35rem; background: var(--line); border-radius: 2px; overflow: hidden; }
+.progress-row .fill { display: block; height: 100%; background: currentColor; }
+.progress-row .num { color: var(--fg-faint); min-width: 2.4rem; text-align: right; }
+
+/* ---- panels ------------------------------------------------------------ */
+.panel {
+  background: var(--bg-raised); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 0.7rem 0.85rem;
+}
+.panel h2 {
+  font-size: 10px; letter-spacing: 0.2em; text-transform: uppercase;
+  color: var(--fg-faint); font-family: var(--mono); font-weight: 500;
+  margin-bottom: 0.5rem;
+}
+.seat { padding: 0.4rem 0; border-top: 1px solid var(--line); }
+.seat:first-of-type { border-top: 0; }
+.seat-head { display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; }
+.seat-name { font-family: var(--display); font-size: 0.95rem; }
+.seat-head .tag { font-size: 10px; color: var(--fg-faint); }
+.seat.current .seat-name::before { content: "\25B6"; margin-right: 0.3rem; font-size: 0.7em; }
+.stat-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem; margin-top: 0.25rem; }
+
+.track { display: flex; flex-wrap: wrap; gap: 0.2rem; margin-top: 0.2rem; }
+.space {
+  position: relative;
+  display: inline-flex; flex-direction: column; align-items: center; line-height: 1.15;
+  min-width: 1.9rem; text-align: center; padding: 0.05rem 0.2rem;
+  border: 1px solid var(--line-bright); border-radius: 3px; font-size: 10px;
+  color: var(--fg-dim);
+}
+.space.taken { background: var(--line); color: var(--fg); border-color: currentColor; }
+/* The occupant marker sits UNDER the space's own figure, not beside it: the
+ * `margin-left` was an inline nudge from before W6 made `.space` a column,
+ * and it left the dot off centre in every track. */
+.space .occ { font-size: 9px; }
+/* What the space PAYS, on the space. It was a `title=` attribute and nothing
+ * else, which no touch screen, no screen reader and no assertion can see. */
+.space .sub { font-size: 8.5px; color: var(--vp); }
+/* The 2P dummy is a real occupant and never a seat. Marked, never coloured. */
+.space.dummy { border-style: dashed; color: var(--fg-faint); background: transparent; }
+
+/* ---- decision ---------------------------------------------------------- */
+
+/* **The pinned deck.** Warnings, the prompt and any error, held together at the
+ * bottom of the viewport so that answering never costs a scroll. See
+ * `App.tsx`'s comment for why the three share a container rather than each
+ * taking its own sticky rule — the short version is that separately they pin to
+ * the same edge and the error strip swallows Confirm and Undo.
+ *
+ * `max-height` plus a column flex is what keeps a long prompt honest: real
+ * prompts driven through this API measured 146, 201 and 562 option rows, whose
+ * natural heights are 5,721 / 7,827 / 21,646px. The deck refuses to grow past
+ * 62% of the viewport and hands the shortfall to `.options`, which is the only
+ * child allowed to scroll — so the phase chain, the question and every control
+ * stay on screen at 562 rows exactly as at three. Clamping the deck as a block
+ * instead would put Confirm at internal offset 22,088 with nothing saying so. */
+.deck {
+  position: sticky; bottom: 0; z-index: 10;
+  display: flex; flex-direction: column; min-height: 0;
+  max-height: 62vh;
+  background: var(--bg-sunken);
+  box-shadow: 0 -8px 20px rgb(0 0 0 / 0.35);
+}
+/* The deck's own children must be allowed to shrink, or `min-height: auto` on a
+ * flex item silently defeats every clamp above. */
+.deck > * { min-height: 0; }
+
+.decision {
+  border-top: 1px solid var(--line); background: var(--bg-sunken);
+  padding: 0.9rem 1.25rem 1.4rem;
+  display: flex; flex-direction: column; min-height: 0;
+}
+/* **Mounted always, costing nothing while empty.**
+ *
+ * The warnings and error blocks are live regions now, and a live region has to
+ * be in the accessibility tree BEFORE its text arrives or the change has
+ * nothing to announce against. So they are never unmounted and never
+ * `display: none` — which would take them out of the tree and put the problem
+ * back — they simply have no border, no padding and therefore no height until
+ * they hold something. */
+.decision.notices { padding: 0; border-top: 0; }
+.decision.notices:not(:empty) { padding: 0.9rem 1.25rem; border-top: 1px solid var(--line); }
+.messages:empty { display: none; }
+.chain { display: flex; flex-wrap: wrap; gap: 0.45rem; font-size: 10px; color: var(--fg-faint); letter-spacing: 0.08em; text-transform: uppercase; }
+.chain .lit { color: var(--fg); background: var(--line); padding: 0 0.35rem; border-radius: 3px; }
+.asking { font-family: var(--display); font-size: 1.05rem; margin: 0.5rem 0 0.6rem; }
+
+.options { display: flex; flex-direction: column; gap: 0.25rem; max-width: 62rem; }
+
+/* **Who gives up space first, when the deck runs out of it.**
+ *
+ * The deck is capped, so something inside it has to yield, and WHICH thing is
+ * the whole design. Two failures were measured getting this wrong, both of them
+ * silent to the component suite:
+ *
+ *  1. Scrolling every `.options` — `Decision.tsx`'s `retreat` arm reuses that
+ *     class as a plain wrapper around a message and a row of count buttons, so
+ *     the counts ended up inside the clip. Hence `.scrolls`, marked at the one
+ *     site that is really a list of answers.
+ *  2. Letting the ANSWER LIST absorb all the shrinkage. Against a bot seat the
+ *     applied-move deltas reach sixteen lines and 312px; the deck clamped at
+ *     446px and `.options` was squeezed to a height of exactly 0. The row's box
+ *     is still 34px tall, so its centre fell through onto `.controls` and the
+ *     first option became unclickable — four failing browser specs, and a real
+ *     player would have met it on their sixth move.
+ *
+ * So the order is stated rather than left to flex defaults: the controls, the
+ * question and the phase chain never shrink; the answer list shrinks to a floor
+ * of about two rows and then scrolls; the running commentary yields first and
+ * scrolls within its own cap. The answer is what the deck is FOR. */
+.decision > * { flex: 0 0 auto; }
+.options.scrolls {
+  flex: 1 1 auto;
+  min-height: 4.5rem;
+  overflow-y: auto;
+  scrollbar-width: thin; scrollbar-color: var(--line-bright) transparent;
+}
+.decision > .messages, .decision > .near-miss {
+  flex: 0 1 auto; min-height: 0; max-height: 7rem;
+  overflow-y: auto;
+  scrollbar-width: thin; scrollbar-color: var(--line-bright) transparent;
+}
+.option {
+  display: flex; align-items: baseline; gap: 0.6rem; width: 100%;
+  background: var(--bg-raised); color: var(--fg);
+  border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 0.4rem 0.6rem; font: inherit; text-align: left; cursor: pointer;
+  transition: border-color 100ms ease, background 100ms ease;
+}
+.option:hover:not(:disabled) { border-color: var(--line-bright); background: #1a2027; }
+.option:focus-visible { outline: 2px solid var(--vp); outline-offset: 1px; }
+.option:disabled { opacity: 0.5; cursor: default; }
+.option .num { color: var(--vp); font-weight: 700; min-width: 1.6rem; }
+.option .more { color: var(--fg-faint); margin-left: auto; }
+
+.near-miss { margin-top: 0.7rem; font-size: 11px; color: var(--fg-dim); max-width: 62rem; }
+.near-miss b { color: var(--fg); }
+
+.controls { display: flex; gap: 0.5rem; margin-top: 0.6rem; flex-wrap: wrap; }
+button.ghost {
+  background: transparent; color: var(--fg-dim); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 0.3rem 0.7rem; font: inherit; cursor: pointer;
+}
+button.ghost:hover { color: var(--fg); border-color: var(--line-bright); }
+button.ghost.danger:hover { color: var(--warn); border-color: var(--warn); }
+
+.messages { margin-top: 0.7rem; display: flex; flex-direction: column; gap: 0.15rem; max-width: 62rem; }
+.messages div { color: var(--fg-dim); font-size: 11.5px; }
+.messages div.warn, .warn { color: var(--warn); }
+
+/* ---- the read-only surfaces -------------------------------------------- */
+/* **A right-hand drawer above 1201px, the full-width panel below it.**
+ *
+ * The panel used to measure 1376×804 at 1440×900 and cover 980 of the board's
+ * 992px — 98.8% of the thing it was explaining. You could not read what an area
+ * pays at power 4 while looking at the area. As a 704px drawer it covers 308px
+ * and the board stays readable beside it; measured across all eleven surfaces at
+ * 1440 and 1280, every one of them contains cleanly.
+ *
+ * **The breakpoint is not decoration.** `min(44rem, 55vw)` shrinks FASTER than
+ * the old modal did, so below 1201 the drawer is a regression the modal never
+ * had: measured, `suggest` and `why` clip a `bar-name > code` by 6px at 1024 and
+ * 900, and `table.outcome` escapes its body by 19px at 900 (min-content 496.5
+ * against a 461px content box). Under 1201 the board is stacked above the rail
+ * anyway and there is no board to sit beside, so the drawer buys nothing there
+ * and costs three panels. Full width below, drawer above.
+ *
+ * `<dialog>` renders in the TOP LAYER, so `z-index` is meaningless here and the
+ * `.deck`'s own `z-index: 10` cannot fight it — which is why the deck takes a
+ * matching right inset while a surface is open rather than a stacking rule. */
+.surface {
+  position: fixed; inset: 3rem 2rem;
+  /* `width`/`height: auto` are NOT redundant with the insets: a `<dialog>` gets
+   * `width: fit-content; height: fit-content` from the UA stylesheet, and
+   * `fit-content` beats a top/bottom pair. Measured without this at 1280x720:
+   * the panel computed to 855px tall and ran to y=903 — 183px BELOW the fold —
+   * so its body never scrolled and the `why` panel's "Show all 185 candidates"
+   * button was unreachable. It failed as "element is outside of the viewport",
+   * which names the symptom and not the cause. */
+  width: auto; height: auto;
+  margin: 0; padding: 0; max-width: none; max-height: none;
+  background: var(--bg-raised); border: 1px solid var(--line-bright);
+  color: var(--fg);
+  border-radius: 6px; box-shadow: 0 24px 64px rgb(0 0 0 / 0.6);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+/* Not open means not shown — a `<dialog>` is `display: none` until it is, and
+ * the flex above would otherwise override that. */
+.surface:not([open]) { display: none; }
+
+/* Nearly clear on purpose. `showModal` makes the background inert, which is
+ * correct — these are read-only reference surfaces and nothing behind them is
+ * answerable — but the board must stay LEGIBLE beside the drawer, which is the
+ * entire reason for making it a drawer. A conventional dim would undo that. */
+.surface::backdrop { background: rgb(4 6 9 / 0.35); }
+
+@media (min-width: 1201px) {
+  .surface { inset: 3rem 2rem 3rem auto; width: min(44rem, 55vw); }
+}
+/* `role="presentation"` on the panel's header in `Surfaces.tsx`: a bare
+ * `<header>` inside a dialog is a SECOND `banner` landmark, and a screen reader
+ * offering two "banner" destinations on one page is offering a wrong one. */
+.surface header {
+  display: flex; align-items: baseline; gap: 1rem;
+  padding: 0.7rem 1rem; border-bottom: 1px solid var(--line); background: var(--bg-sunken);
+}
+.surface header h2 { font-size: 1rem; }
+.surface header .meta { color: var(--fg-faint); font-size: 11px; }
+.surface header button { margin-left: auto; }
+/* `min-height: 0` is what makes this actually SCROLL rather than be clipped.
+ *
+ * A flex child's default `min-height: auto` refuses to shrink below its content,
+ * so the body grew to its full height and `.surface`'s `overflow: hidden` cut it
+ * off — no scrollbar, no way to reach the bottom. It was latent for two
+ * milestones because a 1376px-wide panel wrapped its content short enough to
+ * fit; the 704px drawer is what surfaced it, on the `why` panel's 185 ranked
+ * candidates. */
+.surface-body {
+  padding: 1rem;
+  overflow: auto; min-height: 0; flex: 1 1 auto;
+  scrollbar-width: thin; scrollbar-color: var(--line-bright) transparent;
+}
+.surface-body h3 { font-size: 0.95rem; margin: 0.9rem 0 0.4rem; }
+.surface-body .lede { color: var(--fg-dim); margin-top: 0; }
+.slot-head { display: flex; gap: 0.25rem; }
+
+.area-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr)); gap: 0.7rem; }
+.area-card { background: var(--bg-sunken); border: 1px solid var(--line); border-radius: var(--radius); padding: 0.6rem; }
+.area-card h3 { font-size: 0.9rem; margin: 0 0 0.3rem; }
+table.ladder { width: 100%; border-collapse: collapse; font-size: 11px; margin-top: 0.3rem; }
+table.ladder td { padding: 0.1rem 0.2rem; border-top: 1px solid var(--line); }
+table.ladder .power { color: var(--vp); width: 1.4rem; font-weight: 700; }
+
+ol.log { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.1rem; }
+ol.log li { display: flex; gap: 0.6rem; font-size: 11.5px; padding: 0.1rem 0; border-top: 1px solid var(--line); }
+ol.log .num { color: var(--fg-faint); min-width: 2.5rem; text-align: right; }
+
+/* **The replay track (M4).**
+ *
+ * It lives in the log panel by owner ruling, and the BOARD deliberately does
+ * not: measured at HEAD, a 4P board inside this 704px drawer scrolls 322px
+ * horizontally and ~205px vertically, and the tile size that would fit it
+ * horizontally drops the printed power ladder to ~5.2px cap height against the
+ * 7.9px M3.5 measured as legible. So the panel carries the control and the
+ * words, and `.table` behind it draws the position at full size.
+ *
+ * `flex-wrap` because this row holds five controls and the drawer is 670px of
+ * content box at 1440 and 1280 alike — `min(44rem, 55vw)` clamps to 44rem at
+ * both. The range takes the slack; nothing else shrinks. */
+.scrub {
+  display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;
+  padding: 0.5rem 0; border-bottom: 1px solid var(--line); margin-bottom: 0.5rem;
+}
+.scrub input[type="range"] { flex: 1 1 12rem; min-width: 8rem; accent-color: var(--vp); }
+.scrub .scrub-at { color: var(--fg-dim); font-size: 11.5px; white-space: nowrap; }
+
+/* The log line is a button so a stop can be reached by keyboard and named by
+ * an accessible role — but it must not LOOK like one, because the log is a
+ * document you read far more often than a control you press. */
+.log-jump {
+  background: none; border: 0; padding: 0; margin: 0; color: inherit;
+  font: inherit; text-align: left; cursor: pointer;
+}
+.log-jump:hover { color: var(--fg); text-decoration: underline; }
+.log-jump:disabled { cursor: default; text-decoration: none; }
+ol.log li.at { background: rgb(105 194 95 / 0.12); }
+ol.log li.at .num { color: var(--reachable); }
+
+/* **The help panel's screenshots, which had NO rule at all.**
+ *
+ * They are 1440x900 PNGs rendered inside a 651px `.surface-body`, and nothing
+ * in this file or in `index.html` constrained them — so each ran 794px past the
+ * panel's right edge and the panel gained a horizontal scroll. The containment
+ * cell that exists to catch exactly that could not see it: `Help.tsx` sets
+ * `loading="lazy"`, so at the instant the cell measures, the images still have
+ * a 0x0 box and contribute nothing to `scrollWidth`. A missing rule plus a
+ * blind assertion is how a 794px overflow ships.
+ *
+ * `figure` also carries a 40px UA side margin, which is why the margin is reset
+ * rather than left to inherit. */
+.shot { margin: 0.8rem 0; }
+.shot img {
+  max-width: 100%; height: auto; display: block;
+  border: 1px solid var(--line); border-radius: 4px;
+}
+.shot figcaption { color: var(--fg-dim); font-size: 11.5px; margin-top: 0.35rem; }
+
+/* ---- setup ------------------------------------------------------------- */
+.setup { max-width: 52rem; margin: 3rem auto; padding: 0 1.25rem; }
+.setup h2 { font-size: 1.4rem; margin-bottom: 0.3rem; }
+.setup h3 { font-size: 1rem; margin: 1.6rem 0 0.4rem; }
+.setup p.lede { color: var(--fg-dim); margin-top: 0; }
+.field { display: flex; align-items: center; gap: 0.6rem; margin: 0.6rem 0; }
+.field label { min-width: 9rem; color: var(--fg-dim); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; }
+.field input, .field select {
+  background: var(--bg-sunken); color: var(--fg); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 0.3rem 0.5rem; font: inherit;
+}
+button.primary {
+  background: var(--vp); color: #061019; border: 0; border-radius: var(--radius);
+  padding: 0.45rem 1.1rem; font: inherit; font-weight: 700; cursor: pointer;
+}
+button.primary:disabled { opacity: 0.45; cursor: default; }
+
+.deal { display: flex; gap: 0.6rem; flex-wrap: wrap; margin: 0.4rem 0 0.9rem; }
+.deal-pick {
+  background: none; border: 1px solid transparent; border-radius: 6px;
+  padding: 0.2rem; cursor: pointer; font: inherit; color: inherit;
+}
+.deal-pick.chosen { border-color: var(--vp); box-shadow: 0 0 0 1px var(--vp); }
+.deal-pick:focus-visible { outline: 2px solid var(--vp); outline-offset: 1px; }
+
+.saved ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.25rem; }
+.saved li { display: flex; gap: 0.4rem; align-items: center; }
+
+.error { color: var(--warn); margin-top: 0.6rem; }
+.center { text-align: center; color: var(--fg-dim); padding: 3rem; }
+
+/* ---- mercenary supply --------------------------------------------------- */
+.merc-strip { display: flex; gap: 0.4rem; margin-top: 0.4rem; }
+.merc { display: inline-flex; align-items: center; gap: 0.15rem; font-size: 10px; color: var(--fg-dim); }
+.merc img { width: 1.35rem; height: 1.35rem; border-radius: 3px; }
+.merc.gone { opacity: 0.3; }
+.merc.gone img { filter: grayscale(1); }
+
+/* A zero good is printed, not dropped — a suppressed figure cannot be read as
+ * "none" rather than "not shown here", and imports are what the Customs track
+ * and one church faith payment type are counted in. */
+.chip.zero { opacity: 0.4; }
+
+/* A row's price. Stated even when free, because two rows that differ only in
+ * cost must not look identical — the terminal prints `free` for the same
+ * reason. */
+.option .price { color: var(--fg-faint); margin-left: auto; font-size: 10.5px; }
+.option .price.costs { color: var(--yen); }
+.option .price + .more { margin-left: 0.6rem; }
+
+/* ---- the explanation surface (M3) ---------------------------------------
+ *
+ * A DIVERGING bar chart: one row per feature, sorted by |contribution|, bars
+ * growing from a centre zero line — right helps this seat, left hurts it.
+ *
+ * The pair was VALIDATED, not chosen by eye. Against this panel's surface
+ * (#14181d) blue/orange separates at ΔE 23.0 under protanopia and 29.8 in
+ * normal vision, and both sit inside the dark-mode lightness band. The house
+ * --green/--red would have been the classic mistake: the one pair a
+ * red-green-colourblind reader cannot separate, on a chart whose entire
+ * meaning is which side of zero a row falls on.
+ *
+ * Colour is never the only encoding anyway. Every row sits on its own side of
+ * the zero line AND carries its signed number in a monospace column, so the
+ * chart reads in greyscale, in forced-colors mode, and to a reader who sees no
+ * difference between the two hues at all. */
+:root {
+  --helps: #3d86e0;
+  --hurts: #e06a44;
+}
+
+.explain section { margin-bottom: 1.1rem; }
+.explain .headline {
+  font-family: var(--display); font-size: 1.15rem; margin: 0.2rem 0;
+}
+.explain .meta { color: var(--fg-faint); font-size: 11px; display: block; margin: 0.15rem 0 0.5rem; }
+.explain .warn {
+  color: var(--warn); font-size: 12px; border-left: 2px solid var(--warn);
+  padding-left: 0.6rem; margin: 0.6rem 0;
+}
+.explain .provenance { border-top: 1px solid var(--line); padding-top: 0.6rem; }
+.explain code { font-family: var(--mono); font-size: 10px; color: var(--fg-faint); }
+
+.axis-legend {
+  display: grid; grid-template-columns: 1fr auto 1fr; gap: 0.5rem;
+  font-size: 10px; margin: 0 0 0.35rem; letter-spacing: 0.04em;
+}
+.axis-legend .hurts { text-align: right; color: var(--hurts); }
+.axis-legend .helps { color: var(--helps); }
+.axis-legend .muted { text-align: center; width: 1rem; }
+
+/* NO gap between rows, so the per-row zero segments join into one continuous
+ * spine. The breathing room moves onto the name cell instead. */
+.bars { display: flex; flex-direction: column; }
+.bar-row {
+  display: grid;
+  grid-template-columns: minmax(9rem, 1.1fr) minmax(8rem, 2fr) auto 4.5rem;
+  align-items: stretch; gap: 0.6rem;
+}
+.bar-row:hover { background: var(--bg-sunken); }
+.bar-name {
+  font-size: 12px; display: flex; flex-direction: column; line-height: 1.25;
+  padding: 2px 0;
+}
+.bar-track { display: grid; grid-template-columns: 1fr 1px 1fr; align-items: center; }
+.bar-half { display: flex; align-items: center; height: 100%; }
+.bar-half.left { justify-content: flex-end; }
+/* **The chart's spine.** Every bar is anchored to it, so which side a row falls
+ * on is readable before its colour is — which is what makes the chart survive
+ * greyscale, forced-colors, and a reader who cannot separate the two hues. It
+ * spans the FULL row height and the rows are flush, so the segments read as one
+ * line rather than as a dashed one. An earlier draft drew it at `--line-bright`
+ * inside a 10px track with a 2px row gap: on screen there was no visible zero
+ * at all, and a diverging chart without its zero is just two colours. */
+.bar-zero { background: var(--fg-faint); height: 100%; }
+.bar {
+  height: 10px; display: block;
+  /* Rounded at the DATA end only, square against the zero line — the mark's
+   * length is the measurement, and a rounded root would add pixels to it. */
+}
+.bar.helps { background: var(--helps); border-radius: 0 3px 3px 0; }
+.bar.hurts { background: var(--hurts); border-radius: 3px 0 0 3px; }
+.bar-terms { font-family: var(--mono); font-size: 10px; color: var(--fg-faint); white-space: nowrap; align-self: center; }
+.bar-value { font-family: var(--mono); font-size: 12px; text-align: right; align-self: center; }
+.bar-value.helps { color: var(--helps); }
+.bar-value.hurts { color: var(--hurts); }
+.bar-value.nil { color: var(--fg-faint); }
+
+.explanation .total {
+  display: flex; justify-content: space-between; align-items: baseline;
+  gap: 1rem; margin: 0.6rem 0 0.4rem; padding-top: 0.5rem;
+  border-top: 1px solid var(--line-bright);
+  font-size: 12px; letter-spacing: 0.06em;
+}
+.explanation .total .num { font-family: var(--mono); font-size: 1.05rem; color: var(--fg); }
+
+.standing { display: flex; gap: 1.6rem; margin: 0.6rem 0; }
+.standing dt { font-size: 10px; color: var(--fg-faint); letter-spacing: 0.05em; }
+.standing dd { margin: 0; font-family: var(--mono); font-size: 1.05rem; }
+
+.line { margin: 0.2rem 0; padding-left: 1.4rem; font-size: 12px; }
+.line li { margin: 0.15rem 0; }
+.line li:first-child { color: var(--fg); }
+.line li + li { color: var(--fg-dim); }
+
+.runner-ups { list-style: none; margin: 0.2rem 0; padding: 0; font-size: 12px; }
+.runner-ups li {
+  display: grid; grid-template-columns: 3.5rem 1fr; gap: 0.6rem;
+  padding: 1px 0; border-top: 1px solid var(--line);
+}
+
+.counters { display: flex; flex-wrap: wrap; gap: 0.1rem 0.9rem; align-items: baseline; margin: 0.2rem 0; }
+.counters > span:first-child { min-width: 6rem; }
+.counters b { font-family: var(--mono); font-weight: 500; color: var(--fg-dim); margin-left: 0.3rem; }
+
+.refusal { border-left: 2px solid var(--fg-faint); padding-left: 0.8rem; }
+/* `pre-line`, because the CLI's refusal wording carries deliberate breaks and
+ * HTML would collapse them. The `mismatch` arm is the one that needs it: it
+ * names the reconstructed move and the recorded move on their own lines, and
+ * run together into one paragraph they read as a single confusing sentence.
+ * The words are the CLI's verbatim; this keeps the shape it wrote them in. */
+.refusal p { margin: 0.3rem 0 0; color: var(--fg-dim); max-width: 62ch; white-space: pre-line; }
+
+/* ---- the card indexes and the final score (M3) --------------------------- */
+.index-head { display: flex; align-items: baseline; gap: 1rem; margin: 0 0 0.6rem; }
+.index-head label { display: flex; align-items: baseline; gap: 0.4rem; font-size: 11px; color: var(--fg-faint); }
+.index-head input {
+  font-family: var(--mono); font-size: 12px; background: var(--bg-sunken);
+  color: var(--fg); border: 1px solid var(--line-bright); border-radius: var(--radius);
+  padding: 0.2rem 0.4rem; width: 14rem;
+}
+.index-cards {
+  list-style: none; margin: 0 0 0.5rem; padding: 0;
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(7.5rem, 1fr)); gap: 0.5rem;
+  align-items: start;
+}
+/* Goals and sites carry prose and a progress table rather than a card face, so
+ * they get a cell wide enough not to wrap every word. */
+.index-cards.wide { grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr)); }
+.index-card { display: flex; flex-direction: column; gap: 0.2rem; font-size: 11px; }
+/* A card the index knows the whereabouts of reads as SPOKEN FOR. Dimming is not
+ * inferred from `selection`: `screen_model` numbers dimmed cards on purpose, so
+ * the two are different facts. */
+.index-card.placed { opacity: 0.55; }
+/* The goal and site cells reuse `Cards.tsx`'s own card faces now, so the
+ * hand-rolled `.index-goal` / `.index-site` / `.goal-progress` rules that stood
+ * here are gone rather than left as dead selectors. */
+
+table.outcome { width: 100%; border-collapse: collapse; font-size: 12px; }
+table.outcome th, table.outcome td { padding: 0.3rem 0.5rem; border-top: 1px solid var(--line); }
+table.outcome th { font-size: 10px; color: var(--fg-faint); letter-spacing: 0.05em; font-weight: 500; }
+table.outcome .num { font-family: var(--mono); text-align: right; }
+table.outcome .total { color: var(--fg); font-size: 13px; }
+/* The winner is marked, never inferred from a margin: two seats can tie on
+ * points and be separated by the engine's own tie-break. */
+table.outcome tr.won td { background: color-mix(in srgb, var(--vp) 12%, transparent); }
+table.outcome tr.won td:first-child::after { content: " ★"; color: var(--vp); }
+.copies { list-style: none; margin: 0.2rem 0 0; padding: 0; font-size: 10px; }
+.copies li { display: flex; gap: 0.4rem; color: var(--fg-dim); }
+.copies code { color: var(--fg-faint); }
+.chip.dim { color: var(--fg-faint); }
+
+/* **Card faces inside an index fill their grid cell.**
+ *
+ * `.card-face` is a fixed `width` sized for the dashboard, and the index lays
+ * its cards out on a grid — so a tech card (which has no `sm` variant) rendered
+ * WIDER than its cell and overlapped its neighbour, with the caption of one card
+ * running across the art of the next. Measured in a browser at 1440px before
+ * this rule existed. Inside `.index-cards` the cell is the authority. */
+.index-cards .card-face { width: 100%; }
+
+/* ---- the banner's card disclosure (M3.5 W7) ---------------------------- */
+/* Five card-reference surfaces behind one control, so the banner stays on one
+ * row at every laptop width. The panel is `position: fixed` with its top at
+ * 3rem, and a wrapped banner's second row reaches 88px at 1280 and 125px at
+ * 1024 — i.e. underneath it — so before this you had to close a panel to switch
+ * to another one. */
+.cards-menu { position: relative; }
+.cards-menu > summary {
+  list-style: none; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 0.3rem;
+}
+.cards-menu > summary::-webkit-details-marker { display: none; }
+.cards-menu > summary::after { content: "▾"; font-size: 9px; opacity: 0.7; }
+.cards-menu[open] > summary { color: var(--fg); border-color: var(--vp); }
+.cards-menu > div {
+  position: absolute; top: calc(100% + 0.35rem); right: 0; z-index: 30;
+  display: flex; flex-direction: column; gap: 0.25rem;
+  padding: 0.35rem;
+  background: var(--bg-raised);
+  border: 1px solid var(--line-bright); border-radius: var(--radius);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.5);
+}
+.cards-menu > div button { text-align: left; white-space: nowrap; }
+
+/* ---- the tracks surface (M3.5 / F5) ------------------------------------ */
+/* The Dashboard's strip keeps every space's points and rider in a `title=`
+ * attribute, which is invisible on touch, to a screen reader, and to any
+ * assertion. This is the surface that says them. */
+table.track-table { width: 100%; border-collapse: collapse; font-size: 12px; margin: 0.3rem 0 1rem; }
+table.track-table th {
+  text-align: left; font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--fg-faint); font-weight: 700; padding: 0.25rem 0.5rem;
+  border-bottom: 1px solid var(--line);
+}
+table.track-table td { padding: 0.25rem 0.5rem; border-bottom: 1px solid var(--line); }
+table.track-table tr.taken td { background: rgb(95 168 255 / 0.06); }
+table.track-table .power { color: var(--vp); font-weight: 700; width: 3rem; }
+table.track-table .occ { font-weight: 700; }
+table.track-table .occ.dummy { color: var(--fg-faint); font-weight: 400; font-style: italic; }
+
+/* ---- the building-site cards (M3.5 / F5) ------------------------------- */
+/* The printed card with what is BUILT drawn on it, at rects measured off the
+ * art rather than guessed: each of the 24 site webps minus its own 9px box
+ * blur, averaged, leaves the printed rules and cancels every card's content.
+ * In the pre-W0b PORTRAIT frame the vertical gutter lands at x 0.486–0.500 and
+ * the horizontals at y 0.344–0.354 and y 0.641–0.650 — the frame the art has
+ * since left; the rects below are those measurements turned (see them). */
+.site-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr)); gap: 0.8rem;
+}
+.site-card { margin: 0; display: flex; flex-direction: column; gap: 0.3rem; }
+.site-face {
+  position: relative; aspect-ratio: var(--wide-card-aspect);
+  border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden;
+  background: var(--bg-sunken);
+}
+.site-face img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.site-card figcaption { font-size: 11px; color: var(--fg-dim); }
+
+.site-space, .site-trading-house {
+  position: absolute; display: grid; place-items: center;
+  border-radius: 3px; pointer-events: none;
+}
+/* The four printed spaces and the trading-house column, as measured at M3.5
+ * and MAPPED at M5's W0b. The KB's slot names TL/TR/ML/MR were transcribed in
+ * the sheet's SIDEWAYS frame (the scan stores the card a quarter turn
+ * clockwise); the physical card is landscape — three columns, two rows:
+ * [TR, MR, house] over [TL, ML, ★VP]. Each rect below is M3.5's measured
+ * portrait-frame rect under the exact counter-clockwise turn
+ * (l, t, w, h) → (t, 1 − l − w, h, w). An unbuilt space draws NOTHING. */
+.site-space.slot-0 { left: 2%;    top: 52%; width: 32%; height: 46%; }  /* TL → bottom-left  */
+.site-space.slot-1 { left: 2%;    top: 2%;  width: 32%; height: 46%; }  /* TR → top-left     */
+.site-space.slot-2 { left: 36.5%; top: 52%; width: 27%; height: 46%; }  /* ML → bottom-middle */
+.site-space.slot-3 { left: 36.5%; top: 2%;  width: 27%; height: 46%; }  /* MR → top-middle    */
+.site-trading-house { left: 66%;  top: 2%;  width: 32%; height: 96%; }  /* the right column   */
+.site-space.built, .site-trading-house.built {
+  background: rgb(9 11 14 / 0.62);
+  box-shadow: inset 0 0 0 2px currentColor;
+}
+.site-space .built-mark, .site-trading-house .built-mark {
+  font-size: 1.4rem; color: currentColor; text-shadow: 0 1px 3px #000;
+}
+
+/* A panel shape this client does not know. Rendered as its own JSON rather than
+ * silently dropped — see `Dashboard.tsx`'s comment. */
+pre.raw-panel {
+  margin: 0; padding: 0.5rem; overflow-x: auto;
+  background: var(--bg-sunken); border: 1px solid var(--line); border-radius: var(--radius);
+  font-size: 10.5px; color: var(--fg-dim);
+  scrollbar-width: thin; scrollbar-color: var(--line-bright) transparent;
+}
+
+/* ---- M5: the tile popover ---------------------------------------------- */
+.tile-pop {
+  position: fixed; z-index: 40; width: 22rem; box-sizing: border-box;
+  background: var(--bg-raised); border: 1px solid var(--line-bright); border-radius: 6px;
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.5); padding: 0.5rem;
+  pointer-events: none;
+}
+.tile-pop-head { display: flex; align-items: baseline; gap: 0.4rem; font-family: var(--display); font-size: 1rem; margin-bottom: 0.4rem; }
+.tile-pop-id { color: var(--fg-faint); font-size: 10px; font-family: var(--mono); }
+/* The enlarged tile is a BOX, not a bare image, because it carries the tile's
+ * own `.pieces-band` — which is `position: absolute` — and the aspect has to
+ * live on whatever the band is positioned against. Same rect, same component,
+ * same `.pieces` rules as the board: nothing here is specialised for the
+ * popover (owner ruling R-GA-1, gate A of M5.5). */
+.tile-pop-art-box { position: relative; width: 100%; aspect-ratio: var(--tile-aspect); }
+.tile-pop-art { display: block; width: 100%; height: 100%; object-fit: cover; border-radius: 3px; }
+.tile-pop-row { display: flex; gap: 0.6rem; margin-top: 0.5rem; align-items: flex-start; }
+.tile-pop-row .site-face { width: 12rem; flex: 0 0 12rem; }
+.tile-pop-words { font-size: 11.5px; color: var(--fg-dim); display: flex; flex-direction: column; gap: 0.25rem; }
+.tile-pop-words .reachable-words { color: var(--reachable); }
+
+/* ---- M5: the side column ----------------------------------------------- */
+/* The header carries the walk's controls beside the heading, so it WRAPS, and
+ * the `margin-left: auto` that used to push the fold button over now sits on
+ * the select: everything after it — the controls and the fold — rides to the
+ * right of the free space as one group instead of the fold alone. */
+.turn-account h2 { display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap; }
+.turn-account h2 select { margin-left: auto; font: inherit; font-size: 10px; background: var(--bg-sunken); color: var(--fg); border: 1px solid var(--line); border-radius: 3px; }
+/* Every button in the header, the fold included — it is a `.ghost` too. */
+.turn-account h2 .ghost { font-size: 10px; padding: 0 0.4rem; letter-spacing: 0; text-transform: none; }
+/* **The 9rem cap is the DEFAULT and is lifted only above 1201px (ruling
+ * R-T8-2).** The account is one row per event and wants the height it needs,
+ * with the side column scrolling instead — but `.side` is only a scroller
+ * inside `@media (min-width: 1201px)` (its `overflow: auto` is declared there
+ * and nowhere else, ~:200). BELOW that width `.side` is part of the page
+ * stack, so an uncapped account would trade a 9rem internal scroller for
+ * unbounded page growth, which is the sub-1201 column stack changing — what
+ * M5's R8 says must not happen. So the cap stays here and goes away there. */
+.turn-account .messages { margin-top: 0.3rem; max-height: 9rem; overflow: auto; scrollbar-width: thin; }
+.turn-account .messages.folded { max-height: 0; overflow: hidden; margin-top: 0; }
+@media (min-width: 1201px) {
+  /* The width at which `.side` becomes the scroller (M5.5 spec §3.2.5).
+   * `:not(.folded)` rather than a bare `.messages`: the folded rule wins on
+   * specificity today (three classes against two), but that is an accident of
+   * how the folded rule is written, and a fold that stops folding above 1201px
+   * is not a failure anything here would catch. */
+  .turn-account .messages:not(.folded) { max-height: none; }
+}
+/* **The empty region keeps its box.** `.messages:empty` is `display: none`,
+ * which is right for the deck's own blocks and wrong here: an element that is
+ * not displayed is not in the accessibility tree either, so the region would
+ * arrive at the same instant as its first line — the exact case the comment at
+ * the top of `TurnAccount.tsx` says is unreliably announced. Empty it has no
+ * border, no padding and no children, so it costs nothing but its margin. */
+.turn-account .messages:empty { display: flex; }
+
+ol.account { list-style: none; margin: 0.3rem 0 0; padding: 0; display: flex; flex-direction: column; gap: 0.15rem; }
+ol.account li { display: grid; grid-template-columns: auto auto 1fr; align-items: baseline; gap: 0.4rem; font-size: 11.5px; padding: 0.15rem 0.2rem; border-top: 1px solid var(--line); }
+ol.account li.at { background: rgb(105 194 95 / 0.12); }
+ol.account .mover { font-weight: 700; }
+
+/* ---- M5: the strips on the table ---------------------------------------- */
+.table-sections {
+  display: flex; flex-wrap: wrap; justify-content: center; gap: 1rem;
+  margin-top: 1rem;
+  /* Cards grow with the room, not with the tile: 12cqw is 9.2rem at the
+   * owner's 1230px table and the 12rem cap by 1600px (spec §3.4, corrected in
+   * the plan — a card keyed to the tile would need Board's shape here). */
+  --card-w: clamp(8rem, 12cqw, 12rem);
+}
+/* **TWO REGIMES, and the second one is what puts two boards side by side.**
+ *
+ * A six-slot strip is `6·cw` of cards plus `5 × 0.5rem` of slot gaps plus
+ * `2 × 0.85rem` of section padding — 6·cw + 2.5rem + 1.7rem. Two of them beside
+ * each other, with the flex row's own 1rem gap, must fit the table's content
+ * box: `2·(6·cw + 4.2rem) + 1rem ≤ 100cqw − 2rem` (the `.table` padding), and
+ * that solves to `cw ≤ (100cqw − 11.4rem) / 12`. The constant below is 13rem,
+ * NOT 11.4, and the extra ~1.6rem is deliberate slack: two section borders, a
+ * classic scrollbar on the table's own overflow, and sub-pixel rounding. A
+ * strip that overflows by one pixel wraps and loses the whole side-by-side
+ * arrangement, so the arm errs small.
+ *
+ * At the 8rem card floor 13rem needs 100cqw ≥ 109rem, so the query opens at
+ * 108rem and the clamp's own floor holds the last rem — below it the arm cannot
+ * help and the one-per-row rule above stands.
+ *
+ * `cqw` reads `.table`, which is the size container — but ONLY above 1201px,
+ * which is where `container-type: size` is set. Below that there is no query
+ * container up the tree, so this arm cannot fire at all; that width is the
+ * column stack, where one strip per row is the layout anyway. Every measured
+ * figure quoted here is from above 1201. */
+@container (min-width: 108rem) {
+  .table-sections { --card-w: clamp(8rem, (100cqw - 13rem) / 12, 12rem); }
+}
+.table-sec {
+  flex: 0 1 auto; max-width: 100%; box-sizing: border-box;
+  background: var(--bg-raised); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 0.7rem 0.85rem;
+}
+.table-sec > h2 {
+  font-size: 10px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--fg-faint);
+  font-family: var(--mono); font-weight: 500; margin-bottom: 0.5rem;
+  display: flex; align-items: baseline; gap: 0.8rem; flex-wrap: wrap;
+}
+.table-sec > h2 .meta { letter-spacing: 0; text-transform: none; font-size: 10.5px; }
+.board-strip { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+.strip-slot { display: flex; flex-direction: column; gap: 0.25rem; }
+.strip-slot .card-face { width: var(--card-w); }
+.strip-slot .card-blank.empty { width: var(--card-w); box-sizing: border-box; }
+/* The achievements are LANDSCAPE (W0b), so they get the wide BOX. The WIDTH
+ * only: `.card-face.achievement img` already carries `var(--wide-card-aspect)`
+ * from its base rule, and restating it here would be a second copy of one
+ * number, free to drift from it. */
+.table-sec.achievements .card-face.achievement { width: calc(var(--card-w) * 1.5); }
+/* And so are the site cards, since W0b: the column floor is the LANDSCAPE
+ * width, or `auto-fill` packs a wide card into a portrait track and the row
+ * runs short. */
+.table-sec .site-grid { grid-template-columns: repeat(auto-fill, minmax(calc(var(--card-w) * 1.5), 1fr)); }
+/* **And the sites section needs a DEFINITE basis, or `auto-fill` counts one.**
+ * Every other strip is sized by its own content, which is what `flex: 0 1 auto`
+ * gives them; a grid of `repeat(auto-fill, minmax(…, 1fr))` inside a
+ * content-sized box has no available width to fill, so it resolves to a SINGLE
+ * track. Measured before this: eight site cards laid out 251 x 1486px, one card
+ * per row, at 1710 and at 2560 alike. A full-row basis gives the grid a width
+ * and it packs columns. The sites are the one strip that is a GRID of many
+ * cards rather than a row of six, so this is the one that needs it. */
+.table-sec.buildings { flex-basis: 100%; }
+.table-sec.tracks .panel { background: transparent; border: 0; padding: 0; }
+/* **A section carrying a LINE does not take the row's height.** `.table-sections`
+ * is a wrapping flex row, so its default `align-items: stretch` made the two
+ * withheld boxes (2026-09-06, R-C3) as tall as the port strip beside them to
+ * hold one short sentence. `align-self` is on the `collapsed` shape alone —
+ * the three standing absences, never a strip with cards in it and never the
+ * `loading` moment — so every section with content keeps stretching as it did. */
+.table-sec.collapsed { color: var(--fg-faint); align-self: flex-start; }
+.tile-id-words { color: var(--fg-faint); font-size: 10px; }
+
+/* ---- M5.5: the walk's highlights --------------------------------------- */
+/* The mover's seat colour, via `.seat-*`'s `color`, so one rule serves four
+ * seats and a fifth colour is still one line elsewhere. The tile's RESTING
+ * outline is INSET, because the tiles sit a 0.4rem gap apart (both ways —
+ * `.board` and `.board-row` each set it) and an outset ring on a 22rem tile
+ * crosses into its neighbour.
+ *
+ * **The pulse's first frames deliberately overshoot into that gap, and the
+ * arithmetic is bounded rather than incidental.** `outline-offset` moves the
+ * outline's INNER edge, so the start frame — width 9px at offset -3px — spans
+ * from 3px inside the border box to 6px outside it, against a 6.4px gap: it
+ * fills the gap and never reaches a neighbour, leaving 0.4px between two
+ * adjacent lit tiles at their brightest. That overshoot is the point. An
+ * animation kept wholly inside the box would be a stroke thickening inward over
+ * the art, which on a 22rem tile is not a flash a player catches. */
+.tile.changed { outline: 3px solid currentColor; outline-offset: -3px; }
+.seat.changed { background: rgb(105 194 95 / 0.10); }
+/* A card the walk is lighting, wherever it is drawn: in an offer slot the
+ * wrapper carries the mark, in a hand the card's own root does (R-GC-2). One
+ * stroke either way, because it is one kind of fact. */
+.strip-slot.changed .card-face,
+.card-face.changed { outline: 3px solid var(--vp); outline-offset: 2px; }
+/* The other end of a take (R-GC-1): the card that LEFT the laboratory, marked
+ * in the list it landed in. Same stroke as the slot it came from, so the two
+ * halves of one move read as one mark in two places. */
+.chip.tech.changed { outline: 3px solid var(--vp); outline-offset: 2px; }
+
+/* **And every one of them PULSES for the step's own dwell (R-GC-1).**
+ *
+ * The keyframes END at the resting values above, which is what makes the mark
+ * STAY: `forwards` holds the last frame, and the last frame is the outline the
+ * static rule would have drawn. So a step's mark is bright when it lands, has
+ * settled by the time the next step is due, and stays there until something
+ * replaces it — the pulse is the arrival, not the highlight.
+ *
+ * TWO NAMES PER FAMILY, byte-identical, and the duplication is the mechanism
+ * rather than an oversight: an element's animation restarts only when its
+ * `animation-name` changes or the element is re-created. A tile lit by two
+ * consecutive steps is neither, so with one name the second step lands in
+ * silence. `App` alternates `data-beat` per step and the selectors below pick
+ * the other name. CSS has no way to alias a keyframe, so the body is written
+ * twice; a change to one is a change to both.
+ *
+ * Only `outline-width` and `background-color` are animated — never the colour
+ * or the offset — so ONE pair of keyframes serves four selectors whose resting
+ * strokes differ (`currentColor` inset on a tile, `var(--vp)` outset on a card
+ * and a chip). Animating the colour would have needed a keyframe per family. */
+@keyframes pulse-outline-0 { from { outline-width: 9px; } to { outline-width: 3px; } }
+@keyframes pulse-outline-1 { from { outline-width: 9px; } to { outline-width: 3px; } }
+@keyframes pulse-seat-0 { from { background-color: rgb(105 194 95 / 0.34); } to { background-color: rgb(105 194 95 / 0.10); } }
+@keyframes pulse-seat-1 { from { background-color: rgb(105 194 95 / 0.34); } to { background-color: rgb(105 194 95 / 0.10); } }
+
+/* `--dwell-ms` is the step's own dwell, set by `App` on `.app`: the cadence on
+ * a step that moved something, 400ms on a bookkeeping one. The fallback is the
+ * default cadence, so a mark outside a walk would still settle rather than
+ * hang mid-pulse. */
+.app[data-beat="0"] .tile.changed,
+.app[data-beat="0"] .strip-slot.changed .card-face,
+.app[data-beat="0"] .card-face.changed,
+.app[data-beat="0"] .chip.tech.changed { animation-name: pulse-outline-0; }
+.app[data-beat="1"] .tile.changed,
+.app[data-beat="1"] .strip-slot.changed .card-face,
+.app[data-beat="1"] .card-face.changed,
+.app[data-beat="1"] .chip.tech.changed { animation-name: pulse-outline-1; }
+.app[data-beat="0"] .seat.changed { animation-name: pulse-seat-0; }
+.app[data-beat="1"] .seat.changed { animation-name: pulse-seat-1; }
+.app[data-beat] .tile.changed,
+.app[data-beat] .seat.changed,
+.app[data-beat] .strip-slot.changed .card-face,
+.app[data-beat] .card-face.changed,
+.app[data-beat] .chip.tech.changed {
+  animation-duration: var(--dwell-ms, 2000ms);
+  animation-timing-function: ease-out;
+  animation-iteration-count: 1;
+  animation-fill-mode: forwards;
+}
+/* Motion is the part that can be declined; the MARK is information and stays.
+ * `animation: none` drops every longhand above, and the resting rules — which
+ * are the keyframes' own end state — are what is left. */
+@media (prefers-reduced-motion: reduce) {
+  .app[data-beat] .tile.changed,
+  .app[data-beat] .seat.changed,
+  .app[data-beat] .strip-slot.changed .card-face,
+  .app[data-beat] .card-face.changed,
+  .app[data-beat] .chip.tech.changed { animation: none; }
+}
+/* The deck while the opponent's turn plays out: who is playing, how far in, and
+ * the way out. It replaces the prompt, so it carries the prompt's own padding.
+ *
+ * **`flex-direction` is stated, and that is the whole of ruling R-F3.** This
+ * rule set `display: flex` and inherited `column` from `.decision` above, which
+ * every other deck block wants — so the strip stacked "Blue" / "is playing ·
+ * step 3 of 8" / "skip" at 123.3px tall (measured at 1710x869) where spec
+ * §3.2.2's own words are "Blue is playing · skip". Wrapping is allowed because
+ * a narrow deck has to put the way out somewhere; nothing below 1201px changes,
+ * the strip staying inside the sticky deck as it already did. */
+.decision.walking {
+  display: flex; flex-direction: row; flex-wrap: wrap;
+  align-items: center; gap: 0.5rem; padding: 0.6rem 0.8rem;
+  font-family: var(--display); font-size: 1.05rem;
+}
+.decision.walking .ghost { margin-left: auto; }
+
+/* ---- M5.5: the set table ------------------------------------------------
+ *
+ * The second setup step is the M5 table with the deals in the deck, so it
+ * inherits the whole layout and needs only what is new: the two cards of a deal
+ * side by side rather than wrapped, the bot's mark on the card it keeps, and
+ * the CLI's hedge under the picks.
+ *
+ * **The deck's cap is raised here, and it was MEASURED that it had to be.** The
+ * 45vh cap above 1201px is sized for an answer list with a running commentary
+ * under it; this deck holds a card row per human seat, and at 2P/1710x869 the
+ * cap cut the Keep scores, the hedge and the Start button out of the frame —
+ * seen in gate B's own picture, not deduced. A set table has no commentary and
+ * no account to keep on screen, so the deal takes the height and the side
+ * column, which here holds only the bot's two cards, keeps what is left. The
+ * block still scrolls above that: at 4P with three human seats it is taller
+ * than any cap, and the deck's own rule is that the ANSWER stays reachable. */
+.deal-seat .deal { flex-wrap: nowrap; }
+/* A dealt card is a column: the card, and whatever caption sits under it. The
+ * `.bot-keeps` badge this rule was written beside is GONE — the bot's deal left
+ * the wire in the 2026-09-06 corrections (R-C1), so there is no kept card to
+ * mark and no Keep score under it to avoid covering. */
+.deal-card { display: flex; flex-direction: column; }
+/* **A HUMAN seat that is not choosing shows a SMALLER pair of backs.** Its two
+ * cards are an indication — this seat has answered, or has not been asked yet —
+ * with no id and no Keep score to read, so they do not need the reading size the
+ * choosing seat's cards need. The BOT's two keep the full 8rem and are outside
+ * this selector deliberately: they are the only cards in the side column, with
+ * no height to compete for.
+ *
+ * Measured at 4P/1710x869, where three human seats share the deck. At the full
+ * 8rem the block ran 931px inside a 539px window and the ASKING seat's own label
+ * sat 28px ABOVE the fold on the middle turn — the one thing the deck's rule
+ * says must stay reachable. At 4rem the block is 738px and that label is 25px
+ * BELOW the top of the window. Gated since then by the 4P set-table cell in
+ * `the_table.spec.ts`, which prints its own reading. */
+.deal-seat.human:not(.current) .card-face.sm { width: 4rem; }
+/* The line under a face-down deal, sized with the hedge rather than as a
+ * generic `<p>`: the set table's height budget (R-T12-3, measured at 1710x869)
+ * is what the bot's panel is competing for. */
+.deal-unseen, .keep-hedge { font-size: 11px; margin: 0.3rem 0; }
+/* **The set table's own height budget (R-T12-3), MEASURED at 1710x869.** Above
+ * 1201px the grid gives the deck an `auto` row and the side column the rest, so
+ * the two share the 808px under the banner: the deal, the hedge and Start in
+ * one, the bot's two cards in the other. With the generic paddings that came to
+ * 831px and the bot's own Keep scores fell below the fold — the measurement is
+ * the PAST, taken when a bot seat still showed its cards face up; its two are
+ * backs with no caption since the 2026-09-06 corrections, which only makes the
+ * column's share easier to hold. These four rules take
+ * ~39px out of the deck and ~16px out of the column; the deck's cap then binds
+ * only at three and four human seats, where no cap fits them and the block
+ * scrolls instead. Figures in the task report. */
+.setup-table .deck > .decision { padding: 0.7rem 1.25rem 0.8rem; overflow-y: auto; }
+.setup-table .asking { font-size: 1rem; margin: 0.3rem 0 0.4rem; }
+.setup-table .deal-seat .field { margin: 0.2rem 0; }
+.setup-table .side { padding: 0.5rem 1rem; }
+@media (min-width: 1201px) {
+  /* Scoped, so the base `.deck` rule still stands below the breakpoint, where
+   * the page scrolls and the deck is sticky rather than a grid row. */
+  .app.setup-table > .deck { max-height: 62vh; }
+}
