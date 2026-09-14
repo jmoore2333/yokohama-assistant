@@ -635,14 +635,28 @@ impl Games {
         // performs the swap — the comparison that used to happen here by hand
         // now happens where the read and the write are under one lock.
         //
-        // A read that FAILS (not "is absent" — the store distinguishes them)
-        // leaves `expected` at `None`, and the write then refuses rather than
-        // landing: `write_if_version` reads the same file, fails the same way,
-        // and answers `Io`. The old code wrote straight over an unreadable
-        // record, and that is the one behaviour here that deliberately did not
-        // survive the move — `read` is how `create` already learns that a file
-        // it cannot read is a file it must not overwrite.
-        let stored = self.store.read(Doc::Record, id).ok().flatten();
+        // **A read that FAILS is PROPAGATED, never discarded.** "Cannot be
+        // read" and "is not there" are different answers — the seam exists to
+        // keep them apart — and `?` returns the first one through this
+        // function's ordinary `Err` path, which does NOT evict: the handle is
+        // right and the store is not, exactly as `conflict`'s doc says.
+        //
+        // The line was `.ok().flatten()`, and discarding the error defeated
+        // that rule from the inside. A failed read became `expected: None`,
+        // which is a CREATE, and a create over a present document is a
+        // `Conflict` — so a transient I/O failure took the live session down,
+        // the one outcome the two variants exist to prevent. It is not enough
+        // that `FsStore`'s own write would have failed the same way and
+        // answered `Io`: the guarantee has to hold for the TRAIT, and any store
+        // whose read can fail where its write's read succeeds lands on the
+        // evicting arm. Pinned by
+        // `a_read_failure_refuses_the_write_and_leaves_the_handle_resident`.
+        //
+        // The old code, before the seam, wrote straight over an unreadable
+        // record. That does not survive either, and deliberately: refusing is
+        // the rule `create` has enforced since the `chmod 000` measurement,
+        // applied to the other writer.
+        let stored = self.store.read(Doc::Record, id)?;
         let mut expected: Option<Version> = None;
         if let Some((stored, current)) = &stored {
             if let Ok(on_disk) = serde_json::from_str::<GameRecord>(stored) {
@@ -1715,5 +1729,80 @@ mod tests {
         let games = Games::new(Arc::new(Rules::standard()), Arc::new(Unreadable));
         let err = games.create(&req("taken")).err().expect("the name is occupied");
         assert!(err.contains("already exists"), "{err}");
+    }
+
+    /// **A store that cannot be READ refuses the write and KEEPS the handle.**
+    ///
+    /// The two ways a write can fail are not one failure, and `persist` acts on
+    /// the difference: a CONFLICT means this handle is wrong about the world,
+    /// so it is dropped and the next request rebuilds from the record; an I/O
+    /// failure means the handle is right and the disk is not, so it stays. That
+    /// rule is stated in `conflict`'s own doc and carried by `WriteError`.
+    ///
+    /// `persist` used to DISCARD its read error (`.ok().flatten()`), and the
+    /// discard defeated the rule from the inside: an unreadable store became
+    /// `expected: None`, which is a CREATE, and a create over a present
+    /// document is a `Conflict` — so a transient read failure evicted the live
+    /// session, which is precisely what the split exists to prevent.
+    ///
+    /// Residency is asserted THROUGH `handle`, which is the only honest way to
+    /// ask: it returns the resident `Arc` if there is one and otherwise rebuilds
+    /// off the store — and the store is still failing, so a rebuild cannot
+    /// succeed. `Arc::ptr_eq` against the handle `create` returned is therefore
+    /// both halves of the claim at once.
+    #[test]
+    fn a_read_failure_refuses_the_write_and_leaves_the_handle_resident() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        /// A `MemStore` whose reads can be switched off under a live handle.
+        #[derive(Default)]
+        struct FlakyReads {
+            inner: MemStore,
+            failing: AtomicBool,
+        }
+        impl Store for FlakyReads {
+            fn list(&self, doc: Doc) -> Result<Vec<GameId>, String> {
+                self.inner.list(doc)
+            }
+            fn read(&self, doc: Doc, id: &str) -> Result<Option<(String, Version)>, String> {
+                if self.failing.load(Ordering::Relaxed) {
+                    return Err("the disk went away".to_string());
+                }
+                self.inner.read(doc, id)
+            }
+            fn write_if_version(
+                &self,
+                doc: Doc,
+                id: &str,
+                json: &str,
+                expected: Option<Version>,
+            ) -> Result<Version, WriteError> {
+                self.inner.write_if_version(doc, id, json, expected)
+            }
+            fn delete(&self, id: &str) -> Result<(), String> {
+                self.inner.delete(id)
+            }
+        }
+
+        let store = Arc::new(FlakyReads::default());
+        let games = Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>);
+        let (id, handle) = games.create(&req("ioflake")).expect("a game");
+
+        store.failing.store(true, Ordering::Relaxed);
+        let err = {
+            let repl = handle.lock().expect("the handle");
+            games.persist(&id, &repl).expect_err("a store that cannot be read refuses the write")
+        };
+        assert!(
+            err.contains("the disk went away"),
+            "the refusal carries the store's own reason rather than inventing a conflict: {err}",
+        );
+
+        let again = games.handle(&id).expect("the handle is still resident");
+        assert!(
+            Arc::ptr_eq(&again, &handle),
+            "an I/O failure must not evict — and a rebuild is impossible here, because the \
+             store is still refusing to be read",
+        );
     }
 }

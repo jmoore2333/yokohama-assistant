@@ -123,6 +123,22 @@ pub trait Store: Send + Sync {
     fn delete(&self, id: &str) -> Result<(), String>;
 }
 
+/// The id suffix [`Doc::Table`] reserves, which no game may end with.
+///
+/// `<id>.table.json` IS `<id>`'s table document, and a dot is a legal character
+/// in a name — `is_safe_id`'s own cell lists `A.b-c_d` as good — so without
+/// this the game `mygame.table` would have its RECORD written to the exact path
+/// `mygame`'s table occupies. On `FsStore` that is reachable data loss and not
+/// merely confusion: `list(Doc::Record)` excludes the table suffix, so the game
+/// vanishes from the list, and `delete("mygame")` — for a `mygame` that never
+/// existed — removes the other game's record and answers `Ok`, which the route
+/// serves as a 200.
+///
+/// `MemStore` keys `(Doc, GameId)` and has none of this. That the two
+/// implementations of one trait diverge is exactly why the guard lives HERE,
+/// above both, rather than in the store that has the problem.
+const RESERVED_ID_SUFFIX: &str = ".table";
+
 /// Whether `id` may be used as a storage key.
 ///
 /// An allowlist, and deliberately not a denylist or an escaping pass: `..`,
@@ -130,11 +146,30 @@ pub trait Store: Send + Sync {
 /// on the list rather than by being enumerated. The same shape (and the same
 /// reasoning) as `yokohama_bridge::capture::safe_table_id`, which guards the
 /// one other place in this repo where an outside string becomes a filename.
+///
+/// The one SUBTRACTION from that allowlist is [`RESERVED_ID_SUFFIX`] — read it
+/// for why a name may not end in `.table`.
 pub fn is_safe_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 64
         && id.chars().next().is_some_and(|c| c.is_ascii_alphanumeric())
         && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
+        && !spells_a_table_document(id)
+}
+
+/// Whether `id` would spell another game's table document.
+///
+/// **Case-INSENSITIVE**, because the filesystems this is written and tested on
+/// are: on APFS and NTFS, `mygame.TABLE.json` and `mygame.table.json` are one
+/// file, so a case-sensitive guard would close the hole on the deployment and
+/// leave it open on both workstations.
+///
+/// The slice is safe because `is_safe_id` has already established that every
+/// character is ASCII by the time `&&` reaches this call — the checks are
+/// short-circuiting and ordered.
+fn spells_a_table_document(id: &str) -> bool {
+    id.len() >= RESERVED_ID_SUFFIX.len()
+        && id[id.len() - RESERVED_ID_SUFFIX.len()..].eq_ignore_ascii_case(RESERVED_ID_SUFFIX)
 }
 
 /// The local implementation: one JSON file per document in a directory.
@@ -467,22 +502,48 @@ mod tests {
     /// The last two assertions are the retired memory-store cell's: an unsafe
     /// id is refused by BOTH stores, not only by the one that touches a
     /// filesystem, and a second delete is an error rather than a silent ok.
+    ///
+    /// **One id here carries a DOT, and that is the point of running this cell
+    /// on both stores.** `MemStore` keys `(Doc, GameId)` and cannot confuse two
+    /// documents whatever the name; `FsStore` spells each as one filename in
+    /// one directory and has to tell `a.b.json` from `a.b.table.json`. With
+    /// only dotless ids the cell would pass against a store that could not do
+    /// that — which is the divergence `both()` exists to catch.
     #[test]
     fn the_two_kinds_are_separate_documents_under_one_id() {
         for (name, store) in both("kinds") {
+            // The dotted round trip first, so a store that cannot separate two
+            // documents under a dotted name fails here rather than later.
+            store.write_if_version(Doc::Record, "a.b", "{\"r\":0}", None).expect(name);
+            store.write_if_version(Doc::Table, "a.b", "{\"t\":0}", None).expect(name);
+            assert_eq!(
+                store.read(Doc::Record, "a.b").expect(name).expect("present").0,
+                "{\"r\":0}",
+                "{name}: a dotted id's record is its own",
+            );
+            assert_eq!(
+                store.read(Doc::Table, "a.b").expect(name).expect("present").0,
+                "{\"t\":0}",
+                "{name}: and so is its table",
+            );
+
             store.write_if_version(Doc::Record, "g", "{\"r\":1}", None).expect(name);
             assert!(store.read(Doc::Table, "g").expect(name).is_none(), "{name}");
             store.write_if_version(Doc::Table, "g", "{\"t\":1}", None).expect(name);
-            assert_eq!(store.list(Doc::Table).expect(name), vec!["g".to_string()]);
+            assert_eq!(
+                store.list(Doc::Table).expect(name),
+                vec!["a.b".to_string(), "g".to_string()],
+            );
             store.write_if_version(Doc::Record, "h", "{\"r\":2}", None).expect(name);
             assert_eq!(
                 store.list(Doc::Table).expect(name),
-                vec!["g".to_string()],
+                vec!["a.b".to_string(), "g".to_string()],
                 "{name}: h has no table",
             );
             assert_eq!(
                 store.list(Doc::Record).expect(name),
-                vec!["g".to_string(), "h".to_string()],
+                vec!["a.b".to_string(), "g".to_string(), "h".to_string()],
+                "{name}: and a dotted record is listed as a record, not hidden as a table",
             );
             store.delete("g").expect(name);
             assert!(
@@ -493,6 +554,12 @@ mod tests {
             assert!(
                 store.delete("g").is_err(),
                 "{name}: deleting twice is an error, not a silent ok",
+            );
+            store.delete("a.b").expect(name);
+            assert!(
+                store.read(Doc::Record, "a.b").expect(name).is_none()
+                    && store.read(Doc::Table, "a.b").expect(name).is_none(),
+                "{name}: and a dotted id's delete takes both of ITS documents",
             );
             assert!(
                 store.write_if_version(Doc::Record, "../escape", "{}", None).is_err(),
@@ -532,11 +599,31 @@ mod tests {
             "with space",
             "nul\0byte",
             "sö",
+            // **A name ending in `.table` spells another game's TABLE.**
+            // `FsStore` gives both documents one filename each in one
+            // directory, so a record stored for `mygame.table` is written to
+            // exactly the path `mygame`'s table document occupies — and from
+            // there `list(Doc::Record)` hides it, and `delete("mygame")`
+            // removes it while answering `Ok`. Case-insensitively, because the
+            // filesystems this is developed and tested on (APFS, NTFS) are.
+            "mygame.table",
+            "mygame.TABLE",
+            ".table",
         ] {
             assert!(!is_safe_id(bad), "{bad:?} must be refused");
         }
         assert!(!is_safe_id(&"a".repeat(65)), "an unbounded name must be refused");
         assert!(is_safe_id(&"a".repeat(64)));
+
+        // The guard and the document have to reserve the SAME suffix, and a
+        // constant that merely looks right is how they drift apart. This
+        // derives one from the other: change either `Doc`'s suffixes or
+        // `RESERVED_ID_SUFFIX` alone and this fails.
+        assert_eq!(
+            Doc::Table.suffix(),
+            format!("{RESERVED_ID_SUFFIX}{}", Doc::Record.suffix()),
+            "the id guard reserves exactly what the table document appends",
+        );
     }
 
     /// Every door into the filesystem asks the id guard first — both documents,
