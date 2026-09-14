@@ -1,0 +1,32 @@
+{
+  "chosen": [
+    false,
+    false
+  ],
+  "colors": [
+    "Red",
+    "Blue"
+  ],
+  "created_at": 1789000000,
+  "created_by": "red@wire.test",
+  "id": "wire",
+  "my_seats": [
+    0
+  ],
+  "name": "wire",
+  "over": null,
+  "players": 2,
+  "seats": [
+    {
+      "kind": "human",
+      "user": "red@wire.test"
+    },
+    {
+      "kind": "human",
+      "user": "blue@wire.test"
+    }
+  ],
+  "start_seat": 0,
+  "status": "dealing",
+  "to_move": null
+}

@@ -151,7 +151,11 @@ impl FromRequestParts<Arc<AppState>> for Identity {
     async fn from_request_parts(parts: &mut Parts, state: &Arc<AppState>) -> Result<Self, ApiError> {
         resolve(state.identity, &parts.headers)
             .map(Identity)
-            .map_err(|message| ApiError { status: StatusCode::UNAUTHORIZED, message })
+            .map_err(|message| ApiError {
+                status: StatusCode::UNAUTHORIZED,
+                message,
+                table_status: None,
+            })
     }
 }
 

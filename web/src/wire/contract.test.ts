@@ -75,6 +75,18 @@ describe("the payload roots carry exactly the fields the client declares", () =>
     ["health", wire.health, KEYS.health],
     ["me", wire.me, KEYS.me],
     ["me_signed_out", wire.meSignedOut, KEYS.me],
+    // **M6.1's seven.** Each is a payload shape the client has to draw and
+    // nothing else in the corpus reaches: a table at each of its two statuses,
+    // the deal with the caller's cards and the deal without them, the lobby, and
+    // the two refusals — the dealing 409 the client BRANCHES on, and the 403 a
+    // caller with no seat here is handed.
+    ["table_dealing", wire.tableDealing, KEYS.table],
+    ["table", wire.table, KEYS.table],
+    ["deal", wire.deal, KEYS.dealView],
+    ["deal_waiting", wire.dealWaiting, KEYS.dealView],
+    ["games", wire.games, KEYS.gamesList],
+    ["dealing_409", wire.dealing409, KEYS.dealingError],
+    ["not_seated_403", wire.notSeated403, KEYS.apiError],
     ["preview", wire.preview, KEYS.preview],
     ["preview_bot", wire.previewBot, KEYS.preview],
     ["preview.deal", wire.preview.deals[0], KEYS.deal],

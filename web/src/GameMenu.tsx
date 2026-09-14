@@ -42,8 +42,10 @@ export function GameMenu({
     setError(null);
     const seq = (listing.current += 1);
     api
+      // The list is a list of TABLES since M6.1, scoped to the caller by the
+      // server. This menu reads their ids, which is all it ever read.
       .list()
-      .then((ids) => seq === listing.current && setSaved(ids))
+      .then((l) => seq === listing.current && setSaved(l.games.map((t) => t.id)))
       .catch((e) => seq === listing.current && setError(said(e)));
   };
   const switchTo = (id: string) => {

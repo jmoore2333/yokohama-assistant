@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import { render } from "@testing-library/react";
 import { App } from "./App";
 import { loadSections } from "./sections";
-import { gate, renderApp, stubApi } from "./test/harness";
+import { gamesNamed, gate, renderApp, stubApi } from "./test/harness";
 import { wire } from "./wire/contract";
 
 /** The board tile for one area, as the accessible name renders it. */
@@ -447,7 +447,7 @@ describe("a reply for a game you left", () => {
     const reply = gate<unknown>();
     const stub = await renderApp(wire.optionsMany, (call) => {
       if (call.method === "GET" && call.path.endsWith("/api/games"))
-        return [wire.optionsMany.id, "sim-other"];
+        return gamesNamed(wire.optionsMany.id, "sim-other");
       if (call.method === "GET" && call.path.endsWith("/api/games/sim-other"))
         return switchGet.promise;
       if (call.path.endsWith("/input")) return reply.promise;
@@ -489,7 +489,7 @@ describe("a reply for a game you left", () => {
     const held = gate<unknown>();
     await renderApp(wire.optionsMany, (call) => {
       if (call.method === "GET" && call.path.endsWith("/api/games"))
-        return [wire.optionsMany.id, "sim-other"];
+        return gamesNamed(wire.optionsMany.id, "sim-other");
       if (call.path.endsWith("/input")) return held.promise;
       return undefined;
     });
@@ -922,7 +922,8 @@ describe("the turn playback", () => {
     const { before, replied, at, log } = botReply();
     const other = { ...wire.options4p, id: "sim-other" };
     await renderApp(before, (call) => {
-      if (call.method === "GET" && call.path.endsWith("/api/games")) return [before.id, "sim-other"];
+      if (call.method === "GET" && call.path.endsWith("/api/games"))
+        return gamesNamed(before.id, "sim-other");
       if (call.method === "GET" && call.path.endsWith("/api/games/sim-other")) return other;
       if (call.path.endsWith("/input")) return replied;
       const m = /\/at\/(\d+)$/.exec(call.path);
@@ -1038,11 +1039,16 @@ describe("the turn playback", () => {
 describe("the boards a player switches during setup", () => {
   it("stay switched when the game opens", async () => {
     const stub = stubApi((call) => {
-      if (call.method === "GET" && call.path.endsWith("/api/games")) return [];
+      if (call.method === "GET" && call.path.endsWith("/api/games")) return gamesNamed();
       if (call.path.endsWith("/api/labels")) return wire.labels;
       if (call.path.endsWith("/api/art")) return wire.artManifest;
       if (call.path.endsWith("preview")) return wire.previewBot;
-      if (call.method === "POST" && call.path.endsWith("/api/games")) return wire.options;
+      // The opening sequence (M6.1 §4.3): a create answers with a DEALING
+      // table, a keep with the table, and the GAME is read back afterwards.
+      if (call.method === "POST" && call.path.endsWith("/api/games")) return wire.tableDealing;
+      if (call.path.endsWith("/keep")) return wire.table;
+      if (call.method === "GET" && call.path.endsWith(`/api/games/${wire.options.id}`))
+        return wire.options;
       if (call.path.endsWith("/ports")) return wire.ports;
       if (call.path.endsWith("/labs")) return wire.labs;
       if (call.path.endsWith("/areas")) return wire.areas;

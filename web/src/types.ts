@@ -462,6 +462,78 @@ export interface Preview {
   deals: Deal[];
 }
 
+// ---- the table: who sits where (M6.1) ------------------------------------
+
+/** Who plays one seat. A person's normalized email, or the built-in bot. */
+export type SeatDoc = { kind: "human"; user: string } | { kind: "bot" };
+
+/** A table is DEALING until every human seat has chosen a starting order, and
+ *  PLAYING afterwards. Every route that needs a session answers 409 while it is
+ *  dealing, carrying `status: "dealing"` so this client knows which screen to
+ *  draw rather than showing an error. */
+export type TableStatus = "dealing" | "playing";
+
+/** The table as a seated player sees it.
+ *
+ *  **Two things the server holds are not here**: the setup seed, which
+ *  regenerates every deal and both decks, and the `keeps` — what the OTHER
+ *  seats chose. `chosen` is what crosses instead: whether a seat has answered
+ *  is public at any table; which card it took is not. */
+export interface TableView {
+  id: string;
+  name: string | null;
+  created_by: string;
+  /** Unix SECONDS, not a formatted string — the lobby sorts on it. */
+  created_at: number;
+  players: number;
+  colors: PlayerColor[];
+  start_seat: number;
+  seats: SeatDoc[];
+  /** True for a bot seat from the start, and for a human seat once it has kept. */
+  chosen: boolean[];
+  /** The seats the CALLER holds. Empty is impossible: a caller with no seat here
+   *  is a 403 and never receives this payload. */
+  my_seats: PlayerId[];
+  status: TableStatus;
+  /** Present once playing, `null` while dealing. */
+  to_move: PlayerId | null;
+  over: boolean | null;
+}
+
+/** What `GET …/deal` serves: the set table, and the CALLER's own two cards.
+ *
+ *  **`seat` and `cards` are null together**, and that is the "waiting for the
+ *  others" screen rather than an error — every seat this caller holds has
+ *  chosen, and the table has not finished dealing. */
+export interface DealView {
+  table: TableView;
+  seat: PlayerId | null;
+  cards: DealCard[] | null;
+  /** The terminal's own `KEEP_SCORE_NOTE`, served rather than copied here, so
+   *  the hedge beside the Keep score cannot drift from the CLI's. */
+  keep_note: string;
+  frame: HistoricalFrame;
+}
+
+/** The lobby. An object rather than a bare array, so a cursor or a count can be
+ *  added without every reader changing shape. */
+export interface GamesList {
+  games: TableView[];
+}
+
+/** Which of the two dealt cards a seat keeps. `card` is 1 or 2, as they are
+ *  numbered on screen. */
+export interface KeepRequest {
+  seat: number;
+  card: 1 | 2;
+}
+
+/** The 409 a session route answers while its table is still dealing: the
+ *  ordinary error shape, plus the one status this client BRANCHES on. */
+export interface DealingErrorBody extends ApiErrorBody {
+  status: string;
+}
+
 // ---- the read-only surfaces ---------------------------------------------
 
 export interface PortSlotModel {

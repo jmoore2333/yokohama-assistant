@@ -100,7 +100,8 @@ impl Api {
         Self { router: app(Arc::new(AppState::in_memory())) }
     }
 
-    /// A call as [`WALKER`], which is every call the walk makes.
+    /// A call as [`WALKER`], which is every call the walk makes that is not a
+    /// MOVE — those go as the acting seat (see [`acting`]).
     async fn call(&self, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
         self.call_as(Some(WALKER), method, uri, body).await
     }
@@ -150,13 +151,83 @@ impl Api {
         v
     }
 
-    async fn send(&self, line: &str) -> Value {
-        let (status, v) =
-            self.call("POST", "/api/games/wire/input", Some(json!({ "line": line }))).await;
-        assert_eq!(status, StatusCode::OK, "input {line:?} was refused: {v}");
+    /// A move from a NAMED seat's holder.
+    ///
+    /// Every move in the walk goes as the ACTING seat (M6.1: `input` becomes the
+    /// acting seat's later in this cycle, and a corpus recorded from the wrong
+    /// caller would have to be re-cut then). `acting` reads the payload's own
+    /// `to_move` rather than tracking it here.
+    async fn send_as(&self, who: &str, line: &str) -> Value {
+        let (status, v) = self
+            .call_as(Some(who), "POST", "/api/games/wire/input", Some(json!({ "line": line })))
+            .await;
+        assert_eq!(status, StatusCode::OK, "input {line:?} as {who} was refused: {v}");
         v
     }
 }
+
+/// What `created_at` reads as in the committed corpus.
+///
+/// **The one value in this file that is not the server's own**, and it is here
+/// because a wall clock is not a function of three constants: a table document
+/// stamps `now_unix()` (R-plan-1), so every regeneration would rewrite five
+/// fixtures with a new number and the golden would fail on the next run without
+/// anything having changed. Freezing it keeps the corpus a function of the seeds
+/// and the identities, which is the property that makes a diff here mean
+/// something.
+///
+/// **What is therefore NOT pinned**: the VALUE. What still is: the field's
+/// presence and its type, on both sides — `KEYS.table` names it, `Widen<TableView>`
+/// requires a number, and [`freeze_clock`] REFUSES a value that is not a
+/// plausible unix timestamp, so a `created_at` that became a string, a null or a
+/// zero fails here rather than being normalized away.
+const FROZEN_CREATED_AT: u64 = 1_789_000_000;
+
+/// Replace every `created_at` with [`FROZEN_CREATED_AT`], wherever it is nested.
+///
+/// A walk rather than a list of paths: the field rides on `TableView`, which
+/// appears at the root of two fixtures, inside `deal.table`, and once per row of
+/// `games.games` — and a list of those would be a fourth statement of the wire
+/// shape to keep true.
+fn freeze_clock(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            for (key, v) in map.iter_mut() {
+                if key == "created_at" {
+                    let seen = v.as_u64().unwrap_or_else(|| {
+                        panic!("created_at is not a unix timestamp: {v}")
+                    });
+                    assert!(
+                        seen > 1_700_000_000,
+                        "created_at reads {seen}, which is not a clock — freezing it would hide \
+                         a field that has stopped being stamped",
+                    );
+                    *v = json!(FROZEN_CREATED_AT);
+                } else {
+                    freeze_clock(v);
+                }
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(freeze_clock),
+        _ => {}
+    }
+}
+
+/// Which of the walk's two people holds the seat that is to move.
+fn acting(state: &Value) -> &'static str {
+    if state["to_move"].as_u64() == Some(0) {
+        WALKER
+    } else {
+        OTHER
+    }
+}
+
+/// The walk's second person. Seat 1 is a HUMAN in this corpus (see the module
+/// doc on why there is no bot), and since M6.1 a seat belongs to somebody.
+const OTHER: &str = "blue@wire.test";
+
+/// Someone with no seat at this table, for the one fixture that is a 403.
+const STRANGER: &str = "green@wire.test";
 
 fn new_game_body() -> Value {
     json!({
@@ -164,10 +235,10 @@ fn new_game_body() -> Value {
         "colors": ["Red", "Blue"],
         "start_seat": 0,
         "seed": SETUP_SEED,
-        "keeps": [1, 1],
         // NO bot seats. See the module doc: a bot's seed is OS entropy and a
-        // golden built over one would churn on every run.
-        "bot_seats": [],
+        // golden built over one would churn on every run. Two PEOPLE instead,
+        // which is also what makes the per-seat deal fixtures below real.
+        "seats": [{ "user": WALKER }, { "user": OTHER }],
         "name": "wire",
     })
 }
@@ -219,18 +290,60 @@ async fn walk() -> Vec<(String, Value)> {
     // no bot seed into anything it returns, so unlike the walk's game it is
     // deterministic with a bot on the table.
     let mut with_bot = new_game_body();
-    with_bot["bot_seats"] = json!([1]);
-    with_bot["keeps"] = json!([1, null]);
+    with_bot["seats"] = json!([{ "user": WALKER }, { "bot": true }]);
     with_bot["name"] = json!("wire-bot");
     let (status, preview_bot) = api.call("POST", "/api/games/preview", Some(with_bot)).await;
     assert_eq!(status, StatusCode::OK, "{preview_bot}");
 
-    let (status, created) = api.call("POST", "/api/games", Some(new_game_body())).await;
-    assert_eq!(status, StatusCode::CREATED, "{created}");
+    // **The opening sequence, and every payload it produces** (M6.1 §4). A
+    // create opens a DEALING table; each seat fetches its own two cards and
+    // keeps; the last keep starts the game. Six shapes the client draws exist
+    // only inside that sequence, so they are captured as they go past rather
+    // than reconstructed afterwards.
+    let (status, table_dealing) = api.call("POST", "/api/games", Some(new_game_body())).await;
+    assert_eq!(status, StatusCode::CREATED, "{table_dealing}");
+
+    let deal = api.get("/api/games/wire/deal").await;
+    // Every session route while the table is dealing: a 409 carrying a STATUS
+    // the client branches on, not a 404 it cannot act on.
+    let (status, dealing_409) = api.call("GET", "/api/games/wire", None).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{dealing_409}");
+
+    let (status, kept) = api
+        .call("POST", "/api/games/wire/keep", Some(json!({ "seat": 0, "card": 1 })))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{kept}");
+    // The same route once this caller's seats have all chosen: `seat` and
+    // `cards` are null together, which is the "waiting for the others" screen.
+    let deal_waiting = api.get("/api/games/wire/deal").await;
+    // The lobby while a table is still dealing.
+    let games_list = api.get("/api/games").await;
+    // A caller with no seat here. A 403, and the client draws it as one.
+    let (status, not_seated_403) =
+        api.call_as(Some(STRANGER), "GET", "/api/games/wire/deal", None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{not_seated_403}");
+
+    let (status, kept) = api
+        .call_as(Some(OTHER), "POST", "/api/games/wire/keep", Some(json!({ "seat": 1, "card": 1 })))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{kept}");
+    // The table AFTER finalize, read by the seat that is not the creator — so
+    // the corpus carries `my_seats` at something other than `[0]`.
+    let (status, table) = api.call_as(Some(OTHER), "GET", "/api/games/wire/table", None).await;
+    assert_eq!(status, StatusCode::OK, "{table}");
+
+    let created = api.get("/api/games/wire").await;
 
     let mut out: Vec<(String, Value)> = vec![
         ("preview".to_string(), preview),
         ("preview_bot".to_string(), preview_bot),
+        ("table_dealing".to_string(), table_dealing),
+        ("table".to_string(), table),
+        ("deal".to_string(), deal),
+        ("deal_waiting".to_string(), deal_waiting),
+        ("dealing_409".to_string(), dealing_409),
+        ("games".to_string(), games_list),
+        ("not_seated_403".to_string(), not_seated_403),
         ("health".to_string(), api.get("/api/health").await),
         // **Both sides of `/api/me`, because the client branches on both.**
         // Signed in, and signed out — the second taken with the header omitted
@@ -280,6 +393,8 @@ async fn walk() -> Vec<(String, Value)> {
             last_prompt = state["prompt"].clone();
         }
         let kind = state["prompt"]["kind"].as_str().expect("a prompt kind").to_string();
+        // Every move this iteration makes goes as the seat that is to move.
+        let mover = acting(&state);
         capture(&mut out, &mut seen, &kind, &state);
 
         // The SHAPES within a kind that the client branches on separately.
@@ -357,7 +472,7 @@ async fn walk() -> Vec<(String, Value)> {
             // warning. The line is a number the grammar lets through (three
             // digits — four is refused at the FENCE, which is a different
             // answer) and the REPL then declines as out of range.
-            out.push(("refused".to_string(), api.send("999").await));
+            out.push(("refused".to_string(), api.send_as(mover, "999").await));
 
             // A MASKED HAND. `HandPanel::hidden` empties `cards` in the MODEL,
             // which is the property that makes a client that ignores the flag
@@ -367,9 +482,9 @@ async fn walk() -> Vec<(String, Value)> {
             // the grammar's allowlist precisely because the browser offers it,
             // so this is the real toggle over the real route, not a construction.
             seen.push("hidden_hand".to_string());
-            out.push(("hidden_hand".to_string(), api.send("privacy").await));
+            out.push(("hidden_hand".to_string(), api.send_as(mover, "privacy").await));
             // ...and back, so the rest of the corpus reads as an ordinary game.
-            state = api.send("privacy").await;
+            state = api.send_as(mover, "privacy").await;
             continue;
         }
 
@@ -427,7 +542,8 @@ async fn walk() -> Vec<(String, Value)> {
                     let mut landed = None;
                     for area in order {
                         let (status, probe) = api
-                            .call(
+                            .call_as(
+                                Some(mover),
                                 "POST",
                                 "/api/games/wire/input",
                                 Some(json!({ "line": format!("A{area:02}") })),
@@ -461,7 +577,7 @@ async fn walk() -> Vec<(String, Value)> {
                     "confirm".to_string()
                 } else {
                     let area = areas[rng.below(areas.len())].as_u64().expect("an area id");
-                    let picked = api.send(&format!("A{area:02}")).await;
+                    let picked = api.send_as(mover, &format!("A{area:02}")).await;
                     capture(&mut out, &mut seen, "place_b_selected", &picked);
                     state = picked;
                     continue;
@@ -479,7 +595,7 @@ async fn walk() -> Vec<(String, Value)> {
             "game_over" => break,
             other => panic!("unknown prompt kind {other:?}: {state}"),
         };
-        state = api.send(&line).await;
+        state = api.send_as(mover, &line).await;
     }
 
     capture(&mut out, &mut seen, "game_over", &state);
@@ -514,6 +630,10 @@ async fn walk() -> Vec<(String, Value)> {
     // lane's review found — a frame built for seat 0 while the prompt carried
     // seat 2's options — was reachable only at 3P or 4P, which is one dropdown
     // away in the client's own setup screen.
+    // **One person in all four seats**, which is the CLI's "one operator driving
+    // the table" and keeps this table's opening a single identity's sequence.
+    // The corpus shape it exists for is the 4P BOARD, which no seat binding
+    // changes; the two-people case is the `wire` game above.
     let (status, four) = api
         .call(
             "POST",
@@ -523,14 +643,18 @@ async fn walk() -> Vec<(String, Value)> {
                 "colors": ["Red", "Blue", "Yellow", "Green"],
                 "start_seat": 0,
                 "seed": SETUP_SEED,
-                "keeps": [1, 1, 1, 1],
-                "bot_seats": [],
+                "seats": [{ "user": WALKER }, { "user": WALKER }, { "user": WALKER }, { "user": WALKER }],
                 "name": "wire4",
             })),
         )
         .await;
     assert_eq!(status, StatusCode::CREATED, "{four}");
-    out.push(("options_4p".to_string(), four));
+    for seat in 0..4 {
+        let (status, kept) =
+            api.call("POST", "/api/games/wire4/keep", Some(json!({ "seat": seat, "card": 1 }))).await;
+        assert_eq!(status, StatusCode::OK, "seat {seat}: {kept}");
+    }
+    out.push(("options_4p".to_string(), api.get("/api/games/wire4").await));
     // The area panel at 4P as well. Only away from two players does the tile set
     // contain a Canal — whose ladder is EMPTY, which is the client's "never an
     // action area" branch — or a Chinatown, whose rung pays `Exchanges`. A
@@ -783,6 +907,11 @@ async fn corpus() -> Vec<(String, Value)> {
         .expect("a serializable manifest"),
     ));
     all.push(("site_space_words".to_string(), site_space_words()));
+    // The ONE normalization, applied to everything so no payload can acquire a
+    // clock without passing through it. See [`FROZEN_CREATED_AT`].
+    for (_, value) in all.iter_mut() {
+        freeze_clock(value);
+    }
     // Sorted, so the file set is a set and its order is not an accident of the
     // walk. (The names, not the payloads — payload key order is serde's.)
     all.sort_by(|a, b| a.0.cmp(&b.0));

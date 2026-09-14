@@ -2,6 +2,8 @@ import type {
   AreasPanel,
   ArtManifest,
   ClientState,
+  DealView,
+  GamesList,
   Labels,
   LabsPanel,
   HistoricalFrame,
@@ -12,6 +14,7 @@ import type {
   IndexModel,
   Outcome,
   SuggestResponse,
+  TableView,
   WhyResponse,
 } from "./types";
 
@@ -82,6 +85,10 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
   return parsed as T;
 }
 
+/** One seat of a table being opened: a person's email, or the bot. Exactly one
+ *  of the two — a seat naming both is a 400 that says so. */
+export type SeatRequest = { user: string } | { bot: true };
+
 export interface NewGameRequest {
   players: number;
   colors: string[];
@@ -89,10 +96,9 @@ export interface NewGameRequest {
   /** A decimal STRING: a `u64` seed does not survive a JS number, and the seed
    *  round-trips through this client on the way from preview to create. */
   seed?: string;
-  /** One entry per seat: `1` or `2` on a human seat; `null` on a bot seat,
-   *  whose keep is the bot's own. A value on a bot seat is a 400 naming it. */
-  keeps: (number | null)[];
-  bot_seats: number[];
+  /** One entry per seat, in seat order. **The creator must hold one of them**
+   *  (R-1.6), and a bot is refused at three and four players (R-P10). */
+  seats: SeatRequest[];
   name?: string;
 }
 
@@ -106,9 +112,21 @@ export const api = {
   /** 404s when the server has no cropped art. That is a supported state, not an
    *  error: callers treat the rejection as "no art" and draw without it. */
   art: () => call<ArtManifest>("GET", "/api/art"),
-  list: () => call<string[]>("GET", "/api/games"),
+  /** The tables you sit at, newest first — never anyone else's. */
+  list: () => call<GamesList>("GET", "/api/games"),
   preview: (req: NewGameRequest) => call<Preview>("POST", "/api/games/preview", req),
-  create: (req: NewGameRequest) => call<ClientState>("POST", "/api/games", req),
+  /** Opens a table, and starts NOTHING: the reply is `status: "dealing"` and
+   *  every seat is owed a deal it fetches for itself. */
+  create: (req: NewGameRequest) => call<TableView>("POST", "/api/games", req),
+  /** Who sits where, and how far the dealing has got. */
+  table: (game: string) => call<TableView>("GET", `/api/games/${id(game)}/table`),
+  /** The caller's OWN two cards, over the set table. `seat` and `cards` are
+   *  null together once every seat this caller holds has chosen. */
+  deal: (game: string) => call<DealView>("GET", `/api/games/${id(game)}/deal`),
+  /** Choose, for one seat the caller holds. The LAST keep at the table starts
+   *  the game, and the reply then reads `status: "playing"`. */
+  keep: (game: string, seat: number, card: 1 | 2) =>
+    call<TableView>("POST", `/api/games/${id(game)}/keep`, { seat, card }),
   get: (game: string) => call<ClientState>("GET", `/api/games/${id(game)}`),
   remove: (game: string) => call<null>("DELETE", `/api/games/${id(game)}`),
   /** The one mutation: an option's `number`, or a sub-prompt token. The server

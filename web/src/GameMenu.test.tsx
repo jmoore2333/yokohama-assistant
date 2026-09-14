@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
-import { renderApp } from "./test/harness";
+import { gamesNamed, renderApp } from "./test/harness";
 import { wire } from "./wire/contract";
 
 /** This file's own directory, as a `file:` URL.
@@ -21,7 +21,8 @@ describe("the Game menu", () => {
   it("lists the other saved games and switches to one", async () => {
     const other = { ...wire.options4p, id: "sim-other" };
     await renderApp(wire.options, (call) => {
-      if (call.method === "GET" && call.path.endsWith("/api/games")) return [wire.options.id, "sim-other"];
+      if (call.method === "GET" && call.path.endsWith("/api/games"))
+        return gamesNamed(wire.options.id, "sim-other");
       if (call.method === "GET" && call.path.endsWith("/api/games/sim-other")) return other;
       return undefined;
     });
@@ -46,7 +47,9 @@ describe("the Game menu", () => {
 
   it("returns to the setup screen without a reload", async () => {
     await renderApp(wire.options, (call) =>
-      call.method === "GET" && call.path.endsWith("/api/games") ? [wire.options.id] : undefined,
+      call.method === "GET" && call.path.endsWith("/api/games")
+        ? gamesNamed(wire.options.id)
+        : undefined,
     );
     const user = userEvent.setup();
     await user.click(screen.getByText(new RegExp(wire.options.id)));
@@ -67,7 +70,8 @@ describe("the Game menu", () => {
   it("a double-clicked saved game is fetched once", async () => {
     const other = { ...wire.options4p, id: "sim-other" };
     const stub = await renderApp(wire.options, (call) => {
-      if (call.method === "GET" && call.path.endsWith("/api/games")) return [wire.options.id, "sim-other"];
+      if (call.method === "GET" && call.path.endsWith("/api/games"))
+        return gamesNamed(wire.options.id, "sim-other");
       if (call.method === "GET" && call.path.endsWith("/api/games/sim-other")) return other;
       return undefined;
     });

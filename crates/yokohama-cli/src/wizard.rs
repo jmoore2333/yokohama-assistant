@@ -1381,7 +1381,8 @@ fn ask_sim_deal(
 /// Hand-wrapped to two lines under 80 columns for the same reason every other
 /// width in this driver is a fixed budget: std exposes no terminal size, and
 /// the guide promises a 140-column window clears every layout.
-const KEEP_SCORE_NOTE: &str = "  (the Keep score is what the built-in bot would prefer, from the card's printed\n   \
+/// Served by `yokohama-web` beside the deal (M6.1), so the browser carries no copy.
+pub const KEEP_SCORE_NOTE: &str = "  (the Keep score is what the built-in bot would prefer, from the card's printed\n   \
      economics alone — hand-set, unmeasured, and no substitute for your own read)\n";
 
 // ---------------------------------------------------------------------

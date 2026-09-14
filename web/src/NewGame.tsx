@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api, ApiError, type NewGameRequest } from "./api";
+import { api, ApiError, claimedUser, type NewGameRequest } from "./api";
 import { Board } from "./Board";
 import { BoardsMenu } from "./BoardsMenu";
 import { backArt } from "./art";
@@ -136,8 +136,17 @@ export function NewGame({
   /** The saved game whose `delete` has been clicked once — see the row below. */
   const [confirming, setConfirming] = useState<string | null>(null);
 
+  /** The ids of the tables this player sits at.
+   *
+   *  **The list is a list of TABLES since M6.1**, scoped to the caller by the
+   *  server; this screen still draws it as names, which is all it ever read. */
+  const savedIds = async () => (await api.list()).games.map((t) => t.id);
+
   useEffect(() => {
-    api.list().then(setSaved).catch(() => setSaved([]));
+    savedIds().then(setSaved).catch(() => setSaved([]));
+    // `savedIds` is re-created every render and this must run once, so it is
+    // deliberately not a dependency — the shape the original `api.list()` call
+    // had here, kept.
   }, []);
 
   const colors = COLORS.slice(0, players) as PlayerColor[];
@@ -146,31 +155,26 @@ export function NewGame({
     colors: [...colors],
     start_seat: 0,
     ...(seedText.trim() ? { seed: seedText.trim() } : {}),
-    keeps: previewKeeps(),
-    bot_seats: [botSeat],
+    seats: Array.from({ length: players }, (_, seat) =>
+      seat === botSeat ? { bot: true } : { user: claimedUser() ?? "" },
+    ),
   });
 
-  /** The `keeps` list the wire takes: a number on a human seat, `null` on the
-   *  bot's, whose keep is the bot's own. A value on a bot seat is a 400 naming
-   *  the seat, and so is a `null` on a human one.
+  /** Every seat this player has chosen for, lowest first.
    *
-   *  **Two of them, because the two requests mean different things by it.** On
-   *  the PREVIEW the value is inert: no human seat has chosen yet, so `1` goes
-   *  on every human seat only to pass the shape check, and the server ignores
-   *  it — a previewed human hand is empty. It is NOT inert on the bot's seat,
-   *  which the server keeps for by its own argmax either way, so the previewed
-   *  table already shows one order in the bot's hand. CREATE is where the
-   *  choice is made and sends what the player picked.
+   *  **A keep is its own request now (M6.1 §4.3)**: `create` opens a DEALING
+   *  table and each seat posts the card it kept, which is what lets the server
+   *  serve one seat's deal without ever putting another's on the wire. A create
+   *  can no longer carry a card for anybody.
    *
-   *  **What comes BACK is a different question, and the answer is R-C1:** the
-   *  response carries each human seat's two cards and nothing of the bot's. */
-  const previewKeeps = (): (number | null)[] =>
-    Array.from({ length: players }, (_, seat) => (seat === botSeat ? null : 1));
-
-  const createKeeps = (): (number | null)[] =>
-    Array.from({ length: players }, (_, seat) =>
-      seat === botSeat ? null : (chosen[seat] ?? null),
-    );
+   *  This screen still holds every human seat's choice and sends them in a row,
+   *  because it is still the hot-seat form — the per-seat screen is the next
+   *  step of this cycle, which replaces this component. */
+  const keeps = (): [number, 1 | 2][] =>
+    Object.keys(chosen)
+      .map(Number)
+      .sort((a, b) => a - b)
+      .map((seat) => [seat, chosen[seat]!] as [number, 1 | 2]);
 
   // The same guard, and the same reasoning, as `App`'s `inFlight` — read its
   // comment; this is the second site and it was missing.
@@ -372,13 +376,17 @@ export function NewGame({
                   className="primary"
                   disabled={busy}
                   onClick={() =>
-                    run(async () =>
-                      onStarted(
-                        // The seed sent back is the STRING the server gave, verbatim.
-                        await api.create({ ...base(), seed: preview.seed, keeps: createKeeps() }),
-                        true,
-                      ),
-                    )
+                    run(async () => {
+                      // The seed sent back is the STRING the server gave, verbatim.
+                      const table = await api.create({ ...base(), seed: preview.seed });
+                      for (const [seat, card] of keeps()) {
+                        await api.keep(table.id, seat, card);
+                      }
+                      // The create no longer answers with a game — it answers
+                      // with a table, and the game exists only after the last
+                      // keep. So the state this screen hands on is read back.
+                      onStarted(await api.get(table.id), true);
+                    })
                   }
                 >
                   Start
@@ -527,7 +535,7 @@ export function NewGame({
                         run(async () => {
                           await api.remove(name);
                           setConfirming(null);
-                          setSaved(await api.list());
+                          setSaved(await savedIds());
                         })
                       }
                     >

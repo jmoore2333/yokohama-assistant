@@ -41,6 +41,7 @@ pub mod grammar;
 pub mod identity;
 pub mod outcome;
 pub mod store;
+pub mod table;
 
 use std::sync::Arc;
 
@@ -69,14 +70,23 @@ use crate::store::{FsStore, MemStore, Store};
 pub struct ApiError {
     pub status: StatusCode,
     pub message: String,
+    /// The ONE refusal a client branches on rather than displays (M6.1): a
+    /// table that is still dealing. It rides beside the sentence as `"status"`,
+    /// so a client that opened a game by id knows to draw the setup screen
+    /// instead of an error banner.
+    ///
+    /// **`&'static str`, and absent on every other refusal.** A field that a
+    /// handler could fill with anything would be a second, untyped error
+    /// channel; the only value that reaches it is [`games::GameError::Dealing`]'s.
+    pub table_status: Option<&'static str>,
 }
 
 impl ApiError {
     pub fn bad_request(message: impl Into<String>) -> Self {
-        Self { status: StatusCode::BAD_REQUEST, message: message.into() }
+        Self { status: StatusCode::BAD_REQUEST, message: message.into(), table_status: None }
     }
     pub fn not_found(message: impl Into<String>) -> Self {
-        Self { status: StatusCode::NOT_FOUND, message: message.into() }
+        Self { status: StatusCode::NOT_FOUND, message: message.into(), table_status: None }
     }
     /// This process failed at something the caller asked for correctly.
     ///
@@ -85,13 +95,51 @@ impl ApiError {
     /// every other refusal, because the shape is the same one `web/src/api.ts`
     /// reads `.error` off.
     pub fn server_error(message: impl Into<String>) -> Self {
-        Self { status: StatusCode::INTERNAL_SERVER_ERROR, message: message.into() }
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: message.into(),
+            table_status: None,
+        }
+    }
+    /// A session route asked of a table that has not finished dealing.
+    pub fn dealing() -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            message: games::DEALING_SENTENCE.to_string(),
+            table_status: Some("dealing"),
+        }
+    }
+}
+
+/// Every refusal `Games` raises, in the status a client reads it as.
+///
+/// **One mapping, in one place.** Fifteen handlers reach `Games::handle`, and
+/// before this each mapped its own error with `ApiError::not_found` — so a
+/// dealing table answered 404 on fourteen routes and the client had nothing to
+/// branch on. A `From` impl means a handler writes `?` and cannot get it wrong.
+impl From<games::GameError> for ApiError {
+    fn from(e: games::GameError) -> Self {
+        use games::GameError as E;
+        match e {
+            E::NotFound(m) => Self::not_found(m),
+            E::Dealing => Self::dealing(),
+            E::Forbidden(m) => {
+                Self { status: StatusCode::FORBIDDEN, message: m, table_status: None }
+            }
+            E::Conflict(m) => Self { status: StatusCode::CONFLICT, message: m, table_status: None },
+            E::BadRequest(m) => Self::bad_request(m),
+            E::Server(m) => Self::server_error(m),
+        }
     }
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        (self.status, Json(serde_json::json!({ "error": self.message }))).into_response()
+        let body = match self.table_status {
+            Some(status) => serde_json::json!({ "error": self.message, "status": status }),
+            None => serde_json::json!({ "error": self.message }),
+        };
+        (self.status, Json(body)).into_response()
     }
 }
 
@@ -312,59 +360,120 @@ async fn labels(State(state): State<Arc<AppState>>) -> Json<Labels> {
 /// told a client its request was wrong and sent it away to fix something that
 /// was not broken.
 async fn preview_game(
-    _who: identity::Identity,
+    identity::Identity(user): identity::Identity,
     State(state): State<Arc<AppState>>,
     JsonBody(req): JsonBody<NewGame>,
 ) -> ApiResult<games::Preview> {
-    games::preview(&req, &state.rules).map(Json).map_err(|e| match e {
+    games::preview(&req, &state.rules, &user).map(Json).map_err(|e| match e {
         games::PreviewError::Request(m) => ApiError::bad_request(m),
         games::PreviewError::Server(m) => ApiError::server_error(m),
     })
 }
 
-// **`identity::Identity` is on all fifteen `/api/games` handlers, and here it
-// only fences.** Taking it makes the route a 401 without an identity — that is
-// the whole of its job in this task. The extracted `User` is deliberately
-// UNUSED (`_who`): which games a caller may see, and which seat is theirs, is
-// seat scoping and arrives later in this cycle. Naming it now means the scoping
-// task adds a USE rather than a parameter to every one of them, and means a
-// handler added later cannot reach the router without answering the question.
+// **`identity::Identity` is on all twenty `/api/games` handlers.** Taking it
+// makes the route a 401 without an identity; the five below now also USE the
+// `User` it carries, which is what makes a table the caller's rather than
+// anyone's. The rest still fence only — the per-seat VIEW is the next task of
+// this cycle — but every one of them now maps `Games`' refusals through
+// `ApiError::from`, which is what makes a dealing table answer 409 with a status
+// a client can branch on instead of a 404 it cannot.
 //
-// Fifteen handlers over thirteen signatures — `ports`, `labs` and `areas` share
+// Twenty handlers over eighteen signatures — `ports`, `labs` and `areas` share
 // the `surface!` macro below.
-async fn list_games(
-    _who: identity::Identity,
-    State(state): State<Arc<AppState>>,
-) -> ApiResult<Vec<String>> {
-    state.games.list().map(Json).map_err(ApiError::bad_request)
+
+/// The lobby: `{ "games": [...] }` rather than a bare array.
+///
+/// An object because a list is a place fields get added to — a cursor, a count —
+/// and a client that has to change shape to read one is a client that breaks.
+#[derive(Debug, Clone, Serialize)]
+pub struct GamesList {
+    pub games: Vec<crate::table::TableView>,
 }
 
+async fn list_games(
+    identity::Identity(user): identity::Identity,
+    State(state): State<Arc<AppState>>,
+) -> ApiResult<GamesList> {
+    state
+        .games
+        .list_for(&user)
+        .map(|games| Json(GamesList { games }))
+        .map_err(ApiError::server_error)
+}
+
+/// **201 with the TABLE, and no game yet.** Nothing is dealt into anyone's hand
+/// by this call: the seats are bound and every human seat is owed a deal it
+/// fetches for itself.
 async fn create_game(
-    _who: identity::Identity,
+    identity::Identity(user): identity::Identity,
     State(state): State<Arc<AppState>>,
     JsonBody(req): JsonBody<NewGame>,
-) -> Result<(StatusCode, Json<ClientState>), ApiError> {
-    let (id, handle) = state.games.create(&req).map_err(ApiError::bad_request)?;
-    let repl = handle.lock().expect("a fresh game");
-    Ok((StatusCode::CREATED, Json(ClientState::of(&id, &repl, Vec::new()))))
+) -> Result<(StatusCode, Json<crate::table::TableView>), ApiError> {
+    let view = state.games.create(&req, &user)?;
+    Ok((StatusCode::CREATED, Json(view)))
+}
+
+async fn get_table(
+    identity::Identity(user): identity::Identity,
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> ApiResult<crate::table::TableView> {
+    let doc = state.games.table(&id, &user)?;
+    Ok(Json(doc.view(&user)))
+}
+
+/// The caller's own two cards, over the set table. A seated caller's, or a 403.
+async fn deal(
+    identity::Identity(user): identity::Identity,
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> ApiResult<crate::table::DealView> {
+    Ok(Json(state.games.deal(&id, &user)?))
+}
+
+/// Which of the two dealt cards a seat keeps.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Keep {
+    pub seat: u8,
+    pub card: u8,
+}
+
+async fn keep(
+    identity::Identity(user): identity::Identity,
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    JsonBody(req): JsonBody<Keep>,
+) -> ApiResult<crate::table::TableView> {
+    // **`PlayerId::new` PANICS at four and above**, and this number came off the
+    // wire — so it is parsed through the fallible constructor and refused as a
+    // 400. A panic here would poison nothing (the seat is read before any lock)
+    // but would still drop the connection with no sentence in it.
+    let seat = yokohama_core::PlayerId::try_new(req.seat)
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    Ok(Json(state.games.keep(&id, &user, seat, req.card)?))
 }
 
 async fn get_game(
-    _who: identity::Identity,
+    identity::Identity(user): identity::Identity,
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> ApiResult<ClientState> {
-    let handle = state.games.handle(&id).map_err(ApiError::not_found)?;
+    // Seated first, so a stranger holding an id is a 403 rather than a frame.
+    // The VIEW this builds is still the acting seat's — per-caller scoping is
+    // the next task — but the fence in front of it is this one's.
+    state.games.table(&id, &user)?;
+    let handle = state.games.handle(&id)?;
     let repl = handle.lock().expect("a game");
     Ok(Json(ClientState::of(&id, &repl, Vec::new())))
 }
 
 async fn delete_game(
-    _who: identity::Identity,
+    identity::Identity(user): identity::Identity,
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    state.games.delete(&id).map_err(ApiError::not_found)?;
+    state.games.delete(&id, &user)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -422,7 +531,7 @@ async fn input(
     if !grammar::is_gameplay_line(&req.line) {
         return Err(ApiError::bad_request(grammar::refusal(&req.line)));
     }
-    let handle = state.games.handle(&id).map_err(ApiError::not_found)?;
+    let handle = state.games.handle(&id)?;
     let mut repl = handle.lock().expect("a game");
 
     if let Some(expected) = &req.expect {
@@ -434,6 +543,7 @@ async fn input(
                     "this game is asking {actual:?}, not {expected:?} — the prompt moved on \
                      (a restart drops an open picker). Re-read the game and answer what it asks.",
                 ),
+                table_status: None,
             });
         }
     }
@@ -553,7 +663,7 @@ macro_rules! surface {
             State(state): State<Arc<AppState>>,
             Path(id): Path<String>,
         ) -> ApiResult<$model> {
-            let handle = state.games.handle(&id).map_err(ApiError::not_found)?;
+            let handle = state.games.handle(&id)?;
             let repl = handle.lock().expect("a game");
             let f: fn(&yokohama_core::GameState, &Rules) -> $model = $build;
             Ok(Json(f(repl.session.state(), repl.session.rules())))
@@ -610,7 +720,7 @@ async fn suggest(
     Path(id): Path<String>,
 ) -> ApiResult<explain::SuggestResponse> {
     use explain::SuggestRefusal as R;
-    let handle = state.games.handle(&id).map_err(ApiError::not_found)?;
+    let handle = state.games.handle(&id)?;
 
     let read = {
         let repl = handle.lock().expect("a game");
@@ -672,7 +782,7 @@ async fn why(
     Path(id): Path<String>,
     QueryArgs(q): QueryArgs<WhyQuery>,
 ) -> ApiResult<explain::Why> {
-    let handle = state.games.handle(&id).map_err(ApiError::not_found)?;
+    let handle = state.games.handle(&id)?;
     let (mode, record, bots) = {
         let repl = handle.lock().expect("a game");
         // **The lockdown gate fences COMPUTATION, not projection**, and this is
@@ -743,7 +853,7 @@ async fn card_index(
         Some(term) => yokohama_cli::card_prompt::parse_filter(term, kind)
             .map_err(ApiError::bad_request)?,
     };
-    let handle = state.games.handle(&id).map_err(ApiError::not_found)?;
+    let handle = state.games.handle(&id)?;
     let repl = handle.lock().expect("a game");
     Ok(Json(yokohama_cli::screen_model::build_index(
         kind,
@@ -775,12 +885,13 @@ async fn result(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> ApiResult<outcome::Outcome> {
-    let handle = state.games.handle(&id).map_err(ApiError::not_found)?;
+    let handle = state.games.handle(&id)?;
     let repl = handle.lock().expect("a game");
     if !repl.session.is_over() {
         return Err(ApiError {
             status: StatusCode::CONFLICT,
             message: "the game is not over — there is no final score yet".to_string(),
+            table_status: None,
         });
     }
     Ok(Json(outcome::Outcome::of(&repl.session.final_result())))
@@ -808,7 +919,7 @@ async fn log(
     Path(id): Path<String>,
     QueryArgs(q): QueryArgs<LogQuery>,
 ) -> ApiResult<yokohama_cli::screen_model::LogPanel> {
-    let handle = state.games.handle(&id).map_err(ApiError::not_found)?;
+    let handle = state.games.handle(&id)?;
     let repl = handle.lock().expect("a game");
     let total = repl.session.record().events.len();
     let first = q.tail.map_or(0, |n| total.saturating_sub(n));
@@ -861,7 +972,7 @@ async fn at_k(
     State(state): State<Arc<AppState>>,
     Path((id, k)): Path<(String, usize)>,
 ) -> ApiResult<client::HistoricalFrame> {
-    let handle = state.games.handle(&id).map_err(ApiError::not_found)?;
+    let handle = state.games.handle(&id)?;
     let repl = handle.lock().expect("a game");
     let total = repl.session.record().events.len();
     if k > total {
@@ -872,6 +983,7 @@ async fn at_k(
     client::HistoricalFrame::at(&repl, k).map(Json).map_err(|e| ApiError {
         status: StatusCode::INTERNAL_SERVER_ERROR,
         message: format!("replaying this game to {k} failed at event {}: {}", e.event_index, e.message),
+        table_status: None,
     })
 }
 
@@ -920,6 +1032,9 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/api/games", get(list_games).post(create_game))
         .route("/api/games/preview", post(preview_game))
         .route("/api/games/{id}", get(get_game).delete(delete_game))
+        .route("/api/games/{id}/table", get(get_table))
+        .route("/api/games/{id}/deal", get(deal))
+        .route("/api/games/{id}/keep", post(keep))
         .route("/api/games/{id}/input", post(input))
         .route("/api/games/{id}/ports", get(ports))
         .route("/api/games/{id}/labs", get(labs))
@@ -1104,7 +1219,8 @@ mod tests {
     async fn an_unknown_key_in_a_new_game_request_is_refused_rather_than_defaulted() {
         let good = serde_json::json!({
             "players": 2, "colors": ["Red", "Blue"], "start_seat": 1,
-            "seed": "20260831", "keeps": [1, 1], "name": "fenced",
+            "seed": "20260831", "name": "fenced",
+            "seats": [{ "user": WHO }, { "user": WHO }],
         });
         let mut renamed = good.clone();
         renamed.as_object_mut().expect("an object").remove("start_seat");
@@ -1119,15 +1235,19 @@ mod tests {
         assert_eq!(status, StatusCode::CREATED, "the correctly-spelled request still works");
     }
 
-    /// The preview route serves the SET TABLE, and refuses a keep on a bot seat.
+    /// The preview route serves the SET TABLE, and withholds the bot's deal.
     ///
-    /// The two halves are the route's whole contract: a client that draws the
-    /// position after setup needs `table`, and a client that stopped choosing
-    /// for the bot needs the refusal to name the seat rather than to succeed
-    /// with a card the bot did not pick. Asserted through the router, because
-    /// `games::preview`'s own cells prove the projection and not the wiring.
+    /// **Its second half moved.** This cell used to end by refusing a keep on a
+    /// bot seat, which a create body can no longer express — a keep is its own
+    /// route now, and its 403 is
+    /// [`the_create_flow_deals_per_seat_and_the_state_is_409_until_the_last_keep`]'s.
+    /// What is left here is the route's remaining contract: the position after
+    /// setup, with one seat's cards absent from the payload rather than filtered
+    /// by the client.
+    ///
+    /// The route itself is retired by Task 10 of this cycle (R-plan-4).
     #[tokio::test]
-    async fn the_preview_serves_the_set_table_and_refuses_a_keep_on_a_bot_seat() {
+    async fn the_preview_serves_the_set_table_and_withholds_the_bots_deal() {
         // **Seed 20260830, not the corpus seed**, kept from the era when this
         // cell read the bot's own Keep off the payload: there the argmax is
         // card 2, so a constant could not have passed. The deal left the wire
@@ -1136,9 +1256,9 @@ mod tests {
         // place a stray field could still appear.
         let body = serde_json::json!({
             "players": 2, "colors": ["Red", "Blue"], "start_seat": 0, "seed": 20260830,
-            "keeps": [1, null], "bot_seats": [1]
+            "seats": [{ "user": WHO }, { "bot": true }],
         });
-        let (status, preview) = post_json("/api/games/preview", body.clone()).await;
+        let (status, preview) = post_json("/api/games/preview", body).await;
         assert_eq!(status, StatusCode::OK, "{preview}");
         assert_eq!(preview["table"]["index"], serde_json::json!(0));
         let bot = &preview["deals"][1];
@@ -1149,11 +1269,6 @@ mod tests {
         // one seat's cards rather than serving an empty set table.
         assert_eq!(preview["deals"][0]["cards"].as_array().expect("two cards").len(), 2);
         assert!(preview["deals"][0]["cards"][0]["keep_score"].is_i64());
-        let mut on_bot = body;
-        on_bot["keeps"] = serde_json::json!([1, 1]);
-        let (status, err) = post_json("/api/games/preview", on_bot).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
-        assert!(err["error"].as_str().unwrap_or("").contains("seat 1"), "{err}");
     }
 
     /// A preview this server cannot BUILD is a 500; a request it will not
@@ -1175,15 +1290,17 @@ mod tests {
         }));
         let good = serde_json::json!({
             "players": 2, "colors": ["Red", "Blue"], "start_seat": 0, "seed": 20260830,
-            "keeps": [1, null], "bot_seats": [1]
+            "seats": [{ "user": WHO }, { "bot": true }],
         });
         let (status, body) = call(&router, "POST", "/api/games/preview", Some(good.clone())).await;
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
         assert!(body["error"].is_string(), "and it carries a sentence: {body}");
 
-        let mut on_bot = good;
-        on_bot["keeps"] = serde_json::json!([1, 1]);
-        let (status, body) = call(&router, "POST", "/api/games/preview", Some(on_bot)).await;
+        // A seat that is BOTH a person and the bot — the caller's own mistake,
+        // refused by name before the setup is ever attempted.
+        let mut both = good;
+        both["seats"][1] = serde_json::json!({ "user": "other@wire.test", "bot": true });
+        let (status, body) = call(&router, "POST", "/api/games/preview", Some(both)).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
         assert!(body["error"].as_str().unwrap_or("").contains("seat 1"), "{body}");
     }
@@ -1264,36 +1381,225 @@ mod tests {
         (status, serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null))
     }
 
-    /// A 2P `keeps` list: `1` on a human seat, `null` on a bot's, whose keep is
-    /// the bot's own (`games::bot_keep`). A value on a bot seat is a 400.
-    fn keeps_for(bots: &[u8]) -> serde_json::Value {
+    /// The `seats` list a create takes: [`WHO`] in every human seat, `bot` in
+    /// the ones named.
+    ///
+    /// **Every human seat is the SAME person**, because [`call`] sends one
+    /// identity and these cells are about the routes rather than about who holds
+    /// what. A hot seat is a real table — the CLI's "one operator driving the
+    /// table" — so nothing here is a fiction the product does not support; the
+    /// cells whose subject IS two people drive two identities instead
+    /// ([`post_as`] and friends).
+    fn seats_for(players: u8, bots: &[u8]) -> serde_json::Value {
         serde_json::Value::Array(
-            (0u8..2)
+            (0..players)
                 .map(|seat| {
                     if bots.contains(&seat) {
-                        serde_json::Value::Null
+                        serde_json::json!({ "bot": true })
                     } else {
-                        serde_json::json!(1)
+                        serde_json::json!({ "user": WHO })
                     }
                 })
                 .collect(),
         )
     }
 
-    /// Start a 2P game and return the router it lives in.
-    async fn a_game(router: &Router, name: &str, bots: &[u8]) -> serde_json::Value {
-        let (status, state) = call(
+    /// Open a table, keep at every human seat, and return the game's first
+    /// `ClientState` — the payload `create` used to answer with.
+    ///
+    /// A game is no longer one call (M6.1 §4.3): a create opens a DEALING table
+    /// and the last keep is what builds the session. This is that sequence, so
+    /// every cell below still reads as "start a game, then ask it something".
+    async fn start(
+        router: &Router,
+        name: &str,
+        players: u8,
+        bots: &[u8],
+    ) -> serde_json::Value {
+        let colors = ["Red", "Blue", "Yellow", "Green"];
+        let (status, table) = call(
             router,
             "POST",
             "/api/games",
             Some(serde_json::json!({
-                "players": 2, "colors": ["Red", "Blue"], "start_seat": 0,
-                "seed": "20260831", "keeps": keeps_for(bots), "bot_seats": bots, "name": name,
+                "players": players,
+                "colors": colors[..usize::from(players)],
+                "start_seat": 0,
+                "seed": "20260831",
+                "seats": seats_for(players, bots),
+                "name": name,
             })),
         )
         .await;
-        assert_eq!(status, StatusCode::CREATED, "{state}");
+        assert_eq!(status, StatusCode::CREATED, "{table}");
+        for seat in (0..players).filter(|s| !bots.contains(s)) {
+            let (status, kept) = call(
+                router,
+                "POST",
+                &format!("/api/games/{name}/keep"),
+                Some(serde_json::json!({ "seat": seat, "card": 1 })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "seat {seat}: {kept}");
+        }
+        let (status, state) = call(router, "GET", &format!("/api/games/{name}"), None).await;
+        assert_eq!(status, StatusCode::OK, "{state}");
         state
+    }
+
+    /// Start a 2P game and return its first payload.
+    async fn a_game(router: &Router, name: &str, bots: &[u8]) -> serde_json::Value {
+        start(router, name, 2, bots).await
+    }
+
+    /// A request under a NAMED identity, against a state several of them share.
+    ///
+    /// The cells about seats need two people at one table, which `call`'s single
+    /// [`WHO`] cannot express. `app(state)` is rebuilt per call — a `Router` is
+    /// cheap and `oneshot` consumes a clone anyway — so what is shared is the
+    /// `AppState`, which is the game.
+    async fn request_as(
+        state: &Arc<AppState>,
+        who: &str,
+        method: &str,
+        uri: &str,
+        body: Option<serde_json::Value>,
+    ) -> (StatusCode, serde_json::Value) {
+        let req = Request::builder().method(method).uri(uri).header(identity::CLAIMED_HEADER, who);
+        let req = match body {
+            Some(b) => req
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&b).expect("a body"))),
+            None => req.body(Body::empty()),
+        }
+        .expect("a request");
+        let res = app(Arc::clone(state)).oneshot(req).await.expect("the router answers");
+        let status = res.status();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.expect("a body");
+        (status, serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null))
+    }
+
+    async fn post_as(
+        state: &Arc<AppState>,
+        who: &str,
+        uri: &str,
+        body: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
+        request_as(state, who, "POST", uri, Some(body)).await
+    }
+
+    async fn get_as(
+        state: &Arc<AppState>,
+        who: &str,
+        uri: &str,
+    ) -> (StatusCode, serde_json::Value) {
+        request_as(state, who, "GET", uri, None).await
+    }
+
+    async fn delete_as(
+        state: &Arc<AppState>,
+        who: &str,
+        uri: &str,
+    ) -> (StatusCode, serde_json::Value) {
+        request_as(state, who, "DELETE", uri, None).await
+    }
+
+    /// **The whole create flow over the router, as two people drive it.**
+    ///
+    /// The cell this cycle exists for: a create opens a DEALING table, each seat
+    /// is dealt its own two cards, a keep is refused on a seat the caller does
+    /// not hold, every session route answers 409 with a status the client can
+    /// branch on until the last keep, and the list is scoped to the caller.
+    ///
+    /// One cell rather than eight, because the SEQUENCE is the claim — each
+    /// refusal is stated against a table that a moment later answers the same
+    /// call correctly, so a fence that refused everything could not pass.
+    #[tokio::test]
+    async fn the_create_flow_deals_per_seat_and_the_state_is_409_until_the_last_keep() {
+        let state = Arc::new(AppState::in_memory());
+        let body = serde_json::json!({
+            "players": 2, "colors": ["Red", "Blue"], "start_seat": 0, "seed": "20260831", "name": "flow",
+            "seats": [{ "user": "red@wire.test" }, { "user": "blue@wire.test" }],
+        });
+        let (status, table) = post_as(&state, "red@wire.test", "/api/games", body).await;
+        assert_eq!(status, StatusCode::CREATED, "{table}");
+        assert_eq!(table["status"], "dealing");
+        assert!(!table.to_string().contains("20260831"), "no seed on the wire: {table}");
+        let (status, body) = get_as(&state, "red@wire.test", "/api/games/flow").await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body, serde_json::json!({ "error": "this table is still dealing", "status": "dealing" }));
+        let (status, _) = get_as(&state, "red@wire.test", "/api/games/flow/ports").await;
+        assert_eq!(status, StatusCode::CONFLICT, "every session route");
+        let (status, deal) = get_as(&state, "blue@wire.test", "/api/games/flow/deal").await;
+        assert_eq!(status, StatusCode::OK, "{deal}");
+        assert_eq!(deal["seat"], 1);
+        assert_eq!(deal["cards"].as_array().unwrap().len(), 2);
+        let (status, err) = post_as(
+            &state,
+            "blue@wire.test",
+            "/api/games/flow/keep",
+            serde_json::json!({ "seat": 0, "card": 1 }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{err}");
+        let (status, _) = post_as(
+            &state,
+            "blue@wire.test",
+            "/api/games/flow/keep",
+            serde_json::json!({ "seat": 1, "card": 1 }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, err) = get_as(&state, "green@wire.test", "/api/games/flow/deal").await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{err}");
+        let (status, view) = post_as(
+            &state,
+            "red@wire.test",
+            "/api/games/flow/keep",
+            serde_json::json!({ "seat": 0, "card": 2 }),
+        )
+        .await;
+        assert_eq!((status, view["status"].as_str()), (StatusCode::OK, Some("playing")), "{view}");
+        let (status, game) = get_as(&state, "red@wire.test", "/api/games/flow").await;
+        assert_eq!(status, StatusCode::OK, "{game}");
+        assert_eq!(game["events"], 0);
+        let (status, list) = get_as(&state, "blue@wire.test", "/api/games").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(list["games"][0]["my_seats"], serde_json::json!([1]));
+        let (status, _) = get_as(&state, "green@wire.test", "/api/games").await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    /// The OLD create body is refused by name, and delete is the creator's.
+    ///
+    /// `keeps` and `bot_seats` are gone (M6.1 §4.2), and the existing
+    /// `deny_unknown_fields` fence is what turns a client that never updated
+    /// into a 400 naming the key rather than a game dealt for somebody else.
+    #[tokio::test]
+    async fn the_old_body_keys_are_refused_by_name_and_delete_is_the_creators() {
+        let state = Arc::new(AppState::in_memory());
+        // One at a time, because each must NAME ITSELF: a body carrying both is
+        // refused for whichever serde meets first, and the other key's cell
+        // would be riding on that one.
+        for key in ["keeps", "bot_seats"] {
+            let mut old = serde_json::json!({
+                "players": 2, "colors": ["Red", "Blue"], "start_seat": 0,
+                "seats": [{ "user": "red@wire.test" }, { "bot": true }],
+            });
+            old[key] = serde_json::json!([1]);
+            let (status, err) = post_as(&state, "red@wire.test", "/api/games", old).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{key}: {err}");
+            assert!(err["error"].as_str().unwrap().contains(key), "{key}: {err}");
+        }
+        let body = serde_json::json!({
+            "players": 2, "colors": ["Red", "Blue"], "name": "own",
+            "seats": [{ "user": "red@wire.test" }, { "user": "blue@wire.test" }],
+        });
+        post_as(&state, "red@wire.test", "/api/games", body).await;
+        let (status, _) = delete_as(&state, "blue@wire.test", "/api/games/own").await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _) = delete_as(&state, "red@wire.test", "/api/games/own").await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
     }
 
     /// **The only destructive route in the product, which nothing exercised.**
@@ -1311,8 +1617,18 @@ mod tests {
         a_game(&router, "doomed", &[]).await;
         a_game(&router, "kept", &[]).await;
 
+        let ids = |list: &serde_json::Value| {
+            list["games"]
+                .as_array()
+                .expect("a games list")
+                .iter()
+                .map(|g| g["id"].as_str().expect("an id").to_string())
+                .collect::<Vec<_>>()
+        };
         let (_, before) = call(&router, "GET", "/api/games", None).await;
-        assert_eq!(before, serde_json::json!(["doomed", "kept"]), "the premise: both are stored");
+        let mut names = ids(&before);
+        names.sort();
+        assert_eq!(names, ["doomed", "kept"], "the premise: both are stored");
 
         let (status, _) = call(&router, "DELETE", "/api/games/doomed", None).await;
         assert_eq!(status, StatusCode::NO_CONTENT);
@@ -1320,7 +1636,7 @@ mod tests {
         // Gone from the list, gone from the store, and the OTHER game survives —
         // without that last clause a handler that deleted everything would pass.
         let (_, after) = call(&router, "GET", "/api/games", None).await;
-        assert_eq!(after, serde_json::json!(["kept"]), "only the named game went");
+        assert_eq!(ids(&after), ["kept"], "only the named game went");
         let (status, _) = call(&router, "GET", "/api/games/doomed", None).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "the record is really gone");
         let (status, _) = call(&router, "GET", "/api/games/kept", None).await;
@@ -1685,15 +2001,7 @@ mod tests {
             }
         };
 
-        let (status, state) = call(
-            "/api/games".to_string(),
-            serde_json::json!({
-                "players": 2, "colors": ["Red", "Blue"], "start_seat": 0,
-                "seed": "20260831", "keeps": [1, null], "bot_seats": [1], "name": "expects",
-            }),
-        )
-        .await;
-        assert_eq!(status, StatusCode::CREATED);
+        let state = start(&router, "expects", 2, &[1]).await;
         assert_eq!(state["prompt"]["kind"], "options", "the opening asks for an option");
 
         // The shape a dropped picker produces: the client believes a placement
@@ -1758,17 +2066,15 @@ mod tests {
             }
         };
 
-        // 3P with ONE bot, so seats 0 and 2 are both human — the shape that
-        // broke. One bot is what the client's own setup screen sends.
-        let mut state = call(
-            "POST",
-            "/api/games".to_string(),
-            Some(serde_json::json!({
-                "players": 3, "colors": ["Red", "Blue", "Yellow"], "start_seat": 0,
-                "seed": "20260831", "keeps": [1, null, 1], "bot_seats": [1], "name": "hotseat",
-            })),
-        )
-        .await;
+        // 3P, so play passes through more than one seat — the shape that broke.
+        //
+        // **All three seats are human now, and that is R-P10 rather than a
+        // preference**: the bot is refused at three and four players with the
+        // evaluator's own sentence, so the 3P-with-one-bot table this cell used
+        // to build can no longer be created. A hot seat at 3P reaches the same
+        // state — the payload follows the mover across a seat boundary — which
+        // is what the walk below asserts.
+        let mut state = start(&router, "hotseat", 3, &[]).await;
 
         let mut saw_a_seat_other_than_zero = false;
         for step in 0..60 {
@@ -1854,16 +2160,7 @@ mod tests {
             }
         };
 
-        let (status, _) = call(
-            "POST",
-            "/api/games".to_string(),
-            Some(serde_json::json!({
-                "players": 2, "colors": ["Red", "Blue"], "start_seat": 0,
-                "seed": "20260831", "keeps": [1, null], "bot_seats": [1], "name": "surfaces",
-            })),
-        )
-        .await;
-        assert_eq!(status, StatusCode::CREATED);
+        start(&router, "surfaces", 2, &[1]).await;
 
         let (status, ports) = call("GET", "/api/games/surfaces/ports".into(), None).await;
         assert_eq!(status, StatusCode::OK, "{ports}");
@@ -1927,18 +2224,22 @@ mod tests {
         );
     }
 
-    /// A seat's-worth of the hidden set rides on this: the seed a client is
-    /// shown must be the seed it can send back.
+    /// A seat's-worth of the hidden set rides on this: the seed a client sends
+    /// must be the seed the game is dealt from.
     ///
     /// The value here is `0xFEDC_BA98_7654_3210` — past 2^53, so a JSON number
     /// would round it, and past `Number.MAX_SAFE_INTEGER` by enough that the
-    /// rounding lands on a DIFFERENT seed and therefore a different deal. The
-    /// test walks the real flow: preview, read the seed back off the wire, send
-    /// exactly that value to create the game, and require the game's own seed to
-    /// be the one asked for. A rounding bug shows up as an inequality, not as a
-    /// subtly different board nobody notices.
+    /// rounding lands on a DIFFERENT seed and therefore a different deal.
+    ///
+    /// **Re-pointed from `preview` to `create` (M6.1).** The round trip it used
+    /// to walk was preview-then-create; the setup flow is now create-then-deal,
+    /// and `preview` is retired by the last task of this cycle. What is asserted
+    /// is strictly stronger than before: rather than comparing two previews to
+    /// each other, the dealt ids are compared to `new_game`'s OWN deal at that
+    /// seed, so a server that rounded consistently could not pass by rounding
+    /// both sides the same way.
     #[tokio::test]
-    async fn a_seed_survives_the_preview_round_trip_past_the_double_limit() {
+    async fn a_seed_survives_the_create_round_trip_past_the_double_limit() {
         const SEED: u64 = 0xFEDC_BA98_7654_3210;
         // The premise, stated rather than assumed: through a double — which is
         // every JSON number a browser parses — this seed is NOT this seed.
@@ -1949,85 +2250,65 @@ mod tests {
         );
 
         let router = app(Arc::new(AppState::in_memory()));
-        let post = |uri: &'static str, body: serde_json::Value| {
-            let router = router.clone();
-            async move {
-                let res = router
-                    .oneshot(
-                        Request::builder()
-                            .method("POST")
-                            .uri(uri)
-                            .header("content-type", "application/json")
-                            .header(identity::CLAIMED_HEADER, WHO)
-                            .body(Body::from(serde_json::to_vec(&body).expect("a body")))
-                            .expect("a request"),
-                    )
-                    .await
-                    .expect("the router answers");
-                let status = res.status();
-                let bytes =
-                    axum::body::to_bytes(res.into_body(), usize::MAX).await.expect("a body");
-                (status, serde_json::from_slice::<serde_json::Value>(&bytes).expect("JSON"))
-            }
+        let body = |name: &str, seed: u64| {
+            serde_json::json!({
+                "players": 2, "colors": ["Red", "Blue"], "start_seat": 0,
+                "seats": [{ "user": WHO }, { "bot": true }],
+                "seed": seed.to_string(), "name": name,
+            })
         };
 
-        let base = serde_json::json!({
-            "players": 2, "colors": ["Red", "Blue"], "start_seat": 0,
-            "keeps": [1, null], "bot_seats": [1],
-        });
-        let mut req = base.clone();
-        req["seed"] = serde_json::json!(SEED.to_string());
-
-        let (status, preview) = post("/api/games/preview", req.clone()).await;
-        assert_eq!(status, StatusCode::OK, "{preview}");
-        assert_eq!(
-            preview["seed"],
-            serde_json::json!(SEED.to_string()),
-            "the seed comes back as a string, exactly",
-        );
-        // The dealt ids a player is looking at when they choose.
-        let previewed = preview["deals"].clone();
-
-        // What the client sends back is the string it was given, verbatim.
-        let mut create = req;
-        create["seed"] = preview["seed"].clone();
-        create["name"] = serde_json::json!("bigseed");
-        let (status, game) = post("/api/games", create).await;
-        assert_eq!(status, StatusCode::CREATED, "{game}");
-        // The created game does NOT echo the seed back. It used to, and that
-        // was the leak: the setup seed regenerates both decks, the boxed pile,
-        // the board and every deal, so a play payload carrying it publishes the
-        // whole hidden set. `preview` is the one surface that keeps it, because
-        // the flow round-trips the value from there into this call.
-        assert_eq!(game["seed"], serde_json::Value::Null, "a play payload carries no seed");
-        assert_eq!(
-            game["frame"]["title"]["seed"],
-            serde_json::Value::Null,
-            "and neither does the frame's title",
+        let (status, table) = call(&router, "POST", "/api/games", Some(body("bigseed", SEED))).await;
+        assert_eq!(status, StatusCode::CREATED, "{table}");
+        // The table does NOT echo the seed back. It used to on the created
+        // game's payload, and that was the leak: the setup seed regenerates both
+        // decks, the boxed pile, the board and every deal, so a payload carrying
+        // it publishes the whole hidden set.
+        assert!(
+            !table.to_string().contains(&SEED.to_string()),
+            "a table payload carries no seed: {table}",
         );
 
-        // And the game really was dealt from it: the same seed previews the
-        // same deal, which is the property a rounded seed breaks.
-        let mut again = base.clone();
-        again["seed"] = serde_json::json!(SEED.to_string());
-        let (_, preview2) = post("/api/games/preview", again).await;
-        assert_eq!(preview2["deals"], previewed, "the deal is a function of the seed");
+        // The game really was dealt from it: the seat's own two cards are the
+        // engine's own deal at this exact seed.
+        let dealt = |deal: &serde_json::Value| {
+            deal["cards"]
+                .as_array()
+                .expect("two dealt cards")
+                .iter()
+                .map(|c| c["card"]["id"].as_u64().expect("a card id"))
+                .collect::<Vec<_>>()
+        };
+        let (status, deal) = call(&router, "GET", "/api/games/bigseed/deal", None).await;
+        assert_eq!(status, StatusCode::OK, "{deal}");
+        let pending = yokohama_core::new_game(
+            yokohama_core::GameConfig::for_player_count(2),
+            &Rules::standard(),
+            SEED,
+        )
+        .expect("the setup deals");
+        assert_eq!(
+            dealt(&deal),
+            pending.deals[0].iter().map(|id| u64::from(id.0)).collect::<Vec<_>>(),
+            "the dealt cards are the ones this exact seed produces",
+        );
 
         // **The discrimination the assertion above cannot make on its own.**
-        // Equal-seeds-deal-equally holds just as well on a server that rounds,
-        // because it would round both the same way. `SEED` and `SEED ^ 1` differ
-        // in the LAST BIT and collide as `f64` — so if any step of this path put
-        // the value through a double, these two deal identically. They must not.
+        // `SEED` and `SEED ^ 1` differ in the LAST BIT and collide as `f64` — so
+        // if any step of this path put the value through a double, these two
+        // tables deal identically. They must not.
         let neighbour = SEED ^ 1;
         assert_eq!(
             neighbour as f64 as u64, SEED as f64 as u64,
             "the premise: these two seeds are indistinguishable once rounded",
         );
-        let mut adjacent = base;
-        adjacent["seed"] = serde_json::json!(neighbour.to_string());
-        let (_, preview3) = post("/api/games/preview", adjacent).await;
+        let (status, table) =
+            call(&router, "POST", "/api/games", Some(body("neighbour", neighbour))).await;
+        assert_eq!(status, StatusCode::CREATED, "{table}");
+        let (_, adjacent) = call(&router, "GET", "/api/games/neighbour/deal", None).await;
         assert_ne!(
-            preview3["deals"], previewed,
+            dealt(&adjacent),
+            dealt(&deal),
             "a one-bit change in the seed must change the deal — equal here means the \
              full u64 did not survive the round trip",
         );
@@ -2066,15 +2347,7 @@ mod tests {
             }
         };
 
-        let (status, _) = post(
-            "/api/games".to_string(),
-            serde_json::json!({
-                "players": 2, "colors": ["Red", "Blue"], "start_seat": 0,
-                "seed": 20260831u64, "keeps": [1, null], "bot_seats": [1], "name": "fence",
-            }),
-        )
-        .await;
-        assert_eq!(status, StatusCode::CREATED);
+        start(&router, "fence", 2, &[1]).await;
 
         let (status, body) = post(
             "/api/games/fence/input".to_string(),

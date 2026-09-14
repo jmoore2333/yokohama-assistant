@@ -16,7 +16,18 @@ import { render } from "@testing-library/react";
 import { vi } from "vitest";
 import { App } from "../App";
 import { wire } from "../wire/contract";
-import type { ClientState } from "../types";
+import type { ClientState, GamesList } from "../types";
+
+/** What `GET /api/games` answers with, naming these games.
+ *
+ *  **Derived from the corpus's own row, never hand-authored** — the rule this
+ *  whole file follows. `games.json` carries one real `TableView`; only its `id`
+ *  moves, which is the same pattern the game-switch cells already use to make a
+ *  second game out of a corpus payload. A builder that typed a `TableView` out
+ *  by hand would keep compiling after the server dropped a field from it. */
+export const gamesNamed = (...ids: string[]): GamesList => ({
+  games: ids.map((id) => ({ ...wire.games.games[0]!, id })),
+});
 
 /** One request the client made. */
 export interface ApiCall {
@@ -137,7 +148,7 @@ export async function renderApp(
     if (mine !== undefined) return mine;
     const boot = bootstrapReply(call);
     if (boot !== undefined) return boot;
-    if (call.method === "GET" && call.path.endsWith("/api/games")) return [state.id];
+    if (call.method === "GET" && call.path.endsWith("/api/games")) return gamesNamed(state.id);
     if (call.method === "GET" && call.path.endsWith(`/api/games/${state.id}`)) return state;
     throw new Error(`unexpected ${call.method} ${call.path}`);
   });

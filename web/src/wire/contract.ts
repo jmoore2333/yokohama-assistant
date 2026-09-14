@@ -56,6 +56,9 @@ import type {
   Counter,
   Deal,
   DealCard,
+  DealingErrorBody,
+  DealView,
+  GamesList,
   IndexCard,
   IndexGroup,
   DecisionModel,
@@ -81,6 +84,7 @@ import type {
   RefusalRow,
   SuggestOk,
   SuggestResponse,
+  TableView,
   Term,
   Terminal,
   TileModel,
@@ -118,6 +122,13 @@ import placeASelected from "./place_a_selected.json";
 import placeB from "./place_b.json";
 import placeBSelected from "./place_b_selected.json";
 import ports from "./ports.json";
+import tableDealing from "./table_dealing.json";
+import table from "./table.json";
+import deal from "./deal.json";
+import dealWaiting from "./deal_waiting.json";
+import dealing409 from "./dealing_409.json";
+import gamesList from "./games.json";
+import notSeated403 from "./not_seated_403.json";
 import preview from "./preview.json";
 import previewBot from "./preview_bot.json";
 import refused from "./refused.json";
@@ -182,6 +193,22 @@ const _choiceChurchSpace: Widen<ClientState> = choiceChurchSpace;
 const _choiceWarehouseTake: Widen<ClientState> = choiceWarehouseTake;
 const _refused: Widen<ClientState> = refused;
 const _labels: Widen<Labels> = labels;
+// ---- M6.1: the table, the deal, the lobby, and the two refusals ----------
+//
+// `table_dealing` and `table` are the SAME type at its two statuses, and both
+// are here because a widened `TableStatus` cannot tell them apart: `to_move`
+// and `over` are null on one and present on the other, and only a payload of
+// each proves both shapes are the type the client declares.
+const _tableDealing: Widen<TableView> = tableDealing;
+const _table: Widen<TableView> = table;
+// Likewise the deal at its two shapes: the caller's cards, and the null pair
+// that is the "waiting for the others" screen.
+const _deal: Widen<DealView> = deal;
+const _dealWaiting: Widen<DealView> = dealWaiting;
+const _gamesList: Widen<GamesList> = gamesList;
+const _dealing409: Widen<DealingErrorBody> = dealing409;
+const _notSeated403: Widen<ApiErrorBody> = notSeated403;
+
 const _preview: Widen<Preview> = preview;
 const _previewBot: Widen<Preview> = previewBot;
 const _health: Widen<Health> = health;
@@ -277,6 +304,7 @@ void [
 void [
   _options, _options4p, _optionsMany, _optionsPriced, _pick, _retreat, _retreatAnswered, _placeA, _placeASelected, _placeB, _placeBSelected,
   _gameOver, _watching, _hiddenHand, _locked, _refused, _labels, _preview, _previewBot, _health, _me, _meOut, _error,
+  _tableDealing, _table, _deal, _dealWaiting, _gamesList, _dealing409, _notSeated403,
   _ports, _labs, _areas, _areas4p, _log, _atK, _artManifest, _feeNonzero,
   _choiceAssistantMove, _choiceChurchSpace, _choiceWarehouseTake,
   _suggest, _why, _whyRefused, _whyRefusals,
@@ -361,6 +389,15 @@ const LABELS = [
 const HEALTH = ["server_version", "semantics_rev", "rules_hash", "identity"] as const;
 const ME = ["mode", "user"] as const;
 const PREVIEW = ["seed", "table", "deals"] as const;
+const TABLE = [
+  "id", "name", "created_by", "created_at", "players", "colors", "start_seat",
+  "seats", "chosen", "my_seats", "status", "to_move", "over",
+] as const;
+const DEAL_VIEW = ["table", "seat", "cards", "keep_note", "frame"] as const;
+const GAMES_LIST = ["games"] as const;
+// The dealing 409 is the ONE refusal that carries a second key, and the only
+// one this client branches on rather than displays.
+const DEALING_ERROR = ["error", "status"] as const;
 const DEAL = ["seat", "is_bot", "cards"] as const;
 const DEAL_CARD = ["card", "keep_score"] as const;
 const API_ERROR = ["error"] as const;
@@ -411,6 +448,10 @@ const _he: KeysOf<Health, typeof HEALTH> = HEALTH;
 // `_me` is taken by the widened assignment above, so the key list takes `_mk`.
 const _mk: KeysOf<Me, typeof ME> = ME;
 const _pv: KeysOf<Preview, typeof PREVIEW> = PREVIEW;
+const _tv: KeysOf<TableView, typeof TABLE> = TABLE;
+const _dv: KeysOf<DealView, typeof DEAL_VIEW> = DEAL_VIEW;
+const _gl: KeysOf<GamesList, typeof GAMES_LIST> = GAMES_LIST;
+const _d4: KeysOf<DealingErrorBody, typeof DEALING_ERROR> = DEALING_ERROR;
 const _dl: KeysOf<Deal, typeof DEAL> = DEAL;
 const _dc: KeysOf<DealCard, typeof DEAL_CARD> = DEAL_CARD;
 const _er: KeysOf<ApiErrorBody, typeof API_ERROR> = API_ERROR;
@@ -433,6 +474,7 @@ const _ig: KeysOf<IndexGroup, typeof INDEX_GROUP> = INDEX_GROUP;
 const _hf: KeysOf<HistoricalFrame, typeof HISTORICAL_FRAME> = HISTORICAL_FRAME;
 const _ic: KeysOf<IndexCard, typeof INDEX_CARD> = INDEX_CARD;
 void [_cs, _fr, _de, _or, _pl, _ti, _tr, _po, _la, _ar, _lo, _lb, _he, _mk, _pv, _dl, _dc, _er,
+      _tv, _dv, _gl, _d4,
       _sr, _so, _wr, _wo, _ex, _tm, _pr, _rk, _rf, _ix, _oc, _pc, _bd,
       _tl, _ct, _ig, _ic, _hf];
 
@@ -454,6 +496,10 @@ export const KEYS = {
   health: HEALTH,
   me: ME,
   preview: PREVIEW,
+  table: TABLE,
+  dealView: DEAL_VIEW,
+  gamesList: GAMES_LIST,
+  dealingError: DEALING_ERROR,
   deal: DEAL,
   dealCard: DEAL_CARD,
   apiError: API_ERROR,
@@ -516,6 +562,13 @@ export const wire = {
   choiceWarehouseTake: as<ClientState>(choiceWarehouseTake),
   refused: as<ClientState>(refused),
   labels: as<Labels>(labels),
+  tableDealing: as<TableView>(tableDealing),
+  table: as<TableView>(table),
+  deal: as<DealView>(deal),
+  dealWaiting: as<DealView>(dealWaiting),
+  games: as<GamesList>(gamesList),
+  dealing409: as<DealingErrorBody>(dealing409),
+  notSeated403: as<ApiErrorBody>(notSeated403),
   preview: as<Preview>(preview),
   previewBot: as<Preview>(previewBot),
   health: as<Health>(health),

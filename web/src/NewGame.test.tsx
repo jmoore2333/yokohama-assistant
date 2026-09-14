@@ -7,7 +7,8 @@ import { useSections } from "./BoardsMenu";
 import { NewGame } from "./NewGame";
 import type { ClientState } from "./types";
 import { loadSections } from "./sections";
-import { gate, stubApi, type ApiCall, type Reply } from "./test/harness";
+import { CLAIMED_USER_KEY } from "./api";
+import { gamesNamed, gate, stubApi, type ApiCall, type Reply } from "./test/harness";
 import { wire } from "./wire/contract";
 
 /** A seed at the top of the `u64` range — the shape `draw_seed` actually
@@ -33,11 +34,39 @@ function Host({ onStarted }: { onStarted: (s: ClientState, opening: boolean) => 
   );
 }
 
+/** Who this browser is signed in as.
+ *
+ *  **Every `/api/games` route is a 401 without an identity (M6.1)**, and the
+ *  create body now names a PERSON in every human seat — so a component test that
+ *  left storage empty would post `{"user": ""}` and assert against a seat nobody
+ *  holds. The sign-in screen is a later task of this cycle; this is where its
+ *  output already has to exist. */
+const ME = "red@wire.test";
+
 function show(handler: (call: ApiCall) => Reply) {
+  localStorage.setItem(CLAIMED_USER_KEY, ME);
   const onStarted = vi.fn();
   const stub = stubApi(handler);
   render(<Host onStarted={onStarted} />);
   return { onStarted, stub, user: userEvent.setup() };
+}
+
+/** The opening sequence's two replies: a create answers with a DEALING table
+ *  and a keep with the table it left behind (M6.1 §4.3). `undefined` for
+ *  anything else, so a caller chains it the way `renderApp` chains its own
+ *  fallback. */
+/** The create posts, and NOT the keeps or the preview beside them.
+ *
+ *  `matching("POST", "/api/games")` is a substring match, so since M6.1 it also
+ *  catches `/api/games/{id}/keep` — three posts where a cell means one. The
+ *  create is the only one whose path ENDS there. */
+const creates = (stub: ReturnType<typeof stubApi>): ApiCall[] =>
+  stub.matching("POST", "/api/games").filter((c) => c.path.endsWith("/api/games"));
+
+function openingReply(call: ApiCall): Reply | undefined {
+  if (call.method === "POST" && call.path.endsWith("/api/games")) return wire.tableDealing;
+  if (call.path.endsWith("/keep")) return wire.table;
+  return undefined;
 }
 
 /** Walk the whole set-table sequence: choose the first card at every human
@@ -80,7 +109,7 @@ describe("a double-clicked Start", () => {
   it("posts create exactly once", async () => {
     const held = gate<unknown>();
     const { stub, user } = show((call) => {
-      if (call.method === "GET" && call.path.endsWith("/api/games")) return [];
+      if (call.method === "GET" && call.path.endsWith("/api/games")) return gamesNamed();
       if (call.path.endsWith("/api/games/preview")) return wire.preview;
       if (call.method === "POST" && call.path.endsWith("/api/games")) return held.promise;
       throw new Error(`unexpected ${call.method} ${call.path}`);
@@ -102,12 +131,10 @@ describe("a double-clicked Start", () => {
       fireEvent.click(start);
     });
 
-    const creates = () =>
-      stub.matching("POST", "/api/games").filter((c) => !c.path.endsWith("preview"));
-    expect(creates()).toHaveLength(1);
+    expect(creates(stub)).toHaveLength(1);
 
-    held.resolve(wire.options);
-    await waitFor(() => expect(creates()).toHaveLength(1));
+    held.resolve(wire.tableDealing);
+    await waitFor(() => expect(creates(stub)).toHaveLength(1));
   });
 });
 
@@ -122,10 +149,9 @@ describe("the seed", () => {
     expect(String(Number(BIG_SEED))).not.toBe(BIG_SEED);
 
     const { stub, user, onStarted } = show((call) => {
-      if (call.method === "GET" && call.path.endsWith("/api/games")) return [];
+      if (call.method === "GET" && call.path.endsWith("/api/games")) return gamesNamed();
       if (call.path.endsWith("/api/games/preview")) return { ...wire.preview, seed: BIG_SEED };
-      if (call.path.endsWith("/api/games")) return wire.options;
-      throw new Error(`unexpected ${call.method} ${call.path}`);
+      return openingReply(call) ?? wire.options;
     });
 
     await user.click(screen.getByRole("button", { name: "Deal" }));
@@ -136,14 +162,14 @@ describe("the seed", () => {
     await user.click(screen.getByRole("button", { name: "Start" }));
     await waitFor(() => expect(onStarted).toHaveBeenCalled());
 
-    const create = stub.matching("POST", "/api/games").filter((c) => !c.path.endsWith("preview"));
+    const create = creates(stub);
     expect(create).toHaveLength(1);
     expect((create[0]!.body as { seed: unknown }).seed).toBe(BIG_SEED);
   });
 
   it("is sent as typed when the player names one, and omitted when they do not", async () => {
     const { stub, user } = show((call) => {
-      if (call.method === "GET") return [];
+      if (call.method === "GET") return gamesNamed();
       return { ...wire.preview, seed: BIG_SEED };
     });
 
@@ -173,21 +199,21 @@ describe("the seed", () => {
 describe("the request the client sends", () => {
   it("names every field the create endpoint reads, and no others", async () => {
     const { stub, user } = show((call) => {
-      if (call.method === "GET") return [];
+      if (call.method === "GET" && call.path.endsWith("/api/games")) return gamesNamed();
       if (call.path.endsWith("preview")) return wire.preview;
-      return wire.options;
+      return openingReply(call) ?? wire.options;
     });
     await user.click(screen.getByRole("button", { name: "Deal" }));
     await setTableIsUp();
     await chooseAll(user);
     await user.click(screen.getByRole("button", { name: "Start" }));
 
-    const create = stub
-      .matching("POST", "/api/games")
-      .filter((c) => !c.path.endsWith("preview"));
+    const create = creates(stub);
     await waitFor(() => expect(create.length).toBeGreaterThan(0));
+    // `keeps` and `bot_seats` are gone (M6.1 §4.2): a create can no longer
+    // choose a card for anybody, and which seats are bots is said by `seats`.
     expect(Object.keys(create[0]!.body as object).sort()).toEqual(
-      ["bot_seats", "colors", "keeps", "players", "seed", "start_seat"].sort(),
+      ["colors", "players", "seats", "seed", "start_seat"].sort(),
     );
   });
 });
@@ -225,9 +251,9 @@ describe("the setup form's subtitle", () => {
 describe("the set table", () => {
   const dealt = async (fixture: typeof wire.preview) => {
     const shown = show((call) => {
-      if (call.method === "GET") return [];
+      if (call.method === "GET" && call.path.endsWith("/api/games")) return gamesNamed();
       if (call.path.endsWith("preview")) return fixture;
-      return wire.options;
+      return openingReply(call) ?? wire.options;
     });
     await shown.user.click(screen.getByRole("button", { name: "Deal" }));
     await setTableIsUp();
@@ -370,18 +396,16 @@ describe("the set table", () => {
     expect(start()).not.toBeNull();
     await user.click(start()!);
     await waitFor(() => expect(onStarted).toHaveBeenCalled());
-    const create = stub.matching("POST", "/api/games").filter((c) => !c.path.endsWith("preview"));
-    expect(create).toHaveLength(1);
-    const keeps = (create[0]!.body as { keeps: (number | null)[] }).keeps;
-    // The seat this FORM can speak for. `createKeeps` reads the form's bot seat
-    // — the same source the create's own `bot_seats` reads, so the two can
-    // never disagree in the app — and this screen has no "no bot" option at
-    // all: the bot-free payload is a corpus fixture the server generates and
-    // the form cannot request. So under it the second slot nulls, and what is
-    // asserted here is the first: `2`, the SECOND card, which no constant and
-    // no first-card default produces.
-    expect(keeps).toHaveLength(2);
-    expect(keeps[0]).toBe(2);
+    expect(creates(stub)).toHaveLength(1);
+    // **The keeps are their own requests now (M6.1 §4.3)**, one per seat, in
+    // seat order. Both seats of this fixture are human, and the two differ —
+    // seat 0 took its SECOND card and seat 1 its first — so neither a constant
+    // nor a first-card default produces this pair, and a form that forgot the
+    // earlier seat's pick when the screen was passed on would post one row.
+    expect(stub.matching("POST", "/keep").map((c) => c.body)).toEqual([
+      { seat: 0, card: 2 },
+      { seat: 1, card: 1 },
+    ]);
   });
 
   // **A fresh deal starts at the FIRST seat again (R-C9).** `turn` survives a
@@ -497,31 +521,32 @@ describe("the set table", () => {
     expect(screen.getByText(/^Boards/)).toHaveTextContent(`Boards · ${loadSections().length} on`);
   });
 
-  it("sends a keep per human seat and null per bot seat, numbered as on screen", async () => {
+  it("posts one keep per human seat and none for the bot, numbered as on screen", async () => {
     const { stub, user, onStarted } = await dealt(wire.previewBot);
     await user.click(screen.getAllByRole("button", { name: /keep O\d\d for seat 0/ })[1]!);
     await user.click(screen.getByRole("button", { name: "Start" }));
     await waitFor(() => expect(onStarted).toHaveBeenCalledWith(wire.options, true));
-    const create = stub.matching("POST", "/api/games").filter((c) => !c.path.endsWith("preview"));
-    expect((create[0]!.body as { keeps: unknown }).keeps).toEqual([2, null]);
+    // **A keep is its own request (M6.1 §4.3)** and the bot has none: its card
+    // is the server's own argmax, computed when the table finalizes. `2` is the
+    // SECOND card, which no constant and no first-card default produces.
+    expect(stub.matching("POST", "/keep").map((c) => c.body)).toEqual([{ seat: 0, card: 2 }]);
   });
 
-  // **The preview request's own `keeps`, which nothing on this side pinned.**
-  // The server refuses `null` on a human seat and a value on a bot seat with a
-  // 400 naming the seat — so a preview that sent the wrong shape would fail at
-  // the deal with a sentence about a field the player never touched, and only
-  // the server would have caught it. The preview keeps NEITHER card (it is the
-  // deal, not the choice); the field is there to pass the shape check.
+  // **The seats the request names, which nothing on this side pinned.**
   //
-  // **An all-human `[1, 1]` is not reachable from this screen and is not
-  // asserted**: the wizard always names exactly one bot seat (`bot_seats:
-  // [botSeat]`, and the select cannot be empty), so the shape is always one
-  // `null` among values. What IS worth pinning is that the `null` tracks the
-  // CHOSEN seat rather than sitting at index 1 — hence the second read.
-  it("previews with a value on every human seat and null on the bot's, wherever the bot sits", async () => {
-    const previewKeeps = async (seats?: { players: number; bot: number }) => {
+  // The server refuses a seat that is both a person and the bot, a creator who
+  // holds no seat (R-1.6) and a bot at more than two players (R-P10) — each by
+  // name — so a client that built this list wrong would fail at the deal with a
+  // sentence about a field the player never touched, and only the server would
+  // have caught it.
+  //
+  // **The bot's POSITION is what the second read is for**: the entry has to
+  // track the seat the form chose rather than sit at index 1. The screen has no
+  // "no bot" option, so every request it can make names exactly one.
+  it("names a person in every human seat and the bot in its own, wherever the bot sits", async () => {
+    const previewSeats = async (seats?: { players: number; bot: number }) => {
       const { stub, user } = show((call) => {
-        if (call.method === "GET") return [];
+        if (call.method === "GET" && call.path.endsWith("/api/games")) return gamesNamed();
         return wire.previewBot;
       });
       if (seats) {
@@ -530,15 +555,19 @@ describe("the set table", () => {
       }
       await user.click(screen.getByRole("button", { name: "Deal" }));
       await waitFor(() => expect(stub.matching("POST", "preview")).toHaveLength(1));
-      return (stub.matching("POST", "preview")[0]!.body as { keeps: unknown }).keeps;
+      return (stub.matching("POST", "preview")[0]!.body as { seats: unknown }).seats;
     };
-    expect(await previewKeeps()).toEqual([1, null]);
-    expect(await previewKeeps({ players: 3, bot: 2 })).toEqual([1, 1, null]);
+    expect(await previewSeats()).toEqual([{ user: ME }, { bot: true }]);
+    expect(await previewSeats({ players: 3, bot: 2 })).toEqual([
+      { user: ME },
+      { user: ME },
+      { bot: true },
+    ]);
   });
 
   it("resumes a saved game as NOT an opening", async () => {
     const { user, onStarted } = show((call) => {
-      if (call.method === "GET" && call.path.endsWith("/api/games")) return ["wire"];
+      if (call.method === "GET" && call.path.endsWith("/api/games")) return gamesNamed("wire");
       if (call.method === "GET" && call.path.endsWith("/api/games/wire")) return wire.options;
       throw new Error(`unexpected ${call.method} ${call.path}`);
     });
@@ -550,7 +579,7 @@ describe("the set table", () => {
 describe("the saved games", () => {
   it("resumes one with a GET, because a record is not a restore", async () => {
     const { user, onStarted, stub } = show((call) => {
-      if (call.method === "GET" && call.path.endsWith("/api/games")) return ["wire"];
+      if (call.method === "GET" && call.path.endsWith("/api/games")) return gamesNamed("wire");
       if (call.method === "GET" && call.path.endsWith("/api/games/wire")) return wire.options;
       throw new Error(`unexpected ${call.method} ${call.path}`);
     });
@@ -561,7 +590,7 @@ describe("the saved games", () => {
 
   it("says so when there are none", async () => {
     show((call) => {
-      if (call.method === "GET") return [];
+      if (call.method === "GET") return gamesNamed();
       throw new Error("unexpected");
     });
     expect(await screen.findByText(/none yet/)).toBeInTheDocument();
@@ -569,7 +598,7 @@ describe("the saved games", () => {
 
   it("shows a refusal rather than swallowing it", async () => {
     const { user } = show((call) => {
-      if (call.method === "GET") return [];
+      if (call.method === "GET") return gamesNamed();
       return { status: 400, body: { error: "a game named \"wire\" already exists" } };
     });
     await user.click(screen.getByRole("button", { name: "Deal" }));
@@ -591,7 +620,8 @@ describe("the saved games", () => {
 // the mistake is made.
 describe("deleting a saved game", () => {
   const twoGames = (call: ApiCall): Reply => {
-    if (call.method === "GET" && call.path.endsWith("/api/games")) return ["wire", "sim-other"];
+    if (call.method === "GET" && call.path.endsWith("/api/games"))
+      return gamesNamed("wire", "sim-other");
     if (call.method === "DELETE") return null;
     throw new Error(`unexpected ${call.method} ${call.path}`);
   };

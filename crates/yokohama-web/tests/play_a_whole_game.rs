@@ -88,7 +88,8 @@ async fn a_whole_two_player_game_against_the_bot_plays_through_the_api() {
             "/api/games/preview",
             Some(serde_json::json!({
                 "players": 2, "colors": ["Red", "Blue"], "start_seat": 0,
-                "seed": 20260830u64, "keeps": [1, 1],
+                "seed": 20260830u64,
+                "seats": [{ "user": "red@wire.test" }, { "user": "red@wire.test" }],
             })),
         )
         .await;
@@ -100,19 +101,33 @@ async fn a_whole_two_player_game_against_the_bot_plays_through_the_api() {
         "each seat is dealt two order cards: {preview}",
     );
 
-    // Seat 1 is the shipped bot; seat 0 is us.
-    let (status, mut state) = api
+    // Seat 1 is the shipped bot; seat 0 is us. **A create opens a DEALING table
+    // and nothing is playable until the last keep** (M6.1 §4.3) — so the gate
+    // now drives the whole opening sequence, which is itself part of what "can
+    // this surface be played" means.
+    let (status, table) = api
         .call(
             "POST",
             "/api/games",
             Some(serde_json::json!({
                 "players": 2, "colors": ["Red", "Blue"], "start_seat": 0,
-                "seed": 20260830u64, "keeps": [1, null], "bot_seats": [1],
+                "seed": 20260830u64,
+                "seats": [{ "user": "red@wire.test" }, { "bot": true }],
                 "name": "gate",
             })),
         )
         .await;
-    assert_eq!(status, StatusCode::CREATED, "{state}");
+    assert_eq!(status, StatusCode::CREATED, "{table}");
+    assert_eq!(table["status"], "dealing", "a create opens a table, not a game: {table}");
+
+    let (status, kept) = api
+        .call("POST", "/api/games/gate/keep", Some(serde_json::json!({ "seat": 0, "card": 1 })))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{kept}");
+    assert_eq!(kept["status"], "playing", "the last keep starts the game: {kept}");
+
+    let (status, mut state) = api.call("GET", "/api/games/gate", None).await;
+    assert_eq!(status, StatusCode::OK, "{state}");
     assert_eq!(state["seat"], 0, "the viewing seat is the human one");
     assert_eq!(state["mode"], "sim");
     assert!(
@@ -183,5 +198,11 @@ async fn a_whole_two_player_game_against_the_bot_plays_through_the_api() {
 
     let (status, list) = api.call("GET", "/api/games", None).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(list, serde_json::json!(["gate"]));
+    let ids: Vec<&str> = list["games"]
+        .as_array()
+        .expect("a games list")
+        .iter()
+        .map(|g| g["id"].as_str().expect("an id"))
+        .collect();
+    assert_eq!(ids, ["gate"]);
 }
