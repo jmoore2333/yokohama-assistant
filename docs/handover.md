@@ -6,9 +6,11 @@ here names the document that carries it, and it never outranks `guidingpath.md` 
 `CLAUDE.md` (the operating facts), or a dated document in `docs/plans/`. Keep it current at every
 session close: rewrite the stale lines, do not append history (the decision log is for history).
 
-**Updated:** 2026-09-11 (second session), after the V4 diagnostic games were played and scribed and
-the owner-games LEDGER artifact was published for the owner's annotation. The previous update was the
-web-lane merge (`abe4eec`) with the AI-lane re-entry handover
+**Updated:** 2026-09-14, on branch `web-room` (worktree `.claude/worktrees/web-room`), after the M6
+"room" brainstorm produced the five-cycle plan, the M6.1 spec and the M6.1 implementation plan
+(Track 3). The previous update, 2026-09-11 (second session), followed the V4 diagnostic games being
+played and scribed and the owner-games LEDGER artifact being published for annotation (Track 1); before
+that, the web-lane merge (`abe4eec`) with the AI-lane re-entry handover
 `docs/plans/2026-09-11-ai-lane-reentry-handover.md`.
 
 ## Where things stand
@@ -21,7 +23,10 @@ web-lane merge (`abe4eec`) with the AI-lane re-entry handover
   artifact, then the findings document, then the two rulings together (Track 1).
 - **The web client** merged to master 2026-09-11 and is live at `yokohama.moore.nyc` behind
   Cloudflare Access, `yokohama-web:0.5.0-m5.5.4` on the NAS via Portainer. Nothing about it moves
-  the bot. Its next milestone (M6, "the room") is unplanned.
+  the bot. **M6 "the room" is PLANNED (2026-09-14) on branch `web-room`**: the five-cycle plan
+  `docs/plans/2026-09-14-web-frontend-m6-room-plan.md`, the first cycle's spec
+  `docs/plans/2026-09-14-web-frontend-m6.1-identity-and-seats-spec.md` and its implementation plan
+  `docs/plans/2026-09-14-web-frontend-m6.1-plan.md` — execution is the next step (Track 3).
 - **Licensing:** Apache-2.0 on every crate and on `web/package.json` (checked 2026-09-11);
   `LICENSE` + `NOTICE` at the root; `ASSETS.md` carves out the game's own material.
 - **Gates at HEAD:** all per-edit suites green (the counts are in `CLAUDE.md`); the fifteen-gate
@@ -135,9 +140,37 @@ what a public README claims. Session shape: brainstorm → spec → plan, in its
   copy `web-<date>-<id>.json` and let the findings document carry the purpose; CLI games keep
   `gameN-v4.json`. Everything under `docs/temp/owner-games/` is gitignored on purpose — a record
   carries the setup seed, which is the whole hidden set.
-- **M6 ("the room")** — lobby, chat, switching, then Cloudflare Workers + Modal hosting — waits for a
-  feature branch; its entry is `docs/plans/2026-09-06-web-frontend-m6-handover.md` (§3 the charter,
-  §4 the LEAVE list, §5 the process you want).
+**M6 "the room" — PLANNED 2026-09-14, on branch `web-room` in the worktree
+`.claude/worktrees/web-room` (master stays the AI track's).** Read, in order:
+
+1. `docs/plans/2026-09-14-web-frontend-m6-room-plan.md` — the five cycles (M6.1 identity + seats +
+   per-seat views + the events poll → M6.2 lobby → M6.3 transport + spectating → M6.4 chat → M6.5
+   hosting), the eleven owner rulings of 2026-09-14 (R-P1–R-P11: sequential cycles; identity
+   pluggable with a typed-email `claimed` mode allowed for now; live-first cadence with async as a
+   consequence; files on the volume now, an EXTERNAL Postgres later and never a database inside the
+   container; vs-bot undo as today and multi-person undo only while your own turn has not passed;
+   legacy records not served; no polling from a hidden tab; the signal separate from the fetch; a bot
+   at two players only; Opus implementers + Opus reviewers + one clean final review against the live
+   site), and the three seams (identity, store, signal) with today's implementation beside the hosted
+   one.
+2. `docs/plans/2026-09-14-web-frontend-m6.1-identity-and-seats-spec.md` — M6.1, approved by you
+   2026-09-14: one `Identity` extractor over `YOKOHAMA_WEB_IDENTITY` (`claimed` | `cf-access` |
+   `worker`, one header each, no default); the store trait widened to typed documents with
+   `write_if_version`; a `table` document beside each record; the deal served PER SEAT (create →
+   dealing → each seat keeps from its own view → the last keep finalizes), which retires `preview`
+   and the last seed on the wire; every game route resolving the caller to a seat and masking every
+   other hand with the existing `SeatFacts`; the acting-seat fence on `input`; the undo rule; `GET
+   …/events` polled at 3 s from a visible tab only; sign-in, a per-seat form, the dealing screen.
+3. `docs/plans/2026-09-14-web-frontend-m6.1-plan.md` — thirteen tasks (0–12) with the code, the
+   cells, the gates and the commits; **the browser walk is RED by design from Task 3 to Task 8** and
+   green again after; the corpus regenerates at Tasks 1, 3, 4, 6 and 10 (read every diff); Task 11
+   deploys `0.5.0-m6.1` with `YOKOHAMA_WEB_IDENTITY=claimed`; Task 12 is the final review against
+   the live site from two browsers as two people plus the close and the handover into M6.2.
+
+**Next step:** execute the plan under R-P11 (Opus per task, the SDD ledger at
+`.superpowers/sdd/2026-09-14-web-frontend-m6.1-plan/progress.md`), from the worktree. Its
+entry artifact stays `docs/plans/2026-09-06-web-frontend-m6-handover.md` (§4 the LEAVE list M6
+inherits, §5 the process).
 
 ## Owner rulings outstanding (one line each; detail in the re-entry handover §5)
 
