@@ -58,7 +58,7 @@ use yokohama_core::{Rules, SEMANTICS_REV};
 
 use crate::client::ClientState;
 use crate::games::{Games, NewGame};
-use crate::store::{FsStore, MemStore, SessionStore};
+use crate::store::{FsStore, MemStore, Store};
 
 /// A refused request, as the client sees it.
 ///
@@ -183,7 +183,7 @@ impl AppState {
         Self::with_store(Arc::new(MemStore::default()), identity)
     }
 
-    pub fn with_store(store: Arc<dyn SessionStore>, identity: identity::IdentityMode) -> Self {
+    pub fn with_store(store: Arc<dyn Store>, identity: identity::IdentityMode) -> Self {
         let rules = Arc::new(Rules::standard());
         Self { rules: Arc::clone(&rules), games: Games::new(rules, store), identity }
     }
@@ -937,6 +937,7 @@ pub fn app(state: Arc<AppState>) -> Router {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::Doc;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
@@ -1528,11 +1529,17 @@ mod tests {
         )));
         a_game(&router, "faulted", &[]).await;
 
-        let stored = store.read("faulted").expect("a stored game");
+        let (stored, version) =
+            store.read(Doc::Record, "faulted").expect("a stored game").expect("a stored game");
         let mut record: serde_json::Value = serde_json::from_str(&stored).expect("a record");
         record["lockdown"] = serde_json::json!("invariant violation applying that move");
         store
-            .write("faulted", &serde_json::to_string(&record).expect("a record"))
+            .write_if_version(
+                Doc::Record,
+                "faulted",
+                &serde_json::to_string(&record).expect("a record"),
+                Some(version),
+            )
             .expect("a stored lockdown");
         let router =
             app(Arc::new(AppState::with_store(store, identity::IdentityMode::Claimed)));
@@ -2550,11 +2557,17 @@ mod tests {
         a_game(&router, "faultedreplay", &[]).await;
         play(&router, "faultedreplay", 4).await;
 
-        let stored = store.read("faultedreplay").expect("a stored game");
+        let (stored, version) =
+            store.read(Doc::Record, "faultedreplay").expect("a stored game").expect("a stored game");
         let mut record: serde_json::Value = serde_json::from_str(&stored).expect("a record");
         record["lockdown"] = serde_json::json!("invariant violation applying that move");
         store
-            .write("faultedreplay", &serde_json::to_string(&record).expect("a record"))
+            .write_if_version(
+                Doc::Record,
+                "faultedreplay",
+                &serde_json::to_string(&record).expect("a record"),
+                Some(version),
+            )
             .expect("a stored lockdown");
         let router =
             app(Arc::new(AppState::with_store(store, identity::IdentityMode::Claimed)));

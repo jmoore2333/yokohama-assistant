@@ -747,7 +747,7 @@ mod tests {
         let games = crate::games::Games::new(
             std::sync::Arc::new(rules.clone()),
             std::sync::Arc::new(crate::store::MemStore::default())
-                as std::sync::Arc<dyn crate::store::SessionStore>,
+                as std::sync::Arc<dyn crate::store::Store>,
         );
         let (_, handle) = games
             .create(&crate::games::NewGame {

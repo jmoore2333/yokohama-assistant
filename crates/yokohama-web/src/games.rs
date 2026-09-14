@@ -20,7 +20,7 @@ use yokohama_core::{
 };
 
 use crate::client::HistoricalFrame;
-use crate::store::{is_safe_id, GameId, SessionStore};
+use crate::store::{is_safe_id, Doc, GameId, Store, Version, WriteError};
 
 /// A `u64` that crosses the wire as a STRING.
 ///
@@ -397,15 +397,16 @@ pub fn preview(req: &NewGame, rules: &Rules) -> Result<Preview, PreviewError> {
 /// Every live game, plus the store behind them.
 pub struct Games {
     rules: Arc<Rules>,
-    store: Arc<dyn SessionStore>,
+    store: Arc<dyn Store>,
     live: Mutex<HashMap<GameId, Arc<Mutex<Repl>>>>,
-    /// What this process last successfully LEFT IN THE STORE, per id — a digest
-    /// of the exact JSON written (or, on a cold rebuild, of the JSON read).
+    /// What this process last successfully LEFT IN THE STORE, per id — the
+    /// [`Version`] the store reported for the JSON written (or, on a cold
+    /// rebuild, for the JSON read).
     ///
     /// **This is what makes the write a compare-and-swap rather than a
     /// monotonicity heuristic**, and the difference is a working undo. See
     /// [`Games::persist`].
-    written: Mutex<HashMap<GameId, u64>>,
+    written: Mutex<HashMap<GameId, Version>>,
     /// Serializes `create` against itself, and nothing else.
     ///
     /// `create` is check-then-write across a slow middle (`Session::new_sim`
@@ -443,7 +444,7 @@ pub struct Games {
 const MAX_RESIDENT: usize = 64;
 
 impl Games {
-    pub fn new(rules: Arc<Rules>, store: Arc<dyn SessionStore>) -> Self {
+    pub fn new(rules: Arc<Rules>, store: Arc<dyn Store>) -> Self {
         Self {
             rules,
             store,
@@ -454,12 +455,13 @@ impl Games {
         }
     }
 
-    pub fn store(&self) -> &Arc<dyn SessionStore> {
+    pub fn store(&self) -> &Arc<dyn Store> {
         &self.store
     }
 
+    /// Every game with a stored record.
     pub fn list(&self) -> Result<Vec<GameId>, String> {
-        self.store.list()
+        self.store.list(Doc::Record)
     }
 
     /// Start a game and persist it before returning, so a client that is told
@@ -489,11 +491,21 @@ impl Games {
             // first and identifies the game without describing it.
             None => format!("sim-{:016x}", draw_seed()),
         };
-        // `exists`, not `read(...).is_ok()`. The latter reads EVERY failure as
-        // absence, so a stored game whose file was momentarily unreadable was
-        // answered 201 and overwritten — measured with a `chmod 000`: the
-        // create succeeded and the original record was gone.
-        if self.store.exists(&id)? {
+        // **An unreadable record is OCCUPIED, not absent.** The store's `read`
+        // now carries that distinction in its type — `Ok(None)` is `NotFound`
+        // and nothing else, every other failure is an `Err` — so the question
+        // the retired `exists` method existed to answer is answered here, by
+        // reading an `Err` as "a file that exists and cannot be spoken for".
+        // Reading it as absence is what let a new game overwrite a real one:
+        // measured with a `chmod 000`, the POST returned 201 and the original
+        // record was gone. The id reaching this line is already known safe (the
+        // `match` above refuses an unsafe name and the default is generated),
+        // so the only `Err` left here is I/O.
+        let occupied = match self.store.read(Doc::Record, &id) {
+            Ok(found) => found.is_some(),
+            Err(_) => true,
+        };
+        if occupied {
             return Err(format!("a game named {id:?} already exists"));
         }
 
@@ -545,12 +557,13 @@ impl Games {
         if let Some(h) = self.live.lock().expect("games lock").get(id) {
             return Ok(Arc::clone(h));
         }
-        let json = self.store.read(id)?;
+        let (json, version) =
+            self.store.read(Doc::Record, id)?.ok_or_else(|| format!("no game named {id:?}"))?;
         // The base for `persist`'s compare-and-swap: what we found in the store
         // is what we may overwrite until someone else changes it. Recorded
         // BEFORE `live` is taken — nothing may take `written` while holding
         // `live`.
-        self.written.lock().expect("games lock").insert(id.to_string(), digest(&json));
+        self.written.lock().expect("games lock").insert(id.to_string(), version);
         let record: GameRecord = serde_json::from_str(&json).map_err(|e| e.to_string())?;
         let session = Session::from_record(record, (*self.rules).clone())?;
         let mut repl = Repl::new(session);
@@ -596,6 +609,14 @@ impl Games {
     /// than quietly deleted, because the next reader's instinct should be to
     /// distrust a paragraph that has stopped matching its code.
     ///
+    /// **The swap is now the STORE's** ([`Store::write_if_version`]): the
+    /// guards below decide what version the write may land on, and the store
+    /// holds its own lock across the read, the compare and the write. Nothing
+    /// about what is refused moved — the three refusals are the same three
+    /// sentences in the same order — but a store that can enforce the condition
+    /// (a row version, a conditional PUT) is now a second implementation rather
+    /// than a rewrite of this function.
+    ///
     /// The arm-by-arm reasoning, and the honest limits, are inline below.
     pub fn persist(&self, id: &str, repl: &Repl) -> Result<(), String> {
         if self.deleted.lock().expect("games lock").contains(id) {
@@ -608,8 +629,23 @@ impl Games {
 
         let record = repl.session.record();
         let events = record.events.len();
-        if let Ok(stored) = self.store.read(id) {
-            if let Ok(on_disk) = serde_json::from_str::<GameRecord>(&stored) {
+        // `expected` is what the write below is CONDITIONAL on: `None` means
+        // "create, and refuse a present document", `Some(v)` means "replace
+        // only what I just read". The guards decide which, and the store
+        // performs the swap — the comparison that used to happen here by hand
+        // now happens where the read and the write are under one lock.
+        //
+        // A read that FAILS (not "is absent" — the store distinguishes them)
+        // leaves `expected` at `None`, and the write then refuses rather than
+        // landing: `write_if_version` reads the same file, fails the same way,
+        // and answers `Io`. The old code wrote straight over an unreadable
+        // record, and that is the one behaviour here that deliberately did not
+        // survive the move — `read` is how `create` already learns that a file
+        // it cannot read is a file it must not overwrite.
+        let stored = self.store.read(Doc::Record, id).ok().flatten();
+        let mut expected: Option<Version> = None;
+        if let Some((stored, current)) = &stored {
+            if let Ok(on_disk) = serde_json::from_str::<GameRecord>(stored) {
                 // IDENTITY BEFORE LENGTH — a name is not a game.
                 //
                 // The tombstone's own bound is "`create`, which clears the id",
@@ -649,13 +685,15 @@ impl Games {
                 // length differ in content and not in count, so a length
                 // comparison waved them through and this does not.
                 //
-                // It detects a conflict; it does not prevent one. Nothing
-                // serializes read-then-write across processes — `FsStore::write`
-                // is atomic per file (temp + rename) but the store has no lock.
-                // That is unchanged, and was never true of the old guard either.
+                // It detects a conflict; it does not prevent one. Within THIS
+                // process `write_if_version` holds the store's own lock across
+                // the read, the compare and the write; across processes nothing
+                // serializes read-then-write — `FsStore` publishes atomically
+                // per file (temp + rename), and that is the whole of it. Which
+                // is unchanged, and was never true of the old guard either.
                 match written.get(id) {
                     // Ours to overwrite, shorter or longer.
-                    Some(&base) if base == digest(&stored) => {}
+                    Some(base) if base == current => expected = Some(*current),
                     Some(_) => {
                         return Err(self.conflict(
                             id,
@@ -679,8 +717,18 @@ impl Games {
                                 ),
                             ));
                         }
+                        expected = Some(*current);
                     }
                 }
+            } else {
+                // A record that will not PARSE is still a record, and replacing
+                // it is still a replace: conditioning on what was just read
+                // keeps a second writer's repair from being clobbered by this
+                // one. The old code wrote over it unconditionally; this refuses
+                // only if it changed between that read and the write, which is
+                // the same answer in every case a test can arrange and a
+                // stronger one under a concurrent repair.
+                expected = Some(*current);
             }
         }
         // `Session::to_record_json`, never `to_string_pretty(record())`: the
@@ -690,8 +738,31 @@ impl Games {
         // CLI-written save's digest-for-state-N onto a state-N+1 record, which
         // the next cold rebuild refused forever.
         let json = repl.session.to_record_json()?;
-        self.store.write(id, &json)?;
-        written.insert(id.to_string(), digest(&json));
+        // The swap itself. A CONFLICT here means the store moved between the
+        // compare above and this line — a window the guards cannot close from
+        // outside — and it is a conflict in the same sense as the three
+        // refusals above, so it evicts the handle. An I/O failure does NOT:
+        // there the handle is right and the disk is not, which is the
+        // distinction `conflict`'s doc draws and `WriteError` now carries in
+        // its type.
+        //
+        // **NO CELL DRIVES THE CONFLICT ARM**, and saying so is worth the line.
+        // Within one process the guards above have already read the store under
+        // the same `written` lock, so the only way to reach it is a SECOND
+        // PROCESS writing between that read and this write — which no test here
+        // can arrange. It is defence in depth against a window the old code
+        // could not see at all, not a covered invariant.
+        let version = match self.store.write_if_version(Doc::Record, id, &json, expected) {
+            Ok(v) => v,
+            Err(WriteError::Conflict { .. }) => {
+                return Err(self.conflict(
+                    id,
+                    format!("{id:?} changed under this handle between the compare and the write"),
+                ))
+            }
+            Err(WriteError::Io(e)) => return Err(e),
+        };
+        written.insert(id.to_string(), version);
         Ok(())
     }
 
@@ -729,19 +800,6 @@ impl Games {
         self.deleted.lock().expect("games lock").insert(id.to_string());
         Ok(())
     }
-}
-
-/// A digest of the exact bytes in the store, for [`Games::persist`]'s
-/// compare-and-swap.
-///
-/// In-process only and never persisted, so a hasher with no stability guarantee
-/// across builds is exactly right: the only comparison is between two values
-/// computed by the same running process.
-fn digest(json: &str) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    json.hash(&mut h);
-    h.finish()
 }
 
 /// Drop resident handles until the map is within [`MAX_RESIDENT`], never
@@ -1158,10 +1216,10 @@ mod tests {
     fn a_persisted_record_arms_the_provenance_refusal_against_an_edited_seed() {
         let store = Arc::new(MemStore::default());
         let games =
-            Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn SessionStore>);
+            Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>);
         let (id, _handle) = games.create(&req("digest")).expect("a game");
 
-        let stored = store.read(&id).expect("the record");
+        let stored = stored_json(&store, &id);
         let record: GameRecord = serde_json::from_str(&stored).expect("a record");
         assert!(
             record.terminal_digest.is_some(),
@@ -1174,10 +1232,10 @@ mod tests {
             serde_json::from_str(&stored).expect("the record as json");
         let seed = tampered["seed"].as_u64().expect("a seed");
         tampered["seed"] = serde_json::Value::from(seed ^ 1);
-        store.write(&id, &tampered.to_string()).expect("the tampered write");
+        overwrite_record(&store, &id, &tampered.to_string());
 
         let fresh =
-            Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn SessionStore>);
+            Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>);
         // `Repl` is not `Debug`, so match rather than `expect_err`.
         let err = match fresh.handle(&id) {
             Ok(_) => panic!("an edited record must be refused, not loaded"),
@@ -1206,12 +1264,12 @@ mod tests {
     fn a_save_that_carries_a_digest_survives_a_move_made_through_this_server() {
         let store = Arc::new(MemStore::default());
         let rules = Arc::new(Rules::standard());
-        let games = Games::new(Arc::clone(&rules), Arc::clone(&store) as Arc<dyn SessionStore>);
+        let games = Games::new(Arc::clone(&rules), Arc::clone(&store) as Arc<dyn Store>);
         let (id, _handle) = games.create(&req("fromcli")).expect("a game");
 
         // COLD rebuild, so the resident session's record is the STAMPED one
         // off the store rather than the `None`-digest record `create` built.
-        let cold = Games::new(Arc::clone(&rules), Arc::clone(&store) as Arc<dyn SessionStore>);
+        let cold = Games::new(Arc::clone(&rules), Arc::clone(&store) as Arc<dyn Store>);
         let handle = cold.handle(&id).expect("the stored game loads");
         {
             let mut repl = handle.lock().expect("the handle");
@@ -1228,7 +1286,7 @@ mod tests {
             cold.persist(&id, &repl).expect("the write");
         }
 
-        let fresh = Games::new(Arc::clone(&rules), Arc::clone(&store) as Arc<dyn SessionStore>);
+        let fresh = Games::new(Arc::clone(&rules), Arc::clone(&store) as Arc<dyn Store>);
         assert!(
             fresh.handle(&id).is_ok(),
             "the record this server just wrote must still load",
@@ -1254,7 +1312,7 @@ mod tests {
     fn an_in_flight_write_cannot_land_on_a_different_game_that_took_the_name() {
         let store = Arc::new(MemStore::default());
         let rules = Arc::new(Rules::standard());
-        let games = Games::new(Arc::clone(&rules), Arc::clone(&store) as Arc<dyn SessionStore>);
+        let games = Games::new(Arc::clone(&rules), Arc::clone(&store) as Arc<dyn Store>);
 
         let (id, handle) = games.create(&req("reused")).expect("a game");
         let repl = handle.lock().expect("the handle");
@@ -1267,7 +1325,7 @@ mod tests {
         let mut second = req("reused");
         second.seed = Some(WireSeed(20_260_901));
         games.create(&second).expect("the name is reusable");
-        let after_create = store.read(&id).expect("the new record");
+        let after_create = stored_json(&store, &id);
 
         let err = match games.persist(&id, &repl) {
             Ok(()) => panic!("the in-flight write landed on someone else's game"),
@@ -1279,10 +1337,10 @@ mod tests {
         );
 
         let now: GameRecord =
-            serde_json::from_str(&store.read(&id).expect("the record")).expect("a record");
+            serde_json::from_str(&stored_json(&store, &id)).expect("a record");
         assert_ne!(now.seed, doomed_seed, "the deleted game did not come back");
         assert_eq!(
-            store.read(&id).expect("the record"),
+            stored_json(&store, &id),
             after_create,
             "the stored record is byte-identical to what `create` wrote",
         );
@@ -1306,12 +1364,12 @@ mod tests {
     fn a_handle_whose_write_was_refused_is_not_left_resident() {
         let store = Arc::new(MemStore::default());
         let rules = Arc::new(Rules::standard());
-        let games = Games::new(Arc::clone(&rules), Arc::clone(&store) as Arc<dyn SessionStore>);
+        let games = Games::new(Arc::clone(&rules), Arc::clone(&store) as Arc<dyn Store>);
         let (id, handle) = games.create(&req("stale")).expect("a game");
 
         // Someone else moves the stored game past this handle.
         {
-            let other = Games::new(Arc::clone(&rules), Arc::clone(&store) as Arc<dyn SessionStore>);
+            let other = Games::new(Arc::clone(&rules), Arc::clone(&store) as Arc<dyn Store>);
             let h = other.handle(&id).expect("the same game");
             let mut r = h.lock().expect("the handle");
             let _ = r.step("");
@@ -1356,7 +1414,7 @@ mod tests {
             let store = Arc::new(MemStore::default());
             let games = Arc::new(Games::new(
                 Arc::new(Rules::standard()),
-                Arc::clone(&store) as Arc<dyn SessionStore>,
+                Arc::clone(&store) as Arc<dyn Store>,
             ));
             let name = format!("dup{round}");
             let barrier = Arc::new(std::sync::Barrier::new(2));
@@ -1392,7 +1450,7 @@ mod tests {
             // The record on disk is the winner's game, and the resident handle
             // is the same one the winner was handed.
             let stored: GameRecord =
-                serde_json::from_str(&store.read(&name).expect("the record")).expect("a record");
+                serde_json::from_str(&stored_json(&store, &name)).expect("a record");
             assert_eq!(stored.seed, winners[0].1, "round {round}: the stored game is the winner's");
             let resident = games.handle(&name).expect("the resident handle");
             assert_eq!(
@@ -1430,9 +1488,30 @@ mod tests {
         assert_eq!(games.list().expect("a list"), vec!["drace".to_string()]);
     }
 
+    /// The record `id` is stored as, as bytes.
+    ///
+    /// `expect` twice, and the two are different questions: the store failed,
+    /// or the store answered "not there". A cell calling this wants a record
+    /// that is present, so either is a failed premise.
+    fn stored_json(store: &MemStore, id: &str) -> String {
+        store.read(Doc::Record, id).expect("a readable store").expect("a stored record").0
+    }
+
+    /// Replace `id`'s record the way a SECOND WRITER does: read what is there,
+    /// then write against that version.
+    ///
+    /// Not an unconditional write, because there is no longer such a thing —
+    /// and this is the shape the cells below want anyway, since every one of
+    /// them is staging another writer who has seen the current record.
+    fn overwrite_record(store: &MemStore, id: &str, json: &str) {
+        let version = store.read(Doc::Record, id).expect("a readable store").map(|(_, v)| v);
+        store.write_if_version(Doc::Record, id, json, version).expect("another writer's write");
+    }
+
     /// How many events the STORE holds for `id`.
     fn stored_events(store: &MemStore, id: &str) -> usize {
-        let json = store.read(id).expect("a stored record");
+        let (json, _) =
+            store.read(Doc::Record, id).expect("a stored record").expect("a stored record");
         serde_json::from_str::<GameRecord>(&json).expect("a record").events.len()
     }
 
@@ -1454,7 +1533,7 @@ mod tests {
     fn an_undo_reaches_the_store() {
         let store = Arc::new(MemStore::default());
         let games =
-            Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn SessionStore>);
+            Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>);
         let (id, handle) = games.create(&req("undo")).expect("a game");
 
         {
@@ -1495,7 +1574,7 @@ mod tests {
         // And it SURVIVES a cold rebuild, which is the whole point — the record
         // is the truth, and a rebuild replays it.
         let fresh =
-            Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn SessionStore>);
+            Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>);
         let rebuilt = fresh.handle(&id).expect("the stored game loads");
         assert_eq!(
             rebuilt.lock().expect("the handle").session.record().events.len(),
@@ -1517,7 +1596,7 @@ mod tests {
     fn a_divergent_write_of_the_same_length_is_refused() {
         let store = Arc::new(MemStore::default());
         let games =
-            Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn SessionStore>);
+            Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>);
         let (id, handle) = games.create(&req("fork")).expect("a game");
         {
             let mut repl = handle.lock().expect("the handle");
@@ -1531,14 +1610,14 @@ mod tests {
         // the same reason the stale-handle cell builds its ahead-record: the
         // divergence has to be exact, not incidental.
         let mut theirs: GameRecord =
-            serde_json::from_str(&store.read(&id).expect("stored")).expect("a record");
+            serde_json::from_str(&stored_json(&store, &id)).expect("a record");
         let last = theirs.events.pop().expect("at least one event");
         theirs.events.push(last.clone());
         theirs.events.push(last);
         theirs.events.pop();
         theirs.lockdown = Some("a different writer was here".to_string());
         let theirs_json = serde_json::to_string(&theirs).expect("json");
-        store.write(&id, &theirs_json).expect("their write");
+        overwrite_record(&store, &id, &theirs_json);
         assert_eq!(stored_events(&store, &id), mine, "the premise: the SAME length");
 
         let repl = handle.lock().expect("the handle");
@@ -1553,7 +1632,7 @@ mod tests {
         };
         assert!(err.contains("changed"), "the refusal names the conflict: {err}");
         assert_eq!(
-            store.read(&id).expect("stored"),
+            stored_json(&store, &id),
             theirs_json,
             "their record survived byte for byte",
         );
@@ -1564,13 +1643,13 @@ mod tests {
     ///
     /// `live` caches a handle forever and nothing invalidates it against the
     /// store, so with two processes over one store — the arrangement
-    /// `SessionStore` exists for — a stale handle would publish a record with
+    /// [`Store`] exists for — a stale handle would publish a record with
     /// FEWER events, erasing a move another writer had already applied and
     /// acknowledged.
     #[test]
     fn a_stale_handle_cannot_erase_a_move_another_writer_already_stored() {
         let store = Arc::new(MemStore::default());
-        let games = Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn SessionStore>);
+        let games = Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>);
         let (id, handle) = games.create(&req("stale")).expect("a game");
 
         // One real move, so the handle and the store agree on a non-empty
@@ -1584,10 +1663,10 @@ mod tests {
         // Now the store advances behind this handle's back — which is exactly
         // what a second process doing one move looks like from here.
         let mut record: GameRecord =
-            serde_json::from_str(&store.read(&id).expect("stored")).expect("a record");
+            serde_json::from_str(&stored_json(&store, &id)).expect("a record");
         let ahead = record.events.last().cloned().expect("the move is recorded");
         record.events.push(ahead);
-        store.write(&id, &serde_json::to_string(&record).expect("json")).expect("a write");
+        overwrite_record(&store, &id, &serde_json::to_string(&record).expect("json"));
         let ahead_len = record.events.len();
 
         let repl = handle.lock().expect("the handle");
@@ -1603,7 +1682,7 @@ mod tests {
         );
 
         let after: GameRecord =
-            serde_json::from_str(&store.read(&id).expect("stored")).expect("a record");
+            serde_json::from_str(&stored_json(&store, &id)).expect("a record");
         assert_eq!(after.events.len(), ahead_len, "the newer record survived");
     }
 
@@ -1611,17 +1690,22 @@ mod tests {
     #[test]
     fn create_refuses_a_name_whose_record_is_unreadable() {
         struct Unreadable;
-        impl SessionStore for Unreadable {
-            fn list(&self) -> Result<Vec<GameId>, String> {
+        impl Store for Unreadable {
+            fn list(&self, _: Doc) -> Result<Vec<GameId>, String> {
                 Ok(vec!["taken".to_string()])
             }
-            fn read(&self, _: &str) -> Result<String, String> {
+            /// An `Err`, not `Ok(None)` — the shape a present file that cannot
+            /// be read has, and the one `create` must not mistake for absence.
+            fn read(&self, _: Doc, _: &str) -> Result<Option<(String, Version)>, String> {
                 Err("permission denied".to_string())
             }
-            fn exists(&self, id: &str) -> Result<bool, String> {
-                Ok(id == "taken")
-            }
-            fn write(&self, _: &str, _: &str) -> Result<(), String> {
+            fn write_if_version(
+                &self,
+                _: Doc,
+                _: &str,
+                _: &str,
+                _: Option<Version>,
+            ) -> Result<Version, WriteError> {
                 panic!("a refused create must not reach the store");
             }
             fn delete(&self, _: &str) -> Result<(), String> {
