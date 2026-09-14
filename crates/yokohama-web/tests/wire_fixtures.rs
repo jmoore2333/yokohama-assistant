@@ -155,8 +155,15 @@ impl Api {
     }
 
     async fn get(&self, uri: &str) -> Value {
-        let (status, v) = self.call("GET", uri, None).await;
-        assert_eq!(status, StatusCode::OK, "GET {uri}: {v}");
+        self.get_as(WALKER, uri).await
+    }
+
+    /// A GET from a NAMED seat's holder. Every payload is built for the caller
+    /// (M6.1 §5.1), so a fixture of the acting seat's frame has to be FETCHED by
+    /// the acting seat's holder — see [`as_actor`].
+    async fn get_as(&self, who: &str, uri: &str) -> Value {
+        let (status, v) = self.call_as(Some(who), "GET", uri, None).await;
+        assert_eq!(status, StatusCode::OK, "GET {uri} as {who}: {v}");
         v
     }
 
@@ -229,6 +236,25 @@ fn acting(state: &Value) -> &'static str {
     } else {
         OTHER
     }
+}
+
+/// The payload the ACTING seat's holder sees, re-read when the turn has passed.
+///
+/// A reply is built for its CALLER (M6.1 §5.1), so the move that ends a turn
+/// answers its own mover with a `watching` prompt and that seat's frame — true,
+/// and not what the walk must answer next, nor the payload the client renders
+/// while it is somebody's turn. So whenever the reply's `seat` is no longer the
+/// seat to move, the game is re-read as the new mover.
+///
+/// **The condition is what keeps the corpus honest about `messages`.** A reply
+/// that did NOT cross a turn boundary is returned untouched, so the fixtures
+/// captured from one still carry the delta lines the client renders; only the
+/// turn-crossing ones become a fresh read, which has none.
+async fn as_actor(api: &Api, state: Value) -> Value {
+    if state["over"] == Value::Bool(true) || state["seat"] == state["to_move"] {
+        return state;
+    }
+    api.get_as(acting(&state), "/api/games/wire").await
 }
 
 /// The walk's second person. Seat 1 is a HUMAN in this corpus (see the module
@@ -400,7 +426,7 @@ async fn walk() -> Vec<(String, Value)> {
         }
     };
 
-    let mut state = created;
+    let mut state = as_actor(&api, created).await;
     let mut rng = Rng(WALK_SEED);
     let mut steps = 0usize;
     // The area the server last accepted an assistant in, tried first next time.
@@ -452,7 +478,10 @@ async fn walk() -> Vec<(String, Value)> {
             // `SETUP_SEED` and the walk — and the answer is the same answer
             // every run.
             if !seen.iter().any(|s| s == "suggest") {
-                let s = api.get("/api/games/wire/suggest").await;
+                // **As the MOVER, because `suggest` answers the acting seat's
+                // holder only** (R-1.8): the advisor ranks the moves of the
+                // seat that is to move, and nobody else may ask for them.
+                let s = api.get_as(mover, "/api/games/wire/suggest").await;
                 capture(&mut out, &mut seen, "suggest", &s);
             }
         }
@@ -491,9 +520,20 @@ async fn walk() -> Vec<(String, Value)> {
             capture(&mut out, &mut seen, "retreat_answered", &state);
         }
 
-        // The two payloads a walk that only ever answers the game never
-        // produces. Both are taken at the first main prompt, both apply no
-        // move, and both are safe to continue from.
+        // The one payload a walk that only ever answers the game never
+        // produces. It applies no move, and the walk continues from the state
+        // it already holds.
+        //
+        // **`hidden_hand` used to be captured here too, and it is retired with
+        // this milestone** rather than moved. It was the `privacy` toggle — one
+        // operator's "hide every hand so I can pass the keyboard over" — which
+        // `client::facts_for` no longer consults: a seat's payload masks every
+        // hand but its own, always, so toggling privacy over the route now
+        // produces a payload byte-identical to the one beside it. The property
+        // the fixture carried — a masked hand is a count and no identities —
+        // is still on the wire in every `ClientState` in the corpus, as
+        // `hand_hidden` on the seats that are not the viewer's, and is asserted
+        // corpus-wide in the client's `contract.test.ts`.
         if kind == "options" && !seen.iter().any(|s| s == "refused") {
             seen.push("refused".to_string());
 
@@ -505,18 +545,6 @@ async fn walk() -> Vec<(String, Value)> {
             // digits — four is refused at the FENCE, which is a different
             // answer) and the REPL then declines as out of range.
             out.push(("refused".to_string(), api.send_as(mover, "999").await));
-
-            // A MASKED HAND. `HandPanel::hidden` empties `cards` in the MODEL,
-            // which is the property that makes a client that ignores the flag
-            // still unable to leak identities — and the client has a branch for
-            // it that no other fixture reaches, because every seat in this
-            // corpus is human and privacy is off in simulation. `privacy` is on
-            // the grammar's allowlist precisely because the browser offers it,
-            // so this is the real toggle over the real route, not a construction.
-            seen.push("hidden_hand".to_string());
-            out.push(("hidden_hand".to_string(), api.send_as(mover, "privacy").await));
-            // ...and back, so the rest of the corpus reads as an ordinary game.
-            state = api.send_as(mover, "privacy").await;
             continue;
         }
 
@@ -627,7 +655,7 @@ async fn walk() -> Vec<(String, Value)> {
             "game_over" => break,
             other => panic!("unknown prompt kind {other:?}: {state}"),
         };
-        state = api.send_as(mover, &line).await;
+        state = as_actor(&api, api.send_as(mover, &line).await).await;
     }
 
     capture(&mut out, &mut seen, "game_over", &state);
@@ -639,7 +667,6 @@ async fn walk() -> Vec<(String, Value)> {
     // depend on where the walk happened to go.
     for owed in [
         "refused",
-        "hidden_hand",
         "options_many",
         "options_priced",
         "fee_nonzero",
@@ -775,16 +802,24 @@ fn constructed() -> Vec<(String, Value)> {
     // seat 1 and carries no answerable list. Deliberately NOT pumped: the pump
     // is what makes this state transient in the served API, and the client
     // still has to render it.
+    //
+    // The viewer is seat 1 EXPLICITLY now (M6.1 §5.1). Over the router it would
+    // be `viewer_seat`'s answer for the person holding seat 1 — the bot holds
+    // the acting seat, so a caller falls back to their own lowest — and that is
+    // the same seat this constructs, stated rather than derived because there
+    // is no table document in process.
     let watching = build(vec![Some(PROVISIONAL_DEFAULT_BOT), None]);
-    let watching = serde_json::to_value(ClientState::of("wire", &watching, Vec::new()))
-        .expect("a serializable payload");
+    let watching =
+        serde_json::to_value(ClientState::of("wire", &watching, PlayerId::new(1), Vec::new()))
+            .expect("a serializable payload");
 
     let mut locked = build(vec![None, None]);
     locked
         .session
         .lock_down("the engine reported an invariant violation applying that move".to_string());
-    let locked = serde_json::to_value(ClientState::of("wire", &locked, Vec::new()))
-        .expect("a serializable payload");
+    let locked =
+        serde_json::to_value(ClientState::of("wire", &locked, PlayerId::new(0), Vec::new()))
+            .expect("a serializable payload");
 
     // ---- M3: the explanation surface ----------------------------------------
     //

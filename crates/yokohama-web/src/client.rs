@@ -6,9 +6,12 @@
 
 use serde::Serialize;
 use yokohama_cli::repl::{Repl, SubPrompt};
-use yokohama_cli::screen_model::{self, FrameModel, TitleMode, TitleModel};
+use yokohama_cli::screen_model::{self, FrameModel, SeatFacts, TitleMode, TitleModel};
 use yokohama_cli::{describe, session::TrackingMode};
-use yokohama_core::{AreaId, PlayerId};
+use yokohama_core::{AreaId, GameState, PlayerId};
+
+use crate::identity::User;
+use crate::table::TableDoc;
 
 /// One numbered entry, exactly as the engine-backed list produced it.
 #[derive(Debug, Clone, Serialize)]
@@ -100,10 +103,10 @@ pub enum PromptState {
     /// `viewer_is_deciding: false` while the prompt beside it carried the
     /// actor's entries.
     ///
-    /// Reachable through the bot-fallback arm of [`viewing_seat`]: when the
-    /// actor is a bot the payload is built for a human, and the bot's hand is
-    /// masked unconditionally — so without this the client would hold an option
-    /// list derived from a hand the same payload hides.
+    /// Reached whenever the caller's seat is not the acting one ([`viewer_seat`]):
+    /// another person is to move, or a bot is. The acting seat's hand is masked
+    /// from this payload — so without this the client would hold an option list
+    /// derived from a hand the same payload hides.
     Watching { to_move: PlayerId },
     /// The session is locked after a driver or engine fault and accepts no
     /// gameplay at all.
@@ -201,76 +204,49 @@ impl PromptState {
     }
 }
 
-/// The seat this payload is built for: **the seat to move**, exactly as the
-/// terminal does it.
+/// The seat a payload is built FOR (spec §5.1): the acting seat when the caller
+/// holds it, else the caller's lowest seat, else `None` — which the route turns
+/// into a 403 (R-1.5).
 ///
-/// `screen.rs:608` passes `state.current_player` to `render::dashboard`, so the
-/// CLI's hand panel follows the ACTOR — which is what a single operator driving
-/// a table needs, and this port inherits that model rather than inventing one.
+/// **It replaces two functions, and the pair is worth naming.** `viewing_seat`
+/// followed the MOVER, because before M6.1 nobody was asking: one browser held
+/// every seat, and the only honest answer to "whose payload is this" was "the
+/// one about to play". `replay_seat` existed because that answer re-pointed
+/// every turn and `/at/{k}` needed a pin that did not — the lowest non-bot seat,
+/// stable for the life of the game. An AUTHENTICATED route needs neither: the
+/// stable seat is the caller's own, so one function answers both routes and the
+/// replay's pin is now per caller rather than per game.
 ///
-/// **It used to return the first seat no bot holds, and that was a parity
-/// divergence with teeth.** At 3P or 4P with one bot, seats 0 and 2 are both
-/// human; the frame was built for seat 0 while `PromptState` carried seat 2's
-/// options, because those come from `Repl::option_rows()` and the REPL has only
-/// ever one current player. The screen then showed RED's hand, said "seat 2 is
-/// deciding", and offered seat 2's moves as live buttons — three statements
-/// about three different seats, with the acting seat's hand nowhere.
-///
-/// The bot arm is a real fallback and not defensiveness: `step` pumps bot seats
-/// after every applied move, so a returned payload is normally on a human, but
-/// a payload built mid-pump would otherwise carry a bot's seat. Its hand stays
-/// masked either way — `SeatFacts.hand_hidden` folds `is_bot` in regardless of
-/// the privacy toggle — so this only decides whose panel is shown, never
-/// whether a hidden hand leaks.
-pub fn viewing_seat(repl: &Repl) -> PlayerId {
-    let facts = repl.seat_facts();
-    let acting = repl.session.state().current_player;
-    let is_bot = facts.get(usize::from(acting.0)).is_some_and(|f| f.is_bot);
-    if !is_bot {
-        return acting;
+/// **The acting-seat arm is what makes a hot seat playable.** One person in
+/// several seats gets the seat that is to move, so the screen follows the turn
+/// around the table exactly as it did before there were identities; a person
+/// who holds no acting seat gets their lowest, and watches.
+pub fn viewer_seat(table: &TableDoc, user: &User, state: &GameState) -> Option<PlayerId> {
+    let mine = table.seats_of(user);
+    if mine.contains(&state.current_player) {
+        return Some(state.current_player);
     }
-    facts
-        .iter()
-        .position(|f| !f.is_bot)
-        .map(|i| PlayerId::new(i as u8))
-        .unwrap_or(acting)
+    mine.first().copied()
 }
 
-/// The seat a REPLAY is built for — stable for the life of the game.
+/// R-1.7: a hand is shown to its own seat only, bots included, hot-seat
+/// included. The other seats show as counts, which is what `hand_hidden` means
+/// to every panel builder downstream.
 ///
-/// **Deliberately not [`viewing_seat`], and the difference is the whole
-/// security property of `/at/{k}`.** `viewing_seat` returns the ACTING seat
-/// whenever that seat is human, so it re-points every time the turn changes.
-/// A replay route using it would be pinned only within a single instant:
-/// measured on an all-human 2P game, one sweep of `0..=total` returned seat 1's
-/// hands, and after eight more inputs the same sweep returned seat 0's — union
-/// `{0, 1}`. A sweep that merely straddled a turn change got both without
-/// waiting at all. That is a per-REQUEST pin, which is not a fence.
-///
-/// This returns the lowest non-bot seat instead. `SeatFacts::is_bot` is fixed
-/// when the game is created and restored with it, so the answer is the same for
-/// every request against the same game, at every `k`, forever — which is what
-/// makes "walking every position shows one seat's hands and no other's" a true
-/// sentence rather than an aspiration.
-///
-/// **A bot-only table cannot be created** (`games::config_of` refuses one, so at
-/// least one seat is human), and the `unwrap_or` is therefore unreachable rather
-/// than a fallback with meaning; seat 0 is the safe direction if it ever is
-/// reached, because seat 0 exists at every player count.
-///
-/// **What this does NOT buy, stated because the spec once overclaimed it.** It
-/// is not privacy and not authentication. `GET /api/games/{id}/log` is
-/// unauthenticated and defaults to the WHOLE log, and the CLI's event wording
-/// names order cards as they enter and leave a hand — so a game's hand HISTORY
-/// is already legible to anyone holding the id, by a route M4 did not touch.
-/// What the stable pin closes is narrower and still worth having: `/at/{k}`
-/// cannot be used to read a *second* seat's private frame, at any k, ever.
-pub fn replay_seat(repl: &Repl) -> PlayerId {
-    repl.seat_facts()
+/// **This is the SERVER's answer to `build_frame`'s `seats`, and it replaces
+/// `Repl::seat_facts()` in this crate.** That method folds the REPL's `privacy`
+/// flag — one operator's toggle at one terminal, which hides every hand at once
+/// so a person can hand the keyboard over. A per-seat payload has no use for
+/// it: each seat already sees only its own, always, and there is nobody to hand
+/// the screen to. `is_bot` is still the REPL's own reconciled answer
+/// ([`Repl::bots`]), never re-derived here.
+pub fn facts_for(repl: &Repl, viewer: PlayerId) -> Vec<SeatFacts> {
+    repl.session
+        .state()
+        .players
         .iter()
-        .position(|f| !f.is_bot)
-        .map(|i| PlayerId::new(i as u8))
-        .unwrap_or(PlayerId::new(0))
+        .map(|p| SeatFacts { is_bot: repl.bots().is_bot(p.id), hand_hidden: p.id != viewer })
+        .collect()
 }
 
 fn rows_from(
@@ -366,10 +342,14 @@ fn prompt_of(repl: &Repl) -> PromptState {
 }
 
 impl ClientState {
-    /// Build the payload for `repl`, carrying `messages` from whatever produced
-    /// this state (an applied move's deltas, or a refusal).
-    pub fn of(id: &str, repl: &Repl, messages: Vec<String>) -> Self {
-        let seat = viewing_seat(repl);
+    /// Build the payload for `repl` as `viewer` sees it, carrying `messages`
+    /// from whatever produced this state (an applied move's deltas, or a
+    /// refusal).
+    ///
+    /// `viewer` is [`viewer_seat`]'s answer, resolved by the ROUTE before the
+    /// lock is taken — a caller with no seat never reaches here.
+    pub fn of(id: &str, repl: &Repl, viewer: PlayerId, messages: Vec<String>) -> Self {
+        let seat = viewer;
         let session = &repl.session;
         let state = session.state();
         let over = session.is_over();
@@ -377,7 +357,7 @@ impl ClientState {
         let frame = screen_model::build_frame(
             state,
             session.rules(),
-            &repl.seat_facts(),
+            &facts_for(repl, seat),
             seat,
             &session.legal(),
             TitleModel {
@@ -465,16 +445,19 @@ pub struct HistoricalFrame {
     pub total: usize,
     /// The seat this payload was built FOR — whose hand is unmasked.
     ///
-    /// **Stable for the life of the game** ([`replay_seat`]): the lowest non-bot
-    /// seat, which is fixed at creation and restored with the game. So a sweep
-    /// over `0..=total` returns that seat's hands and no other seat's, at any
-    /// time, however many turns pass between requests.
+    /// **[`viewer_seat`]'s answer, and therefore PER CALLER** (M6.1 §5.1). M4's
+    /// security sentence is kept and re-pointed: a sweep over `0..=total`
+    /// returns the CALLER's hands and no other seat's, at any `k`, however many
+    /// turns pass between requests — and a second caller sweeping the same game
+    /// harvests their own seat, not this one's.
     ///
-    /// An earlier draft of this field used [`viewing_seat`] and claimed the same
-    /// property. It did not hold: `viewing_seat` follows the mover, so the pin
-    /// re-pointed every turn and two sweeps — or one sweep across a turn change
-    /// — harvested both seats. The claim is kept honest here because the code
-    /// changed, not the wording.
+    /// **Two earlier answers, and why neither survives an identity.** The first
+    /// draft followed the mover, so the pin re-pointed every turn and two sweeps
+    /// — or one sweep across a turn change — harvested both seats. M4 replaced
+    /// it with the lowest non-bot seat, stable for the life of the game, because
+    /// an UNAUTHENTICATED route had no better pin available. An authenticated
+    /// route does: the caller's own, which is stable for the same reason and is
+    /// additionally the seat the caller is entitled to.
     pub seat: PlayerId,
     /// Whose turn it was at `k`.
     pub to_move: PlayerId,
@@ -512,13 +495,13 @@ impl HistoricalFrame {
     /// divergent authority on record validity. Checking is
     /// `Session::from_record`'s job, on the path where a record enters from
     /// disk.
-    pub fn at(repl: &Repl, k: usize) -> Result<Self, yokohama_core::ReplayError> {
+    pub fn at(repl: &Repl, k: usize, viewer: PlayerId) -> Result<Self, yokohama_core::ReplayError> {
         let session = &repl.session;
         let record = session.record();
         let total = record.events.len();
         let rules = session.rules();
         let state = yokohama_core::state_at(record, k, rules)?;
-        let seat = replay_seat(repl);
+        let seat = viewer;
 
         // **Paid deliberately, not defensively.** `build_board` derives
         // `tile.reachable` from the legal list, so a historical board built with
@@ -532,7 +515,7 @@ impl HistoricalFrame {
         let frame = screen_model::build_frame(
             &state,
             rules,
-            &repl.seat_facts(),
+            &facts_for(repl, seat),
             seat,
             &legal,
             TitleModel {
@@ -571,5 +554,144 @@ impl HistoricalFrame {
             ports: screen_model::build_ports(&state, rules),
             labs: screen_model::build_labs(&state, rules),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::table::{SeatDoc, TableStatus};
+    use yokohama_cli::bot::BotSeats;
+    use yokohama_cli::session::Session;
+    use yokohama_core::{
+        finalize_setup, new_game, GameConfig, GameState, PlayerColor, Rules, StartingOrderChoice,
+    };
+
+    /// A playing table whose seats are the named emails, in order.
+    fn table_of(emails: &[&str]) -> TableDoc {
+        let players = emails.len() as u8;
+        TableDoc {
+            schema: 1,
+            id: "t".into(),
+            name: None,
+            created_by: emails[0].to_string(),
+            created_at: 0,
+            players,
+            colors: [PlayerColor::Red, PlayerColor::Blue, PlayerColor::Yellow]
+                [..usize::from(players)]
+                .to_vec(),
+            start_seat: 0,
+            seats: emails.iter().map(|e| SeatDoc::Human { user: (*e).to_string() }).collect(),
+            keeps: vec![Some(1); usize::from(players)],
+            seed: 7,
+            status: TableStatus::Playing,
+            turn: None,
+        }
+    }
+
+    /// A real 3P position with `current_player` moved to `seat`.
+    ///
+    /// [`viewer_seat`] reads exactly one field of the state, so the position
+    /// itself is scenery — but it is a REAL one rather than a construction,
+    /// because `GameState` has no cheap honest constructor and a hand-built one
+    /// would be a second statement of the setup.
+    fn state_with_current(seat: PlayerId) -> GameState {
+        let rules = Rules::standard();
+        let pending = new_game(GameConfig::for_player_count(3), &rules, 7).expect("a setup");
+        let mut state =
+            finalize_setup(pending, &[StartingOrderChoice::Keep(0); 3]).expect("a game");
+        state.current_player = seat;
+        state
+    }
+
+    /// The corpus-seed 2P game with no bots — built exactly as
+    /// `wire_fixtures.rs`'s `build(vec![None, None])` builds it, so the hand
+    /// this cell reads is the hand the committed corpus carries.
+    fn two_human_repl() -> Repl {
+        let rules = Rules::standard();
+        let mut config = GameConfig::for_player_count(2);
+        config.player_colors = vec![PlayerColor::Red, PlayerColor::Blue];
+        config.start_player = PlayerId::new(0);
+        let choices = vec![StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)];
+        let mut session =
+            Session::new_sim(config, 20_260_831, choices, rules).expect("a fixture game");
+        let bots = BotSeats::new(vec![None, None], 0x4649_5854_5552_4553);
+        session.set_run_seats(bots.seat_provenance());
+        Repl::new(session)
+    }
+
+    /// The three arms of [`viewer_seat`], including the hot seat, in one cell —
+    /// because the claim is the PRECEDENCE, and each arm alone is satisfied by
+    /// an implementation that ignores the other two.
+    #[test]
+    fn the_viewer_is_the_acting_seat_when_mine_else_my_lowest_else_none() {
+        let (red, blue, green) = (
+            User::parse("red@t.test").expect("an email"),
+            User::parse("blue@t.test").expect("an email"),
+            User::parse("green@t.test").expect("an email"),
+        );
+        // A 3P hot seat for red: seats 0 and 2 are red's, seat 1 is blue's.
+        let mut doc = table_of(&["red@t.test", "blue@t.test", "red@t.test"]);
+        let state = state_with_current(PlayerId::new(2));
+        assert_eq!(viewer_seat(&doc, &red, &state), Some(PlayerId::new(2)), "acting and mine");
+        assert_eq!(
+            viewer_seat(&doc, &blue, &state),
+            Some(PlayerId::new(1)),
+            "not acting: my lowest"
+        );
+        assert_eq!(viewer_seat(&doc, &green, &state), None, "a stranger has no seat to view from");
+        doc.seats[2] = SeatDoc::Bot;
+        assert_eq!(
+            viewer_seat(&doc, &red, &state),
+            Some(PlayerId::new(0)),
+            "a bot is acting: my lowest"
+        );
+    }
+
+    /// R-1.7 at the model: one hand panel, the viewer's, and every other seat
+    /// masked on the panel that carries the rest.
+    #[test]
+    fn the_facts_hide_every_hand_but_the_viewers_bots_included() {
+        let repl = two_human_repl();
+        let f = facts_for(&repl, PlayerId::new(1));
+        assert_eq!(f.iter().map(|s| s.hand_hidden).collect::<Vec<_>>(), vec![true, false]);
+        assert!(f.iter().all(|s| !s.is_bot), "this fixture seats no bot");
+
+        let payload = ClientState::of("t", &repl, PlayerId::new(1), Vec::new());
+        assert_eq!(payload.seat, PlayerId::new(1));
+        let hands: Vec<(u8, bool, usize)> = payload
+            .frame
+            .dashboard
+            .iter()
+            .filter_map(|p| match p {
+                screen_model::Panel::Hand(h) => Some((h.seat.0, h.hidden, h.cards.len())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            hands,
+            vec![(1, false, 1)],
+            "the viewer's own hand, open, and no other Hand panel"
+        );
+
+        // The mask the OTHER seats wear instead — a flag on the Players panel,
+        // never a hand panel of their own. Asserted here because `hands` above
+        // would read the same if the model had simply stopped masking.
+        let rows: Vec<(u8, bool)> = payload
+            .frame
+            .dashboard
+            .iter()
+            .filter_map(|p| match p {
+                screen_model::Panel::Players(pp) => Some(pp),
+                _ => None,
+            })
+            .flat_map(|pp| pp.players.iter().map(|p| (p.seat.0, p.hand_hidden)))
+            .collect();
+        assert_eq!(rows, vec![(0, true), (1, false)]);
+
+        // And the payload is the VIEWER's in its other two seat-shaped fields:
+        // seat 0 is to move, so seat 1 is watching and it is not its turn.
+        assert!(!payload.your_turn);
+        assert_eq!(payload.prompt.kind(), "watching");
     }
 }

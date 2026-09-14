@@ -195,21 +195,42 @@ describe("the keyed payloads are not empty", () => {
 });
 
 describe("what the corpus itself has to be true of", () => {
-  // A payload built for a seat whose hand is masked must not carry the
-  // identities anywhere. The mask is a property of the MODEL — `HandPanel.cards`
-  // is empty when `hidden` — which is what makes a client that ignores the flag
-  // still unable to leak. This asserts the property on the wire rather than
-  // trusting the sentence.
-  it("a masked hand carries a count and no identities", () => {
-    const hand = wire.hiddenHand.frame.dashboard.find(
-      (p): p is Extract<Panel, { Hand: HandPanel }> => "Hand" in p,
-    );
-    expect(hand).toBeDefined();
-    expect(hand!.Hand.hidden).toBe(true);
-    expect(hand!.Hand.cards).toEqual([]);
-    // Truthful whether masked or not: the height of a hand is public at a table.
-    expect(hand!.Hand.card_count).toBeGreaterThan(0);
-    expect(JSON.stringify(wire.hiddenHand)).not.toContain('"is_starting_order"');
+  // **R-1.7, asserted over the WHOLE corpus rather than over one fixture.**
+  //
+  // Every payload is built for exactly one seat (M6.1 §5.1): the only Hand
+  // panel in it is that seat's, open, and every other seat carries
+  // `hand_hidden` on the Players panel instead. Stated here as a property of
+  // the corpus because that is the strongest form available on this side of the
+  // wire — a server that unmasked a second seat in ANY of the twenty payloads
+  // fails, where a cell over one fixture would only have covered one.
+  //
+  // It replaces a cell over `hidden_hand`, the `privacy`-toggle payload, which
+  // is retired: the server no longer reads that flag, so no fixture carries a
+  // masked Hand panel and the mask lives entirely on the Players rows.
+  it("every payload unmasks its own seat and no other", () => {
+    for (const state of EVERY_STATE) {
+      const hands = state.frame.dashboard.filter(
+        (p): p is Extract<Panel, { Hand: HandPanel }> => "Hand" in p,
+      );
+      expect(hands.length, `${state.id}: one hand panel`).toBe(1);
+      expect(hands[0]!.Hand.seat).toBe(state.seat);
+      expect(hands[0]!.Hand.hidden).toBe(false);
+
+      const players = state.frame.dashboard.find(
+        (p): p is Extract<Panel, { Players: unknown }> => "Players" in p,
+      );
+      expect(players).toBeDefined();
+      for (const p of players!.Players.players) {
+        expect(p.hand_hidden, `seat ${p.seat} of ${state.seat}'s payload`).toBe(
+          p.seat !== state.seat,
+        );
+      }
+      // The mask is a property of the MODEL, not of the renderer: a masked hand
+      // has no `cards` to leak, so the one card-level secret — which order was
+      // dealt as a starting order — appears only inside the viewer's own panel.
+      const marks = JSON.stringify(state).split('"is_starting_order"').length - 1;
+      expect(marks, `${state.seat}'s payload`).toBe(hands[0]!.Hand.cards.length);
+    }
   });
 
   // **A seat only ever sees its own deal (2026-09-06, R-C1).** The bot still

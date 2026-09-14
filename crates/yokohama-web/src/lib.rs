@@ -370,16 +370,66 @@ async fn preview_game(
     })
 }
 
-// **`identity::Identity` is on all twenty `/api/games` handlers.** Taking it
-// makes the route a 401 without an identity; the five below now also USE the
-// `User` it carries, which is what makes a table the caller's rather than
-// anyone's. The rest still fence only — the per-seat VIEW is the next task of
-// this cycle — but every one of them now maps `Games`' refusals through
-// `ApiError::from`, which is what makes a dealing table answer 409 with a status
-// a client can branch on instead of a 404 it cannot.
+// **`identity::Identity` is on all twenty `/api/games` handlers**, and since
+// M6.1 §5.3 every one of them USES the `User` it carries: a game route resolves
+// the caller to a seat before it touches the `Repl`, and builds what it serves
+// for that seat. A caller with no seat here is a 403 (R-1.5) rather than a
+// payload, and a dealing table is a 409 carrying a status a client can branch
+// on rather than a 404 it cannot.
 //
 // Twenty handlers over eighteen signatures — `ports`, `labs` and `areas` share
 // the `surface!` macro below.
+
+/// Resolve the caller to a seated table and a live handle.
+///
+/// 404 for no table, 403 for a stranger (R-1.5), 409 while dealing. **Every
+/// session route starts here**, which is what makes those three answers one
+/// sentence each rather than fifteen.
+///
+/// The TABLE is read first and deliberately: a stranger holding an id learns
+/// that it is not theirs, and learns nothing about whether it is dealing.
+fn seated(
+    state: &AppState,
+    id: &str,
+    user: &identity::User,
+) -> Result<(Arc<std::sync::Mutex<yokohama_cli::repl::Repl>>, crate::table::TableDoc), ApiError> {
+    let table = state.games.table(id, user)?;
+    let handle = state.games.handle(id)?;
+    Ok((handle, table))
+}
+
+/// The seat this caller's payload is built for.
+///
+/// **The `None` arm is unreachable behind [`seated`], and is written anyway.**
+/// `viewer_seat` answers `None` exactly when `TableDoc::seats_of` is empty,
+/// which is the same condition `Games::table` already refused — so this is the
+/// TYPE being total rather than a second fence, and it is what lets every
+/// builder downstream take a `PlayerId` instead of an `Option`. The sentence
+/// matches the one `Games::table` raises, so a caller cannot tell which of the
+/// two spoke.
+fn viewer_of(
+    repl: &yokohama_cli::repl::Repl,
+    table: &crate::table::TableDoc,
+    user: &identity::User,
+) -> Result<yokohama_core::PlayerId, ApiError> {
+    client::viewer_seat(table, user, repl.session.state()).ok_or_else(|| ApiError {
+        status: StatusCode::FORBIDDEN,
+        message: "you are not seated at this table".to_string(),
+        table_status: None,
+    })
+}
+
+/// Who holds `seat` at this table, for a refusal that names them.
+///
+/// A bot has no email and is named as what it is. The `None` arm is the same
+/// unreachable-by-construction shape as [`viewer_of`]'s: `Games::read_table`
+/// refuses a document whose `seats` disagrees with its `players`.
+fn holder_of(table: &crate::table::TableDoc, seat: yokohama_core::PlayerId) -> &str {
+    match table.seats.get(usize::from(seat.0)) {
+        Some(crate::table::SeatDoc::Human { user }) => user,
+        _ => "the bot",
+    }
+}
 
 /// The lobby: `{ "games": [...] }` rather than a bare array.
 ///
@@ -459,13 +509,13 @@ async fn get_game(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> ApiResult<ClientState> {
-    // Seated first, so a stranger holding an id is a 403 rather than a frame.
-    // The VIEW this builds is still the acting seat's — per-caller scoping is
-    // the next task — but the fence in front of it is this one's.
-    state.games.table(&id, &user)?;
-    let handle = state.games.handle(&id)?;
+    // Seated first, so a stranger holding an id is a 403 rather than a frame;
+    // then the frame is built for the CALLER's seat, so the hand on it is the
+    // caller's own and every other seat's is a count (R-1.7).
+    let (handle, table) = seated(&state, &id, &user)?;
     let repl = handle.lock().expect("a game");
-    Ok(Json(ClientState::of(&id, &repl, Vec::new())))
+    let viewer = viewer_of(&repl, &table, &user)?;
+    Ok(Json(ClientState::of(&id, &repl, viewer, Vec::new())))
 }
 
 async fn delete_game(
@@ -523,7 +573,7 @@ pub struct Input {
 /// shows both that a line is checked and that a checked line goes through
 /// untouched.
 async fn input(
-    _who: identity::Identity,
+    identity::Identity(user): identity::Identity,
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     JsonBody(req): JsonBody<Input>,
@@ -531,8 +581,31 @@ async fn input(
     if !grammar::is_gameplay_line(&req.line) {
         return Err(ApiError::bad_request(grammar::refusal(&req.line)));
     }
-    let handle = state.games.handle(&id)?;
+    let (handle, table) = seated(&state, &id, &user)?;
     let mut repl = handle.lock().expect("a game");
+    let viewer = viewer_of(&repl, &table, &user)?;
+
+    // **A move is the ACTING SEAT'S HOLDER'S, and nobody else's.**
+    //
+    // `viewer_seat` returns the acting seat whenever the caller holds it, so
+    // this comparison IS "do you hold the seat that is to move" — one person in
+    // several seats passes it at every one of them, which is what keeps a hot
+    // seat playable. Everyone else is refused by a sentence that names whose
+    // turn it is, because "403" alone tells a player nothing about what to do
+    // next: wait, or look at another table.
+    //
+    // Before `step`, so a refused caller cannot advance the game, and before
+    // the `expect` check below, so a watcher is told whose turn it is rather
+    // than handed a prompt-moved-on conflict about a prompt that was never
+    // theirs.
+    let acting = repl.session.state().current_player;
+    if acting != viewer {
+        return Err(ApiError {
+            status: StatusCode::FORBIDDEN,
+            message: format!("it is seat {}'s turn ({})", acting.0, holder_of(&table, acting)),
+            table_status: None,
+        });
+    }
 
     if let Some(expected) = &req.expect {
         let actual = crate::client::prompt_kind(&repl);
@@ -603,7 +676,11 @@ async fn input(
     };
     let messages: Vec<String> =
         body.lines().map(str::trim_end).filter(|l| !l.is_empty()).map(str::to_string).collect();
-    let mut client = ClientState::of(&id, &repl, messages);
+    // **The reply is the CALLER's view, not the new mover's.** A move that ends
+    // a turn therefore answers its own mover with a `watching` prompt, which is
+    // the true thing to say: the game has moved on and this person is not the
+    // one it is waiting for.
+    let mut client = ClientState::of(&id, &repl, viewer, messages);
     // **The banner must not say "saved" on the payload that says it is not.**
     //
     // `TitleModel::autosaved` is a literal `true` in `client.rs` — correct as a
@@ -654,16 +731,22 @@ async fn input(
 /// A handler that reads one game and projects it.
 ///
 /// The three lock-and-project routes differ only in which builder they call, so
-/// the borrow, the not-found and the lock live once. A fourth copy of this
-/// wiring is a fourth chance to forget the `map_err`.
+/// the borrow, the not-found, the seat fence and the lock live once. A fourth
+/// copy of this wiring is a fourth chance to forget one of them.
+///
+/// **Seated, and no viewer.** All three of these are the public table — the two
+/// offer boards and the area reference — and none carries a hand or a seat's
+/// own anything, so there is nothing here for a viewer to scope. The fence in
+/// front of them is still the seat one: what the three would leak to a stranger
+/// is the offer at a table they have no business at.
 macro_rules! surface {
     ($name:ident, $model:ty, $build:expr) => {
         async fn $name(
-            _who: identity::Identity,
+            identity::Identity(user): identity::Identity,
             State(state): State<Arc<AppState>>,
             Path(id): Path<String>,
         ) -> ApiResult<$model> {
-            let handle = state.games.handle(&id)?;
+            let (handle, _table) = seated(&state, &id, &user)?;
             let repl = handle.lock().expect("a game");
             let f: fn(&yokohama_core::GameState, &Rules) -> $model = $build;
             Ok(Json(f(repl.session.state(), repl.session.rules())))
@@ -715,15 +798,36 @@ pub struct LogQuery {
 /// game, including the poll that draws the board. `GameState` is history-free
 /// and cheap to clone for exactly this reason.
 async fn suggest(
-    _who: identity::Identity,
+    identity::Identity(user): identity::Identity,
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> ApiResult<explain::SuggestResponse> {
     use explain::SuggestRefusal as R;
-    let handle = state.games.handle(&id)?;
+    let (handle, table) = seated(&state, &id, &user)?;
 
+    // **R-1.8: the acting seat's holder only, and this is a 403 rather than a
+    // typed refusal.** The four refusals below are ANSWERS about the game — it
+    // is over, it is locked, a bot is thinking — and a client renders each as a
+    // sentence in the advisor panel. "This is not your seat" is not that: it is
+    // the same access answer every other route on this table gives, and serving
+    // it as a 200 would put the advisor's own panel in front of a person who
+    // must not be ranking that seat's moves.
+    //
+    // It also subsumes `SuggestRefusal::BotSeat` at a table where no human
+    // holds the bot's seat, which is every table: a bot seat is nobody's, so
+    // the caller is refused here first. That refusal stays declared because it
+    // is the CLI's own and this crate carries `repl::suggest_cmd`'s ladder
+    // verbatim rather than a subset of it.
     let read = {
         let repl = handle.lock().expect("a game");
+        let acting = repl.session.state().current_player;
+        if !table.seats_of(&user).contains(&acting) {
+            return Err(ApiError {
+                status: StatusCode::FORBIDDEN,
+                message: "it is not your turn".to_string(),
+                table_status: None,
+            });
+        }
         let refuse = if repl.session.record().lockdown.is_some() {
             Some(R::Locked)
         } else if matches!(repl.session.mode, yokohama_cli::session::TrackingMode::Live) {
@@ -777,12 +881,18 @@ async fn suggest(
 /// Same lock discipline as `suggest`, for the same reason: the reconstruction
 /// runs the same `decide` path the pump ran.
 async fn why(
-    _who: identity::Identity,
+    identity::Identity(user): identity::Identity,
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     QueryArgs(q): QueryArgs<WhyQuery>,
 ) -> ApiResult<explain::Why> {
-    let handle = state.games.handle(&id)?;
+    // Seated, and no viewer of its own: `why` already answers at the VIEWER's
+    // visibility by masking the roads not taken for every caller
+    // (`explain::HandVisibility::Masked`), so an unplayed `FulfillOrder` words
+    // as "from hand" and names no card, at every seat. What this fence adds is
+    // the seat one — an account of a search at a table the caller has no place
+    // at is not theirs to read.
+    let (handle, _table) = seated(&state, &id, &user)?;
     let (mode, record, bots) = {
         let repl = handle.lock().expect("a game");
         // **The lockdown gate fences COMPUTATION, not projection**, and this is
@@ -831,7 +941,7 @@ async fn why(
 /// second one: a second parser would answer an ambiguous prefix differently from
 /// the terminal on the first `f s` a player typed.
 async fn card_index(
-    _who: identity::Identity,
+    identity::Identity(user): identity::Identity,
     State(state): State<Arc<AppState>>,
     Path((id, kind)): Path<(String, String)>,
     QueryArgs(q): QueryArgs<IndexQuery>,
@@ -853,7 +963,10 @@ async fn card_index(
         Some(term) => yokohama_cli::card_prompt::parse_filter(term, kind)
             .map_err(ApiError::bad_request)?,
     };
-    let handle = state.games.handle(&id)?;
+    // Seated, and no viewer: `Repl::index_placements`' own doc defends the leak
+    // fence this index needs — it never says "in seat N's hand" — so the model
+    // is the same for every seat at the table and there is nothing to scope.
+    let (handle, _table) = seated(&state, &id, &user)?;
     let repl = handle.lock().expect("a game");
     Ok(Json(yokohama_cli::screen_model::build_index(
         kind,
@@ -881,11 +994,11 @@ pub struct IndexQuery {
 /// the result of an unfinished game is a client mistake, and `final_result`
 /// would answer with a standing nobody has earned.
 async fn result(
-    _who: identity::Identity,
+    identity::Identity(user): identity::Identity,
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> ApiResult<outcome::Outcome> {
-    let handle = state.games.handle(&id)?;
+    let (handle, _table) = seated(&state, &id, &user)?;
     let repl = handle.lock().expect("a game");
     if !repl.session.is_over() {
         return Err(ApiError {
@@ -913,13 +1026,19 @@ pub struct WhyQuery {
 /// movement fee to today's president owners — a log that rewrites its own
 /// history as the game moves. This route therefore reads the cache and never
 /// builds a description.
+/// **Seated, and no viewer — stated because it is the one projection where a
+/// reader would expect masking.** The CLI's event wording names an order card
+/// only at the PUBLIC moments it is named at a table, and words the one secret
+/// as "hidden starting order" (M6.1 §5.3). So there is nothing here to scope to
+/// a seat, and a per-viewer log would be a second, divergent wording of events
+/// that were already described once, against the state they applied in.
 async fn log(
-    _who: identity::Identity,
+    identity::Identity(user): identity::Identity,
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     QueryArgs(q): QueryArgs<LogQuery>,
 ) -> ApiResult<yokohama_cli::screen_model::LogPanel> {
-    let handle = state.games.handle(&id)?;
+    let (handle, _table) = seated(&state, &id, &user)?;
     let repl = handle.lock().expect("a game");
     let total = repl.session.record().events.len();
     let first = q.tail.map_or(0, |n| total.saturating_sub(n));
@@ -968,11 +1087,11 @@ async fn log(
 /// store write, and the clone that dropping would require copies every `Move` in
 /// the record. Following `why`'s pattern here would cost more than it saves.
 async fn at_k(
-    _who: identity::Identity,
+    identity::Identity(user): identity::Identity,
     State(state): State<Arc<AppState>>,
     Path((id, k)): Path<(String, usize)>,
 ) -> ApiResult<client::HistoricalFrame> {
-    let handle = state.games.handle(&id)?;
+    let (handle, table) = seated(&state, &id, &user)?;
     let repl = handle.lock().expect("a game");
     let total = repl.session.record().events.len();
     if k > total {
@@ -980,7 +1099,14 @@ async fn at_k(
             "this game has {total} events, so its last position is {total} — there is no position {k}"
         )));
     }
-    client::HistoricalFrame::at(&repl, k).map(Json).map_err(|e| ApiError {
+    // **The pin is the CALLER's seat, at every `k`.** M4 pinned the lowest
+    // non-bot seat because an unauthenticated route had nothing better; an
+    // authenticated one has the caller's own, which is stable for the same
+    // reason AND is the seat the caller is entitled to. So a sweep over
+    // `0..=total` still harvests exactly one seat's hands — and now it is the
+    // sweeper's own.
+    let viewer = viewer_of(&repl, &table, &user)?;
+    client::HistoricalFrame::at(&repl, k, viewer).map(Json).map_err(|e| ApiError {
         status: StatusCode::INTERNAL_SERVER_ERROR,
         message: format!("replaying this game to {k} failed at event {}: {}", e.event_index, e.message),
         table_status: None,
@@ -1502,6 +1628,255 @@ mod tests {
         uri: &str,
     ) -> (StatusCode, serde_json::Value) {
         request_as(state, who, "DELETE", uri, None).await
+    }
+
+    /// **A started game whose seats belong to the NAMED people, each keeping as
+    /// itself** — the multi-identity sibling of [`start`], which drives one.
+    ///
+    /// Not an overload of that name, because it is not the same helper: `start`
+    /// takes a `Router` and a bot list and plays every seat as [`WHO`], and the
+    /// cells below need a `state` several identities share. The `_as` suffix is
+    /// the one [`get_as`] and [`post_as`] already use for "under this identity",
+    /// and here it is per SEAT: every keep is posted by the person who holds the
+    /// seat it is for, which is what the keep route requires.
+    async fn start_as(state: &Arc<AppState>, name: &str, seed: u64, seats: &[&str]) {
+        let colors = ["Red", "Blue", "Yellow", "Green"];
+        let players = seats.len();
+        let (status, table) = post_as(
+            state,
+            seats[0],
+            "/api/games",
+            serde_json::json!({
+                "players": players,
+                "colors": colors[..players],
+                "start_seat": 0,
+                "seed": seed.to_string(),
+                "seats": seats.iter().map(|u| serde_json::json!({ "user": u })).collect::<Vec<_>>(),
+                "name": name,
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{table}");
+        for (seat, who) in seats.iter().enumerate() {
+            let (status, kept) = post_as(
+                state,
+                who,
+                &format!("/api/games/{name}/keep"),
+                serde_json::json!({ "seat": seat, "card": 1 }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "seat {seat} as {who}: {kept}");
+        }
+    }
+
+    /// Play `user`'s whole turn, so a cell that needs a turn BOUNDARY has one.
+    ///
+    /// The last option row each time — the one that ends a phase — which is the
+    /// same walk `games::tests::the_turn_mirror_follows_every_persisted_move`
+    /// takes at the `Repl` level, here over the route so the fence is exercised
+    /// too. Bounded, and the bound FAILS rather than passing quietly: a turn
+    /// that never ends means the cell below proves nothing about a boundary.
+    async fn play_turn(state: &Arc<AppState>, id: &str, user: &str) {
+        let (_, before) = get_as(state, user, &format!("/api/games/{id}")).await;
+        let mine = before["to_move"].as_u64().expect("a seat to move");
+        for _ in 0..40 {
+            let (_, now) = get_as(state, user, &format!("/api/games/{id}")).await;
+            if now["to_move"].as_u64() != Some(mine) || now["over"] == serde_json::json!(true) {
+                return;
+            }
+            let rows = now["prompt"]["rows"].as_array().cloned().unwrap_or_default();
+            let line = match rows.last().and_then(|r| r["number"].as_u64()) {
+                Some(n) => n.to_string(),
+                None => "confirm".to_string(),
+            };
+            let (status, body) = post_as(
+                state,
+                user,
+                &format!("/api/games/{id}/input"),
+                serde_json::json!({ "line": line }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{line}: {body}");
+        }
+        panic!("{user}'s turn did not end in 40 inputs");
+    }
+
+    /// **Every route that needs a session is a 403 for a signed-in stranger**
+    /// (R-1.5), in one cell over the whole table, because a fence applied to
+    /// fourteen routes and forgotten on the fifteenth is exactly the shape that
+    /// ships.
+    ///
+    /// `/events` is absent deliberately: that route does not exist yet (M6.1
+    /// Task 6 adds it), and a URI with no route answers 404 from the fallback
+    /// rather than 403 from a handler.
+    #[tokio::test]
+    async fn every_session_route_is_403_for_a_signed_in_stranger() {
+        let state = Arc::new(AppState::in_memory());
+        start_as(&state, "fenced", 20260831, &["red@wire.test", "blue@wire.test"]).await;
+        for uri in [
+            "/api/games/fenced",
+            "/api/games/fenced/table",
+            "/api/games/fenced/ports",
+            "/api/games/fenced/labs",
+            "/api/games/fenced/areas",
+            "/api/games/fenced/log",
+            "/api/games/fenced/at/0",
+            "/api/games/fenced/suggest",
+            "/api/games/fenced/why",
+            "/api/games/fenced/index/orders",
+            "/api/games/fenced/result",
+        ] {
+            let (status, body) = get_as(&state, "green@wire.test", uri).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{uri}: {body}");
+            assert_eq!(body["error"], "you are not seated at this table", "{uri}");
+        }
+        let (status, body) = post_as(
+            &state,
+            "green@wire.test",
+            "/api/games/fenced/input",
+            serde_json::json!({ "line": "1" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+
+        // Anti-vacuity: a seated caller gets every one of them. Without this a
+        // server that refused all fifteen to everybody would pass above.
+        for uri in [
+            "/api/games/fenced",
+            "/api/games/fenced/table",
+            "/api/games/fenced/log",
+            "/api/games/fenced/at/0",
+            "/api/games/fenced/index/orders",
+        ] {
+            let (status, body) = get_as(&state, "blue@wire.test", uri).await;
+            assert_eq!(status, StatusCode::OK, "{uri}: {body}");
+        }
+    }
+
+    /// **A move is the acting seat's holder's, and the refusal names whose turn
+    /// it is** (R-P11 on the wire: a player who cannot act needs to know why).
+    ///
+    /// Both directions in one cell: the seat that is NOT to move is refused,
+    /// and the seat that IS goes through — so a fence that refused every input
+    /// would fail the second half and make the game unplayable.
+    #[tokio::test]
+    async fn input_is_the_acting_seats_holders_and_names_whose_turn_it_is() {
+        let state = Arc::new(AppState::in_memory());
+        start_as(&state, "acting", 20260831, &["red@wire.test", "blue@wire.test"]).await;
+        let (status, body) = post_as(
+            &state,
+            "blue@wire.test",
+            "/api/games/acting/input",
+            serde_json::json!({ "line": "1" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert_eq!(body["error"], "it is seat 0's turn (red@wire.test)");
+        let (status, body) = post_as(
+            &state,
+            "red@wire.test",
+            "/api/games/acting/input",
+            serde_json::json!({ "line": "1" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+
+    /// **R-1.7 on the wire: a payload for one seat never carries another's
+    /// cards**, asserted from BOTH seats of the same game so a server that
+    /// unmasked seat 0 for everyone could not pass.
+    #[tokio::test]
+    async fn a_payload_for_one_seat_never_carries_another_seats_cards() {
+        let state = Arc::new(AppState::in_memory());
+        start_as(&state, "mask", 20260831, &["red@wire.test", "blue@wire.test"]).await;
+        for (user, mine) in [("red@wire.test", 0u64), ("blue@wire.test", 1)] {
+            let (status, game) = get_as(&state, user, "/api/games/mask").await;
+            assert_eq!(status, StatusCode::OK, "{game}");
+            assert_eq!(game["seat"], mine);
+            let panels = game["frame"]["dashboard"].as_array().expect("panels");
+            let players =
+                panels.iter().find_map(|p| p.get("Players")).expect("a Players panel");
+            let rows = players["players"].as_array().expect("a row per seat");
+            assert_eq!(rows.len(), 2);
+            for p in rows {
+                assert_eq!(p["hand_hidden"], p["seat"] != mine, "{user}: {p}");
+            }
+            let hands: Vec<&serde_json::Value> =
+                panels.iter().filter_map(|p| p.get("Hand")).collect();
+            assert_eq!(hands.len(), 1, "{user}: one hand panel, and it is the viewer's");
+            assert_eq!(hands[0]["seat"], mine);
+            assert_eq!(hands[0]["hidden"], false);
+            assert!(
+                hands[0]["cards"].as_array().is_some_and(|c| !c.is_empty()),
+                "anti-vacuity: the viewer's own hand really is open: {}",
+                hands[0],
+            );
+        }
+        let (_, as_blue) = get_as(&state, "blue@wire.test", "/api/games/mask").await;
+        assert_eq!(as_blue["your_turn"], false);
+        assert_eq!(as_blue["prompt"]["kind"], "watching");
+    }
+
+    /// **The replay pin is PER CALLER, and it holds across a turn boundary.**
+    ///
+    /// M4's sweep cell asserted that one sweep of `0..=total` harvests one
+    /// seat's hands; its sibling asserted the pin did not move when the turn
+    /// did. Both are this one cell now, and it is strictly stronger than the
+    /// pair: the sweep is taken by EACH of two callers over a record that spans
+    /// a turn change, and each must see only its own. A follow-the-mover
+    /// implementation fails it in both directions at once.
+    #[tokio::test]
+    async fn a_replay_sweep_as_each_caller_shows_only_that_callers_hands() {
+        let state = Arc::new(AppState::in_memory());
+        start_as(&state, "sweep", 20260831, &["red@wire.test", "blue@wire.test"]).await;
+        // Red's whole turn, so the sweep below spans a seat boundary.
+        play_turn(&state, "sweep", "red@wire.test").await;
+        let (_, game) = get_as(&state, "blue@wire.test", "/api/games/sweep").await;
+        let total = game["events"].as_u64().expect("an event count") as usize;
+        assert!(total > 0, "the walk applied nothing, so the sweep has one stop");
+        assert_eq!(game["to_move"], 1, "the turn really did pass");
+
+        for (user, mine) in [("red@wire.test", 0u64), ("blue@wire.test", 1)] {
+            let mut seen = std::collections::BTreeSet::new();
+            let mut open = 0usize;
+            for k in 0..=total {
+                let (status, frame) =
+                    get_as(&state, user, &format!("/api/games/sweep/at/{k}")).await;
+                assert_eq!(status, StatusCode::OK, "{user} at {k}: {frame}");
+                assert_eq!(frame["seat"], mine, "{user} at {k}");
+                for h in frame["frame"]["dashboard"]
+                    .as_array()
+                    .expect("panels")
+                    .iter()
+                    .filter_map(|p| p.get("Hand"))
+                {
+                    seen.insert(h["seat"].as_u64().expect("a seat"));
+                    if h["cards"].as_array().is_some_and(|c| !c.is_empty()) {
+                        open += 1;
+                    }
+                }
+            }
+            assert_eq!(
+                seen,
+                std::collections::BTreeSet::from([mine]),
+                "{user}: one seat's hands across the sweep",
+            );
+            assert!(open > 0, "{user}: the sweep unmasked nothing, so it shows nothing");
+        }
+    }
+
+    /// **`suggest` answers the acting seat's holder only** (R-1.8), so the
+    /// advisor never ranks a move for a seat the caller cannot play.
+    #[tokio::test]
+    async fn suggest_answers_the_acting_seats_holder_only() {
+        let state = Arc::new(AppState::in_memory());
+        start_as(&state, "advise", 20260831, &["red@wire.test", "blue@wire.test"]).await;
+        let (status, body) = get_as(&state, "blue@wire.test", "/api/games/advise/suggest").await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert_eq!(body["error"], "it is not your turn");
+        let (status, body) = get_as(&state, "red@wire.test", "/api/games/advise/suggest").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["ok"]["seat"], 0);
     }
 
     /// **The whole create flow over the router, as two people drive it.**
@@ -2042,6 +2417,13 @@ mod tests {
     /// Asserted as an IDENTITY across a whole turn rather than at one moment:
     /// the failure only appears once play has passed seat 0, which is exactly
     /// the state a single snapshot would miss.
+    ///
+    /// **Re-pointed for M6.1: the state is READ at the top of every step rather
+    /// than taken from the previous POST's reply.** A reply is the CALLER's
+    /// view now, so the move that ends a turn answers its own mover with a
+    /// `watching` prompt — true, and not the payload this cell is about. One
+    /// identity holds all three seats, so every request here IS the acting
+    /// seat's holder's, and the walk asserts the same identity it always did.
     #[tokio::test]
     async fn every_payload_shows_the_hand_of_the_seat_it_offers_moves_for() {
         let router = app(Arc::new(AppState::in_memory()));
@@ -2074,10 +2456,13 @@ mod tests {
         // to build can no longer be created. A hot seat at 3P reaches the same
         // state — the payload follows the mover across a seat boundary — which
         // is what the walk below asserts.
-        let mut state = start(&router, "hotseat", 3, &[]).await;
+        start(&router, "hotseat", 3, &[]).await;
 
         let mut saw_a_seat_other_than_zero = false;
         for step in 0..60 {
+            // READ, rather than reuse the last reply: a reply is the caller's
+            // view and this cell is about the ACTING seat's.
+            let state = call("GET", "/api/games/hotseat".to_string(), None).await;
             if state["over"].as_bool() == Some(true) {
                 break;
             }
@@ -2117,9 +2502,8 @@ mod tests {
                 Some("game_over") => break,
                 _ => "confirm".to_string(),
             };
-            state =
-                call("POST", "/api/games/hotseat/input".to_string(), Some(serde_json::json!({ "line": line })))
-                    .await;
+            call("POST", "/api/games/hotseat/input".to_string(), Some(serde_json::json!({ "line": line })))
+                .await;
         }
         assert!(
             saw_a_seat_other_than_zero,
@@ -2581,129 +2965,26 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "and the same request answers twice: {again}");
     }
 
-    /// **THE VIEWER PIN, executable — the most important cell in this milestone.**
-    ///
-    /// The threat is not that a frame shows a hand; the live route already does,
-    /// for whoever is moving. It is that `/at/{k}` makes the exposure
-    /// HARVESTABLE IN ONE PASS: a follow-the-mover sweep over `0..=len` reads
-    /// every human seat's whole hand history in a second, from a URL, with no
-    /// waiting for a turn to change.
-    ///
-    /// So the assertion is over the UNION ACROSS THE SWEEP, not per frame — a
-    /// per-frame reading would be vacuous, because `build_dashboard` only ever
-    /// builds one hand panel.
-    ///
-    /// Two anti-vacuity guards, because this cell is worthless without them: the
-    /// sweep must actually unmask something, and it must actually cross a seat
-    /// boundary — otherwise a follow-the-mover implementation would pass it too.
-    /// Mutation-proof by pinning the frame to the acting seat and watching it
-    /// fail.
-    #[tokio::test]
-    async fn a_replay_sweep_never_unmasks_more_than_one_seat() {
-        let router = app(Arc::new(AppState::in_memory()));
-        // All-human on purpose: with a bot seat the mask would be doing the work
-        // and the pin would be untested.
-        a_game(&router, "pinned", &[]).await;
-        play(&router, "pinned", 12).await;
-        let total = total_events(&router, "pinned").await;
-        assert!(total >= 2, "too short a record to cross a seat boundary");
-
-        let mut unmasked = std::collections::BTreeSet::new();
-        let mut movers = std::collections::BTreeSet::new();
-        for k in 0..=total {
-            let (status, hist) =
-                call(&router, "GET", &format!("/api/games/pinned/at/{k}"), None).await;
-            assert_eq!(status, StatusCode::OK, "k={k}: {hist}");
-            movers.insert(hist["to_move"].as_u64().expect("a seat to move"));
-            for panel in hist["frame"]["dashboard"].as_array().expect("panels") {
-                let Some(hand) = panel.get("Hand") else { continue };
-                if hand["cards"].as_array().is_some_and(|c| !c.is_empty()) {
-                    unmasked.insert(hand["seat"].as_u64().expect("a seat"));
-                }
-            }
-        }
-
-        assert!(
-            movers.len() >= 2,
-            "the sweep never changed seats, so a follow-the-mover bug would pass it: {movers:?}",
-        );
-        assert!(
-            !unmasked.is_empty(),
-            "the sweep unmasked NOTHING, so it cannot show that it unmasked one seat",
-        );
-        assert_eq!(
-            unmasked.len(),
-            1,
-            "a sweep must not harvest a second seat's hand: {unmasked:?}",
-        );
-    }
-
-    /// **The pin does not move when the turn does — the cell the old one owed.**
-    ///
-    /// The sweep cell above takes its whole sweep at one instant, so it passes
-    /// under a pin that merely tracks the current mover. That is exactly what
-    /// the route used to do, and the security sentence beside it claimed the
-    /// opposite. Measured on the old code: sweep, then eight inputs, then sweep
-    /// again — `pin=1 unmasked={1}` then `pin=0 unmasked={0}`, union `{0, 1}`.
-    /// The fence held for an instant and not for a game.
-    ///
-    /// So this cell spans a turn change deliberately and asserts the pin is the
-    /// SAME integer on both sides of it, and that the union across both sweeps
-    /// is still one seat. Mutation-proof by restoring `viewing_seat(repl)` in
-    /// `HistoricalFrame::at`.
-    #[tokio::test]
-    async fn the_replay_pin_does_not_move_when_the_turn_does() {
-        let router = app(Arc::new(AppState::in_memory()));
-        a_game(&router, "stable", &[]).await;
-        play(&router, "stable", 6).await;
-
-        async fn sweep(router: &Router) -> (std::collections::BTreeSet<u64>, u64) {
-            let total = total_events(router, "stable").await;
-            let mut unmasked = std::collections::BTreeSet::new();
-            let mut pin = u64::MAX;
-            for k in 0..=total {
-                let (status, hist) =
-                    call(router, "GET", &format!("/api/games/stable/at/{k}"), None).await;
-                assert_eq!(status, StatusCode::OK, "k={k}: {hist}");
-                pin = hist["seat"].as_u64().expect("a pinned seat");
-                for panel in hist["frame"]["dashboard"].as_array().expect("panels") {
-                    let Some(hand) = panel.get("Hand") else { continue };
-                    if hand["cards"].as_array().is_some_and(|c| !c.is_empty()) {
-                        unmasked.insert(hand["seat"].as_u64().expect("a seat"));
-                    }
-                }
-            }
-            (unmasked, pin)
-        }
-
-        let (_, live_before) = call(&router, "GET", "/api/games/stable", None).await;
-        let mover_before = live_before["to_move"].as_u64().expect("a mover");
-        let (seen_a, pin_a) = sweep(&router).await;
-
-        // Walk until the LIVE mover actually changes — the transition the old
-        // pin could not survive. Anti-vacuity: if it never changes, this cell
-        // proves nothing and says so rather than passing.
-        let mut moved = false;
-        for _ in 0..12 {
-            play(&router, "stable", 1).await;
-            let (_, now) = call(&router, "GET", "/api/games/stable", None).await;
-            if now["to_move"].as_u64() != Some(mover_before) {
-                moved = true;
-                break;
-            }
-        }
-        assert!(moved, "the live mover never changed, so no turn boundary was crossed");
-
-        let (seen_b, pin_b) = sweep(&router).await;
-
-        assert_eq!(pin_a, pin_b, "the replay pin moved with the turn: {pin_a} then {pin_b}");
-        let union: std::collections::BTreeSet<_> = seen_a.union(&seen_b).copied().collect();
-        assert!(
-            union.len() <= 1,
-            "two sweeps across a turn boundary harvested {union:?} — the pin is per-request, \
-             not per-game",
-        );
-    }
+    // **THE VIEWER PIN's two M4 cells are retired here, and the property is
+    // kept rather than dropped.**
+    //
+    // `a_replay_sweep_never_unmasks_more_than_one_seat` asserted that one sweep
+    // of `0..=total` harvests one seat's hands, and
+    // `the_replay_pin_does_not_move_when_the_turn_does` asserted the pin
+    // survived a turn change — the second existing because the first takes its
+    // whole sweep at one instant and passes under a pin that merely tracks the
+    // mover. Both were written against `replay_seat`, the lowest non-bot seat,
+    // which was the best pin an UNAUTHENTICATED route could have.
+    //
+    // Their successor is `a_replay_sweep_as_each_caller_shows_only_that
+    // _callers_hands`, and it is strictly stronger than the pair: TWO callers
+    // sweep the SAME record across a turn boundary and each sees only its own
+    // seat. The second cell's claim in particular does not survive the change
+    // and must not be restated — a hot seat's viewer follows the turn on
+    // purpose (R-1.7 shows a hand to its own seat, and one person holding both
+    // seats is entitled to both), so "the pin does not move when the turn does"
+    // is now FALSE of the very table it was written over, and true only of the
+    // thing that matters: no caller reaches a seat that is not theirs.
 
     /// The live payload counts its events, so a client that answered from
     /// `events: n` and receives `events: m > n` knows the reply applied

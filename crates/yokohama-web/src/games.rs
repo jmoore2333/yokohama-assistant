@@ -475,6 +475,21 @@ fn withhold_until_the_choice(table: &mut HistoricalFrame) {
         .retain(|panel| !matches!(panel, yokohama_cli::screen_model::Panel::Achievements(_)));
 }
 
+/// Whose panel the set table draws when the caller has no seat left to choose
+/// for: the LOWEST HUMAN seat.
+///
+/// **Never a bot seat, and that is the load-bearing half.** Every human hand is
+/// empty on this table — no seat has chosen, so every human choice is
+/// `Unknown` — which makes the answer cosmetic among humans. A bot seat's is
+/// not empty: its keep is already applied, and a frame built for it would
+/// unmask the one card on the set table that is nobody's business
+/// ([`client::facts_for`] shows the VIEWER's hand and masks the rest).
+fn first_human_seat(seats: &[SeatDoc]) -> PlayerId {
+    PlayerId::new(
+        seats.iter().position(|s| matches!(s, SeatDoc::Human { .. })).unwrap_or(0) as u8
+    )
+}
+
 /// The position after setup, as a THROWAWAY projection: the set table a player
 /// chooses a starting order over.
 ///
@@ -494,6 +509,7 @@ fn set_table(
     seats: &[SeatDoc],
     deals: &[[OrderCardId; 2]],
     rules: &Rules,
+    viewer: PlayerId,
 ) -> Result<HistoricalFrame, String> {
     // A human seat previews as `Unknown` — no card in a hand nobody has chosen
     // from — and a bot seat at its argmax, the card the game will deal it.
@@ -511,7 +527,7 @@ fn set_table(
     // finalize runs, and the reason no second attachment step is needed here.
     session.set_run_seats(BotSeats::new(contestants_of(seats), THROWAWAY_BOT_SEED).seat_provenance());
     let repl = Repl::new(session);
-    let mut table = HistoricalFrame::at(&repl, 0)
+    let mut table = HistoricalFrame::at(&repl, 0, viewer)
         .map_err(|e| format!("the setup position did not build: {}", e.message))?;
     withhold_until_the_choice(&mut table);
     Ok(table)
@@ -526,8 +542,8 @@ pub fn preview(req: &NewGame, rules: &Rules, creator: &User) -> Result<Preview, 
     let seed = req.seed.map_or_else(draw_seed, |s| s.0);
     let pending = new_game(config.clone(), rules, seed)
         .map_err(|e| PreviewError::Server(format!("the setup did not deal: {e}")))?;
-    let table =
-        set_table(config, seed, &seats, &pending.deals, rules).map_err(PreviewError::Server)?;
+    let table = set_table(config, seed, &seats, &pending.deals, rules, first_human_seat(&seats))
+        .map_err(PreviewError::Server)?;
     let deals = pending
         .deals
         .iter()
@@ -844,8 +860,19 @@ impl Games {
         let config = config_from(&doc);
         let pending = new_game(config.clone(), &self.rules, doc.seed)
             .map_err(|e| GameError::Server(format!("the setup did not deal: {e}")))?;
-        let frame = set_table(config, doc.seed, &doc.seats, &pending.deals, &self.rules)
-            .map_err(GameError::Server)?;
+        // The set table is drawn for the seat this caller is choosing FOR, so
+        // the frame beside the two cards is that seat's own; once every seat of
+        // theirs has chosen there is no such seat and the lowest human's empty
+        // panel is drawn instead. Neither shows a hand — see [`first_human_seat`].
+        let frame = set_table(
+            config,
+            doc.seed,
+            &doc.seats,
+            &pending.deals,
+            &self.rules,
+            seat.unwrap_or_else(|| first_human_seat(&doc.seats)),
+        )
+        .map_err(GameError::Server)?;
         Ok(DealView {
             table: doc.view(user),
             seat,
@@ -1546,7 +1573,7 @@ mod tests {
         // What the SAME seed puts on a real table, read from the game itself.
         let g = games();
         let handle = playing(&g, &req_seeded("withheld", ARGMAX_IS_CARD_2), &["red@t.test"]);
-        let started = HistoricalFrame::at(&handle.lock().unwrap(), 0).unwrap();
+        let started = HistoricalFrame::at(&handle.lock().unwrap(), 0, PlayerId::new(0)).unwrap();
         let titles: Vec<String> = started
             .labs
             .boards

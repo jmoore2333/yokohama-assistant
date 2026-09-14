@@ -1005,7 +1005,7 @@
                   "silk": 1,
                   "tea": 1
                 },
-                "hand_hidden": false,
+                "hand_hidden": true,
                 "is_bot": false,
                 "is_current": false,
                 "mercenaries_unused": 0,

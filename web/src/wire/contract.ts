@@ -104,7 +104,6 @@ import error from "./error.json";
 import feeNonzero from "./fee_nonzero.json";
 import gameOver from "./game_over.json";
 import health from "./health.json";
-import hiddenHand from "./hidden_hand.json";
 import labels from "./labels.json";
 import labs from "./labs.json";
 import locked from "./locked.json";
@@ -185,7 +184,6 @@ const _placeB: Widen<ClientState> = placeB;
 const _placeBSelected: Widen<ClientState> = placeBSelected;
 const _gameOver: Widen<ClientState> = gameOver;
 const _watching: Widen<ClientState> = watching;
-const _hiddenHand: Widen<ClientState> = hiddenHand;
 const _locked: Widen<ClientState> = locked;
 const _feeNonzero: Widen<ClientState> = feeNonzero;
 const _choiceAssistantMove: Widen<ClientState> = choiceAssistantMove;
@@ -275,7 +273,6 @@ const _pOptionsMany: PromptOf<"options"> = optionsMany.prompt;
 const _pOptionsPriced: PromptOf<"options"> = optionsPriced.prompt;
 const _pOptions4p: PromptOf<"options"> = options4p.prompt;
 const _pRefused: PromptOf<"options"> = refused.prompt;
-const _pHiddenHand: PromptOf<"options"> = hiddenHand.prompt;
 const _pPick: PromptOf<"pick"> = pick.prompt;
 const _pRetreat: PromptOf<"retreat"> = retreat.prompt;
 const _pRetreatAnswered: PromptOf<"retreat"> = retreatAnswered.prompt;
@@ -293,7 +290,7 @@ const _pLocked: PromptOf<"locked"> = locked.prompt;
 // `reveal` has no fixture — live mode only; see `wire_fixtures.rs`'s exemption.
 
 void [
-  _pOptions, _pOptionsMany, _pOptionsPriced, _pOptions4p, _pRefused, _pHiddenHand,
+  _pOptions, _pOptionsMany, _pOptionsPriced, _pOptions4p, _pRefused,
   _pPick, _pRetreat, _pRetreatAnswered, _pPlaceA, _pPlaceASelected, _pPlaceB,
   _pPlaceBSelected, _pGameOver, _pWatching, _pLocked, _pFeeNonzero,
   _pChoiceAssistantMove, _pChoiceWarehouseTake, _pChoiceChurchSpace,
@@ -303,7 +300,7 @@ void [
 // reference keeps the compiler's other rule from deleting the check.
 void [
   _options, _options4p, _optionsMany, _optionsPriced, _pick, _retreat, _retreatAnswered, _placeA, _placeASelected, _placeB, _placeBSelected,
-  _gameOver, _watching, _hiddenHand, _locked, _refused, _labels, _preview, _previewBot, _health, _me, _meOut, _error,
+  _gameOver, _watching, _locked, _refused, _labels, _preview, _previewBot, _health, _me, _meOut, _error,
   _tableDealing, _table, _deal, _dealWaiting, _gamesList, _dealing409, _notSeated403,
   _ports, _labs, _areas, _areas4p, _log, _atK, _artManifest, _feeNonzero,
   _choiceAssistantMove, _choiceChurchSpace, _choiceWarehouseTake,
@@ -554,7 +551,6 @@ export const wire = {
   placeBSelected: as<ClientState>(placeBSelected),
   gameOver: as<ClientState>(gameOver),
   watching: as<ClientState>(watching),
-  hiddenHand: as<ClientState>(hiddenHand),
   locked: as<ClientState>(locked),
   feeNonzero: as<ClientState>(feeNonzero),
   choiceAssistantMove: as<ClientState>(choiceAssistantMove),
@@ -615,6 +611,6 @@ export const EVERY_STATE: readonly ClientState[] = [
   wire.options, wire.optionsMany, wire.options4p, wire.optionsPriced, wire.pick, wire.retreat,
   wire.retreatAnswered, wire.placeA, wire.placeASelected,
   wire.placeB, wire.placeBSelected, wire.gameOver, wire.watching, wire.locked,
-  wire.refused, wire.hiddenHand, wire.feeNonzero,
+  wire.refused, wire.feeNonzero,
   wire.choiceAssistantMove, wire.choiceChurchSpace, wire.choiceWarehouseTake,
 ];

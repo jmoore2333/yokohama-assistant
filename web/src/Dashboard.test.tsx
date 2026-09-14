@@ -217,17 +217,39 @@ describe("the 2P dummy pawn", () => {
 });
 
 describe("a hand", () => {
-  // The mask is a property of the MODEL — `cards` is empty whenever `hidden` —
-  // so a client that ignores the flag still cannot leak identities. This
-  // asserts the rendering does not put one back: the count is truthful and no
-  // card id appears.
-  it("masked, shows the count and no identity", () => {
-    const hand = handOf(wire.hiddenHand);
-    expect(hand?.hidden).toBe(true);
-    const { container } = show(wire.hiddenHand);
-    expect(screen.getByText(new RegExp(`${hand!.card_count} card\\(s\\) — hidden`)))
-      .toBeInTheDocument();
-    expect(container.querySelectorAll(".card-face.order")).toHaveLength(0);
+  // **R-1.7 as the screen shows it.** A payload is built for one seat (M6.1
+  // §5.1), so the only Hand panel in it is the viewer's and every other seat is
+  // a row on the Players panel carrying `hand_hidden` — a COUNT, and no card
+  // face anywhere in that row.
+  //
+  // This replaces a cell over the retired `hidden_hand` fixture, which was the
+  // `privacy` toggle hiding every hand at one terminal. The server no longer
+  // reads that flag per payload, so no fixture carries a masked Hand panel; the
+  // masking the product actually does is the one asserted here, and it is
+  // asserted on the RENDERED row rather than on the payload.
+  it("another seat's hand shows as a count and never as cards", () => {
+    const others = playersOf(wire.options).filter((p) => p.seat !== wire.options.seat);
+    expect(others.length).toBeGreaterThan(0);
+    expect(others.every((p) => p.hand_hidden)).toBe(true);
+
+    const { container } = show(wire.options);
+    for (const p of others) {
+      const row = [...container.querySelectorAll(".seat")].find((el) =>
+        el.textContent?.includes(`seat ${p.seat}`),
+      );
+      expect(row).toBeDefined();
+      expect(row!.textContent).toContain(`${p.orders_in_hand} order(s) in hand`);
+      expect(row!.querySelectorAll(".card-face.order")).toHaveLength(0);
+    }
+
+    // Anti-vacuity, and the other half of the rule: the VIEWER's own hand is
+    // the one panel that draws cards. Without this a dashboard that rendered
+    // nothing at all would pass every line above.
+    const mine = handOf(wire.options);
+    expect(mine?.seat).toBe(wire.options.seat);
+    expect(mine?.hidden).toBe(false);
+    expect(container.querySelectorAll(".card-face.order")).toHaveLength(mine!.cards.length);
+    expect(mine!.cards.length).toBeGreaterThan(0);
   });
 
   it("unmasked, draws every card it carries", () => {
