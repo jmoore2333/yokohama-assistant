@@ -93,11 +93,20 @@ impl Rng {
 
 struct Api {
     router: axum::Router,
+    /// The state BEHIND the router, kept reachable.
+    ///
+    /// A later task of this cycle reads the store the walk wrote to, which is
+    /// only reachable from here — `app()` moves the `Arc` in and nothing gives
+    /// it back. It is used in the walk below rather than carried as dead weight,
+    /// and the assertion it carries is a real one: the record is written at
+    /// FINALIZE, not at create.
+    state: Arc<AppState>,
 }
 
 impl Api {
     fn new() -> Self {
-        Self { router: app(Arc::new(AppState::in_memory())) }
+        let state = Arc::new(AppState::in_memory());
+        Self { router: app(Arc::clone(&state)), state }
     }
 
     /// A call as [`WALKER`], which is every call the walk makes that is not a
@@ -308,6 +317,18 @@ async fn walk() -> Vec<(String, Value)> {
     // the client branches on, not a 404 it cannot act on.
     let (status, dealing_409) = api.call("GET", "/api/games/wire", None).await;
     assert_eq!(status, StatusCode::CONFLICT, "{dealing_409}");
+    // **No record exists yet**, read off the store behind the walk rather than
+    // inferred from the 409 above. The two are different claims: the 409 says
+    // this API declines to serve a session, and this says there is none.
+    assert!(
+        api.state
+            .games
+            .store()
+            .read(yokohama_web::store::Doc::Record, "wire")
+            .expect("a readable store")
+            .is_none(),
+        "a dealing table has no record",
+    );
 
     let (status, kept) = api
         .call("POST", "/api/games/wire/keep", Some(json!({ "seat": 0, "card": 1 })))
@@ -331,6 +352,17 @@ async fn walk() -> Vec<(String, Value)> {
     // the corpus carries `my_seats` at something other than `[0]`.
     let (status, table) = api.call_as(Some(OTHER), "GET", "/api/games/wire/table", None).await;
     assert_eq!(status, StatusCode::OK, "{table}");
+    // ...and now there is one. The other half of the pair above: the record is
+    // written by the LAST keep and by nothing before it.
+    assert!(
+        api.state
+            .games
+            .store()
+            .read(yokohama_web::store::Doc::Record, "wire")
+            .expect("a readable store")
+            .is_some(),
+        "the last keep wrote the record",
+    );
 
     let created = api.get("/api/games/wire").await;
 

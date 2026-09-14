@@ -337,6 +337,42 @@ fn config_of(req: &NewGame, creator: &User) -> Result<(GameConfig, Vec<SeatDoc>)
     Ok((config, seats))
 }
 
+/// Is this a document every consumer may INDEX BY SEAT?
+///
+/// **The `players` bound is the load-bearing half, and the length checks alone
+/// do not give it.** `TableDoc::seats_of` maps each seat's position through
+/// `PlayerId::new`, which `types/ids.rs` documents as PANICKING at `id >= 4` —
+/// so a document reading `players: 9` with nine seats and nine keeps satisfies
+/// every length comparison and then panics on its fifth seat. Inside a handler
+/// that is a dropped connection with no sentence in it; inside `Games::keep`,
+/// which holds `table_lock` across the read, it POISONS that mutex, and every
+/// later `create`, `keep` and repairing `settle` in the process fails with it.
+///
+/// Only this server writes these files, so failing here means a hand-edited or
+/// truncated one — which is exactly when a typed 500 naming the file beats a
+/// dropped socket and a dead lock.
+///
+/// Checked at the two places a document ENTERS this process: [`Games::read_table`],
+/// which refuses, and [`Games::list_for`], which skips and says so. Both, because
+/// the listing deliberately does not go through `read_table` — one unreadable
+/// file must not take the other nineteen tables off the lobby.
+fn check_shape(doc: &TableDoc) -> Result<(), String> {
+    if !(2..=4).contains(&doc.players) {
+        return Err(format!("{} players — a table is 2 to 4", doc.players));
+    }
+    let n = usize::from(doc.players);
+    if doc.seats.len() != n || doc.keeps.len() != n || doc.colors.len() != n {
+        return Err(format!(
+            "{} players, but {} seats, {} keeps and {} colours",
+            doc.players,
+            doc.seats.len(),
+            doc.keeps.len(),
+            doc.colors.len(),
+        ));
+    }
+    Ok(())
+}
+
 /// The engine config a stored table describes. The document is the authority on
 /// every field of it, so a resumed finalize deals the game the table promised.
 fn config_from(doc: &TableDoc) -> GameConfig {
@@ -654,17 +690,11 @@ impl Games {
     /// the caller's question is "does this game exist", and answering "no" for a
     /// file that is sitting right there is how a create comes to overwrite it.
     ///
-    /// **The three lengths are checked HERE, once, because every consumer
-    /// INDEXES by seat.** `next_unkept_seat_of` reads `keeps` at a seat it took
-    /// from `seats`, and [`Games::deal`] reads `deals` at the same seat — so a
-    /// document whose vectors disagree with its `players` would panic inside a
-    /// handler, under the per-game mutex, in a crate with no `CatchPanicLayer`:
-    /// a dropped connection with no sentence in it, and a poisoned game
-    /// afterwards. Checking at the one place a document ENTERS this process
-    /// makes every later index total by construction, rather than making twenty
-    /// call sites defensive. Only this server writes these files, so reaching
-    /// the refusal means a hand-edited or truncated one — which is exactly when
-    /// a typed 500 naming the file beats a dropped socket.
+    /// **The shape is checked HERE, once, because every consumer INDEXES by
+    /// seat** — see [`check_shape`] for what a document that failed it would do
+    /// to a handler and to `table_lock`. Checking at the places a document
+    /// ENTERS this process makes every later index total by construction rather
+    /// than making twenty call sites defensive.
     fn read_table(&self, id: &str) -> Result<Option<(TableDoc, Version)>, GameError> {
         let Some((json, version)) = self.store.read(Doc::Table, id).map_err(GameError::Server)?
         else {
@@ -672,17 +702,9 @@ impl Games {
         };
         let doc: TableDoc = serde_json::from_str(&json)
             .map_err(|e| GameError::Server(format!("{id:?}'s table document does not parse: {e}")))?;
-        let n = usize::from(doc.players);
-        if doc.seats.len() != n || doc.keeps.len() != n || doc.colors.len() != n {
-            return Err(GameError::Server(format!(
-                "{id:?}'s table document is malformed: {} players, but {} seats, {} keeps and {} \
-                 colours",
-                doc.players,
-                doc.seats.len(),
-                doc.keeps.len(),
-                doc.colors.len(),
-            )));
-        }
+        check_shape(&doc).map_err(|why| {
+            GameError::Server(format!("{id:?}'s table document is malformed: {why}"))
+        })?;
         Ok(Some((doc, version)))
     }
 
@@ -902,16 +924,51 @@ impl Games {
     /// the listing is over `Doc::Table`, so a pre-M6 record is neither listed
     /// nor openable and is left on disk untouched for the Docker-archive pull.
     ///
-    /// A document that cannot be read or parsed is SKIPPED rather than failing
-    /// the whole list: the lobby's job is to show the games it can, and one
-    /// unreadable file must not take the other nineteen off the screen. The
-    /// game itself still refuses loudly when opened, where the caller can act
-    /// on it.
+    /// A document that cannot be read, parsed or trusted to be indexed is
+    /// SKIPPED rather than failing the whole list: the lobby's job is to show
+    /// the games it can, and one unreadable file must not take the other
+    /// nineteen off the screen. The game itself still refuses loudly when
+    /// OPENED, where the caller can act on it.
+    ///
+    /// **Skipped, but never silently.** A table that vanishes from its own
+    /// player's lobby with nothing said anywhere is worse than one that is
+    /// missing loudly: `create` will then report the name occupied, so the
+    /// player can neither see the game nor reuse the name and no surface says
+    /// why. Each skip writes one line naming the id and the failure, through the
+    /// same `eprintln!` channel `main.rs` reports its own failures on, so a
+    /// corrupt table is visible in the container log.
     pub fn list_for(&self, user: &User) -> Result<Vec<TableView>, String> {
         let mut rows: Vec<TableDoc> = Vec::new();
         for id in self.store.list(Doc::Table)? {
-            let Ok(Some((json, _))) = self.store.read(Doc::Table, &id) else { continue };
-            let Ok(doc) = serde_json::from_str::<TableDoc>(&json) else { continue };
+            let doc = match self.store.read(Doc::Table, &id) {
+                Ok(Some((json, _))) => match serde_json::from_str::<TableDoc>(&json) {
+                    Ok(doc) => doc,
+                    Err(e) => {
+                        eprintln!(
+                            "{id:?}'s table document does not parse, so it is not in this \
+                             listing: {e}"
+                        );
+                        continue;
+                    }
+                },
+                // Absent between the listing and the read — a delete that
+                // landed in the window. Nothing is wrong and nothing is lost.
+                Ok(None) => continue,
+                Err(e) => {
+                    eprintln!(
+                        "{id:?}'s table document could not be read, so it is not in this \
+                         listing: {e}"
+                    );
+                    continue;
+                }
+            };
+            // **The same fence `read_table` applies**, because this path
+            // deliberately does not go through it — and `seats_of` two lines
+            // below is exactly the call [`check_shape`] exists to make total.
+            if let Err(why) = check_shape(&doc) {
+                eprintln!("{id:?}'s table document is malformed, so it is not in this listing: {why}");
+                continue;
+            }
             if doc.seats_of(user).is_empty() {
                 continue;
             }
@@ -1694,29 +1751,58 @@ mod tests {
         );
     }
 
-    /// The bot's own Keep is what lands in the started game's hand.
+    /// One dealt card's Keep score, through core's own function.
     ///
-    /// **At [`ARGMAX_IS_CARD_2`], deliberately**: at the corpus seed the argmax
-    /// IS card 1, which is the card every human seat in these helpers sends, so
-    /// a `bot_keep` reduced to the constant `1` would pass there and this cell
-    /// would prove nothing. The premise is asserted from `bot_keep` itself
-    /// rather than trusted, so a deal that moved says so out loud instead of
-    /// quietly making the cell vacuous.
+    /// **The INDEPENDENT derivation**, and the reason it is here rather than
+    /// reusing [`bot_keep`]: a premise asserted from the function under test is
+    /// not a premise. `bot_keep` reduced to a constant would agree with itself.
+    ///
+    /// The module is NOT globbed to the crate root (`game/mod.rs` lists every
+    /// `pub use x::*` and `greedy` is deliberately namespaced), so the path is
+    /// `yokohama_core::greedy::` and not `yokohama_core::`.
+    fn keep_score(rules: &Rules, id: yokohama_core::OrderCardId) -> i64 {
+        let card = rules.orders.get(id).expect("a dealt card");
+        yokohama_core::greedy::score_starting_order(card, rules)
+    }
+
+    /// The bot's own Keep is what lands in the started game's hand — read at
+    /// BOTH seeds, where the two answers differ.
+    ///
+    /// **Neither half of this may come from `bot_keep`.** One seed cannot
+    /// discriminate: at [`CORPUS_SEED`] the argmax is card 1, which is the card
+    /// every human seat in these helpers sends, and at [`ARGMAX_IS_CARD_2`] it
+    /// is card 2 — so a `bot_keep` reduced to EITHER constant fails one of the
+    /// two halves, and only both halves together say the bot chose. And each
+    /// seed's premise is derived from `score_starting_order` through
+    /// [`keep_score`] rather than from `bot_keep`, so a `bot_keep` that agreed
+    /// with itself cannot make the premise true; a deal that MOVED says so out
+    /// loud instead of quietly making the cell vacuous.
+    ///
+    /// The review that found the one-sided version put it exactly right: the
+    /// premise `assert_eq!(bot_keep(…), 2)` reads `2 == 2` under a constant `2`,
+    /// and `Keep(2-1)` then puts the expected card in the hand.
     #[test]
     fn the_bot_keeps_its_own_argmax_at_finalize() {
         let games = games();
         let rules = Rules::standard();
-        let pending = new_game(GameConfig::for_player_count(2), &rules, ARGMAX_IS_CARD_2).unwrap();
-        assert_eq!(
-            bot_keep(&pending.deals[1], &rules),
-            2,
-            "the premise: at this seed the argmax is card 2",
-        );
-        let handle = playing(&games, &req_seeded("argmax", ARGMAX_IS_CARD_2), &["red@t.test"]);
-        assert_eq!(
-            handle.lock().unwrap().session.state().players[1].order_cards_in_hand,
-            vec![pending.deals[1][1]],
-        );
+        for (seed, expected_card) in [(CORPUS_SEED, 1usize), (ARGMAX_IS_CARD_2, 2usize)] {
+            let pending = new_game(GameConfig::for_player_count(2), &rules, seed).unwrap();
+            let deal = pending.deals[1];
+            let (a, b) = (keep_score(&rules, deal[0]), keep_score(&rules, deal[1]));
+            let argmax = if b > a { 2 } else { 1 };
+            assert_eq!(
+                argmax, expected_card,
+                "the premise at seed {seed}: the bot's argmax must be card {expected_card} \
+                 ({a} then {b}), or the pair of seeds no longer discriminates",
+            );
+            let name = format!("argmax-{seed}");
+            let handle = playing(&games, &req_seeded(&name, seed), &["red@t.test"]);
+            assert_eq!(
+                handle.lock().unwrap().session.state().players[1].order_cards_in_hand,
+                vec![deal[expected_card - 1]],
+                "seed {seed}: the bot holds the card it scored highest",
+            );
+        }
     }
 
     /// **A hot seat is a SEQUENCE and needs no button.** One person holding two
@@ -1860,6 +1946,71 @@ mod tests {
         let after = games.table("mirror", &red).unwrap().turn.unwrap();
         assert_ne!(before, after, "the mirror moved with the turn");
         assert_eq!(after.to_move, 1);
+    }
+
+    /// **A document nobody could have created is a typed refusal, and it does
+    /// not take the server down with it.**
+    ///
+    /// `players: 9` with NINE seats, nine keeps and nine colours: every length
+    /// agrees with every other, so the length comparisons alone wave it through
+    /// and only the 2..=4 bound catches it. Without that bound `seats_of` maps
+    /// the fifth seat through `PlayerId::new(4)`, which panics — and `keep`
+    /// holds `table_lock` across the read, so the panic POISONS that mutex and
+    /// every later `create`, `keep` and repairing `settle` in the process dies
+    /// with it.
+    ///
+    /// **The last line is the load-bearing one**, and it is the one a
+    /// `catch_unwind` somewhere could not fake: after four calls against the
+    /// broken table, a create of a DIFFERENT name still works. The `list_for`
+    /// line is the other half of R-3.1 — the bad file leaves the listing, the
+    /// good one stays on it, and the call still answers `Ok`.
+    #[test]
+    fn a_malformed_table_document_refuses_typed_and_leaves_the_server_alive() {
+        let games = games();
+        let red = who("red@t.test");
+        games.create(&two_people("healthy", CORPUS_SEED), &red).expect("a neighbour table");
+
+        let broken = serde_json::json!({
+            "schema": 1,
+            "id": "broken",
+            "name": "broken",
+            "created_by": "red@t.test",
+            "created_at": 1_789_000_000u64,
+            "players": 9,
+            "colors": ["Red", "Blue", "Yellow", "Green", "Red", "Blue", "Yellow", "Green", "Red"],
+            "start_seat": 0,
+            "seats": (0..9).map(|_| serde_json::json!({ "kind": "human", "user": "red@t.test" }))
+                .collect::<Vec<_>>(),
+            "keeps": [null, null, null, null, null, null, null, null, null],
+            "seed": CORPUS_SEED,
+            "status": "dealing",
+            "turn": null,
+        });
+        games
+            .store()
+            .write_if_version(Doc::Table, "broken", &broken.to_string(), None)
+            .expect("the store takes what it is given");
+
+        assert!(matches!(games.table("broken", &red), Err(GameError::Server(_))));
+        assert!(matches!(games.deal("broken", &red), Err(GameError::Server(_))));
+        // The path that holds `table_lock` across the read, which is the one
+        // whose panic would be a poisoned mutex rather than one dropped request.
+        assert!(matches!(
+            games.keep("broken", &red, PlayerId::new(0), 1),
+            Err(GameError::Server(_)),
+        ));
+
+        let listed = games.list_for(&red).expect("one bad file does not fail the listing");
+        assert!(listed.iter().all(|t| t.id != "broken"), "the malformed table is skipped");
+        assert!(
+            listed.iter().any(|t| t.id == "healthy"),
+            "and the other tables are still on the screen: {:?}",
+            listed.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(),
+        );
+
+        games
+            .create(&two_people("after", CORPUS_SEED), &red)
+            .expect("`table_lock` is not poisoned, so the server can still open a table");
     }
 
     /// **Delete is the CREATOR's**, and a seated player is not a creator.
