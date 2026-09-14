@@ -50,7 +50,12 @@ impl Api {
     }
 
     async fn call(&self, method: &str, uri: &str, body: Option<serde_json::Value>) -> (StatusCode, serde_json::Value) {
-        let req = Request::builder().method(method).uri(uri);
+        // Every `/api/games` route needs an identity (M6.1). The gate is about
+        // whether a game can be PLAYED over JSON, so it plays as one player.
+        let req = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("x-yokohama-claimed-user", "red@wire.test");
         let req = match body {
             Some(v) => req
                 .header("content-type", "application/json")

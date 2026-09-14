@@ -6,6 +6,7 @@ import type {
   LabsPanel,
   HistoricalFrame,
   LogPanel,
+  Me,
   PortsPanel,
   Preview,
   IndexModel,
@@ -17,10 +18,31 @@ import type {
 /** A refusal from the server, carrying the sentence it refused with. */
 export class ApiError extends Error {}
 
+/** Where the sign-in screen keeps the claimed user (R-plan-2). Read on every
+ *  call; absent means no header. A value is only ever WRITTEN by the sign-in
+ *  screen, which only exists in `claimed` mode, and the server ignores this
+ *  header under any other mode (spec R-1.2). */
+export const CLAIMED_USER_KEY = "yokohama.claimed_user";
+
+/** The claimed user, or `null`. A storage that throws — a private window, a
+ *  blocked site — reads as nobody and never as an error, the `sections.ts`
+ *  idiom. */
+export function claimedUser(): string | null {
+  try {
+    return typeof localStorage === "undefined" ? null : localStorage.getItem(CLAIMED_USER_KEY);
+  } catch {
+    return null;
+  }
+}
+
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const headers: Record<string, string> = {};
+  if (body !== undefined) headers["content-type"] = "application/json";
+  const who = claimedUser();
+  if (who) headers["x-yokohama-claimed-user"] = who;
   const res = await fetch(path, {
     method,
-    headers: body === undefined ? {} : { "content-type": "application/json" },
+    headers,
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await res.text();
@@ -77,6 +99,9 @@ export interface NewGameRequest {
 const id = (s: string) => encodeURIComponent(s);
 
 export const api = {
+  /** Who the server thinks we are, and which header it reads. Never refuses:
+   *  `user: null` is the answer, not an error. */
+  me: () => call<Me>("GET", "/api/me"),
   labels: () => call<Labels>("GET", "/api/labels"),
   /** 404s when the server has no cropped art. That is a supported state, not an
    *  error: callers treat the rejection as "no art" and draw without it. */

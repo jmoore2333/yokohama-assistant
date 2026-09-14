@@ -38,6 +38,7 @@ pub mod client;
 pub mod explain;
 pub mod games;
 pub mod grammar;
+pub mod identity;
 pub mod outcome;
 pub mod store;
 
@@ -162,28 +163,29 @@ where
 pub struct AppState {
     pub rules: Arc<Rules>,
     pub games: Games,
+    /// Which header names the caller (R-1.2). Read once at start; no default.
+    pub identity: identity::IdentityMode,
 }
 
 impl AppState {
     /// Backed by a directory on disk.
-    pub fn new() -> Self {
-        Self::with_store(Arc::new(FsStore::new(store::default_dir())))
+    pub fn new(identity: identity::IdentityMode) -> Self {
+        Self::with_store(Arc::new(FsStore::new(store::default_dir())), identity)
     }
 
-    /// Backed by memory — tests, and any run that must leave no trace.
+    /// Backed by memory, in `claimed` mode — the mode every test drives with a
+    /// header. Tests, and any run that must leave no trace.
     pub fn in_memory() -> Self {
-        Self::with_store(Arc::new(MemStore::default()))
+        Self::in_memory_with(identity::IdentityMode::Claimed)
     }
 
-    pub fn with_store(store: Arc<dyn SessionStore>) -> Self {
+    pub fn in_memory_with(identity: identity::IdentityMode) -> Self {
+        Self::with_store(Arc::new(MemStore::default()), identity)
+    }
+
+    pub fn with_store(store: Arc<dyn SessionStore>, identity: identity::IdentityMode) -> Self {
         let rules = Arc::new(Rules::standard());
-        Self { rules: Arc::clone(&rules), games: Games::new(rules, store) }
-    }
-}
-
-impl Default for AppState {
-    fn default() -> Self {
-        Self::new()
+        Self { rules: Arc::clone(&rules), games: Games::new(rules, store), identity }
     }
 }
 
@@ -200,6 +202,9 @@ pub struct Health {
     pub server_version: &'static str,
     pub semantics_rev: u32,
     pub rules_hash: String,
+    /// Which identity source this deployment is configured with, by name — the
+    /// one deployment fact a client cannot infer from a successful call.
+    pub identity: &'static str,
 }
 
 async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
@@ -207,6 +212,29 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
         server_version: env!("CARGO_PKG_VERSION"),
         semantics_rev: SEMANTICS_REV,
         rules_hash: state.rules.content_hash(),
+        identity: state.identity.name(),
+    })
+}
+
+/// What `/api/me` answers. Never a 401: null is the answer that tells the client
+/// which screen to show (spec §2.3).
+#[derive(Debug, Clone, Serialize)]
+pub struct Me {
+    pub mode: &'static str,
+    pub user: Option<String>,
+}
+
+/// **Who the server thinks you are — and it never refuses to say "nobody".**
+///
+/// The one route that reads the identity headers WITHOUT the extractor, because
+/// the extractor's answer to an absent identity is a 401 and that is precisely
+/// the case this route exists to report. A client with no identity yet needs a
+/// fact back: the mode, so it knows whether a sign-in screen is even meaningful
+/// here, and `user`, which is `null` when nobody is named.
+async fn me(State(state): State<Arc<AppState>>, headers: axum::http::HeaderMap) -> Json<Me> {
+    Json(Me {
+        mode: state.identity.name(),
+        user: identity::resolve(state.identity, &headers).ok().map(|u| u.as_str().to_string()),
     })
 }
 
@@ -284,6 +312,7 @@ async fn labels(State(state): State<Arc<AppState>>) -> Json<Labels> {
 /// told a client its request was wrong and sent it away to fix something that
 /// was not broken.
 async fn preview_game(
+    _who: identity::Identity,
     State(state): State<Arc<AppState>>,
     JsonBody(req): JsonBody<NewGame>,
 ) -> ApiResult<games::Preview> {
@@ -293,11 +322,25 @@ async fn preview_game(
     })
 }
 
-async fn list_games(State(state): State<Arc<AppState>>) -> ApiResult<Vec<String>> {
+// **`identity::Identity` is on all fifteen `/api/games` handlers, and here it
+// only fences.** Taking it makes the route a 401 without an identity — that is
+// the whole of its job in this task. The extracted `User` is deliberately
+// UNUSED (`_who`): which games a caller may see, and which seat is theirs, is
+// seat scoping and arrives later in this cycle. Naming it now means the scoping
+// task adds a USE rather than a parameter to every one of them, and means a
+// handler added later cannot reach the router without answering the question.
+//
+// Fifteen handlers over thirteen signatures — `ports`, `labs` and `areas` share
+// the `surface!` macro below.
+async fn list_games(
+    _who: identity::Identity,
+    State(state): State<Arc<AppState>>,
+) -> ApiResult<Vec<String>> {
     state.games.list().map(Json).map_err(ApiError::bad_request)
 }
 
 async fn create_game(
+    _who: identity::Identity,
     State(state): State<Arc<AppState>>,
     JsonBody(req): JsonBody<NewGame>,
 ) -> Result<(StatusCode, Json<ClientState>), ApiError> {
@@ -307,6 +350,7 @@ async fn create_game(
 }
 
 async fn get_game(
+    _who: identity::Identity,
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> ApiResult<ClientState> {
@@ -316,6 +360,7 @@ async fn get_game(
 }
 
 async fn delete_game(
+    _who: identity::Identity,
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
@@ -369,6 +414,7 @@ pub struct Input {
 /// shows both that a line is checked and that a checked line goes through
 /// untouched.
 async fn input(
+    _who: identity::Identity,
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     JsonBody(req): JsonBody<Input>,
@@ -503,6 +549,7 @@ async fn input(
 macro_rules! surface {
     ($name:ident, $model:ty, $build:expr) => {
         async fn $name(
+            _who: identity::Identity,
             State(state): State<Arc<AppState>>,
             Path(id): Path<String>,
         ) -> ApiResult<$model> {
@@ -558,6 +605,7 @@ pub struct LogQuery {
 /// game, including the poll that draws the board. `GameState` is history-free
 /// and cheap to clone for exactly this reason.
 async fn suggest(
+    _who: identity::Identity,
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> ApiResult<explain::SuggestResponse> {
@@ -619,6 +667,7 @@ async fn suggest(
 /// Same lock discipline as `suggest`, for the same reason: the reconstruction
 /// runs the same `decide` path the pump ran.
 async fn why(
+    _who: identity::Identity,
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     QueryArgs(q): QueryArgs<WhyQuery>,
@@ -672,6 +721,7 @@ async fn why(
 /// second one: a second parser would answer an ambiguous prefix differently from
 /// the terminal on the first `f s` a player typed.
 async fn card_index(
+    _who: identity::Identity,
     State(state): State<Arc<AppState>>,
     Path((id, kind)): Path<(String, String)>,
     QueryArgs(q): QueryArgs<IndexQuery>,
@@ -721,6 +771,7 @@ pub struct IndexQuery {
 /// the result of an unfinished game is a client mistake, and `final_result`
 /// would answer with a standing nobody has earned.
 async fn result(
+    _who: identity::Identity,
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> ApiResult<outcome::Outcome> {
@@ -752,6 +803,7 @@ pub struct WhyQuery {
 /// history as the game moves. This route therefore reads the cache and never
 /// builds a description.
 async fn log(
+    _who: identity::Identity,
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     QueryArgs(q): QueryArgs<LogQuery>,
@@ -805,6 +857,7 @@ async fn log(
 /// store write, and the clone that dropping would require copies every `Move` in
 /// the record. Following `why`'s pattern here would cost more than it saves.
 async fn at_k(
+    _who: identity::Identity,
     State(state): State<Arc<AppState>>,
     Path((id, k)): Path<(String, usize)>,
 ) -> ApiResult<client::HistoricalFrame> {
@@ -861,6 +914,7 @@ async fn fallback(uri: axum::http::Uri) -> Response {
 pub fn app(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/health", get(health))
+        .route("/api/me", get(me))
         .route("/api/labels", get(labels))
         .route("/api/art", get(art_manifest))
         .route("/api/games", get(list_games).post(create_game))
@@ -887,9 +941,20 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
 
+    /// The identity every helper below sends, so a route cell is about the
+    /// route rather than about the 401 in front of it. The identity cells
+    /// choose their own headers with [`get_with`].
+    const WHO: &str = "red@wire.test";
+
     async fn get_json(uri: &str) -> (StatusCode, serde_json::Value) {
         let res = app(Arc::new(AppState::in_memory()))
-            .oneshot(Request::builder().uri(uri).body(Body::empty()).expect("a GET"))
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .header(identity::CLAIMED_HEADER, WHO)
+                    .body(Body::empty())
+                    .expect("a GET"),
+            )
             .await
             .expect("the router answers");
         let status = res.status();
@@ -913,6 +978,7 @@ mod tests {
                     .method("POST")
                     .uri(uri)
                     .header("content-type", "application/json")
+                    .header(identity::CLAIMED_HEADER, WHO)
                     .body(Body::from(body))
                     .expect("a POST"),
             )
@@ -922,6 +988,102 @@ mod tests {
         let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.expect("a body");
         let value = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
         (status, value)
+    }
+
+    /// A request under headers the CELL chooses — for the identity cells only.
+    async fn get_with(
+        state: Arc<AppState>,
+        uri: &str,
+        headers: &[(&str, &str)],
+    ) -> (StatusCode, serde_json::Value) {
+        let mut req = Request::builder().uri(uri);
+        for (k, v) in headers {
+            req = req.header(*k, *v);
+        }
+        let res = app(state)
+            .oneshot(req.body(Body::empty()).expect("a GET"))
+            .await
+            .expect("the router answers");
+        let status = res.status();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.expect("a body");
+        (status, serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null))
+    }
+
+    /// **Every game route needs an identity, and the public three do not.**
+    ///
+    /// Asserted over a route from each family — the collection, a game, and a
+    /// sub-surface — because the extractor is added per handler and a handler
+    /// that forgot it answers 200 with nothing anywhere saying so. The public
+    /// half is what keeps the fence from being "refuse everything": `/api/me`
+    /// in particular must answer a caller who has no identity yet, since that
+    /// answer is how the client learns which screen to show.
+    ///
+    /// The last arm is R-1.2 at the ROUTE: under `cf-access` the claimed header
+    /// is a header this deployment does not read, so forging it changes nothing.
+    #[tokio::test]
+    async fn every_game_route_is_401_without_an_identity_and_the_public_ones_are_not() {
+        use identity::{IdentityMode as M, CLAIMED_HEADER};
+        for uri in ["/api/games", "/api/games/nope", "/api/games/nope/log"] {
+            let (status, body) = get_with(Arc::new(AppState::in_memory()), uri, &[]).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "{uri}: {body}");
+            assert!(
+                body["error"].as_str().unwrap_or("").contains("X-Yokohama-Claimed-User"),
+                "{body}"
+            );
+        }
+        for uri in ["/api/health", "/api/labels", "/api/me"] {
+            let (status, _) = get_with(Arc::new(AppState::in_memory()), uri, &[]).await;
+            assert_ne!(status, StatusCode::UNAUTHORIZED, "{uri} is public");
+        }
+        // The mode reads its own header: under cf-access the claimed header is inert.
+        let (status, _) = get_with(
+            Arc::new(AppState::in_memory_with(M::CfAccess)),
+            "/api/games",
+            &[(CLAIMED_HEADER, "forged@t.test")],
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    /// **`/api/me` is the one route that answers "nobody" rather than refusing.**
+    ///
+    /// A 401 here would leave the client with a status code where it needs a
+    /// fact: which mode this deployment runs, and whether the caller is signed
+    /// in. An unparseable header is the same answer as no header at all — it
+    /// names nobody — and the normalization is the extractor's, so a browser
+    /// never has to know that ` Red@Wire.TEST ` and `red@wire.test` are one
+    /// person.
+    #[tokio::test]
+    async fn me_answers_without_identity_and_names_the_mode() {
+        use identity::{IdentityMode as M, CF_ACCESS_HEADER, CLAIMED_HEADER};
+        let (status, body) = get_with(Arc::new(AppState::in_memory()), "/api/me", &[]).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, serde_json::json!({ "mode": "claimed", "user": null }));
+        let (_, body) = get_with(
+            Arc::new(AppState::in_memory()),
+            "/api/me",
+            &[(CLAIMED_HEADER, " Red@Wire.TEST ")],
+        )
+        .await;
+        assert_eq!(body["user"], "red@wire.test", "normalized once, in the extractor");
+        let (_, body) = get_with(
+            Arc::new(AppState::in_memory()),
+            "/api/me",
+            &[(CLAIMED_HEADER, "not-an-email")],
+        )
+        .await;
+        assert_eq!(
+            body["user"],
+            serde_json::Value::Null,
+            "an invalid header resolves to null here, never 401"
+        );
+        let (_, body) = get_with(
+            Arc::new(AppState::in_memory_with(M::CfAccess)),
+            "/api/me",
+            &[(CF_ACCESS_HEADER, "a@b.c")],
+        )
+        .await;
+        assert_eq!(body, serde_json::json!({ "mode": "cf-access", "user": "a@b.c" }));
     }
 
     /// A key this API does not know is a REFUSAL, not a default.
@@ -1008,6 +1170,7 @@ mod tests {
         let router = app(Arc::new(AppState {
             rules: Arc::clone(&rules),
             games: Games::new(rules, Arc::new(crate::store::MemStore::default())),
+            identity: identity::IdentityMode::Claimed,
         }));
         let good = serde_json::json!({
             "players": 2, "colors": ["Red", "Blue"], "start_seat": 0, "seed": 20260830,
@@ -1085,7 +1248,8 @@ mod tests {
         uri: &str,
         body: Option<serde_json::Value>,
     ) -> (StatusCode, serde_json::Value) {
-        let req = Request::builder().method(method).uri(uri);
+        let req =
+            Request::builder().method(method).uri(uri).header(identity::CLAIMED_HEADER, WHO);
         let req = match body {
             Some(b) => req
                 .header("content-type", "application/json")
@@ -1358,7 +1522,10 @@ mod tests {
     #[tokio::test]
     async fn a_locked_session_refuses_the_searches_and_still_serves_the_views() {
         let store = Arc::new(MemStore::default());
-        let router = app(Arc::new(AppState::with_store(store.clone())));
+        let router = app(Arc::new(AppState::with_store(
+            store.clone(),
+            identity::IdentityMode::Claimed,
+        )));
         a_game(&router, "faulted", &[]).await;
 
         let stored = store.read("faulted").expect("a stored game");
@@ -1367,7 +1534,8 @@ mod tests {
         store
             .write("faulted", &serde_json::to_string(&record).expect("a record"))
             .expect("a stored lockdown");
-        let router = app(Arc::new(AppState::with_store(store)));
+        let router =
+            app(Arc::new(AppState::with_store(store, identity::IdentityMode::Claimed)));
 
         let (status, state) = call(&router, "GET", "/api/games/faulted", None).await;
         assert_eq!(status, StatusCode::OK);
@@ -1467,6 +1635,7 @@ mod tests {
         assert_eq!(body["semantics_rev"], SEMANTICS_REV);
         assert_eq!(body["rules_hash"], Rules::standard().content_hash());
         assert_eq!(body["server_version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(body["identity"], "claimed");
     }
 
     /// An answer to a prompt the game is no longer asking is REFUSED, not
@@ -1496,6 +1665,7 @@ mod tests {
                             .method("POST")
                             .uri(uri)
                             .header("content-type", "application/json")
+                            .header(identity::CLAIMED_HEADER, WHO)
                             .body(Body::from(serde_json::to_vec(&body).expect("a body")))
                             .expect("a request"),
                     )
@@ -1563,7 +1733,10 @@ mod tests {
         let call = |method: &'static str, uri: String, body: Option<serde_json::Value>| {
             let router = router.clone();
             async move {
-                let req = Request::builder().method(method).uri(uri);
+                let req = Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .header(identity::CLAIMED_HEADER, WHO);
                 let req = match body {
                     Some(v) => req
                         .header("content-type", "application/json")
@@ -1655,7 +1828,10 @@ mod tests {
         let call = |method: &'static str, uri: String, body: Option<serde_json::Value>| {
             let router = router.clone();
             async move {
-                let req = Request::builder().method(method).uri(uri);
+                let req = Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .header(identity::CLAIMED_HEADER, WHO);
                 let req = match body {
                     Some(v) => req
                         .header("content-type", "application/json")
@@ -1775,6 +1951,7 @@ mod tests {
                             .method("POST")
                             .uri(uri)
                             .header("content-type", "application/json")
+                            .header(identity::CLAIMED_HEADER, WHO)
                             .body(Body::from(serde_json::to_vec(&body).expect("a body")))
                             .expect("a request"),
                     )
@@ -1869,6 +2046,7 @@ mod tests {
                             .method("POST")
                             .uri(uri)
                             .header("content-type", "application/json")
+                            .header(identity::CLAIMED_HEADER, WHO)
                             .body(Body::from(serde_json::to_vec(&body).expect("a body")))
                             .expect("a request"),
                     )
@@ -2365,7 +2543,10 @@ mod tests {
     #[tokio::test]
     async fn a_locked_session_serves_the_replay_and_still_refuses_the_account() {
         let store = Arc::new(MemStore::default());
-        let router = app(Arc::new(AppState::with_store(store.clone())));
+        let router = app(Arc::new(AppState::with_store(
+            store.clone(),
+            identity::IdentityMode::Claimed,
+        )));
         a_game(&router, "faultedreplay", &[]).await;
         play(&router, "faultedreplay", 4).await;
 
@@ -2375,7 +2556,8 @@ mod tests {
         store
             .write("faultedreplay", &serde_json::to_string(&record).expect("a record"))
             .expect("a stored lockdown");
-        let router = app(Arc::new(AppState::with_store(store)));
+        let router =
+            app(Arc::new(AppState::with_store(store, identity::IdentityMode::Claimed)));
 
         let (status, hist) = call(&router, "GET", "/api/games/faultedreplay/at/1", None).await;
         assert_eq!(status, StatusCode::OK, "a projection serves a locked session: {hist}");

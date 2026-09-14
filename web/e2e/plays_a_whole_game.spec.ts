@@ -133,10 +133,17 @@ test("a game survives a reload, because nothing lives only in memory", async ({ 
   expect(await chainOf(), "the rebuilt game resumes at the turn it left off").toBe(chain);
 
   // And the log the server rebuilt carries the moves that were played.
-  const logged = await page.evaluate(
-    async (id: string) => (await (await fetch(`/api/games/${id}/log`)).json()).total as number,
-    game.id,
-  );
+  // A RAW fetch from inside the page, so it carries the identity itself: this
+  // does not go through `api.ts` and therefore gets none of its header attach,
+  // and every `/api/games` route is a 401 without one. The value is read from
+  // the same `localStorage` key the client reads, rather than restated here.
+  const logged = await page.evaluate(async (id: string) => {
+    const who = localStorage.getItem("yokohama.claimed_user");
+    const res = await fetch(`/api/games/${id}/log`, {
+      headers: who ? { "x-yokohama-claimed-user": who } : {},
+    });
+    return (await res.json()).total as number;
+  }, game.id);
   expect(logged, "the rebuilt record carries the events the walk applied").toBeGreaterThan(0);
 
   expect(watch.failures).toEqual([]);

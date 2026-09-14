@@ -81,8 +81,34 @@ export interface Game {
   seed: string;
 }
 
+/** Who the walk plays as. */
+export const WALKER = "walker@e2e.test";
+
+/**
+ * Put [`WALKER`] where the client looks for a claimed user, before anything loads.
+ *
+ * **A STAND-IN, until the sign-in screen exists.** Every `/api/games` route is a
+ * 401 without an identity, and in `claimed` mode the client attaches the header
+ * from `localStorage` — so the walk seeds that key rather than typing into a
+ * screen that has not been built yet.
+ *
+ * Written through `addInitScript` and NOT as a context-wide extra header, on
+ * purpose: the client's own attach path stays the thing under test, and a client
+ * that stopped sending the header fails here instead of being covered up by the
+ * harness. Registered on the PAGE, so later navigations in the same test carry
+ * it too — which is why `startGame` calling it is enough for most specs, and
+ * only a spec that navigates before its first `startGame` calls it itself.
+ */
+export async function signIn(page: Page): Promise<void> {
+  await page.addInitScript(
+    (who: string) => localStorage.setItem("yokohama.claimed_user", who),
+    WALKER,
+  );
+}
+
 /** Start a fresh game through the setup screen, exactly as a player does. */
 export async function startGame(page: Page, opts: { players?: number } = {}): Promise<Game> {
+  await signIn(page);
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "New game" })).toBeVisible();
 

@@ -4,7 +4,16 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { haveBrowser } from "../playwright.config";
 import { pyramidFits, tileWidthFor } from "../src/fit";
-import { act, blame, readOverflow, readScreen, rng, startGame, watchForBreakage } from "./harness";
+import {
+  act,
+  blame,
+  readOverflow,
+  readScreen,
+  rng,
+  signIn,
+  startGame,
+  watchForBreakage,
+} from "./harness";
 
 test.skip(!haveBrowser, "no Chromium — YOKOHAMA_WEB_E2E_OPTIONAL=1; this run tested NOTHING");
 
@@ -415,6 +424,7 @@ test("four assistants of one colour stand as a pile, not as a cube and a count",
 test("at four players the asking seat is in the frame on the middle turn", async ({ page }) => {
   const watch = watchForBreakage(page);
   await page.setViewportSize({ width: 1710, height: 869 });
+  await signIn(page);
   await page.goto("/");
   await page.getByLabel("Players").selectOption("4");
   await page.getByRole("button", { name: "Deal" }).click();
@@ -475,6 +485,7 @@ test("at four players the asking seat is in the frame on the middle turn", async
 test("the set table shows the port, hides the bot's cards and withholds the technologies and goals before the first choice, and the chosen card lands in hand", async ({ page }) => {
   const watch = watchForBreakage(page);
   await page.setViewportSize({ width: 1710, height: 869 });
+  await signIn(page);
   await page.goto("/");
   await page.getByRole("button", { name: "Deal" }).click();
   await expect(page.locator(".table-sec.ports .strip-slot .card-face")).toHaveCount(6);

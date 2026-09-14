@@ -68,6 +68,7 @@ import type {
   Labels,
   LabsPanel,
   LogPanel,
+  Me,
   OptionRow,
   Outcome,
   Placing,
@@ -104,6 +105,8 @@ import labels from "./labels.json";
 import labs from "./labs.json";
 import locked from "./locked.json";
 import log from "./log.json";
+import me from "./me.json";
+import meSignedOut from "./me_signed_out.json";
 import atK from "./at_k.json";
 import options from "./options.json";
 import options4p from "./options_4p.json";
@@ -182,6 +185,12 @@ const _labels: Widen<Labels> = labels;
 const _preview: Widen<Preview> = preview;
 const _previewBot: Widen<Preview> = previewBot;
 const _health: Widen<Health> = health;
+// Both sides of `/api/me`: signed in, and the payload a caller with no identity
+// is handed. The second is a real response and not a construction — `user` is
+// `null` there, and a type alone cannot say that the SERVER answers rather than
+// refusing.
+const _me: Widen<Me> = me;
+const _meOut: Widen<Me> = meSignedOut;
 const _error: Widen<ApiErrorBody> = error;
 const _ports: Widen<PortsPanel> = ports;
 const _labs: Widen<LabsPanel> = labs;
@@ -267,7 +276,7 @@ void [
 // reference keeps the compiler's other rule from deleting the check.
 void [
   _options, _options4p, _optionsMany, _optionsPriced, _pick, _retreat, _retreatAnswered, _placeA, _placeASelected, _placeB, _placeBSelected,
-  _gameOver, _watching, _hiddenHand, _locked, _refused, _labels, _preview, _previewBot, _health, _error,
+  _gameOver, _watching, _hiddenHand, _locked, _refused, _labels, _preview, _previewBot, _health, _me, _meOut, _error,
   _ports, _labs, _areas, _areas4p, _log, _atK, _artManifest, _feeNonzero,
   _choiceAssistantMove, _choiceChurchSpace, _choiceWarehouseTake,
   _suggest, _why, _whyRefused, _whyRefusals,
@@ -349,7 +358,8 @@ const HISTORICAL_FRAME = [
 const LABELS = [
   "area_types", "phases", "phase_chain", "tech_effects", "achievements", "features",
 ] as const;
-const HEALTH = ["server_version", "semantics_rev", "rules_hash"] as const;
+const HEALTH = ["server_version", "semantics_rev", "rules_hash", "identity"] as const;
+const ME = ["mode", "user"] as const;
 const PREVIEW = ["seed", "table", "deals"] as const;
 const DEAL = ["seat", "is_bot", "cards"] as const;
 const DEAL_CARD = ["card", "keep_score"] as const;
@@ -398,6 +408,8 @@ const _ar: KeysOf<AreasPanel, typeof AREAS> = AREAS;
 const _lo: KeysOf<LogPanel, typeof LOG> = LOG;
 const _lb: KeysOf<Labels, typeof LABELS> = LABELS;
 const _he: KeysOf<Health, typeof HEALTH> = HEALTH;
+// `_me` is taken by the widened assignment above, so the key list takes `_mk`.
+const _mk: KeysOf<Me, typeof ME> = ME;
 const _pv: KeysOf<Preview, typeof PREVIEW> = PREVIEW;
 const _dl: KeysOf<Deal, typeof DEAL> = DEAL;
 const _dc: KeysOf<DealCard, typeof DEAL_CARD> = DEAL_CARD;
@@ -420,7 +432,7 @@ const _ct: KeysOf<Counter, typeof COUNTER> = COUNTER;
 const _ig: KeysOf<IndexGroup, typeof INDEX_GROUP> = INDEX_GROUP;
 const _hf: KeysOf<HistoricalFrame, typeof HISTORICAL_FRAME> = HISTORICAL_FRAME;
 const _ic: KeysOf<IndexCard, typeof INDEX_CARD> = INDEX_CARD;
-void [_cs, _fr, _de, _or, _pl, _ti, _tr, _po, _la, _ar, _lo, _lb, _he, _pv, _dl, _dc, _er,
+void [_cs, _fr, _de, _or, _pl, _ti, _tr, _po, _la, _ar, _lo, _lb, _he, _mk, _pv, _dl, _dc, _er,
       _sr, _so, _wr, _wo, _ex, _tm, _pr, _rk, _rf, _ix, _oc, _pc, _bd,
       _tl, _ct, _ig, _ic, _hf];
 
@@ -440,6 +452,7 @@ export const KEYS = {
   log: LOG,
   labels: LABELS,
   health: HEALTH,
+  me: ME,
   preview: PREVIEW,
   deal: DEAL,
   dealCard: DEAL_CARD,
@@ -506,6 +519,8 @@ export const wire = {
   preview: as<Preview>(preview),
   previewBot: as<Preview>(previewBot),
   health: as<Health>(health),
+  me: as<Me>(me),
+  meSignedOut: as<Me>(meSignedOut),
   error: as<ApiErrorBody>(error),
   ports: as<PortsPanel>(ports),
   labs: as<LabsPanel>(labs),

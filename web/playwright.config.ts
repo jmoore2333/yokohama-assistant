@@ -156,6 +156,13 @@ export default defineConfig({
           stderr: "pipe",
           env: {
             YOKOHAMA_WEB_PORT: String(PORT),
+            // There is NO default identity source (M6.1 R-1.3): the server
+            // exits 1 before it binds anything without this, so a walk that
+            // omitted it would fail at start-up rather than in a test.
+            // `claimed` is the development mode — the client attaches the
+            // header from `localStorage`, which `harness.ts` seeds before the
+            // first navigation.
+            YOKOHAMA_WEB_IDENTITY: "claimed",
             // ONE directory, reused and cleared, rather than `mkdtempSync`.
             // This module is loaded by every Playwright invocation — including
             // `--list` and each worker — so a fresh temp directory per load

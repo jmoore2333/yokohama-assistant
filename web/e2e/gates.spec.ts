@@ -11,7 +11,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { haveBrowser } from "../playwright.config";
-import { act, readScreen, rng, startGame } from "./harness";
+import { act, readScreen, rng, signIn, startGame } from "./harness";
 
 test.skip(!haveBrowser, "no Chromium — YOKOHAMA_WEB_E2E_OPTIONAL=1; this run tested NOTHING");
 // The owner's display is 2×; a 1× shot understates the art's legibility.
@@ -326,6 +326,7 @@ for (const players of [2, 4] as const) {
 test("gate B — the set table before the first choice", async ({ page }) => {
   mkdirSync(OUT, { recursive: true });
   await page.setViewportSize({ width: 1710, height: 869 });
+  await signIn(page);
   await page.goto("/");
   await page.getByRole("button", { name: "Deal" }).click();
 

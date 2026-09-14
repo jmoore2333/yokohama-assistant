@@ -65,6 +65,11 @@ const BOT_SEED: u64 = 0x4649_5854_5552_4553; // "FIXTURES"
 /// silently re-order the walk as well.
 const WALK_SEED: u64 = 0x5741_4C4B_5041_5448; // "WALKPATH"
 
+/// Who the walk plays as. Every `/api/games` route needs an identity (M6.1),
+/// and this one is a constant like the seeds so the corpus stays a function of
+/// what is written in this file.
+const WALKER: &str = "red@wire.test";
+
 /// A tiny deterministic PRNG, so the corpus is a function of three constants
 /// and nothing else. SplitMix64, the shape the engine uses for its own stream
 /// derivation — no new dependency for a test that only picks an index.
@@ -95,8 +100,30 @@ impl Api {
         Self { router: app(Arc::new(AppState::in_memory())) }
     }
 
+    /// A call as [`WALKER`], which is every call the walk makes.
     async fn call(&self, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
-        let req = Request::builder().method(method).uri(uri);
+        self.call_as(Some(WALKER), method, uri, body).await
+    }
+
+    /// The same call with the identity header omitted, for the one fixture that
+    /// is the answer to a caller who has none.
+    async fn get_anonymous(&self, uri: &str) -> Value {
+        let (status, v) = self.call_as(None, "GET", uri, None).await;
+        assert_eq!(status, StatusCode::OK, "GET {uri} without an identity: {v}");
+        v
+    }
+
+    async fn call_as(
+        &self,
+        who: Option<&str>,
+        method: &str,
+        uri: &str,
+        body: Option<Value>,
+    ) -> (StatusCode, Value) {
+        let mut req = Request::builder().method(method).uri(uri);
+        if let Some(who) = who {
+            req = req.header("x-yokohama-claimed-user", who);
+        }
         let req = match body {
             Some(v) => req
                 .header("content-type", "application/json")
@@ -205,6 +232,13 @@ async fn walk() -> Vec<(String, Value)> {
         ("preview".to_string(), preview),
         ("preview_bot".to_string(), preview_bot),
         ("health".to_string(), api.get("/api/health").await),
+        // **Both sides of `/api/me`, because the client branches on both.**
+        // Signed in, and signed out — the second taken with the header omitted
+        // rather than constructed, since "what a caller with no identity is
+        // handed" is exactly the payload a route test cannot fake and the one a
+        // sign-in screen renders from.
+        ("me".to_string(), api.get("/api/me").await),
+        ("me_signed_out".to_string(), api.get_anonymous("/api/me").await),
         ("labels".to_string(), api.get("/api/labels").await),
         ("ports".to_string(), api.get("/api/games/wire/ports").await),
         ("labs".to_string(), api.get("/api/games/wire/labs").await),

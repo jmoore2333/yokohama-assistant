@@ -72,7 +72,20 @@ async fn main() {
     // whoever deploys it rather than by this line.
     let host = std::env::var("YOKOHAMA_WEB_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
 
-    let state = Arc::new(AppState::new());
+    // **No default identity source (R-1.3).** Which header names the caller is
+    // a deployment decision — `claimed` trusts anything past the door, and the
+    // two proxy modes trust a header only their own edge can set — so a process
+    // that was not told refuses to start rather than guessing the permissive
+    // one. The Worker's own fail-closed shape for its secrets.
+    let identity = match yokohama_web::identity::IdentityMode::from_env() {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+    };
+
+    let state = Arc::new(AppState::new(identity));
     let listener = match tokio::net::TcpListener::bind((host.as_str(), port)).await {
         Ok(l) => l,
         Err(e) => {

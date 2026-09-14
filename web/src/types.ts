@@ -406,6 +406,19 @@ export interface Health {
   server_version: string;
   semantics_rev: number;
   rules_hash: string;
+  /** Which identity source this deployment reads, by name. */
+  identity: string;
+}
+
+/** Who the server thinks you are, and which header it reads to decide.
+ *
+ *  `GET /api/me` NEVER refuses: `user` is `null` when nobody is named, which is
+ *  the answer that tells the client which screen to show. `mode` says whether
+ *  signing in here is even meaningful — only `claimed` has a screen to offer,
+ *  since the other two are set by an edge the browser cannot reach. */
+export interface Me {
+  mode: "claimed" | "cf-access" | "worker";
+  user: string | null;
 }
 
 /** Every refusal on this API, in one shape. `api.ts` reads `error` off it and
