@@ -64,12 +64,24 @@ async fn main() {
         .unwrap_or(8080);
 
     // **The default stays loopback, and that is the safe half of this knob.**
-    // This API has no authentication of any kind — `GET /api/games` lists every
-    // game to any caller — so a bind address is a real decision and not a
-    // convenience. A container needs `0.0.0.0` to be reachable at all, and it
-    // is expected to sit behind an identity proxy that terminates before the
-    // request arrives. Making the host explicit means that choice is made by
-    // whoever deploys it rather than by this line.
+    //
+    // A bind address is a real decision and not a convenience, and M6.1's
+    // identity seam narrowed the reason without removing it. Every
+    // `/api/games` route now refuses a request carrying no identity — so this
+    // is no longer "no authentication of any kind" — but neither mode makes the
+    // port safe to expose:
+    //
+    // - Under `claimed` the header is whatever the caller sends. It
+    //   authenticates the DOOR, not the seat: it tells this process apart from
+    //   nobody, and tells no two callers apart at all.
+    // - Under `cf-access` and `worker` the trusted header is one only that
+    //   deployment's own edge can set — which is worth exactly nothing if the
+    //   port is reachable without going through the edge, since anyone who can
+    //   connect directly can send the same header and be anyone.
+    //
+    // A container needs `0.0.0.0` to be reachable at all, and it is expected to
+    // sit behind that identity proxy. Making the host explicit means the choice
+    // is made by whoever deploys it rather than by this line.
     let host = std::env::var("YOKOHAMA_WEB_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
 
     // **No default identity source (R-1.3).** Which header names the caller is

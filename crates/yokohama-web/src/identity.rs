@@ -50,10 +50,16 @@ impl IdentityMode {
     }
 
     pub fn from_env() -> Result<Self, String> {
-        match std::env::var(ENV_VAR) {
-            Ok(v) => Self::from_str(&v),
-            Err(_) => Self::from_str(""),
-        }
+        Self::from_env_value(std::env::var(ENV_VAR).ok().as_deref())
+    }
+
+    /// The whole of [`Self::from_env`] except the read, so the UNSET case is
+    /// testable without mutating the process environment under a threaded test
+    /// runner. An absent variable is the same refusal an unknown value is —
+    /// that equality is the whole of R-1.3, and it lived in a line no test
+    /// reached until this split.
+    pub fn from_env_value(v: Option<&str>) -> Result<Self, String> {
+        Self::from_str(v.unwrap_or(""))
     }
 }
 
@@ -211,5 +217,11 @@ mod tests {
             "{err}"
         );
         assert!(IdentityMode::from_str("neon").is_err(), "reserved, not built");
+        // **The fail-closed path itself.** `from_env` is the only code that
+        // turns an UNSET variable into a refusal, and until this line nothing
+        // ran it: `main.rs` has no test content and the browser walk always
+        // sets the variable, so `Err(_) => Ok(Self::Claimed)` would have
+        // deleted R-1.3 with every suite green.
+        assert!(IdentityMode::from_env_value(None).is_err(), "unset is a refusal, not a default");
     }
 }
