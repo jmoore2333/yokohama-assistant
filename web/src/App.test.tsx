@@ -1459,22 +1459,21 @@ describe("the door", () => {
 // under, and the only thing in the client that turns "the count moved" into a
 // board the player can see.
 describe("the opponent's turn arrives by the signal", () => {
-  /** A position for the run to be walked over: the corpus's `at_k` with the
-   *  seat that is TO MOVE marked as a bot.
+  /** A position for the run to be walked over: the corpus's `at_k`, moved to
+   *  the position and the mover this cell is about, and NOT marked as a bot.
    *
-   *  **One field moved, and it is the field that makes a run a walk.** A run of
-   *  your own events applies at once (`hasBotStep`), and the corpus marks no
-   *  seat as a bot — so a cell built on the fallback's positions would fetch
-   *  them, build the run, and then assert nothing about the playback it is
-   *  named for. The pattern is `botReply`'s, one describe above. */
-  const atBot = (k: number, total: number) => {
+   *  **No seat here is a bot, and that is the point (ruling R-9.1).** A room is
+   *  people. A walk gated on `hasBotStep` therefore never runs for a person's
+   *  turn, and the opponent's move SNAPS onto the table — M5.5's whole
+   *  step-by-step account, the thing the room plan promises the poll will
+   *  drive, silently not happening at exactly the table it was built for. The
+   *  first version of this cell marked seat 0 a bot and so could not have seen
+   *  it; the fixture is left honest instead. */
+  const at = (k: number, total: number) => {
     const f = JSON.parse(JSON.stringify(wire.atK)) as typeof wire.atK;
     f.index = k;
     f.total = total;
     f.to_move = wire.watching.to_move;
-    const players = f.frame.dashboard.find((p) => "Players" in p);
-    if (players && "Players" in players)
-      players.Players.players[wire.watching.to_move]!.is_bot = true;
     return f;
   };
 
@@ -1505,7 +1504,7 @@ describe("the opponent's turn arrives by the signal", () => {
       if (call.method === "GET" && call.path.endsWith(`/api/games/${wire.watching.id}`))
         return { ...wire.watching, events };
       const m = /\/at\/(\d+)$/.exec(call.path);
-      if (m) return atBot(Number(m[1]), events);
+      if (m) return at(Number(m[1]), events);
       return undefined;
     });
     /** The RE-READS of the game, and the match is anchored on purpose:
@@ -1559,9 +1558,25 @@ describe("the opponent's turn arrives by the signal", () => {
       ).toEqual([0, 1, 2]);
       // And the walk is on the table: the deck is the strip rather than the
       // prompt, and the account has one row per event.
+      //
+      // **A PERSON's turn, walked (ruling R-9.1).** Nothing in this fixture is
+      // a bot; the mover is simply not the seat this browser is watching from
+      // (`wire.watching` is built for seat 1 while seat 0 is to move). The
+      // account's transport is the assertion that separates a walk from a
+      // static list of rows — `TurnAccount` renders those controls only while
+      // one is running — and the lit row is what says a STEP is on the table
+      // rather than the whole run at once.
       expect(document.querySelector(".decision.walking")).not.toBeNull();
       expect(screen.getByText(/is playing · step 1 of 2/)).toBeInTheDocument();
       expect(document.querySelectorAll("ol.account li")).toHaveLength(2);
+      const account = within(document.querySelector<HTMLElement>(".turn-account")!);
+      expect(account.getByRole("button", { name: "Pause" })).toBeInTheDocument();
+      expect(account.getByRole("button", { name: "Step forward" })).toBeInTheDocument();
+      expect(account.getByRole("button", { name: "Step back" })).toBeInTheDocument();
+      expect(account.getByRole("button", { name: "skip" })).toBeInTheDocument();
+      expect(document.querySelector("ol.account li.at")).toBe(
+        document.querySelector("ol.account li"),
+      );
 
       // **`events` is legitimately non-monotone: an undo POPS them** (R-P5).
       // The client re-reads, and must NOT try to walk a range that runs

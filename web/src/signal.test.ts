@@ -16,8 +16,9 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useSignal, nextDelay, BACKOFF_MS, VISIBLE_MS } from "./signal";
-import { stubApi } from "./test/harness";
+import { gate, stubApi, type Reply } from "./test/harness";
 import { wire } from "./wire/contract";
+import type { Events } from "./types";
 
 /** Put the tab in a state and tell the document about it.
  *
@@ -130,5 +131,75 @@ describe("the poll", () => {
     expect(stub.matching("GET", "/events")).toHaveLength(1);
     rerender({ active: false });
     expect(result.current).toBe("live");
+  });
+
+  // ---- the reply that lands after the teardown ------------------------------
+  //
+  // **The two `if (stopped) return` lines are the only thing between this hook
+  // and an immortal timer, and nothing above reaches them**: every cell here
+  // lets the request finish before it tears anything down. The torn-down case
+  // is not exotic — `App`'s `active` includes `!busy`, so the effect is torn
+  // down and rebuilt on EVERY opponent move, and a reply in flight across that
+  // boundary is the ordinary case rather than the edge one.
+  //
+  // What a missing guard costs is not a wasted render. `ask` ends by calling
+  // `schedule`, and the timer it sets belongs to a closure whose cleanup has
+  // already run — so nothing will ever clear it, and it schedules its own
+  // successor forever. One orphan per teardown, on a page that tears down once
+  // a move.
+  //
+  // Both exits are covered because they are two different lines: the resolved
+  // path at the top of `try`, and the refused path at the top of `catch`.
+
+  it("drops a reply that lands after it was torn down, and arms nothing from it", async () => {
+    const held = gate<Reply>();
+    const seen: Events[] = [];
+    const stub = stubApi((c) => (c.path.endsWith("/events") ? held.promise : undefined));
+    const { rerender } = renderHook(
+      ({ active }) => useSignal("wire", active, (e) => seen.push(e)),
+      { initialProps: { active: true } },
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(VISIBLE_MS + 10);
+    });
+    expect(stub.matching("GET", "/events")).toHaveLength(1);
+    // Torn down with the request still in flight, and only THEN answered.
+    rerender({ active: false });
+    await act(async () => {
+      held.resolve(wire.events);
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    // The consumer is never told: this answer is about a screen that has
+    // stopped watching, and handing it over would re-read a game nobody asked
+    // about.
+    expect(seen).toHaveLength(0);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(VISIBLE_MS * 2 + 20);
+    });
+    expect(stub.matching("GET", "/events")).toHaveLength(1);
+  });
+
+  it("drops a REFUSAL that lands after it was torn down, and arms nothing from it", async () => {
+    const held = gate<Reply>();
+    const stub = stubApi((c) => (c.path.endsWith("/events") ? held.promise : undefined));
+    const { result, rerender } = renderHook(({ active }) => useSignal("wire", active, () => {}), {
+      initialProps: { active: true },
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(VISIBLE_MS + 10);
+    });
+    expect(stub.matching("GET", "/events")).toHaveLength(1);
+    rerender({ active: false });
+    await act(async () => {
+      held.resolve({ status: 502, body: { error: "gone" } });
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    // Nothing is said about a link that is no longer being kept, and the
+    // backoff arms no timer.
+    expect(result.current).toBe("live");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(BACKOFF_MS[0]! * 4);
+    });
+    expect(stub.matching("GET", "/events")).toHaveLength(1);
   });
 });

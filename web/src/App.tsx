@@ -19,6 +19,7 @@ import {
   buildRun,
   dwellFor,
   hasBotStep,
+  hasOpponentStep,
   heldChanges,
   walkReducer,
   type Run,
@@ -33,6 +34,7 @@ import type {
   Labels,
   Outcome,
   PlayerColor,
+  PlayerId,
   TableView,
 } from "./types";
 
@@ -161,8 +163,8 @@ export function App() {
   // the player is now looking at. So the id is kept in a ref that every change
   // of game updates, and `send` drops anything that no longer matches it.
   const gameId = useRef<string | null>(null);
-  /** Events `prev..next` landed: build the run and start the walk when a bot
-   *  moved.
+  /** Events `prev..next` landed: build the run, and walk it when it holds a
+   *  move this browser did not make.
    *
    *  Called INSIDE the busy window, so the deck stays disabled until the walk
    *  is ready to show rather than offering the next prompt over a table that is
@@ -180,9 +182,19 @@ export function App() {
    *  R-P5).** `events` is legitimately non-monotone: a picker step applies no
    *  event, a refusal none, and an undo POPS them. Leaving the previous run
    *  standing there would keep an account of an earlier turn on screen in place
-   *  of the prose that answers the click just made. */
+   *  of the prose that answers the click just made.
+   *
+   *  **`watching` is what decides whether the run PLAYS, and the two answers
+   *  are different questions (ruling R-9.1).** A run that came back as the
+   *  reply to this browser's own move passes `null`: the only other mover there
+   *  can be is a bot seat it is playing against, so `hasBotStep` is the whole
+   *  question and a vs-bot game is unchanged. A run that arrived through the
+   *  SIGNAL passes the seat it is being watched from, and every step that seat
+   *  did not play is worth watching — because **a room is people**, and a gate
+   *  on `moverIsBot` would leave the opponent's turn SNAPPING onto the board at
+   *  exactly the table the walk was built for. */
   const landed = useCallback(
-    async (game: string, prev: number, next: number) => {
+    async (game: string, prev: number, next: number, watching: PlayerId | null = null) => {
       setFresh(false);
       if (next <= prev) {
         setRun(null);
@@ -193,9 +205,10 @@ export function App() {
       // The same rule the reply itself is judged by: a run for a game the
       // player has left is dropped, never shown over the game they are on.
       if (gameId.current !== game) return;
+      const plays = watching === null ? hasBotStep(r) : hasOpponentStep(r.steps, watching);
       setRun(r);
       setFresh(true);
-      setWalk(hasBotStep(r) ? { at: 0, playing: true } : null);
+      setWalk(plays ? { at: 0, playing: true } : null);
     },
     [],
   );
@@ -432,7 +445,13 @@ export function App() {
           // the pop can be somebody else's. A run over a backwards range is not
           // a turn that happened — there are no positions to fetch for it — so
           // the account goes with the events it described.
-          if (e.events > state.events) await landed(game, state.events, fresh.events);
+          // **`fresh.seat`, and it is read off the payload the walk will be
+          // drawn against.** `ClientState` is built for ONE seat, and at a
+          // hot-seat table the server builds for the acting seat whenever this
+          // caller holds it — so the seat this browser is watching from is the
+          // fresh payload's, not the one the poll started under.
+          if (e.events > state.events)
+            await landed(game, state.events, fresh.events, fresh.seat);
           else {
             setRun(null);
             setWalk(null);

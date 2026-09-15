@@ -60,8 +60,34 @@ export function buildRun(from: number, frames: HistoricalFrame[], log: LogPanel)
 }
 
 /** The walk plays only when the opponent moved: a run of your own events
- *  applies at once (spec §3.2.2). */
+ *  applies at once (spec §3.2.2).
+ *
+ *  **The gate on a run that came back as the REPLY to your own move**, where
+ *  the only other mover there can be is a bot seat this browser is playing
+ *  against. A run that arrived through the signal asks {@link hasOpponentStep}
+ *  instead. */
 export const hasBotStep = (run: Run): boolean => run.steps.some((s) => s.moverIsBot);
+
+/** The run contains a step this viewer did not play — the gate on a walk that
+ *  arrived through the SIGNAL (ruling R-9.1, M6.1 §6 and §7.5).
+ *
+ *  **`hasBotStep` is the wrong question at a human table, and that is the whole
+ *  reason this exists.** A room is people: no seat at a table of players is a
+ *  bot, so a gate on `moverIsBot` never fires for a person's turn and the
+ *  opponent's move SNAPS onto the board — M5.5's step-by-step account, the
+ *  thing the room plan promises the poll will drive, silently not happening at
+ *  exactly the table it was built for. What a walk is FOR is watching somebody
+ *  else play; whether that somebody is a person or a program does not change
+ *  the picture.
+ *
+ *  The bot arm stays in the OR rather than being replaced by it: it is the arm
+ *  that answers for a seat the viewer's own browser holds, which is every
+ *  vs-bot game this client has ever played.
+ *
+ *  Takes the steps rather than the `Run` its sibling takes, as the ruling
+ *  states it: one question about a list, asked by a caller that has the list. */
+export const hasOpponentStep = (steps: Step[], viewer: PlayerId): boolean =>
+  steps.some((s) => s.moverIsBot || s.mover !== viewer);
 
 /** How long a step stays on the table. */
 export const dwellFor = (step: Step, cadence: number): number =>
