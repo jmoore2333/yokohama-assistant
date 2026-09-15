@@ -12,6 +12,7 @@
       "created_at": 1789000000,
       "created_by": "red@wire.test",
       "id": "wire",
+      "locked": false,
       "my_seats": [
         0
       ],
@@ -21,16 +22,19 @@
       "seats": [
         {
           "kind": "human",
+          "name": null,
           "user": "red@wire.test"
         },
         {
           "kind": "human",
+          "name": null,
           "user": "blue@wire.test"
         }
       ],
       "start_seat": 0,
       "status": "dealing",
-      "to_move": null
+      "to_move": null,
+      "winner": null
     }
   ]
 }

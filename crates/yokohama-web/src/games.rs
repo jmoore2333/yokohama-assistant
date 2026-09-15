@@ -67,11 +67,18 @@ impl std::error::Error for GameError {}
 /// on — the words are for a human reading a `curl`.
 pub const DEALING_SENTENCE: &str = "this table is still dealing";
 
-/// The two facts the list mirrors off a live session (R-plan-3).
+/// The facts the list mirrors off a live session (R-plan-3).
+///
+/// The winner is read from `final_result` — the engine's own ranking with the
+/// KB's clockwise tie-break — and ONLY once the game is over, because
+/// `final_result` scores whatever position it is handed and would otherwise
+/// name a leader as a winner.
 pub(crate) fn mirror_of(repl: &Repl) -> TurnMirror {
+    let over = repl.session.is_over();
     TurnMirror {
         to_move: repl.session.state().current_player.0,
-        over: repl.session.is_over(),
+        over,
+        winner: over.then(|| repl.session.final_result().winner.0),
     }
 }
 

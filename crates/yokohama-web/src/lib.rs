@@ -412,7 +412,7 @@ fn viewer_of(
 /// refuses a document whose `seats` disagrees with its `players`.
 fn holder_of(table: &crate::table::TableDoc, seat: yokohama_core::PlayerId) -> &str {
     match table.seats.get(usize::from(seat.0)) {
-        Some(crate::table::SeatDoc::Human { user }) => user,
+        Some(crate::table::SeatDoc::Human { user, .. }) => user,
         _ => "the bot",
     }
 }

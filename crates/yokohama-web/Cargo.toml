@@ -65,6 +65,13 @@ serde_json.workspace = true
 axum = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
 
+# M6.2 (owner-ruled 2026-09-15, spec R-2.8): the table password. The workspace
+# has no hash crate — `fnv1a_64` in yokohama-core is a digest, not a password
+# hash — and the threat is a shared game password behind Cloudflare Access, so
+# a salted SHA-256 is the whole of it: no argon2, no constant-time crate (the
+# compare is a fold of XORs in table.rs).
+sha2 = "0.10"
+
 [dev-dependencies]
 # Route tests drive the router through `ServiceExt::oneshot` -- no socket, no
 # port, no runtime teardown to get wrong. A test that binds a real port is a

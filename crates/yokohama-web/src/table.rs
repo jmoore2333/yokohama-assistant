@@ -12,12 +12,14 @@
 //! ([`crate::store::Doc`]), each with its own version, and a seat change and a
 //! move land independently.
 //!
-//! **Two things never leave this document.** The setup `seed` — hidden-set
+//! **Three things never leave this document.** The setup `seed` — hidden-set
 //! member #1 (`game/observe.rs`), which regenerates both decks, the boxed pile,
-//! the board and every deal — and the `keeps`, which are what the OTHER seats
-//! chose. [`TableView`] is what a seated caller is handed instead, and it
-//! carries `chosen` (a boolean per seat) in the keeps' place: whether a seat has
-//! answered is public at any table; which card it took is not.
+//! the board and every deal — the `keeps`, which are what the OTHER seats
+//! chose, and, since M6.2, the `lock`, whose salt and hash in a browser are a
+//! password to attack offline. [`TableView`] is what a seated caller is handed
+//! instead, and it carries a boolean in each one's place: `chosen` per seat
+//! (whether a seat has answered is public at any table; which card it took is
+//! not) and `locked` for the password.
 
 use serde::{Deserialize, Serialize};
 use yokohama_core::{PlayerColor, PlayerId};
@@ -34,28 +36,46 @@ use crate::identity::User;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SeatDoc {
-    Human { user: String },
+    Human {
+        user: String,
+        /// What this seat is CALLED on screen (M6.2). `None` on every seat a
+        /// schema-1 document bound, and on a seat whose holder gave no name —
+        /// the client falls back to the email, which is why this is optional
+        /// rather than defaulted to something here.
+        #[serde(default)]
+        name: Option<String>,
+    },
     /// The shipped production contestant, as the CLI seats it
     /// (`bot::PROVISIONAL_DEFAULT_BOT`). WHICH contestant is not stored here:
     /// the record's own `SeatProvenance` carries it once the game exists, and a
     /// second statement of it would be a second thing to keep true.
     Bot,
+    /// An unfilled seat at an open table (M6.2). Never present once the table
+    /// has left `Open` — `check_shape` refuses the pair.
+    Open,
 }
 
-/// Dealing, or playing. **"Over" is not a status** — it is read from the
+/// Open, dealing, or playing. **"Over" is not a status** — it is read from the
 /// session, because a finished game is a property of the record and storing it
 /// here would be a copy that can go stale.
+///
+/// `Open` is M6.2's and is the one status with a SEAT invariant beside it: a
+/// table is open exactly while it has an open seat, both directions refused in
+/// `tables::check_shape`.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TableStatus {
+    Open,
     Dealing,
     Playing,
 }
 
-/// Two facts of the session, MIRRORED here so the lobby can be built from the
-/// table documents alone (R-plan-3).
+/// A few facts of the session, MIRRORED here so the lobby can be built from the
+/// table documents alone (R-plan-3). M6.2 added the winner, for the same reason
+/// the other two are here: a finished game's row says who won without rebuilding
+/// the session that knows.
 ///
-/// **The record is the truth and this is a cache of two integers off it.**
+/// **The record is the truth and this is a cache off it.**
 /// `Games::persist` refreshes it after every applied move and IGNORES a conflict
 /// doing so: a lost mirror write costs a list row that says whose turn it was
 /// one move ago, and nothing else — no play route reads this. Listing twenty
@@ -64,6 +84,85 @@ pub enum TableStatus {
 pub struct TurnMirror {
     pub to_move: u8,
     pub over: bool,
+    /// The ENGINE's winner once `over` — the same value `/result` projects as
+    /// `Placing.won`, never `standings[0]` (rank order; `outcome.rs:71`).
+    #[serde(default)]
+    pub winner: Option<u8>,
+}
+
+/// The table password, as stored: hex of 16 random bytes and hex of
+/// SHA-256(salt_bytes ‖ password_bytes). Serialized for the DOCUMENT; [`TableView`]
+/// has no field of this type.
+///
+/// **A shared game password, not an account credential** (R-2.8). It gates
+/// joining a table, and from M6.3 watching one, behind a door Cloudflare Access
+/// has already opened; nobody's identity rests on it. That is why there is no
+/// argon2 here and no work factor to tune — the salt stops one precomputed
+/// table from reading every table's password at once, and that is the whole of
+/// what this is for.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Lock {
+    pub salt: String,
+    pub hash: String,
+}
+
+impl Lock {
+    pub fn new(password: &str) -> Self {
+        let salt_bytes: [u8; 16] = {
+            let a = crate::tables::draw_seed().to_le_bytes();
+            let b = crate::tables::draw_seed().to_le_bytes();
+            let mut s = [0u8; 16];
+            s[..8].copy_from_slice(&a);
+            s[8..].copy_from_slice(&b);
+            s
+        };
+        let salt = hex(&salt_bytes);
+        let hash = hex(&digest(&salt_bytes, password));
+        Self { salt, hash }
+    }
+
+    /// Constant-time over the hash bytes: every byte is compared and the
+    /// mismatches are folded with OR, so the time does not depend on WHERE the
+    /// first difference is.
+    pub fn matches(&self, given: &str) -> bool {
+        let Some(salt_bytes) = unhex(&self.salt) else { return false };
+        let Some(stored) = unhex(&self.hash) else { return false };
+        let computed = digest(&salt_bytes, given);
+        if stored.len() != computed.len() {
+            return false;
+        }
+        let mut diff = 0u8;
+        for (a, b) in stored.iter().zip(computed.iter()) {
+            diff |= a ^ b;
+        }
+        diff == 0
+    }
+}
+
+fn digest(salt: &[u8], password: &str) -> Vec<u8> {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(salt);
+    h.update(password.as_bytes());
+    h.finalize().to_vec()
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// `None` on anything that is not an even number of ASCII hex digits.
+///
+/// **The `is_ascii` guard is a panic fence, not a taste**: `s[i..i + 2]` slices
+/// by BYTE, and a multi-byte character straddling that boundary is a panic
+/// rather than an error. `tables::check_shape` refuses a stored lock that is
+/// not hex, so no document reaching [`Lock::matches`] through the API has one —
+/// but `matches` is public and this makes it total on its own terms.
+fn unhex(s: &str) -> Option<Vec<u8>> {
+    if !s.is_ascii() || !s.len().is_multiple_of(2) {
+        return None;
+    }
+    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok()).collect()
 }
 
 /// The document, as it is stored (`<id>.table.json`).
@@ -91,6 +190,12 @@ pub struct TableDoc {
     pub status: TableStatus,
     /// `Some` once playing; see [`TurnMirror`].
     pub turn: Option<TurnMirror>,
+    /// The table password, or none (M6.2). **Never on the wire** — like `seed`
+    /// and `keeps`, and for the plainer reason that a salt and a hash handed to
+    /// a browser are a password to attack offline. [`TableView`] carries the
+    /// boolean `locked` in its place.
+    #[serde(default)]
+    pub lock: Option<Lock>,
 }
 
 impl TableDoc {
@@ -100,9 +205,29 @@ impl TableDoc {
         self.seats
             .iter()
             .enumerate()
-            .filter(|(_, s)| matches!(s, SeatDoc::Human { user: u } if u == user.as_str()))
+            .filter(|(_, s)| matches!(s, SeatDoc::Human { user: u, .. } if u == user.as_str()))
             .map(|(i, _)| PlayerId::new(i as u8))
             .collect()
+    }
+
+    /// Every seat nobody holds yet, lowest first — what a join fills and what
+    /// the lobby counts.
+    pub fn open_seats(&self) -> Vec<PlayerId> {
+        self.seats
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| matches!(s, SeatDoc::Open))
+            .map(|(i, _)| PlayerId::new(i as u8))
+            .collect()
+    }
+
+    pub fn is_full(&self) -> bool {
+        self.open_seats().is_empty()
+    }
+
+    /// True when the table has no lock, or the lock matches.
+    pub fn check_password(&self, given: &str) -> bool {
+        self.lock.as_ref().is_none_or(|l| l.matches(given))
     }
 
     /// How many DIFFERENT people hold a seat here.
@@ -115,8 +240,8 @@ impl TableDoc {
         self.seats
             .iter()
             .filter_map(|s| match s {
-                SeatDoc::Human { user } => Some(user.as_str()),
-                SeatDoc::Bot => None,
+                SeatDoc::Human { user, .. } => Some(user.as_str()),
+                SeatDoc::Bot | SeatDoc::Open => None,
             })
             .collect::<std::collections::BTreeSet<_>>()
             .len()
@@ -168,6 +293,8 @@ impl TableDoc {
             status: self.status,
             to_move: self.turn.map(|t| PlayerId::new(t.to_move)),
             over: self.turn.map(|t| t.over),
+            locked: self.lock.is_some(),
+            winner: self.turn.and_then(|t| t.winner).map(PlayerId::new),
         }
     }
 }
@@ -176,7 +303,9 @@ impl TableDoc {
 ///
 /// Other seats' EMAILS are here, to seated players only: they were invited by
 /// email, and a table whose other seats are anonymous cannot say whose turn it
-/// is. A display name is M6.2's.
+/// is. Since M6.2 a seat may also carry the display NAME its holder gave, which
+/// is what the screen prefers; the email stays because a name is chosen, not
+/// unique, and two people at one table may pick the same one.
 #[derive(Debug, Clone, Serialize)]
 pub struct TableView {
     pub id: String,
@@ -195,6 +324,12 @@ pub struct TableView {
     /// Present once playing, `null` while dealing — both from [`TurnMirror`].
     pub to_move: Option<PlayerId>,
     pub over: Option<bool>,
+    /// Whether a password is needed to join (and, from M6.3, to watch). The
+    /// salt and the hash stay in the document; see [`Lock`].
+    pub locked: bool,
+    /// Who won, once `over`. `null` at every other moment, including a table
+    /// that is still dealing.
+    pub winner: Option<PlayerId>,
 }
 
 /// What `GET /api/games/{id}/deal` serves: the set table, and the caller's OWN
@@ -248,14 +383,15 @@ mod tests {
             colors: vec![PlayerColor::Red, PlayerColor::Blue, PlayerColor::Yellow],
             start_seat: 0,
             seats: vec![
-                SeatDoc::Human { user: "a@t.test".into() },
-                SeatDoc::Human { user: "b@t.test".into() },
-                SeatDoc::Human { user: "a@t.test".into() },
+                SeatDoc::Human { user: "a@t.test".into(), name: None },
+                SeatDoc::Human { user: "b@t.test".into(), name: None },
+                SeatDoc::Human { user: "a@t.test".into(), name: None },
             ],
             keeps: vec![None, None, None],
             seed: 7,
             status: TableStatus::Dealing,
             turn: None,
+            lock: None,
         }
     }
 
@@ -301,5 +437,93 @@ mod tests {
         let d = doc();
         let back: TableDoc = serde_json::from_str(&serde_json::to_string(&d).unwrap()).unwrap();
         assert_eq!(serde_json::to_string(&back).unwrap(), serde_json::to_string(&d).unwrap());
+    }
+
+    /// M6.2's shape: an OPEN table with two unfilled seats, a display name on
+    /// the one seat that is taken, and no lock.
+    ///
+    /// A second helper rather than a widened [`doc`], because the cells above
+    /// are about a DEALING table and the ones below are about an open one —
+    /// and `check_shape` refuses each other's status paired with each other's
+    /// seats, so one fixture cannot serve both.
+    fn open_doc() -> TableDoc {
+        TableDoc {
+            schema: 2,
+            id: "t".into(),
+            name: None,
+            created_by: "red@t.test".into(),
+            created_at: 1_789_000_000,
+            players: 3,
+            colors: vec![PlayerColor::Red, PlayerColor::Blue, PlayerColor::Green],
+            start_seat: 0,
+            seats: vec![
+                SeatDoc::Human { user: "red@t.test".into(), name: Some("Red".into()) },
+                SeatDoc::Open,
+                SeatDoc::Open,
+            ],
+            keeps: vec![None, None, None],
+            seed: 1,
+            status: TableStatus::Open,
+            turn: None,
+            lock: None,
+        }
+    }
+
+    #[test]
+    fn a_schema_one_document_reads_with_every_new_field_at_its_default() {
+        let json = r#"{"schema":1,"id":"old","name":"old","created_by":"red@t.test",
+            "created_at":1789000000,"players":2,"colors":["Red","Blue"],"start_seat":0,
+            "seats":[{"kind":"human","user":"red@t.test"},{"kind":"human","user":"blue@t.test"}],
+            "keeps":[1,2],"seed":7,"status":"playing","turn":{"to_move":0,"over":false}}"#;
+        let doc: TableDoc = serde_json::from_str(json).expect("a schema-1 document parses");
+        assert!(doc.lock.is_none());
+        assert!(doc.seats.iter().all(|s| matches!(s, SeatDoc::Human { name: None, .. })));
+        assert_eq!(doc.turn.expect("a mirror").winner, None);
+        assert!(!doc.is_full() || doc.open_seats().is_empty());
+    }
+
+    #[test]
+    fn open_seats_and_is_full_read_the_seats() {
+        let d = open_doc();
+        assert_eq!(d.open_seats(), vec![PlayerId::new(1), PlayerId::new(2)]);
+        assert!(!d.is_full());
+        let mut full = d.clone();
+        full.seats[1] = SeatDoc::Bot;
+        full.seats[2] = SeatDoc::Human { user: "b@t.test".into(), name: None };
+        assert!(full.is_full());
+        assert!(full.open_seats().is_empty());
+    }
+
+    #[test]
+    fn a_lock_matches_its_password_and_refuses_a_one_byte_variant_and_the_empty_string() {
+        let lock = Lock::new("sesame");
+        assert_eq!(lock.salt.len(), 32, "16 bytes as hex");
+        assert_eq!(lock.hash.len(), 64, "SHA-256 as hex");
+        assert!(lock.matches("sesame"));
+        assert!(!lock.matches("sesamf"));
+        assert!(!lock.matches("sesam"));
+        assert!(!lock.matches(""));
+        assert_ne!(Lock::new("sesame").salt, lock.salt, "two locks for one password differ");
+        let mut d = open_doc();
+        assert!(d.check_password("anything"), "no lock: any password passes");
+        d.lock = Some(lock);
+        assert!(d.check_password("sesame"));
+        assert!(!d.check_password("open"));
+    }
+
+    #[test]
+    fn the_view_carries_locked_and_winner_and_never_the_salt_or_the_hash() {
+        let mut d = open_doc();
+        d.lock = Some(Lock::new("sesame"));
+        d.turn = Some(TurnMirror { to_move: 1, over: true, winner: Some(2) });
+        let v = serde_json::to_value(d.view(&User::parse("red@t.test").unwrap())).unwrap();
+        assert_eq!(v["locked"], true);
+        assert_eq!(v["winner"], 2);
+        let text = v.to_string();
+        for key in ["salt", "hash", "\"lock\""] {
+            assert!(!text.contains(key), "{key} must not reach the view: {text}");
+        }
+        assert_eq!(v["seats"][1]["kind"], "open");
+        assert_eq!(v["seats"][0]["name"], "Red");
     }
 }

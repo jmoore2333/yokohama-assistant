@@ -39,7 +39,13 @@ use crate::table::{
 };
 
 /// The shape version stamped on every table document this build writes.
-const TABLE_SCHEMA: u32 = 1;
+///
+/// **2 since M6.2**, which added an open seat kind, an open status, a per-seat
+/// display name and the lock. Every one of those is `#[serde(default)]`, so a
+/// schema-1 document READS here unchanged; the number is what lets an OLDER
+/// server refuse a document a newer one wrote, which is the direction that
+/// cannot be made safe by defaults.
+const TABLE_SCHEMA: u32 = 2;
 
 /// The bot stream seed a THROWAWAY table is built with.
 ///
@@ -224,7 +230,7 @@ fn config_of(req: &NewGame, creator: &User) -> Result<(GameConfig, Vec<SeatDoc>)
             // finds.
             (Some(raw), false) => {
                 let user = User::parse(raw).map_err(|e| format!("seat {i}: {e}"))?;
-                seats.push(SeatDoc::Human { user: user.as_str().to_string() });
+                seats.push(SeatDoc::Human { user: user.as_str().to_string(), name: None });
             }
             (None, true) => seats.push(SeatDoc::Bot),
             _ => return Err(format!("seat {i}: exactly one of user or bot")),
@@ -236,7 +242,8 @@ fn config_of(req: &NewGame, creator: &User) -> Result<(GameConfig, Vec<SeatDoc>)
     if seats.iter().all(|s| matches!(s, SeatDoc::Bot)) {
         return Err("at least one seat must stay human".to_string());
     }
-    if !seats.iter().any(|s| matches!(s, SeatDoc::Human { user } if user == creator.as_str())) {
+    if !seats.iter().any(|s| matches!(s, SeatDoc::Human { user, .. } if user == creator.as_str()))
+    {
         return Err(format!("the creator must hold a seat — {creator} is not seated"));
     }
     if n > 2 && seats.iter().any(|s| matches!(s, SeatDoc::Bot)) {
@@ -284,6 +291,39 @@ fn config_of(req: &NewGame, creator: &User) -> Result<(GameConfig, Vec<SeatDoc>)
 /// the listing deliberately does not go through `read_table` — one unreadable
 /// file must not take the other nineteen tables off the lobby.
 fn check_shape(doc: &TableDoc) -> Result<(), String> {
+    if doc.schema > TABLE_SCHEMA {
+        return Err(format!(
+            "schema {} — this server reads up to {TABLE_SCHEMA}; a newer server wrote it",
+            doc.schema
+        ));
+    }
+    let open = doc.seats.iter().any(|s| matches!(s, SeatDoc::Open));
+    if open && doc.status != TableStatus::Open {
+        return Err(format!("an open seat at a table whose status is {:?}", doc.status));
+    }
+    if doc.status == TableStatus::Open && !open {
+        return Err("status open with no open seat".to_string());
+    }
+    if let Some(lock) = &doc.lock {
+        if lock.salt.len() != 32 || !lock.salt.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err("the lock's salt is not 32 hex characters".to_string());
+        }
+        if lock.hash.len() != 64 || !lock.hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err("the lock's hash is not 64 hex characters".to_string());
+        }
+    }
+    for (i, seat) in doc.seats.iter().enumerate() {
+        if let SeatDoc::Human { name: Some(name), .. } = seat {
+            if let Err(why) = check_name(name) {
+                return Err(format!("seat {i}'s name: {why}"));
+            }
+        }
+    }
+    if let Some(TurnMirror { winner: Some(w), .. }) = doc.turn {
+        if usize::from(w) >= usize::from(doc.players) {
+            return Err(format!("winner {w} at a {}-seat table", doc.players));
+        }
+    }
     if !(2..=4).contains(&doc.players) {
         return Err(format!("{} players — a table is 2 to 4", doc.players));
     }
@@ -307,6 +347,22 @@ fn check_shape(doc: &TableDoc) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// The display-name rule, applied on WRITE (create, join, keep) and on READ
+/// ([`check_shape`]), so a document this server wrote is never one it refuses.
+///
+/// Trimmed and returned rather than merely checked: the caller stores what
+/// comes back, so " Red " and "Red" are one name and not two.
+pub(crate) fn check_name(raw: &str) -> Result<String, String> {
+    let name = raw.trim();
+    if name.is_empty() || name.chars().count() > 64 {
+        return Err("a name is 1 to 64 characters".to_string());
+    }
+    if name.chars().any(char::is_control) {
+        return Err("a name has no control characters".to_string());
+    }
+    Ok(name.to_string())
 }
 
 /// The engine config a stored table describes. The document is the authority on
@@ -531,6 +587,9 @@ impl Games {
             seed,
             status: TableStatus::Dealing,
             turn: None,
+            // Task 3 is where a create can open a table and set a password;
+            // until then every table this server opens is full and unlocked.
+            lock: None,
         };
         match self.write_table(&doc, None) {
             Ok(_) => Ok(doc.view(creator)),
@@ -898,6 +957,7 @@ impl Games {
 mod tests {
     use super::*;
     use crate::games::test_support::*;
+    use crate::table::Lock;
     use crate::store::{GameId, MemStore, Store};
     use yokohama_core::GameRecord;
 
@@ -1234,9 +1294,9 @@ mod tests {
         // so the claim that it never names a bot is asserted where it lives.
         let seats = |first_is_bot: bool| {
             if first_is_bot {
-                vec![SeatDoc::Bot, SeatDoc::Human { user: "red@t.test".to_string() }]
+                vec![SeatDoc::Bot, SeatDoc::Human { user: "red@t.test".to_string(), name: None }]
             } else {
-                vec![SeatDoc::Human { user: "red@t.test".to_string() }, SeatDoc::Bot]
+                vec![SeatDoc::Human { user: "red@t.test".to_string(), name: None }, SeatDoc::Bot]
             }
         };
         assert_eq!(first_human_seat(&seats(true)), PlayerId::new(1), "the bot is skipped");
@@ -1558,6 +1618,162 @@ mod tests {
         games
             .create(&two_people("after", CORPUS_SEED), &red)
             .expect("`table_lock` is not poisoned, so the server can still open a table");
+    }
+
+    /// Every M6.2 shape arm, read as the SENTENCE it answers with.
+    ///
+    /// Built in Rust rather than as JSON, and that is the point: the six arms
+    /// below guard against a document some future write path produces, and a
+    /// JSON literal would only prove that serde can be handed a bad string. A
+    /// `TableDoc` that type-checks and is still refused is the case that
+    /// matters.
+    ///
+    /// The fixture is valid on its own — asserted first, so a cell whose arms
+    /// all fire for the wrong reason cannot pass.
+    #[test]
+    fn every_shape_arm_refuses_with_the_sentence_it_promises() {
+        let valid = || TableDoc {
+            schema: TABLE_SCHEMA,
+            id: "shape".into(),
+            name: Some("shape".into()),
+            created_by: "red@t.test".into(),
+            created_at: 1_789_000_000,
+            players: 2,
+            colors: vec![PlayerColor::Red, PlayerColor::Blue],
+            start_seat: 0,
+            seats: vec![
+                SeatDoc::Human { user: "red@t.test".into(), name: Some("Red".into()) },
+                SeatDoc::Human { user: "blue@t.test".into(), name: None },
+            ],
+            keeps: vec![None, None],
+            seed: CORPUS_SEED,
+            status: TableStatus::Dealing,
+            turn: None,
+            lock: None,
+        };
+        assert_eq!(check_shape(&valid()), Ok(()), "the fixture itself is well formed");
+
+        let newer = || {
+            let mut d = valid();
+            d.schema = TABLE_SCHEMA + 1;
+            d
+        };
+        let open_seat_while_dealing = || {
+            let mut d = valid();
+            d.seats[1] = SeatDoc::Open;
+            d
+        };
+        let open_with_no_open_seat = || {
+            let mut d = valid();
+            d.status = TableStatus::Open;
+            d
+        };
+        let short_salt = || {
+            let mut d = valid();
+            let mut lock = Lock::new("sesame");
+            lock.salt.pop();
+            d.lock = Some(lock);
+            d
+        };
+        let long_name = || {
+            let mut d = valid();
+            d.seats[0] = SeatDoc::Human { user: "red@t.test".into(), name: Some("n".repeat(65)) };
+            d
+        };
+        let control_name = || {
+            let mut d = valid();
+            d.seats[1] =
+                SeatDoc::Human { user: "blue@t.test".into(), name: Some("bl\u{7}ue".into()) };
+            d
+        };
+        let winner_off_the_table = || {
+            let mut d = valid();
+            d.status = TableStatus::Playing;
+            d.turn = Some(TurnMirror { to_move: 0, over: true, winner: Some(2) });
+            d
+        };
+
+        let cases: [(&str, TableDoc); 7] = [
+            ("newer server", newer()),
+            ("open seat", open_seat_while_dealing()),
+            ("no open seat", open_with_no_open_seat()),
+            ("salt", short_salt()),
+            ("1 to 64", long_name()),
+            ("control", control_name()),
+            ("winner 2", winner_off_the_table()),
+        ];
+        for (fragment, doc) in cases {
+            let why = check_shape(&doc).expect_err(&format!("{fragment}: must refuse"));
+            assert!(why.contains(fragment), "expected {fragment:?} in the refusal, read {why:?}");
+        }
+
+        // And the far side of the open-seat pair: a table that IS open with an
+        // open seat is well formed, so the two arms above fence a mismatch
+        // rather than the variant.
+        let mut open = valid();
+        open.status = TableStatus::Open;
+        open.seats[1] = SeatDoc::Open;
+        assert_eq!(check_shape(&open), Ok(()), "an open table with an open seat is fine");
+    }
+
+    /// **The mirror names the winner once the game is over, and nobody before
+    /// then.**
+    ///
+    /// `final_result` scores whatever position it is handed, so a mirror that
+    /// filled `winner` unconditionally would name the current LEADER as the
+    /// winner of every game in the lobby. The cell reads the stored document
+    /// before the end (`None`) and after it, against the engine's own answer.
+    ///
+    /// The finish is played by a both-bot session built over the SAME config,
+    /// seed and keeps the table describes — `Games::persist` compares record
+    /// identity by seed, so this is that table's game, played out — which is
+    /// `lib.rs`'s `a_finished_two_person_game` mechanism, routed through
+    /// `persist` because `persist` is the subject here.
+    #[test]
+    fn the_mirror_names_the_winner_once_over() {
+        use yokohama_cli::repl::Repl;
+        use yokohama_core::{GameConfig, StartingOrderChoice};
+
+        let games = games();
+        let red = who("red@t.test");
+        let _handle =
+            playing(&games, &two_people("winner", CORPUS_SEED), &["red@t.test", "blue@t.test"]);
+        let before = games.table("winner", &red).unwrap().turn.expect("a mirror");
+        assert!(!before.over);
+        assert_eq!(before.winner, None, "a game in progress has no winner");
+
+        // The very game the table describes: `playing` keeps card 1 at every
+        // human seat, which is `Keep(0)`.
+        let mut config = GameConfig::for_player_count(2);
+        config.player_colors = vec![PlayerColor::Red, PlayerColor::Blue];
+        config.start_player = PlayerId::new(0);
+        let mut session = Session::new_sim(
+            config,
+            CORPUS_SEED,
+            vec![StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)],
+            Rules::standard(),
+        )
+        .expect("a game");
+        let bots =
+            BotSeats::new(vec![Some(PROVISIONAL_DEFAULT_BOT); 2], CORPUS_SEED);
+        session.set_run_seats(bots.seat_provenance());
+        let mut repl = Repl::new(session);
+        for _ in 0..400 {
+            if repl.session.is_over() {
+                break;
+            }
+            repl.pump_bots();
+        }
+        assert!(repl.session.is_over(), "the both-bot pump must reach a finished game");
+
+        games.persist("winner", &repl).expect("the finished record");
+        let after = games.table("winner", &red).unwrap().turn.expect("a mirror");
+        assert!(after.over);
+        assert_eq!(
+            after.winner,
+            Some(repl.session.final_result().winner.0),
+            "the mirror carries the engine's winner",
+        );
     }
 
     /// A [`MemStore`] with two GATES in it, so a test can choose an
