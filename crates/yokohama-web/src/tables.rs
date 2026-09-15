@@ -586,6 +586,43 @@ fn set_table(
     Ok(table)
 }
 
+/// Which question `GET /api/games` is asking (§3.3).
+///
+/// Two scopes and not a filter grammar: a lobby has exactly two lists on it —
+/// the tables I sit at and the tables I could sit at — and a general predicate
+/// over table documents would be a query language nobody asked for, with a
+/// cost per row that grows without anything bounding it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    /// Every table this caller holds a seat at, at every status.
+    Mine,
+    /// Every table still filling its seats, whoever made it (R-2.7).
+    Open,
+}
+
+impl std::str::FromStr for Scope {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s {
+            "mine" => Ok(Self::Mine),
+            "open" => Ok(Self::Open),
+            other => Err(format!("no scope named {other:?} — the two are mine and open")),
+        }
+    }
+}
+
+pub const LIST_LIMIT_DEFAULT: usize = 20;
+pub const LIST_LIMIT_MAX: usize = 100;
+
+/// The cursor naming this row: `<created_at>,<id>`.
+///
+/// Both halves, because `created_at` is unix SECONDS and twenty tables made in
+/// one second share one — a cursor of the timestamp alone could not say which
+/// of them the caller had already seen.
+fn cursor_of(doc: &TableDoc) -> String {
+    format!("{},{}", doc.created_at, doc.id)
+}
+
 impl Games {
     /// Open a TABLE. No record, no session, nothing to play yet: the seats are
     /// bound, the seed is drawn, and every human seat is owed a deal.
@@ -700,6 +737,10 @@ impl Games {
     }
 
     /// The table as a seated caller may read it, REPAIRED first if it needs it.
+    ///
+    /// **This is still the fence every session route reads through** (R-1.5,
+    /// via `seated`): the ONE widening M6.2 makes lives in
+    /// [`Games::table_for_anyone`] and is reached only by `GET …/{id}/table`.
     pub fn table(&self, id: &str, user: &User) -> Result<TableDoc, GameError> {
         let (doc, _) = self
             .settle(id)?
@@ -708,6 +749,30 @@ impl Games {
             return Err(GameError::Forbidden("you are not seated at this table".to_string()));
         }
         Ok(doc)
+    }
+
+    /// [`Games::table`]'s rule with R-2.7's ONE widening: an OPEN table reads
+    /// for any signed-in caller.
+    ///
+    /// A join link is an address and nothing else (R-2.5), so the person who
+    /// follows one has to be able to see what they are joining — the seats, who
+    /// is already there, and whether a password is wanted — before they hold a
+    /// seat at it. What an open table discloses is exactly what the `open`
+    /// listing already hands to everybody.
+    ///
+    /// **Nothing else widens, and the status is checked FIRST so nothing
+    /// leaks.** A stranger at a table that is not open gets `table`'s own
+    /// sentence and learns only that the table is not theirs: not its status,
+    /// not who is at it. Every other session route keeps reading through
+    /// [`Games::table`].
+    pub fn table_for_anyone(&self, id: &str, user: &User) -> Result<TableDoc, GameError> {
+        let (doc, _) = self
+            .settle(id)?
+            .ok_or_else(|| GameError::NotFound(format!("no game named {id:?}")))?;
+        if doc.status == TableStatus::Open || !doc.seats_of(user).is_empty() {
+            return Ok(doc);
+        }
+        Err(GameError::Forbidden("you are not seated at this table".to_string()))
     }
 
     /// **Self-repair, on the way past.** A table stuck at `dealing` with every
@@ -1034,11 +1099,16 @@ impl Games {
         Ok(doc.view(user))
     }
 
-    /// The tables this user sits at, newest first.
+    /// **One page of the lobby**, in the scope the caller asked for (§3.3).
     ///
     /// **A record with no table document is not a game this API serves** (R-P7):
-    /// the listing is over `Doc::Table`, so a pre-M6 record is neither listed
-    /// nor openable and is left on disk untouched for the Docker-archive pull.
+    /// the listing is over `Doc::Table` ALONE — no record is read and no session
+    /// is built, which `a_listing_reads_no_record_and_builds_no_session` holds
+    /// with a store whose record reader panics. `to_move`, `over` and `winner`
+    /// come off the table's own [`TurnMirror`], which exists for exactly this:
+    /// a lobby that read them from the games would rebuild every session on the
+    /// volume on every poll. So a pre-M6 record is neither listed nor openable
+    /// and is left on disk untouched for the Docker-archive pull.
     ///
     /// A document that cannot be read, parsed or trusted to be indexed is
     /// SKIPPED rather than failing the whole list: the lobby's job is to show
@@ -1053,7 +1123,29 @@ impl Games {
     /// why. Each skip writes one line naming the id and the failure, through the
     /// same `eprintln!` channel `main.rs` reports its own failures on, so a
     /// corrupt table is visible in the container log.
-    pub fn list_for(&self, user: &User) -> Result<Vec<TableView>, String> {
+    ///
+    /// **The order is `(created_at desc, id asc)` and it is TOTAL**, which is
+    /// what makes the cursor exact rather than approximate: `created_at` is unix
+    /// SECONDS, so a sort on it alone leaves ties whose order is whatever the
+    /// store listed, and a page boundary inside such a tie would drop rows or
+    /// repeat them. `before` names the last row the caller saw and the retain is
+    /// STRICTLY after it in that same order — no gap, no overlap
+    /// (`the_cursor_pages_without_gap_or_overlap`).
+    ///
+    /// `limit` is the caller's page size, already range-checked at the route;
+    /// **`0` is refused here too** rather than trusted, because `rows[limit - 1]`
+    /// below would otherwise index `usize::MAX` for any in-process caller that
+    /// did not check. `next` is `Some` only when a row was actually left over.
+    pub fn list(
+        &self,
+        user: &User,
+        scope: Scope,
+        limit: usize,
+        before: Option<(u64, String)>,
+    ) -> Result<(Vec<TableView>, Option<String>), String> {
+        if limit == 0 {
+            return Err("a page of no rows is not a page".to_string());
+        }
         let mut rows: Vec<TableDoc> = Vec::new();
         for id in self.store.list(Doc::Table)? {
             let doc = match self.store.read(Doc::Table, &id) {
@@ -1085,15 +1177,35 @@ impl Games {
                 eprintln!("{id:?}'s table document is malformed, so it is not in this listing: {why}");
                 continue;
             }
-            if doc.seats_of(user).is_empty() {
-                continue;
+            let keep = match scope {
+                Scope::Mine => !doc.seats_of(user).is_empty(),
+                Scope::Open => doc.status == TableStatus::Open,
+            };
+            if keep {
+                rows.push(doc);
             }
-            rows.push(doc);
         }
         // Newest first, ties broken by id so the order is total and a reload
         // does not reshuffle two tables made in the same second.
         rows.sort_by(|a, b| b.created_at.cmp(&a.created_at).then_with(|| a.id.cmp(&b.id)));
-        Ok(rows.iter().map(|doc| doc.view(user)).collect())
+        if let Some((at, id)) = before {
+            // Strictly AFTER the cursor row in this order: older created_at, or
+            // an equal created_at with a greater id.
+            rows.retain(|d| d.created_at < at || (d.created_at == at && d.id > id));
+        }
+        let next = (rows.len() > limit).then(|| cursor_of(&rows[limit - 1]));
+        rows.truncate(limit);
+        Ok((rows.iter().map(|doc| doc.view(user)).collect(), next))
+    }
+
+    /// Every table this user sits at, newest first — [`Games::list`] at the
+    /// `mine` scope with no paging.
+    ///
+    /// Kept as a name because the cells that predate the scopes read this
+    /// question and not a page of it; it DELEGATES rather than restating the
+    /// loop, so there is one listing in this file and not two that can disagree.
+    pub fn list_for(&self, user: &User) -> Result<Vec<TableView>, String> {
+        self.list(user, Scope::Mine, LIST_LIMIT_MAX, None).map(|(rows, _)| rows)
     }
 
     /// Delete, and remember that we did. **The creator's, and nobody else's.**
@@ -2946,4 +3058,166 @@ mod tests {
         assert_eq!(before.1, after.1, "and so is the version");
     }
 
+    /// **The two scopes are two different questions over one set of documents**
+    /// (§3.3), and the sort is `(created_at desc, id asc)` in both.
+    ///
+    /// `mine` is every table this caller holds a seat at WHATEVER its status —
+    /// so the open one red made is on it beside the dealing one — and `open` is
+    /// every open table WHOEVER made it, so blue's is on red's `open` listing
+    /// while blue's dealing table is on neither of red's.
+    ///
+    /// **The sleep is what makes this cell about the sort's primary key.**
+    /// `created_at` is unix SECONDS (R-plan-1), so three creates in one second
+    /// are one instant and every assertion below would be about the id
+    /// tie-break instead — the same reason
+    /// `the_list_is_the_tables_i_sit_at_newest_first_with_whose_turn_it_is`
+    /// pays for one. `o1` is made first and alone; `mine-only` and `o2` land
+    /// after it and are never compared with each other, falling as they do in
+    /// different scopes.
+    ///
+    /// The last line is R-2.7 read from the LISTING rather than from a route: a
+    /// row on the `open` scope may be a table this caller has no seat at, so
+    /// `my_seats` is empty on one of these two rows and not on the other.
+    #[test]
+    fn the_two_scopes_list_by_construction_newest_first() {
+        let games = games();
+        let red = who("red@t.test");
+        let blue = who("blue@t.test");
+        open_two(&games, "o1", None);
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        games.create(&two_people("mine-only", CORPUS_SEED), &red).unwrap();
+        let mut r = req("o2");
+        r.seats = vec![
+            SeatSpec { user: Some("blue@t.test".into()), bot: false, open: false },
+            SeatSpec { user: None, bot: false, open: true },
+        ];
+        games.create(&r, &blue).unwrap();
+        let (mine, next) = games.list(&red, Scope::Mine, 20, None).unwrap();
+        assert_eq!(mine.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), vec!["mine-only", "o1"]);
+        assert!(next.is_none());
+        let (open, _) = games.list(&red, Scope::Open, 20, None).unwrap();
+        assert_eq!(open.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), vec!["o2", "o1"]);
+        assert!(open.iter().all(|t| t.status == TableStatus::Open));
+        assert!(open[0].my_seats.is_empty() && open[1].my_seats == vec![PlayerId::new(0)]);
+    }
+
+    /// **The cursor pages without a gap and without an overlap** (§3.3).
+    ///
+    /// Five tables in one second, so every row shares a `created_at` and the
+    /// whole of the ordering is the id tie-break — which is the case the cursor
+    /// has to get right, since `created_at` alone cannot separate these rows and
+    /// a cursor comparing it alone would either repeat the page it just served
+    /// or skip past it.
+    ///
+    /// The walk asserts the WHOLE SET at the end rather than each page, because
+    /// a duplicate and an omission are the two failures and only the set sees
+    /// both: an off-by-one at the boundary (`>=` where the code says `>`) hands
+    /// `p1` back on the second page, and `seen` then has six entries against
+    /// five.
+    #[test]
+    fn the_cursor_pages_without_gap_or_overlap() {
+        let games = games();
+        let red = who("red@t.test");
+        for i in 0..5 {
+            games.create(&req(&format!("p{i}")), &red).unwrap();
+        }
+        let mut seen: Vec<String> = Vec::new();
+        let mut before = None;
+        loop {
+            let (page, next) = games.list(&red, Scope::Mine, 2, before.clone()).unwrap();
+            assert!(page.len() <= 2);
+            seen.extend(page.iter().map(|t| t.id.clone()));
+            match next {
+                Some(cursor) => {
+                    let (at, id) = cursor.split_once(',').expect("created_at,id");
+                    before = Some((at.parse::<u64>().unwrap(), id.to_string()));
+                }
+                None => break,
+            }
+        }
+        seen.sort();
+        assert_eq!(seen, (0..5).map(|i| format!("p{i}")).collect::<Vec<_>>());
+    }
+
+    /// **Both scopes read TABLE documents alone** (§3.3), proven by a store
+    /// whose record reader panics.
+    ///
+    /// The fence earns a store of its own because the cheap way to list would
+    /// be the expensive one: `to_move`, `over` and `winner` all live in the
+    /// session, and a listing that reached for them would rebuild every game on
+    /// the volume on every poll of the lobby. The turn mirror exists so that it
+    /// does not, and this is what says so.
+    ///
+    /// **Armed AFTER the arranging, and that is not a weakening.** `create`
+    /// asks the store about both documents — an id is taken if either is
+    /// present — so a store that panicked from the first call would refuse to
+    /// make a table at all and this cell could never reach the calls it is
+    /// about. The flag is set between the arranging and the acting, and the
+    /// acting is the part under test.
+    #[test]
+    fn a_listing_reads_no_record_and_builds_no_session() {
+        struct RecordPanics {
+            inner: MemStore,
+            armed: std::sync::atomic::AtomicBool,
+        }
+        impl RecordPanics {
+            fn armed(&self) -> bool {
+                self.armed.load(std::sync::atomic::Ordering::SeqCst)
+            }
+        }
+        impl Store for RecordPanics {
+            fn list(&self, doc: Doc) -> Result<Vec<GameId>, String> {
+                self.inner.list(doc)
+            }
+            fn read(&self, doc: Doc, id: &str) -> Result<Option<(String, Version)>, String> {
+                assert!(
+                    !(doc == Doc::Record && self.armed()),
+                    "the listing read a RECORD for {id}"
+                );
+                self.inner.read(doc, id)
+            }
+            fn write_if_version(
+                &self,
+                doc: Doc,
+                id: &str,
+                json: &str,
+                expected: Option<Version>,
+            ) -> Result<Version, WriteError> {
+                self.inner.write_if_version(doc, id, json, expected)
+            }
+            fn delete(&self, id: &str) -> Result<(), String> {
+                self.inner.delete(id)
+            }
+        }
+        let store = Arc::new(RecordPanics {
+            inner: MemStore::default(),
+            armed: std::sync::atomic::AtomicBool::new(false),
+        });
+        let games = Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>);
+        let red = who("red@t.test");
+        open_two(&games, "o", None);
+        games.create(&two_people("d", CORPUS_SEED), &red).unwrap();
+        store.armed.store(true, std::sync::atomic::Ordering::SeqCst);
+        games.list(&red, Scope::Mine, 20, None).unwrap();
+        games.list(&red, Scope::Open, 20, None).unwrap();
+    }
+
+    /// **An open table reads for anybody signed in; every other status keeps
+    /// R-1.5's 403** (R-2.7).
+    ///
+    /// The dealing half is the anti-vacuity partner and is the half with teeth:
+    /// a widening written as "any caller may read a table" would pass the first
+    /// three lines and hand a stranger the seats, the colours and the status of
+    /// every game on the volume.
+    #[test]
+    fn an_open_table_is_readable_by_a_stranger_and_a_dealing_one_is_not() {
+        let games = games();
+        let stranger = who("nobody@t.test");
+        open_two(&games, "o", None);
+        let doc = games.table_for_anyone("o", &stranger).expect("an open table reads");
+        assert!(doc.view(&stranger).my_seats.is_empty());
+        games.create(&two_people("d", CORPUS_SEED), &who("red@t.test")).unwrap();
+        assert!(matches!(games.table_for_anyone("d", &stranger), Err(GameError::Forbidden(_))));
+        assert!(matches!(games.table_for_anyone("nope", &stranger), Err(GameError::NotFound(_))));
+    }
 }
