@@ -792,11 +792,14 @@ export function App() {
             </div>
           </details>
         </nav>
-        {/* The payload is built for the seat to move, so the banner names WHO
-            is playing rather than saying "your turn" — at 3P or 4P one operator
+        {/* The payload is built for the CALLER's seat, which is not always the
+            seat to move — so the banner names WHO is playing rather than saying
+            "your turn". That is right on both counts: while somebody else is
+            thinking it says whose turn it is, and at 3P or 4P one operator
             drives more than one human seat, exactly as the terminal does, and a
             screen that will not say which seat is a screen you can play the
-            wrong turn on. */}
+            wrong turn on. `view.to_move` is the field it reads, and it means
+            the mover whoever asked. */}
         <span className="meta turn">
           {state.over ? (
             "finished"

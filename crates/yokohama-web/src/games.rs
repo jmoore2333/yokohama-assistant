@@ -286,16 +286,31 @@ fn config_of(req: &NewGame, creator: &User) -> Result<(GameConfig, Vec<SeatDoc>)
     Ok((config, seats))
 }
 
-/// Is this a document every consumer may INDEX BY SEAT?
+/// Is this a document every consumer may INDEX BY SEAT and BUILD A CONFIG FROM?
 ///
-/// **The `players` bound is the load-bearing half, and the length checks alone
-/// do not give it.** `TableDoc::seats_of` maps each seat's position through
-/// `PlayerId::new`, which `types/ids.rs` documents as PANICKING at `id >= 4` —
-/// so a document reading `players: 9` with nine seats and nine keeps satisfies
-/// every length comparison and then panics on its fifth seat. Inside a handler
-/// that is a dropped connection with no sentence in it; inside `Games::keep`,
-/// which holds `table_lock` across the read, it POISONS that mutex, and every
-/// later `create`, `keep` and repairing `settle` in the process fails with it.
+/// **The BOUNDS are the load-bearing half, and the length checks alone do not
+/// give them.** Three fields carry a number this module then hands to something
+/// that panics on a value it does not accept, and every one of them is reached
+/// on the path that holds `table_lock` across the read — where a panic is not a
+/// dropped connection but a POISONED mutex, after which every later `create`,
+/// `keep` and repairing `settle` in the process dies with it.
+///
+/// - `players`: `TableDoc::seats_of` maps each seat's position through
+///   `PlayerId::new`, which `types/ids.rs` documents as PANICKING at `id >= 4`,
+///   so `players: 9` with nine seats and nine keeps satisfies every length
+///   comparison and then panics on its fifth seat.
+/// - `start_seat`: [`config_from`] does `PlayerId::new(doc.start_seat)`, the
+///   same assertion, and [`Games::finalize`] makes that call under the lock.
+///   Measured on a hand-written `start_seat: 7`: `PlayerId must be 0-3, got 7`,
+///   raised from inside `Games::keep`.
+/// - `keeps[i]`: [`choices_of`] does `Keep(keep - 1)` on a `u8`, so a stored
+///   `0` is `attempt to subtract with overflow` in a debug build — measured, on
+///   the same call.
+///
+/// The keep bound is `{None, Some(1), Some(2)}` and not merely non-zero,
+/// because `1` and `2` are the only numbers `Games::keep` ever writes: the wire
+/// numbers the two dealt cards from 1, and `cards_of`'s doc is the join. A
+/// stored `3` indexes a third card that does not exist.
 ///
 /// Only this server writes these files, so failing here means a hand-edited or
 /// truncated one — which is exactly when a typed 500 naming the file beats a
@@ -317,6 +332,15 @@ fn check_shape(doc: &TableDoc) -> Result<(), String> {
             doc.seats.len(),
             doc.keeps.len(),
             doc.colors.len(),
+        ));
+    }
+    if usize::from(doc.start_seat) >= n {
+        return Err(format!("seat {} cannot start a {n}-seat game", doc.start_seat));
+    }
+    if let Some(i) = doc.keeps.iter().position(|k| !matches!(k, None | Some(1 | 2))) {
+        return Err(format!(
+            "seat {i} kept card {} — the dealt cards are numbered 1 and 2",
+            doc.keeps[i].expect("the arm above matched a present value"),
         ));
     }
     Ok(())
@@ -1081,13 +1105,28 @@ impl Games {
                 // it holds (a fresh game), so the deleted game overwrote the new
                 // one. Comparing the seed makes the two games distinguishable,
                 // which a name plus a length never was.
+                //
+                // **The two seeds are COMPARED here and printed nowhere**, and
+                // that is not tidiness. This sentence leaves the process: on an
+                // `input`, `lib.rs` pushes it into `warnings` as `APPLIED BUT
+                // NOT SAVED — {e}` and serializes it on the reply. So the
+                // version that named both numbers handed the OLD game's player
+                // the NEW table's setup seed — hidden-set member #1, which
+                // regenerates that table's decks, boxed pile, board and every
+                // deal. Narrow (a delete, a re-create under the same name, and
+                // an `input` inside `Repl::step` while it happens) and never in
+                // the corpus, so `no_committed_payload_carries_the_setup_seed`
+                // cannot see it. Pinned instead by the refusal's own cell,
+                // which reads the sentence for both spellings of both seeds.
+                //
+                // The length sentence below names an EVENT COUNT, which is
+                // public arithmetic about a game the caller is already playing.
                 if on_disk.seed != record.seed {
                     return Err(self.conflict(
                         id,
                         format!(
-                            "{id:?} now holds a different game (stored seed {}, this handle's {}) — \
-                             refusing to write one game's events over another's",
-                            on_disk.seed, record.seed,
+                            "{id:?} now holds a different game — refusing to write one game's \
+                             events over another's"
                         ),
                     ));
                 }
@@ -1239,8 +1278,32 @@ impl Games {
     /// back after the file is gone. It is bounded by `create`, which clears the
     /// id — so the set only ever holds ids that are deleted and not recreated,
     /// and re-creating a deleted name works exactly as before.
+    ///
+    /// **It is a TABLE WRITER, so it holds `table_lock` like the other two.**
+    /// Without it, a delete could read a table that was still dealing, and the
+    /// last `keep` could then write the table and enter `finalize` before the
+    /// unlink landed — leaving `finalize`'s `expected: None` record write to
+    /// succeed over two documents that were already gone. The result is an
+    /// orphan record: unlisted (R-P7 lists over tables), unopenable, and
+    /// holding the name forever, since `create` checks both documents. Measured
+    /// and reproduced in
+    /// `a_delete_cannot_interleave_with_the_keep_that_finalizes`.
+    ///
+    /// The table is therefore read through [`Games::read_table`] and not
+    /// through [`Games::table`]: `table` goes via `settle`, which takes this
+    /// same non-reentrant lock when a repair is due, and calling it from here
+    /// would deadlock. The two refusals it raises are restated inline so the
+    /// caller reads the same sentences — and NOT settling is the right answer
+    /// besides, since finalizing a table on the way to deleting it only writes
+    /// the record this function then has to remove.
     pub fn delete(&self, id: &str, user: &User) -> Result<(), GameError> {
-        let doc = self.table(id, user)?;
+        let _serialized = self.table_lock.lock().expect("games lock");
+        let (doc, _) = self
+            .read_table(id)?
+            .ok_or_else(|| GameError::NotFound(format!("no game named {id:?}")))?;
+        if doc.seats_of(user).is_empty() {
+            return Err(GameError::Forbidden("you are not seated at this table".to_string()));
+        }
         if !doc.is_creator(user) {
             return Err(GameError::Forbidden(format!(
                 "only {} can delete this table",
@@ -1963,6 +2026,15 @@ mod tests {
     /// broken table, a create of a DIFFERENT name still works. The `list_for`
     /// line is the other half of R-3.1 — the bad file leaves the listing, the
     /// good one stays on it, and the call still answers `Ok`.
+    ///
+    /// **THREE documents, because there are three unbounded fields and only one
+    /// of them was bounded.** `players` was R-3.2's; the final review found
+    /// `start_seat` and `keeps[i]` reaching the SAME locked path with the same
+    /// panic class. `config_from` does `PlayerId::new(doc.start_seat)`, which
+    /// asserts `id < 4`, and `finalize` calls it under `table_lock`; a stored
+    /// `keeps: [0, …]` reaches `choices_of`'s `Keep(keep - 1)`, a debug-build
+    /// overflow on the same call. Each arm is refused typed at the read, which
+    /// is what makes the panic unreachable rather than caught.
     #[test]
     fn a_malformed_table_document_refuses_typed_and_leaves_the_server_alive() {
         let games = games();
@@ -1985,22 +2057,60 @@ mod tests {
             "status": "dealing",
             "turn": null,
         });
-        games
-            .store()
-            .write_if_version(Doc::Table, "broken", &broken.to_string(), None)
-            .expect("the store takes what it is given");
+        // A well-formed 2P document, one field at a time made impossible. Every
+        // LENGTH agrees with `players` on both of these, exactly as it does on
+        // `broken` above — so the length comparisons wave all three through and
+        // only the bounds catch them.
+        let two_seat = |id: &str, start_seat: u8, keeps: serde_json::Value| {
+            serde_json::json!({
+                "schema": 1,
+                "id": id,
+                "name": id,
+                "created_by": "red@t.test",
+                "created_at": 1_789_000_000u64,
+                "players": 2,
+                "colors": ["Red", "Blue"],
+                "start_seat": start_seat,
+                "seats": [
+                    { "kind": "human", "user": "red@t.test" },
+                    { "kind": "human", "user": "blue@t.test" },
+                ],
+                "keeps": keeps,
+                "seed": CORPUS_SEED,
+                "status": "dealing",
+                "turn": null,
+            })
+        };
+        let documents = [
+            ("broken", broken),
+            // `PlayerId::new(7)` panics, and `finalize` makes that call under
+            // `table_lock`.
+            ("bad-start", two_seat("bad-start", 7, serde_json::json!([null, null]))),
+            // `Keep(0 - 1)` on a `u8`. Seat 0 has "chosen" card 0, which is not
+            // one of the two dealt cards and was never a number `keep` accepts.
+            ("bad-keep", two_seat("bad-keep", 0, serde_json::json!([0, null]))),
+        ];
+        for (id, doc) in &documents {
+            games
+                .store()
+                .write_if_version(Doc::Table, id, &doc.to_string(), None)
+                .expect("the store takes what it is given");
 
-        assert!(matches!(games.table("broken", &red), Err(GameError::Server(_))));
-        assert!(matches!(games.deal("broken", &red), Err(GameError::Server(_))));
-        // The path that holds `table_lock` across the read, which is the one
-        // whose panic would be a poisoned mutex rather than one dropped request.
-        assert!(matches!(
-            games.keep("broken", &red, PlayerId::new(0), 1),
-            Err(GameError::Server(_)),
-        ));
+            assert!(matches!(games.table(id, &red), Err(GameError::Server(_))), "{id}: table");
+            assert!(matches!(games.deal(id, &red), Err(GameError::Server(_))), "{id}: deal");
+            // The path that holds `table_lock` across the read, which is the one
+            // whose panic would be a poisoned mutex rather than one dropped
+            // request.
+            assert!(
+                matches!(games.keep(id, &red, PlayerId::new(0), 1), Err(GameError::Server(_))),
+                "{id}: keep",
+            );
+        }
 
         let listed = games.list_for(&red).expect("one bad file does not fail the listing");
-        assert!(listed.iter().all(|t| t.id != "broken"), "the malformed table is skipped");
+        for (id, _) in &documents {
+            assert!(listed.iter().all(|t| &t.id != id), "the malformed table {id} is skipped");
+        }
         assert!(
             listed.iter().any(|t| t.id == "healthy"),
             "and the other tables are still on the screen: {:?}",
@@ -2010,6 +2120,179 @@ mod tests {
         games
             .create(&two_people("after", CORPUS_SEED), &red)
             .expect("`table_lock` is not poisoned, so the server can still open a table");
+    }
+
+    /// A [`MemStore`] with two GATES in it, so a test can choose an
+    /// interleaving rather than race for one.
+    ///
+    /// Each gate is armed independently and fires exactly once: it signals that
+    /// a thread has ARRIVED at that operation and then blocks until the test
+    /// releases it. `park_record` sits in front of a `Doc::Record` write —
+    /// which is `finalize`'s — and `park_delete` inside `Store::delete`, after
+    /// `Games::delete` has read the table and decided to remove it.
+    ///
+    /// Both channel ends tolerate a dropped peer, so a test that fails and
+    /// unwinds while a thread is parked here does not turn one failure into
+    /// two.
+    struct RaceStore {
+        inner: MemStore,
+        park_record: std::sync::atomic::AtomicBool,
+        park_delete: std::sync::atomic::AtomicBool,
+        at_record: Mutex<std::sync::mpsc::Sender<()>>,
+        go_record: Mutex<std::sync::mpsc::Receiver<()>>,
+        at_delete: Mutex<std::sync::mpsc::Sender<()>>,
+        go_delete: Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+
+    impl RaceStore {
+        fn wait(
+            arrived: &Mutex<std::sync::mpsc::Sender<()>>,
+            release: &Mutex<std::sync::mpsc::Receiver<()>>,
+        ) {
+            let _ = arrived.lock().expect("the gate").send(());
+            let _ = release.lock().expect("the gate").recv();
+        }
+    }
+
+    impl Store for RaceStore {
+        fn list(&self, doc: Doc) -> Result<Vec<GameId>, String> {
+            self.inner.list(doc)
+        }
+        fn read(&self, doc: Doc, id: &str) -> Result<Option<(String, Version)>, String> {
+            self.inner.read(doc, id)
+        }
+        fn write_if_version(
+            &self,
+            doc: Doc,
+            id: &str,
+            json: &str,
+            expected: Option<Version>,
+        ) -> Result<Version, WriteError> {
+            if doc == Doc::Record
+                && self.park_record.swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                Self::wait(&self.at_record, &self.go_record);
+            }
+            self.inner.write_if_version(doc, id, json, expected)
+        }
+        fn delete(&self, id: &str) -> Result<(), String> {
+            if self.park_delete.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                Self::wait(&self.at_delete, &self.go_delete);
+            }
+            self.inner.delete(id)
+        }
+    }
+
+    /// **A `DELETE` may not interleave with the keep that finalizes**, because
+    /// the two together leave a RECORD WITH NO TABLE DOCUMENT — a game this API
+    /// will never serve (R-P7), never list, and whose NAME `create` refuses
+    /// forever, since it checks both documents. Only a shell can clear it.
+    ///
+    /// The window, in the order it happens without the lock:
+    ///
+    /// 1. `delete` reads the table while it is still DEALING and NOT all-kept —
+    ///    the one state in which `settle` takes no lock — and is on its way to
+    ///    `store.delete`;
+    /// 2. the last `keep` writes its table (now all-kept) and enters
+    ///    `finalize`;
+    /// 3. `delete` unlinks BOTH documents;
+    /// 4. `finalize`'s record write lands. It is `expected: None`, so an absent
+    ///    document is exactly what it asks for, and it SUCCEEDS.
+    ///    `flip_to_playing` then 404s and the orphan stays.
+    ///
+    /// **Both gates are needed, and where each one sits is the proof.** The
+    /// delete is parked INSIDE the store, after its read and before the unlink,
+    /// which is the only point at which step 2 can slide in front of step 3;
+    /// the finalize is parked before its record write, which is the only point
+    /// at which step 3 can slide in front of step 4. A single gate one step
+    /// earlier — on the keep's own TABLE write — proves nothing about this
+    /// defect: the delete then unlinks first and the keep's CONDITIONAL table
+    /// write conflicts harmlessly. A single gate one step later, on the record
+    /// write alone, proves nothing either: by then the stored table reads
+    /// all-kept, so even the unfixed `settle` takes the lock and blocks.
+    ///
+    /// **The delete is started FIRST and waited for**, so the lock is
+    /// unambiguously its. With the lock taken, the keep cannot reach its record
+    /// write at all while the delete is parked, which is the middle assertion;
+    /// without it, the keep sails past and the orphan is the one at the end.
+    /// Measured on the code before the fix: the record write arrives, and
+    /// `Doc::Record` is still in the store after both threads have finished.
+    #[test]
+    fn a_delete_cannot_interleave_with_the_keep_that_finalizes() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::mpsc::{channel, RecvTimeoutError};
+        use std::time::Duration;
+
+        let (at_record_tx, at_record_rx) = channel();
+        let (go_record_tx, go_record_rx) = channel();
+        let (at_delete_tx, at_delete_rx) = channel();
+        let (go_delete_tx, go_delete_rx) = channel();
+        let store = Arc::new(RaceStore {
+            inner: MemStore::default(),
+            park_record: AtomicBool::new(false),
+            park_delete: AtomicBool::new(false),
+            at_record: Mutex::new(at_record_tx),
+            go_record: Mutex::new(go_record_rx),
+            at_delete: Mutex::new(at_delete_tx),
+            go_delete: Mutex::new(go_delete_rx),
+        });
+        let games =
+            Arc::new(Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>));
+        let (red, blue) = (who("red@t.test"), who("blue@t.test"));
+        let id = games.create(&two_people("raced", CORPUS_SEED), &red).expect("a table").id;
+        // Seat 0 chooses. The stored table now reads `keeps: [1, null]`:
+        // DEALING and NOT all-kept, which is the state `settle` passes over
+        // without taking the lock — step 1's precondition.
+        games.keep(&id, &red, PlayerId::new(0), 1).expect("red's keep");
+
+        store.park_delete.store(true, Ordering::SeqCst);
+        store.park_record.store(true, Ordering::SeqCst);
+
+        let deleter = {
+            let (games, id, red) = (Arc::clone(&games), id.clone(), red.clone());
+            std::thread::spawn(move || games.delete(&id, &red))
+        };
+        at_delete_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the delete reaches the store with the table read and the unlink pending");
+
+        let keeper = {
+            let (games, id, blue) = (Arc::clone(&games), id.clone(), blue.clone());
+            std::thread::spawn(move || games.keep(&id, &blue, PlayerId::new(1), 1))
+        };
+
+        assert!(
+            matches!(
+                at_record_rx.recv_timeout(Duration::from_millis(500)),
+                Err(RecvTimeoutError::Timeout),
+            ),
+            "the finalizing keep reached its record write while a delete of the same table was \
+             mid-flight — which is the interleaving that writes a record over two documents that \
+             are about to be unlinked",
+        );
+
+        // Released in the order the threads can take them. The record gate's
+        // send is buffered, so it works whether the keep is parked on it or
+        // still waiting for `table_lock`.
+        go_delete_tx.send(()).expect("the parked delete is still listening");
+        go_record_tx.send(()).expect("a buffered release");
+        deleter.join().expect("the delete thread").expect("the delete");
+        // The keep's own outcome is NOT asserted: with the lock taken it finds
+        // the table gone and refuses in conflict, which is the honest answer to
+        // "the game you were choosing at has been deleted". What matters is
+        // what it left behind.
+        let _ = keeper.join().expect("the keep thread");
+
+        assert!(
+            store.read(Doc::Record, &id).expect("a readable store").is_none(),
+            "an orphan record: unlisted, unopenable, and holding the name",
+        );
+        assert!(store.read(Doc::Table, &id).expect("a readable store").is_none());
+        assert!(matches!(games.table(&id, &red), Err(GameError::NotFound(_))));
+        assert!(matches!(games.handle(&id), Err(GameError::NotFound(_))));
+        // The consequence a player would actually meet. `create` checks BOTH
+        // documents, so an orphan record makes the name permanently occupied.
+        games.create(&two_people("raced", CORPUS_SEED), &red).expect("the name is reusable");
     }
 
     /// **Delete is the CREATOR's**, and a seated player is not a creator.
@@ -2167,6 +2450,26 @@ mod tests {
             err.contains("different game"),
             "the refusal says the id holds another game: {err}",
         );
+        // **AND IT SAYS IT WITHOUT SPELLING EITHER SEED.**
+        //
+        // This sentence is not confined to a log: `input` pushes it into
+        // `warnings` as `APPLIED BUT NOT SAVED — {e}` (`lib.rs`) and serializes
+        // it on the reply, so a sentence carrying a seed is a seed on the wire —
+        // and it would be the NEW table's seed handed to the OLD game's player,
+        // which regenerates that table's whole hidden set. The corpus-wide value
+        // pin cannot see this one: no committed payload reaches this arm.
+        //
+        // Both spellings, and both games' seeds, because the fence is about the
+        // number and not about which side it came from.
+        for seed in [doomed_seed, 20_260_901u64] {
+            for spelling in [seed.to_string(), format!("{seed:016x}"), format!("{seed:x}")] {
+                assert!(
+                    !err.contains(&spelling),
+                    "the refusal spells a setup seed ({spelling}) on a sentence that reaches a \
+                     client's `warnings`: {err}",
+                );
+            }
+        }
 
         let now: GameRecord =
             serde_json::from_str(&stored_json(&store, &id)).expect("a record");

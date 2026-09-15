@@ -129,6 +129,8 @@ import dealWaiting from "./deal_waiting.json";
 import dealing409 from "./dealing_409.json";
 import gamesList from "./games.json";
 import notSeated403 from "./not_seated_403.json";
+import undoRefused403 from "./undo_refused_403.json";
+import wrongSeat403 from "./wrong_seat_403.json";
 import refused from "./refused.json";
 import retreat from "./retreat.json";
 import retreatAnswered from "./retreat_answered.json";
@@ -210,6 +212,13 @@ const _events: Widen<Events> = events;
 const _eventsDealing: Widen<Events> = eventsDealing;
 const _dealing409: Widen<DealingErrorBody> = dealing409;
 const _notSeated403: Widen<ApiErrorBody> = notSeated403;
+// The two refusals a SEATED caller meets by acting out of turn (spec §8). The
+// same `ApiErrorBody` shape as the 403 above, and committed for the SENTENCES:
+// the undo rule runs in front of the acting-seat fence (R-5.1), so the two
+// answer a player differently and a server that lost the ordering would answer
+// both the same way.
+const _wrongSeat403: Widen<ApiErrorBody> = wrongSeat403;
+const _undoRefused403: Widen<ApiErrorBody> = undoRefused403;
 
 const _health: Widen<Health> = health;
 // Both sides of `/api/me`: signed in, and the payload a caller with no identity
@@ -304,6 +313,7 @@ void [
   _options, _options4p, _optionsMany, _optionsPriced, _pick, _retreat, _retreatAnswered, _placeA, _placeASelected, _placeB, _placeBSelected,
   _gameOver, _watching, _locked, _refused, _labels, _health, _me, _meOut, _error,
   _tableDealing, _table, _deal, _dealWaiting, _gamesList, _dealing409, _notSeated403,
+  _wrongSeat403, _undoRefused403,
   _events, _eventsDealing,
   _ports, _labs, _areas, _areas4p, _log, _atK, _artManifest, _feeNonzero,
   _choiceAssistantMove, _choiceChurchSpace, _choiceWarehouseTake,
@@ -568,6 +578,8 @@ export const wire = {
   eventsDealing: as<Events>(eventsDealing),
   dealing409: as<DealingErrorBody>(dealing409),
   notSeated403: as<ApiErrorBody>(notSeated403),
+  wrongSeat403: as<ApiErrorBody>(wrongSeat403),
+  undoRefused403: as<ApiErrorBody>(undoRefused403),
   health: as<Health>(health),
   me: as<Me>(me),
   meSignedOut: as<Me>(meSignedOut),

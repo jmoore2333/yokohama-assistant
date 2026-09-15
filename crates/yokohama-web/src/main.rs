@@ -72,8 +72,10 @@ async fn main() {
     // port safe to expose:
     //
     // - Under `claimed` the header is whatever the caller sends. It
-    //   authenticates the DOOR, not the seat: it tells this process apart from
-    //   nobody, and tells no two callers apart at all.
+    //   authenticates the DOOR, not the seat: two callers sending two different
+    //   emails ARE two different people to this server, seated and scoped
+    //   separately — it simply cannot verify that either is who they say, so
+    //   anyone past the door can be anyone.
     // - Under `cf-access` and `worker` the trusted header is one only that
     //   deployment's own edge can set — which is worth exactly nothing if the
     //   port is reachable without going through the edge, since anyone who can

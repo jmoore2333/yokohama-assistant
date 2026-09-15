@@ -38,9 +38,9 @@ pub enum Doc {
     /// durable truth about a game's position.
     Record,
     /// The table document — who may sit at this game, and in which seat.
-    /// `<id>.table.json`, written by the next task of this cycle. The variant
-    /// exists now so the store's shape is settled before there are two
-    /// documents to keep consistent.
+    /// `<id>.table.json`. Written by `Games::create` and by every `keep`; it is
+    /// what `GET /api/games` lists over, so a record with no table beside it is
+    /// a game this API does not serve (R-P7).
     Table,
 }
 
@@ -276,10 +276,12 @@ impl Store for FsStore {
             .filter_map(|e| {
                 let name = e.path().file_name()?.to_str()?.to_string();
                 // `<id>.table.json` ends with `.json` too, and stripping that
-                // suffix leaves `<id>.table` — which `is_safe_id` ACCEPTS,
-                // because a dot is a legal character in a name. So a record
-                // listing has to exclude the table suffix explicitly rather
-                // than rely on the id guard to notice.
+                // suffix leaves `<id>.table` — which `is_safe_id` now REFUSES,
+                // by [`RESERVED_ID_SUFFIX`]. So this branch is redundant
+                // defence rather than the thing that keeps a table document out
+                // of a record listing, and it is kept as the second of two:
+                // the id guard closes the name at the way in, and this closes
+                // the listing even for a file some other writer left there.
                 if doc == Doc::Record && name.ends_with(Doc::Table.suffix()) {
                     return None;
                 }

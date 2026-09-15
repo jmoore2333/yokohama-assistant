@@ -113,10 +113,11 @@ impl ApiError {
 
 /// Every refusal `Games` raises, in the status a client reads it as.
 ///
-/// **One mapping, in one place.** Fifteen handlers reach `Games::handle`, and
+/// **One mapping, in one place.** Twelve handlers reach `Games::handle`, and
 /// before this each mapped its own error with `ApiError::not_found` — so a
-/// dealing table answered 404 on fourteen routes and the client had nothing to
-/// branch on. A `From` impl means a handler writes `?` and cannot get it wrong.
+/// dealing table answered 404 on every one of them and the client had nothing
+/// to branch on. A `From` impl means a handler writes `?` and cannot get it
+/// wrong.
 impl From<games::GameError> for ApiError {
     fn from(e: games::GameError) -> Self {
         use games::GameError as E;
@@ -350,21 +351,24 @@ async fn labels(State(state): State<Arc<AppState>>) -> Json<Labels> {
     })
 }
 
-// **`identity::Identity` is on all twenty `/api/games` handlers**, and since
+// **`identity::Identity` is on all eighteen `/api/games` handlers**, and since
 // M6.1 §5.3 every one of them USES the `User` it carries: a game route resolves
 // the caller to a seat before it touches the `Repl`, and builds what it serves
 // for that seat. A caller with no seat here is a 403 (R-1.5) rather than a
 // payload, and a dealing table is a 409 carrying a status a client can branch
 // on rather than a 404 it cannot.
 //
-// Twenty handlers over eighteen signatures — `ports`, `labs` and `areas` share
-// the `surface!` macro below.
+// Eighteen handlers over sixteen bodies — `ports`, `labs` and `areas` are three
+// handlers from the one `surface!` macro below.
 
 /// Resolve the caller to a seated table and a live handle.
 ///
 /// 404 for no table, 403 for a stranger (R-1.5), 409 while dealing. **Every
-/// session route starts here**, which is what makes those three answers one
-/// sentence each rather than fifteen.
+/// session route starts here except `events`**, which is what makes those three
+/// answers one sentence each rather than eleven. `events` calls `Games::table`
+/// and `Games::handle` itself, in that order and with the same meanings,
+/// because it has to ANSWER a dealing table rather than refuse it — see its own
+/// doc.
 ///
 /// The TABLE is read first and deliberately: a stranger holding an id learns
 /// that it is not theirs, and learns nothing about whether it is dealing.
@@ -2049,7 +2053,7 @@ mod tests {
 
     /// **Every route that needs a session is a 403 for a signed-in stranger**
     /// (R-1.5), in one cell over the whole table, because a fence applied to
-    /// fourteen routes and forgotten on the fifteenth is exactly the shape that
+    /// twelve routes and forgotten on the thirteenth is exactly the shape that
     /// ships.
     ///
     /// `/events` joined the list when Task 6 added the route (R-0.2). It was
@@ -2088,7 +2092,7 @@ mod tests {
         assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
 
         // Anti-vacuity: a seated caller gets every one of them. Without this a
-        // server that refused all fifteen to everybody would pass above.
+        // server that refused all thirteen to everybody would pass above.
         for uri in [
             "/api/games/fenced",
             "/api/games/fenced/table",

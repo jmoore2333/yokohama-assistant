@@ -7,8 +7,11 @@
 //! without one, the Worker's own fail-closed shape for its secrets.
 //!
 //! `claimed` is a development convenience and not a security boundary (R-1.4):
-//! anyone past the door can claim any email. The runbook says so beside the
-//! mode. Reserved and unbuilt: `cf-access-jwt` and `neon`, each a new arm here.
+//! anyone past the door can claim any email. It distinguishes two callers who
+//! send two different emails; what it cannot do is verify that either is who
+//! they say. Which mode a given deployment runs under belongs in that
+//! deployment's own record, beside the [`ENV_VAR`] its container sets.
+//! Reserved and unbuilt: `cf-access-jwt` and `neon`, each a new arm here.
 
 use std::fmt;
 use std::str::FromStr;

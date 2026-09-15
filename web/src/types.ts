@@ -386,9 +386,12 @@ export interface HistoricalFrame {
   /** The record's length. The track has `total + 1` stops, and the last one is
    *  the present: a real position with no event to name. */
   total: number;
-  /** Whose view this is. **Pinned server-side and it does not follow the
-   *  mover** — that is what stops a sweep over every `k` from harvesting every
-   *  seat's whole hand history in one pass. */
+  /** Whose view this is. **Chosen server-side, and always one of the CALLER's
+   *  own seats** — the seat to move when the caller holds it, otherwise their
+   *  lowest (R-4.2). It never names a seat somebody else holds, which is what
+   *  stops a sweep over every `k` from harvesting another player's whole hand
+   *  history in one pass. At a hot seat, where one person holds several, it
+   *  does follow the mover among those. */
   seat: PlayerId;
   /** Whose turn it was at `k`. */
   to_move: PlayerId;

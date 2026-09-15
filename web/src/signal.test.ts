@@ -135,18 +135,25 @@ describe("the poll", () => {
 
   // ---- the reply that lands after the teardown ------------------------------
   //
-  // **The two `if (stopped) return` lines are the only thing between this hook
-  // and an immortal timer, and nothing above reaches them**: every cell here
-  // lets the request finish before it tears anything down. The torn-down case
-  // is not exotic — `App`'s `active` includes `!busy`, so the effect is torn
-  // down and rebuilt on EVERY opponent move, and a reply in flight across that
-  // boundary is the ordinary case rather than the edge one.
+  // **The two `if (stopped) return` lines are what these two cells are about,
+  // and nothing above reaches them**: every cell here lets the request finish
+  // before it tears anything down. The torn-down case is not exotic — `App`'s
+  // `active` includes `!busy`, so the effect is torn down and rebuilt on EVERY
+  // opponent move, and a reply in flight across that boundary is the ordinary
+  // case rather than the edge one.
   //
-  // What a missing guard costs is not a wasted render. `ask` ends by calling
+  // **What a missing guard costs, at its real size.** `ask` ends by calling
   // `schedule`, and the timer it sets belongs to a closure whose cleanup has
-  // already run — so nothing will ever clear it, and it schedules its own
-  // successor forever. One orphan per teardown, on a page that tears down once
-  // a move.
+  // already run, so nothing will ever clear it — but the successor is not
+  // immortal either: `ask` itself opens with `if (stopped || !visible()) return`,
+  // so the orphan fires once, returns, and arms nothing. One orphan timer and
+  // one dead callback per teardown, on a page that tears down once a move.
+  //
+  // The two costs the cells below actually assert are the ones that are
+  // observable: the CONSUMER is never handed an answer about a screen that has
+  // stopped watching (which would re-read a game nobody asked about), and no
+  // further request is made — the request count stays at one through two full
+  // intervals, and through four backoff waits on the refused path.
   //
   // Both exits are covered because they are two different lines: the resolved
   // path at the top of `try`, and the refused path at the top of `catch`.

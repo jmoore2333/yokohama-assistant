@@ -23,9 +23,11 @@
 //!    fixture covers fails that test rather than shipping a browser branch
 //!    nobody rendered.
 //!
-//! **Why the game has no bot.** `Games::create` draws the bot seed from OS
-//! entropy (`games.rs`'s `config_of`), deliberately — so a game with a bot in
-//! it does not reproduce, and a golden built from one would churn on every run.
+//! **Why the game has no bot.** The bot seed is drawn from OS entropy at
+//! FINALIZE — `Games::finalize`'s `BotSeats::new(…, draw_seed())`, which the
+//! LAST keep reaches, not `create` and not `config_of` — deliberately, so a
+//! game with a bot in it does not reproduce and a golden built from one would
+//! churn on every run.
 //! A 2P table of two human seats is what the CLI calls one operator driving the
 //! table, is fully determined by the setup seed, and exercises every prompt the
 //! client can be shown. The ONE payload that genuinely needs a bot —
@@ -522,6 +524,50 @@ async fn walk() -> Vec<(String, Value)> {
             capture(&mut out, &mut seen, "retreat_answered", &state);
         }
 
+        // **The two refusals a seated caller meets by acting out of turn**
+        // (spec §8). Both are the plain `ApiErrorBody` the client already
+        // renders, so what these files pin is the WORDS and the status rather
+        // than a new shape — and the words are the whole point: "403" alone
+        // tells a player nothing about what to do next.
+        //
+        // Taken once the walk has crossed a TURN BOUNDARY, which is what makes
+        // them real: until seat 1 is to move, `WALKER` holds the acting seat
+        // and neither refusal exists. `events > 0` is the same condition read
+        // from the other side — `undo_allowed` answers "nothing to undo" on an
+        // empty log, which is a different sentence about a different thing.
+        //
+        // **The two sentences differ because the two checks are ORDERED**
+        // (R-5.1): `undo` is refused by R-P6's rule, which runs in FRONT of the
+        // acting-seat fence, so the player hears about the button they pressed;
+        // every other line falls through to the fence, which names whose turn
+        // it is. A server that dropped the ordering would answer both of these
+        // with one sentence, and these two files are what would say so.
+        //
+        // Neither request mutates: both are refused before `Repl::step`.
+        if state["to_move"].as_u64() == Some(1)
+            && state["events"].as_u64().unwrap_or(0) > 0
+            && !seen.iter().any(|s| s == "wrong_seat_403")
+        {
+            seen.push("wrong_seat_403".to_string());
+            seen.push("undo_refused_403".to_string());
+            let (status, wrong_seat) = api
+                .call_as(Some(WALKER), "POST", "/api/games/wire/input", Some(json!({ "line": "1" })))
+                .await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{wrong_seat}");
+            out.push(("wrong_seat_403".to_string(), wrong_seat));
+
+            let (status, undo_refused) = api
+                .call_as(
+                    Some(WALKER),
+                    "POST",
+                    "/api/games/wire/input",
+                    Some(json!({ "line": "undo" })),
+                )
+                .await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{undo_refused}");
+            out.push(("undo_refused_403".to_string(), undo_refused));
+        }
+
         // The one payload a walk that only ever answers the game never
         // produces. It applies no move, and the walk continues from the state
         // it already holds.
@@ -673,6 +719,8 @@ async fn walk() -> Vec<(String, Value)> {
         "options_priced",
         "fee_nonzero",
         "retreat_answered",
+        "wrong_seat_403",
+        "undo_refused_403",
     ] {
         assert!(
             seen.iter().any(|s| s == owed),
@@ -842,10 +890,10 @@ fn constructed() -> Vec<(String, Value)> {
     // ---- M3: the explanation surface ----------------------------------------
     //
     // These are built HERE and not in the walk, for the reason the `watching`
-    // fixture is: `Games::create` draws its bot seed from OS entropy, so a
-    // golden over a router-created bot game would churn on every run. With a
-    // fixed `BOT_SEED` and a fixed `SETUP_SEED` the account below is the same
-    // account every time, which is what a committed payload has to be.
+    // fixture is: the last keep's `finalize` draws the bot seed from OS
+    // entropy, so a golden over a router-created bot game would churn on every
+    // run. With a fixed `BOT_SEED` and a fixed `SETUP_SEED` the account below is
+    // the same account every time, which is what a committed payload has to be.
 
     let rules = Rules::standard();
 

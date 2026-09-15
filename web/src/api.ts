@@ -228,8 +228,9 @@ export const api = {
    *  a frame equal to the live one. A `k` past the end is a 404 naming the
    *  bound, not a clamp.
    *
-   *  The frame is built for ONE pinned seat that does not follow the mover, so
-   *  walking every `k` shows one seat's hands and no other's. */
+   *  The frame is built for a seat the CALLER holds — the mover when it is
+   *  theirs, otherwise their lowest (R-4.2) — so walking every `k` shows the
+   *  caller's own hands and nobody else's. */
   at: (game: string, k: number) =>
     call<HistoricalFrame>("GET", `/api/games/${id(game)}/at/${k}`),
 

@@ -87,6 +87,12 @@ describe("the payload roots carry exactly the fields the client declares", () =>
     ["games", wire.games, KEYS.gamesList],
     ["dealing_409", wire.dealing409, KEYS.dealingError],
     ["not_seated_403", wire.notSeated403, KEYS.apiError],
+    // And the two a SEATED caller meets by acting out of turn (spec §8): an
+    // ordinary line from the seat that is not to move, and `undo` after that
+    // seat's turn has passed. One root key each, which is the whole of the
+    // shape — what these files are for is the two SENTENCES, asserted below.
+    ["wrong_seat_403", wire.wrongSeat403, KEYS.apiError],
+    ["undo_refused_403", wire.undoRefused403, KEYS.apiError],
     // The signal at both statuses. Two rows rather than one because the fields
     // are the same four at each, and a corpus carrying only the playing shape
     // would let a `dealing` reply grow or lose a key unnoticed.
@@ -338,6 +344,31 @@ describe("what the corpus itself has to be true of", () => {
     expect(wire.watching.frame.decision.options).toEqual([]);
     expect(wire.watching.frame.decision.viewer_is_deciding).toBe(false);
     expect(wire.watching.your_turn).toBe(false);
+  });
+
+  // **The three 403s a person can be handed say three different things**, and
+  // that is the only reason three of them are committed: the shape is one root
+  // key, so a key-set row alone would let all three collapse into one sentence
+  // without a single check going red.
+  //
+  // Each one answers a different question. Not seated here: this table is not
+  // yours. Not your turn: whose it is, so you know whether to wait. `undo`
+  // after your turn: the button you pressed, which is R-5.1's ordering — the
+  // undo rule runs in FRONT of the acting-seat fence precisely so this caller
+  // is not told "it is seat 1's turn" about a question they did not ask.
+  it("the three refusals a caller can be handed are three different sentences", () => {
+    const said = [
+      wire.notSeated403.error,
+      wire.wrongSeat403.error,
+      wire.undoRefused403.error,
+    ];
+    expect(new Set(said).size).toBe(3);
+    for (const sentence of said) expect(sentence.length).toBeGreaterThan(0);
+    expect(wire.notSeated403.error).toContain("not seated");
+    // Whose turn it is, named — a bare "403" leaves a player with nothing to
+    // do next.
+    expect(wire.wrongSeat403.error).toMatch(/seat \d+'s turn/);
+    expect(wire.undoRefused403.error).toContain("undo");
   });
 
   // A locked session accepts nothing, and says why. It used to report a live
