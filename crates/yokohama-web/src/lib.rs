@@ -431,6 +431,29 @@ fn holder_of(table: &crate::table::TableDoc, seat: yokohama_core::PlayerId) -> &
     }
 }
 
+/// The sentence a refusal carries when the GAME'S OWN STATUS is the reason a
+/// caller cannot act — the lockdown's reason, or the CLI's own
+/// `ApplyError::GameOver` line, in `client::prompt_of`'s precedence so a game
+/// that is both faulted and finished reports the fault. `None` on a live game,
+/// where the reason is about the caller instead.
+///
+/// **Single-sourced because TWO fences in [`input`] need it and they must not
+/// disagree** (R-4.3 with R-5.1). R-4.3 ruled that a non-acting caller at a
+/// finished game hears the game's own sentence rather than one about seats;
+/// R-5.1 then put R-P6's undo rule in FRONT of that fence. Without this, a
+/// watcher's `undo` at a finished game started answering "undo is not offered
+/// once your turn has passed" — still a 403, still no rewind, but a ruled
+/// sentence overturned by an ordering change rather than by a decision.
+///
+/// The two readers are [`undo_allowed`], which refuses outright at either
+/// status (R-5.2), and the acting-seat fence, which uses it in place of naming
+/// a seat. `None` means the game is live and the reason is about the caller.
+fn status_refusal(repl: &yokohama_cli::repl::Repl) -> Option<String> {
+    repl.session.record().lockdown.clone().or_else(|| {
+        repl.session.is_over().then(|| yokohama_cli::session::ApplyError::GameOver.to_string())
+    })
+}
+
 /// **How far back an undo may reach** (R-P6), checked before `Repl::step`.
 ///
 /// ONE distinct person at the table — vs-bot, or one person sitting in every
@@ -440,21 +463,28 @@ fn holder_of(table: &crate::table::TableDoc, seat: yokohama_core::PlayerId) -> &
 /// has shipped, since the trailing event at a vs-bot table is the bot's and its
 /// mover is never the caller.
 ///
-/// Otherwise the undo may reach back into the caller's own turn and no further:
-/// the trailing event's mover is the caller's seat AND the current player is
-/// still that seat.
+/// Otherwise the game must still be RUNNING — finished or faulted, it is not
+/// rewound by anybody (R-5.2: a finished game has no turn in progress for
+/// anyone, so nobody's turn is incomplete, and one player reopening a game the
+/// other has watched end is what R-P6 exists to stop; a faulted record is the
+/// one thing here that exists to be read afterwards) — and the undo may then
+/// reach back into the caller's own turn and no further: the trailing event's
+/// mover is the caller's seat AND the current player is still that seat.
 ///
-/// **The two halves refuse different callers, and only one of them is reachable
-/// through [`input`].** Without the MOVER half, the seat that is to move pops
-/// whatever the PREVIOUS player did last — measured on this server before the
-/// rule: blue's `undo`, sent before blue had moved at all, returned 200 and
-/// popped red's move. Without the CURRENT-PLAYER half, a caller whose own move
-/// is the trailing event undoes it after their turn has already ended, which is
-/// the case R-P6 closes by name. That second caller is refused by the
-/// acting-seat fence in front of this function before it ever gets here, so
-/// that half is this function's own invariant rather than a second fence — and
-/// the cell reads `undo_allowed` DIRECTLY for it, because a condition no test
-/// can kill is a condition that quietly stops being true.
+/// **The two halves refuse different callers.** Without the MOVER half, the
+/// seat that is to move pops whatever the PREVIOUS player did last — measured
+/// on this server before the rule: blue's `undo`, sent before blue had moved at
+/// all, returned 200 and popped red's move. Without the CURRENT-PLAYER half, a
+/// caller whose own move is the trailing event undoes it after their turn has
+/// already ended, which is the case R-P6 closes by name.
+///
+/// **This runs BEFORE the acting-seat fence** (R-5.1), which is what makes the
+/// second half reachable: the fence would otherwise refuse that caller first,
+/// with a sentence about whose turn it is instead of about the button they
+/// pressed. Both sentences are true and neither mutates, so the order chooses
+/// only which one is heard. The fence still runs afterwards, for this line and
+/// every other — where this function waves a line through (a table with one
+/// person at it) the fence is what guards, exactly as before.
 ///
 /// **The mover of event `len - 1` is `state_at(record, len - 1).current_player`
 /// — replay-derived**, which is the CLI's own attribution for exactly this
@@ -473,6 +503,21 @@ fn undo_allowed(
 ) -> Result<(), String> {
     if table.distinct_humans() <= 1 {
         return Ok(());
+    }
+    // **A game that is FINISHED or FAULTED is not rewound by anybody** (R-5.2),
+    // the seat that is to move included, and so BEFORE the conjunction below —
+    // which can hold at either status, since the state still names a current
+    // player and the trailing event can be that player's. Measured on the code
+    // without this arm: at a finished two-person game the acting holder's
+    // `undo` returned 200 and took the record from 357 events to 200; at a
+    // faulted one it returned 200 with a refusal in prose, while the watcher
+    // beside them got a 403 — two callers, one game, two different answers.
+    //
+    // The sentence is the GAME's own status rather than R-P6's, from the same
+    // helper the acting-seat fence reads, so the two cannot drift (R-4.3 with
+    // R-5.1). It returns `None` on a live game, which is where R-P6 speaks.
+    if let Some(status) = status_refusal(repl) {
+        return Err(status);
     }
     let record = repl.session.record();
     let len = record.events.len();
@@ -647,6 +692,29 @@ async fn input(
     let mut repl = handle.lock().expect("a game");
     let viewer = viewer_of(&repl, &table, &user)?;
 
+    // **An undo reaches back into your own turn and no further** (R-P6).
+    //
+    // The check is HERE rather than inside `step` because it needs the TABLE:
+    // the rule turns on how many PEOPLE sit at this one, which is a fact of the
+    // seat bindings and not of the record. Before `step`, because
+    // `Session::undo` pops events and a refusal afterwards would be a refusal
+    // of something that already happened.
+    //
+    // **And before the acting-seat fence, deliberately** (R-5.1). Both refuse
+    // the same caller — a player whose turn has passed is neither the acting
+    // seat nor entitled to undo — and both are a 403 that mutates nothing, so
+    // the only thing the order decides is which true sentence they hear. "Undo
+    // is not offered once your turn has passed" answers the button they
+    // pressed; "it is seat 1's turn" answers a question they did not ask. The
+    // fence is untouched and still runs, for this line and every other.
+    if grammar::is_undo(&req.line) {
+        undo_allowed(&repl, &table, viewer).map_err(|message| ApiError {
+            status: StatusCode::FORBIDDEN,
+            message,
+            table_status: None,
+        })?;
+    }
+
     // **A move is the ACTING SEAT'S HOLDER'S, and nobody else's.**
     //
     // `viewer_seat` returns the acting seat whenever the caller holds it, so
@@ -676,35 +744,20 @@ async fn input(
     //
     // So the comparison is unconditional and the SENTENCE is chosen: the
     // lockdown's own reason, the CLI's own `ApplyError::GameOver` line, or whose
-    // turn it is. The acting seat's holder's path is untouched in all three —
-    // their `undo` at game over is still the CLI's behaviour, which is Task 5's
-    // R-P6 to rule on at a multi-person table.
+    // turn it is. The acting seat's holder's path is untouched in all three.
+    //
+    // **The measured defect stays closed with R-P6's check now in front of
+    // this one** (R-5.1): that seated watcher's `undo` is refused by
+    // `undo_allowed` before it arrives here, because the watcher is not the
+    // current player. Where `undo_allowed` waves a line through — a table with
+    // ONE person at it — this comparison is what guards, exactly as it did
+    // before. Neither check is the other's fallback; both run.
     let acting = repl.session.state().current_player;
     if acting != viewer {
-        // Lockdown first, matching `client::prompt_of`'s precedence, so a game
-        // that is both faulted and finished reports the fault.
-        let message = if let Some(reason) = repl.session.record().lockdown.clone() {
-            reason
-        } else if repl.session.is_over() {
-            yokohama_cli::session::ApplyError::GameOver.to_string()
-        } else {
+        let message = status_refusal(&repl).unwrap_or_else(|| {
             format!("it is seat {}'s turn ({})", acting.0, holder_of(&table, acting))
-        };
+        });
         return Err(ApiError { status: StatusCode::FORBIDDEN, message, table_status: None });
-    }
-
-    // **An undo reaches back into your own turn and no further** (R-P6), and
-    // the check is HERE rather than inside `step` because it needs the table:
-    // the rule turns on how many PEOPLE are at this one, which is a fact of the
-    // seat bindings and not of the record. Before `step`, because `Session::undo`
-    // pops events and a refusal afterwards would be a refusal of something that
-    // already happened.
-    if grammar::is_undo(&req.line) {
-        undo_allowed(&repl, &table, viewer).map_err(|message| ApiError {
-            status: StatusCode::FORBIDDEN,
-            message,
-            table_status: None,
-        })?;
     }
 
     if let Some(expected) = &req.expect {
@@ -1988,16 +2041,18 @@ mod tests {
     ///
     /// The walk, in order: nothing to undo yet, which is the underflow guard
     /// answering and not R-P6; mid-turn, where the caller's own move comes
-    /// back; once the turn has passed, where the caller is no longer the acting
-    /// seat and THAT fence answers first — so the sentence is the fence's, and
-    /// this cell says so rather than letting a reader think R-P6 spoke; the
-    /// same moment asked of `undo_allowed` directly, which is the only way to
-    /// reach its current-player half at all; the acting seat whose own turn has
-    /// not started; and the turn come back around.
+    /// back; once the turn has passed, where R-P6 answers the button that was
+    /// pressed rather than letting the acting-seat fence answer a question
+    /// nobody asked (R-5.1); the acting seat whose own turn has not started
+    /// yet; and the turn come back around.
     ///
     /// **The last read is what the rule exists for.** Without it, red's `undo`
     /// after blue's turn pops blue's move — another person's move, erased by
     /// someone entitled to act but not to rewind.
+    ///
+    /// **And one ORDINARY line from the same non-acting caller**, so the
+    /// reordering is shown not to have loosened the fence: `"1"` from red while
+    /// blue is to move still hears whose turn it is.
     #[tokio::test]
     async fn undo_is_admitted_mid_turn_and_refused_once_the_turn_has_passed() {
         let state = Arc::new(AppState::in_memory());
@@ -2038,8 +2093,9 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "{undone}");
         assert_eq!(undone["events"].as_u64().unwrap(), n0);
 
-        // Play the turn out; blue is to move. Red's undo is refused, and the
-        // fence that speaks is the acting seat's — R-P6 is never reached.
+        // Play the turn out; blue is to move. Red's undo is refused, and what
+        // answers is R-P6 — the trailing move IS red's, so the first half
+        // passes and the current-player half is what speaks.
         play_turn(&state, "undo", "red@wire.test").await;
         let (status, body) = post_as(
             &state,
@@ -2049,24 +2105,20 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
-        assert_eq!(body["error"], "it is seat 1's turn (blue@wire.test)");
+        assert_eq!(body["error"], "undo is not offered once your turn has passed");
 
-        // **And so R-P6's second half is unreachable over HTTP**, since the
-        // acting-seat fence has already refused everyone it would catch. Asked
-        // directly, it is the half that speaks here: the trailing move IS red's
-        // — the first half passes — and red is no longer the player to move.
-        // Without this read, `state().current_player == viewer` is a condition
-        // no cell can kill.
-        {
-            let user = identity::User::parse("red@wire.test").expect("a user");
-            let table = state.games.table("undo", &user).expect("seated");
-            let handle = state.games.handle("undo").expect("a game");
-            let repl = handle.lock().expect("a game");
-            assert_eq!(
-                undo_allowed(&repl, &table, yokohama_core::PlayerId::new(0)),
-                Err("undo is not offered once your turn has passed".to_string()),
-            );
-        }
+        // The same caller, at the same moment, sending an ordinary line: the
+        // acting-seat fence is exactly where it was, and putting R-P6 in front
+        // of it moved nothing else.
+        let (status, body) = post_as(
+            &state,
+            "red@wire.test",
+            "/api/games/undo/input",
+            serde_json::json!({ "line": "1" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert_eq!(body["error"], "it is seat 1's turn (blue@wire.test)");
 
         // Blue IS the acting seat and has not moved yet, so blue's undo would
         // cross red's turn boundary. This is R-P6's own refusal.
@@ -2438,6 +2490,151 @@ mod tests {
             after["events"].as_u64(),
             Some(events),
             "the watcher's undo rewound a finished shared game",
+        );
+    }
+
+    /// **A faulted game says so to an `undo`, whoever sends it** — R-4.3's
+    /// precedence applied to R-P6's refusal, and the reason the sentence is
+    /// single-sourced.
+    ///
+    /// Both seated callers, because they are refused for different reasons and
+    /// must hear the same thing. The WATCHER is refused on the merits — the
+    /// trailing move is not theirs — and the HOLDER is not: they are the acting
+    /// seat and the trailing move IS theirs, so before the status arm their
+    /// `undo` was admitted, reached `Repl::step`, and came back 200 with a
+    /// refusal in prose. Two callers, one faulted game, two different answers,
+    /// neither of them saying plainly that the game cannot be played at all.
+    ///
+    /// The lockdown is also the one status where the two fences could still
+    /// drift: at a FINISHED game `undo_allowed` refuses on its own (R-5.2), so
+    /// a `status_refusal` that read only `is_over` would pass every other cell
+    /// in this file.
+    ///
+    /// **The event count is read back**, as the finished-game siblings do: a
+    /// 403 that still rewound a faulted record would pass a status check, and a
+    /// faulted record is the one thing in this server that exists to be read
+    /// afterwards.
+    #[tokio::test]
+    async fn a_locked_game_answers_every_callers_undo_with_the_lockdown_reason() {
+        let store = Arc::new(MemStore::default());
+        let state = Arc::new(AppState::with_store(store.clone(), identity::IdentityMode::Claimed));
+        start_as(&state, "faultedundo", ENDED_SEED, &["red@wire.test", "blue@wire.test"]).await;
+
+        // One move first, so the refusal being overridden is R-P6's own and not
+        // the empty-record guard's, and so the count read back is not zero.
+        let (_, game) = get_as(&state, "red@wire.test", "/api/games/faultedundo").await;
+        let (status, _) = post_as(
+            &state,
+            "red@wire.test",
+            "/api/games/faultedundo/input",
+            serde_json::json!({ "line": first_option(&game) }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        let (stored, version) =
+            store.read(Doc::Record, "faultedundo").expect("a store").expect("a record");
+        let mut record: serde_json::Value = serde_json::from_str(&stored).expect("a record");
+        record["lockdown"] = serde_json::json!("invariant violation applying that move");
+        store
+            .write_if_version(
+                Doc::Record,
+                "faultedundo",
+                &serde_json::to_string(&record).expect("a record"),
+                Some(version),
+            )
+            .expect("a stored lockdown");
+
+        // A fresh state over the same store, so the game is rebuilt FROM the
+        // record just written rather than served from the resident handle.
+        let locked = Arc::new(AppState::with_store(store, identity::IdentityMode::Claimed));
+        let (_, game) = get_as(&locked, "red@wire.test", "/api/games/faultedundo").await;
+        assert_eq!(game["prompt"]["kind"], "locked", "anti-vacuity — really faulted: {game}");
+        assert_eq!(game["over"], serde_json::json!(false), "locked, not finished: {game}");
+        let acting = game["to_move"].as_u64().expect("a seat to move");
+        let events = game["events"].as_u64().expect("an event count");
+        assert!(events > 0, "a move to undo: {game}");
+        let (holder, watcher) = if acting == 0 {
+            ("red@wire.test", "blue@wire.test")
+        } else {
+            ("blue@wire.test", "red@wire.test")
+        };
+
+        for who in [holder, watcher] {
+            let (status, body) = post_as(
+                &locked,
+                who,
+                "/api/games/faultedundo/input",
+                serde_json::json!({ "line": "undo" }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{who}: {body}");
+            assert_eq!(
+                body["error"], "invariant violation applying that move",
+                "{who}: the fault's own reason, not a sentence about turn order",
+            );
+        }
+
+        let (_, after) = get_as(&locked, "red@wire.test", "/api/games/faultedundo").await;
+        assert_eq!(
+            after["events"].as_u64(),
+            Some(events),
+            "an undo rewound a faulted game, which is the record a lockdown exists to preserve",
+        );
+    }
+
+    /// **A finished shared game cannot be rewound by ANYBODY, the seat that is
+    /// to move included** (controller ruling R-5.2 on R-P6's reading).
+    ///
+    /// The sibling above closed this for a WATCHER, and the fence's own comment
+    /// left the acting holder to R-P6 — which does not settle it in words: "only
+    /// while the caller's own turn has not fully completed" can be read as
+    /// leaving the turn a game ended during. Ruled: a finished game has no turn
+    /// in progress for ANYONE, so nobody's turn is incomplete, and one player
+    /// reopening a game the other has watched end is what R-P6 exists to stop.
+    ///
+    /// **Measured before the rule, on this fixture**: the acting holder's
+    /// `undo` returned 200 and the record went from 357 events to 200 — there,
+    /// because the fixture's seats are bot-provenanced, by unwinding a "bot run"
+    /// and re-pumping into a `BOT HALT`; at a human-seated table by popping the
+    /// caller's own trailing move. Both are a finished shared game changing
+    /// under a player who had already seen it end.
+    ///
+    /// The sentence is the game's own status, not R-P6's: `status_refusal` is
+    /// single-sourced with the acting-seat fence, so the two cannot drift. And
+    /// the event count is read back through a second GET, because a 403 that
+    /// still rewound the game would pass a status check.
+    ///
+    /// **One person at the table keeps today's CLI behaviour** — R-P6's first
+    /// sentence — and that arm is covered by
+    /// `undo_at_a_table_with_one_person_unwinds_the_bot_run_as_before`.
+    #[tokio::test]
+    async fn the_acting_holder_cannot_undo_a_finished_shared_game() {
+        let (state, id, _watcher) = a_finished_two_person_game("endedundo").await;
+        let (_, game) = get_as(&state, "red@wire.test", &format!("/api/games/{id}")).await;
+        let acting = game["to_move"].as_u64().expect("a seat to move");
+        let holder = if acting == 0 { "red@wire.test" } else { "blue@wire.test" };
+        let events = game["events"].as_u64().expect("an event count");
+        assert!(events > 0 && game["over"] == serde_json::json!(true), "{game}");
+
+        let (status, body) = post_as(
+            &state,
+            holder,
+            &format!("/api/games/{id}/input"),
+            serde_json::json!({ "line": "undo" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert_eq!(
+            body["error"], "the game is already over",
+            "the game's own status, not R-P6's sentence",
+        );
+
+        let (_, after) = get_as(&state, "red@wire.test", &format!("/api/games/{id}")).await;
+        assert_eq!(
+            after["events"].as_u64(),
+            Some(events),
+            "the acting holder's undo rewound a finished shared game",
         );
     }
 
