@@ -1137,10 +1137,28 @@ impl Games {
                 doc.created_by
             )));
         }
-        self.store.delete(id).map_err(GameError::Server)?;
+        // **The tombstone goes down BEFORE the unlink, and the order is the
+        // whole of it.** `create` CLEARS this id from the set, and since the
+        // lock split (R-2.9) `create` holds a different mutex from this one, so
+        // the two interleave: with the insert last, a create that slipped
+        // between the unlink and the insert found both documents absent,
+        // cleared a tombstone that was not there yet, wrote a brand-new table —
+        // and then THIS call tombstoned the id that now names it. `persist`
+        // reads the set, so every move at that new table answered `"…" was
+        // deleted while this move was in flight` and evicted its handle. With
+        // the insert first, `create`'s clear is strictly later in every
+        // interleaving. Arranged and measured in
+        // `a_delete_cannot_tombstone_the_table_a_create_put_in_its_place`.
+        self.deleted.lock().expect("games lock").insert(id.to_string());
+        if let Err(e) = self.store.delete(id) {
+            // Nothing was unlinked, so the table is still there and must still
+            // be playable: a tombstone left behind by a failed unlink refuses
+            // every move at a live game, naming a delete that did not happen.
+            self.deleted.lock().expect("games lock").remove(id);
+            return Err(GameError::Server(e));
+        }
         self.written.lock().expect("games lock").remove(id);
         self.live.lock().expect("games lock").remove(id);
-        self.deleted.lock().expect("games lock").insert(id.to_string());
         Ok(())
     }
 }
@@ -1729,24 +1747,28 @@ mod tests {
     /// agrees with every other, so the length comparisons alone wave it through
     /// and only the 2..=4 bound catches it. Without that bound `seats_of` maps
     /// the fifth seat through `PlayerId::new(4)`, which panics — and `keep`
-    /// holds `table_lock` across the read, so the panic POISONS that mutex and
-    /// every later `create`, `keep` and repairing `settle` in the process dies
-    /// with it.
+    /// holds THAT TABLE's lock across the read ([`Games::lock_for`], R-2.9), so
+    /// the panic POISONS that mutex and every later `keep`, `join`, `delete`
+    /// and repairing `settle` AT THIS TABLE dies with it, with nothing anywhere
+    /// able to clear it.
     ///
-    /// **The last line is the load-bearing one**, and it is the one a
-    /// `catch_unwind` somewhere could not fake: after four calls against the
-    /// broken table, a create of a DIFFERENT name still works. The `list_for`
-    /// line is the other half of R-3.1 — the bad file leaves the listing, the
-    /// good one stays on it, and the call still answers `Ok`.
+    /// **Read the closing create at its M6.2 size.** Under M6.1's single global
+    /// `table_lock` it was the load-bearing line, because a poisoning here took
+    /// every later `create` in the process down too; since the lock split it
+    /// would survive that poisoning in any case. What it still says — and what
+    /// a `catch_unwind` somewhere could not fake — is that after twelve calls
+    /// against three broken tables the PROCESS is alive and serving. The
+    /// `list_for` line is the other half of R-3.1 — the bad file leaves the
+    /// listing, the good one stays on it, and the call still answers `Ok`.
     ///
     /// **THREE documents, because there are three unbounded fields and only one
     /// of them was bounded.** `players` was R-3.2's; the final review found
     /// `start_seat` and `keeps[i]` reaching the SAME locked path with the same
     /// panic class. `config_from` does `PlayerId::new(doc.start_seat)`, which
-    /// asserts `id < 4`, and `finalize` calls it under `table_lock`; a stored
-    /// `keeps: [0, …]` reaches `choices_of`'s `Keep(keep - 1)`, a debug-build
-    /// overflow on the same call. Each arm is refused typed at the read, which
-    /// is what makes the panic unreachable rather than caught.
+    /// asserts `id < 4`, and `finalize` is called with the table's lock held; a
+    /// stored `keeps: [0, …]` reaches `choices_of`'s `Keep(keep - 1)`, a
+    /// debug-build overflow on the same call. Each arm is refused typed at the
+    /// read, which is what makes the panic unreachable rather than caught.
     #[test]
     fn a_malformed_table_document_refuses_typed_and_leaves_the_server_alive() {
         let games = games();
@@ -1795,8 +1817,8 @@ mod tests {
         };
         let documents = [
             ("broken", broken),
-            // `PlayerId::new(7)` panics, and `finalize` makes that call under
-            // `table_lock`.
+            // `PlayerId::new(7)` panics, and `finalize` makes that call with
+            // the table's lock held.
             ("bad-start", two_seat("bad-start", 7, serde_json::json!([null, null]))),
             // `Keep(0 - 1)` on a `u8`. Seat 0 has "chosen" card 0, which is not
             // one of the two dealt cards and was never a number `keep` accepts.
@@ -1810,9 +1832,9 @@ mod tests {
 
             assert!(matches!(games.table(id, &red), Err(GameError::Server(_))), "{id}: table");
             assert!(matches!(games.deal(id, &red), Err(GameError::Server(_))), "{id}: deal");
-            // The path that holds `table_lock` across the read, which is the one
-            // whose panic would be a poisoned mutex rather than one dropped
-            // request.
+            // The path that holds the TABLE's lock across the read, which is
+            // the one whose panic would be a poisoned mutex rather than one
+            // dropped request.
             assert!(
                 matches!(games.keep(id, &red, PlayerId::new(0), 1, None), Err(GameError::Server(_))),
                 "{id}: keep",
@@ -1831,7 +1853,7 @@ mod tests {
 
         games
             .create(&two_people("after", CORPUS_SEED), &red)
-            .expect("`table_lock` is not poisoned, so the server can still open a table");
+            .expect("the process is alive, so the server can still open a table");
     }
 
     /// Every M6.2 shape arm, read as the SENTENCE it answers with.
@@ -1990,8 +2012,8 @@ mod tests {
         );
     }
 
-    /// A [`MemStore`] with two GATES in it, so a test can choose an
-    /// interleaving rather than race for one.
+    /// A [`MemStore`] with GATES in it, so a test can choose an interleaving
+    /// rather than race for one.
     ///
     /// Each gate is armed independently and fires exactly once: it signals that
     /// a thread has ARRIVED at that operation and then blocks until the test
@@ -1999,7 +2021,15 @@ mod tests {
     /// which is `finalize`'s — `park_delete` inside `Store::delete`, after
     /// `Games::delete` has read the table and decided to remove it, and
     /// `park_table` (M6.2) in front of a `Doc::Table` write, which is where a
-    /// `join` sits with its seat filled and its flip not yet on disk.
+    /// `join` sits with its seat filled and its flip not yet on disk, and
+    /// `park_after_delete` (M6.2) inside `Store::delete` AFTER the unlink — the
+    /// one point at which a `create` of the same id finds both documents gone
+    /// while the delete has not yet finished its bookkeeping.
+    ///
+    /// **`park_delete` and `park_after_delete` sit on either side of the same
+    /// call and are not interchangeable**: the keep/finalize race needs the
+    /// unlink to be PENDING, and the delete/create race needs it to have
+    /// HAPPENED.
     ///
     /// Both channel ends tolerate a dropped peer, so a test that fails and
     /// unwinds while a thread is parked here does not turn one failure into
@@ -2009,12 +2039,15 @@ mod tests {
         park_record: std::sync::atomic::AtomicBool,
         park_delete: std::sync::atomic::AtomicBool,
         park_table: std::sync::atomic::AtomicBool,
+        park_after_delete: std::sync::atomic::AtomicBool,
         at_record: Mutex<std::sync::mpsc::Sender<()>>,
         go_record: Mutex<std::sync::mpsc::Receiver<()>>,
         at_delete: Mutex<std::sync::mpsc::Sender<()>>,
         go_delete: Mutex<std::sync::mpsc::Receiver<()>>,
         at_table: Mutex<std::sync::mpsc::Sender<()>>,
         go_table: Mutex<std::sync::mpsc::Receiver<()>>,
+        at_after_delete: Mutex<std::sync::mpsc::Sender<()>>,
+        go_after_delete: Mutex<std::sync::mpsc::Receiver<()>>,
     }
 
     impl RaceStore {
@@ -2057,7 +2090,11 @@ mod tests {
             if self.park_delete.swap(false, std::sync::atomic::Ordering::SeqCst) {
                 Self::wait(&self.at_delete, &self.go_delete);
             }
-            self.inner.delete(id)
+            let answer = self.inner.delete(id);
+            if self.park_after_delete.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                Self::wait(&self.at_after_delete, &self.go_after_delete);
+            }
+            answer
         }
     }
 
@@ -2107,17 +2144,22 @@ mod tests {
         let (go_delete_tx, go_delete_rx) = channel();
         let (at_table_tx, _at_table_rx) = channel();
         let (_go_table_tx, go_table_rx) = channel();
+        let (at_after_delete_tx, _at_after_delete_rx) = channel();
+        let (_go_after_delete_tx, go_after_delete_rx) = channel();
         let store = Arc::new(RaceStore {
             inner: MemStore::default(),
             park_record: AtomicBool::new(false),
             park_delete: AtomicBool::new(false),
             park_table: AtomicBool::new(false),
+            park_after_delete: AtomicBool::new(false),
             at_record: Mutex::new(at_record_tx),
             go_record: Mutex::new(go_record_rx),
             at_delete: Mutex::new(at_delete_tx),
             go_delete: Mutex::new(go_delete_rx),
             at_table: Mutex::new(at_table_tx),
             go_table: Mutex::new(go_table_rx),
+            at_after_delete: Mutex::new(at_after_delete_tx),
+            go_after_delete: Mutex::new(go_after_delete_rx),
         });
         let games =
             Arc::new(Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>));
@@ -2585,11 +2627,26 @@ mod tests {
         r.display_name = Some("Jeremy".into());
         games.create(&r, &red).expect("a table");
         games.keep("kn", &blue, PlayerId::new(1), 1, Some("Alex")).expect("blue keeps with a name");
+
+        // **The 400, and it has to be probed HERE — at a table that is still
+        // DEALING.** Below the finalizing keep this call meets the `Playing`
+        // guard at the top of `keep` and never reaches `check_name` at all, so
+        // a `keep` with no name check in it would answer `Playing` and leave
+        // the assertion green. Seat 0 is red's, has not chosen, and the card is
+        // valid, so nothing but the name can refuse it.
+        let e = games.keep("kn", &red, PlayerId::new(0), 1, Some("\u{7}")).unwrap_err();
+        assert!(
+            matches!(e, GameError::BadRequest(_)) && e.to_string().contains("control"),
+            "a bad name is a 400: {e}",
+        );
+
+        // And the refused keep wrote NOTHING: seat 0 can still choose, which it
+        // could not if the refusal had left `keeps[0]` behind ("already
+        // chosen"). This is also the last keep, so it finalizes.
         let v = games.keep("kn", &red, PlayerId::new(0), 1, Some("Not Jeremy")).expect("red keeps");
         assert_eq!(v.seats[0], SeatDoc::Human { user: "red@t.test".into(), name: Some("Jeremy".into()) });
         assert_eq!(v.seats[1], SeatDoc::Human { user: "blue@t.test".into(), name: Some("Alex".into()) });
-        let e = games.keep("kn", &red, PlayerId::new(0), 1, Some("\u{7}")).unwrap_err();
-        assert!(matches!(e, GameError::Playing) || e.to_string().contains("control"), "a bad name is 400 before anything else: {e}");
+        assert_eq!(v.status, TableStatus::Playing, "the last keep finalized");
     }
 
     /// **The lock is PER TABLE** (R-2.9): a finalize at one table does not
@@ -2625,17 +2682,22 @@ mod tests {
         let (_go_delete_tx, go_delete_rx) = channel();
         let (at_table_tx, _at_table_rx) = channel();
         let (_go_table_tx, go_table_rx) = channel();
+        let (at_after_delete_tx, _at_after_delete_rx) = channel();
+        let (_go_after_delete_tx, go_after_delete_rx) = channel();
         let store = Arc::new(RaceStore {
             inner: MemStore::default(),
             park_record: AtomicBool::new(false),
             park_delete: AtomicBool::new(false),
             park_table: AtomicBool::new(false),
+            park_after_delete: AtomicBool::new(false),
             at_record: Mutex::new(at_record_tx),
             go_record: Mutex::new(go_record_rx),
             at_delete: Mutex::new(at_delete_tx),
             go_delete: Mutex::new(go_delete_rx),
             at_table: Mutex::new(at_table_tx),
             go_table: Mutex::new(go_table_rx),
+            at_after_delete: Mutex::new(at_after_delete_tx),
+            go_after_delete: Mutex::new(go_after_delete_rx),
         });
         let games =
             Arc::new(Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>));
@@ -2699,17 +2761,22 @@ mod tests {
         let (go_delete_tx, go_delete_rx) = channel();
         let (at_table_tx, at_table_rx) = channel();
         let (go_table_tx, go_table_rx) = channel();
+        let (at_after_delete_tx, _at_after_delete_rx) = channel();
+        let (_go_after_delete_tx, go_after_delete_rx) = channel();
         let store = Arc::new(RaceStore {
             inner: MemStore::default(),
             park_record: AtomicBool::new(false),
             park_delete: AtomicBool::new(false),
             park_table: AtomicBool::new(false),
+            park_after_delete: AtomicBool::new(false),
             at_record: Mutex::new(at_record_tx),
             go_record: Mutex::new(go_record_rx),
             at_delete: Mutex::new(at_delete_tx),
             go_delete: Mutex::new(go_delete_rx),
             at_table: Mutex::new(at_table_tx),
             go_table: Mutex::new(go_table_rx),
+            at_after_delete: Mutex::new(at_after_delete_tx),
+            go_after_delete: Mutex::new(go_after_delete_rx),
         });
         let games =
             Arc::new(Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>));
@@ -2755,6 +2822,108 @@ mod tests {
         assert!(store.read(Doc::Record, "raced").expect("a readable store").is_none());
         assert!(matches!(games.table("raced", &red), Err(GameError::NotFound(_))));
         games.create(&req("raced"), &red).expect("the name is reusable");
+    }
+
+    /// **A `DELETE` may not tombstone the table a `create` put in its place.**
+    ///
+    /// The window the lock split opened, in the order it happens with the
+    /// tombstone written last:
+    ///
+    /// 1. `delete` takes the TABLE's lock and unlinks both documents;
+    /// 2. `create` of the same id — holding the GLOBAL `table_lock`, which is a
+    ///    different mutex since R-2.9, so nothing stops it — finds both
+    ///    documents absent, clears the id from `deleted` (where it is not yet),
+    ///    and writes a brand-new table;
+    /// 3. `delete` inserts the id into `deleted`.
+    ///
+    /// The new table is now tombstoned. `Games::persist` reads that set before
+    /// anything else, so EVERY move at a game the player just created answers
+    /// `"…" was deleted while this move was in flight` and evicts its handle —
+    /// a game that cannot be played and says something untrue about why. Under
+    /// M6.1 both calls took the one global mutex and the interleaving did not
+    /// exist; none of that cycle's four race cells is delete-versus-create.
+    ///
+    /// **The gate is AFTER the unlink and that is the whole arrangement.**
+    /// `park_delete`, which sits before it, would prove nothing here: with the
+    /// documents still present the create refuses the name as occupied and
+    /// never reaches step 2.
+    ///
+    /// Measured against the pre-fix ordering: `deleted` contains `"dc"` after
+    /// both calls return, and the create's own table is unplayable.
+    #[test]
+    fn a_delete_cannot_tombstone_the_table_a_create_put_in_its_place() {
+        // The gate is armed AT CONSTRUCTION rather than by a later `store`,
+        // because nothing may run between the create below and the delete.
+        use std::sync::atomic::AtomicBool;
+        use std::sync::mpsc::channel;
+        use std::time::Duration;
+
+        let (at_record_tx, _at_record_rx) = channel();
+        let (_go_record_tx, go_record_rx) = channel();
+        let (at_delete_tx, _at_delete_rx) = channel();
+        let (_go_delete_tx, go_delete_rx) = channel();
+        let (at_table_tx, _at_table_rx) = channel();
+        let (_go_table_tx, go_table_rx) = channel();
+        let (at_after_delete_tx, at_after_delete_rx) = channel();
+        let (go_after_delete_tx, go_after_delete_rx) = channel();
+        let store = Arc::new(RaceStore {
+            inner: MemStore::default(),
+            park_record: AtomicBool::new(false),
+            park_delete: AtomicBool::new(false),
+            park_table: AtomicBool::new(false),
+            park_after_delete: AtomicBool::new(true),
+            at_record: Mutex::new(at_record_tx),
+            go_record: Mutex::new(go_record_rx),
+            at_delete: Mutex::new(at_delete_tx),
+            go_delete: Mutex::new(go_delete_rx),
+            at_table: Mutex::new(at_table_tx),
+            go_table: Mutex::new(go_table_rx),
+            at_after_delete: Mutex::new(at_after_delete_tx),
+            go_after_delete: Mutex::new(go_after_delete_rx),
+        });
+        let games =
+            Arc::new(Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>));
+        let red = who("red@t.test");
+        games.create(&req("dc"), &red).expect("the table that is about to go");
+
+        let deleter = {
+            let (games, red) = (Arc::clone(&games), red.clone());
+            std::thread::spawn(move || games.delete("dc", &red))
+        };
+        at_after_delete_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the delete has unlinked both documents and not yet finished");
+
+        // Step 2, on its own thread and WAITED FOR, so a create that blocked
+        // fails this cell instead of hanging it.
+        let (made_tx, made_rx) = channel();
+        let creator = {
+            let (games, red) = (Arc::clone(&games), red.clone());
+            std::thread::spawn(move || {
+                let answer = games.create(&req("dc"), &red);
+                let _ = made_tx.send(answer.is_ok());
+                answer
+            })
+        };
+        let made = made_rx.recv_timeout(Duration::from_secs(10));
+
+        go_after_delete_tx.send(()).expect("the parked delete is still listening");
+        deleter.join().expect("the delete thread").expect("the delete");
+        let created = creator.join().expect("the create thread");
+        assert_eq!(made, Ok(true), "the create of the freed name did not land: {created:?}");
+
+        // **The claim.** The id names a table the player just made, and nothing
+        // in this process thinks it was deleted.
+        assert!(
+            !games.deleted.lock().expect("games lock").contains("dc"),
+            "the delete tombstoned the table the create put in its place",
+        );
+        // And the consequence a player would actually meet: the new table
+        // finishes dealing and its first persisted move is not refused.
+        games.keep("dc", &red, PlayerId::new(0), 1, None).expect("the new table finalizes");
+        let handle = games.handle("dc").expect("the new table plays");
+        let repl = handle.lock().expect("a game");
+        games.persist("dc", &repl).expect("a move at the new table is not refused as deleted");
     }
 
     /// **A refused join writes NOTHING**, read as the stored bytes and the
