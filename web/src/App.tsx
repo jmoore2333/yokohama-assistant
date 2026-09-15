@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
-import { api, ApiError, clearClaimedUser, isSignedOut } from "./api";
+import { api, ApiError, isSignedOut, onUnauthorized } from "./api";
 import { SignIn } from "./SignIn";
 import { doorSentence, useMe } from "./whoami";
 import { Board } from "./Board";
@@ -56,28 +56,17 @@ export function App() {
   // we are decides which of four screens this is — see the branch below the
   // hooks, which is where it can finally be acted on.
   const door = useMe();
-  const { refresh } = door;
-  /** Stop being this person: the sign-out button, and where a refusal lands.
-   *
-   *  **Dropping the stored name is half of it, and not a tidy-up.** `/api/me`
-   *  reads the very header `api.ts` attaches from storage, so asking the door
-   *  again while still holding the name it just refused gets the same name
-   *  back. Under the two edge-identity doors there is nothing stored to drop
-   *  and `/api/me` answers `user: null` on its own. */
-  const signOut = useCallback(() => {
-    clearClaimedUser();
-    refresh();
-  }, [refresh]);
-  /** A refusal that means the server no longer knows who we are (401, and the
-   *  API has exactly one): back to the door. `true` when it was that. */
-  const signedOut = useCallback(
-    (e: unknown) => {
-      if (!isSignedOut(e)) return false;
-      signOut();
-      return true;
-    },
-    [signOut],
-  );
+  const { refresh, signOut, signedOut } = door;
+  // **Every 401 on this API routes here, and no screen has to remember to
+  // (ruling R-7.1).** `api.ts` invokes this from inside `call`, before the
+  // refusal is thrown — so it reaches the door whatever the caller then does
+  // with the error, including `/result`'s catch, which discards it. Registered
+  // in an effect and cleared on unmount: the module holds one handler, and a
+  // handler left behind by a torn-down tree would move a door that is gone.
+  useEffect(() => {
+    onUnauthorized(signedOut);
+    return () => onUnauthorized(null);
+  }, [signedOut]);
   const [labels, setLabels] = useState<Labels | null>(null);
   const [art, setArt] = useState<ArtManifest | null>(null);
   const [state, setState] = useState<ClientState | null>(null);
@@ -269,10 +258,10 @@ export function App() {
         // longer on screen would sit over a game it does not describe.
         if (gameId.current !== game) return;
         setError(e instanceof ApiError ? e.message : String(e));
-        // **A 401 goes to the door, and the re-read below is skipped.** The
-        // server does not know who we are, so re-reading the game would earn
-        // the same 401 and the recovery would be a second refusal.
-        if (signedOut(e)) return;
+        // **The re-read below is skipped on a 401.** The door has already been
+        // moved — `api.ts` did that before this refusal was thrown — and a
+        // re-read would only spend a request earning the same answer.
+        if (isSignedOut(e)) return;
         // **Re-read the game, because the server just told us to and this
         // client had no way to.**
         //
@@ -301,7 +290,7 @@ export function App() {
         setBusy(false);
       }
     },
-    [state, landed, signedOut],
+    [state, landed],
   );
 
   // **Debounced, because a drag is not a click.**
@@ -337,16 +326,13 @@ export function App() {
           if (!live) return;
           setPast(null);
           setError(e instanceof ApiError ? e.message : String(e));
-          // The scrubber reads the same record every other route does, so a
-          // refusal here means the same thing it means there.
-          signedOut(e);
         });
     }, 200);
     return () => {
       live = false;
       clearTimeout(timer);
     };
-  }, [scrubK, state?.id, signedOut]);
+  }, [scrubK, state?.id]);
 
   // Leaving the log panel leaves the replay. The scrub track lives in that
   // panel, so a scrub position with the panel shut would be a board showing a
@@ -372,7 +358,7 @@ export function App() {
   if (door.error) return <div className="setup door-error">{door.error}</div>;
   if (!door.me) return null;
   if (door.me.mode === "claimed" && !door.me.user)
-    return <SignIn onSignedIn={() => refresh()} />;
+    return <SignIn onSignedIn={() => refresh()} notice={door.notice ?? undefined} />;
   if (!door.me.user) return <div className="setup door-error">{doorSentence(door.me.mode)}</div>;
 
   // **Who you are, and how to stop being them — built once, placed twice.**
@@ -542,7 +528,6 @@ export function App() {
             setError(null);
             show(null);
           }}
-          onSignedOut={signOut}
         />
         {who}
         {/* Four surfaces inline, the five card references behind a disclosure,

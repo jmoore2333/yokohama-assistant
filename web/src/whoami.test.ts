@@ -49,6 +49,44 @@ describe("useMe", () => {
     expect(stub.matching("GET", "/api/me")).toHaveLength(2);
   });
 
+  // **The sentence survives the screen change**, which is the whole point of
+  // holding it here rather than in whatever component caught the refusal: a 401
+  // unmounts that component, and a player who arrives at a bare form has been
+  // told nothing about why their game vanished.
+  it("carries the refusal's sentence to the door, and drops the name with it", async () => {
+    localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
+    meFromStorage();
+    const { result } = renderHook(() => useMe());
+    await waitFor(() => expect(result.current.me?.user).toBe(wire.me.user));
+    expect(result.current.notice).toBeNull();
+
+    act(() => result.current.signedOut("no signed-in user: send X-Yokohama-Claimed-User"));
+    await waitFor(() => expect(result.current.me).toEqual(wire.meSignedOut));
+    expect(result.current.notice).toBe("no signed-in user: send X-Yokohama-Claimed-User");
+    // Dropped, not merely re-asked: `/api/me` reads the very header storage
+    // supplies, so a name kept here comes straight back.
+    expect(localStorage.getItem(CLAIMED_USER_KEY)).toBeNull();
+  });
+
+  it("says nothing when the player signs out on purpose", async () => {
+    localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
+    meFromStorage();
+    const { result } = renderHook(() => useMe());
+    await waitFor(() => expect(result.current.me?.user).toBe(wire.me.user));
+    act(() => result.current.signedOut("stale sentence from an earlier refusal"));
+    await waitFor(() => expect(result.current.notice).not.toBeNull());
+
+    // Signing in again and then out by hand must not re-show the old refusal:
+    // a notice left standing would explain a screen the player asked for.
+    localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
+    act(() => result.current.refresh());
+    await waitFor(() => expect(result.current.me?.user).toBe(wire.me.user));
+    act(() => result.current.signOut());
+    await waitFor(() => expect(result.current.me).toEqual(wire.meSignedOut));
+    expect(result.current.notice).toBeNull();
+    expect(localStorage.getItem(CLAIMED_USER_KEY)).toBeNull();
+  });
+
   it("carries the server's own sentence when the door refuses", async () => {
     stubApi((call) =>
       call.path.endsWith("/api/me") ? { status: 500, body: wire.error } : undefined,

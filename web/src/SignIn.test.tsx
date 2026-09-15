@@ -42,6 +42,25 @@ describe("the sign-in screen", () => {
     expect(onSignedIn).not.toHaveBeenCalled();
   });
 
+  // §7.1's last bullet: the player is returned here WITH the sentence. Without
+  // it a game vanishes and a bare form appears, and nothing on screen connects
+  // the two.
+  it("shows the sentence that sent the player back, above the form", () => {
+    render(<SignIn onSignedIn={vi.fn()} notice="no signed-in user: send X-Yokohama-Claimed-User" />);
+    const said = screen.getByRole("status");
+    expect(said).toHaveTextContent("no signed-in user: send X-Yokohama-Claimed-User");
+    // Above the form, not after it: the reason you are here is read before the
+    // thing it is asking you to do.
+    expect(said.compareDocumentPosition(screen.getByRole("button", { name: "Sign in" }))).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+  });
+
+  it("says nothing of its own when there is no notice", () => {
+    render(<SignIn onSignedIn={vi.fn()} />);
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
   // Not in the plan's two cells, and here because the plan's own message reads
   // " is not an email" when the field is empty — a sentence with a hole in it,
   // shown on the likeliest mistake there is (clicking the button first).

@@ -5,7 +5,7 @@ import { BoardsMenu } from "./BoardsMenu";
 import { backArt } from "./art";
 import { OrderCardView, seatClass } from "./Cards";
 import { TableSections } from "./TableSections";
-import { tableWord } from "./tables";
+import { TableFacts } from "./TableFacts";
 import type { SectionKey } from "./sections";
 import type {
   ArtManifest,
@@ -544,9 +544,7 @@ export function NewGame({
                   >
                     {name}
                   </button>
-                  <span className="muted">
-                    {t.players}P &middot; {tableWord(t)}
-                  </span>
+                  <TableFacts table={t} />
                   {/* **Two clicks, and the first one asks (final review I2).**
                       Deleting a record is not undoable — the game is gone — and
                       M5 put this list one banner menu away from a running game,

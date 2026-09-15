@@ -98,6 +98,15 @@ describe("the Game menu", () => {
     expect(await row(dealing.name)).toHaveTextContent("2P · dealing");
     expect(await row("sim-waiting")).toHaveTextContent("2P · waiting on red@wire.test");
     expect(await row("sim-yours")).toHaveTextContent("2P · your turn");
+
+    // §7.2: WHO is at the table, which is how a player picks between three of
+    // them. `tableWord` names at most one seat, and on the dealing row it names
+    // none at all — so without this a lobby says nothing about the company.
+    for (const seat of dealing.seats) {
+      expect(await row(dealing.name)).toHaveTextContent(
+        seat.kind === "bot" ? "the bot" : seat.user,
+      );
+    }
   });
 
   // **The same defect the app guards at its two other mutation controls**, in the

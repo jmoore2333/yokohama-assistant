@@ -5,7 +5,22 @@
 // functions. Written inline they would be two ternaries drifting apart, and the
 // same table would read differently depending on which screen you opened.
 
-import type { PlayerId, TableView } from "./types";
+import type { PlayerId, SeatDoc, TableView } from "./types";
+
+/** One seat, in the words a row reads: a person's email, or the bot. */
+export function seatName(seat: SeatDoc): string {
+  return seat.kind === "bot" ? "the bot" : seat.user;
+}
+
+/** Every seat, in SEAT ORDER (spec §7.2).
+ *
+ *  `tableWord` names at most ONE seat — the one holding the turn — and on a
+ *  dealing table it names none, which is exactly the table a player is deciding
+ *  whether to sit down at. This is the other half of the question "which of my
+ *  three games is this": who is at it. */
+export function seatNames(t: TableView): string {
+  return t.seats.map(seatName).join(", ");
+}
 
 /** Who holds one seat, in the words a row uses: a person's email, or the bot.
  *
@@ -15,8 +30,7 @@ import type { PlayerId, TableView } from "./types";
  *  every payload the server sends, so nothing today reaches it. */
 export function holder(t: TableView, seat: PlayerId): string {
   const s = t.seats[seat];
-  if (s === undefined) return "nobody";
-  return s.kind === "bot" ? "the bot" : s.user;
+  return s === undefined ? "nobody" : seatName(s);
 }
 
 /** What one row says the table is doing.

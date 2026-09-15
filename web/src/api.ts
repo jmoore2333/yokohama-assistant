@@ -42,6 +42,29 @@ export class ApiError extends Error {
 /** The server no longer knows who we are. See `ApiError.status`. */
 export const isSignedOut = (e: unknown): boolean => e instanceof ApiError && e.status === 401;
 
+/** The ONE handler for "the server no longer knows who you are", invoked by
+ *  `call` on every 401 before the refusal is thrown.
+ *
+ *  **Central, and not a wiring at each catch site (ruling R-7.1).** Spec §7.1
+ *  says a 401 from ANY call returns the player to the door, and a client that
+ *  meets that by adding two lines per catch is a client that meets it for the
+ *  catches that existed on the day it was written. It was already three of
+ *  seven: the opening walk reported into a game screen it had already drawn,
+ *  the setup screen's list swallowed the refusal into an empty array and told a
+ *  signed-out player they had no games, and `/result`'s catch does not even
+ *  RECEIVE the error — `.catch(() => setOutcome(null))` discards it, so no
+ *  per-site wiring could ever have routed that one. Here, every call routes by
+ *  construction, including the calls no screen has written yet.
+ *
+ *  One handler, not a list: there is one door, and a second subscriber would be
+ *  a second thing racing to decide which screen this is. `App` registers it in
+ *  an effect and clears it on unmount. */
+let unauthorized: ((sentence: string) => void) | null = null;
+
+export function onUnauthorized(handler: ((sentence: string) => void) | null): void {
+  unauthorized = handler;
+}
+
 /** Where the sign-in screen keeps the claimed user (R-plan-2). Read on every
  *  call; absent means no header. A value is only ever WRITTEN by the sign-in
  *  screen, which only exists in `claimed` mode, and the server ignores this
@@ -119,6 +142,9 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
       !parseFailed && parsed && typeof parsed === "object" && "error" in parsed
         ? String((parsed as { error: unknown }).error)
         : `${res.status} ${res.statusText}`;
+    // **Before the throw, so it reaches the door whatever the caller does with
+    // the refusal** — including discarding it, which one caller does.
+    if (res.status === 401) unauthorized?.(message);
     throw new ApiError(message, res.status);
   }
   if (parseFailed) {

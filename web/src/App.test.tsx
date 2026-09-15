@@ -1154,12 +1154,16 @@ describe("the door", () => {
     expect(screen.queryByLabelText("Email")).toBeNull();
   });
 
-  it("a 401 mid-game returns to sign-in", async () => {
+  it("a 401 mid-game returns to sign-in, carrying the sentence", async () => {
     const stub = await renderApp(wire.options, (call) =>
       call.path.endsWith("/input") ? signedOutReply() : undefined,
     );
     await userEvent.setup().click(firstOptionButton());
     await screen.findByRole("heading", { name: "Sign in" });
+    // **§7.1's last bullet.** The refusal was in an error strip the sign-in
+    // screen replaced, so without carrying it the player's game vanishes and a
+    // bare form appears with nothing connecting the two.
+    expect(screen.getByRole("status")).toHaveTextContent(signedOutReply().body.error);
     expect(stub.matching("POST", "/input")).toHaveLength(1);
     // The stored name is DROPPED, not merely re-asked: the harness answers
     // `/api/me` from storage, so a client that kept it would have been handed
@@ -1176,10 +1180,15 @@ describe("the door", () => {
     ).toHaveLength(1);
   });
 
-  // **The third catch site**, and the one in a different component: the Game
-  // menu's two requests are both `/api/games` routes, so both refuse the moment
-  // the server stops knowing who we are — and the menu is where a player goes
-  // after leaving the tab open all afternoon.
+  // ---- R-7.1: EVERY call routes, because `call()` does it ------------------
+  //
+  // The four cells below are four different callers, and three of them handle
+  // their own refusals in ways that could not have routed a 401 on their own:
+  // the Game menu shows the sentence and stays put, the scrubber is an effect,
+  // `/result` throws its error away entirely, and the opening walk reports into
+  // an error strip on a screen it has already drawn. One `if` in `api.ts` is
+  // what makes all four the same, and Task 8's rewritten screens too.
+
   it("a 401 from the Game menu's list returns to sign-in", async () => {
     let lists = 0;
     await renderApp(wire.options, (call) => {
@@ -1223,5 +1232,76 @@ describe("the door", () => {
     await screen.findByText(wire.notSeated403.error);
     expect(screen.queryByRole("heading", { name: "Sign in" })).toBeNull();
     expect(localStorage.getItem(CLAIMED_USER_KEY)).toBe(wire.me.user);
+  });
+
+  // **The cell that can only pass CENTRALLY.** `/result`'s catch is
+  // `.catch(() => setOutcome(null))` — it does not receive the error, it
+  // discards it — so no amount of wiring at the call sites that DO receive one
+  // would route this. A finished game whose session had expired sat there
+  // showing no standing and saying nothing at all.
+  it("a 401 from the final score returns to sign-in", async () => {
+    await renderApp(wire.gameOver, (call) =>
+      call.path.endsWith("/result") ? signedOutReply() : undefined,
+    );
+    await screen.findByRole("heading", { name: "Sign in" });
+    expect(screen.getByRole("status")).toHaveTextContent(signedOutReply().body.error);
+  });
+
+  // **The worst of the unrouted sites, because it put a FALSE sentence on
+  // screen.** The setup screen's list swallows its refusal into an empty array,
+  // so a player whose session had expired was told they had no games.
+  it("a 401 from the saved-game list says why, rather than that you have no games", async () => {
+    localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
+    stubApi((call) => {
+      if (call.path.endsWith("/api/me"))
+        return localStorage.getItem(CLAIMED_USER_KEY) ? wire.me : wire.meSignedOut;
+      if (call.path.endsWith("/api/labels")) return wire.labels;
+      if (call.path.endsWith("/api/art")) return wire.artManifest;
+      if (call.method === "GET" && call.path.endsWith("/api/games")) return signedOutReply();
+      return undefined;
+    });
+    render(<App />);
+    await screen.findByRole("heading", { name: "Sign in" });
+    expect(screen.getByRole("status")).toHaveTextContent(signedOutReply().body.error);
+    expect(screen.queryByText(/none yet/)).toBeNull();
+  });
+
+  // The opening walk: the run a just-created game's own events are shown as. It
+  // runs OUTSIDE any request of its own — `show` starts it — so its refusal
+  // landed in the error strip of a game screen already drawn, and the SAME walk
+  // routed correctly when it ran inside a move.
+  it("a 401 from the opening walk returns to sign-in", async () => {
+    localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
+    stubApi((call) => {
+      if (call.path.endsWith("/api/me"))
+        return localStorage.getItem(CLAIMED_USER_KEY) ? wire.me : wire.meSignedOut;
+      if (call.path.endsWith("/api/labels")) return wire.labels;
+      if (call.path.endsWith("/api/art")) return wire.artManifest;
+      if (call.method === "GET" && call.path.endsWith("/api/games")) return gamesNamed();
+      if (call.path.endsWith("preview")) return wire.previewBot;
+      if (call.method === "POST" && call.path.endsWith("/api/games")) return wire.tableDealing;
+      if (call.path.endsWith("/keep")) return wire.table;
+      // **`events` is the one field moved, and it is what makes this the
+      // opening walk at all**: `show(state, opening)` builds a run only when the
+      // game it opens already has events, and the corpus's playable state has
+      // none. Two of them, so the run is three positions rather than the 1,036
+      // the finished game would fetch.
+      if (call.method === "GET" && call.path.endsWith(`/api/games/${wire.options.id}`))
+        return { ...wire.options, events: 2 };
+      if (/\/at\/\d+$/.test(call.path)) return signedOutReply();
+      if (/\/log(\?|$)/.test(call.path)) return wire.log;
+      if (call.path.endsWith("/ports")) return wire.ports;
+      if (call.path.endsWith("/labs")) return wire.labs;
+      if (call.path.endsWith("/areas")) return wire.areas;
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    render(<App />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Deal" }));
+    // Two dealt cards, so two buttons: the first, as the other create cells do.
+    await user.click((await screen.findAllByRole("button", { name: /^keep O\d\d for seat 0/ }))[0]!);
+    await user.click(await screen.findByRole("button", { name: "Start" }));
+    await screen.findByRole("heading", { name: "Sign in" });
+    expect(screen.getByRole("status")).toHaveTextContent(signedOutReply().body.error);
   });
 });

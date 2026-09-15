@@ -6,8 +6,8 @@
 // this menu. Nothing is deleted from here; the setup screen already does that.
 
 import { useRef, useState } from "react";
-import { api, ApiError, isSignedOut } from "./api";
-import { tableWord } from "./tables";
+import { api, ApiError } from "./api";
+import { TableFacts } from "./TableFacts";
 import type { ClientState, TableView } from "./types";
 
 export function GameMenu({
@@ -15,18 +15,12 @@ export function GameMenu({
   busy,
   onSwitch,
   onNew,
-  onSignedOut,
 }: {
   state: ClientState;
   /** A move is in flight. See the rows' `disabled` below. */
   busy: boolean;
   onSwitch: (s: ClientState) => void;
   onNew: () => void;
-  /** The server no longer knows who we are. Both requests this menu makes are
-   *  `/api/games` routes, so both are a 401 the moment that is true, and the
-   *  menu is a likely place to find out — it is the one control a player
-   *  reaches for after leaving the tab open. */
-  onSignedOut: () => void;
 }) {
   const [saved, setSaved] = useState<TableView[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -44,13 +38,9 @@ export function GameMenu({
   // two `GET /api/games`, and the first to answer is not the first sent; a
   // stale list is one that offers a game already deleted.
   const listing = useRef(0);
-  /** The sentence to show — and, on the one refusal a sentence cannot help
-   *  with, the way back to the door. Both catch sites below go through it, so
-   *  neither can be the one that forgets. */
-  const said = (e: unknown) => {
-    if (isSignedOut(e)) onSignedOut();
-    return e instanceof ApiError ? e.message : String(e);
-  };
+  // The sentence to show. A 401 needs nothing here: `api.ts` moves the door
+  // from inside `call`, before this ever sees the refusal (ruling R-7.1).
+  const said = (e: unknown) => (e instanceof ApiError ? e.message : String(e));
   const load = () => {
     setError(null);
     const seq = (listing.current += 1);
@@ -104,10 +94,10 @@ export function GameMenu({
             a reply for the game left behind is dropped by the same guard. */}
         {/* **A row is the table, not its id.** The button is what it is CALLED
             — the name whoever opened it typed, and the id when nobody typed one
-            — and the line beside it is how many seats it has and what it is
-            waiting on. `tables.ts` words that, shared with the setup screen's
-            list, so the same table cannot read two different ways depending on
-            which of the two lists you are looking at. */}
+            — and `TableFacts` is the rest: the size, what the table is waiting
+            on, and who is at it. Shared with the setup screen's list, so the
+            same table cannot read two different ways depending on which of the
+            two you are looking at. */}
         {others.map((t) => (
           <div className="game-row" key={t.id}>
             <button
@@ -118,9 +108,7 @@ export function GameMenu({
             >
               {t.name ?? t.id}
             </button>
-            <span className="muted">
-              {t.players}P &middot; {tableWord(t)}
-            </span>
+            <TableFacts table={t} />
           </div>
         ))}
         {saved !== null && others.length === 0 && <div className="muted">no other saved game</div>}

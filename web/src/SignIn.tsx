@@ -21,7 +21,17 @@ import { setClaimedUser } from "./api";
  *  server would have accepted. */
 const EMAIL = /^[^\s@]+@[^\s@]+$/;
 
-export function SignIn({ onSignedIn }: { onSignedIn: (email: string) => void }) {
+export function SignIn({
+  onSignedIn,
+  notice,
+}: {
+  onSignedIn: (email: string) => void;
+  /** Why the player is here, in the server's own words, when they did not
+   *  choose to be (spec §7.1). A 401 unmounts the screen that caught it, so the
+   *  sentence has to arrive with them or it is lost — and a game vanishing into
+   *  a bare form is not something anyone can act on. */
+  notice?: string;
+}) {
   const [value, setValue] = useState("");
   const [error, setError] = useState<string | null>(null);
   const submit = () => {
@@ -46,6 +56,14 @@ export function SignIn({ onSignedIn }: { onSignedIn: (email: string) => void }) 
   return (
     <div className="setup sign-in">
       <h2>Sign in</h2>
+      {/* Above the form: the reason you are here is read before the thing it is
+          asking you to do. `role="status"` because it appears without the
+          player having done anything on this screen. */}
+      {notice && (
+        <p className="error door-notice" role="status">
+          {notice}
+        </p>
+      )}
       <p className="lede">
         This is a development door: the name you type is the name you play under. Behind Cloudflare
         Access it is still Access that lets you in.

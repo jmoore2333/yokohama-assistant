@@ -6,7 +6,7 @@
 // looking at is a lobby nobody can trust.
 
 import { describe, expect, it } from "vitest";
-import { holder, tableWord } from "./tables";
+import { holder, seatName, seatNames, tableWord } from "./tables";
 import { wire } from "./wire/contract";
 import type { TableView } from "./types";
 
@@ -49,5 +49,27 @@ describe("tableWord", () => {
     expect(tableWord(vsBot)).toBe("waiting on the bot");
     expect(holder(vsBot, wire.table.to_move!)).toBe("the bot");
     expect(holder(wire.table, 1)).toBe("blue@wire.test");
+  });
+});
+
+// §7.2: a row lists the seats as names, with a bot marked. `tableWord` names at
+// most ONE seat — the one holding the turn — so on a dealing table it names
+// nobody, which is exactly the table a player is deciding whether to join.
+describe("seatNames", () => {
+  it("lists every seat in seat order, in the words a row reads", () => {
+    expect(seatNames(wire.games.games[0]!)).toBe("red@wire.test, blue@wire.test");
+    // Seat ORDER, not the order the server happens to have listed them in:
+    // which colour sits where is what a returning player is looking for.
+    expect(seatNames(wire.table)).toBe("red@wire.test, blue@wire.test");
+  });
+
+  it("marks a bot seat rather than inventing a name for it", () => {
+    // Derived for the same reason the cell above it is: the corpus game is
+    // bot-free by construction, so no committed payload can carry this seat.
+    const seats = [...wire.table.seats];
+    seats[1] = { kind: "bot" };
+    expect(seatNames({ ...wire.table, seats })).toBe("red@wire.test, the bot");
+    expect(seatName({ kind: "bot" })).toBe("the bot");
+    expect(seatName({ kind: "human", user: "red@wire.test" })).toBe("red@wire.test");
   });
 });

@@ -870,9 +870,9 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
 
 .saved ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.25rem; }
 .saved li { display: flex; gap: 0.4rem; align-items: center; }
-/* The row's second half — how many seats and what the table is waiting on. It
-   wraps rather than pushing the delete controls off a narrow screen. */
-.saved li .muted { font-size: 11px; }
+/* The row's second half — the size, what the table is waiting on, and who is at
+   it. It wraps rather than pushing the delete controls off a narrow screen. */
+.saved li .table-facts { font-size: 11px; }
 
 /* ---- the door (M6.1) ---------------------------------------------------- */
 
@@ -895,10 +895,15 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
 .sign-in .field { max-width: 26rem; }
 .sign-in form { margin-top: 1rem; }
 .sign-in button.primary { margin-top: 0.6rem; }
+/* Why the player is at this door, when they did not choose to be. Above the
+   form, and given the room a sentence needs. */
+.sign-in .door-notice { margin: 0 0 0.9rem; max-width: 34rem; }
 
-/* One table in the Game menu's list: the name is a control, the rest is not. */
-.game-row { display: flex; align-items: baseline; gap: 0.5rem; }
-.game-row .muted { font-size: 10px; white-space: nowrap; }
+/* One table in the Game menu's list: the name is a control, the rest is not.
+   The facts can carry three or four emails at 4P, so the row wraps rather than
+   widening a dropdown past the banner. */
+.game-row { display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; }
+.game-row .table-facts { font-size: 10px; }
 
 .error { color: var(--warn); margin-top: 0.6rem; }
 .center { text-align: center; color: var(--fg-dim); padding: 3rem; }
