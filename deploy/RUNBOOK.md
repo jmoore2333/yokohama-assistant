@@ -204,6 +204,12 @@ header name the client and the server disagree about, still answers `/api/health
 perfectly — so a check that reads only the health payload cannot tell a working
 identity gate from a broken one.
 
+**This check needs WARP active** (Access authenticates an enrolled device
+silently, which is what lets `curl` past it at all): a "Just a moment…"
+challenge page back from `curl` means WARP is off, **not** that the deployment
+failed — §3.7 is the run where exactly that happened and the in-container read
+was the workaround.
+
 Recorded on 2026-09-01, before identity existed: health
 `{"server_version":"0.5.0","semantics_rev":7,"rules_hash":"d85445c479cb1ead"}`,
 art 200 `image/webp`, help screenshots 200 `image/png`, create → list → `/at/0`
@@ -474,12 +480,17 @@ is the first build that reads an identity header at all.
   rode across untouched. The container log's first line:
   `yokohama-web listening on http://0.0.0.0:8080`. **Healthy on the first
   probe at 07:00:06Z** (03:00:06 local), 30 s after start.
-- **Verified from INSIDE the container, by `docker exec` — and say why, because
-  it is a departure from §3.2.** The shell's path through the tunnel hit a
-  Cloudflare managed challenge page at that moment: WARP was not passing Access
-  from the shell, so §3.2's `curl` trio could not be run at all. The on-screen
-  check through the tunnel is the final review's (R-P11), not this record's.
-  What was read, from `127.0.0.1:8080` inside the container:
+- **Verified TWICE, and the order is the interesting part.** The first read was
+  taken from inside the container by `docker exec`, a departure from §3.2, and
+  the reason it was taken that way is the lesson §3.2 now carries: WARP was off,
+  so the shell's path through the tunnel returned a Cloudflare managed challenge
+  page rather than the API. WARP was re-enabled and the §3.2 reading was then
+  taken normally. **Both are recorded because the pair is what separates "the
+  server is right" from "the whole path to it is right"** — the first reading
+  alone cannot see a tunnel or an Access misconfiguration, and the second alone
+  cannot tell you where a failure lives.
+
+  **07:00Z, inside the container** (`docker exec`, against `127.0.0.1:8080`):
   - `wget -qO- http://127.0.0.1:8080/api/health` →
     `{"server_version":"0.5.0","semantics_rev":7,"rules_hash":"d85445c479cb1ead","identity":"claimed"}`
     — the `identity` field is new in this build and is how the mode is read back.
@@ -487,6 +498,16 @@ is the first build that reads an identity header at all.
   - `GET /api/games` with `X-Yokohama-Claimed-User: jamoore@gmail.com` →
     **`{"games":[]}`**.
   - `GET /` serves `index-BdYKdXfa.js`, which exists only in this build.
+
+  **07:02Z, through the tunnel** (§3.2, from a WARP-enrolled shell, which is
+  what Access authenticates silently): the same four readings, identically —
+  `https://yokohama.moore.nyc/api/health` returning that same payload with
+  `"identity":"claimed"`, `/api/games` **401** bare and `{"games":[]}` with
+  `X-Yokohama-Claimed-User: jamoore@gmail.com`, and `/` serving
+  `index-BdYKdXfa.js`. So the tunnel, the Access application and the identity
+  gate agree end to end. The on-screen check in a browser, at both layouts and
+  from two browsers as two people, is the final review's (R-P11) and not this
+  record's.
 - **The empty list is expected and is not a lost store (R-P7).** `/api/games`
   lists TABLES, and a record with no table document is not a game this API
   serves. Every record already on the volume predates the table document, so
