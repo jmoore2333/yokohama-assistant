@@ -91,8 +91,11 @@ export default {
     // Absent when Access is not configured. That is NOT treated as a failure
     // here: it is legitimate while the policy is being set up, and pretending
     // otherwise would mean the first deploy could never be tested. The
-    // consequence is stated rather than hidden — with no Access policy, this
-    // Worker is a public proxy to the game store.
+    // consequence is stated rather than hidden — with no Access policy every
+    // caller arrives as `anonymous`, which the origin treats as no identity, so
+    // the game store answers 401 and only the public surfaces are reachable.
+    // That is fail-closed rather than safe: nothing here authenticates, and the
+    // store is one Access policy away from being served to whoever asks.
     let user = "anonymous";
     if (ctx.access) {
       const identity = await ctx.access.getIdentity();

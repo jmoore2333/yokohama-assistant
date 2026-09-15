@@ -71,9 +71,10 @@ if (!haveBrowser) {
 // the gate list, which is the silent skip the whole design was avoiding.
 //
 // Every BROWSER spec carries `test.skip(!haveBrowser, …)` instead, so the
-// reporter prints one SKIPPED test per browser test — eleven at this writing,
-// a reading rather than a contract — with the reason attached, and the run
-// exits 0. A skip you can count is not a skip you can miss.
+// reporter prints one SKIPPED test per browser test — thirty-seven at this
+// writing, which is every test in the glob except the structural one below, a
+// reading rather than a contract — with the reason attached, and the run exits
+// 0. A skip you can count is not a skip you can miss.
 //
 // **And the convention is enforced rather than remembered.** It was written
 // down here once and then broken anyway: M3 added a third spec without the

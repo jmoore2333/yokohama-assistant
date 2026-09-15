@@ -6,9 +6,11 @@ here names the document that carries it, and it never outranks `guidingpath.md` 
 `CLAUDE.md` (the operating facts), or a dated document in `docs/plans/`. Keep it current at every
 session close: rewrite the stale lines, do not append history (the decision log is for history).
 
-**Updated:** 2026-09-14, on branch `web-room` (worktree `.claude/worktrees/web-room`), after the M6
-"room" brainstorm produced the five-cycle plan, the M6.1 spec and the M6.1 implementation plan
-(Track 3). The previous update, 2026-09-11 (second session), followed the V4 diagnostic games being
+**Updated:** 2026-09-15, on branch `web-room` (worktree `.claude/worktrees/web-room`), at the close
+of M6.1 "identity and seats" — shipped, live on the NAS, reviewed clean against the live site, and
+recorded in `docs/plans/2026-09-15-web-frontend-m6.1-close.md` (Track 3). The previous update,
+2026-09-14, followed the M6 "room" brainstorm producing the five-cycle plan, the M6.1 spec and the
+M6.1 implementation plan. Before that, 2026-09-11 (second session) followed the V4 diagnostic games being
 played and scribed and the owner-games LEDGER artifact being published for annotation (Track 1); before
 that, the web-lane merge (`abe4eec`) with the AI-lane re-entry handover
 `docs/plans/2026-09-11-ai-lane-reentry-handover.md`.
@@ -22,11 +24,12 @@ that, the web-lane merge (`abe4eec`) with the AI-lane re-entry handover
   reconstructed, zero refusals)**; what is outstanding is YOUR annotation of them in the ledger
   artifact, then the findings document, then the two rulings together (Track 1).
 - **The web client** merged to master 2026-09-11 and is live at `yokohama.moore.nyc` behind
-  Cloudflare Access, `yokohama-web:0.5.0-m5.5.4` on the NAS via Portainer. Nothing about it moves
-  the bot. **M6 "the room" is PLANNED (2026-09-14) on branch `web-room`**: the five-cycle plan
-  `docs/plans/2026-09-14-web-frontend-m6-room-plan.md`, the first cycle's spec
-  `docs/plans/2026-09-14-web-frontend-m6.1-identity-and-seats-spec.md` and its implementation plan
-  `docs/plans/2026-09-14-web-frontend-m6.1-plan.md` — execution is the next step (Track 3).
+  Cloudflare Access, now `yokohama-web:0.5.0-m6.1` on the NAS via Portainer. Nothing about it moves
+  the bot. **M6 "the room" is PLANNED (2026-09-14) on branch `web-room` and its FIRST cycle has
+  SHIPPED**: M6.1 "identity and seats" went live 2026-09-15, closed in
+  `docs/plans/2026-09-15-web-frontend-m6.1-close.md`. **M6.2, the lobby, is the next step**
+  (Track 3), from the room plan `docs/plans/2026-09-14-web-frontend-m6-room-plan.md` §2. The branch
+  `web-room` is not yet merged to master.
 - **Licensing:** Apache-2.0 on every crate and on `web/package.json` (checked 2026-09-11);
   `LICENSE` + `NOTICE` at the root; `ASSETS.md` carves out the game's own material.
 - **Gates at HEAD:** all per-edit suites green (the counts are in `CLAUDE.md`); the fifteen-gate
@@ -110,19 +113,49 @@ the root layout (`analysis-1/`, `tts-assets/`, `bridge/`, `deploy/`, `docs/temp/
 rulebook PDFs stay (the owner's edition is `tts-assets/pdf/…`; `analysis-1/`'s is the outlier);
 what a public README claims. Session shape: brainstorm → spec → plan, in its own branch.
 
-## Track 3 — The web client: operations now, M6 later (web lane)
+## Track 3 — The web client: M6.1 shipped, M6.2 (the lobby) next (web lane)
+
+**M6.1 "identity and seats" is DONE and LIVE** — planned 2026-09-14, shipped 2026-09-15 as
+`yokohama-web:0.5.0-m6.1` on the NAS with `YOKOHAMA_WEB_IDENTITY=claimed`. You sign in, you hold
+named seats at named tables, each seat is dealt into its own browser, and every payload the server
+builds is built for the caller. The five fenced crates stayed byte-identical, `SEMANTICS_REV` is 7,
+no bot behaviour moved, and the CLI moved by 24 behaviour-preserving lines. Reviewed clean against
+the live site from two browsers as two people (**SHIP AS IS**, 3 cosmetic minors) and by the spec's
+own eight-mutation battery (**8/8 caught**).
+
+**The record of record is the close, `docs/plans/2026-09-15-web-frontend-m6.1-close.md`** — §5 the
+thirty rulings with their costs, §6 the LEAVE list (inherited and new), §7 what is not
+claimed, §8 the handover into M6.2. It is also M6.2's entry artifact.
+
+**Two things owed to you on the NAS:**
+
+- Delete the review's game, id **`m6.1-live-review`** — the only game the live review created.
+- Nothing else: the named volume rode the swap untouched, and records from before M6 stay unlisted
+  and unserved by design (R-P7).
+
+**Next step — M6.2, the lobby.** Charter: `docs/plans/2026-09-14-web-frontend-m6-room-plan.md` §2.
+Open tables and join links, taking a seat, start when full, a display name beside the email, "my
+games" with whose turn it is, abandon by the creator — the front door proper, so the first screen a
+person sees is the lobby rather than a form. Exit criterion: someone holding only a link joins a
+table and plays. It starts from M6.1's table document (which gains `open` before `dealing`), the
+identity seam (a join link is the first place a person arrives without being named in advance) and
+the bot-at-2P rule; the close's §8 says what each of those already gives it. Same session shape as
+M6.1: brainstorm → spec → plan → execution under R-P11 → deploy → one clean live review → close.
 
 **Live operations.** The deployment record and recipe are `deploy/RUNBOOK.md` (§3.5 the recipe,
-§3.6 every deployment, §5 rollback). Deploys run through the Portainer MCP against environment 2
-(`http://192.168.1.173:9000`); after every deploy, look at BOTH layouts on screen.
+§3.7 the M6.1 deployment, §5 rollback). Deploys run through the Portainer MCP against environment 2
+(`http://192.168.1.173:9000`); after every deploy, look at BOTH layouts on screen. Two operating
+facts worth having in hand: the workstation's LAN address changes between sessions and must be read
+from `ifconfig` for the context-tarball fetch, and a Cloudflare "Just a moment…" challenge page from
+`curl` means WARP is off, not a failed deploy.
 
 **Pulling a web game as a save file** — verified 2026-09-11:
 
 - The server persists every game as the SAME `GameRecord` JSON the CLI's `save` writes (one
   function, `Session::to_record_json`), at `/data/games/<id>.json` inside the container
   (`YOKOHAMA_WEB_DIR=/data/games`, the named volume `yokohama-web-data`). No API route serves the
-  raw record, and no route ever will carry the setup seed by default — so the pull is a Docker
-  archive read through Portainer:
+  raw record, and no route ever will carry the setup seed — so the pull is a Docker archive read
+  through Portainer:
 
   ```bash
   # the token the Portainer MCP uses (never paste it anywhere): env, the portainer-mcp
@@ -133,44 +166,16 @@ what a public README claims. Session shape: brainstorm → spec → plan, in its
   ```
 
   Game ids come from `curl https://yokohama.moore.nyc/api/games` (WARP passes Access from the
-  shell). The pulled file resumes in the CLI (`cargo run -p yokohama-cli -- <file>`) and `why`
-  works on every bot move — checked on `sim-016f847457c957a6` (231 events; you beat the bot
-  100–56 in that one).
-- **Naming:** the browser cannot name a game (ids are random `sim-<16 hex>`), so name the PULLED
-  copy `web-<date>-<id>.json` and let the findings document carry the purpose; CLI games keep
-  `gameN-v4.json`. Everything under `docs/temp/owner-games/` is gitignored on purpose — a record
-  carries the setup seed, which is the whole hidden set.
-**M6 "the room" — PLANNED 2026-09-14, on branch `web-room` in the worktree
-`.claude/worktrees/web-room` (master stays the AI track's).** Read, in order:
-
-1. `docs/plans/2026-09-14-web-frontend-m6-room-plan.md` — the five cycles (M6.1 identity + seats +
-   per-seat views + the events poll → M6.2 lobby → M6.3 transport + spectating → M6.4 chat → M6.5
-   hosting), the eleven owner rulings of 2026-09-14 (R-P1–R-P11: sequential cycles; identity
-   pluggable with a typed-email `claimed` mode allowed for now; live-first cadence with async as a
-   consequence; files on the volume now, an EXTERNAL Postgres later and never a database inside the
-   container; vs-bot undo as today and multi-person undo only while your own turn has not passed;
-   legacy records not served; no polling from a hidden tab; the signal separate from the fetch; a bot
-   at two players only; Opus implementers + Opus reviewers + one clean final review against the live
-   site), and the three seams (identity, store, signal) with today's implementation beside the hosted
-   one.
-2. `docs/plans/2026-09-14-web-frontend-m6.1-identity-and-seats-spec.md` — M6.1, approved by you
-   2026-09-14: one `Identity` extractor over `YOKOHAMA_WEB_IDENTITY` (`claimed` | `cf-access` |
-   `worker`, one header each, no default); the store trait widened to typed documents with
-   `write_if_version`; a `table` document beside each record; the deal served PER SEAT (create →
-   dealing → each seat keeps from its own view → the last keep finalizes), which retires `preview`
-   and the last seed on the wire; every game route resolving the caller to a seat and masking every
-   other hand with the existing `SeatFacts`; the acting-seat fence on `input`; the undo rule; `GET
-   …/events` polled at 3 s from a visible tab only; sign-in, a per-seat form, the dealing screen.
-3. `docs/plans/2026-09-14-web-frontend-m6.1-plan.md` — thirteen tasks (0–12) with the code, the
-   cells, the gates and the commits; **the browser walk is RED by design from Task 3 to Task 8** and
-   green again after; the corpus regenerates at Tasks 1, 3, 4, 6 and 10 (read every diff); Task 11
-   deploys `0.5.0-m6.1` with `YOKOHAMA_WEB_IDENTITY=claimed`; Task 12 is the final review against
-   the live site from two browsers as two people plus the close and the handover into M6.2.
-
-**Next step:** execute the plan under R-P11 (Opus per task, the SDD ledger at
-`.superpowers/sdd/2026-09-14-web-frontend-m6.1-plan/progress.md`), from the worktree. Its
-entry artifact stays `docs/plans/2026-09-06-web-frontend-m6-handover.md` (§4 the LEAVE list M6
-inherits, §5 the process).
+  shell) — **which now needs an identity header**: add
+  `-H "X-Yokohama-Claimed-User: <your email>"` and the list is the tables that email sits at.
+  Since M6.1 a browser-created game carries the name you typed rather than a random `sim-` id, but
+  `<id>.table.json` beside the record is a second file and the pull above takes only the record.
+  The pulled file resumes in the CLI (`cargo run -p yokohama-cli -- <file>`) and `why` works on
+  every bot move — checked on `sim-016f847457c957a6` (231 events; you beat the bot 100–56 in that
+  one).
+- **Naming:** name the PULLED copy `web-<date>-<id>.json` and let the findings document carry the
+  purpose; CLI games keep `gameN-v4.json`. Everything under `docs/temp/owner-games/` is gitignored
+  on purpose — a record carries the setup seed, which is the whole hidden set.
 
 ## Owner rulings outstanding (one line each; detail in the re-entry handover §5)
 
@@ -191,7 +196,9 @@ inherits, §5 the process).
 
 - AI lane: `docs/plans/2026-09-11-ai-lane-reentry-handover.md`, then the V4 close
   `docs/plans/2026-08-30-phase3.5c-v4-close.md` §3.
-- Web lane: `docs/plans/2026-09-06-web-frontend-m6-handover.md`; operations `deploy/RUNBOOK.md`.
+- Web lane: `docs/plans/2026-09-15-web-frontend-m6.1-close.md` (M6.2's entry), then the room plan
+  `docs/plans/2026-09-14-web-frontend-m6-room-plan.md` §0 and §2; what M6 inherited is
+  `docs/plans/2026-09-06-web-frontend-m6-handover.md`; operations `deploy/RUNBOOK.md`.
 - Bridge (BGA capture → import): `docs/bridge-setup.md`; ledger
   `docs/plans/2026-08-08-phase3.5b-execution-ledger.md`.
 - Everything: `CLAUDE.md`, then `guidingpath.md`'s Current state and the decision log's tail.
