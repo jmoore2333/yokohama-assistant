@@ -19,6 +19,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useSections } from "./BoardsMenu";
 import { Dealing } from "./Dealing";
+import { ApiError } from "./api";
 import { stubApi, type ApiCall, type Reply } from "./test/harness";
 import { wire } from "./wire/contract";
 import type { DealView } from "./types";
@@ -139,6 +140,50 @@ describe("the dealing screen", () => {
       await vi.advanceTimersByTimeAsync(9000);
     });
     expect(onPlaying).toHaveBeenCalledTimes(1);
+  });
+
+  // **A hand-over that FAILS must be retried, and the latch is what nearly
+  // stopped it.** `started` exists so `App` is told exactly once — the keep's
+  // reply, a 409 from `/deal` and the poll can all notice the same table — but
+  // set before `onPlaying` has succeeded it also latches on a FAILURE. The game
+  // is running server-side by then (the last keep started it), so a 500 or a
+  // dropped connection on the read that opens it would strand this browser on a
+  // dealing screen for a table that is not dealing, with no way forward but the
+  // "Games" button. The latch is released on failure and taken again on the next
+  // attempt, so its purpose — one hand-over per SUCCESS — is unchanged.
+  it("retries the hand-over when it fails, and stops asking once it succeeds", async () => {
+    vi.useFakeTimers();
+    const onPlaying = vi
+      .fn()
+      // A server error, not a 401: `api.ts` moves the door on a 401 before the
+      // refusal is thrown, so that case never reaches this screen at all.
+      .mockRejectedValueOnce(new ApiError("the game could not be read", 500))
+      .mockResolvedValue(undefined);
+    stubApi((call) => {
+      if (call.path.endsWith("/deal")) return wire.dealWaiting;
+      if (call.path.endsWith("/events")) return { ...wire.eventsDealing, status: "playing" };
+      return undefined;
+    });
+    render(<Host onPlaying={onPlaying} />);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3100);
+    });
+    expect(onPlaying).toHaveBeenCalledTimes(1);
+    // The player is told, rather than left on a screen that has quietly given up.
+    expect(screen.getByText(/could not be read/)).toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3100);
+    });
+    expect(onPlaying).toHaveBeenCalledTimes(2);
+
+    // And now it stops: the game is open, and a third attempt would open it
+    // again. This is the half the latch is actually for.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(9000);
+    });
+    expect(onPlaying).toHaveBeenCalledTimes(2);
   });
 
   // **The keep that FINISHES the dealing opens the game at once.** The last

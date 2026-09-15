@@ -118,7 +118,16 @@ export function Dealing({
   const inFlight = useRef(false);
   /** The game has been handed on. Everything that can notice the table has
    *  started — the keep's own reply, a refusal from `/deal`, the poll — is
-   *  raced against this, so `App` is told exactly once. */
+   *  raced against this, so `App` is told exactly once.
+   *
+   *  **Taken before the attempt and RELEASED if it fails**, which is the whole
+   *  of `start` below. Taken before, because the three noticers overlap and two
+   *  of them could otherwise open the game twice. Released after a failure,
+   *  because by then the game is already running server-side — the last keep
+   *  started it — so a 500 or a dropped connection on the read that opens it
+   *  would otherwise strand this browser on a dealing screen for a table that is
+   *  not dealing, with the poll's own guard reading a latch nothing could ever
+   *  clear. The purpose is one hand-over per SUCCESS, and that is unchanged. */
   const started = useRef(false);
 
   // `onPlaying` through a ref, so the interval below is installed ONCE.
@@ -136,6 +145,9 @@ export function Dealing({
     try {
       await playing.current();
     } catch (e) {
+      // The hand-over did not happen, so nothing has been handed on: release the
+      // latch and let the next poll tick — or the next keep — try again.
+      started.current = false;
       setError(said(e));
     }
   }, []);
