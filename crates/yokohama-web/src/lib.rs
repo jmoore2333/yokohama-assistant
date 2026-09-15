@@ -431,6 +431,68 @@ fn holder_of(table: &crate::table::TableDoc, seat: yokohama_core::PlayerId) -> &
     }
 }
 
+/// **How far back an undo may reach** (R-P6), checked before `Repl::step`.
+///
+/// ONE distinct person at the table — vs-bot, or one person sitting in every
+/// human seat — keeps today's undo untouched: the rule exists to stop somebody
+/// erasing ANOTHER PERSON's move, and where there is no other person there is
+/// nothing to protect. Fencing there would also break the only mode this server
+/// has shipped, since the trailing event at a vs-bot table is the bot's and its
+/// mover is never the caller.
+///
+/// Otherwise the undo may reach back into the caller's own turn and no further:
+/// the trailing event's mover is the caller's seat AND the current player is
+/// still that seat.
+///
+/// **The two halves refuse different callers, and only one of them is reachable
+/// through [`input`].** Without the MOVER half, the seat that is to move pops
+/// whatever the PREVIOUS player did last — measured on this server before the
+/// rule: blue's `undo`, sent before blue had moved at all, returned 200 and
+/// popped red's move. Without the CURRENT-PLAYER half, a caller whose own move
+/// is the trailing event undoes it after their turn has already ended, which is
+/// the case R-P6 closes by name. That second caller is refused by the
+/// acting-seat fence in front of this function before it ever gets here, so
+/// that half is this function's own invariant rather than a second fence — and
+/// the cell reads `undo_allowed` DIRECTLY for it, because a condition no test
+/// can kill is a condition that quietly stops being true.
+///
+/// **The mover of event `len - 1` is `state_at(record, len - 1).current_player`
+/// — replay-derived**, which is the CLI's own attribution for exactly this
+/// question (`repl.rs`'s undo unwinds by replay, not by a boundary stack, so it
+/// survives a save and reload). A `GameEvent` carries no seat of its own, and a
+/// second attribution here would be a second thing to keep true.
+///
+/// What pops is `Session::undo`'s unit — one `Move` with the reveals bound to
+/// it, or a trailing standalone reveal — and never more: admission requires
+/// that event to be the caller's own, so a bot run can never be sitting in
+/// front of it, even at a mixed table where one seat is a bot.
+fn undo_allowed(
+    repl: &yokohama_cli::repl::Repl,
+    table: &crate::table::TableDoc,
+    viewer: yokohama_core::PlayerId,
+) -> Result<(), String> {
+    if table.distinct_humans() <= 1 {
+        return Ok(());
+    }
+    let record = repl.session.record();
+    let len = record.events.len();
+    // Not R-P6 speaking: the guard that keeps `len - 1` from underflowing, on
+    // a game whose first prompt has not been answered yet. `Session::undo`'s
+    // own words for the same condition, so the answer reads the same whichever
+    // of the two paths reaches it.
+    if len == 0 {
+        return Err("nothing to undo".to_string());
+    }
+    let mover = yokohama_core::state_at(record, len - 1, repl.session.rules())
+        .map_err(|e| e.message)?
+        .current_player;
+    if mover == viewer && repl.session.state().current_player == viewer {
+        Ok(())
+    } else {
+        Err("undo is not offered once your turn has passed".to_string())
+    }
+}
+
 /// The lobby: `{ "games": [...] }` rather than a bare array.
 ///
 /// An object because a list is a place fields get added to — a cursor, a count —
@@ -629,6 +691,20 @@ async fn input(
             format!("it is seat {}'s turn ({})", acting.0, holder_of(&table, acting))
         };
         return Err(ApiError { status: StatusCode::FORBIDDEN, message, table_status: None });
+    }
+
+    // **An undo reaches back into your own turn and no further** (R-P6), and
+    // the check is HERE rather than inside `step` because it needs the table:
+    // the rule turns on how many PEOPLE are at this one, which is a fact of the
+    // seat bindings and not of the record. Before `step`, because `Session::undo`
+    // pops events and a refusal afterwards would be a refusal of something that
+    // already happened.
+    if grammar::is_undo(&req.line) {
+        undo_allowed(&repl, &table, viewer).map_err(|message| ApiError {
+            status: StatusCode::FORBIDDEN,
+            message,
+            table_status: None,
+        })?;
     }
 
     if let Some(expected) = &req.expect {
@@ -1748,6 +1824,84 @@ mod tests {
         panic!("{user}'s turn did not end in 40 inputs");
     }
 
+    /// **One person and a bot** — the table R-P6 deliberately leaves alone.
+    async fn start_vs_bot(state: &Arc<AppState>, name: &str, seed: u64, who: &str) {
+        let (status, table) = post_as(
+            state,
+            who,
+            "/api/games",
+            serde_json::json!({
+                "players": 2,
+                "colors": ["Red", "Blue"],
+                "start_seat": 0,
+                "seed": seed.to_string(),
+                "seats": [{ "user": who }, { "bot": true }],
+                "name": name,
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{table}");
+        let (status, kept) = post_as(
+            state,
+            who,
+            &format!("/api/games/{name}/keep"),
+            serde_json::json!({ "seat": 0, "card": 1 }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{kept}");
+    }
+
+    /// The FIRST row of an options prompt — deliberately not [`play_turn`]'s
+    /// last one, which is the row that ends a phase. A cell about undoing
+    /// INSIDE a turn needs a move that leaves the turn running.
+    fn first_option(game: &serde_json::Value) -> String {
+        let rows = game["prompt"]["rows"].as_array().expect("an options prompt");
+        rows.first()
+            .and_then(|r| r["number"].as_u64())
+            .unwrap_or_else(|| panic!("a numbered first row: {game}"))
+            .to_string()
+    }
+
+    /// Play `user`'s whole turn at a table with a BOT, and hand back the reply
+    /// that carried the bot's run.
+    ///
+    /// **[`play_turn`] cannot serve here, and the reason is the behaviour being
+    /// tested.** `Repl::step` pumps every bot seat owed a move before it
+    /// returns, so between two of this caller's inputs `to_move` is never the
+    /// bot's: the turn boundary happens INSIDE one reply and a `to_move` watch
+    /// never sees it. So the stop is the bot's own log line, which is also the
+    /// evidence the cell needs — an undo with no trailing bot run proves
+    /// nothing about unwinding one. Bounded, and the bound FAILS rather than
+    /// passing quietly.
+    async fn play_turn_vs_bot(
+        state: &Arc<AppState>,
+        id: &str,
+        user: &str,
+        bot_color: &str,
+    ) -> serde_json::Value {
+        for _ in 0..40 {
+            let (_, now) = get_as(state, user, &format!("/api/games/{id}")).await;
+            let line = match now["prompt"]["rows"].as_array().and_then(|r| r.last()) {
+                Some(row) => row["number"].as_u64().expect("a numbered row").to_string(),
+                None => "confirm".to_string(),
+            };
+            let (status, reply) = post_as(
+                state,
+                user,
+                &format!("/api/games/{id}/input"),
+                serde_json::json!({ "line": line }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{line}: {reply}");
+            let (_, log) = get_as(state, user, &format!("/api/games/{id}/log?tail=1")).await;
+            let last = log["entries"][0]["text"].as_str().unwrap_or_default().to_string();
+            if last.starts_with(bot_color) {
+                return reply;
+            }
+        }
+        panic!("the bot never moved in 40 of {user}'s inputs");
+    }
+
     /// **Every route that needs a session is a 403 for a signed-in stranger**
     /// (R-1.5), in one cell over the whole table, because a fence applied to
     /// fourteen routes and forgotten on the fifteenth is exactly the shape that
@@ -1827,6 +1981,178 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{body}");
+    }
+
+    /// **R-P6: at a table with more than one person, undo reaches back into
+    /// your own turn and no further.**
+    ///
+    /// The walk, in order: nothing to undo yet, which is the underflow guard
+    /// answering and not R-P6; mid-turn, where the caller's own move comes
+    /// back; once the turn has passed, where the caller is no longer the acting
+    /// seat and THAT fence answers first — so the sentence is the fence's, and
+    /// this cell says so rather than letting a reader think R-P6 spoke; the
+    /// same moment asked of `undo_allowed` directly, which is the only way to
+    /// reach its current-player half at all; the acting seat whose own turn has
+    /// not started; and the turn come back around.
+    ///
+    /// **The last read is what the rule exists for.** Without it, red's `undo`
+    /// after blue's turn pops blue's move — another person's move, erased by
+    /// someone entitled to act but not to rewind.
+    #[tokio::test]
+    async fn undo_is_admitted_mid_turn_and_refused_once_the_turn_has_passed() {
+        let state = Arc::new(AppState::in_memory());
+        start_as(&state, "undo", 20260831, &["red@wire.test", "blue@wire.test"]).await;
+        // One event of red's turn, then undo it: admitted, and the log shrinks by one.
+        let (_, before) = get_as(&state, "red@wire.test", "/api/games/undo").await;
+        let n0 = before["events"].as_u64().unwrap();
+        assert_eq!(n0, 0, "a fresh game, so the next post hits the empty-record guard");
+        let (status, body) = post_as(
+            &state,
+            "red@wire.test",
+            "/api/games/undo/input",
+            serde_json::json!({ "line": "undo" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert_eq!(body["error"], "nothing to undo", "the guard, not R-P6");
+        let line = first_option(&before);
+        let (_, after) = post_as(
+            &state,
+            "red@wire.test",
+            "/api/games/undo/input",
+            serde_json::json!({ "line": line }),
+        )
+        .await;
+        assert!(after["events"].as_u64().unwrap() > n0, "the option applied: {after}");
+        assert_eq!(
+            after["to_move"], 0,
+            "and the turn is still red's, so the undo below is mid-turn",
+        );
+        let (status, undone) = post_as(
+            &state,
+            "red@wire.test",
+            "/api/games/undo/input",
+            serde_json::json!({ "line": "undo" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{undone}");
+        assert_eq!(undone["events"].as_u64().unwrap(), n0);
+
+        // Play the turn out; blue is to move. Red's undo is refused, and the
+        // fence that speaks is the acting seat's — R-P6 is never reached.
+        play_turn(&state, "undo", "red@wire.test").await;
+        let (status, body) = post_as(
+            &state,
+            "red@wire.test",
+            "/api/games/undo/input",
+            serde_json::json!({ "line": "undo" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert_eq!(body["error"], "it is seat 1's turn (blue@wire.test)");
+
+        // **And so R-P6's second half is unreachable over HTTP**, since the
+        // acting-seat fence has already refused everyone it would catch. Asked
+        // directly, it is the half that speaks here: the trailing move IS red's
+        // — the first half passes — and red is no longer the player to move.
+        // Without this read, `state().current_player == viewer` is a condition
+        // no cell can kill.
+        {
+            let user = identity::User::parse("red@wire.test").expect("a user");
+            let table = state.games.table("undo", &user).expect("seated");
+            let handle = state.games.handle("undo").expect("a game");
+            let repl = handle.lock().expect("a game");
+            assert_eq!(
+                undo_allowed(&repl, &table, yokohama_core::PlayerId::new(0)),
+                Err("undo is not offered once your turn has passed".to_string()),
+            );
+        }
+
+        // Blue IS the acting seat and has not moved yet, so blue's undo would
+        // cross red's turn boundary. This is R-P6's own refusal.
+        let (status, body) = post_as(
+            &state,
+            "blue@wire.test",
+            "/api/games/undo/input",
+            serde_json::json!({ "line": "undo" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert_eq!(body["error"], "undo is not offered once your turn has passed");
+
+        // And when the turn comes back around, red is acting again — and is
+        // still refused, because the trailing move is blue's.
+        play_turn(&state, "undo", "blue@wire.test").await;
+        let (_, now) = get_as(&state, "red@wire.test", "/api/games/undo").await;
+        assert_eq!(now["to_move"], 0, "red is acting again: {now}");
+        let (status, body) = post_as(
+            &state,
+            "red@wire.test",
+            "/api/games/undo/input",
+            serde_json::json!({ "line": "undo" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert_eq!(body["error"], "undo is not offered once your turn has passed");
+    }
+
+    /// **The other half of R-P6: one person at the table keeps today's undo**,
+    /// bot run and all.
+    ///
+    /// The rule is about not erasing another PERSON's move, so where there is
+    /// no other person there is nothing to fence — and fencing anyway would
+    /// break the only mode this server has shipped so far, since the bot's run
+    /// is the trailing event and its mover is never the caller.
+    #[tokio::test]
+    async fn undo_at_a_table_with_one_person_unwinds_the_bot_run_as_before() {
+        let state = Arc::new(AppState::in_memory());
+        start_vs_bot(&state, "undo-bot", 20260830, "red@wire.test").await;
+        // Play red's whole turn; the bot then moves inside the same reply.
+        let after = play_turn_vs_bot(&state, "undo-bot", "red@wire.test", "Blue").await;
+        assert_eq!(after["to_move"], 0, "the bot has played and it is red again: {after}");
+        let n = after["events"].as_u64().unwrap();
+        let (status, undone) = post_as(
+            &state,
+            "red@wire.test",
+            "/api/games/undo-bot/input",
+            serde_json::json!({ "line": "undo" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{undone}");
+        assert!(
+            undone["events"].as_u64().unwrap() < n,
+            "the trailing bot run and red's move are gone: {undone}",
+        );
+        let (_, log) = get_as(&state, "red@wire.test", "/api/games/undo-bot/log?tail=1").await;
+        assert!(
+            log["entries"][0]["text"].as_str().is_none_or(|t| !t.starts_with("Blue")),
+            "the bot's run is what was unwound: {log}",
+        );
+    }
+
+    /// **`privacy` is refused at every table** (M6.1 §5.4) — asked from the
+    /// ACTING seat both times, so nothing but the grammar can be what refused
+    /// it, and at both table shapes, because the vs-bot table is the one where
+    /// a reader might expect the old hot-seat toggle to have survived.
+    #[tokio::test]
+    async fn privacy_is_refused_at_every_table() {
+        let state = Arc::new(AppState::in_memory());
+        start_as(&state, "priv", 20260831, &["red@wire.test", "blue@wire.test"]).await;
+        start_vs_bot(&state, "priv-bot", 20260830, "red@wire.test").await;
+        for id in ["priv", "priv-bot"] {
+            let (status, body) = post_as(
+                &state,
+                "red@wire.test",
+                &format!("/api/games/{id}/input"),
+                serde_json::json!({ "line": "privacy" }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{id}: {body}");
+            assert!(
+                body["error"].as_str().unwrap().contains("no privacy toggle"),
+                "{id}: {body}",
+            );
+        }
     }
 
     /// **R-1.7 on the wire: a payload for one seat never carries another's

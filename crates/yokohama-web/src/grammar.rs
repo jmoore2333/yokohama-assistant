@@ -44,9 +44,15 @@
 //! and the same reasoning as [`crate::store::is_safe_id`]: a denylist over a
 //! grammar is a list of the tricks someone has thought of, and `save` is only
 //! the one that is obvious today. What is on the list is what a game needs —
-//! pick an option, answer a sub-prompt, page, undo, toggle privacy — and a word
-//! added to the REPL tomorrow is refused here by default rather than exposed by
-//! default.
+//! pick an option, answer a sub-prompt, page, undo — and a word added to the
+//! REPL tomorrow is refused here by default rather than exposed by default.
+//!
+//! **A word can also LEAVE the list, and one has** (M6.1 §5.4). `privacy`
+//! toggled the hand mask when one browser served every seat; a seated table
+//! resolves each caller to its own seat and masks every other hand before the
+//! payload is built, so the toggle has nothing left to hide and no seat it
+//! could speak for. It is refused by name rather than by default, because the
+//! client that sends it was right yesterday.
 
 /// The head words a browser may send.
 ///
@@ -57,8 +63,7 @@ const HEADS: &[&str] = &[
     // sub-prompt control
     "confirm", "cancel", // paging over a long option list
     "more", "list", // the two spellings of the same undo
-    "undo", "back", // the hand-contents mask
-    "privacy", // the four move grammars: placement A/B, assistant-move, retreat
+    "undo", "back", // the four move grammars: placement A/B, assistant-move, retreat
     "a", "b", "m", "r",
 ];
 
@@ -100,6 +105,22 @@ fn is_token(token: &str) -> bool {
         && token.chars().all(|c| c.is_ascii_alphanumeric() || c == ':')
 }
 
+/// Whether `line` is the undo, in either of its two spellings.
+///
+/// **The undo RULE is not here** — R-P6 needs the table and the record, and
+/// lives in `lib.rs`'s `undo_allowed`. This is only the grammar's answer to
+/// "was that an undo", kept beside [`HEADS`] because that is where the two
+/// words are admitted and where a third would be added.
+///
+/// Whole-line equality after a trim, deliberately, and NOT a head test: `undo
+/// 3` passes [`is_gameplay_line`] as an allowlisted head with a numeric
+/// argument, and a head test would report it as an undo. The REPL dispatches on
+/// the whole token slice (`["undo"] | ["back"]`, `repl.rs:951`), so this
+/// predicate and the thing it predicts agree on exactly one set of lines.
+pub fn is_undo(line: &str) -> bool {
+    matches!(line.trim(), "undo" | "back")
+}
+
 /// The refusal a rejected line answers with.
 ///
 /// It names the line, says which category it fell into, and — for the words
@@ -109,6 +130,10 @@ pub fn refusal(line: &str) -> String {
     let head = line.split_whitespace().next().unwrap_or("");
     let why = match head {
         "save" => "writes a file on the server; games persist automatically after every move",
+        "privacy" => {
+            "masked every hand at one shared terminal — a seated table has no privacy toggle: \
+             every seat sees its own hand and no other"
+        }
         "quit" | "q" => "ends a terminal session; a browser closes its tab",
         "?" | "index" | "orders" | "techs" | "goals" | "sitecards" | "view" | "views" => {
             "opens a sticky terminal overlay in which a number selects a card, not a move"
@@ -122,7 +147,7 @@ pub fn refusal(line: &str) -> String {
     format!(
         "{line:?} {why}. This endpoint takes an option number, a sub-prompt answer \
          (confirm/cancel/an area/a count), a move grammar (a/b/m/r), more/list, undo/back, \
-         privacy, or an empty line to apply a sole option."
+         or an empty line to apply a sole option."
     )
 }
 
@@ -149,7 +174,6 @@ mod tests {
             "list",        //
             "undo",        //
             "back",        //
-            "privacy",     //
             "a",           // Placement Option A, picker
             "a 1 2 3",     // ...direct
             "A05",         // an area token, prefixed
@@ -220,6 +244,58 @@ mod tests {
         ] {
             assert!(!is_gameplay_line(line), "{line:?} must be refused");
         }
+    }
+
+    /// **The two spellings of one undo, named here because the RULE is
+    /// elsewhere.**
+    ///
+    /// `lib.rs` has to know whether a line is an undo before `Repl::step` sees
+    /// it (R-P6), and which words those are is the grammar's fact, not the
+    /// handler's — a second list there goes stale the day a third spelling is
+    /// admitted here.
+    ///
+    /// **The trailing-token cases are the load-bearing half.** `undo 3` passes
+    /// [`is_gameplay_line`] (an allowlisted head with a numeric argument), so a
+    /// rule keyed on the HEAD alone would fence `undo` and wave `undo 3`
+    /// through. It is safe because the REPL dispatches undo on the whole token
+    /// slice — `["undo"] | ["back"]`, `repl.rs:951` — so `undo 3` undoes
+    /// nothing there either, and `trim()`-equality is exactly that set: the
+    /// REPL splits on whitespace, so surrounding space undoes in both and
+    /// interior space undoes in neither.
+    #[test]
+    fn undo_and_back_are_the_two_spellings_of_the_same_undo() {
+        assert!(is_undo("undo"));
+        assert!(is_undo("back"));
+        assert!(is_undo("  undo  "), "the client does not always trim");
+        assert!(!is_undo("1"), "an option number is not an undo");
+        assert!(!is_undo(""), "the empty line applies the sole option");
+        assert!(!is_undo("undo 3"), "undo takes no argument, and the REPL agrees");
+        assert!(!is_undo("undone"));
+    }
+
+    /// **`privacy` is not a word a seated table has** (M6.1 §5.4).
+    ///
+    /// The toggle hid every hand at ONE terminal, which is what a hot seat
+    /// needed when one browser served every seat. A seated table is bound: the
+    /// server resolves each caller to its own seat and masks every other hand
+    /// before the payload is built, so there is nothing left for a toggle to
+    /// hide and no seat it could speak for. The refusal says THAT rather than
+    /// "is not a gameplay line", because a client written before this cycle
+    /// sent the word and its author needs to know the fence moved, not that
+    /// they mistyped.
+    #[test]
+    fn privacy_left_the_grammar_when_every_seat_got_its_own_view() {
+        assert!(!is_gameplay_line("privacy"), "privacy must be refused");
+        let r = refusal("privacy");
+        assert!(
+            r.contains("a seated table has no privacy toggle: every seat sees its own hand \
+                        and no other"),
+            "{r}",
+        );
+        // And the menu at the end of EVERY refusal stops offering it. Read on a
+        // refusal that does not mention privacy for its own reason, so this
+        // cannot be satisfied by the sentence above.
+        assert!(!refusal("save /tmp/x").contains("privacy"), "the menu still offers it");
     }
 
     /// The refusal names the line and says what to send instead.
