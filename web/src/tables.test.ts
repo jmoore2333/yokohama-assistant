@@ -70,6 +70,9 @@ describe("seatNames", () => {
     seats[1] = { kind: "bot" };
     expect(seatNames({ ...wire.table, seats })).toBe("red@wire.test, the bot");
     expect(seatName({ kind: "bot" })).toBe("the bot");
-    expect(seatName({ kind: "human", user: "red@wire.test" })).toBe("red@wire.test");
+    expect(seatName({ kind: "human", user: "red@wire.test", name: null })).toBe("red@wire.test");
+    // M6.2's third arm. A seat nobody has taken is named rather than left to
+    // print as `undefined`, which is what a ternary over `kind === "bot"` did.
+    expect(seatName({ kind: "open" })).toBe("an open seat");
   });
 });

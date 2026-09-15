@@ -10,7 +10,7 @@
   "created_at": 1789000000,
   "created_by": "red@wire.test",
   "id": "wire",
-  "locked": false,
+  "locked": true,
   "my_seats": [
     1
   ],
@@ -20,12 +20,12 @@
   "seats": [
     {
       "kind": "human",
-      "name": null,
+      "name": "Red",
       "user": "red@wire.test"
     },
     {
       "kind": "human",
-      "name": null,
+      "name": "Blue",
       "user": "blue@wire.test"
     }
   ],

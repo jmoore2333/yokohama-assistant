@@ -7,9 +7,20 @@
 
 import type { PlayerId, SeatDoc, TableView } from "./types";
 
-/** One seat, in the words a row reads: a person's email, or the bot. */
+/** One seat, in the words a row reads: a person's email, the bot, or a seat
+ *  nobody has taken yet.
+ *
+ *  A `switch` over the tag rather than a ternary, so a fourth kind of seat is a
+ *  compile error here instead of a row that prints `undefined`. */
 export function seatName(seat: SeatDoc): string {
-  return seat.kind === "bot" ? "the bot" : seat.user;
+  switch (seat.kind) {
+    case "bot":
+      return "the bot";
+    case "open":
+      return "an open seat";
+    case "human":
+      return seat.user;
+  }
 }
 
 /** Every seat, in SEAT ORDER (spec §7.2).

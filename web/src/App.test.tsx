@@ -465,7 +465,7 @@ describe("a reply for a game you left", () => {
     const switchGet = gate<unknown>();
     const reply = gate<unknown>();
     const stub = await renderApp(wire.optionsMany, (call) => {
-      if (call.method === "GET" && call.path.endsWith("/api/games"))
+      if (call.method === "GET" && call.path.split("?")[0]!.endsWith("/api/games"))
         return gamesNamed(wire.optionsMany.id, "sim-other");
       if (call.method === "GET" && call.path.endsWith("/api/games/sim-other"))
         return switchGet.promise;
@@ -507,7 +507,7 @@ describe("a reply for a game you left", () => {
   it("cannot be started from the Game menu while a move is in flight", async () => {
     const held = gate<unknown>();
     await renderApp(wire.optionsMany, (call) => {
-      if (call.method === "GET" && call.path.endsWith("/api/games"))
+      if (call.method === "GET" && call.path.split("?")[0]!.endsWith("/api/games"))
         return gamesNamed(wire.optionsMany.id, "sim-other");
       if (call.path.endsWith("/input")) return held.promise;
       return undefined;
@@ -941,7 +941,7 @@ describe("the turn playback", () => {
     const { before, replied, at, log } = botReply();
     const other = { ...wire.options4p, id: "sim-other" };
     await renderApp(before, (call) => {
-      if (call.method === "GET" && call.path.endsWith("/api/games"))
+      if (call.method === "GET" && call.path.split("?")[0]!.endsWith("/api/games"))
         return gamesNamed(before.id, "sim-other");
       if (call.method === "GET" && call.path.endsWith("/api/games/sim-other")) return other;
       if (call.path.endsWith("/input")) return replied;
@@ -1072,7 +1072,7 @@ describe("opening a saved table", () => {
       if (call.path.endsWith("/api/me")) return wire.me;
       if (call.path.endsWith("/api/labels")) return wire.labels;
       if (call.path.endsWith("/api/art")) return wire.artManifest;
-      if (call.method === "GET" && call.path.endsWith("/api/games")) return gamesNamed("wire");
+      if (call.method === "GET" && call.path.split("?")[0]!.endsWith("/api/games")) return gamesNamed("wire");
       if (call.path.endsWith("/api/games/wire/table")) return table;
       if (call.path.endsWith("/deal")) return wire.deal;
       if (call.path.endsWith("/events")) return wire.eventsDealing;
@@ -1177,14 +1177,14 @@ describe("the boards a player switches during setup", () => {
     let dealt = false;
     const stub = stubApi((call) => {
       if (call.path.endsWith("/api/me")) return wire.me;
-      if (call.method === "GET" && call.path.endsWith("/api/games")) return gamesNamed();
+      if (call.method === "GET" && call.path.split("?")[0]!.endsWith("/api/games")) return gamesNamed();
       if (call.path.endsWith("/api/labels")) return wire.labels;
       if (call.path.endsWith("/api/art")) return wire.artManifest;
       // The opening sequence (M6.1 §§4.2–4.3): a create answers 201 with a
       // DEALING table, the dealing screen fetches the caller's own two cards,
       // and the keep that finishes the dealing answers with the table at
       // `playing` — which is when the GAME is read back.
-      if (call.method === "POST" && call.path.endsWith("/api/games"))
+      if (call.method === "POST" && call.path.split("?")[0]!.endsWith("/api/games"))
         return { status: 201, body: wire.tableDealing };
       if (call.path.endsWith("/table")) return dealt ? wire.table : wire.tableDealing;
       if (call.path.endsWith("/deal")) return wire.deal;
@@ -1250,7 +1250,7 @@ describe("the door", () => {
       // server that ignores its own header, and signing in would prove nothing.
       if (call.path.endsWith("/api/me"))
         return localStorage.getItem(CLAIMED_USER_KEY) ? wire.me : wire.meSignedOut;
-      if (call.path.endsWith("/api/games")) return wire.games;
+      if (call.path.split("?")[0]!.endsWith("/api/games")) return wire.games;
       if (call.path.endsWith("/api/labels")) return wire.labels;
       if (call.path.endsWith("/api/art")) return wire.artManifest;
       return undefined;
@@ -1327,7 +1327,7 @@ describe("the door", () => {
   it("a 401 from the Game menu's list returns to sign-in", async () => {
     let lists = 0;
     await renderApp(wire.options, (call) => {
-      if (call.method === "GET" && call.path.endsWith("/api/games")) {
+      if (call.method === "GET" && call.path.split("?")[0]!.endsWith("/api/games")) {
         // The FIRST list is the setup screen's, which `renderApp` opens the
         // game from. The menu's is the next one, and that is the one refused.
         lists += 1;
@@ -1392,7 +1392,7 @@ describe("the door", () => {
         return localStorage.getItem(CLAIMED_USER_KEY) ? wire.me : wire.meSignedOut;
       if (call.path.endsWith("/api/labels")) return wire.labels;
       if (call.path.endsWith("/api/art")) return wire.artManifest;
-      if (call.method === "GET" && call.path.endsWith("/api/games")) return signedOutReply();
+      if (call.method === "GET" && call.path.split("?")[0]!.endsWith("/api/games")) return signedOutReply();
       return undefined;
     });
     render(<App />);
@@ -1413,8 +1413,8 @@ describe("the door", () => {
         return localStorage.getItem(CLAIMED_USER_KEY) ? wire.me : wire.meSignedOut;
       if (call.path.endsWith("/api/labels")) return wire.labels;
       if (call.path.endsWith("/api/art")) return wire.artManifest;
-      if (call.method === "GET" && call.path.endsWith("/api/games")) return gamesNamed();
-      if (call.method === "POST" && call.path.endsWith("/api/games"))
+      if (call.method === "GET" && call.path.split("?")[0]!.endsWith("/api/games")) return gamesNamed();
+      if (call.method === "POST" && call.path.split("?")[0]!.endsWith("/api/games"))
         return { status: 201, body: wire.tableDealing };
       // The table crosses from dealing to playing at the keep, which is what
       // makes the game open at all — see the boards cell above for the shape.

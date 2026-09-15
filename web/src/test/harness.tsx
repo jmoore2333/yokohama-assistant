@@ -34,6 +34,9 @@ export const gamesNamed = (...ids: string[]): GamesList => ({
   // find nothing. Clearing it is the `?? id` fallback — a table opened without
   // a name — which is the shape these cells have always assumed.
   games: ids.map((id) => ({ ...wire.games.games[0]!, id, name: null })),
+  // One page, so there is nothing after it. A cursor here would name a row this
+  // helper never built.
+  next: null,
 });
 
 /** What the server answers a request it cannot name a caller for.
@@ -202,7 +205,7 @@ export async function renderApp(
     if (mine !== undefined) return mine;
     const boot = bootstrapReply(call);
     if (boot !== undefined) return boot;
-    if (call.method === "GET" && call.path.endsWith("/api/games")) return gamesNamed(state.id);
+    if (call.method === "GET" && call.path.split("?")[0]!.endsWith("/api/games")) return gamesNamed(state.id);
     if (call.method === "GET" && call.path.endsWith(`/api/games/${state.id}`)) return state;
     throw new Error(`unexpected ${call.method} ${call.path}`);
   });

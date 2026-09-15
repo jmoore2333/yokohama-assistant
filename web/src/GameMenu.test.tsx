@@ -5,6 +5,7 @@ import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import { gameMenu, gamesNamed, renderApp } from "./test/harness";
+import { seatName } from "./tables";
 import { wire } from "./wire/contract";
 
 /** This file's own directory, as a `file:` URL.
@@ -21,7 +22,7 @@ describe("the Game menu", () => {
   it("lists the other saved games and switches to one", async () => {
     const other = { ...wire.options4p, id: "sim-other" };
     await renderApp(wire.options, (call) => {
-      if (call.method === "GET" && call.path.endsWith("/api/games"))
+      if (call.method === "GET" && call.path.split("?")[0]!.endsWith("/api/games"))
         return gamesNamed(wire.options.id, "sim-other");
       if (call.method === "GET" && call.path.endsWith("/api/games/sim-other")) return other;
       return undefined;
@@ -47,7 +48,7 @@ describe("the Game menu", () => {
 
   it("returns to the setup screen without a reload", async () => {
     await renderApp(wire.options, (call) =>
-      call.method === "GET" && call.path.endsWith("/api/games")
+      call.method === "GET" && call.path.split("?")[0]!.endsWith("/api/games")
         ? gamesNamed(wire.options.id)
         : undefined,
     );
@@ -82,7 +83,7 @@ describe("the Game menu", () => {
     // often, their own turn, is the corpus's table read from the other side.
     const yours = { ...wire.table, id: "sim-yours", name: null, my_seats: [wire.table.to_move!] };
     await renderApp(wire.options, (call) =>
-      call.method === "GET" && call.path.endsWith("/api/games")
+      call.method === "GET" && call.path.split("?")[0]!.endsWith("/api/games")
         ? // The game being played is in the list too — `renderApp` opens it
           // from the setup screen's copy of this same list — and the menu is
           // then asserted NOT to offer it back.
@@ -103,9 +104,7 @@ describe("the Game menu", () => {
     // them. `tableWord` names at most one seat, and on the dealing row it names
     // none at all — so without this a lobby says nothing about the company.
     for (const seat of dealing.seats) {
-      expect(await row(dealing.name)).toHaveTextContent(
-        seat.kind === "bot" ? "the bot" : seat.user,
-      );
+      expect(await row(dealing.name)).toHaveTextContent(seatName(seat));
     }
   });
 
@@ -118,7 +117,7 @@ describe("the Game menu", () => {
   // with no Game menu — the form and the deal — keep both.
   it("carries the way out, beside the way to another game", async () => {
     await renderApp(wire.options, (call) =>
-      call.method === "GET" && call.path.endsWith("/api/games")
+      call.method === "GET" && call.path.split("?")[0]!.endsWith("/api/games")
         ? gamesNamed(wire.options.id)
         : undefined,
     );
@@ -145,7 +144,7 @@ describe("the Game menu", () => {
   it("a double-clicked saved game is fetched once", async () => {
     const other = { ...wire.options4p, id: "sim-other" };
     const stub = await renderApp(wire.options, (call) => {
-      if (call.method === "GET" && call.path.endsWith("/api/games"))
+      if (call.method === "GET" && call.path.split("?")[0]!.endsWith("/api/games"))
         return gamesNamed(wire.options.id, "sim-other");
       if (call.method === "GET" && call.path.endsWith("/api/games/sim-other")) return other;
       return undefined;

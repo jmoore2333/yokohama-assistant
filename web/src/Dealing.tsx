@@ -28,7 +28,7 @@ import { BoardsMenu } from "./BoardsMenu";
 import { OrderCardView, seatClass } from "./Cards";
 import { TableSections } from "./TableSections";
 import { useSignal } from "./signal";
-import { holder } from "./tables";
+import { holder, seatName } from "./tables";
 import type { SectionKey } from "./sections";
 import type { ArtManifest, DealView, Labels, PlayerColor } from "./types";
 
@@ -318,7 +318,7 @@ export function Dealing({
                 <span className={seatClass(colors[i])}>{colors[i]}</span> &middot; seat {i}
               </h2>
               <p className="muted deal-state">
-                {seat.user === me ? "you" : seat.user} &middot;{" "}
+                {seat.kind === "human" && seat.user === me ? "you" : seatName(seat)} &middot;{" "}
                 {table.chosen[i] ? "chosen" : "waiting"}
               </p>
             </section>

@@ -59,6 +59,18 @@ use yokohama_web::{app, AppState};
 /// real game's seed does not apply, and a short literal is readable in a diff.
 const SETUP_SEED: u64 = 20_260_831;
 
+/// The walk's table password (M6.2). A constant like the seeds, so the corpus
+/// stays a function of what is written in this file — and so
+/// [`no_payload_of_this_run_carries_the_password_or_its_hash`] has a literal to
+/// search for.
+///
+/// **What it gates is not what it is worth.** A table password is a shared
+/// game password (R-2.8): it decides who may take a seat at a table behind a
+/// door Cloudflare Access has already opened, and nobody's identity rests on
+/// it. So a readable word is the right literal here, and the fixtures below
+/// prove the SALT and the HASH never leave the server whatever the word is.
+const WIRE_PASSWORD: &str = "sesame";
+
 /// The bot seed for the one fixture that needs a bot. Fixed for the same
 /// reason, and never drawn from entropy here.
 const BOT_SEED: u64 = 0x4649_5854_5552_4553; // "FIXTURES"
@@ -201,12 +213,23 @@ impl Api {
 /// zero fails here rather than being normalized away.
 const FROZEN_CREATED_AT: u64 = 1_789_000_000;
 
-/// Replace every `created_at` with [`FROZEN_CREATED_AT`], wherever it is nested.
+/// Replace every `created_at` with [`FROZEN_CREATED_AT`], wherever it is nested
+/// — **and the same clock where it is spelled inside a list CURSOR**.
 ///
 /// A walk rather than a list of paths: the field rides on `TableView`, which
 /// appears at the root of two fixtures, inside `deal.table`, and once per row of
 /// `games.games` — and a list of those would be a fourth statement of the wire
 /// shape to keep true.
+///
+/// **`next` is the second clock on this wire and it does not look like one**
+/// (M6.2). A page cursor is `<created_at>,<id>`, so `games_next.json` would
+/// otherwise carry a wall-clock timestamp inside a string and churn on every
+/// regeneration exactly as `created_at` would have. The same rule applies to it
+/// and for the same reason, and the same anti-vacuity rides along: the
+/// timestamp half is REFUSED if it is not a plausible clock, so a cursor that
+/// stopped carrying one fails here rather than being normalized away. The ID
+/// half is left alone — it is the row the page ended at, which is the whole
+/// content of the field.
 fn freeze_clock(value: &mut Value) {
     match value {
         Value::Object(map) => {
@@ -221,6 +244,22 @@ fn freeze_clock(value: &mut Value) {
                          a field that has stopped being stamped",
                     );
                     *v = json!(FROZEN_CREATED_AT);
+                } else if key == "next" {
+                    // `null` is the last page and carries no clock at all.
+                    if let Some(cursor) = v.as_str() {
+                        let (at, id) = cursor.split_once(',').unwrap_or_else(|| {
+                            panic!("a page cursor is <created_at>,<id>: {cursor:?}")
+                        });
+                        let seen: u64 = at.parse().unwrap_or_else(|_| {
+                            panic!("a page cursor's first half is a unix timestamp: {cursor:?}")
+                        });
+                        assert!(
+                            seen > 1_700_000_000,
+                            "a page cursor reads {seen}, which is not a clock — freezing it \
+                             would hide a cursor that has stopped carrying one",
+                        );
+                        *v = json!(format!("{FROZEN_CREATED_AT},{id}"));
+                    }
                 } else {
                     freeze_clock(v);
                 }
@@ -266,18 +305,60 @@ const OTHER: &str = "blue@wire.test";
 /// Someone with no seat at this table, for the one fixture that is a 403.
 const STRANGER: &str = "green@wire.test";
 
+/// **An OPEN, LOCKED table with one seat still to fill** (M6.2, §7).
+///
+/// It used to bind both seats at the create. It binds one, and [`OTHER`] takes
+/// the other through `POST …/join` — which is what puts the room's own opening
+/// on this corpus: a table somebody has to be let into, a password that has to
+/// be right, and a join that flips the table to `dealing` in the same write.
+/// Everything after that point in the walk is the table it always was.
+///
+/// NO bot seats, here or at `wire2`. See the module doc: a bot's seed is OS
+/// entropy and a golden built over one would churn on every run. Two PEOPLE
+/// instead, which is also what makes the per-seat deal fixtures below real.
 fn new_game_body() -> Value {
     json!({
         "players": 2,
         "colors": ["Red", "Blue"],
         "start_seat": 0,
         "seed": SETUP_SEED,
-        // NO bot seats. See the module doc: a bot's seed is OS entropy and a
-        // golden built over one would churn on every run. Two PEOPLE instead,
-        // which is also what makes the per-seat deal fixtures below real.
-        "seats": [{ "user": WALKER }, { "user": OTHER }],
+        "seats": [{ "user": WALKER }, { "open": true }],
         "name": "wire",
         "id": "wire",
+        // Written onto the creator's seats and onto no other (R-2.3), so the
+        // corpus carries a NAMED seat beside an email-only one.
+        "display_name": "Red",
+        "password": WIRE_PASSWORD,
+    })
+}
+
+/// A SECOND open table, unlocked, so two lobby fixtures mean something.
+///
+/// `games_open` is the lobby's "tables I could sit at", and a page of one table
+/// cannot show the lock marker against anything — both rows would read the same
+/// way whether the client rendered the flag or ignored it. `games_next` needs a
+/// second row for a different reason: a page of one at `limit=1` is the only way
+/// `next` is ever `Some`.
+///
+/// **It is created BEFORE `wire`, and the order is load-bearing.** The listing
+/// is `(created_at desc, id asc)` over unix SECONDS, so two tables opened in one
+/// second are separated by their ids and `wire` sorts before `wire2`; opened in
+/// two seconds, the NEWER sorts first. Creating `wire2` first makes `wire` the
+/// first row under both — which is what keeps `games_next`'s page and its cursor
+/// a function of this file rather than of where a second boundary happened to
+/// fall. The other order is correct roughly 999 runs in 1000, which is the worst
+/// kind of correct for a committed golden.
+///
+/// Nobody ever joins it and it never deals: it exists to be listed.
+fn second_table_body() -> Value {
+    json!({
+        "players": 2,
+        "colors": ["Red", "Blue"],
+        "start_seat": 0,
+        "seed": SETUP_SEED,
+        "seats": [{ "user": WALKER }, { "open": true }],
+        "name": "wire2",
+        "id": "wire2",
     })
 }
 
@@ -322,8 +403,107 @@ async fn walk() -> Vec<(String, Value)> {
     // keeps; the last keep starts the game. Six shapes the client draws exist
     // only inside that sequence, so they are captured as they go past rather
     // than reconstructed afterwards.
-    let (status, table_dealing) = api.call("POST", "/api/games", Some(new_game_body())).await;
-    assert_eq!(status, StatusCode::CREATED, "{table_dealing}");
+    // The second table first — see [`second_table_body`] for why the ORDER of
+    // these two creates is what keeps the lobby fixtures deterministic.
+    let (status, second) = api.call("POST", "/api/games", Some(second_table_body())).await;
+    assert_eq!(status, StatusCode::CREATED, "{second}");
+    let (status, table_created) = api.call("POST", "/api/games", Some(new_game_body())).await;
+    assert_eq!(status, StatusCode::CREATED, "{table_created}");
+    assert_eq!(table_created["status"], "open", "a table with an open seat opens OPEN");
+
+    // **The room's opening, and every payload it produces** (M6.2 §7). A table
+    // with an open seat is something a person who is not seated at it can read,
+    // follow a link to, be refused by, and then join — and each of those is a
+    // shape the client draws and nothing else in this corpus carries.
+
+    // A STRANGER reads the open table. The one route R-2.7 widens: a join link
+    // is an address, so the person following one sees what they are joining —
+    // with `my_seats` EMPTY, which is impossible at any other status.
+    let (status, table_open) =
+        api.call_as(Some(STRANGER), "GET", "/api/games/wire/table", None).await;
+    assert_eq!(status, StatusCode::OK, "an open table reads for a stranger: {table_open}");
+    assert_eq!(
+        table_open["my_seats"].as_array().map(Vec::len),
+        Some(0),
+        "a stranger holds no seat here: {table_open}",
+    );
+
+    // The lobby's OTHER list: tables I could sit at, whoever made them. Read by
+    // the stranger, because that is who the list is for, and carrying both
+    // tables — one locked and one not, which is the only way the lock marker on
+    // a row is rendered by a payload rather than by nothing.
+    let games_open = api.get_as(STRANGER, "/api/games?scope=open").await;
+
+    // A SEATED caller's session route, while the table is still open. A 409
+    // carrying `status: "open"` — the same shape as the dealing 409 below and a
+    // different word, so the client draws the setup screen it is actually at.
+    let (status, open_409) = api.call("GET", "/api/games/wire", None).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{open_409}");
+
+    // **The three ways a join is refused, in the order §3.2 refuses them.**
+    // Each is the plain `ApiErrorBody` the client already renders, so what these
+    // files pin is the SENTENCE: "403" alone leaves a person with nothing to do
+    // next, and these three are three different things to do.
+    let (status, join_403_locked) = api
+        .call_as(Some(OTHER), "POST", "/api/games/wire/join", Some(json!({ "seat": 1 })))
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{join_403_locked}");
+    let (status, join_403_password) = api
+        .call_as(
+            Some(OTHER),
+            "POST",
+            "/api/games/wire/join",
+            Some(json!({ "seat": 1, "password": "open" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{join_403_password}");
+    // The seat the CREATOR holds, asked for with the right password: the seat
+    // check runs in front of the password check, so this is a conflict about
+    // the seat and says so.
+    let (status, join_409_taken) = api
+        .call_as(
+            Some(OTHER),
+            "POST",
+            "/api/games/wire/join",
+            Some(json!({ "seat": 0, "password": WIRE_PASSWORD })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{join_409_taken}");
+
+    // And the join that works. It fills the LAST open seat, so it flips the
+    // table to `dealing` in the same write — which is why this reply is the
+    // corpus's `table_dealing`.
+    let (status, table_dealing) = api
+        .call_as(
+            Some(OTHER),
+            "POST",
+            "/api/games/wire/join",
+            Some(json!({ "seat": 1, "name": "Blue", "password": WIRE_PASSWORD })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{table_dealing}");
+    assert_eq!(table_dealing["status"], "dealing", "the filling join flips: {table_dealing}");
+
+    // The same join again, at a table that is no longer open: a 409 carrying
+    // the status, not a 403 about the seat.
+    let (status, join_409_not_open) = api
+        .call_as(
+            Some(OTHER),
+            "POST",
+            "/api/games/wire/join",
+            Some(json!({ "seat": 1, "password": WIRE_PASSWORD })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{join_409_not_open}");
+
+    // The lobby's FIRST list, paged: `wire` and `wire2` are both this caller's,
+    // so a page of one leaves a row over and `next` is the only non-null cursor
+    // anywhere in this corpus. See [`freeze_clock`] on the clock inside it.
+    let games_next = api.get("/api/games?scope=mine&limit=1").await;
+    assert!(
+        games_next["next"].is_string(),
+        "a page of one over two tables has a next: {games_next}",
+    );
 
     let deal = api.get("/api/games/wire/deal").await;
     // Every session route while the table is dealing: a 409 carrying a STATUS
@@ -389,6 +569,15 @@ async fn walk() -> Vec<(String, Value)> {
     let mut out: Vec<(String, Value)> = vec![
         ("table_dealing".to_string(), table_dealing),
         ("table".to_string(), table),
+        // ---- M6.2: the open table, the two lists, and the four refusals ----
+        ("table_open".to_string(), table_open),
+        ("games_open".to_string(), games_open),
+        ("games_next".to_string(), games_next),
+        ("open_409".to_string(), open_409),
+        ("join_403_locked".to_string(), join_403_locked),
+        ("join_403_password".to_string(), join_403_password),
+        ("join_409_taken".to_string(), join_409_taken),
+        ("join_409_not_open".to_string(), join_409_not_open),
         ("deal".to_string(), deal),
         ("deal_waiting".to_string(), deal_waiting),
         ("dealing_409".to_string(), dealing_409),
@@ -1187,6 +1376,96 @@ async fn no_committed_payload_carries_the_setup_seed() {
     assert!(
         !serde_json::to_string(&created).expect("serializable").contains(&decimal),
         "the create that wrote that document answered with the seed in it",
+    );
+}
+
+/// **No payload carries the table password, its salt or its hash** (M6.2 §5.7).
+///
+/// The sibling fence above is about the setup seed; this is the same shape of
+/// claim about the second secret a table document now holds. The threat is
+/// plainer and the reach is wider: a salt and a hash in a browser are a password
+/// to attack OFFLINE, at whatever rate the attacker's hardware allows and with
+/// nothing on this server able to notice, and people reuse passwords. So
+/// `TableDoc.lock` never leaves the document and `TableView` carries the boolean
+/// `locked` in its place.
+///
+/// **Three searches, over two different runs, because the values are not the
+/// same kind of thing.**
+///
+/// The PASSWORD is a constant of this file, so it is searched for across the
+/// whole committed corpus — every payload of a full walk, including the four
+/// join refusals, where a server that echoed the attempt back would be found.
+///
+/// The SALT and the HASH are drawn per table, so a corpus produced by one `Api`
+/// says nothing about them: this opens a SECOND table and searches THAT api's
+/// own answers for THAT table's values. Three surfaces, and they are the three a
+/// lock can reach — the create's own reply, the table view, and a lobby row
+/// (`view()` builds all three, so a field added there would ride on each).
+///
+/// **The anti-vacuity partner is the document.** A search for a value that is
+/// nowhere passes exactly as loudly as a search looking for the wrong thing, so
+/// the salt and the hash are READ OUT of the stored document before they are
+/// searched for — they are strings this codebase really does write down, and
+/// their lengths are pinned (16 bytes of salt and a SHA-256, in hex) so a lock
+/// that silently became empty would fail here rather than make every search
+/// trivially pass. **The password itself has no such partner and cannot have
+/// one**: nothing stores it, which is the property, so that third search rests
+/// on the other two having proved the mechanism finds what is there.
+#[tokio::test]
+async fn no_payload_of_this_run_carries_the_password_or_its_hash() {
+    // This run's payloads, taken before the golden compares them — the same
+    // corpus the committed files are cut from.
+    let run = corpus().await;
+
+    let api = Api::new();
+    let (status, created) = api.call("POST", "/api/games", Some(new_game_body())).await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let (doc, _) = api
+        .state
+        .games
+        .store()
+        .read(yokohama_web::store::Doc::Table, "wire")
+        .expect("a readable store")
+        .expect("the table document the create wrote");
+    let doc: Value = serde_json::from_str(&doc).expect("the table document is JSON");
+    let salt = doc["lock"]["salt"].as_str().expect("the document carries the salt").to_string();
+    let hash = doc["lock"]["hash"].as_str().expect("the document carries the hash").to_string();
+    assert_eq!(salt.len(), 32, "16 random bytes, in hex");
+    assert_eq!(hash.len(), 64, "a SHA-256, in hex");
+
+    let mut offenders: Vec<String> = Vec::new();
+    for (name, value) in &run {
+        if serde_json::to_string(value).expect("serializable").contains(WIRE_PASSWORD) {
+            offenders.push(format!("{name} carries the password"));
+        }
+    }
+    for (name, uri) in [
+        ("the create's own reply", None),
+        ("the table view", Some("/api/games/wire/table")),
+        ("an open lobby row", Some("/api/games?scope=open")),
+    ] {
+        let value = match uri {
+            None => created.clone(),
+            Some(uri) => api.get(uri).await,
+        };
+        let text = serde_json::to_string(&value).expect("serializable");
+        for (what, needle) in
+            [("the password", WIRE_PASSWORD), ("the salt", &salt), ("the hash", &hash)]
+        {
+            if text.contains(needle) {
+                offenders.push(format!("{name} carries {what}"));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "a table password reached the client: {}\n\
+         The salt and the hash are an offline attack on a password people reuse, and the \
+         password itself is the thing this server was trusted not to repeat. `locked` is the \
+         boolean that crosses instead; if a new field genuinely needs more, it needs an owner \
+         decision first, not an exemption here.",
+        offenders.join(", "),
     );
 }
 

@@ -12,7 +12,7 @@
       "created_at": 1789000000,
       "created_by": "red@wire.test",
       "id": "wire",
-      "locked": false,
+      "locked": true,
       "my_seats": [
         0
       ],
@@ -22,17 +22,51 @@
       "seats": [
         {
           "kind": "human",
-          "name": null,
+          "name": "Red",
           "user": "red@wire.test"
         },
         {
           "kind": "human",
-          "name": null,
+          "name": "Blue",
           "user": "blue@wire.test"
         }
       ],
       "start_seat": 0,
       "status": "dealing",
+      "to_move": null,
+      "winner": null
+    },
+    {
+      "chosen": [
+        false,
+        false
+      ],
+      "colors": [
+        "Red",
+        "Blue"
+      ],
+      "created_at": 1789000000,
+      "created_by": "red@wire.test",
+      "id": "wire2",
+      "locked": false,
+      "my_seats": [
+        0
+      ],
+      "name": "wire2",
+      "over": null,
+      "players": 2,
+      "seats": [
+        {
+          "kind": "human",
+          "name": null,
+          "user": "red@wire.test"
+        },
+        {
+          "kind": "open"
+        }
+      ],
+      "start_seat": 0,
+      "status": "open",
       "to_move": null,
       "winner": null
     }

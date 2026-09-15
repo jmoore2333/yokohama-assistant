@@ -465,14 +465,28 @@ export interface DealCard {
 
 // ---- the table: who sits where (M6.1) ------------------------------------
 
-/** Who plays one seat. A person's normalized email, or the built-in bot. */
-export type SeatDoc = { kind: "human"; user: string } | { kind: "bot" };
+/** Who plays one seat: a person, the built-in bot, or nobody yet.
+ *
+ *  A human seat carries the server's NORMALIZED email — the key every binding
+ *  is written under — and, since M6.2, the display `name` its holder gave. The
+ *  name is `null` on a seat bound before names existed and on a seat whose
+ *  holder gave none, so a screen that shows one falls back to the email; and
+ *  the email stays beside it because a name is chosen rather than unique, and
+ *  two people at one table may pick the same one.
+ *
+ *  `open` is an unfilled seat at an open table (M6.2): anyone signed in may
+ *  take it through `api.join`. It never appears once the table has left
+ *  `open` — the server refuses to read back a document where the two disagree. */
+export type SeatDoc =
+  | { kind: "human"; user: string; name: string | null }
+  | { kind: "bot" }
+  | { kind: "open" };
 
-/** A table is DEALING until every human seat has chosen a starting order, and
- *  PLAYING afterwards. Every route that needs a session answers 409 while it is
- *  dealing, carrying `status: "dealing"` so this client knows which screen to
- *  draw rather than showing an error. */
-export type TableStatus = "dealing" | "playing";
+/** A table is OPEN while it is still filling its seats, DEALING until every
+ *  human seat has chosen a starting order, and PLAYING afterwards. Every route
+ *  that needs a session answers 409 at the first two, carrying the status so
+ *  this client knows which screen to draw rather than showing an error. */
+export type TableStatus = "open" | "dealing" | "playing";
 
 /** The table as a seated player sees it.
  *
@@ -492,13 +506,20 @@ export interface TableView {
   seats: SeatDoc[];
   /** True for a bot seat from the start, and for a human seat once it has kept. */
   chosen: boolean[];
-  /** The seats the CALLER holds. Empty is impossible: a caller with no seat here
-   *  is a 403 and never receives this payload. */
+  /** The seats the CALLER holds. Empty for a caller not seated at an OPEN
+   *  table (R-2.7); never empty at any other status, where a caller with no
+   *  seat is a 403. */
   my_seats: PlayerId[];
   status: TableStatus;
   /** Present once playing, `null` while dealing. */
   to_move: PlayerId | null;
   over: boolean | null;
+  /** Whether a password is needed to join. The salt and the hash stay on the
+   *  server — a password handed to a browser is a password to attack offline. */
+  locked: boolean;
+  /** Who won, once `over`. `null` at every other moment, a table that is still
+   *  open or dealing included. */
+  winner: PlayerId | null;
 }
 
 /** What `GET …/deal` serves: the set table, and the CALLER's own two cards.
@@ -517,9 +538,14 @@ export interface DealView {
 }
 
 /** The lobby. An object rather than a bare array, so a cursor or a count can be
- *  added without every reader changing shape. */
+ *  added without every reader changing shape — and `next` is the field that
+ *  was. */
 export interface GamesList {
   games: TableView[];
+  /** The cursor for the NEXT page, or `null` when this is the last one.
+   *  `<created_at>,<id>`: opaque to this client, which sends it straight back
+   *  as `before`. */
+  next: string | null;
 }
 
 /** Which of the two dealt cards a seat keeps. `card` is 1 or 2, as they are
@@ -529,10 +555,13 @@ export interface KeepRequest {
   card: 1 | 2;
 }
 
-/** The 409 a session route answers while its table is still dealing: the
- *  ordinary error shape, plus the one status this client BRANCHES on. */
+/** The 409 a session route answers while its table is still open or dealing:
+ *  the ordinary error shape, plus the one status this client BRANCHES on.
+ *
+ *  Narrowed to [`TableStatus`] rather than left as a string, so a screen that
+ *  branches on it is checked against the three the server can send. */
 export interface DealingErrorBody extends ApiErrorBody {
-  status: string;
+  status: TableStatus;
 }
 
 // ---- the read-only surfaces ---------------------------------------------

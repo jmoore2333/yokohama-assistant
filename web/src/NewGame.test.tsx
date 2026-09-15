@@ -13,6 +13,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { NewGame } from "./NewGame";
 import { gamesNamed, gate, stubApi, type ApiCall, type Reply } from "./test/harness";
+import { seatName } from "./tables";
 import { wire } from "./wire/contract";
 import type { TableView } from "./types";
 
@@ -51,7 +52,7 @@ function Host({
  *  every `/api/games/{id}/…` post. The create is the only one whose path ENDS
  *  there. */
 const creates = (stub: ReturnType<typeof stubApi>): ApiCall[] =>
-  stub.matching("POST", "/api/games").filter((c) => c.path.endsWith("/api/games"));
+  stub.matching("POST", "/api/games").filter((c) => c.path.split("?")[0]!.endsWith("/api/games"));
 
 /** The form, rendered over a stub. The saved list is fetched on mount, so a
  *  handler that answers nothing else still has to answer that. */
@@ -65,13 +66,13 @@ function show(handler: (call: ApiCall) => Reply, props: Parameters<typeof Host>[
 
 /** The opening reply: a create answers 201 with a DEALING table (§4.2). */
 const created = (call: ApiCall): Reply | undefined =>
-  call.method === "POST" && call.path.endsWith("/api/games")
+  call.method === "POST" && call.path.split("?")[0]!.endsWith("/api/games")
     ? { status: 201, body: wire.tableDealing }
     : undefined;
 
 /** The saved list, and nothing else. */
 const listOnly = (call: ApiCall): Reply | undefined =>
-  call.method === "GET" && call.path.endsWith("/api/games") ? gamesNamed() : undefined;
+  call.method === "GET" && call.path.split("?")[0]!.endsWith("/api/games") ? gamesNamed() : undefined;
 
 describe("the seats the form posts", () => {
   // **The body §4.2 reads, and nothing this client used to send.** `keeps` and
@@ -81,9 +82,9 @@ describe("the seats the form posts", () => {
   // a field the player never touched.
   it("posts one seat entry per seat, me by default, and the bot only at two players", async () => {
     const stub = stubApi((call) => {
-      if (call.method === "POST" && call.path.endsWith("/api/games"))
+      if (call.method === "POST" && call.path.split("?")[0]!.endsWith("/api/games"))
         return { status: 201, body: wire.tableDealing };
-      if (call.path.endsWith("/api/games")) return wire.games;
+      if (call.path.split("?")[0]!.endsWith("/api/games")) return wire.games;
       return undefined;
     });
     const onCreated = vi.fn();
@@ -244,7 +245,7 @@ describe("a double-clicked Deal", () => {
   it("posts create exactly once", async () => {
     const held = gate<unknown>();
     const { stub } = show((call) => {
-      if (call.method === "POST" && call.path.endsWith("/api/games")) return held.promise;
+      if (call.method === "POST" && call.path.split("?")[0]!.endsWith("/api/games")) return held.promise;
       return listOnly(call);
     });
     // BOTH clicks inside ONE `act`, so no render happens between them — the
@@ -269,7 +270,7 @@ describe("the saved tables", () => {
   // seats have not all chosen.
   it("opens one by id, because only App knows whether it is dealing", async () => {
     const { user, onOpen, stub } = show((call) =>
-      call.method === "GET" && call.path.endsWith("/api/games") ? gamesNamed("wire") : undefined,
+      call.method === "GET" && call.path.split("?")[0]!.endsWith("/api/games") ? gamesNamed("wire") : undefined,
     );
     await user.click(await screen.findByRole("button", { name: "wire" }));
     expect(onOpen).toHaveBeenCalledWith("wire");
@@ -284,18 +285,18 @@ describe("the saved tables", () => {
 
   it("names each table, its size, and what it is waiting on", async () => {
     show((call) =>
-      call.method === "GET" && call.path.endsWith("/api/games") ? wire.games : undefined,
+      call.method === "GET" && call.path.split("?")[0]!.endsWith("/api/games") ? wire.games : undefined,
     );
     const row = (await screen.findByRole("button", { name: "wire" })).closest("li")!;
     expect(row).toHaveTextContent("2P · dealing");
     for (const seat of wire.games.games[0]!.seats) {
-      expect(row).toHaveTextContent(seat.kind === "bot" ? "the bot" : seat.user);
+      expect(row).toHaveTextContent(seatName(seat));
     }
   });
 
   it("shows a refusal rather than swallowing it", async () => {
     const { user } = show((call) =>
-      call.method === "GET" && call.path.endsWith("/api/games")
+      call.method === "GET" && call.path.split("?")[0]!.endsWith("/api/games")
         ? gamesNamed()
         : { status: 400, body: { error: 'a game named "wire" already exists' } },
     );
@@ -313,7 +314,7 @@ describe("the saved tables", () => {
 // different one. There is no undo — the record is gone.
 describe("deleting a saved game", () => {
   const twoGames = (call: ApiCall): Reply => {
-    if (call.method === "GET" && call.path.endsWith("/api/games"))
+    if (call.method === "GET" && call.path.split("?")[0]!.endsWith("/api/games"))
       return gamesNamed("wire", "sim-other");
     if (call.method === "DELETE") return null;
     throw new Error(`unexpected ${call.method} ${call.path}`);

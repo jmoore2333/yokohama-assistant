@@ -128,6 +128,14 @@ import deal from "./deal.json";
 import dealWaiting from "./deal_waiting.json";
 import dealing409 from "./dealing_409.json";
 import gamesList from "./games.json";
+import gamesOpen from "./games_open.json";
+import gamesNext from "./games_next.json";
+import tableOpen from "./table_open.json";
+import open409 from "./open_409.json";
+import join403Locked from "./join_403_locked.json";
+import join403Password from "./join_403_password.json";
+import join409Taken from "./join_409_taken.json";
+import join409NotOpen from "./join_409_not_open.json";
 import notSeated403 from "./not_seated_403.json";
 import undoRefused403 from "./undo_refused_403.json";
 import wrongSeat403 from "./wrong_seat_403.json";
@@ -205,6 +213,28 @@ const _table: Widen<TableView> = table;
 const _deal: Widen<DealView> = deal;
 const _dealWaiting: Widen<DealView> = dealWaiting;
 const _gamesList: Widen<GamesList> = gamesList;
+// ---- M6.2: the room's opening ------------------------------------------
+//
+// The table at its THIRD status, read by somebody who is not seated at it —
+// the one payload in the corpus whose `my_seats` is empty, and the only place
+// an `open` seat and a `locked` table reach the client's declared types.
+const _tableOpen: Widen<TableView> = tableOpen;
+// The lobby's two lists. `games_open` is the OTHER question (tables I could sit
+// at, whoever made them), and `games_next` is the only payload anywhere whose
+// `next` is a cursor rather than null — so the string arm of that field is
+// checked by a payload rather than by nothing.
+const _gamesOpen: Widen<GamesList> = gamesOpen;
+const _gamesNext: Widen<GamesList> = gamesNext;
+// A session route asked of a table that is still OPEN. The same two-key shape
+// as the dealing 409 and a different word in the field the client branches on.
+const _open409: Widen<DealingErrorBody> = open409;
+// ...and the join's own, at a table that has left `open`.
+const _join409NotOpen: Widen<DealingErrorBody> = join409NotOpen;
+// The three refusals a join meets, in the order the server applies them. Plain
+// `ApiErrorBody`, committed for the SENTENCES — see `contract.test.ts`.
+const _join403Locked: Widen<ApiErrorBody> = join403Locked;
+const _join403Password: Widen<ApiErrorBody> = join403Password;
+const _join409Taken: Widen<ApiErrorBody> = join409Taken;
 // The signal at both of the statuses the client polls through. Two payloads
 // because `to_move` is null on one and a seat on the other, and a widened
 // `status` cannot tell the two apart on its own.
@@ -313,6 +343,8 @@ void [
   _options, _options4p, _optionsMany, _optionsPriced, _pick, _retreat, _retreatAnswered, _placeA, _placeASelected, _placeB, _placeBSelected,
   _gameOver, _watching, _locked, _refused, _labels, _health, _me, _meOut, _error,
   _tableDealing, _table, _deal, _dealWaiting, _gamesList, _dealing409, _notSeated403,
+  _tableOpen, _gamesOpen, _gamesNext, _open409, _join409NotOpen,
+  _join403Locked, _join403Password, _join409Taken,
   _wrongSeat403, _undoRefused403,
   _events, _eventsDealing,
   _ports, _labs, _areas, _areas4p, _log, _atK, _artManifest, _feeNonzero,
@@ -400,12 +432,12 @@ const HEALTH = ["server_version", "semantics_rev", "rules_hash", "identity"] as 
 const ME = ["mode", "user"] as const;
 const TABLE = [
   "id", "name", "created_by", "created_at", "players", "colors", "start_seat",
-  "seats", "chosen", "my_seats", "status", "to_move", "over",
+  "seats", "chosen", "my_seats", "status", "to_move", "over", "locked", "winner",
 ] as const;
 const DEAL_VIEW = ["table", "seat", "cards", "keep_note", "frame"] as const;
-const GAMES_LIST = ["games"] as const;
-// The dealing 409 is the ONE refusal that carries a second key, and the only
-// one this client branches on rather than displays.
+const GAMES_LIST = ["games", "next"] as const;
+// The open and dealing 409s are the ONLY refusals that carry a second key, and
+// the only ones this client branches on rather than displays.
 const DEALING_ERROR = ["error", "status"] as const;
 const EVENTS = ["events", "to_move", "status", "your_turn"] as const;
 const DEAL_CARD = ["card", "keep_score"] as const;
@@ -574,6 +606,14 @@ export const wire = {
   deal: as<DealView>(deal),
   dealWaiting: as<DealView>(dealWaiting),
   games: as<GamesList>(gamesList),
+  tableOpen: as<TableView>(tableOpen),
+  gamesOpen: as<GamesList>(gamesOpen),
+  gamesNext: as<GamesList>(gamesNext),
+  open409: as<DealingErrorBody>(open409),
+  join409NotOpen: as<DealingErrorBody>(join409NotOpen),
+  join403Locked: as<ApiErrorBody>(join403Locked),
+  join403Password: as<ApiErrorBody>(join403Password),
+  join409Taken: as<ApiErrorBody>(join409Taken),
   events: as<Events>(events),
   eventsDealing: as<Events>(eventsDealing),
   dealing409: as<DealingErrorBody>(dealing409),

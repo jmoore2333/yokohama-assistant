@@ -87,6 +87,17 @@ describe("the payload roots carry exactly the fields the client declares", () =>
     ["games", wire.games, KEYS.gamesList],
     ["dealing_409", wire.dealing409, KEYS.dealingError],
     ["not_seated_403", wire.notSeated403, KEYS.apiError],
+    // M6.2's eight. The table at its third status, read by somebody with no
+    // seat at it; the lobby's other list and its paged form; and the four ways
+    // a caller is turned away from a table it may not open or sit at.
+    ["table_open", wire.tableOpen, KEYS.table],
+    ["games_open", wire.gamesOpen, KEYS.gamesList],
+    ["games_next", wire.gamesNext, KEYS.gamesList],
+    ["open_409", wire.open409, KEYS.dealingError],
+    ["join_409_not_open", wire.join409NotOpen, KEYS.dealingError],
+    ["join_403_locked", wire.join403Locked, KEYS.apiError],
+    ["join_403_password", wire.join403Password, KEYS.apiError],
+    ["join_409_taken", wire.join409Taken, KEYS.apiError],
     // And the two a SEATED caller meets by acting out of turn (spec §8): an
     // ordinary line from the seat that is not to move, and `undo` after that
     // seat's turn has passed. One root key each, which is the whole of the
@@ -333,6 +344,87 @@ describe("what the corpus itself has to be true of", () => {
     ] as const) {
       expect(JSON.stringify(payload), name).not.toContain('"seed"');
     }
+  });
+
+  // **The open table is the one payload whose `my_seats` is empty**, and the
+  // only place an unfilled seat reaches the client at all.
+  //
+  // R-2.7 widens `GET …/table` to any signed-in caller while a table is open,
+  // because a join link is an address and the person following one has to see
+  // what they are joining. Every other status refuses a caller with no seat, so
+  // `my_seats: []` is not a shape the client can meet anywhere else — and this
+  // is the payload its "you are not sitting here yet" screen renders from.
+  //
+  // **Both seat kinds, because each is the other's anti-vacuity.** A `seats`
+  // array of two open seats would satisfy "there is an open seat" while proving
+  // nothing about the arm that carries a person, and a payload with no open
+  // seat at all is just `table.json`. This one holds a NAMED human beside an
+  // open seat, which is the row a lobby draws.
+  it("an open table has an empty my_seats, a seat nobody holds, and a lock", () => {
+    expect(wire.tableOpen.status).toBe("open");
+    expect(wire.tableOpen.my_seats).toEqual([]);
+    expect(wire.tableOpen.seats.map((s) => s.kind)).toEqual(["human", "open"]);
+    const held = wire.tableOpen.seats[0]!;
+    if (held.kind !== "human") throw new Error("fixture moved");
+    expect(held.user).toBe("red@wire.test");
+    // The display name the creator gave, beside the email it can never replace.
+    expect(held.name).toBe("Red");
+    // `locked` is the boolean that crosses in the password's place: the salt
+    // and the hash stay on the server, and `wire_fixtures.rs` searches every
+    // payload of the run for all three.
+    expect(wire.tableOpen.locked).toBe(true);
+    expect(JSON.stringify(wire.tableOpen)).not.toContain("salt");
+    expect(JSON.stringify(wire.tableOpen)).not.toContain("hash");
+  });
+
+  // **The open lobby lists both kinds of table, and the paged one has a
+  // cursor.** Two separate properties, and each is what its fixture is for.
+  //
+  // `games_open` is the stranger's list: every row is a table they could sit
+  // at, one locked and one not — so a client that ignored `locked` would draw
+  // both rows identically and this is what would say so. `games_next` is the
+  // ONLY payload anywhere whose `next` is a string, so without it the paged
+  // arm of `GamesList` is declared by the client and rendered by nothing.
+  it("the open list carries tables the caller has no seat at, locked and not", () => {
+    expect(wire.gamesOpen.games).toHaveLength(2);
+    for (const row of wire.gamesOpen.games) {
+      expect(row.status).toBe("open");
+      expect(row.my_seats).toEqual([]);
+    }
+    expect(wire.gamesOpen.games.map((g) => g.locked)).toEqual([true, false]);
+    expect(wire.gamesOpen.next).toBeNull();
+  });
+
+  it("a paged list names the row it ended at", () => {
+    expect(wire.gamesNext.games).toHaveLength(1);
+    // `<created_at>,<id>` — opaque to the client, which sends it back as
+    // `before`. The timestamp is frozen by the harness; the id is the server's.
+    expect(wire.gamesNext.next).toBe(`${wire.gamesNext.games[0]!.created_at},wire`);
+  });
+
+  // **The four refusals the room adds say four different things**, and that is
+  // the only reason four of them are committed: three share a single root key,
+  // so a key-set row alone would let them collapse into one sentence without a
+  // check going red. This is the same cell as the three 403s above, for the
+  // three ways a join is turned down and the two 409s that are not a join.
+  it("the room's refusals are four different sentences, and the two 409s name a status", () => {
+    const said = [
+      wire.join403Locked.error,
+      wire.join403Password.error,
+      wire.join409Taken.error,
+      wire.open409.error,
+    ];
+    expect(new Set(said).size).toBe(4);
+    // Not "403": what to send. A person who has the password can act on this.
+    expect(wire.join403Locked.error).toContain("password");
+    // And a different sentence from the one above, because a wrong password is
+    // a different thing to do about than a missing one.
+    expect(wire.join403Password.error).toContain("wrong password");
+    expect(wire.join409Taken.error).toMatch(/seat \d+ is taken/);
+    // The two the client BRANCHES on rather than displays: each names the
+    // status the table is actually at, so the client draws that screen.
+    expect(wire.open409.status).toBe("open");
+    expect(wire.join409NotOpen.status).toBe("dealing");
   });
 
   // A payload that is not the actor's carries no answerable list, in BOTH
