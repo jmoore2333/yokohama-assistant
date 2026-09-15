@@ -58,6 +58,7 @@ import type {
   DealCard,
   DealingErrorBody,
   DealView,
+  Events,
   GamesList,
   IndexCard,
   IndexGroup,
@@ -101,6 +102,8 @@ import areas4p from "./areas_4p.json";
 import artManifest from "./art_manifest.json";
 import siteSpaceWords from "./site_space_words.json";
 import error from "./error.json";
+import events from "./events.json";
+import eventsDealing from "./events_dealing.json";
 import feeNonzero from "./fee_nonzero.json";
 import gameOver from "./game_over.json";
 import health from "./health.json";
@@ -204,6 +207,11 @@ const _table: Widen<TableView> = table;
 const _deal: Widen<DealView> = deal;
 const _dealWaiting: Widen<DealView> = dealWaiting;
 const _gamesList: Widen<GamesList> = gamesList;
+// The signal at both of the statuses the client polls through. Two payloads
+// because `to_move` is null on one and a seat on the other, and a widened
+// `status` cannot tell the two apart on its own.
+const _events: Widen<Events> = events;
+const _eventsDealing: Widen<Events> = eventsDealing;
 const _dealing409: Widen<DealingErrorBody> = dealing409;
 const _notSeated403: Widen<ApiErrorBody> = notSeated403;
 
@@ -302,6 +310,7 @@ void [
   _options, _options4p, _optionsMany, _optionsPriced, _pick, _retreat, _retreatAnswered, _placeA, _placeASelected, _placeB, _placeBSelected,
   _gameOver, _watching, _locked, _refused, _labels, _preview, _previewBot, _health, _me, _meOut, _error,
   _tableDealing, _table, _deal, _dealWaiting, _gamesList, _dealing409, _notSeated403,
+  _events, _eventsDealing,
   _ports, _labs, _areas, _areas4p, _log, _atK, _artManifest, _feeNonzero,
   _choiceAssistantMove, _choiceChurchSpace, _choiceWarehouseTake,
   _suggest, _why, _whyRefused, _whyRefusals,
@@ -395,6 +404,7 @@ const GAMES_LIST = ["games"] as const;
 // The dealing 409 is the ONE refusal that carries a second key, and the only
 // one this client branches on rather than displays.
 const DEALING_ERROR = ["error", "status"] as const;
+const EVENTS = ["events", "to_move", "status", "your_turn"] as const;
 const DEAL = ["seat", "is_bot", "cards"] as const;
 const DEAL_CARD = ["card", "keep_score"] as const;
 const API_ERROR = ["error"] as const;
@@ -449,6 +459,7 @@ const _tv: KeysOf<TableView, typeof TABLE> = TABLE;
 const _dv: KeysOf<DealView, typeof DEAL_VIEW> = DEAL_VIEW;
 const _gl: KeysOf<GamesList, typeof GAMES_LIST> = GAMES_LIST;
 const _d4: KeysOf<DealingErrorBody, typeof DEALING_ERROR> = DEALING_ERROR;
+const _ev: KeysOf<Events, typeof EVENTS> = EVENTS;
 const _dl: KeysOf<Deal, typeof DEAL> = DEAL;
 const _dc: KeysOf<DealCard, typeof DEAL_CARD> = DEAL_CARD;
 const _er: KeysOf<ApiErrorBody, typeof API_ERROR> = API_ERROR;
@@ -471,6 +482,7 @@ const _ig: KeysOf<IndexGroup, typeof INDEX_GROUP> = INDEX_GROUP;
 const _hf: KeysOf<HistoricalFrame, typeof HISTORICAL_FRAME> = HISTORICAL_FRAME;
 const _ic: KeysOf<IndexCard, typeof INDEX_CARD> = INDEX_CARD;
 void [_cs, _fr, _de, _or, _pl, _ti, _tr, _po, _la, _ar, _lo, _lb, _he, _mk, _pv, _dl, _dc, _er,
+      _ev,
       _tv, _dv, _gl, _d4,
       _sr, _so, _wr, _wo, _ex, _tm, _pr, _rk, _rf, _ix, _oc, _pc, _bd,
       _tl, _ct, _ig, _ic, _hf];
@@ -496,6 +508,7 @@ export const KEYS = {
   table: TABLE,
   dealView: DEAL_VIEW,
   gamesList: GAMES_LIST,
+  events: EVENTS,
   dealingError: DEALING_ERROR,
   deal: DEAL,
   dealCard: DEAL_CARD,
@@ -563,6 +576,8 @@ export const wire = {
   deal: as<DealView>(deal),
   dealWaiting: as<DealView>(dealWaiting),
   games: as<GamesList>(gamesList),
+  events: as<Events>(events),
+  eventsDealing: as<Events>(eventsDealing),
   dealing409: as<DealingErrorBody>(dealing409),
   notSeated403: as<ApiErrorBody>(notSeated403),
   preview: as<Preview>(preview),

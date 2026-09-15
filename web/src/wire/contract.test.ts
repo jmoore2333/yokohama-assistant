@@ -87,6 +87,11 @@ describe("the payload roots carry exactly the fields the client declares", () =>
     ["games", wire.games, KEYS.gamesList],
     ["dealing_409", wire.dealing409, KEYS.dealingError],
     ["not_seated_403", wire.notSeated403, KEYS.apiError],
+    // The signal at both statuses. Two rows rather than one because the fields
+    // are the same four at each, and a corpus carrying only the playing shape
+    // would let a `dealing` reply grow or lose a key unnoticed.
+    ["events", wire.events, KEYS.events],
+    ["events_dealing", wire.eventsDealing, KEYS.events],
     ["preview", wire.preview, KEYS.preview],
     ["preview_bot", wire.previewBot, KEYS.preview],
     ["preview.deal", wire.preview.deals[0], KEYS.deal],

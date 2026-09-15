@@ -338,6 +338,25 @@ export interface ClientState {
   events: number;
 }
 
+/** The change SIGNAL, from `GET /api/games/{id}/events` — what a poll asks for
+ *  while it is somebody else's turn (room plan R-P9).
+ *
+ *  **Deliberately not a frame.** The client learns that this game now has `N`
+ *  events and seat `S` to move, and fetches a frame only when that moved — so
+ *  the every-few-seconds request costs a few bytes rather than a whole board.
+ *
+ *  `status` is what lets ONE poll serve two screens: `dealing` is the setup
+ *  screen waiting for the other seats to choose (`events` 0, `to_move` null),
+ *  and the flip to `playing` is the client's cue to open the game. `your_turn`
+ *  is answered per caller and is false once the game is `over`, so a finished
+ *  game never reads as waiting for the reader. */
+export interface Events {
+  events: number;
+  to_move: PlayerId | null;
+  status: "dealing" | "playing" | "over";
+  your_turn: boolean;
+}
+
 /** One historical position, from `GET /api/games/{id}/at/{k}` — the M4 replay
  *  payload.
  *

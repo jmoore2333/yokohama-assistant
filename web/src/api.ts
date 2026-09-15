@@ -3,6 +3,7 @@ import type {
   ArtManifest,
   ClientState,
   DealView,
+  Events,
   GamesList,
   Labels,
   LabsPanel,
@@ -191,4 +192,21 @@ export const api = {
 
   /** The final score. A 409 while the game is still running. */
   result: (game: string) => call<Outcome>("GET", `/api/games/${id(game)}/result`),
+
+  /** The change signal: four fields, and no frame built (R-P9).
+   *
+   *  What a poll asks for while it is somebody else's turn — and what the
+   *  setup screen asks to learn that the last seat has chosen, since a dealing
+   *  table answers here rather than refusing.
+   *
+   *  `after` is the RESUME CURSOR. This server validates it and does not act on
+   *  it: the reply is immediate whether or not `events` has moved past it. It
+   *  is sent anyway, because M6.3's held request and stream answer this same
+   *  shape with this same cursor, and a caller written against it keeps working
+   *  when the transport underneath is replaced. */
+  events: (game: string, after?: number) =>
+    call<Events>(
+      "GET",
+      `/api/games/${id(game)}/events${after === undefined ? "" : `?after=${after}`}`,
+    ),
 };

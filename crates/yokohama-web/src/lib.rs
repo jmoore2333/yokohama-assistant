@@ -1223,6 +1223,93 @@ async fn log(
     Ok(Json(yokohama_cli::screen_model::build_log(total, described)))
 }
 
+/// How much of the game a poll gets: the SIGNAL, in four fields (room plan
+/// R-P9, spec §6).
+///
+/// **A few bytes, and no frame is built.** This is the endpoint the client asks
+/// every three seconds while it is somebody else's turn, and the whole point of
+/// R-P9 is that the signal is separate from the fetch: the client learns that
+/// this game now has N events and seat S to move, and asks for frames only when
+/// that moved. Serving a `ClientState` here instead would make the poll cost a
+/// whole board, a dashboard and a decision list, most of them identical to the
+/// one already on screen.
+///
+/// **`status` is the field that lets ONE poll serve two screens.** A dealing
+/// table answers `dealing` with `events` 0 and `to_move` null, so the setup
+/// screen watches for its own start on the same endpoint the game watches for
+/// the opponent's move, and the client has one timer rather than two.
+///
+/// **`your_turn` is per-caller, and it is why this route resolves a seat.**
+/// `to_move` alone would make every client compute it from a seat number it
+/// would have to be holding correctly; answering it here means the poll's
+/// consumer branches on one boolean. It is false once the game is over, so a
+/// finished game never reads as waiting for the reader.
+#[derive(Debug, Clone, Serialize)]
+pub struct Events {
+    pub events: usize,
+    pub to_move: Option<yokohama_core::PlayerId>,
+    pub status: &'static str,
+    pub your_turn: bool,
+}
+
+/// The resume cursor, VALIDATED AND NOT ACTED ON in this cycle (spec §6).
+///
+/// **It is here now so the transport can change without the client changing.**
+/// M6.3 chooses among a held request, server-sent events and a Durable Object
+/// notifier, and every one of those answers "what has happened since N" — so
+/// the polled form takes the same parameter and answers immediately whether or
+/// not `events` has moved past it. A client written against this cycle keeps
+/// working when the transport underneath it is replaced.
+///
+/// Typed `usize`, so a negative or non-numeric cursor is a 400 from serde
+/// rather than a value this handler would have to range-check; and
+/// `deny_unknown_fields` through [`QueryArgs`] makes a MISSPELLED cursor a 400
+/// too, rather than a silent `None` that polls from the beginning forever.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EventsQuery {
+    #[serde(default)]
+    pub after: Option<usize>,
+}
+
+/// `GET /api/games/{id}/events` — the change signal, polled form.
+///
+/// **Seated, like every other game route**, and it resolves a seat for one
+/// reason only: `your_turn`. The stranger's 403 comes from `Games::table`
+/// before any session is touched.
+///
+/// **The DEALING arm answers without a session, and must.** `Games::handle`
+/// refuses a dealing table with a 409 (it has no record yet), so a handler that
+/// reached for the session first would hand the setup screen an error instead
+/// of the reading it is polling for. `Games::table` has already settled a table
+/// whose keeps are all in, so the flip to `playing` is seen here on the first
+/// poll after the last keep rather than one poll later.
+///
+/// The lock is taken only to read the three fields below, and nothing inside it
+/// searches or builds.
+async fn events(
+    State(state): State<Arc<AppState>>,
+    identity::Identity(user): identity::Identity,
+    Path(id): Path<String>,
+    QueryArgs(_q): QueryArgs<EventsQuery>,
+) -> ApiResult<Events> {
+    let table = state.games.table(&id, &user)?;
+    if table.status == crate::table::TableStatus::Dealing {
+        return Ok(Json(Events { events: 0, to_move: None, status: "dealing", your_turn: false }));
+    }
+    let handle = state.games.handle(&id)?;
+    let repl = handle.lock().expect("a game");
+    let viewer = viewer_of(&repl, &table, &user)?;
+    let s = repl.session.state();
+    let over = repl.session.is_over();
+    Ok(Json(Events {
+        events: repl.session.record().events.len(),
+        to_move: Some(s.current_player),
+        status: if over { "over" } else { "playing" },
+        your_turn: !over && s.current_player == viewer,
+    }))
+}
+
 /// `GET /api/games/{id}/at/{k}` — the position as it stood after `k` events.
 ///
 /// **A projection, and therefore it SERVES A LOCKED SESSION.** The rule is the
@@ -1342,6 +1429,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/api/games/{id}/labs", get(labs))
         .route("/api/games/{id}/areas", get(areas))
         .route("/api/games/{id}/log", get(log))
+        .route("/api/games/{id}/events", get(events))
         .route("/api/games/{id}/at/{k}", get(at_k))
         .route("/api/games/{id}/suggest", get(suggest))
         .route("/api/games/{id}/why", get(why))
@@ -1960,9 +2048,10 @@ mod tests {
     /// fourteen routes and forgotten on the fifteenth is exactly the shape that
     /// ships.
     ///
-    /// `/events` is absent deliberately: that route does not exist yet (M6.1
-    /// Task 6 adds it), and a URI with no route answers 404 from the fallback
-    /// rather than 403 from a handler.
+    /// `/events` joined the list when Task 6 added the route (R-0.2). It was
+    /// exempt here only while the route did not exist — a URI with no route
+    /// answers 404 from the fallback, which is not the property this cell is
+    /// about — and the exemption went out with the reason for it.
     #[tokio::test]
     async fn every_session_route_is_403_for_a_signed_in_stranger() {
         let state = Arc::new(AppState::in_memory());
@@ -1974,6 +2063,7 @@ mod tests {
             "/api/games/fenced/labs",
             "/api/games/fenced/areas",
             "/api/games/fenced/log",
+            "/api/games/fenced/events",
             "/api/games/fenced/at/0",
             "/api/games/fenced/suggest",
             "/api/games/fenced/why",
@@ -2005,6 +2095,88 @@ mod tests {
             let (status, body) = get_as(&state, "blue@wire.test", uri).await;
             assert_eq!(status, StatusCode::OK, "{uri}: {body}");
         }
+    }
+
+    /// **The signal answers in four fields at every status, and fences its
+    /// query** (room plan R-P9, spec §6).
+    ///
+    /// One cell over the whole endpoint, because the four fields are ONE
+    /// answer and a poll acts on the combination: a reply with `status` right
+    /// and `your_turn` wrong leaves a player watching a board it was their turn
+    /// to move on.
+    ///
+    /// **Both statuses on one table, in the order a real client meets them.**
+    /// DEALING first, which is the arm that cannot be served from a session —
+    /// none exists yet, and a handler reaching for one answers 409 here rather
+    /// than the dealing screen's own reading. Then PLAYING, read by BOTH seats,
+    /// because `your_turn` is the one field whose value depends on who asked
+    /// and one reader cannot tell a correct answer from a constant.
+    ///
+    /// **Then a move is played, because every reading before it sees `events`
+    /// at 0** — and a count asserted only against zero is a count a stub
+    /// satisfies. Measured: replacing the length with a literal `0` left this
+    /// cell GREEN, and was caught only by the committed corpus, whose
+    /// `events.json` happens to sit at 1. That is a different instrument and it
+    /// should not be the only one holding the field the client branches on. The
+    /// same move proves `your_turn` FOLLOWS the turn rather than naming a fixed
+    /// seat, and that the count is the game's and not the caller's.
+    ///
+    /// **`over` is not asserted here, and is not asserted anywhere yet.**
+    /// Reaching it means playing a game to a winner, which this cell would have
+    /// to do for one field; Task 10's two-identity arm of the whole-game gate
+    /// is where the cycle puts that reading. Until it lands the third `status`
+    /// is written and unproven — said plainly, because "the statuses are
+    /// covered" is the sentence a reader would otherwise take from the name.
+    ///
+    /// **`after` is sent, accepted, and not acted on** — this cycle validates
+    /// the resume cursor and nothing more (spec §6), so the reply carrying it
+    /// is the same reading as the one without. The MISSPELLING is the other
+    /// half: `afer` is a 400 rather than a silent default, which is
+    /// `deny_unknown_fields` through `QueryArgs` doing its job on this new
+    /// struct rather than an assumption that it was wired up.
+    #[tokio::test]
+    async fn events_answers_in_four_fields_at_every_status_and_fences_its_query() {
+        let state = Arc::new(AppState::in_memory());
+        let body = serde_json::json!({ "players": 2, "colors": ["Red", "Blue"], "seed": "20260831", "name": "sig",
+            "seats": [{ "user": "red@wire.test" }, { "user": "blue@wire.test" }] });
+        post_as(&state, "red@wire.test", "/api/games", body).await;
+        let (status, e) = get_as(&state, "blue@wire.test", "/api/games/sig/events").await;
+        assert_eq!(status, StatusCode::OK, "{e}");
+        assert_eq!(e, serde_json::json!({ "events": 0, "to_move": null, "status": "dealing", "your_turn": false }));
+        post_as(&state, "red@wire.test", "/api/games/sig/keep", serde_json::json!({ "seat": 0, "card": 1 })).await;
+        post_as(&state, "blue@wire.test", "/api/games/sig/keep", serde_json::json!({ "seat": 1, "card": 1 })).await;
+        let (_, e) = get_as(&state, "red@wire.test", "/api/games/sig/events?after=0").await;
+        assert_eq!(e, serde_json::json!({ "events": 0, "to_move": 0, "status": "playing", "your_turn": true }));
+        let (_, e) = get_as(&state, "blue@wire.test", "/api/games/sig/events").await;
+        assert_eq!(e["your_turn"], false);
+        let (status, err) = get_as(&state, "blue@wire.test", "/api/games/sig/events?afer=0").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
+        // And the cursor's own VALUE, which spec §6 requires to be a
+        // non-negative integer. Both of these are refused by the TYPE rather
+        // than by a range check in the handler, which is the reason there is no
+        // range check in the handler to read.
+        for bad in ["after=-1", "after=abc"] {
+            let uri = format!("/api/games/sig/events?{bad}");
+            let (status, err) = get_as(&state, "blue@wire.test", &uri).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}: {err}");
+        }
+        let (status, _) = get_as(&state, "green@wire.test", "/api/games/sig/events").await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        // A real move, and the reading the poll exists to deliver.
+        play_turn(&state, "sig", "red@wire.test").await;
+        let (_, e) = get_as(&state, "red@wire.test", "/api/games/sig/events").await;
+        let moved = e["events"].as_u64().expect("an event count");
+        assert!(moved > 0, "the count never moved off zero: {e}");
+        assert_eq!(e["to_move"], serde_json::json!(1), "{e}");
+        assert_eq!(e["your_turn"], false, "the turn passed and this seat still owns it: {e}");
+        let (_, e) = get_as(&state, "blue@wire.test", "/api/games/sig/events").await;
+        assert_eq!(e["your_turn"], true, "the seat to move is not told so: {e}");
+        assert_eq!(
+            e["events"].as_u64(),
+            Some(moved),
+            "the count is the GAME's and must read the same to both seats: {e}",
+        );
     }
 
     /// **A move is the acting seat's holder's, and the refusal names whose turn

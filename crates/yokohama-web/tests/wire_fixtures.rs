@@ -355,6 +355,13 @@ async fn walk() -> Vec<(String, Value)> {
             .is_none(),
         "a dealing table has no record",
     );
+    // **The signal, while the table is DEALING**, and the 409 just above is what
+    // makes this fixture worth committing: every route that needs a SESSION
+    // refuses here, and this one answers. The setup screen therefore polls the
+    // same endpoint the game does (spec §6) and gets a reading rather than an
+    // error to branch on. Taken before any keep, so `status` is `dealing`,
+    // `events` is 0 and `to_move` is null.
+    let events_dealing = api.get("/api/games/wire/events").await;
 
     let (status, kept) = api
         .call("POST", "/api/games/wire/keep", Some(json!({ "seat": 0, "card": 1 })))
@@ -402,6 +409,7 @@ async fn walk() -> Vec<(String, Value)> {
         ("dealing_409".to_string(), dealing_409),
         ("games".to_string(), games_list),
         ("not_seated_403".to_string(), not_seated_403),
+        ("events_dealing".to_string(), events_dealing),
         ("health".to_string(), api.get("/api/health").await),
         // **Both sides of `/api/me`, because the client branches on both.**
         // Signed in, and signed out — the second taken with the header omitted
@@ -483,6 +491,18 @@ async fn walk() -> Vec<(String, Value)> {
                 // seat that is to move, and nobody else may ask for them.
                 let s = api.get_as(mover, "/api/games/wire/suggest").await;
                 capture(&mut out, &mut seen, "suggest", &s);
+            }
+            // The signal at a position with a real event count behind it.
+            //
+            // **Read by OTHER rather than by the mover**, which is the
+            // whole point of the fixture: `your_turn` is the one field whose
+            // value depends on who asked, and the client's poll exists to run
+            // while it is somebody ELSE's turn. Captured at the opening
+            // instead, `events` would be 0 and the count would be a constant
+            // the client could not tell from a stub.
+            if !seen.iter().any(|s| s == "events") {
+                let e = api.get_as(OTHER, "/api/games/wire/events").await;
+                capture(&mut out, &mut seen, "events", &e);
             }
         }
         if kind == "options" && rows.iter().any(|r| r["fee"] != Value::Null) {
