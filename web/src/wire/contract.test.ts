@@ -92,18 +92,10 @@ describe("the payload roots carry exactly the fields the client declares", () =>
     // would let a `dealing` reply grow or lose a key unnoticed.
     ["events", wire.events, KEYS.events],
     ["events_dealing", wire.eventsDealing, KEYS.events],
-    ["preview", wire.preview, KEYS.preview],
-    ["preview_bot", wire.previewBot, KEYS.preview],
-    ["preview.deal", wire.preview.deals[0], KEYS.deal],
-    ["preview.dealCard", wire.preview.deals[0]!.cards[0], KEYS.dealCard],
-    // **The BOT's deal, which no row above reaches.** `preview.deal` is the
-    // bot-free fixture's human seat and `preview_bot` is checked only at its
-    // top level, so before this row a field emitted on a bot seat alone — under
-    // any name but the literal `bot_keep` the three absence cells search for —
-    // passed every check in this file. §1's structural typing cannot see it
-    // either: TypeScript does not flag excess properties on a JSON import.
-    // That is precisely the seat R-C1 moved the leak-relevant shape onto.
-    ["preview_bot.deal(bot)", wire.previewBot.deals[1], KEYS.deal],
+    // The dealt CARD, reached through the one payload that still carries one:
+    // a caller's own `deal`. It used to be reached through `preview.deals`,
+    // which served every seat's at once and is retired (M6.1 §8).
+    ["deal.dealCard", wire.deal.cards![0], KEYS.dealCard],
     ["error", wire.error, KEYS.apiError],
     ["suggest", wire.suggest, KEYS.suggestResponse],
     ["suggest.ok", wire.suggest.ok, KEYS.suggestOk],
@@ -238,84 +230,103 @@ describe("what the corpus itself has to be true of", () => {
     }
   });
 
-  // **A seat only ever sees its own deal (2026-09-06, R-C1).** The bot still
-  // keeps a card — the argmax it has always kept, now visible only as a card in
-  // its hand — and the wire says nothing about which two it was dealt: `cards`
-  // is empty and there is no keep field to read. The two preview fixtures are
-  // the two sides of that, and the human halves are the anti-vacuity: a server
-  // that emptied EVERY deal would pass a check on the bot's alone.
-  it("a bot seat's deal is not on the wire, and a human seat's is", () => {
-    const bot = wire.previewBot.deals[1]!;
-    expect(bot.is_bot).toBe(true);
-    expect(bot.cards.length).toBe(0);
-    expect("bot_keep" in bot).toBe(false);
-    expect(wire.previewBot.deals[0]!.is_bot).toBe(false);
-    expect(wire.previewBot.deals[0]!.cards.length).toBe(2);
-    expect(wire.preview.deals.every((d) => !d.is_bot)).toBe(true);
-    expect(wire.preview.deals.every((d) => d.cards.length === 2)).toBe(true);
-    expect(wire.preview.deals.every((d) => !("bot_keep" in d))).toBe(true);
+  // **A seat only ever sees its own deal (2026-09-06, R-C1), and since M6.1 §8
+  // that is the SHAPE of the payload rather than a filter over it.** The wire
+  // used to carry one `Deal` per seat and the reader picked its own; there is
+  // no per-seat array any more, so a caller's `cards` is either its own two or
+  // null.
+  //
+  // **Both payloads, because each is the other's anti-vacuity.** `deal_waiting`
+  // is the null — every seat this caller holds has chosen — so a server that
+  // always sent two cards would fail there, and one that never sent any would
+  // fail on `deal`. Either payload alone is satisfied by a field that is always
+  // the same thing.
+  it("a deal carries the caller's own two cards, or none at all", () => {
+    expect(wire.deal.seat).not.toBeNull();
+    expect(wire.deal.cards).toHaveLength(2);
+    expect(JSON.stringify(wire.deal)).not.toContain("bot_keep");
+    expect(wire.dealWaiting.seat).toBeNull();
+    expect(wire.dealWaiting.cards).toBeNull();
   });
 
   // **The technologies and the goals are not on the set table (2026-09-06,
-  // R-C3).** Both previews carry the laboratory with every slot emptied and no
-  // `Achievements` panel at all, because the owner's edition deals the two
-  // starting orders and takes the secret choice at its step 9 — before the
-  // technologies reach the Laboratory at step 10 and the achievements the score
-  // track at step 11.
+  // R-C3).** The set table is the `frame` beside a seat's two cards now that
+  // `preview` is retired (M6.1 §8), and it carries the laboratory with every
+  // slot emptied and no `Achievements` panel at all — because the owner's
+  // edition deals the two starting orders and takes the secret choice at its
+  // step 9, before the technologies reach the Laboratory at step 10 and the
+  // achievements the score track at step 11.
   //
   // `deck_remaining` stays: how many cards are left is public arithmetic, and
   // it is the identities that have not come out yet.
   //
+  // **Both deal fixtures, because they are different moments** — the payload a
+  // seat chooses over, and the one it is handed after choosing — and the screen
+  // draws the table in both.
+  //
   // **`at_k` is the anti-vacuity and it is load-bearing.** A `HistoricalFrame`
   // whose labs were empty and whose dashboard had no Achievements panel BY TYPE
-  // would satisfy every line above while proving nothing about the preview; the
-  // replay position at k shows both, so what is asserted here is a property of
-  // this payload and not of its shape.
-  it("both previews withhold the laboratory and the goals, and a replay position does not", () => {
+  // would satisfy every line above while proving nothing about the set table;
+  // the replay position at k shows both, so what is asserted here is a property
+  // of these payloads and not of their shape.
+  it("the set table withholds the laboratory and the goals, and a replay position does not", () => {
     const hasGoals = (frame: { dashboard: Panel[] }) =>
       frame.dashboard.some((p) => "Achievements" in p);
-    for (const [name, p] of [
-      ["preview", wire.preview],
-      ["preview_bot", wire.previewBot],
+    for (const [name, d] of [
+      ["deal", wire.deal],
+      ["deal_waiting", wire.dealWaiting],
     ] as const) {
-      expect(p.table.labs.boards.length, `${name}: the laboratory board is still drawn`)
+      const p = d.frame;
+      expect(p.labs.boards.length, `${name}: the laboratory board is still drawn`)
         .toBeGreaterThan(0);
-      expect(p.table.labs.boards.every((b) => b.slots.length === 0), name).toBe(true);
-      expect(p.table.labs.deck_remaining, `${name}: the deck count is public`).toBeGreaterThan(0);
-      expect(hasGoals(p.table.frame), `${name}: no Achievements panel`).toBe(false);
+      expect(p.labs.boards.every((b) => b.slots.length === 0), name).toBe(true);
+      expect(p.labs.deck_remaining, `${name}: the deck count is public`).toBeGreaterThan(0);
+      expect(hasGoals(p.frame), `${name}: no Achievements panel`).toBe(false);
       // R-C4: what STAYS. The port is on the table at step 9, and the tracks
       // are printed board rather than cards.
-      expect(p.table.ports.boards.flatMap((b) => b.slots).filter((s) => s.card !== null).length)
+      expect(p.ports.boards.flatMap((b) => b.slots).filter((s) => s.card !== null).length)
         .toBe(6);
-      expect(p.table.frame.dashboard.some((d) => "Tracks" in d), name).toBe(true);
+      expect(p.frame.dashboard.some((d) => "Tracks" in d), name).toBe(true);
     }
     expect(wire.atK.labs.boards.some((b) => b.slots.length > 0)).toBe(true);
     expect(hasGoals(wire.atK.frame)).toBe(true);
   });
 
-  // **No play payload carries the setup seed; `preview` does, and must.**
+  // **NO payload carries the setup seed, and the exemption is gone (M6.1 §8).**
   //
   // The seed regenerates both decks, the boxed pile, the board and every deal —
   // hidden-set member #1 in `game/observe.rs` — so a frame carrying it hands the
   // whole hidden set to whoever holds the frame. It used to ride on every
-  // payload twice, as `ClientState.seed` and again as `frame.title.seed`.
+  // payload twice, as `ClientState.seed` and again as `frame.title.seed`, and
+  // then on `preview` alone, which had to carry one because the setup flow
+  // round-tripped the value back into `create`. The flow is create-then-deal
+  // now: the seed is written into the table document on the server and no
+  // client ever reads it back.
   //
   // The server has its own fence over the same corpus
-  // (`no_committed_payload_carries_the_setup_seed_except_the_preview`). This is
-  // the client's half and is deliberately not the same check: that one searches
-  // for the VALUE, this one asserts the SHAPE the client is allowed to see, so
-  // a payload that carried a seed under some other key would fail there and a
-  // client that started reading one would fail here.
+  // (`no_committed_payload_carries_the_setup_seed`). This is the client's half
+  // and is deliberately not the same check: that one searches for the VALUE,
+  // this one asserts the SHAPE the client is allowed to see, so a payload that
+  // carried a seed under some other key would fail there and a client that
+  // started reading one would fail here.
   //
-  // `preview` keeps it, and keeps it as a STRING: the setup flow round-trips
-  // the value from preview into create, and a `u64` through a JS number rounds
-  // silently — dealing a different game than the one whose cards were chosen.
-  it("no play payload carries a seed, and preview's is a string", () => {
+  // **Every committed fixture, not only the play states.** `EVERY_STATE` is the
+  // `ClientState` corpus; the setup payloads are where a seed would now have to
+  // reappear, so they are named beside it.
+  it("no payload carries a seed at all", () => {
     for (const state of EVERY_STATE) {
       expect(JSON.stringify(state)).not.toContain('"seed"');
     }
-    expect(typeof wire.preview.seed).toBe("string");
-    expect(wire.preview.seed).toMatch(/^\d+$/);
+    for (const [name, payload] of [
+      ["table_dealing", wire.tableDealing],
+      ["table", wire.table],
+      ["deal", wire.deal],
+      ["deal_waiting", wire.dealWaiting],
+      ["games", wire.games],
+      ["at_k", wire.atK],
+    ] as const) {
+      expect(JSON.stringify(payload), name).not.toContain('"seed"');
+    }
   });
 
   // A payload that is not the actor's carries no answerable list, in BOTH

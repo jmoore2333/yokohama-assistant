@@ -97,7 +97,17 @@ export function OrderCardView({
 }) {
   const src = orderArt(art, id);
   return (
-    <figure className={`card-face order ${size}${changed ? " changed" : ""}`}>
+    // **`data-card` is the card's IDENTIFIER, for a reader that is not a
+    // person.** The printed id is on screen as prose inside the caption, and the
+    // art carries it as a picture — neither is something a test can compare
+    // across two browsers without parsing what it is looking at. The
+    // two-browser walk asks each context for the ids in its OWN hand and
+    // requires the two sets to be disjoint, which is a statement about card
+    // identities and needs one.
+    <figure
+      className={`card-face order ${size}${changed ? " changed" : ""}`}
+      data-card={id}
+    >
       {src ? (
         <img src={src} alt="" loading="lazy" />
       ) : (

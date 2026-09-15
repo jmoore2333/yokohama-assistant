@@ -314,22 +314,6 @@ fn art_dir() -> PathBuf {
 async fn walk() -> Vec<(String, Value)> {
     let api = Api::new();
 
-    let (status, preview) =
-        api.call("POST", "/api/games/preview", Some(new_game_body())).await;
-    assert_eq!(status, StatusCode::OK, "{preview}");
-
-    // A SECOND preview, with a bot at seat 1, so the corpus carries the shape
-    // the set table's bot half has: `is_bot` true, an EMPTY `cards` (R-C1: a
-    // seat only ever sees its own deal), and a hand that already holds the card
-    // the bot kept. No `create` beside it — a preview pumps nothing and draws
-    // no bot seed into anything it returns, so unlike the walk's game it is
-    // deterministic with a bot on the table.
-    let mut with_bot = new_game_body();
-    with_bot["seats"] = json!([{ "user": WALKER }, { "bot": true }]);
-    with_bot["name"] = json!("wire-bot");
-    let (status, preview_bot) = api.call("POST", "/api/games/preview", Some(with_bot)).await;
-    assert_eq!(status, StatusCode::OK, "{preview_bot}");
-
     // **The opening sequence, and every payload it produces** (M6.1 §4). A
     // create opens a DEALING table; each seat fetches its own two cards and
     // keeps; the last keep starts the game. Six shapes the client draws exist
@@ -400,8 +384,6 @@ async fn walk() -> Vec<(String, Value)> {
     let created = api.get("/api/games/wire").await;
 
     let mut out: Vec<(String, Value)> = vec![
-        ("preview".to_string(), preview),
-        ("preview_bot".to_string(), preview_bot),
         ("table_dealing".to_string(), table_dealing),
         ("table".to_string(), table),
         ("deal".to_string(), deal),
@@ -1060,7 +1042,7 @@ fn site_space_words() -> Value {
     serde_json::json!({ "cards": cards })
 }
 
-/// **No payload spells the setup seed, except the one whose job is to.**
+/// **No payload spells the setup seed. There is no longer an exception.**
 ///
 /// The seed is the FIRST member of the engine's hidden set (`game/observe.rs`):
 /// it regenerates the order deck, the tech deck, the boxed pile, the board AND
@@ -1082,41 +1064,40 @@ fn site_space_words() -> Value {
 /// is typed — `TitleModel::seed` is an `Option` the web passes `None` — but a
 /// future field, a debug route or a renamed key could publish the number again
 /// without touching that type. So this searches the SERIALIZED TEXT of every
-/// committed payload for the value itself, in the two spellings JSON can hold
-/// it in. `preview` is the single exemption and needs no list of its own: the
-/// setup flow round-trips the seed from preview back into `create`, so a
-/// preview that did not carry it could not deal the game the player chose.
+/// committed payload for the value itself, in the spellings JSON can hold it in.
+///
+/// **The one exemption is gone, and that is what this task is** (M6.1 §8).
+/// `POST /api/games/preview` was the last surface that carried the seed: it
+/// drew one, dealt from it, and the client sent the value back into `create`,
+/// so the round trip could not have worked without it. The setup flow is
+/// create-then-deal now — the table document holds the seed on the SERVER and
+/// no client ever sees it — so this reads every committed payload with no list
+/// of exceptions at all.
+///
+/// **And an exemption-free search needs an anti-vacuity partner**, because a
+/// search for a value that is nowhere passes exactly as loudly as a search that
+/// is looking for the wrong thing. The partner is below: the same string, found
+/// in the table document the store holds for a table opened from the same body.
+///
+/// It covers the DECIMAL form, which is the one this codebase writes; the hex
+/// arm guards a spelling nothing produces today and is a fence rather than a
+/// measurement, which is said here rather than left to be inferred.
 #[tokio::test]
-async fn no_committed_payload_carries_the_setup_seed_except_the_preview() {
+async fn no_committed_payload_carries_the_setup_seed() {
     let decimal = SETUP_SEED.to_string();
+    // The two spellings a number reaches JSON in — `WireSeed` serializes to a
+    // string and `TitleModel` used to serialize to a number, so a fence that
+    // knew only one would have missed the other — and the HEX form beside them,
+    // which is how an id or a key has spelled a seed on this wire before:
+    // default game ids were `sim-{seed:016x}` until they were drawn
+    // independently, and a `GET /api/games` then handed the hidden set to
+    // anyone who could list.
+    let hex = format!("{SETUP_SEED:016x}");
     let mut offenders: Vec<String> = Vec::new();
 
     for (name, value) in corpus().await {
-        if name.starts_with("preview") {
-            // The exemption, asserted rather than assumed: if `preview` ever
-            // STOPS carrying the seed, this test is silently guarding nothing
-            // and the round trip is broken anyway.
-            assert!(
-                serde_json::to_string(&value).expect("serializable").contains(&decimal),
-                "preview must carry the seed it round-trips — {name} does not",
-            );
-            // The exemption is the SEED FIELD and nothing else. `preview` now
-            // carries a whole position beside it, and a frame is served
-            // seed-free everywhere else in this API — so the table inside the
-            // one exempt payload is held to the same rule the exemption does
-            // not cover.
-            let table = serde_json::to_string(&value["table"]).expect("serializable");
-            assert!(
-                !table.contains(&decimal),
-                "{name}.table carries the setup seed — the position is served seed-free like every frame",
-            );
-            continue;
-        }
         let text = serde_json::to_string(&value).expect("serializable");
-        // As a JSON number and as a JSON string: `WireSeed` serializes to a
-        // string, `TitleModel` used to serialize to a number, and a fence that
-        // knew only one spelling would have missed the other.
-        if text.contains(&decimal) {
+        if text.contains(&decimal) || text.contains(&hex) {
             offenders.push(name);
         }
     }
@@ -1129,6 +1110,33 @@ async fn no_committed_payload_carries_the_setup_seed_except_the_preview() {
          exemption here.",
         offenders.len(),
         offenders.join(", "),
+    );
+
+    // **The anti-vacuity partner: the search cannot pass by searching for
+    // nothing.** The same seed IS in the table document the store holds for a
+    // table opened from the walk's own body — so the string above is a string
+    // this codebase really does write down somewhere, and `contains` really
+    // does find it. Without this the whole test passes just as well against a
+    // seed no route was ever given.
+    let api = Api::new();
+    let (status, created) = api.call("POST", "/api/games", Some(new_game_body())).await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let (doc, _) = api
+        .state
+        .games
+        .store()
+        .read(yokohama_web::store::Doc::Table, "wire")
+        .expect("a readable store")
+        .expect("the table document the create wrote");
+    assert!(
+        doc.contains(&decimal),
+        "the seed is in the table document and nowhere on the wire — this one is not, so the \
+         search above was looking for a string nothing writes",
+    );
+    // And the create's own reply, which IS on the wire, is not.
+    assert!(
+        !serde_json::to_string(&created).expect("serializable").contains(&decimal),
+        "the create that wrote that document answered with the seed in it",
     );
 }
 

@@ -282,8 +282,12 @@ export interface FrameModel {
   /** No `seed`. The server passes `TitleModel::seed: None` on every frame it
    *  serves — the setup seed regenerates both decks, the boxed pile, the board
    *  and every deal, so a payload carrying it hands over the whole hidden set.
-   *  The one place the seed legitimately reaches this client is `Preview`,
-   *  which round-trips it back into `create`. */
+   *
+   *  **Nor does anything else on this wire.** `POST …/preview` was the last
+   *  payload that carried one, because the setup flow round-tripped the value
+   *  back into `create`; the flow is create-then-deal now, the seed lives only
+   *  in the table document on the server, and the fence that says so —
+   *  `no_committed_payload_carries_the_setup_seed` — has no exemption left. */
   title: { mode: "Sim" | "Live"; autosaved: boolean };
   board: BoardModel;
   dashboard: Panel[];
@@ -454,31 +458,6 @@ export interface DealCard {
    *  unmeasured by its own doc, so it is shown under the CLI's hedge and never
    *  as a recommendation the engine stands behind. */
   keep_score: number;
-}
-
-/** The two cards a seat was dealt \u2014 and NOT the two another seat was dealt.
- *
- *  **A bot seat carries an empty `cards` and no keep field at all** (the
- *  2026-09-06 corrections, R-C1): the bot keeps by its own argmax and the
- *  record holds the card, but a player reading this payload cannot learn what
- *  it was dealt or which it took. The client draws two card backs from
- *  `is_bot`, and it never chooses for the bot \u2014 `keeps` carries `null` there,
- *  which the server refuses a value on by name. */
-export interface Deal {
-  seat: PlayerId;
-  is_bot: boolean;
-  cards: DealCard[];
-}
-
-/** The set table: the position after setup, beside the deals.
- *
- *  `table` is a `HistoricalFrame` at `index 0, total 0` over a session the
- *  server throws away — so this screen draws the real board with the same
- *  components a replay position uses, and nothing is created until Start. */
-export interface Preview {
-  seed: string;
-  table: HistoricalFrame;
-  deals: Deal[];
 }
 
 // ---- the table: who sits where (M6.1) ------------------------------------

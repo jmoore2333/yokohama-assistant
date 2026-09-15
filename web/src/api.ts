@@ -11,7 +11,6 @@ import type {
   LogPanel,
   Me,
   PortsPanel,
-  Preview,
   IndexModel,
   Outcome,
   SuggestResponse,
@@ -167,8 +166,9 @@ export interface NewGameRequest {
   players: number;
   colors: string[];
   start_seat: number;
-  /** A decimal STRING: a `u64` seed does not survive a JS number, and the seed
-   *  round-trips through this client on the way from preview to create. */
+  /** A decimal STRING: a `u64` seed does not survive a JS number, so a client
+   *  that sent its own `Number` would open a different game from the one it
+   *  asked for. ONE-WAY: nothing on this wire ever sends a seed back. */
   seed?: string;
   /** One entry per seat, in seat order. **The creator must hold one of them**
    *  (R-1.6), and a bot is refused at three and four players (R-P10). */
@@ -188,7 +188,6 @@ export const api = {
   art: () => call<ArtManifest>("GET", "/api/art"),
   /** The tables you sit at, newest first — never anyone else's. */
   list: () => call<GamesList>("GET", "/api/games"),
-  preview: (req: NewGameRequest) => call<Preview>("POST", "/api/games/preview", req),
   /** Opens a table, and starts NOTHING: the reply is `status: "dealing"` and
    *  every seat is owed a deal it fetches for itself. */
   create: (req: NewGameRequest) => call<TableView>("POST", "/api/games", req),

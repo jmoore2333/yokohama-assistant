@@ -350,26 +350,6 @@ async fn labels(State(state): State<Arc<AppState>>) -> Json<Labels> {
     })
 }
 
-/// The one handler that answers a 500, and the reason it is not all 400s.
-///
-/// `games::preview` now says WHOSE fault a failure is
-/// ([`games::PreviewError`]): a request this API cannot start a game from is
-/// the caller's and stays a 400, while a `new_game`, a `Session::new_sim` or a
-/// `HistoricalFrame::at` failure — every one of them downstream of a request
-/// `config_of` has already accepted — is this process's. Mapping those to 400
-/// told a client its request was wrong and sent it away to fix something that
-/// was not broken.
-async fn preview_game(
-    identity::Identity(user): identity::Identity,
-    State(state): State<Arc<AppState>>,
-    JsonBody(req): JsonBody<NewGame>,
-) -> ApiResult<games::Preview> {
-    games::preview(&req, &state.rules, &user).map(Json).map_err(|e| match e {
-        games::PreviewError::Request(m) => ApiError::bad_request(m),
-        games::PreviewError::Server(m) => ApiError::server_error(m),
-    })
-}
-
 // **`identity::Identity` is on all twenty `/api/games` handlers**, and since
 // M6.1 §5.3 every one of them USES the `User` it carries: a game route resolves
 // the caller to a seat before it touches the `Repl`, and builds what it serves
@@ -1419,7 +1399,6 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/api/labels", get(labels))
         .route("/api/art", get(art_manifest))
         .route("/api/games", get(list_games).post(create_game))
-        .route("/api/games/preview", post(preview_game))
         .route("/api/games/{id}", get(get_game).delete(delete_game))
         .route("/api/games/{id}/table", get(get_table))
         .route("/api/games/{id}/deal", get(deal))
@@ -1625,74 +1604,99 @@ mod tests {
         assert_eq!(status, StatusCode::CREATED, "the correctly-spelled request still works");
     }
 
-    /// The preview route serves the SET TABLE, and withholds the bot's deal.
+    /// **A `deal` this server cannot BUILD is a 500; a request it will not
+    /// ACCEPT is still a 400 — and neither takes the server down.**
     ///
-    /// **Its second half moved.** This cell used to end by refusing a keep on a
-    /// bot seat, which a create body can no longer express — a keep is its own
-    /// route now, and its 403 is
-    /// [`the_create_flow_deals_per_seat_and_the_state_is_409_until_the_last_keep`]'s.
-    /// What is left here is the route's remaining contract: the position after
-    /// setup, with one seat's cards absent from the payload rather than filtered
-    /// by the client.
+    /// Inherited from `preview`, whose handler was the one place this API
+    /// answered a 500 and which is retired (M6.1 §8). The claim moved rather
+    /// than going away, because it is about the API and not about
+    /// that route: a failure DOWNSTREAM of a request this server already
+    /// accepted is this process's, and answering "your request was wrong" sends
+    /// a client away to fix something that is not broken.
     ///
-    /// The route itself is retired by Task 10 of this cycle (R-plan-4).
+    /// The broken table is `players: 9` with nine seats, nine keeps and nine
+    /// colours — every length agreeing with every other, so only `check_shape`'s
+    /// 2..=4 bound catches it — written STRAIGHT INTO THE STORE, because no
+    /// request can produce one. `games.rs`'s
+    /// `a_malformed_table_document_refuses_typed_and_leaves_the_server_alive`
+    /// makes the same claim about the typed error; this one is about the STATUS
+    /// a browser reads, which that cell cannot see.
+    ///
+    /// **Every one of these answers comes off ONE router, because the
+    /// discrimination is the claim**: a handler that answered 500 to everything
+    /// would satisfy the first line alone, and one that answered 400 to
+    /// everything would satisfy none of the others while still looking careful.
+    ///
+    /// **And the closing pair is load-bearing.** `deal` reaches
+    /// `settle`, which takes `table_lock` when it has repairing to do, so a
+    /// panic in there would poison that mutex and every later `create` in the
+    /// process would die with it. A create of a different name answering 201,
+    /// and its own deal answering 200, is what a `catch_unwind` could not fake.
     #[tokio::test]
-    async fn the_preview_serves_the_set_table_and_withholds_the_bots_deal() {
-        // **Seed 20260830, not the corpus seed**, kept from the era when this
-        // cell read the bot's own Keep off the payload: there the argmax is
-        // card 2, so a constant could not have passed. The deal left the wire
-        // in the 2026-09-06 corrections (R-C1) and what this route now owes is
-        // the ABSENCE — asserted on the serialized body, which is the only
-        // place a stray field could still appear.
-        let body = serde_json::json!({
-            "players": 2, "colors": ["Red", "Blue"], "start_seat": 0, "seed": 20260830,
-            "seats": [{ "user": WHO }, { "bot": true }],
+    async fn a_deal_the_server_cannot_build_is_a_500_a_bad_request_is_400_and_the_server_lives() {
+        let state = Arc::new(AppState::in_memory());
+        let router = app(Arc::clone(&state));
+        let broken = serde_json::json!({
+            "schema": 1,
+            "id": "broken",
+            "name": "broken",
+            "created_by": WHO,
+            "created_at": 1_789_000_000u64,
+            "players": 9,
+            "colors": ["Red", "Blue", "Yellow", "Green", "Red", "Blue", "Yellow", "Green", "Red"],
+            "start_seat": 0,
+            "seats": (0..9)
+                .map(|_| serde_json::json!({ "kind": "human", "user": WHO }))
+                .collect::<Vec<_>>(),
+            "keeps": [null, null, null, null, null, null, null, null, null],
+            "seed": 20260830u64,
+            "status": "dealing",
+            "turn": null,
         });
-        let (status, preview) = post_json("/api/games/preview", body).await;
-        assert_eq!(status, StatusCode::OK, "{preview}");
-        assert_eq!(preview["table"]["index"], serde_json::json!(0));
-        let bot = &preview["deals"][1];
-        assert_eq!(bot["is_bot"], serde_json::json!(true), "{bot}");
-        assert_eq!(bot["cards"].as_array().expect("an array").len(), 0, "{bot}");
-        assert!(!preview.to_string().contains("bot_keep"), "{preview}");
-        // Anti-vacuity: the reader's OWN deal is whole, so the route withholds
-        // one seat's cards rather than serving an empty set table.
-        assert_eq!(preview["deals"][0]["cards"].as_array().expect("two cards").len(), 2);
-        assert!(preview["deals"][0]["cards"][0]["keep_score"].is_i64());
-    }
+        state
+            .games
+            .store()
+            .write_if_version(Doc::Table, "broken", &broken.to_string(), None)
+            .expect("the store takes what it is given");
 
-    /// A preview this server cannot BUILD is a 500; a request it will not
-    /// ACCEPT is still a 400.
-    ///
-    /// Both halves on one router, because the direction that matters is the
-    /// discrimination: a handler that answered 500 to everything would pass the
-    /// first assertion. The rules here are `Rules::empty_for_tests()`, which
-    /// `config_of` never looks at and `new_game` cannot deal from — a failure
-    /// downstream of a request that is perfectly well formed, which is exactly
-    /// the case this split exists for.
-    #[tokio::test]
-    async fn a_preview_the_server_cannot_build_is_a_500_and_a_bad_request_is_still_a_400() {
-        let rules = Arc::new(yokohama_core::Rules::empty_for_tests());
-        let router = app(Arc::new(AppState {
-            rules: Arc::clone(&rules),
-            games: Games::new(rules, Arc::new(crate::store::MemStore::default())),
-            identity: identity::IdentityMode::Claimed,
-        }));
-        let good = serde_json::json!({
-            "players": 2, "colors": ["Red", "Blue"], "start_seat": 0, "seed": 20260830,
-            "seats": [{ "user": WHO }, { "bot": true }],
-        });
-        let (status, body) = call(&router, "POST", "/api/games/preview", Some(good.clone())).await;
+        let (status, body) = call(&router, "GET", "/api/games/broken/deal", None).await;
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
         assert!(body["error"].is_string(), "and it carries a sentence: {body}");
 
-        // A seat that is BOTH a person and the bot — the caller's own mistake,
-        // refused by name before the setup is ever attempted.
-        let mut both = good;
-        both["seats"][1] = serde_json::json!({ "user": "other@wire.test", "bot": true });
-        let (status, body) = call(&router, "POST", "/api/games/preview", Some(both)).await;
+        // Not a blanket 500: a table that is not there is a 404...
+        let (status, body) = call(&router, "GET", "/api/games/no-such-table/deal", None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+
+        // ...and a request this API will not accept is the caller's own 400,
+        // named by the key it did not know.
+        let mut bad = serde_json::json!({
+            "players": 2, "colors": ["Red", "Blue"], "start_seat": 0,
+            "seats": seats_for(2, &[1]), "name": "typo",
+        });
+        bad["startSeat"] = serde_json::json!(0);
+        let (status, body) = call(&router, "POST", "/api/games", Some(bad)).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-        assert!(body["error"].as_str().unwrap_or("").contains("seat 1"), "{body}");
+        assert!(
+            body["error"].as_str().unwrap_or_default().contains("startSeat"),
+            "the refusal names the key it did not know: {body}",
+        );
+
+        // The server is alive and `table_lock` is not poisoned: a table of a
+        // different name still opens, and its own deal still answers.
+        let (status, body) = call(
+            &router,
+            "POST",
+            "/api/games",
+            Some(serde_json::json!({
+                "players": 2, "colors": ["Red", "Blue"], "start_seat": 0,
+                "seats": seats_for(2, &[1]), "name": "after",
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        let (status, body) = call(&router, "GET", "/api/games/after/deal", None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["cards"].as_array().expect("two cards").len(), 2, "{body}");
     }
 
     /// The same fence on the one MUTATION body. `expect` is what stops a number
@@ -3641,8 +3645,9 @@ mod tests {
     /// rounding lands on a DIFFERENT seed and therefore a different deal.
     ///
     /// **Re-pointed from `preview` to `create` (M6.1).** The round trip it used
-    /// to walk was preview-then-create; the setup flow is now create-then-deal,
-    /// and `preview` is retired by the last task of this cycle. What is asserted
+    /// to walk was preview-then-create; the setup flow is create-then-deal, and
+    /// `preview` is retired (§8) — so a seed now crosses this wire in ONE
+    /// direction only, inbound on a create. What is asserted
     /// is strictly stronger than before: rather than comparing two previews to
     /// each other, the dealt ids are compared to `new_game`'s OWN deal at that
     /// seed, so a server that rounded consistently could not pass by rounding

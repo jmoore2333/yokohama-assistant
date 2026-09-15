@@ -97,22 +97,41 @@ export const WALKER = "walker@e2e.test";
  * stand-in and said so. It is a form now, so the walk types into it — which is
  * the only thing that also tests the screen that puts the name there.
  *
+ * **`email` is a parameter because two browsers are two people.** Every walk but
+ * one signs in as [`WALKER`], which is why it is the default; `two_browsers`
+ * signs its two contexts in under two different addresses, and the identity a
+ * context holds is the whole subject there.
+ *
  * Idempotent, because several specs navigate more than once in a test and the
  * name survives inside a page's storage: if the door is already open this just
  * waits for the strip that says so. The wait is on EITHER, because `App` draws
  * nothing at all until `/api/me` answers — a bare `count()` would read zero for
  * a player who is signed in perfectly well.
  */
-export async function signIn(page: Page, url = "/"): Promise<void> {
+export async function signIn(page: Page, email: string = WALKER, url = "/"): Promise<void> {
   await page.goto(url);
   const form = page.getByRole("heading", { name: "Sign in" });
-  const strip = page.getByText(new RegExp(`^You are ${WALKER}$`));
+  const strip = page.getByText(new RegExp(`^You are ${email.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`));
   await expect(form.or(strip).first()).toBeVisible();
   if (await form.count()) {
-    await page.getByLabel("Email").fill(WALKER);
+    await page.getByLabel("Email").fill(email);
     await page.getByRole("button", { name: "Sign in" }).click();
   }
   await expect(strip.first()).toBeVisible();
+}
+
+/**
+ * Open a table from the saved-games list, BY ID.
+ *
+ * The list is the only way into a table this browser did not create, which is
+ * how the second person at a two-browser table gets to it. A row's button is
+ * labelled with the table's name, and a table opened without one is named by its
+ * id — so `exact: true` is load-bearing: the row also carries `delete <name>`
+ * and `confirm delete <name>` buttons, whose accessible names CONTAIN the id.
+ */
+export async function openFromList(page: Page, id: string): Promise<void> {
+  await expect(page.getByRole("heading", { name: "New game" })).toBeVisible();
+  await page.getByRole("button", { name: id, exact: true }).click();
 }
 
 /** Start a fresh game through the setup screen, exactly as a player does. */

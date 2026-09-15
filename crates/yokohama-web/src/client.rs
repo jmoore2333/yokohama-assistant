@@ -371,9 +371,13 @@ impl ClientState {
                 // payload carrying it hands the entire hidden set to whoever
                 // holds the payload. The CLI passes `Some` because it is one
                 // operator reading their own title strip; a frame served over
-                // HTTP declines. The seed still reaches the client exactly once
-                // where the flow genuinely needs it — `POST /api/games/preview`,
-                // which round-trips it back to `create`.
+                // HTTP declines. **And nothing else on this wire carries one
+                // either, as of M6.1 §8**: the last exception was
+                // `POST /api/games/preview`, which drew a seed and round-tripped
+                // it back into `create`; the flow is create-then-deal now, the
+                // seed lives only in the table document, and
+                // `no_committed_payload_carries_the_setup_seed` searches every
+                // committed payload for it with no exemption list at all.
                 seed: None,
                 // This server persists after every applied move, so the answer
                 // is unconditionally yes -- it is not the CLI's `save_path`.

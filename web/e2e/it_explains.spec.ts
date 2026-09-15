@@ -86,7 +86,7 @@ async function pastTheForcedOpening(
 async function openPanel(page: import("@playwright/test").Page, game: string, label: string) {
   // `signIn` navigates: the door is a SCREEN since M6.1, so getting through it
   // is a page load and a form rather than a storage write before one.
-  await signIn(page, `/?game=${game}`);
+  await signIn(page, WALKER, `/?game=${game}`);
   const pick = page.getByRole("button", { name: game, exact: false }).first();
   if (await pick.count()) await pick.click().catch(() => {});
   await expect(page.getByRole("heading", { name: "Yokohama" })).toBeVisible();

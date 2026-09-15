@@ -54,7 +54,6 @@ import type {
   ApiErrorBody,
   ClientState,
   Counter,
-  Deal,
   DealCard,
   DealingErrorBody,
   DealView,
@@ -78,7 +77,6 @@ import type {
   Placing,
   PlayerModel,
   PortsPanel,
-  Preview,
   PromptState,
   Provenance,
   Ranked,
@@ -131,8 +129,6 @@ import dealWaiting from "./deal_waiting.json";
 import dealing409 from "./dealing_409.json";
 import gamesList from "./games.json";
 import notSeated403 from "./not_seated_403.json";
-import preview from "./preview.json";
-import previewBot from "./preview_bot.json";
 import refused from "./refused.json";
 import retreat from "./retreat.json";
 import retreatAnswered from "./retreat_answered.json";
@@ -215,8 +211,6 @@ const _eventsDealing: Widen<Events> = eventsDealing;
 const _dealing409: Widen<DealingErrorBody> = dealing409;
 const _notSeated403: Widen<ApiErrorBody> = notSeated403;
 
-const _preview: Widen<Preview> = preview;
-const _previewBot: Widen<Preview> = previewBot;
 const _health: Widen<Health> = health;
 // Both sides of `/api/me`: signed in, and the payload a caller with no identity
 // is handed. The second is a real response and not a construction — `user` is
@@ -308,7 +302,7 @@ void [
 // reference keeps the compiler's other rule from deleting the check.
 void [
   _options, _options4p, _optionsMany, _optionsPriced, _pick, _retreat, _retreatAnswered, _placeA, _placeASelected, _placeB, _placeBSelected,
-  _gameOver, _watching, _locked, _refused, _labels, _preview, _previewBot, _health, _me, _meOut, _error,
+  _gameOver, _watching, _locked, _refused, _labels, _health, _me, _meOut, _error,
   _tableDealing, _table, _deal, _dealWaiting, _gamesList, _dealing409, _notSeated403,
   _events, _eventsDealing,
   _ports, _labs, _areas, _areas4p, _log, _atK, _artManifest, _feeNonzero,
@@ -394,7 +388,6 @@ const LABELS = [
 ] as const;
 const HEALTH = ["server_version", "semantics_rev", "rules_hash", "identity"] as const;
 const ME = ["mode", "user"] as const;
-const PREVIEW = ["seed", "table", "deals"] as const;
 const TABLE = [
   "id", "name", "created_by", "created_at", "players", "colors", "start_seat",
   "seats", "chosen", "my_seats", "status", "to_move", "over",
@@ -405,7 +398,6 @@ const GAMES_LIST = ["games"] as const;
 // one this client branches on rather than displays.
 const DEALING_ERROR = ["error", "status"] as const;
 const EVENTS = ["events", "to_move", "status", "your_turn"] as const;
-const DEAL = ["seat", "is_bot", "cards"] as const;
 const DEAL_CARD = ["card", "keep_score"] as const;
 const API_ERROR = ["error"] as const;
 const SUGGEST_RESPONSE = ["ok", "refusal"] as const;
@@ -454,13 +446,11 @@ const _lb: KeysOf<Labels, typeof LABELS> = LABELS;
 const _he: KeysOf<Health, typeof HEALTH> = HEALTH;
 // `_me` is taken by the widened assignment above, so the key list takes `_mk`.
 const _mk: KeysOf<Me, typeof ME> = ME;
-const _pv: KeysOf<Preview, typeof PREVIEW> = PREVIEW;
 const _tv: KeysOf<TableView, typeof TABLE> = TABLE;
 const _dv: KeysOf<DealView, typeof DEAL_VIEW> = DEAL_VIEW;
 const _gl: KeysOf<GamesList, typeof GAMES_LIST> = GAMES_LIST;
 const _d4: KeysOf<DealingErrorBody, typeof DEALING_ERROR> = DEALING_ERROR;
 const _ev: KeysOf<Events, typeof EVENTS> = EVENTS;
-const _dl: KeysOf<Deal, typeof DEAL> = DEAL;
 const _dc: KeysOf<DealCard, typeof DEAL_CARD> = DEAL_CARD;
 const _er: KeysOf<ApiErrorBody, typeof API_ERROR> = API_ERROR;
 const _sr: KeysOf<SuggestResponse, typeof SUGGEST_RESPONSE> = SUGGEST_RESPONSE;
@@ -481,7 +471,7 @@ const _ct: KeysOf<Counter, typeof COUNTER> = COUNTER;
 const _ig: KeysOf<IndexGroup, typeof INDEX_GROUP> = INDEX_GROUP;
 const _hf: KeysOf<HistoricalFrame, typeof HISTORICAL_FRAME> = HISTORICAL_FRAME;
 const _ic: KeysOf<IndexCard, typeof INDEX_CARD> = INDEX_CARD;
-void [_cs, _fr, _de, _or, _pl, _ti, _tr, _po, _la, _ar, _lo, _lb, _he, _mk, _pv, _dl, _dc, _er,
+void [_cs, _fr, _de, _or, _pl, _ti, _tr, _po, _la, _ar, _lo, _lb, _he, _mk, _dc, _er,
       _ev,
       _tv, _dv, _gl, _d4,
       _sr, _so, _wr, _wo, _ex, _tm, _pr, _rk, _rf, _ix, _oc, _pc, _bd,
@@ -504,13 +494,11 @@ export const KEYS = {
   labels: LABELS,
   health: HEALTH,
   me: ME,
-  preview: PREVIEW,
   table: TABLE,
   dealView: DEAL_VIEW,
   gamesList: GAMES_LIST,
   events: EVENTS,
   dealingError: DEALING_ERROR,
-  deal: DEAL,
   dealCard: DEAL_CARD,
   apiError: API_ERROR,
   suggestResponse: SUGGEST_RESPONSE,
@@ -580,8 +568,6 @@ export const wire = {
   eventsDealing: as<Events>(eventsDealing),
   dealing409: as<DealingErrorBody>(dealing409),
   notSeated403: as<ApiErrorBody>(notSeated403),
-  preview: as<Preview>(preview),
-  previewBot: as<Preview>(previewBot),
   health: as<Health>(health),
   me: as<Me>(me),
   meSignedOut: as<Me>(meSignedOut),

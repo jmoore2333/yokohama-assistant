@@ -54,15 +54,22 @@ const THROWAWAY_BOT_SEED: u64 = 0;
 /// the browser was already displaying `5856483359458926000`, whose last four
 /// digits are not in the seed.
 ///
-/// The setup flow makes that worse than a display bug, because it ROUND-TRIPS
-/// the value: `/api/games/preview` draws a seed and deals from it, the client
-/// shows the deal and sends the seed back to `POST /api/games`, and a rounded
-/// seed starts a DIFFERENT GAME than the one the player looked at. The cards
-/// they chose between are not the cards they get.
+/// **Nothing round-trips a seed any more, and this type is now one-way.** It
+/// used to: `/api/games/preview` drew a seed and dealt from it, the client
+/// showed the deal and sent the value back to `POST /api/games`, and a rounded
+/// seed started a DIFFERENT GAME from the one the player looked at — the cards
+/// they chose between were not the cards they got. `preview` is retired (M6.1
+/// §8) and no payload carries a seat's seed at all
+/// (`no_committed_payload_carries_the_setup_seed`), so what is left is the
+/// INBOUND half: `NewGame.seed` on a create, typed by a person, a fixture or a
+/// `curl`.
 ///
 /// Deserialization accepts a string or a number, so a small literal from `curl`
-/// or a test still works and nothing that was correct becomes an error.
-/// Serialization always emits a string, so nothing a client reads can be lossy.
+/// or a test still works and nothing that was correct becomes an error. The
+/// string form is what a browser must send: the setup screen's seed box is a
+/// text field for exactly this reason, and a client that sent its own `Number`
+/// would open a different game from the one it asked for. Serialization stays a
+/// string so the type cannot become lossy if something ever serves one again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WireSeed(pub u64);
 
@@ -138,64 +145,6 @@ pub struct DealCard {
     /// `score_starting_order` — the printed economics, hand-set and
     /// unmeasured (its own doc); shown beside the card under the CLI's hedge.
     pub keep_score: i64,
-}
-
-/// The two cards a seat was dealt, so a client can show them before choosing.
-///
-/// **A seat only ever sees its OWN deal (2026-09-06, R-C1).** On a bot seat
-/// `cards` is EMPTY and there is no keep field on this struct at all — the
-/// client draws two card backs from `is_bot` alone. The bot still keeps by the
-/// same argmax ([`bot_keep`], applied at finalize): the record knows which card
-/// it took, and the player does not.
-#[derive(Debug, Clone, Serialize)]
-pub struct Deal {
-    pub seat: PlayerId,
-    pub is_bot: bool,
-    /// The seat's two dealt cards, each with its Keep score — and `[]` on a bot
-    /// seat, whose deal is not the reader's to see.
-    pub cards: Vec<DealCard>,
-}
-
-/// The set table (M5.5 spec §3.3.1): the position after setup, a throwaway
-/// projection over a session that is never persisted, beside the deals.
-///
-/// **Retired by Task 10 of this cycle**, when the setup screen reads
-/// `GET …/deal` instead and no unstarted table exists outside the store. It
-/// survives here so the milestone's steps stay independently green (R-plan-4).
-#[derive(Debug, Clone, Serialize)]
-pub struct Preview {
-    pub seed: WireSeed,
-    pub table: HistoricalFrame,
-    pub deals: Vec<Deal>,
-}
-
-/// Why a preview could not be served — and, more to the point, WHOSE fault it
-/// is.
-///
-/// [`preview`] used to return one `String` and the route mapped every one of
-/// them to 400. Three of the four things that can go wrong there are not the
-/// caller's: once [`config_of`] has accepted a request, a `new_game`, a
-/// `Session::new_sim` or a `HistoricalFrame::at` failure is this process
-/// failing to build a position from a request that was fine — and answering
-/// "your request was wrong" sends the client away to fix something that is not
-/// broken. Only the first is a 400.
-#[derive(Debug, Clone)]
-pub enum PreviewError {
-    /// The request cannot start a game: [`config_of`]'s own refusals, which
-    /// name the seat, the numbering or the count. A 400.
-    Request(String),
-    /// The setup, or its projection, failed. Nothing the caller sent is wrong.
-    /// A 500.
-    Server(String),
-}
-
-impl PreviewError {
-    /// The sentence, whichever side it came from.
-    pub fn message(&self) -> &str {
-        match self {
-            Self::Request(m) | Self::Server(m) => m,
-        }
-    }
 }
 
 /// Why a table operation was refused, in the shapes an HTTP layer answers with.
@@ -508,10 +457,11 @@ fn first_human_seat(seats: &[SeatDoc]) -> PlayerId {
 /// so the client draws the set table with the components it already has and no
 /// second frame type exists.
 ///
-/// One function for both callers: [`preview`], which survives until this cycle's
-/// last task, and [`Games::deal`], which is what replaces it. Two copies of this
-/// body would be two set tables that can disagree about what a player sees
-/// before choosing.
+/// **One caller now: [`Games::deal`].** It had two — `preview` drew a seed,
+/// dealt from it and served every seat's cards at once, and this body is what
+/// they shared so the two could not disagree about what a player sees before
+/// choosing. `preview` is retired (M6.1 §8): a set table exists only for a
+/// table that has been opened, and a seat is served its own cards over it.
 fn set_table(
     config: GameConfig,
     seed: u64,
@@ -540,38 +490,6 @@ fn set_table(
         .map_err(|e| format!("the setup position did not build: {}", e.message))?;
     withhold_until_the_choice(&mut table);
     Ok(table)
-}
-
-/// The deal a seed produces AND the table it sets, without starting anything.
-///
-/// **Retired by Task 10** — `GET …/deal` on a real table is what this becomes,
-/// and that one serves a seat its OWN cards rather than every seat's at once.
-pub fn preview(req: &NewGame, rules: &Rules, creator: &User) -> Result<Preview, PreviewError> {
-    let (config, seats) = config_of(req, creator).map_err(PreviewError::Request)?;
-    let seed = req.seed.map_or_else(draw_seed, |s| s.0);
-    let pending = new_game(config.clone(), rules, seed)
-        .map_err(|e| PreviewError::Server(format!("the setup did not deal: {e}")))?;
-    let table = set_table(config, seed, &seats, &pending.deals, rules, first_human_seat(&seats))
-        .map_err(PreviewError::Server)?;
-    let deals = pending
-        .deals
-        .iter()
-        .enumerate()
-        .map(|(i, deal)| {
-            let is_bot = matches!(seats.get(i), Some(SeatDoc::Bot));
-            Deal {
-                seat: PlayerId::new(i as u8),
-                is_bot,
-                // **A bot seat sends no cards (R-C1).** Not a filter on the
-                // client's side of the wire but an absence on this one: the
-                // payload cannot leak what it does not carry. The bot's own
-                // keep is applied above, where the previewed table needs it,
-                // and reaches the client only as a card already in a hand.
-                cards: if is_bot { Vec::new() } else { cards_of(deal, rules) },
-            }
-        })
-        .collect();
-    Ok(Preview { seed: WireSeed(seed), table, deals })
 }
 
 /// Every live game, plus the store behind them.
@@ -1449,27 +1367,35 @@ mod tests {
         games.handle(&id).expect("playing")
     }
 
-    /// The preview is the position after setup \u2014 a throwaway, never a game \u2014
-    /// with every human hand empty (nothing has been chosen) and the bot's
-    /// kept card in the bot's hand; each dealt card carries its Keep score.
+    /// **The deal's frame is the position after setup** — a throwaway
+    /// projection, never a game — with every human hand empty (nothing has been
+    /// chosen) and the bot's kept card in the bot's hand; each dealt card
+    /// carries its Keep score.
+    ///
+    /// Re-pointed from `preview`, which is retired (M6.1 §8). The claim is the
+    /// route's now: a set table exists only for a table that has been OPENED,
+    /// and `index`/`total` at zero is what says the position is the one before
+    /// any move rather than a frame from somewhere in the game.
     ///
     /// **At the corpus seed on purpose**, so the projection is asserted against
     /// the same position the committed fixtures hold. **Which card the bot kept
-    /// is not on this payload and is not asserted here (R-C1)** \u2014 the deal is
-    /// empty on a bot seat; what the projection still says out loud is that the
-    /// bot HAS chosen, which is the hand count below.
+    /// is not on this payload and is not asserted here (R-C1)** — a caller is
+    /// served its OWN seat's cards and no others; what the projection still says
+    /// out loud is that the bot HAS chosen, which is the hand count below.
     #[test]
-    fn the_preview_is_the_position_after_setup() {
+    fn the_deal_is_the_position_after_setup() {
         let rules = Rules::standard();
-        let p = preview(&req("p"), &rules, &who("red@t.test")).unwrap();
-        assert_eq!(p.table.index, 0);
-        assert_eq!(p.table.total, 0);
+        let games = games();
+        let red = who("red@t.test");
+        let id = games.create(&req("p"), &red).expect("a table").id;
+        let d = games.deal(&id, &red).expect("red's deal");
+        assert_eq!((d.frame.index, d.frame.total), (0, 0), "the position before any move");
         assert!(
-            p.table.ports.boards[0].slots.iter().all(|s| s.card.is_some()),
+            d.frame.ports.boards[0].slots.iter().all(|s| s.card.is_some()),
             "the port is full",
         );
-        let players = p
-            .table
+        let players = d
+            .frame
             .frame
             .dashboard
             .iter()
@@ -1481,63 +1407,15 @@ mod tests {
         assert!(players.players[1].is_bot);
         assert_eq!(players.players[1].orders_in_hand, 1, "the bot's kept card is in its hand");
         assert_eq!(players.players[0].orders_in_hand, 0, "nothing chosen yet");
-        assert_eq!(p.deals.len(), 2);
-        assert!(!p.deals[0].is_bot);
-        assert_eq!(p.deals[0].cards.len(), 2);
-        assert!(p.deals[1].is_bot);
-        assert!(p.deals[1].cards.is_empty(), "a bot seat's deal is not on the wire");
-        for d in &p.deals {
-            for c in &d.cards {
-                assert_eq!(
-                    c.keep_score,
-                    yokohama_core::greedy::score_starting_order(&c.card, &rules),
-                );
-            }
-        }
-        // Nothing was persisted or made resident.
-        let g = games();
-        assert!(g.list_for(&who("red@t.test")).unwrap().is_empty());
-    }
-
-    /// **Another seat's deal never reaches the wire (2026-09-06, R-C1).** A bot
-    /// seat's `cards` is empty and `bot_keep` is not a field at all, so a
-    /// player reading the payload cannot learn what the bot was dealt or which
-    /// of the two it kept. The record still knows: the kept card is in the
-    /// bot's hand in the game `create` builds, which
-    /// [`the_created_game_holds_the_bots_own_keep_at_both_seeds`] reads.
-    ///
-    /// **At [`ARGMAX_IS_CARD_2`]** so the seat this cell empties is the seat
-    /// whose Keep is not the constant `1`, and with the human's half asserted
-    /// beside it: a `preview` that emptied EVERY deal would hide the bot's
-    /// cards and take the player's own with them.
-    #[test]
-    fn a_bot_seats_deal_never_reaches_the_wire() {
-        let rules = Rules::standard();
-        let p = preview(&req_seeded("hidden", ARGMAX_IS_CARD_2), &rules, &who("red@t.test")).unwrap();
-        assert!(p.deals[1].is_bot, "the premise: seat 1 is the bot");
-        assert!(p.deals[1].cards.is_empty(), "a bot seat's cards are not on the wire");
-        let json = serde_json::to_string(&p).unwrap();
-        assert!(!json.contains("bot_keep"), "the payload names the bot's keep");
-        // **The KEY SET, not the old field's name (R-C10).** The line above
-        // searches for one literal, so a keep re-added under any other name —
-        // `kept`, `keep_index`, `argmax` — passed every cell in this crate and
-        // was caught only by the committed corpus, which CI does not run. This
-        // reads what the bot's deal actually serializes to and requires it to
-        // be these three keys and nothing else, which is the claim this cell's
-        // own doc makes. The client half of the same fence is
-        // `contract.test.ts`'s `preview_bot.deal(bot)` row.
-        let bot = serde_json::to_value(&p.deals[1]).unwrap();
-        let mut keys: Vec<&str> =
-            bot.as_object().expect("a deal is an object").keys().map(String::as_str).collect();
-        keys.sort_unstable();
-        assert_eq!(keys, ["cards", "is_bot", "seat"], "the bot's deal carries {bot}");
-        // Anti-vacuity: the human's own deal is untouched, with both Keep
-        // scores, so the withholding is targeted rather than a blank preview.
-        assert!(!p.deals[0].is_bot);
-        assert_eq!(p.deals[0].cards.len(), 2);
-        for c in &p.deals[0].cards {
+        let cards = d.cards.as_ref().expect("the caller's own two cards");
+        assert_eq!(cards.len(), 2);
+        for c in cards {
             assert_eq!(c.keep_score, yokohama_core::greedy::score_starting_order(&c.card, &rules));
         }
+        // And nothing has been STARTED: the table is still dealing and there is
+        // no record behind it. The projection is a throwaway.
+        assert_eq!(games.table(&id, &red).unwrap().status, TableStatus::Dealing);
+        assert!(games.store().read(Doc::Record, &id).unwrap().is_none(), "no record until the last keep");
     }
 
     /// The achievement TYPE names on a frame's dashboard, or empty where the
@@ -1558,7 +1436,7 @@ mod tests {
     }
 
     /// **The technologies and the goals are withheld until the choice
-    /// (2026-09-06, R-C3).** The previewed table carries the laboratory with
+    /// (2026-09-06, R-C3).** The set table beside a seat's two cards carries the laboratory with
     /// EMPTY slots and no `Achievements` panel at all, so the player choosing a
     /// starting order reads the same table the owner's edition has in front of
     /// them at its step 9 — before the technologies go out at step 10 and the
@@ -1567,21 +1445,22 @@ mod tests {
     /// **Read against the game the same seed CREATES**, not against a list
     /// written here: the six technology titles and the three achievement types
     /// are learned from the created game's own frame and then required to be
-    /// absent from the preview's JSON. A withholding checked against a
+    /// absent from the deal's JSON. A withholding checked against a
     /// hard-coded list stops discriminating the moment the deal changes.
     ///
-    /// The anti-vacuity is the port: its six order ids ARE in the preview's
+    /// The anti-vacuity is the port: its six order ids ARE in the deal's
     /// JSON, so this is a targeted withholding and not a blank table. And
     /// `deck_remaining` is kept — the count is public arithmetic; it is the
     /// identities that are not on the table yet.
     #[test]
-    fn the_preview_withholds_the_laboratory_and_the_achievements() {
-        let rules = Rules::standard();
-        let p = preview(&req_seeded("withheld", ARGMAX_IS_CARD_2), &rules, &who("red@t.test")).unwrap();
+    fn the_deal_withholds_the_laboratory_and_the_achievements() {
+        let g = games();
+        let red = who("red@t.test");
+        let id = g.create(&req_seeded("withheld", ARGMAX_IS_CARD_2), &red).unwrap().id;
+        let p = g.deal(&id, &red).unwrap();
 
         // What the SAME seed puts on a real table, read from the game itself.
-        let g = games();
-        let handle = playing(&g, &req_seeded("withheld", ARGMAX_IS_CARD_2), &["red@t.test"]);
+        let handle = playing(&g, &req_seeded("withheld-started", ARGMAX_IS_CARD_2), &["red@t.test"]);
         let started = HistoricalFrame::at(&handle.lock().unwrap(), 0, PlayerId::new(0)).unwrap();
         let titles: Vec<String> = started
             .labs
@@ -1598,21 +1477,21 @@ mod tests {
         // first: a withholding that cleared the BOARDS rather than their slots
         // would otherwise pass this cell while deleting the laboratory.
         assert!(
-            !p.table.labs.boards.is_empty(),
+            !p.frame.labs.boards.is_empty(),
             "the laboratory board is still drawn on the set table",
         );
         assert!(
-            p.table.labs.boards.iter().all(|b| b.slots.is_empty()),
+            p.frame.labs.boards.iter().all(|b| b.slots.is_empty()),
             "every laboratory slot is empty on the set table",
         );
         assert_eq!(
-            p.table.labs.deck_remaining, started.labs.deck_remaining,
+            p.frame.labs.deck_remaining, started.labs.deck_remaining,
             "the technology deck's COUNT is public and is kept",
         );
         // The PANEL's absence, not merely an empty card list: `achievement_names`
         // returns nothing for either, and "no panel" is the claim.
         assert!(
-            !p.table
+            !p.frame
                 .frame
                 .dashboard
                 .iter()
@@ -1622,10 +1501,10 @@ mod tests {
 
         let json = serde_json::to_string(&p).unwrap();
         for title in &titles {
-            assert!(!json.contains(title.as_str()), "the preview names the technology {title}");
+            assert!(!json.contains(title.as_str()), "the deal names the technology {title}");
         }
         for name in &goals {
-            assert!(!json.contains(name.as_str()), "the preview names the achievement {name}");
+            assert!(!json.contains(name.as_str()), "the deal names the achievement {name}");
         }
         // Anti-vacuity: the port is still on the table, by id.
         let port_ids: Vec<u8> = started
@@ -1638,7 +1517,7 @@ mod tests {
         assert_eq!(port_ids.len(), 6, "the premise: a 2P port offers six orders");
         for id in port_ids {
             assert!(
-                p.table.ports.boards.iter().flat_map(|b| b.slots.iter()).any(|s| s
+                p.frame.ports.boards.iter().flat_map(|b| b.slots.iter()).any(|s| s
                     .card
                     .is_some_and(|c| c.0 == id)),
                 "the port's order {id} is missing from the set table",
@@ -1752,16 +1631,19 @@ mod tests {
     ///
     /// The one hand that is not empty on this screen is the bot's: every human
     /// choice is `Unknown` at that point, while a bot seat's keep is already
-    /// applied so the game can be previewed. `client::facts_for` unmasks the
+    /// applied so the position can be drawn. `client::facts_for` unmasks the
     /// VIEWER's hand, so a viewer of the bot's seat would put the card the bot
     /// kept on screen — the one thing the 2026-09-06 corrections took off this
     /// wire (R-C1).
     ///
-    /// **Both branches, because they are different code.** Before red keeps,
-    /// the viewer is `next_unkept_seat_of` — red's own; after, there is no such
-    /// seat and `first_human_seat`'s fallback decides, which is the branch whose
-    /// doc makes the claim. Neither changed a fixture, and neither failed a cell
-    /// before this one existed.
+    /// **Two claims, and with `preview` retired they are reached differently
+    /// (M6.1 §8).** The ROUTE's is asserted through `deal`: before red keeps,
+    /// the viewer is `next_unkept_seat_of` — red's own seat, a human's. The
+    /// fallback's is asserted on [`first_human_seat`] itself, because no route
+    /// can reach it at a table holding a bot any more: a bot is legal at two
+    /// players only (R-P10), so such a table has one human seat and that seat's
+    /// keep finalizes it. `preview` used to be that reach, and always chose its
+    /// viewer this way.
     ///
     /// The bot's non-empty hand is asserted as a PREMISE: without it a frame
     /// built for seat 1 would show an empty panel and this cell would pass while
@@ -1801,17 +1683,31 @@ mod tests {
 
         check(&games.deal(&id, &red).unwrap().frame, "before the caller chooses");
         games.keep(&id, &red, PlayerId::new(0), 1).unwrap();
-        // Red holds every human seat, so `next_unkept_seat_of` is now `None` and
-        // the fallback is what answers.
-        let d = games.deal(&id, &red);
+        // Red holds every human seat, so `next_unkept_seat_of` is now `None`.
         // The last human keep FINALIZES, so the table is playing and `deal`
         // refuses — which is itself the answer: there is no set table left to
-        // draw for anyone. The fallback branch is reached through `preview`,
-        // whose own table is asserted below on the same seats.
+        // draw for anyone.
+        let d = games.deal(&id, &red);
         assert!(matches!(d, Err(GameError::Conflict(_))), "the table finalized on the last keep");
-        let p = preview(&req_seeded("botdeal2", ARGMAX_IS_CARD_2), &Rules::standard(), &red)
-            .unwrap();
-        check(&p.table, "the fallback branch, via preview");
+
+        // **The fallback is asserted on the function itself, because with
+        // `preview` retired no ROUTE can reach it at a table holding a bot.**
+        // It used to be reached through `preview`, which always chose its viewer
+        // this way. A bot is legal at two players only (R-P10), so a bot table
+        // has exactly one human seat and that seat's keep finalizes the table —
+        // which is the refusal just above. `first_human_seat` is still what
+        // `deal` falls back to at a table of two PEOPLE (the branch
+        // `the_deal_serves_the_callers_own_cards_and_never_the_others` walks),
+        // so the claim that it never names a bot is asserted where it lives.
+        let seats = |first_is_bot: bool| {
+            if first_is_bot {
+                vec![SeatDoc::Bot, SeatDoc::Human { user: "red@t.test".to_string() }]
+            } else {
+                vec![SeatDoc::Human { user: "red@t.test".to_string() }, SeatDoc::Bot]
+            }
+        };
+        assert_eq!(first_human_seat(&seats(true)), PlayerId::new(1), "the bot is skipped");
+        assert_eq!(first_human_seat(&seats(false)), PlayerId::new(0), "and the human is taken");
     }
 
     /// **A keep is fenced by WHO holds the seat and by having chosen once**, and
