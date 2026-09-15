@@ -3170,6 +3170,14 @@ mod tests {
     /// make a table at all and this cell could never reach the calls it is
     /// about. The flag is set between the arranging and the acting, and the
     /// acting is the part under test.
+    ///
+    /// **Three tables, one at each status, and the PLAYING one is the point.**
+    /// A record is only written at finalize, so an open table and a dealing
+    /// table have none on the volume — a panicking reader armed against those
+    /// two alone could never fire, whatever the listing did, and the cell would
+    /// be arguing from a temptation that was not on the disk. The playing table
+    /// is the one with a record to read and with `to_move`, `over` and `winner`
+    /// to be tempted by; it is what makes the assertion reachable.
     #[test]
     fn a_listing_reads_no_record_and_builds_no_session() {
         struct RecordPanics {
@@ -3213,8 +3221,21 @@ mod tests {
         let red = who("red@t.test");
         open_two(&games, "o", None);
         games.create(&two_people("d", CORPUS_SEED), &red).unwrap();
+        // The third status, and the only one with a record behind it — see the
+        // doc. Built before the flag goes up, since finalizing writes and then
+        // reads exactly the document this store is about to refuse.
+        drop(playing(&games, &req_seeded("p", CORPUS_SEED), &["red@t.test"]));
+        assert!(
+            games.store().read(Doc::Record, "p").unwrap().is_some(),
+            "the playing table has a record on the store, which is what arms this cell",
+        );
         store.armed.store(true, std::sync::atomic::Ordering::SeqCst);
-        games.list(&red, Scope::Mine, 20, None).unwrap();
+        let (mine, _) = games.list(&red, Scope::Mine, 20, None).unwrap();
+        assert_eq!(mine.len(), 3, "all three statuses are on the listing: {mine:?}");
+        // Read off the TABLE's own turn mirror and never off the game.
+        let played = mine.iter().find(|t| t.id == "p").expect("the playing table");
+        assert_eq!((played.status, played.over), (TableStatus::Playing, Some(false)));
+        assert!(played.to_move.is_some(), "whose turn it is, from the mirror: {played:?}");
         games.list(&red, Scope::Open, 20, None).unwrap();
     }
 

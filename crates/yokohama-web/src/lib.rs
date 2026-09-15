@@ -2373,6 +2373,89 @@ mod tests {
         }
     }
 
+    /// **A second page is reached by sending the cursor back** (§3.3), over the
+    /// route rather than over `Games::list`.
+    ///
+    /// The route is where the claim lives and where nothing saw it: the lib
+    /// cell `tables::tests::the_cursor_pages_without_gap_or_overlap` walks the
+    /// pages inside the type, and `GamesList.next` was never once SERIALIZED
+    /// non-null — not in a cell and not in the committed corpus — so the
+    /// handler's `before` parse had its four refusals covered and its success
+    /// path covered nowhere.
+    ///
+    /// **The two tables are created in the REVERSE of the order they are
+    /// expected in, and that is what keeps this cell off the clock.**
+    /// `created_at` is unix SECONDS: two creates normally land in one second,
+    /// where the id tie-break puts `oa` first, but a pair straddling a second
+    /// boundary would be ordered by recency instead. Making `oa` the LATER
+    /// create means both rules give the same answer, so the expected order is
+    /// fixed however the clock falls. The tie-break itself is pinned, at five
+    /// rows in one second, by the cursor cell in `tables.rs`.
+    #[tokio::test]
+    async fn the_listing_pages_over_the_route_with_a_cursor_the_client_sends_back() {
+        let state = Arc::new(AppState::in_memory());
+        for id in ["ob", "oa"] {
+            let (status, body) = post_as(
+                &state,
+                "red@wire.test",
+                "/api/games",
+                serde_json::json!({
+                    "players": 2,
+                    "colors": ["Red", "Blue"],
+                    "start_seat": 0,
+                    "seed": "20260831",
+                    "seats": [{ "user": "red@wire.test" }, { "open": true }],
+                    "id": id,
+                    "name": id,
+                }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{id}: {body}");
+        }
+        // The whole listing first, so the paged walk below is compared against
+        // this server's own order rather than against a re-implementation of
+        // the sort. Two rows, and the last page of them says so with a null.
+        let (status, all) = get_as(&state, "red@wire.test", "/api/games?scope=open").await;
+        assert_eq!(status, StatusCode::OK, "{all}");
+        assert_eq!(
+            all["games"].as_array().expect("an array").iter().map(|g| g["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["oa", "ob"],
+            "{all}",
+        );
+        assert!(all["next"].is_null(), "one page holds both: {all}");
+
+        // PAGE ONE. `next` is non-null here and nowhere else in this codebase.
+        let (status, first) =
+            get_as(&state, "red@wire.test", "/api/games?scope=open&limit=1").await;
+        assert_eq!(status, StatusCode::OK, "{first}");
+        assert_eq!(first["games"].as_array().expect("an array").len(), 1, "{first}");
+        assert_eq!(first["games"][0]["id"], "oa", "{first}");
+        let cursor = first["next"].as_str().expect("a cursor, not null").to_string();
+        // Its exact form, because the client sends this string back verbatim
+        // and a shape change here is a shape change on the wire.
+        let (at, id) = cursor.split_once(',').expect("<created_at>,<id>");
+        assert_eq!(
+            at.parse::<u64>().expect("a numeric created_at"),
+            first["games"][0]["created_at"].as_u64().expect("a created_at"),
+            "the cursor names the row this page ended at: {cursor}",
+        );
+        assert_eq!(id, "oa", "…by its id too: {cursor}");
+
+        // PAGE TWO, from the cursor the server just handed out. The second row
+        // arrives, the first does not arrive again, and the walk ends.
+        let (status, second) = get_as(
+            &state,
+            "red@wire.test",
+            &format!("/api/games?scope=open&limit=1&before={cursor}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{second}");
+        assert_eq!(second["games"].as_array().expect("an array").len(), 1, "{second}");
+        assert_eq!(second["games"][0]["id"], "ob", "no gap and no overlap: {second}");
+        assert!(second["next"].is_null(), "the last page: {second}");
+    }
+
     /// **The listing fences its query and pages it** (§3.3).
     ///
     /// Four refusals and then the one that answers, because the refusals are
