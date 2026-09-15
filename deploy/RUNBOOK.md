@@ -499,8 +499,9 @@ is the first build that reads an identity header at all.
     **`{"games":[]}`**.
   - `GET /` serves `index-BdYKdXfa.js`, which exists only in this build.
 
-  **07:02Z, through the tunnel** (§3.2, from a WARP-enrolled shell, which is
-  what Access authenticates silently): the same four readings, identically —
+  **07:02Z, through the tunnel — this is the milestone's stated verification**
+  (spec §10, and §3.2's own recipe), from a WARP-enrolled shell, which is what
+  Access authenticates silently: the same four readings, identically —
   `https://yokohama.moore.nyc/api/health` returning that same payload with
   `"identity":"claimed"`, `/api/games` **401** bare and `{"games":[]}` with
   `X-Yokohama-Claimed-User: jamoore@gmail.com`, and `/` serving
