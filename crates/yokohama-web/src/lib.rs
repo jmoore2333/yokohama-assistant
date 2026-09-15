@@ -598,6 +598,37 @@ async fn deal(
 pub struct Keep {
     pub seat: u8,
     pub card: u8,
+    /// What this seat is called on screen (M6.2, §3.5). Written onto the seat
+    /// only when it has no name yet — see [`Games::keep`](games::Games::keep).
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+/// Taking an open seat at an open table (M6.2, §3.2).
+///
+/// The password is the TABLE's and not the caller's: a table without a lock
+/// ignores one, and a table with a lock refuses without it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Join {
+    pub seat: u8,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub password: Option<String>,
+}
+
+async fn join(
+    identity::Identity(user): identity::Identity,
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    JsonBody(req): JsonBody<Join>,
+) -> ApiResult<crate::table::TableView> {
+    // The same fallible parse `keep` makes, and for the same reason: the number
+    // came off the wire and `PlayerId::new` panics at four and above.
+    let seat = yokohama_core::PlayerId::try_new(req.seat)
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    Ok(Json(state.games.join(&id, &user, seat, req.name.as_deref(), req.password.as_deref())?))
 }
 
 async fn keep(
@@ -612,7 +643,7 @@ async fn keep(
     // but would still drop the connection with no sentence in it.
     let seat = yokohama_core::PlayerId::try_new(req.seat)
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
-    Ok(Json(state.games.keep(&id, &user, seat, req.card)?))
+    Ok(Json(state.games.keep(&id, &user, seat, req.card, req.name.as_deref())?))
 }
 
 async fn get_game(
@@ -1427,6 +1458,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/api/games/{id}/table", get(get_table))
         .route("/api/games/{id}/deal", get(deal))
         .route("/api/games/{id}/keep", post(keep))
+        .route("/api/games/{id}/join", post(join))
         .route("/api/games/{id}/input", post(input))
         .route("/api/games/{id}/ports", get(ports))
         .route("/api/games/{id}/labs", get(labs))
@@ -1651,11 +1683,17 @@ mod tests {
     /// would satisfy the first line alone, and one that answered 400 to
     /// everything would satisfy none of the others while still looking careful.
     ///
-    /// **And the closing pair is load-bearing.** `deal` reaches
-    /// `settle`, which takes `table_lock` when it has repairing to do, so a
-    /// panic in there would poison that mutex and every later `create` in the
-    /// process would die with it. A create of a different name answering 201,
-    /// and its own deal answering 200, is what a `catch_unwind` could not fake.
+    /// **And the closing pair is load-bearing.** `deal` reaches `settle`, which
+    /// takes a lock when it has repairing to do, so a panic in there is not a
+    /// dropped connection but a POISONED mutex. A create of a different name
+    /// answering 201, and its own deal answering 200, is what a `catch_unwind`
+    /// could not fake.
+    ///
+    /// **Read it at its M6.2 size.** The lock `settle` takes is now that
+    /// table's own (`Games::lock_for`), so a poisoning here is confined to the
+    /// broken game and a create of another name would survive it in any case;
+    /// what the closing pair still says is that the PROCESS is alive and
+    /// serving, which is what a panic in a handler does not leave behind.
     #[tokio::test]
     async fn a_deal_the_server_cannot_build_is_a_500_a_bad_request_is_400_and_the_server_lives() {
         let state = Arc::new(AppState::in_memory());
@@ -1705,8 +1743,8 @@ mod tests {
             "the refusal names the key it did not know: {body}",
         );
 
-        // The server is alive and `table_lock` is not poisoned: a table of a
-        // different name still opens, and its own deal still answers.
+        // The server is alive: a table of a different name still opens, and its
+        // own deal still answers.
         let (status, body) = call(
             &router,
             "POST",
@@ -4247,5 +4285,86 @@ mod tests {
             "no position in {positions} marked a single reachable tile — the historical board is \
              being built with an empty legal list, and the reach marker is silently gone",
         );
+    }
+    /// **`POST …/{id}/join` answers 200 with the table**, and its body is
+    /// fenced like every other.
+    ///
+    /// The unknown key is posted at a DEALING table on purpose: the extractor
+    /// refuses it before the handler runs, so the answer is 400 naming the key
+    /// and not the 409 the table's own status would give — which is what says
+    /// the body fence sits in front of the status check rather than behind it.
+    #[tokio::test]
+    async fn join_is_a_route_that_answers_200_with_the_table_and_400_on_an_unknown_key() {
+        let state = Arc::new(AppState::in_memory());
+        let (status, table) = post_as(
+            &state,
+            "red@wire.test",
+            "/api/games",
+            serde_json::json!({
+                "players": 2,
+                "colors": ["Red", "Blue"],
+                "start_seat": 0,
+                "seed": "20260831",
+                "seats": [{ "user": "red@wire.test" }, { "open": true }],
+                "id": "joinable",
+                "password": "sesame",
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{table}");
+        assert_eq!(table["status"], serde_json::json!("open"), "{table}");
+
+        let (status, joined) = post_as(
+            &state,
+            "blue@wire.test",
+            "/api/games/joinable/join",
+            serde_json::json!({ "seat": 1, "name": "Alex", "password": "sesame" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{joined}");
+        assert_eq!(joined["my_seats"], serde_json::json!([1]), "{joined}");
+        assert_eq!(joined["seats"][1]["name"], serde_json::json!("Alex"), "{joined}");
+        assert_eq!(joined["status"], serde_json::json!("dealing"), "the filling join flips");
+
+        let (status, body) = post_as(
+            &state,
+            "blue@wire.test",
+            "/api/games/joinable/join",
+            serde_json::json!({ "seat": 1, "nope": 1 }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(body["error"].as_str().unwrap_or_default().contains("nope"), "names the key: {body}");
+    }
+
+    /// **A keep may carry the display name**, which is how a seat somebody
+    /// else's create bound gets a name at all.
+    #[tokio::test]
+    async fn keep_carries_a_name() {
+        let state = Arc::new(AppState::in_memory());
+        let (status, table) = post_as(
+            &state,
+            "red@wire.test",
+            "/api/games",
+            serde_json::json!({
+                "players": 2,
+                "colors": ["Red", "Blue"],
+                "start_seat": 0,
+                "seed": "20260831",
+                "seats": [{ "user": "red@wire.test" }, { "bot": true }],
+                "id": "named",
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{table}");
+        let (status, kept) = post_as(
+            &state,
+            "red@wire.test",
+            "/api/games/named/keep",
+            serde_json::json!({ "seat": 0, "card": 1, "name": "Jeremy" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{kept}");
+        assert_eq!(kept["seats"][0]["name"], serde_json::json!("Jeremy"), "{kept}");
     }
 }

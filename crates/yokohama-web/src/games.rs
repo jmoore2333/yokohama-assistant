@@ -114,20 +114,37 @@ pub struct Games {
     /// monotonicity heuristic**, and the difference is a working undo. See
     /// [`Games::persist`].
     pub(crate) written: Mutex<HashMap<GameId, Version>>,
-    /// Serializes every write to a TABLE document against every other one:
-    /// `create`, each `keep`, and the self-repair in [`Games::settle`].
+    /// Serializes `create` against every other `create` — and, since M6.2,
+    /// NOTHING ELSE. Every other table writer holds that table's own lock
+    /// ([`Games::lock_for`], R-2.9).
     ///
     /// `create` is check-then-write across a slow middle, so without this two
     /// requests both read "absent" and both went on to build, write and insert.
-    /// A keep is read-modify-write over the same document, and the LAST keep
-    /// finalizes — two of them racing would build two sessions and write two
-    /// records for one table. Held across the whole of each, because any shorter
-    /// hold leaves the same window somewhere else.
+    /// A per-table lock cannot serve there: the id may be DRAWN, so two requests
+    /// racing for one name are not yet two requests about one table, and the
+    /// occupancy check reads two documents. Held across the whole of it, because
+    /// any shorter hold leaves the same window somewhere else.
     ///
     /// A dedicated lock rather than holding `live`: `live` is taken by every
     /// `handle`, and blocking ordinary reads for the length of a game setup to
     /// serialize an operation a user performs by hand is the wrong trade.
     pub(crate) table_lock: Mutex<()>,
+    /// One lock PER TABLE (M6.2, R-2.9), created on first use and kept.
+    ///
+    /// `table_lock` above serializes every table writer in the process against
+    /// every other one, which is right for `create` — where the thing being
+    /// protected is the ID SPACE and two requests for different names still
+    /// race for the same one — and wrong for everything else. A finalize builds
+    /// a session and writes a record while holding it, so one table's last keep
+    /// held the whole lobby's write path; with the lobby, that is twenty people
+    /// waiting on a game none of them is at.
+    ///
+    /// The outer mutex is held only long enough to hand back the `Arc`, never
+    /// across the table's own lock, so the two can never be taken in two orders.
+    /// The map is not pruned: an entry is a pointer and a mutex, and a delete
+    /// that removed one would drop it while a blocked writer was about to take
+    /// it and hand the next writer a DIFFERENT lock for the same table.
+    pub(crate) locks: Mutex<HashMap<GameId, Arc<Mutex<()>>>>,
     /// Ids deleted since this process started, so a request that was already
     /// holding a handle cannot write the record back after `DELETE` removed it.
     /// Cleared by `create`, so a name can be reused.
@@ -159,12 +176,30 @@ impl Games {
             live: Mutex::new(HashMap::new()),
             written: Mutex::new(HashMap::new()),
             table_lock: Mutex::new(()),
+            locks: Mutex::new(HashMap::new()),
             deleted: Mutex::new(std::collections::HashSet::new()),
         }
     }
 
     pub fn store(&self) -> &Arc<dyn Store> {
         &self.store
+    }
+
+    /// The table's OWN lock (R-2.9). `join`, `keep`, `delete` and a repairing
+    /// `settle` TAKE it for the whole of what they do, and `settle_locked`,
+    /// `finalize` and `flip_to_playing` are CALLED with it held — the
+    /// distinction matters, because the mutex is not reentrant and a second
+    /// take from inside one of those three would deadlock. `create` holds the
+    /// global [`Games::table_lock`] instead, because the thing it is protecting
+    /// is the id space and not one document.
+    ///
+    /// The entry is created on first use, so a table nobody has written costs
+    /// nothing, and it is never removed — see [`Games::locks`] for why a delete
+    /// that pruned the map would hand two writers two different locks for one
+    /// table.
+    pub(crate) fn lock_for(&self, id: &str) -> Arc<Mutex<()>> {
+        let mut locks = self.locks.lock().expect("games lock");
+        Arc::clone(locks.entry(id.to_string()).or_insert_with(|| Arc::new(Mutex::new(()))))
     }
 
     /// The live handle for `id`, rebuilt from the store if it is not resident.
@@ -1167,10 +1202,55 @@ pub(crate) mod test_support {
             while let Some(seat) =
                 games.table(&id, &user).expect("seated").next_unkept_seat_of(&user)
             {
-                games.keep(&id, &user, seat, 1).expect("a keep");
+                games.keep(&id, &user, seat, 1, None).expect("a keep");
             }
         }
         games.handle(&id).expect("playing")
+    }
+
+    /// A [`MemStore`] that COUNTS its writes.
+    ///
+    /// Delegation rather than a wrapper type with a `Deref`, because the thing
+    /// being counted is one trait method and the others must stay exactly what
+    /// `MemStore` does. A cell that asks "how many writes did this take" cannot
+    /// read the answer off the stored document — both a one-write and a
+    /// two-write implementation leave the same bytes.
+    #[derive(Default)]
+    pub(crate) struct CountingStore {
+        inner: MemStore,
+        writes: std::sync::atomic::AtomicUsize,
+    }
+
+    impl CountingStore {
+        pub(crate) fn writes(&self) -> usize {
+            self.writes.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    impl Store for CountingStore {
+        fn list(&self, doc: Doc) -> Result<Vec<crate::store::GameId>, String> {
+            self.inner.list(doc)
+        }
+        fn read(
+            &self,
+            doc: Doc,
+            id: &str,
+        ) -> Result<Option<(String, crate::store::Version)>, String> {
+            self.inner.read(doc, id)
+        }
+        fn write_if_version(
+            &self,
+            doc: Doc,
+            id: &str,
+            json: &str,
+            expected: Option<crate::store::Version>,
+        ) -> Result<crate::store::Version, crate::store::WriteError> {
+            self.writes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.write_if_version(doc, id, json, expected)
+        }
+        fn delete(&self, id: &str) -> Result<(), String> {
+            self.inner.delete(id)
+        }
     }
 
     /// The record `id` is stored as, as bytes.

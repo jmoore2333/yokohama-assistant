@@ -783,7 +783,7 @@ mod tests {
         while let Some(s) =
             games.table(&id, &red).expect("seated").next_unkept_seat_of(&red)
         {
-            games.keep(&id, &red, s, 1).expect("a keep");
+            games.keep(&id, &red, s, 1, None).expect("a keep");
         }
         let handle = games.handle(&id).expect("a game");
         let repl = handle.lock().expect("the handle");

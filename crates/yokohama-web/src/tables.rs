@@ -314,9 +314,15 @@ fn config_of(req: &NewGame, creator: &User) -> Result<(GameConfig, Vec<SeatDoc>)
 /// **The BOUNDS are the load-bearing half, and the length checks alone do not
 /// give them.** Three fields carry a number this module then hands to something
 /// that panics on a value it does not accept, and every one of them is reached
-/// on the path that holds `table_lock` across the read — where a panic is not a
-/// dropped connection but a POISONED mutex, after which every later `create`,
-/// `keep` and repairing `settle` in the process dies with it.
+/// on a path that holds a TABLE LOCK across the read — where a panic is not a
+/// dropped connection but a POISONED mutex, after which every later `keep`,
+/// `join`, `delete` and repairing `settle` AT THAT TABLE dies with it.
+///
+/// **The blast radius narrowed with M6.2 and the reason did not.** The lock is
+/// now per table ([`Games::lock_for`]), so one hand-edited document poisons one
+/// game rather than the whole process, and `create` — still on the global
+/// `table_lock` — is not touched at all. A game that can never again be opened,
+/// joined or deleted by anyone is reason enough for the bounds below.
 ///
 /// - `players`: `TableDoc::seats_of` maps each seat's position through
 ///   `PlayerId::new`, which `types/ids.rs` documents as PANICKING at `id >= 4`,
@@ -671,7 +677,7 @@ impl Games {
     ///
     /// **The shape is checked HERE, once, because every consumer INDEXES by
     /// seat** — see [`check_shape`] for what a document that failed it would do
-    /// to a handler and to `table_lock`. Checking at the places a document
+    /// to a handler and to that table's lock. Checking at the places a document
     /// ENTERS this process makes every later index total by construction rather
     /// than making twenty call sites defensive.
     pub(crate) fn read_table(&self, id: &str) -> Result<Option<(TableDoc, Version)>, GameError> {
@@ -714,13 +720,15 @@ impl Games {
     pub(crate) fn settle(&self, id: &str) -> Result<Option<(TableDoc, Version)>, GameError> {
         let Some((doc, version)) = self.read_table(id)? else { return Ok(None) };
         if doc.status == TableStatus::Dealing && doc.all_humans_kept() {
-            let _serialized = self.table_lock.lock().expect("games lock");
+            let lock = self.lock_for(id);
+            let _serialized = lock.lock().expect("table lock");
             return self.settle_locked(id);
         }
         Ok(Some((doc, version)))
     }
 
-    /// [`Games::settle`] with `table_lock` already held by the caller. The
+    /// [`Games::settle`] with this table's own lock already held by the caller
+    /// ([`Games::lock_for`] — R-2.9, no longer the global one). The
     /// document is re-read under the lock, because the writer that made the
     /// repair necessary may have finished it while this request was waiting.
     fn settle_locked(&self, id: &str) -> Result<Option<(TableDoc, Version)>, GameError> {
@@ -859,15 +867,113 @@ impl Games {
         })
     }
 
+    /// Take an OPEN seat at an open table (M6.2, §3.2).
+    ///
+    /// **The refusals are in the order a client can act on them** (§3.2): the
+    /// table exists, it is still open, the seat is one this table has, the name
+    /// is a name, the seat is free, and the password is right. The PASSWORD is
+    /// last of the six on purpose — a caller who sent the wrong seat number
+    /// learns that before it learns anything about the lock, and a caller who
+    /// sent neither right learns about the seat first, which is the thing it can
+    /// fix by itself.
+    ///
+    /// **The seat and the flip are ONE write.** A join that filled the seat,
+    /// wrote, and then flipped would leave a moment at which the table is full
+    /// and still `Open` — a shape `check_shape` refuses to read back — and two
+    /// crash windows where there is now none.
+    ///
+    /// A table WITHOUT a lock ignores any password sent: the password is the
+    /// table's, not the caller's, and refusing a harmless extra field here would
+    /// make a client that remembered one unable to join a table that dropped it.
+    pub fn join(
+        &self,
+        id: &str,
+        user: &User,
+        seat: PlayerId,
+        name: Option<&str>,
+        password: Option<&str>,
+    ) -> Result<TableView, GameError> {
+        let lock = self.lock_for(id);
+        let _serialized = lock.lock().expect("table lock");
+        let (mut doc, version) = self
+            .read_table(id)?
+            .ok_or_else(|| GameError::NotFound(format!("no game named {id:?}")))?;
+        match doc.status {
+            TableStatus::Open => {}
+            TableStatus::Dealing => return Err(GameError::Dealing),
+            TableStatus::Playing => return Err(GameError::Playing),
+        }
+        // `seats.len()`, not `PlayerId`'s own range: seat 3 is a real seat at a
+        // 4P table and not one here, and `read_table` has already refused a
+        // document whose `seats` disagrees with its `players`.
+        let n = usize::from(seat.0);
+        if n >= doc.seats.len() {
+            return Err(GameError::BadRequest(format!(
+                "seat {} at a {}-seat table",
+                seat.0, doc.players
+            )));
+        }
+        let name = match name {
+            Some(raw) => Some(check_name(raw).map_err(GameError::BadRequest)?),
+            None => None,
+        };
+        // **Open, not "not mine".** A seat this caller already holds is taken
+        // too — otherwise a join is a way to re-bind a seat somebody is sitting
+        // at, including one's own, and a person who wants a second seat takes an
+        // OPEN one (which this allows, and a cell pins).
+        if !matches!(doc.seats[n], SeatDoc::Open) {
+            return Err(GameError::Conflict(format!("seat {} is taken", seat.0)));
+        }
+        if doc.lock.is_some() {
+            match password.map(str::trim) {
+                // An absent password and an empty one are the same request —
+                // "let me in without one" — and get the same sentence, which
+                // names what to send rather than saying the guess was wrong.
+                None | Some("") => {
+                    return Err(GameError::Forbidden(
+                        "this table is locked — send its password".to_string(),
+                    ))
+                }
+                Some(p) if !doc.check_password(p) => {
+                    return Err(GameError::Forbidden(
+                        "wrong password for this table".to_string(),
+                    ))
+                }
+                Some(_) => {}
+            }
+        }
+        doc.seats[n] = SeatDoc::Human { user: user.as_str().to_string(), name };
+        if doc.is_full() {
+            doc.status = TableStatus::Dealing;
+        }
+        match self.write_table(&doc, Some(version)) {
+            Ok(_) => Ok(doc.view(user)),
+            // Somebody took this seat between the read and here. The stored
+            // table is the table — `create`'s rule and `finalize`'s — so the
+            // answer is a conflict and not a retry.
+            Err(WriteError::Conflict { .. }) => Err(GameError::Conflict(format!(
+                "{id:?} changed while this join was in flight"
+            ))),
+            Err(WriteError::Io(e)) => Err(GameError::Server(e)),
+        }
+    }
+
     /// One seat chooses. The LAST one finalizes.
+    ///
+    /// `name` is the display name the chooser gave (M6.2, §3.5), and it lands
+    /// on the seat ONLY when the seat has none yet: a seat named at create
+    /// keeps that name, and a seat somebody else's create bound gets its name
+    /// from its holder's first keep. A later keep never renames a seat.
     pub fn keep(
         &self,
         id: &str,
         user: &User,
         seat: PlayerId,
         card: u8,
+        name: Option<&str>,
     ) -> Result<TableView, GameError> {
-        let _serialized = self.table_lock.lock().expect("games lock");
+        let lock = self.lock_for(id);
+        let _serialized = lock.lock().expect("table lock");
         // Settled first, so a table left mid-finalize by a crash is repaired by
         // the same call that would otherwise refuse a keep it has already taken.
         let (mut doc, version) = self
@@ -895,7 +1001,18 @@ impl Games {
                 "keep {card} — the dealt cards are numbered 1 and 2"
             )));
         }
+        // Checked BEFORE anything is mutated, so a refused name leaves the
+        // document exactly as it was — the keep included.
+        let name = match name {
+            Some(raw) => Some(check_name(raw).map_err(GameError::BadRequest)?),
+            None => None,
+        };
         doc.keeps[usize::from(n)] = Some(card);
+        if let (Some(new), SeatDoc::Human { name: slot @ None, .. }) =
+            (name, &mut doc.seats[usize::from(n)])
+        {
+            *slot = Some(new);
+        }
         // **Written BEFORE the finalize, not with it.** The choice is the
         // player's and is durable the moment it is made; a crash between this
         // write and the record leaves a table that `settle` finishes on the next
@@ -986,7 +1103,9 @@ impl Games {
     /// id — so the set only ever holds ids that are deleted and not recreated,
     /// and re-creating a deleted name works exactly as before.
     ///
-    /// **It is a TABLE WRITER, so it holds `table_lock` like the other two.**
+    /// **It is a TABLE WRITER, so it holds this table's own lock** — since
+    /// M6.2 [`Games::lock_for`]'s and not the global `table_lock`, which now
+    /// serializes `create` alone (R-2.9).
     /// Without it, a delete could read a table that was still dealing, and the
     /// last `keep` could then write the table and enter `finalize` before the
     /// unlink landed — leaving `finalize`'s `expected: None` record write to
@@ -1004,7 +1123,8 @@ impl Games {
     /// besides, since finalizing a table on the way to deleting it only writes
     /// the record this function then has to remove.
     pub fn delete(&self, id: &str, user: &User) -> Result<(), GameError> {
-        let _serialized = self.table_lock.lock().expect("games lock");
+        let lock = self.lock_for(id);
+        let _serialized = lock.lock().expect("table lock");
         let (doc, _) = self
             .read_table(id)?
             .ok_or_else(|| GameError::NotFound(format!("no game named {id:?}")))?;
@@ -1306,7 +1426,7 @@ mod tests {
             d.frame.labs.boards.iter().all(|b| b.slots.is_empty()),
             "withheld until the choice",
         );
-        games.keep(&id, &red, PlayerId::new(0), 1).unwrap();
+        games.keep(&id, &red, PlayerId::new(0), 1, None).unwrap();
         let d = games.deal(&id, &red).unwrap();
         assert_eq!((d.seat, d.cards.is_none()), (None, true), "all of red's seats have kept");
         let d = games.deal(&id, &blue).unwrap();
@@ -1369,7 +1489,7 @@ mod tests {
         };
 
         check(&games.deal(&id, &red).unwrap().frame, "before the caller chooses");
-        games.keep(&id, &red, PlayerId::new(0), 1).unwrap();
+        games.keep(&id, &red, PlayerId::new(0), 1, None).unwrap();
         // Red holds every human seat, so `next_unkept_seat_of` is now `None`.
         // The last human keep FINALIZES, so the table is playing and `deal`
         // refuses — which is itself the answer: there is no set table left to
@@ -1411,12 +1531,12 @@ mod tests {
         let games = games();
         let (red, blue) = (who("red@t.test"), who("blue@t.test"));
         let id = games.create(&two_people("keep", ARGMAX_IS_CARD_2), &red).unwrap().id;
-        assert!(matches!(games.keep(&id, &blue, PlayerId::new(0), 1), Err(GameError::Forbidden(_))));
-        assert!(matches!(games.keep(&id, &red, PlayerId::new(0), 3), Err(GameError::BadRequest(_))));
+        assert!(matches!(games.keep(&id, &blue, PlayerId::new(0), 1, None), Err(GameError::Forbidden(_))));
+        assert!(matches!(games.keep(&id, &red, PlayerId::new(0), 3, None), Err(GameError::BadRequest(_))));
         assert!(matches!(games.handle(&id), Err(GameError::Dealing)));
-        games.keep(&id, &red, PlayerId::new(0), 2).unwrap();
-        assert!(matches!(games.keep(&id, &red, PlayerId::new(0), 1), Err(GameError::Conflict(_))));
-        let v = games.keep(&id, &blue, PlayerId::new(1), 1).unwrap();
+        games.keep(&id, &red, PlayerId::new(0), 2, None).unwrap();
+        assert!(matches!(games.keep(&id, &red, PlayerId::new(0), 1, None), Err(GameError::Conflict(_))));
+        let v = games.keep(&id, &blue, PlayerId::new(1), 1, None).unwrap();
         assert_eq!(v.status, TableStatus::Playing);
         assert_eq!(v.to_move, Some(PlayerId::new(0)));
         let (json, _) = games.store().read(Doc::Record, &id).unwrap().expect("the record exists now");
@@ -1432,7 +1552,7 @@ mod tests {
             "red kept card 2",
         );
         assert!(
-            matches!(games.keep(&id, &red, PlayerId::new(0), 1), Err(GameError::Playing)),
+            matches!(games.keep(&id, &red, PlayerId::new(0), 1, None), Err(GameError::Playing)),
             "a playing table takes no keep",
         );
     }
@@ -1503,9 +1623,9 @@ mod tests {
         r.seats[1] = SeatSpec { user: Some("red@t.test".into()), bot: false, open: false };
         let id = games.create(&r, &red).unwrap().id;
         assert_eq!(games.deal(&id, &red).unwrap().seat, Some(PlayerId::new(0)));
-        games.keep(&id, &red, PlayerId::new(0), 1).unwrap();
+        games.keep(&id, &red, PlayerId::new(0), 1, None).unwrap();
         assert_eq!(games.deal(&id, &red).unwrap().seat, Some(PlayerId::new(1)));
-        let v = games.keep(&id, &red, PlayerId::new(1), 1).unwrap();
+        let v = games.keep(&id, &red, PlayerId::new(1), 1, None).unwrap();
         assert_eq!(v.status, TableStatus::Playing);
     }
 
@@ -1527,7 +1647,7 @@ mod tests {
         let games = games();
         let red = who("red@t.test");
         let id = games.create(&req_seeded("settle1", CORPUS_SEED), &red).unwrap().id;
-        games.keep(&id, &red, PlayerId::new(0), 1).unwrap();
+        games.keep(&id, &red, PlayerId::new(0), 1, None).unwrap();
         let (json, v) = games.store().read(Doc::Table, &id).unwrap().unwrap();
         let mut doc: TableDoc = serde_json::from_str(&json).unwrap();
         doc.status = TableStatus::Dealing;
@@ -1694,7 +1814,7 @@ mod tests {
             // whose panic would be a poisoned mutex rather than one dropped
             // request.
             assert!(
-                matches!(games.keep(id, &red, PlayerId::new(0), 1), Err(GameError::Server(_))),
+                matches!(games.keep(id, &red, PlayerId::new(0), 1, None), Err(GameError::Server(_))),
                 "{id}: keep",
             );
         }
@@ -1876,8 +1996,10 @@ mod tests {
     /// Each gate is armed independently and fires exactly once: it signals that
     /// a thread has ARRIVED at that operation and then blocks until the test
     /// releases it. `park_record` sits in front of a `Doc::Record` write —
-    /// which is `finalize`'s — and `park_delete` inside `Store::delete`, after
-    /// `Games::delete` has read the table and decided to remove it.
+    /// which is `finalize`'s — `park_delete` inside `Store::delete`, after
+    /// `Games::delete` has read the table and decided to remove it, and
+    /// `park_table` (M6.2) in front of a `Doc::Table` write, which is where a
+    /// `join` sits with its seat filled and its flip not yet on disk.
     ///
     /// Both channel ends tolerate a dropped peer, so a test that fails and
     /// unwinds while a thread is parked here does not turn one failure into
@@ -1886,10 +2008,13 @@ mod tests {
         inner: MemStore,
         park_record: std::sync::atomic::AtomicBool,
         park_delete: std::sync::atomic::AtomicBool,
+        park_table: std::sync::atomic::AtomicBool,
         at_record: Mutex<std::sync::mpsc::Sender<()>>,
         go_record: Mutex<std::sync::mpsc::Receiver<()>>,
         at_delete: Mutex<std::sync::mpsc::Sender<()>>,
         go_delete: Mutex<std::sync::mpsc::Receiver<()>>,
+        at_table: Mutex<std::sync::mpsc::Sender<()>>,
+        go_table: Mutex<std::sync::mpsc::Receiver<()>>,
     }
 
     impl RaceStore {
@@ -1920,6 +2045,11 @@ mod tests {
                 && self.park_record.swap(false, std::sync::atomic::Ordering::SeqCst)
             {
                 Self::wait(&self.at_record, &self.go_record);
+            }
+            if doc == Doc::Table
+                && self.park_table.swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                Self::wait(&self.at_table, &self.go_table);
             }
             self.inner.write_if_version(doc, id, json, expected)
         }
@@ -1975,14 +2105,19 @@ mod tests {
         let (go_record_tx, go_record_rx) = channel();
         let (at_delete_tx, at_delete_rx) = channel();
         let (go_delete_tx, go_delete_rx) = channel();
+        let (at_table_tx, _at_table_rx) = channel();
+        let (_go_table_tx, go_table_rx) = channel();
         let store = Arc::new(RaceStore {
             inner: MemStore::default(),
             park_record: AtomicBool::new(false),
             park_delete: AtomicBool::new(false),
+            park_table: AtomicBool::new(false),
             at_record: Mutex::new(at_record_tx),
             go_record: Mutex::new(go_record_rx),
             at_delete: Mutex::new(at_delete_tx),
             go_delete: Mutex::new(go_delete_rx),
+            at_table: Mutex::new(at_table_tx),
+            go_table: Mutex::new(go_table_rx),
         });
         let games =
             Arc::new(Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>));
@@ -1991,7 +2126,7 @@ mod tests {
         // Seat 0 chooses. The stored table now reads `keeps: [1, null]`:
         // DEALING and NOT all-kept, which is the state `settle` passes over
         // without taking the lock — step 1's precondition.
-        games.keep(&id, &red, PlayerId::new(0), 1).expect("red's keep");
+        games.keep(&id, &red, PlayerId::new(0), 1, None).expect("red's keep");
 
         store.park_delete.store(true, Ordering::SeqCst);
         store.park_record.store(true, Ordering::SeqCst);
@@ -2006,7 +2141,7 @@ mod tests {
 
         let keeper = {
             let (games, id, blue) = (Arc::clone(&games), id.clone(), blue.clone());
-            std::thread::spawn(move || games.keep(&id, &blue, PlayerId::new(1), 1))
+            std::thread::spawn(move || games.keep(&id, &blue, PlayerId::new(1), 1, None))
         };
 
         assert!(
@@ -2021,7 +2156,7 @@ mod tests {
 
         // Released in the order the threads can take them. The record gate's
         // send is buffered, so it works whether the keep is parked on it or
-        // still waiting for `table_lock`.
+        // still waiting for the table's lock.
         go_delete_tx.send(()).expect("the parked delete is still listening");
         go_record_tx.send(()).expect("a buffered release");
         deleter.join().expect("the delete thread").expect("the delete");
@@ -2111,7 +2246,7 @@ mod tests {
                                 .expect("seated")
                                 .next_unkept_seat_of(&creator)
                             {
-                                games.keep(&id, &creator, seat, 1).expect("a keep");
+                                games.keep(&id, &creator, seat, 1, None).expect("a keep");
                             }
                             let handle = games.handle(&id).expect("playing");
                             let seed = handle.lock().expect("a handle").session.record().seed;
@@ -2327,4 +2462,319 @@ mod tests {
         assert!(doc.check_password("sesame"), "trimmed on the way in");
         assert!(!doc.check_password(" sesame "));
     }
+
+    /// A table with seat 1 OPEN, optionally locked — the shape every join cell
+    /// starts from.
+    fn open_two(games: &Games, id: &str, password: Option<&str>) -> TableView {
+        let mut r = req(id);
+        r.seats[1] = SeatSpec { user: None, bot: false, open: true };
+        r.password = password.map(str::to_string);
+        games.create(&r, &who("red@t.test")).expect("an open table")
+    }
+
+    /// **Every refusal a join can raise, in the order a client reads them**
+    /// (§3.2), and then the join that fills the last seat and FLIPS the table
+    /// to dealing.
+    ///
+    /// One cell rather than seven, for the reason
+    /// `create_refuses_in_the_order_a_client_reads_and_binds_the_creator` is
+    /// one: the ORDER is the claim. A probe wrong in one way says a rule
+    /// exists and nothing about where in the chain it sits — so the name probe
+    /// below carries a CORRECT password at an OPEN seat, and the "taken" probe
+    /// carries the password too, each asserting that the earlier link is not
+    /// the one that answers.
+    #[test]
+    fn join_refuses_in_the_order_a_client_reads() {
+        let games = games();
+        let blue = who("blue@t.test");
+        let s1 = PlayerId::new(1);
+        assert!(matches!(games.join("nope", &blue, s1, None, None), Err(GameError::NotFound(_))));
+        open_two(&games, "locked", Some("sesame"));
+        assert!(matches!(
+            games.join("locked", &blue, PlayerId::new(2), None, None),
+            Err(GameError::BadRequest(_))
+        ));
+        let e = games.join("locked", &blue, s1, Some(&"x".repeat(65)), Some("sesame")).unwrap_err();
+        assert!(e.to_string().contains("1 to 64"), "{e}");
+        let e = games.join("locked", &blue, PlayerId::new(0), None, Some("sesame")).unwrap_err();
+        assert!(matches!(e, GameError::Conflict(_)) && e.to_string().contains("taken"), "{e}");
+        let e = games.join("locked", &blue, s1, None, None).unwrap_err();
+        assert!(matches!(e, GameError::Forbidden(_)) && e.to_string().contains("locked"), "{e}");
+        let e = games.join("locked", &blue, s1, None, Some("open")).unwrap_err();
+        assert!(
+            matches!(e, GameError::Forbidden(_)) && e.to_string().contains("wrong password"),
+            "{e}"
+        );
+
+        // **The two ADJACENT pairs the probes above cannot see.** Each of the
+        // six is wrong in ONE way apart from the seat probe, so it says a rule
+        // exists and nothing about where it sits: `check_name` moved below the
+        // taken check, or the taken check moved below the lock, would leave
+        // every one of them green. These two are wrong at two adjacent links
+        // and assert the EARLIER sentence is the one a client is handed, which
+        // is the whole claim of this cell's name.
+        let e = games
+            .join("locked", &blue, PlayerId::new(0), Some(&"x".repeat(65)), Some("sesame"))
+            .unwrap_err();
+        assert!(e.to_string().contains("1 to 64"), "the name precedes the taken seat: {e}");
+        let e = games.join("locked", &blue, PlayerId::new(0), None, Some("open")).unwrap_err();
+        assert!(e.to_string().contains("taken"), "the taken seat precedes the password: {e}");
+
+        let v = games.join("locked", &blue, s1, Some(" Alex "), Some("sesame")).expect("seated");
+        assert_eq!(v.seats[1], SeatDoc::Human { user: "blue@t.test".into(), name: Some("Alex".into()) });
+        assert_eq!(v.my_seats, vec![s1]);
+        assert_eq!(v.status, TableStatus::Dealing, "the filling join flips");
+        assert!(matches!(games.join("locked", &blue, s1, None, Some("sesame")), Err(GameError::Dealing)));
+    }
+
+    /// **The seat and the flip are ONE write**, not two.
+    ///
+    /// Two writes are two crash windows and a moment at which the table is full
+    /// and still open — a state `check_shape` would refuse to read back. The
+    /// count is the only way to see it: both orderings leave the same document.
+    #[test]
+    fn the_filling_join_writes_the_seat_and_the_flip_in_one_write() {
+        let store = Arc::new(CountingStore::default());
+        let games = Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>);
+        open_two(&games, "one", None);
+        let before = store.writes();
+        games.join("one", &who("blue@t.test"), PlayerId::new(1), None, None).expect("seated");
+        assert_eq!(store.writes() - before, 1, "one write for the seat AND the flip");
+        let (doc, _) = games.read_table("one").unwrap().unwrap();
+        assert_eq!(doc.status, TableStatus::Dealing);
+        assert!(doc.open_seats().is_empty());
+    }
+
+    /// **A person may hold two seats, and a seat named by email is TAKEN.**
+    ///
+    /// The second half is the one an implementation gets wrong by checking "is
+    /// this seat mine" instead of "is this seat open": red joining the seat red
+    /// already holds must be refused, or a join becomes a way to re-bind a seat
+    /// somebody is sitting at.
+    #[test]
+    fn a_person_may_take_two_seats_and_a_named_seat_is_taken() {
+        let games = games();
+        let red = who("red@t.test");
+        let mut r = req("three");
+        r.players = 3;
+        r.colors = vec![PlayerColor::Red, PlayerColor::Blue, PlayerColor::Green];
+        r.seats = vec![
+            SeatSpec { user: Some("red@t.test".into()), bot: false, open: false },
+            SeatSpec { user: Some("green@t.test".into()), bot: false, open: false },
+            SeatSpec { user: None, bot: false, open: true },
+        ];
+        games.create(&r, &red).expect("a table");
+        let e = games.join("three", &red, PlayerId::new(1), None, None).unwrap_err();
+        assert!(e.to_string().contains("taken"), "a named seat is Human and therefore taken: {e}");
+        let v = games.join("three", &red, PlayerId::new(2), None, None).expect("a second seat");
+        assert_eq!(v.my_seats, vec![PlayerId::new(0), PlayerId::new(2)]);
+    }
+
+    /// **A keep names its seat only if the seat has no name yet** (§3.5).
+    ///
+    /// The name belongs to the person who gave it first — at create, for the
+    /// creator's own seats — so a later keep cannot rename a seat, and a seat
+    /// bound by somebody else's create gets its name from the holder's first
+    /// keep.
+    #[test]
+    fn keep_writes_the_name_when_the_seat_has_none_and_leaves_a_set_one_alone() {
+        let games = games();
+        let red = who("red@t.test");
+        let blue = who("blue@t.test");
+        let mut r = two_people("kn", CORPUS_SEED);
+        r.display_name = Some("Jeremy".into());
+        games.create(&r, &red).expect("a table");
+        games.keep("kn", &blue, PlayerId::new(1), 1, Some("Alex")).expect("blue keeps with a name");
+        let v = games.keep("kn", &red, PlayerId::new(0), 1, Some("Not Jeremy")).expect("red keeps");
+        assert_eq!(v.seats[0], SeatDoc::Human { user: "red@t.test".into(), name: Some("Jeremy".into()) });
+        assert_eq!(v.seats[1], SeatDoc::Human { user: "blue@t.test".into(), name: Some("Alex".into()) });
+        let e = games.keep("kn", &red, PlayerId::new(0), 1, Some("\u{7}")).unwrap_err();
+        assert!(matches!(e, GameError::Playing) || e.to_string().contains("control"), "a bad name is 400 before anything else: {e}");
+    }
+
+    /// **The lock is PER TABLE** (R-2.9): a finalize at one table does not
+    /// block a join at another.
+    ///
+    /// The global `table_lock` M6.1 shipped serialized every table writer in
+    /// the process against every other, so one table's finalize — which builds
+    /// a session and writes a record — held the lobby's whole write path. With
+    /// the lock split by id the two are independent, and the only way to SEE
+    /// that is to park one and answer the other while it is parked: the record
+    /// write inside A's finalize is the longest hold there is, and B's join
+    /// completes underneath it.
+    ///
+    /// **The join runs on its own thread and is WAITED FOR with a timeout**,
+    /// which is the difference between a cell that fails and a cell that hangs.
+    /// Called inline, the mutation below blocks the test thread forever and the
+    /// suite stops rather than reporting; on a thread, the waiting ends and the
+    /// assertion names what happened. The gates are released and both threads
+    /// joined BEFORE the assertion, so a failure leaves nothing parked.
+    ///
+    /// Measured against the global lock (M6.1's `table_lock` restored in `keep`
+    /// and `join`): the join at B never answers inside the timeout, because it
+    /// is waiting on the one lock the parked finalize holds.
+    #[test]
+    fn a_finalize_at_one_table_does_not_block_a_join_at_another() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::mpsc::channel;
+        use std::time::Duration;
+
+        let (at_record_tx, at_record_rx) = channel();
+        let (go_record_tx, go_record_rx) = channel();
+        let (at_delete_tx, _at_delete_rx) = channel();
+        let (_go_delete_tx, go_delete_rx) = channel();
+        let (at_table_tx, _at_table_rx) = channel();
+        let (_go_table_tx, go_table_rx) = channel();
+        let store = Arc::new(RaceStore {
+            inner: MemStore::default(),
+            park_record: AtomicBool::new(false),
+            park_delete: AtomicBool::new(false),
+            park_table: AtomicBool::new(false),
+            at_record: Mutex::new(at_record_tx),
+            go_record: Mutex::new(go_record_rx),
+            at_delete: Mutex::new(at_delete_tx),
+            go_delete: Mutex::new(go_delete_rx),
+            at_table: Mutex::new(at_table_tx),
+            go_table: Mutex::new(go_table_rx),
+        });
+        let games =
+            Arc::new(Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>));
+        let (red, blue) = (who("red@t.test"), who("blue@t.test"));
+        open_two(&games, "b", None);
+        games.create(&two_people("a", CORPUS_SEED), &red).expect("a table");
+        games.keep("a", &red, PlayerId::new(0), 1, None).expect("red's keep");
+
+        store.park_record.store(true, Ordering::SeqCst);
+        let finalizer = {
+            let (games, blue) = (Arc::clone(&games), blue.clone());
+            std::thread::spawn(move || games.keep("a", &blue, PlayerId::new(1), 1, None))
+        };
+        at_record_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("A's finalize reaches its record write and parks there");
+
+        let (done_tx, done_rx) = channel();
+        let joiner = {
+            let (games, blue) = (Arc::clone(&games), blue.clone());
+            std::thread::spawn(move || {
+                let answer = games.join("b", &blue, PlayerId::new(1), None, None);
+                let _ = done_tx.send(answer.is_ok());
+                answer
+            })
+        };
+        let answered = done_rx.recv_timeout(Duration::from_secs(10));
+
+        go_record_tx.send(()).expect("the parked finalize is still listening");
+        finalizer.join().expect("the keep thread").expect("A finalizes after the gate opens");
+        let joined = joiner.join().expect("the join thread");
+        assert_eq!(
+            answered,
+            Ok(true),
+            "the join at B did not answer while A's finalize was parked — the two tables are \
+             still sharing one lock. It eventually answered {joined:?}",
+        );
+    }
+
+    /// **A `DELETE` may not interleave with the join that fills the last
+    /// seat** — the sibling of
+    /// `a_delete_cannot_interleave_with_the_keep_that_finalizes`, and the cell
+    /// that says the per-table lock did not lose what the global one bought.
+    ///
+    /// The join is parked INSIDE the store at its table write, which is the one
+    /// point at which a delete could unlink the document this join is about to
+    /// replace. With the lock held by the join, the delete cannot reach
+    /// `Store::delete` at all while it is parked — the middle assertion, and the
+    /// one that goes red if `join` stops taking the lock. The two outcomes are
+    /// then required to be CONSISTENT: whichever landed first, no table document
+    /// exists after the delete, and the name is reusable.
+    #[test]
+    fn a_delete_cannot_interleave_with_the_join_that_fills_the_last_seat() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::mpsc::{channel, RecvTimeoutError};
+        use std::time::Duration;
+
+        let (at_record_tx, _at_record_rx) = channel();
+        let (_go_record_tx, go_record_rx) = channel();
+        let (at_delete_tx, at_delete_rx) = channel();
+        let (go_delete_tx, go_delete_rx) = channel();
+        let (at_table_tx, at_table_rx) = channel();
+        let (go_table_tx, go_table_rx) = channel();
+        let store = Arc::new(RaceStore {
+            inner: MemStore::default(),
+            park_record: AtomicBool::new(false),
+            park_delete: AtomicBool::new(false),
+            park_table: AtomicBool::new(false),
+            at_record: Mutex::new(at_record_tx),
+            go_record: Mutex::new(go_record_rx),
+            at_delete: Mutex::new(at_delete_tx),
+            go_delete: Mutex::new(go_delete_rx),
+            at_table: Mutex::new(at_table_tx),
+            go_table: Mutex::new(go_table_rx),
+        });
+        let games =
+            Arc::new(Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>));
+        let (red, blue) = (who("red@t.test"), who("blue@t.test"));
+        open_two(&games, "raced", None);
+
+        store.park_table.store(true, Ordering::SeqCst);
+        store.park_delete.store(true, Ordering::SeqCst);
+
+        let joiner = {
+            let (games, blue) = (Arc::clone(&games), blue.clone());
+            std::thread::spawn(move || games.join("raced", &blue, PlayerId::new(1), None, None))
+        };
+        at_table_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the join reaches its table write with the seat filled and the flip pending");
+
+        let deleter = {
+            let (games, red) = (Arc::clone(&games), red.clone());
+            std::thread::spawn(move || games.delete("raced", &red))
+        };
+        assert!(
+            matches!(
+                at_delete_rx.recv_timeout(Duration::from_millis(500)),
+                Err(RecvTimeoutError::Timeout),
+            ),
+            "the delete reached the store while a join of the same table was mid-write — which is \
+             the interleaving that unlinks a document another writer is about to write back",
+        );
+
+        go_table_tx.send(()).expect("the parked join is still listening");
+        go_delete_tx.send(()).expect("a buffered release");
+        let joined = joiner.join().expect("the join thread");
+        let deleted = deleter.join().expect("the delete thread");
+
+        // **Consistent, in either order.** With the lock the join lands first
+        // and the delete then removes a dealing table; the assertion is that a
+        // table document never outlives its own delete, and that the pair of
+        // answers agrees with what is on disk.
+        assert!(joined.is_ok(), "the join landed first under the lock: {joined:?}");
+        assert!(deleted.is_ok(), "the delete then removed a dealing table: {deleted:?}");
+        assert!(store.read(Doc::Table, "raced").expect("a readable store").is_none());
+        assert!(store.read(Doc::Record, "raced").expect("a readable store").is_none());
+        assert!(matches!(games.table("raced", &red), Err(GameError::NotFound(_))));
+        games.create(&req("raced"), &red).expect("the name is reusable");
+    }
+
+    /// **A refused join writes NOTHING**, read as the stored bytes and the
+    /// version rather than as the absence of a visible change.
+    ///
+    /// A 500-character name is the probe because it is refused LATE — after the
+    /// document has been read and the seat found open — so a `join` that
+    /// mutated its copy and wrote before validating would pass every other cell
+    /// here and be caught only by this one.
+    #[test]
+    fn a_five_hundred_character_name_on_join_is_refused_and_the_document_is_unchanged() {
+        let games = games();
+        let blue = who("blue@t.test");
+        open_two(&games, "long", None);
+        let before = games.store().read(Doc::Table, "long").unwrap().expect("a table document");
+        let e = games.join("long", &blue, PlayerId::new(1), Some(&"x".repeat(500)), None).unwrap_err();
+        assert!(matches!(e, GameError::BadRequest(_)) && e.to_string().contains("1 to 64"), "{e}");
+        let after = games.store().read(Doc::Table, "long").unwrap().expect("a table document");
+        assert_eq!(before.0, after.0, "the stored bytes are unchanged");
+        assert_eq!(before.1, after.1, "and so is the version");
+    }
+
 }
