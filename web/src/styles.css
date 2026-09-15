@@ -870,6 +870,35 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
 
 .saved ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.25rem; }
 .saved li { display: flex; gap: 0.4rem; align-items: center; }
+/* The row's second half — how many seats and what the table is waiting on. It
+   wraps rather than pushing the delete controls off a narrow screen. */
+.saved li .muted { font-size: 11px; }
+
+/* ---- the door (M6.1) ---------------------------------------------------- */
+
+/* Who you are, on a screen that has no banner to put it in. Right-aligned and
+   above the heading, which is where a page header would have carried it. */
+.who-strip {
+  display: flex; align-items: center; justify-content: flex-end;
+  gap: 0.5rem; margin-bottom: 0.8rem;
+}
+.who-strip .who { color: var(--fg-faint); font-size: 11px; letter-spacing: 0.04em; }
+
+/* In a banner it is one more `.meta`, and it sits to the LEFT of the turn strip
+   — which takes `margin-left: auto` and so stays at the far end of the row. */
+.banner .who { white-space: nowrap; }
+
+/* The door's refusal: a sentence and nothing to click, so it reads as prose
+   rather than as a failed form. */
+.door-error { color: var(--warn); max-width: 34rem; }
+
+.sign-in .field { max-width: 26rem; }
+.sign-in form { margin-top: 1rem; }
+.sign-in button.primary { margin-top: 0.6rem; }
+
+/* One table in the Game menu's list: the name is a control, the rest is not. */
+.game-row { display: flex; align-items: baseline; gap: 0.5rem; }
+.game-row .muted { font-size: 10px; white-space: nowrap; }
 
 .error { color: var(--warn); margin-top: 0.6rem; }
 .center { text-align: center; color: var(--fg-dim); padding: 3rem; }

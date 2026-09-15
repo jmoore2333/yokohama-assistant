@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
-import { api, ApiError } from "./api";
+import { api, ApiError, clearClaimedUser, isSignedOut } from "./api";
+import { SignIn } from "./SignIn";
+import { doorSentence, useMe } from "./whoami";
 import { Board } from "./Board";
 import { seatClass } from "./Cards";
 import { Dashboard } from "./Dashboard";
@@ -49,6 +51,33 @@ async function fetchRun(game: string, prev: number, next: number): Promise<Run> 
 }
 
 export function App() {
+  // **The door, read before any screen is chosen** (M6.1 §7.1). Every
+  // `/api/games` route is a 401 without an identity, so who the server thinks
+  // we are decides which of four screens this is — see the branch below the
+  // hooks, which is where it can finally be acted on.
+  const door = useMe();
+  const { refresh } = door;
+  /** Stop being this person: the sign-out button, and where a refusal lands.
+   *
+   *  **Dropping the stored name is half of it, and not a tidy-up.** `/api/me`
+   *  reads the very header `api.ts` attaches from storage, so asking the door
+   *  again while still holding the name it just refused gets the same name
+   *  back. Under the two edge-identity doors there is nothing stored to drop
+   *  and `/api/me` answers `user: null` on its own. */
+  const signOut = useCallback(() => {
+    clearClaimedUser();
+    refresh();
+  }, [refresh]);
+  /** A refusal that means the server no longer knows who we are (401, and the
+   *  API has exactly one): back to the door. `true` when it was that. */
+  const signedOut = useCallback(
+    (e: unknown) => {
+      if (!isSignedOut(e)) return false;
+      signOut();
+      return true;
+    },
+    [signOut],
+  );
   const [labels, setLabels] = useState<Labels | null>(null);
   const [art, setArt] = useState<ArtManifest | null>(null);
   const [state, setState] = useState<ClientState | null>(null);
@@ -240,6 +269,10 @@ export function App() {
         // longer on screen would sit over a game it does not describe.
         if (gameId.current !== game) return;
         setError(e instanceof ApiError ? e.message : String(e));
+        // **A 401 goes to the door, and the re-read below is skipped.** The
+        // server does not know who we are, so re-reading the game would earn
+        // the same 401 and the recovery would be a second refusal.
+        if (signedOut(e)) return;
         // **Re-read the game, because the server just told us to and this
         // client had no way to.**
         //
@@ -268,7 +301,7 @@ export function App() {
         setBusy(false);
       }
     },
-    [state, landed],
+    [state, landed, signedOut],
   );
 
   // **Debounced, because a drag is not a click.**
@@ -304,13 +337,16 @@ export function App() {
           if (!live) return;
           setPast(null);
           setError(e instanceof ApiError ? e.message : String(e));
+          // The scrubber reads the same record every other route does, so a
+          // refusal here means the same thing it means there.
+          signedOut(e);
         });
     }, 200);
     return () => {
       live = false;
       clearTimeout(timer);
     };
-  }, [scrubK, state?.id]);
+  }, [scrubK, state?.id, signedOut]);
 
   // Leaving the log panel leaves the replay. The scrub track lives in that
   // panel, so a scrub position with the panel shut would be a board showing a
@@ -318,6 +354,46 @@ export function App() {
   useEffect(() => {
     if (surface !== "log") setScrubK(null);
   }, [surface]);
+
+  // ---- the door, below every hook and above every screen (M6.1 §7.1) -------
+  //
+  // Four answers, in order, and the ORDER is the rule:
+  //
+  // 1. `/api/me` refused. Say so and offer nothing — a sign-in form over a
+  //    server that cannot answer would take a name and lose it.
+  // 2. It has not answered yet: draw NOTHING. A default either way flashes the
+  //    wrong screen at half the players for one round trip, and the one that
+  //    flashes is the sign-in form at people who are already signed in.
+  // 3. Nobody is signed in under `claimed` — the one door this browser can
+  //    knock on. The form.
+  // 4. Nobody is signed in under Cloudflare Access or the edge Worker. There is
+  //    no form to offer: the identity comes from in front of the server, so the
+  //    only useful thing to say is which header was expected.
+  if (door.error) return <div className="setup door-error">{door.error}</div>;
+  if (!door.me) return null;
+  if (door.me.mode === "claimed" && !door.me.user)
+    return <SignIn onSignedIn={() => refresh()} />;
+  if (!door.me.user) return <div className="setup door-error">{doorSentence(door.me.mode)}</div>;
+
+  // **Who you are, and how to stop being them — built once, placed twice.**
+  // The setup screens carry their own root and their own banner, so the strip
+  // is handed to `NewGame` as a node rather than restated there: two copies
+  // would be two places for the sign-out wiring to drift, and only one of them
+  // would be covered by the door's cells.
+  //
+  // The button exists under `claimed` ONLY. Under the two edge doors there is
+  // nothing stored to clear, and a control that looked like it logged you out
+  // while Access kept letting you in would be a lie on screen.
+  const who = (
+    <>
+      <span className="meta who">You are {door.me.user}</span>
+      {door.me.mode === "claimed" && (
+        <button type="button" className="ghost" onClick={signOut}>
+          sign out
+        </button>
+      )}
+    </>
+  );
 
   // `enabled`/`toggleSection` are THIS component's, deliberately: the set table
   // and the game must agree about which boards are on, and a second
@@ -331,6 +407,7 @@ export function App() {
         sections={enabled}
         onToggleSection={toggleSection}
         onStarted={show}
+        who={who}
       />
     );
   }
@@ -465,7 +542,9 @@ export function App() {
             setError(null);
             show(null);
           }}
+          onSignedOut={signOut}
         />
+        {who}
         {/* Four surfaces inline, the five card references behind a disclosure,
             so the banner stays ONE ROW at every laptop width: measured 93 → 56px
             at 1440 and 174 → 93 at 1024, with the nav's bottom edge at 43px

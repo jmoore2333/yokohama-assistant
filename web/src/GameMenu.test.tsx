@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
-import { gamesNamed, renderApp } from "./test/harness";
+import { gameMenu, gamesNamed, renderApp } from "./test/harness";
 import { wire } from "./wire/contract";
 
 /** This file's own directory, as a `file:` URL.
@@ -27,7 +27,7 @@ describe("the Game menu", () => {
       return undefined;
     });
     const user = userEvent.setup();
-    await user.click(screen.getByText(new RegExp(wire.options.id)));
+    await user.click(gameMenu());
     const button = await screen.findByRole("button", { name: "sim-other" });
     await user.click(button);
     // The summary now names the other game, and the list has RECOMPUTED: the
@@ -52,13 +52,52 @@ describe("the Game menu", () => {
         : undefined,
     );
     const user = userEvent.setup();
-    await user.click(screen.getByText(new RegExp(wire.options.id)));
+    await user.click(gameMenu());
     await user.click(screen.getByRole("button", { name: "New game" }));
     expect(await screen.findByRole("heading", { name: "New game" })).toBeInTheDocument();
     // A reload in jsdom is a no-op that would pass; the source is the check.
     for (const f of ["App.tsx", "GameMenu.tsx"]) {
       expect(readFileSync(new URL(`./${f}`, here), "utf8")).not.toMatch(/location\.reload/);
     }
+  });
+
+  // The list is a list of TABLES since M6.1, and a row has to say enough for a
+  // player with three games open to pick the right one: what it is CALLED, how
+  // many seats it has, and whether it is waiting on them. Before this it said
+  // an opaque id and nothing else.
+  it("names each table, its size, and what it is waiting on", async () => {
+    // Three rows off two corpus payloads. The menu hides the game you are
+    // already in, so each has to be a table other than this one — `id` is
+    // moved, and on two of them `name` is cleared, which is the `?? id`
+    // fallback a table opened without a name takes.
+    //
+    // `dealing` keeps a name, and it is INVENTED rather than the corpus's
+    // "wire": a table's name is free text a player typed, so there is no
+    // server-authored value to preserve, and the corpus's happens to collide
+    // with the id of the game this cell is playing.
+    const dealing = { ...wire.games.games[0]!, id: "sim-dealing", name: "Tuesday game" };
+    const waiting = { ...wire.table, id: "sim-waiting", name: null };
+    // `my_seats` is the one field the server varies per caller, and the corpus
+    // can only carry one caller's reading — so the row every player sees most
+    // often, their own turn, is the corpus's table read from the other side.
+    const yours = { ...wire.table, id: "sim-yours", name: null, my_seats: [wire.table.to_move!] };
+    await renderApp(wire.options, (call) =>
+      call.method === "GET" && call.path.endsWith("/api/games")
+        ? // The game being played is in the list too — `renderApp` opens it
+          // from the setup screen's copy of this same list — and the menu is
+          // then asserted NOT to offer it back.
+          { games: [...gamesNamed(wire.options.id).games, dealing, waiting, yours] }
+        : undefined,
+    );
+    await userEvent.setup().click(gameMenu());
+    expect(screen.queryByRole("button", { name: wire.options.id })).toBeNull();
+
+    const row = async (name: string) =>
+      (await screen.findByRole("button", { name })).closest(".game-row")!;
+    // The `name`, not the id: a table opened with a name is listed under it.
+    expect(await row(dealing.name)).toHaveTextContent("2P · dealing");
+    expect(await row("sim-waiting")).toHaveTextContent("2P · waiting on red@wire.test");
+    expect(await row("sim-yours")).toHaveTextContent("2P · your turn");
   });
 
   // **The same defect the app guards at its two other mutation controls**, in the
@@ -75,7 +114,7 @@ describe("the Game menu", () => {
       if (call.method === "GET" && call.path.endsWith("/api/games/sim-other")) return other;
       return undefined;
     });
-    await userEvent.setup().click(screen.getByText(new RegExp(wire.options.id)));
+    await userEvent.setup().click(gameMenu());
     const row = await screen.findByRole("button", { name: "sim-other" });
     // The GAME, not its board panels: `matching` is a substring test, and the
     // switched-to game's `/ports` and `/labs` fetches contain the id too.

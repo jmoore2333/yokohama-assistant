@@ -231,7 +231,11 @@ describe("the request the client sends", () => {
 // two and three human seats choosing in turn.
 describe("the setup form's subtitle", () => {
   it("says one human seat at two players and counts them above that", async () => {
-    const { user } = show(() => []);
+    // An EMPTY LIST, not a bare `[]`: `GET /api/games` answers `{games: […]}`
+    // and the screen reads `.games` off it. A stub answering an array models a
+    // server that does not exist — it used to be caught only because the old
+    // code called `.map` on `undefined` and the throw landed in a catch.
+    const { user } = show(() => gamesNamed());
     const lede = () => document.querySelector("p.lede")!.textContent ?? "";
     expect(lede()).toMatch(/^One human seat against v4-step9-draft1/);
     expect(lede()).not.toMatch(/in turn/);

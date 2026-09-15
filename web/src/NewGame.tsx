@@ -1,12 +1,20 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { api, ApiError, claimedUser, type NewGameRequest } from "./api";
 import { Board } from "./Board";
 import { BoardsMenu } from "./BoardsMenu";
 import { backArt } from "./art";
 import { OrderCardView, seatClass } from "./Cards";
 import { TableSections } from "./TableSections";
+import { tableWord } from "./tables";
 import type { SectionKey } from "./sections";
-import type { ArtManifest, ClientState, Labels, PlayerColor, Preview } from "./types";
+import type {
+  ArtManifest,
+  ClientState,
+  Labels,
+  PlayerColor,
+  Preview,
+  TableView,
+} from "./types";
 
 const COLORS = ["Red", "Blue", "Yellow", "Green"] as const;
 
@@ -78,9 +86,20 @@ export function NewGame({
   sections,
   onToggleSection,
   onStarted,
+  who,
 }: {
   art: ArtManifest | null;
   labels: Labels | null;
+  /** The "You are …" strip and, under a `claimed` deployment, its sign-out
+   *  button — built by `App`, which is where the door's state lives, and merely
+   *  PLACED here.
+   *
+   *  A node rather than an email and a callback, so there is exactly one
+   *  statement of the strip and one wiring of the button: this screen and the
+   *  game screen show the same thing because it is the same thing. Optional
+   *  because this component's own cells are about setting a game up and have no
+   *  door to speak of; `App` always passes it. */
+  who?: ReactNode;
   /** The boards the set table draws, and the toggle behind its Boards menu.
    *
    *  **Owned by `App`, not by this screen (R-T12-4).** `useSections()` seeds
@@ -130,21 +149,22 @@ export function NewGame({
     passing.current = false;
     firstPick.current?.focus();
   }, [turn]);
-  const [saved, setSaved] = useState<string[]>([]);
+  const [saved, setSaved] = useState<TableView[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   /** The saved game whose `delete` has been clicked once — see the row below. */
   const [confirming, setConfirming] = useState<string | null>(null);
 
-  /** The ids of the tables this player sits at.
+  /** The tables this player sits at, scoped to them by the server (M6.1).
    *
-   *  **The list is a list of TABLES since M6.1**, scoped to the caller by the
-   *  server; this screen still draws it as names, which is all it ever read. */
-  const savedIds = async () => (await api.list()).games.map((t) => t.id);
+   *  **The whole table, not just its id**: a row says what the table is called,
+   *  how many seats it has and what it is waiting on, which is what makes a
+   *  list of three games something a player can read. */
+  const savedTables = async () => (await api.list()).games;
 
   useEffect(() => {
-    savedIds().then(setSaved).catch(() => setSaved([]));
-    // `savedIds` is re-created every render and this must run once, so it is
+    savedTables().then(setSaved).catch(() => setSaved([]));
+    // `savedTables` is re-created every render and this must run once, so it is
     // deliberately not a dependency — the shape the original `api.list()` call
     // had here, kept.
   }, []);
@@ -232,6 +252,7 @@ export function NewGame({
           <span className="meta">
             setting up &middot; seed <code>{preview.seed}</code>
           </span>
+          {who}
           <span className="meta turn">choose your card</span>
           {/* Spec §3.3.3: the same menu the game banner carries, so a player can
               switch a board on and read a site card at full size before
@@ -414,6 +435,10 @@ export function NewGame({
 
   return (
     <div className="setup">
+      {/* This screen carries no banner, so the strip gets a row of its own —
+          the same node the set table puts in its banner and the game screen
+          puts in its own, so there is one place a player reads who they are. */}
+      {who && <div className="who-strip">{who}</div>}
       <h2>New game</h2>
       {/* **Count-aware, because this form seats one bot at any player count**
           and R-C2 made two and three human seats a designed flow one click
@@ -503,67 +528,77 @@ export function NewGame({
           <p className="muted">none yet — a game appears here as soon as it starts.</p>
         ) : (
           <ul>
-            {saved.map((name) => (
-              <li key={name}>
-                <button
-                  type="button"
-                  className="ghost"
-                  disabled={busy}
-                  onClick={() => run(async () => onStarted(await api.get(name), false))}
-                >
-                  {name}
-                </button>
-                {/* **Two clicks, and the first one asks (final review I2).**
-                    Deleting a record is not undoable — the game is gone — and
-                    M5 put this list one banner menu away from a running game,
-                    so a stray click beside the game you meant to resume used
-                    to remove a different one.
+            {saved.map((t) => {
+              // The id is what every REQUEST is keyed by, and the name is only
+              // ever what is shown. Bound once per row so the two cannot be
+              // confused below: `delete ${name}` beside `api.remove(id)` is how
+              // a row deletes a game other than the one it names.
+              const name = t.name ?? t.id;
+              return (
+                <li key={t.id}>
+                  <button
+                    type="button"
+                    className="ghost"
+                    disabled={busy}
+                    onClick={() => run(async () => onStarted(await api.get(t.id), false))}
+                  >
+                    {name}
+                  </button>
+                  <span className="muted">
+                    {t.players}P &middot; {tableWord(t)}
+                  </span>
+                  {/* **Two clicks, and the first one asks (final review I2).**
+                      Deleting a record is not undoable — the game is gone — and
+                      M5 put this list one banner menu away from a running game,
+                      so a stray click beside the game you meant to resume used
+                      to remove a different one.
 
-                    A row that asks, rather than `window.confirm`: a native
-                    dialog blocks the browser walk this client is tested with,
-                    and the question belongs where the mistake is made. Both
-                    buttons NAME the game, so the confirmation cannot be about
-                    a row other than the one that opened it. */}
-                {confirming === name ? (
-                  <>
+                      A row that asks, rather than `window.confirm`: a native
+                      dialog blocks the browser walk this client is tested with,
+                      and the question belongs where the mistake is made. Both
+                      buttons NAME the game, so the confirmation cannot be about
+                      a row other than the one that opened it. */}
+                  {confirming === t.id ? (
+                    <>
+                      <button
+                        type="button"
+                        className="ghost danger"
+                        disabled={busy}
+                        aria-label={`confirm delete ${name}`}
+                        onClick={() =>
+                          run(async () => {
+                            await api.remove(t.id);
+                            setConfirming(null);
+                            setSaved(await savedTables());
+                          })
+                        }
+                      >
+                        confirm delete
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost"
+                        disabled={busy}
+                        aria-label={`cancel deleting ${name}`}
+                        onClick={() => setConfirming(null)}
+                      >
+                        cancel
+                      </button>
+                    </>
+                  ) : (
                     <button
                       type="button"
                       className="ghost danger"
                       disabled={busy}
-                      aria-label={`confirm delete ${name}`}
-                      onClick={() =>
-                        run(async () => {
-                          await api.remove(name);
-                          setConfirming(null);
-                          setSaved(await savedIds());
-                        })
-                      }
+                      aria-label={`delete ${name}`}
+                      onClick={() => setConfirming(t.id)}
                     >
-                      confirm delete
+                      delete
                     </button>
-                    <button
-                      type="button"
-                      className="ghost"
-                      disabled={busy}
-                      aria-label={`cancel deleting ${name}`}
-                      onClick={() => setConfirming(null)}
-                    >
-                      cancel
-                    </button>
-                  </>
-                ) : (
-                  <button
-                    type="button"
-                    className="ghost danger"
-                    disabled={busy}
-                    aria-label={`delete ${name}`}
-                    onClick={() => setConfirming(name)}
-                  >
-                    delete
-                  </button>
-                )}
-              </li>
-            ))}
+                  )}
+                </li>
+              );
+            })}
           </ul>
         )}
       </section>

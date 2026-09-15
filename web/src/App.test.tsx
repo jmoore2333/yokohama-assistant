@@ -5,13 +5,22 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { render } from "@testing-library/react";
 import { App } from "./App";
+import { CLAIMED_USER_KEY } from "./api";
 import { loadSections } from "./sections";
-import { gamesNamed, gate, renderApp, stubApi } from "./test/harness";
+import { gameMenu, gamesNamed, gate, renderApp, signedOutReply, stubApi } from "./test/harness";
 import { wire } from "./wire/contract";
 
 /** The board tile for one area, as the accessible name renders it. */
 const tile = (area: number) =>
   screen.getByRole("button", { name: new RegExp(`^A${String(area).padStart(2, "0")} `) });
+
+/** The first answer in the deck, whatever the prompt's rows happen to say.
+ *
+ *  A query by CLASS, because the cells that use it are about what the click
+ *  SENDS rather than about which move it was: matching on the row's own words
+ *  would tie them to a fixture's wording for no gain. */
+const firstOptionButton = () =>
+  document.querySelector<HTMLButtonElement>("button.option:not([disabled])")!;
 
 describe("the in-flight guard", () => {
   // **The defect, exactly.** The board tile was the one mutation control with
@@ -117,7 +126,7 @@ describe("the seed on screen", () => {
     expect(screen.queryByText(/seed/i)).not.toBeInTheDocument();
     // The banner is still there and still names the game — the assertion above
     // would pass on a blank page without this.
-    expect(screen.getByText(new RegExp(wire.options.id))).toBeInTheDocument();
+    expect(gameMenu()).toHaveTextContent(wire.options.id);
   });
 });
 
@@ -456,7 +465,7 @@ describe("a reply for a game you left", () => {
     const user = userEvent.setup();
 
     // The switch goes out and is HELD, so it is still in flight for the move.
-    await user.click(screen.getByText(new RegExp(wire.optionsMany.id)));
+    await user.click(gameMenu());
     await user.click(await screen.findByRole("button", { name: "sim-other" }));
 
     const state = wire.optionsMany;
@@ -494,7 +503,7 @@ describe("a reply for a game you left", () => {
       return undefined;
     });
     const user = userEvent.setup();
-    await user.click(screen.getByText(new RegExp(wire.optionsMany.id)));
+    await user.click(gameMenu());
     const row = await screen.findByRole("button", { name: "sim-other" });
     expect(row).toBeEnabled();
 
@@ -940,7 +949,7 @@ describe("the turn playback", () => {
       expect(screen.getByText(/is playing · step 1 of 3/)).toBeInTheDocument();
       expect(boardPieces()).toHaveLength(2);
 
-      click(screen.getByText(new RegExp(before.id)));
+      click(gameMenu());
       await settle();
       click(screen.getByRole("button", { name: "sim-other" }));
       await settle();
@@ -1038,7 +1047,11 @@ describe("the turn playback", () => {
 // the half that was already right.
 describe("the boards a player switches during setup", () => {
   it("stay switched when the game opens", async () => {
+    // Signed in, because since M6.1 there is a door in front of every screen
+    // and this cell drives `App` directly rather than through `renderApp`.
+    localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
     const stub = stubApi((call) => {
+      if (call.path.endsWith("/api/me")) return wire.me;
       if (call.method === "GET" && call.path.endsWith("/api/games")) return gamesNamed();
       if (call.path.endsWith("/api/labels")) return wire.labels;
       if (call.path.endsWith("/api/art")) return wire.artManifest;
@@ -1059,7 +1072,9 @@ describe("the boards a player switches during setup", () => {
     render(<App />);
     const user = userEvent.setup();
 
-    await user.click(screen.getByRole("button", { name: "Deal" }));
+    // `find`, not `get`: `App` draws nothing at all until `/api/me` answers, so
+    // the setup screen is one round trip away rather than there on first paint.
+    await user.click(await screen.findByRole("button", { name: "Deal" }));
     // `Re-deal`, not Start: since R-C2 Start is not drawn until every human seat
     // has chosen, so waiting for it here would wait for a click below.
     await waitFor(() => expect(screen.getByRole("button", { name: "Re-deal" })).toBeInTheDocument());
@@ -1082,5 +1097,131 @@ describe("the boards a player switches during setup", () => {
     // And the port was never fetched for the game either — the section being
     // absent is not the same as its request not going out.
     expect(stub.matching("GET", "/ports")).toHaveLength(0);
+  });
+});
+
+// ---- the door (M6.1 §7.1) --------------------------------------------------
+//
+// Four screens, and `/api/me` picks between them: nothing while it is in
+// flight, the sign-in form under a `claimed` deployment with nobody signed in,
+// a sentence naming the missing header under the other two doors, and the app
+// itself once the server names a user.
+
+describe("the door", () => {
+  it("shows sign-in when the door is claimed and nobody is signed in, then the games list", async () => {
+    const stub = stubApi((call) => {
+      // Answered the way the SERVER answers it: from the header this browser
+      // is sending. A stub that returned `wire.me` regardless would model a
+      // server that ignores its own header, and signing in would prove nothing.
+      if (call.path.endsWith("/api/me"))
+        return localStorage.getItem(CLAIMED_USER_KEY) ? wire.me : wire.meSignedOut;
+      if (call.path.endsWith("/api/games")) return wire.games;
+      if (call.path.endsWith("/api/labels")) return wire.labels;
+      if (call.path.endsWith("/api/art")) return wire.artManifest;
+      return undefined;
+    });
+    render(<App />);
+    await screen.findByRole("heading", { name: "Sign in" });
+    // **Nothing is asked for from behind the door.** Every `/api/games` route
+    // is a 401 without an identity, so a client that listed first would show
+    // the player a refusal as their first screen.
+    expect(stub.matching("GET", "/api/games")).toHaveLength(0);
+
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText("Email"), wire.me.user!);
+    await user.click(screen.getByRole("button", { name: "Sign in" }));
+
+    await screen.findByText(`You are ${wire.me.user}`);
+    // The list, and no individual game: signing in lands on the setup screen,
+    // not inside whatever game happens to be first.
+    expect(stub.matching("GET", "/api/games/")).toHaveLength(0);
+    // Read AGAIN after signing in, rather than the client deciding for itself
+    // that it is now this person: a typed name is only worth what the server
+    // says it is worth.
+    expect(stub.matching("GET", "/api/me").length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("names the door rather than offering a form when a non-claimed deployment has no user", async () => {
+    stubApi((call) =>
+      // The corpus carries only the `claimed` door — the fixture server runs in
+      // that mode — so the MODE is the one field moved off a real payload.
+      call.path.endsWith("/api/me") ? { ...wire.meSignedOut, mode: "cf-access" } : undefined,
+    );
+    render(<App />);
+    await screen.findByText(/Cf-Access-Authenticated-User-Email/);
+    // There is nothing to type: the identity arrives from an edge in front of
+    // the server, and a form here would store a name that server ignores.
+    expect(screen.queryByLabelText("Email")).toBeNull();
+  });
+
+  it("a 401 mid-game returns to sign-in", async () => {
+    const stub = await renderApp(wire.options, (call) =>
+      call.path.endsWith("/input") ? signedOutReply() : undefined,
+    );
+    await userEvent.setup().click(firstOptionButton());
+    await screen.findByRole("heading", { name: "Sign in" });
+    expect(stub.matching("POST", "/input")).toHaveLength(1);
+    // The stored name is DROPPED, not merely re-asked: the harness answers
+    // `/api/me` from storage, so a client that kept it would have been handed
+    // its user straight back and walked into the game again.
+    expect(localStorage.getItem(CLAIMED_USER_KEY)).toBeNull();
+    // And the recovery a refusal normally triggers does NOT run: re-reading the
+    // game would earn the same 401, so the only `GET` for it is the one that
+    // opened it. The GAME, not its board panels — `matching` is a substring
+    // test and every panel's path contains the game's.
+    expect(
+      stub.calls.filter(
+        (c) => c.method === "GET" && c.path.endsWith(`/api/games/${wire.options.id}`),
+      ),
+    ).toHaveLength(1);
+  });
+
+  // **The third catch site**, and the one in a different component: the Game
+  // menu's two requests are both `/api/games` routes, so both refuse the moment
+  // the server stops knowing who we are — and the menu is where a player goes
+  // after leaving the tab open all afternoon.
+  it("a 401 from the Game menu's list returns to sign-in", async () => {
+    let lists = 0;
+    await renderApp(wire.options, (call) => {
+      if (call.method === "GET" && call.path.endsWith("/api/games")) {
+        // The FIRST list is the setup screen's, which `renderApp` opens the
+        // game from. The menu's is the next one, and that is the one refused.
+        lists += 1;
+        if (lists > 1) return signedOutReply();
+      }
+      return undefined;
+    });
+    await userEvent.setup().click(gameMenu());
+    await screen.findByRole("heading", { name: "Sign in" });
+    expect(localStorage.getItem(CLAIMED_USER_KEY)).toBeNull();
+  });
+
+  // The scrubber reads the same record every other route does, and it is the
+  // one catch site that is an effect rather than a click handler.
+  it("a 401 from the replay scrubber returns to sign-in", async () => {
+    await renderApp(wire.options, (call) =>
+      /\/at\/\d+$/.test(call.path) ? signedOutReply() : undefined,
+    );
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Log" }));
+    // One step back from the present. The fetch is debounced 200 ms, so the
+    // wait below is what carries it.
+    await user.click(await screen.findByRole("button", { name: "Previous move" }));
+    await screen.findByRole("heading", { name: "Sign in" }, { timeout: 2000 });
+    expect(localStorage.getItem(CLAIMED_USER_KEY)).toBeNull();
+  });
+
+  it("a refusal that is not about identity leaves you in the game", async () => {
+    // **What makes the cell above about 401 and not about 4xx.** Not being
+    // seated at a table is a 403, and is exactly the refusal a player CAN act
+    // on from inside the app; signing them out would throw away the screen
+    // that explains it.
+    await renderApp(wire.options, (call) =>
+      call.path.endsWith("/input") ? { status: 403, body: wire.notSeated403 } : undefined,
+    );
+    await userEvent.setup().click(firstOptionButton());
+    await screen.findByText(wire.notSeated403.error);
+    expect(screen.queryByRole("heading", { name: "Sign in" })).toBeNull();
+    expect(localStorage.getItem(CLAIMED_USER_KEY)).toBe(wire.me.user);
   });
 });

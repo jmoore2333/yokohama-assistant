@@ -19,8 +19,28 @@ import type {
   WhyResponse,
 } from "./types";
 
-/** A refusal from the server, carrying the sentence it refused with. */
-export class ApiError extends Error {}
+/** A refusal from the server, carrying the sentence it refused with — and the
+ *  STATUS it arrived with, because one caller has to branch on which refusal
+ *  this is rather than on how it is worded.
+ *
+ *  **401 is the whole reason the status is here, and it is a total join**:
+ *  `identity.rs` is the only place on this API that answers 401, so the status
+ *  alone means "the server does not know who you are" and nothing else. The
+ *  sentence cannot do that job — it is one of THREE, one per identity mode
+ *  ("no signed-in user: send X-Yokohama-Claimed-User" under `claimed`, and two
+ *  different "no identity reached the server…" sentences under Cloudflare
+ *  Access and the edge Worker) — so a client matching the first would strand
+ *  exactly the deployment that is hosted. */
+export class ApiError extends Error {
+  readonly status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
+  }
+}
+
+/** The server no longer knows who we are. See `ApiError.status`. */
+export const isSignedOut = (e: unknown): boolean => e instanceof ApiError && e.status === 401;
 
 /** Where the sign-in screen keeps the claimed user (R-plan-2). Read on every
  *  call; absent means no header. A value is only ever WRITTEN by the sign-in
@@ -36,6 +56,32 @@ export function claimedUser(): string | null {
     return typeof localStorage === "undefined" ? null : localStorage.getItem(CLAIMED_USER_KEY);
   } catch {
     return null;
+  }
+}
+
+/** Remember who this browser plays as. Written by the sign-in screen and by
+ *  nothing else, so the stored name is always one a person typed here.
+ *
+ *  A storage that refuses — a private window, a blocked site — is not an error
+ *  to report: the header is simply not sent, the server answers `user: null`,
+ *  and the player is asked again. Signing in is not a thing that can half
+ *  happen. */
+export function setClaimedUser(email: string): void {
+  try {
+    localStorage.setItem(CLAIMED_USER_KEY, email);
+  } catch {
+    /* storage refused: the header is simply not sent */
+  }
+}
+
+/** Forget it. Sign-out, and also what a `no signed-in user` refusal means: the
+ *  name we hold is not one this server will answer to, so holding it only
+ *  buys another refusal. */
+export function clearClaimedUser(): void {
+  try {
+    localStorage.removeItem(CLAIMED_USER_KEY);
+  } catch {
+    /* nothing to clear */
   }
 }
 
@@ -73,7 +119,7 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
       !parseFailed && parsed && typeof parsed === "object" && "error" in parsed
         ? String((parsed as { error: unknown }).error)
         : `${res.status} ${res.statusText}`;
-    throw new ApiError(message);
+    throw new ApiError(message, res.status);
   }
   if (parseFailed) {
     // A 2xx that is not JSON is this API answering with something it does not
@@ -81,6 +127,7 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
     // complaint about the first character of it.
     throw new ApiError(
       `${res.status} ${res.statusText}: the server answered with something that is not JSON`,
+      res.status,
     );
   }
   return parsed as T;

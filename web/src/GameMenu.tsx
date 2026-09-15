@@ -6,22 +6,29 @@
 // this menu. Nothing is deleted from here; the setup screen already does that.
 
 import { useRef, useState } from "react";
-import { api, ApiError } from "./api";
-import type { ClientState } from "./types";
+import { api, ApiError, isSignedOut } from "./api";
+import { tableWord } from "./tables";
+import type { ClientState, TableView } from "./types";
 
 export function GameMenu({
   state,
   busy,
   onSwitch,
   onNew,
+  onSignedOut,
 }: {
   state: ClientState;
   /** A move is in flight. See the rows' `disabled` below. */
   busy: boolean;
   onSwitch: (s: ClientState) => void;
   onNew: () => void;
+  /** The server no longer knows who we are. Both requests this menu makes are
+   *  `/api/games` routes, so both are a 401 the moment that is true, and the
+   *  menu is a likely place to find out — it is the one control a player
+   *  reaches for after leaving the tab open. */
+  onSignedOut: () => void;
 }) {
-  const [saved, setSaved] = useState<string[] | null>(null);
+  const [saved, setSaved] = useState<TableView[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   // A switch already asked for. Two rows clicked in the same breath would
   // otherwise both `GET`, and the one that answered LAST would win — which is
@@ -37,15 +44,23 @@ export function GameMenu({
   // two `GET /api/games`, and the first to answer is not the first sent; a
   // stale list is one that offers a game already deleted.
   const listing = useRef(0);
-  const said = (e: unknown) => (e instanceof ApiError ? e.message : String(e));
+  /** The sentence to show — and, on the one refusal a sentence cannot help
+   *  with, the way back to the door. Both catch sites below go through it, so
+   *  neither can be the one that forgets. */
+  const said = (e: unknown) => {
+    if (isSignedOut(e)) onSignedOut();
+    return e instanceof ApiError ? e.message : String(e);
+  };
   const load = () => {
     setError(null);
     const seq = (listing.current += 1);
     api
       // The list is a list of TABLES since M6.1, scoped to the caller by the
-      // server. This menu reads their ids, which is all it ever read.
+      // server, and the rows say so: a table has a name, a size and something
+      // it is waiting on. The id alone was all this menu could show when a
+      // saved game was a file.
       .list()
-      .then((l) => seq === listing.current && setSaved(l.games.map((t) => t.id)))
+      .then((l) => seq === listing.current && setSaved(l.games))
       .catch((e) => seq === listing.current && setError(said(e)));
   };
   const switchTo = (id: string) => {
@@ -61,7 +76,7 @@ export function GameMenu({
         setSwitching(false);
       });
   };
-  const others = (saved ?? []).filter((id) => id !== state.id);
+  const others = (saved ?? []).filter((t) => t.id !== state.id);
   return (
     <details
       className="cards-menu game-menu"
@@ -87,16 +102,26 @@ export function GameMenu({
             keeps the player from asking for the state the guard has to throw
             away. **New game** stays live: it leaves for the setup screen, where
             a reply for the game left behind is dropped by the same guard. */}
-        {others.map((id) => (
-          <button
-            type="button"
-            className="ghost"
-            key={id}
-            disabled={busy || switching}
-            onClick={() => switchTo(id)}
-          >
-            {id}
-          </button>
+        {/* **A row is the table, not its id.** The button is what it is CALLED
+            — the name whoever opened it typed, and the id when nobody typed one
+            — and the line beside it is how many seats it has and what it is
+            waiting on. `tables.ts` words that, shared with the setup screen's
+            list, so the same table cannot read two different ways depending on
+            which of the two lists you are looking at. */}
+        {others.map((t) => (
+          <div className="game-row" key={t.id}>
+            <button
+              type="button"
+              className="ghost"
+              disabled={busy || switching}
+              onClick={() => switchTo(t.id)}
+            >
+              {t.name ?? t.id}
+            </button>
+            <span className="muted">
+              {t.players}P &middot; {tableWord(t)}
+            </span>
+          </div>
         ))}
         {saved !== null && others.length === 0 && <div className="muted">no other saved game</div>}
       </div>
