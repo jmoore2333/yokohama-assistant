@@ -232,16 +232,26 @@ async fn a_whole_two_player_game_against_the_bot_plays_through_the_api() {
 /// before M6.1; it cannot say anything at all about whose payload is whose,
 /// because there is only ever one caller. This arm drives the SAME policy under
 /// two claimed identities — every request carrying its own header, alternating
-/// with the turn — and reads two things off every single reply:
+/// with the turn — and holds every payload to [`assert_built_for`]: `seat` is
+/// the seat the REQUESTER holds, `hand_hidden` is false at exactly that seat and
+/// true at every other, and the one open Hand panel on the frame is that seat's.
 ///
-/// 1. **`seat` is the REQUESTER's**, not the game's idea of who is interesting.
-///    A payload built for "whoever is to move" would pass every cell in this
-///    crate that only ever asks as the mover, and would hand a watching player
-///    the acting seat's frame.
-/// 2. **`hand_hidden` is false at the caller's seat and true at every other
-///    one** — asserted as an EQUALITY against `seat != mine`, not as a pair of
-///    spot checks, so a server that masked everything and a server that masked
-///    nothing both fail. Mutation-proven by flipping `facts_for`'s own test.
+/// **The expected seat is passed IN, never read off the payload**, and that is
+/// the whole discrimination. Stated against the payload's own `seat` it is a
+/// tautology; stated against who asked, a server keyed on
+/// `state.current_player` — ignoring the header entirely — fails.
+///
+/// **So the arm asks as the NON-MOVER too, once per turn**, and that is the
+/// assertion a mover-keyed server actually trips. A walk that only ever asks as
+/// the mover cannot tell the two servers apart, because for the mover the two
+/// answers are the same seat. Mutation-proven: `client::viewer_seat` returning
+/// `Some(state.current_player)` unconditionally fails the non-mover read and
+/// nothing else in this arm.
+///
+/// **And the POST replies are checked, not only the GETs.** A move's reply is a
+/// whole `ClientState` built for its caller (§5.1) — it is the payload the
+/// client renders next — so leaving it unread would have left the busiest
+/// surface on this route unasserted.
 ///
 /// **It probes a placement, and it has to.** [`choose`] answers every placement
 /// picker with `confirm` on an empty selection, which is legal and keeps the
@@ -281,8 +291,44 @@ async fn two_people_play_to_a_winner_and_each_sees_only_their_own_hand() {
         assert_eq!(status, StatusCode::OK, "{kept}");
     }
 
+    // **Every payload this arm sees goes through here, and the seat it is
+    // checked against is passed IN.**
+    //
+    // Reading the expected seat off the payload — `hand_hidden == (p.seat !=
+    // payload.seat)` — is a tautology about one object: a server that built
+    // every reply for `state.current_player` and ignored the header would
+    // satisfy it on every line. `who` and `seat` come from what this test KNOWS
+    // about the table it created, so the two servers are distinguishable.
+    let assert_built_for = |payload: &Value, who: &str, seat: u64| {
+        assert_eq!(payload["seat"], seat, "{who} holds seat {seat}, and was served: {payload}");
+        let panels = payload["frame"]["dashboard"].as_array().expect("a dashboard");
+        let players = panels.iter().find_map(|p| p.get("Players")).expect("a Players panel");
+        let rows = players["players"].as_array().expect("one row per seat");
+        assert_eq!(rows.len(), 2, "both seats are on the panel: {players}");
+        for p in rows {
+            assert_eq!(
+                p["hand_hidden"],
+                p["seat"] != seat,
+                "{who} holds seat {seat} and is shown seat {} with hand_hidden {}: {p}",
+                p["seat"],
+                p["hand_hidden"],
+            );
+        }
+        // And the one hand drawn OPEN on the frame is this caller's own. The
+        // `hand_hidden` rows above are the Players panel's summary; the Hand
+        // panel is the card list itself, which is where identities would leak.
+        let hands: Vec<&Value> = panels.iter().filter_map(|p| p.get("Hand")).collect();
+        assert_eq!(hands.len(), 1, "{who}: exactly one Hand panel, got {}", hands.len());
+        assert_eq!(hands[0]["seat"], seat, "{who} holds seat {seat}: {}", hands[0]);
+        assert_eq!(hands[0]["hidden"], false, "{who}'s own hand is open: {}", hands[0]);
+    };
+
     let mut rng = Rng(0x5457_4F50_4C41_5945); // "TWOPLAYE"
     let mut inputs = 0usize;
+    // The turn the non-mover was last read on, so that read happens once per
+    // turn rather than once per move — it is the assertion a mover-keyed
+    // server trips, and it costs a request.
+    let mut watched: Option<u64> = None;
     // How many times the server ACCEPTED an area into a placement picker. Not
     // the same as an assistant reaching the board — a selection can still be
     // cancelled or refused at Confirm — which is why the claim below is the
@@ -309,27 +355,25 @@ async fn two_people_play_to_a_winner_and_each_sees_only_their_own_hand() {
     while state["over"] != Value::Bool(true) {
         inputs += 1;
         assert!(inputs < 40_000, "a game must finish inside the cap; last state: {state}");
-        let to_move = state["to_move"].clone();
-        let mover = if to_move == 0 { red } else { blue };
+        let seat = state["to_move"].as_u64().expect("a seat to move");
+        let (mover, watcher, watcher_seat) =
+            if seat == 0 { (red, blue, 1) } else { (blue, red, 0) };
         let (status, mine) = api.call_as(mover, "GET", "/api/games/two", None).await;
         assert_eq!(status, StatusCode::OK, "{mine}");
-        assert_eq!(mine["seat"], to_move, "the payload is the requester's seat: {mine}");
+        assert_built_for(&mine, mover, seat);
 
-        let players = mine["frame"]["dashboard"]
-            .as_array()
-            .expect("a dashboard")
-            .iter()
-            .find_map(|p| p.get("Players"))
-            .expect("a Players panel");
-        let rows = players["players"].as_array().expect("one row per seat");
-        assert_eq!(rows.len(), 2, "both seats are on the panel: {players}");
-        for p in rows {
+        // **The read a mover-keyed server fails**, once per turn. For the mover
+        // "the seat you hold" and "the seat to move" are the same number, so
+        // every assertion above passes either way; the WATCHER's payload is
+        // where they come apart, and its `seat` must be the watcher's own.
+        if watched != Some(seat) {
+            watched = Some(seat);
+            let (status, theirs) = api.call_as(watcher, "GET", "/api/games/two", None).await;
+            assert_eq!(status, StatusCode::OK, "{theirs}");
+            assert_built_for(&theirs, watcher, watcher_seat);
             assert_eq!(
-                p["hand_hidden"],
-                p["seat"] != mine["seat"],
-                "{mover} is shown seat {} with hand_hidden {}: {p}",
-                p["seat"],
-                p["hand_hidden"],
+                theirs["your_turn"], false,
+                "{watcher} is not to move, and the payload says so: {theirs}",
             );
         }
 
@@ -344,6 +388,7 @@ async fn two_people_play_to_a_winner_and_each_sees_only_their_own_hand() {
                 .call_as(mover, "POST", "/api/games/two/input", Some(serde_json::json!({ "line": "cancel" })))
                 .await;
             assert_eq!(status, StatusCode::OK, "backing out of a stuck picker: {next}");
+            assert_built_for(&next, mover, seat);
             state = next;
             continue;
         }
@@ -393,6 +438,7 @@ async fn two_people_play_to_a_winner_and_each_sees_only_their_own_hand() {
                     }
                 }
                 if let Some(next) = landed {
+                    assert_built_for(&next, mover, seat);
                     state = next;
                     continue;
                 }
@@ -406,6 +452,10 @@ async fn two_people_play_to_a_winner_and_each_sees_only_their_own_hand() {
             .call_as(mover, "POST", "/api/games/two/input", Some(serde_json::json!({ "line": line })))
             .await;
         assert_eq!(status, StatusCode::OK, "input {line:?} as {mover} was refused: {next}");
+        // **The move's own reply, which is what the client renders next.** It is
+        // built for its CALLER, so it is the mover's seat even when the move
+        // ended the turn and `to_move` has already moved on.
+        assert_built_for(&next, mover, seat);
         state = next;
     }
 
