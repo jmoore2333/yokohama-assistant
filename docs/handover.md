@@ -6,10 +6,13 @@ here names the document that carries it, and it never outranks `guidingpath.md` 
 `CLAUDE.md` (the operating facts), or a dated document in `docs/plans/`. Keep it current at every
 session close: rewrite the stale lines, do not append history (the decision log is for history).
 
-**Updated:** 2026-09-15, on branch `web-room` (worktree `.claude/worktrees/web-room`), at the close
-of M6.1 "identity and seats" — shipped, live on the NAS, reviewed clean against the live site, and
-recorded in `docs/plans/2026-09-15-web-frontend-m6.1-close.md` (Track 3). The previous update,
-2026-09-14, followed the M6 "room" brainstorm producing the five-cycle plan, the M6.1 spec and the
+**Updated:** 2026-09-15 (second session), on branch `web-room-m6.2` in the MAIN checkout — the
+worktree is gone; `web-room` (M6.1, 27 commits) is PUSHED and is **PR #31** against master; the CI
+workflow no longer runs the whole-game gate binary (`48ae908`); the M6.2 and M6.3 specs and their
+implementation plans are written, adversarially reviewed and committed (Track 3). The previous update,
+earlier the same day, was the close of M6.1 "identity and seats" — shipped, live on the NAS, reviewed
+clean against the live site, recorded in `docs/plans/2026-09-15-web-frontend-m6.1-close.md`. Before
+that, 2026-09-14, followed the M6 "room" brainstorm producing the five-cycle plan, the M6.1 spec and the
 M6.1 implementation plan. Before that, 2026-09-11 (second session) followed the V4 diagnostic games being
 played and scribed and the owner-games LEDGER artifact being published for annotation (Track 1); before
 that, the web-lane merge (`abe4eec`) with the AI-lane re-entry handover
@@ -27,9 +30,10 @@ that, the web-lane merge (`abe4eec`) with the AI-lane re-entry handover
   Cloudflare Access, now `yokohama-web:0.5.0-m6.1` on the NAS via Portainer. Nothing about it moves
   the bot. **M6 "the room" is PLANNED (2026-09-14) on branch `web-room` and its FIRST cycle has
   SHIPPED**: M6.1 "identity and seats" went live 2026-09-15, closed in
-  `docs/plans/2026-09-15-web-frontend-m6.1-close.md`. **M6.2, the lobby, is the next step**
-  (Track 3), from the room plan `docs/plans/2026-09-14-web-frontend-m6-room-plan.md` §2. The branch
-  `web-room` is not yet merged to master.
+  `docs/plans/2026-09-15-web-frontend-m6.1-close.md`. **`web-room` is PR #31 against master,
+  unmerged — your call.** **M6.2 (the lobby) and M6.3 (transport and spectating) are SPECIFIED AND
+  PLANNED** on branch `web-room-m6.2`, cut from `web-room`'s tip; execution of the M6.2 plan is the
+  next step (Track 3).
 - **Licensing:** Apache-2.0 on every crate and on `web/package.json` (checked 2026-09-11);
   `LICENSE` + `NOTICE` at the root; `ASSETS.md` carves out the game's own material.
 - **Gates at HEAD:** all per-edit suites green (the counts are in `CLAUDE.md`); the fifteen-gate
@@ -133,14 +137,30 @@ claimed, §8 the handover into M6.2. It is also M6.2's entry artifact.
 - Nothing else: the named volume rode the swap untouched, and records from before M6 stay unlisted
   and unserved by design (R-P7).
 
-**Next step — M6.2, the lobby.** Charter: `docs/plans/2026-09-14-web-frontend-m6-room-plan.md` §2.
-Open tables and join links, taking a seat, start when full, a display name beside the email, "my
-games" with whose turn it is, abandon by the creator — the front door proper, so the first screen a
-person sees is the lobby rather than a form. Exit criterion: someone holding only a link joins a
-table and plays. It starts from M6.1's table document (which gains `open` before `dealing`), the
-identity seam (a join link is the first place a person arrives without being named in advance) and
-the bot-at-2P rule; the close's §8 says what each of those already gives it. Same session shape as
-M6.1: brainstorm → spec → plan → execution under R-P11 → deploy → one clean live review → close.
+**Next step — EXECUTE the M6.2 plan, then M6.3's.** Both cycles were brainstormed, specified and
+planned together on 2026-09-15 (owner: two specs, two plans, run back to back) on branch
+`web-room-m6.2` (from `web-room`'s tip `937ce92`; first commit `48ae908`, the CI change):
+
+- **M6.2 "the lobby"** — spec `docs/plans/2026-09-15-web-frontend-m6.2-lobby-spec.md`, plan
+  `docs/plans/2026-09-15-web-frontend-m6.2-plan.md` (twelve tasks, the `games.rs` cut first). The
+  owner's rulings of the day: all tables visible to the house with one optional table password
+  gating joining and watching (R-2.1); start when full is automatic; the display name is a per-seat
+  field; the name is a label and the id is drawn; a join link is `#/t/<id>`; `sha2` enters the web
+  crate. Exit: someone holding only a link joins a table and plays.
+- **M6.3 "transport and spectating"** — spec
+  `docs/plans/2026-09-15-web-frontend-m6.3-transport-and-spectating-spec.md`, plan
+  `docs/plans/2026-09-15-web-frontend-m6.3-plan.md` (twelve tasks; the tunnel measurement is Task 3
+  on an rc deploy, because there is no stream to hold before Tasks 1–2 build it). SSE over
+  per-table watch channels read through `fetch` (the browser's `EventSource` cannot carry the
+  identity header), the held request as the measured fallback, the masked spectator behind
+  `unlock`, the notifier designed for M6.5. Exit: no polling on the NAS; a spectator link shows a
+  game walking.
+- Both specs were read adversarially against `48ae908` before you read them (23 + 26 findings, then
+  9 on the rewrites, all folded in); the specs' headers say so. Process unchanged (R-P11): Opus
+  implementers and per-task reviewers, the SDD workspace, one clean live review per cycle.
+- **CI:** the `web-server` job runs `cargo test -p yokohama-web --lib --test wire_fixtures` since
+  `48ae908` — the whole-game gate's OS-entropy game had read 857 s and hung PR #31's check for half
+  an hour; the gate is per-edit locally and returns to CI after M6 by your ruling.
 
 **Live operations.** The deployment record and recipe are `deploy/RUNBOOK.md` (§3.5 the recipe,
 §3.7 the M6.1 deployment, §5 rollback). Deploys run through the Portainer MCP against environment 2
