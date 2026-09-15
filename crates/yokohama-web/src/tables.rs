@@ -1228,6 +1228,15 @@ mod tests {
         let mut r = req("order");
         r.id = Some("bad id".into());
         assert!(games.create(&r, &red).unwrap_err().to_string().contains("not a usable"));
+        // **Wrong in TWO ways, at the two ENDS of the chain.** The id is the
+        // only check that does not live in `config_of` — it needs the store's
+        // rule, not this module's — so this is what says the request is
+        // validated before the id is looked at rather than beside it.
+        let mut r = req("order");
+        r.players = 5;
+        r.id = Some("bad id".into());
+        let e = games.create(&r, &red).unwrap_err().to_string();
+        assert!(e.contains("2 to 4"), "the whole of config_of precedes the id: {e}");
         let v = games.create(&req("order"), &red).expect("a table");
         assert_eq!(v.status, TableStatus::Dealing);
         assert_eq!(v.my_seats, vec![PlayerId::new(0)]);
@@ -2229,6 +2238,49 @@ mod tests {
         let mut r = req("o");
         r.id = Some("bad id".into());
         assert!(games.create(&r, &red).unwrap_err().to_string().contains("not a usable"));
+
+        // **The ORDER, and only a probe wrong in TWO ways can see it.** Each of
+        // the six above carries a single defect, so it says a rule EXISTS and
+        // nothing about where in the chain it sits: `name` moved above the
+        // creator check would leave every one of them green. Each probe below
+        // is wrong at two ADJACENT links and asserts that the EARLIER sentence
+        // is the one a client is handed — which is the whole claim of §3.1's
+        // list, and of this cell's name.
+        let mut r = req("o");
+        r.seats[0] = SeatSpec { user: Some("other@t.test".into()), bot: false, open: false };
+        r.name = Some("x".repeat(65));
+        let e = games.create(&r, &red).unwrap_err().to_string();
+        assert!(e.contains("creator"), "the creator check precedes the name: {e}");
+        let mut r = req("o");
+        r.players = 3;
+        r.colors = vec![PlayerColor::Red, PlayerColor::Blue, PlayerColor::Green];
+        r.seats = vec![
+            SeatSpec { user: Some("red@t.test".into()), bot: false, open: false },
+            SeatSpec { user: None, bot: true, open: false },
+            SeatSpec { user: Some("red@t.test".into()), bot: false, open: false },
+        ];
+        r.name = Some("x".repeat(65));
+        let e = games.create(&r, &red).unwrap_err().to_string();
+        assert!(e.contains("two players only"), "the bot check precedes the name: {e}");
+        // `starts_with`, never `contains`: both sentences come out of
+        // `check_name` and differ only in their prefix, and "name:" is a
+        // SUBSTRING of "display name:" — so a `contains` here would pass on
+        // either answer and pin nothing.
+        let mut r = req("o");
+        r.name = Some("x".repeat(65));
+        r.display_name = Some("\u{7}".into());
+        let e = games.create(&r, &red).unwrap_err().to_string();
+        assert!(e.starts_with("name:"), "the name precedes the display name: {e}");
+        let mut r = req("o");
+        r.display_name = Some("\u{7}".into());
+        r.password = Some("   ".into());
+        let e = games.create(&r, &red).unwrap_err().to_string();
+        assert!(e.starts_with("display name:"), "the display name precedes the password: {e}");
+        let mut r = req("o");
+        r.password = Some("   ".into());
+        r.id = Some("bad id".into());
+        let e = games.create(&r, &red).unwrap_err().to_string();
+        assert!(e.contains("at least one character"), "the password precedes the id: {e}");
     }
 
     /// **The name is a label, the id is its own field, and the display name
