@@ -904,6 +904,16 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
   white-space: nowrap; max-width: 12rem; overflow: hidden; text-overflow: ellipsis;
 }
 
+/* What the poll can say for itself (M6.1 §6). Present ONLY while it is not
+   live, so the resting state costs the banner no width at all — which matters,
+   because the banner is gated at one row and 22px of room was what the measure
+   at 1280 left. `nowrap` for the same reason the "You are …" strip has it: this
+   is a two-word fact, and a fact that breaks the line is worse than a fact
+   that is slightly cramped. `--warn` rather than the faint grey: "reconnecting"
+   is the one thing here a player should notice without looking for it. */
+.banner .link, .who-strip .link { white-space: nowrap; color: var(--warn); }
+.who-strip .link { font-size: 11px; letter-spacing: 0.04em; margin-right: auto; }
+
 /* The door's way out, at the foot of the Game menu — see `GameMenu`'s prop. */
 .menu-door { margin-top: 0.5rem; padding-top: 0.4rem; border-top: 1px solid var(--line); }
 

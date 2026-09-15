@@ -17,6 +17,7 @@ import {
   type ApiCall,
   type Reply,
 } from "./test/harness";
+import { VISIBLE_MS } from "./signal";
 import { wire } from "./wire/contract";
 
 /** The board tile for one area, as the accessible name renders it. */
@@ -1447,5 +1448,145 @@ describe("the door", () => {
     await user.click((await screen.findAllByRole("button", { name: /^keep O\d\d for seat 0/ }))[0]!);
     await screen.findByRole("heading", { name: "Sign in" });
     expect(screen.getByRole("status")).toHaveTextContent(signedOutReply().body.error);
+  });
+});
+
+// ---- M6.1 §6: the opponent's turn arrives by the signal ---------------------
+//
+// The poll's own properties — when it asks, when it is silent, what it says
+// while it cannot reach the server — are `signal.test.ts`'s. What this cell is
+// about is the CONSUMER (R-P9): the one function M6.3 replaces the transport
+// under, and the only thing in the client that turns "the count moved" into a
+// board the player can see.
+describe("the opponent's turn arrives by the signal", () => {
+  /** A position for the run to be walked over: the corpus's `at_k` with the
+   *  seat that is TO MOVE marked as a bot.
+   *
+   *  **One field moved, and it is the field that makes a run a walk.** A run of
+   *  your own events applies at once (`hasBotStep`), and the corpus marks no
+   *  seat as a bot — so a cell built on the fallback's positions would fetch
+   *  them, build the run, and then assert nothing about the playback it is
+   *  named for. The pattern is `botReply`'s, one describe above. */
+  const atBot = (k: number, total: number) => {
+    const f = JSON.parse(JSON.stringify(wire.atK)) as typeof wire.atK;
+    f.index = k;
+    f.total = total;
+    f.to_move = wire.watching.to_move;
+    const players = f.frame.dashboard.find((p) => "Players" in p);
+    if (players && "Players" in players)
+      players.Players.players[wire.watching.to_move]!.is_bot = true;
+    return f;
+  };
+
+  /** The reply chain settles without the clock moving — `the turn playback`'s
+   *  helper, and for the reason written out in full there: `waitFor` takes its
+   *  real-timer branch under vitest's fake clock and never polls. */
+  const settle = async (rounds = 10) => {
+    for (let i = 0; i < rounds; i++) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+    }
+  };
+
+  /** Put the tab in a state and tell the document, the way `signal.test.ts`
+   *  does: jsdom has no page lifecycle, so both halves are set by hand. */
+  const visibility = (value: "visible" | "hidden") =>
+    act(() => {
+      Object.defineProperty(document, "visibilityState", { value, configurable: true });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+
+  it("walks the new events when the count grows, and reloads without a walk when it shrinks", async () => {
+    let events = wire.watching.events;
+    const stub = await renderApp(wire.watching, (call) => {
+      if (call.path.endsWith("/events"))
+        return { events, to_move: wire.watching.to_move, status: "playing", your_turn: false };
+      if (call.method === "GET" && call.path.endsWith(`/api/games/${wire.watching.id}`))
+        return { ...wire.watching, events };
+      const m = /\/at\/(\d+)$/.exec(call.path);
+      if (m) return atBot(Number(m[1]), events);
+      return undefined;
+    });
+    /** The RE-READS of the game, and the match is anchored on purpose:
+     *  `matching("GET", "/api/games/wire")` is a substring test that also counts
+     *  `/events`, `/at/0` and `/table`, so it would pass without a reload
+     *  happening at all. */
+    const reloads = () =>
+      stub.calls.filter((c) => c.method === "GET" && /\/api\/games\/wire$/.test(c.path));
+    expect(reloads()).toHaveLength(1);
+
+    // **The tab is hidden and then shown again, and that is not decoration.**
+    // The poll's first timer was armed while `renderApp` drove `userEvent`
+    // under REAL timers — `renderApp` has to, because user-event awaits a
+    // `setTimeout(0)` between interactions and a faked one never fires — so
+    // advancing a fake clock would never reach a timer scheduled before it was
+    // installed. Hiding the tab under the real clock genuinely cancels that
+    // timer (R-P8) and the return arms the next one on whichever clock is
+    // installed by then. The cell gets the poll on the fake clock, and the
+    // R-P8 round trip is exercised on the way.
+    await visibility("hidden");
+    vi.useFakeTimers();
+    try {
+      await visibility("visible");
+      // **The strip, on the banner, before the answer.** The board on screen is
+      // as old as the tab was hidden, so this is the one true thing to say for
+      // the length of one round trip — and it is the only assertion anywhere
+      // that `App` renders the hook's state at all.
+      expect(screen.getByText(/refreshing/)).toBeInTheDocument();
+      // That one ask, answered: the count has NOT moved, so the strip goes and
+      // nothing at all is fetched. It is the answer this poll gives nearly
+      // every time it runs, and the cheapest thing it can do with it.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10);
+      });
+      await settle();
+      expect(screen.queryByText(/refreshing/)).toBeNull();
+      expect(reloads()).toHaveLength(1);
+      expect(stub.matching("GET", "/at/")).toHaveLength(0);
+
+      events = wire.watching.events + 2;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(VISIBLE_MS + 10);
+      });
+      await settle();
+      // The count moved, so the game was re-read ONCE and the run's positions
+      // fetched: `prev..=next` is 0, 1, 2 — `prev` included, because a step's
+      // highlight is a diff and the live payload is not a position.
+      expect(reloads()).toHaveLength(2);
+      expect(
+        stub.matching("GET", "/at/").map((c) => Number(/\/at\/(\d+)$/.exec(c.path)![1])),
+      ).toEqual([0, 1, 2]);
+      // And the walk is on the table: the deck is the strip rather than the
+      // prompt, and the account has one row per event.
+      expect(document.querySelector(".decision.walking")).not.toBeNull();
+      expect(screen.getByText(/is playing · step 1 of 2/)).toBeInTheDocument();
+      expect(document.querySelectorAll("ol.account li")).toHaveLength(2);
+
+      // **`events` is legitimately non-monotone: an undo POPS them** (R-P5).
+      // The client re-reads, and must NOT try to walk a range that runs
+      // backwards — `/at/-1` is not a position and the account it would build
+      // describes nothing.
+      //
+      // **One ask per advance, deliberately.** React's `act` flushes its work
+      // queue when the async scope ends, so a single advance long enough for
+      // three ticks runs all three against a tree that has not re-rendered —
+      // and the callback, read through its ref, is still closed over the count
+      // from before the first of them. Measured: one 9 s advance issued three
+      // re-reads where a browser issues one. That is the harness, not the
+      // client; a real commit lands between two timer callbacks.
+      const atCalls = stub.matching("GET", "/at/").length;
+      events = wire.watching.events;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(VISIBLE_MS + 10);
+      });
+      await settle();
+      expect(reloads()).toHaveLength(3);
+      expect(stub.matching("GET", "/at/")).toHaveLength(atCalls);
+      expect(document.querySelector("ol.account")).toBeNull();
+      expect(document.querySelector(".decision.walking")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

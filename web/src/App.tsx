@@ -11,6 +11,7 @@ import { GameMenu } from "./GameMenu";
 import { Dealing } from "./Dealing";
 import { NewGame } from "./NewGame";
 import { loadCadence, saveCadence, type Cadence } from "./playback";
+import { useSignal } from "./signal";
 import { BoardsMenu, useSections } from "./BoardsMenu";
 import { CARD_SURFACES, Surface, SURFACES, type SurfaceName } from "./Surfaces";
 import { TableSections } from "./TableSections";
@@ -27,6 +28,7 @@ import {
 import type {
   ArtManifest,
   ClientState,
+  Events,
   HistoricalFrame,
   Labels,
   Outcome,
@@ -159,27 +161,35 @@ export function App() {
   // the player is now looking at. So the id is kept in a ref that every change
   // of game updates, and `send` drops anything that no longer matches it.
   const gameId = useRef<string | null>(null);
-  /** A reply landed: if it added events, build the run and start the walk when
-   *  a bot moved.
+  /** Events `prev..next` landed: build the run and start the walk when a bot
+   *  moved.
    *
    *  Called INSIDE the busy window, so the deck stays disabled until the walk
    *  is ready to show rather than offering the next prompt over a table that is
    *  about to rewind.
    *
-   *  **A reply that added NOTHING clears the run as well as `fresh` (ruling
+   *  **A COUNT, not the payload that carried it (M6.1 §6).** Until the poll
+   *  there was exactly one way events arrived — a reply to something this
+   *  browser sent — so taking the `ClientState` was the same thing as taking
+   *  its `events`. The signal is the second way, and what IT knows is a number:
+   *  the frame that goes with it is fetched separately, and threading a
+   *  synthetic `ClientState` through here only to read one field off it would
+   *  be a payload built to satisfy a signature.
+   *
+   *  **A run that added NOTHING clears the run as well as `fresh` (ruling
    *  R-P5).** `events` is legitimately non-monotone: a picker step applies no
    *  event, a refusal none, and an undo POPS them. Leaving the previous run
    *  standing there would keep an account of an earlier turn on screen in place
    *  of the prose that answers the click just made. */
   const landed = useCallback(
-    async (game: string, prev: number, replied: ClientState) => {
+    async (game: string, prev: number, next: number) => {
       setFresh(false);
-      if (replied.events <= prev) {
+      if (next <= prev) {
         setRun(null);
         setWalk(null);
         return;
       }
-      const r = await fetchRun(game, prev, replied.events);
+      const r = await fetchRun(game, prev, next);
       // The same rule the reply itself is judged by: a run for a game the
       // player has left is dropped, never shown over the game they are on.
       if (gameId.current !== game) return;
@@ -221,7 +231,7 @@ export function App() {
         // the refusal goes where every other one goes rather than into an
         // unhandled rejection.
         setBusy(true);
-        void landed(s.id, 0, s)
+        void landed(s.id, 0, s.events)
           .catch((e) => setError(e instanceof ApiError ? e.message : String(e)))
           .finally(() => setBusy(false));
       }
@@ -314,7 +324,7 @@ export function App() {
         // rides INSIDE the `try` on purpose: a failed fetch of the run reports
         // through the error strip like any other refusal, and the live state
         // stays on screen — the move was applied and persisted either way.
-        if (replied.id === gameId.current) await landed(game, state.events, replied);
+        if (replied.id === gameId.current) await landed(game, state.events, replied.events);
         // **The hot-seat pass, and it is one re-read (spec §7.5).**
         //
         // A move that ends a turn answers its own mover with a `watching`
@@ -378,6 +388,65 @@ export function App() {
       }
     },
     [state, landed, table],
+  );
+
+  /** The OTHER way a move reaches this screen: somebody else made it (M6.1 §6).
+   *
+   *  **The consumer the room plan names, and it is one function** (R-P9). The
+   *  poll knows only that this game now has N events; everything about turning
+   *  that into a board happens here, and M6.3 replaces the transport under
+   *  `useSignal` without touching a line of it.
+   *
+   *  `active` is "there is something to wait for". Your own turn is not: the
+   *  prompt on screen is the answer, and a timer under it would re-read the
+   *  game under the player's hand. Nor is a finished game, nor the setup screen.
+   *  **It is read off the STATE and never off the signal** — a locked session
+   *  answers `/events` with `your_turn: true` by the M3 projection rule, and a
+   *  client that let the signal decide would have the lockdown hand it a move
+   *  to make.
+   *
+   *  `busy` is in there for a second reason: while a request of this browser's
+   *  own is in flight, the count the server is about to report is one this
+   *  client is itself changing. Polling through that window races a reply
+   *  against a signal for the same events. */
+  const link = useSignal(
+    state?.id ?? null,
+    !!state && !state.over && !state.your_turn && !busy,
+    useCallback(
+      async (e: Events) => {
+        if (!state) return;
+        const game = state.id;
+        // The cheap answer, and the one this poll gives nearly every time: the
+        // count has not moved, so nothing is fetched and nothing re-renders.
+        if (e.events === state.events) return;
+        setBusy(true);
+        try {
+          const fresh = await api.get(game);
+          // The same rule every other reply is judged by: a payload for a game
+          // the player has left is dropped, never drawn over the game they are
+          // on.
+          if (gameId.current !== game) return;
+          setState(fresh);
+          // **Grown: walk it. SHRUNK: reload and show nothing.** `events` is
+          // non-monotone because `undo` pops them (R-P5), and at a shared table
+          // the pop can be somebody else's. A run over a backwards range is not
+          // a turn that happened — there are no positions to fetch for it — so
+          // the account goes with the events it described.
+          if (e.events > state.events) await landed(game, state.events, fresh.events);
+          else {
+            setRun(null);
+            setWalk(null);
+            setFresh(false);
+          }
+        } catch (err) {
+          if (gameId.current === game)
+            setError(err instanceof ApiError ? err.message : String(err));
+        } finally {
+          setBusy(false);
+        }
+      },
+      [state, landed],
+    ),
   );
 
   // **Debounced, because a drag is not a click.**
@@ -646,6 +715,18 @@ export function App() {
             controls live (which game, which other game, back to the form). The
             screens with no Game menu — the form and the deal — keep both. */}
         {whoStrip}
+        {/* **What the poll can say for itself, and `live` says nothing.**
+            A permanent "connected" mark is a thing people stop seeing, and the
+            banner is GATED at one row at 1440 and 1280 with 22px of room
+            measured — so the resting state costs no width at all. The two words
+            that do appear are the two a player would otherwise have to guess
+            at: the board is as old as the tab was hidden ("refreshing"), or
+            this browser cannot reach the server ("reconnecting"). */}
+        {link !== "live" && (
+          <span className="meta link" role="status">
+            {link}&hellip;
+          </span>
+        )}
         {/* Four surfaces inline, the five card references behind a disclosure,
             so the banner stays ONE ROW at every laptop width: measured 93 → 56px
             at 1440 and 174 → 93 at 1024, with the nav's bottom edge at 43px

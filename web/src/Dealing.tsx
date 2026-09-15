@@ -27,19 +27,10 @@ import { Board } from "./Board";
 import { BoardsMenu } from "./BoardsMenu";
 import { OrderCardView, seatClass } from "./Cards";
 import { TableSections } from "./TableSections";
+import { useSignal } from "./signal";
 import { holder } from "./tables";
 import type { SectionKey } from "./sections";
 import type { ArtManifest, DealView, Labels, PlayerColor } from "./types";
-
-/** How often this screen asks whether the table has started without it.
- *
- *  **A plain interval, and Task 9 replaces it with the shared poll hook.** The
- *  contract it holds is the one that matters and does not change: when
- *  `GET …/events` reports a status other than `dealing`, the game is running and
- *  this screen is done. The only case it serves is a table whose remaining seats
- *  are at OTHER browsers — a keep of this browser's own is answered by `POST
- *  …/keep` itself, which says whether that keep finalized the table. */
-const POLL_MS = 3000;
 
 /** Two face-down order cards: a deal this browser was never sent.
  *
@@ -126,14 +117,16 @@ export function Dealing({
    *  because by then the game is already running server-side — the last keep
    *  started it — so a 500 or a dropped connection on the read that opens it
    *  would otherwise strand this browser on a dealing screen for a table that is
-   *  not dealing, with the poll's own guard reading a latch nothing could ever
-   *  clear. The purpose is one hand-over per SUCCESS, and that is unchanged. */
+   *  not dealing, behind a latch nothing could ever clear. The purpose is one
+   *  hand-over per SUCCESS, and that is unchanged. */
   const started = useRef(false);
 
-  // `onPlaying` through a ref, so the interval below is installed ONCE.
-  // `App` re-creates the callback on every render, and an effect that depended
-  // on it would tear the timer down and start a new one each time — a poll that
-  // never reaches its own first tick.
+  // `onPlaying` through a ref, so `start` has a stable identity and the poll
+  // below is not re-armed by a re-render. `App` re-creates the callback every
+  // time, and a timer torn down and restarted on each one is a poll that never
+  // reaches its own first tick. (`useSignal` holds its consumer through a ref
+  // for exactly the same reason; this one keeps `start` itself stable, which
+  // `fetchDeal` also depends on.)
   const playing = useRef(onPlaying);
   playing.current = onPlaying;
 
@@ -174,21 +167,37 @@ export function Dealing({
     void fetchDeal();
   }, [fetchDeal]);
 
-  useEffect(() => {
-    const timer = setInterval(() => {
-      if (started.current) return;
-      api
-        .events(game)
-        .then((e) => {
-          if (e.status !== "dealing") void start();
-        })
-        // A poll that cannot reach the server is not a refusal to show the
-        // player: the next tick is three seconds away and the screen is still
-        // correct. A 401 still routes to the door, from `call` itself.
-        .catch(() => {});
-    }, POLL_MS);
-    return () => clearInterval(timer);
-  }, [game, start]);
+  /** How this screen learns that the table started without it: the SAME poll
+   *  the game screen uses (M6.1 §6).
+   *
+   *  **The contract is the one the interval held, and it has not changed**:
+   *  when `GET …/events` reports a status other than `dealing`, the game is
+   *  running and this screen is done. The only case it serves is a table whose
+   *  remaining seats are at OTHER browsers — a keep of this browser's own is
+   *  answered by `POST …/keep` itself, which says whether that keep finalized
+   *  the table.
+   *
+   *  What the hook adds is what the interval could not do: nothing is asked
+   *  from a tab nobody is looking at (R-P8), the return asks at once, a server
+   *  that cannot answer is asked less often rather than more, and the strip
+   *  below says which of those is happening.
+   *
+   *  **`active` is a constant `true`, and the latch is what stops it.** The
+   *  three noticers overlap by design — the keep's reply, a 409 from `/deal`,
+   *  this poll — so `start` is the one place that decides, and it returns at
+   *  once once the hand-over has succeeded. A ref cannot deactivate a hook
+   *  without a re-render, and the screen is being replaced anyway: the cost of
+   *  a cheap request nothing acts on, for the one or two ticks between the
+   *  hand-over and the unmount, is the honest price of keeping ONE decision. */
+  const link = useSignal(game, true, (e) => {
+    if (e.status !== "dealing") void start();
+  });
+  /** The poll's own state, said the same way the game banner says it. */
+  const linkStrip = link !== "live" && (
+    <span className="meta link" role="status">
+      {link}&hellip;
+    </span>
+  );
 
   const keep = async (card: 1 | 2) => {
     if (!deal || deal.seat === null || inFlight.current) return;
@@ -217,7 +226,12 @@ export function Dealing({
   if (!deal) {
     return (
       <div className="setup dealing-wait">
-        {who && <div className="who-strip">{who}</div>}
+        {(who || linkStrip) && (
+          <div className="who-strip">
+            {linkStrip}
+            {who}
+          </div>
+        )}
         <h2>Dealing</h2>
         {error ? <div className="error">{error}</div> : <p className="muted">dealing&hellip;</p>}
       </div>
@@ -248,6 +262,7 @@ export function Dealing({
       <header className="banner">
         <h1>Yokohama</h1>
         <span className="meta">{table.name ?? table.id}</span>
+        {linkStrip}
         {who}
         {/* Spec §3.3.3: the same menu the game banner carries, so a player can
             switch a board on and read a site card at full size before
