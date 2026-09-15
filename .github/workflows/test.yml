@@ -22,12 +22,28 @@ jobs:
   # It is a separate job from `test` because it is a separate claim: the engine
   # crate is byte-identical to master and this one is not, so a failure here
   # names the lane it came from.
+  #
+  # **Since 2026-09-15 this job runs WITHOUT the whole-game gate binary**
+  # (`tests/play_a_whole_game.rs`, two tests:
+  # `a_whole_two_player_game_against_the_bot_plays_through_the_api` and
+  # `two_people_play_to_a_winner_and_each_sees_only_their_own_hand`). Both play a
+  # full two-player game through the API on an OS-entropy seed, and the gate's
+  # wall has read 13 s, 857 s and 16 s on identical code (M6.1 close §6.1) — the
+  # pull_request run for PR #31 sat inside it for over thirty minutes while the
+  # push run on the SAME commit passed in three. The two remaining targets are
+  # the claims CI is here for: the lib cells and the corpus contract.
+  #
+  # The gate stays PER-EDIT locally — `cargo test -p yokohama-web` with no
+  # target filter still runs it — and it is deliberately not `#[ignore]`d,
+  # because an ignored test that no documented command runs is a test that
+  # never runs. Owner ruling 2026-09-15: it returns to this job once the room
+  # (M6) is through and the gate is stable.
   web-server:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test -p yokohama-web
+      - run: cargo test -p yokohama-web --lib --test wire_fixtures
 
   # **The browser client, which nothing here could make red until M3.5.**
   #
