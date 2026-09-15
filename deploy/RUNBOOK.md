@@ -15,10 +15,25 @@ guesses are the useful part.
   `bdvc.cloudflareaccess.com`. **The client inherits that policy by taking the
   hostname and needs no Access application of its own.** (Both M4 documents
   carried this as UNVERIFIED; it is now settled.)
-- **The server has no authentication of any kind.** No session, no header read,
-  and `GET /api/games` returns every game id to any caller. Everything that
-  makes it safe to expose is the Access application in front of it. Remove that
-  and the game store is public.
+- **The server reads ONE identity header, and which one is a deployment
+  decision.** (Since M6.1, 2026-09-15; before it this bullet said "no
+  authentication of any kind", which was true then and is not now.)
+  `YOKOHAMA_WEB_IDENTITY` picks the mode: `claimed` reads
+  `X-Yokohama-Claimed-User`, `cf-access` reads
+  `Cf-Access-Authenticated-User-Email`, `worker` reads `X-Yokohama-User`. Every
+  mode reads **exactly one** header and ignores the other two, so a forged
+  header on a path that does not read it changes nothing. **There is no
+  default** — an unset or unknown value refuses to start, naming the three
+  accepted values (`main.rs:94-98`). Every route under `/api/games` requires an
+  identity and answers **401** without one; a caller with no seat at a table
+  gets **403**. Public: `/api/health`, `/api/labels`, `/api/art`, `/art/*`,
+  `GET /api/me`, and the client bundle.
+- **The bind address is still a real decision, for a reason the header does not
+  remove.** `claimed` behind Access authenticates the **door** and not the
+  **seat**: anyone past Access can claim any email, so it tells two callers
+  apart and verifies neither. `cf-access` and `worker` trust a header that only
+  their own edge can set, which is a true statement only while that edge is the
+  one path to the port. Publish 8080 and both properties are gone — see §3.
 - **The tunnel is LOCALLY managed.** `/volume1/docker/cloudflared/config/config.yml`
   on the NAS is the source of truth for ingress; the Zero Trust dashboard shows
   its routes read-only. A copy of what is deployed lives here as
@@ -127,17 +142,26 @@ deployment never matched it, and the file has been corrected.)
 ```
 POST /containers/create?name=yokohama-web
 { "Image": "yokohama-web:0.5.0",
+  "Env": ["YOKOHAMA_WEB_IDENTITY=claimed"],
   "HostConfig": { "NetworkMode": "cf-internal",
                   "RestartPolicy": { "Name": "unless-stopped" },
                   "Mounts": [{ "Type": "volume", "Source": "yokohama-web-data",
                                "Target": "/data" }] } }
 ```
 
+**The `Env` line is not optional and is not in the image.** Neither Dockerfile
+sets `YOKOHAMA_WEB_IDENTITY`, deliberately: there is no default mode, so an
+image started without it **exits 1** naming the three accepted values. A deploy
+from this recipe with the line dropped does not come up. The mode belongs to
+the container because it is a statement about what is in FRONT of the container,
+which the image cannot know.
+
 **A named volume, not a bind mount.** The image runs as uid 10001 and `chown`s
 `/data` at build time; a named volume inherits that ownership on first use,
 while a host bind mount arrives root-owned and the server cannot write its game
-store. Do not publish 8080 to the LAN — nothing on the LAN should reach an API
-with no authentication.
+store. Do not publish 8080 to the LAN. `claimed` authenticates the door and not
+the seat, and the other two modes trust a header their own edge sets — both
+properties hold only while cloudflared is the one path to this port.
 
 Then edit the tunnel config (this repo's `cloudflared-config.yml` is the
 deployed copy), **back up the old one first**, and restart:
@@ -167,15 +191,23 @@ client went live on `yokohama.moore.nyc` with only a config edit.
 ### 3.2 Verify, through the tunnel and not from inside
 
 ```bash
-curl -sS https://yokohama.moore.nyc/api/health
+curl -sS https://yokohama.moore.nyc/api/health     # "identity" names the mode
 curl -sS -o /dev/null -w '%{http_code}\n' https://yokohama.moore.nyc/art/areas/Church.webp
-curl -sS "https://yokohama.moore.nyc/api/games/<id>/at/999"   # 404 naming the bound
+
+# Since M6.1, the two readings that prove the gate is ON rather than merely built:
+curl -sS -o /dev/null -w '%{http_code}\n' https://yokohama.moore.nyc/api/games        # 401
+curl -sS -H 'X-Yokohama-Claimed-User: you@example.com' https://yokohama.moore.nyc/api/games
 ```
 
-Recorded on the day: health `{"server_version":"0.5.0","semantics_rev":7,
-"rules_hash":"d85445c479cb1ead"}`, art 200 `image/webp`, help screenshots 200
-`image/png`, create → list → `/at/0` → out-of-range 404, then the smoke game
-deleted.
+The 401 is the load-bearing one. A deployment whose mode is wrong, or whose
+header name the client and the server disagree about, still answers `/api/health`
+perfectly — so a check that reads only the health payload cannot tell a working
+identity gate from a broken one.
+
+Recorded on 2026-09-01, before identity existed: health
+`{"server_version":"0.5.0","semantics_rev":7,"rules_hash":"d85445c479cb1ead"}`,
+art 200 `image/webp`, help screenshots 200 `image/png`, create → list → `/at/0`
+→ out-of-range 404, then the smoke game deleted. §3.7 is the current reading.
 
 ### 3.3 What this costs on the hardware — MEASURED
 
@@ -405,6 +437,83 @@ on the NAS** — `0.5.0`, `0.5.0-m5`, `0.5.0-m5.1`, `0.5.0-m5.5`, `0.5.0-m5.5.1`
 The checks' own saves were erased the same day at the owner's word; the owner's
 five remain. The live build is `fb6cec7`; the wave's record commit follows it.
 
+### 3.7 M6.1 is live — the fourth deployment, 2026-09-15 (a record, not a plan)
+
+The §3.5 recipe again, through the Portainer Docker proxy (environment 2) from
+the workstation. **The one thing that is NEW in the recipe and not just a
+number: the create body carries `YOKOHAMA_WEB_IDENTITY=claimed`**, because this
+is the first build that reads an identity header at all.
+
+- **Build:** `web-room` at `5be1e54` (the whole-branch review's fix wave; the
+  deploy-docs commit is the one after it). The musl binary moved and by more
+  than any previous milestone — `ELF 64-bit LSB pie executable, x86-64,
+  static-pie linked`, **6,400,224 bytes** (was 6,105,976: identity, the table
+  document, the seat gate and the store's version seam); `web/dist` carries the
+  M6.1 client, bundle `index-BdYKdXfa.js`. Context tarball **13,990,090 B**
+  (sha256 prefix `82ba551a6a1c5f33`), holding `yokohama-web`, `dist/`, `art/`
+  and `Dockerfile` (a copy of `deploy/Dockerfile.runtime`), served by
+  `python3 -m http.server 8899` on the workstation at **192.168.1.16** — *this
+  workstation's LAN address today; §3.6's `.221` was a different day, so read
+  it from `ifconfig` every time* — and fetched by the NAS (192.168.1.173) in
+  one GET at **06:58:58Z** (02:58:58 local). The file server was stopped after
+  the fetch.
+- **Image:** `yokohama-web:0.5.0-m6.1`, Id
+  `sha256:8a29e8a4f347bebd9bcceb16e44787ecc7957e8261ef8d2156bca7e7c84fe4c2`,
+  **26,300,095 B** (was 25,996,894), created **06:59:09Z** — about 11 s after
+  the fetch — through
+  `POST /build?remote=http://192.168.1.16:8899/ctx.tar.gz&t=yokohama-web:0.5.0-m6.1&dockerfile=Dockerfile&rm=true`.
+- **Swap:** `POST /containers/yokohama-web/stop` on the `0.5.0-m5.5.4`
+  container (`d2dfda65f02c…`, created 2026-09-06) → `DELETE /containers/yokohama-web`
+  → `POST /containers/create?name=yokohama-web` with §3's body (Image,
+  `NetworkMode: cf-internal`, `RestartPolicy: unless-stopped`, the named volume
+  `yokohama-web-data` → `/data`, the two labels `maintainer`/`purpose`)
+  **plus `"Env": ["YOKOHAMA_WEB_IDENTITY=claimed"]`** → new container Id
+  `4e1996e6571e1ef22bbe69cfb604d32b569b187ae45681fe2f7e3d3153fe4a5c`, created
+  **06:59:32Z**, started **06:59:36Z**. Same address on `cf-internal`
+  (**172.21.0.4**), so the tunnel's ingress needed nothing. The named volume
+  rode across untouched. The container log's first line:
+  `yokohama-web listening on http://0.0.0.0:8080`. **Healthy on the first
+  probe at 07:00:06Z** (03:00:06 local), 30 s after start.
+- **Verified from INSIDE the container, by `docker exec` — and say why, because
+  it is a departure from §3.2.** The shell's path through the tunnel hit a
+  Cloudflare managed challenge page at that moment: WARP was not passing Access
+  from the shell, so §3.2's `curl` trio could not be run at all. The on-screen
+  check through the tunnel is the final review's (R-P11), not this record's.
+  What was read, from `127.0.0.1:8080` inside the container:
+  - `wget -qO- http://127.0.0.1:8080/api/health` →
+    `{"server_version":"0.5.0","semantics_rev":7,"rules_hash":"d85445c479cb1ead","identity":"claimed"}`
+    — the `identity` field is new in this build and is how the mode is read back.
+  - `GET /api/games` with no header → **`HTTP/1.1 401 Unauthorized`**.
+  - `GET /api/games` with `X-Yokohama-Claimed-User: jamoore@gmail.com` →
+    **`{"games":[]}`**.
+  - `GET /` serves `index-BdYKdXfa.js`, which exists only in this build.
+- **The empty list is expected and is not a lost store (R-P7).** `/api/games`
+  lists TABLES, and a record with no table document is not a game this API
+  serves. Every record already on the volume predates the table document, so
+  the list starts empty and fills as tables are created. The records themselves
+  are untouched on disk and the Docker-archive pull recipe (`docs/handover.md`
+  Track 3) is unaffected.
+- **R-1.4, in the two sentences the spec asks for beside the mode.**
+  `cf-access` is trustworthy only because port 8080 is unpublished and
+  cloudflared is the one path to it (§3: "Do not publish 8080 to the LAN").
+  `claimed` behind Access authenticates the **DOOR and not the SEAT** — a
+  development convenience, not a security boundary: anyone past Access can
+  claim any email, so the mode tells two callers apart and verifies neither.
+- **The mode is NOT baked into the image.** Neither Dockerfile sets
+  `YOKOHAMA_WEB_IDENTITY`, and an image started without it **exits 1 by
+  design** (R-1.3) rather than picking a default. A deploy driven from this
+  runbook alone must carry the `Env` line in the create body or the container
+  does not come up.
+- **Downtime:** the seconds between `stop` and `start`; nobody was playing.
+- **Rollback — a WHOLE-IMAGE rollback this time, and that is the difference
+  from every previous one.** `yokohama-web:0.5.0-m5.5.4` is still an image on
+  the NAS, but its client knows nothing of `/table`, so there is no partial
+  step back: recreate the container from that tag with §3's body **without**
+  the `Env` line (the old binary ignores the variable). **Nine tags now sit on
+  the NAS** — `0.5.0`, `0.5.0-m5`, `0.5.0-m5.1`, `0.5.0-m5.5`, `0.5.0-m5.5.1`,
+  `0.5.0-m5.5.2`, `0.5.0-m5.5.3`, `0.5.0-m5.5.4`, `0.5.0-m6.1` — each a
+  rollback point (§5).
+
 ---
 
 ## 4. Modal — the upgrade path, not yet deployed
@@ -420,6 +529,12 @@ that a Modal endpoint is world-reachable by default: without
 an Access policy in front would protect nothing, since anyone with the
 `*.modal.run` URL could skip it.
 
+**That path runs `YOKOHAMA_WEB_IDENTITY=worker`, not `claimed`**, because the
+Worker is what authenticates: it reads the Access identity and sets
+`X-Yokohama-User`, stripping any the client sent. `modal_app.py` declares the
+variable on the image it builds; the NAS sets it on the container instead
+(§3), which is the same decision made at the level that owns it in each case.
+
 Neither is deployed. The NAS is serving the product today, and §3.3's
 measurement says it should go on doing so.
 
@@ -431,10 +546,18 @@ measurement says it should go on doing so.
   `cloudflared-nas`. One file, one restart.
 - **The container:** `docker stop yokohama-web`. The tunnel then 502s that
   hostname until the ingress is pointed back.
-- **The previous build (since M5, 2026-09-02):** `yokohama-web:0.5.0` is still
-  an image on the NAS. Stop and remove the running container and recreate it
-  from that tag with §3's body — the volume is the same, so the games carry
-  over; only the client and help go back.
+- **The previous build:** every earlier tag is still an image on the NAS (§3.7
+  lists the nine). Stop and remove the running container and recreate it from
+  the tag you want with §3's body — the volume is the same, so the records
+  carry over.
+- **Across M6.1 that is a WHOLE-IMAGE rollback, not a partial one.** Before
+  M6.1 a rollback moved only the client and the help pictures. A pre-M6.1
+  image has no `/table` route, no identity and no seat gate, so going back
+  behind `0.5.0-m6.1` takes all three at once; the table documents on the
+  volume are simply not read by the older binary, and the records still
+  replay. Drop the `Env` line when recreating from a pre-M6.1 tag — that
+  binary ignores `YOKOHAMA_WEB_IDENTITY` and leaving it in is harmless, but
+  the line is only meaningful from `0.5.0-m6.1` on.
 - **The store is not rolled back by either.** It is the named volume
   `yokohama-web-data`; the records are the whole state, which is why they
   replay.

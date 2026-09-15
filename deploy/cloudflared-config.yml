@@ -37,10 +37,14 @@ ingress:
   # 2026-09-01, which is why the terminal moved to the block below.
   #
   # PROTECTED BY: the Cloudflare Access application already on this hostname.
-  # That is load-bearing and not decorative -- this origin has NO
-  # authentication of any kind: no session, no header read, and
-  # `GET /api/games` lists every game id to any caller. If Access is ever
-  # removed from this hostname, the game store is public.
+  # That is load-bearing and not decorative. Since M6.1 the origin does read an
+  # identity -- one header, named by `YOKOHAMA_WEB_IDENTITY`, required on every
+  # `/api/games` route -- but it runs in `claimed` mode, which authenticates the
+  # DOOR and not the SEAT: anyone past Access can claim any email. So Access is
+  # still the only thing separating strangers from the game store, and removing
+  # it from this hostname makes the store readable by anyone who sends a header.
+  # This tunnel is also the one path to the container's port 8080, which is
+  # published nowhere; that is the other half of why the arrangement holds.
   - hostname: yokohama.moore.nyc
     service: http://yokohama-web:8080
 

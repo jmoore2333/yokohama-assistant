@@ -10,7 +10,7 @@
 //     -> yokohama.moore.nyc            Cloudflare Access authenticates HERE
 //     -> this Worker                   identity available as ctx.access
 //     -> https://<...>.modal.run       Modal proxy-auth rejects anyone else
-//     -> yokohama-web (axum)           no auth of its own, by design
+//     -> yokohama-web (axum)           reads the X-Yokohama-User we set
 //
 // **The middle hop is not decoration.** A Modal web endpoint is world-reachable
 // by default, so an Access policy in front of a Worker that forwarded to an
@@ -19,12 +19,20 @@
 // on the Modal side plus the two secrets below are what make the Worker the
 // only door.
 //
-// **The origin server has no authentication of any kind and that is deliberate,
-// not an oversight.** It has no notion of who is asking: there is no session,
-// no header read, and `GET /api/games` lists every game id to any caller. It is
-// a hot-seat driver for one operator at one screen. Everything that makes it
-// safe to expose is in this file and in the Access policy — so if either is
-// removed, the correct assumption is that the game store is public.
+// **The origin now READS the header this Worker sets, which is what makes the
+// stripping below load-bearing rather than precautionary.** Since M6.1 the
+// server runs under `YOKOHAMA_WEB_IDENTITY`; on this path the value is
+// `worker`, so `X-Yokohama-User` IS the caller's identity, every `/api/games`
+// route requires it, and each table serves a caller only the seats they hold.
+// `anonymous` — what this Worker sends when no Access policy is in front of it
+// — is treated by the origin as no identity at all, so an unprotected Worker
+// gets 401s rather than a wide-open store.
+//
+// **What that does NOT change.** The origin trusts this header completely: it
+// verifies no signature and cannot tell our header from anyone else's. So the
+// Access policy in front and the Modal proxy token below are still the whole of
+// the security, and a client-supplied `X-Yokohama-User` that reached the origin
+// would now be an impersonation of any seat at any table rather than a no-op.
 
 interface Env {
   /** Modal proxy-auth token id, `wk-…`. `wrangler secret put MODAL_KEY`. */
@@ -51,11 +59,14 @@ const HOP_BY_HOP = new Set([
  * Headers a client must never be able to set, because the origin would have no
  * way to tell them from ours.
  *
- * The origin does not read these today — it reads no headers at all — but a
- * proxy that forwards a client-supplied `X-Yokohama-User` is a proxy that has
- * pre-built an impersonation bug for whoever adds the first `if` to the server.
- * Stripping on the way in is the cheap half; it is done here so that adding
- * identity to the origin later is a safe change rather than a dangerous one.
+ * **This stopped being precautionary at M6.1.** The comment here used to say
+ * the origin "does not read these today — it reads no headers at all", and the
+ * stated point was that adding identity to the origin later should be a safe
+ * change rather than a dangerous one. That later has arrived: under
+ * `YOKOHAMA_WEB_IDENTITY=worker` the origin takes `x-yokohama-user` as the
+ * caller and scopes every table to the seats that caller holds. Forwarding a
+ * client-supplied one would therefore be an impersonation of any player at any
+ * table, and this line is the only thing between the two.
  */
 const CLIENT_MUST_NOT_SET = ["x-yokohama-user", "modal-key", "modal-secret"];
 
@@ -128,6 +139,19 @@ export default {
     if (response.status === 401 || response.status === 403) {
       // Modal refusing OUR credentials is an operator problem, not the
       // player's, and it must not be mistaken for the game refusing a move.
+      //
+      // **KNOWN DEFECT since M6.1, recorded rather than fixed here because this
+      // path is not deployed** (RUNBOOK.md §4; the NAS runs `claimed` and never
+      // reaches this file). The origin itself now answers 401 for a request
+      // with no identity and 403 for a caller with no seat at that table — two
+      // statuses this branch cannot tell from Modal's, so it would rewrite an
+      // honest "you are not seated at this table" into an operator's
+      // credentials error. Modal refuses at its proxy before a container
+      // starts, so the two are distinguishable in principle (the origin's
+      // refusal carries this API's own `{"error": …}` JSON shape and Modal's
+      // does not). Fixing it belongs with the first real Modal deployment,
+      // where it can be tested; guessing at the discriminator now would mean
+      // shipping an untested one.
       return json(502, {
         error:
           "the edge is not authorised to reach the game server — the Modal proxy token is missing, wrong, or revoked",
