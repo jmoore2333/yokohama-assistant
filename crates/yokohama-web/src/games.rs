@@ -484,6 +484,15 @@ fn withhold_until_the_choice(table: &mut HistoricalFrame) {
 /// not empty: its keep is already applied, and a frame built for it would
 /// unmask the one card on the set table that is nobody's business
 /// ([`client::facts_for`] shows the VIEWER's hand and masks the rest).
+///
+/// **The `unwrap_or` is the one branch that could name a bot, and it is
+/// unreachable rather than a fallback with meaning**: [`config_of`] refuses a
+/// bot-only table, so `seats` always holds a human. It is written as a fallback
+/// and not a panic because this runs inside a request handler under the
+/// per-game mutex, where a panic poisons the game rather than refusing the call;
+/// seat 0 is the safe direction if it ever is reached, because seat 0 exists at
+/// every player count. Pinned from the other side by
+/// `the_set_table_is_drawn_for_a_human_seat_and_never_the_bots`.
 fn first_human_seat(seats: &[SeatDoc]) -> PlayerId {
     PlayerId::new(
         seats.iter().position(|s| matches!(s, SeatDoc::Human { .. })).unwrap_or(0) as u8
@@ -1736,6 +1745,73 @@ mod tests {
         assert_eq!((d.seat, d.cards.is_none()), (None, true), "all of red's seats have kept");
         let d = games.deal(&id, &blue).unwrap();
         assert_eq!(ids(d.cards.as_ref().unwrap()), pending.deals[1].to_vec());
+    }
+
+    /// **The set table is never drawn for a BOT seat, before or after the
+    /// caller has chosen** (review M1).
+    ///
+    /// The one hand that is not empty on this screen is the bot's: every human
+    /// choice is `Unknown` at that point, while a bot seat's keep is already
+    /// applied so the game can be previewed. `client::facts_for` unmasks the
+    /// VIEWER's hand, so a viewer of the bot's seat would put the card the bot
+    /// kept on screen — the one thing the 2026-09-06 corrections took off this
+    /// wire (R-C1).
+    ///
+    /// **Both branches, because they are different code.** Before red keeps,
+    /// the viewer is `next_unkept_seat_of` — red's own; after, there is no such
+    /// seat and `first_human_seat`'s fallback decides, which is the branch whose
+    /// doc makes the claim. Neither changed a fixture, and neither failed a cell
+    /// before this one existed.
+    ///
+    /// The bot's non-empty hand is asserted as a PREMISE: without it a frame
+    /// built for seat 1 would show an empty panel and this cell would pass while
+    /// proving nothing.
+    #[test]
+    fn the_set_table_is_drawn_for_a_human_seat_and_never_the_bots() {
+        use yokohama_cli::screen_model::Panel;
+        let games = games();
+        let red = who("red@t.test");
+        let id = games.create(&req_seeded("botdeal", ARGMAX_IS_CARD_2), &red).unwrap().id;
+
+        let check = |frame: &HistoricalFrame, when: &str| {
+            let hands: Vec<(u8, bool)> = frame
+                .frame
+                .dashboard
+                .iter()
+                .filter_map(|p| match p {
+                    Panel::Hand(h) => Some((h.seat.0, h.hidden)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(hands, vec![(0, false)], "{when}: the set table is seat 0's");
+            let rows: Vec<(u8, bool, usize)> = frame
+                .frame
+                .dashboard
+                .iter()
+                .filter_map(|p| match p {
+                    Panel::Players(pp) => Some(pp),
+                    _ => None,
+                })
+                .flat_map(|pp| {
+                    pp.players.iter().map(|p| (p.seat.0, p.hand_hidden, p.orders_in_hand))
+                })
+                .collect();
+            assert_eq!(rows, vec![(0, false, 0), (1, true, 1)], "{when}: {rows:?}");
+        };
+
+        check(&games.deal(&id, &red).unwrap().frame, "before the caller chooses");
+        games.keep(&id, &red, PlayerId::new(0), 1).unwrap();
+        // Red holds every human seat, so `next_unkept_seat_of` is now `None` and
+        // the fallback is what answers.
+        let d = games.deal(&id, &red);
+        // The last human keep FINALIZES, so the table is playing and `deal`
+        // refuses — which is itself the answer: there is no set table left to
+        // draw for anyone. The fallback branch is reached through `preview`,
+        // whose own table is asserted below on the same seats.
+        assert!(matches!(d, Err(GameError::Conflict(_))), "the table finalized on the last keep");
+        let p = preview(&req_seeded("botdeal2", ARGMAX_IS_CARD_2), &Rules::standard(), &red)
+            .unwrap();
+        check(&p.table, "the fallback branch, via preview");
     }
 
     /// **A keep is fenced by WHO holds the seat and by having chosen once**, and

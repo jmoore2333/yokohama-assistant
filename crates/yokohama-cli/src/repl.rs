@@ -1720,7 +1720,29 @@ impl Repl {
     /// order is hidden, and an index that dimmed it with "in Seat 1's hand"
     /// would leak the one card the whole observation boundary exists to
     /// protect.
+    ///
+    /// **The terminal's own path, which is [`Self::index_placements_for`] asked
+    /// about the CURRENT PLAYER** — the seat whose hand this driver has on
+    /// screen. A caller that serves someone other than the mover must ask for
+    /// the seat it is answering, or the fence above becomes a fence around a
+    /// seat that is not the reader's.
     pub fn index_placements(&self) -> Vec<(CardRef, CardLocation)> {
+        self.index_placements_for(self.session.state().current_player)
+    }
+
+    /// [`Self::index_placements`] for a NAMED seat.
+    ///
+    /// **It exists so a per-seat API can ask for the VIEWER's placements**
+    /// (M6.1): `yokohama-web` builds every payload for the caller's own seat,
+    /// and an index built for `current_player` would then say strictly more
+    /// than the dashboard beside it — which is precisely what
+    /// [`CardLocation::OwnHand`]'s own doc forbids. The terminal has one
+    /// operator whose seat IS the mover's, so it keeps the delegating path
+    /// above and nothing about it changes.
+    ///
+    /// The `me` in the body is the only difference. Every fence is the one
+    /// stated above, applied to `me` rather than to the mover.
+    pub fn index_placements_for(&self, me: PlayerId) -> Vec<(CardRef, CardLocation)> {
         let state = self.session.state();
         let mut placed = Vec::new();
         for (board_b, board) in
@@ -1733,7 +1755,6 @@ impl Repl {
                 }
             }
         }
-        let me = state.current_player;
         if !self.seat_display().hides_hand(me) {
             if let Some(p) = state.players.iter().find(|p| p.id == me) {
                 for &id in &p.order_cards_in_hand {

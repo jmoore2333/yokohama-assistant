@@ -750,6 +750,22 @@ async fn walk() -> Vec<(String, Value)> {
     // rule the prompt shapes follow: `shown < total` is a branch the client
     // renders differently ("36 of 36" against "7 of 36") and one payload per
     // kind never reaches it.
+    // **Fetched by a caller who is NOT the acting seat's holder, and that is
+    // asserted rather than hoped for** (M6.1, R-4.1). `CardLocation::OwnHand`
+    // marks the READER's hand; before the index was scoped to the viewer it
+    // marked the MOVER's, and this very fixture froze the leak — the corpus
+    // committed at the previous HEAD named both of seat 1's cards to `WALKER`,
+    // who holds seat 0. So what these files now pin is an ABSENCE, and an
+    // absence is only a pin while the reader is somebody else: if the walk ever
+    // ends with `WALKER` to move, these fixtures stop discriminating and this
+    // says so instead of going quiet.
+    let over = api.get("/api/games/wire").await;
+    assert_eq!(
+        over["to_move"].as_u64(),
+        Some(1),
+        "the finished game must leave the OTHER seat to move, or the index fixtures below are \
+         taken by the acting seat's own holder and pin nothing",
+    );
     for kind in ["orders", "techs", "goals", "sites"] {
         out.push((
             format!("index_{kind}"),

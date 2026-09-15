@@ -447,9 +447,17 @@ pub struct HistoricalFrame {
     ///
     /// **[`viewer_seat`]'s answer, and therefore PER CALLER** (M6.1 §5.1). M4's
     /// security sentence is kept and re-pointed: a sweep over `0..=total`
-    /// returns the CALLER's hands and no other seat's, at any `k`, however many
-    /// turns pass between requests — and a second caller sweeping the same game
-    /// harvests their own seat, not this one's.
+    /// returns THEIR SEATS' hands and no other PERSON's, at any `k`, however
+    /// many turns pass between requests — and a second caller sweeping the same
+    /// game harvests their own, not this one's.
+    ///
+    /// **"Stable per caller" means never another person's seat, not always the
+    /// same integer** (§5.3 read against §5.1, controller ruling R-4.2). A
+    /// caller holding one seat sees that seat at every `k`, forever. A hot-seat
+    /// caller holding two sees whichever of THEIR OWN is acting, so the pin
+    /// moves among their seats as the turn passes and never outside them — which
+    /// is the property the fence is for, and is why a sweep is still not a way
+    /// to harvest a second player's hand history.
     ///
     /// **Two earlier answers, and why neither survives an identity.** The first
     /// draft followed the mover, so the pin re-pointed every turn and two sweeps

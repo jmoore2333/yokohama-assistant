@@ -584,7 +584,12 @@ pub fn refusal_kinds() -> Vec<&'static str> {
 ///   before returning, so a bot is never the seat to move when a request is
 ///   answered. It is kept because a HALTED pump (the `PUMP_MOVE_CAP` arm) can
 ///   leave one, and because a handler that assumed otherwise would advise a bot
-///   against the player.
+///   against the player. **Since M6.1 it is unreachable over HTTP entirely**,
+///   and this is the line an audit of "which refusals can a browser see" will
+///   find: R-1.8 refuses a caller who does not hold the acting seat, a bot seat
+///   is held by nobody, and that 403 sits ahead of this rung in `suggest`'s
+///   ladder. The variant stays because this crate carries `repl::suggest_cmd`'s
+///   four refusals verbatim rather than a subset of them.
 /// - `LiveMode` cannot be reached through this API at all — `Session::new_sim`
 ///   is the only constructor `games.rs` calls, and `TrackingMode::Live` is
 ///   derived from a record's setup observations, so only a live-tracked CLI save

@@ -598,8 +598,16 @@ async fn input(
     // the `expect` check below, so a watcher is told whose turn it is rather
     // than handed a prompt-moved-on conflict about a prompt that was never
     // theirs.
+    //
+    // **And only while the game is WAITING for somebody.** A finished game has
+    // no turn and a locked one accepts no gameplay from any seat, so naming a
+    // seat there is a false sentence — and it was the false half of a pair, the
+    // holder of that same seat being told the truth by `step` on the same
+    // table. `step`'s own refusal is the true one for both, and it applies
+    // nothing in either state, so the request is let through to collect it.
     let acting = repl.session.state().current_player;
-    if acting != viewer {
+    let waiting = !repl.session.is_over() && repl.session.record().lockdown.is_none();
+    if waiting && acting != viewer {
         return Err(ApiError {
             status: StatusCode::FORBIDDEN,
             message: format!("it is seat {}'s turn ({})", acting.0, holder_of(&table, acting)),
@@ -806,38 +814,47 @@ async fn suggest(
     let (handle, table) = seated(&state, &id, &user)?;
 
     // **R-1.8: the acting seat's holder only, and this is a 403 rather than a
-    // typed refusal.** The four refusals below are ANSWERS about the game — it
-    // is over, it is locked, a bot is thinking — and a client renders each as a
-    // sentence in the advisor panel. "This is not your seat" is not that: it is
-    // the same access answer every other route on this table gives, and serving
-    // it as a 200 would put the advisor's own panel in front of a person who
-    // must not be ranking that seat's moves.
+    // typed refusal.** The four refusals in the ladder are ANSWERS about the
+    // game — it is over, it is locked, a bot is thinking — and a client renders
+    // each as a sentence in the advisor panel. "This is not your seat" is not
+    // that: it is the same access answer every other route on this table gives,
+    // and serving it as a 200 would put the advisor's own panel in front of a
+    // person who must not be ranking that seat's moves.
     //
-    // It also subsumes `SuggestRefusal::BotSeat` at a table where no human
+    // **It sits AFTER the three refusals that are true of the GAME, and that
+    // ordering was a review finding.** A finished game has no turn, so telling
+    // a watcher "it is not your turn" there is false — and the holder of the
+    // same seat was being told the truth on the same table. Whatever the game
+    // itself has to say, every caller hears it; the seat answer is for the case
+    // where the game is genuinely waiting for somebody.
+    //
+    // It still subsumes `SuggestRefusal::BotSeat` at a table where no human
     // holds the bot's seat, which is every table: a bot seat is nobody's, so
     // the caller is refused here first. That refusal stays declared because it
     // is the CLI's own and this crate carries `repl::suggest_cmd`'s ladder
     // verbatim rather than a subset of it.
     let read = {
         let repl = handle.lock().expect("a game");
-        let acting = repl.session.state().current_player;
-        if !table.seats_of(&user).contains(&acting) {
-            return Err(ApiError {
-                status: StatusCode::FORBIDDEN,
-                message: "it is not your turn".to_string(),
-                table_status: None,
-            });
-        }
         let refuse = if repl.session.record().lockdown.is_some() {
             Some(R::Locked)
         } else if matches!(repl.session.mode, yokohama_cli::session::TrackingMode::Live) {
             Some(R::LiveMode)
         } else if repl.session.is_over() {
             Some(R::GameOver)
-        } else if repl.bots().is_bot(repl.session.state().current_player) {
-            Some(R::BotSeat)
         } else {
-            None
+            let acting = repl.session.state().current_player;
+            if !table.seats_of(&user).contains(&acting) {
+                return Err(ApiError {
+                    status: StatusCode::FORBIDDEN,
+                    message: "it is not your turn".to_string(),
+                    table_status: None,
+                });
+            }
+            if repl.bots().is_bot(acting) {
+                Some(R::BotSeat)
+            } else {
+                None
+            }
         };
         match refuse {
             Some(r) => Err(r),
@@ -922,11 +939,17 @@ async fn why(
 ///
 /// The four indexes are the CLI's canonical identification mechanism, and this
 /// serves the same model the terminal draws: `screen_model::build_index` over
-/// `Repl::index_placements`, which is why that function was widened rather than
-/// copied — its doc defends a leak fence (no other seat's hand, because in a
-/// live game an opponent's starting order is hidden and an index that dimmed it
-/// with "in Seat 1's hand" would leak the one card the observation boundary
+/// `Repl::index_placements_for`, which is why that function was widened rather
+/// than copied — its doc defends a leak fence (no other seat's hand, because in
+/// a live game an opponent's starting order is hidden and an index that dimmed
+/// it with "in Seat 1's hand" would leak the one card the observation boundary
 /// exists to protect).
+///
+/// **The `_for` is M6.1's, and it is the difference between that fence holding
+/// and reading as though it did.** The terminal's fence is around the MOVER's
+/// hand, because the terminal's one operator is the mover; this API's reader is
+/// whoever asked. Asking the REPL for the viewer's placements keeps one fence in
+/// one place rather than writing a second one here.
 ///
 /// **`target` is always `None` here, and that is the whole difference between
 /// an index the terminal opens and an index this API serves.** In the CLI an
@@ -963,15 +986,23 @@ async fn card_index(
         Some(term) => yokohama_cli::card_prompt::parse_filter(term, kind)
             .map_err(ApiError::bad_request)?,
     };
-    // Seated, and no viewer: `Repl::index_placements`' own doc defends the leak
-    // fence this index needs — it never says "in seat N's hand" — so the model
-    // is the same for every seat at the table and there is nothing to scope.
-    let (handle, _table) = seated(&state, &id, &user)?;
+    // **The index is scoped to the VIEWER, and that is not a formality.**
+    //
+    // `Repl::index_placements`' leak fence is real but is written from the
+    // terminal's standpoint, where the one operator's seat IS the mover's: it
+    // marks `CardLocation::OwnHand` for `current_player`. Served unscoped, a
+    // seated opponent read the acting seat's whole hand from one GET — and the
+    // public port takes then name that seat's hidden starting order. So the
+    // REPL is asked for the placements of the seat this payload is FOR, which
+    // is what keeps `OwnHand`'s own contract ("the index never says more than
+    // the dashboard") true of a dashboard that is now the caller's.
+    let (handle, table) = seated(&state, &id, &user)?;
     let repl = handle.lock().expect("a game");
+    let viewer = viewer_of(&repl, &table, &user)?;
     Ok(Json(yokohama_cli::screen_model::build_index(
         kind,
         repl.session.rules(),
-        &repl.index_placements(),
+        &repl.index_placements_for(viewer),
         &yokohama_cli::screen_model::build_achievements(repl.session.state()).cards,
         None,
         filter,
@@ -1863,6 +1894,204 @@ mod tests {
             );
             assert!(open > 0, "{user}: the sweep unmasked nothing, so it shows nothing");
         }
+    }
+
+    /// **A finished or faulted game answers EVERY caller with what is true of
+    /// the GAME, not with whose turn it is** (review I1).
+    ///
+    /// The defect: at game over a non-acting caller was told "it is seat 0's
+    /// turn (red@…)" on a game where it is nobody's turn, while the holder of
+    /// that same seat was told the truth. The fence's ordering was right and its
+    /// WORDING was a lie — and this crate's standard is that a refusal names
+    /// what to do next.
+    ///
+    /// **Both arms are exercised, because they are two different orderings.**
+    /// `input` folds "over" and "locked" into one condition ahead of the seat
+    /// fence, so either arm proves it; `suggest` has a four-rung ladder where
+    /// `Locked` and `GameOver` are separate rungs, so a locked-only cell would
+    /// leave the game-over rung unexecuted. The finished game is built by
+    /// pumping both seats as bots in process and installing the record — the
+    /// same shape the lockdown cells use, because a 2P game driven to a winner
+    /// over the route costs a whole game.
+    ///
+    /// The claim is an EQUALITY between callers rather than a fixed sentence:
+    /// whatever the acting seat's holder is told, the watcher is told too.
+    #[tokio::test]
+    async fn a_finished_or_locked_game_refuses_every_caller_the_same_way() {
+        use yokohama_cli::bot::{BotSeats, PROVISIONAL_DEFAULT_BOT};
+        use yokohama_cli::session::Session;
+        use yokohama_core::{GameConfig, PlayerColor, PlayerId, StartingOrderChoice};
+
+        const SEED: u64 = 20260831;
+        let store = Arc::new(MemStore::default());
+        let state = Arc::new(AppState::with_store(store.clone(), identity::IdentityMode::Claimed));
+        start_as(&state, "ended", SEED, &["red@wire.test", "blue@wire.test"]).await;
+        start_as(&state, "faultedseat", SEED, &["red@wire.test", "blue@wire.test"]).await;
+
+        // A FINISHED record of the very game the table describes: same config,
+        // same seed, same keeps (`start_as` keeps card 1 at every seat, which is
+        // `Keep(0)`), played out by pumping both seats.
+        let mut config = GameConfig::for_player_count(2);
+        config.player_colors = vec![PlayerColor::Red, PlayerColor::Blue];
+        config.start_player = PlayerId::new(0);
+        let mut session = Session::new_sim(
+            config,
+            SEED,
+            vec![StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)],
+            Rules::standard(),
+        )
+        .expect("a game");
+        let bots =
+            BotSeats::new(vec![Some(PROVISIONAL_DEFAULT_BOT), Some(PROVISIONAL_DEFAULT_BOT)], SEED);
+        session.set_run_seats(bots.seat_provenance());
+        let mut repl = yokohama_cli::repl::Repl::new(session);
+        for _ in 0..400 {
+            if repl.session.is_over() {
+                break;
+            }
+            repl.pump_bots();
+        }
+        assert!(repl.session.is_over(), "the both-bot pump must reach a finished game");
+        let finished = repl.session.to_record_json().expect("a record");
+        let (_, version) = store.read(Doc::Record, "ended").expect("a store").expect("a record");
+        store
+            .write_if_version(Doc::Record, "ended", &finished, Some(version))
+            .expect("the finished record");
+
+        // And a LOCKED one, stamped through the durable record exactly as a
+        // driver fault reaches a later process.
+        let (stored, version) =
+            store.read(Doc::Record, "faultedseat").expect("a store").expect("a record");
+        let mut record: serde_json::Value = serde_json::from_str(&stored).expect("a record");
+        record["lockdown"] = serde_json::json!("invariant violation applying that move");
+        store
+            .write_if_version(
+                Doc::Record,
+                "faultedseat",
+                &serde_json::to_string(&record).expect("a record"),
+                Some(version),
+            )
+            .expect("a stored lockdown");
+
+        // A fresh state over the same store, so both games are rebuilt from the
+        // records just written rather than served from the resident handles.
+        let state = Arc::new(AppState::with_store(store, identity::IdentityMode::Claimed));
+
+        for (id, kind) in [("ended", "game_over"), ("faultedseat", "locked")] {
+            let (_, game) = get_as(&state, "red@wire.test", &format!("/api/games/{id}")).await;
+            let acting = game["to_move"].as_u64().expect("a seat to move");
+            let (holder, watcher) = if acting == 0 {
+                ("red@wire.test", "blue@wire.test")
+            } else {
+                ("blue@wire.test", "red@wire.test")
+            };
+
+            let (hs, hb) = get_as(&state, holder, &format!("/api/games/{id}/suggest")).await;
+            let (ws, wb) = get_as(&state, watcher, &format!("/api/games/{id}/suggest")).await;
+            assert_eq!(hb["refusal"]["kind"], kind, "{id}: the holder is told the truth: {hb}");
+            assert_eq!((ws, &wb), (hs, &hb), "{id}: and the watcher is told the same thing");
+
+            // **`input` is compared on the REFUSAL, not on the whole body**:
+            // the reply is a per-seat payload, so two callers legitimately
+            // receive different frames — their own hands. What must match is
+            // the status and what the session said, which is the sentence the
+            // seat fence was drowning out.
+            let line = serde_json::json!({ "line": "1" });
+            let (hs, hb) =
+                post_as(&state, holder, &format!("/api/games/{id}/input"), line.clone()).await;
+            let (ws, wb) = post_as(&state, watcher, &format!("/api/games/{id}/input"), line).await;
+            assert_ne!(
+                wb["error"].as_str(),
+                Some("it is seat 0's turn (red@wire.test)"),
+                "{id}: input must not name a turn on a game that has none: {wb}",
+            );
+            assert_eq!(ws, hs, "{id}: input answers both callers with the same status");
+            assert_eq!(wb["messages"], hb["messages"], "{id}: ...and the same refusal");
+            assert!(
+                !hb["messages"].as_array().expect("messages").is_empty(),
+                "{id}: anti-vacuity — the session really did refuse, in words: {hb}",
+            );
+        }
+    }
+
+    /// **The card index is a VIEW OF THE CALLER's cards, and a watcher's index
+    /// names none of the mover's** (spec §5.3's viewer column, R-4.1).
+    ///
+    /// The defect this closes, measured: `Repl::index_placements` marks
+    /// `CardLocation::OwnHand` for the seat the TERMINAL is showing, which there
+    /// is always the mover. Passed through unscoped, a seated opponent issued
+    /// one GET and read which order cards were in the acting seat's hand — and
+    /// since every other order card is taken face-up from a port display,
+    /// subtracting the public takes names that seat's hidden starting order, the
+    /// single thing hidden player-to-player in the engine's representation.
+    ///
+    /// **Three assertions, and none of the three is enough alone.** The
+    /// watcher's index must not mark the mover's cards (the leak); it MUST mark
+    /// the watcher's own (or the fix is "drop `OwnHand` entirely", which breaks
+    /// the index for the person it is for); and the mover's own index must still
+    /// mark the mover's (the same, from the other side). The card ids come from
+    /// each seat's own dashboard rather than from a list written here.
+    #[tokio::test]
+    async fn a_watchers_card_index_never_names_the_acting_seats_hand() {
+        let state = Arc::new(AppState::in_memory());
+        start_as(&state, "indexed", 20260831, &["red@wire.test", "blue@wire.test"]).await;
+
+        /// The order ids a payload shows in its own Hand panel.
+        fn hand_of(game: &serde_json::Value) -> Vec<u64> {
+            game["frame"]["dashboard"]
+                .as_array()
+                .expect("panels")
+                .iter()
+                .find_map(|p| p.get("Hand"))
+                .expect("a hand panel")["cards"]
+                .as_array()
+                .expect("cards")
+                .iter()
+                .map(|c| c["id"].as_u64().expect("a card id"))
+                .collect()
+        }
+        /// The order ids an index marks as the reader's own hand.
+        ///
+        /// `CardLocation` is externally tagged and `OwnHand` is a unit variant,
+        /// so it serializes as the bare string; the id lives under the card's
+        /// `face`, which is `CardRef`'s own tagging.
+        fn own_hand(index: &serde_json::Value) -> std::collections::BTreeSet<u64> {
+            index["groups"]
+                .as_array()
+                .expect("groups")
+                .iter()
+                .flat_map(|g| g["cards"].as_array().expect("cards"))
+                .filter(|c| c["location"] == serde_json::json!("OwnHand"))
+                .map(|c| c["face"]["Order"]["id"].as_u64().expect("an order card id"))
+                .collect()
+        }
+
+        let (_, as_red) = get_as(&state, "red@wire.test", "/api/games/indexed").await;
+        let (_, as_blue) = get_as(&state, "blue@wire.test", "/api/games/indexed").await;
+        assert_eq!(as_red["to_move"], 0, "red is the acting seat");
+        let (red_hand, blue_hand) = (hand_of(&as_red), hand_of(&as_blue));
+        assert!(!red_hand.is_empty() && !blue_hand.is_empty(), "the premise: both hold a card");
+        assert_ne!(red_hand, blue_hand, "and they are not the same card");
+
+        let (status, watcher) =
+            get_as(&state, "blue@wire.test", "/api/games/indexed/index/orders").await;
+        assert_eq!(status, StatusCode::OK, "{watcher}");
+        let marked = own_hand(&watcher);
+        for id in &red_hand {
+            assert!(!marked.contains(id), "the watcher's index names O{id}, which is red's");
+        }
+        assert_eq!(
+            marked,
+            blue_hand.iter().copied().collect(),
+            "and it names blue's own, which is what the index is for",
+        );
+
+        let (_, mover) = get_as(&state, "red@wire.test", "/api/games/indexed/index/orders").await;
+        assert_eq!(
+            own_hand(&mover),
+            red_hand.iter().copied().collect(),
+            "the acting seat's own index still marks its own hand",
+        );
     }
 
     /// **`suggest` answers the acting seat's holder only** (R-1.8), so the
