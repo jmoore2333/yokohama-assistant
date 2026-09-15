@@ -599,20 +599,36 @@ async fn input(
     // than handed a prompt-moved-on conflict about a prompt that was never
     // theirs.
     //
-    // **And only while the game is WAITING for somebody.** A finished game has
-    // no turn and a locked one accepts no gameplay from any seat, so naming a
-    // seat there is a false sentence — and it was the false half of a pair, the
-    // holder of that same seat being told the truth by `step` on the same
-    // table. `step`'s own refusal is the true one for both, and it applies
-    // nothing in either state, so the request is let through to collect it.
+    // **The fence never drops. Only its WORDING changes** (R-4.3).
+    //
+    // A finished game has no turn and a locked one accepts no gameplay, so
+    // naming a seat there is a false sentence — the false half of a pair, since
+    // the holder of that same seat is told the truth by `step`. But the first
+    // fix for that let a non-acting caller's POST through to `step` when the
+    // game was over, and `undo` is an allowlisted gameplay line that
+    // `Session::undo` applies with no game-over guard of its own. Measured on
+    // that code: a seated WATCHER posted `undo` at a finished game, got 200,
+    // and the record went from 357 events to 200 with `over` back to false —
+    // any seated player could rewind a completed shared game, and this server
+    // persisted it because `events.len()` had changed.
+    //
+    // So the comparison is unconditional and the SENTENCE is chosen: the
+    // lockdown's own reason, the CLI's own `ApplyError::GameOver` line, or whose
+    // turn it is. The acting seat's holder's path is untouched in all three —
+    // their `undo` at game over is still the CLI's behaviour, which is Task 5's
+    // R-P6 to rule on at a multi-person table.
     let acting = repl.session.state().current_player;
-    let waiting = !repl.session.is_over() && repl.session.record().lockdown.is_none();
-    if waiting && acting != viewer {
-        return Err(ApiError {
-            status: StatusCode::FORBIDDEN,
-            message: format!("it is seat {}'s turn ({})", acting.0, holder_of(&table, acting)),
-            table_status: None,
-        });
+    if acting != viewer {
+        // Lockdown first, matching `client::prompt_of`'s precedence, so a game
+        // that is both faulted and finished reports the fault.
+        let message = if let Some(reason) = repl.session.record().lockdown.clone() {
+            reason
+        } else if repl.session.is_over() {
+            yokohama_cli::session::ApplyError::GameOver.to_string()
+        } else {
+            format!("it is seat {}'s turn ({})", acting.0, holder_of(&table, acting))
+        };
+        return Err(ApiError { status: StatusCode::FORBIDDEN, message, table_status: None });
     }
 
     if let Some(expected) = &req.expect {
@@ -1896,6 +1912,72 @@ mod tests {
         }
     }
 
+    /// The two-person seed every finished-game cell below deals from.
+    const ENDED_SEED: u64 = 20260831;
+
+    /// A two-person table whose record has been played out to a WINNER, with
+    /// the id and the email of the seat that is NOT to move at the end.
+    ///
+    /// **Built by pumping both seats as bots in process and installing the
+    /// record** — the shape the lockdown cells use — because driving a 2P human
+    /// table to a winner over the route costs a whole game. The table document
+    /// still describes two PEOPLE, which is what the cells are about; only the
+    /// record's own run provenance says bot, and no route reads it for these
+    /// claims.
+    async fn a_finished_two_person_game(
+        name: &'static str,
+    ) -> (Arc<AppState>, &'static str, &'static str) {
+        use yokohama_cli::bot::{BotSeats, PROVISIONAL_DEFAULT_BOT};
+        use yokohama_cli::session::Session;
+        use yokohama_core::{GameConfig, PlayerColor, PlayerId, StartingOrderChoice};
+
+        let store = Arc::new(MemStore::default());
+        let state = Arc::new(AppState::with_store(store.clone(), identity::IdentityMode::Claimed));
+        start_as(&state, name, ENDED_SEED, &["red@wire.test", "blue@wire.test"]).await;
+
+        // The very game the table describes: same config, same seed, same keeps
+        // (`start_as` keeps card 1 at every seat, which is `Keep(0)`).
+        let mut config = GameConfig::for_player_count(2);
+        config.player_colors = vec![PlayerColor::Red, PlayerColor::Blue];
+        config.start_player = PlayerId::new(0);
+        let mut session = Session::new_sim(
+            config,
+            ENDED_SEED,
+            vec![StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)],
+            Rules::standard(),
+        )
+        .expect("a game");
+        let bots = BotSeats::new(
+            vec![Some(PROVISIONAL_DEFAULT_BOT), Some(PROVISIONAL_DEFAULT_BOT)],
+            ENDED_SEED,
+        );
+        session.set_run_seats(bots.seat_provenance());
+        let mut repl = yokohama_cli::repl::Repl::new(session);
+        for _ in 0..400 {
+            if repl.session.is_over() {
+                break;
+            }
+            repl.pump_bots();
+        }
+        assert!(repl.session.is_over(), "the both-bot pump must reach a finished game");
+        let finished = repl.session.to_record_json().expect("a record");
+        let (_, version) = store.read(Doc::Record, name).expect("a store").expect("a record");
+        store
+            .write_if_version(Doc::Record, name, &finished, Some(version))
+            .expect("the finished record");
+
+        // A fresh state over the same store, so the game is rebuilt from the
+        // record just written rather than served from the resident handle.
+        let state = Arc::new(AppState::with_store(store, identity::IdentityMode::Claimed));
+        let (_, game) = get_as(&state, "red@wire.test", &format!("/api/games/{name}")).await;
+        let watcher = if game["to_move"].as_u64() == Some(0) {
+            "blue@wire.test"
+        } else {
+            "red@wire.test"
+        };
+        (state, name, watcher)
+    }
+
     /// **A finished or faulted game answers EVERY caller with what is true of
     /// the GAME, not with whose turn it is** (review I1).
     ///
@@ -1918,47 +2000,11 @@ mod tests {
     /// whatever the acting seat's holder is told, the watcher is told too.
     #[tokio::test]
     async fn a_finished_or_locked_game_refuses_every_caller_the_same_way() {
-        use yokohama_cli::bot::{BotSeats, PROVISIONAL_DEFAULT_BOT};
-        use yokohama_cli::session::Session;
-        use yokohama_core::{GameConfig, PlayerColor, PlayerId, StartingOrderChoice};
-
-        const SEED: u64 = 20260831;
         let store = Arc::new(MemStore::default());
         let state = Arc::new(AppState::with_store(store.clone(), identity::IdentityMode::Claimed));
-        start_as(&state, "ended", SEED, &["red@wire.test", "blue@wire.test"]).await;
-        start_as(&state, "faultedseat", SEED, &["red@wire.test", "blue@wire.test"]).await;
+        start_as(&state, "faultedseat", ENDED_SEED, &["red@wire.test", "blue@wire.test"]).await;
 
-        // A FINISHED record of the very game the table describes: same config,
-        // same seed, same keeps (`start_as` keeps card 1 at every seat, which is
-        // `Keep(0)`), played out by pumping both seats.
-        let mut config = GameConfig::for_player_count(2);
-        config.player_colors = vec![PlayerColor::Red, PlayerColor::Blue];
-        config.start_player = PlayerId::new(0);
-        let mut session = Session::new_sim(
-            config,
-            SEED,
-            vec![StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)],
-            Rules::standard(),
-        )
-        .expect("a game");
-        let bots =
-            BotSeats::new(vec![Some(PROVISIONAL_DEFAULT_BOT), Some(PROVISIONAL_DEFAULT_BOT)], SEED);
-        session.set_run_seats(bots.seat_provenance());
-        let mut repl = yokohama_cli::repl::Repl::new(session);
-        for _ in 0..400 {
-            if repl.session.is_over() {
-                break;
-            }
-            repl.pump_bots();
-        }
-        assert!(repl.session.is_over(), "the both-bot pump must reach a finished game");
-        let finished = repl.session.to_record_json().expect("a record");
-        let (_, version) = store.read(Doc::Record, "ended").expect("a store").expect("a record");
-        store
-            .write_if_version(Doc::Record, "ended", &finished, Some(version))
-            .expect("the finished record");
-
-        // And a LOCKED one, stamped through the durable record exactly as a
+        // A LOCKED record, stamped through the durable record exactly as a
         // driver fault reaches a later process.
         let (stored, version) =
             store.read(Doc::Record, "faultedseat").expect("a store").expect("a record");
@@ -1973,12 +2019,15 @@ mod tests {
             )
             .expect("a stored lockdown");
 
-        // A fresh state over the same store, so both games are rebuilt from the
-        // records just written rather than served from the resident handles.
-        let state = Arc::new(AppState::with_store(store, identity::IdentityMode::Claimed));
+        // A fresh state over the same store, so the locked game is rebuilt from
+        // the record just written rather than served from the resident handle.
+        let locked = Arc::new(AppState::with_store(store, identity::IdentityMode::Claimed));
+        let (ended, ended_id, _) = a_finished_two_person_game("ended").await;
 
-        for (id, kind) in [("ended", "game_over"), ("faultedseat", "locked")] {
-            let (_, game) = get_as(&state, "red@wire.test", &format!("/api/games/{id}")).await;
+        for (state, id, kind) in
+            [(&ended, ended_id, "game_over"), (&locked, "faultedseat", "locked")]
+        {
+            let (_, game) = get_as(state, "red@wire.test", &format!("/api/games/{id}")).await;
             let acting = game["to_move"].as_u64().expect("a seat to move");
             let (holder, watcher) = if acting == 0 {
                 ("red@wire.test", "blue@wire.test")
@@ -1986,8 +2035,8 @@ mod tests {
                 ("blue@wire.test", "red@wire.test")
             };
 
-            let (hs, hb) = get_as(&state, holder, &format!("/api/games/{id}/suggest")).await;
-            let (ws, wb) = get_as(&state, watcher, &format!("/api/games/{id}/suggest")).await;
+            let (hs, hb) = get_as(state, holder, &format!("/api/games/{id}/suggest")).await;
+            let (ws, wb) = get_as(state, watcher, &format!("/api/games/{id}/suggest")).await;
             assert_eq!(hb["refusal"]["kind"], kind, "{id}: the holder is told the truth: {hb}");
             assert_eq!((ws, &wb), (hs, &hb), "{id}: and the watcher is told the same thing");
 
@@ -1998,20 +2047,72 @@ mod tests {
             // seat fence was drowning out.
             let line = serde_json::json!({ "line": "1" });
             let (hs, hb) =
-                post_as(&state, holder, &format!("/api/games/{id}/input"), line.clone()).await;
-            let (ws, wb) = post_as(&state, watcher, &format!("/api/games/{id}/input"), line).await;
+                post_as(state, holder, &format!("/api/games/{id}/input"), line.clone()).await;
+            let (ws, wb) = post_as(state, watcher, &format!("/api/games/{id}/input"), line).await;
             assert_ne!(
                 wb["error"].as_str(),
                 Some("it is seat 0's turn (red@wire.test)"),
                 "{id}: input must not name a turn on a game that has none: {wb}",
             );
-            assert_eq!(ws, hs, "{id}: input answers both callers with the same status");
-            assert_eq!(wb["messages"], hb["messages"], "{id}: ...and the same refusal");
             assert!(
                 !hb["messages"].as_array().expect("messages").is_empty(),
-                "{id}: anti-vacuity — the session really did refuse, in words: {hb}",
+                "{id}: anti-vacuity — the session really did refuse the holder, in words: {hb}",
+            );
+            assert_eq!(hs, StatusCode::OK, "{id}: the acting holder's own path is unchanged");
+            assert_eq!(ws, StatusCode::FORBIDDEN, "{id}: and the watcher still cannot act: {wb}");
+            assert_ne!(
+                wb["error"].as_str(),
+                Some("it is seat 0's turn (red@wire.test)"),
+                "{id}: input must not name a turn on a game that has none: {wb}",
             );
         }
+    }
+
+    /// **A watcher cannot REWIND a finished game, and the fence that stops them
+    /// is the same fence at every game status** (controller ruling R-4.3).
+    ///
+    /// The hole this closes was opened by the first fix for I1, which is why it
+    /// gets its own cell rather than a line in the one above. Dropping the seat
+    /// fence at game over so the watcher could hear the game's own sentence let
+    /// their POST reach `Repl::step` — and `undo` is an allowlisted gameplay
+    /// line that `Session::undo` applies with no game-over guard of its own. Any
+    /// seated player could rewind a completed shared game, and the server would
+    /// persist it, because `events.len()` had changed.
+    ///
+    /// So the fence never drops; only its WORDING changes. What a non-acting
+    /// caller hears at game over is the CLI's own `ApplyError::GameOver`
+    /// sentence, and at lockdown the lockdown's own reason.
+    ///
+    /// **The anti-mutation assertion is the point of the cell**, not the status
+    /// code: `events` is read before and after, through a GET as the acting
+    /// holder, and must not have moved. A 403 that still rewound the game would
+    /// pass a status check.
+    #[tokio::test]
+    async fn a_watcher_cannot_undo_a_finished_game() {
+        let (state, id, watcher) = a_finished_two_person_game("rewind").await;
+        let (_, before) = get_as(&state, "red@wire.test", &format!("/api/games/{id}")).await;
+        let events = before["events"].as_u64().expect("an event count");
+        assert!(events > 0 && before["over"] == serde_json::json!(true), "{before}");
+
+        let (status, body) = post_as(
+            &state,
+            watcher,
+            &format!("/api/games/{id}/input"),
+            serde_json::json!({ "line": "undo" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert_eq!(
+            body["error"], "the game is already over",
+            "the CLI's own ApplyError::GameOver sentence, not one authored here",
+        );
+
+        let (_, after) = get_as(&state, "red@wire.test", &format!("/api/games/{id}")).await;
+        assert_eq!(
+            after["events"].as_u64(),
+            Some(events),
+            "the watcher's undo rewound a finished shared game",
+        );
     }
 
     /// **The card index is a VIEW OF THE CALLER's cards, and a watcher's index
