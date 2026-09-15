@@ -1094,7 +1094,7 @@ fn site_space_words() -> Value {
 ///
 /// The seed is the FIRST member of the engine's hidden set (`game/observe.rs`):
 /// it regenerates the order deck, the tech deck, the boxed pile, the board AND
-/// every deal. `games::draw_seed`'s own doc states the threat model — the public
+/// every deal. `tables::draw_seed`'s own doc states the threat model — the public
 /// board is an injective fingerprint of the seed, so small seeds are
 /// "brute-forceable in milliseconds, recovering the entire hidden set". Serving
 /// the value removes the need to brute-force anything: `new_game(config, rules,

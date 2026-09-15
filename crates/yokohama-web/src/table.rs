@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use yokohama_core::{PlayerColor, PlayerId};
 
 use crate::client::HistoricalFrame;
-use crate::games::DealCard;
+use crate::tables::DealCard;
 use crate::identity::User;
 
 /// Who plays one seat.
@@ -83,7 +83,7 @@ pub struct TableDoc {
     pub start_seat: u8,
     pub seats: Vec<SeatDoc>,
     /// `1` or `2` once a HUMAN seat has chosen; a bot seat's stays `None`
-    /// forever — the bot's keep is `games::bot_keep`'s, computed at finalize and
+    /// forever — the bot's keep is `tables::bot_keep`'s, computed at finalize and
     /// living in the record, never here.
     pub keeps: Vec<Option<u8>>,
     /// **Never on the wire.** See the module doc.

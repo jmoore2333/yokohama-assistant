@@ -42,6 +42,7 @@ pub mod identity;
 pub mod outcome;
 pub mod store;
 pub mod table;
+pub mod tables;
 
 use std::sync::Arc;
 
@@ -58,7 +59,8 @@ use serde::{Deserialize, Serialize};
 use yokohama_core::{Rules, SEMANTICS_REV};
 
 use crate::client::ClientState;
-use crate::games::{Games, NewGame};
+use crate::games::Games;
+use crate::tables::NewGame;
 use crate::store::{FsStore, MemStore, Store};
 
 /// A refused request, as the client sees it.
