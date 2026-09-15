@@ -35,7 +35,7 @@ use crate::games::{bring_alive, evict_down_to, mirror_of, GameError, Games};
 use crate::identity::User;
 use crate::store::{is_safe_id, Doc, Version, WriteError};
 use crate::table::{
-    now_unix, DealView, SeatDoc, TableDoc, TableStatus, TableView, TurnMirror,
+    now_unix, DealView, Lock, SeatDoc, TableDoc, TableStatus, TableView, TurnMirror,
 };
 
 /// The shape version stamped on every table document this build writes.
@@ -107,12 +107,12 @@ impl<'de> Deserialize<'de> for WireSeed {
     }
 }
 
-/// One seat of a requested table: a person's email, or the bot.
+/// One seat of a requested table: a person's email, the bot, or nobody yet.
 ///
-/// **Exactly one of the two**, refused by name otherwise. Two optional fields
-/// rather than a tagged enum because that is what the browser's form produces
-/// and what a `curl` writes by hand; the refusal names the seat, which a serde
-/// untagged-union error would not.
+/// **Exactly one of the THREE**, refused by name otherwise. Three optional
+/// fields rather than a tagged enum because that is what the browser's form
+/// produces and what a `curl` writes by hand; the refusal names the seat, which
+/// a serde untagged-union error would not.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SeatSpec {
@@ -120,6 +120,9 @@ pub struct SeatSpec {
     pub user: Option<String>,
     #[serde(default)]
     pub bot: bool,
+    /// An unfilled seat (M6.2, R-2.7): anyone signed in may take it.
+    #[serde(default)]
+    pub open: bool,
 }
 
 /// What a client sends to open a table.
@@ -143,8 +146,24 @@ pub struct NewGame {
     pub seed: Option<WireSeed>,
     /// One entry per seat, in seat order.
     pub seats: Vec<SeatSpec>,
+    /// A LABEL since M6.2 (R-2.4): free text, 1–64 characters, what the lobby
+    /// prints. **Never the id** — it used to be both, which is why a game could
+    /// not be called "Thursday's game" and why two tables could not share a
+    /// name.
     #[serde(default)]
     pub name: Option<String>,
+    /// The storage id, under [`is_safe_id`]; absent, the server draws one. Tests
+    /// and the fixture harness set it; the browser never does.
+    #[serde(default)]
+    pub id: Option<String>,
+    /// Written onto every seat the creator holds (R-2.3), and onto no other —
+    /// a name is a claim about the person who gave it.
+    #[serde(default)]
+    pub display_name: Option<String>,
+    /// The table password (R-2.1); stored as a [`crate::table::Lock`], never
+    /// served. Trimmed here, so " sesame " and "sesame" are one password.
+    #[serde(default)]
+    pub password: Option<String>,
 }
 
 /// One dealt card and what the built-in bot would score it at.
@@ -223,23 +242,26 @@ fn config_of(req: &NewGame, creator: &User) -> Result<(GameConfig, Vec<SeatDoc>)
     }
     let mut seats: Vec<SeatDoc> = Vec::with_capacity(n);
     for (i, spec) in req.seats.iter().enumerate() {
-        match (&spec.user, spec.bot) {
+        match (&spec.user, spec.bot, spec.open) {
             // Normalized HERE and nowhere else, through the one function that
             // knows what an email of this API's is — so a seat bound from a
             // header reading `  Red@Wire.TEST ` is the seat the next request
             // finds.
-            (Some(raw), false) => {
+            (Some(raw), false, false) => {
                 let user = User::parse(raw).map_err(|e| format!("seat {i}: {e}"))?;
                 seats.push(SeatDoc::Human { user: user.as_str().to_string(), name: None });
             }
-            (None, true) => seats.push(SeatDoc::Bot),
-            _ => return Err(format!("seat {i}: exactly one of user or bot")),
+            (None, true, false) => seats.push(SeatDoc::Bot),
+            (None, false, true) => seats.push(SeatDoc::Open),
+            _ => return Err(format!("seat {i}: exactly one of user, bot or open")),
         }
     }
-    // The wizard's rule, kept: an all-bot table is refused. Bot-vs-bot
-    // spectating is deliberately out of v1, and a table with nobody at it
-    // would sit there waiting for a move that never comes.
-    if seats.iter().all(|s| matches!(s, SeatDoc::Bot)) {
+    // The wizard's rule, kept, with its predicate WIDENED for M6.2: a table
+    // with no human seat is refused. Bot-vs-bot spectating is deliberately out
+    // of v1, and a table with nobody at it would sit there waiting for a move
+    // that never comes. **An open seat is not a human seat** — it is nobody
+    // yet — so "every seat is a bot" is no longer the whole of the rule.
+    if !seats.iter().any(|s| matches!(s, SeatDoc::Human { .. })) {
         return Err("at least one seat must stay human".to_string());
     }
     if !seats.iter().any(|s| matches!(s, SeatDoc::Human { user, .. } if user == creator.as_str()))
@@ -248,6 +270,37 @@ fn config_of(req: &NewGame, creator: &User) -> Result<(GameConfig, Vec<SeatDoc>)
     }
     if n > 2 && seats.iter().any(|s| matches!(s, SeatDoc::Bot)) {
         return Err("the bot is measured at two players only".to_string());
+    }
+    // M6.2's three, in the order §3.1 lists them. The id's own check is
+    // `create`'s and comes after these — it is the only one that needs the
+    // store's rule rather than this module's.
+    if let Some(raw) = &req.name {
+        check_name(raw).map_err(|e| format!("name: {e}"))?;
+    }
+    let display_name = match &req.display_name {
+        Some(raw) => Some(check_name(raw).map_err(|e| format!("display name: {e}"))?),
+        None => None,
+    };
+    if let Some(raw) = &req.password {
+        let p = raw.trim();
+        if p.is_empty() {
+            return Err("a password is at least one character".to_string());
+        }
+        if p.chars().count() > 64 {
+            return Err("a password is at most 64 characters".to_string());
+        }
+    }
+    // **Onto the creator's seats and no other** (R-plan-6). A create may seat
+    // other people, and writing the creator's chosen name onto their seats
+    // would be this server making a claim about somebody who has not spoken.
+    if let Some(name) = &display_name {
+        for seat in &mut seats {
+            if let SeatDoc::Human { user, name: slot } = seat {
+                if user == creator.as_str() {
+                    *slot = Some(name.clone());
+                }
+            }
+        }
     }
 
     let mut config = GameConfig::for_player_count(req.players);
@@ -540,11 +593,11 @@ impl Games {
         let (config, seats) = config_of(req, creator).map_err(GameError::BadRequest)?;
         let seed = req.seed.map_or_else(draw_seed, |s| s.0);
 
-        let id = match &req.name {
-            Some(name) if !is_safe_id(name) => {
-                return Err(GameError::BadRequest(format!("{name:?} is not a usable game name")))
+        let id = match &req.id {
+            Some(id) if !is_safe_id(id) => {
+                return Err(GameError::BadRequest(format!("{id:?} is not a usable game id")))
             }
-            Some(name) => name.clone(),
+            Some(id) => id.clone(),
             // An INDEPENDENT draw, never `seed`. A default id of
             // `sim-{seed:016x}` published the setup seed — hidden-set member #1
             // — in the id itself, so `GET /api/games` handed out every game's
@@ -573,10 +626,19 @@ impl Games {
 
         self.deleted.lock().expect("games lock").remove(&id);
 
+        // **The status is a function of the seats and not of the request.**
+        // `check_shape` refuses the pair in both directions, so a table that is
+        // open exactly while it has an open seat is the only shape this server
+        // can write and the only one it can read back.
+        let status = if seats.iter().any(|s| matches!(s, SeatDoc::Open)) {
+            TableStatus::Open
+        } else {
+            TableStatus::Dealing
+        };
         let doc = TableDoc {
             schema: TABLE_SCHEMA,
             id,
-            name: req.name.clone(),
+            name: req.name.as_deref().map(str::trim).map(str::to_string),
             created_by: creator.as_str().to_string(),
             created_at: now_unix(),
             players: req.players,
@@ -585,11 +647,12 @@ impl Games {
             seats,
             keeps: vec![None; usize::from(req.players)],
             seed,
-            status: TableStatus::Dealing,
+            status,
             turn: None,
-            // Task 3 is where a create can open a table and set a password;
-            // until then every table this server opens is full and unlocked.
-            lock: None,
+            // Trimmed the same way `config_of` validated it: `Lock::new` is
+            // unguarded by design, so the rule that an empty password is
+            // refused lives there and the trim must agree with it here.
+            lock: req.password.as_deref().map(str::trim).map(Lock::new),
         };
         match self.write_table(&doc, None) {
             Ok(_) => Ok(doc.view(creator)),
@@ -753,8 +816,14 @@ impl Games {
     /// there is no second copy of the deal to keep true.
     pub fn deal(&self, id: &str, user: &User) -> Result<DealView, GameError> {
         let doc = self.table(id, user)?;
+        // A table still filling its seats has no deal to serve: the cards a seat
+        // is shown depend on the PLAYER COUNT and the seed, and a seat that is
+        // still open is a seat whose neighbour has not arrived.
+        if doc.status == TableStatus::Open {
+            return Err(GameError::Open);
+        }
         if doc.status == TableStatus::Playing {
-            return Err(GameError::Conflict("this table is playing".to_string()));
+            return Err(GameError::Playing);
         }
         let seat = doc.next_unkept_seat_of(user);
         let config = config_from(&doc);
@@ -804,8 +873,11 @@ impl Games {
         let (mut doc, version) = self
             .settle_locked(id)?
             .ok_or_else(|| GameError::NotFound(format!("no game named {id:?}")))?;
+        if doc.status == TableStatus::Open {
+            return Err(GameError::Open);
+        }
         if doc.status == TableStatus::Playing {
-            return Err(GameError::Conflict("this table is playing".to_string()));
+            return Err(GameError::Playing);
         }
         let n = seat.0;
         // A seat nobody holds and a seat somebody ELSE holds are the same
@@ -957,7 +1029,6 @@ impl Games {
 mod tests {
     use super::*;
     use crate::games::test_support::*;
-    use crate::table::Lock;
     use crate::store::{GameId, MemStore, Store};
     use yokohama_core::GameRecord;
 
@@ -1134,15 +1205,29 @@ mod tests {
         r.players = 5;
         assert!(games.create(&r, &red).unwrap_err().to_string().contains("2 to 4"));
         let mut r = req("order");
-        r.seats[0] = SeatSpec { user: Some("other@t.test".into()), bot: false };
+        r.seats[0] = SeatSpec { user: Some("other@t.test".into()), bot: false, open: false };
         let e = games.create(&r, &red).unwrap_err().to_string();
         assert!(e.contains("creator"), "R-1.6: {e}");
         let mut r = req("order");
-        r.seats[1] = SeatSpec { user: Some("x@t.test".into()), bot: true };
+        r.seats[1] = SeatSpec { user: Some("x@t.test".into()), bot: true, open: false };
         assert!(games.create(&r, &red).unwrap_err().to_string().contains("exactly one"));
         let mut r = req("order");
-        r.seats = vec![SeatSpec { user: None, bot: true }, SeatSpec { user: None, bot: true }];
+        r.seats = vec![
+            SeatSpec { user: None, bot: true, open: false },
+            SeatSpec { user: None, bot: true, open: false },
+        ];
         assert!(games.create(&r, &red).unwrap_err().to_string().contains("human"));
+        let mut r = req("order");
+        r.name = Some("x".repeat(65));
+        assert!(games.create(&r, &red).unwrap_err().to_string().contains("1 to 64"));
+        let mut r = req("order");
+        r.password = Some("   ".into());
+        assert!(
+            games.create(&r, &red).unwrap_err().to_string().contains("at least one character")
+        );
+        let mut r = req("order");
+        r.id = Some("bad id".into());
+        assert!(games.create(&r, &red).unwrap_err().to_string().contains("not a usable"));
         let v = games.create(&req("order"), &red).expect("a table");
         assert_eq!(v.status, TableStatus::Dealing);
         assert_eq!(v.my_seats, vec![PlayerId::new(0)]);
@@ -1171,9 +1256,9 @@ mod tests {
             r.seats = (0..n)
                 .map(|i| {
                     if i == 1 {
-                        SeatSpec { user: None, bot: true }
+                        SeatSpec { user: None, bot: true, open: false }
                     } else {
-                        SeatSpec { user: Some("red@t.test".into()), bot: false }
+                        SeatSpec { user: Some("red@t.test".into()), bot: false, open: false }
                     }
                 })
                 .collect();
@@ -1281,7 +1366,7 @@ mod tests {
         // refuses — which is itself the answer: there is no set table left to
         // draw for anyone.
         let d = games.deal(&id, &red);
-        assert!(matches!(d, Err(GameError::Conflict(_))), "the table finalized on the last keep");
+        assert!(matches!(d, Err(GameError::Playing)), "the table finalized on the last keep");
 
         // **The fallback is asserted on the function itself, because with
         // `preview` retired no ROUTE can reach it at a table holding a bot.**
@@ -1338,7 +1423,7 @@ mod tests {
             "red kept card 2",
         );
         assert!(
-            matches!(games.keep(&id, &red, PlayerId::new(0), 1), Err(GameError::Conflict(_))),
+            matches!(games.keep(&id, &red, PlayerId::new(0), 1), Err(GameError::Playing)),
             "a playing table takes no keep",
         );
     }
@@ -1406,7 +1491,7 @@ mod tests {
         let games = games();
         let red = who("red@t.test");
         let mut r = two_people("hot", CORPUS_SEED);
-        r.seats[1] = SeatSpec { user: Some("red@t.test".into()), bot: false };
+        r.seats[1] = SeatSpec { user: Some("red@t.test".into()), bot: false, open: false };
         let id = games.create(&r, &red).unwrap().id;
         assert_eq!(games.deal(&id, &red).unwrap().seat, Some(PlayerId::new(0)));
         games.keep(&id, &red, PlayerId::new(0), 1).unwrap();
@@ -2082,5 +2167,112 @@ mod tests {
             .expect_err("the name is occupied")
             .to_string();
         assert!(err.contains("already exists"), "{err}");
+    }
+
+    /// **An open seat opens the table; a full one deals at once.**
+    ///
+    /// Both halves in one cell because the claim is the RULE and not either
+    /// reading: a `create` that always wrote `Open` would pass the first
+    /// assertion and break every existing vs-bot table, and one that never wrote
+    /// it would pass the second. `chosen` is asserted at the open seats too — an
+    /// unfilled seat has not chosen, and reading `true` there would tell the
+    /// lobby a table was ready to finalize.
+    #[test]
+    fn create_lands_open_when_any_seat_is_open_and_dealing_otherwise() {
+        let games = games();
+        let red = who("red@t.test");
+        let mut r = req("open3");
+        r.players = 3;
+        r.colors = vec![PlayerColor::Red, PlayerColor::Blue, PlayerColor::Green];
+        r.seats = vec![
+            SeatSpec { user: Some("red@t.test".into()), bot: false, open: false },
+            SeatSpec { user: None, bot: false, open: true },
+            SeatSpec { user: None, bot: false, open: true },
+        ];
+        let v = games.create(&r, &red).expect("an open table");
+        assert_eq!(v.status, TableStatus::Open);
+        assert_eq!(v.seats[1], SeatDoc::Open);
+        assert_eq!(v.chosen, vec![false, false, false]);
+        let v = games.create(&req("bot2"), &red).expect("a bot table");
+        assert_eq!(v.status, TableStatus::Dealing, "a 2P bot table is full at create");
+    }
+
+    /// M6.2's four new refusals, in the order §3.1 lists them, and the one
+    /// widening the open seat forces: an open seat is NOT a human seat, so a
+    /// table of open seats and a bot has nobody at it yet and is refused by the
+    /// rule that already refused an all-bot table.
+    #[test]
+    fn create_refuses_the_new_arms_in_order_and_an_open_seat_is_not_human() {
+        let games = games();
+        let red = who("red@t.test");
+        let mut r = req("o");
+        r.seats[1] = SeatSpec { user: None, bot: true, open: true };
+        assert!(games.create(&r, &red).unwrap_err().to_string().contains("exactly one"));
+        let mut r = req("o");
+        r.seats = vec![
+            SeatSpec { user: None, bot: false, open: true },
+            SeatSpec { user: None, bot: true, open: false },
+        ];
+        let e = games.create(&r, &red).unwrap_err().to_string();
+        assert!(e.contains("human"), "open seats and a bot: no human yet: {e}");
+        let mut r = req("o");
+        r.name = Some("x".repeat(65));
+        assert!(games.create(&r, &red).unwrap_err().to_string().contains("1 to 64"));
+        let mut r = req("o");
+        r.display_name = Some("\u{7}".into());
+        assert!(games.create(&r, &red).unwrap_err().to_string().contains("control"));
+        let mut r = req("o");
+        r.password = Some("   ".into());
+        assert!(
+            games.create(&r, &red).unwrap_err().to_string().contains("at least one character")
+        );
+        let mut r = req("o");
+        r.id = Some("bad id".into());
+        assert!(games.create(&r, &red).unwrap_err().to_string().contains("not a usable"));
+    }
+
+    /// **The name is a label, the id is its own field, and the display name
+    /// lands on the CREATOR's seats and nobody else's.**
+    ///
+    /// The three were one string until this cycle: `name` was the storage key,
+    /// so a game could not be called "Thursday's game" and a person had no name
+    /// at all. The second half is the fence — red creating a table that seats
+    /// blue must not write red's chosen name onto blue's seat, which is the one
+    /// way a display name could become a claim about somebody else.
+    #[test]
+    fn the_name_is_a_label_the_id_is_drawn_and_the_display_name_lands_on_the_creators_seats() {
+        let games = games();
+        let red = who("red@t.test");
+        let mut r = two_people("ignored", CORPUS_SEED);
+        r.id = None;
+        r.name = Some("Thursday's game".into());
+        r.display_name = Some("Jeremy".into());
+        r.seats[1] = SeatSpec { user: Some("red@t.test".into()), bot: false, open: false };
+        let v = games.create(&r, &red).expect("a table");
+        assert!(v.id.starts_with("sim-"), "drawn: {}", v.id);
+        assert_eq!(v.name.as_deref(), Some("Thursday's game"));
+        for s in &v.seats {
+            assert_eq!(s, &SeatDoc::Human { user: "red@t.test".into(), name: Some("Jeremy".into()) });
+        }
+        let mut r = two_people("named", CORPUS_SEED);
+        r.display_name = Some("Jeremy".into());
+        let v = games.create(&r, &red).expect("a table");
+        assert_eq!(v.seats[1], SeatDoc::Human { user: "blue@t.test".into(), name: None }, "not blue's");
+    }
+
+    /// **The password is trimmed on the way in and the view says only that one
+    /// exists.** The salt and the hash are a password to attack offline, so the
+    /// document keeps them; `locked` is the whole of what a client is told.
+    #[test]
+    fn a_password_at_create_locks_the_table_and_the_view_says_only_that() {
+        let games = games();
+        let red = who("red@t.test");
+        let mut r = req("locked");
+        r.password = Some(" sesame ".into());
+        let v = games.create(&r, &red).expect("a table");
+        assert!(v.locked);
+        let (doc, _) = games.read_table("locked").unwrap().unwrap();
+        assert!(doc.check_password("sesame"), "trimmed on the way in");
+        assert!(!doc.check_password(" sesame "));
     }
 }

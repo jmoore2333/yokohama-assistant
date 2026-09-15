@@ -277,6 +277,7 @@ fn new_game_body() -> Value {
         // which is also what makes the per-seat deal fixtures below real.
         "seats": [{ "user": WALKER }, { "user": OTHER }],
         "name": "wire",
+        "id": "wire",
     })
 }
 
@@ -754,6 +755,7 @@ async fn walk() -> Vec<(String, Value)> {
                 "seed": SETUP_SEED,
                 "seats": [{ "user": WALKER }, { "user": WALKER }, { "user": WALKER }, { "user": WALKER }],
                 "name": "wire4",
+                "id": "wire4",
             })),
         )
         .await;

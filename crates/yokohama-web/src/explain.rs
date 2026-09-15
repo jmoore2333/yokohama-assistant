@@ -758,7 +758,11 @@ mod tests {
         // until every human seat has chosen (M6.1 §4.3), and both seats here are
         // one person's, so one identity answers for both.
         let red = crate::identity::User::parse("red@t.test").expect("an email");
-        let seat = |who: &str| crate::tables::SeatSpec { user: Some(who.to_string()), bot: false };
+        let seat = |who: &str| crate::tables::SeatSpec {
+            user: Some(who.to_string()),
+            bot: false,
+            open: false,
+        };
         let id = games
             .create(
                 &crate::tables::NewGame {
@@ -767,7 +771,10 @@ mod tests {
                     start_seat: 0,
                     seed: Some(crate::tables::WireSeed(20_260_831)),
                     seats: vec![seat("red@t.test"), seat("red@t.test")],
-                    name: Some("rank".to_string()),
+                    name: None,
+                    id: Some("rank".to_string()),
+                    display_name: None,
+                    password: None,
                 },
                 &red,
             )

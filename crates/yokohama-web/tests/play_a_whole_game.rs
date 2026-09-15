@@ -158,6 +158,7 @@ async fn a_whole_two_player_game_against_the_bot_plays_through_the_api() {
                 "seed": 20260830u64,
                 "seats": [{ "user": "red@wire.test" }, { "bot": true }],
                 "name": "gate",
+                "id": "gate",
             })),
         )
         .await;
@@ -273,7 +274,7 @@ async fn two_people_play_to_a_winner_and_each_sees_only_their_own_hand() {
             "/api/games",
             Some(serde_json::json!({
                 "players": 2, "colors": ["Red", "Blue"], "start_seat": 0,
-                "seed": 20260914u64, "name": "two",
+                "seed": 20260914u64, "name": "two", "id": "two",
                 "seats": [{ "user": red }, { "user": blue }],
             })),
         )

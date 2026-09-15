@@ -40,6 +40,15 @@ pub enum GameError {
     NotFound(String),
     /// Every route that needs a SESSION, while the table is still dealing.
     Dealing,
+    /// A session route at a table still FILLING ITS SEATS (M6.2, spec §3.4).
+    /// A sibling of `Dealing` for the same reason: the client branches on it —
+    /// an open table needs the lobby's join screen, not an error banner.
+    Open,
+    /// A table-phase route (join, deal, keep) at a table already playing or
+    /// finished (M6.2, spec §3.4). The mirror image of `Dealing`, and typed for
+    /// the same reason: a client that opened a link to a game that has started
+    /// wants the board, not a sentence.
+    Playing,
     Forbidden(String),
     Conflict(String),
     BadRequest(String),
@@ -56,6 +65,8 @@ impl std::fmt::Display for GameError {
             | Self::BadRequest(m)
             | Self::Server(m) => f.write_str(m),
             Self::Dealing => f.write_str(DEALING_SENTENCE),
+            Self::Open => f.write_str(OPEN_SENTENCE),
+            Self::Playing => f.write_str(PLAYING_SENTENCE),
         }
     }
 }
@@ -66,6 +77,14 @@ impl std::error::Error for GameError {}
 /// on the wire rides `"status": "dealing"`, which is what the client branches
 /// on — the words are for a human reading a `curl`.
 pub const DEALING_SENTENCE: &str = "this table is still dealing";
+
+/// The sentence a table that is still filling its seats answers with. Beside it
+/// rides `"status": "open"` (M6.2, spec §3.4).
+pub const OPEN_SENTENCE: &str = "this table is still open";
+
+/// The sentence a table-phase route answers with once the game has started.
+/// Beside it rides `"status": "playing"`.
+pub const PLAYING_SENTENCE: &str = "this table is playing";
 
 /// The facts the list mirrors off a live session (R-plan-3).
 ///
@@ -159,6 +178,10 @@ impl Games {
         }
         match self.settle(id)? {
             None => Err(GameError::NotFound(format!("no game named {id:?}"))),
+            // **Before the dealing arm**, and the order is the claim: an open
+            // table has no record either, and a client polling one must be told
+            // which of the two it is looking at.
+            Some((doc, _)) if doc.status == TableStatus::Open => Err(GameError::Open),
             Some((doc, _)) if doc.status == TableStatus::Dealing => Err(GameError::Dealing),
             Some(_) => self.live_handle(id),
         }
@@ -1096,29 +1119,37 @@ pub(crate) mod test_support {
     }
 
     /// The cycle's standing request: red at seat 0, the bot at seat 1.
-    pub(crate) fn req_seeded(name: &str, seed: u64) -> NewGame {
+    ///
+    /// **The argument is the ID since M6.2**, not the name: `name` became a free
+    /// -text LABEL (R-2.4) and the storage key moved to its own field, so a cell
+    /// that opens a table and then reads it back by the string it passed keeps
+    /// working and says which of the two it means.
+    pub(crate) fn req_seeded(id: &str, seed: u64) -> NewGame {
         NewGame {
             players: 2,
             colors: vec![PlayerColor::Red, PlayerColor::Blue],
             start_seat: 0,
             seed: Some(WireSeed(seed)),
             seats: vec![
-                SeatSpec { user: Some("red@t.test".into()), bot: false },
-                SeatSpec { user: None, bot: true },
+                SeatSpec { user: Some("red@t.test".into()), bot: false, open: false },
+                SeatSpec { user: None, bot: true, open: false },
             ],
-            name: Some(name.to_string()),
+            name: None,
+            id: Some(id.to_string()),
+            display_name: None,
+            password: None,
         }
     }
 
-    pub(crate) fn req(name: &str) -> NewGame {
-        req_seeded(name, CORPUS_SEED)
+    pub(crate) fn req(id: &str) -> NewGame {
+        req_seeded(id, CORPUS_SEED)
     }
 
     /// The same table with a PERSON in seat 1 — the shape every cell about
     /// per-seat scoping needs, since a bot seat never calls anything.
-    pub(crate) fn two_people(name: &str, seed: u64) -> NewGame {
-        let mut r = req_seeded(name, seed);
-        r.seats[1] = SeatSpec { user: Some("blue@t.test".into()), bot: false };
+    pub(crate) fn two_people(id: &str, seed: u64) -> NewGame {
+        let mut r = req_seeded(id, seed);
+        r.seats[1] = SeatSpec { user: Some("blue@t.test".into()), bot: false, open: false };
         r
     }
 

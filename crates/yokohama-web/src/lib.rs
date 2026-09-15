@@ -111,6 +111,22 @@ impl ApiError {
             table_status: Some("dealing"),
         }
     }
+    /// A session route asked of a table that is still filling its seats (M6.2).
+    pub fn open() -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            message: games::OPEN_SENTENCE.to_string(),
+            table_status: Some("open"),
+        }
+    }
+    /// A table-phase route asked of a table whose game has started (M6.2).
+    pub fn playing() -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            message: games::PLAYING_SENTENCE.to_string(),
+            table_status: Some("playing"),
+        }
+    }
 }
 
 /// Every refusal `Games` raises, in the status a client reads it as.
@@ -126,6 +142,8 @@ impl From<games::GameError> for ApiError {
         match e {
             E::NotFound(m) => Self::not_found(m),
             E::Dealing => Self::dealing(),
+            E::Open => Self::open(),
+            E::Playing => Self::playing(),
             E::Forbidden(m) => {
                 Self { status: StatusCode::FORBIDDEN, message: m, table_status: None }
             }
@@ -1594,7 +1612,7 @@ mod tests {
     async fn an_unknown_key_in_a_new_game_request_is_refused_rather_than_defaulted() {
         let good = serde_json::json!({
             "players": 2, "colors": ["Red", "Blue"], "start_seat": 1,
-            "seed": "20260831", "name": "fenced",
+            "seed": "20260831", "name": "fenced", "id": "fenced",
             "seats": [{ "user": WHO }, { "user": WHO }],
         });
         let mut renamed = good.clone();
@@ -1677,7 +1695,7 @@ mod tests {
         // named by the key it did not know.
         let mut bad = serde_json::json!({
             "players": 2, "colors": ["Red", "Blue"], "start_seat": 0,
-            "seats": seats_for(2, &[1]), "name": "typo",
+            "seats": seats_for(2, &[1]), "name": "typo", "id": "typo",
         });
         bad["startSeat"] = serde_json::json!(0);
         let (status, body) = call(&router, "POST", "/api/games", Some(bad)).await;
@@ -1695,7 +1713,7 @@ mod tests {
             "/api/games",
             Some(serde_json::json!({
                 "players": 2, "colors": ["Red", "Blue"], "start_seat": 0,
-                "seats": seats_for(2, &[1]), "name": "after",
+                "seats": seats_for(2, &[1]), "name": "after", "id": "after",
             })),
         )
         .await;
@@ -1828,6 +1846,7 @@ mod tests {
                 "seed": "20260831",
                 "seats": seats_for(players, bots),
                 "name": name,
+                "id": name,
             })),
         )
         .await;
@@ -1927,6 +1946,7 @@ mod tests {
                 "seed": seed.to_string(),
                 "seats": seats.iter().map(|u| serde_json::json!({ "user": u })).collect::<Vec<_>>(),
                 "name": name,
+                "id": name,
             }),
         )
         .await;
@@ -1988,6 +2008,7 @@ mod tests {
                 "seed": seed.to_string(),
                 "seats": [{ "user": who }, { "bot": true }],
                 "name": name,
+                "id": name,
             }),
         )
         .await;
@@ -2147,7 +2168,7 @@ mod tests {
     #[tokio::test]
     async fn events_answers_in_four_fields_at_every_status_and_fences_its_query() {
         let state = Arc::new(AppState::in_memory());
-        let body = serde_json::json!({ "players": 2, "colors": ["Red", "Blue"], "seed": "20260831", "name": "sig",
+        let body = serde_json::json!({ "players": 2, "colors": ["Red", "Blue"], "seed": "20260831", "name": "sig", "id": "sig",
             "seats": [{ "user": "red@wire.test" }, { "user": "blue@wire.test" }] });
         post_as(&state, "red@wire.test", "/api/games", body).await;
         let (status, e) = get_as(&state, "blue@wire.test", "/api/games/sig/events").await;
@@ -2928,7 +2949,7 @@ mod tests {
     async fn the_create_flow_deals_per_seat_and_the_state_is_409_until_the_last_keep() {
         let state = Arc::new(AppState::in_memory());
         let body = serde_json::json!({
-            "players": 2, "colors": ["Red", "Blue"], "start_seat": 0, "seed": "20260831", "name": "flow",
+            "players": 2, "colors": ["Red", "Blue"], "start_seat": 0, "seed": "20260831", "name": "flow", "id": "flow",
             "seats": [{ "user": "red@wire.test" }, { "user": "blue@wire.test" }],
         });
         let (status, table) = post_as(&state, "red@wire.test", "/api/games", body).await;
@@ -3002,7 +3023,7 @@ mod tests {
             assert!(err["error"].as_str().unwrap().contains(key), "{key}: {err}");
         }
         let body = serde_json::json!({
-            "players": 2, "colors": ["Red", "Blue"], "name": "own",
+            "players": 2, "colors": ["Red", "Blue"], "name": "own", "id": "own",
             "seats": [{ "user": "red@wire.test" }, { "user": "blue@wire.test" }],
         });
         post_as(&state, "red@wire.test", "/api/games", body).await;
@@ -3674,7 +3695,7 @@ mod tests {
             serde_json::json!({
                 "players": 2, "colors": ["Red", "Blue"], "start_seat": 0,
                 "seats": [{ "user": WHO }, { "bot": true }],
-                "seed": seed.to_string(), "name": name,
+                "seed": seed.to_string(), "name": name, "id": name,
             })
         };
 
