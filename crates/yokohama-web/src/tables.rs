@@ -1044,19 +1044,35 @@ impl Games {
         let (mut doc, version) = self
             .settle_locked(id)?
             .ok_or_else(|| GameError::NotFound(format!("no game named {id:?}")))?;
-        if doc.status == TableStatus::Open {
-            return Err(GameError::Open);
-        }
-        if doc.status == TableStatus::Playing {
-            return Err(GameError::Playing);
-        }
         let n = seat.0;
         // A seat nobody holds and a seat somebody ELSE holds are the same
         // refusal, and deliberately: a caller learning which of the two it was
         // would be learning about a table it has no seat at. The bounds check
         // rides along — `seats_of` only ever names a seat this document has.
+        //
+        // **ABOVE the two status arms, and that order is the claim** (spec
+        // §3.4's "a STRANGER gets 403 … on every route but `table` and `join`",
+        // ruling #8). Below them, a caller with no seat here was told WHICH
+        // status the table was in — 409 "this table is still open" or "this
+        // table is playing" — so `keep` was the one route on which somebody
+        // holding only an id learned something about a table that was not
+        // theirs, while every other route answered them with one sentence about
+        // seats and nothing else. Measured against the whole route sweep in
+        // `every_session_route_refuses_a_stranger_at_every_status_except_table_and_join_at_open`,
+        // which is where the discrepancy was found.
+        //
+        // **No SEATED caller's answer moves**: a holder passes this check and
+        // meets the same status arm it met before, so the 409 `open` a seat
+        // holder gets at an open table is unchanged and is asserted in that
+        // same cell.
         if !doc.seats_of(user).contains(&seat) {
             return Err(GameError::Forbidden(format!("seat {n} is not yours")));
+        }
+        if doc.status == TableStatus::Open {
+            return Err(GameError::Open);
+        }
+        if doc.status == TableStatus::Playing {
+            return Err(GameError::Playing);
         }
         if doc.keeps[usize::from(n)].is_some() {
             return Err(GameError::Conflict(format!("seat {n} has already chosen")));

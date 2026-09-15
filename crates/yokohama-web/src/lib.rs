@@ -2217,16 +2217,16 @@ mod tests {
     /// measured eleven routes against a DEALING table while reporting them as
     /// open.
     ///
-    /// **ONE DOCUMENTED EXCEPTION, and it is a FINDING and not a design.**
-    /// `POST …/keep` is STATUS-first, not seat-first: `Games::keep` must settle
-    /// under the table's lock, and its `Open`/`Playing` arms sit above the
-    /// holder check — so a stranger asking to keep at an open or a playing
-    /// table is told which of the two it is (409), where spec §3.4's "a STRANGER
-    /// gets 403 … on every route but `table` and `join`" says 403. What leaks is
-    /// a table's STATUS to somebody holding its id, and nothing about its seats,
-    /// its cards or its game. Asserted here as MEASURED rather than as ruled;
-    /// the fix is to move the holder check above the two status arms in
-    /// `tables.rs`, and it is the controller's to make, not this task's.
+    /// **`POST …/keep` was the one route that answered a stranger differently,
+    /// and this cell is where that was found** (ruling #8). `Games::keep` must
+    /// settle under the table's lock, and its `Open`/`Playing` arms used to sit
+    /// ABOVE the holder check — so a caller with no seat here was told WHICH
+    /// status the table was in (409 "this table is still open" / "this table is
+    /// playing") where every other route answered one sentence about seats and
+    /// nothing else. The check moved above them; all seventeen routes now
+    /// refuse a stranger alike, and the only thing `keep` still says
+    /// differently is its own sentence, "seat N is not yours", which is
+    /// deliberate and older than this cycle.
     #[tokio::test]
     async fn every_session_route_refuses_a_stranger_at_every_status_except_table_and_join_at_open()
     {
@@ -2268,30 +2268,25 @@ mod tests {
         start_as(&state, "playt", 20260831, &["red@wire.test", "blue@wire.test"]).await;
 
         // 1. THE STRANGER, at all three tables, on every route but `table` and
-        //    `join` — which are asked afterwards, `join` last of all.
-        for (table, keep_refusal) in
-            [("opent", (StatusCode::CONFLICT, "open")), ("playt", (StatusCode::CONFLICT, "playing"))]
-                .into_iter()
-                .chain(std::iter::once(("dealt", (StatusCode::FORBIDDEN, ""))))
-        {
+        //    `join` — which are asked afterwards, `join` last of all. 403 on
+        //    every one of them, at every status, and NO route says which status
+        //    it was (ruling #8 closed the one that did).
+        for table in ["opent", "dealt", "playt"] {
             for (method, suffix, body) in session_routes() {
                 if suffix == "/table" || suffix == "/join" {
                     continue;
                 }
                 let uri = format!("/api/games/{table}{suffix}");
                 let (status, got) = request_as(&state, STRANGER, method, &uri, body).await;
-                if suffix == "/keep" {
-                    // The documented exception — see this cell's doc.
-                    assert_eq!(status, keep_refusal.0, "{method} {uri}: {got}");
-                    if keep_refusal.0 == StatusCode::CONFLICT {
-                        assert_eq!(got["status"], keep_refusal.1, "{method} {uri}: {got}");
-                    } else {
-                        assert_eq!(got["error"], "seat 1 is not yours", "{method} {uri}: {got}");
-                    }
-                    continue;
-                }
                 assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}: {got}");
-                assert_eq!(got["error"], NOT_SEATED, "{method} {uri}: {got}");
+                // `keep`'s own sentence is older than this cycle and stays: a
+                // seat nobody holds and a seat somebody else holds are one
+                // refusal. What matters here is that it names a SEAT and never
+                // a status, so it tells a stranger nothing the others do not.
+                let expected =
+                    if suffix == "/keep" { "seat 1 is not yours" } else { NOT_SEATED };
+                assert_eq!(got["error"], expected, "{method} {uri}: {got}");
+                assert!(got.get("status").is_none(), "no status leaks: {method} {uri}: {got}");
             }
         }
 
@@ -2316,6 +2311,16 @@ mod tests {
             if suffix == "/table" || suffix == "/join" || method == "DELETE" {
                 continue;
             }
+            // **Red's keep is for red's OWN seat**, and it has to be: since
+            // ruling #8 the holder check comes first, so a keep for the still-
+            // OPEN seat 1 is "seat 1 is not yours" whoever sends it. Seat 0 is
+            // what makes this line a reading of the STATUS arm rather than of
+            // the seat fence — which is the whole of what this loop claims.
+            let body = if suffix == "/keep" {
+                Some(serde_json::json!({ "seat": 0, "card": 1 }))
+            } else {
+                body
+            };
             let uri = format!("/api/games/opent{suffix}");
             let (status, got) = request_as(&state, "red@wire.test", method, &uri, body).await;
             assert_eq!(status, StatusCode::CONFLICT, "{method} {uri}: {got}");
