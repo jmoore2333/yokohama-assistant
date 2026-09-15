@@ -71,6 +71,29 @@ const SETUP_SEED: u64 = 20_260_831;
 /// prove the SALT and the HASH never leave the server whatever the word is.
 const WIRE_PASSWORD: &str = "sesame";
 
+/// The WRONG password the walk sends, as a constant for the same reason the
+/// right one is: so the pin has a literal to search for.
+///
+/// **A review found the gap this closes, and it is worth stating exactly.** The
+/// pin searched the corpus for [`WIRE_PASSWORD`] alone. Three payloads are
+/// produced by requests carrying that literal, so an echo in those is caught —
+/// but the wrong-password attempt carries a DIFFERENT string, so a refusal that
+/// repeated the attempt back ("wrong password: {given}") would contain the
+/// attempt and never the table's own password, and the search could not see it.
+/// That is the realistic leak on this route: a sentence quoting what the caller
+/// typed, which is exactly what a person then finds in a bug report, a proxy log
+/// or a screenshot.
+///
+/// Two things about the literal, and the second was measured rather than
+/// reasoned. It is **not a word**: an accidental occurrence in some unrelated
+/// payload would fail the pin for a reason that is not a leak, and a common
+/// English word in a corpus with this much prose in it is a real risk. And it
+/// **shares no substring with [`WIRE_PASSWORD`]**: the first draft was
+/// `"not-sesame-9f3a"`, which contains `"sesame"`, so the two needles were not
+/// independent — an echoed ATTEMPT was reported as the table's own password
+/// leaking, and the pin could not have told the two apart.
+const WIRE_WRONG_PASSWORD: &str = "wrongpass-9f3a";
+
 /// The bot seed for the one fixture that needs a bot. Fixed for the same
 /// reason, and never drawn from entropy here.
 const BOT_SEED: u64 = 0x4649_5854_5552_4553; // "FIXTURES"
@@ -453,7 +476,7 @@ async fn walk() -> Vec<(String, Value)> {
             Some(OTHER),
             "POST",
             "/api/games/wire/join",
-            Some(json!({ "seat": 1, "password": "open" })),
+            Some(json!({ "seat": 1, "password": WIRE_WRONG_PASSWORD })),
         )
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{join_403_password}");
@@ -1392,9 +1415,13 @@ async fn no_committed_payload_carries_the_setup_seed() {
 /// **Three searches, over two different runs, because the values are not the
 /// same kind of thing.**
 ///
-/// The PASSWORD is a constant of this file, so it is searched for across the
-/// whole committed corpus — every payload of a full walk, including the four
-/// join refusals, where a server that echoed the attempt back would be found.
+/// The PASSWORDS — the table's own and the wrong one the walk attempts — are
+/// constants of this file, so both are searched for across the whole committed
+/// corpus: every payload of a full walk, including the four join refusals, where
+/// a server that echoed either back would be found. **Two literals and not one,
+/// because a refusal quotes the ATTEMPT and never the table's password**; the
+/// one-literal version of this test could not see the leak it was written to
+/// catch, which a review found and [`WIRE_WRONG_PASSWORD`] records.
 ///
 /// The SALT and the HASH are drawn per table, so a corpus produced by one `Api`
 /// says nothing about them: this opens a SECOND table and searches THAT api's
@@ -1408,9 +1435,10 @@ async fn no_committed_payload_carries_the_setup_seed() {
 /// searched for — they are strings this codebase really does write down, and
 /// their lengths are pinned (16 bytes of salt and a SHA-256, in hex) so a lock
 /// that silently became empty would fail here rather than make every search
-/// trivially pass. **The password itself has no such partner and cannot have
-/// one**: nothing stores it, which is the property, so that third search rests
-/// on the other two having proved the mechanism finds what is there.
+/// trivially pass. **Neither password has such a partner and neither can have
+/// one**: nothing stores either of them, which is the property — so those two
+/// searches rest on the salt and the hash having proved the mechanism finds what
+/// is there, and on the mutations recorded in the task report.
 #[tokio::test]
 async fn no_payload_of_this_run_carries_the_password_or_its_hash() {
     // This run's payloads, taken before the golden compares them — the same
@@ -1435,8 +1463,17 @@ async fn no_payload_of_this_run_carries_the_password_or_its_hash() {
 
     let mut offenders: Vec<String> = Vec::new();
     for (name, value) in &run {
-        if serde_json::to_string(value).expect("serializable").contains(WIRE_PASSWORD) {
-            offenders.push(format!("{name} carries the password"));
+        let text = serde_json::to_string(value).expect("serializable");
+        // **BOTH literals, and the second is the one a review had to add.** A
+        // refusal that quotes the attempt back leaks what the caller TYPED, not
+        // what the table holds — and people type their other passwords into
+        // these boxes. See [`WIRE_WRONG_PASSWORD`].
+        for (what, needle) in
+            [("the password", WIRE_PASSWORD), ("a password ATTEMPT", WIRE_WRONG_PASSWORD)]
+        {
+            if text.contains(needle) {
+                offenders.push(format!("{name} carries {what}"));
+            }
         }
     }
     for (name, uri) in [
@@ -1449,9 +1486,12 @@ async fn no_payload_of_this_run_carries_the_password_or_its_hash() {
             Some(uri) => api.get(uri).await,
         };
         let text = serde_json::to_string(&value).expect("serializable");
-        for (what, needle) in
-            [("the password", WIRE_PASSWORD), ("the salt", &salt), ("the hash", &hash)]
-        {
+        for (what, needle) in [
+            ("the password", WIRE_PASSWORD),
+            ("a password ATTEMPT", WIRE_WRONG_PASSWORD),
+            ("the salt", &salt),
+            ("the hash", &hash),
+        ] {
             if text.contains(needle) {
                 offenders.push(format!("{name} carries {what}"));
             }
