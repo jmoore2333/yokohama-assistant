@@ -170,23 +170,34 @@ export function Help() {
 
       <h3>Starting a game</h3>
       <p>
-        The deal happens over the <strong>set table</strong>: the areas with their site cards and
-        tokens, the port and the tracks &mdash; what the rulebook has on the table at the step
+        Sign in first: the server has to know who you are before it will show you a table, and
+        under this deployment that is an email address you type once and it remembers. The new-game
+        form is then <strong>one row per seat</strong> &mdash; each one you, somebody else&rsquo;s
+        email, or the bot. The bot is offered at two players only, because that is where it has
+        been measured. Press Deal and the table opens; nobody has played yet, and the game does
+        not exist until every seat has chosen its first card.
+      </p>
+      <p>
+        That choice happens over the <strong>set table</strong>: the areas with their site cards
+        and tokens, the port and the tracks &mdash; what the rulebook has on the table at the step
         where the two cards are dealt and chosen in secret. The technologies and the goals go out
         at the two steps after that one, so they are held back here as well and appear once you
-        have chosen. Your two cards are in the answer bar, each with the
-        built-in bot&rsquo;s <em>Keep score</em> under it. With more than one person playing on
-        this screen, each seat chooses <strong>in turn</strong>: only the seat being asked has its
-        cards face up, the others stay face down, and <em>Next seat</em> passes the screen on. The
-        bot&rsquo;s own two cards are{" "}
-        <strong>face down</strong> in the side column. It keeps one of them by the same reading of
-        the printed economics the Keep score shows you &mdash; the game&rsquo;s record knows which,
-        and you do not see it, any more than you would across a table. Press the card
-        you want and Start; nothing is created until you do, and <em>Re-deal</em> goes back to the
-        setup form &mdash; where the seed field keeps whatever you typed, so a blank one deals a
-        fresh game and a named one deals the same one again. The Keep score is the bot&rsquo;s preference from the card&rsquo;s printed
-        economics alone &mdash; hand-set and unmeasured, so it is a number rather than a
-        recommendation.
+        have chosen. <strong>You are shown your own two cards and nobody else&rsquo;s</strong>, each
+        with the built-in bot&rsquo;s <em>Keep score</em> under it: that number is its preference
+        from the card&rsquo;s printed economics alone &mdash; hand-set and unmeasured, so it is a
+        number rather than a recommendation. The other seats are listed beside the table as{" "}
+        <em>chosen</em> or <em>waiting</em>, and that is all anyone can learn about them &mdash;
+        whether a seat has answered is public at any table, and which card it took is not. A bot
+        seat shows two cards <strong>face down</strong>. It keeps one of them by the same reading
+        of the printed economics the Keep score shows you; the game&rsquo;s record knows which, and
+        you do not see it, any more than you would across a table.
+      </p>
+      <p>
+        Press the card you want. If you are holding more than one seat &mdash; several seats set to
+        you, everyone round one screen &mdash; the next of them is dealt to you straight away, so
+        the seats are answered in turn and the screen never has two people&rsquo;s cards on it.
+        Otherwise it says <em>waiting on</em> whoever has not chosen yet, and the game opens by
+        itself the moment the last of them does.
       </p>
 
       <h3>Saving, and coming back</h3>

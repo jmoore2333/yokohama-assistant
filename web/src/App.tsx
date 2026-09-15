@@ -8,6 +8,7 @@ import { Dashboard } from "./Dashboard";
 import { TurnAccount } from "./TurnAccount";
 import { Decision } from "./Decision";
 import { GameMenu } from "./GameMenu";
+import { Dealing } from "./Dealing";
 import { NewGame } from "./NewGame";
 import { loadCadence, saveCadence, type Cadence } from "./playback";
 import { BoardsMenu, useSections } from "./BoardsMenu";
@@ -30,6 +31,7 @@ import type {
   Labels,
   Outcome,
   PlayerColor,
+  TableView,
 } from "./types";
 
 /** The positions `prev..=next` and the log's tail, in parallel.
@@ -70,6 +72,24 @@ export function App() {
   const [labels, setLabels] = useState<Labels | null>(null);
   const [art, setArt] = useState<ArtManifest | null>(null);
   const [state, setState] = useState<ClientState | null>(null);
+  /** The table being DEALT, when there is one (M6.1 §7.4).
+   *
+   *  **A third screen, not a mode of the other two.** A table exists before its
+   *  game does — `create` opens one at `status: "dealing"` and every session
+   *  route refuses it with a 409 until the last seat has kept — so "no game on
+   *  screen" is no longer the same question as "the setup form". `state` and
+   *  this are never both set: `show` clears this, and the one place that sets it
+   *  is `open`. */
+  const [dealing, setDealing] = useState<string | null>(null);
+  /** The table the game on screen belongs to — who sits where, and which of
+   *  those seats are the caller's.
+   *
+   *  **Held because a payload cannot say it.** `ClientState` reports ONE seat's
+   *  view and `SeatFacts` says only whether a hand is hidden, so nothing in a
+   *  play payload distinguishes "somebody else is to move" from "another of MY
+   *  seats is to move" — and those are two different screens. `my_seats` is the
+   *  server's own answer to that, read once when the game is opened. */
+  const [table, setTable] = useState<TableView | null>(null);
   const [surface, setSurface] = useState<SurfaceName | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -185,6 +205,12 @@ export function App() {
     (s: ClientState | null, opening = false) => {
       gameId.current = s?.id ?? null;
       setState(s);
+      // The dealing screen goes with the game being shown, and with "New game"
+      // too: a table id left behind here would draw the dealing screen again the
+      // next time the player asked for the form. The TABLE goes with it for the
+      // same reason — `open` puts the new one back in the same tick.
+      setDealing(null);
+      setTable(null);
       setRun(null);
       setWalk(null);
       setFresh(false);
@@ -201,6 +227,42 @@ export function App() {
       }
     },
     [landed],
+  );
+
+  /** Open a table BY ID — the one door into a game, and the reason it asks
+   *  `GET …/table` first (M6.1 §7.4).
+   *
+   *  A table exists before its game does. While it is dealing every session
+   *  route answers 409 by design, so a caller that went straight to
+   *  `GET /api/games/{id}` would show a refusal for exactly the tables this
+   *  cycle exists to open — and each of the three places that open one (the
+   *  create, a saved row, the Game menu) would have to know that separately.
+   *  One `open` asks what the table IS and picks the screen.
+   *
+   *  `opening` is true only where the events already on the record have just
+   *  HAPPENED: the last keep finalizes the table, and a bot on the start seat
+   *  has played by the time the dealing screen hands over. A saved game
+   *  reopened passes false — its events are history, not something that just
+   *  happened. */
+  const open = useCallback(
+    async (id: string, opening = false) => {
+      // `doc`, not `table`: the state of the same name is what this puts BACK,
+      // and one name for both would read as a self-assignment.
+      const doc = await api.table(id);
+      if (doc.status === "dealing") {
+        // `show(null)` first, so a game being left takes its walk and its
+        // refusal with it; the dealing id is set in the same tick.
+        show(null);
+        setDealing(id);
+        return;
+      }
+      const next = await api.get(id);
+      show(next, opening);
+      // AFTER `show`, which clears it: React batches both into one render, so
+      // the last write is the one that stands.
+      setTable(doc);
+    },
+    [show],
   );
 
   // **The final standing comes from `/result`, because `scores` cannot carry
@@ -253,6 +315,31 @@ export function App() {
         // through the error strip like any other refusal, and the live state
         // stays on screen — the move was applied and persisted either way.
         if (replied.id === gameId.current) await landed(game, state.events, replied);
+        // **The hot-seat pass, and it is one re-read (spec §7.5).**
+        //
+        // A move that ends a turn answers its own mover with a `watching`
+        // prompt: the reply is built for the seat that POSTED, which is the
+        // true thing to say to a person who has just finished playing. At a
+        // table where somebody else holds the next seat that is the whole of
+        // it — the poll is what brings their move back. At a table where the
+        // next seat is ALSO this person's, it leaves a browser holding an
+        // unanswerable screen for a turn that is its own: `my_seats` is the
+        // server's own answer to which of the two this is, and `GET
+        // /api/games/{id}` builds for the acting seat whenever the caller
+        // holds it, so one re-read IS the pass.
+        //
+        // **Not the poll, and not a substitute for it.** The poll (M6.1 §6)
+        // waits on somebody else and runs on a timer; this is a single read
+        // for a turn that never left this browser, and without it a hot-seat
+        // table stalls on every seat change until a timer happens to fire.
+        if (
+          replied.id === gameId.current &&
+          replied.prompt.kind === "watching" &&
+          table?.my_seats.includes(replied.to_move)
+        ) {
+          const mine = await api.get(game);
+          if (mine.id === gameId.current) setState(mine);
+        }
       } catch (e) {
         // The same rule for the refusal: a sentence about a game that is no
         // longer on screen would sit over a game it does not describe.
@@ -290,7 +377,7 @@ export function App() {
         setBusy(false);
       }
     },
-    [state, landed],
+    [state, landed, table],
   );
 
   // **Debounced, because a drag is not a click.**
@@ -361,23 +448,25 @@ export function App() {
     return <SignIn onSignedIn={() => refresh()} notice={door.notice ?? undefined} />;
   if (!door.me.user) return <div className="setup door-error">{doorSentence(door.me.mode)}</div>;
 
-  // **Who you are, and how to stop being them — built once, placed twice.**
-  // The setup screens carry their own root and their own banner, so the strip
-  // is handed to `NewGame` as a node rather than restated there: two copies
-  // would be two places for the sign-out wiring to drift, and only one of them
-  // would be covered by the door's cells.
+  // **Who you are, and how to stop being them.**
+  //
+  // The setup and dealing screens carry their own root and their own banner, so
+  // the strip is handed to them as a node rather than restated there: two copies
+  // would be two places for the sign-out wiring to drift.
   //
   // The button exists under `claimed` ONLY. Under the two edge doors there is
   // nothing stored to clear, and a control that looked like it logged you out
   // while Access kept letting you in would be a lie on screen.
+  const signOutButton = door.me.mode === "claimed" && (
+    <button type="button" className="ghost" onClick={signOut}>
+      sign out
+    </button>
+  );
+  const whoStrip = <span className="meta who">You are {door.me.user}</span>;
   const who = (
     <>
-      <span className="meta who">You are {door.me.user}</span>
-      {door.me.mode === "claimed" && (
-        <button type="button" className="ghost" onClick={signOut}>
-          sign out
-        </button>
-      )}
+      {whoStrip}
+      {signOutButton}
     </>
   );
 
@@ -385,14 +474,28 @@ export function App() {
   // and the game must agree about which boards are on, and a second
   // `useSections()` inside `NewGame` was two copies that stopped agreeing the
   // moment one of them was toggled (R-T12-4).
+  // **Two screens live in front of a game now, not one.** A table is dealt
+  // before it is played, and the dealing screen is where the person holding a
+  // seat chooses their card. `open` is what moves between them, so neither
+  // screen has to know what the other is for.
   if (!state) {
-    return (
-      <NewGame
+    return dealing ? (
+      <Dealing
+        game={dealing}
+        me={door.me.user}
         art={art}
         labels={labels}
         sections={enabled}
         onToggleSection={toggleSection}
-        onStarted={show}
+        onPlaying={() => open(dealing, true)}
+        onLeave={() => show(null)}
+        who={who}
+      />
+    ) : (
+      <NewGame
+        me={door.me.user}
+        onCreated={(t) => open(t.id)}
+        onOpen={(id) => open(id)}
         who={who}
       />
     );
@@ -513,14 +616,18 @@ export function App() {
         <GameMenu
           state={state}
           busy={busy}
-          onSwitch={(s) => {
+          signOut={signOutButton || undefined}
+          onSwitch={(id) => {
             setSurface(null);
             setScrubK(null);
             // The refusal on screen was about the game being left, so it goes
             // with it: a sentence from game A over game B describes nothing
             // the player can see.
             setError(null);
-            show(s);
+            // Through `open`, so a table still DEALING in this list opens its
+            // dealing screen instead of the 409 every session route answers it
+            // with.
+            return open(id);
           }}
           onNew={() => {
             setSurface(null);
@@ -529,7 +636,16 @@ export function App() {
             show(null);
           }}
         />
-        {who}
+        {/* **The strip here, and the BUTTON inside the Game menu.**
+            The banner is one row at 1440 and 1280 by a gate that measures it
+            (`the_screen_itself.spec.ts`), and the door's two controls together
+            cost 269px of a 1240px content box at 1280 — enough to break the
+            line, measured: 1325px of children and gaps against 1240. The strip
+            is a FACT a player reads at a glance and stays; the button is a
+            control, and the Game menu is already where this screen's session
+            controls live (which game, which other game, back to the form). The
+            screens with no Game menu — the form and the deal — keep both. */}
+        {whoStrip}
         {/* Four surfaces inline, the five card references behind a disclosure,
             so the banner stays ONE ROW at every laptop width: measured 93 → 56px
             at 1440 and 174 → 93 at 1024, with the nav's bottom edge at 43px

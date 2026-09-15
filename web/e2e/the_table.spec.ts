@@ -46,7 +46,8 @@ const settle = (page: Page) =>
  *  that is being played, and an empty board is also the one configuration where
  *  a tile drawing nothing would still measure correctly. The pick stream is
  *  seeded so a failure names a reproducible sequence; the GAME seed is the
- *  server's, and `startGame` carries it. */
+ *  server's and never reaches this client at all (M6.1), so a failure names the
+ *  table and the record on the server is what reproduces it. */
 async function playAFew(page: Page, moves: number, seed: number) {
   const pick = rng(seed);
   for (let i = 0; i < moves; i++) {
@@ -407,34 +408,38 @@ test("four assistants of one colour stand as a pile, not as a cube and a count",
   expect(watch.failures).toEqual([]);
 });
 
-// **The asking seat stays reachable when three human seats share the deck.**
+// **The asking seat stays reachable when this browser holds four of them.**
 //
-// The 2026-09-06 sequence puts every human seat in the deck at once, and at 4P
-// that is three of them. Measured while the rule was being written: with the
-// non-choosing seats' backs at the reading size (8rem) the block ran 931px
-// inside a 539px window and on the MIDDLE turn the asking seat's own label sat
-// 28px ABOVE the fold — a player scrolling up to find the cards they were just
-// handed. `styles.css`'s `.deal-seat.human:not(.current) .card-face.sm` is the
-// fix; this is what keeps it fixed, because nothing else on the set table is
-// asserted above two players.
+// The claim is inherited from the 2026-09-06 sequence, and the mechanism under
+// it changed: that version put every human seat's cards in the deck at once, and
+// at 4P the block ran 931px inside a 539px window with the asking seat's own
+// label 28px ABOVE the fold on the middle turn — a player scrolling up to find
+// the cards they were just handed. `GET …/deal` now serves ONE seat, so the deck
+// holds one card row at every player count and the other seats are a line each
+// in the side column. The property is the same and worth keeping: the seat being
+// asked, and both of its cards, are in the frame unscrolled.
 //
-// The MIDDLE turn specifically: it is the worst case, with one seat's backs
-// above the asking seat and another's below. jsdom has no layout, so this claim
+// The MIDDLE seat specifically: it is the worst case, with answered seats above
+// it in the column and unanswered ones below. jsdom has no layout, so this claim
 // can only be made here.
 test("at four players the asking seat is in the frame on the middle turn", async ({ page }) => {
   const watch = watchForBreakage(page);
   await page.setViewportSize({ width: 1710, height: 869 });
   await signIn(page);
-  await page.goto("/");
   await page.getByLabel("Players").selectOption("4");
   await page.getByRole("button", { name: "Deal" }).click();
-  await expect(page.getByRole("button", { name: "Re-deal" })).toBeVisible();
-  // Three human seats and one bot, which is what makes a middle turn exist.
-  await expect(page.locator(".deal-seat.human")).toHaveCount(3);
-
-  await page.locator(".deal-seat.human.current button.deal-pick").first().click();
-  await page.getByRole("button", { name: "Next seat" }).click();
+  // Four seats, all this browser's (R-P10: no bot above two players), and the
+  // dealing screen asks for the lowest one that has not kept.
   const current = page.locator(".deal-seat.human.current");
+  await expect(current).toHaveCount(1);
+  await expect(page.locator(".deal-seat.human.other")).toHaveCount(3);
+
+  // Two keeps in, so the seat being asked is the middle one: two answered above
+  // it in the column and one still waiting below.
+  for (let i = 0; i < 2; i++) {
+    await page.locator(".deal-seat.human.current button.deal-pick:not([disabled])").first().click();
+    await expect(page.locator(".deal-seat.human.other.chosen")).toHaveCount(i + 1);
+  }
   await expect(current).toHaveCount(1);
 
   // The label AND both buttons, at `ratio: 1`: a seat whose cards are in the
@@ -458,8 +463,9 @@ test("at four players the asking seat is in the frame on the middle turn", async
   });
   // RECORDED, never gated: heights are layout- and font-dependent, and what is
   // gated is the property above. The figures are here so a future reader can
-  // re-measure against the ones the CSS comment states (931/539/-28 before the
-  // rule, 738/539/+25 after).
+  // re-measure against the two the CSS comment states from the hot-seat deck
+  // this replaced (931/539/-28 with three card rows, 738/539/+25 once the two
+  // that were not choosing shrank).
   // eslint-disable-next-line no-console
   console.log(
     `4P set table at 1710x869, middle turn: deck window ${read.window}px holding ${read.block}px, ` +
@@ -470,23 +476,24 @@ test("at four players the asking seat is in the frame on the middle turn", async
 
 // ---- M5.5 part B: the set table --------------------------------------------
 //
-// The two halves jsdom cannot see. (1) The port strip on the setup screen draws
-// SIX cards from `preview.table` rather than the "loading…" line a fetch with
+// The two halves jsdom cannot see. (1) The port strip on the dealing screen
+// draws SIX cards from `deal.frame` rather than the "loading…" line a fetch with
 // no game to name would leave — the component suite asserts the element, this
 // asserts it against a real server. (2) The card the player pressed is the card
-// that reaches the hand of the game that is then created, which spans the
-// preview's seed, the `keeps` the create carries and the deal the engine makes
-// from them; nothing short of the real round trip can see that join.
+// that reaches the hand of the game the last keep starts, which spans the
+// table's seed, the keep this browser posts and the deal the engine makes from
+// them; nothing short of the real round trip can see that join.
 //
 // **And the bot's own deal is HIDDEN on both sides of that (R-C1).** The
 // component suite reads the absence off a committed fixture; this reads it off
-// what a real server sent a real browser, which is the only reading that can
-// say the payload itself carried nothing.
+// what a real server sent a real browser, which is the only reading that can say
+// the payload itself carried nothing — and since M6.1 it is a stronger reading
+// still, because `GET …/deal` serves ONE seat and the other seat's two cards are
+// not in any payload this browser received.
 test("the set table shows the port, hides the bot's cards and withholds the technologies and goals before the first choice, and the chosen card lands in hand", async ({ page }) => {
   const watch = watchForBreakage(page);
   await page.setViewportSize({ width: 1710, height: 869 });
   await signIn(page);
-  await page.goto("/");
   await page.getByRole("button", { name: "Deal" }).click();
   await expect(page.locator(".table-sec.ports .strip-slot .card-face")).toHaveCount(6);
   await expect(page.locator(".board .tile")).toHaveCount(10);
@@ -538,10 +545,12 @@ test("the set table shows the port, hides the bot's cards and withholds the tech
   expect(boxes.labs, "the withheld laboratory stretches to the row").toBeLessThan(boxes.tracks);
   expect(boxes.goals, "the withheld goals stretch to the row").toBeLessThan(boxes.tracks);
 
-  // Since R-C2 Start is not drawn until every human seat has chosen, and this
-  // is before the first choice: one seat is asking, and there is nothing to
-  // press but a card.
+  // **There is nothing to press but a card (M6.1 §7.4).** The keep IS the
+  // commit: the last one finalizes the table server-side and the game opens, so
+  // there is no Start and no Re-deal to go back to a preview that no longer
+  // exists. One seat is asking, and it is this browser's.
   await expect(page.getByRole("button", { name: "Start" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Re-deal" })).toHaveCount(0);
   await expect(page.locator(".deal-seat.human.current")).toHaveCount(1);
 
   // **Inert, and still readable (spec §3.3.3).** `.tile[role="button"]` is the placement
@@ -575,10 +584,10 @@ test("the set table shows the port, hides the bot's cards and withholds the tech
   for (let i = 0; i < 2; i++) {
     await expect(page.locator(".deal-seat.bot img.back").nth(i)).toBeInViewport({ ratio: 1 });
   }
-  // The controls row rather than Start, which is not drawn before the choice
-  // (R-C2); the claim — the bottom of the deck's block is in the frame — is the
-  // same one, and Start is asserted in the viewport after the pick below.
-  await expect(page.locator(".deck .controls")).toBeInViewport({ ratio: 1 });
+  // The hedge under the picks rather than a controls row: there is no button in
+  // this deck at all now, and the claim — the bottom of the deck's block is in
+  // the frame — is the same one.
+  await expect(page.locator(".deck .keep-hedge")).toBeInViewport({ ratio: 1 });
   const budget = await page.evaluate(() => {
     const q = (x: string) => document.querySelector(x) as HTMLElement;
     return {
@@ -595,14 +604,6 @@ test("the set table shows the port, hides the bot's cards and withholds the tech
     `set table at 1710x869: deck ${budget.deck}px holding ${budget.deckContent}px · ` +
       `side ${budget.side}px holding ${budget.sideContent}px (recorded)`,
   );
-
-  const pick = page.locator(".deal-seat.human button.deal-pick").nth(1);
-  const chosen = /keep (O\d\d)/.exec((await pick.getAttribute("aria-label"))!)![1]!;
-  await pick.click();
-  // The one human seat has answered, so Start is on the screen — and in the
-  // frame, which is the half of R-T12-3's budget the assertion above hands on
-  // to now that Start arrives late.
-  await expect(page.getByRole("button", { name: "Start" })).toBeInViewport({ ratio: 1 });
 
   // **Ruling R-T12-1: the set table does not widen the page either.** Spec §4.3
   // names the same four widths the M3.5 gate uses, and this screen is a
@@ -630,7 +631,14 @@ test("the set table shows the port, hides the bot's cards and withholds the tech
   }
   await page.setViewportSize({ width: 1710, height: 869 });
 
-  await page.getByRole("button", { name: "Start" }).click();
+  // **The keep IS the commit now.** This browser holds the only human seat, so
+  // the card pressed here is the last keep at the table: the server finalizes,
+  // the reply says `playing`, and the client opens the game — no Start, and no
+  // three-second wait on the poll. The SECOND card, so the join below cannot be
+  // satisfied by a first-card default anywhere in the chain.
+  const pick = page.locator(".deal-seat.human.current button.deal-pick").nth(1);
+  const chosen = /keep (O\d\d)/.exec((await pick.getAttribute("aria-label"))!)![1]!;
+  await pick.click();
   await expect(page.getByRole("heading", { name: "Yokohama" })).toBeVisible();
   await readScreen(page);
   await expect(page.locator(".panel", { hasText: /'S HAND|’s hand/i }).first()).toContainText(chosen);

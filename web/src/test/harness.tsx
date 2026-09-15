@@ -158,6 +158,17 @@ function bootstrapReply(call: ApiCall): Reply | undefined {
     return localStorage.getItem(CLAIMED_USER_KEY) ? wire.me : wire.meSignedOut;
   if (call.path.endsWith("/api/labels")) return wire.labels;
   if (call.path.endsWith("/api/art")) return wire.artManifest;
+  // **`GET …/table` is now on the way into every game (M6.1 §7.4)**: `App`'s
+  // `open` asks what a table IS before it fetches the game, because a table
+  // still dealing refuses the game route with a 409. So every cell that opens a
+  // game passes through here, whether or not it is about tables.
+  //
+  // The ID is taken from the PATH rather than left at the corpus's own, which is
+  // the documented fixture-override shape — the smallest move that makes the
+  // reply about the table the caller asked for. The status is the corpus's
+  // (`playing`); a cell that wants the dealing screen answers `/table` itself.
+  const table = /\/api\/games\/([^/]+)\/table$/.exec(call.path);
+  if (table) return { ...wire.table, id: decodeURIComponent(table[1]!) };
   if (call.path.endsWith("/ports")) return wire.ports;
   if (call.path.endsWith("/labs")) return wire.labs;
   if (call.path.endsWith("/areas")) return wire.areas;

@@ -18,55 +18,83 @@ import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { Help } from "./Help";
 
-/** The set-table paragraph, found by what it is about rather than by position:
- *  a heading order that changed would otherwise silently point this at another
- *  paragraph and keep passing. */
-function setTableParagraph(): HTMLElement {
+/** The whole "Starting a game" SECTION — every paragraph from that heading to
+ *  the next one.
+ *
+ *  **The section, not its first paragraph.** M6.1 split it in three (the door
+ *  and the form, the set table, the choice), and a helper that took the first
+ *  `<p>` would have pointed at the form and gone on passing for whatever it
+ *  happened to find there. Bounded by the next heading rather than by a count,
+ *  so a fourth paragraph joins the reading instead of escaping it. */
+function startingSection(): string {
   const heading = screen.getByRole("heading", { name: "Starting a game" });
-  let el = heading.nextElementSibling;
-  while (el && el.tagName !== "P") el = el.nextElementSibling;
-  if (!el) throw new Error("no paragraph follows the 'Starting a game' heading");
-  return el as HTMLElement;
+  let text = "";
+  for (let el = heading.nextElementSibling; el; el = el.nextElementSibling) {
+    if (/^H[1-6]$/.test(el.tagName)) break;
+    text += ` ${el.textContent ?? ""}`;
+  }
+  if (!text.trim()) throw new Error("nothing follows the 'Starting a game' heading");
+  return text;
 }
 
-describe("the help panel's set-table paragraph", () => {
+describe("the help panel's set-table section", () => {
   // **R-C5, the sentence itself.** The bot's cards are face down and the record
   // is what knows which one it kept; the player's own Keep scores stay.
   it("says the bot's two cards are face down, with the space between the words", () => {
     render(<Help />);
-    const text = setTableParagraph().textContent ?? "";
-    expect(text).toContain("two cards are face down");
+    const text = startingSection();
+    expect(text).toContain("two cards face down");
     // The anti-vacuity, and the actual defect: `toContain` on the fixed string
     // would also pass if the glued form appeared somewhere else in the same
-    // paragraph, and the glued form is what a reader sees.
-    expect(text).not.toContain("areface");
+    // section, and the glued form is what a reader sees.
+    expect(text).not.toContain("cardsface");
     expect(text).toContain("Keep score");
     expect(text).not.toContain("bot keeps this");
   });
 
-  // **R-C2's half.** One browser serves every seat at a hot-seat table, so the
-  // secrecy is the sequence, and the paragraph has to say so — a player who
-  // does not know the screen is passed on will hand it over with their own
-  // cards still up.
-  it("says the human seats choose in turn and the others stay face down", () => {
+  // **What replaced R-C2's hot-seat pass (M6.1 §7.4).** The deal is served per
+  // SEAT now, so the secrecy is the payload's rather than a sequence the player
+  // has to be told to respect — and the page must not go on describing a "Next
+  // seat" button that is gone. What a person holding several seats needs to know
+  // is that the next one is dealt to them straight away.
+  it("says you see only your own two cards, and that a second seat of yours follows", () => {
     render(<Help />);
-    const text = setTableParagraph().textContent ?? "";
-    expect(text).toContain("each seat chooses in turn");
-    expect(text).toContain("Next seat");
-    expect(text).toMatch(/only the seat being asked has its cards face up/);
+    const text = startingSection();
+    expect(text).toContain("your own two cards and nobody else");
+    expect(text).toContain("more than one seat");
+    expect(text).not.toContain("Next seat");
   });
 
-  // **R-C3's half of the same paragraph.** What the set table has on it is the
-  // owner's edition at the step where the two orders are dealt and chosen in
-  // secret: the areas, the port and the tracks. The technologies and the goals
-  // go out at the two steps after that, so the sentence must not still list
-  // them among what is on the table when the cards are drawn.
+  // The lobby's words, so a player waiting on somebody else knows the screen is
+  // not stuck: the other seats read chosen or waiting, and the game opens by
+  // itself when the last one answers.
+  it("says what the other seats read, and that the game opens by itself", () => {
+    render(<Help />);
+    const text = startingSection();
+    expect(text).toContain("chosen");
+    expect(text).toContain("waiting on");
+    expect(text).toContain("opens by itself");
+  });
+
+  // **R-C3's half.** What the set table has on it is the owner's edition at the
+  // step where the two orders are dealt and chosen in secret: the areas, the
+  // port and the tracks. The technologies and the goals go out at the two steps
+  // after that, so the sentence must not still list them among what is on the
+  // table when the cards are drawn.
   it("says the technologies and the goals come out after the choice", () => {
     render(<Help />);
-    const text = setTableParagraph().textContent ?? "";
+    const text = startingSection();
     expect(text).toContain("the port and the tracks");
     expect(text).toContain("once you have chosen");
     expect(text).not.toContain("the port, the laboratory and the goals");
+  });
+
+  // **R-P10, on the page as well as on the form.** A player who wonders where
+  // the bot went at three players should find the answer here rather than in a
+  // 400.
+  it("says the bot is offered at two players only", () => {
+    render(<Help />);
+    expect(startingSection()).toMatch(/bot is offered at two players only/);
   });
 });
 

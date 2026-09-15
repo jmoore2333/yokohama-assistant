@@ -109,6 +109,33 @@ describe("the Game menu", () => {
     }
   });
 
+  // **The way out lives here on the game screen, and the reason is measured.**
+  // The banner is gated at ONE ROW at 1440 and 1280 (`the_screen_itself.spec.ts`),
+  // and M6.1's door put a strip and a button in it: 1325px of children and gaps
+  // against a 1240px content box at 1280, which broke the line. The FACT ("You
+  // are …") is read at a glance and stays in the banner; the CONTROL joins this
+  // menu, where the screen's other session controls already are. The screens
+  // with no Game menu — the form and the deal — keep both.
+  it("carries the way out, beside the way to another game", async () => {
+    await renderApp(wire.options, (call) =>
+      call.method === "GET" && call.path.endsWith("/api/games")
+        ? gamesNamed(wire.options.id)
+        : undefined,
+    );
+    // The strip stays in the banner, and the button is no longer a CHILD of it
+    // — which is the half that keeps the banner one row. A direct-child query,
+    // because the menu is itself a banner child and a subtree query would find
+    // the button through it and prove nothing.
+    expect(document.querySelector("header.banner")).toHaveTextContent(`You are ${wire.me.user}`);
+    expect(
+      document.querySelector("header.banner > button"),
+      "the door's button is no longer a banner child",
+    ).toBeNull();
+    await userEvent.setup().click(gameMenu());
+    const out = await screen.findByRole("button", { name: "sign out" });
+    expect(out.closest(".game-menu")).not.toBeNull();
+  });
+
   // **The same defect the app guards at its two other mutation controls**, in the
   // one place M5 added: `App`'s `inFlight` and `NewGame`'s carry the reasoning.
   // React batches, so two clicks in the same tick both read the guard's STATE as
@@ -129,12 +156,21 @@ describe("the Game menu", () => {
     // switched-to game's `/ports` and `/labs` fetches contain the id too.
     const gets = () =>
       stub.calls.filter((c) => c.method === "GET" && c.path.endsWith("/api/games/sim-other"));
+    // **The FIRST request the switch makes, and since M6.1 that is `…/table`
+    // rather than the game** — `App.open` asks what a table is before it fetches
+    // the game, because a table still dealing refuses the game route. It is what
+    // this cell has to count in the same tick: the game fetch is now one await
+    // later, so counting it here would read zero however many clicks landed and
+    // the guard could be deleted with the cell still green.
+    const tableReads = () =>
+      stub.calls.filter((c) => c.path.endsWith("/api/games/sim-other/table"));
     act(() => {
       fireEvent.click(row);
       fireEvent.click(row);
     });
-    expect(gets()).toHaveLength(1);
+    expect(tableReads()).toHaveLength(1);
     await waitFor(() => expect(screen.getByText(/sim · sim-other/)).toBeInTheDocument());
+    expect(tableReads()).toHaveLength(1);
     expect(gets()).toHaveLength(1);
   });
 });

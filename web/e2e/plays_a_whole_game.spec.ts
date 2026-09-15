@@ -39,7 +39,7 @@ test("a whole two-player game plays through to a winner", async ({ page }) => {
   }
   // eslint-disable-next-line no-console
   console.log(
-    `game ${game.id} (seed ${game.seed}) finished in ${moves} moves via ` +
+    `game ${game.id} finished in ${moves} moves via ` +
       [...used].map(([k, n]) => `${k}×${n}`).join(", "),
   );
 

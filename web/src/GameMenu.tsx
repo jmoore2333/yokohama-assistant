@@ -5,7 +5,7 @@
 // the multi-game layer (lobby, chat, another player's game) and it grows from
 // this menu. Nothing is deleted from here; the setup screen already does that.
 
-import { useRef, useState } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { api, ApiError } from "./api";
 import { TableFacts } from "./TableFacts";
 import type { ClientState, TableView } from "./types";
@@ -15,12 +15,29 @@ export function GameMenu({
   busy,
   onSwitch,
   onNew,
+  signOut,
 }: {
   state: ClientState;
   /** A move is in flight. See the rows' `disabled` below. */
   busy: boolean;
-  onSwitch: (s: ClientState) => void;
+  /** A row was chosen. **The ID, not the game** (M6.1): a table that is still
+   *  dealing refuses `GET /api/games/{id}` with a 409, so this menu can no
+   *  longer fetch the thing it is switching to — `App`'s `open` asks
+   *  `GET …/table` first and draws the dealing screen or the game. It is
+   *  awaited here so the rows stay disabled for the whole switch and a refusal
+   *  still lands in this menu's own line. */
+  onSwitch: (id: string) => void | Promise<void>;
   onNew: () => void;
+  /** The door's sign-out control, built by `App` and merely PLACED here.
+   *
+   *  **It lives in this menu on the game screen, and beside the strip on the
+   *  two screens that have no menu.** The banner is gated at one row at 1440 and
+   *  1280, and the strip and the button together cost 269px of a 1240px content
+   *  box — enough to break the line, measured. This menu is already this
+   *  screen's session control, so the control goes in it and the FACT ("You are
+   *  …") stays in the banner where it is read at a glance. Absent under the two
+   *  edge doors, where there is nothing stored to clear. */
+  signOut?: ReactNode;
 }) {
   const [saved, setSaved] = useState<TableView[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -53,18 +70,18 @@ export function GameMenu({
       .then((l) => seq === listing.current && setSaved(l.games))
       .catch((e) => seq === listing.current && setError(said(e)));
   };
-  const switchTo = (id: string) => {
+  const switchTo = async (id: string) => {
     if (switchInFlight.current) return;
     switchInFlight.current = true;
     setSwitching(true);
-    api
-      .get(id)
-      .then(onSwitch)
-      .catch((e) => setError(said(e)))
-      .finally(() => {
-        switchInFlight.current = false;
-        setSwitching(false);
-      });
+    try {
+      await onSwitch(id);
+    } catch (e) {
+      setError(said(e));
+    } finally {
+      switchInFlight.current = false;
+      setSwitching(false);
+    }
   };
   const others = (saved ?? []).filter((t) => t.id !== state.id);
   return (
@@ -104,7 +121,7 @@ export function GameMenu({
               type="button"
               className="ghost"
               disabled={busy || switching}
-              onClick={() => switchTo(t.id)}
+              onClick={() => void switchTo(t.id)}
             >
               {t.name ?? t.id}
             </button>
@@ -112,6 +129,7 @@ export function GameMenu({
           </div>
         ))}
         {saved !== null && others.length === 0 && <div className="muted">no other saved game</div>}
+        {signOut && <div className="menu-door">{signOut}</div>}
       </div>
     </details>
   );

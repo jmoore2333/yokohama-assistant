@@ -7,7 +7,16 @@ import { render } from "@testing-library/react";
 import { App } from "./App";
 import { CLAIMED_USER_KEY } from "./api";
 import { loadSections } from "./sections";
-import { gameMenu, gamesNamed, gate, renderApp, signedOutReply, stubApi } from "./test/harness";
+import {
+  gameMenu,
+  gamesNamed,
+  gate,
+  renderApp,
+  signedOutReply,
+  stubApi,
+  type ApiCall,
+  type Reply,
+} from "./test/harness";
 import { wire } from "./wire/contract";
 
 /** The board tile for one area, as the accessible name renders it. */
@@ -1045,21 +1054,144 @@ describe("the turn playback", () => {
 //
 // The cell drives the whole flow rather than the storage, because storage was
 // the half that was already right.
+// ---- opening a table (M6.1 §7.4) -------------------------------------------
+//
+// **A table exists before its game does**, and every session route refuses one
+// that is still dealing with a 409. So `App` asks `GET …/table` FIRST and picks
+// the screen from the status — which is the whole reason a saved row hands up an
+// ID rather than a game.
+describe("opening a saved table", () => {
+  /** The screens in front of a game, with the table's status the one thing that
+   *  moves. The saved list names one table, so the row is the way in. */
+  const openWith = async (table: unknown, extra: (call: ApiCall) => Reply | undefined = () => undefined) => {
+    localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
+    const stub = stubApi((call) => {
+      const mine = extra(call);
+      if (mine !== undefined) return mine;
+      if (call.path.endsWith("/api/me")) return wire.me;
+      if (call.path.endsWith("/api/labels")) return wire.labels;
+      if (call.path.endsWith("/api/art")) return wire.artManifest;
+      if (call.method === "GET" && call.path.endsWith("/api/games")) return gamesNamed("wire");
+      if (call.path.endsWith("/api/games/wire/table")) return table;
+      if (call.path.endsWith("/deal")) return wire.deal;
+      if (call.path.endsWith("/events")) return wire.eventsDealing;
+      if (call.path.endsWith("/ports")) return wire.ports;
+      if (call.path.endsWith("/labs")) return wire.labs;
+      if (call.path.endsWith("/areas")) return wire.areas;
+      if (/\/at\/\d+$/.test(call.path)) return wire.atK;
+      if (/\/log(\?|$)/.test(call.path)) return wire.log;
+      return undefined;
+    });
+    render(<App />);
+    await userEvent.setup().click(await screen.findByRole("button", { name: "wire" }));
+    return stub;
+  };
+
+  it("reads its table first and shows the dealing screen when it is dealing", async () => {
+    const stub = await openWith(wire.tableDealing);
+    await screen.findByRole("heading", { name: "Choose your card" });
+    // **And the game itself was never asked for.** That request is a 409 while
+    // the table is dealing, so a client that sent it would greet the player with
+    // a refusal on exactly the tables this screen exists for.
+    expect(
+      stub.calls.filter((c) => c.method === "GET" && c.path.endsWith("/api/games/wire")),
+    ).toHaveLength(0);
+  });
+
+  it("opens the game when the same table reads playing, so the branch above is a branch", async () => {
+    const stub = await openWith(wire.table, (call) =>
+      call.method === "GET" && call.path.endsWith("/api/games/wire") ? wire.options : undefined,
+    );
+    await screen.findByText(/end triggers:/);
+    expect(
+      stub.calls.filter((c) => c.method === "GET" && c.path.endsWith("/api/games/wire")),
+    ).toHaveLength(1);
+    expect(screen.queryByRole("heading", { name: "Choose your card" })).toBeNull();
+  });
+});
+
+// ---- the hot-seat pass, in the game (M6.1 §7.5) ----------------------------
+//
+// **A move that ends a turn answers its own mover with a `watching` prompt.**
+// That is the true thing to say to the person who has just played — the reply is
+// built for the seat that POSTED — and at a table with other people in it the
+// poll is what brings their move back. At a table where the NEXT seat is also
+// this person's, it leaves a browser holding an unanswerable screen for a turn
+// that never left it. `TableView.my_seats` is the server's own answer to which
+// of the two this is, and it is why `App` holds the table at all.
+describe("a move that ends the turn", () => {
+  /** Open the game, then answer once; `seats` is what the table says this
+   *  caller holds. The `/input` reply is the corpus's own `watching` payload —
+   *  seat 1's view of seat 0's turn — so the re-read is asked for the seat the
+   *  game is actually waiting on. */
+  const answerOnce = async (seats: number[]) => {
+    const stub = await renderApp(wire.options, (call) => {
+      // **`my_seats` is the one field moved off the corpus payload**, and it is
+      // the one the server varies per caller: the committed table can only
+      // carry one caller's reading, and a hot seat is the same person in two.
+      if (call.path.endsWith(`/api/games/${wire.options.id}/table`))
+        return { ...wire.table, my_seats: seats };
+      if (call.path.endsWith("/input")) return wire.watching;
+      return undefined;
+    });
+    await userEvent.setup().click(firstOptionButton());
+    return stub;
+  };
+  const reads = (stub: Awaited<ReturnType<typeof answerOnce>>) =>
+    stub.calls.filter(
+      (c) => c.method === "GET" && c.path.endsWith(`/api/games/${wire.options.id}`),
+    );
+
+  it("re-reads for the next seat when this browser holds it", async () => {
+    const stub = await answerOnce([0, 1]);
+    // Two: the read that opened the game, and the pass.
+    await waitFor(() => expect(reads(stub)).toHaveLength(2));
+    // And the screen is answerable again, which is the point of the re-read
+    // rather than the request being made.
+    expect(screen.queryByText(/Nothing here is yours to answer/)).toBeNull();
+    expect(firstOptionButton()).toBeInTheDocument();
+  });
+
+  it("does not re-read when the next seat is somebody else's", async () => {
+    const stub = await answerOnce([1]);
+    // The opening read, and nothing since: the poll is what brings the other
+    // player's move back, and a client that re-read here would spend a request
+    // per move earning the same watching payload.
+    await screen.findByText(/Nothing here is yours to answer/);
+    expect(reads(stub)).toHaveLength(1);
+  });
+});
+
 describe("the boards a player switches during setup", () => {
   it("stay switched when the game opens", async () => {
     // Signed in, because since M6.1 there is a door in front of every screen
     // and this cell drives `App` directly rather than through `renderApp`.
     localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
+    // **The table's status MOVES, because the flow crosses it twice.** `App`
+    // reads `GET …/table` on the way into the dealing screen and again on the
+    // way into the game, so a stub answering one fixed status would either
+    // refuse to open the deal or send the dealing screen straight back to
+    // itself. The keep that finishes the dealing is what flips it, which is
+    // exactly what the server does.
+    let dealt = false;
     const stub = stubApi((call) => {
       if (call.path.endsWith("/api/me")) return wire.me;
       if (call.method === "GET" && call.path.endsWith("/api/games")) return gamesNamed();
       if (call.path.endsWith("/api/labels")) return wire.labels;
       if (call.path.endsWith("/api/art")) return wire.artManifest;
-      if (call.path.endsWith("preview")) return wire.previewBot;
-      // The opening sequence (M6.1 §4.3): a create answers with a DEALING
-      // table, a keep with the table, and the GAME is read back afterwards.
-      if (call.method === "POST" && call.path.endsWith("/api/games")) return wire.tableDealing;
-      if (call.path.endsWith("/keep")) return wire.table;
+      // The opening sequence (M6.1 §§4.2–4.3): a create answers 201 with a
+      // DEALING table, the dealing screen fetches the caller's own two cards,
+      // and the keep that finishes the dealing answers with the table at
+      // `playing` — which is when the GAME is read back.
+      if (call.method === "POST" && call.path.endsWith("/api/games"))
+        return { status: 201, body: wire.tableDealing };
+      if (call.path.endsWith("/table")) return dealt ? wire.table : wire.tableDealing;
+      if (call.path.endsWith("/deal")) return wire.deal;
+      if (call.path.endsWith("/keep")) {
+        dealt = true;
+        return wire.table;
+      }
+      if (call.path.endsWith("/events")) return wire.eventsDealing;
       if (call.method === "GET" && call.path.endsWith(`/api/games/${wire.options.id}`))
         return wire.options;
       if (call.path.endsWith("/ports")) return wire.ports;
@@ -1075,17 +1207,19 @@ describe("the boards a player switches during setup", () => {
     // `find`, not `get`: `App` draws nothing at all until `/api/me` answers, so
     // the setup screen is one round trip away rather than there on first paint.
     await user.click(await screen.findByRole("button", { name: "Deal" }));
-    // `Re-deal`, not Start: since R-C2 Start is not drawn until every human seat
-    // has chosen, so waiting for it here would wait for a click below.
-    await waitFor(() => expect(screen.getByRole("button", { name: "Re-deal" })).toBeInTheDocument());
+    // The dealing screen's own heading: a create opens a TABLE, and the deal is
+    // a screen of its own since M6.1, so this is what says the set table
+    // arrived.
+    await screen.findByRole("heading", { name: "Choose your card" });
     expect(document.querySelector(".table-sec.ports")).not.toBeNull();
 
     await user.click(screen.getByText(/^Boards/));
     await user.click(screen.getByRole("button", { name: "Port" }));
     expect(document.querySelector(".table-sec.ports")).toBeNull();
 
+    // One keep, and it is the last: the table comes back at `playing`, and the
+    // dealing screen hands `App` the game.
     await user.click(screen.getAllByRole("button", { name: /^keep O\d\d for seat 0/ })[0]!);
-    await user.click(screen.getByRole("button", { name: "Start" }));
     await waitFor(() => expect(screen.getByText(/end triggers:/)).toBeInTheDocument());
 
     // The claim: the GAME opens with the board the player switched off still
@@ -1272,15 +1406,24 @@ describe("the door", () => {
   // routed correctly when it ran inside a move.
   it("a 401 from the opening walk returns to sign-in", async () => {
     localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
+    let dealt = false;
     stubApi((call) => {
       if (call.path.endsWith("/api/me"))
         return localStorage.getItem(CLAIMED_USER_KEY) ? wire.me : wire.meSignedOut;
       if (call.path.endsWith("/api/labels")) return wire.labels;
       if (call.path.endsWith("/api/art")) return wire.artManifest;
       if (call.method === "GET" && call.path.endsWith("/api/games")) return gamesNamed();
-      if (call.path.endsWith("preview")) return wire.previewBot;
-      if (call.method === "POST" && call.path.endsWith("/api/games")) return wire.tableDealing;
-      if (call.path.endsWith("/keep")) return wire.table;
+      if (call.method === "POST" && call.path.endsWith("/api/games"))
+        return { status: 201, body: wire.tableDealing };
+      // The table crosses from dealing to playing at the keep, which is what
+      // makes the game open at all — see the boards cell above for the shape.
+      if (call.path.endsWith("/table")) return dealt ? wire.table : wire.tableDealing;
+      if (call.path.endsWith("/deal")) return wire.deal;
+      if (call.path.endsWith("/events")) return wire.eventsDealing;
+      if (call.path.endsWith("/keep")) {
+        dealt = true;
+        return wire.table;
+      }
       // **`events` is the one field moved, and it is what makes this the
       // opening walk at all**: `show(state, opening)` builds a run only when the
       // game it opens already has events, and the corpus's playable state has
@@ -1299,8 +1442,9 @@ describe("the door", () => {
     const user = userEvent.setup();
     await user.click(await screen.findByRole("button", { name: "Deal" }));
     // Two dealt cards, so two buttons: the first, as the other create cells do.
+    // The keep is the last one, so the game opens on the reply and the opening
+    // walk starts — which is the run whose refusal this cell is about.
     await user.click((await screen.findAllByRole("button", { name: /^keep O\d\d for seat 0/ }))[0]!);
-    await user.click(await screen.findByRole("button", { name: "Start" }));
     await screen.findByRole("heading", { name: "Sign in" });
     expect(screen.getByRole("status")).toHaveTextContent(signedOutReply().body.error);
   });

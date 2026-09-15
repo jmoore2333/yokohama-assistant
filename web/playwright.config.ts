@@ -160,8 +160,9 @@ export default defineConfig({
             // exits 1 before it binds anything without this, so a walk that
             // omitted it would fail at start-up rather than in a test.
             // `claimed` is the development mode — the client attaches the
-            // header from `localStorage`, which `harness.ts` seeds before the
-            // first navigation.
+            // header from `localStorage`, and the walk puts it there by typing
+            // into the sign-in screen (`harness.ts`'s `signIn`), which is the
+            // only shape that also tests the screen.
             YOKOHAMA_WEB_IDENTITY: "claimed",
             // ONE directory, reused and cleared, rather than `mkdtempSync`.
             // This module is loaded by every Playwright invocation — including

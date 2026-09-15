@@ -162,13 +162,15 @@ for (const players of [2, 4] as const) {
     mkdirSync(OUT, { recursive: true });
     await page.setViewportSize({ width: 1710, height: 869 });
     // The server draws the seed, so every run photographs a different game.
-    // `startGame` hands back the id and the seed it read off the responses that
-    // carry them; recording it here is what lets a reader of the pictures say
-    // WHICH game they are looking at without anyone transcribing it by hand.
+    // `startGame` hands back the table id; recording it here is what lets a
+    // reader of the pictures say WHICH game they are looking at without anyone
+    // transcribing it by hand. The SEED is not on the wire at all since M6.1 —
+    // it regenerates the whole hidden set — so the record on the server is what
+    // a picture is traced back through.
     const game = await startGame(page, { players });
     test.info().annotations.push({
       type: "game",
-      description: `${players}P ${game.id} seed ${game.seed}`,
+      description: `${players}P ${game.id}`,
     });
     await playAFew(page, 14, 0x5441_424c + players); // "TABL"
 
@@ -327,7 +329,6 @@ test("gate B — the set table before the first choice", async ({ page }) => {
   mkdirSync(OUT, { recursive: true });
   await page.setViewportSize({ width: 1710, height: 869 });
   await signIn(page);
-  await page.goto("/");
   await page.getByRole("button", { name: "Deal" }).click();
 
   // On CONTENT, not on the wrapper, for `TableSections`' own reason: the
@@ -356,12 +357,16 @@ test("gate B — the set table before the first choice", async ({ page }) => {
   await expect(page.locator(".deal-seat.bot .card-id")).toHaveCount(0);
   await expect(page.locator(".deal-seat.bot")).toContainText("keeps one of its two cards");
   // Before the first choice, which is what this gate is a picture OF — and
-  // since R-C2 that means Start is not on the screen at all: the seat that is
-  // asking has its two cards up and nothing to press but a card.
+  // since M6.1 the keep IS the commit, so there is nothing to press but a card:
+  // no Start, and no Re-deal back to a preview that no longer exists.
   await expect(page.getByRole("button", { name: "Start" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Re-deal" })).toHaveCount(0);
   await expect(page.locator(".deal-seat.human.current")).toHaveCount(1);
-  const seed = await page.locator("header.banner code").innerText();
-  test.info().annotations.push({ type: "game", description: `2P set table, seed ${seed}` });
+  // The TABLE, not the seed: no payload this client receives carries one any
+  // more (it regenerates the whole hidden set), so the picture is traced back
+  // through the record on the server.
+  const name = await page.locator("header.banner .meta").first().innerText();
+  test.info().annotations.push({ type: "game", description: `2P set table, ${name}` });
 
   // **Both frames are taken at scroll 0 — nothing is scrolled to make the
   // picture work (R-T12-3).** The deal cards drop their chip rows and the set
@@ -394,10 +399,10 @@ test("gate B — the set table before the first choice", async ({ page }) => {
   for (let i = 0; i < 2; i++) {
     await expect(page.locator(".deal-seat.bot img.back").nth(i)).toBeInViewport({ ratio: 1 });
   }
-  // The CONTROLS row, not Start: before the first choice Start is not drawn
-  // (R-C2) and Re-deal is what stands there. The claim is unchanged — the
-  // bottom of the deck's block is in the frame without scrolling.
-  await expect(page.locator(".deck .controls")).toBeInViewport({ ratio: 1 });
+  // The HEDGE under the picks, not a controls row: there is no button in this
+  // deck at all now. The claim is unchanged — the bottom of the deck's block is
+  // in the frame without scrolling.
+  await expect(page.locator(".deck .keep-hedge")).toBeInViewport({ ratio: 1 });
 
   await park(page);
   await page.screenshot({ path: `${OUT}/b-set-table-1710x869.png` });
@@ -434,7 +439,7 @@ test("gate C — the opponent's turn plays out on the table, stepped", async ({ 
   mkdirSync(OUT, { recursive: true });
   await page.setViewportSize({ width: 1710, height: 869 });
   const game = await startGame(page, { players: 2 });
-  test.info().annotations.push({ type: "game", description: `2P ${game.id} seed ${game.seed}` });
+  test.info().annotations.push({ type: "game", description: `2P ${game.id}` });
   // One second a step: the pictures are stills, but a paused walk is reached
   // through a running one and the slowest cadence would spend the budget.
   await page.getByLabel("Cadence").selectOption("1000");
