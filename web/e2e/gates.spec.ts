@@ -11,7 +11,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { haveBrowser } from "../playwright.config";
-import { act, readScreen, rng, signIn, startGame } from "./harness";
+import { act, newGameForm, readScreen, rng, startGame } from "./harness";
 
 test.skip(!haveBrowser, "no Chromium — YOKOHAMA_WEB_E2E_OPTIONAL=1; this run tested NOTHING");
 // The owner's display is 2×; a 1× shot understates the art's legibility.
@@ -293,7 +293,7 @@ for (const players of [2, 4] as const) {
     await page.locator(".game-menu > summary").click();
     await expect(page.locator(".game-menu[open]")).toHaveCount(1);
     const menu = page.locator(".game-menu > div");
-    await expect(menu.getByRole("button", { name: "New game" })).toBeVisible();
+    await expect(menu.getByRole("button", { name: "Lobby" })).toBeVisible();
     // **The list is asserted RESOLVED, not non-empty.** `GameMenu` fetches on
     // toggle and renders "loading…" until the answer lands, which is the state
     // this shot could otherwise photograph. It is deliberately NOT
@@ -310,7 +310,7 @@ for (const players of [2, 4] as const) {
     const rows = await menu.locator("button.ghost").count();
     test.info().annotations.push({
       type: "menu",
-      description: `${players}P saved-game rows beside "New game": ${rows - 1}`,
+      description: `${players}P saved-game rows beside "Lobby": ${rows - 1}`,
     });
     await scrollTable(page, "top");
     await park(page);
@@ -328,7 +328,7 @@ for (const players of [2, 4] as const) {
 test("gate B — the set table before the first choice", async ({ page }) => {
   mkdirSync(OUT, { recursive: true });
   await page.setViewportSize({ width: 1710, height: 869 });
-  await signIn(page);
+  await newGameForm(page);
   await page.getByRole("button", { name: "Deal" }).click();
 
   // On CONTENT, not on the wrapper, for `TableSections`' own reason: the

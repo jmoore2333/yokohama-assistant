@@ -56,6 +56,12 @@ function memoryStorage(): Storage {
 }
 
 beforeEach(() => {
+  // **The route is the hash, and the hash is a GLOBAL that outlives a test**
+  // (M6.2 §5.1). jsdom keeps one `window.location` per file, so a cell that
+  // clicks a lobby row leaves `#/t/wire` behind and the next cell mounts `App`
+  // already inside that game — a screen it never asked for, and a failure with
+  // nothing in it naming the cell that caused it.
+  window.location.hash = "";
   vi.stubGlobal("localStorage", memoryStorage());
   vi.stubGlobal(
     "fetch",

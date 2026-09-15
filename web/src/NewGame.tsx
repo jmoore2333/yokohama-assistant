@@ -1,23 +1,25 @@
-// Setup (M6.1 §7.3): who sits where, and the tables you already sit at.
+// Setup (spec §5.3): who sits where, and what the table is called.
 //
-// **A FORM again, and the deal has left it.** Until this cycle this screen drew
-// the set table itself: it asked `POST …/preview` for a throwaway position with
-// every seat's two cards on it, sequenced a hot-seat pass between the human
-// seats, and sent the whole thing back as a create carrying a `keeps` array. A
-// create now OPENS A TABLE and starts nothing (§4.2): the reply is
-// `status: "dealing"`, each seat fetches its own two cards from `GET …/deal`,
-// and the sequence a person holding two seats walks is the server's answer after
-// each keep. The set table moved to `Dealing.tsx` with it, along with
-// `DealBacks`, the Keep-score hedge and the `turn`/`passing`/"Next seat" state
-// that made the pass.
+// **A FORM, and nothing else now.** The deal left it at M6.1 — a create opens a
+// DEALING table and each seat fetches its own two cards from `GET …/deal` — and
+// M6.2 took the saved-tables list with it: the lobby is the first screen and
+// lists both your games and the open ones, so a second list here would be the
+// same tables read two ways.
 //
-// So what is left here is the question a create actually asks: how many seats,
-// who holds each one, and — for a fixture or a diagnostic — which seed.
+// What is left is the question a create actually asks: how many seats, who holds
+// each one, what the table is called, what YOU are called at it, whether it
+// wants a password, and — for a fixture or a diagnostic — which seed.
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
-import { api, ApiError, type NewGameRequest, type SeatRequest } from "./api";
+import { useRef, useState, type ReactNode } from "react";
+import {
+  api,
+  ApiError,
+  displayName as storedName,
+  setDisplayName,
+  type NewGameRequest,
+  type SeatRequest,
+} from "./api";
 import { seatClass } from "./Cards";
-import { TableFacts } from "./TableFacts";
 import type { PlayerColor, TableView } from "./types";
 
 const COLORS = ["Red", "Blue", "Yellow", "Green"] as const;
@@ -26,45 +28,49 @@ const COLORS = ["Red", "Blue", "Yellow", "Green"] as const;
  *
  *  `email` keeps its typed text even while the row is switched to `me`, so a
  *  player who flips a row back and forth does not lose what they typed. */
-type SeatRow = { kind: "me" | "email" | "bot"; email: string };
+type SeatRow = { kind: "me" | "email" | "bot" | "open"; email: string };
 
 /** The default seating for a player count.
  *
  *  **The bot sits at seat 1, and only at two players (R-P10).** The server
  *  refuses a bot at three and four — "the bot is measured at two players only" —
- *  so the form does not offer one there and every seat defaults to the person
- *  filling the form in, which is the hot-seat table this client has always
- *  supported. */
+ *  so the form does not offer one there.
+ *
+ *  **Above two players the other seats default to OPEN** (spec §5.3). Until
+ *  M6.2 they defaulted to the person filling the form in, which made a hot seat
+ *  the only 3P and 4P table this client could open; a room is people, and the
+ *  seats they have not arrived at yet are open ones. A player who really is
+ *  running a hot seat sets the rows to `me`, which is one control away. */
 const defaultSeats = (players: number): SeatRow[] =>
   Array.from({ length: players }, (_, i) => ({
-    kind: players === 2 && i === 1 ? ("bot" as const) : ("me" as const),
+    kind: i === 0 ? ("me" as const) : players === 2 ? ("bot" as const) : ("open" as const),
     email: "",
   }));
 
 export function NewGame({
   me,
   onCreated,
-  onOpen,
   who,
 }: {
   /** Who this browser plays as, from the DOOR.
    *
-   *  **Not from storage** (Task 7's review, `NewGame.tsx:179`). `api.ts` holds a
-   *  claimed name and attaches it as a header; what that header is WORTH is the
-   *  server's answer, and `/api/me` is the only thing that knows it. A form that
-   *  read storage would seat a name the server may not answer to — and under
+   *  **Not from storage** (M6.1 Task 7's review). `api.ts` holds a claimed name
+   *  and attaches it as a header; what that header is WORTH is the server's
+   *  answer, and `/api/me` is the only thing that knows it. A form that read
+   *  storage would seat a name the server may not answer to — and under
    *  Cloudflare Access or the edge Worker there is nothing in storage at all,
-   *  so it would post an empty seat. */
-  me: string;
-  /** The table was opened, and is dealing. `App` takes it from here.
+   *  so it would post an empty seat.
    *
-   *  Both callbacks may return a promise, and both are AWAITED inside `run`:
-   *  `App`'s `open` is two requests, and a refusal from either belongs in this
-   *  screen's error line rather than in an unhandled rejection. */
+   *  The DISPLAY name below is read from storage, and that is not the same
+   *  thing: it is a label on a seat, not a claim about who is asking. */
+  me: string;
+  /** The table was opened. `App` takes it from here — the reply's `status` says
+   *  whether it is open or dealing, and `open` is what asks.
+   *
+   *  It may return a promise and is AWAITED inside `run`: `App`'s `open` is two
+   *  requests, and a refusal from either belongs in this screen's error line
+   *  rather than in an unhandled rejection. */
   onCreated: (table: TableView) => void | Promise<void>;
-  /** A saved table was clicked. The ID only: whether it is still dealing is a
-   *  `GET …/table` away, and `App` is what asks. */
-  onOpen: (id: string) => void | Promise<void>;
   /** The "You are …" strip and its sign-out button, built by `App` — a node
    *  rather than an email and a callback, so there is one statement of the strip
    *  and one wiring of the button. */
@@ -74,24 +80,15 @@ export function NewGame({
   const [seats, setSeats] = useState<SeatRow[]>(() => defaultSeats(2));
   const [seedText, setSeedText] = useState("");
   const [name, setName] = useState("");
-  const [saved, setSaved] = useState<TableView[]>([]);
+  /** What this browser calls itself, prefilled from the last table it opened.
+   *
+   *  Read ONCE, in the initializer: a value re-read on every render would
+   *  overwrite what the player is in the middle of typing. */
+  const [myName, setMyName] = useState(() => storedName() ?? "");
+  const [locked, setLocked] = useState(false);
+  const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  /** The saved game whose `delete` has been clicked once — see the row below. */
-  const [confirming, setConfirming] = useState<string | null>(null);
-
-  /** The tables this player sits at, scoped to them by the server (M6.1).
-   *
-   *  **The whole table, not just its id**: a row says what the table is called,
-   *  how many seats it has and what it is waiting on, which is what makes a list
-   *  of three games something a player can read. */
-  const savedTables = async () => (await api.list()).games;
-
-  useEffect(() => {
-    savedTables().then(setSaved).catch(() => setSaved([]));
-    // `savedTables` is re-created every render and this must run once, so it is
-    // deliberately not a dependency.
-  }, []);
 
   // The same guard, and the same reasoning, as `App`'s `inFlight`.
   //
@@ -119,18 +116,18 @@ export function NewGame({
 
   const colors = COLORS.slice(0, players) as PlayerColor[];
 
-  /** The seat list §4.2 reads: one entry per seat, in seat order, each exactly
-   *  one of `user` / `bot: true`.
+  /** The seat list §3.1 reads: one entry per seat, in seat order, each exactly
+   *  one of `user` / `bot: true` / `open: true`.
    *
    *  **Normalized here, because the server normalizes too (R-1.1).** A table
    *  seated under `blue@wire.test` does not answer to `Blue@Wire.test`, and the
    *  person at that address would be told they hold no seat. */
   const seatRequests = (): SeatRequest[] =>
-    seats.map((row) =>
-      row.kind === "bot"
-        ? { bot: true }
-        : { user: row.kind === "me" ? me : row.email.trim().toLowerCase() },
-    );
+    seats.map((row) => {
+      if (row.kind === "bot") return { bot: true };
+      if (row.kind === "open") return { open: true };
+      return { user: row.kind === "me" ? me : row.email.trim().toLowerCase() };
+    });
 
   const body = (): NewGameRequest => ({
     players,
@@ -144,10 +141,23 @@ export function NewGame({
     // deals a different game from move one.
     ...(seedText.trim() ? { seed: seedText.trim() } : {}),
     ...(name.trim() ? { name: name.trim() } : {}),
+    ...(myName.trim() ? { display_name: myName.trim() } : {}),
+    // **Only when the box is ticked AND something was typed.** A password field
+    // left blank under a ticked box is a table nobody can join rather than a
+    // table anybody can — so the absent field is the honest thing to send, and
+    // the table opens unlocked.
+    ...(locked && password.trim() ? { password: password.trim() } : {}),
   });
 
   const setRow = (i: number, patch: Partial<SeatRow>) =>
     setSeats((rows) => rows.map((r, n) => (n === i ? { ...r, ...patch } : r)));
+
+  /** What the button says it will do, and the two things differ.
+   *
+   *  A table with an open seat is not dealt when it is created — it waits for
+   *  somebody to sit down — so a button reading "Deal" would promise the set
+   *  table and hand over a waiting room. */
+  const opensSeats = seats.some((r) => r.kind === "open");
 
   return (
     <div className="setup">
@@ -198,6 +208,7 @@ export function NewGame({
           >
             <option value="me">me</option>
             <option value="email">another email</option>
+            <option value="open">open seat</option>
             {players === 2 && <option value="bot">bot</option>}
           </select>
           <span className={`meta ${seatClass(colors[i])}`}>{colors[i]}</span>
@@ -214,14 +225,62 @@ export function NewGame({
         </div>
       ))}
 
+      {/* **Free text, and never an id** (R-2.4). The server draws the storage id
+          and a client-chosen one is a name two people can collide on; this is
+          only what the lobby prints. */}
       <div className="field">
         <label htmlFor="name">Name</label>
         <input
           id="name"
           value={name}
-          placeholder="blank — the table is listed by its id"
+          placeholder="blank — listed by its id"
           onChange={(e) => setName(e.target.value)}
         />
+      </div>
+
+      {/* What YOU are called at this table, written onto every seat you hold and
+          onto no other — a name is a claim about the person who gave it. Kept in
+          this browser so the next table does not ask again. */}
+      <div className="field">
+        <label htmlFor="display-name">Your name</label>
+        <input
+          id="display-name"
+          value={myName}
+          placeholder="blank — your email is shown"
+          onChange={(e) => setMyName(e.target.value)}
+        />
+      </div>
+
+      {/* **The checkbox carries the row's only label**, so the field is asked
+          about by one name rather than two. A "Password" caption beside it would
+          be a second label on the same control — the checkbox's accessible name
+          would read as both — and the field it reveals is then labelled by
+          something it is not. */}
+      <div className="field password-field">
+        <label className="check" htmlFor="lock">
+          <input
+            id="lock"
+            type="checkbox"
+            checked={locked}
+            onChange={(e) => {
+              setLocked(e.target.checked);
+              // Cleared with the box, so an unticked form cannot carry a word
+              // the player can no longer see.
+              if (!e.target.checked) setPassword("");
+            }}
+          />{" "}
+          Ask for a password to join
+        </label>
+        {locked && (
+          <input
+            id="password"
+            type="password"
+            aria-label="Table password"
+            placeholder="the word people join with"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+        )}
       </div>
 
       <div className="field">
@@ -241,103 +300,15 @@ export function NewGame({
         disabled={busy}
         onClick={() =>
           run(async () => {
+            // Remembered on SUBMIT, not on every keystroke: a name half typed
+            // and then abandoned is not what this browser is called.
+            setDisplayName(myName.trim());
             await onCreated(await api.create(body()));
           })
         }
       >
-        Deal
+        {opensSeats ? "Open table" : "Deal"}
       </button>
-
-      {/* Every move is persisted as its `GameRecord` after it is applied, and a
-          game whose handle is gone is rebuilt from that record — so resuming one
-          is a `GET`, not a restore. */}
-      <section className="saved">
-        <h3>Saved games</h3>
-        {saved.length === 0 ? (
-          <p className="muted">none yet — a game appears here as soon as it starts.</p>
-        ) : (
-          <ul>
-            {saved.map((t) => {
-              // The id is what every REQUEST is keyed by, and the name is only
-              // ever what is shown. Bound once per row so the two cannot be
-              // confused below: `delete ${name}` beside `api.remove(id)` is how
-              // a row deletes a game other than the one it names.
-              const name = t.name ?? t.id;
-              return (
-                <li key={t.id}>
-                  {/* **The id goes up, not the game.** A table that is still
-                      dealing refuses every session route with a 409, so a row
-                      that fetched `GET /api/games/{id}` here would show a
-                      refusal for exactly the tables this cycle exists to open.
-                      `App` asks `GET …/table` first and picks the screen. */}
-                  <button
-                    type="button"
-                    className="ghost"
-                    disabled={busy}
-                    onClick={() =>
-                      run(async () => {
-                        await onOpen(t.id);
-                      })
-                    }
-                  >
-                    {name}
-                  </button>
-                  <TableFacts table={t} />
-                  {/* **Two clicks, and the first one asks (M5 final review I2).**
-                      Deleting a record is not undoable — the game is gone — and
-                      M5 put this list one banner menu away from a running game,
-                      so a stray click beside the game you meant to resume used
-                      to remove a different one.
-
-                      A row that asks, rather than `window.confirm`: a native
-                      dialog blocks the browser walk this client is tested with,
-                      and the question belongs where the mistake is made. Both
-                      buttons NAME the game, so the confirmation cannot be about
-                      a row other than the one that opened it. */}
-                  {confirming === t.id ? (
-                    <>
-                      <button
-                        type="button"
-                        className="ghost danger"
-                        disabled={busy}
-                        aria-label={`confirm delete ${name}`}
-                        onClick={() =>
-                          run(async () => {
-                            await api.remove(t.id);
-                            setConfirming(null);
-                            setSaved(await savedTables());
-                          })
-                        }
-                      >
-                        confirm delete
-                      </button>
-                      <button
-                        type="button"
-                        className="ghost"
-                        disabled={busy}
-                        aria-label={`cancel deleting ${name}`}
-                        onClick={() => setConfirming(null)}
-                      >
-                        cancel
-                      </button>
-                    </>
-                  ) : (
-                    <button
-                      type="button"
-                      className="ghost danger"
-                      disabled={busy}
-                      aria-label={`delete ${name}`}
-                      onClick={() => setConfirming(t.id)}
-                    >
-                      delete
-                    </button>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </section>
 
       {error && <div className="error">{error}</div>}
     </div>

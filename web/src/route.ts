@@ -1,0 +1,86 @@
+// Which screen this is, as the URL (spec §5.1).
+//
+// **The hash, and no router.** Three routes is not a routing problem; what it
+// is, is a SHAREABLE address — M6.2's whole point is that a table has a link
+// somebody else can follow — plus back and forward working for free, because
+// the browser already keeps a history of hashes. A path-based router would need
+// the server to serve `index.html` under every path it does not know, which is
+// a deployment change for three screens.
+//
+// **`parseRoute` is total.** Anything it does not recognize is the lobby, so a
+// stale bookmark, a truncated paste and an empty hash all land on a screen a
+// player can act from rather than on a blank one.
+
+import { useEffect, useState } from "react";
+
+export type Route = { kind: "lobby" } | { kind: "new" } | { kind: "table"; id: string };
+
+/** `#/` the lobby, `#/new` the form, `#/t/<id>` a table (R-2.5). Anything
+ *  else is the lobby, so a stale or mistyped link lands somewhere useful. */
+export function parseRoute(hash: string): Route {
+  const path = hash.startsWith("#") ? hash.slice(1) : hash;
+  if (path === "/new") return { kind: "new" };
+  const m = /^\/t\/([^/]+)$/.exec(path);
+  // `decodeURIComponent` throws on a malformed escape (`%zz`), which is a
+  // hand-typed link and not a bug in this client — so it reads as the lobby
+  // like every other unrecognized hash, rather than as an exception thrown
+  // during a render.
+  if (m) {
+    try {
+      return { kind: "table", id: decodeURIComponent(m[1]!) };
+    } catch {
+      return { kind: "lobby" };
+    }
+  }
+  return { kind: "lobby" };
+}
+
+export function hashOf(route: Route): string {
+  switch (route.kind) {
+    case "lobby":
+      return "#/";
+    case "new":
+      return "#/new";
+    case "table":
+      return `#/t/${encodeURIComponent(route.id)}`;
+  }
+}
+
+/** Go to a route.
+ *
+ *  **Guarded against setting the hash it already holds**, which is not a
+ *  micro-optimization: an unconditional write pushes a duplicate history entry,
+ *  so Back would step through the same screen twice — and `open()` calls this
+ *  on every way into a table, including the one the route effect itself
+ *  started. */
+export function navigate(route: Route): void {
+  const next = hashOf(route);
+  if (window.location.hash !== next) window.location.hash = next;
+}
+
+/** Two routes are the same screen. */
+const same = (a: Route, b: Route): boolean =>
+  a.kind === b.kind && (a.kind !== "table" || a.id === (b as { id: string }).id);
+
+/** The route is the hash: read at mount, followed on `hashchange`, so back and
+ *  forward work without any state of this component's own.
+ *
+ *  **The same route is the same OBJECT.** Consumers put this in an effect's
+ *  dependency list, and a fresh object per `hashchange` would re-run those
+ *  effects for a screen that has not moved — `App`'s route effect opens a table
+ *  in one of its arms, so a churning identity there is a second request. */
+export function useRoute(): Route {
+  const [route, setRoute] = useState<Route>(() => parseRoute(window.location.hash));
+  useEffect(() => {
+    const onChange = () => {
+      const next = parseRoute(window.location.hash);
+      setRoute((r) => (same(r, next) ? r : next));
+    };
+    window.addEventListener("hashchange", onChange);
+    // Read again on mount: a hash set between the initial state above and this
+    // effect running would otherwise be missed for the life of the component.
+    onChange();
+    return () => window.removeEventListener("hashchange", onChange);
+  }, []);
+  return route;
+}

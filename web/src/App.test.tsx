@@ -7,16 +7,7 @@ import { render } from "@testing-library/react";
 import { App } from "./App";
 import { CLAIMED_USER_KEY } from "./api";
 import { loadSections } from "./sections";
-import {
-  gameMenu,
-  gamesNamed,
-  gate,
-  renderApp,
-  signedOutReply,
-  stubApi,
-  type ApiCall,
-  type Reply,
-} from "./test/harness";
+import { gameMenu, gamesNamed, gate, isGamesList, renderApp, signedOutReply, stubApi, type ApiCall, type Reply } from "./test/harness";
 import { VISIBLE_MS } from "./signal";
 import { wire } from "./wire/contract";
 
@@ -465,7 +456,7 @@ describe("a reply for a game you left", () => {
     const switchGet = gate<unknown>();
     const reply = gate<unknown>();
     const stub = await renderApp(wire.optionsMany, (call) => {
-      if (call.method === "GET" && call.path.split("?")[0]!.endsWith("/api/games"))
+      if (isGamesList(call, "mine"))
         return gamesNamed(wire.optionsMany.id, "sim-other");
       if (call.method === "GET" && call.path.endsWith("/api/games/sim-other"))
         return switchGet.promise;
@@ -507,7 +498,7 @@ describe("a reply for a game you left", () => {
   it("cannot be started from the Game menu while a move is in flight", async () => {
     const held = gate<unknown>();
     await renderApp(wire.optionsMany, (call) => {
-      if (call.method === "GET" && call.path.split("?")[0]!.endsWith("/api/games"))
+      if (isGamesList(call, "mine"))
         return gamesNamed(wire.optionsMany.id, "sim-other");
       if (call.path.endsWith("/input")) return held.promise;
       return undefined;
@@ -941,7 +932,7 @@ describe("the turn playback", () => {
     const { before, replied, at, log } = botReply();
     const other = { ...wire.options4p, id: "sim-other" };
     await renderApp(before, (call) => {
-      if (call.method === "GET" && call.path.split("?")[0]!.endsWith("/api/games"))
+      if (isGamesList(call, "mine"))
         return gamesNamed(before.id, "sim-other");
       if (call.method === "GET" && call.path.endsWith("/api/games/sim-other")) return other;
       if (call.path.endsWith("/input")) return replied;
@@ -1072,7 +1063,9 @@ describe("opening a saved table", () => {
       if (call.path.endsWith("/api/me")) return wire.me;
       if (call.path.endsWith("/api/labels")) return wire.labels;
       if (call.path.endsWith("/api/art")) return wire.artManifest;
-      if (call.method === "GET" && call.path.split("?")[0]!.endsWith("/api/games")) return gamesNamed("wire");
+      if (isGamesList(call, "mine")) return gamesNamed("wire");
+      // The lobby asks for both scopes (spec §5.2); nothing here is open.
+      if (isGamesList(call, "open")) return gamesNamed();
       if (call.path.endsWith("/api/games/wire/table")) return table;
       if (call.path.endsWith("/deal")) return wire.deal;
       if (call.path.endsWith("/events")) return wire.eventsDealing;
@@ -1177,7 +1170,7 @@ describe("the boards a player switches during setup", () => {
     let dealt = false;
     const stub = stubApi((call) => {
       if (call.path.endsWith("/api/me")) return wire.me;
-      if (call.method === "GET" && call.path.split("?")[0]!.endsWith("/api/games")) return gamesNamed();
+      if (isGamesList(call, "mine") || isGamesList(call, "open")) return gamesNamed();
       if (call.path.endsWith("/api/labels")) return wire.labels;
       if (call.path.endsWith("/api/art")) return wire.artManifest;
       // The opening sequence (M6.1 §§4.2–4.3): a create answers 201 with a
@@ -1206,7 +1199,9 @@ describe("the boards a player switches during setup", () => {
     const user = userEvent.setup();
 
     // `find`, not `get`: `App` draws nothing at all until `/api/me` answers, so
-    // the setup screen is one round trip away rather than there on first paint.
+    // the LOBBY is one round trip away rather than there on first paint — and
+    // the form is one click beyond it since M6.2 (spec §5.1).
+    await user.click(await screen.findByRole("button", { name: "New table" }));
     await user.click(await screen.findByRole("button", { name: "Deal" }));
     // The dealing screen's own heading: a create opens a TABLE, and the deal is
     // a screen of its own since M6.1, so this is what says the set table
@@ -1232,6 +1227,159 @@ describe("the boards a player switches during setup", () => {
     // And the port was never fetched for the game either — the section being
     // absent is not the same as its request not going out.
     expect(stub.matching("GET", "/ports")).toHaveLength(0);
+  });
+});
+
+// ---- the hash is the screen (M6.2 §5.1) -----------------------------------
+//
+// **One effect turns a route into a screen**, and these are the four things it
+// has to get right: where a signed-in player lands, what each hash draws, what a
+// hash the server refuses does, and — the one that is not a screen at all — that
+// a table is not opened twice because `open` navigates before it fetches.
+
+describe("the route", () => {
+  /** `App`, signed in, over a stub that answers the bootstrap and both lobby
+   *  scopes from the corpus. */
+  const app = (handler: (call: ApiCall) => Reply | undefined = () => undefined) => {
+    localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
+    const stub = stubApi((call) => {
+      const mine = handler(call);
+      if (mine !== undefined) return mine;
+      if (call.path.endsWith("/api/me")) return wire.me;
+      if (call.path.endsWith("/api/labels")) return wire.labels;
+      if (call.path.endsWith("/api/art")) return wire.artManifest;
+      if (isGamesList(call, "open")) return gamesNamed();
+      if (isGamesList(call, "mine")) return gamesNamed();
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    render(<App />);
+    return { stub, user: userEvent.setup() };
+  };
+
+  it("lands on the lobby, and #/new draws the form", async () => {
+    const { user } = app();
+    // The first screen after the door is the LOBBY, not the form — which is the
+    // product change: a player with three games open used to be shown a blank
+    // create.
+    expect(await screen.findByRole("heading", { name: "Lobby" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "New game" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "New table" }));
+    expect(window.location.hash).toBe("#/new");
+    expect(await screen.findByRole("heading", { name: "New game" })).toBeInTheDocument();
+  });
+
+  it("draws the form for a hash typed before the app mounts", async () => {
+    // **The route is read at MOUNT, not only on `hashchange`.** A link is
+    // followed in a cold tab, where no `hashchange` ever fires.
+    window.location.hash = "#/new";
+    app();
+    expect(await screen.findByRole("heading", { name: "New game" })).toBeInTheDocument();
+  });
+
+  // **And the sentence does not follow you into the next table.** A refusal is
+  // about the open that failed; carried forward it sits in the next game's error
+  // strip describing nothing on screen.
+  it("drops a refused table's sentence when another table is opened", async () => {
+    window.location.hash = "#/t/not-yours";
+    const { user } = app((call) => {
+      if (call.path.endsWith("/api/games/not-yours/table"))
+        return { status: 403, body: { error: "you are not seated at this table" } };
+      if (isGamesList(call, "mine")) return gamesNamed(wire.options.id);
+      if (call.path.endsWith(`/api/games/${wire.options.id}/table`)) return wire.table;
+      if (call.method === "GET" && call.path.endsWith(`/api/games/${wire.options.id}`))
+        return wire.options;
+      if (call.path.endsWith("/ports")) return wire.ports;
+      if (call.path.endsWith("/labs")) return wire.labs;
+      if (call.path.endsWith("/areas")) return wire.areas;
+      if (/\/at\/\d+$/.test(call.path)) return wire.atK;
+      if (/\/log(\?|$)/.test(call.path)) return wire.log;
+      return undefined;
+    });
+    await screen.findByText("you are not seated at this table");
+    // **A PLAYING table, because that is the screen that would show it.** The
+    // dealing screen renders no error strip at all, so a sentence "disappearing"
+    // there says nothing about whether it was cleared — mutation-proven: with
+    // the clear removed, this reaches the game and finds the sentence in its
+    // deck.
+    await user.click(await screen.findByRole("button", { name: wire.options.id }));
+    await screen.findByText(/end triggers:/);
+    expect(screen.queryByText("you are not seated at this table")).toBeNull();
+  });
+
+  it("shows the server's sentence over the lobby when a table refuses, and goes back to #/", async () => {
+    window.location.hash = "#/t/not-yours";
+    app((call) =>
+      call.path.endsWith("/api/games/not-yours/table")
+        ? { status: 403, body: { error: "you are not seated at this table" } }
+        : undefined,
+    );
+    expect(await screen.findByText("you are not seated at this table")).toBeInTheDocument();
+    // **The lobby, and the hash with it.** A screen left at `#/t/<id>` for a
+    // table that answers nothing is the one place a player cannot act from —
+    // and a reload would earn the same refusal again.
+    expect(screen.getByRole("heading", { name: "Lobby" })).toBeInTheDocument();
+    await waitFor(() => expect(window.location.hash).toBe("#/"));
+  });
+
+  // **The double-open, and it is the hazard `openingId` exists for.** `open`
+  // sets the hash BEFORE it fetches, so the route effect runs while the first
+  // `GET …/table` is still in flight — and every "is it already open?" test it
+  // can make (`gameId`, `dealing`, `openTable`) is still false. Without the ref
+  // a create opens its own table twice: two `GET …/table`, two deals fetched,
+  // and the second reply overwriting the first.
+  it("opens a table ONCE when a create navigates to it", async () => {
+    // **The first `GET …/table` is HELD, and that is what makes this a witness.**
+    // `hashchange` is a queued task and a stubbed fetch settles in microtasks,
+    // so with an instant reply the table is already on screen by the time the
+    // route effect runs and any guard at all would do. In a browser the reply is
+    // a network round trip and the hashchange arrives FIRST — which is the
+    // window `openingId` exists for, and the only state of the world in which
+    // the second open happens. Mutation-proven: drop `openingId` from the
+    // effect's condition and this cell counts two.
+    const held = gate<Reply>();
+    let tables = 0;
+    const { stub, user } = app((call) => {
+      if (call.method === "POST" && call.path.split("?")[0]!.endsWith("/api/games"))
+        return { status: 201, body: wire.tableDealing };
+      if (call.path.endsWith("/table")) {
+        tables += 1;
+        return tables === 1 ? held.promise : wire.tableDealing;
+      }
+      if (call.path.endsWith("/deal")) return wire.deal;
+      if (call.path.endsWith("/events")) return wire.eventsDealing;
+      if (call.path.endsWith("/ports")) return wire.ports;
+      if (call.path.endsWith("/labs")) return wire.labs;
+      if (call.path.endsWith("/areas")) return wire.areas;
+      return undefined;
+    });
+    await user.click(await screen.findByRole("button", { name: "New table" }));
+    await user.click(await screen.findByRole("button", { name: "Deal" }));
+    await waitFor(() => expect(stub.matching("GET", "/table")).toHaveLength(1));
+    // The hash is set BEFORE the fetch, so it is already there; the task that
+    // carries `hashchange` is what runs next.
+    expect(window.location.hash).toBe(`#/t/${wire.tableDealing.id}`);
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    // Nothing new went out while the first request was still in flight.
+    expect(stub.matching("GET", "/table")).toHaveLength(1);
+
+    held.resolve(wire.tableDealing);
+    await screen.findByRole("heading", { name: "Choose your card" });
+    expect(stub.matching("GET", "/table")).toHaveLength(1);
+    expect(stub.matching("GET", "/deal")).toHaveLength(1);
+  });
+
+  // The other half of the same rule: a game LEFT takes the hash with it, so the
+  // address never names a screen that is not on it.
+  it("clears the game and the hash when the Game menu leaves for the lobby", async () => {
+    await renderApp(wire.options);
+    expect(window.location.hash).toBe(`#/t/${wire.options.id}`);
+    const user = userEvent.setup();
+    await user.click(gameMenu());
+    await user.click(screen.getByRole("button", { name: "Lobby" }));
+    expect(await screen.findByRole("heading", { name: "Lobby" })).toBeInTheDocument();
+    expect(window.location.hash).toBe("#/");
   });
 });
 
@@ -1267,8 +1415,8 @@ describe("the door", () => {
     await user.click(screen.getByRole("button", { name: "Sign in" }));
 
     await screen.findByText(`You are ${wire.me.user}`);
-    // The list, and no individual game: signing in lands on the setup screen,
-    // not inside whatever game happens to be first.
+    // The list, and no individual game: signing in lands on the LOBBY, not
+    // inside whatever game happens to be first.
     expect(stub.matching("GET", "/api/games/")).toHaveLength(0);
     // Read AGAIN after signing in, rather than the client deciding for itself
     // that it is now this person: a typed name is only worth what the server
@@ -1327,8 +1475,8 @@ describe("the door", () => {
   it("a 401 from the Game menu's list returns to sign-in", async () => {
     let lists = 0;
     await renderApp(wire.options, (call) => {
-      if (call.method === "GET" && call.path.split("?")[0]!.endsWith("/api/games")) {
-        // The FIRST list is the setup screen's, which `renderApp` opens the
+      if (isGamesList(call, "mine")) {
+        // The FIRST `mine` list is the LOBBY's, which `renderApp` opens the
         // game from. The menu's is the next one, and that is the one refused.
         lists += 1;
         if (lists > 1) return signedOutReply();
@@ -1392,7 +1540,9 @@ describe("the door", () => {
         return localStorage.getItem(CLAIMED_USER_KEY) ? wire.me : wire.meSignedOut;
       if (call.path.endsWith("/api/labels")) return wire.labels;
       if (call.path.endsWith("/api/art")) return wire.artManifest;
-      if (call.method === "GET" && call.path.split("?")[0]!.endsWith("/api/games")) return signedOutReply();
+      // Both scopes, because the lobby asks for both and a client that saw one
+      // refuse and one answer would draw half a lobby over a closed door.
+      if (isGamesList(call)) return signedOutReply();
       return undefined;
     });
     render(<App />);
@@ -1413,7 +1563,7 @@ describe("the door", () => {
         return localStorage.getItem(CLAIMED_USER_KEY) ? wire.me : wire.meSignedOut;
       if (call.path.endsWith("/api/labels")) return wire.labels;
       if (call.path.endsWith("/api/art")) return wire.artManifest;
-      if (call.method === "GET" && call.path.split("?")[0]!.endsWith("/api/games")) return gamesNamed();
+      if (isGamesList(call, "mine") || isGamesList(call, "open")) return gamesNamed();
       if (call.method === "POST" && call.path.split("?")[0]!.endsWith("/api/games"))
         return { status: 201, body: wire.tableDealing };
       // The table crosses from dealing to playing at the keep, which is what
@@ -1441,6 +1591,7 @@ describe("the door", () => {
     });
     render(<App />);
     const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "New table" }));
     await user.click(await screen.findByRole("button", { name: "Deal" }));
     // Two dealt cards, so two buttons: the first, as the other create cells do.
     // The keep is the last one, so the game opens on the reply and the opening

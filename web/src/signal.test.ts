@@ -15,7 +15,8 @@
 
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { useSignal, nextDelay, BACKOFF_MS, VISIBLE_MS } from "./signal";
+import { useSignal, usePolled, nextDelay, BACKOFF_MS, VISIBLE_MS, type End } from "./signal";
+import { api } from "./api";
 import { gate, stubApi, type Reply } from "./test/harness";
 import { wire } from "./wire/contract";
 import type { Events } from "./types";
@@ -206,6 +207,92 @@ describe("the poll", () => {
     expect(result.current).toBe("live");
     await act(async () => {
       await vi.advanceTimersByTimeAsync(BACKOFF_MS[0]! * 4);
+    });
+    expect(stub.matching("GET", "/events")).toHaveLength(1);
+  });
+  // ---- the generalized hook (spec §5.5) -------------------------------------
+  //
+  // **`useSignal` is now ONE INSTANCE of `usePolled`**, and every cell above
+  // runs through it unchanged — which is what says the generalization did not
+  // move the contract. The two below are about what only the generic hook can
+  // be asked, because `useSignal` has no second consumer to vary and no
+  // refusal it acts on.
+
+  it("does not re-arm the timer when a consumer re-renders with a new closure", async () => {
+    // **The hazard the refs exist for, as an executable cell.** Every consumer
+    // of this hook closes over state, so `once` is a NEW function on every
+    // render; an effect that depended on it would tear the timer down and arm a
+    // fresh one each time, and a poll re-armed faster than its own interval
+    // never reaches its first tick at all. Measured here as ONE request across
+    // five re-renders inside one interval — and the value it saw is the LAST
+    // closure's, so the ref is read at ask time rather than captured at arm
+    // time.
+    const seen: number[] = [];
+    const asked: number[] = [];
+    const { rerender } = renderHook(
+      ({ n }) =>
+        usePolled<number>(
+          {
+            key: "lobby",
+            once: () => {
+              asked.push(n);
+              return Promise.resolve(n);
+            },
+            stream: "/api/stream",
+          },
+          true,
+          (v) => seen.push(v),
+        ),
+      { initialProps: { n: 0 } },
+    );
+    // **The re-renders happen PART WAY through the interval**, which is what
+    // makes this a witness rather than a tautology: five re-renders at t=0 all
+    // arm a timer that fires at the same moment whether or not it was re-armed,
+    // so the cell would pass with the hazard present. Mutation-proven by adding
+    // `source?.once` to the effect's dependency list — the ask below then never
+    // happens, because each re-arm pushes the first tick a further interval out.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(VISIBLE_MS - 500);
+    });
+    expect(asked).toEqual([]);
+    for (let n = 1; n <= 5; n += 1) rerender({ n });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(600);
+    });
+    // ONE ask, and it saw the LAST closure's value — so the ref is read at ask
+    // time rather than captured when the timer was armed.
+    expect(asked).toEqual([5]);
+    expect(seen).toEqual([5]);
+  });
+
+  it("ends the poll on a 404 and hands the sentence to onEnd", async () => {
+    // **A refusal this poll can act on, which the backoff cannot.** A game that
+    // has been deleted answers 404 for as long as the tab is open, so retrying
+    // it forever is a client asking a question that has a permanent answer —
+    // and the screen would sit reading "reconnecting…" about a game that is
+    // gone. `onEnd` is how the consumer says so and leaves.
+    const ends: End[] = [];
+    const stub = stubApi((c) =>
+      c.path.endsWith("/events")
+        ? { status: 404, body: { error: 'no game named "wire"' } }
+        : undefined,
+    );
+    renderHook(() =>
+      usePolled<Events>(
+        { key: "wire", once: () => api.events("wire"), stream: "/api/games/wire/stream" },
+        true,
+        () => {},
+        (e) => ends.push(e),
+      ),
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(VISIBLE_MS + 10);
+    });
+    expect(ends).toEqual([{ reason: "gone", sentence: 'no game named "wire"' }]);
+    // ENDED, not backed off: nothing is asked again, through three more
+    // intervals and four backoff waits.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(VISIBLE_MS * 3 + BACKOFF_MS[0]! * 4);
     });
     expect(stub.matching("GET", "/events")).toHaveLength(1);
   });

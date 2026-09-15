@@ -107,6 +107,34 @@ export function clearClaimedUser(): void {
   }
 }
 
+/** Where the form keeps what this browser calls itself (spec §5.3).
+ *
+ *  **A CONVENIENCE, and never an identity.** Who you are is the server's answer
+ *  at `/api/me`; this is only what a seat you take is LABELLED with, so it is
+ *  sent as a field on a create or a join and never as a header. A browser with
+ *  nothing here simply seats an address. */
+export const DISPLAY_NAME_KEY = "yokohama.display_name";
+
+/** What this browser calls itself, or `null`. A storage that throws — a private
+ *  window, a blocked site — reads as nobody, the `claimedUser` idiom. */
+export function displayName(): string | null {
+  try {
+    return typeof localStorage === "undefined" ? null : localStorage.getItem(DISPLAY_NAME_KEY);
+  } catch {
+    return null;
+  }
+}
+
+/** Remember it, so the next table does not ask again. A storage that refuses is
+ *  not an error to report: the field is simply blank next time. */
+export function setDisplayName(name: string): void {
+  try {
+    localStorage.setItem(DISPLAY_NAME_KEY, name);
+  } catch {
+    /* storage refused: the field is blank next time */
+  }
+}
+
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
   const headers: Record<string, string> = {};
   if (body !== undefined) headers["content-type"] = "application/json";

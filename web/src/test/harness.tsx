@@ -39,6 +39,19 @@ export const gamesNamed = (...ids: string[]): GamesList => ({
   next: null,
 });
 
+/** Is this call the LOBBY LISTING, and — when `scope` is given — that scope's?
+ *
+ *  **One matcher, because there are now two listings behind one path.** Every
+ *  stub in this suite matched `GET /api/games` by its path alone, and M6.2's
+ *  `?scope=open` walks straight through such a check: a cell stubbing the open
+ *  list would silently be handed the `mine` reply and pass while asserting the
+ *  wrong thing. A 28th restatement of the path test is how that happens twice. */
+export const isGamesList = (call: ApiCall, scope?: "mine" | "open"): boolean => {
+  const [path, query] = call.path.split("?");
+  if (call.method !== "GET" || !path!.endsWith("/api/games")) return false;
+  return scope === undefined || new URLSearchParams(query ?? "").get("scope") === scope;
+};
+
 /** What the server answers a request it cannot name a caller for.
  *
  *  The SHAPE is the corpus's refusal; the sentence is `identity.rs`'s own, for
@@ -205,7 +218,12 @@ export async function renderApp(
     if (mine !== undefined) return mine;
     const boot = bootstrapReply(call);
     if (boot !== undefined) return boot;
-    if (call.method === "GET" && call.path.split("?")[0]!.endsWith("/api/games")) return gamesNamed(state.id);
+    // **The two scopes answer differently, and they have to.** The lobby asks
+    // for both; a stub answering one reply to both would list this game TWICE —
+    // once under Your games and once under Open tables — and the click below
+    // would fail on an ambiguity that has nothing to do with the cell.
+    if (isGamesList(call, "open")) return gamesNamed();
+    if (isGamesList(call)) return gamesNamed(state.id);
     if (call.method === "GET" && call.path.endsWith(`/api/games/${state.id}`)) return state;
     throw new Error(`unexpected ${call.method} ${call.path}`);
   });
@@ -219,6 +237,10 @@ export async function renderApp(
   localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
 
   const view = render(<App />);
+  // **Through the LOBBY now, which is the first screen after the door (spec
+  // §5.1).** The row is the same row the saved list used to draw, in the
+  // section that is now its home; the id is still what names it, because
+  // `gamesNamed` clears the corpus row's own name.
   const open = await view.findByRole("button", { name: state.id });
   const { default: userEvent } = await import("@testing-library/user-event");
   await userEvent.setup().click(open);

@@ -7,8 +7,15 @@
 
 import type { PlayerId, SeatDoc, TableView } from "./types";
 
-/** One seat, in the words a row reads: a person's email, the bot, or a seat
- *  nobody has taken yet.
+/** One seat, in the words a row reads: what the person there is CALLED, the
+ *  bot, or a seat nobody has taken yet.
+ *
+ *  **The name, and the email only when there is no name (spec §5.6).** A
+ *  display name is what a player typed about themselves, and an address is what
+ *  a table is keyed by — so a lobby reading addresses tells three people at one
+ *  table whose turn it is in a string none of them chose. `name` is null for a
+ *  seat filled before M6.2 and for anyone who left the field blank, which is
+ *  what the fallback is for.
  *
  *  A `switch` over the tag rather than a ternary, so a fourth kind of seat is a
  *  compile error here instead of a row that prints `undefined`. */
@@ -17,9 +24,9 @@ export function seatName(seat: SeatDoc): string {
     case "bot":
       return "the bot";
     case "open":
-      return "an open seat";
+      return "open seat";
     case "human":
-      return seat.user;
+      return seat.name ?? seat.user;
   }
 }
 
@@ -46,13 +53,24 @@ export function holder(t: TableView, seat: PlayerId): string {
 
 /** What one row says the table is doing.
  *
- *  **The order is the rule.** `over` is read first because a finished game
+ *  **The order is the rule.** `open` is read first because an open table is not
+ *  playing, not dealing and not over, and the one thing a player wants from its
+ *  row is how many seats are left. `over` comes next because a finished game
  *  still carries the seat that moved last, so reading the turn first would
- *  invite you back into a game that has ended. `dealing` is read next because a
- *  dealing table has no `to_move` at all — the turn words have nothing to say
- *  about it. */
+ *  invite you back into a game that has ended. `dealing` is read after that
+ *  because a dealing table has no `to_move` at all — the turn words have
+ *  nothing to say about it. */
 export function tableWord(t: TableView): string {
-  if (t.over) return "over";
+  if (t.status === "open") {
+    const filled = t.seats.filter((s) => s.kind !== "open").length;
+    return `open · ${filled} of ${t.players} seated`;
+  }
+  // **The winner is NAMED, through `holder`.** "over" alone is the one row a
+  // player comes back to the lobby for and learns nothing from; `winner` is
+  // null at every status but this one, and a tie is separated by the engine's
+  // own tie-break rather than by the margin, so this is the only honest source
+  // for it.
+  if (t.over) return t.winner === null ? "over" : `over · ${holder(t, t.winner)} won`;
   if (t.status === "dealing") return "dealing";
   // `to_move` is present once playing (`TableView`'s own rule), and this is
   // what the row says if that ever stops being true — rather than printing a

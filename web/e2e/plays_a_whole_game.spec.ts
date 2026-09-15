@@ -123,12 +123,11 @@ test("a game survives a reload, because nothing lives only in memory", async ({ 
   // plan depends on, since both shapes under consideration sleep when idle and
   // lose their disk.
   //
-  // The game is found BY NAME. `first()` would pass on a store holding one game
-  // and silently open the wrong one on a store holding several, which is what a
-  // second test in the same run leaves behind.
+  // **The reload comes back to the SAME table, because the hash names it**
+  // (M6.2 §5.1). This used to go through the saved-game list and find the row by
+  // name; the route is stronger — it names the table by id, so there is no way
+  // for a store holding several games to hand back a different one.
   await page.reload();
-  await expect(page.getByRole("heading", { name: "New game" })).toBeVisible();
-  await page.getByRole("button", { name: game.id, exact: true }).click();
   await expect(page.locator("header .meta").first()).toContainText(game.id);
   expect(await chainOf(), "the rebuilt game resumes at the turn it left off").toBe(chain);
 

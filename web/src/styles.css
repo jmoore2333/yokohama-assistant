@@ -866,7 +866,22 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
    form that pushed the input off the edge would be a page that scrolls
    sideways (the width gate's own rule, applied before the gate sees it). */
 .field.seat-row { flex-wrap: wrap; }
+/* The password row's caption IS its checkbox's label, so it is not the
+   uppercase column heading every other `.field label` is — it is a sentence
+   beside a control, and it wraps rather than reserving 9rem of gutter. */
+.field.password-field { flex-wrap: wrap; }
+.field .check {
+  min-width: 0; display: flex; align-items: center; gap: 0.4rem;
+  text-transform: none; letter-spacing: normal; font-size: 12px;
+}
 .field.seat-row .meta { font-size: 11px; letter-spacing: 0.06em; }
+
+/* The lobby's two lists ARE the setup screen's `.saved` sections, deliberately:
+   the rows are the same rows and a second set of rules is a second place for
+   them to drift. Only the lock marker is new, and it is a fact on the row
+   rather than a control. */
+.lobby .lock { font-size: 11px; }
+.lobby .open-tables li .table-facts { color: var(--fg-dim); }
 
 .deal { display: flex; gap: 0.6rem; flex-wrap: wrap; margin: 0.4rem 0 0.9rem; }
 .deal-pick {

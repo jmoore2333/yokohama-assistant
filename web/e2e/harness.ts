@@ -121,27 +121,56 @@ export async function signIn(page: Page, email: string = WALKER, url = "/"): Pro
 }
 
 /**
- * Open a table from the saved-games list, BY ID.
+ * Open a table from the LOBBY's Your games, BY ID.
  *
- * The list is the only way into a table this browser did not create, which is
- * how the second person at a two-browser table gets to it. A row's button is
- * labelled with the table's name, and a table opened without one is named by its
- * id — so `exact: true` is load-bearing: the row also carries `delete <name>`
- * and `confirm delete <name>` buttons, whose accessible names CONTAIN the id.
+ * The lobby is the only way into a table this browser did not create, which is
+ * how the second person at a two-browser table gets to it (M6.2 §5.2). A row's
+ * button is labelled with the table's name, and a table opened without one is
+ * named by its id — so `exact: true` is load-bearing: `getByRole` matches by
+ * substring by default, and the lobby lists a table in both sections when it is
+ * both yours and open.
+ *
+ * **The click only sets the HASH** (§5.1); what the table then draws is `App`'s
+ * route effect asking the server, so the caller waits for the screen it wants.
  */
 export async function openFromList(page: Page, id: string): Promise<void> {
-  await expect(page.getByRole("heading", { name: "New game" })).toBeVisible();
-  await page.getByRole("button", { name: id, exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Lobby" })).toBeVisible();
+  await page.locator(".lobby .saved").first().getByRole("button", { name: id, exact: true }).click();
 }
 
-/** Start a fresh game through the setup screen, exactly as a player does. */
+/**
+ * Get to the setup FORM, the way a player does: through the door, then the
+ * lobby, then New table (M6.2 §5.1).
+ *
+ * Its own helper because four specs stop at the form rather than playing on —
+ * the deal is the picture they are about — and the path to it moved this cycle.
+ */
+export async function newGameForm(page: Page, email: string = WALKER): Promise<void> {
+  await signIn(page, email);
+  await expect(page.getByRole("heading", { name: "Lobby" })).toBeVisible();
+  await page.getByRole("button", { name: "New table" }).click();
+  await expect(page.getByRole("heading", { name: "New game" })).toBeVisible();
+}
+
+/** Start a fresh game through the lobby and the setup screen, exactly as a
+ *  player does (M6.2 §5.8). */
 export async function startGame(page: Page, opts: { players?: number } = {}): Promise<Game> {
   const players = opts.players ?? 2;
-  await signIn(page);
-  await expect(page.getByRole("heading", { name: "New game" })).toBeVisible();
+  // **The lobby is the first screen since M6.2**, and the form is one click
+  // beyond it.
+  await newGameForm(page);
 
   if (players !== 2) {
-    await page.getByLabel("Players").selectOption(String(players));
+    await page.getByLabel("Players", { exact: true }).selectOption(String(players));
+    // **The hot seat is ASKED FOR since M6.2** (§5.3). Above two players the
+    // form defaults the other seats to OPEN, which opens a table that waits for
+    // people rather than one that deals — so every walk that plays 3P or 4P by
+    // itself says, in the form, that it holds every seat. Two `exact: true`
+    // queries, because `getByLabel` matches by substring and a row switched to
+    // an email would put "Seat 1 email" beside "Seat 1".
+    for (let i = 1; i < players; i += 1) {
+      await page.getByLabel(`Seat ${i}`, { exact: true }).selectOption("me");
+    }
   }
   // **The id comes off the RESPONSE, not off the banner.**
   //
@@ -162,9 +191,9 @@ export async function startGame(page: Page, opts: { players?: number } = {}): Pr
   if (!id) throw new Error("the server did not name the table");
 
   // **The deal, one seat at a time, served by `GET …/deal` (§4.3).** Every seat
-  // this browser holds is asked in turn — the form seats one bot at two players
-  // and nobody but the walker above that — and the screen hands over to the game
-  // when the last keep finalizes the table. So the loop is "keep whatever I am
+  // this browser holds is asked in turn — one bot at two players, and above that
+  // the walker in every seat, which the loop above ASKS FOR since M6.2 — and the
+  // screen hands over to the game when the last keep finalizes the table. So the loop is "keep whatever I am
   // being asked, until the game is on screen", and the COUNT afterwards is what
   // says the sequence really happened.
   //

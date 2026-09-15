@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
-import { gameMenu, gamesNamed, renderApp } from "./test/harness";
+import { gameMenu, gamesNamed, isGamesList, renderApp } from "./test/harness";
 import { seatName } from "./tables";
 import { wire } from "./wire/contract";
 
@@ -22,7 +22,7 @@ describe("the Game menu", () => {
   it("lists the other saved games and switches to one", async () => {
     const other = { ...wire.options4p, id: "sim-other" };
     await renderApp(wire.options, (call) => {
-      if (call.method === "GET" && call.path.split("?")[0]!.endsWith("/api/games"))
+      if (isGamesList(call, "mine"))
         return gamesNamed(wire.options.id, "sim-other");
       if (call.method === "GET" && call.path.endsWith("/api/games/sim-other")) return other;
       return undefined;
@@ -46,16 +46,22 @@ describe("the Game menu", () => {
     expect(screen.queryByRole("button", { name: "sim-other" })).toBeNull();
   });
 
-  it("returns to the setup screen without a reload", async () => {
+  it("returns to the lobby without a reload", async () => {
     await renderApp(wire.options, (call) =>
-      call.method === "GET" && call.path.split("?")[0]!.endsWith("/api/games")
+      isGamesList(call, "mine")
         ? gamesNamed(wire.options.id)
         : undefined,
     );
     const user = userEvent.setup();
     await user.click(gameMenu());
-    await user.click(screen.getByRole("button", { name: "New game" }));
-    expect(await screen.findByRole("heading", { name: "New game" })).toBeInTheDocument();
+    // **The way out goes to the LOBBY since M6.2** (spec §5.1), not straight to
+    // the form: the lobby is where a player picks between their tables and the
+    // open ones, and its own "New table" is one click further on.
+    await user.click(screen.getByRole("button", { name: "Lobby" }));
+    expect(await screen.findByRole("heading", { name: "Lobby" })).toBeInTheDocument();
+    // And the hash says so, so Back works and a reload lands where the screen
+    // does.
+    expect(window.location.hash).toBe("#/");
     // A reload in jsdom is a no-op that would pass; the source is the check.
     for (const f of ["App.tsx", "GameMenu.tsx"]) {
       expect(readFileSync(new URL(`./${f}`, here), "utf8")).not.toMatch(/location\.reload/);
@@ -83,7 +89,7 @@ describe("the Game menu", () => {
     // often, their own turn, is the corpus's table read from the other side.
     const yours = { ...wire.table, id: "sim-yours", name: null, my_seats: [wire.table.to_move!] };
     await renderApp(wire.options, (call) =>
-      call.method === "GET" && call.path.split("?")[0]!.endsWith("/api/games")
+      isGamesList(call, "mine")
         ? // The game being played is in the list too — `renderApp` opens it
           // from the setup screen's copy of this same list — and the menu is
           // then asserted NOT to offer it back.
@@ -97,7 +103,9 @@ describe("the Game menu", () => {
       (await screen.findByRole("button", { name })).closest(".game-row")!;
     // The `name`, not the id: a table opened with a name is listed under it.
     expect(await row(dealing.name)).toHaveTextContent("2P · dealing");
-    expect(await row("sim-waiting")).toHaveTextContent("2P · waiting on red@wire.test");
+    // The seat's NAME since M6.2 (spec §5.6): "Red" is what seat 0 called
+    // itself, and `red@wire.test` is only how the table is keyed.
+    expect(await row("sim-waiting")).toHaveTextContent("2P · waiting on Red");
     expect(await row("sim-yours")).toHaveTextContent("2P · your turn");
 
     // §7.2: WHO is at the table, which is how a player picks between three of
@@ -117,7 +125,7 @@ describe("the Game menu", () => {
   // with no Game menu — the form and the deal — keep both.
   it("carries the way out, beside the way to another game", async () => {
     await renderApp(wire.options, (call) =>
-      call.method === "GET" && call.path.split("?")[0]!.endsWith("/api/games")
+      isGamesList(call, "mine")
         ? gamesNamed(wire.options.id)
         : undefined,
     );
@@ -144,7 +152,7 @@ describe("the Game menu", () => {
   it("a double-clicked saved game is fetched once", async () => {
     const other = { ...wire.options4p, id: "sim-other" };
     const stub = await renderApp(wire.options, (call) => {
-      if (call.method === "GET" && call.path.split("?")[0]!.endsWith("/api/games"))
+      if (isGamesList(call, "mine"))
         return gamesNamed(wire.options.id, "sim-other");
       if (call.method === "GET" && call.path.endsWith("/api/games/sim-other")) return other;
       return undefined;

@@ -1,9 +1,9 @@
 // The session control (M5 spec §3.7): the current game, the other saved games,
-// and a way back to the setup screen that is not a page reload.
+// and a way back to the lobby that is not a page reload.
 //
 // The smallest thing that removes the reload, and deliberately no more: M6 is
 // the multi-game layer (lobby, chat, another player's game) and it grows from
-// this menu. Nothing is deleted from here; the setup screen already does that.
+// this menu. Nothing is deleted from here; M6.2 puts that on the open table.
 
 import { useRef, useState, type ReactNode } from "react";
 import { api, ApiError } from "./api";
@@ -14,7 +14,7 @@ export function GameMenu({
   state,
   busy,
   onSwitch,
-  onNew,
+  onLobby,
   signOut,
 }: {
   state: ClientState;
@@ -27,7 +27,12 @@ export function GameMenu({
    *  awaited here so the rows stay disabled for the whole switch and a refusal
    *  still lands in this menu's own line. */
   onSwitch: (id: string) => void | Promise<void>;
-  onNew: () => void;
+  /** The way OUT of this game, and since M6.2 it goes to the lobby rather than
+   *  straight to the form (spec §5.1). The lobby is where a player picks
+   *  between their tables and the open ones, and its own "New table" button is
+   *  one click further on — so a control that jumped past it would be the only
+   *  route in the client that skipped the first screen. */
+  onLobby: () => void;
   /** The door's sign-out control, built by `App` and merely PLACED here.
    *
    *  **It lives in this menu on the game screen, and beside the strip on the
@@ -96,8 +101,8 @@ export function GameMenu({
         {state.frame.title.autosaved ? " · saved" : ""}
       </summary>
       <div>
-        <button type="button" className="ghost" onClick={onNew}>
-          New game
+        <button type="button" className="ghost" onClick={onLobby}>
+          Lobby
         </button>
         <div className="label">Saved games</div>
         {saved === null && !error && <div className="muted">loading…</div>}
@@ -107,8 +112,8 @@ export function GameMenu({
             and the honest answer to "you cannot have both" is to let the move
             finish. `App` drops the stale reply as well; this is the half that
             keeps the player from asking for the state the guard has to throw
-            away. **New game** stays live: it leaves for the setup screen, where
-            a reply for the game left behind is dropped by the same guard. */}
+            away. **Lobby** stays live: it leaves for the lobby, where a reply
+            for the game left behind is dropped by the same guard. */}
         {/* **A row is the table, not its id.** The button is what it is CALLED
             — the name whoever opened it typed, and the id when nobody typed one
             — and `TableFacts` is the rest: the size, what the table is waiting

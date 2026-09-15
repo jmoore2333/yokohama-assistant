@@ -21,6 +21,7 @@ import { useSections } from "./BoardsMenu";
 import { Dealing } from "./Dealing";
 import { ApiError } from "./api";
 import { stubApi, type ApiCall, type Reply } from "./test/harness";
+import { seatName } from "./tables";
 import { wire } from "./wire/contract";
 import type { DealView } from "./types";
 
@@ -224,7 +225,12 @@ describe("the dealing screen", () => {
     // has chosen is public at any table; which card it took is not.
     const other = container.querySelector('.deal-seat.human.other[data-seat="1"]')!;
     expect(other).not.toBeNull();
-    expect(other.textContent).toContain("blue@wire.test");
+    // **The NAME that seat's holder gave, not the address the table is keyed
+    // by** (spec §5.6). Derived through `seatName` rather than restated, so the
+    // one place a seat is worded is the one place this can drift from.
+    const seat1 = wire.deal.table.seats[1]!;
+    expect(seatName(seat1)).toBe("Blue");
+    expect(other.textContent).toContain(seatName(seat1));
     expect(other.textContent).toContain("waiting");
   });
 
