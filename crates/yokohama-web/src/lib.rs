@@ -498,13 +498,16 @@ fn admitted(
 /// The one sentence a route answers a caller with no business at this table
 /// with, written once so the routes that share it cannot drift apart.
 ///
-/// **It is not the only refusal a stranger earns, and the two sets are two BY
-/// DESIGN (R-4.4).** At a locked playing table the WRITES — `deal`, `keep`,
-/// `DELETE` — answer this, while every READ answers "this table is locked —
-/// unlock it first", because a reader can do something about a lock and a
-/// writer cannot. The stranger sweep pins that difference route by route, so a
-/// refusal moving from one set to the other is a failing cell rather than a
-/// silent widening.
+/// **It is not the only refusal a stranger earns, and the sets are more than
+/// one BY DESIGN (R-4.4).** At a locked playing table the writes that resolve
+/// the caller inside `Games` rather than through `admitted` — `deal` and the
+/// table's `DELETE` — answer this, while every READ answers "this table is
+/// locked — unlock it first", because a reader can do something about a lock
+/// and a writer cannot. **`keep` is in neither set**: it answers its own older
+/// sentence, "seat N is not yours", at every status, which names a SEAT and
+/// never a status and so tells a stranger nothing the other two do not. The
+/// stranger sweep pins all three route by route, so a refusal moving between
+/// the sets is a failing cell rather than a silent widening.
 const NOT_SEATED: &str = "you are not seated at this table";
 
 /// The refusal a WRITE route gives an admitted spectator: the same sentence a

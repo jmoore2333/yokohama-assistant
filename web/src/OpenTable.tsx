@@ -54,8 +54,11 @@ export function OpenTable({
    *  was up. */
   onStarted: () => void;
   /** Back to the lobby, carrying a sentence when there is one to carry: a
-   *  table deleted under this screen is a 404 the lobby shows, not a silent
-   *  return to a list. */
+   *  table deleted under this screen is a notice the lobby shows, not a silent
+   *  return to a list. The words are `signal.ts`'s `endSentence` when the
+   *  abandon arrives as an `end` frame, which carries a reason and none of its
+   *  own (final review I-2), and the server's own message when a refusal is
+   *  what ended the signal. */
   onLeave: (sentence?: string) => void;
   /** The "You are …" strip, built by `App` and merely placed here. */
   who?: ReactNode;

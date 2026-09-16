@@ -95,10 +95,13 @@ export function Dealing({
    *  player who opens a table that is waiting on somebody else, and then wants
    *  to play something else, otherwise has only a page reload.
    *
-   *  **The optional sentence is the SERVER's**, and it is what makes leaving
-   *  under somebody else's abandon different from leaving by choice: the poll
-   *  below hands it on so the lobby can say why this screen went, exactly as
-   *  `App` and `OpenTable` do with the same `End`. */
+   *  **The optional sentence comes with the `End`**, and it is what makes
+   *  leaving under somebody else's abandon different from leaving by choice:
+   *  the signal below hands it on so the lobby can say why this screen went,
+   *  exactly as `App` and `OpenTable` do with the same `End`. An abandon
+   *  arrives as an `end` FRAME, which carries a reason and no words, so the
+   *  words are `signal.ts`'s `endSentence` (final review I-2); a refusal that
+   *  ends the signal carries the server's own message instead. */
   onLeave: (sentence?: string) => void;
   /** The "You are …" strip, built by `App` and merely placed here. */
   who?: ReactNode;

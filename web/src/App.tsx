@@ -741,7 +741,11 @@ export function App() {
     // reachable case is a shared table somebody abandoned while this browser was
     // looking at it: before `onEnd` the poll backed off against a permanent 404
     // and the banner read "reconnecting…" about a game that was never coming
-    // back. The sentence is the server's own.
+    // back. The sentence is the CLIENT's for an `end` frame — `signal.ts`'s
+    // `endSentence` words `deleted` and `gone` once for all four consumers
+    // (final review I-2), since the frame carries a reason and no words — and
+    // the server's own message for the two refusals that end a signal without
+    // one. The fallback below is what is left if neither arrives.
     useCallback((e: End) => toLobby(e.sentence ?? "this game is no longer available"), [toLobby]),
   );
 
