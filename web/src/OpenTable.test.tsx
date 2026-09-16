@@ -96,7 +96,7 @@ describe("the open table, to a stranger", () => {
     expect(seats[0]).toHaveTextContent("Red");
     // Nothing a stranger holds: no link to send on, and nothing to abandon.
     expect(screen.queryByLabelText("Link")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Abandon" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /abandon/i })).toBeNull();
   });
 
   it("asks for no password at an unlocked table", async () => {
@@ -259,46 +259,34 @@ describe("the open table, to somebody sitting at it", () => {
     );
   });
 
-  it("offers the creator a two-click Abandon", async () => {
-    const { user } = show(tableIs(seated()));
+  // **What is this screen's, and what is the CONTROL's.** The two clicks, the
+  // guard and the cancel are `Abandon`'s and are tested once, in
+  // `Abandon.test.tsx`. What is here is the wiring: who is offered it, and
+  // where the screen goes when the table is gone.
+  it("offers the abandon control to the person who opened the table", async () => {
+    show(tableIs(seated()));
     // `created_by` is `red@wire.test`, which is who this browser is.
-    expect(await screen.findByRole("button", { name: "Abandon" })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Abandon" }));
-    expect(screen.getByRole("button", { name: /^confirm abandon/ })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "abandon wire" })).toBeInTheDocument();
   });
 
-  it("offers no Abandon to a person who merely sits here", async () => {
+  it("offers nothing to abandon to a person who merely sits here", async () => {
     show(tableIs(seated({ created_by: "someone@else.test" })));
     await screen.findByLabelText("Link");
-    expect(screen.queryByRole("button", { name: "Abandon" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /abandon/i })).toBeNull();
   });
 
-  it("does not abandon on the first click, and does on the second", async () => {
+  it("leaves for the lobby once the table has been abandoned", async () => {
     const { stub, onLeave, user } = show((call) => {
       if (call.path.endsWith("/table")) return seated();
       if (call.method === "DELETE") return null;
       return undefined;
     });
-    await user.click(await screen.findByRole("button", { name: "Abandon" }));
-    expect(stub.matching("DELETE", "/api/games/wire")).toHaveLength(0);
-    // The confirming button NAMES the table, so the question cannot be about a
-    // different one.
+    await user.click(await screen.findByRole("button", { name: "abandon wire" }));
     await user.click(screen.getByRole("button", { name: "confirm abandon wire" }));
     await waitFor(() => expect(stub.matching("DELETE", "/api/games/wire")).toHaveLength(1));
+    // **The leave is the point.** There is nothing to go back to: the table the
+    // screen is about no longer exists.
     await waitFor(() => expect(onLeave).toHaveBeenCalledTimes(1));
-  });
-
-  it("puts the control back when the second click cancels", async () => {
-    const { stub, user } = show((call) => {
-      if (call.path.endsWith("/table")) return seated();
-      if (call.method === "DELETE") return null;
-      return undefined;
-    });
-    await user.click(await screen.findByRole("button", { name: "Abandon" }));
-    await user.click(screen.getByRole("button", { name: "cancel" }));
-    expect(screen.getByRole("button", { name: "Abandon" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /^confirm abandon/ })).toBeNull();
-    expect(stub.matching("DELETE", "/api/games/wire")).toHaveLength(0);
   });
 
   it("has a way back to the lobby", async () => {

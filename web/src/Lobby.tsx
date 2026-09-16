@@ -14,6 +14,7 @@
 // would show "loading…" for three seconds on every visit.
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { Abandon } from "./Abandon";
 import { api, ApiError } from "./api";
 import { hashOf, navigate } from "./route";
 import { usePolled } from "./signal";
@@ -76,15 +77,6 @@ export function Lobby({
    *  then the polled list's own. */
   const [paged, setPaged] = useState<{ games: TableView[]; next: string | null } | null>(null);
   const pageInFlight = useRef(false);
-  /** The table whose Abandon has been clicked ONCE, or `null` (R-13).
-   *
-   *  **By id, so the confirmation cannot be about a different row.** This
-   *  control came back from the setup screen's saved list, where M5's own final
-   *  review found data loss on a single click: the record is gone and there is
-   *  no undo, and the Game menu had just put a running game one click away from
-   *  this list. Both buttons name the table for the same reason. */
-  const [confirming, setConfirming] = useState<string | null>(null);
-  const removeInFlight = useRef(false);
 
   const take = useCallback((v: Lists) => {
     setLists(v);
@@ -122,25 +114,20 @@ export function Lobby({
     }
   };
 
-  /** Abandon a table, and refresh the lists so the screen agrees with the
-   *  store. The same in-flight guard as the pager above, and for the same
-   *  reason: two clicks in one tick would send two DELETEs. */
-  const remove = async (game: string) => {
-    if (removeInFlight.current) return;
-    removeInFlight.current = true;
-    try {
-      await api.remove(game);
-      setConfirming(null);
-      // **The pager is dropped too.** Its pages were fetched around a table
-      // that no longer exists, and a cursor is `<created_at>,<id>` — the id of
-      // a row that has just gone.
-      setPaged(null);
-      take(await fetchLists());
-    } catch (e) {
-      setError(said(e));
-    } finally {
-      removeInFlight.current = false;
-    }
+  /** What follows an abandon: re-read both listings, so the screen agrees with
+   *  the store.
+   *
+   *  **The pager is dropped too.** Its pages were fetched around a table that no
+   *  longer exists, and a cursor is `<created_at>,<id>` — the id of a row that
+   *  has just gone. The DELETE, its confirmation and its in-flight guard are
+   *  `Abandon`'s; this is only the part that is the lobby's.
+   *
+   *  It can THROW, and is meant to: `Abandon` awaits it inside its own attempt,
+   *  so a listing that will not read reports in the strip below rather than as
+   *  an unhandled rejection. */
+  const reread = async () => {
+    setPaged(null);
+    take(await fetchLists());
   };
 
   /** One row: what the table is CALLED, then what it is. The words are
@@ -154,7 +141,7 @@ export function Lobby({
    *  what makes the row openable in a new tab, copyable from the context menu
    *  and readable as a destination by a screen reader; a button with an
    *  `onClick` calling `navigate` is the same jump with none of it. */
-  const row = (t: TableView) => (
+  const row = (t: TableView, yours: boolean) => (
     <li key={t.id}>
       <a className="ghost row-link" href={hashOf({ kind: "table", id: t.id })}>
         {t.name ?? t.id}
@@ -169,41 +156,18 @@ export function Lobby({
           🔒
         </span>
       )}
-      {/* **Abandoning is the CREATOR's, at every status** (R-13). It was the
-          setup screen's saved-list control until this cycle; the list moved
-          here, so the control did. A table that is still OPEN can also be
-          abandoned from its own screen, which is where somebody who has just
-          opened one is standing — this is the way to reach the other two. */}
-      {t.created_by === me &&
-        (confirming === t.id ? (
-          <>
-            <button
-              type="button"
-              className="ghost danger"
-              aria-label={`confirm abandon ${t.name ?? t.id}`}
-              onClick={() => void remove(t.id)}
-            >
-              confirm abandon
-            </button>
-            <button
-              type="button"
-              className="ghost"
-              aria-label={`cancel abandoning ${t.name ?? t.id}`}
-              onClick={() => setConfirming(null)}
-            >
-              cancel
-            </button>
-          </>
-        ) : (
-          <button
-            type="button"
-            className="ghost danger"
-            aria-label={`abandon ${t.name ?? t.id}`}
-            onClick={() => setConfirming(t.id)}
-          >
-            Abandon
-          </button>
-        ))}
+      {/* **Abandoning is the CREATOR's, on the YOUR-GAMES rows** (R-13). It
+          was the setup screen's saved-list control until this cycle; the list
+          moved here, so the control did, and it reaches the dealing and playing
+          tables the open table's own screen cannot.
+
+          `yours` and not `created_by === me` alone: a table that is both yours
+          and open is listed in BOTH sections, and drawing the control in each
+          puts two buttons with the same accessible name on one screen. The
+          ruling names Your games, so that is where it is. */}
+      {yours && t.created_by === me && (
+        <Abandon table={t} onDone={reread} onError={setError} />
+      )}
     </li>
   );
 
@@ -234,7 +198,7 @@ export function Lobby({
         ) : mine.length === 0 ? (
           <p className="muted">none yet — open a table, or take a seat at one below.</p>
         ) : (
-          <ul>{mine.map(row)}</ul>
+          <ul>{mine.map((t) => row(t, true))}</ul>
         )}
         {nextCursor && (
           <button type="button" className="ghost" onClick={() => void page(nextCursor)}>
@@ -251,7 +215,7 @@ export function Lobby({
         {lists === null ? null : lists.open.games.length === 0 ? (
           <p className="muted">no table is waiting for players.</p>
         ) : (
-          <ul>{lists.open.games.map(row)}</ul>
+          <ul>{lists.open.games.map((t) => row(t, false))}</ul>
         )}
       </section>
 

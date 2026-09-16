@@ -187,19 +187,11 @@ describe("the lobby", () => {
   // table's own screen carries the same control for the table you are looking
   // at; this is the only way to reach a DEALING or PLAYING one.
   describe("abandoning a table", () => {
-    it("does not abandon on the first click", async () => {
-      const { stub, user } = show();
-      // Scoped to one section, because a table that is both yours and open is
-      // listed in BOTH — which is the corpus's own shape here.
-      const mine = section("Your games");
-      await user.click(await within(mine).findByRole("button", { name: "abandon wire" }));
-      expect(stub.matching("DELETE", "/api/games/wire")).toHaveLength(0);
-      expect(
-        within(mine).getByRole("button", { name: "confirm abandon wire" }),
-      ).toBeInTheDocument();
-    });
-
-    it("abandons the table the row names when the second click confirms it", async () => {
+    // **What is the LOBBY's here.** The two clicks, the in-flight guard and the
+    // cancel belong to the control and are tested once, in `Abandon.test.tsx`.
+    // These three are the row's own wiring: which row gets one, which table it
+    // deletes, and what the lobby does afterwards.
+    it("abandons the table the row names, and re-reads the lists", async () => {
       const { stub, user } = show((call) => (call.method === "DELETE" ? null : undefined));
       const mine = section("Your games");
       await user.click(await within(mine).findByRole("button", { name: "abandon wire2" }));
@@ -217,14 +209,20 @@ describe("the lobby", () => {
       );
     });
 
-    it("puts the row back when the second click cancels", async () => {
-      const { stub, user } = show();
+    // **Your games only** (R-13, and the reason the row takes a flag). A table
+    // that is both yours and open is listed in BOTH sections, and a control
+    // drawn in each puts two buttons with the same accessible name on one
+    // screen — which is also an ambiguity every query here would have to work
+    // around.
+    it("draws the control in Your games and not in Open tables", async () => {
+      show();
       const mine = section("Your games");
-      await user.click(await within(mine).findByRole("button", { name: "abandon wire" }));
-      await user.click(within(mine).getByRole("button", { name: "cancel abandoning wire" }));
-      expect(within(mine).getByRole("button", { name: "abandon wire" })).toBeInTheDocument();
-      expect(within(mine).queryByRole("button", { name: "confirm abandon wire" })).toBeNull();
-      expect(stub.matching("DELETE", "/api/games/wire")).toHaveLength(0);
+      const open = section("Open tables");
+      // Anti-vacuity: the SAME table is in both sections and was opened by this
+      // browser, so the two reads below differ only in which section they are.
+      expect(await within(mine).findByRole("button", { name: "abandon wire" })).toBeInTheDocument();
+      expect(within(open).getByRole("link", { name: "wire" })).toBeInTheDocument();
+      expect(within(open).queryByRole("button", { name: /abandon/i })).toBeNull();
     });
 
     it("offers nothing to abandon at a table this browser did not open", async () => {

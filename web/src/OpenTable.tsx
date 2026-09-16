@@ -24,6 +24,7 @@
 // naming a screen it cannot know (spec §5.4).
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { Abandon } from "./Abandon";
 import { api, ApiError, displayName, setDisplayName } from "./api";
 import { seatClass } from "./Cards";
 import { hashOf } from "./route";
@@ -60,7 +61,6 @@ export function OpenTable({
   const [name, setName] = useState(() => displayName() ?? "");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [confirming, setConfirming] = useState(false);
   const [copied, setCopied] = useState(false);
   // The guard against a SECOND join going out while the first is in flight —
   // a ref and not the state, for the reason `App`'s own `inFlight` is one:
@@ -158,15 +158,6 @@ export function OpenTable({
       }
     } finally {
       inFlight.current = false;
-    }
-  };
-
-  const abandon = async () => {
-    try {
-      await api.remove(game);
-      leave.current();
-    } catch (e) {
-      setError(said(e));
     }
   };
 
@@ -270,30 +261,13 @@ export function OpenTable({
         </div>
       )}
       <div className="field open-table-controls">
-        {/* **Two clicks, and both buttons NAME the table** — the shape M5's own
-            review forced on the saved list this control came from. There is no
-            undo: the record is gone. */}
-        {seated &&
-          table.created_by === me &&
-          (confirming ? (
-            <>
-              <button
-                type="button"
-                className="ghost danger"
-                aria-label={`confirm abandon ${table.name ?? table.id}`}
-                onClick={() => void abandon()}
-              >
-                confirm abandon
-              </button>
-              <button type="button" className="ghost" onClick={() => setConfirming(false)}>
-                cancel
-              </button>
-            </>
-          ) : (
-            <button type="button" className="ghost danger" onClick={() => setConfirming(true)}>
-              Abandon
-            </button>
-          ))}
+        {/* The shared control (R-13), so this screen and the lobby's rows cannot
+            drift apart again — they already had, over the in-flight guard this
+            copy did not carry. `onDone` is the leave: the table is gone, and
+            there is nothing here to go back to. */}
+        {seated && table.created_by === me && (
+          <Abandon table={table} onDone={() => leave.current()} onError={setError} />
+        )}
         <button type="button" className="ghost" onClick={() => leave.current()}>
           Lobby
         </button>
