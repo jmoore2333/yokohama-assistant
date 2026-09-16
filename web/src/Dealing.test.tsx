@@ -20,7 +20,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { useSections } from "./BoardsMenu";
 import { Dealing } from "./Dealing";
 import { ApiError, DISPLAY_NAME_KEY } from "./api";
-import { BACKOFF_MS } from "./signal";
+import { BACKOFF_MS, endSentence } from "./signal";
 import { fakeStream, flush, until, stubApi, type ApiCall, type Reply } from "./test/harness";
 import { seatName } from "./tables";
 import { wire } from "./wire/contract";
@@ -340,9 +340,12 @@ describe("the dealing screen", () => {
   // silently and the deal sits there until the next click 404s. `App` and
   // `OpenTable` already carried these three lines; this consumer did not.
   //
-  // The SENTENCE is the point, not merely the leave: it is the server's, and it
-  // is what the lobby then shows about a screen that went by itself.
-  it("leaves with the server's sentence when the table is abandoned under it", async () => {
+  // **This cell drives a DROPPED CONNECTION and a 404 on the reopen** — a
+  // server restart, not a delete (final review I-2). The abandon itself writes
+  // an `end` FRAME, which is the cell below; the title used to claim that path
+  // and this one never took it. The sentence here is the server's own, off the
+  // refusal that ends the ladder.
+  it("leaves with the refusal's sentence when the reopen finds the table gone", async () => {
     vi.useFakeTimers();
     const onLeave = vi.fn();
     // **The SERVER's sentence, over the stream's own refusal.** A table
@@ -383,6 +386,34 @@ describe("the dealing screen", () => {
     });
     expect(onLeave).toHaveBeenCalledTimes(1);
     expect(stub.matching("GET", "/stream")).toHaveLength(opens);
+  });
+
+  // **A REAL abandon, which is an `end` frame and carries no words** (final
+  // review I-2). `Signals::end` writes `{"reason":"deleted"}` and nothing else,
+  // and this screen hands `end.sentence` straight to `onLeave` — so before the
+  // fix the creator abandoning a table took everyone else's dealing screen to
+  // the lobby in SILENCE, while the cell above claimed otherwise about a path
+  // it did not drive. The words are `signal.ts`'s `endSentence`, one place for
+  // all four consumers.
+  it("leaves with a sentence when the abandon arrives as an end frame", async () => {
+    vi.useFakeTimers();
+    const onLeave = vi.fn();
+    const { stream, at } = signalling();
+    stubApi((call) => {
+      if (call.path.endsWith("/deal")) return wire.dealWaiting;
+      return at(call);
+    });
+    render(<Host onLeave={onLeave} />);
+    await until(() => stream.opens() > 0, "the table's stream was opened");
+    expect(onLeave).not.toHaveBeenCalled();
+
+    stream.push("end", { reason: "deleted" });
+    await settle();
+    expect(onLeave).toHaveBeenCalledTimes(1);
+    expect(onLeave.mock.calls[0]![0], "the lobby is told WHY, not nothing at all").toBe(
+      endSentence("deleted"),
+    );
+    expect(onLeave.mock.calls[0]![0]).toMatch(/abandoned/);
   });
 
   // ---- the name on the keep (spec §5.6) ------------------------------------

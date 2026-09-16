@@ -20,6 +20,7 @@ import {
   useSignal,
   usePolled,
   nextDelay,
+  endSentence,
   BACKOFF_MS,
   HELD_REASK_MS,
   type End,
@@ -63,12 +64,22 @@ function streamed(onOpen?: (open: number) => Array<[string, unknown]>, extra?: (
   return { stream, stub };
 }
 
-/** The game's signal, as the four consumers hold it. */
+/** The game's signal, as the game and the dealing screens hold it: a `"value"`
+ *  source, whose `once` is the HELD `GET …/events?wait=25`. */
 const gameSource = (game: string): Source<Events> => ({
   key: game,
   once: () => api.events(game),
   stream: `/api/games/${game}/stream`,
   frames: "value",
+});
+
+/** The lobby's and the open table's shape: a `"wake"` source, whose `once` is
+ *  an ordinary read that answers at once and has no waiting endpoint behind
+ *  it. The distinction is what [`HELD_REASK_MS`] is about. */
+const wakeSource = (game: string): Source<Events> => ({
+  key: game,
+  once: () => api.events(game),
+  stream: `/api/games/${game}/stream`,
 });
 
 beforeEach(() => {
@@ -203,7 +214,12 @@ describe("the signal, over the stream", () => {
     await until(() => stream.opens() > 0, "the stream was opened");
     stream.push("end", { reason: "deleted" });
     await settle();
-    expect(ends).toEqual([{ reason: "deleted" }]);
+    // **And the frame is given WORDS here** (final review I-2): `Signals::end`
+    // writes a reason and nothing else, every consumer hands `end.sentence` to
+    // its own leave, and only the game screen had a fallback — so a real
+    // abandon took the dealing screen and the open table to the lobby in
+    // silence. One place for all four, which is what this asserts.
+    expect(ends).toEqual([{ reason: "deleted", sentence: endSentence("deleted") }]);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(BACKOFF_MS[BACKOFF_MS.length - 1]! * 3);
     });
@@ -545,17 +561,19 @@ describe("the two frame modes (R-7.1)", () => {
 });
 
 describe("the held-request arm (R-plan-5)", () => {
-  it("asks its once route, re-asks after the named wait, and never opens the stream", async () => {
+  it("re-asks a WAKE source after the named wait, and never opens the stream", async () => {
     // The fallback for an edge that will not hold a stream open: the same hook,
-    // one frame per request. **The re-ask is at `HELD_REASK_MS` and not at
-    // once** — the lobby's and the open table's `once` have no waiting endpoint
-    // at all, so a reopen at zero would be a hot loop against three listings.
+    // one frame per request. **For a `"wake"` source the re-ask is at
+    // `HELD_REASK_MS` and not at once** — the lobby's and the open table's
+    // `once` have no waiting endpoint at all, so a reopen at zero would be a
+    // hot loop against three listings. The cell below is the other half, and
+    // the two delays are why one number could not serve both (I-3).
     setSignalKind("held");
     const seen: Events[] = [];
     const { stub } = streamed(undefined, (call) =>
       call.path.includes("/events") ? at(2) : undefined,
     );
-    renderHook(() => usePolled<Events>(gameSource("wire"), true, (e) => seen.push(e)));
+    renderHook(() => usePolled<Events>(wakeSource("wire"), true, (e) => seen.push(e)));
     await settle();
     expect(stub.matching("GET", "/events")).toHaveLength(1);
     expect(stub.matching("GET", "/stream")).toHaveLength(0);
@@ -570,6 +588,37 @@ describe("the held-request arm (R-plan-5)", () => {
       await vi.advanceTimersByTimeAsync(200);
     });
     await settle();
+    expect(stub.matching("GET", "/events")).toHaveLength(2);
+    expect(stub.matching("GET", "/stream")).toHaveLength(0);
+  });
+
+  // **A source whose `once` HOLDS is re-asked at ONCE** (final review I-3).
+  //
+  // The number that was shared cost real latency and not merely requests:
+  // `?wait` subscribes and waits for a NEW bump, and nothing compares the
+  // caller's count (R-3.14), so a bump landing in the 3 s gap was not seen
+  // until the NEXT request's 25 s deadline — 27–28 s under a hook whose whole
+  // claim is to be faster than the 3 s poll it replaced.
+  //
+  // The discriminator is the CLOCK: `settle` advances it by twelve
+  // milliseconds in all, which fires a timer armed at 0 and cannot reach one
+  // armed at 3,000. The request is held so that exactly one is ever in flight,
+  // which is what makes the second ask a reading about the re-ask and not
+  // about the answer racing it.
+  it("re-asks a source whose own request HOLDS at once, not after the wake delay", async () => {
+    setSignalKind("held");
+    const holding: Array<() => void> = [];
+    const { stub } = streamed(undefined, (call) =>
+      call.path.includes("/events")
+        ? new Promise<Reply>((resolve) => holding.push(() => resolve(at(2))))
+        : undefined,
+    );
+    renderHook(() => usePolled<Events>(gameSource("wire"), true, () => {}));
+    await until(() => holding.length === 1, "the first held request went out");
+    expect(stub.matching("GET", "/events")).toHaveLength(1);
+
+    holding[0]!();
+    await until(() => holding.length === 2, "the next ask went out without waiting");
     expect(stub.matching("GET", "/events")).toHaveLength(2);
     expect(stub.matching("GET", "/stream")).toHaveLength(0);
   });

@@ -18,6 +18,7 @@ import { OpenTable } from "./OpenTable";
 import { DISPLAY_NAME_KEY } from "./api";
 import { fakeStream, flush, openStream, until, stubApi, type ApiCall, type Reply } from "./test/harness";
 import { wire } from "./wire/contract";
+import { endSentence } from "./signal";
 import type { TableView } from "./types";
 
 /** The table this caller SITS at, still filling its seats — `wire2`, the
@@ -341,7 +342,11 @@ describe("the open table's watch", () => {
     expect(onStarted).toHaveBeenCalled();
   });
 
-  it("leaves for the lobby, with the sentence, when the table is gone", async () => {
+  // **This cell drives a WAKE whose re-read 404s** — the table was deleted and
+  // this screen learned it from its own `once`, not from an end frame (final
+  // review I-2). The sentence is the refusal's. The real abandon is the cell
+  // below, and the title used to claim that path without taking it.
+  it("leaves for the lobby with the refusal's sentence when the re-read 404s", async () => {
     vi.useFakeTimers();
     const onLeave = vi.fn();
     let tables = 0;
@@ -374,5 +379,38 @@ describe("the open table's watch", () => {
       await vi.advanceTimersByTimeAsync(60_000);
     });
     expect(onLeave).toHaveBeenCalledTimes(1);
+  });
+
+  // **A REAL abandon, which is an `end` frame and carries no words** (final
+  // review I-2). `Signals::end` writes `{"reason":"deleted"}` and nothing else,
+  // and this screen hands `end.sentence` straight to its leave — so before the
+  // fix the creator abandoning an open table took every waiting joiner to the
+  // lobby in SILENCE. The same gap caught the stranger on a table that FILLED
+  // without them: the bump's read is then a 403, which the server reports as
+  // `gone` and which has no sentence either.
+  it("leaves with a sentence when the abandon arrives as an end frame", async () => {
+    vi.useFakeTimers();
+    const onLeave = vi.fn();
+    const stream = fakeStream();
+    stubApi((call) => {
+      if (call.path.endsWith("/stream")) return stream.reply(call);
+      return call.path.endsWith("/table") ? wire.tableOpen : undefined;
+    });
+    render(<OpenTable game="wire" me="red@wire.test" onStarted={() => {}} onLeave={onLeave} />);
+    await until(() => stream.opens() > 0, "the table's stream was opened");
+    expect(onLeave).not.toHaveBeenCalled();
+
+    stream.push("end", { reason: "deleted" });
+    await settle();
+    expect(onLeave).toHaveBeenCalledTimes(1);
+    expect(onLeave.mock.calls[0]![0], "the lobby is told WHY, not nothing at all").toBe(
+      endSentence("deleted"),
+    );
+    expect(onLeave.mock.calls[0]![0]).toMatch(/abandoned/);
+
+    // And the OTHER reason a frame can end this screen — the table filled
+    // without this caller, which the server reads as a 403 and reports as
+    // `gone` — has words of its own rather than none.
+    expect(endSentence("gone")).toMatch(/no longer available/);
   });
 });

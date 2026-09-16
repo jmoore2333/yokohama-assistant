@@ -9,6 +9,7 @@ import { CLAIMED_USER_KEY } from "./api";
 import { loadSections } from "./sections";
 import { fakeStream, flush, until, gameMenu, gamesNamed, gate, isGamesList, openStream, renderApp, signedOutReply, stubApi, type ApiCall, type Reply } from "./test/harness";
 import { wire } from "./wire/contract";
+import type { Events } from "./types";
 
 /** The board tile for one area, as the accessible name renders it. */
 const tile = (area: number) =>
@@ -2009,12 +2010,16 @@ describe("the opponent's turn arrives by the signal", () => {
     let events = wire.watching.events;
     /** The signal this game is watching, as the server writes it: an `Events`
      *  on the `signal` frame, which the game declares `frames: "value"` for and
-     *  therefore reads WITHOUT a second request (R-7.1, R-3.2). */
-    const signal = () => ({
+     *  therefore reads WITHOUT a second request (R-7.1, R-3.2).
+     *
+     *  **Built from the corpus and not by hand** (final review M-1), which is
+     *  `signal.test.ts`'s `at()` and the repo's rule: an object written out
+     *  here still compiles after the server renames a field, and only the
+     *  committed payload moves with it. */
+    const signal = (): Events => ({
+      ...wire.events,
       events,
       to_move: wire.watching.to_move,
-      status: "playing",
-      your_turn: false,
     });
     // The server writes the current count ON CONNECT (spec §3.1), which is what
     // makes the return from a hidden tab an ask with no request of its own.
@@ -2139,12 +2144,22 @@ describe("the opponent's turn arrives by the signal", () => {
   // what it looks like on screen is the opponent's turn SNAPPING onto the
   // table: no lit row, no strip, no account at all.
   //
-  // The fixture's mover is a HUMAN (`spectator_at_k.json` marks no bot), which
-  // is what makes the two branches answer differently here.
+  // The fixture's mover must be a HUMAN for the two branches to answer
+  // differently at all, and the cell ASSERTS that rather than stating it
+  // (review T8 #2): `moverIsBot` is read off the Players panel of the position
+  // before each step, so a corpus re-cut that seated a bot on the moving seat
+  // would leave this cell green against the very defect it is named for.
   it("walks a run served to a watcher, who holds no seat at all", async () => {
     const live = wire.spectator;
     let events = live.events;
-    const signal = () => ({ events, to_move: live.to_move, status: "playing", your_turn: false });
+    const seats = wire.spectatorAtK.frame.dashboard.flatMap((p) =>
+      "Players" in p ? p.Players.players : [],
+    );
+    expect(
+      seats.find((p) => p.seat === live.to_move)?.is_bot,
+      "the fixture's mover is a person, which is what makes hasBotStep the wrong gate",
+    ).toBe(false);
+    const signal = (): Events => ({ ...wire.events, events, to_move: live.to_move });
     const stream = fakeStream(() => [["signal", signal()]]);
     /** A position for the run, from the SPECTATOR's own corpus frame — which
      *  carries `seat: null` and every hand hidden, exactly as the server builds
@@ -2225,12 +2240,7 @@ describe("the opponent's turn arrives by the signal", () => {
   // at zero and `settle` advances the clock past it.
   it("holds ONE open stream across an arrival, its frame fetch and its walk", async () => {
     let events = wire.watching.events;
-    const signal = () => ({
-      events,
-      to_move: wire.watching.to_move,
-      status: "playing",
-      your_turn: false,
-    });
+    const signal = (): Events => ({ ...wire.events, events, to_move: wire.watching.to_move });
     const stream = fakeStream(() => [["signal", signal()]]);
     /** The arrival's game read, HELD — and it is what makes this cell able to
      *  see anything at all. Measured while writing it: with the read answering
@@ -2299,20 +2309,21 @@ describe("the opponent's turn arrives by the signal", () => {
   // range a second time — two accounts of one turn, and one of them drawn over
   // the other.
   //
-  // What is asserted is the coalescing: frames are never dropped and never
-  // processed concurrently. Three arrive, two of them under the held read, and
-  // exactly ONE follow-up read answers all three — because by the time the
-  // first has landed, the state it produced already carries the count the other
-  // two were announcing, which is the handler's own no-op.
-  it("coalesces frames that arrive while a run is in flight into one follow-up", async () => {
+  // **This cell is the NO-OP half of the loop, and the cell below is the other**
+  // (final review I-1). Three frames arrive, two of them under a held read that
+  // is answered with the count they were announcing — so by the time the first
+  // pass has landed, the state it produced already carries base+3 and the
+  // second pass fetches NOTHING. Two reads in total, and the pending frame is
+  // consumed by the `continue` rather than by a request.
+  //
+  // Read at its real size: it says a coalesced frame costs nothing when the
+  // read already answered it. It CANNOT see a pending frame being dropped —
+  // `frame = null` in place of `frame = pending.current` passes every
+  // assertion here — which is what the cell below exists for.
+  it("treats a frame the held read already answered as a no-op, and fetches once", async () => {
     const base = wire.watching.events;
     let events = base;
-    const signal = () => ({
-      events,
-      to_move: wire.watching.to_move,
-      status: "playing",
-      your_turn: false,
-    });
+    const signal = (): Events => ({ ...wire.events, events, to_move: wire.watching.to_move });
     const stream = fakeStream(() => [["signal", signal()]]);
     /** The held game reads, resolved by hand. Each answers the count as it
      *  stands at RELEASE, which is what a server would say. */
@@ -2367,9 +2378,11 @@ describe("the opponent's turn arrives by the signal", () => {
       );
       await settle();
 
-      // ONE follow-up read answered all three frames, and the newest state is
-      // the one on screen: three events, walked as one run of three steps.
-      expect(reloads(), "one read answered all three frames").toHaveLength(2);
+      // TWO reads in all — the one the first frame sent and no other — and the
+      // newest state is the one on screen: three events, walked as one run of
+      // three steps. The follow-up pass ran and fetched nothing, which is the
+      // no-op this cell is about.
+      expect(reloads(), "the coalesced frames cost no request of their own").toHaveLength(2);
       expect(document.querySelectorAll("ol.account li")).toHaveLength(3);
       // Each position fetched ONCE: a second pass over the same range would
       // repeat them, which is what walking the same run twice looks like.
@@ -2377,6 +2390,96 @@ describe("the opponent's turn arrives by the signal", () => {
         .matching("GET", "/at/")
         .map((c) => Number(/\/at\/(\d+)$/.exec(c.path)![1]));
       expect(positions).toEqual([base, base + 1, base + 2, base + 3]);
+      expect(stream.opens(), "and still one reader").toBe(opened + 1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // **The follow-up pass FETCHES, and this is the cell that can see it** (final
+  // review I-1). The loop's second pass exists for one case and the no-op cell
+  // above never drives it: A moves twice, and B's game read is answered with
+  // the count as it stood when the request went OUT — base+1 — while the frame
+  // for base+3 is already sitting in `pending`. The pass must then read again,
+  // and without it B's screen sits one move behind until somebody else moves.
+  //
+  // **Mutation-proven**: replace `frame = pending.current` with `frame = null`
+  // and this fails at the third read, where the cell above stays green.
+  //
+  // The account ends at TWO rows and not three, and the arithmetic is the
+  // point: the first pass walked base→base+1 (one step) and the second walks
+  // base+1→base+3 (two), `setRun` REPLACES, and the three events are accounted
+  // for across the two runs. The positions below are what says so.
+  it("fetches again when a frame under the read announced a count the read did not carry", async () => {
+    const base = wire.watching.events;
+    let events = base;
+    const signal = (): Events => ({ ...wire.events, events, to_move: wire.watching.to_move });
+    const stream = fakeStream(() => [["signal", signal()]]);
+    /** The held game read, resolved by hand — and answering the count as it
+     *  stood when the REQUEST went out, which is the whole of this case and the
+     *  one thing the cell above does differently. */
+    const holding: Array<() => void> = [];
+    let hold = false;
+    const stub = await renderApp(wire.watching, (call) => {
+      if (call.path.endsWith(`/api/games/${wire.watching.id}/stream`)) return stream.reply(call);
+      if (call.method === "GET" && call.path.endsWith(`/api/games/${wire.watching.id}`)) {
+        if (!hold) return { ...wire.watching, events };
+        const answered = events;
+        return new Promise<unknown>((resolve) => {
+          holding.push(() => resolve({ ...wire.watching, events: answered }));
+        });
+      }
+      const m = /\/at\/(\d+)$/.exec(call.path);
+      if (m) return at(Number(m[1]), events);
+      return undefined;
+    });
+    const reloads = () =>
+      stub.calls.filter((c) => c.method === "GET" && /\/api\/games\/wire$/.test(c.path));
+    expect(reloads()).toHaveLength(1);
+
+    const opened = stream.opens();
+    await visibility("hidden");
+    vi.useFakeTimers();
+    try {
+      await visibility("visible");
+      await until(() => stream.opens() > opened, "the reader was opened again");
+      await settle();
+
+      hold = true;
+      events = base + 1;
+      stream.push("signal", signal());
+      await until(() => reloads().length === 2, "the first frame's game read went out");
+      // The two that land underneath it, the newest of which is what `pending`
+      // holds when the read is released.
+      events = base + 2;
+      stream.push("signal", signal());
+      await settle();
+      events = base + 3;
+      stream.push("signal", signal());
+      await settle();
+      expect(reloads(), "the frames under the read did not each fetch a game").toHaveLength(2);
+      expect(holding).toHaveLength(1);
+      expect(document.querySelector("ol.account")).toBeNull();
+
+      hold = false;
+      act(() => holding.forEach((release) => release()));
+      // **The assertion the no-op cell cannot make.** The first pass landed at
+      // base+1; the pending frame says base+3; the loop reads again.
+      await until(() => reloads().length === 3, "the pending frame was fetched");
+      await until(
+        () => document.querySelectorAll("ol.account li").length === 2,
+        "the second run reached the screen",
+      );
+      await settle();
+
+      expect(reloads(), "and exactly one follow-up read, not one per frame").toHaveLength(3);
+      // base→base+1 for the first pass, base+1→base+3 for the second: every
+      // position fetched once, no range walked twice, and the three events
+      // accounted for end to end.
+      const positions = stub
+        .matching("GET", "/at/")
+        .map((c) => Number(/\/at\/(\d+)$/.exec(c.path)![1]));
+      expect(positions).toEqual([base, base + 1, base + 1, base + 2, base + 3]);
       expect(stream.opens(), "and still one reader").toBe(opened + 1);
     } finally {
       vi.useRealTimers();

@@ -409,15 +409,19 @@ export function App() {
         }
         // **The WATCHER who has not presented the password yet** (spec §5.3).
         //
-        // Three conditions, and all three are load-bearing. `playing` because a
-        // finished table is `playing` too (its game is over, its status is not)
-        // while an OPEN one is the seat picker's — and `can_watch` says nothing
-        // about status, so an open locked table answers `false` here and would
-        // otherwise draw a password box in place of the seats somebody came to
-        // take (Task 4 review M-7). `my_seats` empty because a seated caller is
-        // a player and never needs to unlock anything. `can_watch` false
-        // because it is the server's own answer to "may this caller read this
-        // table", and once it turns over the game route answers them.
+        // **`playing` is a RESTATEMENT here, not a guard** (review T8 #1): the
+        // type has three arms and the two above have returned, so by this line
+        // it can be nothing else. It is written because the condition it
+        // states is real and is what the next reader needs — an OPEN locked
+        // table answers `can_watch: false`, and a draft that tested the other
+        // two terms alone drew a password box in place of the seats somebody
+        // came to take (Task 4 review M-7). Keeping it means the arms above
+        // can be reordered or narrowed without this one quietly widening.
+        // `my_seats` empty because a seated caller is a player and never needs
+        // to unlock anything; `can_watch` false because it is the server's own
+        // answer to "may this caller read this table", and once it turns over
+        // the game route answers them. (A finished table is `playing` too —
+        // its game is over, its status is not.)
         //
         // `show(null)` first and the ref set after, which is the shape the two
         // arms above have: a game being left takes its walk with it, and the
@@ -656,9 +660,13 @@ export function App() {
         // frame per move and a room can move twice while one `GET …/{id}` is in
         // flight; re-entered, this would read the same stale count, fetch the
         // game again and walk the same range twice — two accounts of one turn,
-        // one drawn over the other. So a frame that lands during a run is
-        // REMEMBERED rather than dropped or run beside it, and the loop below
-        // takes it once the first has landed. (Before the fix above the
+        // one drawn over the other. So the NEWEST frame that lands during a run
+        // is remembered rather than run beside it, and the loop below takes it
+        // once the first has landed. **The newest and not all of them** —
+        // `pending` is one slot, and an earlier frame it overwrites is not lost
+        // because `events` is a CUMULATIVE count: the newest frame's number
+        // covers every frame before it, and the loop compares that number
+        // against the state the first pass produced. (Before the fix above the
         // question could not arise: the reader was aborted for the whole
         // window, and those frames reached nobody at all.)
         if (arriving.current) {

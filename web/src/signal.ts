@@ -46,15 +46,29 @@ import type { Events } from "./types";
  *  it hardest exactly while it was least able to answer. */
 export const BACKOFF_MS = [2000, 4000, 8000, 16000, 30000] as const;
 
-/** How long the HELD arm waits before asking again after an answer.
+/** How long the HELD arm waits before asking again after an answer — for a
+ *  `"wake"` source ONLY.
  *
- *  **Not zero, and that is ruling R-pre-5.** The game's `once` is
- *  `GET …/events?wait=25`, which holds on the server and so could be reopened
- *  at once; the lobby's and the open table's are ordinary reads that answer
- *  immediately, and reopening one of those at zero is a hot loop against three
- *  table listings. One value for both arms, at the cadence the poll this
- *  replaces used to run at — it is the fallback transport, and the fallback's
- *  job is to be no worse than what came before. */
+ *  **It is not one value for both arms, and the correction is the final
+ *  review's I-3.** R-pre-5 set a single 3 s because reopening at zero is a hot
+ *  loop against three table listings; that is true of the lobby and the open
+ *  table, whose `once` answers immediately, and false of the game's and the
+ *  dealing screen's, which is `GET …/events?wait=25` and HOLDS on the server.
+ *  Worse than merely wasteful: `?wait` subscribes and waits for a NEW bump and
+ *  nothing compares the caller's count (R-3.14), so a bump landing inside the
+ *  3 s gap was not seen until the NEXT request's 25 s deadline — a 27–28 s
+ *  latency where the poll this replaces had 3 s, under a hook whose whole claim
+ *  is to be faster. A source whose `once` holds is therefore re-asked at 0 and
+ *  only a `"wake"` source waits this long.
+ *
+ *  **The residual, which re-asking at zero does not close.** A bump that lands
+ *  inside one request's own round trip — after the server answered and before
+ *  the next subscribe — still waits for the bump after it, or for the 25 s
+ *  deadline. Closing that needs the server to answer at once when `after`
+ *  differs from the current count, which is a route change and not a reader
+ *  one. Recorded here because R-plan-5's "the fallback is a one-line change in
+ *  the client's reader" is the sentence this limit belongs to; the arm is
+ *  dormant while `signalKind()` is `"sse"`. */
 export const HELD_REASK_MS = 3000;
 
 /** How long the game's held request asks the server to wait, in seconds. The
@@ -105,6 +119,19 @@ export interface Source<T> {
    *  such a frame over as a `T` would have the lobby render `{seq: 4}`. */
   frames?: "value" | "wake";
 }
+
+/** What the LOBBY is told about a signal that ended on a FRAME.
+ *
+ *  **The frame carries a reason and no words** — `{"reason":"deleted"}` is the
+ *  whole of what `Signals::end` writes — and each consumer hands `end.sentence`
+ *  to its own leave. Only the game screen had a fallback, so a real abandon
+ *  took the dealing screen and the open table to the lobby in silence, and so
+ *  did an open table filling its last seat without the stranger watching it
+ *  (a 403 read as `gone`). The two refusals that END a signal already carry the
+ *  server's own message and are not routed through here; these two are the
+ *  frames, and the words are the client's because the frame has none. */
+export const endSentence = (reason: "deleted" | "gone"): string =>
+  reason === "deleted" ? "this table was abandoned" : "this table is no longer available";
 
 /** Why a signal STOPPED, as opposed to failing and backing off.
  *
@@ -238,6 +265,7 @@ export function usePolled<T>(
       // question only this attempt's own signal can answer.
       const mine = new AbortController();
       controller = mine;
+      const frames = src.current.frames ?? "wake";
       try {
         if (signalKind() === "held") {
           // R-plan-5: the same answer, one request at a time. The game's `once`
@@ -255,10 +283,12 @@ export function usePolled<T>(
           failures.current = 0;
           setLink("live");
           latest.current(v);
-          schedule(HELD_REASK_MS);
+          // **At ONCE for a source whose `once` holds** — see
+          // [`HELD_REASK_MS`], which is the `"wake"` sources' wait and the
+          // reason the two cannot share a number.
+          schedule(frames === "value" ? 0 : HELD_REASK_MS);
           return;
         }
-        const frames = src.current.frames ?? "wake";
         const outcome = await readStream(
           src.current.stream,
           mine.signal,
@@ -268,8 +298,16 @@ export function usePolled<T>(
             // The server's own reason rides the frame: `deleted` for a table
             // that was abandoned, `gone` for one that stopped being readable
             // under a live connection.
-            const { reason } = JSON.parse(f.data) as { reason: "deleted" | "gone" };
-            ended.current?.({ reason });
+            // **And it is given WORDS here, once, for all four consumers**
+            // (final review I-2). A server-supplied sentence is kept if one
+            // ever arrives; today none does, and defaulting in the consumers
+            // instead would be three copies of the same two strings with one
+            // of them already missing.
+            const { reason, sentence } = JSON.parse(f.data) as {
+              reason: "deleted" | "gone";
+              sentence?: string;
+            };
+            ended.current?.({ reason, sentence: sentence ?? endSentence(reason) });
             return;
           }
           if (f.event !== "signal" && f.event !== "house") return;
