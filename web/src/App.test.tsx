@@ -1322,6 +1322,29 @@ describe("the route", () => {
     await waitFor(() => expect(window.location.hash).toBe("#/"));
   });
 
+  // **And it does not outlive the SCREEN either** (final review M5). The clear
+  // above happens when another table is opened; a player who instead goes to the
+  // form and comes back was, until this, met by a 403 about a table they are no
+  // longer trying to open. The route effect now clears on any route that is not
+  // the one the notice was raised for — which is why the sentence still survives
+  // the navigation that shows it, asserted first so this cannot pass by clearing
+  // too eagerly.
+  it("drops a refused table's sentence on a trip to the form and back", async () => {
+    window.location.hash = "#/t/not-yours";
+    const { user } = app((call) =>
+      call.path.endsWith("/api/games/not-yours/table")
+        ? { status: 403, body: { error: "you are not seated at this table" } }
+        : undefined,
+    );
+    await screen.findByText("you are not seated at this table");
+    await user.click(screen.getByRole("button", { name: "New table" }));
+    await screen.findByRole("heading", { name: "New game" });
+    expect(screen.queryByText("you are not seated at this table")).toBeNull();
+    window.location.hash = "#/";
+    expect(await screen.findByRole("heading", { name: "Lobby" })).toBeInTheDocument();
+    expect(screen.queryByText("you are not seated at this table")).toBeNull();
+  });
+
   // **The double-open, and it is the hazard `openingId` exists for.** `open`
   // sets the hash BEFORE it fetches, so the route effect runs while the first
   // `GET …/table` is still in flight — and every "is it already open?" test it
@@ -1461,6 +1484,57 @@ describe("the route", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  // **And the hand-over that finds the table refusing** (final review M1). The
+  // reachable case is a stranger who pressed a seat that filled in the same
+  // moment: the join answers with a table that is no longer open, the hand-over
+  // runs, and `GET …/table` refuses a caller who is not seated. `open` has no
+  // catch of its own, so before this the rejection was unhandled and the screen
+  // recovered only when the open table's OWN poll refused a tick later.
+  //
+  // **The clock is what makes this a witness**: the poll is never advanced past
+  // the tick that hands over, so the sentence on screen can only have come from
+  // the hand-over's catch.
+  it("lands on the lobby with the sentence when the hand-over's table refuses", async () => {
+    window.location.hash = "#/t/wire";
+    // **Flipped by hand rather than counted.** Two reads open this screen —
+    // `open`'s own and `OpenTable`'s opening fetch — so a cell that numbered
+    // them would hand over before the seat picker was ever drawn.
+    let flipped = false;
+    let afterFlip = 0;
+    app((call) => {
+      if (!call.path.endsWith("/table")) return undefined;
+      if (!flipped) return wire.tableOpen;
+      afterFlip += 1;
+      // The tick that reads a table no longer open is what hands over; the
+      // read the hand-over itself makes is the one that refuses.
+      return afterFlip === 1
+        ? wire.tableDealing
+        : { status: 403, body: { error: "you are not seated at this table" } };
+    });
+    const rejected: unknown[] = [];
+    const note = (e: unknown) => rejected.push(e);
+    process.on("unhandledRejection", note);
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(screen.getByRole("button", { name: "sit here" })).toBeInTheDocument();
+
+      flipped = true;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3100);
+      });
+      expect(screen.getByRole("heading", { name: "Lobby" })).toBeInTheDocument();
+      expect(screen.getByText("you are not seated at this table")).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "sit here" })).toBeNull();
+    } finally {
+      vi.useRealTimers();
+      process.off("unhandledRejection", note);
+    }
+    expect(rejected).toEqual([]);
   });
 
   // The other half of the same rule: a game LEFT takes the hash with it, so the

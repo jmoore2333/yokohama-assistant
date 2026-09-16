@@ -38,7 +38,7 @@ function Host({
   game?: string;
   me?: string;
   onPlaying?: () => void;
-  onLeave?: () => void;
+  onLeave?: (sentence?: string) => void;
 }) {
   const [sections, onToggleSection] = useSections();
   return (
@@ -310,6 +310,49 @@ describe("the dealing screen", () => {
     render(<Host onLeave={onLeave} />);
     await screen.findAllByRole("button", { name: /^keep/ });
     await userEvent.setup().click(screen.getByRole("button", { name: "Games" }));
+    expect(onLeave).toHaveBeenCalledTimes(1);
+  });
+
+  // **A table that is GONE stops being polled, and says so** (final review M2).
+  // The reachable case is the creator abandoning from a lobby row (R-13) while
+  // the deal is up at somebody ELSE's browser: without an `onEnd` the poll ends
+  // silently and the deal sits there until the next click 404s. `App` and
+  // `OpenTable` already carried these three lines; this consumer did not.
+  //
+  // The SENTENCE is the point, not merely the leave: it is the server's, and it
+  // is what the lobby then shows about a screen that went by itself.
+  it("leaves with the server's sentence when the table is abandoned under it", async () => {
+    vi.useFakeTimers();
+    const onLeave = vi.fn();
+    let gone = false;
+    stubApi((call) => {
+      if (call.path.endsWith("/deal")) return wire.dealWaiting;
+      if (call.path.endsWith("/events"))
+        return gone
+          ? { status: 404, body: { error: "no such game" } }
+          : wire.eventsDealing;
+      return undefined;
+    });
+    render(<Host onLeave={onLeave} />);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3100);
+    });
+    // Anti-vacuity: a live table is still being waited on.
+    expect(onLeave).not.toHaveBeenCalled();
+
+    gone = true;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3100);
+    });
+    expect(onLeave).toHaveBeenCalledTimes(1);
+    expect(onLeave.mock.calls[0]![0]).toBe("no such game");
+
+    // And the poll is over: a permanent 404 asked again is a client waiting for
+    // an answer it already has.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(9000);
+    });
     expect(onLeave).toHaveBeenCalledTimes(1);
   });
 

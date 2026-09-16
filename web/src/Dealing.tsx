@@ -93,8 +93,13 @@ export function Dealing({
    *  table had "Re-deal" for this; a table is PERSISTED now, so leaving is not
    *  abandoning anything — the row is in the lobby and opens right back here. A
    *  player who opens a table that is waiting on somebody else, and then wants
-   *  to play something else, otherwise has only a page reload. */
-  onLeave: () => void;
+   *  to play something else, otherwise has only a page reload.
+   *
+   *  **The optional sentence is the SERVER's**, and it is what makes leaving
+   *  under somebody else's abandon different from leaving by choice: the poll
+   *  below hands it on so the lobby can say why this screen went, exactly as
+   *  `App` and `OpenTable` do with the same `End`. */
+  onLeave: (sentence?: string) => void;
   /** The "You are …" strip, built by `App` and merely placed here. */
   who?: ReactNode;
 }) {
@@ -189,9 +194,19 @@ export function Dealing({
    *  without a re-render, and the screen is being replaced anyway: the cost of
    *  a cheap request nothing acts on, for the one or two ticks between the
    *  hand-over and the unmount, is the honest price of keeping ONE decision. */
-  const link = useSignal(game, true, (e) => {
-    if (e.status !== "dealing") void start();
-  });
+  const link = useSignal(
+    game,
+    true,
+    (e) => {
+      if (e.status !== "dealing") void start();
+    },
+    // **A table that is GONE stops being polled, and says so**, which the deal
+    // needs as much as the game screen does: the creator can abandon from a
+    // lobby row (R-13) while this screen is up at somebody ELSE's browser, and
+    // without this the poll ends silently and the deal sits there until the
+    // next click 404s. Same three lines `App` and `OpenTable` already have.
+    (end) => onLeave(end.sentence),
+  );
   /** The poll's own state, said the same way the game banner says it. */
   const linkStrip = link !== "live" && (
     <span className="meta link" role="status">
@@ -277,7 +292,7 @@ export function Dealing({
             choosing. */}
         <nav className="views">
           <BoardsMenu enabled={sections} onToggle={onToggleSection} />
-          <button type="button" className="ghost" onClick={onLeave}>
+          <button type="button" className="ghost" onClick={() => onLeave()}>
             Games
           </button>
         </nav>

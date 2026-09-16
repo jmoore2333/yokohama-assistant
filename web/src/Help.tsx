@@ -171,11 +171,27 @@ export function Help() {
       <h3>Starting a game</h3>
       <p>
         Sign in first: the server has to know who you are before it will show you a table, and
-        under this deployment that is an email address you type once and it remembers. The new-game
-        form is then <strong>one row per seat</strong> &mdash; each one you, somebody else&rsquo;s
-        email, or the bot. The bot is offered at two players only, because that is where it has
-        been measured. Press Deal and the table opens; nobody has played yet, and the game does
-        not exist until every seat has chosen its first card.
+        under this deployment that is an email address you type once and it remembers. What you
+        land on is the <strong>lobby</strong>. It has two lists &mdash; <em>Your games</em>, the
+        tables you already sit at, and <em>Open tables</em>, every table on the server still
+        waiting for players, whoever opened it &mdash; and <em>New table</em>, which is the form.
+      </p>
+      <p>
+        The form is <strong>one row per seat</strong> &mdash; each one you, somebody else&rsquo;s
+        email, an open seat, or the bot. The bot is offered at two players only, because that is
+        where it has been measured. You can give the table a name, give yourself a display name,
+        and ask for a <strong>password</strong> that anyone joining has to type. Fill every seat
+        and the button reads Deal: the table opens at once. Leave a seat open and it reads Open
+        table, and the table waits. Either way nobody has played yet, and the game does not exist
+        until every seat has chosen its first card.
+      </p>
+      <p>
+        A table with a seat still open has a <strong>link</strong> &mdash; its own address, shown
+        on the table&rsquo;s screen with a copy button beside it. Send it to whoever is playing:
+        they sign in, type the password if the table asks for one, and press <em>sit here</em>.
+        They can equally find the table for themselves under Open tables, without a link at all.
+        The deal begins by itself the moment the last seat is taken, on everybody&rsquo;s screen at
+        once.
       </p>
       <p>
         That choice happens over the <strong>set table</strong>: the areas with their site cards
@@ -203,11 +219,13 @@ export function Help() {
       <h3>Saving, and coming back</h3>
       <p>
         Every move you make is written to the server as it is applied &mdash; there is no save
-        button and nothing to remember. Leave and come back and the game is in the list on the
-        start screen, where it resumes exactly where you left it. You do not have to leave to
-        find it: the banner&rsquo;s leftmost control names the game you are in, and opening it
-        lists your other saved games to switch to, with a way back to the start screen for a new
-        one.
+        button and nothing to remember. Leave and come back and the table is under{" "}
+        <em>Your games</em> in the lobby, where it resumes exactly where you left it. You do not
+        have to leave to find it: the banner&rsquo;s leftmost control names the game you are in,
+        and opening it offers <em>Lobby</em> at the top and your other tables under it to switch
+        between. A table you opened yourself can be abandoned, from its own screen while it is
+        still filling or from its row in the lobby &mdash; two clicks, and it is gone for everyone
+        who was at it.
       </p>
 
       <h3>If something looks wrong</h3>

@@ -6,10 +6,10 @@
 // holds one is WAITING, and what they are offered is the link to send somebody
 // else and, if they opened the table, the way to abandon it.
 //
-// Every payload below is the corpus's, or the corpus's with one field moved:
-// no committed fixture carries a table that is open AND seated (the fixture
-// walk's stranger never sits), so the seated face is `wire.table` read at the
-// status it passed through.
+// Every payload below is the corpus's. The two faces are two committed
+// fixtures: `wire.tableOpen` is the table as the stranger reads it, and the
+// lobby's second row is the same shape from the seat — a listing row and a
+// `GET …/table` reply are one `TableView`, so neither face is built here.
 
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -20,21 +20,21 @@ import { stubApi, type ApiCall, type Reply } from "./test/harness";
 import { wire } from "./wire/contract";
 import type { TableView } from "./types";
 
-/** The table this caller SITS at, still filling its seats.
- *
- *  `wire.table` is the same table once it is playing, so the four fields moved
- *  here are exactly the ones a status carries — and the second seat is reopened,
- *  because a table with no open seat is not one anybody is waiting at. */
+/** The table this caller SITS at, still filling its seats — `wire2`, the
+ *  lobby's second row, committed exactly in that shape: `status: "open"`,
+ *  `my_seats: [0]`, one open seat beside this caller's, and opened by the
+ *  person this screen plays as. Nothing is moved; the overrides below are what
+ *  each cell is ABOUT. */
 const seated = (over: Partial<TableView> = {}): TableView => ({
-  ...wire.table,
-  status: "open",
-  my_seats: [0],
-  seats: [wire.table.seats[0]!, { kind: "open" }],
-  chosen: [false, false],
-  to_move: null,
-  over: null,
+  ...wire.games.games[1]!,
   ...over,
 });
+
+/** `show`, at the id `seated()` actually carries. */
+const showSeated = (
+  handler: (call: ApiCall) => Reply | undefined,
+  props: Partial<Parameters<typeof OpenTable>[0]> = {},
+) => show(handler, { game: "wire2", ...props });
 
 function show(
   handler: (call: ApiCall) => Reply | undefined,
@@ -237,9 +237,11 @@ describe("the open table, to a stranger", () => {
 
 describe("the open table, to somebody sitting at it", () => {
   it("shows the link to send, and no seat to take", async () => {
-    show(tableIs(seated()));
+    // `locked: true`, so the absent Password field below is the seated FACE
+    // and not merely a table that asks for no password.
+    showSeated(tableIs(seated({ locked: true })));
     const link = await screen.findByLabelText("Link");
-    expect(link).toHaveValue(`${window.location.origin}/#/t/wire`);
+    expect(link).toHaveValue(`${window.location.origin}/#/t/wire2`);
     expect(screen.getByRole("button", { name: "copy" })).toBeInTheDocument();
     // Nothing to fill in: this person has a seat, and the fields are for taking
     // one.
@@ -264,33 +266,33 @@ describe("the open table, to somebody sitting at it", () => {
   // `Abandon.test.tsx`. What is here is the wiring: who is offered it, and
   // where the screen goes when the table is gone.
   it("offers the abandon control to the person who opened the table", async () => {
-    show(tableIs(seated()));
+    showSeated(tableIs(seated()));
     // `created_by` is `red@wire.test`, which is who this browser is.
-    expect(await screen.findByRole("button", { name: "abandon wire" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "abandon wire2" })).toBeInTheDocument();
   });
 
   it("offers nothing to abandon to a person who merely sits here", async () => {
-    show(tableIs(seated({ created_by: "someone@else.test" })));
+    showSeated(tableIs(seated({ created_by: "someone@else.test" })));
     await screen.findByLabelText("Link");
     expect(screen.queryByRole("button", { name: /abandon/i })).toBeNull();
   });
 
   it("leaves for the lobby once the table has been abandoned", async () => {
-    const { stub, onLeave, user } = show((call) => {
+    const { stub, onLeave, user } = showSeated((call) => {
       if (call.path.endsWith("/table")) return seated();
       if (call.method === "DELETE") return null;
       return undefined;
     });
-    await user.click(await screen.findByRole("button", { name: "abandon wire" }));
-    await user.click(screen.getByRole("button", { name: "confirm abandon wire" }));
-    await waitFor(() => expect(stub.matching("DELETE", "/api/games/wire")).toHaveLength(1));
+    await user.click(await screen.findByRole("button", { name: "abandon wire2" }));
+    await user.click(screen.getByRole("button", { name: "confirm abandon wire2" }));
+    await waitFor(() => expect(stub.matching("DELETE", "/api/games/wire2")).toHaveLength(1));
     // **The leave is the point.** There is nothing to go back to: the table the
     // screen is about no longer exists.
     await waitFor(() => expect(onLeave).toHaveBeenCalledTimes(1));
   });
 
   it("has a way back to the lobby", async () => {
-    const { onLeave, user } = show(tableIs(seated()));
+    const { onLeave, user } = showSeated(tableIs(seated()));
     await user.click(await screen.findByRole("button", { name: "Lobby" }));
     expect(onLeave).toHaveBeenCalledTimes(1);
   });

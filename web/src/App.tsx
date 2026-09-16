@@ -12,7 +12,7 @@ import { Dealing } from "./Dealing";
 import { Lobby } from "./Lobby";
 import { NewGame } from "./NewGame";
 import { OpenTable } from "./OpenTable";
-import { navigate, useRoute } from "./route";
+import { navigate, useRoute, type Route } from "./route";
 import { loadCadence, saveCadence, type Cadence } from "./playback";
 import { useSignal, type End } from "./signal";
 import { BoardsMenu, useSections } from "./BoardsMenu";
@@ -111,6 +111,16 @@ export function App() {
   const [surface, setSurface] = useState<SurfaceName | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** **Which visit to the lobby the notice above is about.**
+   *
+   *  Every sentence shown over the lobby is raised together with the navigation
+   *  that shows it — a refused `#/t/<id>`, a table abandoned under this screen,
+   *  a seat taken between the draw and the click — so clearing on any route
+   *  change would wipe it in the same tick it was set. This records the route
+   *  the notice belongs to, and the route effect clears it the next time the
+   *  route is something else. Without it a 403 about a table survived a trip to
+   *  the form and back and sat in the lobby's strip describing nothing. */
+  const noticeFor = useRef<Route["kind"] | null>(null);
   const [outcome, setOutcome] = useState<Outcome | null>(null);
   // **The replay position, or `null` for "the present".** M4's whole state is
   // this one integer: the scrubber is a projection over a record the server
@@ -287,6 +297,23 @@ export function App() {
     [landed],
   );
 
+  /** **Land on the lobby, with the server's sentence if there is one.**
+   *
+   *  The five paths that put a player back on the lobby against their will —
+   *  a refused `#/t/<id>`, a game that stopped answering, a deal or an open
+   *  table that went out from under them, a hand-over that found the table
+   *  filled — say the same two things in the same order, and they also have to
+   *  agree with `noticeFor` about which visit the sentence belongs to. One
+   *  callback, so that agreement is not five separate things to keep true.
+   *
+   *  A `null` or absent sentence CLEARS, which is what leaving by choice
+   *  should do. */
+  const toLobby = useCallback((sentence?: string | null) => {
+    setError(sentence ?? null);
+    noticeFor.current = sentence == null ? null : "lobby";
+    navigate({ kind: "lobby" });
+  }, []);
+
   /** Open a table BY ID — the one door into a game, and the reason it asks
    *  `GET …/table` first (M6.1 §7.4).
    *
@@ -368,19 +395,29 @@ export function App() {
         // one clears it.** Without this a "you are not seated at this table"
         // follows the player into the next game they open and sits in its error
         // strip describing nothing on screen. Cleared HERE and not at the top of
-        // the effect: the arm below is the one a refused open navigates TO, and
-        // clearing there would wipe the sentence in the same tick it was set.
+        // the effect: the arm below is the one a refused open navigates TO, so
+        // an unconditional clear there would wipe the sentence in the same tick
+        // it was set — which is why that arm asks `noticeFor` first.
         setError(null);
+        noticeFor.current = null;
         open(route.id).catch((e) => {
           // A table that does not exist, or is not this caller's to see. The
           // sentence is the server's and the lobby is where it is shown — a
           // bare screen at a `#/t/<id>` that answers nothing is the one place a
           // player cannot act from.
-          setError(e instanceof ApiError ? e.message : String(e));
-          navigate({ kind: "lobby" });
+          toLobby(e instanceof ApiError ? e.message : String(e));
         });
       }
       return;
+    }
+    // **A notice does not outlive the screen it was about.** It is raised
+    // together with the navigation that shows it, so `noticeFor` says which
+    // visit it belongs to and the clear happens on the NEXT route change —
+    // clearing unconditionally here would wipe the sentence in the same tick a
+    // refused table set it, which is the case the arm above exists for.
+    if (noticeFor.current !== route.kind) {
+      setError(null);
+      noticeFor.current = null;
     }
     // `#/` or `#/new`: no game, no deal and no table on screen.
     if (tableOnScreen.current) show(null);
@@ -569,10 +606,7 @@ export function App() {
     // looking at it: before `onEnd` the poll backed off against a permanent 404
     // and the banner read "reconnecting…" about a game that was never coming
     // back. The sentence is the server's own.
-    useCallback((e: End) => {
-      setError(e.sentence ?? "this game is no longer available");
-      navigate({ kind: "lobby" });
-    }, []),
+    useCallback((e: End) => toLobby(e.sentence ?? "this game is no longer available"), [toLobby]),
   );
 
   // **Debounced, because a drag is not a click.**
@@ -687,7 +721,10 @@ export function App() {
           sections={enabled}
           onToggleSection={toggleSection}
           onPlaying={() => open(dealing, true)}
-          onLeave={() => navigate({ kind: "lobby" })}
+          // A sentence when the table went out from under this screen, none
+          // when the player simply left — `toLobby` clears on the absence,
+          // which is what leaving by choice should do.
+          onLeave={toLobby}
           who={who}
         />
       );
@@ -706,15 +743,23 @@ export function App() {
           // Safe to call for the id already on screen: the two refs the route
           // effect reads exist to stop that EFFECT echoing a navigation, and
           // neither is consulted here.
-          onStarted={() => void open(openTable, true)}
-          onLeave={(sentence) => {
-            // The sentence is the server's — a table deleted under this screen
-            // — and the lobby is where it is shown, for the reason a refused
-            // `#/t/<id>` lands there: a bare screen that answers nothing is the
-            // one place a player cannot act from.
-            setError(sentence ?? null);
-            navigate({ kind: "lobby" });
-          }}
+          // **The `catch` is not decoration.** `open` has none of its own, and
+          // the reachable case is a stranger who clicked a seat that filled in
+          // the same moment: `join` answers with a table that is no longer
+          // open, the hand-over runs, and `GET …/table` refuses a caller who is
+          // not seated. Without this that rejection is unhandled and the screen
+          // recovers only when the poll's own refusal fires one tick later.
+          // Same two lines the route effect uses for a refused `#/t/<id>`.
+          onStarted={() =>
+            void open(openTable, true).catch((e) =>
+              toLobby(e instanceof ApiError ? e.message : String(e)),
+            )
+          }
+          // The sentence is the server's — a table deleted under this screen —
+          // and the lobby is where it is shown, for the reason a refused
+          // `#/t/<id>` lands there: a bare screen that answers nothing is the
+          // one place a player cannot act from.
+          onLeave={toLobby}
           who={who}
         />
       );
