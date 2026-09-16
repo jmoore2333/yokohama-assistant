@@ -130,7 +130,7 @@ the root layout (`analysis-1/`, `tts-assets/`, `bridge/`, `deploy/`, `docs/temp/
 rulebook PDFs stay (the owner's edition is `tts-assets/pdf/…`; `analysis-1/`'s is the outlier);
 what a public README claims. Session shape: brainstorm → spec → plan, in its own branch.
 
-## Track 3 — The web client: M6.3 SHIPPED AND LIVE; what waits on you is the merge order (web lane)
+## Track 3 — The web client: M6.3 SHIPPED AND LIVE; M6.4 "chat" SPECIFIED AND PLANNED, waiting on your go (web lane)
 
 **M6.3 "transport and spectating" is SHIPPED AND LIVE** as `yokohama-web:0.5.0-m6.3` (container
 `f0c371c7…` since 19:20:51Z on 2026-09-16) — planned 2026-09-15, executed
@@ -201,12 +201,25 @@ are candidates for the start of M6.4 if you want them closed.
 - **M6.2's ruling #13** — the delete control on the lobby's Your-games rows — you approved
   mid-cycle ("Ruling 13 is ok") and it needs nothing further.
 
-**Next — M6.4 "chat"**, entering from
-`docs/plans/2026-09-16-web-frontend-m6.4-chat-handover.md` (the charter, the seams chat stands on,
-the questions its brainstorm must settle). R-P1 says brainstorm → spec → plan before any execution.
-Process unchanged (R-P11) plus the rule you made mid-M6.2: **every agent writes its report to a
-transcript file and replies with the path** (the notification channel truncates at ~4k characters).
-The whole-game gate stays out of CI.
+**M6.4 "chat" — BRAINSTORMED, SPECIFIED AND PLANNED on 2026-09-16, on branch `web-room-m6.4`
+(off `2194b57`, PR #33's tip).** The brainstorm settled sixteen rulings in your words, numbered
+`R-6.4.1`–`R-6.4.16` (spec §1): seats AND watchers post under the one signed-in identity; the label
+is the lobby's rule (name, else the address) with a "watching" marker; "Your name" at the door and
+beside the address, stored per browser; the stream HELD at every visible status; chat on the game,
+dealing, open-table and lobby screens with `YOKOHAMA_WEB_LOBBY_CHAT=on|off`; retention as launch
+variables (`YOKOHAMA_WEB_CHAT_KEEP` 500|all, `YOKOHAMA_WEB_CHAT_TEXT` 500) reported on health; a
+count on the signal and a fetch for the text; the panel LAST in the side column and FOLDED
+everywhere; a tagged author with a `bot` arm no route produces, so an LLM-driven bot can talk later
+(fed its own VIEW, never the record); the live review HEADED. **The spec is
+`docs/plans/2026-09-16-web-frontend-m6.4-chat-spec.md`**, corrected by an Opus adversarial read
+against HEAD (8 HIGH, 10 MEDIUM, 9 MINOR, 10 OPEN, all folded; 80 claims verified true; its report
+is under the gitignored `.superpowers/sdd/2026-09-16-web-frontend-m6.4-spec/`). **The plan is
+`docs/plans/2026-09-16-web-frontend-m6.4-plan.md`**: ten tasks, the store's third kind first and the
+headed live review last, seven plan-level rulings. **What waits on you: the go to execute** — under
+R-P11 (Opus implementers and reviewers, Fable orchestrating; every agent's report to a file; never
+a follow-up without reading HEAD), then the release and the headed three-browser review, which needs
+nothing changed on the NAS (WARP stays on; the claimed door makes three contexts three people). The
+whole-game gate stays out of CI.
 
 **Live operations.** The deployment record and recipe are `deploy/RUNBOOK.md` (§3.5 the recipe,
 §3.9 the M6.3 deployment with the R-3.1 readings, §5 rollback — and note that rolling back behind
