@@ -1,14 +1,22 @@
 # Web frontend — M6.3 "transport and spectating": the close
 
-**BUILT 2026-09-16 at `9a4626d` on `web-room-m6.3`; NOT deployed — the rc deploy and the
-R-3.1 tunnel measurement (Task 3), the release (Task 10) and the live review (Task 11)
-are OWED to the owner; this record is amended ONCE, at the release, before it freezes.**
+*Amended 2026-09-16 at the release; frozen after this.*
+
+**SHIPPED AND LIVE 2026-09-16: `yokohama-web:0.5.0-m6.3`, built at `74a0e80` on
+`web-room-m6.3`, serving `yokohama.moore.nyc` from container `f0c371c7…` since
+19:20:51Z. The R-3.1 tunnel measurement was taken both ways and SSE SHIPS (§2.1); the
+three-browser live review returned SHIP, 0 Critical / 0 Important / 3 Minor (§4.5); PR
+#33 is open against `web-room-m6.2`
+(https://github.com/jmoore2333/yokohama-assistant/pull/33). The build closed at
+`9a4626d`; everything recorded below was measured there, and the amendment touches this
+header, §1's opening, §2.1, §4.5, §7 and §8 — nothing else.**
 
 The branch was cut from `web-room-m6.2` at `be21a4b` (the M6.2 close HEAD) and carries
 **twenty-two execution commits** — nineteen through Task 9's fix round at `26da94f`, then
 the final review's three-commit fix wave at `9214661`, `9f70aa2` and `9a4626d` — plus the
 doc-pass commits this record is part of. It is stacked: `web-room-m6.2` is stacked on
-`web-room` (PR #31, unmerged) and its own PR #33 is not yet opened.
+`web-room` (PR #31, unmerged) and its own PR #33 is open against `web-room-m6.2` —
+**merge order is the owner's**.
 
 The authority for everything below is the spec,
 `docs/plans/2026-09-15-web-frontend-m6.3-transport-and-spectating-spec.md`, under the
@@ -32,10 +40,13 @@ and it is the reason §7 exists.
 ## 1. What shipped
 
 The room plan's M6.3 exit criterion is **"no polling on the NAS; a spectator link shows a
-game walking."** Half of it is proven: in the browser walk on this workstation a watching
-tab played a whole two-person game to a winner having asked `GET …/events` **zero** times
-and opened `GET …/{id}/stream` **once** (§2). The other half — *on the NAS* — is not
-shown, because nothing is deployed (§7).
+game walking."** **Both halves are now shown.** In the browser walk on this workstation a
+watching tab played a whole two-person game to a winner having asked `GET …/events`
+**zero** times and opened `GET …/{id}/stream` **once** (§2); and on the NAS, in the live
+review of the deployed image, a watcher arriving by link asked `/events` zero times and
+held ONE stream through two full turns, through a 444 s game of 1,471 events and through
+a whole game against the bot (§4.5). Everything §1 describes was measured at the build
+HEAD `9a4626d`; §2.1 and §4.5 are the release's own readings.
 
 ### 1.1 The signal — `crates/yokohama-web/src/signal.rs` (spec §2, Task 1)
 
@@ -377,39 +388,46 @@ closes gave: every crate the roster measures is byte-identical to `master`, so a
 could only re-measure master's own reading. Nothing added in this cycle is `#[ignore]`d;
 the whole-game gate stays out of CI and per-edit locally.
 
-### 2.1 R-3.1 — the tunnel measurement is OWED
+### 2.1 R-3.1 — the tunnel measurement, TAKEN both ways: SSE SHIPS
 
-**No reading has been taken.** `SIGNAL_KIND` is `"sse"` and STAYS `"sse"` until a reading
-says otherwise; the held-request arm is built, dark and shipped (§1.6, R-F.1), so the
-fallback is the constant plus nothing. The procedure is plan Task 3's, unchanged, and the
-slots below are empty on purpose:
+**Taken 2026-09-16 against the deployed stream, not against an rc.** The owner authorized
+the release in-session, so plan Task 3's rc step was folded into Task 10: HEAD itself was
+deployed as `yokohama-web:0.5.0-m6.3` (container `4f37b4bb…`, started 19:04:04Z) and both
+readings were taken through the tunnel on the table `sim-f68b6accb83c4073`, created for
+the purpose and deleted afterwards. Every figure below is quoted from the logs
+`reading-a.log` and `reading-b.log` in the session scratchpad; the deployment record is
+`deploy/RUNBOOK.md` §3.9.
 
-- **Step 1 — the rc.** Build and deploy `yokohama-web:0.5.0-m6.3-rc1` per
-  `deploy/RUNBOOK.md` §1–§3, the container's `Env` unchanged. This image carries the
-  SERVER half and not the client change, so the live site keeps polling meanwhile and
-  nobody's game is disturbed. *Authorized: ______ · deployed at: ______*
-- **Step 2 — reading A, with the heartbeat.** From the workstation, WARP on, against a
-  playing table the owner names:
-
-  ```bash
-  curl -sN -H "X-Yokohama-Claimed-User: $ME" -H 'Accept: text/event-stream' \
-    "https://yokohama.moore.nyc/api/games/$ID/stream" | ts '[%H:%M:%.S]' | tee /tmp/stream-a.log
-  ```
-
-  Hold **ten minutes**; make ONE move in that game from a browser **at minute nine**.
-  Record: the on-connect frame's timestamp ______ ; every heartbeat comment's timestamp,
-  expected every 25 s ______ ; whether the minute-nine frame ARRIVED ______ ; whether the
-  connection was still open at minute ten ______ .
-- **Step 3 — reading B, without the heartbeat.** The edge's behaviour on an idle stream
-  cannot be reached except through the tunnel, so: hold a stream on an OPEN table nobody
-  joins on the rc image and compare heartbeat arrival with reading A; then build `-rc2`
-  with `HEARTBEAT = 3600 s`, deploy it, hold the stream and record when the edge closes
-  it — **expected near 100 s** (`deploy/cloudflared-config.yml:52`). Redeploy `-rc1`
-  after. Both rc deploys are owner-authorized. *Drop observed at: ______*
-- **Step 4 — the decision.** Reading A holding ten minutes with the frame arriving means
-  **SSE ships** and `SIGNAL_KIND` stays `"sse"`. A drop with the heartbeat on means **the
-  held request ships**: `SIGNAL_KIND = "held"` and the reader uses `…/events?wait=25`,
-  which is one constant and no other change. *Decision: ______*
+- **Step 1 — the rc.** *Folded into the release* (owner authorization; nobody was playing
+  on the NAS). The only extra image cut was reading B's `-rc2`, and it was removed again.
+  *Authorized: the owner, in-session, 2026-09-16 · deployed at: 19:04:04Z.*
+- **Step 2 — reading A, with the heartbeat** (19:06:29Z–19:16:29Z, seat 1 holding
+  `…/stream` while seat 0 played). On-connect frame **19:06:30.3Z** —
+  `event: signal` / `data: {"events":0,"to_move":0,"status":"playing","your_turn":false}`.
+  Heartbeat comments: **23 of them, each 25 s after the last MESSAGE on the stream** —
+  19:06:55.3, 19:07:20.3, 19:07:45.3 … 19:15:15.3 (twenty-one before the move), then
+  19:15:55.3 and 19:16:20.3 after it. The keep-alive restarts from a frame, not from the
+  previous comment, which is why the one gap that is not 25 s is the 40 s across the move.
+  The minute-nine move: A posted `1` (EndAdditionalPhase) at **19:15:29Z (540 s)**
+  and the frame `{"events":1,"to_move":0,"status":"playing","your_turn":false}` arrived at
+  **19:15:30.3Z**, under one second. Still open at minute ten: **yes** — the hold ended
+  because `curl`'s own `--max-time` expired (exit 0), not because anything closed it.
+- **Step 3 — reading B, without the heartbeat.** `HEARTBEAT` was set to 3600 s in a
+  working copy only (reverted; `git status` clean), built and deployed as
+  `yokohama-web:0.5.0-m6.3-rc2` (container `33021c62…`, live ~19:17:5xZ–19:20:3xZ for the
+  reading alone). B held the IDLE stream from **19:18:05Z**: the on-connect frame at +0 s
+  and nothing after it. *Drop observed at:* **19:20:10Z, +125 s**, `curl` exit 92 — an
+  HTTP/2 stream error, i.e. the edge and not the origin. The spec expected it near 100 s;
+  125 s is the measurement. The release image was then redeployed (container `f0c371c7…`,
+  started 19:20:51Z) and a 30 s hold showed the on-connect frame at +0 s and the heartbeat
+  at +25 s again.
+- **Step 4 — the decision.** Reading A held ten minutes with the frame arriving, so
+  ***SSE ships and `SIGNAL_KIND` stays `"sse"`.*** The held-request arm stays built, dark
+  and one constant away; R-F.1's residual at `HELD_REASK_MS` stands unexercised. Reading B
+  is what makes the decision a measurement rather than a hope: without the 25 s comment
+  the same stream dies in about two minutes, so the heartbeat constant is now load-bearing
+  against a number, and the Yokohama ingress comment in `deploy/cloudflared-config.yml`
+  says so at the place someone would change it.
 
 ---
 
@@ -440,7 +458,8 @@ root-key rows never went red between tasks.
 
 Nine implementer dispatches, nine per-task Opus reviews, **six fix rounds** (Tasks 1, 2,
 4, 7, 9 and the final wave), every fix re-reviewed in scope; one Fable whole-branch
-review; one fix wave; one mutation battery. Every report is in
+review; one fix wave; one mutation battery — and, at the release, one Fable live review
+against the DEPLOYED site (§4.5, added by the amendment). Every report is in
 `.superpowers/sdd/2026-09-15-web-frontend-m6.3-plan/` — **the SDD workspace is
 gitignored**, so the findings are quoted here rather than linked to.
 
@@ -572,6 +591,75 @@ Both browser mutations aborted in about two minutes rather than a green run's th
 because the cell stops at its first failed hold; neither figure is comparable with a
 passing run's wall.
 
+### 4.5 The live review against the DEPLOYED site (`live-review`, Fable, 2026-09-16)
+
+Added at the release. A clean Fable subagent with no part in the build drove **three
+Chromium contexts as three people** — two playing, one arriving by link and watching —
+against `https://yokohama.moore.nyc` running `yokohama-web:0.5.0-m6.3`, in both layouts
+(desktop 1440×900 and mobile 390×844), counting every request off each page's own request
+log rather than estimating, and photographing 82 screens.
+
+**Verdict: SHIP — 0 Critical, 0 Important, 3 Minor.** Twenty-five claims the close's §1
+makes about what a player and a watcher see were tried and found TRUE in both layouts,
+with **zero console errors on all three screens** across the review.
+
+**The exit criterion, on the NAS.** The watcher asked `GET …/events` **zero** times and
+opened `…/{id}/stream` **once, with zero aborts**, through two full turns (a 5.5 s window
+desktop, 7.1 s mobile: 9 frames, 16 `/at/{k}`, 1 `…/table`), through a 444 s game that
+reached **1,471 events** (`/events` 0, stream opens 1, frames 1,464, `/at` 2,926) and
+through a whole game against the bot (485 events: `/events` 0, stream opens 1). The tab
+was asserted `visible` at every applied move. The watcher's frame fetch left **0–9 ms
+BEFORE the mover's own reply landed** — the bump is sent after the write and before the
+reply returns — so the signal reaches a watcher inside the mover's round trip.
+
+**Two readings worth carrying beside it.** The PLAYERS reconnect once per turn boundary by
+design (144 and 145 opens over 287 mover changes in the 444 s game, median gap 1.3 s = the
+other player's turn): "one connection per tab" is the sentence, and "one connection per
+turn" is a player's reading of it. And the link strip drew **no word at all** while live —
+a MutationObserver on every game screen in every run recorded `null` throughout, so
+"refreshing…" and "reconnecting…" never appeared in 444 s through the tunnel.
+
+**The three Minor findings**, none of which holds the release and none of which produced a
+point release:
+
+1. **M-1 (reproduced) — a watcher on a FINISHED game is not told when the creator abandons
+   it, and stays on the dead screen.** `useSignal`'s `active` is `!!state && !state.over
+   && !state.your_turn` (`web/src/App.tsx:653`), so the stream is CLOSED at game over and
+   the `end` frame has nobody to reach; the next per-game GET 404s into a panel, which
+   renders `no game named "…"` and leaves the screen where it is. **This falsifies the fix
+   wave's I-2 sentence for one status** — "an abandon leaves a SENTENCE on every screen" is
+   true at `playing` (claim 24 below was measured at 64 ms) and false at `over`. Either
+   one-liner closes it: route a 404 from any per-game route on the game screen to
+   `toLobby(endSentence("gone"))`, or drop `!state.over` from `active` at the cost of one
+   idle connection per finished-game tab. → §6.2.
+2. **M-2 (reproduced) — every arrival at `#/t/<id>` by link or reload draws the LOBBY for
+   one round trip**, opening the house stream and firing three listings that are thrown
+   away (`/api/stream` open at 43.15 s, three `?scope=` reads, abort at 43.23 s, the table
+   stream open at 43.23 s). `App`'s screen selection falls through to `<Lobby>` while
+   `open(id)` is still awaiting `GET …/table`. Fix: render "opening…" while a table route
+   is pending. → §6.2.
+3. **M-3 (suspicion, NOT reproduced) — a player whose TURN it is has no stream open** (by
+   design), so an abandon under them is learned only when they post, and the refusal lands
+   in the error strip with the screen staying put. In the run that abandoned mid-game it
+   was the other seat's turn, so that seat left for the lobby with the sentence in 6 s.
+   Same class and same first fix as M-1; recorded so it is not mistaken for tested. → §6.2.
+
+**Not reachable with this instrument:** the hidden-tab "refreshing…" word. Playwright
+cannot hide a tab — with a second page brought to front in the same context
+`document.visibilityState` stayed `visible` in headless AND headed Chromium — so the
+stream was never let go and no word could appear. The mechanism is held by the client's
+unit cells; on the live site it is untried, and a human with two real tabs is the
+instrument. **Game over at a table of two PEOPLE** was also not reached (1,471 events of
+random play without an end), so the game-over claims were tried at a bot table.
+
+**Housekeeping:** seven tables were created during the review; five were deleted by their
+creator and two were abandoned through the lobby UI as the finding under test. The
+measurement table `sim-f68b6accb83c4073` was deleted afterwards, and the house is empty.
+
+The report, the per-identity request logs, the shell stream reads and the 82 screenshots
+are in the session scratchpad; the SDD workspace is gitignored, so the findings are quoted
+here rather than linked to.
+
 ---
 
 ## 5. The rulings taken in execution, with their costs
@@ -606,7 +694,8 @@ none. (The plan's own R-plan-1–R-plan-5 are restated after the table.)
 
 ### Restated from the plan (R-plan-1 … R-plan-5)
 
-- **R-plan-1** — the measurement is Task 3, after the stream exists. **Still owed** (§2.1).
+- **R-plan-1** — the measurement is Task 3, after the stream exists. **Taken at the
+  release, both ways; SSE ships** (§2.1).
 - **R-plan-2** — `admitted` returns `(TableDoc, Viewer)` and routes needing a handle ask
   after; the nine `seated` sites became `admitted` + `handle` pairs. Done.
 - **R-plan-3** — the stand-in is `(current_player + 1) % players`, one line, and the cells
@@ -722,6 +811,18 @@ watching" strip drops the signed-in address — an owner wording option ("watchi
 **Task 9.** `hasMove` is now duplicated a third time. Eight further polish items in the
 report. The stream closure's ~25 s heartbeat cost is recorded, not gated.
 
+**The live review's three Minors (added at the release, 2026-09-16; §4.5 has the
+evidence).** **M-1** — a watcher (and by the same code a player) on a FINISHED game is not
+told of an abandon, because the stream is closed at game over and a per-game 404 renders
+inside the panel that asked for it; this is the one status at which the fix wave's "a
+sentence on every screen" is not true, and either of two one-line fixes closes it. **M-2**
+— every arrival by link or reload draws the lobby for one round trip, opening and aborting
+the house stream and throwing away three listings; the fix is an "opening…" line while a
+table route is pending. **M-3** — a player whose turn it is holds no stream by design, so
+an abandon under them is learned on their next post; a suspicion, not reproduced, and the
+same fix as M-1's first option. All three LEAVE: none is on the wire, none holds a
+release, and M-1 and M-3 are one small follow-up together.
+
 ### 6.3 OWNER ITEMS — decisions that are not an agent's
 
 1. **The email roster reaches any signed-in caller in one page.** Through `?scope=playing`
@@ -759,21 +860,28 @@ report. The stream closure's ~25 s heartbeat cost is recorded, not gated.
 
 Spec §11, restated at this HEAD, with what the build adds.
 
-- **NOT DEPLOYED.** Nothing in §1 has run on the NAS. The image `0.5.0-m6.3` does not
-  exist; `deploy/RUNBOOK.md` is untouched by this cycle.
-- **No tunnel reading has been taken** (§2.1). R-3.1 is undecided in the field.
-  `SIGNAL_KIND` is `"sse"` because that is the spec's choice, not because a measurement
-  said so.
-- **The exit criterion is half proven.** "A spectator link shows a game walking" is
-  demonstrated in the browser walk on a workstation. **"No polling on the NAS" is not
-  shown**, because nothing is on the NAS.
+- **DEPLOYED, and the three bullets that stood here at the build close are now
+  answered** (this is the amendment; everything else in §7 is unchanged and was written at
+  `9a4626d`). `yokohama-web:0.5.0-m6.3` is live on the NAS in container `f0c371c7…` since
+  19:20:51Z, recorded in `deploy/RUNBOOK.md` §3.9.
+- **The tunnel reading has been taken, both ways** (§2.1). `SIGNAL_KIND` stays `"sse"`
+  because a stream held ten minutes through the edge with a move arriving in it, and
+  because the same stream without its 25 s heartbeat was reset at 125 s. The held-request
+  arm is still dark and still one constant away, with R-F.1's residual unexercised.
+- **The exit criterion is shown, on the NAS.** In the live review of the deployed image a
+  watcher arriving by link asked `GET …/events` **zero** times and held **one** stream
+  through two full turns, through a 444 s game of 1,471 events and through a whole game
+  against the bot (§4.5). What is still NOT claimed about it: nothing was measured with
+  more than three browsers, no game between two PEOPLE was played to its end, and the
+  hidden-tab word remains untried on the live site.
 - **The held arm has shipped DARK and has a residual gap**, written at
   `HELD_REASK_MS`'s own doc: a bump landing inside one request's round trip — after the
   server answered, before the next subscribe — still waits for the bump after it or for
   the 25 s deadline. Closing it needs the server to answer at once when `after` differs,
   which is a route change and not a reader one.
-- **No live review.** The three-browser review against the live site is Task 11's step 2
-  and is owed.
+- **The live review is DONE and returned SHIP** (§4.5), with three Minor findings that
+  LEAVE. It is three browsers driven by one machine for a few minutes, not a week of real
+  play: it says the mechanism works where it is deployed, not that nothing else is wrong.
 - **The notifier is designed only** (spec §7): the Durable Object, the poke's
   authentication, the message shape and the drop-and-recover rule are decided; none of it
   is built. M6.5 builds it.
@@ -802,23 +910,30 @@ stands on (the signal, the store, identity and seats), the rulings that bind it,
 questions the brainstorm must settle, and the process that has worked for three cycles.
 Read it after this document's §1, §5, §6 and §7.
 
-**Three steps are OWED to the owner before M6.4's brainstorm**, and the M6.3 exit is not
-shown until they are done:
+**The three steps that were owed to the owner are DONE, all on 2026-09-16**, under the
+owner's in-session authorization; nothing about M6.4 waits on them any longer:
 
-1. **Plan Task 3** — the rc deploy `0.5.0-m6.3-rc1` and the R-3.1 tunnel measurement,
-   procedure and empty slots in §2.1 above.
-2. **Plan Task 10** — the release `yokohama-web:0.5.0-m6.3`, the repeated reading against
-   the deployed stream, the shell verification (`/api/health` reads its `signal`), and
-   `deploy/RUNBOOK.md` §3.9 plus the heartbeat sentence on the cloudflared ingress.
-3. **Plan Task 11 step 2** — the live review from THREE browsers as three people, two
-   playing and one arriving by link and watching a full turn with the network panel open,
-   in both layouts.
+1. **Plan Task 3** — folded into the release rather than run as a separate rc, because the
+   owner authorized the release and the NAS had nobody playing on it. The R-3.1 reading was
+   taken against the deployed stream: **A** held ten minutes with the minute-nine frame
+   arriving, **B** (a throwaway `-rc2` with no heartbeat, deployed for the reading alone
+   and removed after) was reset by the edge at 125 s. §2.1 has both.
+2. **Plan Task 10** — `yokohama-web:0.5.0-m6.3` built at `74a0e80`, live from 19:04:04Z and,
+   after the rc2 reading, from **19:20:51Z** in container `f0c371c7…`; verified through the
+   tunnel (health carrying `"signal":"sse"`, the bare 401, all three scopes, the bundle) and
+   by the milestone's own create/deal/keep/stream check. Recorded in `deploy/RUNBOOK.md`
+   §3.9, with the heartbeat sentence added to the Yokohama ingress comment in
+   `deploy/cloudflared-config.yml`.
+3. **Plan Task 11 step 2** — the three-browser live review: **SHIP**, 0 Critical, 0
+   Important, 3 Minor, 25 claims true in both layouts, zero console errors. §4.5.
 
-**And two things waiting:** PR #33 is not yet opened (`web-room-m6.3` stacked on
-`web-room-m6.2`, itself stacked on `web-room`/PR #31); **merge order is the owner's**.
-M6.2's ruling #13 — the delete control on the lobby's Your-games rows — was kept on the
-owner's word during this cycle and needs nothing further.
+**And two things still waiting on the owner:** PR #33 is **open** against `web-room-m6.2`
+(https://github.com/jmoore2333/yokohama-assistant/pull/33), which is stacked on
+`web-room`/PR #31 — **merge order is the owner's**, and nothing here is merged. M6.2's
+ruling #13 — the delete control on the lobby's Your-games rows — was kept on the owner's
+word during this cycle and needs nothing further.
 
-**This record is amended ONCE, at the release**: §2.1's slots, §7's first three bullets
-and the deployment paragraph this close does not yet have. After that it freezes like
-every other dated artifact.
+**This record has now been amended ONCE, at the release**, exactly as promised: the header,
+§1's opening, §2.1's slots, the new §4.5 and its three Minors in §6.2, §7's first three
+bullets and this section. **It freezes here**, like every other dated artifact; anything
+later is recorded forward.
